@@ -1,6 +1,6 @@
 # Brainyard
 
-> **v0.1.0 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.1.0), 2026-05-20). First public build: native binary for **macOS arm64** plus a portable **JDK 21+ uberjar**. Linux and macOS amd64 binaries land at M3 once the CI matrix ships.
+> **v0.1.1 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.1.1), 2026-05-20). Tooling refresh: version is now baked from `git describe` at build time, and `bb native:ata` honors the `.sdkmanrc` GraalVM pin. No user-visible behavior changes vs. v0.1.0 — drop-in upgrade via the install command below. Platform coverage unchanged: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries land at M3.
 
 Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 18 available agents across 6 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
 
