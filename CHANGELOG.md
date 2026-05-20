@@ -2,7 +2,7 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
-## [v0.1.0] — 2026-05-17
+## [v0.1.0] — 2026-05-20
 
 First public release of the `by` binary (the Brainyard agent TUI).
 
@@ -10,8 +10,8 @@ This release is a **manual M1 release** per the deployment design — built loca
 
 ### Artifacts
 
-- `by-0.1.0.jar` — Clojure uberjar (44 MB). Runs on JDK 21+.
-- `by-0.1.0-macos-arm64` — native binary (137 MB). Cold start ~1.5 s.
+- `by-0.1.0.jar` — Clojure uberjar (50 MB). Runs on JDK 21+.
+- `by-0.1.0-macos-arm64` — native binary (138 MB). Cold start ~1.5 s.
 - `by-wrapper.sh` — wrapper shell script. Sources `.env` and execs the native binary.
 - `SHA256SUMS` — checksums covering all of the above.
 
@@ -30,7 +30,7 @@ java -jar by-0.1.0.jar --help
 
 ### Upstream provenance
 
-Mirrored from the private upstream `~/Projects/MyDev/brainyard` at commit `e6ba7b6e35e33dd5a063c5346ffaccd1bd923e6f` (branch `main`, synced 2026-05-17). See `SYNCED-FROM.txt`.
+Built from the private upstream `~/Projects/MyDev/brainyard` at commit `ebd66caef58e2319c51bd37a248286e2f4d5fe0b` (branch `main`, synced 2026-05-20). Provenance lives in `release/BUILD-INFO.txt` (uploaded with each release) — synced sources are not committed to this repo.
 
 ### Build environment (this release)
 
