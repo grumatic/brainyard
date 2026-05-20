@@ -6,7 +6,8 @@
 #   - projects/agent-tui-app/target/agent-tui-app.jar    (from `bb uberjar:ata`)
 #   - projects/agent-tui-app/target/by                   (from `bb native:ata`)
 #   - projects/agent-tui-app/scripts/by-wrapper.sh
-#   - projects/agent-tui-app/src/ai/brainyard/agent_tui_app/main.clj
+#   - projects/agent-tui-app/resources/build-version.edn (from `bb version:ata`,
+#                                                        baked from `git describe` in THIS repo)
 #
 # Outputs (written to release/, gitignored — uploaded by the release workflow):
 #   - by-<version>.jar
@@ -26,7 +27,7 @@ SHIPPING_PROJECT_DIR="${REPO_ROOT}/projects/agent-tui-app"
 TARGET_DIR="${SHIPPING_PROJECT_DIR}/target"
 RELEASE_DIR="${REPO_ROOT}/release"
 SYNCED_FROM="${REPO_ROOT}/SYNCED-FROM.txt"
-MAIN_CLJ="${SHIPPING_PROJECT_DIR}/src/ai/brainyard/agent_tui_app/main.clj"
+VERSION_EDN="${SHIPPING_PROJECT_DIR}/resources/build-version.edn"
 WRAPPER_SRC="${SHIPPING_PROJECT_DIR}/scripts/by-wrapper.sh"
 
 log()  { printf '\033[1;34m[release-stage]\033[0m %s\n' "$*"; }
@@ -49,22 +50,36 @@ detect_platform() {
   echo "${os}-${arch}"
 }
 
-# ── Resolve version from upstream main.clj ──────────────────────────────────
+# ── Resolve version from build-version.edn (stamped by `bb version:ata`) ────
+#
+# Upstream's app-version is now baked at build time from `git describe`
+# of THIS repo, so a clean release requires:
+#   - HEAD sits exactly on a tag (no commits since), and
+#   - the working tree is clean (no -dirty suffix).
+# Refuse to stage otherwise — those would yield "v0.1.1-3-gabcdef" or
+# "v0.1.1-dirty" baked into a public binary, which is misleading.
 
 read_version() {
-  [[ -f "${MAIN_CLJ}" ]] || die "Missing ${MAIN_CLJ} — run bin/sync-from-dev.sh first"
-  # Match the line:  (def app-version  "0.1.0")  — possibly with a docstring between.
-  local v
-  v="$(awk '
-    /\(def app-version/ { in_def = 1 }
-    in_def && /"[0-9][^"]*"/ {
-      match($0, /"[0-9][^"]*"/)
-      print substr($0, RSTART + 1, RLENGTH - 2)
-      exit
-    }
-  ' "${MAIN_CLJ}")"
-  [[ -n "${v}" ]] || die "Could not extract app-version from ${MAIN_CLJ}"
-  echo "${v}"
+  [[ -f "${VERSION_EDN}" ]] || die "Missing ${VERSION_EDN} — run 'bb version:ata' (or 'bb build:ata') first"
+  local raw
+  raw="$(awk 'match($0, /:version "[^"]+"/) {
+      print substr($0, RSTART + 11, RLENGTH - 12); exit
+    }' "${VERSION_EDN}")"
+  [[ -n "${raw}" ]] || die "Could not parse :version from ${VERSION_EDN}"
+
+  case "${raw}" in
+    dev)
+      die "Version is 'dev' — was the build run without a .git directory? Re-run 'bb version:ata' from a git working tree."
+      ;;
+    *-dirty)
+      die "Version '${raw}' has uncommitted changes — commit or stash, then re-run 'bb build:ata' to restamp."
+      ;;
+    *-g[0-9a-f]*)
+      die "Version '${raw}' has commits past the last tag — tag HEAD (e.g. 'git tag v<X.Y.Z>'), then re-run 'bb build:ata' to restamp."
+      ;;
+  esac
+  # Strip leading 'v' so asset names look like by-0.1.1-…, not by-v0.1.1-…
+  echo "${raw#v}"
 }
 
 # ── Parse upstream SHA from SYNCED-FROM.txt ─────────────────────────────────
