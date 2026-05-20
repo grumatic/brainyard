@@ -35,7 +35,7 @@ Built from the private upstream `~/Projects/MyDev/brainyard` at commit `ebd66cae
 ### Build environment (this release)
 
 - macOS arm64
-- GraalVM Oracle 25.0.3+9.1 (build 25.0.3+9-LTS) — note: upstream `.sdkmanrc` pins `25.0.1-graal`, no longer available via sdkman.
+- GraalVM Oracle 25.0.3+9.1 (build 25.0.3+9-LTS) — matches upstream `.sdkmanrc` (`java=25.0.3-graal`).
 - Babashka 1.3.190
 - Clojure CLI 1.12.0.1530
 

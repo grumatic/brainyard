@@ -52,7 +52,7 @@ Maintainers with upstream access build like this:
 git clone https://github.com/grumatic/brainyard
 cd brainyard
 bin/sync-from-dev.sh              # pulls Polylith subset + bb.edn/deps.edn from upstream
-sdk use java 25.0.1-graal         # matches the synced .sdkmanrc
+sdk use java 25.0.3-graal         # matches the synced .sdkmanrc
 bb build:ata                      # AOT compile → uberjar → native binary
 bin/release-stage.sh              # stage release/ artifacts + BUILD-INFO.txt with upstream SHA
 ```

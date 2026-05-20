@@ -133,7 +133,7 @@ Building from source requires access to the private upstream dev repo. This repo
 git clone https://github.com/grumatic/brainyard
 cd brainyard
 bin/sync-from-dev.sh          # pull Polylith subset + build config from upstream
-sdk use java 25.0.1-graal     # honors the synced .sdkmanrc
+sdk use java 25.0.3-graal     # honors the synced .sdkmanrc
 
 bb compile:ata                # AOT compile main namespace
 bb uberjar:ata                # build target/agent-tui-app.jar
@@ -214,8 +214,8 @@ A future Java release will block the call by default; the native binary is unaff
 GraalVM isn't on `PATH` and `JAVA_HOME` doesn't point at it.
 
 ```bash
-sdk install java 25.0.1-graal
-sdk use java 25.0.1-graal
+sdk install java 25.0.3-graal
+sdk use java 25.0.3-graal
 ```
 
 On macOS, the bb task also probes `/Library/Java/JavaVirtualMachines/` for any GraalVM install. If yours is somewhere else, set `JAVA_HOME` explicitly.

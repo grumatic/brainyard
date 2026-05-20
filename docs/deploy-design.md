@@ -30,7 +30,7 @@
 - The native binary is named **`by`** (per upstream `bb native:ata` → `-H:Name=target/by`). Current declared version: **`0.1.0`** (hardcoded in `main.clj` as `app-version`).
 - Native-image config is **already complete and committed** at `projects/agent-tui-app/resources/META-INF/native-image/ai.brainyard/agent-tui-app/` (`native-image.properties`, `reflect-config.json`, `resource-config.json`, `proxy-config.json`). Init policy is the modern allow-list using `--features=clj_easy.graal_build_time.InitClojureClasses` — no deprecated bare `--initialize-at-build-time` form. The `bb check:ata` task gates against drift in these files.
 - A **wrapper script** `projects/agent-tui-app/scripts/by-wrapper.sh` is part of the contract: it walks up to find `.env`, sources it, then `exec`s `by-bin`. `bb install:ata` installs `by` (wrapper) + `by-bin` (native) + `by.jar` (uberjar, used when `BY_JAR=1`) into `~/.local/bin`. The public installer should mirror this layout.
-- Toolchain pin: **GraalVM 25** (`.sdkmanrc: java=25.0.1-graal`). The build is also verified against GraalVM 21.0.9 per upstream `CLAUDE.md`.
+- Toolchain pin: **GraalVM 25** (`.sdkmanrc: java=25.0.3-graal`). The build is also verified against GraalVM 21.0.9 per upstream `CLAUDE.md`.
 - The public repo `grumatic/brainyard` currently contains only `.git/` and `docs/` — a true greenfield.
 
 ---
@@ -225,7 +225,7 @@ The release page lists `SHA256SUMS` covering every asset (binaries, jar, and the
    - `by agents` (lists available agents — visible & cheap)
    - `by ask -m haiku 'What is 2+2?'` (one-shot question — produces a visible answer; the choice of `haiku` keeps the cost trivial).
 5. **Documentation** — links to `docs/usage.md` and `docs/install.md`.
-6. **Building from source** — short pointer for contributors covering: `sdk use java 25.0.1-graal`, `bb compile:ata`, `bb uberjar:ata`, `bb native:ata` (or the chained `bb build:ata`). Full details in a `CONTRIBUTING.md` (future).
+6. **Building from source** — short pointer for contributors covering: `sdk use java 25.0.3-graal`, `bb compile:ata`, `bb uberjar:ata`, `bb native:ata` (or the chained `bb build:ata`). Full details in a `CONTRIBUTING.md` (future).
 7. **License** and **Acknowledgements**.
 
 Tone: utilitarian, no marketing fluff. The point of the README is to get someone from "I heard about this" to "I ran it" in under 60 seconds.
