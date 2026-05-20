@@ -1,8 +1,8 @@
 # Brainyard
 
-> **Status:** pre-release. The first public release (`v0.1.0`) lands at milestone M1 — see [`docs/deploy-design.md`](docs/deploy-design.md). The install commands below describe the planned UX; they will start working once the first release is published.
+> **v0.1.0 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.1.0), 2026-05-20). First public build: native binary for **macOS arm64** plus a portable **JDK 21+ uberjar**. Linux and macOS amd64 binaries land at M3 once the CI matrix ships.
 
-Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list available agents, and bootstrap configuration without leaving the terminal.
+Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 18 available agents across 6 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
 
 <!-- TODO: replace with a real asciinema cast / GIF once recorded -->
 <!-- ![Brainyard TUI demo](docs/img/demo.gif) -->
@@ -65,4 +65,4 @@ Licensed under the [Apache License, Version 2.0](LICENSE). Copyright 2026 Grumat
 
 ## Acknowledgements
 
-Brainyard builds on the [Clojure](https://clojure.org/) ecosystem, [GraalVM](https://www.graalvm.org/) native-image, the [Polylith](https://polylith.gitbook.io/) architecture, and a long list of OSS libraries credited in the upstream repo. Specific runtime dependencies are listed in `projects/agent-tui-app/deps.edn` once sources are mirrored.
+Brainyard builds on the [Clojure](https://clojure.org/) ecosystem, [GraalVM](https://www.graalvm.org/) native-image, the [Polylith](https://polylith.gitbook.io/) architecture, and a long list of OSS libraries credited in the upstream repo. Specific runtime dependencies live in the (private) upstream's `projects/agent-tui-app/deps.edn`; this repo only carries the publish glue. The CycloneDX SBOM embedded in the native binary lists 55 components — extract it with `native-image -H:DumpSBOM=…` or read `release/BUILD-INFO.txt` for the upstream SHA that pinned the dep set.
