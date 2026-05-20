@@ -1,0 +1,60 @@
+# Clojure / tools.deps
+.cpcache/
+.nrepl-port
+.shadow-cljs/
+.lsp/
+.calva/
+
+# Build outputs (under projects/agent-tui-app/target/ after sync)
+target/
+classes/
+*.jar
+!docs/**/*.jar
+
+# Local env — never commit, never sync from upstream
+.env
+.env.*
+!.env.example
+
+# Node (only present if frontend bricks ever get mirrored)
+node_modules/
+
+# Editor scratch
+*~
+.#*
+*.bak
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+# Sync staging — never commit
+.sync-staging/
+
+# Release staging — built artifacts, uploaded to GitHub Releases, not git
+release/
+
+# Synced from upstream by bin/sync-from-dev.sh — never committed.
+# This repo is a thin sync-build-publish wrapper; sources and build config
+# live in the dev repo. Run bin/sync-from-dev.sh before any `bb` command.
+bases/
+components/
+projects/
+.clj-kondo/
+bb.edn
+deps.edn
+workspace.edn
+.sdkmanrc
+SYNCED-FROM.txt
+docs/upstream-readme.md
+
+# Transient — regenerated from CHANGELOG.md for each release as the release-body source
+CHANGELOG-latest.md
+
+# Polylith local state
+.brainyard/
+
+# Benchmark outputs (mirrored upstream sometimes; never publish)
+benchmark-results/

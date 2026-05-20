@@ -1,0 +1,51 @@
+# Changelog
+
+All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
+
+## [v0.1.0] — 2026-05-17
+
+First public release of the `by` binary (the Brainyard agent TUI).
+
+This release is a **manual M1 release** per the deployment design — built locally on macOS arm64, with limited platform coverage. Linux and macOS amd64 binaries land at M3 once the CI matrix is in place.
+
+### Artifacts
+
+- `by-0.1.0.jar` — Clojure uberjar (44 MB). Runs on JDK 21+.
+- `by-0.1.0-macos-arm64` — native binary (137 MB). Cold start ~1.5 s.
+- `by-wrapper.sh` — wrapper shell script. Sources `.env` and execs the native binary.
+- `SHA256SUMS` — checksums covering all of the above.
+
+### Install
+
+See [`docs/install.md`](docs/install.md) for the full install paths. Quick start:
+
+```bash
+# Native binary (macOS arm64 only in v0.1.0)
+curl -fsSL https://raw.githubusercontent.com/grumatic/brainyard/main/bin/install.sh | bash
+
+# Uberjar (any platform with JDK 21+)
+curl -LO https://github.com/grumatic/brainyard/releases/download/v0.1.0/by-0.1.0.jar
+java -jar by-0.1.0.jar --help
+```
+
+### Upstream provenance
+
+Mirrored from the private upstream `~/Projects/MyDev/brainyard` at commit `e6ba7b6e35e33dd5a063c5346ffaccd1bd923e6f` (branch `main`, synced 2026-05-17). See `SYNCED-FROM.txt`.
+
+### Build environment (this release)
+
+- macOS arm64
+- GraalVM Oracle 25.0.3+9.1 (build 25.0.3+9-LTS) — note: upstream `.sdkmanrc` pins `25.0.1-graal`, no longer available via sdkman.
+- Babashka 1.3.190
+- Clojure CLI 1.12.0.1530
+
+### Known gaps
+
+- **Linux binaries** are not in v0.1.0. Use the uberjar on Linux for now.
+- **macOS amd64** is not in v0.1.0. Use the uberjar on Intel Macs.
+- **Windows** is deferred (see `docs/deploy-design.md` §7.2).
+- **GraalVM 21.0.9** surfaces a `sci.impl.multimethods__init` clinit failure that GraalVM 25 does not. Upstream `native-image.properties` may need an `--initialize-at-run-time=sci.impl.multimethods__init` carve-out before CI on older GraalVM is reliable.
+
+### Closure
+
+18 Polylith bricks mirrored: 2 bases (`agent-tui`, `acp-stub-agent`) and 16 components. Full list in `bin/.brick-set`.
