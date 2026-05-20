@@ -2,6 +2,36 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [v0.1.1] — 2026-05-20
+
+Tooling release. No user-visible behavior changes vs. v0.1.0 — same 18 agents, same 6 subcommands, same provider lineup. Recommended for everyone on v0.1.0 (the upgrade is a drop-in `curl | bash` re-run).
+
+### What changed
+
+- **Build version baked at compile time.** Upstream's `app-version` now reads `resources/build-version.edn`, which `bb version:ata` stamps from `git describe --tags --always --dirty` before AOT compile. The binary's reported version always reflects the actual source tag, not a hand-edited string literal that could drift.
+- **`bb native:ata` honors the `.sdkmanrc` pin** when probing for `native-image` on machines with multiple GraalVM installs. Fewer "wrong-toolchain-built" surprises on multi-Graal dev boxes.
+- **Wrapper-repo invariant.** This repo's `bin/release-stage.sh` now refuses to stage a release when the wrapper's `git describe` carries `-dirty`, `-N-gabc123` (commits past tag), or resolves to `dev` (no git). Prevents stamping a misleading version into a public artifact.
+
+### Artifacts
+
+- `by-0.1.1.jar` — Clojure uberjar (50 MB). Runs on JDK 21+.
+- `by-0.1.1-macos-arm64` — native binary (138 MB). Cold start ~1.5 s.
+- `by-wrapper.sh` — wrapper shell script (unchanged from v0.1.0).
+- `SHA256SUMS` — checksums.
+- `BUILD-INFO.txt` — upstream SHA, branch, sync/build timestamps.
+
+### Upstream provenance
+
+Built from upstream commit `184d6ecf0c87148041f82a4bdcf9e018597f3562` (branch `main`, synced 2026-05-20). Full provenance in `release/BUILD-INFO.txt`.
+
+### Known gaps (unchanged from v0.1.0)
+
+- **Linux binaries** not in v0.1.1. Use the uberjar on Linux for now.
+- **macOS amd64** not in v0.1.1. Use the uberjar on Intel Macs.
+- **Windows** deferred (see `docs/deploy-design.md` §7.2).
+
+---
+
 ## [v0.1.0] — 2026-05-20
 
 First public release of the `by` binary (the Brainyard agent TUI).
