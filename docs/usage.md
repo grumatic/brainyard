@@ -1,15 +1,17 @@
 # Using Brainyard (`by`)
 
-> **Status:** pre-release. Flags & subcommands described here match the upstream `agent-tui-app` as of 2026-05-17. They will land in the first public release (`v0.1.0`).
+> Flags & subcommands described here match the upstream `agent-tui-app` as of 2026-05-20 (v0.1.0).
 
-`by` is the agent-driven terminal UI binary. It has four subcommands:
+`by` is the agent-driven terminal UI binary. It has six subcommands:
 
 | Subcommand | Purpose |
 |---|---|
 | `run` *(default)* | Launch the interactive TUI. |
 | `ask` | Run a one-shot question, print the answer, exit. Non-interactive. |
 | `agents` | List available agents and exit. |
-| `config` | Interactive environment bootstrap wizard. |
+| `models` | List available LLM models (provider/model) and exit. |
+| `config` | Bootstrap pipeline (detect → ladder → handoff) for provider credentials and runtime settings. |
+| `sessions` | List or prune persisted agent sessions (`by sessions list` / `by sessions prune`). |
 
 If no subcommand is given, `run` is implied.
 
@@ -18,7 +20,9 @@ by                  # equivalent to: by run
 by run -i           # inline mode (no alt-screen)
 by ask 'hello'      # one-shot
 by agents           # list agents and exit
-by config           # bootstrap wizard
+by models           # list provider/model combinations
+by config           # bootstrap pipeline
+by sessions list    # list persisted sessions
 by --help           # full help
 ```
 
@@ -117,6 +121,8 @@ Variables prefixed with `BY_` are read by the **wrapper** (`by` shell script), n
 | `BRAINYARD_ROOT` | binary | Hint at the project root; useful when `.env` discovery isn't enough. |
 
 LLM provider credentials are read from the environment by their conventional names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AWS_PROFILE`, `AWS_REGION`, …) and conventionally placed in `.env` by `by config`.
+
+> **AWS / Bedrock note:** the binary's AWS SDK chain honors `AWS_PROFILE` but **not** `AWS_DEFAULT_PROFILE` — even though the AWS CLI itself honors both. If `by ask -p bedrock …` fails with `Unable to fetch credentials`, export `AWS_PROFILE` explicitly (or set it in your `.env`).
 
 ---
 

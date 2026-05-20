@@ -199,6 +199,16 @@ BY_JAR=1 by ask 'reproduce the crash'
 
 If the JVM run succeeds where the native run fails, the issue is almost always a missing reflection registration. File an issue with the JVM stack trace attached.
 
+On JDK 21+ the uberjar emits warnings from `org.sqlite.SQLiteJDBCLoader` about restricted native-access methods (`java.lang.System::load`). These are informational — sqlite still loads and works. To silence them, run with `--enable-native-access=ALL-UNNAMED`:
+
+```bash
+BY_JAR=1 by ask 'hi'                          # warnings printed, run succeeds
+java --enable-native-access=ALL-UNNAMED \     # warnings silenced
+     -jar ~/.local/bin/by.jar ask 'hi'
+```
+
+A future Java release will block the call by default; the native binary is unaffected.
+
 ### `bb native:ata` fails with "native-image not found"
 
 GraalVM isn't on `PATH` and `JAVA_HOME` doesn't point at it.
