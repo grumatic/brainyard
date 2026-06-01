@@ -42,6 +42,14 @@ by ask -m haiku 'What is 2+2?'    # one-shot question, cheap model
 
 Full command reference: [`docs/usage.md`](docs/usage.md).
 
+## Tutorials
+
+Watch `by` in action — 17 recorded terminal walkthroughs (asciinema), playable in your browser:
+
+**▶ [grumatic.github.io/brainyard](https://grumatic.github.io/brainyard/)**
+
+Topics range from a first "hello" turn to tools & skills, codebase exploration, planning a feature, multi-turn native sessions, research coordination, MCP servers, and workflows. The scenario sources live under [`docs/tutorials/`](docs/tutorials/).
+
 ## Building from source
 
 This repo holds the full source: a [Polylith](https://polylith.gitbook.io/) workspace (`bases/`, `components/`, `projects/agent-tui-app/`) built to a GraalVM native binary and a JVM uberjar.

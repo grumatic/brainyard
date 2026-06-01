@@ -48,3 +48,7 @@ CHANGELOG-latest.md
 
 # Benchmark outputs — never publish
 benchmark-results/
+
+# Generated self-contained tutorials page (~15MB) — published via GitHub Pages
+# (gh-pages branch), regenerated with `bb tutorial:output`. Not tracked on main.
+docs/tutorials/output/
