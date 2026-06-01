@@ -21,7 +21,7 @@ This installs three files under `~/.local/bin`:
 - `by-bin` — the native (GraalVM) binary for your OS/arch.
 - `by.jar` *(optional, via `--with-jar`)* — the uberjar, used when `BY_JAR=1` for JVM-mode debugging.
 
-Pin a specific version with `BY_VERSION=v0.1.0` before piping to bash. See [`docs/install.md`](docs/install.md) for manual install, checksum verification, and troubleshooting.
+Pin a specific version with `BY_VERSION=v0.2.0` before piping to bash. See [`docs/install.md`](docs/install.md) for manual install, checksum verification, and troubleshooting.
 
 ### Java users — uberjar
 
@@ -31,6 +31,17 @@ java -jar by.jar --help
 ```
 
 Requires JDK 21+.
+
+### Configure credentials
+
+`by` reads provider credentials from a nearby `.env` file. Copy the template and fill in the providers you use:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/grumatic/brainyard/main/.env.example -o .env
+# then edit .env — set ANTHROPIC_API_KEY / OPENAI_API_KEY / AWS_PROFILE / etc.
+```
+
+If you cloned the repo, just `cp .env.example .env`. You only need keys for the providers you actually use — the default `claude-code` provider drives the local Claude CLI and needs no API key, as do `ollama` and `apple-fm`. See [`docs/usage.md`](docs/usage.md#environment-variables) for the full variable list.
 
 ## Quick start
 
