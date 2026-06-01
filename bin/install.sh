@@ -150,22 +150,32 @@ fi
 TMPDIR="$(mktemp -d -t brainyard-install.XXXXXX)"
 trap "rm -rf '${TMPDIR}'" EXIT
 
+# Returns curl's exit status; callers decide whether a failure is fatal.
 download() {
   local name="$1"
   local url="${DOWNLOAD_BASE}/${name}"
   log "Downloading ${name}…"
-  if ! curl -fL --progress-bar -o "${TMPDIR}/${name}" "${url}"; then
-    die "Download failed: ${url}"
-  fi
+  curl -fL --progress-bar -o "${TMPDIR}/${name}" "${url}"
 }
 
-download "${BIN_ASSET}"
-download "${WRAPPER_ASSET}"
-if [[ ${VERIFY} -eq 1 ]]; then
-  download "${SUMS_ASSET}"
+# Probe the native binary first. We currently publish only macOS arm64, so
+# Linux and Intel-Mac users won't find a binary for their platform — fall back
+# to the JVM uberjar (requires a JDK on PATH) instead of dying on a 404.
+NATIVE=1
+if ! download "${BIN_ASSET}"; then
+  NATIVE=0
+  log "No native binary for ${PLATFORM} in ${VERSION}; falling back to the JVM uberjar."
+  require_cmd java
 fi
-if [[ ${WITH_JAR} -eq 1 ]]; then
-  download "${JAR_ASSET}"
+
+download "${WRAPPER_ASSET}" || die "Download failed: ${WRAPPER_ASSET}"
+if [[ ${VERIFY} -eq 1 ]]; then
+  download "${SUMS_ASSET}" || die "Download failed: ${SUMS_ASSET}"
+fi
+# The jar is required in fallback mode, and optional (--with-jar) alongside a
+# native install.
+if [[ ${NATIVE} -eq 0 || ${WITH_JAR} -eq 1 ]]; then
+  download "${JAR_ASSET}" || die "Download failed: ${JAR_ASSET}"
 fi
 
 # ── Verify checksums ────────────────────────────────────────────────────────
@@ -175,8 +185,9 @@ if [[ ${VERIFY} -eq 1 ]]; then
   pushd "${TMPDIR}" > /dev/null
   # Build a SHA file restricted to what we actually downloaded so unrelated
   # entries don't trip --ignore-missing on platforms whose shasum is picky.
-  local_files=("${BIN_ASSET}" "${WRAPPER_ASSET}")
-  [[ ${WITH_JAR} -eq 1 ]] && local_files+=("${JAR_ASSET}")
+  local_files=("${WRAPPER_ASSET}")
+  [[ ${NATIVE} -eq 1 ]] && local_files+=("${BIN_ASSET}")
+  [[ ${NATIVE} -eq 0 || ${WITH_JAR} -eq 1 ]] && local_files+=("${JAR_ASSET}")
   if ! ${SHA_CMD} -c "${SUMS_ASSET}" --ignore-missing > /dev/null 2>&1; then
     warn "Checksum verification failed. Aborting."
     ${SHA_CMD} -c "${SUMS_ASSET}" --ignore-missing >&2 || true
@@ -191,11 +202,27 @@ fi
 
 mkdir -p "${INSTALL_DIR}"
 
-install -m 755 "${TMPDIR}/${BIN_ASSET}"     "${INSTALL_DIR}/by-bin"
-install -m 755 "${TMPDIR}/${WRAPPER_ASSET}" "${INSTALL_DIR}/by"
-
-if [[ ${WITH_JAR} -eq 1 ]]; then
-  install -m 644 "${TMPDIR}/${JAR_ASSET}" "${INSTALL_DIR}/by.jar"
+if [[ ${NATIVE} -eq 1 ]]; then
+  install -m 755 "${TMPDIR}/${WRAPPER_ASSET}" "${INSTALL_DIR}/by"
+  install -m 755 "${TMPDIR}/${BIN_ASSET}"     "${INSTALL_DIR}/by-bin"
+  if [[ ${WITH_JAR} -eq 1 ]]; then
+    install -m 644 "${TMPDIR}/${JAR_ASSET}" "${INSTALL_DIR}/by.jar"
+  fi
+else
+  # JVM fallback: install the canonical wrapper as `by-wrapper` (it owns the
+  # .env discovery + BY_JAR handling), the uberjar as `by.jar`, and a small
+  # `by` shim that forces BY_JAR=1 so `by` runs the jar by default.
+  install -m 755 "${TMPDIR}/${WRAPPER_ASSET}" "${INSTALL_DIR}/by-wrapper"
+  install -m 644 "${TMPDIR}/${JAR_ASSET}"     "${INSTALL_DIR}/by.jar"
+  cat > "${INSTALL_DIR}/by" <<EOF
+#!/usr/bin/env bash
+# Brainyard launcher — JVM uberjar mode (no native binary for this platform).
+# Forces BY_JAR=1 and delegates to by-wrapper, which sources a nearby .env and
+# then exec's \`java -jar by.jar\`.
+export BY_JAR=1
+exec "${INSTALL_DIR}/by-wrapper" "\$@"
+EOF
+  chmod 755 "${INSTALL_DIR}/by"
 fi
 
 # macOS: re-apply an ad-hoc codesign to the copied native binary.
@@ -204,7 +231,7 @@ fi
 # original inode. After the cp/install above the kernel won't recognize the
 # copy and AMFI will SIGKILL it on first launch. Re-signing produces a fresh
 # ad-hoc signature on the installed file.
-if [[ "$(uname -s)" == "Darwin" ]]; then
+if [[ ${NATIVE} -eq 1 && "$(uname -s)" == "Darwin" ]]; then
   if command -v codesign >/dev/null 2>&1; then
     log "Re-applying ad-hoc codesign on macOS (avoids AMFI SIGKILL)…"
     codesign --force --sign - "${INSTALL_DIR}/by-bin"
@@ -216,9 +243,15 @@ fi
 # ── Post-install hint ───────────────────────────────────────────────────────
 
 log "Installed to ${INSTALL_DIR}:"
-log "  by      — wrapper (sources .env, execs by-bin)"
-log "  by-bin  — native binary"
-[[ ${WITH_JAR} -eq 1 ]] && log "  by.jar  — uberjar (BY_JAR=1 to use)"
+if [[ ${NATIVE} -eq 1 ]]; then
+  log "  by      — wrapper (sources .env, execs by-bin)"
+  log "  by-bin  — native binary"
+  [[ ${WITH_JAR} -eq 1 ]] && log "  by.jar  — uberjar (BY_JAR=1 to use)"
+else
+  log "  by          — launcher (JVM uberjar mode; requires java on PATH)"
+  log "  by-wrapper  — wrapper (sources .env, runs java -jar)"
+  log "  by.jar      — uberjar"
+fi
 
 case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) ;;
