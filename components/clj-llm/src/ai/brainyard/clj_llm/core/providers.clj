@@ -481,9 +481,9 @@
 (defn get-popular-models
   "Get a curated list of popular models across providers."
   []
-  [{:model "haiku"              :provider :claude-code :description "Claude Haiku 4.5 via CLI (no API key)"}
+  [{:model "opus"               :provider :claude-code :description "Claude Opus 4.6 via CLI (no API key)"}
    {:model "sonnet"             :provider :claude-code :description "Claude Sonnet 4.6 via CLI (no API key)"}
-   {:model "opus"               :provider :claude-code :description "Claude Opus 4.6 via CLI (no API key)"}
+   {:model "haiku"              :provider :claude-code :description "Claude Haiku 4.5 via CLI (no API key)"}
    {:model "gpt-5"             :provider :openai    :description "OpenAI GPT-5 (flagship)"}
    {:model "gpt-5-mini"        :provider :openai    :description "OpenAI GPT-5 Mini (fast, cheap)"}
    {:model "gpt-5-nano"        :provider :openai    :description "OpenAI GPT-5 Nano (cheapest, lowest latency)"}
