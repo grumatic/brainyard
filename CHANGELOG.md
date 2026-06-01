@@ -2,6 +2,22 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [v0.2.2] — 2026-06-01
+
+**Opus is now the default model.** The out-of-box default LM changes from Sonnet to Opus.
+
+### Changed
+
+- **Default LM → Opus.** With no `-m`/config override, `by` now defaults to `claude-code:opus` (most capable Claude via the CLI, no API key). The `-p anthropic` provider default is the latest `claude-opus-4-7`, and `by config --auto` now selects `claude-code:opus`. Override anytime with `-m sonnet`/`-m haiku` or `LM_MODEL`.
+
+### Fixed
+
+- **`:dev` alias.** Trimmed `deps.edn`'s `:dev` alias to the mirrored brick set (17 components + 2 bases); it had listed ~28 components/bases not present in this repo, breaking `bb repl` / `bb repl:test` with "Local lib not found".
+
+### Removed
+
+- Dropped `bb` tasks targeting non-mirrored upstream projects (`repl:fra/ea/ra/awa`, `shadow:fra/awa`) — they could never run here.
+
 ## [v0.2.1] — 2026-06-01
 
 Documentation and tooling only — no binary or behavior changes since v0.2.0. The `by` binary is functionally identical to v0.2.0 (only the reported `--version` differs).
