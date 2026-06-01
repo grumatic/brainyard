@@ -1,6 +1,6 @@
 # Using Brainyard (`by`)
 
-> Flags & subcommands described here match the upstream `agent-tui-app` as of 2026-05-20 (v0.1.0).
+> Flags & subcommands described here match `agent-tui-app` as of v0.2.0.
 
 `by` is the agent-driven terminal UI binary. It has six subcommands:
 
@@ -10,7 +10,7 @@
 | `ask` | Run a one-shot question, print the answer, exit. Non-interactive. |
 | `agents` | List available agents and exit. |
 | `models` | List available LLM models (provider/model) and exit. |
-| `config` | Bootstrap pipeline (detect → ladder → handoff) for provider credentials and runtime settings. |
+| `config` | Bootstrap pipeline (detect → ladder → handoff) for provider + runtime settings. |
 | `sessions` | List or prune persisted agent sessions (`by sessions list` / `by sessions prune`). |
 
 If no subcommand is given, `run` is implied.
@@ -28,37 +28,55 @@ by --help           # full help
 
 ---
 
-## Global options (shared across `run` and `ask`)
+## Options
+
+`run` and `ask` share the model-selection options; `run` adds TUI- and session-specific flags.
+
+### Shared (`run` and `ask`)
 
 | Short | Long | Default | Notes |
 |---|---|---|---|
 | `-a` | `--agent AGENT` | `coact-agent` | Which agent to invoke. Use `by agents` to list. |
-| `-p` | `--provider PROVIDER` | `claude-code` | LLM provider. e.g. `anthropic`, `openai`, `bedrock`, `claude-code`. |
-| `-m` | `--model MODEL` | provider default | Model name. Provider-relative — e.g. `sonnet`, `opus`, `haiku` for Anthropic. |
-| `-i` | `--inline` | off | Inline mode (no alt-screen). Useful when running `by` from inside another TUI/CLI tool. |
-| `-v` | `--verbose` | off | Verbose output (debug logs to stderr). |
+| `-p` | `--provider PROVIDER` | `claude-code` | LLM provider (see below). |
+| `-m` | `--model MODEL` | provider default | Model name override. Provider-relative — e.g. `sonnet`, `opus`, `haiku` for `claude-code`. |
 | `-n` | `--max-iterations N` | per-agent | Cap the agent's iteration loop. |
-| `-s` | `--session-id ID` | new | Resume a specific session. New sessions get a fresh UUID. |
+
+### `run`-only
+
+| Short | Long | Default | Notes |
+|---|---|---|---|
+| `-i` | `--[no-]inline` | off | Inline mode (no alt-screen). Useful when running `by` from inside another TUI/CLI. |
+| `-v` | `--[no-]verbose` | off | Verbose output (debug logs to stderr). |
+| `-r` | `--resume [ID]` | — | Resume a persisted session. Bare `--resume` = latest; `--resume <id>` = that session. |
+|  | `--[no-]select-resume` | off | Pick a session to resume from an interactive menu. |
+|  | `--[no-]with-tmux` | off | Require tmux side panes / popups (exit 1 if not in a tmux session). |
+|  | `--[no-]new` | — | Deprecated no-op — sessions start fresh by default. |
+
+**Providers:** `claude-code` (default, no API key — drives the Claude CLI), `anthropic`, `openai`, `ollama`, `bedrock`, `apple-fm`, `deepseek`, `google`, `groq`, `mistral`. Run `by models` for the full provider/model matrix.
 
 ### Provider/model shorthand
 
-The legacy `provider:model` form still works after `--`:
+The legacy `provider:model` form still works as a positional argument after `--`:
 
 ```bash
 by -- claude-code:sonnet
 by run -- anthropic:claude-sonnet-4-6
 ```
 
+Ordinary question text containing a `:` is **not** affected — only an argument that matches the `provider:model` shape is interpreted this way.
+
 ---
 
 ## `by run` — interactive TUI
 
 ```bash
-by                                              # default: coact-agent on claude-code:haiku
+by                                              # default: coact-agent on claude-code (haiku)
 by -p claude-code -m sonnet                     # change provider/model
 by run -p anthropic -m claude-sonnet-4-6
 by run -a coact-agent -i                        # inline mode
-by run -s 7f3a-8c19-...                         # resume a previous session
+by run --resume                                 # resume the latest session
+by run --resume agt-1779952718824-5844          # resume a specific session
+by run --select-resume                          # pick a session from a menu
 ```
 
 Inside the TUI:
@@ -66,7 +84,7 @@ Inside the TUI:
 - Type messages and hit Enter to send.
 - Streamed responses, tool calls, and plans render incrementally in the main pane.
 - The status row (chrome) shows the agent ID, provider, model, session ID, and version.
-- Use the wizard (`by config`) if `.env`-discovered credentials are missing.
+- Run `by config` if `.env`-discovered credentials are missing.
 
 ---
 
@@ -75,10 +93,10 @@ Inside the TUI:
 ```bash
 by ask 'What is 2+2?'
 by ask -m opus 'Explain monads in two paragraphs.'
-by ask -a coact-agent -p anthropic -m claude-sonnet-4-6 'Summarize this file' < some-file.txt
+by ask -a coact-agent -p anthropic -m claude-sonnet-4-6 'Summarize the Polylith approach'
 ```
 
-`ask` is for piping into other tools or scripting. It writes the agent's answer to stdout and exits with status 0 on success. All global options above work here too; the question is the only positional argument.
+`ask` is for piping into other tools or scripting. It writes the agent's answer to stdout and exits 0 on success. The shared options above apply (`-a`, `-p`, `-m`, `-n`); the question is the only positional argument. Note `-i`/`-v` are `run`-only and not accepted here.
 
 ---
 
@@ -86,56 +104,101 @@ by ask -a coact-agent -p anthropic -m claude-sonnet-4-6 'Summarize this file' < 
 
 ```bash
 $ by agents
-coact-agent      Cooperative-action agent (default)
-acp-agent        ACP-backed agent — forwards to a configured ACP server
-…
+19 agent(s) available:
+
+  AGENT           DESCRIPTION
+  --------------  -----------
+  coact-agent     CoAct (Reasoning-and-Code-and-Action) agent — unifies tool-calling and code-as-action…
+  main-agent      Front-door router — picks the right specialist per question shape…
+  research-agent  LLM-driven multi-specialist research loop…
+  explore-agent   Multi-surface read-mostly exploration specialist…
+  …
 ```
 
-The set of agents is determined at build time — adding a new one requires building a new release.
+The full set (v0.2.0 ships 19) spans routing (`main-agent`), reasoning (`coact-agent`, `react-agent`), research/exploration, planning/execution (`plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`), editing (`update-agent`), memory, MCP, skills, debugging, and more. The set is determined at build time — adding a new one requires a new release.
 
 ---
 
-## `by config` — environment bootstrap wizard
+## `by models` — list provider/model combinations
 
 ```bash
-by config
+by models
 ```
 
-An interactive wizard that walks through provider credentials (Anthropic API key, AWS/Bedrock, OpenAI, …), validates each one, and writes them to a project-local `.env` file. The wizard never writes to a system-wide location; the wrapper picks the `.env` up next time `by` is run from that directory or below.
+Prints a table of every known `provider / model` pair with a short description. Use the `provider` and `model` columns directly with `-p` / `-m` (or the `provider:model` shorthand).
 
-Re-run `by config` any time to refresh credentials or add a new provider.
+---
+
+## `by config` — bootstrap pipeline
+
+```bash
+by config                       # interactive: detect → ladder → hand off to config-agent
+by config --auto                # non-interactive; apply profile defaults
+by config --profile cloud       # named profile: dev | ci | offline | cloud
+by config --dry-run             # compute the config but don't write it
+```
+
+`config` runs a three-phase bootstrap — **detect** the environment, climb a **ladder** to pick the best reachable provider, then **hand off** to the conversational `config-agent`. It writes runtime settings (default provider/model, permissions, MCP servers, agent defaults) to **`~/.brainyard/config.edn`**, plus a rotating `~/.brainyard/bootstrap-log.edn`. It does not write credentials — those come from the environment (see below).
+
+| Flag | Purpose |
+|---|---|
+| `--auto` | Non-interactive; apply profile defaults without prompting. |
+| `--profile S` | Named profile: `dev`, `ci`, `offline`, `cloud`. |
+| `--skip-handoff` | Run phases 1–2 only; skip the config-agent prompt. |
+| `--re-bootstrap` | Force rung re-evaluation even if an existing LLM is reachable. |
+| `--dry-run` | Compute the config but do not write it. |
+| `--log S` | Override the bootstrap-log path. |
+
+Re-run `by config` any time to refresh settings or switch providers.
+
+---
+
+## `by sessions` — manage persisted sessions
+
+```bash
+by sessions list     # list all persisted sessions (id, label, agent, size, last-attached)
+by sessions prune    # delete a persisted session
+```
+
+Sessions are persisted to SQLite under `~/.brainyard/`. Resume one with `by run --resume <id>`.
 
 ---
 
 ## Environment variables
 
-Variables prefixed with `BY_` are read by the **wrapper** (`by` shell script), not the binary itself.
+Variables prefixed with `BY_` are read by the **wrapper** (`by` shell script) or the **installer** — not the binary itself. `BRAINYARD_*` variables are read by the binary.
 
 | Variable | Read by | Purpose |
 |---|---|---|
-| `BY_VERSION` | install.sh | Pin install to a specific release tag. |
 | `BY_ENV_FILE` | wrapper | Force a specific `.env` file path. |
 | `BY_NO_DOTENV` | wrapper | Skip `.env` discovery entirely. |
-| `BY_JAR` | wrapper | Run via `java -jar by.jar` instead of the native binary. |
-| `BY_INSTALL_DIR` | wrapper / bb install:ata | Override install location (default: `~/.local/bin`). |
-| `BRAINYARD_ROOT` | binary | Hint at the project root; useful when `.env` discovery isn't enough. |
+| `BY_JAR` | wrapper | Run via `java -jar by.jar` instead of the native binary (JVM-mode debugging). |
+| `BY_VERSION` | install.sh | Pin install to a specific release tag. |
+| `BY_INSTALL_DIR` | install.sh | Override install location (default: `~/.local/bin`). |
+| `BY_DOWNLOAD_BASE` | install.sh | Override the release download base URL (mirrors). |
+| `BRAINYARD_PROJECT_DIR` | binary | Hint at the project root when `.env`/cwd discovery isn't enough. |
+| `BRAINYARD_SESSION_ID` | binary | Use a deterministic session id (useful for tests/automation). |
+| `BRAINYARD_NREPL_ENABLED` | binary | Enable the embedded (security-gated) nREPL server. |
+| `BRAINYARD_NREPL_PORT` | binary | Port for the embedded nREPL server. |
+| `BRAINYARD_NREPL_GRANT` | binary | Pre-grant nREPL eval permission (skip the interactive confirm). |
 
-LLM provider credentials are read from the environment by their conventional names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AWS_PROFILE`, `AWS_REGION`, …) and conventionally placed in `.env` by `by config`.
+LLM provider credentials are read from the environment by their conventional names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AWS_PROFILE`, `AWS_REGION`, …), typically placed in a project-local `.env` that the wrapper sources.
 
-> **AWS / Bedrock note:** the binary's AWS SDK chain honors `AWS_PROFILE` but **not** `AWS_DEFAULT_PROFILE` — even though the AWS CLI itself honors both. If `by ask -p bedrock …` fails with `Unable to fetch credentials`, export `AWS_PROFILE` explicitly (or set it in your `.env`).
+> **AWS / Bedrock note:** the binary's AWS SDK chain honors `AWS_PROFILE` but **not** `AWS_DEFAULT_PROFILE` — even though the AWS CLI honors both. If `by ask -p bedrock …` fails with `Unable to fetch credentials`, export `AWS_PROFILE` explicitly (or set it in your `.env`).
 
 ---
 
 ## Logging
 
-Brainyard logs to `~/.brainyard/logs/agent-tui-app.log` by default (falling back to `/tmp/` if `$HOME` is not writable). Verbose mode (`-v`) also prints to stderr.
+Brainyard logs to `~/.brainyard/logs/agent-tui-app.log` by default (falling back to `/tmp/agent-tui-app.log` if `$HOME` is not writable). Verbose mode (`-v`, on `run`) also prints to stderr. Crash traces land in `/tmp/by-crash.log`.
 
-The log is structured (mulog events) and useful for filing bugs. Attach it when reporting an issue. The binary never sends telemetry over the network.
+The log is structured (mulog events) and useful for filing bugs — attach it when reporting an issue. The binary never sends telemetry over the network.
 
 ---
 
 ## See also
 
 - [`install.md`](install.md) — install & verification.
-- [`deploy-design.md`](deploy-design.md) — release architecture, rollout plan, why the binary is called `by`.
+- [`deploy-design.md`](deploy-design.md) — release architecture (historical; pre-v0.2.0 sync model).
 - [`../README.md`](../README.md) — overview & quick start.
+- [`../CLAUDE.md`](../CLAUDE.md) — build/release pipeline and tagging discipline.
