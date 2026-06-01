@@ -1,0 +1,8 @@
+;; Polylith convention: bases declare third-party (Maven / git) deps only.
+;; The brick deps (acp, util, mulog) live in projects/acp-stub-agent/deps.edn
+;; (the deployable project that wraps this base). Standalone REPL use of this
+;; base goes through `bb acp-stub:run` which now cd's into the project.
+{:paths ["src" "resources"]
+ :deps {}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {}}}}

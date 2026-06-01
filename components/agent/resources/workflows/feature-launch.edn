@@ -1,0 +1,52 @@
+{:workflow/id   :feature-launch
+ :workflow/name "Feature Launch Workflow"
+ :workflow/description
+ "End-to-end feature delivery: research feasibility → plan → implement →
+  test → release notes → announce. Each stage is a recommendation; the
+  workflow-agent adapts shape (skip/insert/re-run/reorder) to the actual
+  work."
+
+ :acceptance
+ [{:id :a1 :text "Feature meets the user-stated success criteria"}
+  {:id :a2 :text "Implementation merged to main"}
+  {:id :a3 :text "Tests added and passing"}
+  {:id :a4 :text "Release notes published"}
+  {:id :a5 :text "Stakeholders notified"}]
+
+ :stages
+ [{:id                :research-feasibility
+   :purpose           "Validate the feature is worth doing and surface unknowns."
+   :recommended-agent :research-agent
+   :gate-after        :user
+   :acceptance-focus  [:a1]}
+
+  {:id                :plan-design
+   :purpose           "Author a concrete implementation plan with acceptance criteria."
+   :recommended-agent :plan-agent
+   :acceptance-focus  [:a1 :a2]}
+
+  {:id                :implement
+   :purpose           "Spawn a todo from the plan and drive items to completion."
+   :recommended-agent :exec-agent
+   :acceptance-focus  [:a2 :a3]}
+
+  {:id                :test
+   :purpose           "Run / extend tests; capture failures and re-run :implement on regressions."
+   :recommended-agent :exec-agent
+   :acceptance-focus  [:a3]}
+
+  {:id                :release-notes
+   :purpose           "Draft user-facing release notes citing the merged change."
+   :recommended-agent :coact-agent
+   :acceptance-focus  [:a4]}
+
+  {:id                :announce
+   :purpose           "Notify stakeholders via configured channels (Slack / email / Linear)."
+   :recommended-agent :mcp-agent
+   :gate-after        :user
+   :acceptance-focus  [:a5]}]
+
+ :defaults
+ {:hitl               :gates
+  :max-stage-attempts 3
+  :sub-lm             "claude-haiku-4-5-20251001"}}

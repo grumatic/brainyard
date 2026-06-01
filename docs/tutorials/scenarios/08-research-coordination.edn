@@ -1,0 +1,103 @@
+;; docs/tutorials/scenarios/08-research-coordination.edn
+;;
+;; The longer "coordinate agents" walkthrough: the RESEARCH-AGENT — brainyard's
+;; multi-specialist coordinator — runs against the native `by` binary inside an
+;; isolated, git-inited /tmp workspace. Across one substantial research turn it
+;; composes its specialists (explore → plan → eval) via direct kebab-case
+;; dispatch, threading a durable dossier (PURPOSE / DIRECTION / ACCEPTANCE
+;; CRITERIA) under .brainyard/agents/research-agent/<id>/; a second turn reads
+;; that dossier back, showing the thread persists across turns.
+;;
+;; Scoped to investigate + recommend (NOT implement): the prompt tells the
+;; agent to stop before the exec specialist, so the research loop converges
+;; within the settle instead of fanning out into unbounded implementation.
+;;
+;; Recorded live against the native binary on claude-code/opus (the research
+;; loop composes several specialists per turn — it needs a capable model and a
+;; generous settle).
+{:id          "08-research-coordination"
+ :title       "Coordinating specialists with the research-agent"
+ :description "The research-agent — brainyard's multi-specialist coordinator —
+               running on the native `by` binary in an isolated /tmp git
+               workspace. It composes its explore / plan / eval specialists
+               into a durable threaded dossier to investigate a feature
+               (adding a --format json option), recommends an approach, then
+               reads its own dossier back on a follow-up turn. Recorded live
+               against claude-code/opus."
+
+ ;; Turn-by-turn breakdown rendered as markdown under the player on the index
+ ;; page (and the local-view page). Unlike :description it is NOT
+ ;; whitespace-collapsed, so the list structure survives.
+ :walkthrough
+ "**The setup.** `by` launches the research-agent inside a fresh, git-inited
+  /tmp workspace seeded with a four-file Python CLI (`greet`) whose README
+  lists a roadmap item: add a `--format {text,json}` option. Everything the
+  agent writes stays in that throwaway tree — the repo is never touched.
+
+  **Turn 1 — research & coordinate (~10 min).** The research-agent decomposes
+  the question and composes its specialists into one threaded dossier
+  (purpose / direction / acceptance criteria):
+
+  - **explore** maps the formatting flow across `cli.py`, `util.py`, and
+    `formatters.py` — surfacing the key finding that `main()` calls
+    `render(greeting)` and *drops* the `fmt` argument (the real wiring gap).
+  - **plan** turns that into an ordered implementation approach, gated by the
+    dossier's acceptance criteria.
+  - The turn is scoped *recommend-only*: the exec specialist is never
+    dispatched and no code is written into the project.
+
+  **Turn 2 — read the dossier back.** A follow-up question is answered straight
+  from the persisted dossier (no re-research): the single recommended approach
+  — register the flag, **fix the wiring gap first**, then add the JSON branch —
+  plus the top two risks (the wiring-gap regression, and the unspecified JSON
+  shape)."
+
+ :terminal    {:cols 112 :rows 38 :title "brainyard tutorial — research coordination"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 30
+
+ :launch
+ ;; Native binary, research-agent. opus via claude-code (subscription — free).
+ ;; Fullscreen (no -i) so the per-iteration + per-specialist live blocks render.
+ {:binary "by"
+  :args   ["run" "-a" "research-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-08-research"}}
+
+ ;; A small multi-file Python CLI with a stated roadmap item to research, so the
+ ;; explore + plan specialists have real surface area. `by` runs here (isolated).
+ :workspace
+ {:git-init true
+  :seed
+  [{:path "README.md"
+    :content "# greet\n\nA tiny example CLI used in the brainyard `by` tutorials.\n\n    python src/cli.py World\n    python src/cli.py World --shout\n\n## Roadmap\n\n- Add a `--format {text,json}` option so the greeting can be emitted as JSON\n  for piping into other tools. Today output is plain text only (see\n  `src/formatters.py`).\n"}
+   {:path "src/cli.py"
+    :content "#!/usr/bin/env python3\n\"\"\"greet — a tiny CLI that prints a greeting.\"\"\"\nimport argparse\nfrom util import format_greeting\nfrom formatters import render\n\n\ndef build_parser():\n    p = argparse.ArgumentParser(prog=\"greet\", description=\"Print a greeting.\")\n    p.add_argument(\"name\", help=\"who to greet\")\n    p.add_argument(\"--shout\", action=\"store_true\", help=\"upper-case the greeting\")\n    return p\n\n\ndef main():\n    args = build_parser().parse_args()\n    greeting = format_greeting(args.name, shout=args.shout)\n    print(render(greeting))\n\n\nif __name__ == \"__main__\":\n    main()\n"}
+   {:path "src/util.py"
+    :content "def format_greeting(name, shout=False):\n    msg = f\"Hello, {name}!\"\n    return msg.upper() if shout else msg\n"}
+   {:path "src/formatters.py"
+    :content "\"\"\"Output formatters for greet. Currently text-only.\n\nA future `--format json` option would add a JSON renderer here and let cli.py\nselect a renderer by name.\n\"\"\"\n\n\ndef render(greeting, fmt=\"text\"):\n    # Only the text format exists today.\n    if fmt == \"text\":\n        return greeting\n    raise ValueError(f\"unknown format: {fmt}\")\n"}]}
+
+ :preamble
+ [{:type :narrate
+   :text "# research-agent — coordinating explore + plan + eval into one dossier"
+   :pause-ms 2400}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Research turn — compose explore + plan into a dossier"
+   :prompt "Research what it would take to add a --format {text,json} option to this CLI. Coordinate your specialists: have the explore specialist map how greetings are currently formatted and rendered across the files, then have the plan specialist draft an ordered implementation approach, threading everything into your research dossier (purpose, direction, acceptance criteria). Investigate and RECOMMEND only — do NOT dispatch the exec specialist and do NOT write any code into the project. Finish by summarizing the recommended approach."
+   :expect {:contains ["format"]}
+   ;; The research loop composes several specialists; the first take ran ~628s.
+   ;; Give the turn real headroom so a re-record can't truncate it.
+   :settle {:timeout-secs 780}}
+
+  {:id    :ch2
+   :label "Follow-up — read the threaded dossier back"
+   :prompt "From the research dossier you just built, give me the single recommended approach and the top two risks or open questions — concise, no re-research."
+   :expect {:contains ["json"]}
+   :settle {:timeout-secs 300}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

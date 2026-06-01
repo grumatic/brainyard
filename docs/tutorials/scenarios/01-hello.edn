@@ -1,0 +1,56 @@
+;; docs/tutorials/scenarios/01-hello.edn
+;;
+;; Substrate smoke-test scenario. Targets the in-tree ACP **stub** backend so
+;; it records end-to-end with NO API keys, NO network, and deterministic
+;; output (the stub echoes the prompt). This is what `bb tutorial:record
+;; 01-hello` exercises in CI to prove the tmux -> asciinema -> by keystroke
+;; path still works. Content-bearing tutorials (02+) use coact + a real model.
+{:id          "01-hello"
+ :title       "Hello, brainyard — recording substrate smoke test"
+ :description "Drives one turn through the ACP stub backend to validate the
+               recording pipeline (deterministic, credential-free)."
+
+ :walkthrough
+ "**What this is.** The credential-free smoke test that proves the recording
+  substrate works end-to-end (tmux → asciinema → `by` keystrokes) — the CI
+  anchor for the whole tutorial pipeline.
+
+  **The single turn.** One prompt is typed and submitted to the ACP *stub*
+  backend, which deterministically echoes it back. No model, no network, no API
+  keys — so the rendered frame is byte-stable and safe to golden-check in CI.
+  Every content-bearing tutorial after this one (02+) swaps the stub for a real
+  model."
+
+ ;; Recording-time controls (do not affect the agent).
+ :terminal    {:cols 100 :rows 30 :title "brainyard tutorial — hello"}
+ :idle-time-limit 2.0
+ ;; `bb tui:acp` is a JVM (clojure -M) cold start, not the native binary —
+ ;; allow generous startup. `--new` skips the resume picker so we land in a
+ ;; fresh agent (named by BRAINYARD_SESSION_ID via the env hook) without
+ ;; blocking on interactive input.
+ :startup-timeout-secs 90
+
+ ;; Launch via the ACP stub TUI — see §6 launch modes. No model/provider flags
+ ;; needed; the stub is hermetic.
+ :launch
+ {:binary  "bb tui:acp"
+  :args    ["-i" "--new"]
+  :env     {"BRAINYARD_TUTORIAL_MODE" "1"
+            "BRAINYARD_SESSION_ID"     "tutorial-01-hello"}}
+
+ :preamble
+ [{:type :narrate :text "# brainyard `by` — hello world" :pause-ms 1200}
+  {:type :narrate :text "# Driving one turn through the ACP stub agent." :pause-ms 1500}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Echo a greeting"
+   :prompt "hello from the tutorial recorder"
+   :expect {:contains ["hello from the tutorial recorder"]}
+   :settle {:timeout-secs 45}}]
+
+ ;; Type the slash command, then submit with C-m (raw CR) — `Enter` is absorbed
+ ;; by the slash-autocomplete popup; see reference_tmux_enter_vs_cm memory.
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 400}
+  {:type :keys :send "C-m"   :pause-ms 800}]}

@@ -1,0 +1,176 @@
+;; Copyright (c) 2024-2026 Grumatic, Inc.
+;; SPDX-License-Identifier: Apache-2.0
+;; Licensed under the Apache License, Version 2.0 (the "License"); you may
+;; not use this file except in compliance with the License. See LICENSE at
+;; the repository root and CONTRIBUTING.md for contribution terms.
+
+(ns ai.brainyard.agent.acp-agent-test
+  "Tests for the acp-agent defagent.
+
+   The pure-registry test runs fast (no subprocess). The integration
+   test spawns the in-tree :stub backend via setup-agent-by-id + ask,
+   verifies the BT iteration hooks fire, the streamed chunks land in
+   st-memory, and a final :answer is produced."
+  (:require [clojure.test :refer [deftest is testing]]
+            [ai.brainyard.agent.interface :as agent]
+            [ai.brainyard.agent.common.acp-agent :as acp-agent]
+            [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.tool :as tool]
+            [ai.brainyard.agent.core.hooks :as hooks]))
+
+(deftest registry-test
+  (testing "acp-agent is in the unified tool registry as a :agent type"
+    (let [entry (tool/get-tool-defs :id :acp-agent)]
+      (is (some? entry))
+      (is (= :agent (:type entry)))
+      (is (some? (-> entry :meta :bt-factory))
+          "metadata exposes a bt-factory")
+      (is (= [:question :agent-context :acp-backend :acp-backend-opts]
+             (mapv first (rest (get-in entry [:meta :input-schema]))))
+          "all four inputs declared")
+      (is (= [:answer]
+             (mapv first (rest (get-in entry [:meta :output-schema]))))))))
+
+;; =============================================================================
+;; Permission bridge — ACP session/request_permission → TUI user-feedback
+;; =============================================================================
+
+(def ^:private make-permission-callback #'acp-agent/make-permission-callback)
+
+(defn- fake-agent
+  "Minimal agent stub carrying a session config with (optionally) a
+   :user-feedback-fn."
+  [feedback-fn]
+  {:!session (atom {:config (cond-> {}
+                              feedback-fn (assoc :user-feedback-fn feedback-fn))})})
+
+(def ^:private perm-options
+  [{:optionId "allow_once"  :name "Allow once"  :kind "allow_once"}
+   {:optionId "reject_once" :name "Reject once" :kind "reject_once"}])
+
+(def ^:private perm-params
+  {:toolCall {:title "Write /etc/x" :kind "edit"} :options perm-options})
+
+(deftest permission-bridge-test
+  ;; Pin the picker timeout so we don't depend on global config state.
+  (with-redefs [config/get-config (fn [_ _] 5000)]
+    (testing "interactive choice maps the picked index back to its optionId"
+      (let [cb (make-permission-callback
+                (fake-agent (fn [_] {:selected "Allow once" :index 0})))]
+        (is (= {:outcome {:outcome "selected" :optionId "allow_once"}}
+               (cb perm-params))))
+      (let [cb (make-permission-callback
+                (fake-agent (fn [_] {:selected "Reject once" :index 1})))]
+        (is (= {:outcome {:outcome "selected" :optionId "reject_once"}}
+               (cb perm-params)))))
+
+    (testing "timeout / dismissal (no :index) → cancelled outcome"
+      (let [cb (make-permission-callback
+                (fake-agent (fn [_] {:timeout true})))]
+        (is (= {:outcome {:outcome "cancelled"}} (cb perm-params)))))
+
+    (testing "empty options → cancelled without prompting the user"
+      (let [cb (make-permission-callback
+                (fake-agent (fn [_] (throw (ex-info "should not prompt" {})))))]
+        (is (= {:outcome {:outcome "cancelled"}}
+               (cb {:toolCall {} :options []})))))
+
+    (testing "no interactive session → deny by selecting a reject_ option"
+      (let [cb (make-permission-callback (fake-agent nil))]
+        (is (= {:outcome {:outcome "selected" :optionId "reject_once"}}
+               (cb perm-params)))))
+
+    (testing "feedback question carries the toolCall title + kind"
+      (let [seen (atom nil)
+            cb   (make-permission-callback
+                  (fake-agent (fn [req] (reset! seen req) {:index 0})))]
+        (cb perm-params)
+        (is (= "Permission requested: Write /etc/x [edit]" (:question @seen)))
+        (is (= ["Allow once" "Reject once"] (:options @seen)))))))
+
+(defn- record-events
+  "Build a hook handler fn that records `[event-key data]` pairs into !log."
+  [!log event-key]
+  (fn [data] (swap! !log conj [event-key data])))
+
+(deftest ^:integration end-to-end-against-stub-test
+  (testing "ask drives one ACP turn through the :stub backend, streams chunks, ends with end_turn"
+    (let [!log (atom [])]
+      ;; Subscribe to the events the bridge fires from session/update.
+      (doseq [k [:agent.iteration/pre
+                 :agent.iteration/post
+                 :agent.dspy-action/chunk
+                 :agent.dspy-action/post]]
+        (hooks/register-hook! k ::recorder (record-events !log k)
+                              :source ::test))
+      (try
+        (let [sess-id (str "acp-test-" (System/currentTimeMillis))
+              ag (agent/setup-agent-by-id
+                  :acp-agent
+                  :agent-session {:user-id "test-user" :session-id sess-id}
+                  :max-iterations 1
+                  :st-memory-extra {:config {:max-iterations 1
+                                             :acp-backend :stub
+                                             :acp-backend-opts {:chunk-delay-ms 5}}})]
+          (try
+            (let [result (agent/ask ag "hello acp agent")
+                  events @!log
+                  by-event (group-by first events)]
+              (is (some? result))
+              (is (string? (:answer result)))
+              (is (re-find #"hello" (:answer result))
+                  "answer contains user's text (echoed by the stub)")
+              ;; Iteration boundary hooks
+              (is (seq (by-event :agent.iteration/pre))
+                  "iteration/pre fired")
+              (is (seq (by-event :agent.iteration/post))
+                  "iteration/post fired")
+              ;; Streamed chunks
+              (is (seq (by-event :agent.dspy-action/chunk))
+                  "at least one streamed chunk fired")
+              (let [chunk-text (->> (by-event :agent.dspy-action/chunk)
+                                    (map (fn [[_ d]] (:chunk d)))
+                                    (apply str))]
+                (is (re-find #"hello" chunk-text)
+                    "chunks reconstruct to include user's text"))
+              ;; Final marker
+              (is (seq (by-event :agent.dspy-action/post))
+                  "dspy-action/post fired so TUI can clear streaming state"))
+            (finally
+              (.close ag))))
+        (finally
+          (doseq [k [:agent.iteration/pre
+                     :agent.iteration/post
+                     :agent.dspy-action/chunk
+                     :agent.dspy-action/post]]
+            (hooks/unregister-source! ::test)))))))
+
+(deftest ^:integration accumulated-text-on-chunk-test
+  (testing "chunk events carry both :chunk (delta) and :accumulated (running text)"
+    (let [!log (atom [])]
+      (hooks/register-hook! :agent.dspy-action/chunk ::recorder
+                            (record-events !log :agent.dspy-action/chunk)
+                            :source ::test)
+      (try
+        (let [sess-id (str "acp-acc-" (System/currentTimeMillis))
+              ag (agent/setup-agent-by-id
+                  :acp-agent
+                  :agent-session {:user-id "test-user" :session-id sess-id}
+                  :max-iterations 1
+                  :st-memory-extra {:config {:max-iterations 1
+                                             :acp-backend :stub
+                                             :acp-backend-opts {:chunk-delay-ms 5}}})]
+          (try
+            (agent/ask ag "alpha beta gamma")
+            (let [events @!log
+                  accumulated-snapshots (->> events
+                                             (map (fn [[_ d]] (:accumulated d))))]
+              (is (seq accumulated-snapshots))
+              (is (apply <= (map count accumulated-snapshots))
+                  ":accumulated grows monotonically across chunk events")
+              (is (re-find #"alpha" (last accumulated-snapshots))
+                  "final accumulated includes user's text"))
+            (finally
+              (.close ag))))
+        (finally
+          (hooks/unregister-source! ::test))))))

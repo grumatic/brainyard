@@ -1,0 +1,1150 @@
+{:min-bb-version "0.9.161"
+ :tasks
+ {;; --------------- REPL tasks ---------------
+  repl
+  {:doc "Start dev REPL with all components (.env loaded)"
+   :override-builtin true
+   :task (shell "bash" "-c" "set -a && source .env && clj -M:dev:repl")}
+
+  repl:fra
+  {:doc "Start Fulcro RAD app REPL (.env loaded)"
+   :task (shell "bash" "-c" "set -a && source .env && cd projects/fulcro-rad-app && clj -M:dev:nrepl")}
+
+  repl:ea
+  {:doc "Start Electric app REPL (.env loaded)"
+   :task (shell "bash" "-c" "set -a && source .env && cd projects/electric-app && clj -M:dev:nrepl")}
+
+  repl:ra
+  {:doc "Start Replicant app REPL (.env loaded)"
+   :task (shell "bash" "-c" "set -a && source .env && cd projects/replicant-app && clj -M:dev:nrepl")}
+
+  repl:component
+  {:doc "Start REPL for a specific component: bb repl:component <name>"
+   :requires ([babashka.fs :as fs])
+   :task (let [component (first *command-line-args*)
+               dir (str "components/" component)]
+           (when-not component
+             (println "Usage: bb repl:component <name>")
+             (System/exit 1))
+           (when-not (fs/exists? dir)
+             (println (str "Component not found: " dir))
+             (System/exit 1))
+           (shell "bash" "-c"
+                  (str "set -a && source .env && cd " dir " && "
+                       "clj -Sdeps '{:deps {nrepl/nrepl {:mvn/version \"1.3.0\"} cider/cider-nrepl {:mvn/version \"0.57.0\"}}}' "
+                       "-M:test -m nrepl.cmdline --middleware \"[cider.nrepl/cider-middleware]\"")))}
+
+  ;; --------------- ACP stub agent ---------------
+  acp-stub:run
+  {:doc "Run the in-tree ACP stub agent (--echo mode) on stdin/stdout.
+  Useful for hand-driving the protocol from a REPL, e.g.:
+    echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"0.1.0\"}}' | bb acp-stub:run
+
+  Pass --chunk-delay-ms=N to slow down per-token streaming."
+   :task (let [args *command-line-args*]
+           (shell "bash" "-c"
+                  (str "cd projects/acp-stub-agent && "
+                       "exec clojure -M -m ai.brainyard.acp-stub-agent.core "
+                       (clojure.string/join " " args))))}
+
+  ;; --------------- ACP-driven TUI ---------------
+  tui:acp
+  {:doc "Run the Agent TUI driven by an ACP backend (default: in-tree :stub).
+
+  The acp-agent defagent owns no LLM iteration loop — it forwards each
+  user prompt to the configured ACP agent and renders the streamed
+  response, plans, and tool calls through the existing TUI hooks.
+
+  Backend selection lives on the agent's runtime-config (:acp-backend).
+  The default is :stub. Phase 6 will add :claude-agent-acp / :gemini /
+  :codex via acp-client/registry.
+
+  Examples:
+    bb tui:acp                          # run TUI with acp-agent (stub backend)
+    bb tui:acp -i                       # inline mode (no alt screen)"
+   :requires ([clojure.string :as str])
+   :task (let [args *command-line-args*
+               quote-arg (fn [a] (str "'" (str/replace a "'" "'\"'\"'") "'"))
+               quoted-args (str/join " " (map quote-arg args))]
+           (shell "bash" "-c"
+                  (str "set -a && [ -f .env ] && source .env || true; "
+                       "cd projects/agent-tui-app && "
+                       "exec clojure -J--enable-native-access=ALL-UNNAMED -M -m ai.brainyard.agent-tui-app.main "
+                       "-a acp-agent " quoted-args)))}
+
+  ;; --------------- Agent TUI ---------------
+  tui
+  {:doc "Run Agent TUI: bb tui [subcommand] [options]
+  Subcommands:
+    run [opts]           Interactive TUI (default when no subcommand given)
+    ask [opts] QUESTION  One-shot question (non-interactive)
+    agents               List available agents
+    config               Interactive environment bootstrap wizard
+
+  Run/Ask options:
+    -a, --agent AGENT        Agent ID [default: coact-agent]
+    -p, --provider PROVIDER  LM provider [default: claude-code]
+    -m, --model MODEL        Model name (e.g. sonnet, opus, haiku)
+    -i, --inline             Inline mode (no alt screen, for CliClient testing)
+    -v, --verbose            Verbose output
+    -n, --max-iterations N   Max iterations (default from agent config)
+    -r, --resume [ID]        Resume: bare = latest session; with ID = that session
+        --select-resume      Pick a session to resume from an interactive menu
+
+  Examples: bb tui                                    # default: run with claude-code:haiku
+            bb tui --resume                            # resume the latest session
+            bb tui --resume agt-1780236629321-928      # resume a specific session
+            bb tui --select-resume                     # pick from a menu
+            bb tui -p claude-code -m sonnet            # short form (run implied)
+            bb tui run -p anthropic -m claude-sonnet-4-6
+            bb tui run -a coact-agent -i        # inline mode
+            bb tui ask -m opus 'What is 2+2?'          # one-shot question
+            bb tui agents                              # list agents
+            bb tui config                              # bootstrap wizard
+            bb tui -- claude-code:sonnet               # legacy provider:model syntax"
+   :requires ([clojure.string :as str])
+   :task (let [args *command-line-args*
+               quote-arg (fn [a] (str "'" (str/replace a "'" "'\"'\"'") "'"))
+               quoted-args (str/join " " (map quote-arg args))]
+           (shell "bash" "-c"
+                  (str "set -a && source .env && "
+                       "cd projects/agent-tui-app && "
+                       "exec clojure -J--enable-native-access=ALL-UNNAMED -M -m ai.brainyard.agent-tui-app.main "
+                       quoted-args)))}
+
+  tui:attach-ask
+  {:doc "Drive one turn against a live `by` instance via its nREPL port.
+
+  Reads ~/.brainyard/nrepl-ports/by-*.port (newest by mtime if more
+  than one), connects to the loopback nREPL, calls
+  (agent/ask <active-agent> 'prompt'), prints just :answer.
+
+  Usage: bb tui:attach-ask [-p PORT] \"prompt\"
+
+  Examples:
+    bb tui:attach-ask \"hello\"                # auto-discover port
+    bb tui:attach-ask -p 7890 \"what is 2+2?\"  # explicit port
+
+  See docs/live-debugging.md §4 for the underlying recipe and §9 #3 for
+  the design intent."
+   :requires ([clojure.string :as str]
+              [clojure.java.shell :as sh])
+   :task (let [args (vec *command-line-args*)
+               [port-flag remainder]
+               (if (and (>= (count args) 2) (#{"-p" "--port"} (first args)))
+                 [(second args) (vec (drop 2 args))]
+                 [nil args])
+               prompt (str/trim (str/join " " remainder))
+               port   (or port-flag
+                          (let [home (System/getProperty "user.home")
+                                dir  (java.io.File. (str home "/.brainyard/nrepl-ports"))]
+                            (when (.isDirectory dir)
+                              (when-let [f (->> (.listFiles dir)
+                                                (filter (fn [^java.io.File f]
+                                                          (re-matches (re-pattern "by-\\d+\\.port") (.getName f))))
+                                                (sort-by (fn [^java.io.File f] (.lastModified f)))
+                                                last)]
+                                (str/trim (slurp f))))))]
+           (when (or (nil? prompt) (str/blank? prompt))
+             (println "ERROR: prompt is required. See `bb tui:attach-ask --help`.")
+             (System/exit 1))
+           (when (nil? port)
+             (println "ERROR: no port given (-p PORT) and no by-*.port file found in ~/.brainyard/nrepl-ports/")
+             (println "       launch a `by` instance with :nrepl-enabled? first, or pass -p explicitly.")
+             (System/exit 1))
+           (let [tmp (java.io.File/createTempFile "attach-ask-" ".clj")
+                 _   (.deleteOnExit tmp)
+                 _   (spit tmp
+                           (str "(require '[ai.brainyard.agent-tui.session :as ts])\n"
+                                "(require '[ai.brainyard.agent.interface :as agent])\n"
+                                "(let [a (ts/get-active-agent)]\n"
+                                "  (when-not a (throw (ex-info \"No active agent\" {})))\n"
+                                "  (let [r (agent/ask a " (pr-str prompt) ")]\n"
+                                "    (println (:answer r))))"))
+                 {:keys [exit out err]}
+                 (sh/sh "clj-nrepl-eval" "-p" (str port)
+                        (str "(load-file " (pr-str (.getAbsolutePath tmp)) ")"))
+                 ;; clj-nrepl-eval emits the println output, then a `=> nil`
+                 ;; line, then a `*======== user | clj ========*` banner.
+                 ;; Strip the meta-lines and print the rest.
+                 lines (->> (str/split-lines (str out))
+                            (remove (fn [ln]
+                                      (or (str/starts-with? ln "=>")
+                                          (str/starts-with? ln "*========")))))]
+             (when (seq lines) (println (str/join "\n" lines)))
+             (when (pos? exit)
+               (binding [*out* *err*] (println err))
+               (System/exit exit))))}
+
+  repl:test
+  {:doc "Run a Polylith brick's tests inside a LIVE dev nREPL — no restart.
+
+  `bb repl` / `bb repl:ata` launch `clj -M:dev:nrepl`, whose classpath
+  OMITS every brick's `test/` dir (Polylith only adds them under :test /
+  :poly). So `(require 'some.ns-test)` fails in the dev REPL. This loads the
+  `dev.repl-test` helper into the running JVM, which adds the brick test
+  dirs to the live DynamicClassLoader, then reloads + runs the namespace
+  against the current hot-reloaded state.
+
+  Usage: bb repl:test [-p PORT] <test-ns>
+
+  Examples:
+    bb repl:test ai.brainyard.agent.reference-test        # auto-discover port
+    bb repl:test -p 63207 ai.brainyard.agent.reference-test
+
+  Port auto-discovery reads ~/.brainyard/nrepl-ports/by-*.port (newest),
+  which `bb repl:ata` and native `by` both register. Reload the impl ns via
+  your usual workflow first if you changed it — this reloads the TEST ns."
+   :requires ([clojure.string :as str]
+              [clojure.java.shell :as sh])
+   :task (let [args (vec *command-line-args*)
+               [port-flag remainder]
+               (if (and (>= (count args) 2) (#{"-p" "--port"} (first args)))
+                 [(second args) (vec (drop 2 args))]
+                 [nil args])
+               test-ns (str/trim (str/join " " remainder))
+               port    (or port-flag
+                           (let [home (System/getProperty "user.home")
+                                 dir  (java.io.File. (str home "/.brainyard/nrepl-ports"))]
+                             (when (.isDirectory dir)
+                               (when-let [f (->> (.listFiles dir)
+                                                 (filter (fn [^java.io.File f]
+                                                           (re-matches (re-pattern "by-\\d+\\.port") (.getName f))))
+                                                 (sort-by (fn [^java.io.File f] (.lastModified f)))
+                                                 last)]
+                                 (str/trim (slurp f))))))]
+           (when (str/blank? test-ns)
+             (println "ERROR: a test namespace is required, e.g. `bb repl:test ai.brainyard.agent.reference-test`.")
+             (System/exit 1))
+           (when (nil? port)
+             (println "ERROR: no port given (-p PORT) and no by-*.port file in ~/.brainyard/nrepl-ports/.")
+             (println "       Start a dev REPL (bb repl / bb repl:ata) first, or pass -p explicitly.")
+             (System/exit 1))
+           (let [helper (.getAbsolutePath (java.io.File. "development/src/dev/repl_test.clj"))
+                 code   (str "(do (load-file " (pr-str helper) ")"
+                             " (dev.repl-test/run '" test-ns "))")
+                 {:keys [exit out err]} (sh/sh "clj-nrepl-eval" "-p" (str port) code)
+                 lines (->> (str/split-lines (str out))
+                            (remove (fn [ln]
+                                      (or (str/starts-with? ln "=>")
+                                          (str/starts-with? ln "*========")))))]
+             (when (seq lines) (println (str/join "\n" lines)))
+             (when (pos? exit)
+               (binding [*out* *err*] (println err))
+               (System/exit exit))))}
+
+  tui:drive
+  {:doc "Drive one turn against a `by` instance running in a tmux session.
+
+  Sends the prompt via `tmux send-keys`, polls the per-session
+  turn.complete stamp until it updates (or :timeout-secs expires),
+  then prints the settle payload plus the tail of
+  `tmux capture-pane`. The tmux-mode counterpart to tui:attach-ask
+  (which uses nREPL synchronously). Closes the second half of
+  docs/live-debugging.md §9 #1.
+
+  Usage: bb tui:drive -s TMUX-SESSION [-S BY-SESSION-ID] [-T TIMEOUT-SECS] \"prompt\"
+    -s TMUX-SESSION    Required — tmux session/window name running `by`
+    -S BY-SESSION-ID   Watch this specific session's stamp (default: newest)
+    -T TIMEOUT-SECS    Hard timeout, exits 2 (default: 60)
+
+  Examples:
+    bb tui:drive -s by-debug \"what is 2+2?\"
+    bb tui:drive -s by -T 120 \"long task...\"
+
+  Exit codes: 0 (settled), 2 (timeout), 1 (other error)."
+   :requires ([clojure.string :as str]
+              [clojure.java.shell :as sh])
+   :task (let [args (vec *command-line-args*)
+               ;; tiny arg parser: -s / -S / -T flags consume the next token;
+               ;; everything else accumulates into the prompt remainder.
+               parse-flags
+               (fn [args]
+                 (loop [opts {} rest args]
+                   (cond
+                     (empty? rest)
+                     [opts []]
+
+                     (#{"-s" "--tmux"} (first rest))
+                     (recur (assoc opts :tmux (second rest)) (drop 2 rest))
+
+                     (#{"-S" "--session"} (first rest))
+                     (recur (assoc opts :sid (second rest)) (drop 2 rest))
+
+                     (#{"-T" "--timeout"} (first rest))
+                     (recur (assoc opts :timeout (Long/parseLong (second rest))) (drop 2 rest))
+
+                     :else
+                     [opts (vec rest)])))
+               [opts remainder] (parse-flags args)
+               prompt           (str/trim (str/join " " remainder))
+               tmux             (:tmux opts)
+               timeout-ms       (* 1000 (or (:timeout opts) 60))
+               stamp-file
+               (fn [sid]
+                 (java.io.File. (str (System/getProperty "user.home")
+                                     "/.brainyard/sessions/" sid "/turn.complete")))
+               all-stamps
+               (fn []
+                 (let [home    (System/getProperty "user.home")
+                       sessions (java.io.File. (str home "/.brainyard/sessions"))]
+                   (when (.isDirectory sessions)
+                     (->> (.listFiles sessions)
+                          (keep (fn [^java.io.File d]
+                                  (let [s (java.io.File. d "turn.complete")]
+                                    (when (.isFile s) s))))
+                          vec))))
+               ;; When -S is set, watch only that session. Otherwise watch
+               ;; EVERY known stamp and detect whichever one's mtime
+               ;; advances after send-keys. That's race-free against
+               ;; multi-instance setups where a different by could be
+               ;; written-to between our pre-snapshot and the actual reply.
+               stamps (if (:sid opts)
+                        [(stamp-file (:sid opts))]
+                        (or (all-stamps) []))]
+           (cond
+             (or (nil? prompt) (str/blank? prompt))
+             (do (println "ERROR: prompt is required. See `bb tasks` for usage.")
+                 (System/exit 1))
+
+             (nil? tmux)
+             (do (println "ERROR: -s TMUX-SESSION is required.")
+                 (System/exit 1))
+
+             (empty? stamps)
+             (do (println "ERROR: no turn.complete stamps found in ~/.brainyard/sessions/")
+                 (println "       launch a `by` instance first (it creates the stamp on its first turn).")
+                 (System/exit 1))
+
+             :else
+             (let [;; pre-snapshot {stamp-path → mtime}
+                   initial (into {} (map (fn [^java.io.File f]
+                                           [(.getAbsolutePath f) (.lastModified f)])
+                                         stamps))]
+               (if (:sid opts)
+                 (println "Driving tmux session" tmux "→ watching"
+                          (.getAbsolutePath (first stamps)))
+                 (println "Driving tmux session" tmux "→ watching"
+                          (count stamps) "stamp(s) under ~/.brainyard/sessions/"))
+               (let [{:keys [exit err]} (sh/sh "tmux" "send-keys" "-t" tmux prompt "Enter")]
+                 (when (pos? exit)
+                   (println "ERROR: tmux send-keys failed:" err)
+                   (System/exit 1)))
+               (let [poll-ms  200
+                     deadline (+ (System/currentTimeMillis) timeout-ms)
+                     ;; The prompt's first 60 chars are what `:input-preview`
+                     ;; in the stamp will start with (the writer truncates at
+                     ;; 80 with "..."); use a shorter prefix for the match.
+                     prompt-prefix (subs prompt 0 (min 40 (count prompt)))
+                     find-bumped
+                     (fn []
+                       (some (fn [^java.io.File f]
+                               (let [path (.getAbsolutePath f)
+                                     cur  (.lastModified f)
+                                     prev (get initial path 0)]
+                                 (when (> cur prev)
+                                   ;; verify the payload mentions our prompt
+                                   ;; (filters out sub-agent ticks + other
+                                   ;; instances answering different drivers)
+                                   (let [payload (try (slurp f) (catch Exception _ ""))]
+                                     (when (or (:sid opts)              ; explicit → trust it
+                                               (str/includes? payload prompt-prefix))
+                                       {:file f :payload payload})))))
+                             stamps))]
+                 (loop []
+                   (if-let [hit (find-bumped)]
+                     (do (println "Settled:" (:payload hit))
+                         (println "  from session:" (-> (:file hit)
+                                                        ^java.io.File (.getParentFile)
+                                                        .getName))
+                         ;; The settle stamp fires on :agent.ask/post,
+                         ;; which usually beats the TUI's pane re-render
+                         ;; by ~100-300ms. A small grace makes the
+                         ;; capture reliably include the answer box.
+                         ;; -S -200 includes scrollback so a verbose
+                         ;; iteration trail doesn't push the answer
+                         ;; off the visible pane.
+                         (Thread/sleep 500)
+                         (let [{:keys [out]} (sh/sh "tmux" "capture-pane"
+                                                    "-p" "-S" "-200" "-t" tmux)
+                               lines (->> (str/split-lines (str out))
+                                          (drop-while str/blank?))
+                               tail  (vec (take-last 80 lines))]
+                           (println "")
+                           (println "Pane (last" (count tail) "lines incl. scrollback):")
+                           (println (str/join "\n" tail))))
+                     (if (>= (System/currentTimeMillis) deadline)
+                       (do (binding [*out* *err*]
+                             (println "TIMEOUT: no matching stamp updated within"
+                                      (/ timeout-ms 1000) "seconds."))
+                           (System/exit 2))
+                       (do (Thread/sleep poll-ms) (recur)))))))))}
+
+  tui:drive-loop
+  {:doc "Repeat bb tui:attach-ask against a live `by` instance until a
+  Clojure predicate over the answer string evaluates true, or --max
+  iterations are reached. Closes the second half of
+  docs/live-debugging.md §9 #1 (multi-turn / predicate loop).
+
+  The same prompt is sent each turn — the agent's own session memory
+  makes consecutive same-prompt turns meaningful (turn 1: 'not yet';
+  turn 2: 'still not yet'; turn 3: 'OK done.'). For varying prompts,
+  compose bb tui:attach-ask in a shell loop directly.
+
+  Usage:
+    bb tui:drive-loop [-p PORT] --until PREDICATE [--max N] [--sleep SECS] \"prompt\"
+
+  PREDICATE is a Clojure expression with `answer` (string) bound. Eg.
+    --until '(re-find #\"COMPLETE\" answer)'
+    --until '(< (count answer) 30)'
+    --until '(not (clojure.string/blank? answer))'
+
+  Examples:
+    bb tui:drive-loop -p 7890 --until '(re-find #\"OK\" answer)' \"is the task done?\"
+    bb tui:drive-loop --max 5 --sleep 2 --until '(< (count answer) 10)' \"shorter please\"
+
+  Exit codes: 0 (predicate satisfied), 2 (max iter reached), 1 (other error)."
+   :requires ([clojure.string :as str]
+              [clojure.java.shell :as sh])
+   :task (let [args (vec *command-line-args*)
+               parse-flags
+               (fn [args]
+                 (loop [opts {} rest args]
+                   (cond
+                     (empty? rest) [opts []]
+                     (#{"-p" "--port"} (first rest))
+                     (recur (assoc opts :port (second rest)) (drop 2 rest))
+                     (#{"--max" "--max-iter"} (first rest))
+                     (recur (assoc opts :max (Long/parseLong (second rest))) (drop 2 rest))
+                     (#{"--until"} (first rest))
+                     (recur (assoc opts :until (second rest)) (drop 2 rest))
+                     (#{"--sleep" "--between"} (first rest))
+                     (recur (assoc opts :sleep (Long/parseLong (second rest))) (drop 2 rest))
+                     :else
+                     [opts (vec rest)])))
+               [opts remainder] (parse-flags args)
+               prompt   (str/trim (str/join " " remainder))
+               max-n    (or (:max opts) 10)
+               sleep-ms (* 1000 (or (:sleep opts) 1))
+               until-str (:until opts)
+               pred-fn (when until-str
+                         (try
+                           (eval (read-string (str "(fn [answer] " until-str ")")))
+                           (catch Throwable t
+                             (println "ERROR: failed to compile --until predicate:"
+                                      (.getMessage t))
+                             (System/exit 1))))]
+           (cond
+             (or (nil? prompt) (str/blank? prompt))
+             (do (println "ERROR: prompt is required.") (System/exit 1))
+
+             (nil? pred-fn)
+             (do (println "ERROR: --until PREDICATE is required.") (System/exit 1))
+
+             :else
+             (loop [iter 1]
+               (println "")
+               (println (str "── Iteration " iter "/" max-n " ──"))
+               (let [bb-cmd (concat ["bb" "tui:attach-ask"]
+                                    (when (:port opts) ["-p" (:port opts)])
+                                    [prompt])
+                     {:keys [exit out err]} (apply sh/sh bb-cmd)
+                     answer (str/trim (str out))]
+                 (when (pos? exit)
+                   (println "ERROR: tui:attach-ask failed (exit" exit "):" err)
+                   (System/exit 1))
+                 (println answer)
+                 (cond
+                   (try (pred-fn answer)
+                        (catch Throwable t
+                          (println "ERROR: --until predicate threw:" (.getMessage t))
+                          (System/exit 1)))
+                   (do (println "")
+                       (println (str "✓ Predicate satisfied at iter " iter ": "
+                                     until-str)))
+
+                   (>= iter max-n)
+                   (do (println "")
+                       (println (str "✗ Max iterations " max-n
+                                     " reached; predicate still false."))
+                       (System/exit 2))
+
+                   :else
+                   (do (Thread/sleep sleep-ms)
+                       (recur (inc iter))))))))}
+
+  ;; --------------- asciinema tutorial recording (docs/asciinema-deploy.md) ---
+  tutorial:list
+  {:doc "List tutorial scenarios with title + recorded status."
+   :task (shell "bb" "scripts/asciinema/drive-scenario.bb" "list")}
+
+  tutorial:doctor
+  {:doc "Probe tutorial prerequisites (asciinema, tmux, bb, script, by)."
+   :task (shell "bb" "scripts/asciinema/drive-scenario.bb" "doctor")}
+
+  tutorial:dry-run
+  {:doc "Parse + plan a scenario without recording. Usage: bb tutorial:dry-run <id>"
+   :task (shell "bash" "scripts/asciinema/record-scenario.sh"
+                (first *command-line-args*) "--dry-run")}
+
+  tutorial:record
+  {:doc "Record a scenario to docs/tutorials/casts/<id>.cast. Usage: bb tutorial:record <id>"
+   :task (shell "bash" "scripts/asciinema/record-scenario.sh"
+                (first *command-line-args*))}
+
+  tutorial:play
+  {:doc "Play a recorded cast. Usage: bb tutorial:play <id>"
+   :task (shell "asciinema" "play"
+                (str "docs/tutorials/casts/" (first *command-line-args*) ".cast"))}
+
+  tutorial:embed
+  {:doc "Regenerate docs/tutorials/index.md with vendored-player embeds for every recorded cast."
+   :task (shell "bb" "scripts/asciinema/drive-scenario.bb" "embed")}
+
+  tutorial:output
+  {:doc "Generate a self-contained docs/tutorials/output/index.html (casts + player inlined) for local viewing — opens directly in a browser, no server."
+   :task (shell "bb" "scripts/asciinema/drive-scenario.bb" "output")}
+
+  tutorial:verify
+  {:doc "Headless drift check: drive a scenario, redact + diff the golden frame, assert :expect. Usage: bb tutorial:verify <id> [--update-golden]"
+   :task (apply shell "bash" "scripts/asciinema/verify-scenario.sh"
+                *command-line-args*)}
+
+  tutorial:upload
+  {:doc "Upload a cast to an asciinema server (default visibility: unlisted) + cache the share URL. PUBLISHES publicly. Usage: bb tutorial:upload <id> [--dry-run] [--visibility V]"
+   :task (apply shell "bash" "scripts/asciinema/upload-scenario.sh"
+                *command-line-args*)}
+
+  repl:ata
+  {:doc "Start Agent TUI app REPL (.env loaded)"
+   :task (shell "bash" "-c" "set -a && source .env && cd projects/agent-tui-app && clj -J--enable-native-access=ALL-UNNAMED -M:dev:nrepl")}
+
+  ;; --------------- GraalVM Native Build (agent-tui-app → 'by') ---------------
+  version:ata
+  {:doc "Stamp `projects/agent-tui-app/resources/build-version.edn` from
+  `git describe --tags --always --dirty`. Read at namespace init by
+  `app-version` in main.clj, so AOT compile + native-image bake the
+  value into the artifact. Falls back to {:version \"dev\"} when git
+  is unavailable (clean tarball, no .git). Idempotent — runs as a
+  prereq of `compile:ata` and `uberjar:ata` so a fresh build always
+  reflects the current HEAD."
+   :requires ([clojure.string :as str]
+              [clojure.java.io :as io])
+   :task (let [path "projects/agent-tui-app/resources/build-version.edn"
+               git  (shell {:continue true :out :string :err :string}
+                           "git" "describe" "--tags" "--always" "--dirty")
+               ver  (if (zero? (:exit git))
+                      (str/trim (:out git))
+                      "dev")]
+           (io/make-parents path)
+           (spit path (str (pr-str {:version ver}) "\n"))
+           (println (str "Stamped " path " → " ver)))}
+
+  compile:ata
+  {:doc "AOT compile agent-tui-app main namespace. Sets
+  *warn-on-reflection* during compile so unhinted Java interop is
+  visible (each reflection site is a potential native-image break —
+  see docs/design/native-image-design.md §11). The build doesn't fail
+  on warnings yet; treat them as a TODO list."
+   :task (do
+           (run 'version:ata)
+           (println "AOT compiling ai.brainyard.agent-tui-app.main ...")
+           ;; AOT output goes to target/classes (gitignored, under the
+           ;; standard build dir). The `:build` alias in the project's
+           ;; deps.edn puts target/classes on the classpath for uberjar
+           ;; assembly, but NOT for `bb tui` / `bb repl:ata` — which is
+           ;; what prevents stale .class files from shadowing edited
+           ;; sources during development.
+           (let [dir "projects/agent-tui-app"]
+             (shell "mkdir" "-p" (str dir "/target/classes"))
+             (let [result (shell {:continue true :dir dir}
+                                 "clojure" "-M:build" "-e"
+                                 "(binding [*warn-on-reflection* true *compile-path* \"target/classes\"] (compile 'ai.brainyard.agent-tui-app.main))")]
+               (when-not (zero? (:exit result))
+                 (println "AOT compilation failed")
+                 (System/exit 1))
+               (println "AOT compilation complete."))))}
+
+  uberjar:ata
+  {:doc "Build uberjar for agent-tui-app + verify native-image META-INF survived"
+   :task (do
+           (run 'version:ata)
+           (println "Building uberjar ...")
+           (let [dir "projects/agent-tui-app"
+                 jar-path (str dir "/target/agent-tui-app.jar")
+                 ;; --aliases :build tells uberdeps to include the
+                 ;; :build alias's :extra-paths (target/classes — our
+                 ;; AOT output) when walking paths to bundle. Activating
+                 ;; :build on the clojure runtime alone is not enough —
+                 ;; uberdeps inspects deps.edn itself and only honors
+                 ;; aliases passed via this flag.
+                 result (shell {:continue true :dir dir}
+                               "clojure" "-M:uberdeps"
+                               "--aliases" ":build"
+                               "--main-class" "ai.brainyard.agent_tui_app.main"
+                               "--target" "target/agent-tui-app.jar")]
+             (when-not (zero? (:exit result))
+               (println "Uberjar build failed")
+               (System/exit 1))
+             ;; Gate native:ata: if uberdeps ever drops the
+             ;; META-INF/native-image dir, native-image silently falls back
+             ;; to its defaults and we lose all our init-time / reflection
+             ;; configuration. Verify before we waste 2 minutes on a
+             ;; subtly-broken native build.
+             (let [props-entry "META-INF/native-image/ai.brainyard/agent-tui-app/native-image.properties"
+                   zf (java.util.zip.ZipFile. jar-path)
+                   entry (try (.getEntry zf props-entry) (finally (.close zf)))]
+               (when (or (nil? entry) (zero? (.getSize entry)))
+                 (println (str "Uberjar missing or empty: " props-entry))
+                 (println "  → native-image will silently fall back to defaults.")
+                 (println "  → Check that resources/META-INF/native-image/ is on :paths.")
+                 (System/exit 1)))
+             (println "Uberjar built: projects/agent-tui-app/target/agent-tui-app.jar")
+             (println "  META-INF/native-image config: present.")))}
+
+  native:ata
+  {:doc "Build native binary 'by' with GraalVM native-image"
+   :task (do
+           (println "Building native binary 'by' ...")
+           ;; Find native-image: PATH → $JAVA_HOME → SDKMAN pin
+           ;; (.sdkmanrc) → probe macOS standard JVM dirs for any GraalVM
+           ;; install. The probe chain lets the task succeed on a fresh
+           ;; dev box whether the user manages JDKs via SDKMAN (the
+           ;; project's pinned default — see .sdkmanrc) or the macOS
+           ;; .pkg installer. SDKMAN is checked before the system scan
+           ;; so the project's pin wins over an arbitrary host install
+           ;; (a known footgun: GraalVM 21.0.9 sitting in /Library/JVM
+           ;; tripping `next.jdbc.sql__init` analysis even though
+           ;; .sdkmanrc pins a working 25.x build).
+           (let [in-path  (shell {:continue true :out :string} "which" "native-image")
+                 from-env (when-let [jh (System/getenv "JAVA_HOME")]
+                            (let [c (str jh "/bin/native-image")]
+                              (when (.canExecute (java.io.File. c)) c)))
+                 probe-sdkman
+                 (fn []
+                   ;; Honor the .sdkmanrc pin without requiring SDKMAN's
+                   ;; shell hook to be sourced. Parses `java=<candidate>`
+                   ;; and resolves $HOME/.sdkman/candidates/java/<pin>.
+                   (let [rc (java.io.File. ".sdkmanrc")]
+                     (when (.exists rc)
+                       (when-let [pin (some (fn [l]
+                                              (let [t (clojure.string/trim l)]
+                                                (when-let [m (re-matches (re-pattern "^java\\s*=\\s*(.+)$") t)]
+                                                  (clojure.string/trim (nth m 1)))))
+                                            (clojure.string/split-lines (slurp rc)))]
+                         (let [home (System/getProperty "user.home")
+                               c    (str home "/.sdkman/candidates/java/" pin
+                                         "/bin/native-image")]
+                           (when (.canExecute (java.io.File. c)) c))))))
+                 probe-mac-graal
+                 (fn []
+                   (let [jvm-dir (java.io.File. "/Library/Java/JavaVirtualMachines")]
+                     (when (.isDirectory jvm-dir)
+                       (->> (.listFiles jvm-dir)
+                            (filter (fn [f] (re-find (re-pattern "(?i)graal") (.getName f))))
+                            (map    (fn [f] (str (.getAbsolutePath f) "/Contents/Home/bin/native-image")))
+                            (filter (fn [p] (.canExecute (java.io.File. p))))
+                            ;; Sort by name → newest version wins (21.x < 25.x lexically).
+                            sort
+                            last))))
+                 ni-path (or (when (zero? (:exit in-path))
+                               (clojure.string/trim (:out in-path)))
+                             from-env
+                             (probe-sdkman)
+                             (probe-mac-graal))]
+             (when-not ni-path
+               (println "native-image not found! Ensure GraalVM is on PATH or set JAVA_HOME.")
+               (println "  sdk install java 25.0.3-graal && sdk use java 25.0.3-graal")
+               (System/exit 1))
+             (println (str "Using: " ni-path))
+             ;; All build flags live in
+             ;;   projects/agent-tui-app/resources/META-INF/native-image/
+             ;;     ai.brainyard/agent-tui-app/native-image.properties
+             ;; so the uberjar is the single source of truth for the build
+             ;; spec. See docs/design/native-image-design.md §9.
+             ;;
+             ;; Derive JAVA_HOME from ni-path (always two levels above the
+             ;; native-image binary) and pass it via :extra-env. native-image
+             ;; needs a valid JAVA_HOME to locate its own JDK runtime; this
+             ;; makes the task self-contained regardless of how ni-path was
+             ;; discovered, so callers don't need to prefix `JAVA_HOME=...`.
+             (let [dir       "projects/agent-tui-app"
+                   java-home (clojure.string/replace ni-path (re-pattern "/bin/native-image$") "")
+                   start     (System/currentTimeMillis)
+                   result    (shell {:continue true :dir dir
+                                     :extra-env {"JAVA_HOME" java-home}}
+                                    ni-path
+                                    "-jar" "target/agent-tui-app.jar"
+                                    "-o" "target/by")]
+               (if (zero? (:exit result))
+                 (let [elapsed (/ (- (System/currentTimeMillis) start) 1000.0)]
+                   (println (format "Native binary built in %.1fs: projects/agent-tui-app/target/by" elapsed)))
+                 (do (println "Native compilation failed")
+                     (System/exit 1))))))}
+
+  build:ata
+  {:doc "Full build: compile → uberjar → native binary 'by'"
+   :task (do
+           (run 'compile:ata)
+           (run 'uberjar:ata)
+           (run 'native:ata)
+           (println "Build complete! Native binary at: projects/agent-tui-app/target/by"))}
+
+  check:ata
+  {:doc "Validate the committed META-INF/native-image config files.
+  Static drift gate: checks files exist, are non-empty, and haven't
+  blown past a line-count ceiling. Pair with `git diff --exit-code` in
+  CI to catch unexpected modifications.
+
+  Exit 0 = clean; exit 1 = problem.
+
+  This is the lightweight version of design §13 Phase 1 step 7. The
+  full version regenerates configs via `bb tracing:ata` and diffs the
+  output against the committed snapshot. Until the tracing harness
+  lands, the committed configs are authoritative and only manual edits
+  should land — those should be reviewed at PR time."
+   :task (let [base       "projects/agent-tui-app/resources/META-INF/native-image/ai.brainyard/agent-tui-app"
+               specs      [["native-image.properties"   0 100]
+                           ["reflect-config.json"       1 5000]
+                           ["resource-config.json"      1 5000]
+                           ["reachability-metadata.json" 1 100]]
+               check-one  (fn [acc spec]
+                            (let [fname     (nth spec 0)
+                                  min-lines (nth spec 1)
+                                  max-lines (nth spec 2)
+                                  f         (java.io.File. (str base "/" fname))]
+                              (cond
+                                (not (.exists f))
+                                (conj acc (str fname " is missing"))
+
+                                (zero? (.length f))
+                                (conj acc (str fname " is empty"))
+
+                                :else
+                                (let [n (count (clojure.string/split-lines (slurp f)))]
+                                  (cond
+                                    (< n min-lines)
+                                    (conj acc (format "%s has %d lines (< min %d)" fname n min-lines))
+
+                                    (> n max-lines)
+                                    (conj acc (format "%s has %d lines (> ceiling %d) — review for runaway growth" fname n max-lines))
+
+                                    :else
+                                    (do (println (format "  ✓ %-24s %4d lines" fname n))
+                                        acc))))))
+               problems   (reduce check-one [] specs)]
+           (if (seq problems)
+             (do
+               (println)
+               (doseq [p problems] (println (str "  ✗ " p)))
+               (System/exit 1))
+             (do
+               (println)
+               (println "META-INF/native-image config: OK"))))}
+
+  size:ata
+  {:doc "Pretty-print the native-image build report and the total binary size.
+  Reads projects/agent-tui-app/target/native-build.json (written by
+  -H:BuildOutputJSONFile in native-image.properties) plus the on-disk
+  size of target/by. Useful as a quick post-build sanity check and as
+  a hook for CI size-budget gating in the future."
+   :requires ([cheshire.core :as json])
+   :task (let [base       "projects/agent-tui-app/target"
+               json-path  (str base "/native-build.json")
+               by-path    (str base "/by")
+               fmt-mb     (fn [bytes] (format "%.2f MB" (/ (double bytes) (* 1024 1024.0))))
+               json-file  (java.io.File. json-path)
+               by-file    (java.io.File. by-path)]
+           (cond
+             (not (.exists by-file))
+             (do (println "No binary at" by-path)
+                 (println "Run `bb build:ata` first.")
+                 (System/exit 1))
+
+             (not (.exists json-file))
+             (do (println "No build report at" json-path)
+                 (println "Was -H:BuildOutputJSONFile= passed to native-image?")
+                 (println)
+                 (println (format "On-disk size: %s  (%d bytes)"
+                                  (fmt-mb (.length by-file))
+                                  (.length by-file))))
+
+             :else
+             (let [report (json/parse-string (slurp json-file) true)
+                   img    (:image_details report)
+                   info   (:general_info report)
+                   res    (:resource_usage report)
+                   analy  (:analysis_results report)]
+               (println "Native binary report ─────────────────────────────")
+               (println (format "  Disk size           : %s  (%d bytes)"
+                                (fmt-mb (.length by-file))
+                                (.length by-file)))
+               (println (format "  Image total         : %s" (fmt-mb (:total_bytes img))))
+               (println (format "    code area         : %s  (%d compilation units)"
+                                (fmt-mb (get-in img [:code_area :bytes]))
+                                (get-in img [:code_area :compilation_units])))
+               (println (format "    image heap        : %s  (%d objects, %d resources)"
+                                (fmt-mb (get-in img [:image_heap :bytes]))
+                                (get-in img [:image_heap :objects :count])
+                                (get-in img [:image_heap :resources :count])))
+               (println)
+               (println "Reachability ─────────────────────────────────────")
+               (println (format "  Classes reachable   : %d / %d"
+                                (get-in analy [:classes :reachable])
+                                (get-in analy [:classes :total])))
+               (println (format "  Methods reachable   : %d / %d"
+                                (get-in analy [:methods :reachable])
+                                (get-in analy [:methods :total])))
+               (println (format "  Reflection entries  : %d types, %d fields, %d methods"
+                                (get-in analy [:types :reflection])
+                                (get-in analy [:fields :reflection])
+                                (get-in analy [:methods :reflection])))
+               (println)
+               (println "Build environment ────────────────────────────────")
+               (println (format "  GraalVM             : %s" (:graalvm_version info)))
+               (println (format "  Java                : %s" (:java_version info)))
+               (println (format "  GC                  : %s" (:garbage_collector info)))
+               (println (format "  march               : %s"
+                                (get-in info [:graal_compiler :march])))
+               (println (format "  Build time          : %.1fs" (:total_secs res))))))}
+
+  install:ata
+  {:doc "Install 'by' (wrapper + native binary + uberjar) to ~/.local/bin (or BY_INSTALL_DIR).
+  The wrapper sources the nearest .env (walking up from cwd) before exec'ing
+  the real binary, so /usr/local/bin/by-bin doesn't need to know about .env.
+  The uberjar is also installed as by.jar so users can switch to JVM mode
+  with `BY_JAR=1 by ...` (useful for debugging native-image issues)."
+   :task (do
+           (let [src         "projects/agent-tui-app/target/by"
+                 jar-src     "projects/agent-tui-app/target/agent-tui-app.jar"
+                 wrapper-src "projects/agent-tui-app/scripts/by-wrapper.sh"
+                 exists?     (.exists (java.io.File. src))
+                 jar-exists? (.exists (java.io.File. jar-src))
+                 install-dir (or (System/getenv "BY_INSTALL_DIR")
+                                 (str (System/getProperty "user.home") "/.local/bin"))]
+             (when-not exists?
+               (println "Binary not found. Run 'bb build:ata' first.")
+               (System/exit 1))
+             (.mkdirs (java.io.File. install-dir))
+             (shell "cp" src         (str install-dir "/by-bin"))
+             (shell "cp" wrapper-src (str install-dir "/by"))
+             (shell "chmod" "+x"     (str install-dir "/by") (str install-dir "/by-bin"))
+             ;; macOS: native-image emits a `linker-signed,adhoc` signature
+             ;; that the kernel binds to the original inode. After `cp` the
+             ;; copy launches and is SIGKILL'd by AMFI. Re-sign with a plain
+             ;; ad-hoc signature so the OS accepts the installed binary.
+             (when (= "Mac OS X" (System/getProperty "os.name"))
+               (shell "codesign" "--force" "--sign" "-" (str install-dir "/by-bin")))
+             (if jar-exists?
+               (do (shell "cp" jar-src (str install-dir "/by.jar"))
+                   (println (str "Installed: " install-dir "/by (wrapper) + by-bin (native) + by.jar (JVM, BY_JAR=1)")))
+               (do (println (str "Installed: " install-dir "/by (wrapper) + by-bin (native binary)"))
+                   (println "Note: uberjar not found at" jar-src "— BY_JAR=1 mode will be unavailable.")
+                   (println "      Run 'bb uberjar:ata && bb install:ata' to enable it.")))))}
+
+  docker:ata
+  {:doc "Run the agent-tui-app uberjar inside a Linux JRE container —
+  a sandbox-style smoke test for the JVM build (complementary to the
+  native binary, which is host-arch Mach-O and won't run in Linux).
+
+  Bind-mounts projects/agent-tui-app/target/agent-tui-app.jar into
+  eclipse-temurin:21-jre-jammy, forwards AWS creds from your local
+  profile so `-p bedrock` works, and auto-allocates a TTY when stdin
+  is a terminal (so `run` opens the interactive TUI, while
+  non-interactive callers get a one-shot exec).
+
+  Env knobs (all optional):
+    BY_DOCKER_IMAGE   Override base image (default eclipse-temurin:21-jre-jammy)
+    BY_AWS_PROFILE    AWS profile to pull creds from
+                      (default: $AWS_PROFILE / $AWS_DEFAULT_PROFILE)
+    BY_AWS_REGION     AWS region to inject as AWS_REGION
+                      (default: $AWS_REGION / profile's region)
+
+  Examples:
+    bb docker:ata                              # smoke: by --help
+    bb docker:ata agents                       # list available agents
+    bb docker:ata models -p bedrock            # list Bedrock model catalog
+    bb docker:ata ask -p bedrock \\
+        -m global.anthropic.claude-opus-4-7 \\
+        'What is 2+2?'                         # one-shot Bedrock call
+    bb docker:ata run -p bedrock \\
+        -m global.anthropic.claude-opus-4-7    # interactive TUI"
+   :requires ([clojure.string :as str]
+              [babashka.fs :as fs])
+   :task (let [args        *command-line-args*
+               jar         "projects/agent-tui-app/target/agent-tui-app.jar"
+               image       (or (System/getenv "BY_DOCKER_IMAGE")
+                               "eclipse-temurin:21-jre-jammy")
+               aws-profile (or (System/getenv "BY_AWS_PROFILE")
+                               (System/getenv "AWS_PROFILE")
+                               (System/getenv "AWS_DEFAULT_PROFILE"))
+               aws-get     (fn [k]
+                             (when aws-profile
+                               (let [r (shell {:continue true :out :string :err :string}
+                                              "aws" "configure" "get" k
+                                              "--profile" aws-profile)]
+                                 (when (zero? (:exit r))
+                                   (let [v (str/trim (:out r))]
+                                     (when-not (empty? v) v))))))
+               aws-key     (aws-get "aws_access_key_id")
+               aws-secret  (aws-get "aws_secret_access_key")
+               aws-token   (aws-get "aws_session_token")
+               region      (or (System/getenv "BY_AWS_REGION")
+                               (System/getenv "AWS_REGION")
+                               (System/getenv "AWS_DEFAULT_REGION")
+                               (aws-get "region"))
+               tty?        (some? (System/console))
+               jar-abs     (.getAbsolutePath (java.io.File. jar))
+               docker-args (concat ["docker" "run" "--rm"]
+                                   (when tty? ["-it"])
+                                   (when aws-key
+                                     ["-e" (str "AWS_ACCESS_KEY_ID=" aws-key)])
+                                   (when aws-secret
+                                     ["-e" (str "AWS_SECRET_ACCESS_KEY=" aws-secret)])
+                                   (when aws-token
+                                     ["-e" (str "AWS_SESSION_TOKEN=" aws-token)])
+                                   (when region
+                                     ["-e" (str "AWS_REGION=" region)])
+                                   ["-e" "TERM=xterm-256color"
+                                    "-v" (str jar-abs ":/sandbox/agent-tui-app.jar:ro")
+                                    image
+                                    "java" "-jar" "/sandbox/agent-tui-app.jar"]
+                                   (or (seq args) ["--help"]))]
+           (when-not (fs/exists? jar)
+             (println "Uberjar not found at" jar)
+             (println "Run: bb uberjar:ata")
+             (System/exit 1))
+           (when-not aws-key
+             (println "Note: no AWS credentials resolved — Bedrock calls will fail.")
+             (println "      Set AWS_PROFILE (or BY_AWS_PROFILE) to enable `-p bedrock`."))
+           (apply shell docker-args))}
+
+  repl:awa
+  {:doc "Start Agent Web app REPL (.env loaded)"
+   :task (shell "bash" "-c" "set -a && source .env && cd projects/agent-web-app && clj -M:dev:nrepl")}
+
+  ;; --------------- Frontend tasks ---------------
+  shadow:fra
+  {:doc "Start shadow-cljs watch for Fulcro RAD app"
+   :task (shell "npx" "shadow-cljs" "watch" "app"
+                {:dir "projects/fulcro-rad-app"})}
+
+  shadow:awa
+  {:doc "Start shadow-cljs watch for Agent Web app"
+   :task (shell "npx" "shadow-cljs" "watch" "app"
+                {:dir "projects/agent-web-app"})}
+
+  ;; --------------- Test tasks ---------------
+  test
+  {:doc "Run all Polylith tests"
+   :task (shell "clj" "-M:poly" "test")}
+
+  test:component
+  {:doc "Test a specific component: bb test:component <name>
+
+   Discovers every `*_test.clj` namespace under components/<name>/test/ and
+   runs them with clojure.test via `clj -M:test` in the component dir
+   (the workspace has no standalone test-runner; poly is the only other
+   path). Exits non-zero on any failure/error."
+   :requires ([babashka.fs :as fs]
+              [clojure.string :as str])
+   :task (let [component (first *command-line-args*)
+               dir (str "components/" component)
+               test-dir (str dir "/test")]
+           (when-not component
+             (println "Usage: bb test:component <name>")
+             (System/exit 1))
+           (when-not (fs/exists? dir)
+             (println (str "Component not found: " dir))
+             (System/exit 1))
+           (let [nses (->> (when (fs/exists? test-dir)
+                             (fs/glob test-dir "**/*_test.clj"))
+                           (map (fn [p]
+                                  (let [rel    (str (fs/relativize test-dir p))
+                                        no-ext (subs rel 0 (- (count rel) 4))]
+                                    (-> no-ext
+                                        (str/replace "/" ".")
+                                        (str/replace "_" "-")))))
+                           sort)
+                 nses-str (str/join " " (map (fn [n] (str "'" n)) nses))]
+             (if (empty? nses)
+               (do (println (str "No *_test.clj namespaces under " test-dir))
+                   (System/exit 1))
+               (let [eform (str "(require " nses-str ")"
+                                "(require 'clojure.test)"
+                                "(let [m (clojure.test/run-tests " nses-str ")]"
+                                "  (shutdown-agents)"
+                                "  (System/exit (if (zero? (+ (:fail m) (:error m))) 0 1)))")]
+                 (shell {:dir dir} "clj" "-M:test" "-e" eform)))))}
+
+  ;; --------------- Polylith tasks ---------------
+  poly
+  {:doc "Run Polylith CLI with args: bb poly <args>"
+   :task (apply shell "clj" "-M:poly" *command-line-args*)}
+
+  poly:check
+  {:doc "Run Polylith check"
+   :task (shell "clj" "-M:poly" "check")}
+
+  poly:info
+  {:doc "Run Polylith info"
+   :task (shell "clj" "-M:poly" "info")}
+
+  ;; --------------- Migrations ---------------
+  migrate:plan-agent
+  {:doc "One-shot copy of legacy `.brainyard/plans/*.md` into the new
+   `.brainyard/agents/plan-agent/plans/` location. Source files are NOT deleted —
+   a `git checkout` rolls back instantly. Slug-level collisions are
+   reported and skipped (the new file wins).
+
+   Usage: bb migrate:plan-agent
+          bb migrate:plan-agent --dry-run    # report only, no copies"
+   :requires ([babashka.fs :as fs]
+              [clojure.string :as str])
+   :task (let [args      (set *command-line-args*)
+               dry-run?  (contains? args "--dry-run")
+               root      (System/getProperty "user.dir")
+               legacy    (fs/path root ".brainyard/plans")
+               new-dir   (fs/path root ".brainyard/agents/plan-agent/plans")]
+           (cond
+             (not (fs/exists? legacy))
+             (println "Nothing to migrate — no .brainyard/plans/ directory at" (str legacy))
+
+             :else
+             (do
+               (when-not dry-run? (fs/create-dirs new-dir))
+               (let [files   (->> (fs/list-dir legacy)
+                                  (filter (fn [p] (str/ends-with? (str p) ".md")))
+                                  vec)
+                     results (reduce
+                              (fn [acc src]
+                                (let [name    (.toString (fs/file-name src))
+                                      dest    (fs/path new-dir name)
+                                      exists? (fs/exists? dest)]
+                                  (cond
+                                    exists?
+                                    (do (println (str "  SKIP  " name " — already at new path"))
+                                        (update acc :skipped inc))
+
+                                    dry-run?
+                                    (do (println (str "  PLAN  " name))
+                                        (update acc :would-move inc))
+
+                                    :else
+                                    (try
+                                      (fs/copy src dest {:replace-existing false})
+                                      (println (str "  MOVE  " name))
+                                      (update acc :moved inc)
+                                      (catch Exception e
+                                        (println (str "  FAIL  " name " — " (.getMessage e)))
+                                        (update acc :failed inc))))))
+                              {:moved 0 :skipped 0 :failed 0 :would-move 0}
+                              files)]
+                 (println)
+                 (println "Summary:")
+                 (println (str "  total candidates: " (count files)))
+                 (when-not dry-run?
+                   (println (str "  moved:    " (:moved results)))
+                   (println (str "  skipped:  " (:skipped results) " (already at new path)"))
+                   (println (str "  failed:   " (:failed results))))
+                 (when dry-run?
+                   (println (str "  would-move: " (:would-move results)))
+                   (println (str "  skipped:    " (:skipped results))))
+                 (println)
+                 (println (str "Source files preserved at " (str legacy) " — `git checkout` rolls back."))))))}
+
+  migrate:todo-agent
+  {:doc "One-shot copy of legacy `.brainyard/todos/*.md` into the new
+   `.brainyard/agents/todo-agent/todos/` location. Source files are NOT deleted —
+   a `git checkout` rolls back instantly. Slug-level collisions are
+   reported and skipped (the new file wins).
+
+   Usage: bb migrate:todo-agent
+          bb migrate:todo-agent --dry-run    # report only, no copies"
+   :requires ([babashka.fs :as fs]
+              [clojure.string :as str])
+   :task (let [args      (set *command-line-args*)
+               dry-run?  (contains? args "--dry-run")
+               root      (System/getProperty "user.dir")
+               legacy    (fs/path root ".brainyard/todos")
+               new-dir   (fs/path root ".brainyard/agents/todo-agent/todos")]
+           (cond
+             (not (fs/exists? legacy))
+             (println "Nothing to migrate — no .brainyard/todos/ directory at" (str legacy))
+
+             :else
+             (do
+               (when-not dry-run? (fs/create-dirs new-dir))
+               (let [files   (->> (fs/list-dir legacy)
+                                  (filter (fn [p] (str/ends-with? (str p) ".md")))
+                                  vec)
+                     results (reduce
+                              (fn [acc src]
+                                (let [name    (.toString (fs/file-name src))
+                                      dest    (fs/path new-dir name)
+                                      exists? (fs/exists? dest)]
+                                  (cond
+                                    exists?
+                                    (do (println (str "  SKIP  " name " — already at new path"))
+                                        (update acc :skipped inc))
+
+                                    dry-run?
+                                    (do (println (str "  PLAN  " name))
+                                        (update acc :would-move inc))
+
+                                    :else
+                                    (try
+                                      (fs/copy src dest {:replace-existing false})
+                                      (println (str "  MOVE  " name))
+                                      (update acc :moved inc)
+                                      (catch Exception e
+                                        (println (str "  FAIL  " name " — " (.getMessage e)))
+                                        (update acc :failed inc))))))
+                              {:moved 0 :skipped 0 :failed 0 :would-move 0}
+                              files)]
+                 (println)
+                 (println "Summary:")
+                 (println (str "  total candidates: " (count files)))
+                 (when-not dry-run?
+                   (println (str "  moved:    " (:moved results)))
+                   (println (str "  skipped:  " (:skipped results) " (already at new path)"))
+                   (println (str "  failed:   " (:failed results))))
+                 (when dry-run?
+                   (println (str "  would-move: " (:would-move results)))
+                   (println (str "  skipped:    " (:skipped results))))
+                 (println)
+                 (println (str "Source files preserved at " (str legacy) " — `git checkout` rolls back."))))))}
+
+  ;; --------------- License headers ---------------
+  license:check
+  {:doc "Verify every in-scope source file carries the standard Apache-2.0
+  license header. Exits non-zero with the list of offenders so CI can
+  gate on it.
+
+  Scope: .clj / .cljc / .cljs / .bb under the repo root, excluding
+  target/, .cpcache/, .lsp/, .clj-kondo/, node_modules/, .git/, out/,
+  and .shadow-cljs/.
+
+  Detection sentinel is the SPDX line `;; SPDX-License-Identifier:
+  Apache-2.0` within the first 15 lines of the file, so the check is
+  year-agnostic and tolerant of future header tweaks above/below the
+  marker."
+   :task (do
+           (load-file "scripts/license_header.clj")
+           (let [check (resolve 'license-header/check)]
+             (System/exit (check *command-line-args*))))}
+
+  license:add
+  {:doc "Prepend the standard Apache-2.0 license header to any in-scope
+  source file that is missing it. Idempotent — files that already carry
+  the SPDX sentinel are left alone, so re-running is safe.
+
+  Shebangs are preserved: a leading `#!/usr/bin/env bb` line stays on
+  line 1 and the header block lands beneath it.
+
+  Usage: bb license:add              # apply changes
+         bb license:add --dry-run    # list files that would be touched"
+   :task (do
+           (load-file "scripts/license_header.clj")
+           (let [add (resolve 'license-header/add)]
+             (System/exit (add *command-line-args*))))}}}

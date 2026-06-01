@@ -1,0 +1,61 @@
+;; docs/tutorials/scenarios/03-creating-skills.edn
+;;
+;; Walks the skill-agent through the skill lifecycle: discover -> create ->
+;; verify. Recorded live against claude-code/opus via the bb tui JVM launch
+;; mode (the BRAINYARD_SESSION_ID env hook ships in source).
+;;
+;; NOTE: chapter 2 writes a real skill to <project>/.brainyard/skills/. The
+;; demo skill is removed after recording (see the recorder notes) so it isn't
+;; committed.
+{:id          "03-creating-skills"
+ :title       "Creating a skill with the skill-agent"
+ :description "The skill-agent lists existing skills, authors a new SKILL.md
+               from a plain-English request, and reads it back — recorded live
+               against claude-code/opus."
+
+ :walkthrough
+ "The skill-agent walks the full skill lifecycle across three turns.
+
+  **Turn 1 — discover.** Lists the skills already registered in the project.
+
+  **Turn 2 — author.** From a plain-English request, it writes a new
+  `hello-greeter` skill — a `SKILL.md` under `<project>/.brainyard/skills/`.
+
+  **Turn 3 — verify.** Reads the `SKILL.md` it just wrote back, closing the
+  loop. (The demo skill is removed after recording so it isn't committed.)"
+
+ :terminal    {:cols 100 :rows 32 :title "brainyard tutorial — creating skills"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 120
+
+ :launch
+ {:binary "bb tui"
+  :args   ["-a" "skill-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-03-skills"}}
+
+ :preamble
+ [{:type :narrate :text "# skill-agent: discover, author, and verify skills" :pause-ms 2000}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Discover — list existing skills"
+   :prompt "List the skills currently available in this project."
+   :expect {:contains ["skill"]}
+   :settle {:timeout-secs 180}}
+
+  {:id    :ch2
+   :label "Author — create a new skill"
+   :prompt "Create a new brainyard skill named hello-greeter: a short SKILL.md that explains how to greet a user warmly by name."
+   :expect {:contains ["hello-greeter"]}
+   :settle {:timeout-secs 240}}
+
+  {:id    :ch3
+   :label "Verify — read the new skill back"
+   :prompt "Read back the SKILL.md you just created for hello-greeter."
+   :expect {:contains ["hello-greeter"]}
+   :settle {:timeout-secs 180}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

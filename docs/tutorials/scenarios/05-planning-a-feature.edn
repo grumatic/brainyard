@@ -1,0 +1,56 @@
+;; docs/tutorials/scenarios/05-planning-a-feature.edn
+;;
+;; Walkthrough of the plan-agent: pre-flight gate -> author an implementation
+;; blueprint -> post-flight rubric, persisting a dossier under
+;; .brainyard/agents/plan-agent/plans/ (a gitignored path, so no cleanup).
+;; Recorded live against claude-code/opus via the bb tui JVM mode.
+;;
+;; The task is deliberately concrete and self-contained so the pre-flight gate
+;; returns :go (and authors a plan) rather than :gather (ask for more context).
+{:id          "05-planning-a-feature"
+ :title       "Drafting an implementation plan with the plan-agent"
+ :description "The plan-agent authors a structured implementation blueprint for
+               a small feature (context, approach, risks, acceptance), runs its
+               post-flight rubric, persists a plan + dossier, and hands off to
+               the todo-agent — recorded live against claude-code/opus."
+
+ :walkthrough
+ "One plan-agent turn, showing its full gated machinery.
+
+  **Pre-flight.** It checks the request is concrete enough to plan — returning
+  *go* rather than *gather* (so it drafts instead of asking for more context).
+
+  **Author.** It drafts a structured blueprint for adding a `--quiet` flag:
+  context, approach, risks, and acceptance criteria.
+
+  **Post-flight + handoff.** It grades the blueprint against its own rubric,
+  persists a plan + dossier under `.brainyard/agents/plan-agent/plans/`, and
+  hands off to the todo-agent — which tutorial 06 picks up."
+
+ :terminal    {:cols 100 :rows 32 :title "brainyard tutorial — planning"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 120
+
+ :launch
+ ;; opus (claude-code, subscription — no per-call cost) so the plan-agent
+ ;; reliably runs its full flow: pre-flight gate, blueprint, post-flight
+ ;; rubric, and dossier persistence — rather than answering in one shot.
+ ;; Fullscreen (no -i) so the per-iteration live blocks are captured.
+ {:binary "bb tui"
+  :args   ["-a" "plan-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-05-plan"}}
+
+ :preamble
+ [{:type :narrate :text "# plan-agent: pre-flight gate, blueprint, post-flight rubric" :pause-ms 2000}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Author a plan for a small, self-contained feature"
+   :prompt "Draft a short, concrete implementation plan for adding a --quiet flag to a CLI tool that suppresses all non-error output. Assume a standard argument parser; do not ask for more context."
+   :expect {:contains ["quiet"]}
+   :settle {:timeout-secs 420}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

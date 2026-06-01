@@ -1,0 +1,116 @@
+D 2026-02-23T02:21:31.433Z ai.brainyard.util.core.logging:- 79 - Configured Timbre with  
+merged-config
+================================================================================
+{:min-level :debug,
+ :ns-filter
+ {:allow "*",
+  :deny
+  #{"com.mchange.v2.*"
+    "org.quartz.*"
+    "com.zaxxer.hikari.pool.*"
+    "io.undertow.websockets.core.request"
+    "org.apache.http.impl.conn.PoolingHttpClientConnectionManager"
+    "datomic.*"
+    "shadow.cljs.devtools.server.worker.impl"
+    "io.netty.buffer.PoolThreadCache"}},
+ :middleware
+ [#object[ai.brainyard.util.core.logging$pretty_middleware$fn__6442 0x294b045b "ai.brainyard.util.core.logging$pretty_middleware$fn__6442@294b045b"]],
+ :appenders
+ {:println
+  {:enabled? true,
+   :fn
+   #object[taoensso.timbre.appenders.core$println_appender$fn__5633 0x1ced1d14 "taoensso.timbre.appenders.core$println_appender$fn__5633@1ced1d14"]},
+  :spit
+  {:enabled? true,
+   :fn
+   #object[taoensso.timbre.appenders.core$spit_appender$self__5647 0x43e9a8a2 "taoensso.timbre.appenders.core$spit_appender$self__5647@43e9a8a2"]}},
+ :output-fn
+ #object[ai.brainyard.util.core.logging$custom_output_fn 0x237b54bc "ai.brainyard.util.core.logging$custom_output_fn@237b54bc"]}
+================================================================================
+D 2026-02-23T02:30:47.886Z ai.brainyard.util.core.logging:- 79 - Configured Timbre with  
+merged-config
+================================================================================
+{:min-level :debug,
+ :ns-filter
+ {:allow "*",
+  :deny
+  #{"com.mchange.v2.*"
+    "org.quartz.*"
+    "com.zaxxer.hikari.pool.*"
+    "io.undertow.websockets.core.request"
+    "org.apache.http.impl.conn.PoolingHttpClientConnectionManager"
+    "datomic.*"
+    "shadow.cljs.devtools.server.worker.impl"
+    "io.netty.buffer.PoolThreadCache"}},
+ :middleware
+ [#object[ai.brainyard.util.core.logging$pretty_middleware$fn__6444 0x2b370ca9 "ai.brainyard.util.core.logging$pretty_middleware$fn__6444@2b370ca9"]],
+ :appenders
+ {:println
+  {:enabled? true,
+   :fn
+   #object[taoensso.timbre.appenders.core$println_appender$fn__5635 0x59301546 "taoensso.timbre.appenders.core$println_appender$fn__5635@59301546"]},
+  :spit
+  {:enabled? true,
+   :fn
+   #object[taoensso.timbre.appenders.core$spit_appender$self__5649 0x46e38c28 "taoensso.timbre.appenders.core$spit_appender$self__5649@46e38c28"]}},
+ :output-fn
+ #object[ai.brainyard.util.core.logging$custom_output_fn 0x25fc2b8f "ai.brainyard.util.core.logging$custom_output_fn@25fc2b8f"]}
+================================================================================
+D 2026-02-23T02:42:02.326Z ai.brainyard.util.core.logging:- 79 - Configured Timbre with  
+merged-config
+================================================================================
+{:min-level :debug,
+ :ns-filter
+ {:allow "*",
+  :deny
+  #{"com.mchange.v2.*"
+    "org.quartz.*"
+    "com.zaxxer.hikari.pool.*"
+    "io.undertow.websockets.core.request"
+    "org.apache.http.impl.conn.PoolingHttpClientConnectionManager"
+    "datomic.*"
+    "shadow.cljs.devtools.server.worker.impl"
+    "io.netty.buffer.PoolThreadCache"}},
+ :middleware
+ [#object[ai.brainyard.util.core.logging$pretty_middleware$fn__6517 0x63ff861e "ai.brainyard.util.core.logging$pretty_middleware$fn__6517@63ff861e"]],
+ :appenders
+ {:println
+  {:enabled? true,
+   :fn
+   #object[taoensso.timbre.appenders.core$println_appender$fn__5682 0x3c7f8c25 "taoensso.timbre.appenders.core$println_appender$fn__5682@3c7f8c25"]},
+  :spit
+  {:enabled? true,
+   :fn
+   #object[taoensso.timbre.appenders.core$spit_appender$self__5696 0x60655642 "taoensso.timbre.appenders.core$spit_appender$self__5696@60655642"]}},
+ :output-fn
+ #object[ai.brainyard.util.core.logging$custom_output_fn 0x4110ffe5 "ai.brainyard.util.core.logging$custom_output_fn@4110ffe5"]}
+================================================================================
+D 2026-02-23T04:11:31.295Z ai.brainyard.util.core.logging:- 79 - Configured Timbre with  
+merged-config
+================================================================================
+{:min-level :debug,
+ :ns-filter
+ {:allow "*",
+  :deny
+  #{"com.mchange.v2.*"
+    "org.quartz.*"
+    "com.zaxxer.hikari.pool.*"
+    "io.undertow.websockets.core.request"
+    "org.apache.http.impl.conn.PoolingHttpClientConnectionManager"
+    "datomic.*"
+    "shadow.cljs.devtools.server.worker.impl"
+    "io.netty.buffer.PoolThreadCache"}},
+ :middleware
+ [#object[ai.brainyard.util.core.logging$pretty_middleware$fn__6517 0x63ff861e "ai.brainyard.util.core.logging$pretty_middleware$fn__6517@63ff861e"]],
+ :appenders
+ {:println
+  {:enabled? true,
+   :fn
+   #object[taoensso.timbre.appenders.core$println_appender$fn__5682 0x3c7f8c25 "taoensso.timbre.appenders.core$println_appender$fn__5682@3c7f8c25"]},
+  :spit
+  {:enabled? true,
+   :fn
+   #object[taoensso.timbre.appenders.core$spit_appender$self__5696 0x60655642 "taoensso.timbre.appenders.core$spit_appender$self__5696@60655642"]}},
+ :output-fn
+ #object[ai.brainyard.util.core.logging$custom_output_fn 0x4110ffe5 "ai.brainyard.util.core.logging$custom_output_fn@4110ffe5"]}
+================================================================================

@@ -1,0 +1,91 @@
+;; docs/tutorials/scenarios/17-the-front-door-router.edn
+;;
+;; Showcases the MAIN-AGENT — brainyard's front-door router. It doesn't solve
+;; sub-problems itself: it looks at each question, picks the right specialist
+;; (explore / plan / update / config / …), dispatches it, and maintains a
+;; routing log under .brainyard/agents/main-agent/<session-id>/ so a session
+;; stays coherent across turns.
+;;
+;; Two turns show routing + session continuity: turn 1 routes a "where is X?"
+;; question to the explore-agent; turn 2 builds on it. Because main-agent
+;; dispatches a sub-agent, the routed specialist bumps the SAME session's
+;; turn.complete — a coordination-turn settle race the driver guards by also
+;; waiting for the pane to read `idle`; give the turns a generous settle.
+;; Native `by` in an isolated /tmp git workspace so the routed explore-agent's
+;; artifacts land in /tmp. Recorded live on claude-code/opus.
+{:id          "17-the-front-door-router"
+ :title       "Routing questions with the main-agent"
+ :description "The main-agent — brainyard's front-door router — picks the right
+               specialist per question instead of solving it itself. Over two
+               turns it routes a 'where is X?' question to the explore-agent
+               (printing `Routed to explore-agent —` and surfacing
+               `Saved exploration:`), then builds on it — keeping a routing log
+               under .brainyard/agents/main-agent/<session-id>/. Recorded live
+               against claude-code/opus in an isolated /tmp workspace."
+
+ :walkthrough
+ "The **main-agent** is brainyard's front door. It does **not** answer questions
+  directly — it *routes*: it reads the shape of each question, picks the right
+  specialist (explore / plan / todo / exec / update / config / init / research /
+  workflow / …), dispatches it, and records the decision in a routing log under
+  `.brainyard/agents/main-agent/<session-id>/` so the session stays coherent
+  across turns.
+
+  **The setup.** `by` launches the main-agent inside a fresh, git-inited /tmp
+  workspace seeded with the small `greet` CLI, so any routed specialist's
+  artifacts land in /tmp, not this repo.
+
+  **Turn 1 — a discovery question routes to explore.** Asked *where* greetings
+  are rendered, the main-agent prints its decision —
+  `Routed to explore-agent — …` — dispatches it, and surfaces the specialist's
+  handoff (`Saved exploration: <path>`) plus a direct answer.
+
+  **Turn 2 — continuity.** A follow-up (*what would a `--json` flag involve?*)
+  is routed using the same session's context — the router remembers the prior
+  turn rather than starting cold.
+
+  One front door; the right specialist behind it each time."
+
+ :terminal    {:cols 110 :rows 36 :title "brainyard tutorial — main-agent"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 30
+
+ :launch
+ {:binary "by"
+  :args   ["run" "-a" "main-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-17-main"}}
+
+ :workspace
+ {:git-init true
+  :seed
+  [{:path "README.md"
+    :content "# greet\n\nA tiny example CLI used in the brainyard `by` tutorials.\n\n    python src/cli.py World\n\nRoadmap: add a `--json` output option.\n"}
+   {:path "src/cli.py"
+    :content "#!/usr/bin/env python3\n\"\"\"greet — a tiny CLI that prints a greeting.\"\"\"\nimport argparse\nfrom util import format_greeting\nfrom formatters import render\n\n\ndef main():\n    p = argparse.ArgumentParser(prog=\"greet\")\n    p.add_argument(\"name\")\n    p.add_argument(\"--shout\", action=\"store_true\")\n    args = p.parse_args()\n    print(render(format_greeting(args.name, shout=args.shout)))\n\n\nif __name__ == \"__main__\":\n    main()\n"}
+   {:path "src/util.py"
+    :content "def format_greeting(name, shout=False):\n    msg = f\"Hello, {name}!\"\n    return msg.upper() if shout else msg\n"}
+   {:path "src/formatters.py"
+    :content "\"\"\"Output formatters for greet. Currently text-only.\"\"\"\n\n\ndef render(greeting, fmt=\"text\"):\n    if fmt == \"text\":\n        return greeting\n    raise ValueError(f\"unknown format: {fmt}\")\n"}]}
+
+ :preamble
+ [{:type :narrate
+   :text "# main-agent — the front door that routes to the right specialist"
+   :pause-ms 2400}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Discovery question — routes to the explore specialist"
+   :prompt "Where in this project is the greeting actually rendered? Route this to the right specialist and show me what it finds."
+   :expect {:contains ["Routed to"]}
+   :settle {:timeout-secs 420}}
+
+  {:id    :ch2
+   :label "Follow-up — same session, build on the routing"
+   :prompt "Given what you just found, what would adding a --json output option involve? Route to whichever specialist fits and keep the session's context."
+   :expect {:contains ["Routed to"]}
+   :settle {:timeout-secs 420}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

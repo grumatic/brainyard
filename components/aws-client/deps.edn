@@ -1,0 +1,10 @@
+{:paths ["src" "resources"]
+ :deps {com.cognitect.aws/api {:mvn/version "0.8.723"}
+        com.cognitect.aws/endpoints {:mvn/version "871.2.29.39"}
+        com.cognitect.aws/sts {:mvn/version "871.2.29.52"}
+        com.cognitect.aws/iam {:mvn/version "871.2.29.35"}
+        ai.brainyard/mulog {:local/root "../mulog"}
+        org.clojure/data.json {:mvn/version "2.5.1"}
+        com.taoensso/truss {:mvn/version "1.12.0"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {}}}}

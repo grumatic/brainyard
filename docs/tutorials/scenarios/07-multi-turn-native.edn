@@ -1,0 +1,93 @@
+;; docs/tutorials/scenarios/07-multi-turn-native.edn
+;;
+;; Multi-turn walkthrough recorded against the NATIVE `by` binary (the shipped
+;; artifact, not `bb tui`), running inside an isolated, git-inited /tmp
+;; workspace so every tool/agent write lands outside the repo. One coact-agent
+;; session escalates across three turns and the three capability tiers:
+;;
+;;   turn 1 — basic tools     : bash + read-file over the seeded project
+;;   turn 2 — functional agent: delegate to the explore-agent (direct dispatch)
+;;   turn 3 — coordinate agents: coordinate the plan-agent, building on turn 2
+;;
+;; The :workspace key (handled by scripts/asciinema/drive-scenario.bb
+;; `workspace` + record-scenario.sh) materializes the seed files, `git init`s
+;; them, and launches `by` with that dir as cwd → project-dir resolves to it.
+;;
+;; Recorded live against claude-code/opus (subscription — no per-call cost;
+;; the multi-agent turns need a capable model + generous settles).
+{:id          "07-multi-turn-native"
+ :title       "Multi-turn with the native `by` binary"
+ :description "One coact-agent session over three turns in an isolated,
+               git-inited /tmp workspace — escalating from basic tools
+               (bash + read-file) to a functional agent (explore-agent) to
+               coordinating a second agent (plan-agent), each turn building on
+               the last. Recorded live against the native binary on
+               claude-code/opus."
+
+ :walkthrough
+ "One coact-agent session on the **native `by` binary**, escalating the three
+  capability tiers across three turns in an isolated /tmp git workspace.
+
+  **Turn 1 — basic tools.** `bash` lists the seeded project and `read-file`
+  reads `src/cli.py`; the agent summarizes what the CLI does and its flags.
+
+  **Turn 2 — functional agent.** It delegates to the explore-agent (a direct
+  `(explore-agent …)` dispatch) to map the project's structure, then relays
+  the findings.
+
+  **Turn 3 — coordinate agents.** It coordinates the plan-agent
+  (`(plan-agent …)`) to draft a `--verbose` plan built on Turn 2's map, and
+  summarizes — one agent orchestrating another, context carried across turns."
+
+ :terminal    {:cols 110 :rows 34 :title "brainyard tutorial — multi-turn native"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 30          ;; native `by` cold start is ~2s; margin for safety
+
+ :launch
+ ;; The NATIVE binary (`by` on PATH via `bb install:ata`), NOT `bb tui`.
+ ;; Fullscreen (no -i) so the per-iteration live blocks render; --new skips
+ ;; the resume picker. opus via claude-code is subscription-based (free).
+ {:binary "by"
+  :args   ["run" "-a" "coact-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-07-multiturn"}}
+
+ ;; Isolated git workspace: a tiny Python CLI project. `by` runs here, so
+ ;; reads/writes/grep/bash and the agents' .brainyard/ artifacts stay in /tmp.
+ :workspace
+ {:git-init true
+  :seed
+  [{:path "README.md"
+    :content "# greet\n\nA tiny example CLI used in the brainyard `by` multi-turn tutorial.\n\n    python src/cli.py World\n    python src/cli.py World --shout\n"}
+   {:path "src/cli.py"
+    :content "#!/usr/bin/env python3\n\"\"\"greet — a tiny CLI that prints a greeting.\"\"\"\nimport argparse\nfrom util import format_greeting\n\n\ndef build_parser():\n    p = argparse.ArgumentParser(prog=\"greet\", description=\"Print a greeting.\")\n    p.add_argument(\"name\", help=\"who to greet\")\n    p.add_argument(\"--shout\", action=\"store_true\", help=\"upper-case the greeting\")\n    return p\n\n\ndef main():\n    args = build_parser().parse_args()\n    print(format_greeting(args.name, shout=args.shout))\n\n\nif __name__ == \"__main__\":\n    main()\n"}
+   {:path "src/util.py"
+    :content "def format_greeting(name, shout=False):\n    msg = f\"Hello, {name}!\"\n    return msg.upper() if shout else msg\n"}]}
+
+ :preamble
+ [{:type :narrate
+   :text "# Native `by` — one session, three turns, isolated /tmp workspace"
+   :pause-ms 2200}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Basic tools — bash + read-file"
+   :prompt "List this project's files with bash, then use read-file to read src/cli.py and briefly summarize what the CLI does and which flags it accepts."
+   :expect {:contains ["greet"]}
+   :settle {:timeout-secs 180}}
+
+  {:id    :ch2
+   :label "Functional agent — delegate to explore-agent"
+   :prompt "Delegate to the explore-agent to map this project's structure — what each file and function does and how they fit together — then report its findings back to me."
+   :expect {:contains ["explore"]}
+   :settle {:timeout-secs 300}}
+
+  {:id    :ch3
+   :label "Coordinate agents — orchestrate plan-agent"
+   :prompt "Now coordinate the plan-agent: using the structure the explore-agent just mapped, have it draft a short ordered plan to add a --verbose flag to the CLI (propagate it, gate extra stderr logging on it). Summarize the plan back to me. Do NOT begin implementing or dispatch any downstream agent — planning only."
+   :expect {:contains ["verbose"]}
+   :settle {:timeout-secs 360}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

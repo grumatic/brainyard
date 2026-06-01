@@ -1,0 +1,6 @@
+{;; Agent TUI App configuration
+
+ ;; Agent defaults
+ :agent-tui/default-agent-type :coact-agent
+ :agent-tui/default-lm-provider #or [#env LM_PROVIDER "claude-code"]
+ :agent-tui/default-lm-model #or [#env LM_MODEL "sonnet"]}

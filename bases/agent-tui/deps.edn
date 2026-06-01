@@ -1,0 +1,9 @@
+;; Polylith convention: bases declare third-party (Maven / git) deps only.
+;; Brick deps (components) live in the project deps.edn (e.g. agent-tui-app)
+;; so each project composes its own brick set. The compile classpath flows
+;; through the project — base sources still reach component namespaces.
+{:paths ["src" "resources"]
+ :deps {}
+ :aliases {:dev {:extra-paths ["src-dev"]}
+           :test {:extra-paths ["test"]}}}
+

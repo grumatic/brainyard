@@ -1,0 +1,16 @@
+{:paths ["src" "resources"]
+ :deps {metosin/malli {:mvn/version "0.20.0"}
+        org.clojure/data.json {:mvn/version "2.5.1"}
+        ai.brainyard/clj-http-native {:local/root "../clj-http-native"}
+        ai.brainyard/mulog {:local/root "../mulog"}
+        ai.brainyard/aws-client {:local/root "../aws-client"}
+        ;; Bedrock Converse `cachePoint` member was added after 871.2.30.11
+        ;; (Feb 2025); 871.2.42.29 carries it in the bundled service.edn.
+        com.cognitect.aws/bedrock-runtime {:mvn/version "871.2.42.29"}}
+ :aliases {:test {:extra-paths ["test"]
+                  ;; ACP provider is soft-coupled at runtime via requiring-resolve.
+                  ;; Test-time we pull acp-client + the in-tree stub onto the
+                  ;; classpath so the :acp dispatch path can be exercised.
+                  :extra-deps {ai.brainyard/acp {:local/root "../acp"}
+                               ai.brainyard/acp-client {:local/root "../acp-client"}
+                               ai.brainyard/acp-stub-agent {:local/root "../../bases/acp-stub-agent"}}}}}

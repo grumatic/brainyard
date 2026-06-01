@@ -1,5 +1,7 @@
 # Brainyard Deployment Design
 
+> **⚠️ Historical / superseded (as of v0.2.0).** This document describes the original *thin sync-wrapper* model, in which this public repo carried only publish glue and pulled sources from a private upstream on demand. That model has been retired: the full source now lives here and is the source of truth. The sync machinery (`bin/sync-from-dev.sh`, `bin/.brick-set`, `SYNCED-FROM.txt`) is gone. Sections about syncing and upstream provenance no longer apply; the build/release pipeline and tagging discipline (now in [`CLAUDE.md`](../CLAUDE.md)) carry forward. Kept for design rationale and history.
+
 > Status: Draft v0.2 — 2026-05-17
 > Owner: Jake (jake.na@grumatic.com)
 > Scope: Public distribution of the `by` binary (built from the `agent-tui-app` Polylith project) from the private development repo (`~/MyDev/brainyard`) through this public GitHub repo (`grumatic/brainyard`).

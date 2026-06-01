@@ -1,0 +1,6 @@
+{
+  "reflection": [
+    {"type": {"proxy": ["sun.misc.SignalHandler"]}},
+    {"type": {"proxy": ["ch.qos.logback.core.Appender"]}}
+  ]
+}

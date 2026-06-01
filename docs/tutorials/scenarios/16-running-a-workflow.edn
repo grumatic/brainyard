@@ -1,0 +1,85 @@
+;; docs/tutorials/scenarios/16-running-a-workflow.edn
+;;
+;; Showcases the WORKFLOW-AGENT — brainyard's domain-specific multi-stage
+;; workflow loop. It loads a workflow template, threads a durable dossier
+;; (PURPOSE / WORKFLOW-LEVEL ACCEPTANCE / STAGE ROSTER / CUMULATIVE FINDINGS)
+;; across stages, and composes functional agents (explore / plan / …) one stage
+;; at a time, writing a verdict at the end.
+;;
+;; Scoped RECOMMEND-ONLY: the prompt runs the EXPLORE + PLAN stages and then
+;; finalizes :partial — it does NOT run exec or write code — so the loop
+;; converges inside the settle instead of fanning into unbounded implementation.
+;;
+;; FINALIZE is a TWO-iteration move (iter N-1: clojure fence with helpers; iter
+;; N: :answer with the contract line) — collapsing them lies in the dossier, so
+;; give the turn real headroom. Native `by` in an isolated /tmp git workspace.
+;; Recorded live on claude-code/opus.
+{:id          "16-running-a-workflow"
+ :title       "Running a multi-stage workflow with the workflow-agent"
+ :description "The workflow-agent — brainyard's multi-stage workflow loop — runs
+               a small feature-planning workflow over a seeded CLI: it surfaces
+               workflow-level acceptance criteria, runs an explore stage and a
+               plan stage, threads them into a durable dossier, then finalizes
+               :partial — emitting `Saved workflow dossier:`. Scoped
+               recommend-only. Recorded live against claude-code/opus in an
+               isolated /tmp workspace."
+
+ :walkthrough
+ "The **workflow-agent** runs a *domain-specific, multi-stage* process: it loads
+  a workflow template, pins **workflow-level acceptance criteria** and a **stage
+  roster**, then composes functional agents (explore / plan / todo / exec / …)
+  **one stage at a time**, threading every stage's output into a single durable
+  dossier under `.brainyard/agents/workflow-agent/<id>/` before writing a final
+  verdict.
+
+  **The setup.** `by` launches the workflow-agent inside a fresh, git-inited
+  /tmp workspace seeded with the small `greet` CLI.
+
+  **The turn — a small feature-planning workflow (recommend-only).** Asked to run
+  a feature-planning workflow for adding a `--verbose` flag:
+
+  - it surfaces the **acceptance criteria** for the workflow up front;
+  - runs an **explore** stage (where does flag parsing + output live?) and a
+    **plan** stage (an ordered approach), threading each into the dossier;
+  - **finalizes `:partial`** — it deliberately does *not* run an exec stage or
+    write code — printing the terminal
+    `Saved workflow dossier: .brainyard/agents/workflow-agent/<id>/`.
+
+  You see the staged structure — acceptance up front, one agent per stage, a
+  threaded dossier, a verdict — without an unbounded implementation run."
+
+ :terminal    {:cols 112 :rows 38 :title "brainyard tutorial — workflow-agent"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 30
+
+ :launch
+ {:binary "by"
+  :args   ["run" "-a" "workflow-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-16-workflow"}}
+
+ :workspace
+ {:git-init true
+  :seed
+  [{:path "README.md"
+    :content "# greet\n\nA tiny example CLI used in the brainyard `by` tutorials.\n\n    python src/cli.py World\n    python src/cli.py World --shout\n\nRoadmap: add a `--verbose` flag that prints diagnostic detail to stderr.\n"}
+   {:path "src/cli.py"
+    :content "#!/usr/bin/env python3\n\"\"\"greet — a tiny CLI that prints a greeting.\"\"\"\nimport argparse\nfrom util import format_greeting\n\n\ndef build_parser():\n    p = argparse.ArgumentParser(prog=\"greet\", description=\"Print a greeting.\")\n    p.add_argument(\"name\", help=\"who to greet\")\n    p.add_argument(\"--shout\", action=\"store_true\", help=\"upper-case the greeting\")\n    return p\n\n\ndef main():\n    args = build_parser().parse_args()\n    print(format_greeting(args.name, shout=args.shout))\n\n\nif __name__ == \"__main__\":\n    main()\n"}
+   {:path "src/util.py"
+    :content "def format_greeting(name, shout=False):\n    msg = f\"Hello, {name}!\"\n    return msg.upper() if shout else msg\n"}]}
+
+ :preamble
+ [{:type :narrate
+   :text "# workflow-agent — acceptance up front, one agent per stage, a threaded dossier"
+   :pause-ms 2400}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Run explore + plan stages, thread a dossier, finalize :partial"
+   :prompt "Run a feature-planning workflow for adding a --verbose flag to this CLI. First surface the workflow-level acceptance criteria. Then run two stages: an explore stage that maps where argument parsing and output happen, and a plan stage that drafts an ordered implementation approach — threading each stage into your workflow dossier. Then FINALIZE as :partial. Do NOT run an exec stage and do NOT write any code into the project — this is recommend-only. Take the finalize as a deliberate two-step (helper fence, then the answer with your contract line)."
+   :expect {:contains ["acceptance"]}
+   :settle {:timeout-secs 660}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

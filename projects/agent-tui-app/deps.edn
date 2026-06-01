@@ -1,0 +1,60 @@
+{:paths ["src" "resources"]
+
+ :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+
+        ;; CLI
+        cli-matic/cli-matic {:mvn/version "0.5.4"}
+
+        ;; GraalVM native-image: parked on the classpath, NOT yet active.
+        ;; Adding the InitClojureClasses feature here will eventually
+        ;; replace the deprecated bare `--initialize-at-build-time` form
+        ;; in native-image.properties; today it breaks the build on our
+        ;; defagent pattern (see design §14 "Empirical update" + task
+        ;; #20 in the work log). Kept on classpath so re-enabling is a
+        ;; one-line change once the deftool refactor lands.
+        com.github.clj-easy/graal-build-time {:mvn/version "1.0.5"}
+
+        ;; Base
+        ai.brainyard/agent-tui {:local/root "../../bases/agent-tui"}
+
+        ;; Components
+        ai.brainyard/agent {:local/root "../../components/agent"}
+        ai.brainyard/analytics {:local/root "../../components/analytics"}
+        ai.brainyard/behavior-tree {:local/root "../../components/behavior-tree"}
+        ai.brainyard/clj-llm {:local/root "../../components/clj-llm"}
+        ai.brainyard/mulog {:local/root "../../components/mulog"}
+        ai.brainyard/clj-sandbox {:local/root "../../components/clj-sandbox"}
+        ai.brainyard/clj-nrepl {:local/root "../../components/clj-nrepl"}
+        ai.brainyard/display-block {:local/root "../../components/display-block"}
+        ai.brainyard/memory {:local/root "../../components/memory"}
+        ai.brainyard/util {:local/root "../../components/util"}
+        ai.brainyard/env-detect {:local/root "../../components/env-detect"}
+
+        ;; TUI substrate (per docs/simplified-agent-tui-arch-design.md)
+        ai.brainyard/agent-tui-persist {:local/root "../../components/agent-tui-persist"}
+        ai.brainyard/agent-tui-tmux    {:local/root "../../components/agent-tui-tmux"}}
+
+ :aliases {:dev {:extra-deps {ai.brainyard/agent-tui-dev {:local/root "../../bases/agent-tui/src-dev"}
+                              ai.brainyard/agent-tui-test {:local/root "../../bases/agent-tui/test"}}}
+
+           ;; Project-local tests for the `main.clj` entry point. Polylith's
+           ;; `poly test` only covers bricks, so the project's own CLI helpers
+           ;; are exercised here: `cd projects/agent-tui-app && clojure -M:test`.
+           :test {:extra-paths ["test"]
+                  :extra-deps {io.github.cognitect-labs/test-runner
+                               {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+                  :main-opts ["-m" "cognitect.test-runner"]}
+
+           :nrepl {:extra-deps {nrepl/nrepl {:mvn/version "1.3.0"}
+                                cider/cider-nrepl {:mvn/version "0.50.2"}}
+                   :main-opts ["-m" "nrepl.cmdline"
+                               "--middleware" "[cider.nrepl/cider-middleware]"]}
+
+           ;; AOT output dir. Only activated for compile/uberjar/native build
+           ;; tasks so that day-to-day `bb tui` / `bb repl:ata` never load
+           ;; stale .class files (which the JVM prefers over .clj sources).
+           :build {:extra-paths ["target/classes"]}
+
+           :uberdeps {:replace-deps {uberdeps/uberdeps {:mvn/version "1.4.0"}}
+                      :replace-paths []
+                      :main-opts ["-m" "uberdeps.uberjar"]}}}

@@ -1,6 +1,6 @@
 # Brainyard
 
-> **v0.1.1 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.1.1), 2026-05-20). Tooling refresh: version is now baked from `git describe` at build time, and `bb native:ata` honors the `.sdkmanrc` GraalVM pin. No user-visible behavior changes vs. v0.1.0 — drop-in upgrade via the install command below. Platform coverage unchanged: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries land at M3.
+> **v0.2.0 is live** — and this repo is now fully open source. The complete Polylith workspace (sources, build config, docs) is published here; earlier releases shipped binaries only. Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
 
 Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 18 available agents across 6 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
 
@@ -44,25 +44,22 @@ Full command reference: [`docs/usage.md`](docs/usage.md).
 
 ## Building from source
 
-This repo is a thin **sync-build-publish wrapper** around the private upstream development repo. It tracks only the sync script, installer, and release glue — no Clojure sources, no `bb.edn`, no `deps.edn`. Sources are pulled in on demand by `bin/sync-from-dev.sh` (which requires access to the private upstream) and discarded after every release; they are never committed.
-
-Maintainers with upstream access build like this:
+This repo holds the full source: a [Polylith](https://polylith.gitbook.io/) workspace (`bases/`, `components/`, `projects/agent-tui-app/`) built to a GraalVM native binary and a JVM uberjar.
 
 ```bash
 git clone https://github.com/grumatic/brainyard
 cd brainyard
-bin/sync-from-dev.sh              # pulls Polylith subset + bb.edn/deps.edn from upstream
-sdk use java 25.0.3-graal         # matches the synced .sdkmanrc
-bb build:ata                      # AOT compile → uberjar → native binary
-bin/release-stage.sh              # stage release/ artifacts + BUILD-INFO.txt with upstream SHA
+sdk use java 25.0.3-graal         # matches .sdkmanrc
+bb build:ata                      # version → AOT compile → uberjar → native binary
+bin/release-stage.sh              # stage release/ artifacts + BUILD-INFO.txt
 ```
 
-External users without upstream access should install the published binary via the `curl | bash` step above. See [`docs/deploy-design.md`](docs/deploy-design.md) for the full architecture.
+Run the test suite with `bb test`. See [`CLAUDE.md`](CLAUDE.md) for the build/release pipeline and tagging discipline, and [`docs/`](docs/) for architecture and design notes.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). Copyright 2026 Grumatic, Inc.
+Licensed under the [Apache License, Version 2.0](LICENSE). Copyright 2024-2026 Grumatic, Inc.
 
 ## Acknowledgements
 
-Brainyard builds on the [Clojure](https://clojure.org/) ecosystem, [GraalVM](https://www.graalvm.org/) native-image, the [Polylith](https://polylith.gitbook.io/) architecture, and a long list of OSS libraries credited in the upstream repo. Specific runtime dependencies live in the (private) upstream's `projects/agent-tui-app/deps.edn`; this repo only carries the publish glue. The CycloneDX SBOM embedded in the native binary lists 55 components — extract it with `native-image -H:DumpSBOM=…` or read `release/BUILD-INFO.txt` for the upstream SHA that pinned the dep set.
+Brainyard builds on the [Clojure](https://clojure.org/) ecosystem, [GraalVM](https://www.graalvm.org/) native-image, the [Polylith](https://polylith.gitbook.io/) architecture, and a long list of OSS libraries. Runtime dependencies are declared in each brick's `deps.edn`. The CycloneDX SBOM embedded in the native binary lists its components — extract it with `native-image -H:DumpSBOM=…`.

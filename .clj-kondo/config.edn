@@ -1,0 +1,15 @@
+{:lint-as {}
+ :hooks {:analyze-call
+         {ai.brainyard.agent.core.tool/deftool    hooks.brainyard.tool/deftool-like
+          ai.brainyard.agent.core.tool/defcommand hooks.brainyard.tool/deftool-like
+          ai.brainyard.agent.core.tool/defskill   hooks.brainyard.tool/deftool-like
+          ai.brainyard.agent.core.tool/defagent   hooks.brainyard.tool/deftool-like
+          ;; clj-llm signature/schema macros — re-exported through the
+          ;; interface ns, but callers may also refer the core ns directly,
+          ;; so register both resolution targets.
+          ai.brainyard.clj-llm.interface/defschemas        hooks.brainyard.tool/deftool-like
+          ai.brainyard.clj-llm.core.schema-registry/defschemas hooks.brainyard.tool/deftool-like
+          ai.brainyard.clj-llm.interface/defsignature      hooks.brainyard.tool/deftool-like
+          ai.brainyard.clj-llm.core.signature/defsignature hooks.brainyard.tool/deftool-like
+          ;; util re-export macro
+          ai.brainyard.util.interface.macros/export-symbols hooks.brainyard.tool/export-symbols}}}

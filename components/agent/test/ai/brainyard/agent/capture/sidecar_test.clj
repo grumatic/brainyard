@@ -1,0 +1,103 @@
+;; Copyright (c) 2024-2026 Grumatic, Inc.
+;; SPDX-License-Identifier: Apache-2.0
+;; Licensed under the Apache License, Version 2.0 (the "License"); you may
+;; not use this file except in compliance with the License. See LICENSE at
+;; the repository root and CONTRIBUTING.md for contribution terms.
+
+(ns ai.brainyard.agent.capture.sidecar-test
+  "End-to-end tests for the capture pipeline: dispatcher + sidecar +
+  parser writing to L2 via the unified store."
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [ai.brainyard.memory.interface :as mem]
+            [ai.brainyard.memory.interface.protocol :as proto]
+            [ai.brainyard.agent.core.hooks :as hooks]))
+
+(def ^:dynamic *mm* nil)
+
+(use-fixtures :each
+  (fn [f]
+    (hooks/reset-hooks!)
+    (let [mm (mem/create-memory-manager (str "u-" (random-uuid)) :in-memory true)]
+      (try
+        (binding [*mm* mm]
+          (f))
+        (finally
+          (when (mem/capture-running? mm)
+            (mem/stop-capture! mm))
+          (.close (:ds mm)))))
+    (hooks/reset-hooks!)))
+
+(defn- l2-entries
+  ([sid] (l2-entries sid 100))
+  ([sid limit]
+   (proto/read-entries (mem/store *mm*) :l2
+                       {:session-id sid}
+                       {:limit limit})))
+
+(defn- await-count
+  "Spin until L2 for `sid` reaches at least `n` entries or `timeout-ms`
+  elapses. Returns the final count."
+  [sid n timeout-ms]
+  (let [end (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (let [c (count (l2-entries sid))]
+        (if (or (>= c n) (> (System/currentTimeMillis) end))
+          c
+          (do (Thread/sleep 20) (recur)))))))
+
+;; =====================================================
+;; End-to-end capture
+;; =====================================================
+
+(deftest captures-ask-pre-as-l2-entry-test
+  (mem/start-capture! *mm*)
+  (hooks/fire! :agent.ask/pre {:session-id "s1" :user-id "u" :input "Deploy how?"})
+  (is (= 1 (await-count "s1" 1 1000)))
+  (let [[e] (l2-entries "s1")]
+    (is (= "Deploy how?" (:content e)))
+    (is (contains? (:tags e) "kind:user-message"))
+    ;; Sources come back through JSON roundtrip; :type is the keyword name
+    (is (= 1 (count (:sources e))))))
+
+(deftest captures-multiple-event-kinds-test
+  (mem/start-capture! *mm*)
+  (hooks/fire! :agent.ask/pre {:session-id "s2" :user-id "u" :input "Q"})
+  (hooks/fire! :agent.tool-use/post {:session-id "s2" :user-id "u"
+                                     :tool-name "bash" :args {} :result "ok"})
+  (hooks/fire! :agent.ask/post {:session-id "s2" :user-id "u" :input "Q" :result "A"})
+  (is (= 3 (await-count "s2" 3 1000)))
+  (let [tags (set (mapcat :tags (l2-entries "s2")))]
+    (is (contains? tags "kind:user-message"))
+    (is (contains? tags "kind:assistant-answer"))
+    (is (contains? tags "kind:tool-result"))))
+
+(deftest dedup-applies-end-to-end-test
+  (mem/start-capture! *mm*)
+  (dotimes [_ 5]
+    (hooks/fire! :agent.tool-use/post {:session-id "s3" :user-id "u"
+                                       :tool-name "bash" :args {:cmd "x"} :result "y"}))
+  ;; Wait briefly, then check
+  (Thread/sleep 200)
+  (is (= 1 (count (l2-entries "s3")))
+      "5 identical agent.tool-use/post events should dedup to 1 L2 entry"))
+
+(deftest capture-disabled-by-default-test
+  ;; No start-capture! call — verify no entries are written.
+  (hooks/fire! :agent.ask/pre {:session-id "s4" :user-id "u" :input "Quiet"})
+  (Thread/sleep 100)
+  (is (zero? (count (l2-entries "s4")))))
+
+(deftest start-capture-idempotent-test
+  (let [h1 (mem/start-capture! *mm*)
+        h2 (mem/start-capture! *mm*)]
+    (is (identical? h1 h2)
+        "Calling start-capture! twice returns the same handle")))
+
+(deftest stop-capture-tears-down-hooks-test
+  (mem/start-capture! *mm*)
+  (mem/stop-capture! *mm*)
+  (is (not (mem/capture-running? *mm*)))
+  ;; After stop, firing an event must not produce an entry
+  (hooks/fire! :agent.ask/pre {:session-id "s5" :user-id "u" :input "post-stop"})
+  (Thread/sleep 100)
+  (is (zero? (count (l2-entries "s5")))))

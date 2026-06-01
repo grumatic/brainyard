@@ -1,0 +1,4 @@
+{:paths ["src" "resources"]
+ :deps {ai.brainyard/mulog {:local/root "../mulog"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {}}}}

@@ -1,0 +1,58 @@
+;; docs/tutorials/scenarios/06-spawning-todos.edn
+;;
+;; Follow-up to 05-planning-a-feature: the todo-agent turns the --quiet plan
+;; into an executable, ordered todo list, runs its pre/post-flight gate, saves
+;; a todo + dossier, and hands off to the exec-agent. Recorded live against
+;; claude-code/opus (the todo-agent's persistence/gating machinery needs a
+;; capable model + a generous settle — see the asciinema authoring recipe).
+;;
+;; The plan's steps are carried in the prompt so the scenario is reproducible
+;; (it does not depend on a prior gitignored plan dossier existing on disk).
+{:id          "06-spawning-todos"
+ :title       "From plan to todos with the todo-agent"
+ :description "Following the --quiet plan, the todo-agent spawns an ordered,
+               executable todo list with per-item coverage tags, passes its
+               post-flight rubric (R1–R7), and saves a todo + dossier — pausing
+               before the exec-agent handoff. Recorded live against
+               claude-code/opus."
+
+ :walkthrough
+ "The follow-up to 05: the todo-agent turns the `--quiet` plan into work.
+
+  **Spawn.** Given the plan's steps, it authors a concrete, ordered todo list —
+  each item carrying `:via`/`:covers` coverage tags for downstream routing.
+
+  **Gate.** It runs its post-flight rubric (R1–R7) over the list to confirm the
+  items are sound, then saves a todo + dossier.
+
+  **Pause.** It STOPs before the exec-agent handoff — this tutorial is todo
+  planning only, not implementation (which also keeps the recording bounded)."
+
+ :terminal    {:cols 100 :rows 32 :title "brainyard tutorial — todos"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 120
+
+ :launch
+ ;; opus (claude-code, subscription). The todo-agent auto-dispatches the
+ ;; exec-agent after post-flight, and that sub-run never converges in a
+ ;; recording — so the prompt instructs the agent to STOP before dispatch,
+ ;; which lets it author the full flow (todo + rubric + dossier) and settle.
+ ;; Fullscreen (no -i) so the per-iteration live blocks are captured.
+ {:binary "bb tui"
+  :args   ["-a" "todo-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-06-todos"}}
+
+ :preamble
+ [{:type :narrate :text "# todo-agent: turn a plan into an executable todo list" :pause-ms 2000}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Spawn a todo list from the plan"
+   :prompt "Following the plan to add a --quiet flag to a CLI tool (add --quiet/-q to the arg parser, propagate it through a config object, add a log_info wrapper that gates stdout on not-quiet, replace non-error prints with log_info, route all errors to stderr, update --help and README, add integration tests), spawn a concrete, ordered todo list for implementing it. Author the todo list and its dossier, then STOP — do NOT dispatch the exec-agent or begin implementing; this is todo planning only. Do not ask for more context."
+   :expect {:contains ["quiet"]}
+   :settle {:timeout-secs 420}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

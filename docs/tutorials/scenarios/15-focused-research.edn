@@ -1,0 +1,84 @@
+;; docs/tutorials/scenarios/15-focused-research.edn
+;;
+;; A SHORT, single-turn companion to 08-research-coordination. Where 08 is the
+;; long "coordinate explore + plan into a threaded dossier" showcase, this one
+;; shows the RESEARCH-AGENT at its smallest: one explore specialist call + a
+;; synthesized recommendation + finalize — so you can see the dossier mechanism
+;; (PURPOSE / DIRECTION / ACCEPTANCE CRITERIA → verdict) without the long run.
+;;
+;; Scoped EXPLORE-ONLY: the prompt tells the agent NOT to plan, implement, or
+;; dispatch exec/update — so the loop converges fast inside the settle.
+;;
+;; FINALIZE is a TWO-iteration move (iter N-1: clojure fence with helpers;
+;; iter N: :answer with the contract line) — give the turn headroom so /quit
+;; can't truncate the finalize. Runs against the native `by` binary in an
+;; isolated /tmp git workspace. Recorded live on claude-code/opus.
+{:id          "15-focused-research"
+ :title       "A focused research turn with the research-agent"
+ :description "A short, single-turn look at the research-agent: it runs ONE
+               explore specialist over a seeded CLI, threads the finding into a
+               durable dossier (purpose / direction / acceptance criteria), and
+               finalizes with a recommendation — emitting `Saved exploration:`
+               and `Saved research dossier:`. The compact companion to
+               08-research-coordination. Recorded live against claude-code/opus."
+
+ :walkthrough
+ "The **research-agent** composes brainyard's specialists into one durable,
+  threaded **dossier** — purpose, direction, and acceptance criteria carried
+  across every specialist call. `08-research-coordination` shows the full
+  explore + plan coordination; this is the **minimal** version, so the mechanism
+  is easy to see.
+
+  **The setup.** `by` launches the research-agent inside a fresh, git-inited
+  /tmp workspace seeded with the small `greet` CLI (whose `render()` already
+  takes an unused `fmt` argument).
+
+  **The turn — explore, then recommend.** Scoped *explore-only*:
+
+  - the **explore** specialist maps how greetings are rendered across
+    `cli.py`, `util.py`, and `formatters.py`, and persists its finding
+    (`Saved exploration: <path>`);
+  - the research-agent threads that into its dossier and **finalizes** with a
+    one-paragraph feasibility recommendation for a `--json` flag — printing the
+    terminal `Saved research dossier: .brainyard/agents/research-agent/<id>/`
+    handoff.
+
+  No plan stage, no code written — investigate and recommend, then stop."
+
+ :terminal    {:cols 110 :rows 36 :title "brainyard tutorial — research-agent (focused)"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 30
+
+ :launch
+ {:binary "by"
+  :args   ["run" "-a" "research-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-15-research"}}
+
+ :workspace
+ {:git-init true
+  :seed
+  [{:path "README.md"
+    :content "# greet\n\nA tiny example CLI used in the brainyard `by` tutorials.\n\n    python src/cli.py World\n\nOutput is plain text only today; a `--json` option is on the roadmap.\n"}
+   {:path "src/cli.py"
+    :content "#!/usr/bin/env python3\n\"\"\"greet — a tiny CLI that prints a greeting.\"\"\"\nimport argparse\nfrom util import format_greeting\nfrom formatters import render\n\n\ndef main():\n    p = argparse.ArgumentParser(prog=\"greet\")\n    p.add_argument(\"name\")\n    p.add_argument(\"--shout\", action=\"store_true\")\n    args = p.parse_args()\n    print(render(format_greeting(args.name, shout=args.shout)))\n\n\nif __name__ == \"__main__\":\n    main()\n"}
+   {:path "src/util.py"
+    :content "def format_greeting(name, shout=False):\n    msg = f\"Hello, {name}!\"\n    return msg.upper() if shout else msg\n"}
+   {:path "src/formatters.py"
+    :content "\"\"\"Output formatters for greet. Currently text-only.\"\"\"\n\n\ndef render(greeting, fmt=\"text\"):\n    # fmt is accepted but only 'text' is implemented today.\n    if fmt == \"text\":\n        return greeting\n    raise ValueError(f\"unknown format: {fmt}\")\n"}]}
+
+ :preamble
+ [{:type :narrate
+   :text "# research-agent — one explore specialist, threaded into a dossier"
+   :pause-ms 2400}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Explore + recommend (no plan, no code)"
+   :prompt "Research whether adding a --json output option to this CLI is feasible. Use ONLY your explore specialist to map how greetings are currently rendered across the files, thread the finding into your research dossier, then finalize with a short feasibility recommendation. Do NOT run the plan, todo, exec, or update specialists and do NOT write any code into the project — investigate and recommend only."
+   :expect {:contains ["Saved exploration:"]}
+   :settle {:timeout-secs 540}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

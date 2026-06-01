@@ -1,0 +1,2842 @@
+[
+{
+  "name":"[B"
+},
+{
+  "name":"[C"
+},
+{
+  "name":"[D"
+},
+{
+  "name":"[F"
+},
+{
+  "name":"[I"
+},
+{
+  "name":"[J"
+},
+{
+  "name":"[Ljava.lang.Object;"
+},
+{
+  "name":"[Ljava.lang.String;"
+},
+{
+  "name":"[S"
+},
+{
+  "name":"[Z"
+},
+{
+  "name":"ai.brainyard.agent.common.autoresearch__init"
+},
+{
+  "name":"ai.brainyard.agent.common.autoresearch_bt_actions__init"
+},
+{
+  "name":"ai.brainyard.agent.common.codeact_agent__init"
+},
+{
+  "name":"ai.brainyard.agent.common.coact_bt_actions__init"
+},
+{
+  "name":"ai.brainyard.agent.common.commands__init"
+},
+{
+  "name":"ai.brainyard.agent.common.compaction__init"
+},
+{
+  "name":"ai.brainyard.agent.common.compaction_action__init"
+},
+{
+  "name":"ai.brainyard.agent.common.evaluation__init"
+},
+{
+  "name":"ai.brainyard.agent.common.plan__init"
+},
+{
+  "name":"ai.brainyard.agent.common.previous_turns__init"
+},
+{
+  "name":"ai.brainyard.agent.common.react_agent__init"
+},
+{
+  "name":"ai.brainyard.agent.common.reference__init"
+},
+{
+  "name":"ai.brainyard.agent.common.rlm_agent__init"
+},
+{
+  "name":"ai.brainyard.agent.common.coact_generate_code__init"
+},
+{
+  "name":"ai.brainyard.agent.common.sandbox_bindings__init"
+},
+{
+  "name":"ai.brainyard.agent.common.sandbox_meta__init"
+},
+{
+  "name":"ai.brainyard.agent.common.sandbox_tool_bindings__init"
+},
+{
+  "name":"ai.brainyard.agent.common.schema__init"
+},
+{
+  "name":"ai.brainyard.agent.common.scoring__init"
+},
+{
+  "name":"ai.brainyard.agent.common.skills__init"
+},
+{
+  "name":"ai.brainyard.agent.common.todo__init"
+},
+{
+  "name":"ai.brainyard.agent.common.trace__init"
+},
+{
+  "name":"ai.brainyard.agent.common.trajectory__init"
+},
+{
+  "name":"ai.brainyard.agent.common.turn_log__init"
+},
+{
+  "name":"ai.brainyard.agent.core.agent.Agent",
+  "queryAllPublicMethods":true,
+  "methods":[{"name":"check_run_cancelled_QMARK_","parameterTypes":[] }, {"name":"close","parameterTypes":[] }, {"name":"get_bt_st_memory","parameterTypes":[] }, {"name":"update_session_thinking","parameterTypes":["java.lang.Object"] }]
+},
+{
+  "name":"ai.brainyard.agent.core.agent__init"
+},
+{
+  "name":"ai.brainyard.agent.core.bt__init"
+},
+{
+  "name":"ai.brainyard.agent.core.config__init"
+},
+{
+  "name":"ai.brainyard.agent.core.context__init"
+},
+{
+  "name":"ai.brainyard.agent.core.context_recall__init"
+},
+{
+  "name":"ai.brainyard.agent.core.memory__init"
+},
+{
+  "name":"ai.brainyard.agent.core.protocol.IAgent"
+},
+{
+  "name":"ai.brainyard.agent.core.protocol.IAgentBTIntegration"
+},
+{
+  "name":"ai.brainyard.agent.core.protocol.IAgentLifecycle"
+},
+{
+  "name":"ai.brainyard.agent.core.protocol.IAgentMemoryAccess"
+},
+{
+  "name":"ai.brainyard.agent.core.protocol.IAgentState"
+},
+{
+  "name":"ai.brainyard.agent.core.protocol__init"
+},
+{
+  "name":"ai.brainyard.agent.core.queue__init"
+},
+{
+  "name":"ai.brainyard.agent.core.runtime__init"
+},
+{
+  "name":"ai.brainyard.agent.core.session.ISessionStore"
+},
+{
+  "name":"ai.brainyard.agent.core.session.InMemorySessionStore"
+},
+{
+  "name":"ai.brainyard.agent.core.session__init"
+},
+{
+  "name":"ai.brainyard.agent.core.tool__init"
+},
+{
+  "name":"ai.brainyard.agent.interface.tui.ansi__init"
+},
+{
+  "name":"ai.brainyard.agent.interface.tui.format__init"
+},
+{
+  "name":"ai.brainyard.agent.interface__init"
+},
+{
+  "name":"ai.brainyard.agent.mcp.aws_commands__init"
+},
+{
+  "name":"ai.brainyard.agent.mcp.client.HttpMCPClient"
+},
+{
+  "name":"ai.brainyard.agent.mcp.client.MCPClient"
+},
+{
+  "name":"ai.brainyard.agent.mcp.client.StdioMCPClient"
+},
+{
+  "name":"ai.brainyard.agent.mcp.client__init"
+},
+{
+  "name":"ai.brainyard.agent.mcp.commands__init"
+},
+{
+  "name":"ai.brainyard.agent.mcp.integration__init"
+},
+{
+  "name":"ai.brainyard.agent.stdio.client.CliClient"
+},
+{
+  "name":"ai.brainyard.agent.stdio.client__init"
+},
+{
+  "name":"ai.brainyard.agent.task.commands__init"
+},
+{
+  "name":"ai.brainyard.agent.task.executor.BashJobExecutor"
+},
+{
+  "name":"ai.brainyard.agent.task.executor.CliClientJobExecutor"
+},
+{
+  "name":"ai.brainyard.agent.task.executor.ToolJobExecutor"
+},
+{
+  "name":"ai.brainyard.agent.task.executor__init"
+},
+{
+  "name":"ai.brainyard.agent.task.format__init"
+},
+{
+  "name":"ai.brainyard.agent.task.manager.TaskManager"
+},
+{
+  "name":"ai.brainyard.agent.task.manager__init"
+},
+{
+  "name":"ai.brainyard.agent.task.protocol.IJobExecutor"
+},
+{
+  "name":"ai.brainyard.agent.task.protocol.ITaskManager"
+},
+{
+  "name":"ai.brainyard.agent.task.protocol.Task"
+},
+{
+  "name":"ai.brainyard.agent.task.protocol__init"
+},
+{
+  "name":"ai.brainyard.agent.tui.ansi__init"
+},
+{
+  "name":"ai.brainyard.agent.tui.format__init"
+},
+{
+  "name":"ai.brainyard.agent_tui.autocomplete__init"
+},
+{
+  "name":"ai.brainyard.agent_tui.commands__init"
+},
+{
+  "name":"ai.brainyard.agent_tui.core__init"
+},
+{
+  "name":"ai.brainyard.agent_tui.dirs__init"
+},
+{
+  "name":"ai.brainyard.agent_tui.helpers__init"
+},
+{
+  "name":"ai.brainyard.agent_tui.input__init"
+},
+{
+  "name":"ai.brainyard.agent_tui.layout__init"
+},
+{
+  "name":"ai.brainyard.agent_tui.log__init"
+},
+{
+  "name":"ai.brainyard.agent_tui.permissions__init"
+},
+{
+  "name":"ai.brainyard.agent_tui.session__init"
+},
+{
+  "name":"ai.brainyard.agent_tui.terminal__init"
+},
+{
+  "name":"ai.brainyard.agent_tui_app.main__init"
+},
+{
+  "name":"ai.brainyard.analytics.core.cost$calculate_session_cost",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.cost$estimate_optimal_cost",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.cost$eval228",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.cost$eval230",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.cost$eval234",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.cost$model_tier",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.cost$session_cost_breakdown",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.cost$throughput_stats",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.cost__init"
+},
+{
+  "name":"ai.brainyard.analytics.core.persistence$eval270",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.persistence$eval272",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.persistence$eval276",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.persistence$persist_analytics_BANG_",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.persistence$query_analytics_trends",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.persistence$query_session_analytics",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.persistence$resolve_mem_fn",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.persistence$store_pqs_score_BANG_",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.persistence$store_usage_metrics_BANG_",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.persistence$store_waste_detection_BANG_",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.persistence__init"
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$compute_adjustments",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$count_words",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$detect_retry_storms",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$eval13",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$eval15",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$eval19",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$extract_user_messages",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$is_correction_turn_QMARK_",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$jaccard_similarity",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$score_acceptance_criteria",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$score_clarity",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$score_context_completeness",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$score_pqs",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$score_pqs_heuristic",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$score_pqs_llm",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$score_prompt",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$score_specificity",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$score_task_atomicity",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$sentences",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$tokenize_words",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs$word_set",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.pqs__init"
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$detect_all_waste",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$detect_context_bloat",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$detect_model_overkill",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$detect_output_verbosity_mismatch",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$detect_oversized_system_prompt",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$detect_redundant_requests",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$detect_token_leakage",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$detect_unused_context",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$estimate_cost_at_rate",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$eval101",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$eval103",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$eval107",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$jaccard_similarity",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$run_rlm_detection",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste$word_set",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.core.waste__init"
+},
+{
+  "name":"ai.brainyard.analytics.interface$analyze_session",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$calculate_session_cost",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$detect_waste",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$eval11",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$eval226",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$eval268",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$eval330",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$eval5",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$eval7",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$eval99",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$format_analytics",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$get_analytics_trends",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$get_session_analytics",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$persist_analytics_BANG_",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$resolve_usage_fn",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface$score_pqs",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.analytics.interface__init"
+},
+{
+  "name":"ai.brainyard.behavior_tree.core.dspy_action__init"
+},
+{
+  "name":"ai.brainyard.behavior_tree.core.engine__init"
+},
+{
+  "name":"ai.brainyard.behavior_tree.core.nodes__init"
+},
+{
+  "name":"ai.brainyard.behavior_tree.interface.protocol.LongTermMemory"
+},
+{
+  "name":"ai.brainyard.behavior_tree.interface.protocol__init"
+},
+{
+  "name":"ai.brainyard.behavior_tree.interface__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.chain_of_thought__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.claude_code__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.llm__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.oauth__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.predict__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.prompt__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.providers__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.schema__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.schema_registry__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.signature__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.sse__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.core.usage__init"
+},
+{
+  "name":"ai.brainyard.clj_llm.interface__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.core.budget__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.core.context_accessors__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.core.conversation_window__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.core.feedback__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.core.loop__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.core.message_compaction__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.core.prompt__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.core.recursive__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.core.sandbox__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.core.sandbox_state__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.core.truncation__init"
+},
+{
+  "name":"ai.brainyard.clj_sandbox.interface__init"
+},
+{
+  "name":"ai.brainyard.memory.core.episodic.EpisodicMemoryImpl"
+},
+{
+  "name":"ai.brainyard.memory.core.episodic__init"
+},
+{
+  "name":"ai.brainyard.memory.core.fts__init"
+},
+{
+  "name":"ai.brainyard.memory.core.manager.MemoryManager"
+},
+{
+  "name":"ai.brainyard.memory.core.manager__init"
+},
+{
+  "name":"ai.brainyard.memory.core.recall__init"
+},
+{
+  "name":"ai.brainyard.memory.core.semantic.SemanticMemoryImpl"
+},
+{
+  "name":"ai.brainyard.memory.core.semantic__init"
+},
+{
+  "name":"ai.brainyard.memory.core.sqlite__init"
+},
+{
+  "name":"ai.brainyard.memory.interface.protocol.EpisodicMemory"
+},
+{
+  "name":"ai.brainyard.memory.interface.protocol.MemoryManagerLifecycle"
+},
+{
+  "name":"ai.brainyard.memory.interface.protocol.SemanticMemory"
+},
+{
+  "name":"ai.brainyard.memory.interface.protocol.UnifiedMemory"
+},
+{
+  "name":"ai.brainyard.memory.interface.protocol__init"
+},
+{
+  "name":"ai.brainyard.memory.interface__init"
+},
+{
+  "name":"ai.brainyard.mulog.core.context__init"
+},
+{
+  "name":"ai.brainyard.mulog.core.custom__init"
+},
+{
+  "name":"ai.brainyard.mulog.core.publisher__init"
+},
+{
+  "name":"ai.brainyard.mulog.core.slf4j_bridge__init"
+},
+{
+  "name":"ai.brainyard.mulog.interface__init"
+},
+{
+  "name":"ai.brainyard.util.core.common__init"
+},
+{
+  "name":"ai.brainyard.util.core.logging__init"
+},
+{
+  "name":"ai.brainyard.util.core.naming__init"
+},
+{
+  "name":"ai.brainyard.util.interface.macros__init"
+},
+{
+  "name":"ai.brainyard.util.interface__init"
+},
+{
+  "name":"amalloy.ring_buffer.RingBuffer"
+},
+{
+  "name":"amalloy.ring_buffer__init"
+},
+{
+  "name":"borkdude.dynaload.LazyVar"
+},
+{
+  "name":"borkdude.dynaload__init"
+},
+{
+  "name":"borkdude.graal.LockFix"
+},
+{
+  "name":"borkdude.graal.locking__init"
+},
+{
+  "name":"camel_snake_kebab.core__init"
+},
+{
+  "name":"camel_snake_kebab.internals.alter_name.AlterName"
+},
+{
+  "name":"camel_snake_kebab.internals.alter_name__init"
+},
+{
+  "name":"camel_snake_kebab.internals.macros__init"
+},
+{
+  "name":"camel_snake_kebab.internals.misc__init"
+},
+{
+  "name":"camel_snake_kebab.internals.string_separator.StringSeparator"
+},
+{
+  "name":"camel_snake_kebab.internals.string_separator__init"
+},
+{
+  "name":"ch.qos.logback.classic.BasicConfigurator",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ch.qos.logback.classic.Level"
+},
+{
+  "name":"ch.qos.logback.classic.Logger"
+},
+{
+  "name":"ch.qos.logback.classic.joran.SerializedModelConfigurator",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ch.qos.logback.classic.spi.ILoggingEvent"
+},
+{
+  "name":"ch.qos.logback.classic.spi.ThrowableProxy"
+},
+{
+  "name":"ch.qos.logback.classic.util.DefaultJoranConfigurator",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ch.qos.logback.core.AppenderBase"
+},
+{
+  "name":"cheshire.core__init"
+},
+{
+  "name":"clj_commons.ansi__init"
+},
+{
+  "name":"clj_commons.format.exceptions__init"
+},
+{
+  "name":"clj_commons.pretty_impl__init"
+},
+{
+  "name":"clj_http.client__init"
+},
+{
+  "name":"clj_http.conn_mgr.ReuseableAsyncConnectionManager"
+},
+{
+  "name":"clj_http.conn_mgr__init"
+},
+{
+  "name":"clj_http.cookies__init"
+},
+{
+  "name":"clj_http.core__init"
+},
+{
+  "name":"clj_http.headers.HeaderMap"
+},
+{
+  "name":"clj_http.headers__init"
+},
+{
+  "name":"clj_http.links__init"
+},
+{
+  "name":"clj_http.multipart__init"
+},
+{
+  "name":"clj_http.util__init"
+},
+{
+  "name":"clojure.asm.ClassVisitor"
+},
+{
+  "name":"clojure.asm.ClassWriter"
+},
+{
+  "name":"clojure.asm.Opcodes"
+},
+{
+  "name":"clojure.asm.Type"
+},
+{
+  "name":"clojure.asm.commons.GeneratorAdapter"
+},
+{
+  "name":"clojure.asm.commons.Method"
+},
+{
+  "name":"clojure.core$eval3",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"clojure.core.ArrayChunk"
+},
+{
+  "name":"clojure.core.ArrayManager"
+},
+{
+  "name":"clojure.core.Eduction"
+},
+{
+  "name":"clojure.core.IVecImpl"
+},
+{
+  "name":"clojure.core.Inst"
+},
+{
+  "name":"clojure.core.Vec"
+},
+{
+  "name":"clojure.core.VecNode"
+},
+{
+  "name":"clojure.core.VecSeq"
+},
+{
+  "name":"clojure.core.protocols.CollReduce"
+},
+{
+  "name":"clojure.core.protocols.Datafiable"
+},
+{
+  "name":"clojure.core.protocols.IKVReduce"
+},
+{
+  "name":"clojure.core.protocols.InternalReduce"
+},
+{
+  "name":"clojure.core.protocols.Navigable"
+},
+{
+  "name":"clojure.core.protocols__init"
+},
+{
+  "name":"clojure.core.reducers.Cat"
+},
+{
+  "name":"clojure.core.reducers.CollFold"
+},
+{
+  "name":"clojure.core.reducers__init"
+},
+{
+  "name":"clojure.core.specs.alpha__init"
+},
+{
+  "name":"clojure.core__init"
+},
+{
+  "name":"clojure.core_deftype__init"
+},
+{
+  "name":"clojure.core_print__init"
+},
+{
+  "name":"clojure.core_proxy__init"
+},
+{
+  "name":"clojure.data.json.InternalPBR"
+},
+{
+  "name":"clojure.data.json.JSONWriter"
+},
+{
+  "name":"clojure.data.json.ReaderPBR"
+},
+{
+  "name":"clojure.data.json.StringPBR"
+},
+{
+  "name":"clojure.data.json__init"
+},
+{
+  "name":"clojure.datafy__init"
+},
+{
+  "name":"clojure.edn__init"
+},
+{
+  "name":"clojure.genclass__init"
+},
+{
+  "name":"clojure.gvec__init"
+},
+{
+  "name":"clojure.instant__init"
+},
+{
+  "name":"clojure.java.data__init"
+},
+{
+  "name":"clojure.java.io.Coercions"
+},
+{
+  "name":"clojure.java.io.IOFactory"
+},
+{
+  "name":"clojure.java.io__init"
+},
+{
+  "name":"clojure.lang.APersistentMap"
+},
+{
+  "name":"clojure.lang.APersistentMap$KeySeq"
+},
+{
+  "name":"clojure.lang.APersistentMap$ValSeq"
+},
+{
+  "name":"clojure.lang.ASeq"
+},
+{
+  "name":"clojure.lang.Associative"
+},
+{
+  "name":"clojure.lang.BigInt"
+},
+{
+  "name":"clojure.lang.ChunkBuffer"
+},
+{
+  "name":"clojure.lang.Compiler",
+  "allPublicFields":true
+},
+{
+  "name":"clojure.lang.Compiler$CompilerException"
+},
+{
+  "name":"clojure.lang.Compiler$ObjExpr"
+},
+{
+  "name":"clojure.lang.Compiler$ObjMethod"
+},
+{
+  "name":"clojure.lang.Cons"
+},
+{
+  "name":"clojure.lang.Counted"
+},
+{
+  "name":"clojure.lang.Delay"
+},
+{
+  "name":"clojure.lang.DynamicClassLoader"
+},
+{
+  "name":"clojure.lang.ExceptionInfo"
+},
+{
+  "name":"clojure.lang.Fn"
+},
+{
+  "name":"clojure.lang.IAtom"
+},
+{
+  "name":"clojure.lang.IAtom2"
+},
+{
+  "name":"clojure.lang.IChunk",
+  "queryAllPublicMethods":true
+},
+{
+  "name":"clojure.lang.IChunkedSeq"
+},
+{
+  "name":"clojure.lang.IDeref"
+},
+{
+  "name":"clojure.lang.IExceptionInfo"
+},
+{
+  "name":"clojure.lang.IFn"
+},
+{
+  "name":"clojure.lang.IHashEq"
+},
+{
+  "name":"clojure.lang.IKVReduce"
+},
+{
+  "name":"clojure.lang.IMeta"
+},
+{
+  "name":"clojure.lang.IObj"
+},
+{
+  "name":"clojure.lang.IPersistentCollection"
+},
+{
+  "name":"clojure.lang.IPersistentList"
+},
+{
+  "name":"clojure.lang.IPersistentMap"
+},
+{
+  "name":"clojure.lang.IPersistentSet"
+},
+{
+  "name":"clojure.lang.IPersistentStack"
+},
+{
+  "name":"clojure.lang.IPersistentVector"
+},
+{
+  "name":"clojure.lang.IProxy"
+},
+{
+  "name":"clojure.lang.IRecord"
+},
+{
+  "name":"clojure.lang.IReduceInit"
+},
+{
+  "name":"clojure.lang.IRef"
+},
+{
+  "name":"clojure.lang.ISeq"
+},
+{
+  "name":"clojure.lang.Indexed"
+},
+{
+  "name":"clojure.lang.Keyword"
+},
+{
+  "name":"clojure.lang.LazilyPersistentVector"
+},
+{
+  "name":"clojure.lang.LazySeq",
+  "queryAllPublicConstructors":true
+},
+{
+  "name":"clojure.lang.LineNumberingPushbackReader",
+  "queryAllPublicMethods":true,
+  "methods":[{"name":"read","parameterTypes":[]}]
+},
+{
+  "name":"clojure.lang.LispReader$ReaderException"
+},
+{
+  "name":"clojure.lang.LockingTransaction",
+  "queryAllPublicMethods":true
+},
+{
+  "name":"clojure.lang.MapEntry"
+},
+{
+  "name":"clojure.lang.MultiFn"
+},
+{
+  "name":"clojure.lang.Murmur3"
+},
+{
+  "name":"clojure.lang.Named"
+},
+{
+  "name":"clojure.lang.Namespace",
+  "allPublicFields":true,
+  "queryAllPublicMethods":true
+},
+{
+  "name":"clojure.lang.Numbers",
+  "queryAllPublicMethods":true
+},
+{
+  "name":"clojure.lang.PersistentArrayMap",
+  "allPublicFields":true,
+  "queryAllPublicMethods":true
+},
+{
+  "name":"clojure.lang.PersistentArrayMap$Seq"
+},
+{
+  "name":"clojure.lang.PersistentHashMap"
+},
+{
+  "name":"clojure.lang.PersistentHashMap$NodeSeq"
+},
+{
+  "name":"clojure.lang.PersistentHashSet"
+},
+{
+  "name":"clojure.lang.PersistentQueue"
+},
+{
+  "name":"clojure.lang.PersistentVector"
+},
+{
+  "name":"clojure.lang.PersistentVector$ChunkedSeq"
+},
+{
+  "name":"clojure.lang.RT",
+  "queryAllPublicMethods":true
+},
+{
+  "name":"clojure.lang.Ratio"
+},
+{
+  "name":"clojure.lang.ReaderConditional"
+},
+{
+  "name":"clojure.lang.Reflector"
+},
+{
+  "name":"clojure.lang.Reversible"
+},
+{
+  "name":"clojure.lang.SeqIterator"
+},
+{
+  "name":"clojure.lang.Sequential"
+},
+{
+  "name":"clojure.lang.StringSeq"
+},
+{
+  "name":"clojure.lang.Symbol",
+  "queryAllPublicMethods":true
+},
+{
+  "name":"clojure.lang.TaggedLiteral"
+},
+{
+  "name":"clojure.lang.Util",
+  "queryAllPublicMethods":true
+},
+{
+  "name":"clojure.lang.Var",
+  "queryAllPublicMethods":true
+},
+{
+  "name":"clojure.lang.Volatile"
+},
+{
+  "name":"clojure.main__init"
+},
+{
+  "name":"clojure.pprint.PrettyFlush"
+},
+{
+  "name":"clojure.pprint.cl_format__init"
+},
+{
+  "name":"clojure.pprint.column_writer__init"
+},
+{
+  "name":"clojure.pprint.dispatch__init"
+},
+{
+  "name":"clojure.pprint.pprint_base__init"
+},
+{
+  "name":"clojure.pprint.pretty_writer__init"
+},
+{
+  "name":"clojure.pprint.print_table__init"
+},
+{
+  "name":"clojure.pprint.utilities__init"
+},
+{
+  "name":"clojure.pprint__init"
+},
+{
+  "name":"clojure.set__init"
+},
+{
+  "name":"clojure.spec.alpha.Spec"
+},
+{
+  "name":"clojure.spec.alpha.Specize"
+},
+{
+  "name":"clojure.spec.alpha__init"
+},
+{
+  "name":"clojure.spec.gen.alpha__init"
+},
+{
+  "name":"clojure.stacktrace__init"
+},
+{
+  "name":"clojure.string__init"
+},
+{
+  "name":"clojure.test.check.generators.Generator"
+},
+{
+  "name":"clojure.test.check.generators__init"
+},
+{
+  "name":"clojure.test.check.random.IRandom"
+},
+{
+  "name":"clojure.test.check.random.JavaUtilSplittableRandom"
+},
+{
+  "name":"clojure.test.check.random__init"
+},
+{
+  "name":"clojure.test.check.rose_tree.RoseTree"
+},
+{
+  "name":"clojure.test.check.rose_tree__init"
+},
+{
+  "name":"clojure.tools.reader.default_data_readers__init"
+},
+{
+  "name":"clojure.tools.reader.edn__init"
+},
+{
+  "name":"clojure.tools.reader.impl.commons__init"
+},
+{
+  "name":"clojure.tools.reader.impl.errors__init"
+},
+{
+  "name":"clojure.tools.reader.impl.inspect__init"
+},
+{
+  "name":"clojure.tools.reader.impl.utils__init"
+},
+{
+  "name":"clojure.tools.reader.reader_types.IPushbackReader"
+},
+{
+  "name":"clojure.tools.reader.reader_types.IndexingPushbackReader"
+},
+{
+  "name":"clojure.tools.reader.reader_types.IndexingReader"
+},
+{
+  "name":"clojure.tools.reader.reader_types.InputStreamReader"
+},
+{
+  "name":"clojure.tools.reader.reader_types.PushbackReader"
+},
+{
+  "name":"clojure.tools.reader.reader_types.PushbackReaderCoercer"
+},
+{
+  "name":"clojure.tools.reader.reader_types.Reader"
+},
+{
+  "name":"clojure.tools.reader.reader_types.ReaderCoercer"
+},
+{
+  "name":"clojure.tools.reader.reader_types.SourceLoggingPushbackReader"
+},
+{
+  "name":"clojure.tools.reader.reader_types.StringReader"
+},
+{
+  "name":"clojure.tools.reader.reader_types__init"
+},
+{
+  "name":"clojure.tools.reader__init"
+},
+{
+  "name":"clojure.uuid__init"
+},
+{
+  "name":"clojure.walk__init"
+},
+{
+  "name":"clojure.xml__init"
+},
+{
+  "name":"cognitect.transit__init"
+},
+{
+  "name":"com.brunobonacci.mulog.buffer.PRingBuffer"
+},
+{
+  "name":"com.brunobonacci.mulog.buffer.RingBuffer"
+},
+{
+  "name":"com.brunobonacci.mulog.buffer__init"
+},
+{
+  "name":"com.brunobonacci.mulog.core.ClojureThreadLocal"
+},
+{
+  "name":"com.brunobonacci.mulog.core.Flake"
+},
+{
+  "name":"com.brunobonacci.mulog.core__init"
+},
+{
+  "name":"com.brunobonacci.mulog.flakes__init"
+},
+{
+  "name":"com.brunobonacci.mulog.publisher.ConsolePublisher"
+},
+{
+  "name":"com.brunobonacci.mulog.publisher.PPublisher"
+},
+{
+  "name":"com.brunobonacci.mulog.publisher.SimpleFilePublisher"
+},
+{
+  "name":"com.brunobonacci.mulog.publisher__init"
+},
+{
+  "name":"com.brunobonacci.mulog.utils__init"
+},
+{
+  "name":"com.brunobonacci.mulog__init"
+},
+{
+  "name":"crouton.html__init"
+},
+{
+  "name":"edamame.core__init"
+},
+{
+  "name":"edamame.impl.macros__init"
+},
+{
+  "name":"edamame.impl.ns_parser__init"
+},
+{
+  "name":"edamame.impl.parser.Loc"
+},
+{
+  "name":"edamame.impl.parser.Options"
+},
+{
+  "name":"edamame.impl.parser__init"
+},
+{
+  "name":"edamame.impl.read_fn__init"
+},
+{
+  "name":"edamame.impl.syntax_quote__init"
+},
+{
+  "name":"inflections.core.Rule"
+},
+{
+  "name":"inflections.core__init"
+},
+{
+  "name":"integrant.core.Ref"
+},
+{
+  "name":"integrant.core.RefLike"
+},
+{
+  "name":"integrant.core.RefSet"
+},
+{
+  "name":"integrant.core__init"
+},
+{
+  "name":"java.io.BufferedInputStream"
+},
+{
+  "name":"java.io.BufferedOutputStream"
+},
+{
+  "name":"java.io.BufferedReader"
+},
+{
+  "name":"java.io.BufferedWriter"
+},
+{
+  "name":"java.io.ByteArrayInputStream"
+},
+{
+  "name":"java.io.ByteArrayOutputStream"
+},
+{
+  "name":"java.io.CharArrayReader"
+},
+{
+  "name":"java.io.Closeable"
+},
+{
+  "name":"java.io.EOFException"
+},
+{
+  "name":"java.io.File",
+  "methods":[
+    {"name":"<init>","parameterTypes":["java.lang.String"]},
+    {"name":"<init>","parameterTypes":["java.lang.String","java.lang.String"]},
+    {"name":"<init>","parameterTypes":["java.io.File","java.lang.String"]}
+  ]
+},
+{
+  "name":"java.io.FileInputStream",
+  "methods":[
+    {"name":"<init>","parameterTypes":["java.lang.String"]},
+    {"name":"<init>","parameterTypes":["java.io.File"]}
+  ]
+},
+{
+  "name":"java.io.FileOutputStream"
+},
+{
+  "name":"java.io.FilePermission"
+},
+{
+  "name":"java.io.FileReader"
+},
+{
+  "name":"java.io.FileWriter"
+},
+{
+  "name":"java.io.FilterInputStream"
+},
+{
+  "name":"java.io.InputStream"
+},
+{
+  "name":"java.io.InputStreamReader"
+},
+{
+  "name":"java.io.NotSerializableException"
+},
+{
+  "name":"java.io.OutputStream"
+},
+{
+  "name":"java.io.OutputStreamWriter"
+},
+{
+  "name":"java.io.PrintWriter"
+},
+{
+  "name":"java.io.PushbackInputStream"
+},
+{
+  "name":"java.io.PushbackReader"
+},
+{
+  "name":"java.io.Reader"
+},
+{
+  "name":"java.io.Serializable"
+},
+{
+  "name":"java.io.StringReader"
+},
+{
+  "name":"java.io.StringWriter",
+  "allPublicMethods":true
+},
+{
+  "name":"java.io.Writer"
+},
+{
+  "name":"java.lang.ArithmeticException"
+},
+{
+  "name":"java.lang.AssertionError"
+},
+{
+  "name":"java.lang.Boolean"
+},
+{
+  "name":"java.lang.Byte"
+},
+{
+  "name":"java.lang.CharSequence"
+},
+{
+  "name":"java.lang.Character"
+},
+{
+  "name":"java.lang.Class",
+  "queryAllPublicMethods":true
+},
+{
+  "name":"java.lang.Double"
+},
+{
+  "name":"java.lang.Enum"
+},
+{
+  "name":"java.lang.Exception"
+},
+{
+  "name":"java.lang.Float"
+},
+{
+  "name":"java.lang.IllegalArgumentException"
+},
+{
+  "name":"java.lang.Integer"
+},
+{
+  "name":"java.lang.Iterable"
+},
+{
+  "name":"java.lang.Long"
+},
+{
+  "name":"java.lang.Math",
+  "allPublicFields":true,
+  "queryAllPublicMethods":true
+},
+{
+  "name":"java.lang.Number"
+},
+{
+  "name":"java.lang.Object",
+  "queryAllPublicMethods":true
+},
+{
+  "name":"java.lang.ProcessBuilder",
+  "queryAllPublicConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":["java.util.List"] }]
+},
+{
+  "name":"java.lang.Runnable"
+},
+{
+  "name":"java.lang.RuntimePermission"
+},
+{
+  "name":"java.lang.Short"
+},
+{
+  "name":"java.lang.StackTraceElement"
+},
+{
+  "name":"java.lang.String",
+  "queryAllPublicMethods":true
+},
+{
+  "name":"java.lang.StringBuffer",
+  "allPublicMethods":true
+},
+{
+  "name":"java.lang.StringBuilder",
+  "queryAllPublicMethods":true,
+  "queryAllPublicConstructors":true,
+  "methods":[{"name":"append","parameterTypes":["char"] }, {"name":"append","parameterTypes":["double"] }, {"name":"append","parameterTypes":["float"] }, {"name":"append","parameterTypes":["int"] }, {"name":"append","parameterTypes":["long"] }, {"name":"append","parameterTypes":["java.lang.CharSequence"] }, {"name":"append","parameterTypes":["java.lang.Object"] }, {"name":"append","parameterTypes":["java.lang.String"] }, {"name":"append","parameterTypes":["java.lang.StringBuffer"] }, {"name":"append","parameterTypes":["boolean"] }, {"name":"append","parameterTypes":["char[]"] }]
+},
+{
+  "name":"java.lang.Thread",
+  "methods":[
+    {"name":"sleep","parameterTypes":["long"]},
+    {"name":"currentThread","parameterTypes":[]},
+    {"name":"interrupt","parameterTypes":[]},
+    {"name":"isInterrupted","parameterTypes":[]},
+    {"name":"interrupted","parameterTypes":[]},
+    {"name":"setDaemon","parameterTypes":["boolean"]},
+    {"name":"start","parameterTypes":[]}
+  ]
+},
+{
+  "name":"java.lang.ThreadLocal"
+},
+{
+  "name":"java.lang.Throwable"
+},
+{
+  "name":"java.lang.UnsupportedOperationException"
+},
+{
+  "name":"java.lang.annotation.Annotation"
+},
+{
+  "name":"java.lang.annotation.Retention"
+},
+{
+  "name":"java.lang.reflect.Array"
+},
+{
+  "name":"java.lang.reflect.Constructor"
+},
+{
+  "name":"java.lang.reflect.Field"
+},
+{
+  "name":"java.lang.reflect.Method",
+  "methods":[{"name":"canAccess","parameterTypes":["java.lang.Object"] }]
+},
+{
+  "name":"java.lang.reflect.Modifier"
+},
+{
+  "name":"java.math.BigDecimal"
+},
+{
+  "name":"java.math.BigInteger"
+},
+{
+  "name":"java.net.HttpURLConnection"
+},
+{
+  "name":"java.net.InetAddress"
+},
+{
+  "name":"java.net.InetSocketAddress"
+},
+{
+  "name":"java.net.MalformedURLException"
+},
+{
+  "name":"java.net.NetPermission"
+},
+{
+  "name":"java.net.Proxy"
+},
+{
+  "name":"java.net.Proxy$Type"
+},
+{
+  "name":"java.net.ProxySelector"
+},
+{
+  "name":"java.net.ServerSocket"
+},
+{
+  "name":"java.net.Socket"
+},
+{
+  "name":"java.net.SocketException"
+},
+{
+  "name":"java.net.SocketPermission"
+},
+{
+  "name":"java.net.URI"
+},
+{
+  "name":"java.net.URL"
+},
+{
+  "name":"java.net.URLDecoder"
+},
+{
+  "name":"java.net.URLEncoder"
+},
+{
+  "name":"java.net.URLPermission",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.String","java.lang.String"] }]
+},
+{
+  "name":"java.net.UnknownHostException"
+},
+{
+  "name":"java.nio.charset.Charset"
+},
+{
+  "name":"java.nio.file.FileSystems"
+},
+{
+  "name":"java.nio.file.Files"
+},
+{
+  "name":"java.nio.file.Path"
+},
+{
+  "name":"java.nio.file.attribute.FileAttribute"
+},
+{
+  "name":"java.security.AllPermission"
+},
+{
+  "name":"java.security.KeyStore"
+},
+{
+  "name":"java.security.MessageDigest"
+},
+{
+  "name":"java.security.SecureRandom"
+},
+{
+  "name":"java.security.SecureRandomParameters"
+},
+{
+  "name":"java.security.SecurityPermission"
+},
+{
+  "name":"java.sql.Clob"
+},
+{
+  "name":"java.sql.Connection"
+},
+{
+  "name":"java.sql.Date"
+},
+{
+  "name":"java.sql.DriverManager"
+},
+{
+  "name":"java.sql.PreparedStatement"
+},
+{
+  "name":"java.sql.ResultSet"
+},
+{
+  "name":"java.sql.ResultSetMetaData"
+},
+{
+  "name":"java.sql.SQLException",
+  "fields":[{"name":"next"}]
+},
+{
+  "name":"java.sql.Statement"
+},
+{
+  "name":"java.sql.Timestamp"
+},
+{
+  "name":"java.text.SimpleDateFormat"
+},
+{
+  "name":"java.time.Duration"
+},
+{
+  "name":"java.time.Instant",
+  "allPublicFields":true,
+  "queryAllPublicMethods":true
+},
+{
+  "name":"java.time.LocalDate"
+},
+{
+  "name":"java.time.LocalDateTime"
+},
+{
+  "name":"java.time.LocalTime"
+},
+{
+  "name":"java.time.ZoneId"
+},
+{
+  "name":"java.time.ZonedDateTime"
+},
+{
+  "name":"java.time.format.DateTimeFormatter"
+},
+{
+  "name":"java.util.ArrayDeque"
+},
+{
+  "name":"java.util.Base64"
+},
+{
+  "name":"java.util.Calendar"
+},
+{
+  "name":"java.util.Collection"
+},
+{
+  "name":"java.util.Date"
+},
+{
+  "name":"java.util.GregorianCalendar"
+},
+{
+  "name":"java.util.HashMap"
+},
+{
+  "name":"java.util.LinkedList"
+},
+{
+  "name":"java.util.List"
+},
+{
+  "name":"java.util.Locale"
+},
+{
+  "name":"java.util.Map"
+},
+{
+  "name":"java.util.Properties"
+},
+{
+  "name":"java.util.PropertyPermission"
+},
+{
+  "name":"java.util.Random"
+},
+{
+  "name":"java.util.RandomAccess"
+},
+{
+  "name":"java.util.Set"
+},
+{
+  "name":"java.util.TimeZone"
+},
+{
+  "name":"java.util.UUID"
+},
+{
+  "name":"java.util.concurrent.ArrayBlockingQueue"
+},
+{
+  "name":"java.util.concurrent.BlockingQueue"
+},
+{
+  "name":"java.util.concurrent.Callable"
+},
+{
+  "name":"java.util.concurrent.ConcurrentHashMap"
+},
+{
+  "name":"java.util.concurrent.CountDownLatch"
+},
+{
+  "name":"java.util.concurrent.ExecutorService"
+},
+{
+  "name":"java.util.concurrent.Executors"
+},
+{
+  "name":"java.util.concurrent.ForkJoinPool"
+},
+{
+  "name":"java.util.concurrent.ForkJoinTask",
+  "fields":[{"name":"aux"}, {"name":"status"}]
+},
+{
+  "name":"java.util.concurrent.Future"
+},
+{
+  "name":"java.util.concurrent.FutureTask"
+},
+{
+  "name":"java.util.concurrent.LinkedBlockingQueue"
+},
+{
+  "name":"java.util.concurrent.ScheduledFuture"
+},
+{
+  "name":"java.util.concurrent.ScheduledThreadPoolExecutor"
+},
+{
+  "name":"java.util.concurrent.ThreadFactory"
+},
+{
+  "name":"java.util.concurrent.TimeUnit"
+},
+{
+  "name":"java.util.concurrent.TimeoutException"
+},
+{
+  "name":"java.util.concurrent.atomic.AtomicBoolean",
+  "fields":[{"name":"value"}]
+},
+{
+  "name":"java.util.concurrent.atomic.AtomicInteger"
+},
+{
+  "name":"java.util.concurrent.atomic.AtomicLong"
+},
+{
+  "name":"java.util.concurrent.atomic.AtomicReference",
+  "fields":[{"name":"value"}]
+},
+{
+  "name":"java.util.concurrent.locks.ReentrantLock"
+},
+{
+  "name":"java.util.function.UnaryOperator"
+},
+{
+  "name":"java.util.logging.Level"
+},
+{
+  "name":"java.util.logging.Logger"
+},
+{
+  "name":"java.util.regex.Matcher"
+},
+{
+  "name":"java.util.regex.Pattern"
+},
+{
+  "name":"java.util.zip.DeflaterInputStream"
+},
+{
+  "name":"java.util.zip.GZIPInputStream"
+},
+{
+  "name":"java.util.zip.GZIPOutputStream"
+},
+{
+  "name":"java.util.zip.InflaterInputStream"
+},
+{
+  "name":"javax.net.ssl.HostnameVerifier"
+},
+{
+  "name":"javax.net.ssl.KeyManager"
+},
+{
+  "name":"javax.net.ssl.SSLContext"
+},
+{
+  "name":"javax.net.ssl.TrustManager"
+},
+{
+  "name":"javax.smartcardio.CardPermission"
+},
+{
+  "name":"javax.sql.DataSource"
+},
+{
+  "name":"javax.xml.datatype.XMLGregorianCalendar"
+},
+{
+  "name":"javax.xml.parsers.SAXParser"
+},
+{
+  "name":"javax.xml.parsers.SAXParserFactory"
+},
+{
+  "name":"jdk.internal.misc.Unsafe"
+},
+{
+  "name":"malli.core.AST"
+},
+{
+  "name":"malli.core.Cached"
+},
+{
+  "name":"malli.core.DistributiveSchema"
+},
+{
+  "name":"malli.core.EntryParser"
+},
+{
+  "name":"malli.core.EntrySchema"
+},
+{
+  "name":"malli.core.FunctionSchema"
+},
+{
+  "name":"malli.core.IntoSchema"
+},
+{
+  "name":"malli.core.LensSchema"
+},
+{
+  "name":"malli.core.ParserInfo"
+},
+{
+  "name":"malli.core.RefSchema"
+},
+{
+  "name":"malli.core.RegexSchema"
+},
+{
+  "name":"malli.core.Schema"
+},
+{
+  "name":"malli.core.Tag"
+},
+{
+  "name":"malli.core.Tags"
+},
+{
+  "name":"malli.core.Transformer"
+},
+{
+  "name":"malli.core.Walker"
+},
+{
+  "name":"malli.core__init"
+},
+{
+  "name":"malli.error__init"
+},
+{
+  "name":"malli.impl.regex.Cache"
+},
+{
+  "name":"malli.impl.regex.CacheEntry"
+},
+{
+  "name":"malli.impl.regex.CheckDriver"
+},
+{
+  "name":"malli.impl.regex.Driver"
+},
+{
+  "name":"malli.impl.regex.ExplanationDriver"
+},
+{
+  "name":"malli.impl.regex.ICache"
+},
+{
+  "name":"malli.impl.regex.IExplanationDriver"
+},
+{
+  "name":"malli.impl.regex.IParseDriver"
+},
+{
+  "name":"malli.impl.regex.IValidationDriver"
+},
+{
+  "name":"malli.impl.regex.ParseDriver"
+},
+{
+  "name":"malli.impl.regex__init"
+},
+{
+  "name":"malli.impl.util__init"
+},
+{
+  "name":"malli.json_schema.JsonSchema"
+},
+{
+  "name":"malli.json_schema__init"
+},
+{
+  "name":"malli.registry.Registry"
+},
+{
+  "name":"malli.registry__init"
+},
+{
+  "name":"malli.sci__init"
+},
+{
+  "name":"malli.util__init"
+},
+{
+  "name":"next.jdbc.connection__init"
+},
+{
+  "name":"next.jdbc.default_options.DefaultOptions"
+},
+{
+  "name":"next.jdbc.default_options__init"
+},
+{
+  "name":"next.jdbc.prepare.SettableParameter"
+},
+{
+  "name":"next.jdbc.prepare__init"
+},
+{
+  "name":"next.jdbc.protocols.Connectable"
+},
+{
+  "name":"next.jdbc.protocols.Executable"
+},
+{
+  "name":"next.jdbc.protocols.Preparable"
+},
+{
+  "name":"next.jdbc.protocols.Sourceable"
+},
+{
+  "name":"next.jdbc.protocols.Transactable"
+},
+{
+  "name":"next.jdbc.protocols__init"
+},
+{
+  "name":"next.jdbc.result_set.ArrayResultSetBuilder"
+},
+{
+  "name":"next.jdbc.result_set.DatafiableRow"
+},
+{
+  "name":"next.jdbc.result_set.InspectableMapifiedResultSet"
+},
+{
+  "name":"next.jdbc.result_set.MapResultSetBuilder"
+},
+{
+  "name":"next.jdbc.result_set.MapifiedResultSet"
+},
+{
+  "name":"next.jdbc.result_set.ReadableColumn"
+},
+{
+  "name":"next.jdbc.result_set.ResultSetBuilder"
+},
+{
+  "name":"next.jdbc.result_set.RowBuilder"
+},
+{
+  "name":"next.jdbc.result_set__init"
+},
+{
+  "name":"next.jdbc.sql.builder__init"
+},
+{
+  "name":"next.jdbc.sql__init"
+},
+{
+  "name":"next.jdbc.sql_logging.SQLLogging"
+},
+{
+  "name":"next.jdbc.sql_logging__init"
+},
+{
+  "name":"next.jdbc.transaction__init"
+},
+{
+  "name":"next.jdbc__init"
+},
+{
+  "name":"no.en.core__init"
+},
+{
+  "name":"org.apache.commons.codec.binary.Base64"
+},
+{
+  "name":"org.apache.commons.io.IOUtils"
+},
+{
+  "name":"org.apache.commons.logging.LogFactory"
+},
+{
+  "name":"org.apache.commons.logging.impl.Jdk14Logger",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.String"] }, {"name":"setLogFactory","parameterTypes":["org.apache.commons.logging.LogFactory"] }]
+},
+{
+  "name":"org.apache.commons.logging.impl.Log4JLogger"
+},
+{
+  "name":"org.apache.commons.logging.impl.LogFactoryImpl",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"org.apache.commons.logging.impl.WeakHashtable",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"org.apache.http.Consts"
+},
+{
+  "name":"org.apache.http.Header"
+},
+{
+  "name":"org.apache.http.HeaderIterator"
+},
+{
+  "name":"org.apache.http.HttpEntity"
+},
+{
+  "name":"org.apache.http.HttpEntityEnclosingRequest"
+},
+{
+  "name":"org.apache.http.HttpHost"
+},
+{
+  "name":"org.apache.http.HttpRequestInterceptor"
+},
+{
+  "name":"org.apache.http.HttpResponse"
+},
+{
+  "name":"org.apache.http.HttpResponseInterceptor"
+},
+{
+  "name":"org.apache.http.ProtocolException"
+},
+{
+  "name":"org.apache.http.auth.AuthScope"
+},
+{
+  "name":"org.apache.http.auth.NTCredentials"
+},
+{
+  "name":"org.apache.http.auth.UsernamePasswordCredentials"
+},
+{
+  "name":"org.apache.http.client.CookieStore"
+},
+{
+  "name":"org.apache.http.client.CredentialsProvider"
+},
+{
+  "name":"org.apache.http.client.HttpRequestRetryHandler"
+},
+{
+  "name":"org.apache.http.client.RedirectStrategy"
+},
+{
+  "name":"org.apache.http.client.cache.HttpCacheContext"
+},
+{
+  "name":"org.apache.http.client.config.CookieSpecs"
+},
+{
+  "name":"org.apache.http.client.config.RequestConfig"
+},
+{
+  "name":"org.apache.http.client.methods.CloseableHttpResponse"
+},
+{
+  "name":"org.apache.http.client.methods.HttpDelete"
+},
+{
+  "name":"org.apache.http.client.methods.HttpEntityEnclosingRequestBase"
+},
+{
+  "name":"org.apache.http.client.methods.HttpGet"
+},
+{
+  "name":"org.apache.http.client.methods.HttpHead"
+},
+{
+  "name":"org.apache.http.client.methods.HttpOptions"
+},
+{
+  "name":"org.apache.http.client.methods.HttpPatch"
+},
+{
+  "name":"org.apache.http.client.methods.HttpPost"
+},
+{
+  "name":"org.apache.http.client.methods.HttpPut"
+},
+{
+  "name":"org.apache.http.client.methods.HttpRequestBase"
+},
+{
+  "name":"org.apache.http.client.methods.HttpUriRequest"
+},
+{
+  "name":"org.apache.http.client.protocol.HttpClientContext"
+},
+{
+  "name":"org.apache.http.client.utils.URIUtils"
+},
+{
+  "name":"org.apache.http.config.ConnectionConfig"
+},
+{
+  "name":"org.apache.http.config.Registry"
+},
+{
+  "name":"org.apache.http.config.RegistryBuilder"
+},
+{
+  "name":"org.apache.http.config.SocketConfig"
+},
+{
+  "name":"org.apache.http.conn.HttpClientConnectionManager"
+},
+{
+  "name":"org.apache.http.conn.routing.HttpRoutePlanner"
+},
+{
+  "name":"org.apache.http.conn.socket.PlainConnectionSocketFactory"
+},
+{
+  "name":"org.apache.http.conn.ssl.DefaultHostnameVerifier"
+},
+{
+  "name":"org.apache.http.conn.ssl.NoopHostnameVerifier"
+},
+{
+  "name":"org.apache.http.conn.ssl.SSLConnectionSocketFactory"
+},
+{
+  "name":"org.apache.http.conn.ssl.SSLContexts"
+},
+{
+  "name":"org.apache.http.conn.ssl.TrustStrategy"
+},
+{
+  "name":"org.apache.http.cookie.ClientCookie"
+},
+{
+  "name":"org.apache.http.cookie.CookieOrigin"
+},
+{
+  "name":"org.apache.http.cookie.CookieSpec"
+},
+{
+  "name":"org.apache.http.cookie.CookieSpecProvider"
+},
+{
+  "name":"org.apache.http.entity.BufferedHttpEntity"
+},
+{
+  "name":"org.apache.http.entity.ByteArrayEntity"
+},
+{
+  "name":"org.apache.http.entity.ContentType"
+},
+{
+  "name":"org.apache.http.entity.FileEntity"
+},
+{
+  "name":"org.apache.http.entity.InputStreamEntity"
+},
+{
+  "name":"org.apache.http.entity.StringEntity"
+},
+{
+  "name":"org.apache.http.entity.mime.HttpMultipartMode"
+},
+{
+  "name":"org.apache.http.entity.mime.MultipartEntityBuilder"
+},
+{
+  "name":"org.apache.http.entity.mime.content.ByteArrayBody"
+},
+{
+  "name":"org.apache.http.entity.mime.content.ContentBody"
+},
+{
+  "name":"org.apache.http.entity.mime.content.FileBody"
+},
+{
+  "name":"org.apache.http.entity.mime.content.InputStreamBody"
+},
+{
+  "name":"org.apache.http.entity.mime.content.StringBody"
+},
+{
+  "name":"org.apache.http.impl.client.BasicCookieStore"
+},
+{
+  "name":"org.apache.http.impl.client.BasicCredentialsProvider"
+},
+{
+  "name":"org.apache.http.impl.client.CloseableHttpClient"
+},
+{
+  "name":"org.apache.http.impl.client.DefaultRedirectStrategy"
+},
+{
+  "name":"org.apache.http.impl.client.HttpClientBuilder"
+},
+{
+  "name":"org.apache.http.impl.client.HttpClients"
+},
+{
+  "name":"org.apache.http.impl.client.LaxRedirectStrategy"
+},
+{
+  "name":"org.apache.http.impl.client.cache.CacheConfig"
+},
+{
+  "name":"org.apache.http.impl.client.cache.CachingHttpClientBuilder"
+},
+{
+  "name":"org.apache.http.impl.conn.BasicHttpClientConnectionManager"
+},
+{
+  "name":"org.apache.http.impl.conn.DefaultProxyRoutePlanner"
+},
+{
+  "name":"org.apache.http.impl.conn.PoolingHttpClientConnectionManager"
+},
+{
+  "name":"org.apache.http.impl.conn.SystemDefaultRoutePlanner"
+},
+{
+  "name":"org.apache.http.impl.cookie.BasicClientCookie2"
+},
+{
+  "name":"org.apache.http.impl.cookie.BrowserCompatSpecFactory"
+},
+{
+  "name":"org.apache.http.impl.nio.DefaultHttpClientIODispatch"
+},
+{
+  "name":"org.apache.http.impl.nio.client.CloseableHttpAsyncClient"
+},
+{
+  "name":"org.apache.http.impl.nio.client.HttpAsyncClientBuilder"
+},
+{
+  "name":"org.apache.http.impl.nio.client.HttpAsyncClients"
+},
+{
+  "name":"org.apache.http.impl.nio.conn.PoolingNHttpClientConnectionManager"
+},
+{
+  "name":"org.apache.http.impl.nio.reactor.DefaultConnectingIOReactor"
+},
+{
+  "name":"org.apache.http.impl.nio.reactor.IOReactorConfig"
+},
+{
+  "name":"org.apache.http.message.BasicHeader"
+},
+{
+  "name":"org.apache.http.nio.conn.NHttpClientConnectionManager"
+},
+{
+  "name":"org.apache.http.nio.conn.NoopIOSessionStrategy"
+},
+{
+  "name":"org.apache.http.nio.conn.ssl.SSLIOSessionStrategy"
+},
+{
+  "name":"org.apache.http.nio.protocol.HttpAsyncRequestExecutor"
+},
+{
+  "name":"org.apache.http.protocol.BasicHttpContext"
+},
+{
+  "name":"org.slf4j.LoggerFactory"
+},
+{
+  "name":"org.sqlite.JDBC"
+},
+{
+  "name":"org.xml.sax.Attributes"
+},
+{
+  "name":"org.xml.sax.ContentHandler"
+},
+{
+  "name":"org.xml.sax.SAXException"
+},
+{
+  "name":"potemkin.collections.PotemkinMap"
+},
+{
+  "name":"potemkin.collections.PotemkinMeta"
+},
+{
+  "name":"potemkin.collections__init"
+},
+{
+  "name":"potemkin.macros__init"
+},
+{
+  "name":"potemkin.namespaces__init"
+},
+{
+  "name":"potemkin.types.PotemkinType"
+},
+{
+  "name":"potemkin.types__init"
+},
+{
+  "name":"potemkin.utils__init"
+},
+{
+  "name":"potemkin.walk__init"
+},
+{
+  "name":"potemkin__init"
+},
+{
+  "name":"riddley.Util"
+},
+{
+  "name":"riddley.compiler__init"
+},
+{
+  "name":"riddley.walk__init"
+},
+{
+  "name":"ring.util.codec__init"
+},
+{
+  "name":"sci.core__init"
+},
+{
+  "name":"sci.ctx_store__init"
+},
+{
+  "name":"sci.impl.Reflector"
+},
+{
+  "name":"sci.impl.analyzer.FnBody"
+},
+{
+  "name":"sci.impl.analyzer__init"
+},
+{
+  "name":"sci.impl.callstack__init"
+},
+{
+  "name":"sci.impl.cljs__init"
+},
+{
+  "name":"sci.impl.copy_vars__init"
+},
+{
+  "name":"sci.impl.core_protocols__init"
+},
+{
+  "name":"sci.impl.deftype.SciPrintMethod"
+},
+{
+  "name":"sci.impl.deftype.SciType"
+},
+{
+  "name":"sci.impl.deftype__init"
+},
+{
+  "name":"sci.impl.destructure__init"
+},
+{
+  "name":"sci.impl.doseq_macro__init"
+},
+{
+  "name":"sci.impl.evaluator__init"
+},
+{
+  "name":"sci.impl.faster__init"
+},
+{
+  "name":"sci.impl.fns__init"
+},
+{
+  "name":"sci.impl.for_macro__init"
+},
+{
+  "name":"sci.impl.hierarchies__init"
+},
+{
+  "name":"sci.impl.interop__init"
+},
+{
+  "name":"sci.impl.interpreter__init"
+},
+{
+  "name":"sci.impl.io__init"
+},
+{
+  "name":"sci.impl.load__init"
+},
+{
+  "name":"sci.impl.macroexpand__init"
+},
+{
+  "name":"sci.impl.macros__init"
+},
+{
+  "name":"sci.impl.multimethods__init"
+},
+{
+  "name":"sci.impl.namespaces$memfn",
+  "queryAllPublicConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sci.impl.namespaces$time",
+  "queryAllPublicConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sci.impl.namespaces__init"
+},
+{
+  "name":"sci.impl.opts.Ctx"
+},
+{
+  "name":"sci.impl.opts.Env"
+},
+{
+  "name":"sci.impl.opts__init"
+},
+{
+  "name":"sci.impl.parser__init"
+},
+{
+  "name":"sci.impl.protocols__init"
+},
+{
+  "name":"sci.impl.proxy__init"
+},
+{
+  "name":"sci.impl.read__init"
+},
+{
+  "name":"sci.impl.records.SciPrintMethod"
+},
+{
+  "name":"sci.impl.records.SciRecord"
+},
+{
+  "name":"sci.impl.records__init"
+},
+{
+  "name":"sci.impl.reify__init"
+},
+{
+  "name":"sci.impl.resolve__init"
+},
+{
+  "name":"sci.impl.types.ConstantNode"
+},
+{
+  "name":"sci.impl.types.Eval"
+},
+{
+  "name":"sci.impl.types.EvalForm"
+},
+{
+  "name":"sci.impl.types.HasName"
+},
+{
+  "name":"sci.impl.types.IBox"
+},
+{
+  "name":"sci.impl.types.IReified"
+},
+{
+  "name":"sci.impl.types.Reified"
+},
+{
+  "name":"sci.impl.types.SciTypeInstance"
+},
+{
+  "name":"sci.impl.types.Stack"
+},
+{
+  "name":"sci.impl.types__init"
+},
+{
+  "name":"sci.impl.unrestrict__init"
+},
+{
+  "name":"sci.impl.utils__init"
+},
+{
+  "name":"sci.impl.vars.DynVar"
+},
+{
+  "name":"sci.impl.vars.Frame"
+},
+{
+  "name":"sci.impl.vars.IVar"
+},
+{
+  "name":"sci.impl.vars.SciUnbound"
+},
+{
+  "name":"sci.impl.vars.TBox"
+},
+{
+  "name":"sci.impl.vars__init"
+},
+{
+  "name":"sci.lang.IVar"
+},
+{
+  "name":"sci.lang.Namespace"
+},
+{
+  "name":"sci.lang.Type"
+},
+{
+  "name":"sci.lang.Var"
+},
+{
+  "name":"sci.lang__init"
+},
+{
+  "name":"slingshot.slingshot__init"
+},
+{
+  "name":"slingshot.support__init"
+},
+{
+  "name":"sun.security.provider.NativePRNG",
+  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"<init>","parameterTypes":["java.security.SecureRandomParameters"] }]
+},
+{
+  "name":"sun.security.provider.SHA",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"talltale.core__init"
+},
+{
+  "name":"talltale.macros__init"
+},
+{
+  "name":"talltale.samples__init"
+},
+{
+  "name":"taoensso.encore.Counter"
+},
+{
+  "name":"taoensso.encore.DefaultTimeoutImpl"
+},
+{
+  "name":"taoensso.encore.ITimeoutFuture"
+},
+{
+  "name":"taoensso.encore.ITimeoutImpl"
+},
+{
+  "name":"taoensso.encore.LightAtom"
+},
+{
+  "name":"taoensso.encore.LimitEntry"
+},
+{
+  "name":"taoensso.encore.LimitHits"
+},
+{
+  "name":"taoensso.encore.LimitSpec"
+},
+{
+  "name":"taoensso.encore.Pred"
+},
+{
+  "name":"taoensso.encore.ReseedingSRNG"
+},
+{
+  "name":"taoensso.encore.RollingCounter"
+},
+{
+  "name":"taoensso.encore.SimpleCacheEntry"
+},
+{
+  "name":"taoensso.encore.Swapped"
+},
+{
+  "name":"taoensso.encore.TickedCacheEntry"
+},
+{
+  "name":"taoensso.encore.TimeoutFuture"
+},
+{
+  "name":"taoensso.encore.Tup2"
+},
+{
+  "name":"taoensso.encore.Tup3"
+},
+{
+  "name":"taoensso.encore__init"
+},
+{
+  "name":"taoensso.timbre.appenders.core__init"
+},
+{
+  "name":"taoensso.timbre__init"
+},
+{
+  "name":"taoensso.truss.impl.WrappedError"
+},
+{
+  "name":"taoensso.truss.impl__init"
+},
+{
+  "name":"taoensso.truss__init"
+},
+{
+  "name":"weavejester.dependency.DependencyGraph"
+},
+{
+  "name":"weavejester.dependency.DependencyGraphUpdate"
+},
+{
+  "name":"weavejester.dependency.MapDependencyGraph"
+},
+{
+  "name":"weavejester.dependency__init"
+},
+{
+  "name":"ai.brainyard.agent.core.agent.Agent",
+  "allPublicMethods":true,
+  "allPublicFields":true
+}
+]

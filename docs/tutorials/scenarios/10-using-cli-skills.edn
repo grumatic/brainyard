@@ -1,0 +1,76 @@
+;; docs/tutorials/scenarios/10-using-cli-skills.edn
+;;
+;; Showcases SKILL usage in `by`: discover the installed skills, then let the
+;; CoAct agent invoke a CLI-backed skill as a tool (it runs as a background
+;; task) and use the result.
+;;
+;; Picks `find-docs` (fetch up-to-date library documentation via Context7) as
+;; the demo skill ON PURPOSE: it needs NO credentials and returns only PUBLIC
+;; documentation, so the recorded cast contains nothing sensitive — safe to
+;; commit. (An aws-cli/cost or heka skill would put real account/financial data
+;; in the cast.)
+;;
+;; PREREQUISITES:
+;;   - Turn 1 (list skills) is offline / credential-free.
+;;   - Turn 2 invokes `skill$find-docs`, which fetches PUBLIC docs over the
+;;     network (Context7) — no API keys, no secrets in the output.
+;;   - Skills install via `npx skills` (~/.claude, ~/.agents) or live under
+;;     .brainyard/skills. A skill call is deferred-tasked: it runs as `task-NNN`
+;;     in the background and the agent blocks on `task$wait`, then uses the
+;;     result.
+;;
+;; Record with `bb tui` (source) or the native `by` (bb install:ata).
+{:id          "10-using-cli-skills"
+ :title       "Using CLI skills — discover, invoke, use"
+ :description "Discover the installed skills, then have the CoAct agent invoke a
+               credential-free CLI skill (skill$find-docs) — it runs as a
+               background task — to fetch PUBLIC library docs and use them. No
+               secrets, fully reproducible. Recorded live against
+               claude-code/opus."
+
+ :walkthrough
+ "Skills are reusable, prompt-driven capabilities registered alongside tools;
+  many wrap a real CLI or external service. The agent calls one as
+  `skill$<name>`, and a typed `/skill$<name> <text>` shows its description.
+
+  **Turn 1 — discover.** Asked to list skills, the agent calls `list-tools` with
+  `{:type \"skill\"}` and renders the catalog grouped by category (development,
+  docs, AWS, GitHub, security, …).
+
+  **Turn 2 — invoke a CLI skill.** Asked to fetch library docs, the agent calls
+  `skill$find-docs`. The skill is deferred-tasked — it runs as `task-NNN` in the
+  background while the agent holds the turn with `task$wait` — then the agent
+  summarizes the returned (public) documentation. Nothing sensitive enters the
+  recording."
+
+ :terminal    {:cols 110 :rows 34 :title "brainyard tutorial — CLI skills"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 120
+
+ :launch
+ {:binary "bb tui"
+  :args   ["-a" "coact-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-10-skills"}}
+
+ :preamble
+ [{:type :narrate
+   :text "# Skills: discover them, then let the agent run one as a tool"
+   :pause-ms 2200}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Discover — list the installed skills"
+   :prompt "List the available skills, grouped by category."
+   :expect {:contains ["find-docs"]}
+   :settle {:timeout-secs 180}}
+
+  {:id    :ch2
+   :label "Invoke a CLI skill — fetch public docs (runs as a task)"
+   :prompt "Call skill$find-docs directly as a tool to fetch the documentation for the React useState hook, then summarize how to use it: its signature, what it returns, and a tiny example."
+   :expect {:contains ["skill$find-docs"]}
+   :settle {:timeout-secs 300}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

@@ -1,0 +1,83 @@
+;; docs/tutorials/scenarios/09-using-mcp-servers.edn
+;;
+;; Showcases MCP (Model Context Protocol) usage in `by`: enable a configured
+;; server with the `/mcp` slash command, then let the CoAct agent discover and
+;; call that server's tools — search for a page and read one — over the Notion
+;; remote MCP server.
+;;
+;; RECORDING SAFETY: the .cast is committed to the repo, so record only against
+;; PUBLIC / shareable pages. The prompts below deliberately search for a
+;; published/public page (announcement, README, getting-started) and read one —
+;; do NOT record this against confidential pages, and review the cast with
+;; `bb tutorial:play` before committing.
+;;
+;; PREREQUISITES (author-recorded, NOT CI-reproducible):
+;;   - `notion` is one of the built-in seed MCP servers (create-seed-mcp-config),
+;;     bridged through `npx -y mcp-remote https://mcp.notion.com/mcp` (stdio).
+;;   - It is a REMOTE OAUTH server: the first `/mcp notion start` opens a browser
+;;     for Notion authorization (token cached under ~/.mcp-auth). Record on a
+;;     machine that has ALREADY authorized it so the cast connects instantly.
+;;   - Needs Node/npx + network. Results depend on the author's workspace; adjust
+;;     the search term to a public page that exists there.
+;;
+;; Record with `bb tui` (source) or the native `by` (bb install:ata).
+{:id          "09-using-mcp-servers"
+ :title       "Using MCP servers — search & read over a remote server"
+ :description "Enable a configured MCP server with the /mcp slash command, then
+               let the CoAct agent discover and call its tools — search for a
+               public page and read one — recorded live against claude-code/opus
+               over the Notion remote MCP server."
+
+ :walkthrough
+ "`by` ships a set of built-in MCP servers (`create-seed-mcp-config`), merged
+  under `config.edn [:mcp :servers]`. Each is disabled until you turn it on.
+
+  **Setup — enable the server.** `/mcp notion start` connects the `notion`
+  server (bridged via `mcp-remote`; OAuth on first connect). Its tools
+  auto-register as `mcp$notion$<tool>` and become callable by the agent.
+
+  **Turn 1 — search via an MCP tool.** Asked to find a public page, the CoAct
+  agent calls `mcp$notion$notion-search` with a `:query` and lists the matching
+  pages with their URLs.
+
+  **Turn 2 — read one page.** Asked to open and summarize one of them, the agent
+  first lists the server's tools (a `list-tools` filtered to `mcp$notion$…`) to
+  find the right one, then calls `mcp$notion$notion-fetch` with the page `:id`
+  and summarizes the content. Discover the tool, call it by id."
+
+ :terminal    {:cols 110 :rows 34 :title "brainyard tutorial — MCP servers"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 120
+
+ :launch
+ {:binary "bb tui"
+  :args   ["-a" "coact-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-09-mcp"}}
+
+ :preamble
+ [{:type :narrate
+   :text "# MCP: enable a server, then search & read with its tools"
+   :pause-ms 2200}
+  ;; Enable the configured `notion` server. Slash commands need a SEPARATE C-m
+  ;; (plain Enter is eaten by the autocomplete popup). First connect runs the
+  ;; mcp-remote OAuth flow; on an already-authorized machine it connects fast.
+  {:type :keys :send "/mcp notion start" :pause-ms 800}
+  {:type :keys :send "C-m"               :pause-ms 6000}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Search — find pages via an MCP tool"
+   :prompt "Use the notion MCP tools to search my workspace for a published, public-facing page (an announcement, README, or getting-started doc) and list the matches with their URLs."
+   :expect {:contains ["notion-search"]}
+   :settle {:timeout-secs 240}}
+
+  {:id    :ch2
+   :label "Read — open and summarize one public page"
+   :prompt "Open one of those public pages and summarize its contents. If you are unsure which tool to use, list the mcp$notion$ tools first, then fetch the page by its id."
+   :expect {:contains ["notion-fetch"]}
+   :settle {:timeout-secs 300}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

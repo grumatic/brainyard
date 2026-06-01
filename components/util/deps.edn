@@ -1,0 +1,16 @@
+{:paths ["src" "resources"]
+ :deps {inflections/inflections {:mvn/version "0.13.2"}
+        ;; Override noencore 0.3.6 (from inflections) to fix parse-long/parse-double
+        ;; redefinition warnings on Clojure 1.12+
+        noencore/noencore {:mvn/version "0.3.8"}
+        com.taoensso/encore {:mvn/version "3.131.0"}
+        com.taoensso/timbre {:mvn/version "6.6.1"}
+        ai.brainyard/mulog {:local/root "../mulog"}}
+ :aliases {:test {:extra-paths ["test"]
+                  ;; talltale is not actually called at runtime — the require
+                  ;; in naming.cljc is dead weight (replaced by built-in word
+                  ;; lists at lines 14-44). Kept available under :test in case
+                  ;; future test fixtures want a Faker-style helper. Removing
+                  ;; from runtime deps shaves ~2 MB and several hundred
+                  ;; reflection entries off the native-image build (design §5).
+                  :extra-deps {talltale/talltale {:mvn/version "0.5.14"}}}}}

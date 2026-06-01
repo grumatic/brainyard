@@ -1,0 +1,6 @@
+{:paths ["src" "resources"]
+ :deps {nrepl/nrepl {:mvn/version "1.3.0"}
+        integrant/integrant {:mvn/version "0.10.0"}
+        ai.brainyard/mulog {:local/root "../mulog"}
+        ai.brainyard/util {:local/root "../util"}}
+ :aliases {:test {:extra-paths ["test"]}}}

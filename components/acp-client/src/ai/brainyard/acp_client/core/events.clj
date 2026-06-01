@@ -1,0 +1,170 @@
+;; Copyright (c) 2024-2026 Grumatic, Inc.
+;; SPDX-License-Identifier: Apache-2.0
+;; Licensed under the Apache License, Version 2.0 (the "License"); you may
+;; not use this file except in compliance with the License. See LICENSE at
+;; the repository root and CONTRIBUTING.md for contribution terms.
+
+(ns ai.brainyard.acp-client.core.events
+  "Pure translation: ACP `session/update` notification payloads →
+   brainyard hook event descriptors.
+
+   This namespace is **pure data**. It does not call into
+   `agent.core.hooks/fire!` — that would create an unwanted dep from
+   acp-client → agent. Instead, the dispatcher in `client.clj`
+   collects descriptors and hands them to a caller-supplied
+   `:on-event` callback. The Phase 5 `acp-agent` defagent provides a
+   callback that fires real brainyard hooks.
+
+   The translation table mirrors §4.2.1 of docs/acp-design.md.
+
+   Each translation returns either:
+     - `nil` if no event is fired (e.g. unknown sessionUpdate variant)
+     - a map  `{:event ::keyword, :data {…}}`
+
+   Stop-reason translation (driven from session/prompt's response,
+   not session/update) is exposed separately as `translate-stop-reason`."
+  (:require [clojure.string :as str]))
+
+;; =============================================================================
+;; Hook event keywords (verbatim from agent.core.hooks event catalog)
+;;
+;; We do NOT require agent.core.hooks here — keys are duplicated as
+;; constants so this namespace stays free of agent deps. If the catalog
+;; changes upstream, an integration test against the agent's catalog
+;; would catch a drift. Phase 5 wires that test up.
+;; =============================================================================
+
+(def ^:const event-dspy-chunk        :agent.dspy-action/chunk)
+(def ^:const event-tool-use-pre      :agent.tool-use/pre)
+(def ^:const event-tool-use-post     :agent.tool-use/post)
+(def ^:const event-tool-calls-pre    :agent.tool-calls/pre)
+(def ^:const event-tool-calls-post   :agent.tool-calls/post)
+(def ^:const event-todo-updated      :todo/updated)
+(def ^:const event-iteration-pre     :agent.iteration/pre)
+(def ^:const event-iteration-post    :agent.iteration/post)
+(def ^:const event-iteration-exhausted :agent.iteration/exhausted)
+
+;; =============================================================================
+;; Helpers
+;; =============================================================================
+
+(defn- content-block-text
+  "Extract text from an ACP content block, joining if it's a vector.
+   Returns \"\" when the block has no text content."
+  [block]
+  (cond
+    (nil? block)              ""
+    (string? block)           block
+    (and (map? block)
+         (= "text" (:type block))) (or (:text block) "")
+    (vector? block)           (->> block (map content-block-text) (str/join))
+    :else                     ""))
+
+;; =============================================================================
+;; session/update translation
+;; =============================================================================
+
+(defmulti translate-update
+  "Dispatch on `:sessionUpdate` discriminant. Returns nil for variants
+   that don't map to a single event (e.g. tool_call_update which is
+   merged into the in-progress tool_call's hook data by the dispatcher)."
+  (fn [params] (:sessionUpdate params)))
+
+(defmethod translate-update :default [_] nil)
+
+(defmethod translate-update "agent_message_chunk"
+  [{:keys [content sessionId]}]
+  (let [text (content-block-text content)]
+    {:event event-dspy-chunk
+     :data  {:chunk      text
+             :session-id sessionId}}))
+
+(defmethod translate-update "agent_thought_chunk"
+  [{:keys [content sessionId]}]
+  (let [text (content-block-text content)]
+    {:event event-dspy-chunk
+     :data  {:chunk      text
+             :session-id sessionId
+             :meta       {:kind :thought}}}))
+
+(defmethod translate-update "plan"
+  [{:keys [entries sessionId]}]
+  {:event event-todo-updated
+   :data  {:todo-list  (mapv (fn [e]
+                               {:content (:content e)
+                                :status  (or (:status e) "pending")
+                                :priority (:priority e)})
+                             entries)
+           :session-id sessionId}})
+
+(defmethod translate-update "tool_call"
+  [{:keys [toolCall sessionId]}]
+  ;; First time we see a tool call — fire :pre. Subsequent updates
+  ;; (status: completed | failed) fire :post via tool_call_update.
+  (let [{:keys [toolCallId title kind status rawInput]} toolCall]
+    {:event event-tool-use-pre
+     :data  {:tool-call-id toolCallId
+             :tool-name    (or title (some-> kind name) "tool")
+             :tool-args    (or rawInput {})
+             :status       (or status "in_progress")
+             :session-id   sessionId
+             :observer?    true}}))
+
+(defmethod translate-update "tool_call_update"
+  [{:keys [toolCall sessionId]}]
+  (let [{:keys [toolCallId title kind status content]} toolCall]
+    (case status
+      ("completed" "failed")
+      {:event event-tool-use-post
+       :data  {:tool-call-id toolCallId
+               :tool-name    (or title (some-> kind name) "tool")
+               :result       (cond-> {:status status}
+                               (= status "failed")    (assoc :error content)
+                               (= status "completed") (assoc :content content))
+               :session-id   sessionId}}
+
+      ;; status pending or in_progress (or absent) — observer-only update,
+      ;; no hook fired. The dispatcher may still surface progress to UIs
+      ;; via the raw notification.
+      nil)))
+
+;; =============================================================================
+;; Stop-reason translation
+;;
+;; Called when the session/prompt response arrives. One ACP turn maps
+;; to one iteration boundary (open decision 6 from §9.2).
+;; =============================================================================
+
+(defn translate-stop-reason
+  "Return a hook event descriptor for an end-of-turn signal."
+  [stop-reason session-id]
+  (case stop-reason
+    "end_turn"
+    {:event event-iteration-post
+     :data  {:goal-achieved true :session-id session-id :stop-reason stop-reason}}
+
+    "cancelled"
+    {:event event-iteration-exhausted
+     :data  {:reason :cancelled :session-id session-id :stop-reason stop-reason}}
+
+    ;; max_tokens, max_turn_requests, refusal — treated as unsuccessful
+    ;; iteration ends; surface as :iteration-exhausted with the reason.
+    ("max_tokens" "max_turn_requests" "refusal")
+    {:event event-iteration-exhausted
+     :data  {:reason     (keyword stop-reason)
+             :session-id session-id
+             :stop-reason stop-reason}}
+
+    ;; Unknown stop reason — caller decides what to do.
+    nil))
+
+;; =============================================================================
+;; Iteration boundary helpers (called by the session module on prompt!)
+;; =============================================================================
+
+(defn iteration-pre-event
+  "Built when a new prompt starts."
+  [session-id prompt]
+  {:event event-iteration-pre
+   :data  {:session-id session-id
+           :prompt     prompt}})

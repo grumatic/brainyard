@@ -1,0 +1,55 @@
+;; docs/tutorials/scenarios/02-tools-and-skills.edn
+;;
+;; Showcases the CoAct agent's code + tool channels against a real model.
+;; Uses the `bb tui` JVM launch mode (not the native `by`) because the env
+;; hook that honors BRAINYARD_SESSION_ID ships in source — rebuild `by`
+;; (bb install:ata) to record this against the native binary instead.
+{:id          "02-tools-and-skills"
+ :title       "CoAct in action — code & tools from `by`"
+ :description "The CoAct agent answers by emitting Clojure that runs in the
+               sandbox and by calling a built-in tool — recorded live against
+               claude-code/opus."
+
+ :walkthrough
+ "The CoAct agent answers through two of its channels — one per turn.
+
+  **Turn 1 — code channel.** Asked to evaluate `(reduce + (range 1 101))`, the
+  agent emits a Clojure block that runs in the SCI sandbox and reports the
+  result (5050). Computation happens in-process, not through a tool.
+
+  **Turn 2 — tool channel.** Asked to read part of `deps.edn`, the same agent
+  instead calls the built-in `read-file` tool with a line range and names an
+  alias it finds. Same agent, different channel — code for computing, tools for
+  I/O."
+
+ :terminal    {:cols 100 :rows 32 :title "brainyard tutorial — tools & skills"}
+ :idle-time-limit 2.5
+ ;; JVM cold start + real LLM turns — be generous.
+ :startup-timeout-secs 120
+
+ :launch
+ {:binary "bb tui"
+  :args   ["-a" "coact-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-02-tools"}}
+
+ :preamble
+ [{:type :narrate :text "# CoAct: answers via Clojure code AND tool calls" :pause-ms 2000}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Code channel — evaluate Clojure in the sandbox"
+   :prompt "Evaluate (reduce + (range 1 101)) in Clojure and tell me the result."
+   :expect {:contains ["5050"]}
+   :settle {:timeout-secs 180}}
+
+  {:id    :ch2
+   :label "Tool channel — read a project file"
+   :prompt "Use a tool to read the first 12 lines of deps.edn, then name one alias you see."
+   :expect {:contains [":aliases"]}
+   :settle {:timeout-secs 180}}]
+
+ ;; Type the slash command, then submit with C-m (Enter is eaten by the picker).
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

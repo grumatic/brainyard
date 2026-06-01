@@ -1,0 +1,84 @@
+;; docs/tutorials/scenarios/12-configuring-brainyard.edn
+;;
+;; Showcases the CONFIG-AGENT — the conversational hub for brainyard's
+;; config.edn (permissions, MCP servers, runtime knobs, agent defaults). Its
+;; value is the SAFE-WRITE pipeline: read → diff → confirm → snapshot → write.
+;;
+;; RECORDING SAFETY: config-agent reads/writes a REAL config.edn and can surface
+;; secrets. To keep the committed cast clean we (a) run inside an isolated /tmp
+;; git workspace so writes target the THROWAWAY project's
+;; <workspace>/.brainyard/config.edn — never the user's ~/.brainyard — and
+;; (b) scope every prompt to a SINGLE non-secret runtime knob and tell the agent
+;; not to print any secrets/tokens. Review with `bb tutorial:play` before
+;; committing.
+{:id          "12-configuring-brainyard"
+ :title       "Configuring brainyard with the config-agent"
+ :description "The config-agent — the conversational hub for brainyard's
+               config.edn — changes a non-secret runtime knob at PROJECT scope
+               inside an isolated /tmp workspace, showing its safe-write pipeline
+               (read → diff → confirm → snapshot → write) and the stable
+               `Wrote to project` / `Snapshot:` handoff lines. Recorded live
+               against claude-code/opus; never touches the user's real config."
+
+ :walkthrough
+ "`config.edn` drives brainyard's permissions, MCP servers, runtime knobs, and
+  per-agent defaults. The **config-agent** is the conversational front-end to it:
+  you describe the change in English, and it persists the EDN edit through a
+  **safe-write pipeline — read → diff → confirm → snapshot → write** — so every
+  change is reviewable and reversible.
+
+  **Setup (safety).** `by` runs inside an isolated, git-inited /tmp workspace, so
+  PROJECT-scope writes land in that throwaway tree's `.brainyard/config.edn`, not
+  the user's real `~/.brainyard/config.edn`.
+
+  **Turn 1 — inspect a knob.** Asked what the default agent and max-iterations
+  are for this project, the agent reads the effective config and explains the
+  current values (no secrets printed).
+
+  **Turn 2 — change it safely.** Asked to set the project's default agent to
+  `plan-agent` and `max-iterations` to 40, the agent shows the **diff** for just
+  those keys, snapshots, then writes — printing `Wrote to project (…)` and
+  `Snapshot: <path>`. The change is scoped to this project; user config is
+  untouched."
+
+ :terminal    {:cols 110 :rows 34 :title "brainyard tutorial — config-agent"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 30
+
+ :launch
+ {:binary "by"
+  :args   ["run" "-a" "config-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-12-config"}}
+
+ ;; Isolated tree so config writes target <workspace>/.brainyard/config.edn.
+ ;; Seed a minimal project config with a couple of non-secret knobs to edit.
+ :workspace
+ {:git-init true
+  :seed
+  [{:path "README.md"
+    :content "# demo-project\n\nA throwaway project used by the brainyard config-agent tutorial.\n"}
+   {:path ".brainyard/config.edn"
+    :content ";; Project-scope brainyard config (demo).\n{:default-agent :coact-agent\n :max-iterations 20}\n"}]}
+
+ :preamble
+ [{:type :narrate
+   :text "# config-agent — change a runtime knob through the safe-write pipeline"
+   :pause-ms 2400}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Inspect — what are this project's agent defaults?"
+   :prompt "For THIS project (project scope), what is the default agent and the max-iterations setting? Read the project config and tell me the current values. Do not print any secrets, API keys, or tokens."
+   :expect {:contains ["max-iterations"]}
+   :settle {:timeout-secs 240}}
+
+  {:id    :ch2
+   :label "Change safely — set default-agent + max-iterations, then persist"
+   :prompt "Set this project's default agent to plan-agent and max-iterations to 40. Target PROJECT scope only — do NOT touch user scope. Show me the diff for just those two keys, then snapshot and persist the change. Proceed and persist without waiting for further confirmation. Don't print any secrets."
+   :expect {:contains ["Wrote to project"]}
+   :settle {:timeout-secs 300}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

@@ -1,0 +1,79 @@
+{:mvn/repos {"my.datomic.com" {:url "https://my.datomic.com/repo"}
+             "vendredi" {:url "https://repository.hellonico.info/repository/hellonico/"}}
+ :aliases
+ {:dev
+  {:extra-paths ["development/src"]
+   :extra-deps {org.clojure/clojure {:mvn/version "1.12.0"}
+                ai.brainyard/util {:local/root "components/util"}
+                ai.brainyard/nats {:local/root "components/nats"}
+                ai.brainyard/datomic {:local/root "components/datomic"}
+                ai.brainyard/pathom {:local/root "components/pathom"}
+                ai.brainyard/minio {:local/root "components/minio"}
+                ai.brainyard/mlflow {:local/root "components/mlflow"}
+                ai.brainyard/sql {:local/root "components/sql"}
+                ai.brainyard/migrat {:local/root "components/migrat"}
+                ai.brainyard/gstreamer {:local/root "components/gstreamer"}
+                ai.brainyard/label-studio {:local/root "components/label-studio"}
+                ai.brainyard/emmy {:local/root "components/emmy"}
+                ai.brainyard/d2l {:local/root "components/d2l"}
+                ai.brainyard/djl {:local/root "components/djl"}
+                ai.brainyard/javacv {:local/root "components/javacv"}
+                ai.brainyard/origami {:local/root "components/origami"}
+                ai.brainyard/ml {:local/root "components/ml"}
+                ;; New infrastructure components
+                ai.brainyard/config {:local/root "components/config"}
+                ai.brainyard/server {:local/root "components/server"}
+                ai.brainyard/blob-store {:local/root "components/blob-store"}
+                ai.brainyard/websocket {:local/root "components/websocket"}
+                ai.brainyard/event {:local/root "components/event"}
+                ai.brainyard/ring-handler {:local/root "components/ring-handler"}
+                ai.brainyard/mulog {:local/root "components/mulog"}
+                ;; Additional components
+                ai.brainyard/agent {:local/root "components/agent"}
+                ai.brainyard/aws-api {:local/root "components/aws-api"}
+                ai.brainyard/aws-client {:local/root "components/aws-client"}
+                ai.brainyard/email {:local/root "components/email"}
+                ai.brainyard/keycloak {:local/root "components/keycloak"}
+                ai.brainyard/prometheus {:local/root "components/prometheus"}
+                ai.brainyard/redis {:local/root "components/redis"}
+                ai.brainyard/slack {:local/root "components/slack"}
+                ;; Electric Clojure
+                ai.brainyard/electric {:local/root "components/electric"}
+                ;; LLM (pure Clojure)
+                ai.brainyard/clj-llm {:local/root "components/clj-llm"}
+                ;; Behavior Tree
+                ai.brainyard/behavior-tree {:local/root "components/behavior-tree"}
+                ;; Memory
+                ai.brainyard/memory {:local/root "components/memory"}
+                ;; Clj-Sandbox (SCI sandbox for code evaluation)
+                ai.brainyard/clj-sandbox {:local/root "components/clj-sandbox"}
+                ;; Clj-Nrepl (loopback nREPL server + client for live-runtime eval)
+                ai.brainyard/clj-nrepl {:local/root "components/clj-nrepl"}
+                ;; Display-block (collapsible scrollback content)
+                ai.brainyard/display-block {:local/root "components/display-block"}
+                ;; Analytics (session PQS, waste detection, cost)
+                ai.brainyard/analytics {:local/root "components/analytics"}
+                ;; Environment detection (providers, executables, sandbox, OS)
+                ai.brainyard/env-detect {:local/root "components/env-detect"}
+                ;; TUI substrate (per docs/simplified-agent-tui-arch-design.md)
+                ai.brainyard/agent-tui-persist {:local/root "components/agent-tui-persist"}
+                ai.brainyard/agent-tui-tmux    {:local/root "components/agent-tui-tmux"}
+                ;; ACP (Agent Client Protocol) — protocol + transport bedrock
+                ai.brainyard/acp {:local/root "components/acp"}
+                ai.brainyard/acp-client {:local/root "components/acp-client"}
+                ;; Bases
+                ai.brainyard/agent-tui {:local/root "bases/agent-tui"}
+                ai.brainyard/agent-web {:local/root "bases/agent-web"}}}
+
+  :test
+  {:extra-paths []}
+
+  :repl
+  {:extra-deps {nrepl/nrepl {:mvn/version "1.3.0"}
+                cider/cider-nrepl {:mvn/version "0.57.0"}}
+   :main-opts ["-m" "nrepl.cmdline"
+               "--middleware" "[cider.nrepl/cider-middleware]"]}
+
+  :poly
+  {:extra-deps {polylith/clj-poly {:mvn/version "0.2.21"}}
+   :main-opts ["-m" "polylith.clj.core.poly-cli.core"]}}}

@@ -1,0 +1,49 @@
+;; docs/tutorials/scenarios/04-exploring-the-codebase.edn
+;;
+;; Walkthrough of the explore-agent: multi-surface, read-mostly codebase
+;; discovery that persists a durable result under
+;; .brainyard/agents/explore-agent/results/ (a gitignored path, so no cleanup
+;; needed). Recorded live against claude-code/opus via the bb tui JVM mode.
+{:id          "04-exploring-the-codebase"
+ :title       "Codebase discovery with the explore-agent"
+ :description "The explore-agent searches the repo, reads excerpts, summarizes
+               the key files, and saves a durable exploration artifact —
+               recorded live against claude-code/opus."
+
+ :walkthrough
+ "A single explore-agent turn doing read-mostly, multi-surface discovery in
+  three moves.
+
+  **Locate.** It searches the repo to find the file under `components/agent`
+  that defines the `defcommand` macro.
+
+  **Summarize.** It reads the relevant excerpts and distills what the macro
+  does into two sentences.
+
+  **Persist.** It saves a durable exploration artifact under
+  `.brainyard/agents/explore-agent/results/` — a stable handoff that downstream
+  agents can consume — then reports back."
+
+ :terminal    {:cols 100 :rows 32 :title "brainyard tutorial — explore"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 120
+
+ :launch
+ {:binary "bb tui"
+  :args   ["-a" "explore-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-04-explore"}}
+
+ :preamble
+ [{:type :narrate :text "# explore-agent: discover, read, summarize, persist" :pause-ms 2000}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Locate, summarize, and persist"
+   :prompt "Find the file under components/agent that defines the `defcommand` macro, summarize in two sentences what it does, and save your exploration."
+   :expect {:contains ["defcommand"]}
+   :settle {:timeout-secs 240}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

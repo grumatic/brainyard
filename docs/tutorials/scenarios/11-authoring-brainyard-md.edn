@@ -1,0 +1,79 @@
+;; docs/tutorials/scenarios/11-authoring-brainyard-md.edn
+;;
+;; Showcases the INIT-AGENT — brainyard's BRAINYARD.md authoring & maintenance
+;; specialist. Pointed at a fresh project (no BRAINYARD.md yet), it reads the
+;; README + source, then authors a structured BRAINYARD.md through one
+;; transactional writer (snapshot-before-write).
+;;
+;; Runs against the native `by` binary inside an isolated, git-inited /tmp
+;; workspace seeded with a tiny Python CLI — so the BRAINYARD.md it writes (and
+;; its snapshot under .brainyard/agents/init-agent/) land in /tmp, never this
+;; repo. Recorded live on claude-code/opus.
+{:id          "11-authoring-brainyard-md"
+ :title       "Authoring BRAINYARD.md with the init-agent"
+ :description "The init-agent — brainyard's BRAINYARD.md authoring specialist —
+               reads a fresh project's README and source in an isolated /tmp git
+               workspace, then writes a structured BRAINYARD.md (Overview, Build
+               & Run, Conventions, Architecture, …) through its snapshot-first
+               transactional writer. Recorded live against claude-code/opus."
+
+ :walkthrough
+ "`BRAINYARD.md` is brainyard's per-project memory file — the durable context an
+  agent reads first. The **init-agent** owns it: it authors and maintains the
+  project-scope `<project>/.brainyard/BRAINYARD.md` (and the user-scope one)
+  through a single transactional writer that **snapshots before every write**.
+
+  **The setup.** `by` launches the init-agent inside a fresh, git-inited /tmp
+  workspace seeded with a small Python CLI (`greet`) and a README — but **no
+  BRAINYARD.md yet**. Everything it writes stays in that throwaway tree.
+
+  **The turn — author BRAINYARD.md.** Asked to initialize the file, the agent:
+
+  - reads the `README.md` and the `src/` files to learn the project's shape;
+  - drafts the standard sections — `## Overview`, `## Build & Run`,
+    `## Conventions`, `## Architecture`, `## House Rules`, `## Glossary`;
+  - writes it via `init$apply`, which **snapshots first** and prints a stable
+    `Snapshot: <path>` handoff line, then the saved path.
+
+  The result is a ready-to-edit project memory file, authored from the code
+  that's actually there — not a generic template."
+
+ :terminal    {:cols 110 :rows 36 :title "brainyard tutorial — init-agent"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 30
+
+ :launch
+ {:binary "by"
+  :args   ["run" "-a" "init-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-11-init"}}
+
+ :workspace
+ {:git-init true
+  :seed
+  [{:path "README.md"
+    :content "# greet\n\nA tiny example CLI used in the brainyard `by` tutorials.\n\n## Usage\n\n    python src/cli.py World\n    python src/cli.py World --shout\n\n## Development\n\n    pytest -q          # run the tests\n    ruff check src/    # lint\n\nOutput is plain text today; a `--format json` option is on the roadmap.\n"}
+   {:path "src/cli.py"
+    :content "#!/usr/bin/env python3\n\"\"\"greet — a tiny CLI that prints a greeting.\"\"\"\nimport argparse\nfrom util import format_greeting\nfrom formatters import render\n\n\ndef build_parser():\n    p = argparse.ArgumentParser(prog=\"greet\", description=\"Print a greeting.\")\n    p.add_argument(\"name\", help=\"who to greet\")\n    p.add_argument(\"--shout\", action=\"store_true\", help=\"upper-case the greeting\")\n    return p\n\n\ndef main():\n    args = build_parser().parse_args()\n    print(render(format_greeting(args.name, shout=args.shout)))\n\n\nif __name__ == \"__main__\":\n    main()\n"}
+   {:path "src/util.py"
+    :content "def format_greeting(name, shout=False):\n    msg = f\"Hello, {name}!\"\n    return msg.upper() if shout else msg\n"}
+   {:path "src/formatters.py"
+    :content "\"\"\"Output formatters for greet. Currently text-only.\"\"\"\n\n\ndef render(greeting, fmt=\"text\"):\n    if fmt == \"text\":\n        return greeting\n    raise ValueError(f\"unknown format: {fmt}\")\n"}
+   {:path "tests/test_util.py"
+    :content "from src.util import format_greeting\n\n\ndef test_plain():\n    assert format_greeting(\"World\") == \"Hello, World!\"\n\n\ndef test_shout():\n    assert format_greeting(\"World\", shout=True) == \"HELLO, WORLD!\"\n"}]}
+
+ :preamble
+ [{:type :narrate
+   :text "# init-agent — author a project's BRAINYARD.md from its code"
+   :pause-ms 2400}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Author BRAINYARD.md from the README + source"
+   :prompt "Initialize a BRAINYARD.md for this project at project scope. Read the README and the src/ files first, then author the standard sections — Overview, Build & Run, Conventions, Architecture, and a short Glossary — describing what's actually here. Persist it through your snapshot-first writer and show me the result."
+   :expect {:contains ["Overview"]}
+   :settle {:timeout-secs 420}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

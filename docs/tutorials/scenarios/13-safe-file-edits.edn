@@ -1,0 +1,74 @@
+;; docs/tutorials/scenarios/13-safe-file-edits.edn
+;;
+;; Showcases the UPDATE-AGENT — brainyard's safe single-file edit specialist. It
+;; wraps every edit in a probe → apply → verify → persist → rollback pipeline:
+;; it refuses dirty files, persists each edit (with a diff) under
+;; .brainyard/agents/update-agent/edits/, and prints a ready-to-run rollback
+;; command. If verification fails it auto-rolls-back.
+;;
+;; Runs against the native `by` binary inside an isolated, git-inited /tmp
+;; workspace seeded with one small file — so the edit (and the edit record) land
+;; in /tmp, never this repo. The clean git baseline satisfies the agent's
+;; refuse-dirty-files guard. Recorded live on claude-code/opus.
+{:id          "13-safe-file-edits"
+ :title       "Editing files safely with the update-agent"
+ :description "The update-agent — brainyard's safe single-file edit specialist —
+               renames a function within one seeded file inside an isolated /tmp
+               git workspace, showing its probe → apply → verify → persist →
+               rollback pipeline and the stable `Saved edit:` / `Rollback:`
+               handoff lines. Recorded live against claude-code/opus."
+
+ :walkthrough
+ "Most agents that change code delegate the actual write to the **update-agent**
+  — a single-file edit specialist that makes edits *safe*. Every edit runs
+  through one pipeline: **probe** (is the file clean? does the target match?) →
+  **apply** → **verify** → **persist** (save a diff under
+  `.brainyard/agents/update-agent/edits/`) → **rollback** (if verify fails, the
+  workspace is restored automatically).
+
+  **Setup.** `by` runs inside a fresh, git-inited /tmp workspace seeded with one
+  small Python file. The clean git baseline matters: the agent **refuses to edit
+  a dirty file** by default, so the committed seed is exactly what it wants.
+
+  **The turn — rename a function.** Asked to rename `format_greeting` to
+  `build_greeting` (definition *and* its call site, both in the same file), the
+  agent probes the file, applies the edit, verifies it, then persists — printing:
+
+  - `Saved edit: <path>` — the persisted edit record (with diff), and
+  - `Rollback: git checkout -- <path>` — the exact command to undo it.
+
+  One file, one reviewable, reversible change."
+
+ :terminal    {:cols 110 :rows 34 :title "brainyard tutorial — update-agent"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 30
+
+ :launch
+ {:binary "by"
+  :args   ["run" "-a" "update-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-13-update"}}
+
+ ;; One self-contained file so the rename (definition + call site) is a single
+ ;; update-agent edit. git-init gives the clean baseline the agent requires.
+ :workspace
+ {:git-init true
+  :seed
+  [{:path "greeting.py"
+    :content "#!/usr/bin/env python3\n\"\"\"A tiny greeting module.\"\"\"\n\n\ndef format_greeting(name, shout=False):\n    msg = f\"Hello, {name}!\"\n    return msg.upper() if shout else msg\n\n\ndef main():\n    import sys\n    name = sys.argv[1] if len(sys.argv) > 1 else \"World\"\n    print(format_greeting(name))\n\n\nif __name__ == \"__main__\":\n    main()\n"}]}
+
+ :preamble
+ [{:type :narrate
+   :text "# update-agent — a safe, reversible single-file edit"
+   :pause-ms 2400}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Rename a function (definition + call site) in one file"
+   :prompt "In greeting.py, rename the function `format_greeting` to `build_greeting`, updating both its definition and the call site in main(). Use your safe edit pipeline — probe, apply, verify, persist — and show me the diff and the rollback command."
+   :expect {:contains ["Saved edit:"]}
+   :settle {:timeout-secs 300}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

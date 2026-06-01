@@ -1,0 +1,16 @@
+{:paths ["src" "resources"]
+ :deps {com.brunobonacci/mulog {:mvn/version "0.10.1"}
+        ;; Core publishers (included in mulog core)
+        ;; Additional publisher dependencies added as needed:
+        ;; com.brunobonacci/mulog-elasticsearch {:mvn/version "0.10.1"}
+        ;; com.brunobonacci/mulog-kafka {:mvn/version "0.10.1"}
+        ;; com.brunobonacci/mulog-cloudwatch {:mvn/version "0.10.1"}
+        ;; com.brunobonacci/mulog-prometheus {:mvn/version "0.10.1"}
+        ;; com.brunobonacci/mulog-slack {:mvn/version "0.10.1"}
+        ;; com.brunobonacci/mulog-zipkin {:mvn/version "0.10.1"}
+        ;; SLF4J bridge: routes Java library SLF4J logs into mulog
+        org.slf4j/slf4j-api {:mvn/version "2.0.9"}
+        ch.qos.logback/logback-classic {:mvn/version "1.4.14"}
+        integrant/integrant {:mvn/version "0.10.0"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {}}}}

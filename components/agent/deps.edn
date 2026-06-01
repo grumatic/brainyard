@@ -1,0 +1,23 @@
+{:paths ["src" "resources"]
+ :deps {org.clojure/data.json {:mvn/version "2.5.1"}
+        org.clojure/core.async {:mvn/version "1.7.701"}
+        ai.brainyard/clj-http-native {:local/root "../clj-http-native"}
+        ;; Component dependencies (Polylith local refs)
+        ai.brainyard/memory {:local/root "../memory"}
+        ai.brainyard/behavior-tree {:local/root "../behavior-tree"}
+        ai.brainyard/clj-llm {:local/root "../clj-llm"}
+        ai.brainyard/mulog {:local/root "../mulog"}
+        ai.brainyard/util {:local/root "../util"}
+        ai.brainyard/display-block {:local/root "../display-block"}
+        ;; Clj-Sandbox — soft dependency (requiring-resolve), but on classpath for coact-agent
+        ai.brainyard/clj-sandbox {:local/root "../clj-sandbox"}
+        ;; Clj-Nrepl — live-runtime eval backend for code$eval. Loaded on classpath
+        ;; so the task executor + code-eval surface can require it directly; the
+        ;; nREPL *server* is only started when a base/project opts in (Integrant
+        ;; key or BRAINYARD_NREPL_ENABLED).  See docs/design/clj-nrepl-eval.md.
+        ai.brainyard/clj-nrepl {:local/root "../clj-nrepl"}
+        ;; ACP client — soft dependency (requiring-resolve) for the acp-agent defagent.
+        ;; On classpath so the agent is invokable without consumers needing extra wiring.
+        ai.brainyard/acp-client {:local/root "../acp-client"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {ai.brainyard/acp-stub-agent {:local/root "../../bases/acp-stub-agent"}}}}}

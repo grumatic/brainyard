@@ -1,0 +1,82 @@
+;; docs/tutorials/scenarios/14-mapreduce-over-logs.edn
+;;
+;; Showcases the RLM-AGENT — brainyard's Recursive Language Model specialist for
+;; inputs too big for one LLM call. It runs the chunk → map → reduce playbook:
+;; enumerate the files, fan out one sub-LLM call per chunk via query$llm
+;; (batched), then fold the structured map outputs in a clojure fence
+;; (frequencies / group-by) into one digest.
+;;
+;; Runs against the native `by` binary inside an isolated, git-inited /tmp
+;; workspace seeded with a directory of log files carrying categorizable error
+;; lines — enough surface area that a real MapReduce fan-out is the right shape.
+;; Recorded live on claude-code/opus.
+{:id          "14-mapreduce-over-logs"
+ :title       "MapReduce over big inputs with the rlm-agent"
+ :description "The rlm-agent — brainyard's Recursive Language Model specialist —
+               classifies errors across a directory of log files using its
+               chunk → map → reduce playbook: enumerate, fan out batched
+               query$llm calls per chunk, then aggregate the structured outputs
+               in a clojure fence into per-category counts. Recorded live against
+               claude-code/opus in an isolated /tmp workspace."
+
+ :walkthrough
+ "When the source data is **too big for one LLM call** — a directory of files, a
+  long log, a large document — the **rlm-agent** decomposes it procedurally
+  rather than stuffing it all into context. Its playbook is **chunk → map →
+  reduce**:
+
+  - **enumerate** the input with `bash`/`grep`/`read-file` and `def` the file
+    list so it survives iterations;
+  - **chunk** deliberately (stable line/byte ranges, one record never split);
+  - **map** — fan out one sub-LLM call per chunk via batched
+    `(query$llm :prompts [...] :sub-context …)`, each asking for a *structured*
+    one-line result;
+  - **reduce** — fold the parsed map outputs in a clojure fence with
+    `frequencies` / `group-by` into the final aggregate.
+
+  **The turn.** Pointed at `logs/` (several files of mixed error lines), the
+  agent enumerates the files, fans a batched `query$llm` over them to classify
+  each error, then aggregates into **per-category counts** and names the noisiest
+  file — inlining a short chunk plan (files scanned, batches, sub-model). The
+  point isn't the toy log; it's the *shape*: a fan-out the agent could scale to
+  hundreds of files the same way."
+
+ :terminal    {:cols 110 :rows 36 :title "brainyard tutorial — rlm-agent"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 30
+
+ :launch
+ {:binary "by"
+  :args   ["run" "-a" "rlm-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-14-rlm"}}
+
+ ;; A handful of log files with clearly categorizable error lines, so the
+ ;; map step has real per-chunk work to do and the reduce produces real counts.
+ :workspace
+ {:git-init true
+  :seed
+  [{:path "logs/web-01.log"
+    :content "2026-05-30T10:01:12 INFO  request id=a1 path=/health 200\n2026-05-30T10:01:14 ERROR connection refused upstream=db:5432\n2026-05-30T10:01:15 WARN  retrying upstream=db:5432 attempt=1\n2026-05-30T10:01:20 ERROR timeout waiting for upstream=db:5432 after 5000ms\n2026-05-30T10:01:31 INFO  request id=a2 path=/login 200\n2026-05-30T10:01:33 ERROR permission denied user=guest resource=/admin\n2026-05-30T10:02:01 ERROR timeout waiting for upstream=cache:6379 after 3000ms\n"}
+   {:path "logs/web-02.log"
+    :content "2026-05-30T10:05:02 INFO  request id=b1 path=/health 200\n2026-05-30T10:05:09 ERROR connection refused upstream=cache:6379\n2026-05-30T10:05:10 ERROR out of memory: heap exhausted while rendering report\n2026-05-30T10:05:18 ERROR timeout waiting for upstream=db:5432 after 5000ms\n2026-05-30T10:05:40 WARN  slow query 1200ms path=/report\n2026-05-30T10:06:02 ERROR permission denied user=svc resource=/secrets\n"}
+   {:path "logs/worker-01.log"
+    :content "2026-05-30T10:00:00 INFO  worker started pool=4\n2026-05-30T10:03:11 ERROR out of memory: heap exhausted in batch job=nightly\n2026-05-30T10:03:12 ERROR out of memory: heap exhausted in batch job=nightly retry=1\n2026-05-30T10:03:30 ERROR connection refused upstream=db:5432\n2026-05-30T10:04:02 INFO  job=nightly completed items=1024\n2026-05-30T10:07:45 ERROR timeout waiting for upstream=queue:4222 after 8000ms\n"}
+   {:path "logs/worker-02.log"
+    :content "2026-05-30T10:10:00 INFO  worker started pool=4\n2026-05-30T10:11:01 ERROR permission denied user=svc resource=/etc/keys\n2026-05-30T10:11:20 ERROR connection refused upstream=queue:4222\n2026-05-30T10:11:55 WARN  backpressure queue depth=900\n2026-05-30T10:12:30 ERROR timeout waiting for upstream=queue:4222 after 8000ms\n2026-05-30T10:13:00 ERROR out of memory: heap exhausted draining queue\n"}]}
+
+ :preamble
+ [{:type :narrate
+   :text "# rlm-agent — chunk → map → reduce over a directory of logs"
+   :pause-ms 2400}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Classify errors across all logs — fan out, then aggregate"
+   :prompt "Across all the files under logs/, classify every ERROR line by type (e.g. timeout, connection refused, out of memory, permission denied) and give me a per-category count plus the noisiest file. Use your chunk → map → reduce playbook: enumerate the files, fan out a batched query$llm to classify, then aggregate the structured results in a clojure fence. Inline a short chunk plan (files scanned, batches, sub-model) in your answer."
+   :expect {:contains ["timeout"]}
+   :settle {:timeout-secs 480}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

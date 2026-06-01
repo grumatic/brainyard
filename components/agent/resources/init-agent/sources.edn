@@ -1,0 +1,47 @@
+;; init-agent — source priority list for BRAINYARD.md seeding (§8.1)
+;;
+;; Each entry describes a sibling-tool config file init-agent will look for
+;; when seeding (:op :init) or re-seeding (:op :reseed) BRAINYARD.md.
+;; init-agent NEVER edits these files — they are read-only sources.
+;;
+;; Fields:
+;;   :source   keyword identifying the sibling tool's convention
+;;   :scope    :project (resolved against project-dir) or :user (against home)
+;;   :path     relative path (project) or absolute / tilde-prefixed (user)
+;;   :priority :high | :medium | :low — informational, the agent decides
+;;
+;; Adding a new source is one edit here, no code change required.
+[{:source :claude-md
+  :scope  :project
+  :path   "CLAUDE.md"
+  :priority :high}
+
+ {:source :agents-md
+  :scope  :project
+  :path   "AGENTS.md"
+  :priority :high}
+
+ {:source :readme-md
+  :scope  :project
+  :path   "README.md"
+  :priority :medium}
+
+ {:source :claude-md
+  :scope  :user
+  :path   "~/.claude/CLAUDE.md"
+  :priority :medium}
+
+ {:source :agents-md
+  :scope  :user
+  :path   "~/.codex/AGENTS.md"
+  :priority :medium}
+
+ {:source :agents-md
+  :scope  :user
+  :path   "~/.config/codex/AGENTS.md"
+  :priority :medium}
+
+ {:source :cursorrules
+  :scope  :user
+  :path   "~/.cursorrules"
+  :priority :low}]

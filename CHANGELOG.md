@@ -2,6 +2,34 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [v0.2.0] — 2026-06-01
+
+**Brainyard is now open source.** This release publishes the full Polylith workspace — sources, build config, and docs — directly in this repository. Earlier releases (v0.1.x) shipped binaries only, built from a private upstream via a sync wrapper; that machinery has been retired and development now happens here. The codebase is licensed under Apache-2.0, copyright Grumatic, Inc.
+
+### Highlights since v0.1.1
+
+- **Interactive tutorials.** A full asciinema-based tutorial suite under [`docs/tutorials/`](docs/tutorials/) — 17 recorded scenarios with a vendored player, turn-by-turn walkthroughs, and a CI golden-frame drift gate.
+- **MCP improvements.** `config.edn`-backed MCP servers, runtime skill/MCP registration, a `:lazy` connect flag, per-server connect knobs, a startup status banner, and non-blocking per-server connect with background skill scanning.
+- **TUI polish.** Reworked session-resume UX (ordered by update time), full prompt echo with wrapping, configurable collapsed/expanded line limits, and assorted rendering fixes.
+- **Safer agent writes.** Shared write-guards (secret scanning + size caps) across memory, workflow, plan/exec/eval, and bootstrap dossiers; secret scanning in `config$apply`.
+- **Security-gated nREPL** (`clj-nrepl` component): confirm/grant flows, audit, and drift detection for REPL eval.
+- **Performance.** Cached MCP tool listing, faster `explore$find` (INDEX.md first), and fewer redundant routing-log reads.
+
+### Artifacts
+
+- `by-0.2.0.jar` — Clojure uberjar. Runs on JDK 21+.
+- `by-0.2.0-macos-arm64` — native (GraalVM) binary.
+- `by-wrapper.sh` — wrapper shell script (sources `.env`, execs the native binary).
+- `SHA256SUMS` — checksums.
+- `BUILD-INFO.txt` — version, platform, build timestamp, and source commit.
+
+### Known gaps
+
+- **Linux** and **macOS amd64** binaries are not in v0.2.0 — use the uberjar on those platforms.
+- **Windows** is deferred.
+
+---
+
 ## [v0.1.1] — 2026-05-20
 
 Tooling release. No user-visible behavior changes vs. v0.1.0 — same 18 agents, same 6 subcommands, same provider lineup. Recommended for everyone on v0.1.0 (the upgrade is a drop-in `curl | bash` re-run).

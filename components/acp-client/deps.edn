@@ -1,0 +1,6 @@
+{:paths ["src" "resources"]
+ :deps {ai.brainyard/acp {:local/root "../acp"}
+        ai.brainyard/util {:local/root "../util"}
+        ai.brainyard/mulog {:local/root "../mulog"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {ai.brainyard/acp-stub-agent {:local/root "../../bases/acp-stub-agent"}}}}}

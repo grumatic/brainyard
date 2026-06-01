@@ -2,7 +2,6 @@
 # Stage built artifacts into release/ for upload to GitHub Releases.
 #
 # Inputs (must already exist in the working tree):
-#   - SYNCED-FROM.txt                                    (from bin/sync-from-dev.sh)
 #   - projects/agent-tui-app/target/agent-tui-app.jar    (from `bb uberjar:ata`)
 #   - projects/agent-tui-app/target/by                   (from `bb native:ata`)
 #   - projects/agent-tui-app/scripts/by-wrapper.sh
@@ -11,12 +10,11 @@
 #
 # Outputs (written to release/, gitignored — uploaded by the release workflow):
 #   - by-<version>.jar
-#   - by-<version>-<platform>           (e.g. by-0.1.0-macos-arm64)
+#   - by-<version>-<platform>           (e.g. by-0.2.0-macos-arm64)
 #   - by-wrapper.sh
 #   - SHA256SUMS                        (checksums for the 3 files above)
-#   - BUILD-INFO.txt                    (provenance: upstream SHA, version, build time)
+#   - BUILD-INFO.txt                    (provenance: source commit, version, build time)
 #
-# This script lives outside the synced surface so it survives every sync.
 # Asset names match what bin/install.sh expects — do not rename without
 # updating install.sh in lockstep.
 
@@ -26,7 +24,6 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SHIPPING_PROJECT_DIR="${REPO_ROOT}/projects/agent-tui-app"
 TARGET_DIR="${SHIPPING_PROJECT_DIR}/target"
 RELEASE_DIR="${REPO_ROOT}/release"
-SYNCED_FROM="${REPO_ROOT}/SYNCED-FROM.txt"
 VERSION_EDN="${SHIPPING_PROJECT_DIR}/resources/build-version.edn"
 WRAPPER_SRC="${SHIPPING_PROJECT_DIR}/scripts/by-wrapper.sh"
 
@@ -82,16 +79,10 @@ read_version() {
   echo "${raw#v}"
 }
 
-# ── Parse upstream SHA from SYNCED-FROM.txt ─────────────────────────────────
+# ── Source provenance from THIS repo's git ──────────────────────────────────
 
-read_synced_field() {
-  local key="$1"
-  [[ -f "${SYNCED_FROM}" ]] || die "Missing ${SYNCED_FROM} — run bin/sync-from-dev.sh first"
-  local v
-  v="$(awk -v k="${key}:" '$1 == k { sub(/^[^:]+:[[:space:]]*/, ""); print; exit }' "${SYNCED_FROM}")"
-  [[ -n "${v}" ]] || die "Could not read '${key}' from ${SYNCED_FROM}"
-  echo "${v}"
-}
+source_commit() { git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo "unknown"; }
+source_branch() { git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown"; }
 
 # ── SHA-256 helper (macOS has shasum, Linux has sha256sum) ──────────────────
 
@@ -108,12 +99,11 @@ sha256_cmd() {
 # ── Main ────────────────────────────────────────────────────────────────────
 
 main() {
-  local platform version upstream_sha upstream_branch synced_at
+  local platform version src_commit src_branch
   platform="$(detect_platform)"
   version="$(read_version)"
-  upstream_sha="$(read_synced_field upstream_sha)"
-  upstream_branch="$(read_synced_field upstream_branch)"
-  synced_at="$(read_synced_field synced_at)"
+  src_commit="$(source_commit)"
+  src_branch="$(source_branch)"
 
   local jar_src="${TARGET_DIR}/agent-tui-app.jar"
   local bin_src="${TARGET_DIR}/by"
@@ -154,9 +144,8 @@ main() {
     echo "platform:         ${platform}"
     echo "built_at:         ${build_ts}"
     echo ""
-    echo "upstream_sha:     ${upstream_sha}"
-    echo "upstream_branch:  ${upstream_branch}"
-    echo "synced_at:        ${synced_at}"
+    echo "source_commit:    ${src_commit}"
+    echo "source_branch:    ${src_branch}"
     echo ""
     echo "artifacts:"
     echo "  - by-${version}.jar"

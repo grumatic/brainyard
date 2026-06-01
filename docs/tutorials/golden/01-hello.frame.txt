@@ -1,0 +1,30 @@
+LM configured: claude-code / sonnet
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Brainyard TUI — acp-agent · claude-code/sonnet · session <SESSION> │
+│ Type /help for commands. AI output may be inaccurate.                      │
+└────────────────────────────────────────────────────────────────────────────┘
+
+> hello from the tutorial recorder
+> Alt+Enter: newline, /help for commands
+❯ hello from the tutorial recorder
+  ✓ Goal achieved
+
+┌──────────────────────────────────────────┐
+│ echo: hello from the tutorial recorder   │
+└──────────────────────────────────────────┘
+
+                                                                       <N> calls │ <N> tokens │ $<COST>
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -127,13 +127,12 @@ Look for `by-0.1.0-macos-arm64: OK`. If it says `FAILED`, do not install — ope
 
 ## Building from source
 
-Building from source requires access to the private upstream dev repo. This repo only tracks the sync + publish glue — sources, `bb.edn`, and `deps.edn` are pulled in by `bin/sync-from-dev.sh` and gitignored. External users without upstream access should install the published binary via `curl | bash` above.
+This repo holds the full source. You need a GraalVM JDK (25.0.3+, pinned in `.sdkmanrc`), `bb` (Babashka), and the `clojure` CLI.
 
 ```bash
 git clone https://github.com/grumatic/brainyard
 cd brainyard
-bin/sync-from-dev.sh          # pull Polylith subset + build config from upstream
-sdk use java 25.0.3-graal     # honors the synced .sdkmanrc
+sdk use java 25.0.3-graal     # honors .sdkmanrc
 
 bb compile:ata                # AOT compile main namespace
 bb uberjar:ata                # build target/agent-tui-app.jar

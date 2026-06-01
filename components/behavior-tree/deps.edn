@@ -1,0 +1,6 @@
+{:paths ["src" "resources"]
+ :deps {metosin/malli {:mvn/version "0.20.0"}
+        ai.brainyard/mulog {:local/root "../mulog"}
+        ai.brainyard/clj-llm {:local/root "../clj-llm"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {}}}}
