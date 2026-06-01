@@ -685,7 +685,7 @@
                           lazy?       (ansi/muted "lazy (on demand)")
                           :else       (ansi/muted "disconnected"))
         transport   (name (or (:transport config) :unknown))]
-    (str "  " status-icon " " (ansi/style server-name :bold) " " status-text
+    (str "  " status-icon " " server-name " " status-text
          (ansi/muted (str " (" transport ")")))))
 
 (defn- handle-mcp-command
