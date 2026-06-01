@@ -641,6 +641,33 @@
     :config {:command "npx"
              :args ["-y" "mcp-remote" "https://mcp.linear.app/sse"]}
     :enabled false
+    :auto-register-tools true}
+
+   ;; gmail / google-calendar use Google's official hosted remote MCP servers
+   ;; (HTTP + OAuth 2.0). brainyard's native :http transport can't run the OAuth
+   ;; handshake (same reason as notion/linear above), so bridge through
+   ;; mcp-remote (stdio) — it runs the browser consent flow on first start.
+   ;; Google requires a PRE-REGISTERED OAuth client (no dynamic registration):
+   ;; create one in the Google Cloud console and export its id/secret as
+   ;; GCP_OAUTH_CLIENT_ID / GCP_OAUTH_CLIENT_SECRET (e.g. in .env). The command
+   ;; runs under `bash -c` so the shell expands those env vars into
+   ;; --static-oauth-client-info — the server process is spawned directly (no
+   ;; shell), so a bare $VAR in argv would not expand, hence the wrapper.
+   ;; Both ship :enabled false — turn on via `/mcp <name> start`.
+   "gmail"
+   {:transport :stdio
+    :config {:command "bash"
+             :args ["-c"
+                    "npx -y mcp-remote https://gmailmcp.googleapis.com/mcp/v1 --static-oauth-client-info \"{\\\"client_id\\\":\\\"$GCP_OAUTH_CLIENT_ID\\\",\\\"client_secret\\\":\\\"$GCP_OAUTH_CLIENT_SECRET\\\"}\""]}
+    :enabled false
+    :auto-register-tools true}
+
+   "google-calendar"
+   {:transport :stdio
+    :config {:command "bash"
+             :args ["-c"
+                    "npx -y mcp-remote https://calendarmcp.googleapis.com/mcp/v1 --static-oauth-client-info \"{\\\"client_id\\\":\\\"$GCP_OAUTH_CLIENT_ID\\\",\\\"client_secret\\\":\\\"$GCP_OAUTH_CLIENT_SECRET\\\"}\""]}
+    :enabled false
     :auto-register-tools true}})
 
 ;; =============================================================================
