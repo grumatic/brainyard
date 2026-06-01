@@ -37,8 +37,8 @@
   "Auto-setup LM with provider defaults."
   [provider & {:keys [model]}]
   (let [default-models {:openai      "gpt-4.1-mini"
-                        :anthropic   "claude-sonnet-4-6"
-                        :claude-code "sonnet"
+                        :anthropic   "claude-opus-4-7"
+                        :claude-code "opus"
                         :ollama      "glm-5:cloud"
                         :apple-fm    "apple-foundationmodel"}
         env-vars       {:openai    "OPENAI_API_KEY"

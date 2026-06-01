@@ -449,10 +449,10 @@
       (and bedrock? credentials-provider) (assoc :credentials-provider credentials-provider))))
 
 (defn- detect-default-lm
-  "Default LM: claude-code:sonnet — good balance of capability and speed.
+  "Default LM: claude-code:opus — most capable Claude via the CLI.
    No API key required (uses Claude CLI)."
   []
-  (create-lm {:model "sonnet" :provider :claude-code}))
+  (create-lm {:model "opus" :provider :claude-code}))
 
 (defonce ^:private default-lm
   (atom (detect-default-lm)))
