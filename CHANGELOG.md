@@ -2,6 +2,21 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [v0.2.3] — 2026-06-01
+
+### Added
+
+- **Startup user identity.** `by` now resolves a real per-user identity at startup instead of the fixed `tui-user`/`cli-user` placeholders. Precedence: `--user-id`/`-u` flag > `BY_USER_ID` env > the `user.name` system property (OS login) > `by-user`. Sessions and memory (`~/.brainyard/memory/<user-id>.db`) key on it, so your history is scoped to you out of the box. `BY_USER_ID` is documented in `.env.example` and `CLAUDE.md`.
+- **Gmail & Google Calendar MCP servers.** Added `gmail` and `google-calendar` to the built-in MCP server set. Both bridge Google's official hosted MCP endpoints (`gmailmcp.googleapis.com` / `calendarmcp.googleapis.com`) via `mcp-remote` (mirroring the notion/linear pattern). They read a pre-registered OAuth client from `GCP_OAUTH_CLIENT_ID`/`GCP_OAUTH_CLIENT_SECRET` (documented in `.env.example`), ship `:enabled false`, and connect on first `/mcp gmail start` (browser consent).
+
+### Fixed
+
+- **`/mcp` server list rendering.** Server names no longer show a literal `:bold` prefix (e.g. `:boldnotion`) — a keyword was passed to `ansi/style` where it expects an ANSI escape-code string.
+
+### Notes
+
+- The user-id change means default runs no longer read the old `tui-user`/`cli-user` memory stores; a default run now scopes to your OS login (`<user.name>.db`). Existing placeholder stores are left untouched on disk.
+
 ## [v0.2.2] — 2026-06-01
 
 **Opus is now the default model.** The out-of-box default LM changes from Sonnet to Opus.
