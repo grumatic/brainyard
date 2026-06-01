@@ -1,6 +1,6 @@
 # Brainyard
 
-> **v0.2.2 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.2.2) · [changelog](CHANGELOG.md)) — **Opus is now the default model** (`claude-code:opus` out of the box). Built on v0.2.0, which open-sourced the complete Polylith workspace (sources, build config, docs); earlier releases shipped binaries only. Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
+> **v0.2.3 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.2.3) · [changelog](CHANGELOG.md)) — **per-user identity** (sessions & memory now key on `--user-id` / `BY_USER_ID` / your OS login) plus **Gmail & Google Calendar** as built-in MCP servers. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
 
 Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 18 available agents across 6 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
 
