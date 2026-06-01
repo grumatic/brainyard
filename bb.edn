@@ -6,18 +6,6 @@
    :override-builtin true
    :task (shell "bash" "-c" "set -a && source .env && clj -M:dev:repl")}
 
-  repl:fra
-  {:doc "Start Fulcro RAD app REPL (.env loaded)"
-   :task (shell "bash" "-c" "set -a && source .env && cd projects/fulcro-rad-app && clj -M:dev:nrepl")}
-
-  repl:ea
-  {:doc "Start Electric app REPL (.env loaded)"
-   :task (shell "bash" "-c" "set -a && source .env && cd projects/electric-app && clj -M:dev:nrepl")}
-
-  repl:ra
-  {:doc "Start Replicant app REPL (.env loaded)"
-   :task (shell "bash" "-c" "set -a && source .env && cd projects/replicant-app && clj -M:dev:nrepl")}
-
   repl:component
   {:doc "Start REPL for a specific component: bb repl:component <name>"
    :requires ([babashka.fs :as fs])
@@ -923,21 +911,6 @@
              (println "Note: no AWS credentials resolved — Bedrock calls will fail.")
              (println "      Set AWS_PROFILE (or BY_AWS_PROFILE) to enable `-p bedrock`."))
            (apply shell docker-args))}
-
-  repl:awa
-  {:doc "Start Agent Web app REPL (.env loaded)"
-   :task (shell "bash" "-c" "set -a && source .env && cd projects/agent-web-app && clj -M:dev:nrepl")}
-
-  ;; --------------- Frontend tasks ---------------
-  shadow:fra
-  {:doc "Start shadow-cljs watch for Fulcro RAD app"
-   :task (shell "npx" "shadow-cljs" "watch" "app"
-                {:dir "projects/fulcro-rad-app"})}
-
-  shadow:awa
-  {:doc "Start shadow-cljs watch for Agent Web app"
-   :task (shell "npx" "shadow-cljs" "watch" "app"
-                {:dir "projects/agent-web-app"})}
 
   ;; --------------- Test tasks ---------------
   test
