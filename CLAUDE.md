@@ -14,6 +14,21 @@ This repo was seeded from the upstream `v0.2.0` snapshot and is now the source o
 - `bb` (Babashka) and the `clojure` CLI.
 - `gh` CLI for release publishing.
 
+## Runtime configuration (env vars)
+
+`by` reads provider credentials and a few control flags from the environment. A
+real shell env var always wins; otherwise the binary loads the nearest `.env`
+(walking up from cwd, then `~/.brainyard/.env`) — see `.env.example` for the
+full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
+`scripts/by-wrapper.sh` for the loader.
+
+- **`BY_USER_ID`** — user identity stamped onto sessions and memory (L1/L2/L3 are
+  partitioned by it). Resolved once at startup: `--user-id`/`-u` flag >
+  `BY_USER_ID` > the `user.name` system property (OS login) > `"by-user"`.
+- **`AWS_PROFILE`** — Bedrock credential profile (`AWS_DEFAULT_PROFILE` is **not** honored).
+- **`BY_JAR=1`** — run the uberjar instead of the native binary (reflection-config debugging).
+- **`BY_ENV_FILE`** / **`BY_NO_DOTENV=1`** — force a specific `.env`, or skip `.env` discovery.
+
 ## Build & release pipeline
 
 ```bash

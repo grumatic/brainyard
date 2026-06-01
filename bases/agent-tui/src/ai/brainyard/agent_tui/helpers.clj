@@ -9,7 +9,8 @@
   (:require [ai.brainyard.agent-tui.session :as tui-session]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
             [ai.brainyard.agent.interface :as agent]
-            [ai.brainyard.clj-llm.interface :as clj-llm])
+            [ai.brainyard.clj-llm.interface :as clj-llm]
+            [clojure.string :as str])
   (:import [java.util.logging Logger Level]))
 
 ;; ============================================================================
@@ -27,6 +28,36 @@
 ;; Suppress JUL cookie warnings at namespace load time.
 ;; Strong ref prevents GC from resetting the logger level.
 (defonce ^:private _jul-cookie-logger (suppress-jul-cookie-warnings!))
+
+(def ^:private user-id-fallback
+  "Last-resort user-id when neither a CLI flag, BY_USER_ID, nor the
+   `user.name` system property yields a usable value."
+  "by-user")
+
+(defn resolve-user-id
+  "Resolve the effective user-id at startup, in precedence order:
+
+     1. `explicit`           — typically a `--user-id`/`-u` CLI flag (nil when unset)
+     2. `BY_USER_ID`         — real env var, or the same key bridged from a
+                               project `.env` into a System Property (see
+                               agent-tui-app.dotenv); env wins over property
+     3. `user.name`          — JVM system property holding the OS login name
+     4. \"by-user\"           — hardcoded fallback
+
+   Blank/whitespace-only values are treated as absent at every tier, so an
+   empty flag or `BY_USER_ID=` never shadows a lower tier. The result is a
+   non-blank string. Resolution reads process-fixed sources, so calling this
+   as a default at session-creation time yields a value that is stable for
+   the life of the process — i.e. 'determined at start time'."
+  ([] (resolve-user-id nil))
+  ([explicit]
+   (or (some-> explicit str/trim not-empty)
+       (some-> (or (System/getenv "BY_USER_ID")
+                   (System/getProperty "BY_USER_ID"))
+               str/trim
+               not-empty)
+       (some-> (System/getProperty "user.name") str/trim not-empty)
+       user-id-fallback)))
 
 (defn resolve-react-bt
   "Resolve react-behavior-tree from common.react-agent."

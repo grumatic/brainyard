@@ -764,7 +764,7 @@
                                  [:meta :max-iterations])
                          (get agent/default-config :max-iterations 100))
           ag (agent/setup-agent-by-id :config-agent
-                                      :agent-session {:user-id "wizard"
+                                      :agent-session {:user-id (helpers/resolve-user-id)
                                                       :session-id session-id}
                                       :max-iterations max-iter)]
       (try

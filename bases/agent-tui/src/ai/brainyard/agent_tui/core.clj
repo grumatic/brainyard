@@ -581,7 +581,7 @@
    as any defagent invocation, with a generated instance-id.
    Returns the agent instance with permission-fn, user-feedback-fn, and dirs configured."
   [agent-id & {:keys [user-id session-id max-iterations instance-id]}]
-  (let [user-id  (or user-id "tui-user")
+  (let [user-id  (or user-id (helpers/resolve-user-id))
         sess-id  (or session-id
                      (throw (ex-info "create-tui-agent! requires :session-id" {})))
         inst-id  (or instance-id (agent/generate-instance-id agent-id))
@@ -639,7 +639,8 @@
      agent-id - keyword agent ID (e.g., :coact-agent)
 
    Options:
-     :user-id        - User ID (default: \"tui-user\")
+     :user-id        - User ID (default: resolved via helpers/resolve-user-id —
+                       BY_USER_ID env, else the `user.name` system property)
      :session-id     - Session ID (default: auto-generated)
      :max-iterations - Override max iterations
      :verbosity      - :quiet | :normal | :verbose (default: :normal)
@@ -659,7 +660,6 @@
   [& {:keys [agent-id user-id session-id max-iterations verbosity
              lm-provider lm-model inline mode resume? skip-banner]
       :or {agent-id :coact-agent
-           user-id "tui-user"
            verbosity :normal
            inline false
            mode :A

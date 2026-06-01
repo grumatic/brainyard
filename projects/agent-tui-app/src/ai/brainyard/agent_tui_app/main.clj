@@ -100,6 +100,11 @@
 (def max-iter-opt
   {:option "max-iterations" :short "n" :as "Max agent iterations" :type :int})
 
+(def user-id-opt
+  {:option "user-id" :short "u"
+   :as "User identity for sessions/memory (default: $BY_USER_ID, else OS login name)"
+   :type :string})
+
 ;; ============================================================================
 ;; Legacy provider:model parsing
 ;; ============================================================================
@@ -288,6 +293,11 @@
                 (binding [*out* *err*] (print (:guidance probe)) (flush))
                 (System/exit 1))
 
+        ;; Only thread an explicit --user-id; when unset, leave it nil so the
+        ;; downstream default (create-tui-agent! → helpers/resolve-user-id)
+        ;; resolves BY_USER_ID / user.name once at session creation.
+        user-id (some-> (:user-id opts) str/trim not-empty)
+
         run-args (cond-> [:agent-id agent-id
                           :lm-provider provider
                           :mode (:mode probe)]
@@ -296,6 +306,7 @@
                    verbose?   (into [:verbosity :verbose])
                    max-iter   (into [:max-iterations max-iter])
                    session-id (into [:session-id session-id])
+                   user-id    (into [:user-id user-id])
                    resume?    (into [:resume? true]))]
     (apply tui/run! run-args)))
 
@@ -343,7 +354,8 @@
                              (:max-iterations (:meta (agent/get-tool-defs :id agent-id)))
                              (get agent/default-config :max-iterations 20))
           ag (agent/setup-agent-by-id agent-id
-                                      :agent-session {:user-id "cli-user" :session-id sess-id}
+                                      :agent-session {:user-id (helpers/resolve-user-id (:user-id opts))
+                                                      :session-id sess-id}
                                       :max-iterations max-iterations)]
       (try
         (let [result (agent/ask ag question)]
@@ -616,6 +628,7 @@
                   :opts        [agent-opt
                                 provider-opt
                                 model-opt
+                                user-id-opt
                                 {:option "inline" :short "i" :as "Inline mode (no alt screen)"
                                  :type :with-flag :default false}
                                 {:option "verbose" :short "v" :as "Verbose output"
@@ -639,6 +652,7 @@
                   :opts        [agent-opt
                                 provider-opt
                                 model-opt
+                                user-id-opt
                                 max-iter-opt]
                   :args        [{:arg "question" :as "Question to ask" :type :string}]
                   :runs        cmd-ask}
