@@ -2,6 +2,26 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Documentation and tooling only — no binary or behavior changes since v0.2.0.
+
+### Added
+
+- **Hosted tutorials.** The recorded walkthroughs are now published to GitHub Pages at [grumatic.github.io/brainyard](https://grumatic.github.io/brainyard/) and linked from the README.
+- **`bb tutorial:publish`.** Regenerates the self-contained tutorials page and force-pushes it to the `gh-pages` branch (`scripts/asciinema/publish-pages.sh`, via git plumbing — no working-tree churn).
+- **`.env.example`.** Credential template covering the key-based LLM providers (Anthropic, OpenAI, Google, Groq, Mistral, DeepSeek, …) and AWS/Bedrock (`AWS_PROFILE`/`AWS_REGION`). README install flow now points users to copy it.
+- **Upstream `scripts/` migrated.** The asciinema tutorial pipeline (`scripts/asciinema/*`), the license-header tool, and TUI test helpers — so `bb tutorial:output`/`record`/`verify` run locally.
+- **Upstream `development/` migrated.** The Polylith `:dev` project source (`development/src`) and the `dev.repl-test` helper behind `bb repl:test`.
+
+### Changed
+
+- **`docs/usage.md` rewritten** against the actual v0.2.0 CLI: corrected session flags (`-r/--resume`/`--select-resume` replace the removed `-s/--session-id`), split `run`-only flags from `ask`, documented `by config` as the `config.edn` bootstrap pipeline, expanded the provider list, and fixed the environment-variable table.
+
+### Removed
+
+- Dropped the `docs/reference/CCA.md` and `docs/reference/OPTRA-CODER.md` reference docs and the `docs/*.pptx` slide decks (purged from history to keep the repo lean).
+
 ## [v0.2.0] — 2026-06-01
 
 **Brainyard is now open source.** This release publishes the full Polylith workspace — sources, build config, and docs — directly in this repository. Earlier releases (v0.1.x) shipped binaries only, built from a private upstream via a sync wrapper; that machinery has been retired and development now happens here. The codebase is licensed under Apache-2.0, copyright Grumatic, Inc.
