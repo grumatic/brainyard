@@ -505,6 +505,11 @@
   {:doc "Generate a self-contained docs/tutorials/output/index.html (casts + player inlined) for local viewing — opens directly in a browser, no server."
    :task (shell "bb" "scripts/asciinema/drive-scenario.bb" "output")}
 
+  tutorial:publish
+  {:doc "Regenerate the tutorials page and force-push it to the gh-pages branch (GitHub Pages). PUBLISHES publicly. Usage: bb tutorial:publish [remote]"
+   :task (do (shell "bb" "scripts/asciinema/drive-scenario.bb" "output")
+             (apply shell "bash" "scripts/asciinema/publish-pages.sh" *command-line-args*))}
+
   tutorial:verify
   {:doc "Headless drift check: drive a scenario, redact + diff the golden frame, assert :expect. Usage: bb tutorial:verify <id> [--update-golden]"
    :task (apply shell "bash" "scripts/asciinema/verify-scenario.sh"
