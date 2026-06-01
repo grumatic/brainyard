@@ -10,9 +10,11 @@
 #
 # Outputs (written to release/, gitignored — uploaded by the release workflow):
 #   - by-<version>.jar
+#   - by.jar                            (version-less alias of by-<version>.jar so
+#                                        releases/latest/download/by.jar resolves)
 #   - by-<version>-<platform>           (e.g. by-0.2.0-macos-arm64)
 #   - by-wrapper.sh
-#   - SHA256SUMS                        (checksums for the 3 files above)
+#   - SHA256SUMS                        (checksums for the 4 files above)
 #   - BUILD-INFO.txt                    (provenance: source commit, version, build time)
 #
 # Asset names match what bin/install.sh expects — do not rename without
@@ -114,6 +116,7 @@ main() {
   mkdir -p "${RELEASE_DIR}"
 
   local jar_dst="${RELEASE_DIR}/by-${version}.jar"
+  local jar_alias_dst="${RELEASE_DIR}/by.jar"
   local bin_dst="${RELEASE_DIR}/by-${version}-${platform}"
   local wrapper_dst="${RELEASE_DIR}/by-wrapper.sh"
   local sums_dst="${RELEASE_DIR}/SHA256SUMS"
@@ -121,6 +124,7 @@ main() {
 
   log "Staging artifacts for version ${version}, platform ${platform}"
   cp -f "${jar_src}"     "${jar_dst}"
+  cp -f "${jar_src}"     "${jar_alias_dst}"
   cp -f "${bin_src}"     "${bin_dst}"
   cp -f "${WRAPPER_SRC}" "${wrapper_dst}"
   chmod +x "${bin_dst}" "${wrapper_dst}"
@@ -129,7 +133,7 @@ main() {
   sha_cmd="$(sha256_cmd)"
   log "Generating SHA256SUMS"
   ( cd "${RELEASE_DIR}" \
-      && ${sha_cmd} "by-${version}.jar" "by-${version}-${platform}" "by-wrapper.sh" \
+      && ${sha_cmd} "by-${version}.jar" "by.jar" "by-${version}-${platform}" "by-wrapper.sh" \
         > "SHA256SUMS" )
 
   local build_ts
@@ -149,6 +153,7 @@ main() {
     echo ""
     echo "artifacts:"
     echo "  - by-${version}.jar"
+    echo "  - by.jar"
     echo "  - by-${version}-${platform}"
     echo "  - by-wrapper.sh"
     echo "  - SHA256SUMS"

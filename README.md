@@ -15,11 +15,13 @@ Brainyard is an agent-driven terminal UI for working with LLMs from the command 
 curl -fsSL https://raw.githubusercontent.com/grumatic/brainyard/main/bin/install.sh | bash
 ```
 
-This installs three files under `~/.local/bin`:
+On **macOS arm64** this installs the native binary under `~/.local/bin`:
 
 - `by` — the wrapper that sources nearby `.env` files and execs the real binary.
-- `by-bin` — the native (GraalVM) binary for your OS/arch.
+- `by-bin` — the native (GraalVM) binary.
 - `by.jar` *(optional, via `--with-jar`)* — the uberjar, used when `BY_JAR=1` for JVM-mode debugging.
+
+On other platforms (Linux, Intel macOS) — where a native binary isn't published yet — the installer automatically falls back to the **JVM uberjar**, installing a `by` launcher that runs `java -jar` (requires a JDK 21+ on `PATH`).
 
 Pin a specific version with `BY_VERSION=v0.2.0` before piping to bash. See [`docs/install.md`](docs/install.md) for manual install, checksum verification, and troubleshooting.
 
