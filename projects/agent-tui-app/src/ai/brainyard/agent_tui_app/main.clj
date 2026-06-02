@@ -696,6 +696,8 @@
 
 (def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions"})
 (def ^:private help-flags #{"--help" "-?" "-h"})
+;; `-v` is taken by `run --verbose`, so the short version flag is capital `-V`.
+(def ^:private version-flags #{"--version" "-V"})
 
 (defn- inject-bare-resume-sentinel
   "cli-matic treats `--resume` as a required-value option, so a bare
@@ -716,7 +718,17 @@
      []
      (range (count v)))))
 
+(declare -dispatch)
+
 (defn -main [& args]
+  ;; `--version`/`-V` is a global flag: short-circuit before dotenv loading and
+  ;; subcommand dispatch so it prints just the version (no `[dotenv]` noise) and
+  ;; never gets rerouted into the default `run` subcommand.
+  (if (contains? version-flags (first args))
+    (println (str "by " app-version))
+    (-dispatch args)))
+
+(defn- -dispatch [args]
   ;; Bridge project-local `.env` into JVM properties so the native `by`
   ;; binary picks up keys without the `bb` shell wrapper. Real env vars take
   ;; precedence; see dotenv.clj for resolution order.
