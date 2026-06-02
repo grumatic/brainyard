@@ -130,6 +130,38 @@
     (is (contains? (tool/get-tool-defs) :user$wc-test))
     (is (nil? (ut/ensure-loaded! :dirs test-dirs)))))
 
+(deftest management-list-read-delete
+  (ut/define-tool :name "wc-test" :description "Count words."
+    :input-schema [:map [:text :string]]
+    :body "(fn [{:keys [text]}] {:words 1})"
+    :dirs test-dirs)
+  (testing "list-user-tools + tools$list surface the registered user tool"
+    (is (some #(= "user$wc-test" (:id %)) (ut/list-user-tools)))
+    (is (some #(= "user$wc-test" (:id %)) (:tools (tool/invoke-tool :tools$list {})))))
+  (testing "read-user-tool returns the persisted source + schema"
+    (let [r (ut/read-user-tool test-dirs "wc-test")]
+      (is (= "wc-test" (:name r)))
+      (is (= [:map [:text :string]] (:input-schema r)))
+      (is (str/includes? (:body r) ":words"))))
+  (testing "tools$read / tools$delete require :name (registry Malli guard)"
+    (is (str/includes? (:error-message (tool/call-tool :tools$read {})) "missing required key"))
+    (is (str/includes? (:error-message (tool/call-tool :tools$delete {})) "missing required key")))
+  (testing "delete-user-tool! unregisters and removes the persisted source"
+    (let [edn (io/file (str (:project-dir test-dirs) "/.brainyard/tools/wc-test.edn"))]
+      (is (.exists edn))
+      (is (= {:deleted "wc-test"} (ut/delete-user-tool! test-dirs "wc-test")))
+      (is (not (contains? (tool/get-tool-defs) :user$wc-test)))
+      (is (not (.exists edn)))))
+  (testing "deleting a missing tool errors"
+    (is (str/includes? (:error (ut/delete-user-tool! test-dirs "nope")) "no user tool"))))
+
+(deftest tools-create-command
+  (testing "tools$create is registered as a command"
+    (is (contains? (tool/get-tool-defs) :tools$create)))
+  (testing "tools$create routes through define-tool (bad name -> :error, no disk write)"
+    (let [r (tool/call-tool :tools$create {:name "Bad Name" :body "(fn [_] 1)"})]
+      (is (str/includes? (:error r) "tools$create failed")))))
+
 (deftest rejects-bad-definitions
   (testing "invalid name"
     (is (thrown? Exception

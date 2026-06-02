@@ -15,7 +15,7 @@
   (:require [ai.brainyard.agent.common.plan :as plan]
             [ai.brainyard.agent.common.commands]
             [ai.brainyard.agent.common.tools]
-            [ai.brainyard.agent.common.user-tools :as user-tools]
+            [ai.brainyard.agent.common.user-tools]   ;; bare — registers tools$create/list/read/delete
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.session :as session]
             [ai.brainyard.agent.core.tool :as tool]
@@ -226,24 +226,6 @@
                             :server-name server-name}))
              {:doc "Invoke a tool by name. (call-tool \"name\" {:arg v ...}) or (call-tool \"name\" {:arg v} :source \"mcp\" :server-name \"foo\"). tool-args is a positional map of the target tool's arguments."
               :arglists '([tool-name tool-args & {:keys [source server-name]}])
-              :category :tools})
-           'define-tool
-           (with-meta
-             (fn [& {:keys [name description input-schema body]}]
-               (try
-                 (user-tools/define-tool :name name :description description
-                   :input-schema input-schema :body body
-                   :dirs (get-dirs agent)
-                   ;; expose every registered tool as a direct symbol in the body
-                   :extra-bindings (auto-tool-bindings agent))
-                 (catch Exception e {:error (str "define-tool failed: " (.getMessage e))})))
-             {:doc (str "Define a reusable, PERSISTENT tool from Clojure source. "
-                        ":name (lowercase-kebab), :description, :input-schema (Malli [:map ...]), "
-                        ":body (a string `(fn [args] ...)` taking one map). Survives restarts "
-                        "(source persisted to .brainyard/tools/), registers as `user$<name>` "
-                        "(callable directly as a tool on the next turn), and the body may compose "
-                        "other tools by their direct symbol, e.g. (bash {…}) or (user$other {…}).")
-              :arglists '([& {:keys [name description input-schema body]}])
               :category :tools}))))
 
 (defn make-usage-bindings

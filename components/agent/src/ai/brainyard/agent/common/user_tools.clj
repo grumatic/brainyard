@@ -28,7 +28,7 @@
    `deftool` uses, so user tools immediately show up in `list-tools` / `search`,
    flow through `call-tool`'s Malli coercion + hook/permission/depth guards, and
    get auto-bound into agent sandboxes as `user$<name>` callables."
-  (:require [ai.brainyard.agent.core.tool :as tool]
+  (:require [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
             [ai.brainyard.clj-sandbox.interface :as sb]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.edn :as edn]
@@ -220,3 +220,126 @@
     (when-not (contains? @!loaded dir)
       (swap! !loaded conj dir)
       (load-user-tools! :dirs dirs :extra-bindings extra-bindings))))
+
+;; ============================================================================
+;; Management (list / read / delete) — mirrors the skills$* command family
+;; ============================================================================
+
+(defn- current-dirs
+  "Resolve dirs from the current agent session, falling back to init-dirs!.
+   Uses requiring-resolve to avoid a static require cycle (sandbox-bindings,
+   which this ns is required by, sits above core.config in the load graph)."
+  []
+  (or (when-let [a (some-> (requiring-resolve 'ai.brainyard.agent.core.protocol/*current-agent*)
+                           deref)]
+        (some-> (:!session a) deref
+                ((or (requiring-resolve 'ai.brainyard.agent.core.session/get-session-config)
+                     (constantly nil))
+                 :dirs)))
+      ((or (requiring-resolve 'ai.brainyard.agent.core.config/init-dirs!)
+           (constantly {})))))
+
+(defn list-user-tools
+  "Summaries of every registered user-defined tool, sorted by id."
+  []
+  (->> (vals @tool/!tool-defs)
+       (filter #(get-in % [:meta :user-defined]))
+       (mapv (fn [td]
+               (let [m (:meta td)]
+                 {:id           (name (:id m))
+                  :description  (:description m)
+                  :input-schema (:input-schema m)})))
+       (sort-by :id)
+       vec))
+
+(defn read-user-tool
+  "Full record for one user tool — `{:name :description :input-schema :body}` —
+   read from the persisted source on disk, falling back to registry metadata
+   (without source) when the file is absent."
+  [dirs name]
+  (let [f (io/file (str (tools-dir dirs) "/" name ".edn"))]
+    (cond
+      (.exists f) (edn/read-string (slurp f))
+      (contains? @tool/!tool-defs (tool-id name))
+      (-> (select-keys (:meta (get @tool/!tool-defs (tool-id name)))
+                       [:description :input-schema])
+          (assoc :name name :body nil :note "source not on disk"))
+      :else {:error (str "no user tool named " (pr-str name))})))
+
+(defn delete-user-tool!
+  "Unregister a user tool and delete its persisted source. The orphaned
+   `__ut_<name>` / `user$<name>` sandbox vars are harmless (registry dispatch is
+   gone) and clear on the next sandbox rebuild."
+  [dirs name]
+  (let [id (tool-id name)]
+    (if (contains? @tool/!tool-defs id)
+      (let [f (io/file (str (tools-dir dirs) "/" name ".edn"))]
+        (swap! tool/!tool-defs dissoc id)
+        (when (.exists f) (.delete f))
+        (mulog/info ::delete-user-tool :id id)
+        {:deleted name})
+      {:error (str "no user tool named " (pr-str name))})))
+
+(defcommand tools$create
+  "Author a reusable, PERSISTENT tool from Clojure source. :body is a string
+   `(fn [args] ...)` taking one map; :input-schema is a Malli [:map ...]. The
+   tool survives restarts, registers as `user$<name>` (callable directly as a
+   tool on the next turn), and its body may compose other tools by their direct
+   symbol, e.g. (bash {…}) or (user$other {…})."
+  (fn [& {:as args}]
+    (try
+      (let [agent (some-> (requiring-resolve 'ai.brainyard.agent.core.protocol/*current-agent*)
+                          deref)
+            ;; runtime resolve avoids a static require cycle (sandbox-bindings
+            ;; requires this ns for registration); exposes the full tool palette
+            ;; as direct symbols inside the body's sandbox.
+            extra ((requiring-resolve 'ai.brainyard.agent.common.sandbox-bindings/auto-tool-bindings)
+                   agent)]
+        (define-tool :name (:name args)
+          :description (:description args)
+          :input-schema (:input-schema args)
+          :body (:body args)
+          :dirs (current-dirs)
+          :extra-bindings extra))
+      (catch Exception e {:error (str "tools$create failed: " (.getMessage e))})))
+  :input-schema  [:map
+                  [:name        [:string {:desc "lowercase-kebab tool name (no user$ prefix)"}]]
+                  [:body        [:string {:desc "Clojure source: a `(fn [args] ...)` of one map"}]]
+                  [:description {:optional true} [:string {:desc "one-line description"}]]
+                  [:input-schema {:optional true} [:any {:desc "Malli [:map ...] arg schema (default [:map])"}]]]
+  :output-schema [:map
+                  [:id        [:string {:desc "Registered tool id, e.g. user$shout"}]]
+                  [:name      [:string {:desc "Tool name"}]]
+                  [:persisted [:string {:desc "Path the source was written to"}]]
+                  [:error     [:string {:desc "Error if definition failed"}]]])
+
+(defcommand tools$list
+  "List user-defined tools (authored via tools$create). Returns id, description, schema."
+  (fn [& _] {:tools (list-user-tools)})
+  :input-schema  [:map]
+  :output-schema [:map [:tools [:any {:desc "Vector of {:id :description :input-schema}"}]]])
+
+(defcommand tools$read
+  "Read a user-defined tool's source + schema by name (without the user$ prefix)."
+  (fn [& {:as args}]
+    (if (str/blank? (:name args))
+      {:error "name is required"}
+      (read-user-tool (current-dirs) (:name args))))
+  :input-schema  [:map [:name [:string {:desc "User tool name, e.g. \"shout\" (no user$ prefix)"}]]]
+  :output-schema [:map
+                  [:name         [:string {:desc "Tool name"}]]
+                  [:description  [:string {:desc "Description"}]]
+                  [:input-schema [:any {:desc "Malli [:map ...] schema"}]]
+                  [:body         [:string {:desc "Clojure source `(fn [args] ...)`"}]]
+                  [:error        [:string {:desc "Error if not found"}]]])
+
+(defcommand tools$delete
+  "Delete a user-defined tool: unregister it and remove its persisted source."
+  (fn [& {:as args}]
+    (if (str/blank? (:name args))
+      {:error "name is required"}
+      (delete-user-tool! (current-dirs) (:name args))))
+  :input-schema  [:map [:name [:string {:desc "User tool name to delete (no user$ prefix)"}]]]
+  :output-schema [:map
+                  [:deleted [:string {:desc "Name of the deleted tool"}]]
+                  [:error   [:string {:desc "Error if not found"}]]])
