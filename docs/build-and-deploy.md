@@ -577,8 +577,7 @@ tag version matches `app-version`, `CHANGELOG-latest.md` is non-empty).
 Pending decisions before v1 ships — none block the design, all live in
 `grumatic/brainyard:docs/deploy-design.md §9`:
 
-- **License** — Apache-2.0 recommended, with NOTICE crediting upstream
-  OSS deps.
+- **License** — MIT, copyright Grumatic, Inc.
 - **Brick-set freezing** — commit a resolved brick list
   (`bin/.brick-set`) so accidental brick additions in upstream are
   caught at sync time.

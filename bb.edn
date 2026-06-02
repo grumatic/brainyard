@@ -1095,7 +1095,7 @@
 
   ;; --------------- License headers ---------------
   license:check
-  {:doc "Verify every in-scope source file carries the standard Apache-2.0
+  {:doc "Verify every in-scope source file carries the standard MIT
   license header. Exits non-zero with the list of offenders so CI can
   gate on it.
 
@@ -1104,7 +1104,7 @@
   and .shadow-cljs/.
 
   Detection sentinel is the SPDX line `;; SPDX-License-Identifier:
-  Apache-2.0` within the first 15 lines of the file, so the check is
+  MIT` within the first 15 lines of the file, so the check is
   year-agnostic and tolerant of future header tweaks above/below the
   marker."
    :task (do
@@ -1113,7 +1113,7 @@
              (System/exit (check *command-line-args*))))}
 
   license:add
-  {:doc "Prepend the standard Apache-2.0 license header to any in-scope
+  {:doc "Prepend the standard MIT license header to any in-scope
   source file that is missing it. Idempotent — files that already carry
   the SPDX sentinel are left alone, so re-running is safe.
 
@@ -1125,4 +1125,16 @@
    :task (do
            (load-file "scripts/license_header.clj")
            (let [add (resolve 'license-header/add)]
-             (System/exit (add *command-line-args*))))}}}
+             (System/exit (add *command-line-args*))))}
+
+  license:migrate
+  {:doc "One-time relicense migration: rewrite the legacy Apache-2.0 header
+  block to the current MIT header. Files without the legacy block are left
+  alone, so re-running is safe.
+
+  Usage: bb license:migrate              # apply changes
+         bb license:migrate --dry-run    # list files that would be touched"
+   :task (do
+           (load-file "scripts/license_header.clj")
+           (let [migrate (resolve 'license-header/migrate)]
+             (System/exit (migrate *command-line-args*))))}}}

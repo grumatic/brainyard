@@ -362,7 +362,7 @@ Resolved during the v0.2 reality check:
 
 Still open — these don't block the design, but need a call before v1 ships:
 
-1. **License** — which license should the public artifacts ship under? (MIT, Apache-2.0, or company-specific?) **Recommendation:** Apache-2.0, with NOTICE crediting upstream OSS deps.
+1. **License** — which license should the public artifacts ship under? (MIT, Apache-2.0, or company-specific?) **Resolved:** MIT, copyright Grumatic, Inc.
 2. **Public repo / org name** — confirm the GitHub coordinates. The design assumes `grumatic/brainyard`; if the public org is different the install URL and asset coordinates need to follow.
 3. **Brick set freezing** — the sync script's transitive-closure resolver is best-effort. Should we commit the resolved brick list (e.g. `bin/.brick-set`) so accidental brick additions in upstream are caught at sync time? **Recommendation:** yes, with the sync script diffing the resolved set against the committed list and refusing to proceed on mismatch unless `--allow-brick-set-change` is passed.
 4. **Windows support** — deferred per §7.2. Confirm we're OK shipping Linux + macOS in v1 and adding Windows in a follow-up.

@@ -1,5 +1,7 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
-;; SPDX-License-Identifier: Apache-2.0
+;; SPDX-License-Identifier: MIT
+;; Licensed under the MIT License. See LICENSE at the repository root.
+
 (ns ai.brainyard.clj-nrepl.classifier-test
   (:require [clojure.test :refer [deftest is testing]]
             [ai.brainyard.clj-nrepl.core.classifier :as cls]))

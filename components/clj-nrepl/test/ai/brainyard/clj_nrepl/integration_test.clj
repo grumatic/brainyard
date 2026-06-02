@@ -1,5 +1,7 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
-;; SPDX-License-Identifier: Apache-2.0
+;; SPDX-License-Identifier: MIT
+;; Licensed under the MIT License. See LICENSE at the repository root.
+
 (ns ai.brainyard.clj-nrepl.integration-test
   "End-to-end smoke for the Phase-1 surface — start server, route through
    code$eval, exercise both the registry (:nrepl arm) and the CoAct fence

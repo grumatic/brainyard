@@ -1,5 +1,6 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
-;; SPDX-License-Identifier: Apache-2.0
+;; SPDX-License-Identifier: MIT
+;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent-tui-app.main-test
   "Unit tests for the project entry-point's pure CLI helpers.

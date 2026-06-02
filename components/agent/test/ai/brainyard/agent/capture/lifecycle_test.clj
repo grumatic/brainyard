@@ -1,8 +1,6 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
-;; SPDX-License-Identifier: Apache-2.0
-;; Licensed under the Apache License, Version 2.0 (the "License"); you may
-;; not use this file except in compliance with the License. See LICENSE at
-;; the repository root and CONTRIBUTING.md for contribution terms.
+;; SPDX-License-Identifier: MIT
+;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent.capture.lifecycle-test
   "Tests that the memory capture pipeline starts/stops automatically with

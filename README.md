@@ -77,9 +77,13 @@ bin/release-stage.sh              # stage release/ artifacts + BUILD-INFO.txt
 
 Run the test suite with `bb test`. See [`CLAUDE.md`](CLAUDE.md) for the build/release pipeline and tagging discipline, and [`docs/`](docs/) for architecture and design notes.
 
+## Contributing
+
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development setup, workspace layout, and PR conventions.
+
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). Copyright 2024-2026 Grumatic, Inc.
+Licensed under the [MIT License](LICENSE). Copyright (c) 2024-2026 Grumatic, Inc.
 
 ## Acknowledgements
 

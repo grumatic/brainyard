@@ -1,10 +1,8 @@
 #!/usr/bin/env bb
 
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
-;; SPDX-License-Identifier: Apache-2.0
-;; Licensed under the Apache License, Version 2.0 (the "License"); you may
-;; not use this file except in compliance with the License. See LICENSE at
-;; the repository root and CONTRIBUTING.md for contribution terms.
+;; SPDX-License-Identifier: MIT
+;; Licensed under the MIT License. See LICENSE at the repository root.
 
 ;; drive-scenario.bb — scenario parser, planner, and tmux driver for asciinema
 ;; tutorial recording. The shell orchestrator (record-scenario.sh) owns the

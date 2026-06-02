@@ -2,6 +2,12 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Relicensed from Apache-2.0 to MIT.** The project now ships under the [MIT License](LICENSE), copyright Grumatic, Inc. The `LICENSE` file, all source-file SPDX headers, and the `bb license:*` tooling were updated accordingly; the Apache-specific `NOTICE` file was removed. A `bb license:migrate` task performs the one-time header rewrite. Note: MIT carries no express patent grant, unlike Apache-2.0.
+
 ## [v0.2.3] — 2026-06-01
 
 ### Added
