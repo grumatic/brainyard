@@ -22,7 +22,9 @@
    take a snapshot before calling."
   (:require [ai.brainyard.agent-tui.bootstrap :as boot]
             [ai.brainyard.agent-tui.smoke-test :as smoke]
-            [ai.brainyard.agent.core.config :as core-config]
+            ;; Depend on the agent brick via its interface (Polylith rule);
+            ;; init-dirs!/read-edn-config/write-edn-config! are re-exported there.
+            [ai.brainyard.agent.interface :as core-config]
             [ai.brainyard.env-detect.interface :as env]))
 
 ;; ============================================================================
