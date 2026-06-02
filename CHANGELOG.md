@@ -2,11 +2,20 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [v0.2.4] — 2026-06-03
+
+### Added
+
+- **User-defined tools.** The agent can now author its own tools at runtime: `tools$create` takes Clojure source and turns it into a first-class, persistent, discoverable tool (auto-bound as `user$<name>`, flowing through the same Malli coercion, hook/permission, and depth guards as built-ins). Because SCI closures aren't EDN-serializable, the tool *source* is persisted to `.brainyard/tools/<name>.edn` and re-evaled in a dedicated sandbox to rehydrate on call and at session boot. A uniform `tools$create` / `tools$list` / `tools$read` / `tools$delete` command family (mirroring `skills$*`) manages them.
 
 ### Changed
 
-- **Relicensed from Apache-2.0 to MIT.** The project now ships under the [MIT License](LICENSE), copyright Grumatic, Inc. The `LICENSE` file, all source-file SPDX headers, and the `bb license:*` tooling were updated accordingly; the Apache-specific `NOTICE` file was removed. A `bb license:migrate` task performs the one-time header rewrite. Note: MIT carries no express patent grant, unlike Apache-2.0.
+- **Relicensed from Apache-2.0 to MIT.** The project now ships under the [MIT License](LICENSE), copyright Grumatic, Inc. The `LICENSE` file, all source-file SPDX headers, and the `bb license:*` tooling were updated accordingly; the Apache-specific `NOTICE` file was removed, and a `CONTRIBUTING.md` was added (inbound = outbound MIT). A `bb license:migrate` task performs the one-time header rewrite. Note: MIT carries no express patent grant, unlike Apache-2.0.
+
+### Fixed
+
+- **Installer JVM fallback.** `bin/install.sh` now falls back to the JVM uberjar on platforms with no published native binary (Linux, Intel macOS), installing a `by` launcher that runs `java -jar` (requires JDK 21+). A stable `by.jar` alias is staged alongside the versioned asset.
+- **Polylith workspace check.** Resolved `check` errors 101 (route `bootstrap-driver` through the `agent` interface) and 107 (declare `clj-http-native` explicitly in the project deps). `bb poly check` is now clean.
 
 ## [v0.2.3] — 2026-06-01
 
