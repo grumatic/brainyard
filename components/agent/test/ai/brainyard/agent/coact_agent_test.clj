@@ -13,6 +13,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.string :as str]
             [ai.brainyard.agent.common.coact-agent :as rca]
+            [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.protocol :as tp]
@@ -30,9 +31,16 @@
     {:result (str "echo: " text)})
   :input-schema [:map [:text [:string {:desc "Text to echo"}]]])
 
+(tool/defcommand test-coact-enum
+  "Echo back the chosen mode — used to exercise a keyword-member [:enum] field
+   through both CoAct dispatch channels."
+  (fn [& {:keys [mode]}]
+    {:mode mode :result (str "mode=" mode)})
+  :input-schema [:map [:mode [:enum {:desc "Mode"} :alpha :beta]]])
+
 (defn cleanup-test-tools [f]
   (f)
-  (swap! tool/!tool-defs dissoc :test-coact-echo))
+  (swap! tool/!tool-defs dissoc :test-coact-echo :test-coact-enum))
 
 (defn reset-task-manager [f]
   ;; Post-Step-F, run-clj-sandbox-block / run-script-block dispatch through the
@@ -1298,3 +1306,42 @@
           (is (str/includes? block "from iter 2"))
           (is (str/includes? block "task-id="))
           (is (str/includes? (first (:code compact)) "from iter 2")))))))
+
+;; ============================================================================
+;; Enum dispatch through BOTH CoAct channels (regression for the keyword->enum
+;; tool-field work). A JSON tool-call delivers the enum value as a wire STRING;
+;; a sandbox code-fence delivers it as a KEYWORD. The bidirectional :enum
+;; decoder must accept both forms and reject out-of-vocabulary values before the
+;; handler runs — identically on each path.
+;; ============================================================================
+
+(deftest coact-enum-dispatch-tool-path
+  (testing "tool-calls channel: string enum arg coerces to keyword; bad value rejected"
+    (let [st (atom {:tool-calls [{:tool-name "test-coact-enum" :tool-args {:mode "alpha"}}
+                                 {:tool-name "test-coact-enum" :tool-args {:mode "bogus"}}]
+                    :iteration-count 1})]
+      (rca/coact-tool-dispatch-action {:st-memory st :agent nil})
+      (let [[ok bad] (:last-tool-results @st)]
+        (is (str/includes? (:tool-result ok) "mode=:alpha")
+            "wire string \"alpha\" must reach the handler as keyword :alpha")
+        (is (str/includes? (:tool-result bad) "should be either")
+            "out-of-enum string is rejected at the Malli layer")))))
+
+(deftest coact-enum-dispatch-code-path
+  (testing "code-blocks channel: keyword enum arg passes through; bad value rejected"
+    (let [bindings (sb-bind/make-tool-bindings nil)
+          sandbox  (clj-sandbox/create-sandbox :bindings bindings)
+          st (atom {:sandbox sandbox
+                    :code-blocks (str "```clojure\n"
+                                      "(:mode (test-coact-enum {:mode :alpha}))\n"
+                                      "```\n"
+                                      "```clojure\n"
+                                      "(test-coact-enum {:mode :bogus})\n"
+                                      "```")
+                    :iteration-count 1})]
+      (rca/coact-code-eval-action {:st-memory st :agent nil})
+      (let [[ok bad] (:last-eval-results @st)]
+        (is (= ":alpha" (:result ok))
+            "code-fence keyword :alpha reaches the handler and is echoed")
+        (is (str/includes? (str (:result bad)) "should be either")
+            "out-of-enum keyword is rejected at the Malli layer")))))
