@@ -54,6 +54,24 @@
     (is (= {:scope :auto} (decode [:map [:scope [:maybe :keyword]]] {"scope" "auto"})))
     (is (= {:scope nil}   (decode [:map [:scope [:maybe :keyword]]] {"scope" nil})))))
 
+(deftest llm-args-transformer-enum-dual-form
+  ;; Enum fields are reached as a wire STRING (JSON tool-call) or a KEYWORD
+  ;; (sandbox code-fence). The :enum decoder reconciles either to the enum's
+  ;; OWN member type, and — like the :keyword decoder — strips a hedged leading
+  ;; colon. The colon case is the one mt/string-transformer gets wrong on its
+  ;; own (":b" -> ::b), so a keyword-[:enum] field can gain enum guidance while
+  ;; still handing the handler the keyword it expects.
+  (testing "keyword-member enum: string / colon-string / keyword all -> keyword member"
+    (is (= {:rung :b} (decode [:map [:rung [:enum :a :b :c]]] {"rung" "b"})))
+    (is (= {:rung :b} (decode [:map [:rung [:enum :a :b :c]]] {"rung" ":b"})))
+    (is (= {:rung :b} (decode [:map [:rung [:enum :a :b :c]]] {"rung" :b})))
+    (is (not= ::b (:rung (decode [:map [:rung [:enum :a :b :c]]] {"rung" ":b"})))
+        "must strip the colon, not namespace-qualify like mt/string-transformer"))
+  (testing "string-member enum: keyword / colon-string / string all -> name string"
+    (is (= {:src "mcp"} (decode [:map [:src [:enum "mcp" "reg"]]] {"src" :mcp})))
+    (is (= {:src "mcp"} (decode [:map [:src [:enum "mcp" "reg"]]] {"src" ":mcp"})))
+    (is (= {:src "mcp"} (decode [:map [:src [:enum "mcp" "reg"]]] {"src" "mcp"})))))
+
 (deftest llm-args-transformer-nested-coercions
   ;; Coverage for cases C & D — nested keyword / vector-of-keyword schemas.
   ;; Without the transformer these would Malli-reject just like the trace bug.

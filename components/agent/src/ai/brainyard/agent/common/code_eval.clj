@@ -80,7 +80,7 @@
         (sandbox-arm-error code))))
   :input-schema  [:map
                   [:code [:string {:desc "Clojure code to evaluate."}]]
-                  [:backend {:optional true} [:keyword {:desc ":sandbox (default, safe) | :nrepl (live runtime, gated)." :default :sandbox}]]
+                  [:backend {:optional true} [:enum {:desc "Eval backend (default :sandbox)." :default :sandbox} :sandbox :nrepl]]
                   [:session {:optional true} [:string {:desc "nREPL session id for stateful :nrepl sequences."}]]
                   [:timeout-ms {:optional true} :int]]
   :output-schema [:map

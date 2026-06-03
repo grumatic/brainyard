@@ -341,7 +341,7 @@
                   :user    (one-scope-read :user    dirs)}
         {:error (str "Unknown scope: " scope*)})))
   :input-schema  [:map
-                  [:scope       {:optional true} [:keyword {:desc "One of :project :user :both (default :both)"}]]
+                  [:scope       {:optional true} [:enum {:desc "Scope (default :both)"} :project :user :both]]
                   [:project-dir {:optional true} [:string  {:desc "Override project dir (tests)"}]]]
   :output-schema [:map
                   [:project {:optional true} [:map     {:desc "BRAINYARD.md state at project scope"}]]
@@ -379,7 +379,7 @@
        :found   (vec (filter :exists? stated))
        :missing (vec (remove :exists? stated))}))
   :input-schema  [:map
-                  [:scope       {:optional true} [:keyword {:desc "One of :project :user :both (default :both)"}]]
+                  [:scope       {:optional true} [:enum {:desc "Scope (default :both)"} :project :user :both]]
                   [:project-dir {:optional true} [:string  {:desc "Override project dir (tests)"}]]]
   :output-schema [:map
                   [:scope   :keyword]
@@ -444,7 +444,7 @@
          :after      proposed
          :size       {:before (count current) :after (count proposed)}})))
   :input-schema  [:map
-                  [:scope       {:optional true} [:keyword {:desc ":project or :user (default :project)"}]]
+                  [:scope       {:optional true} [:enum {:desc "Scope (default :project)"} :project :user]]
                   [:proposed    [:string  {:desc "The full proposed BRAINYARD.md body"}]]
                   [:project-dir {:optional true} [:string  {:desc "Override project dir (tests)"}]]]
   :output-schema [:map
@@ -561,7 +561,7 @@
             {:ok? false :error (str "No .brainyard/ dir for scope " scope*)}
             (take-snapshot! base scope* reason dirs))))))
   :input-schema  [:map
-                  [:scope       {:optional true} [:keyword {:desc ":project or :user (default :project)"}]]
+                  [:scope       {:optional true} [:enum {:desc "Scope (default :project)"} :project :user]]
                   [:reason      [:string  {:desc "Short why (used in filename slug)"}]]
                   [:project-dir {:optional true} :string]]
   :output-schema [:map
@@ -593,7 +593,7 @@
        :scope     scope*
        :base-dirs (mapv second pairs)}))
   :input-schema  [:map
-                  [:scope       {:optional true} [:keyword {:desc ":project :user :both (default :both)"}]]
+                  [:scope       {:optional true} [:enum {:desc "Scope (default :both)"} :project :user :both]]
                   [:limit       {:optional true} [:int     {:desc "Cap on results (default 20)"}]]
                   [:project-dir {:optional true} :string]]
   :output-schema [:map
@@ -651,7 +651,7 @@
                   :user    (smoke-test-scope :user    dirs)}
         {:error (str "Unknown scope: " scope)})))
   :input-schema  [:map
-                  [:scope       {:optional true} [:keyword {:desc ":project :user :both (default :both)"}]]
+                  [:scope       {:optional true} [:enum {:desc "Scope (default :both)"} :project :user :both]]
                   [:project-dir {:optional true} :string]]
   :output-schema [:map
                   [:project {:optional true} :map]
@@ -752,7 +752,7 @@
                 {:ok? false :error (.getMessage t)})))))))
   :input-schema  [:map
                   [:snapshot-path {:optional true} [:string  {:desc "Absolute path to a snapshot .md"}]]
-                  [:scope         {:optional true} [:keyword {:desc "Scope when using :steps"}]]
+                  [:scope         {:optional true} [:enum {:desc "Scope when using :steps"} :project :user]]
                   [:steps         {:optional true} [:int     {:desc "1 = most-recent at scope, 2 = next-older, ..."}]]
                   [:project-dir   {:optional true} :string]]
   :output-schema [:map
@@ -1120,8 +1120,8 @@
                       (catch Throwable t
                         {:ok? false :stage :write :error (.getMessage t)})))))))))))
   :input-schema  [:map
-                  [:scope          {:optional true} [:keyword {:desc ":project or :user (default :project)"}]]
-                  [:op             {:optional true} [:keyword {:desc ":init :append :curate :reseed :replace-section (default :init)"}]]
+                  [:scope          {:optional true} [:enum {:desc "Scope (default :project)"} :project :user]]
+                  [:op             {:optional true} [:enum {:desc "Op (default :init)"} :init :append :curate :reseed :replace-section]]
                   [:body           [:string  {:desc "Full proposed BRAINYARD.md body"}]]
                   [:reason         [:string  {:desc "Short why (used for snapshot slug + dossier)"}]]
                   [:confirm?       {:optional true} [:boolean {:desc "Required true (or :auto? + small append) to actually write"}]]

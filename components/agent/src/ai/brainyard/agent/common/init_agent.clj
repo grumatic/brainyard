@@ -329,8 +329,8 @@ Your answer body is markdown. Be terse. Lead with the outcome.")
   :input-schema  [:map
                   [:question      [:string  {:desc "User request about BRAINYARD.md"}]]
                   [:agent-context {:optional true} [:string  {:desc "Optional handoff context (e.g. from explore-agent)"}]]
-                  [:scope         {:optional true} [:keyword {:desc ":project, :user, or :both — passed through to init$* calls when supplied"}]]
-                  [:op            {:optional true} [:keyword {:desc ":init|:append|:curate|:reseed|:replace-section — pre-classified op (rare)"}]]
+                  [:scope         {:optional true} [:enum {:desc "Scope passed through to init$* calls when supplied"} :project :user :both]]
+                  [:op            {:optional true} [:enum {:desc "Pre-classified op (rare)"} :init :append :curate :reseed :replace-section]]
                   [:confirm?      {:optional true} [:boolean {:desc "Pre-approved write (programmatic callers)"}]]
                   [:auto?         {:optional true} [:boolean {:desc "Skip interactive :confirm? gates (--auto mode)"}]]]
   :output-schema [:map

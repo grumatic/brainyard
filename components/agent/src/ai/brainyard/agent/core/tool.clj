@@ -618,14 +618,18 @@
    routinely hedge by sending either `\"a\"` or `\":a\"` for a keyword field —
    both should yield `:a`.
 
-   The `:enum` decoder handles the dual calling convention for string-member
-   enums: a JSON tool-call delivers the value as a wire STRING (`\"gates\"`),
-   while a sandbox code-fence delivers it as a KEYWORD (`:gates`) because the
-   agent writes Clojure. It normalizes a keyword — or a colon-hedged string
-   `\":gates\"` — to its bare name so either form satisfies `[:enum \"gates\" …]`.
-   Guarded: it only fires for all-string enums, and only substitutes when the
-   normalized form is a real member — non-string enums and genuinely-invalid
-   values pass through untouched so validation still reports a clean error."
+   The `:enum` decoder handles the dual calling convention: a JSON tool-call
+   delivers the value as a wire STRING (`\"gates\"`), while a sandbox code-fence
+   delivers it as a KEYWORD (`:gates`) because the agent writes Clojure. It
+   reconciles whichever form arrives to the enum's own member type so either
+   satisfies `m/explain`:
+     - string-member enum `[:enum \"a\" \"b\"]`  → keyword/colon-string → bare name
+     - keyword-member enum `[:enum :a :b]`       → string/colon-string → keyword
+   Keyword-member enums let a `[:keyword]` field gain enum guidance without
+   changing what the handler receives (still a keyword). Guarded: each branch
+   fires only for a homogeneously-typed enum and only substitutes when the
+   normalized form is a real member — mixed enums and genuinely-invalid values
+   pass through untouched so validation still reports a clean error."
   (mt/transformer
    {:name :llm-keyword
     :decoders
@@ -637,14 +641,24 @@
      :enum
      {:compile
       (fn [schema _]
-        (let [members (set (m/children schema))]
-          (when (every? string? members)
+        (let [members  (set (m/children schema))
+              strip    (fn [v] (if (str/starts-with? v ":") (subs v 1) v))]
+          (cond
+            (every? string? members)
             (fn [v]
-              (let [s (cond
-                        (keyword? v)                               (name v)
-                        (and (string? v) (str/starts-with? v ":")) (subs v 1)
-                        :else                                      v)]
-                (if (contains? members s) s v))))))}}}
+              (let [s (cond (keyword? v) (name v)
+                            (string? v)  (strip v)
+                            :else        v)]
+                (if (contains? members s) s v)))
+
+            (every? keyword? members)
+            (fn [v]
+              (if (string? v)
+                (let [k (keyword (strip v))]
+                  (if (contains? members k) k v))
+                v))
+
+            :else nil)))}}}
    mt/string-transformer))
 
 ;; ============================================================================

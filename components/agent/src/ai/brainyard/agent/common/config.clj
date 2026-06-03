@@ -386,8 +386,8 @@
                 info (assoc :path  (:path info)
                             :mtime (:mtime info)))))))))
   :input-schema  [:map
-                  [:section {:optional true} [:keyword {:desc "One of :all :llm :permissions :agent :mcp :environment :bootstrap (default :all)"}]]
-                  [:scope {:optional true} [:keyword {:desc ":project | :user | :auto (default :auto = project-if-exists-else-user)"}]]
+                  [:section {:optional true} [:enum {:desc "Config section (default :all)"} :all :llm :permissions :agent :mcp :environment :bootstrap]]
+                  [:scope {:optional true} [:enum {:desc "Config scope (default :auto = project-if-exists-else-user)"} :project :user :auto]]
                   [:project-dir {:optional true} [:string {:desc "Override project dir (tests)"}]]]
   :output-schema [:map
                   [:persisted [:map {:desc "Requested slice of config.edn"}]]
@@ -481,7 +481,7 @@
              :config-dir      (:config-dir scope*)})))))
   :input-schema  [:map
                   [:proposed [:map {:desc "Partial map deep-merged over current config"}]]
-                  [:scope {:optional true} [:keyword {:desc ":project | :user | :auto (default :auto)"}]]
+                  [:scope {:optional true} [:enum {:desc "Config scope (default :auto)"} :project :user :auto]]
                   [:project-dir {:optional true} [:string {:desc "Override project dir (tests)"}]]]
   :output-schema [:map
                   [:diff [:string {:desc "Unified-diff text"}]]
@@ -598,7 +598,7 @@
                      :requested-scope (:requested scope*))))))))
   :input-schema  [:map
                   [:reason [:string {:desc "Short why (used in filename slug)"}]]
-                  [:scope {:optional true} [:keyword {:desc ":project | :user | :auto (default :auto)"}]]
+                  [:scope {:optional true} [:enum {:desc "Config scope (default :auto)"} :project :user :auto]]
                   [:base-dir {:optional true} [:string {:desc "Override base dir directly (advanced)"}]]
                   [:project-dir {:optional true} [:string {:desc "Override project dir; sets base-dir to <project>/.brainyard"}]]]
   :output-schema [:map
@@ -650,7 +650,7 @@
            :requested-scope (:requested scope*)}))))
   :input-schema  [:map
                   [:limit {:optional true} [:int {:desc "Cap on results (default 20)"}]]
-                  [:scope {:optional true} [:keyword {:desc ":project | :user | :auto (default :auto)"}]]
+                  [:scope {:optional true} [:enum {:desc "Config scope (default :auto)"} :project :user :auto]]
                   [:base-dir {:optional true} [:string {:desc "Override base dir directly"}]]
                   [:project-dir {:optional true} [:string {:desc "Override project dir; sets base-dir to <project>/.brainyard"}]]]
   :output-schema [:map
@@ -744,7 +744,7 @@
   :input-schema  [:map
                   [:snapshot-path {:optional true} [:string {:desc "Absolute path to a snapshot .edn"}]]
                   [:steps {:optional true} [:int {:desc "1 = most-recent snapshot, 2 = next-older, ..."}]]
-                  [:scope {:optional true} [:keyword {:desc ":project | :user | :auto (default :auto)"}]]
+                  [:scope {:optional true} [:enum {:desc "Config scope (default :auto)"} :project :user :auto]]
                   [:base-dir {:optional true} [:string {:desc "Override base dir directly"}]]
                   [:project-dir {:optional true} [:string {:desc "Override project dir; sets base-dir to <project>/.brainyard"}]]]
   :output-schema [:map
@@ -1191,7 +1191,7 @@
                   [:expected-mtime {:optional true} [:int {:desc "If supplied, refuse the write when file mtime differs"}]]
                   [:question {:optional true} [:string {:desc "User question (recorded in dossier frontmatter)"}]]
                   [:session-id {:optional true} [:string {:desc "Agent session id (recorded in dossier)"}]]
-                  [:scope {:optional true} [:keyword {:desc ":project | :user | :auto (default :auto)"}]]
+                  [:scope {:optional true} [:enum {:desc "Config scope (default :auto)"} :project :user :auto]]
                   [:project-dir {:optional true} [:string {:desc "Override project dir (tests)"}]]]
   :output-schema [:map
                   [:ok? :boolean]
@@ -1292,7 +1292,7 @@
           r)
         {:error "bootstrap-driver not on classpath (agent-tui base not loaded)."})))
   :input-schema  [:map
-                  [:rung [:keyword {:desc ":a :b :c :d :e :f"}]]
+                  [:rung [:enum {:desc "Bootstrap rung"} :a :b :c :d :e :f]]
                   [:provider {:optional true} [:keyword {:desc "Force a specific provider (rung b)"}]]
                   [:model {:optional true} [:string {:desc "Force a specific model"}]]
                   [:auto? {:optional true} [:boolean {:desc "Allow rung (e) install/pull without prompts"}]]
