@@ -369,7 +369,7 @@
           a (@#'agent-core/create-agent "u1" "s1" "async-5" :config {:name "Async"})
           _ (agent/start-agent a)]
       ;; Wrap ask to track execution order
-      (with-redefs [agent-core/ask (fn [ag input]
+      (with-redefs [agent-core/ask (fn [ag input & _]
                                      (swap! order conj input)
                                      (Thread/sleep 50)
                                      {:result input})]
@@ -388,7 +388,7 @@
   (testing "Exception in ask is captured in output as :error"
     (let [a (@#'agent-core/create-agent "u1" "s1" "async-err-1" :config {:name "Err"})
           _ (agent/start-agent a)]
-      (with-redefs [agent-core/ask (fn [_ _] (throw (ex-info "boom" {})))]
+      (with-redefs [agent-core/ask (fn [_ _ & _] (throw (ex-info "boom" {})))]
         (let [clj-ag (agent/ask-async a "fail")]
           (await clj-ag)
           (is (= "boom" (:error (:output @clj-ag))))))
@@ -399,7 +399,7 @@
           _ (agent/start-agent a)
           call-count (atom 0)]
       ;; First call throws
-      (with-redefs [agent-core/ask (fn [_ _]
+      (with-redefs [agent-core/ask (fn [_ _ & _]
                                      (swap! call-count inc)
                                      (throw (ex-info "transient failure" {})))]
         (let [clj-ag (agent/ask-async a "fail")]
@@ -407,7 +407,7 @@
           (is (= "transient failure" (:error (:output @clj-ag))))))
 
       ;; Second call succeeds — agent is still alive
-      (with-redefs [agent-core/ask (fn [_ input] {:answer input})]
+      (with-redefs [agent-core/ask (fn [_ input & _] {:answer input})]
         (let [clj-ag (agent/ask-async a "recover")]
           (await clj-ag)
           (is (= {:answer "recover"} (:output @clj-ag)))
@@ -417,7 +417,7 @@
   (testing "Error mode :continue keeps agent functional across multiple failures"
     (let [a (@#'agent-core/create-agent "u1" "s1" "async-err-3" :config {:name "Err"})
           _ (agent/start-agent a)]
-      (with-redefs [agent-core/ask (fn [_ input]
+      (with-redefs [agent-core/ask (fn [_ input & _]
                                      (if (= input "bad")
                                        (throw (ex-info "bad input" {}))
                                        {:answer input}))]
