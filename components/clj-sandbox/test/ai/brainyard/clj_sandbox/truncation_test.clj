@@ -24,9 +24,12 @@
       (is (str/includes? result "TRUNCATED"))
       (is (str/includes? result "test data TRUNCATED"))
       (is (str/includes? result (str (count big))))
-      ;; Result should contain a recovery path
+      ;; Result should contain a recovery path. The temp dir is project-scoped
+      ;; (<project>/.brainyard/temp/clj-sandbox/truncation/) when the agent
+      ;; component resolves, else the /tmp fallback — either way the content
+      ;; `class` is a path segment.
       (is (str/includes? result "read-file"))
-      (is (str/includes? result "/tmp/"))
+      (is (str/includes? result "/test-class/"))
       (is (str/includes? result "test-class"))
       ;; Extract the path and verify the file exists with original content
       (let [path-match (re-find #"Full content saved to: ([^\s]+)" result)
@@ -48,8 +51,13 @@
       (is (str/ends-with? result "TTTTTTTTTTTTTTTTTTTT")))))
 
 (deftest truncate-to-file-working-dir-binding-test
-  (testing "*working-dir* affects temp directory path"
-    (binding [trunc/*working-dir* "/test/project"]
-      (let [big (apply str (repeat 500 "x"))
-            result (trunc/truncate-to-file big 100 "bound-test")]
-        (is (str/includes? result "test_project"))))))
+  (testing "*working-dir* namespaces the /tmp fallback path when no project dir resolves"
+    ;; The project-scoped path is preferred; *working-dir* only drives the
+    ;; legacy /tmp fallback, so force that branch by making the project-dir
+    ;; resolver return nil.
+    (with-redefs-fn {#'trunc/resolve-project-clj-sandbox-dir (constantly nil)}
+      (fn []
+        (binding [trunc/*working-dir* "/test/project"]
+          (let [big (apply str (repeat 500 "x"))
+                result (trunc/truncate-to-file big 100 "bound-test")]
+            (is (str/includes? result "/tmp/test_project/"))))))))
