@@ -87,7 +87,7 @@
    ;; display mode and returns a :status :pending snapshot. The work keeps
    ;; running; a later iteration harvests the resolved result. The LLM can
    ;; poll via `task$detail` or stop via `task$cancel` at any time.
-   :auto-background-timeout-ms {:type "integer" :default 30000}
+   :auto-background-timeout-ms {:type "integer" :default 120000}
    ;; Fast-eval threshold (ms). Clojure code blocks are evaluated inline
    ;; first; only promoted to a tracked task if they exceed this timeout.
    ;; Set to 0 to disable (always create a task). Does not apply to bash.

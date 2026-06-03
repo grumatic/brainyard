@@ -251,7 +251,7 @@ CODE-BLOCK LIFECYCLE — AUTO-BACKGROUND DETACH
 ---------------------------------------------------------------------------
 Each code block runs as a task in synchronous foreground mode (you see its
 live output). If the block has not finished by the agent's
-`:auto-background-timeout-ms` (configurable; 30s default), the runner
+`:auto-background-timeout-ms` (configurable; 120s default), the runner
 detaches into background — the task keeps executing, but you get a
 `:status :pending :task-id <id>` eval-entry back immediately so the loop
 can continue. A LATER iteration receives the resolved result as an
@@ -620,7 +620,7 @@ and the results (return value, stdout, or error) are sent back for the next iter
 - **Errors are non-fatal**: Exceptions show the error message; sandbox state is preserved.
 - **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied.
 - **Auto-background detach**: a block that hasn't finished by the agent's
-  `:auto-background-timeout-ms` (default 30s) detaches into the background; the
+  `:auto-background-timeout-ms` (default 120s) detaches into the background; the
   resolved result is harvested into a later iteration as an `[↺ async-completion]`
   record. Wait for it; do NOT poll repeatedly.")
 
@@ -652,7 +652,7 @@ reflection, every loaded namespace, and arbitrary interop are all reachable.
   tool-call channel for registered tools, and refer to library functions
   by their full namespace (`clojure.pprint/pprint`, not bare `pprint`).
 - **Auto-background detach**: a block that hasn't returned by the agent's
-  `:auto-background-timeout-ms` (default 30s) detaches into the background;
+  `:auto-background-timeout-ms` (default 120s) detaches into the background;
   the underlying nREPL session keeps running and the resolved result is
   harvested into a later iteration as an `[↺ async-completion]` record.
   Wait for it; do NOT poll repeatedly.")

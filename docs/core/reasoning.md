@@ -355,7 +355,7 @@ The sandbox is **permission-gated**, not sealed:
 - **Auto-background detach**: every code block (clojure / bash / python /
   javascript) runs as a task in synchronous foreground mode. If it has
   not finished by the agent's `:auto-background-timeout-ms` (default
-  30 s), the runner detaches into the background — the task keeps
+  120 s), the runner detaches into the background — the task keeps
   running, the eval-entry surfaces `{:status :pending :task-id <id>}`,
   and the iteration loop continues. `coact-inc-iter-action` calls
   `harvest-pending-tasks!` at the start of each subsequent iteration;
