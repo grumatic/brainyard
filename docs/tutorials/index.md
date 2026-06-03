@@ -506,6 +506,33 @@ One front door; the right specialist behind it each time.
 
 _Recorded against `by` version: `v0.1.1-274-g8886b92`._
 
+---
+
+## Authoring a persistent tool with the tool-agent
+
+The tool-agent lists user-defined tools, authors a new persistent tool from a plain-English request, then reads it back and runs it — recorded live against claude-code/opus.
+
+The tool-agent walks the full user-defined-tool lifecycle across three turns.
+
+**Turn 1 — discover.** Lists the persistent tools already registered for the
+project (the `user$` namespace under `<project>/.brainyard/tools/`).
+
+**Turn 2 — author.** From a plain-English request, it authors a new
+`count-words` tool — a `(fn [args] …)` body plus a Malli `:input-schema`,
+persisted to `<project>/.brainyard/tools/count-words.edn` and registered as
+`user$count-words` (callable directly as a first-class tool on the next turn).
+
+**Turn 3 — verify & use.** Reads the tool definition it just wrote back, then
+invokes `user$count-words` on a real file to show it working end-to-end. (The
+demo tool is removed after recording so it isn't committed.)
+
+<div class="ascii-cast"
+     data-cast="casts/18-creating-tools.cast"
+     data-cols="100" data-rows="32"
+     data-idle="2.5" data-poster="npt:1:42"></div>
+
+_Recorded against `by` version: `v0.2.4-18-gdea2ab8-dirty`._
+
 
 <script src="assets/asciinema-player.min.js"></script>
 <script>

@@ -26,6 +26,16 @@ walkthrough.
 | 06 | From plan to todos                         | todo-agent — ordered todos + R1–R7 rubric                |
 | 07 | Multi-turn with the native `by` binary     | native `by` — basic tools → functional → coordinate      |
 | 08 | Coordinating specialists with research     | research-agent — multi-specialist threaded dossier       |
+| 09 | Using MCP servers                          | coact-agent — search & read over a remote MCP server     |
+| 10 | Using CLI skills                           | coact-agent — discover / invoke (as a task) / use        |
+| 11 | Authoring BRAINYARD.md                      | init-agent — generate project docs from README + source  |
+| 12 | Configuring brainyard                      | config-agent — inspect defaults / change safely / persist|
+| 13 | Editing files safely                       | update-agent — find/replace with a diff, def + call site |
+| 14 | MapReduce over big inputs                  | rlm-agent — fan out across logs, then aggregate          |
+| 15 | A focused research turn                    | research-agent — explore + recommend (no plan, no code)  |
+| 16 | Running a multi-stage workflow             | workflow-agent — explore + plan stages, threaded dossier |
+| 17 | The front-door router                      | main-agent — route questions to the right specialist     |
+| 18 | Authoring a persistent tool                | tool-agent — discover / author / verify & run            |
 
 ## Authoring & regenerating
 
