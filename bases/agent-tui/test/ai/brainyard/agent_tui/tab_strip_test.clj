@@ -5,9 +5,9 @@
 (ns ai.brainyard.agent-tui.tab-strip-test
   "Tests for the multi-session tab strip: monotonic root-tab labels
    (`mainN`) and the render shape produced by `format-tab-strip` —
-   `<id>:<label>` separator, suffixed-without-space markers (`*` / `●`
-   for active, `?` for unread), and `↓` glyph for `:session-type :output`
-   tabs."
+   ` <label>` per tab (no id prefix), suffixed-without-space markers
+   (`*` / `●` for active, `?` for unread), and `↓` glyph for
+   `:session-type :output` tabs."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
             [ai.brainyard.agent-tui.sessions :as sessions]))
@@ -33,20 +33,20 @@
     (is (= "main0" (sessions/next-root-tab-label!)))))
 
 (deftest format-tab-strip-render-shape
-  (testing "single root tab: `0:main0*` (active, idle, no leading space on marker)"
+  (testing "single root tab: `main0*` (active, idle, no leading space on marker)"
     (sessions/create-session! {:id 0
                                :label (sessions/next-root-tab-label!)
                                :skip-agent-creation true})
-    (is (= " 0:main0*" (plain (sessions/format-tab-strip)))))
-  (testing "second root: `1:main1` (background, idle — no marker)"
+    (is (= " main0*" (plain (sessions/format-tab-strip)))))
+  (testing "second root: `main1` (background, idle — no marker)"
     (sessions/create-session! {:id 1
                                :label (sessions/next-root-tab-label!)
                                :skip-agent-creation true})
     (let [out (plain (sessions/format-tab-strip))]
-      (is (str/includes? out " 0:main0*"))
-      (is (str/includes? out " 1:main1"))
-      (is (not (str/includes? out " 1:main1*")))
-      (is (not (str/includes? out " 1:main1?")))))
+      (is (str/includes? out " main0*"))
+      (is (str/includes? out " main1"))
+      (is (not (str/includes? out " main1*")))
+      (is (not (str/includes? out " main1?")))))
   (testing "sub-output inherits root's label and appends bare `↓`"
     (sessions/create-session! {:id 2
                                :label "main0"           ; inherited from root 0
@@ -59,8 +59,8 @@
                                :sub-output-of 1
                                :skip-agent-creation true})
     (let [out (plain (sessions/format-tab-strip))]
-      (is (str/includes? out " 2:main0↓"))
-      (is (str/includes? out " 3:main1↓"))
+      (is (str/includes? out " main0↓"))
+      (is (str/includes? out " main1↓"))
       ;; no tab-id suffix on the ↓ glyph itself
       (is (not (str/includes? out "↓0")))
       (is (not (str/includes? out "↓1")))))
@@ -68,4 +68,4 @@
     ;; Flip the unread flag on tab 1.
     (sessions/update-session! 1 assoc :has-unread? true)
     (let [out (plain (sessions/format-tab-strip))]
-      (is (str/includes? out " 1:main1?")))))
+      (is (str/includes? out " main1?")))))
