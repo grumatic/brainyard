@@ -237,6 +237,18 @@
       ((or (requiring-resolve 'ai.brainyard.agent.core.config/init-dirs!)
            (constantly {})))))
 
+(defn- current-extra-bindings
+  "Resolve the current agent's `auto-tool-bindings` — the full tool palette as
+   direct symbols a tool body may compose ((bash {…}), (read-file {…}),
+   (user$peer {…})). Runtime-resolved to avoid a static require cycle
+   (sandbox-bindings requires this ns for registration). Returns {} when no
+   agent is bound (e.g. in tests)."
+  []
+  (let [agent (some-> (requiring-resolve 'ai.brainyard.agent.core.protocol/*current-agent*)
+                      deref)]
+    ((requiring-resolve 'ai.brainyard.agent.common.sandbox-bindings/auto-tool-bindings)
+     agent)))
+
 (defn list-user-tools
   "Summaries of every registered user-defined tool, sorted by id."
   []
@@ -286,13 +298,7 @@
    symbol, e.g. (bash {…}) or (user$other {…})."
   (fn [& {:as args}]
     (try
-      (let [agent (some-> (requiring-resolve 'ai.brainyard.agent.core.protocol/*current-agent*)
-                          deref)
-            ;; runtime resolve avoids a static require cycle (sandbox-bindings
-            ;; requires this ns for registration); exposes the full tool palette
-            ;; as direct symbols inside the body's sandbox.
-            extra ((requiring-resolve 'ai.brainyard.agent.common.sandbox-bindings/auto-tool-bindings)
-                   agent)]
+      (let [extra (current-extra-bindings)]
         (define-tool :name (:name args)
           :description (:description args)
           :input-schema (:input-schema args)
@@ -341,3 +347,64 @@
   :output-schema [:map
                   [:deleted [:string {:desc "Name of the deleted tool"}]]
                   [:error   [:string {:desc "Error if not found"}]]])
+
+(defcommand tools$validate
+  "Dry-run a user-tool draft: parse + eval-smoke-test the body and check the
+   schema/name in a THROWAWAY fork of the tools sandbox — persists nothing,
+   registers nothing, mutates no live state. Use before tools$create to iterate
+   safely. Optionally pass :sample (an args map) to run the body once and see
+   its result. Mirrors tools$create's arg names so a validated draft promotes
+   to a create call with no reshaping. Returns a structured report (never throws)."
+  (fn [& {:as args}]
+    (try
+      (let [{:keys [name body input-schema sample]} args
+            name-ok    (when name (boolean (re-matches tool-name-re name)))
+            collision  (boolean (and name (contains? @tool/!tool-defs (tool-id name))))
+            schema-ok  (or (nil? input-schema)
+                           (and (vector? input-schema) (= :map (first input-schema))))
+            ;; Fork the LIVE tools sandbox WITH the agent's tool palette bound,
+            ;; so a draft body that composes (read-file {…}) / (bash {…}) /
+            ;; (user$peer {…}) evals here exactly as it would under tools$create.
+            ;; The fork is discarded on return — nothing leaks into the live sandbox.
+            fork       (sb/fork-sandbox (tools-sandbox (current-extra-bindings)))
+            evald      (when (string? body)
+                         (sb/eval-code fork (str "(def __probe " body ")")))
+            body-ok    (boolean (and (string? body) (nil? (:error evald))))
+            sample-res (when (and body-ok (map? sample))
+                         (sb/set-var! fork 'args sample)
+                         (let [r (sb/eval-code fork "(__probe args)")]
+                           (if (:error r) {:error (:error r)} (:result r))))
+            errors     (cond-> []
+                         (false? name-ok)   (conj "name must match ^[a-z][a-z0-9-]*$")
+                         (false? schema-ok) (conj ":input-schema must be a [:map ...] schema")
+                         (not (string? body)) (conj ":body is required (a string `(fn [args] ...)`)")
+                         (and (string? body) (not body-ok))
+                         (conj (str "body failed to eval: " (:error evald))))]
+        (cond-> {:valid     (empty? errors)
+                 :collision collision
+                 :schema-ok schema-ok
+                 :body-ok   body-ok
+                 :errors    errors}
+          (some? name-ok) (assoc :name-ok name-ok)
+          (map? sample)   (assoc :sample-result sample-res)))
+      (catch Exception e
+        {:valid false :collision false :schema-ok false :body-ok false
+         :errors [(str "tools$validate failed: " (.getMessage e))]})))
+  :input-schema  [:map
+                  [:body         [:string {:desc "Clojure source: a `(fn [args] ...)` of one map"}]]
+                  [:name         {:optional true} [:string {:desc "Proposed name; enables name + collision check"}]]
+                  [:input-schema {:optional true} [:any {:desc "Malli [:map ...] arg schema to validate"}]]
+                  [:sample       {:optional true} [:map {:desc "Example args map; if given, body is run once on it"}]]]
+  :output-schema [:map
+                  [:valid         [:boolean {:desc "True iff all checks passed"}]]
+                  [:name-ok       {:optional true} [:boolean {:desc "Name matches ^[a-z][a-z0-9-]*$"}]]
+                  [:collision     [:boolean {:desc "A tool with this name already exists (create would overwrite)"}]]
+                  [:schema-ok     [:boolean {:desc "input-schema is a well-formed [:map ...]"}]]
+                  [:body-ok       [:boolean {:desc "Body parses and evals"}]]
+                  [:sample-result {:optional true} [:any {:desc "Result of running the body on :sample"}]]
+                  [:errors        [:any {:desc "Vector of human-readable failure lines"}]]])
+
+(def tools-commands
+  "All user-tool management commands, for binding into tool-agent. Mirrors
+   `skills/skills-commands`."
+  [#'tools$create #'tools$validate #'tools$list #'tools$read #'tools$delete])

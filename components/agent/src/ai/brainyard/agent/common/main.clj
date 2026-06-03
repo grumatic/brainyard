@@ -15,8 +15,8 @@
    iteration.
 
    The routing-log shape is hand-rolled NDJSON (one decision per line) plus a
-   companion `pointers.md` for human readability. The 20 valid `:shape` keywords
-   correspond 1:1 to the §6 decision table (A–T)."
+   companion `pointers.md` for human readability. The 21 valid `:shape` keywords
+   correspond 1:1 to the §6 decision table (A–U)."
   (:require [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :refer [defcommand]]
             [ai.brainyard.mulog.interface :as mulog]
@@ -32,8 +32,8 @@
 (def ^:private index-rel (str base-rel "/INDEX.md"))
 
 (def valid-shapes
-  "The 20 routing-decision shapes from docs/design/main-agent-design.md §6
-   (decision-table letter labels A–T). Validated by `main$append-log` so
+  "The 21 routing-decision shapes from docs/design/main-agent-design.md §6
+   (decision-table letter labels A–U). Validated by `main$append-log` so
    typos surface immediately rather than poisoning the log."
   #{:direct-answer    ;; A — answer channel; greeting / factual / explain
     :tool-fetch       ;; B — tool channel; one-shot RPC
@@ -54,7 +54,8 @@
     :config           ;; Q — config-agent
     :acp              ;; R — acp-agent
     :meta-resume      ;; S — answer channel from routing.log
-    :clarify})        ;; T — answer channel; ambiguity clarification
+    :clarify          ;; T — answer channel; ambiguity clarification
+    :tool-lifecycle}) ;; U — tool-agent (lifecycle sibling of N skill / O mcp)
 
 ;; ============================================================================
 ;; Time formatters
@@ -347,7 +348,7 @@
                   [:turn       [:int     {:desc "1-based user-turn index within this session"}]]
                   [:iter       [:int     {:desc "main-agent iteration within this turn"}]]
                   [:question   [:string  {:desc "Distilled user-question or sub-question"}]]
-                  [:shape      [:string  {:desc "One of: direct-answer / tool-fetch / code-compose / explore / update / plan-author / decompose / execute / evaluate / research / workflow / rlm / memory / skill-lifecycle / mcp-lifecycle / init / config / acp / meta-resume / clarify"}]]
+                  [:shape      [:string  {:desc "One of: direct-answer / tool-fetch / code-compose / explore / update / plan-author / decompose / execute / evaluate / research / workflow / rlm / memory / skill-lifecycle / mcp-lifecycle / tool-lifecycle / init / config / acp / meta-resume / clarify"}]]
                   [:routed-to  {:optional true} [:string  {:desc "Specialist kebab-case name, or nil for self-answered moves"}]]
                   [:artifact   {:optional true} [:string  {:desc "Path emitted by the specialist (from its Saved <kind>: line)"}]]
                   [:reason     [:string  {:desc "One-sentence rationale tied to §6 decision-table rule"}]]

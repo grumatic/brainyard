@@ -55,6 +55,7 @@
             [ai.brainyard.agent.common.exec-agent]
             [ai.brainyard.agent.common.eval-agent]
             [ai.brainyard.agent.common.mcp-agent]
+            [ai.brainyard.agent.common.tool-agent]
             [ai.brainyard.agent.common.research-agent]
             [ai.brainyard.agent.common.memory-agent]
             [ai.brainyard.agent.common.workflow-agent]

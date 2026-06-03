@@ -160,6 +160,85 @@
     (let [r (tool/call-tool :tools$create {:name "Bad Name" :body "(fn [_] 1)"})]
       (is (str/includes? (:error r) "tools$create failed")))))
 
+(deftest tools-validate-dry-run
+  (testing "tools$validate is registered as a command"
+    (is (contains? (tool/get-tool-defs) :tools$validate)))
+  (testing "a valid draft reports :valid true and PERSISTS/REGISTERS NOTHING"
+    (let [before (tool/get-tool-defs)
+          edn    (io/file (str (:project-dir test-dirs) "/.brainyard/tools/never-made.edn"))
+          r      (tool/invoke-tool :tools$validate
+                                   {:name "never-made"
+                                    :body "(fn [{:keys [text]}] {:n (count text)})"
+                                    :input-schema [:map [:text :string]]})]
+      (is (true? (:valid r)))
+      (is (true? (:name-ok r)))
+      (is (true? (:schema-ok r)))
+      (is (true? (:body-ok r)))
+      (is (false? (:collision r)))
+      (is (empty? (:errors r)))
+      ;; the load-bearing dry-run guarantee: live state is untouched
+      (is (not (contains? (tool/get-tool-defs) :user$never-made)))
+      (is (= before (tool/get-tool-defs)))
+      (is (not (.exists edn))))))
+
+(deftest tools-validate-checks
+  (testing "bad name flips :name-ok and populates :errors"
+    (let [r (tool/invoke-tool :tools$validate {:name "Bad Name" :body "(fn [_] 1)"})]
+      (is (false? (:valid r)))
+      (is (false? (:name-ok r)))
+      (is (some #(str/includes? % "^[a-z]") (:errors r)))))
+  (testing "non-[:map] schema flips :schema-ok"
+    (let [r (tool/invoke-tool :tools$validate
+                              {:name "okname" :body "(fn [_] 1)"
+                               :input-schema [:vector :string]})]
+      (is (false? (:valid r)))
+      (is (false? (:schema-ok r)))))
+  (testing "uncompilable body flips :body-ok with the eval message"
+    (let [r (tool/invoke-tool :tools$validate
+                              {:name "okname" :body "(this is not valid clojure"})]
+      (is (false? (:valid r)))
+      (is (false? (:body-ok r)))
+      (is (some #(str/includes? % "body failed to eval") (:errors r)))))
+  (testing ":name-ok is omitted when :name is not supplied"
+    (let [r (tool/invoke-tool :tools$validate {:body "(fn [_] 1)"})]
+      (is (true? (:valid r)))
+      (is (not (contains? r :name-ok))))))
+
+(deftest tools-validate-collision
+  (testing ":collision is true iff a tool with that name is already registered"
+    (ut/define-tool :name "wc-test" :description "Count words."
+      :input-schema [:map [:text :string]]
+      :body "(fn [{:keys [text]}] {:words 1})"
+      :dirs test-dirs)
+    (is (true?  (:collision (tool/invoke-tool :tools$validate
+                                              {:name "wc-test" :body "(fn [_] 1)"}))))
+    (is (false? (:collision (tool/invoke-tool :tools$validate
+                                              {:name "totally-fresh" :body "(fn [_] 1)"}))))))
+
+(deftest tools-validate-sample
+  (testing ":sample runs the body once and returns its result without registering"
+    (let [r (tool/invoke-tool :tools$validate
+                              {:name "wc-sample"
+                               :body "(fn [{:keys [text]}] {:words (count (clojure.string/split text #\"\\s+\"))})"
+                               :input-schema [:map [:text :string]]
+                               :sample {:text "the quick brown fox"}})]
+      (is (true? (:valid r)))
+      (is (= {:words 4} (:sample-result r)))
+      (is (not (contains? (tool/get-tool-defs) :user$wc-sample))))))
+
+(deftest tools-validate-composes-palette
+  (testing "a draft body composing a builtin (bash) validates true in the fork"
+    ;; Guards the extra-bindings fix: the fork must carry the tool palette so a
+    ;; body that composes (bash {…}) evals here exactly as under tools$create.
+    (let [r (tool/invoke-tool :tools$validate
+                              {:name "echo-validate"
+                               :body "(fn [_] {:echoed (clojure.string/trim (:output (bash {:command \"echo hi\"})))})"
+                               :sample {}})]
+      (is (true? (:body-ok r)))
+      (is (true? (:valid r)))
+      (is (= {:echoed "hi"} (:sample-result r)))
+      (is (not (contains? (tool/get-tool-defs) :user$echo-validate))))))
+
 (deftest rejects-bad-definitions
   (testing "invalid name"
     (is (thrown? Exception

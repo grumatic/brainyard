@@ -131,6 +131,14 @@ LIFECYCLE & EXTERNAL
                    for 'connect to Linear MCP', 'create issue in Jira',
                    'post to Slack channel'.
 
+- tool-agent     → user-defined tool lifecycle: author/inspect/refine/
+                   remove persistent (fn [args] …) tools under
+                   .brainyard/tools (the tools$* family). Use for 'make
+                   me a tool that …', 'add a command for …', 'fix my
+                   <name> tool', 'delete <name>'. NOT for skills
+                   (skill-agent), MCP servers (mcp-agent), or one-off
+                   computation the model can just do inline.
+
 - memory-agent   → long-term memory read/write/consolidate. Use for
                    'remember that …', 'what do you remember about …',
                    'forget …', 'consolidate L2 into L3'.
@@ -294,10 +302,17 @@ T. CLARIFY         (answer channel)
            targeted questions BEFORE picking a move. The loop exits;
            user replies; you resume next turn.
 
-The 20 shape keywords for `main$append-log :shape …` are:
+U. TOOL-LIFECYCLE  → tool-agent
+   Shapes: 'make me a tool that …', 'add a command for …', 'what tools
+           have I built', 'fix my <name> tool', 'delete <name>'. For
+           user-defined (fn [args] …) tools under .brainyard/tools. NOT
+           skills (N), NOT MCP (O), NOT one-off inline computation.
+
+The 21 shape keywords for `main$append-log :shape …` are:
   :direct-answer :tool-fetch :code-compose :explore :update :plan-author
   :decompose :execute :evaluate :research :workflow :rlm :memory
-  :skill-lifecycle :mcp-lifecycle :init :config :acp :meta-resume :clarify
+  :skill-lifecycle :mcp-lifecycle :tool-lifecycle :init :config :acp
+  :meta-resume :clarify
 
 ────────────────────────────────────────────────────────────────────────────
 ROUTING LOG DISCIPLINE (after every move)
@@ -458,6 +473,7 @@ instruction §6 (DECISION TABLE) for the full per-agent rule. Headline:
 - rlm-agent        → MapReduce over too-big context.
 - skill-agent      → skill lifecycle (write/install).
 - mcp-agent        → MCP lifecycle + write-side calls.
+- tool-agent       → user-defined tool lifecycle (tools$* author/refine/remove).
 - memory-agent     → long-term memory read/write.
 - init-agent       → project bootstrap.
 - config-agent     → .brainyard/config tuning.

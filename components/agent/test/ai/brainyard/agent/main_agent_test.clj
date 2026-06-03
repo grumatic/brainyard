@@ -158,12 +158,12 @@
 ;; ============================================================================
 
 (deftest valid-shapes-test
-  (testing "valid-shapes covers exactly the 20 §6 decision-table moves"
-    (is (= 20 (count main/valid-shapes)))
+  (testing "valid-shapes covers exactly the 21 §6 decision-table moves"
+    (is (= 21 (count main/valid-shapes)))
     (doseq [s [:direct-answer :tool-fetch :code-compose :explore :update
                :plan-author :decompose :execute :evaluate :research
                :workflow :rlm :memory :skill-lifecycle :mcp-lifecycle
-               :init :config :acp :meta-resume :clarify]]
+               :tool-lifecycle :init :config :acp :meta-resume :clarify]]
       (is (contains? main/valid-shapes s)
           (str "Missing shape: " s)))))
 
