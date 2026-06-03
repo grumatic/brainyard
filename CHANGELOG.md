@@ -2,6 +2,16 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [v0.2.5] — 2026-06-03
+
+### Added
+
+- **Tool-agent tutorial.** A new recorded walkthrough (`18-creating-tools`) takes the `tool-agent` through the full user-defined-tool lifecycle across three turns — discover existing tools, author a persistent `count-words` tool from a plain-English request, then read it back and run it on a real file. The `docs/tutorials/` README catalog was also backfilled to list every walkthrough (09–18).
+
+### Changed
+
+- **Auto-background detach default raised 30s → 120s.** A code block (clojure / bash / python / javascript) now runs synchronously in the foreground for up to 120s before detaching into a background task, up from 30s — set by the `:auto-background-timeout-ms` config default. Longer evals stay inline (with live output) before backgrounding; the value is still per-agent configurable.
+
 ## [v0.2.4] — 2026-06-03
 
 ### Added
