@@ -290,18 +290,42 @@
         {:deleted name})
       {:error (str "no user tool named " (pr-str name))})))
 
+(defn- coerce-input-schema
+  "Normalize a caller-supplied :input-schema into a Malli schema vector.
+
+   Tool-call args arrive as JSON, which cannot express a keyword-headed vector,
+   so the LLM passes the schema as an EDN STRING (e.g. \"[:map [:x :int]]\").
+   In-process callers (tests, body composition) pass the real vector. This
+   bridges both: nil/blank -> nil (define-tool defaults to [:map]), a vector
+   passes through unchanged, a string is read as EDN. Throws ex-info with a
+   clear message on unreadable EDN so the [:map ...] check downstream sees a
+   value, not a parse crash."
+  [v]
+  (cond
+    (nil? v)    nil
+    (vector? v) v
+    (string? v) (let [s (str/trim v)]
+                  (when-not (str/blank? s)
+                    (try (edn/read-string s)
+                         (catch Exception e
+                           (throw (ex-info (str "tool :input-schema is not readable EDN: "
+                                                (ex-message e))
+                                           {:input-schema v}))))))
+    :else       (throw (ex-info "tool :input-schema must be an EDN string like \"[:map ...]\""
+                                {:input-schema v}))))
+
 (defcommand tools$create
   "Author a reusable, PERSISTENT tool from Clojure source. :body is a string
-   `(fn [args] ...)` taking one map; :input-schema is a Malli [:map ...]. The
-   tool survives restarts, registers as `user$<name>` (callable directly as a
-   tool on the next turn), and its body may compose other tools by their direct
-   symbol, e.g. (bash {…}) or (user$other {…})."
+   `(fn [args] ...)` taking one map; :input-schema is a Malli [:map ...] passed
+   as an EDN string. The tool survives restarts, registers as `user$<name>`
+   (callable directly as a tool on the next turn), and its body may compose
+   other tools by their direct symbol, e.g. (bash {…}) or (user$other {…})."
   (fn [& {:as args}]
     (try
       (let [extra (current-extra-bindings)]
         (define-tool :name (:name args)
           :description (:description args)
-          :input-schema (:input-schema args)
+          :input-schema (coerce-input-schema (:input-schema args))
           :body (:body args)
           :dirs (current-dirs)
           :extra-bindings extra))
@@ -310,7 +334,7 @@
                   [:name        [:string {:desc "lowercase-kebab tool name (no user$ prefix)"}]]
                   [:body        [:string {:desc "Clojure source: a `(fn [args] ...)` of one map"}]]
                   [:description {:optional true} [:string {:desc "one-line description"}]]
-                  [:input-schema {:optional true} [:any {:desc "Malli [:map ...] arg schema (default [:map])"}]]]
+                  [:input-schema {:optional true} [:string {:desc "Malli arg schema as an EDN string, e.g. \"[:map [:x :int]]\" (default [:map])"}]]]
   :output-schema [:map
                   [:id        [:string {:desc "Registered tool id, e.g. user$shout"}]]
                   [:name      [:string {:desc "Tool name"}]]
@@ -357,7 +381,8 @@
    to a create call with no reshaping. Returns a structured report (never throws)."
   (fn [& {:as args}]
     (try
-      (let [{:keys [name body input-schema sample]} args
+      (let [{:keys [name body sample]} args
+            input-schema (coerce-input-schema (:input-schema args))
             name-ok    (when name (boolean (re-matches tool-name-re name)))
             collision  (boolean (and name (contains? @tool/!tool-defs (tool-id name))))
             schema-ok  (or (nil? input-schema)
@@ -393,7 +418,7 @@
   :input-schema  [:map
                   [:body         [:string {:desc "Clojure source: a `(fn [args] ...)` of one map"}]]
                   [:name         {:optional true} [:string {:desc "Proposed name; enables name + collision check"}]]
-                  [:input-schema {:optional true} [:any {:desc "Malli [:map ...] arg schema to validate"}]]
+                  [:input-schema {:optional true} [:string {:desc "Malli arg schema as an EDN string, e.g. \"[:map [:x :int]]\", to validate"}]]
                   [:sample       {:optional true} [:map {:desc "Example args map; if given, body is run once on it"}]]]
   :output-schema [:map
                   [:valid         [:boolean {:desc "True iff all checks passed"}]]

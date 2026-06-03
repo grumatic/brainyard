@@ -21,7 +21,8 @@
   {:project-dir (str (System/getProperty "java.io.tmpdir") "/by-user-tools-test")})
 
 (def ^:private our-ids
-  [:user$wc-test :user$long-test :user$echo-test])
+  [:user$wc-test :user$long-test :user$echo-test
+   :user$shout-test :user$bad-schema-test :user$unreadable-test])
 
 (defn- rm-rf! [^java.io.File f]
   (when (.isDirectory f) (doseq [c (.listFiles f)] (rm-rf! c)))
@@ -159,6 +160,36 @@
   (testing "tools$create routes through define-tool (bad name -> :error, no disk write)"
     (let [r (tool/call-tool :tools$create {:name "Bad Name" :body "(fn [_] 1)"})]
       (is (str/includes? (:error r) "tools$create failed")))))
+
+(deftest tools-create-input-schema-as-edn-string
+  ;; Regression: the LLM reaches tools$create via a JSON tool-call, so it passes
+  ;; :input-schema as an EDN STRING (JSON cannot express a keyword-headed vector).
+  ;; Before the [:string]+coerce fix the field was [:any], and define-tool's
+  ;; (vector? input-schema) check threw on the string — every create with a schema
+  ;; failed. This exercises the full tool/call-tool (Malli) path.
+  (testing "a string :input-schema is parsed and drives the new tool's validation"
+    (let [r (tool/call-tool :tools$create
+                            {:name        "shout-test"
+                             :description "Uppercase the text."
+                             :input-schema "[:map [:text :string]]"
+                             :body        "(fn [{:keys [text]}] {:loud (clojure.string/upper-case text)})"})]
+      (is (= :user$shout-test (:id r)) (str "expected success, got " (pr-str r)))
+      (is (contains? (tool/get-tool-defs) :user$shout-test))
+      (is (= {:loud "HI"} (tool/call-tool :user$shout-test {:text "hi"})))
+      (is (str/includes? (:error-message (tool/call-tool :user$shout-test {}))
+                         "missing required key"))))
+  (testing "a non-[:map] EDN string is rejected by define-tool (no registration)"
+    (let [r (tool/call-tool :tools$create
+                            {:name "bad-schema-test" :input-schema "[:vector :string]"
+                             :body "(fn [_] 1)"})]
+      (is (str/includes? (:error r) "tools$create failed"))
+      (is (not (contains? (tool/get-tool-defs) :user$bad-schema-test)))))
+  (testing "unreadable EDN is reported as an error, not crashed through"
+    (let [r (tool/call-tool :tools$create
+                            {:name "unreadable-test" :input-schema "[:map ["
+                             :body "(fn [_] 1)"})]
+      (is (str/includes? (:error r) "tools$create failed"))
+      (is (not (contains? (tool/get-tool-defs) :user$unreadable-test))))))
 
 (deftest tools-validate-dry-run
   (testing "tools$validate is registered as a command"
