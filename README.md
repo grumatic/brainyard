@@ -1,6 +1,6 @@
 # Brainyard
 
-> **v0.2.4 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.2.4) · [changelog](CHANGELOG.md)) — **user-defined tools** (the agent authors its own persistent `user$*` tools at runtime via `tools$create`) plus a **relicense to MIT**. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
+> **v0.2.5 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.2.5) · [changelog](CHANGELOG.md)) — code blocks now stay in the foreground up to **120s** before detaching into a background task (was 30s), and a new recorded **tool-agent tutorial** walks the agent through authoring a persistent `user$*` tool end-to-end. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
 
 Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 18 available agents across 6 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
 
@@ -57,11 +57,11 @@ Full command reference: [`docs/usage.md`](docs/usage.md).
 
 ## Tutorials
 
-Watch `by` in action — 17 recorded terminal walkthroughs (asciinema), playable in your browser:
+Watch `by` in action — 18 recorded terminal walkthroughs (asciinema), playable in your browser:
 
 **▶ [grumatic.github.io/brainyard](https://grumatic.github.io/brainyard/)**
 
-Topics range from a first "hello" turn to tools & skills, codebase exploration, planning a feature, multi-turn native sessions, research coordination, MCP servers, and workflows. The scenario sources live under [`docs/tutorials/`](docs/tutorials/).
+Topics range from a first "hello" turn to tools & skills, codebase exploration, planning a feature, multi-turn native sessions, research coordination, MCP servers, workflows, and authoring your own persistent tools. The scenario sources live under [`docs/tutorials/`](docs/tutorials/).
 
 ## Building from source
 
