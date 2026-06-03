@@ -82,7 +82,11 @@
           out (boot/choose-rung det {} :dev)]
       (is (= :c (:rung out)))
       (is (= :claude-code (:provider out)))
-      (is (= "sonnet" (:model out))))))
+      ;; The default model is derived live from clj-llm/get-popular-models and
+      ;; drifts as that list evolves — assert rung :c wires claude-code's
+      ;; default through, not a hardcoded model name.
+      (is (= (boot/default-model :claude-code) (:model out)))
+      (is (string? (:model out))))))
 
 (deftest scenario-5-ollama-with-models
   (testing "(d) Ollama running with pulled models"
