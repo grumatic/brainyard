@@ -22,8 +22,8 @@
   (with-redefs [core-config/init-dirs! (constantly {:user-dir "/u"
                                                     :project-dir "/p"
                                                     :working-dir "/p"})
-                core-config/read-edn-config (fn [_] @*fake-config*)
-                core-config/write-edn-config! (fn [_ cfg]
+                core-config/read-edn-config (fn [_ & _] @*fake-config*)
+                core-config/write-edn-config! (fn [_ cfg & _]
                                                 (reset! *fake-config* cfg)
                                                 "/p/.brainyard/config.edn")]
     (body)))
@@ -128,11 +128,11 @@
        (let [r (driver/re-run-rung! {:rung :c :auto? true} {})]
          (is (true? (:ok? r)))
          (is (= :claude-code (get-in r [:chosen :provider])))
-         (is (= "sonnet" (get-in r [:chosen :model])))
+         (is (= (boot/default-model :claude-code) (get-in r [:chosen :model])))
          (is (true? (get-in r [:result :smoke-test :ok?])))
          (testing "config.edn was actually written"
            (is (= :claude-code (get-in @*fake-config* [:llm :default-provider])))
-           (is (= "sonnet"     (get-in @*fake-config* [:llm :default-model])))
+           (is (= (boot/default-model :claude-code) (get-in @*fake-config* [:llm :default-model])))
            (is (= :c           (get-in @*fake-config* [:bootstrap :rung])))))))))
 
 (deftest re-run-rung-b-priority-pick
