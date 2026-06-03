@@ -90,6 +90,15 @@
   (->> (tp/list-tasks mgr {:status :running})
        (filterv #(some-> % :metadata :!sync-waiter? deref true?))))
 
+(defn detached?
+  "True when `task-id` is currently in the detached registry — its pool
+   thread returned `:detached` and the work is still running in the
+   background, awaiting promotion by the watcher. Cleared on finalize.
+   Detach is an internal registry concept (not per-task metadata); this is
+   the observable for 'a `:running` task whose work outlived the pool thread'."
+  [task-id]
+  (contains? @!detached-handlers task-id))
+
 (defn set-display-mode!
   "Flip a task's display-mode flag between `:foreground` and `:background`.
    The TUI per-task block is created when `:foreground`, disposed when

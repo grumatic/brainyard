@@ -90,12 +90,12 @@
   (testing "eval that outlives :timeout-ms returns :detached; watcher promotes when the daemon future completes"
     (let [[m _sb task] (start-eval "(Thread/sleep 600) :slow-done"
                                    :timeout-ms 200)]
-      ;; Wait until the pool thread returns :detached and the manager flips the flag.
-      (is (wait-for #(get-in (tp/get-task m (:id task)) [:metadata :detached?]) 2000)
-          "task should be :detached? once execute-job's pool thread returns")
+      ;; Wait until the pool thread returns :detached and the manager registers it.
+      (is (wait-for #(manager/detached? (:id task)) 2000)
+          "task should be detach-registered once execute-job's pool thread returns")
       (let [mid (tp/get-task m (:id task))]
         (is (= :running (:status mid)))
-        (is (true? (get-in mid [:metadata :detached?]))))
+        (is (manager/detached? (:id task))))
       ;; The watcher polls every 250ms; the underlying eval takes ~600ms.
       (is (wait-for #(= :completed (:status (tp/get-task m (:id task)))) 5000))
       (let [final (tp/get-task m (:id task))]
@@ -105,7 +105,7 @@
 (deftest cancel-while-detached-drives-on-cancel
   (testing "cancel-task on a detached sandbox-eval cancels the daemon future; task → :cancelled"
     (let [[m _sb task] (start-eval "(Thread/sleep 10000)" :timeout-ms 200)]
-      (is (wait-for #(get-in (tp/get-task m (:id task)) [:metadata :detached?]) 2000))
+      (is (wait-for #(manager/detached? (:id task)) 2000))
       (tp/cancel-task m (:id task))
       (let [final (tp/get-task m (:id task))]
         (is (= :cancelled (:status final)))

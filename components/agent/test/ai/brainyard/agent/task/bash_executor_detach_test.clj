@@ -49,12 +49,12 @@
     (let [;; 1s sleep, executor :timeout-ms 200 → detaches after ~200ms,
           ;; proc completes at ~1s, watcher (250ms tick) promotes shortly after.
           [m task] (start-bash "sleep 1 ; echo done" :timeout-ms 200)]
-      (is (wait-for #(get-in (tp/get-task m (:id task)) [:metadata :detached?]) 2000)
-          "task should flip to :detached? once pool thread returns the detached outcome")
+      (is (wait-for #(manager/detached? (:id task)) 2000)
+          "task should be detach-registered once pool thread returns the detached outcome")
       (let [mid (tp/get-task m (:id task))]
         (is (= :running (:status mid))
             "task stays :running during detach (executor pool thread is free)")
-        (is (true? (get-in mid [:metadata :detached?]))))
+        (is (manager/detached? (:id task))))
       (is (wait-for #(= :completed (:status (tp/get-task m (:id task)))) 5000)
           "watcher should promote to :completed once proc exits")
       (let [final (tp/get-task m (:id task))]
@@ -66,7 +66,7 @@
 (deftest nonzero-exit-after-detach-promotes-to-failed
   (testing "detached proc that eventually exits non-zero promotes to :failed"
     (let [[m task] (start-bash "sleep 1 ; exit 7" :timeout-ms 200)]
-      (is (wait-for #(get-in (tp/get-task m (:id task)) [:metadata :detached?]) 2000))
+      (is (wait-for #(manager/detached? (:id task)) 2000))
       (is (wait-for #(= :failed (:status (tp/get-task m (:id task)))) 5000))
       (let [final (tp/get-task m (:id task))]
         (is (= 7 (get-in final [:result :exit-code])))))))
@@ -74,7 +74,7 @@
 (deftest cancel-while-detached-kills-proc
   (testing "cancel-task on a detached bash drives :on-cancel — proc + reader die, task → :cancelled"
     (let [[m task] (start-bash "sleep 30" :timeout-ms 200)]
-      (is (wait-for #(get-in (tp/get-task m (:id task)) [:metadata :detached?]) 2000))
+      (is (wait-for #(manager/detached? (:id task)) 2000))
       (tp/cancel-task m (:id task))
       (let [final (tp/get-task m (:id task))]
         (is (= :cancelled (:status final)))
@@ -85,7 +85,7 @@
     (let [;; Emit 3 lines spaced 250ms apart, total ~750ms. Detach at 100ms.
           [m task] (start-bash "for i in 1 2 3; do echo line-$i; sleep 0.25; done"
                                :timeout-ms 100)]
-      (is (wait-for #(get-in (tp/get-task m (:id task)) [:metadata :detached?]) 1000))
+      (is (wait-for #(manager/detached? (:id task)) 1000))
       ;; Mid-flight: at least line-1 should be in output-lines via streaming.
       (is (wait-for #(some (fn [s] (re-find #"line-1" s)) @(:output-lines (tp/get-task m (:id task))))
                     2000)

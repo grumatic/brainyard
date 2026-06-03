@@ -69,7 +69,7 @@
 ;; ============================================================================
 
 (deftest detached-outcome-promotes-via-watcher
-  (testing "executor :detached → task stays :running with :detached? flag, then watcher promotes on terminal poll"
+  (testing "executor :detached → task stays :running and detach-registered, then watcher promotes on terminal poll"
     (let [poll-atom (atom tp/still-running)
           stub (stub-executor {:initial {:status :detached}
                                :on-poll-atom poll-atom})
@@ -79,12 +79,11 @@
 
       (testing "after start, task is :running and detach-handler is registered"
         ;; Wait for the pool thread to call execute-job and return :detached.
-        (is (wait-for #(get-in (tp/get-task mgr (:id task)) [:metadata :detached?])
-                      1000)
-            "task should be flagged :detached? once pool thread returns the detached outcome")
+        (is (wait-for #(manager/detached? (:id task)) 1000)
+            "task should be detach-registered once the pool thread returns the detached outcome")
         (let [t (tp/get-task mgr (:id task))]
           (is (= :running (:status t)))
-          (is (true? (get-in t [:metadata :detached?])))
+          (is (manager/detached? (:id task)))
           (is (nil? (:completed-at t)))))
 
       (testing "watcher promotes when :on-poll returns a terminal map"
@@ -108,7 +107,7 @@
           mgr  (make-manager-with stub :test-detach)
           task (tp/create-task mgr "detach-fail" :test-detach {})
           _    (tp/start-task mgr (:id task))]
-      (is (wait-for #(get-in (tp/get-task mgr (:id task)) [:metadata :detached?]) 1000))
+      (is (wait-for #(manager/detached? (:id task)) 1000))
       (reset! poll-atom {:error "boom"})
       (is (wait-for #(= :failed (:status (tp/get-task mgr (:id task)))) 2000))
       (is (= {:error "boom"} (:result (tp/get-task mgr (:id task))))))))
@@ -140,7 +139,7 @@
           mgr  (make-manager-with stub :test-detach)
           task (tp/create-task mgr "detach-cancel" :test-detach {})
           _    (tp/start-task mgr (:id task))]
-      (is (wait-for #(get-in (tp/get-task mgr (:id task)) [:metadata :detached?]) 1000))
+      (is (wait-for #(manager/detached? (:id task)) 1000))
       (tp/cancel-task mgr (:id task))
       (is (= 1 @cancel-counter) ":on-cancel should be called exactly once")
       (let [t (tp/get-task mgr (:id task))]
@@ -169,7 +168,7 @@
               mgr  (make-manager-with stub :test-detach)
               task (tp/create-task mgr "detach" :test-detach {})
               _    (tp/start-task mgr (:id task))]
-          (is (wait-for #(get-in (tp/get-task mgr (:id task)) [:metadata :detached?]) 1000))
+          (is (wait-for #(manager/detached? (:id task)) 1000))
           (reset! poll-atom {:result :ok})
           (is (wait-for #(= :completed (:status (tp/get-task mgr (:id task)))) 2000)))
         ;; Each task fired :task/completed exactly once.
@@ -212,7 +211,7 @@
                                    t))
                         jts)]
       (doseq [t tasks]
-        (is (wait-for #(get-in (tp/get-task mgr (:id t)) [:metadata :detached?]) 1000)))
+        (is (wait-for #(manager/detached? (:id t)) 1000)))
       ;; Resolve them out of order to make sure the watcher tracks each separately.
       (reset! (polls 2) {:result :third})
       (is (wait-for #(= :completed (:status (tp/get-task mgr (:id (tasks 2))))) 2000))
