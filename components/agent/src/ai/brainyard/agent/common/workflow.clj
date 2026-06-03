@@ -837,7 +837,7 @@
                   [:template-id   {:optional true} [:any     {:desc "Template id (keyword like :feature-launch, or :ad-hoc)"}]]
                   [:template-path {:optional true} [:string  {:desc "Path to source template.edn for audit copy"}]]
                   [:template-edn  {:optional true} [:map     {:desc "Inline template map (alternative to :template-path)"}]]
-                  [:hitl-mode     {:optional true} [:any     {:desc "Keyword or string: :auto|:gates|:checkpoint|:co-pilot|:step (default :gates). Gate discipline honored by the agent, NOT a code-enforced interlock."}]]
+                  [:hitl-mode     {:optional true} [:enum    {:desc "HITL mode (default gates). Gate discipline honored by the agent, NOT a code-enforced interlock."} "auto" "gates" "checkpoint" "co-pilot" "step"]]
                   [:base-dir      {:optional true} [:string  {:desc "Working directory (default: project root)"}]]]
   :output-schema [:map
                   [:dir          {:optional true} [:string  {:desc "Created (or existing) dossier directory"}]]
@@ -1034,7 +1034,7 @@
   :input-schema  [:map
                   [:id             [:string {:desc "Workflow id"}]]
                   [:stage-id       [:any    {:desc "Stage id (keyword or string)"}]]
-                  [:status         [:any    {:desc "New status (keyword or string): :pending|:in-progress|:satisfied|:failed|:skipped|:abandoned"}]]
+                  [:status         [:enum   {:desc "New stage status"} "pending" "in-progress" "satisfied" "failed" "skipped" "abandoned"]]
                   [:artifact       {:optional true} [:string {:desc "Path to stage output (research dossier / plan / etc.)"}]]
                   [:plan-slug      {:optional true} [:string {:desc "Plan slug (if stage produced one)"}]]
                   [:todo-slug      {:optional true} [:string {:desc "Todo slug (if stage produced one)"}]]
@@ -1112,7 +1112,7 @@
   :input-schema  [:map
                   [:id           [:string {:desc "Workflow id"}]]
                   [:criterion-id [:any    {:desc "Criterion id (keyword or string, e.g. \"a1\")"}]]
-                  [:status       [:any    {:desc "New status (keyword or string): :open|:satisfied|:partial|:descoped|:contradicted"}]]
+                  [:status       [:enum   {:desc "New criterion status"} "open" "satisfied" "partial" "descoped" "contradicted"]]
                   [:base-dir     {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
   :output-schema [:map
                   [:updated {:optional true} [:boolean {:desc "true on success"}]]
@@ -1245,7 +1245,7 @@
                 {:path (.getAbsolutePath verdict-file)}))))))
   :input-schema  [:map
                   [:id        [:string {:desc "Workflow id"}]]
-                  [:status    [:any    {:desc "Terminal status (keyword or string): :achieved|:partial|:abandoned"}]]
+                  [:status    [:enum   {:desc "Workflow status (verdict.md is terminal — prefer achieved/partial/abandoned)"} "in-progress" "achieved" "partial" "abandoned"]]
                   [:narrative [:string {:desc "Markdown body for the ## Verdict section"}]]
                   [:base-dir  {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
   :output-schema [:map
@@ -1299,7 +1299,7 @@
           {:appended true :line line}))))
   :input-schema  [:map
                   [:id       [:string {:desc "Workflow id"}]]
-                  [:status   [:any    {:desc "Terminal status (keyword or string): :achieved|:partial|:abandoned"}]]
+                  [:status   [:enum   {:desc "Workflow status"} "in-progress" "achieved" "partial" "abandoned"]]
                   [:one-line [:string {:desc "One-line distillation (truncated to 200 chars)"}]]
                   [:base-dir {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
   :output-schema [:map

@@ -780,6 +780,29 @@
                        :error)))
       (finally (delete-recursive (io/file tmp))))))
 
+(deftest workflow-bootstrap-call-tool-hitl-enum-test
+  ;; Over JSON tool-calls :hitl-mode arrives as a STRING. The [:enum "..."]
+  ;; tightening must accept valid mode strings (the handler then coerces to a
+  ;; keyword) and reject out-of-vocabulary strings at the Malli layer — surfacing
+  ;; as :error-message, distinct from the handler's own :error (covered above via
+  ;; the direct-fn keyword path).
+  (let [tmp (make-tmp-dir)]
+    (try
+      (testing "valid hitl-mode string bootstraps"
+        (let [r (tool/call-tool :workflow$bootstrap
+                                {:id "bs-hitl-ok" :purpose "p" :acceptance []
+                                 :stages [{:id "s1" :agent "coact-agent"}]
+                                 :hitl-mode "co-pilot" :base-dir tmp})]
+          (is (string? (:dir r)) (str "expected success, got " (pr-str r)))))
+      (testing "out-of-enum hitl-mode string is rejected at the Malli layer"
+        (let [r (tool/call-tool :workflow$bootstrap
+                                {:id "bs-hitl-bad" :purpose "p" :acceptance []
+                                 :stages [{:id "s1" :agent "coact-agent"}]
+                                 :hitl-mode "bogus" :base-dir tmp})]
+          (is (string? (:error-message r)) (str "expected :error-message, got " (pr-str r)))
+          (is (str/includes? (:error-message r) "hitl-mode"))))
+      (finally (delete-recursive (io/file tmp))))))
+
 ;; ============================================================================
 ;; workflow$append-log — NDJSON append-only with optional :action
 ;; ============================================================================
@@ -914,6 +937,38 @@
           (is (= "2026-05-10T00:00:00Z" (:completed-at s3)))
           (is (= "no examples to verify" (:note s3)))))
 
+      (finally (delete-recursive (io/file tmp))))))
+
+(deftest workflow-update-stage-call-tool-enum-test
+  ;; The agent reaches these commands two ways, both routed through
+  ;; tool/call-tool's Malli decode+validate: a JSON tool-call delivers :status
+  ;; as a wire STRING ("in-progress"), while a sandbox code-fence delivers it as
+  ;; a KEYWORD (:satisfied) because the agent writes Clojure. The [:enum "..."]
+  ;; tightening + llm-args-transformer's :enum decoder must accept BOTH and
+  ;; reject out-of-vocabulary values before the handler runs (surfacing as
+  ;; :error-message, not the handler's own :error).
+  (let [tmp (make-tmp-dir)
+        id  "test-stage-enum"]
+    (try
+      (workflow/workflow$bootstrap
+       :id id :purpose "p" :acceptance []
+       :stages [{:id :s1 :agent :coact-agent}]
+       :base-dir tmp)
+      (testing "string status (JSON tool-call form) flips the stage"
+        (let [r (tool/call-tool :workflow$update-stage
+                                {:id id :stage-id "s1" :status "in-progress" :base-dir tmp})]
+          (is (true? (:updated r)) (str "expected success, got " (pr-str r)))
+          (is (= :in-progress (:to r)))))
+      (testing "keyword status (sandbox code-fence form) flips the stage"
+        (let [r (tool/call-tool :workflow$update-stage
+                                {:id id :stage-id "s1" :status :satisfied :base-dir tmp})]
+          (is (true? (:updated r)) (str "expected success, got " (pr-str r)))
+          (is (= :satisfied (:to r)))))
+      (testing "out-of-enum status is rejected at the Malli layer"
+        (let [r (tool/call-tool :workflow$update-stage
+                                {:id id :stage-id "s1" :status "bogus" :base-dir tmp})]
+          (is (string? (:error-message r)) (str "expected :error-message, got " (pr-str r)))
+          (is (str/includes? (:error-message r) "status"))))
       (finally (delete-recursive (io/file tmp))))))
 
 ;; ============================================================================
