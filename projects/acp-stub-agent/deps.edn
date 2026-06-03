@@ -1,0 +1,15 @@
+;; Standalone test harness — wraps the acp-stub-agent base with its brick
+;; dependencies so `bb acp-stub:run` can launch it as a self-contained process.
+;; The agent component's :test alias also pulls this in for ACP-client
+;; integration tests (see components/agent/deps.edn).
+;;
+;; No :paths needed — this project is purely a composition wrapper; the base
+;; carries the source. (Polylith warns about :paths that don't exist on disk.)
+{:deps {org.clojure/clojure {:mvn/version "1.12.0"}
+
+        ;; Base
+        ai.brainyard/acp-stub-agent {:local/root "../../bases/acp-stub-agent"}
+
+        ;; Components (bricks the base requires)
+        ai.brainyard/acp   {:local/root "../../components/acp"}
+        ai.brainyard/mulog {:local/root "../../components/mulog"}}}
