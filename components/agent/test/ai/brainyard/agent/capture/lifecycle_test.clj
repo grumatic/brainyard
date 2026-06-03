@@ -217,8 +217,10 @@
         (let [state-cfg  (:config @(:!state a))
               schema-cfg (some-> (:st-memory-init @(:!state a)) deref :config)
               created-mm (:memory-manager @(:!state a))]
-          ;; Caller's non-schema keys present in agent-record :config slot.
-          (is (= "/tmp" (:working-dir state-cfg)))
+          ;; Caller's keys survive the deep-merge, routed by schema membership:
+          ;; :working-dir is a config-schema key → st-memory-init :config;
+          ;; :permissions is non-schema → @!state :config.
+          (is (= "/tmp" (:working-dir schema-cfg)))
           (is (= {} (:permissions state-cfg)))
           ;; Author's schema key preserved across the merge, lands in
           ;; st-memory-init :config.
