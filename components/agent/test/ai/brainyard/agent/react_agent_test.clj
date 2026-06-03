@@ -219,10 +219,12 @@
           result (react/tool-calls-action context)]
       ;; Should succeed
       (is (= :success result))
-      ;; Both tools called
+      ;; Both tools called. tool-calls-action dispatches via pmap, so the
+      ;; side-effect order of call-log is racy — assert the SET of calls, not
+      ;; their order. Ordered coverage is checked on :tool-results below, which
+      ;; preserves pmap's ORDERED return value (the deterministic contract).
       (is (= 2 (count @call-log)))
-      (is (= "calculator" (:tool (first @call-log))))
-      (is (= "greeter" (:tool (second @call-log))))
+      (is (= #{"calculator" "greeter"} (set (map :tool @call-log))))
       ;; Results stored in st-memory (tool-name stored as keyword — call-tool coerces via keyword)
       (let [results (:tool-results @st-mem)]
         (is (= 2 (count results)))
