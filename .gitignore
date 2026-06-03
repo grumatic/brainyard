@@ -35,9 +35,9 @@ node_modules/
 .vscode/
 *.iml
 
-# Runtime log — Timbre writes app.log to cwd (repo root) on app/test runs.
-# Root-anchored so it doesn't shadow the tracked components/util/app.log.
-/app.log
+# Runtime log — Timbre writes app.log to whatever cwd a run starts from
+# (repo root for `bb test`, a brick dir for brick-local runs).
+app.log
 
 # Agent / tooling local state (never publish)
 .claude/
