@@ -1,8 +1,8 @@
 # Brainyard
 
-> **v0.2.5 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.2.5) · [changelog](CHANGELOG.md)) — code blocks now stay in the foreground up to **120s** before detaching into a background task (was 30s), and a new recorded **tool-agent tutorial** walks the agent through authoring a persistent `user$*` tool end-to-end. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
+> **v0.2.6 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.2.6) · [changelog](CHANGELOG.md)) — **share a live TUI session over the web**: `by --web` wraps the session in [ttyd](https://github.com/tsl0922/ttyd) so it's drivable from a browser and shared by every client that connects, and `--web-tmux` keeps the launching terminal a dashboard while clients co-drive one live pane. Auth is always required and binding defaults to localhost (see [`docs/web-sharing.md`](docs/web-sharing.md)). Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
 
-Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 18 available agents across 6 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
+Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 20 available agents across 6 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
 
 <!-- TODO: replace with a real asciinema cast / GIF once recorded -->
 <!-- ![Brainyard TUI demo](docs/img/demo.gif) -->
@@ -51,17 +51,18 @@ If you cloned the repo, just `cp .env.example .env`. You only need keys for the 
 by --help                         # see all subcommands and flags
 by agents                         # list available agents
 by ask -m haiku 'What is 2+2?'    # one-shot question, cheap model
+by --web                          # share this session in your browser (needs ttyd)
 ```
 
-Full command reference: [`docs/usage.md`](docs/usage.md).
+Full command reference: [`docs/usage.md`](docs/usage.md). Sharing a session over the web: [`docs/web-sharing.md`](docs/web-sharing.md).
 
 ## Tutorials
 
-Watch `by` in action — 18 recorded terminal walkthroughs (asciinema), playable in your browser:
+Watch `by` in action — 20 terminal walkthroughs (19 recorded asciinema casts plus a web-sharing guide), playable in your browser:
 
 **▶ [grumatic.github.io/brainyard](https://grumatic.github.io/brainyard/)**
 
-Topics range from a first "hello" turn to tools & skills, codebase exploration, planning a feature, multi-turn native sessions, research coordination, MCP servers, workflows, and authoring your own persistent tools. The scenario sources live under [`docs/tutorials/`](docs/tutorials/).
+Topics range from a first "hello" turn to tools & skills, codebase exploration, planning a feature, multi-turn native sessions, research coordination, MCP servers, workflows, authoring your own persistent tools, and sharing a live session over the web. The scenario sources live under [`docs/tutorials/`](docs/tutorials/).
 
 ## Building from source
 
