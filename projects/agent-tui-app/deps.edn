@@ -30,6 +30,7 @@
         ai.brainyard/memory {:local/root "../../components/memory"}
         ai.brainyard/util {:local/root "../../components/util"}
         ai.brainyard/env-detect {:local/root "../../components/env-detect"}
+        ai.brainyard/web-share {:local/root "../../components/web-share"}
 
         ;; TUI substrate (per docs/simplified-agent-tui-arch-design.md)
         ai.brainyard/agent-tui-persist {:local/root "../../components/agent-tui-persist"}

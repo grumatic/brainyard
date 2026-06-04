@@ -20,6 +20,7 @@
    [ai.brainyard.agent-tui-app.dotenv :as dotenv]
    [ai.brainyard.agent.interface :as agent]
    [ai.brainyard.agent-tui-persist.interface :as persist]
+   [ai.brainyard.web-share.interface :as web-share]
    [ai.brainyard.clj-llm.interface :as clj-llm]
    ;; Force-include cognitect.aws + aws-client for the GraalVM native-image
    ;; static analyzer. clj-llm's bedrock.clj uses requiring-resolve to keep
@@ -217,12 +218,12 @@
 ;; Subcommand: run — interactive TUI
 ;; ============================================================================
 
-(defn cmd-run
-  "Start interactive TUI agent session.
-   Config precedence: CLI flags > config.edn > hardcoded defaults."
+(defn- run-tui!
+  "Start the interactive TUI agent session in this process.
+   Config precedence: CLI flags > config.edn > hardcoded defaults.
+   `opts` is assumed already normalized by `parse-legacy-provider`."
   [opts]
-  (let [opts (parse-legacy-provider opts)
-        ;; Load persisted config for fallback defaults
+  (let [;; Load persisted config for fallback defaults
         file-config (agent/read-edn-config (agent/init-dirs!))
 
         ;; Support bare agent-id as positional arg (e.g. `by coact-agent`).
@@ -307,6 +308,193 @@
                    user-id    (into [:user-id user-id])
                    resume?    (into [:resume? true]))]
     (apply tui/run! run-args)))
+
+;; ============================================================================
+;; --web — share the TUI over the web via ttyd
+;; ============================================================================
+;;
+;; `by --web` is a thin launcher: it wraps `by run …` in ttyd, which spawns the
+;; child inside a real PTY served to browsers. The child therefore behaves like
+;; a normal terminal session (raw mode, alt-screen, SIGWINCH all work). The
+;; child carries BY_WEB_CHILD=1 so the re-entered process runs the TUI instead
+;; of recursing into another ttyd. Auth is always required; bind defaults to
+;; localhost. See components/web-share.
+
+(defn- env*
+  "Read an env var, falling back to a JVM system property (the dotenv loader
+   bridges `.env` keys into properties; see dotenv.clj)."
+  [k]
+  (or (System/getenv k) (System/getProperty k)))
+
+(defn- env-truthy? [k]
+  (contains? #{"1" "true" "yes" "on"} (some-> (env* k) str/trim str/lower-case)))
+
+(defn- env-int [k]
+  (try (some-> (env* k) str/trim not-empty Long/parseLong) (catch Exception _ nil)))
+
+(defn- web-tmux?
+  "True when Tier 2 (tmux-backed live co-drive) is requested."
+  [opts]
+  (or (:web-tmux opts) (env-truthy? "BY_WEB_TMUX")))
+
+(defn- web-requested?
+  "True when the user asked to share over the web (any --web* flag or env)."
+  [opts]
+  (or (:web opts) (env-truthy? "BY_WEB") (web-tmux? opts)))
+
+(defn- web-child?
+  "True when this process IS the ttyd child (set by the launcher); the
+   re-entrancy guard that stops `--web` from spawning ttyd recursively."
+  []
+  (= "1" (System/getenv "BY_WEB_CHILD")))
+
+(defn- tty?
+  "True when this process has a controlling terminal on stdin. Matches
+   agent-tui terminal/stdin-terminal? (no waitFor-timeout overload → safe in
+   native-image). Used to decide whether --web-tmux attaches locally."
+  []
+  (try
+    (zero? (.waitFor (.start (ProcessBuilder.
+                              ^"[Ljava.lang.String;"
+                              (into-array String ["/bin/sh" "-c" "test -t 0 < /dev/tty"])))))
+    (catch Exception _ false)))
+
+(defn- web-child-argv
+  "Reconstruct the `<self> run …` command ttyd should run, forwarding the
+   user's run flags but NOT any --web* flag (those would recurse — and the
+   child also gets BY_WEB_CHILD=1 as a backstop). `self-argv` comes from
+   web-share/self-exec-argv (the native binary path, `which by`, or
+   BY_WEB_SELF)."
+  [opts self-argv]
+  (cond-> (-> (vec self-argv)
+              (conj "run")
+              (into (:_arguments opts)))            ; positional agent-id, if any
+    (not= (:agent opts) "coact-agent")    (into ["-a" (:agent opts)])
+    (not= (:provider opts) "claude-code") (into ["-p" (:provider opts)])
+    (:model opts)          (into ["-m" (:model opts)])
+    (:user-id opts)        (into ["-u" (:user-id opts)])
+    (:inline opts)         (conj "-i")
+    (:verbose opts)        (conj "-v")
+    (:max-iterations opts) (into ["-n" (str (:max-iterations opts))])
+    (:with-tmux opts)      (conj "--with-tmux")
+    (:select-resume opts)  (conj "--select-resume")
+    (:resume opts)         (into ["-r" (:resume opts)])))
+
+(defn- print-web-banner!
+  [{:keys [url session]} {:keys [user pass generated?]} bind port writable? tmux?]
+  (let [localhost? (contains? #{"127.0.0.1" "localhost" "::1"} bind)]
+    (println)
+    (println "🌐 Brainyard web session (ttyd)")
+    (println (str "   URL:    " url))
+    (println (str "   Auth:   " user " / " pass
+                  (when generated? "   (auto-generated)")))
+    (println (str "   Mode:   " (if writable? "writable" "read-only")
+                  " · shared · " (if localhost? "localhost-only" (str "bound to " bind))))
+    (when tmux?
+      (println (str "   Tmux:   live co-drive (session " session ") — local terminal + web"
+                    " clients share one pane")))
+    (when (zero? (long (or port 0)))
+      (println "   Note:   port 0 = random; see ttyd's \"Listening on port\" line above."))
+    (if localhost?
+      (do (println "   Remote: localhost only. To reach it from another machine, tunnel:")
+          (println (str "             ssh -L " (or port 7681) ":127.0.0.1:" (or port 7681) " <this-host>")))
+      (println (str "   ⚠  Bound beyond localhost — anyone who can reach this port with the\n"
+                    "      credentials above can drive this agent (it runs code & tools).")))
+    (println "   Press Ctrl-C to stop sharing.")
+    (println)
+    (flush)))
+
+(defn- exit-err!
+  [msg]
+  (binding [*out* *err*] (println msg))
+  (System/exit 1))
+
+(defn- resolve-web-config!
+  "Resolve the shared ttyd/share config: probe ttyd, resolve how to relaunch
+   the TUI, then merge CLI flags > BY_WEB_* env > defaults. Exits 1 with
+   guidance when ttyd or the self-exec path can't be resolved.
+   Returns a map of serve!/serve-tmux! options plus :cred."
+  [opts]
+  (let [avail (web-share/available?)]
+    (when-not (:ok? avail) (exit-err! (:hint avail)))
+    (let [self (web-share/self-exec-argv)]
+      (when-not (:ok? self) (exit-err! (str "Error (--web): " (:reason self))))
+      (let [cred (web-share/resolve-credential
+                  {:user (or (:web-user opts) (env* "BY_WEB_USER"))
+                   :pass (or (:web-pass opts) (env* "BY_WEB_PASS"))})]
+        {:ttyd-path   (:path avail)
+         :bind        (or (not-empty (:web-bind opts)) (not-empty (env* "BY_WEB_BIND")) "127.0.0.1")
+         :port        (or (:web-port opts) (env-int "BY_WEB_PORT") 7681)
+         :writable?   (not (or (:web-readonly opts) (env-truthy? "BY_WEB_READONLY")))
+         :max-clients (or (:web-max-clients opts) (env-int "BY_WEB_MAX_CLIENTS") 0)
+         :once?       (or (:web-once opts) (env-truthy? "BY_WEB_ONCE"))
+         :credential  (:credential cred)
+         :cred        cred
+         :child-argv  (web-child-argv opts (:argv self))}))))
+
+(defn- launch-web!
+  "Tier 1: spawn ttyd wrapping a fresh `by run …` session and block until it
+   exits. All browser clients share that one session."
+  [opts]
+  (let [{:keys [cred bind port writable?] :as cfg} (resolve-web-config! opts)
+        handle (web-share/serve! (dissoc cfg :cred))]
+    (.addShutdownHook (Runtime/getRuntime)
+                      (Thread. ^Runnable (fn [] ((:stop handle)))))
+    (print-web-banner! handle cred bind port writable? false)
+    (System/exit (.waitFor ^Process (:proc handle)))))
+
+(defn- launch-web-tmux!
+  "Tier 2: run the TUI in a detached tmux session served by ttyd, then (when a
+   local TTY is present and --web-detach was not given) attach the local
+   terminal so it co-drives the same live pane as the browsers. On local
+   detach the share keeps running until Ctrl-C; on session end it tears down."
+  [opts]
+  (when-not (web-share/tmux-available?)
+    (exit-err! (str "Error (--web-tmux): tmux is not on PATH.\n"
+                    "  macOS:  brew install tmux\n"
+                    "  Debian: sudo apt-get install tmux")))
+  (let [{:keys [cred bind port writable?] :as cfg} (resolve-web-config! opts)
+        handle  (web-share/serve-tmux! (dissoc cfg :cred))
+        detach? (or (:web-detach opts) (env-truthy? "BY_WEB_DETACH") (not (tty?)))]
+    (.addShutdownHook (Runtime/getRuntime)
+                      (Thread. ^Runnable (fn [] ((:stop handle)))))
+    (print-web-banner! handle cred bind port writable? true)
+    (if detach?
+      (do (println "   (serving headless — no local terminal attached)")
+          (println (str "   Attach locally anytime: tmux -L " (:socket handle)
+                        " attach -t " (:session handle)))
+          (flush)
+          (.waitFor ^Process (:proc handle)))
+      (do
+        ;; Hand our controlling terminal to `tmux attach`; the local user now
+        ;; co-drives the shared pane. Blocks until detach or session end.
+        (-> (ProcessBuilder. ^java.util.List (vec (:attach-argv handle)))
+            (.inheritIO)
+            (.start)
+            (.waitFor))
+        ;; If the session is still alive, the user merely detached — keep the
+        ;; share up for remote clients until they Ctrl-C.
+        (when ((:alive? handle))
+          (println)
+          (println (str "Detached from local view — session still shared at " (:url handle)))
+          (println "Press Ctrl-C to stop sharing.")
+          (flush)
+          (.waitFor ^Process (:proc handle)))))
+    ((:stop handle))
+    (System/exit 0)))
+
+(defn cmd-run
+  "Dispatch the `run` subcommand: when a web share is requested (and we are not
+   already the ttyd child), launch Tier 2 (tmux co-drive) or Tier 1 (fresh
+   shared session); otherwise run the TUI locally."
+  [opts]
+  (let [opts (parse-legacy-provider opts)]
+    (if (web-child?)
+      (run-tui! opts)
+      (cond
+        (web-tmux? opts)      (launch-web-tmux! opts)
+        (web-requested? opts) (launch-web! opts)
+        :else                 (run-tui! opts)))))
 
 ;; ============================================================================
 ;; Subcommand: ask — one-shot non-interactive question
@@ -643,6 +831,36 @@
                                  :type :with-flag :default false}
                                 {:option "new"
                                  :as "(deprecated; sessions start fresh by default — accepted as a no-op)"
+                                 :type :with-flag :default false}
+                                {:option "web"
+                                 :as "Share this session over the web via ttyd (requires ttyd on PATH; also BY_WEB=1)"
+                                 :type :with-flag :default false}
+                                {:option "web-port"
+                                 :as "ttyd listen port (default 7681; 0 = random; env BY_WEB_PORT)"
+                                 :type :int}
+                                {:option "web-bind"
+                                 :as "Address ttyd binds (default 127.0.0.1 = localhost-only; env BY_WEB_BIND)"
+                                 :type :string}
+                                {:option "web-user"
+                                 :as "Basic-auth username for the web session (default: by; env BY_WEB_USER)"
+                                 :type :string}
+                                {:option "web-pass"
+                                 :as "Basic-auth password (default: auto-generated and printed; env BY_WEB_PASS)"
+                                 :type :string}
+                                {:option "web-readonly"
+                                 :as "Web clients may watch but not type (env BY_WEB_READONLY)"
+                                 :type :with-flag :default false}
+                                {:option "web-max-clients"
+                                 :as "Max simultaneous web clients (0 = unlimited; env BY_WEB_MAX_CLIENTS)"
+                                 :type :int}
+                                {:option "web-once"
+                                 :as "Stop sharing after the first web client disconnects (env BY_WEB_ONCE)"
+                                 :type :with-flag :default false}
+                                {:option "web-tmux"
+                                 :as "Tier 2: share via a tmux pane so the local terminal and browsers co-drive one live process (env BY_WEB_TMUX)"
+                                 :type :with-flag :default false}
+                                {:option "web-detach"
+                                 :as "With --web-tmux: serve headless without attaching the local terminal (env BY_WEB_DETACH)"
                                  :type :with-flag :default false}]
                   :runs        cmd-run}
                  {:command     "ask"

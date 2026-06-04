@@ -2,6 +2,12 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Share a session over the web (`by --web`).** A new launcher wraps `by run` in [ttyd](https://github.com/tsl0922/ttyd) so a TUI session is reachable in the browser — and shared by all connected clients. Two modes: `--web` serves a fresh session (Tier 1), and `--web-tmux` runs the TUI in a private detached tmux session so your **local terminal and every browser co-drive one live pane** (Tier 2). Auth is always required (password auto-generated if unset), binding defaults to localhost, and origin-checking is always on; `ttyd`/`tmux` are probed at runtime and are not build dependencies. All `--web*` flags have `BY_WEB_*` env equivalents. New brick `components/web-share`; full guide in [`docs/web-sharing.md`](docs/web-sharing.md).
+
 ## [v0.2.5] — 2026-06-03
 
 ### Added

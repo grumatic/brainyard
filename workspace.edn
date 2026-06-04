@@ -4,5 +4,5 @@
  :compact-views #{},
  :vcs {:name "git", :auto-add false},
  :tag-patterns {:stable "stable-*", :release "v[0-9]*"},
- :projects {"agent-tui-app" {:alias "ata", :necessary ["analytics"]}
+ :projects {"agent-tui-app" {:alias "ata", :necessary ["analytics" "web-share"]}
             "acp-stub-agent" {:alias "asa"}}}
