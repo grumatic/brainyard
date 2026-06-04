@@ -19,7 +19,8 @@
    :fireworks  "FIREWORKS_API_KEY"
    :openrouter "OPENROUTER_API_KEY"
    :mistral    "MISTRAL_API_KEY"
-   :deepseek   "DEEPSEEK_API_KEY"})
+   :deepseek   "DEEPSEEK_API_KEY"
+   :free-llm   "FREELLM_API_KEY"})
 
 (def provider-priority
   "Preference order when multiple API-key providers are reachable.
@@ -28,7 +29,7 @@
    wizard uses this to preselect the highest-priority available provider;
    the user can override in interactive mode."
   [:anthropic :openai :google :azure :deepseek :groq :mistral
-   :together :fireworks :openrouter])
+   :together :fireworks :openrouter :free-llm])
 
 (defn- mask-key
   "Show first 6 and last 4 chars of an API key, mask the rest."

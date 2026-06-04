@@ -59,6 +59,13 @@
                  :supports-json-schema? false
                  :message-format       :openai
                  :default-model        "glm-5:cloud"}
+   :free-llm    {:base-url             nil  ;; resolved from FREELLM_BASE_URL at create-lm time
+                 :base-url-env         "FREELLM_BASE_URL"
+                 :api-key-env          "FREELLM_API_KEY"  ;; optional — sent as Bearer if present
+                 :auth-header          "Bearer"
+                 :supports-json-schema? false  ;; conservative default for arbitrary free backends
+                 :message-format       :openai
+                 :default-model        "auto"}
    :mistral     {:base-url             "https://api.mistral.ai/v1"
                  :api-key-env          "MISTRAL_API_KEY"
                  :auth-header          "Bearer"
@@ -287,6 +294,7 @@
    ["mistral/"        :mistral]
    ["deepseek/"       :deepseek]
    ["ollama/"         :ollama]
+   ["free-llm/"       :free-llm]
    ["apple-fm/"       :apple-fm]])
 
 (def ^:private bedrock-region-profile-re
@@ -428,12 +436,20 @@
         resolved-profile  (when bedrock?
                             (or aws-profile
                                 (System/getenv "AWS_PROFILE")
-                                (System/getenv "AWS_DEFAULT_PROFILE")))]
+                                (System/getenv "AWS_DEFAULT_PROFILE")))
+        ;; base-url: explicit arg → static provider default → env var (e.g.
+        ;; FREELLM_BASE_URL). getProperty fallback lets a dotenv loader surface
+        ;; the value without mutating the immutable JVM env map.
+        resolved-base-url (or base-url
+                              (:base-url provider-config)
+                              (when-let [env-var (:base-url-env provider-config)]
+                                (or (System/getenv env-var)
+                                    (System/getProperty env-var))))]
     (cond-> {:model       model
              :provider    detected-provider
              :api-key     resolved-api-key
              :temperature (or temperature 0.0)
-             :base-url    (or base-url (:base-url provider-config))
+             :base-url    resolved-base-url
              :auth-header (:auth-header provider-config)
              :message-format (:message-format provider-config)
              :supports-json-schema? (:supports-json-schema? provider-config)}
@@ -467,13 +483,16 @@
 
 (defn lm-initialized?
   "Return true if the default LM has a resolved API key, OAuth auth, AWS
-   credentials (Bedrock), or is a no-auth provider (claude-code/ollama/apple-fm)."
+   credentials (Bedrock), or is a no-auth provider (claude-code/ollama/apple-fm).
+   :free-llm needs only a resolved :base-url (FREELLM_API_KEY is optional)."
   []
   (or (some? (:api-key @default-lm))
       (= :oauth (:auth-type @default-lm))
       (and (= :bedrock (:provider @default-lm))
            (or (:credentials-provider @default-lm)
                (aws-credentials-detected?)))
+      (and (= :free-llm (:provider @default-lm))
+           (some? (:base-url @default-lm)))
       (#{:claude-code :ollama :apple-fm} (:provider @default-lm))))
 
 (defn get-popular-models
@@ -500,6 +519,7 @@
    {:model "mistral-large-latest" :provider :mistral :description "Mistral Large 3"}
    {:model "llama-3.3-70b-versatile" :provider :groq :description "Groq Llama 3.3 70B (fast inference)"}
    {:model "glm-5:cloud" :provider :ollama :description "GLM-5 Cloud (Ollama)"}
+   {:model "auto" :provider :free-llm :description "Free OpenAI-compatible endpoint (FREELLM_BASE_URL); 'auto' lets the backend pick"}
    {:model "apple-foundationmodel" :provider :apple-fm :description "Apple FM ~3B (on-device, macOS 26+)"}
    {:model "global.anthropic.claude-opus-4-7"               :provider :bedrock :description "Claude Opus 4.7 on Bedrock (global cross-region, most capable)"}
    {:model "global.anthropic.claude-opus-4-6-v1"            :provider :bedrock :description "Claude Opus 4.6 on Bedrock (global cross-region)"}

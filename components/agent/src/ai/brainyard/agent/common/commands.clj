@@ -458,7 +458,7 @@
 
 (defcommand llm$list-models
   "List popular LLM models curated across providers (claude-code, openai,
-   anthropic, google, deepseek, mistral, groq, ollama, apple-fm, bedrock).
+   anthropic, google, deepseek, mistral, groq, ollama, free-llm, apple-fm, bedrock).
    Pure data — no network calls, no API keys required.
 
    Filter by `:provider` (keyword) to narrow the result. Pass `:limit` to

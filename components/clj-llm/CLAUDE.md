@@ -67,4 +67,6 @@ defsignature → compile-signature → {name, instructions, inputs, outputs, out
 
 OpenAI, Anthropic, Google, Azure, Groq, Together, Fireworks, OpenRouter, Ollama, Mistral, DeepSeek. Each has an env var for its API key (e.g., `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
 
+Also **Free LLM** (`:free-llm` provider) — a generic OpenAI-compatible endpoint for free/self-hosted models. Set `FREELLM_BASE_URL` (the `/v1` base; resolved at `create-lm` time) and optionally `FREELLM_API_KEY` (sent as a Bearer token). Default model is `auto`. Route via the `free-llm/` model prefix or `:provider :free-llm`.
+
 Additionally, **Anthropic Max** (`:anthropic-max` provider) supports OAuth 2.0 PKCE authentication for Max/Pro plan subscriptions — no API key required. Use `(oauth-authenticate!)` to log in via browser, then `(create-lm {:model "claude-sonnet-4-6" :provider :anthropic-max})` to create an LM config using subscription auth.

@@ -528,7 +528,7 @@
     (throw (ex-info "No LM configuration provided. Call create-lm first." {})))
   (when-not (or (:api-key lm-config) (= :oauth (:auth-type lm-config))
                 (= :aws-sigv4 (:auth-type lm-config)))
-    (when-not (#{:ollama :claude-code :acp :apple-fm :bedrock} (:provider lm-config))
+    (when-not (#{:ollama :claude-code :acp :apple-fm :bedrock :free-llm} (:provider lm-config))
       (mulog/warn ::no-api-key :provider (:provider lm-config) :message "No API key found for provider")))
   (let [start-ms (System/currentTimeMillis)
         ;; Bedrock ConverseStream is not yet supported by cognitect aws-api
