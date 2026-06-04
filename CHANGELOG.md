@@ -2,6 +2,13 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **User-defined hooks (`hook-agent`).** The agent can now author its own runtime hooks: `hooks$create` takes Clojure source and registers it as a persistent observer on a pre-defined Brainyard event (e.g. `:agent.tool-use/post`, `:agent.iteration/post`). Mirroring user-defined tools, the handler *source* is persisted to `.brainyard/hooks/<id>.edn` and re-evaled in a dedicated sandbox to rehydrate on fire and at session boot; the body composes the tool palette by direct symbol — `(write-file {…})`, `(bash {…})` — to enact its side effect. A `hooks$events` / `hooks$create` / `hooks$validate` / `hooks$list` / `hooks$read` / `hooks$delete` command family (mirroring `tools$*`) manages them, fronted by the new `hook-agent`. v1 is observer-only (gated events that block/modify/replace are reserved) and requires an explicit `:match` scope; safety rests on fail-open handler errors, a re-entrancy guard, and the `enable-user-hooks` kill-switch.
+- **Hook-agent tutorial.** A new recorded walkthrough (`21-hook-authoring`) takes the `hook-agent` through the full hook lifecycle across three turns — discover the hookable events, author a persistent `audit-bash` hook from a plain-English request, then read it back to confirm it is registered and active.
+
 ## [v0.2.6] — 2026-06-04
 
 ### Added

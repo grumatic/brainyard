@@ -610,6 +610,40 @@ session too. Every `--web*` flag has a `BY_WEB_*` env equivalent. Full guide:
 
 _No terminal recording for this walkthrough — see the linked guide._
 
+---
+
+## Authoring a persistent hook with the hook-agent
+
+The hook-agent lists the runtime events you can hook, authors a new persistent observer hook from a plain-English request, then reads it back to confirm it is registered — recorded live against claude-code/opus.
+
+The hook-agent walks the full user-defined-hook lifecycle across three turns.
+A hook is an OBSERVER: it fires on a pre-defined Brainyard runtime event and
+runs a side effect (it cannot block or rewrite agent behavior in v1).
+
+**Turn 1 — discover.** Lists the runtime events a hook may target (via
+`hooks$events`) — each with the payload its handler receives and whether it is
+gated — plus any hooks already registered for the project.
+
+**Turn 2 — author.** From a plain-English request, it authors a new
+`audit-bash` hook — a `(fn [event] …)` body scoped with `{:tool-name "bash"}`
+to the `:agent.tool-use/post` event. It dry-runs the draft with
+`hooks$validate`, then `hooks$create` persists the source to
+`<project>/.brainyard/hooks/audit-bash.edn` and registers it as
+`:user-hook/audit-bash` (firing on the very next matching bash call). The body
+composes the tool palette by direct symbol — `(write-file {…})` — to append
+each command to `.brainyard/audit.log`.
+
+**Turn 3 — verify.** Reads the hook definition it just wrote back and confirms
+it is registered and active. (The demo hook is removed after recording so it
+isn't committed.)
+
+<div class="ascii-cast"
+     data-cast="casts/21-hook-authoring.cast"
+     data-cols="100" data-rows="32"
+     data-idle="2.5" data-poster="npt:1:39"></div>
+
+_Recorded against `by` version: `v0.2.6-3-gff032dd`._
+
 
 <script src="assets/asciinema-player.min.js"></script>
 <script>
