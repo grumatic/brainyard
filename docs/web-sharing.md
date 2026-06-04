@@ -24,10 +24,10 @@ There are two modes:
 | Mode | Flag | What's shared |
 |---|---|---|
 | **Tier 1** (default) | `--web` | A **fresh** `by run` session created inside ttyd. All browser clients co-drive it. Your launching terminal shows ttyd logs, not the session. |
-| **Tier 2** | `--web-tmux` | The TUI runs in a detached **tmux** session; ttyd attaches to it, and so does your local terminal. The **local terminal and every browser co-drive one live pane**. |
+| **Tier 2** | `--web-tmux` | The TUI runs in a private detached **tmux** session that ttyd serves. The launching terminal stays a **dashboard** (connection info stays visible); drive locally from another terminal or the browser. All clients share **one live pane**. |
 
-Use Tier 2 when you want to keep working in your own terminal *and* share that
-exact live session.
+Use Tier 2 when you want a persistent session that several people (and your own
+other terminals) attach to and drive live.
 
 ## Prerequisites
 
@@ -63,7 +63,7 @@ by --web --web-port 8080 --web-user alice --web-pass s3cret
 # Observers only — nobody can type
 by --web --web-readonly
 
-# Tier 2 — local terminal + browsers co-drive one live tmux pane
+# Tier 2 — persistent shared tmux session; the dashboard stays in this terminal
 by --web-tmux
 ```
 
@@ -84,8 +84,7 @@ On launch you'll see a banner like:
 | Flag | Default | Notes |
 |---|---|---|
 | `--web` | off | Tier 1: share a fresh session via ttyd. |
-| `--web-tmux` | off | Tier 2: share via a tmux pane (local + browsers co-drive). Implies `--web`. |
-| `--web-detach` | off | With `--web-tmux`: serve headless, don't attach the local terminal. |
+| `--web-tmux` | off | Tier 2: share via a private tmux session; the launching terminal stays a dashboard. Implies `--web`. |
 | `--web-port N` | `7681` | Listen port. `0` = random (printed by ttyd). |
 | `--web-bind ADDR` | `127.0.0.1` | Address to bind. `127.0.0.1` = localhost only. |
 | `--web-user U` | `by` | Basic-auth username. |
@@ -101,7 +100,6 @@ Every flag has a `BY_WEB_*` environment equivalent (resolved as
 |---|---|
 | `BY_WEB=1` | `--web` |
 | `BY_WEB_TMUX=1` | `--web-tmux` |
-| `BY_WEB_DETACH=1` | `--web-detach` |
 | `BY_WEB_PORT` | `--web-port` |
 | `BY_WEB_BIND` | `--web-bind` |
 | `BY_WEB_USER` / `BY_WEB_PASS` | `--web-user` / `--web-pass` |
@@ -140,16 +138,17 @@ reverse proxy with TLS, use a strong password, and limit clients
 
 - The TUI runs in a **detached tmux session on a private socket** (`tmux -L
   by-web-<id>`), so it never collides with your existing tmux sessions.
-- ttyd attaches to that session; when a local terminal is available, `by` also
-  attaches it for you — so you and every browser drive one pane.
+- The **launching terminal stays a dashboard** — it keeps the banner (URL +
+  credentials) visible the whole time and does *not* take over the screen, so
+  you can read and share the connection info. (Auto-attaching would hide it.)
+- **Drive locally** from another terminal with the command printed in the
+  banner — `tmux -L by-web-<id> attach -t brainyard` — or just open the URL in a
+  browser. Every client (local attach + browsers) shares one live pane.
 - Because the session runs inside tmux, the agent uses tmux **Mode B** (side
   panes / popups render in the shared session).
-- **Detaching** locally (`Ctrl-b d`) leaves the share running for remote clients
-  until you press `Ctrl-C`. **Quitting** the agent (or ending the session) tears
-  everything down.
-- `--web-detach` (or no local TTY, e.g. over SSH without a PTY) skips the local
-  attach and just serves; the banner prints the `tmux … attach` command so you
-  can attach yourself later.
+- `Ctrl-C` in the dashboard terminal stops the share and tears down the tmux
+  session; quitting the agent ends the session too. Detaching a local attach
+  (`Ctrl-b d`) just leaves that one terminal — the share keeps running.
 
 ## Stopping
 

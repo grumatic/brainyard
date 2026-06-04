@@ -348,17 +348,6 @@
   []
   (= "1" (System/getenv "BY_WEB_CHILD")))
 
-(defn- tty?
-  "True when this process has a controlling terminal on stdin. Matches
-   agent-tui terminal/stdin-terminal? (no waitFor-timeout overload → safe in
-   native-image). Used to decide whether --web-tmux attaches locally."
-  []
-  (try
-    (zero? (.waitFor (.start (ProcessBuilder.
-                              ^"[Ljava.lang.String;"
-                              (into-array String ["/bin/sh" "-c" "test -t 0 < /dev/tty"])))))
-    (catch Exception _ false)))
-
 (defn- web-child-argv
   "Reconstruct the `<self> run …` command ttyd should run, forwarding the
    user's run flags but NOT any --web* flag (those would recurse — and the
@@ -381,7 +370,7 @@
     (:resume opts)         (into ["-r" (:resume opts)])))
 
 (defn- print-web-banner!
-  [{:keys [url session]} {:keys [user pass generated?]} bind port writable? tmux?]
+  [{:keys [url session socket]} {:keys [user pass generated?]} bind port writable? tmux?]
   (let [localhost? (contains? #{"127.0.0.1" "localhost" "::1"} bind)]
     (println)
     (println "🌐 Brainyard web session (ttyd)")
@@ -391,8 +380,7 @@
     (println (str "   Mode:   " (if writable? "writable" "read-only")
                   " · shared · " (if localhost? "localhost-only" (str "bound to " bind))))
     (when tmux?
-      (println (str "   Tmux:   live co-drive (session " session ") — local terminal + web"
-                    " clients share one pane")))
+      (println (str "   Tmux:   live session " session " — all clients share one live pane")))
     (when (zero? (long (or port 0)))
       (println "   Note:   port 0 = random; see ttyd's \"Listening on port\" line above."))
     (if localhost?
@@ -400,6 +388,10 @@
           (println (str "             ssh -L " (or port 7681) ":127.0.0.1:" (or port 7681) " <this-host>")))
       (println (str "   ⚠  Bound beyond localhost — anyone who can reach this port with the\n"
                     "      credentials above can drive this agent (it runs code & tools).")))
+    (when tmux?
+      (println "   Local:  drive from this machine in another terminal:")
+      (println (str "             tmux -L " socket " attach -t " session))
+      (println "           …or just open the URL above."))
     (println "   Press Ctrl-C to stop sharing.")
     (println)
     (flush)))
@@ -444,42 +436,32 @@
     (System/exit (.waitFor ^Process (:proc handle)))))
 
 (defn- launch-web-tmux!
-  "Tier 2: run the TUI in a detached tmux session served by ttyd, then (when a
-   local TTY is present and --web-detach was not given) attach the local
-   terminal so it co-drives the same live pane as the browsers. On local
-   detach the share keeps running until Ctrl-C; on session end it tears down."
+  "Tier 2: run the TUI in a private detached tmux session served by ttyd. The
+   launching terminal stays a dashboard showing the connection info (URL +
+   credentials) for as long as the share is up — drive locally from another
+   terminal with the printed `tmux attach` command, or just open the URL.
+   Blocks until Ctrl-C (or the session ends), then tears down ttyd + the
+   private tmux server. Not auto-attaching keeps the banner visible, which is
+   what you need to copy and share."
   [opts]
   (when-not (web-share/tmux-available?)
     (exit-err! (str "Error (--web-tmux): tmux is not on PATH.\n"
                     "  macOS:  brew install tmux\n"
                     "  Debian: sudo apt-get install tmux")))
   (let [{:keys [cred bind port writable?] :as cfg} (resolve-web-config! opts)
-        handle  (web-share/serve-tmux! (dissoc cfg :cred))
-        detach? (or (:web-detach opts) (env-truthy? "BY_WEB_DETACH") (not (tty?)))]
+        handle (web-share/serve-tmux! (dissoc cfg :cred))
+        ttyd   ^Process (:proc handle)]
     (.addShutdownHook (Runtime/getRuntime)
                       (Thread. ^Runnable (fn [] ((:stop handle)))))
     (print-web-banner! handle cred bind port writable? true)
-    (if detach?
-      (do (println "   (serving headless — no local terminal attached)")
-          (println (str "   Attach locally anytime: tmux -L " (:socket handle)
-                        " attach -t " (:session handle)))
-          (flush)
-          (.waitFor ^Process (:proc handle)))
-      (do
-        ;; Hand our controlling terminal to `tmux attach`; the local user now
-        ;; co-drives the shared pane. Blocks until detach or session end.
-        (-> (ProcessBuilder. ^java.util.List (vec (:attach-argv handle)))
-            (.inheritIO)
-            (.start)
-            (.waitFor))
-        ;; If the session is still alive, the user merely detached — keep the
-        ;; share up for remote clients until they Ctrl-C.
-        (when ((:alive? handle))
-          (println)
-          (println (str "Detached from local view — session still shared at " (:url handle)))
-          (println "Press Ctrl-C to stop sharing.")
-          (flush)
-          (.waitFor ^Process (:proc handle)))))
+    ;; Block until either ttyd exits (Ctrl-C) or the tmux session ends — the
+    ;; latter is what /quit (from any client) does. ttyd is a server and does
+    ;; NOT exit just because the session ended, so we must watch the session
+    ;; ourselves and reap ttyd, otherwise the share would hang open.
+    (loop []
+      (when (and (.isAlive ttyd) ((:alive? handle)))
+        (Thread/sleep 500)
+        (recur)))
     ((:stop handle))
     (System/exit 0)))
 
@@ -857,10 +839,7 @@
                                  :as "Stop sharing after the first web client disconnects (env BY_WEB_ONCE)"
                                  :type :with-flag :default false}
                                 {:option "web-tmux"
-                                 :as "Tier 2: share via a tmux pane so the local terminal and browsers co-drive one live process (env BY_WEB_TMUX)"
-                                 :type :with-flag :default false}
-                                {:option "web-detach"
-                                 :as "With --web-tmux: serve headless without attaching the local terminal (env BY_WEB_DETACH)"
+                                 :as "Tier 2: share via a private tmux session; the launching terminal stays a dashboard, drive locally from another terminal or the browser (env BY_WEB_TMUX)"
                                  :type :with-flag :default false}]
                   :runs        cmd-run}
                  {:command     "ask"

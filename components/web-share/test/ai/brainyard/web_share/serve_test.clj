@@ -109,6 +109,7 @@
           (testing "isolated socket + session created and alive"
             (is (string? (:socket handle)))
             (is (= "brainyard" (:session handle)))
+            (is (number? (:server-pid handle)) "captured the tmux server pid")
             (is ((:alive? handle)) "tmux session should be running"))
           (testing "ttyd serves the session with auth enforced"
             (is (not= :error (await-status url "alice:s3cret")))
@@ -118,6 +119,18 @@
             (is (= ["attach" "-t" "brainyard"]
                    (take-last 3 (:attach-argv handle))))
             (is (some #{(:socket handle)} (:attach-argv handle))))
+          (testing "session end (e.g. /quit) flips :alive? — but ttyd keeps running"
+            ;; Emulate the agent exiting: kill the session → the (only) session
+            ;; ends → the private tmux server exits. This is what /quit does.
+            (-> (ProcessBuilder. ^java.util.List
+                 [(:tmux-path handle) "-L" (:socket handle)
+                  "kill-session" "-t" (:session handle)])
+                (.start) (.waitFor))
+            (loop [n 40] (when (and (pos? n) ((:alive? handle)))
+                           (Thread/sleep 100) (recur (dec n))))
+            (is (not ((:alive? handle))) "session end should be detected")
+            (is (.isAlive ^Process (:proc handle))
+                "ttyd does NOT exit on its own — the launcher must reap it"))
           (finally
             ((:stop handle))))
         (testing ":stop kills the tmux server, reaps ttyd, unlinks the socket"

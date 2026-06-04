@@ -52,14 +52,13 @@ by --help           # full help
 |  | `--[no-]with-tmux` | off | Require tmux side panes / popups (exit 1 if not in a tmux session). |
 |  | `--[no-]new` | — | Deprecated no-op — sessions start fresh by default. |
 |  | `--[no-]web` | off | Share this session over the web via [ttyd](https://github.com/tsl0922/ttyd). See [web-sharing.md](web-sharing.md). |
-|  | `--[no-]web-tmux` | off | Share via a tmux pane so the local terminal and browsers co-drive one live session. |
+|  | `--[no-]web-tmux` | off | Share via a private tmux session; the launching terminal stays a dashboard (drive locally from another terminal or the browser). |
 |  | `--web-port N` | `7681` | ttyd listen port (`0` = random). |
 |  | `--web-bind ADDR` | `127.0.0.1` | Address ttyd binds (`127.0.0.1` = localhost only). |
 |  | `--web-user U` / `--web-pass P` | `by` / auto | Basic-auth credentials (auth is always required). |
 |  | `--[no-]web-readonly` | off | Web clients may watch but not type. |
 |  | `--web-max-clients N` | `0` | Max simultaneous web clients (`0` = unlimited). |
 |  | `--[no-]web-once` | off | Stop sharing after the first client disconnects. |
-|  | `--[no-]web-detach` | off | With `--web-tmux`: serve headless without attaching the local terminal. |
 
 **Providers:** `claude-code` (default, no API key — drives the Claude CLI), `anthropic`, `openai`, `ollama`, `bedrock`, `apple-fm`, `deepseek`, `google`, `groq`, `mistral`. Run `by models` for the full provider/model matrix.
 
@@ -102,7 +101,7 @@ Inside the TUI:
 ```bash
 by --web                       # share a fresh session on http://127.0.0.1:7681
 by --web --web-port 8080 --web-user alice --web-pass s3cret
-by --web-tmux                  # local terminal + browsers co-drive one live pane
+by --web-tmux                  # persistent shared tmux session; dashboard stays in this terminal
 ```
 
 `--web` wraps `by run` in [ttyd](https://github.com/tsl0922/ttyd) so the session

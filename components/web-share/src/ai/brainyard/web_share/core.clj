@@ -186,6 +186,31 @@
       (.destroyForcibly proc))
     (catch Exception _ nil)))
 
+(defn- kill-pid!
+  "SIGTERM the process `pid` via ProcessHandle, escalating to SIGKILL if it
+   doesn't exit within ~1.5s. No-op if pid is nil or already gone.
+
+   Crucially this spawns NO subprocess — unlike shelling out to
+   `tmux kill-server`, it is safe to call from a JVM shutdown hook. During
+   Ctrl-C the whole process group is signalled, and a `ProcessBuilder.start`
+   from the hook fails (its jspawnhelper fork is killed mid-exec); a direct
+   ProcessHandle kill avoids that path entirely."
+  [pid]
+  (when pid
+    (try
+      (let [opt (java.lang.ProcessHandle/of (long pid))]
+        (when (.isPresent opt)
+          (let [h (.get opt)]
+            (.destroy h)
+            (loop [n 30] (when (and (pos? n) (.isAlive h)) (Thread/sleep 50) (recur (dec n))))
+            (when (.isAlive h) (.destroyForcibly h)))))
+      (catch Exception _ nil))))
+
+(defn- pid-alive?
+  "True when a process with `pid` currently exists. Subprocess-free."
+  [pid]
+  (boolean (and pid (.isPresent (java.lang.ProcessHandle/of (long pid))))))
+
 (defn- put-child-env!
   "Apply `child-env` over the ProcessBuilder env and force BY_WEB_CHILD=1
    (the re-entrancy guard that stops the relaunched TUI from spawning ttyd)."
@@ -285,11 +310,18 @@
           ttyd-argv   (build-ttyd-argv (assoc opts :child-argv attach-argv))
           log-file    (str (System/getProperty "java.io.tmpdir")
                            "/by-web-ttyd-" sock ".log")
-          ;; Absolute socket path so :stop can unlink the file kill-server
-          ;; leaves behind (otherwise stale sockets accumulate in the tmpdir).
-          sock-path   (-> (run-tmux! tmux sock
-                                     ["display-message" "-t" session "-p" "#{socket_path}"] nil)
-                          :out str/trim not-empty)
+          ;; Capture the server PID and socket path up front. The PID lets us
+          ;; tear the (daemonized) tmux server down with a direct signal — no
+          ;; subprocess — so cleanup is safe in a shutdown hook; it also lets
+          ;; the launcher cheaply detect when the session ends (e.g. /quit).
+          ;; The socket path is unlinked on stop (stale sockets otherwise
+          ;; accumulate in the tmpdir).
+          info        (-> (run-tmux! tmux sock
+                                     ["display-message" "-t" session "-p" "#{pid},#{socket_path}"] nil)
+                          :out str/trim)
+          [pid-str sock-path] (str/split info #"," 2)
+          server-pid  (try (Long/parseLong (str/trim (or pid-str ""))) (catch Exception _ nil))
+          sock-path   (not-empty (some-> sock-path str/trim))
           pb          (doto (ProcessBuilder. ^java.util.List ttyd-argv)
                         (.redirectErrorStream true)
                         (.redirectOutput (java.io.File. ^String log-file)))
@@ -300,13 +332,18 @@
        :session     session
        :socket      sock
        :socket-path sock-path
+       :server-pid  server-pid
        :tmux-path   tmux
        :log-file    log-file
        :attach-argv attach-argv
-       :alive?      (fn [] (zero? (:exit (run-tmux! tmux sock
-                                                    ["has-session" "-t" session] nil))))
+       ;; Subprocess-free liveness: true while the tmux server process is up.
+       ;; Goes false when the session ends (the agent /quit-s, last window
+       ;; closes, server exits) — the launcher polls this to know when to reap.
+       :alive?      (fn [] (pid-alive? server-pid))
+       ;; Subprocess-free teardown (safe in a shutdown hook): signal the tmux
+       ;; server directly, reap ttyd, unlink the socket file.
        :stop        (fn []
-                      (run-tmux! tmux sock ["kill-server"] nil)
+                      (kill-pid! server-pid)
+                      (destroy-proc! proc)
                       (when sock-path
-                        (try (.delete (java.io.File. ^String sock-path)) (catch Exception _ nil)))
-                      (destroy-proc! proc))})))
+                        (try (.delete (java.io.File. ^String sock-path)) (catch Exception _ nil))))})))
