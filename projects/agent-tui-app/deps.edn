@@ -36,8 +36,14 @@
         ai.brainyard/agent-tui-persist {:local/root "../../components/agent-tui-persist"}
         ai.brainyard/agent-tui-tmux    {:local/root "../../components/agent-tui-tmux"}}
 
- :aliases {:dev {:extra-deps {ai.brainyard/agent-tui-dev {:local/root "../../bases/agent-tui/src-dev"}
-                              ai.brainyard/agent-tui-test {:local/root "../../bases/agent-tui/test"}}}
+ :aliases {:dev {;; The agent-tui base's test dir is added as a plain path (not a
+                 ;; local/root dep) so the dev REPL can load its test namespaces
+                 ;; without a deps.edn living inside the brick's test/ tree —
+                 ;; that file tripped Polylith's warning 205 (non-namespace file
+                 ;; in a brick). src-dev stays a local/root: it is outside the
+                 ;; base's scanned src/test paths, so it isn't flagged.
+                 :extra-paths ["../../bases/agent-tui/test"]
+                 :extra-deps {ai.brainyard/agent-tui-dev {:local/root "../../bases/agent-tui/src-dev"}}}
 
            ;; Project-local tests for the `main.clj` entry point. Polylith's
            ;; `poly test` only covers bricks, so the project's own CLI helpers
