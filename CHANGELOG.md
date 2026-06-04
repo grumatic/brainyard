@@ -2,7 +2,7 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [v0.2.6] — 2026-06-04
 
 ### Added
 
