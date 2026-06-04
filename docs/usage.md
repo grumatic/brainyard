@@ -51,6 +51,14 @@ by --help           # full help
 |  | `--[no-]select-resume` | off | Pick a session to resume from an interactive menu. |
 |  | `--[no-]with-tmux` | off | Require tmux side panes / popups (exit 1 if not in a tmux session). |
 |  | `--[no-]new` | — | Deprecated no-op — sessions start fresh by default. |
+|  | `--[no-]web` | off | Share this session over the web via [ttyd](https://github.com/tsl0922/ttyd). See [web-sharing.md](web-sharing.md). |
+|  | `--[no-]web-tmux` | off | Share via a private tmux session; the launching terminal stays a dashboard (drive locally from another terminal or the browser). |
+|  | `--web-port N` | `7681` | ttyd listen port (`0` = random). |
+|  | `--web-bind ADDR` | `127.0.0.1` | Address ttyd binds (`127.0.0.1` = localhost only). |
+|  | `--web-user U` / `--web-pass P` | `by` / auto | Basic-auth credentials (auth is always required). |
+|  | `--[no-]web-readonly` | off | Web clients may watch but not type. |
+|  | `--web-max-clients N` | `0` | Max simultaneous web clients (`0` = unlimited). |
+|  | `--[no-]web-once` | off | Stop sharing after the first client disconnects. |
 
 **Providers:** `claude-code` (default, no API key — drives the Claude CLI), `anthropic`, `openai`, `ollama`, `bedrock`, `apple-fm`, `deepseek`, `google`, `groq`, `mistral`. Run `by models` for the full provider/model matrix.
 
@@ -85,6 +93,22 @@ Inside the TUI:
 - Streamed responses, tool calls, and plans render incrementally in the main pane.
 - The status row (chrome) shows the agent ID, provider, model, session ID, and version.
 - Run `by config` if `.env`-discovered credentials are missing.
+
+---
+
+## `by run --web` — share over the web
+
+```bash
+by --web                       # share a fresh session on http://127.0.0.1:7681
+by --web --web-port 8080 --web-user alice --web-pass s3cret
+by --web-tmux                  # persistent shared tmux session; dashboard stays in this terminal
+```
+
+`--web` wraps `by run` in [ttyd](https://github.com/tsl0922/ttyd) so the session
+is reachable in a browser. Auth is always required, binding defaults to
+localhost, and `by` can run code/tools — so treat a writable session like a
+shared shell. Full guide, flags, env vars, and the security model:
+**[web-sharing.md](web-sharing.md)**.
 
 ---
 
@@ -173,6 +197,7 @@ Variables prefixed with `BY_` are read by the **wrapper** (`by` shell script) or
 | `BY_ENV_FILE` | wrapper | Force a specific `.env` file path. |
 | `BY_NO_DOTENV` | wrapper | Skip `.env` discovery entirely. |
 | `BY_JAR` | wrapper | Run via `java -jar by.jar` instead of the native binary (JVM-mode debugging). |
+| `BY_WEB`, `BY_WEB_*` | binary (`--web`) | Defaults for web sharing (`BY_WEB`, `BY_WEB_TMUX`, `BY_WEB_PORT`, `BY_WEB_BIND`, `BY_WEB_USER`, `BY_WEB_PASS`, …). One per `--web*` flag; flag wins over env. See [web-sharing.md](web-sharing.md). |
 | `BY_VERSION` | install.sh | Pin install to a specific release tag. |
 | `BY_INSTALL_DIR` | install.sh | Override install location (default: `~/.local/bin`). |
 | `BY_DOWNLOAD_BASE` | install.sh | Override the release download base URL (mirrors). |
@@ -198,6 +223,7 @@ The log is structured (mulog events) and useful for filing bugs — attach it wh
 
 ## See also
 
+- [`web-sharing.md`](web-sharing.md) — share a session over the web via ttyd.
 - [`install.md`](install.md) — install & verification.
 - [`deploy-design.md`](deploy-design.md) — release architecture (historical; pre-v0.2.0 sync model).
 - [`../README.md`](../README.md) — overview & quick start.

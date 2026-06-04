@@ -13,6 +13,9 @@ This repo was seeded from the upstream `v0.2.0` snapshot and is now the source o
 - GraalVM 25.0.3+ on `PATH` (or via `.sdkmanrc` + SDKMAN). The `bb native:ata` task probes `PATH`, `JAVA_HOME`, and `/Library/Java/JavaVirtualMachines/`.
 - `bb` (Babashka) and the `clojure` CLI.
 - `gh` CLI for release publishing.
+- **Optional, runtime-only:** `ttyd` for `by --web` (browser-shared sessions);
+  `tmux` additionally for `by --web-tmux`. Probed at runtime — neither is a
+  build dependency. See `components/web-share` and `docs/web-sharing.md`.
 
 ## Runtime configuration (env vars)
 
@@ -28,6 +31,10 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
 - **`AWS_PROFILE`** — Bedrock credential profile (`AWS_DEFAULT_PROFILE` is **not** honored).
 - **`BY_JAR=1`** — run the uberjar instead of the native binary (reflection-config debugging).
 - **`BY_ENV_FILE`** / **`BY_NO_DOTENV=1`** — force a specific `.env`, or skip `.env` discovery.
+- **`BY_WEB`, `BY_WEB_*`** — web-sharing defaults (one per `--web*` flag; flag
+  wins). The `--web` launcher sets **`BY_WEB_CHILD=1`** on the ttyd child as a
+  re-entrancy guard so the relaunched TUI runs in-process instead of spawning
+  another ttyd. See `docs/web-sharing.md`.
 
 ## Build & release pipeline
 
@@ -70,6 +77,16 @@ After a build, smoke-test the binary directly:
 projects/agent-tui-app/target/by --help      # subcommand routing
 projects/agent-tui-app/target/by agents      # config + agent registry load
 projects/agent-tui-app/target/by sessions list   # sqlite persist layer
+```
+
+Web-sharing smoke test (needs `ttyd` on PATH; `BY_WEB_SELF` points ttyd's child
+at a stand-in so the full TUI doesn't boot). Open the URL or `curl` it, then
+Ctrl-C — `by` should reap ttyd and free the port:
+
+```bash
+BY_WEB_SELF=cat projects/agent-tui-app/target/by --web --web-port 7681 --web-pass test
+# elsewhere:  curl -s -o /dev/null -w '%{http_code}\n' -u by:test http://127.0.0.1:7681/   # → 200
+#             curl -s -o /dev/null -w '%{http_code}\n'           http://127.0.0.1:7681/    # → 401
 ```
 
 For a real LLM round-trip (Bedrock works without API keys if `AWS_PROFILE` is set — note `AWS_DEFAULT_PROFILE` is **not** honored by the binary's SDK chain):
