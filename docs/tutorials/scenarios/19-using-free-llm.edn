@@ -1,0 +1,91 @@
+;; docs/tutorials/scenarios/19-using-free-llm.edn
+;;
+;; Showcases the :free-llm PROVIDER — a generic OpenAI-compatible endpoint for
+;; free / self-hosted models. The demo starts coact-agent on claude-code/opus,
+;; then hot-swaps to the free backend with `/model auto` and does real agent
+;; work (a greeting + a tool-channel call) at $0.0000 cost.
+;;
+;; RECORDING REQUIREMENTS: the recorder must export FREELLM_BASE_URL (the
+;; OpenAI-compatible /v1 base — e.g. http://localhost:3001/v1 for the freellmapi
+;; proxy at https://github.com/tashfeenahmed/freellmapi) and, if the endpoint
+;; requires it, FREELLM_API_KEY (a `freellmapi-…` token, sent as a Bearer
+;; header). `/model auto` resolves "auto" → :free-llm via the curated
+;; get-popular-models entry; the free router then picks an available model.
+{:id          "19-using-free-llm"
+ :title       "Using free LLM models with the free-llm provider"
+ :description "Hot-swaps coact-agent from claude-code/opus to the :free-llm
+               provider with `/model auto`, then runs a greeting and a
+               tool-channel call entirely on a free OpenAI-compatible endpoint
+               (FREELLM_BASE_URL) — note the `Switched to free-llm / auto`
+               banner and the $0.0000 per-turn cost. Recorded live against a
+               freellmapi proxy."
+
+ :walkthrough
+ "**What this is.** brainyard talks to any OpenAI-compatible `/v1` endpoint
+  through the **`:free-llm` provider**. Point `FREELLM_BASE_URL` at the endpoint
+  (and set the optional `FREELLM_API_KEY`, sent as a Bearer token) and every
+  agent can run on free or self-hosted models — here, a
+  [freellmapi](https://github.com/tashfeenahmed/freellmapi) proxy that
+  consolidates free-tier access across many providers behind one `auto` model.
+
+  **Setup.** Export `FREELLM_BASE_URL` (e.g. `http://localhost:3001/v1`) and
+  `FREELLM_API_KEY` — in your shell or a `.env` that `by` discovers. The model
+  name `auto` is a curated entry that routes to `:free-llm`; the proxy's router
+  then picks an available backend model per request.
+
+  **Switch the model.** The session launches `coact-agent` on
+  `claude-code/opus`, then `/model auto` hot-swaps the default LM — the agent
+  prints `Switched to free-llm / auto` and the status bar updates. No restart,
+  no re-auth: the same conversation continues on the free backend.
+
+  **Turn 1 — a greeting.** A plain `hello` returns a friendly reply. Watch the
+  per-turn footer: `… │ $0.0000` — the free endpoint costs nothing.
+
+  **Turn 2 — real tool work.** `list tools for aws` exercises the **tool
+  channel** on the free model: the agent calls `list-tools`, then formats the
+  matching commands and skills — proving free models drive brainyard's tools,
+  not just chat. Still `$0.0000`."
+
+ :terminal    {:cols 100 :rows 32 :title "brainyard tutorial — free-llm"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 120
+
+ ;; Launch coact-agent on claude-code/opus (subscription, no per-call cost) so
+ ;; the cast opens on a known-good backend; the `/model auto` step below swaps
+ ;; the live default LM to :free-llm. NO -i -> fullscreen, so the live
+ ;; iteration / think / tool blocks render.
+ :launch
+ {:binary "bb tui"
+  :args   ["-a" "coact-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-19-free-llm"}}
+
+ :preamble
+ [{:type :narrate
+   :text "# free-llm — run any agent on a free OpenAI-compatible endpoint"
+   :pause-ms 2200}
+  {:type :narrate
+   :text "# /model auto routes to :free-llm (FREELLM_BASE_URL); the proxy picks a free model"
+   :pause-ms 2200}
+  ;; Hot-swap the default LM to the free backend. Send the slash command, then
+  ;; submit with C-m (raw CR) — plain Enter is swallowed by the autocomplete
+  ;; popup (see reference_tmux_enter_vs_cm).
+  {:type :keys :send "/model auto" :pause-ms 700}
+  {:type :keys :send "C-m"         :pause-ms 1500}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Greet — a free-model reply at $0.0000"
+   :prompt "hello"
+   :expect {:contains ["free-llm"]}
+   :settle {:timeout-secs 180}}
+
+  {:id    :ch2
+   :label "Tool channel — list AWS tools on the free model"
+   :prompt "list tools for aws"
+   :expect {:contains ["aws"]}
+   :settle {:timeout-secs 240}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

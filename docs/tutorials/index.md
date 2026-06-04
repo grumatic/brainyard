@@ -533,6 +533,44 @@ demo tool is removed after recording so it isn't committed.)
 
 _Recorded against `by` version: `v0.2.4-18-gdea2ab8-dirty`._
 
+---
+
+## Using free LLM models with the free-llm provider
+
+Hot-swaps coact-agent from claude-code/opus to the :free-llm provider with `/model auto`, then runs a greeting and a tool-channel call entirely on a free OpenAI-compatible endpoint (FREELLM_BASE_URL) — note the `Switched to free-llm / auto` banner and the $0.0000 per-turn cost. Recorded live against a freellmapi proxy.
+
+**What this is.** brainyard talks to any OpenAI-compatible `/v1` endpoint
+through the **`:free-llm` provider**. Point `FREELLM_BASE_URL` at the endpoint
+(and set the optional `FREELLM_API_KEY`, sent as a Bearer token) and every
+agent can run on free or self-hosted models — here, a
+[freellmapi](https://github.com/tashfeenahmed/freellmapi) proxy that
+consolidates free-tier access across many providers behind one `auto` model.
+
+**Setup.** Export `FREELLM_BASE_URL` (e.g. `http://localhost:3001/v1`) and
+`FREELLM_API_KEY` — in your shell or a `.env` that `by` discovers. The model
+name `auto` is a curated entry that routes to `:free-llm`; the proxy's router
+then picks an available backend model per request.
+
+**Switch the model.** The session launches `coact-agent` on
+`claude-code/opus`, then `/model auto` hot-swaps the default LM — the agent
+prints `Switched to free-llm / auto` and the status bar updates. No restart,
+no re-auth: the same conversation continues on the free backend.
+
+**Turn 1 — a greeting.** A plain `hello` returns a friendly reply. Watch the
+per-turn footer: `… │ $0.0000` — the free endpoint costs nothing.
+
+**Turn 2 — real tool work.** `list tools for aws` exercises the **tool
+channel** on the free model: the agent calls `list-tools`, then formats the
+matching commands and skills — proving free models drive brainyard's tools,
+not just chat. Still `$0.0000`.
+
+<div class="ascii-cast"
+     data-cast="casts/19-using-free-llm.cast"
+     data-cols="100" data-rows="32"
+     data-idle="2.5" data-poster="npt:0:37"></div>
+
+_Recorded against `by` version: `v0.2.5-1-g841a92e-dirty`._
+
 
 <script src="assets/asciinema-player.min.js"></script>
 <script>
