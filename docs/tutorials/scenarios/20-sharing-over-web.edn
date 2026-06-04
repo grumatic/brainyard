@@ -1,0 +1,79 @@
+;; docs/tutorials/scenarios/20-sharing-over-web.edn
+;;
+;; Showcases `by --web-tmux` — sharing a live TUI session over the web via ttyd.
+;; Unlike the other tutorials (which drive agent CONVERSATION TURNS), this one
+;; demos a LAUNCHER: `by --web-tmux` prints a dashboard banner (URL + auth +
+;; the `tmux attach` command) and serves the session through ttyd. The cast is
+;; intentionally chapterless — there are no in-terminal agent turns to drive;
+;; the launching terminal stays a dashboard. The teaching content lives in
+;; `:walkthrough` (rendered under the player), and the cast shows the banner.
+;;
+;; RECORDING REQUIREMENTS:
+;;   - `ttyd` on PATH (Tier-2 also needs `tmux`; both are runtime-only deps).
+;;   - a v0.2.6+ `by` on PATH (rebuild + `bb install:ata` if stale).
+;;   - port 7681 free at record time.
+;; The agent flags (-a/-p/-m) are forwarded to the shared child session; the
+;; password is pinned (`--web-pass demo`) so the banner is clean.
+{:id          "20-sharing-over-web"
+ :title       "Sharing a session over the web (by --web)"
+ :description "Launches `by --web-tmux` — the TUI runs in a private tmux session
+               served by ttyd, and the launching terminal stays a dashboard
+               showing the URL, credentials, and the `tmux attach` command.
+               Open the URL (or attach from another terminal) and several
+               clients drive one live pane. Auth is always required and binding
+               defaults to localhost."
+
+ :walkthrough
+ "**What this is.** `by --web` shares a live TUI session in the browser using
+  [ttyd](https://github.com/tsl0922/ttyd): a thin launcher wraps `by run` so
+  the session is reachable over HTTP and **shared by every client that
+  connects**. The child runs in a real PTY, so raw-mode input, alt-screen, and
+  resize all work in the browser.
+
+  **Two modes.**
+  - `--web` (Tier 1) serves a fresh session that all browser clients co-drive.
+  - `--web-tmux` (Tier 2, shown here) runs the TUI in a **private detached tmux
+    session**; the launching terminal stays a **dashboard** — the banner (URL +
+    credentials) stays visible so you can copy and share it — and clients drive
+    locally from another terminal or the browser. Everyone shares **one live
+    pane**.
+
+  **Read the banner.** It prints the `URL`, the basic-auth `Auth` line
+  (password auto-generated if you don't pass `--web-pass`), the `Mode`
+  (writable · shared · localhost-only), and a `Local:` line with the exact
+  `tmux -L by-web-<id> attach -t brainyard` command for driving from another
+  terminal on this machine.
+
+  **Security.** Auth is **always required**, binding defaults to **localhost**,
+  and origin-checking is always on. To reach the session from another machine,
+  prefer an SSH tunnel (`ssh -L 7681:127.0.0.1:7681 <host>`) over binding
+  beyond localhost. Remember a writable session is a shell into an agent that
+  can run code and tools.
+
+  **Stopping.** `Ctrl-C` in the dashboard terminal stops sharing and tears down
+  the private tmux server and ttyd; quitting the agent (`/quit`) ends the
+  session too. Every `--web*` flag has a `BY_WEB_*` env equivalent. Full guide:
+  [`docs/web-sharing.md`](../../web-sharing.md)."
+
+ :terminal    {:cols 100 :rows 32 :title "brainyard tutorial — web sharing"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 90
+
+ ;; `by --web-tmux` is a LAUNCHER: it prints the dashboard banner and serves the
+ ;; session via ttyd (logs file-redirected, so the recording pane shows only the
+ ;; clean banner). The agent flags are forwarded to the shared child session.
+ ;; --web-pass is pinned so the banner shows a fixed credential.
+ :launch
+ {:binary "by"
+  :args   ["--web-tmux" "--web-port" "7681" "--web-pass" "demo"
+           "-a" "coact-agent" "-p" "claude-code" "-m" "opus"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"    "tutorial-20"}}
+
+ ;; No :preamble — the dashboard isn't an interactive readline, so typed
+ ;; narration would land on the banner. No :chapters — there are no agent turns
+ ;; in the launching terminal (chapterless is allowed; the validator only
+ ;; rejects an EMPTY :chapters). Hold the banner, then Ctrl-C to stop sharing.
+ :postamble
+ [{:type :sleep :ms 7000}
+  {:type :keys :send "C-c" :pause-ms 2500}]}

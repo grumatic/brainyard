@@ -334,7 +334,7 @@
           (format "npt:%d:%02d" (quot s 60) (mod s 60)))))
     (catch Exception _ "npt:0:02")))
 
-(defn- player-block [{:keys [id title description walkthrough version cols rows idle poster share-url]}]
+(defn- player-block [{:keys [id title description walkthrough version cols rows idle poster cast share-url]}]
   (str "## " (html-escape title) "\n\n"
        (when (seq description)
          (str (str/trim (str/replace description #"\s+" " ")) "\n\n"))
@@ -348,15 +348,20 @@
                    (str/join "\n")
                    str/trim)
               "\n\n"))
-       "<div class=\"ascii-cast\"\n"
-       "     data-cast=\"casts/" id ".cast\"\n"
-       "     data-cols=\"" (or cols 100) "\" data-rows=\"" (or rows 30) "\"\n"
-       "     data-idle=\"" (or idle 2) "\" data-poster=\"" (or poster "npt:0:02") "\"></div>\n\n"
-       "_Recorded against `by` version: `" (html-escape (or version "unknown")) "`._"
-       ;; The offline player above is the default; the share link is an opt-in
-       ;; extra written by `bb tutorial:upload` (cached in casts/<id>.url).
-       (when (seq share-url)
-         (str " · [▶ Play on asciinema.org](" (html-escape share-url) ")"))
+       (if cast
+         (str "<div class=\"ascii-cast\"\n"
+              "     data-cast=\"casts/" id ".cast\"\n"
+              "     data-cols=\"" (or cols 100) "\" data-rows=\"" (or rows 30) "\"\n"
+              "     data-idle=\"" (or idle 2) "\" data-poster=\"" (or poster "npt:0:02") "\"></div>\n\n"
+              "_Recorded against `by` version: `" (html-escape (or version "unknown")) "`._"
+              ;; The offline player above is the default; the share link is an
+              ;; opt-in extra written by `bb tutorial:upload` (cached in
+              ;; casts/<id>.url).
+              (when (seq share-url)
+                (str " · [▶ Play on asciinema.org](" (html-escape share-url) ")")))
+         ;; No cast: docs-only entry (e.g. a launcher demo the recorder can't
+         ;; drive). Render the prose above and note the absence.
+         "_No terminal recording for this walkthrough — see the linked guide._")
        "\n"))
 
 (defn- index-entries
@@ -368,21 +373,26 @@
      (for [f scns
            :let [m    (try (edn/read-string (slurp f)) (catch Exception _ nil))
                  id   (:id m)
-                 cast (str casts-dir "/" id ".cast")]
-           :when (and id (fs/exists? cast))]
-       (let [hdr     (read-cast-header cast)
+                 cast (str casts-dir "/" id ".cast")
+                 has-cast? (fs/exists? cast)]
+           ;; Include every scenario with an :id. Cast-less scenarios still
+           ;; render their docs (title/description/walkthrough) — just without
+           ;; a player (e.g. launcher demos like `--web` that the recorder
+           ;; can't drive). Cast-derived fields stay nil for those.
+           :when id]
+       (let [hdr     (when has-cast? (read-cast-header cast))
              url-f   (str casts-dir "/" id ".url")
-             share   (when (fs/exists? url-f) (str/trim (slurp url-f)))]
+             share   (when (and has-cast? (fs/exists? url-f)) (str/trim (slurp url-f)))]
          {:id id
-          :cast cast
+          :cast (when has-cast? cast)
           :title (or (:title m) (:title hdr) id)
           :description (:description m)
           :walkthrough (:walkthrough m)
-          :version (get-in hdr [:env :BRAINYARD_VERSION])
+          :version (when has-cast? (get-in hdr [:env :BRAINYARD_VERSION]))
           :cols (or (-> m :terminal :cols) (:width hdr))
           :rows (or (-> m :terminal :rows) (:height hdr))
           :idle (or (:idle-time-limit m) (:idle_time_limit hdr))
-          :poster (cast-poster-npt cast)
+          :poster (when has-cast? (cast-poster-npt cast))
           :share-url (when (seq share) share)})))))
 
 (defn- build-index []
@@ -482,15 +492,18 @@
               (html-escape (str/trim (str/replace description #"\s+" " "))) "</p>\n"))
        (when (seq walkthrough)
          (str "  <div class=\"walkthrough\">" (md->html walkthrough) "</div>\n"))
-       "  <div class=\"ascii-cast\""
-       " data-cols=\"" (or cols 100) "\" data-rows=\"" (or rows 30) "\""
-       " data-idle=\"" (or idle 2) "\" data-poster=\"" (or poster "npt:0:02") "\""
-       " data-b64=\"" (file->b64 cast) "\"></div>\n"
-       "  <p class=\"meta\">Recorded against <code>by</code> "
-       (html-escape (or version "?"))
-       (when (seq share-url)
-         (str " · <a href=\"" (html-escape share-url) "\">▶ asciinema.org</a>"))
-       "</p>\n</section>\n"))
+       (if cast
+         (str "  <div class=\"ascii-cast\""
+              " data-cols=\"" (or cols 100) "\" data-rows=\"" (or rows 30) "\""
+              " data-idle=\"" (or idle 2) "\" data-poster=\"" (or poster "npt:0:02") "\""
+              " data-b64=\"" (file->b64 cast) "\"></div>\n"
+              "  <p class=\"meta\">Recorded against <code>by</code> "
+              (html-escape (or version "?"))
+              (when (seq share-url)
+                (str " · <a href=\"" (html-escape share-url) "\">▶ asciinema.org</a>"))
+              "</p>\n")
+         "  <p class=\"meta\">No terminal recording for this walkthrough — see the guide.</p>\n")
+       "</section>\n"))
 
 (defn output [& _]
   (let [entries (index-entries)
@@ -531,9 +544,12 @@
     (fs/create-dirs (fs/parent output-path))
     (spit output-path html)
     (binding [*out* *err*]
-      (println (str "output: wrote " output-path " ("
-                    (count entries) " player(s), "
-                    (long (/ (count html) 1024)) " KB, self-contained — open directly)")))))
+      (let [n-players (count (filter :cast entries))
+            n-docs    (- (count entries) n-players)]
+        (println (str "output: wrote " output-path " ("
+                      (count entries) " section(s): " n-players " with a player"
+                      (when (pos? n-docs) (str ", " n-docs " docs-only"))
+                      ", " (long (/ (count html) 1024)) " KB, self-contained — open directly)"))))))
 
 ;; =============================================================================
 ;; workspace — create an isolated git-inited /tmp tree for the `by` cwd

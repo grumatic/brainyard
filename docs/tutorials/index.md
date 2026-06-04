@@ -571,6 +571,45 @@ not just chat. Still `$0.0000`.
 
 _Recorded against `by` version: `v0.2.5-1-g841a92e-dirty`._
 
+---
+
+## Sharing a session over the web (by --web)
+
+Launches `by --web-tmux` — the TUI runs in a private tmux session served by ttyd, and the launching terminal stays a dashboard showing the URL, credentials, and the `tmux attach` command. Open the URL (or attach from another terminal) and several clients drive one live pane. Auth is always required and binding defaults to localhost.
+
+**What this is.** `by --web` shares a live TUI session in the browser using
+[ttyd](https://github.com/tsl0922/ttyd): a thin launcher wraps `by run` so
+the session is reachable over HTTP and **shared by every client that
+connects**. The child runs in a real PTY, so raw-mode input, alt-screen, and
+resize all work in the browser.
+
+**Two modes.**
+- `--web` (Tier 1) serves a fresh session that all browser clients co-drive.
+- `--web-tmux` (Tier 2, shown here) runs the TUI in a **private detached tmux
+session**; the launching terminal stays a **dashboard** — the banner (URL +
+credentials) stays visible so you can copy and share it — and clients drive
+locally from another terminal or the browser. Everyone shares **one live
+pane**.
+
+**Read the banner.** It prints the `URL`, the basic-auth `Auth` line
+(password auto-generated if you don't pass `--web-pass`), the `Mode`
+(writable · shared · localhost-only), and a `Local:` line with the exact
+`tmux -L by-web-<id> attach -t brainyard` command for driving from another
+terminal on this machine.
+
+**Security.** Auth is **always required**, binding defaults to **localhost**,
+and origin-checking is always on. To reach the session from another machine,
+prefer an SSH tunnel (`ssh -L 7681:127.0.0.1:7681 <host>`) over binding
+beyond localhost. Remember a writable session is a shell into an agent that
+can run code and tools.
+
+**Stopping.** `Ctrl-C` in the dashboard terminal stops sharing and tears down
+the private tmux server and ttyd; quitting the agent (`/quit`) ends the
+session too. Every `--web*` flag has a `BY_WEB_*` env equivalent. Full guide:
+[`docs/web-sharing.md`](../../web-sharing.md).
+
+_No terminal recording for this walkthrough — see the linked guide._
+
 
 <script src="assets/asciinema-player.min.js"></script>
 <script>
