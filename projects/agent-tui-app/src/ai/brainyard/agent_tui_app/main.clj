@@ -21,6 +21,7 @@
    [ai.brainyard.agent.interface :as agent]
    [ai.brainyard.agent-tui-persist.interface :as persist]
    [ai.brainyard.web-share.interface :as web-share]
+   [ai.brainyard.os-sandbox.interface :as os-sandbox]
    [ai.brainyard.clj-llm.interface :as clj-llm]
    ;; Force-include cognitect.aws + aws-client for the GraalVM native-image
    ;; static analyzer. clj-llm's bedrock.clj uses requiring-resolve to keep
@@ -465,18 +466,126 @@
     ((:stop handle))
     (System/exit 0)))
 
+;; ----------------------------------------------------------------------------
+;; --sandbox: contain the session in a macOS seatbelt sandbox (write-containment)
+;;
+;; A thin launcher, parallel to --web: it re-execs `by run …` under
+;; `sandbox-exec` with a generated write-containment profile. Because seatbelt
+;; mediates only new syscalls and leaves inherited fds untouched, the child runs
+;; in the SAME terminal (unlike --web's PTY-over-network). The child carries
+;; BY_SANDBOX_CHILD=1 so the re-entered process runs the TUI instead of
+;; recursing into another sandbox-exec. macOS-only; see components/os-sandbox.
+
+(defn- sandbox-child?
+  "True when this process IS the sandboxed child (the re-entrancy guard)."
+  []
+  (= "1" (System/getenv "BY_SANDBOX_CHILD")))
+
+(defn- sandbox-requested?
+  "True when the user asked to sandbox the session (--sandbox flag or BY_SANDBOX)."
+  [opts]
+  (or (:sandbox opts) (env-truthy? "BY_SANDBOX")))
+
+(defn- sandbox-child-argv
+  "Reconstruct the `<self> run …` command sandbox-exec should run, forwarding
+   the user's run flags but NOT any --web*/--sandbox* flag (those would recurse;
+   the child also gets BY_SANDBOX_CHILD=1 as a backstop). Mirrors web-child-argv."
+  [opts self-argv]
+  (cond-> (-> (vec self-argv)
+              (conj "run")
+              (into (:_arguments opts)))            ; positional agent-id, if any
+    (not= (:agent opts) "coact-agent")    (into ["-a" (:agent opts)])
+    (not= (:provider opts) "claude-code") (into ["-p" (:provider opts)])
+    (:model opts)          (into ["-m" (:model opts)])
+    (:user-id opts)        (into ["-u" (:user-id opts)])
+    (:inline opts)         (conj "-i")
+    (:verbose opts)        (conj "-v")
+    (:max-iterations opts) (into ["-n" (str (:max-iterations opts))])
+    (:with-tmux opts)      (conj "--with-tmux")
+    (:select-resume opts)  (conj "--select-resume")
+    (:resume opts)         (into ["-r" (:resume opts)])))
+
+(defn- resolve-sandbox-config!
+  "Resolve the sandbox launch config: probe sandbox-exec + macOS, resolve how to
+   relaunch the TUI, then merge CLI flags > BY_SANDBOX_* env > defaults. Exits 1
+   with guidance when sandbox-exec or the self-exec path can't be resolved.
+   Returns a map of serve! options."
+  [opts]
+  (let [avail (os-sandbox/available?)]
+    (when-not (:ok? avail) (exit-err! (str "Error (--sandbox): " (:reason avail))))
+    (let [self (os-sandbox/self-exec-argv (System/getenv) "BY_SANDBOX_SELF")]
+      (when-not (:ok? self) (exit-err! (str "Error (--sandbox): " (:reason self))))
+      (let [home     (System/getProperty "user.home")
+            cwd      (System/getProperty "user.dir")
+            tmpdir   (or (env* "TMPDIR") (System/getProperty "java.io.tmpdir"))
+            network? (not (or (:sandbox-no-network opts) (env-truthy? "BY_SANDBOX_NO_NETWORK")))
+            extra    (os-sandbox/parse-allow-writes
+                      (or (:sandbox-allow-write opts) (env* "BY_SANDBOX_ALLOW_WRITE"))
+                      cwd home)
+            profile-path (or (not-empty (:sandbox-profile opts))
+                             (not-empty (env* "BY_SANDBOX_PROFILE")))]
+        {:profile-path   profile-path
+         :profile-string (when-not profile-path
+                           (os-sandbox/build-profile-string
+                            {:home home :cwd cwd :project-dir cwd :tmpdir tmpdir
+                             :network? network? :extra-writes extra}))
+         :params         {:home home :cwd cwd :project-dir cwd :tmpdir tmpdir}
+         :network?       network?
+         :extra-writes   extra
+         :child-argv     (sandbox-child-argv opts (:argv self))}))))
+
+(defn- print-sandbox-banner!
+  [{:keys [network? extra-writes params profile-path]}]
+  (println)
+  (println "🛡  Brainyard sandboxed session (sandbox-exec)")
+  (if profile-path
+    (println (str "   Profile: " profile-path " (custom)"))
+    (println (str "   Writes:  contained to ~/.brainyard, " (:cwd params)
+                  ", $TMPDIR, /tmp"
+                  (when (seq extra-writes) (str ", +" (count extra-writes) " extra")))))
+  (println (str "   Network: " (if network? "allowed (LLM calls work)" "DENIED")))
+  (println "   Press Ctrl-C to stop.")
+  (println)
+  (flush))
+
+(defn- launch-sandbox!
+  "Re-exec `by run …` under sandbox-exec and block until it exits, propagating
+   the child's exit code."
+  [opts]
+  (let [cfg    (resolve-sandbox-config! opts)
+        handle (os-sandbox/serve! cfg)]
+    (.addShutdownHook (Runtime/getRuntime)
+                      (Thread. ^Runnable (fn [] ((:stop handle)))))
+    (print-sandbox-banner! cfg)
+    (System/exit (.waitFor ^Process (:proc handle)))))
+
 (defn cmd-run
-  "Dispatch the `run` subcommand: when a web share is requested (and we are not
-   already the ttyd child), launch Tier 2 (tmux co-drive) or Tier 1 (fresh
-   shared session); otherwise run the TUI locally."
+  "Dispatch the `run` subcommand. When already the guarded child of either
+   launcher, run the TUI. Otherwise: --sandbox contains the session in a macOS
+   seatbelt sandbox (mutually exclusive with --web in v1); --web/--web-tmux
+   share it over the web; else run locally."
   [opts]
   (let [opts (parse-legacy-provider opts)]
-    (if (web-child?)
-      (run-tui! opts)
-      (cond
-        (web-tmux? opts)      (launch-web-tmux! opts)
-        (web-requested? opts) (launch-web! opts)
-        :else                 (run-tui! opts)))))
+    (cond
+      ;; Guarded child of EITHER launcher → just run the TUI.
+      (or (web-child?) (sandbox-child?)) (run-tui! opts)
+
+      ;; v1: --web and --sandbox don't compose. (Future: sandbox the ttyd child
+      ;; by propagating BY_SANDBOX_CHILD through serve!.)
+      (and (sandbox-requested? opts) (web-requested? opts))
+      (exit-err! (str "Error: --web and --sandbox can't be combined yet.\n"
+                      "  Run one or the other. (Sandboxing the web child is planned.)"))
+
+      (sandbox-requested? opts)
+      (if (os-sandbox/macos?)
+        (launch-sandbox! opts)
+        (do (binding [*out* *err*]
+              (println "⚠  --sandbox is macOS-only (sandbox-exec); running unsandboxed."))
+            (run-tui! opts)))
+
+      (web-tmux? opts)      (launch-web-tmux! opts)
+      (web-requested? opts) (launch-web! opts)
+      :else                 (run-tui! opts))))
 
 ;; ============================================================================
 ;; Subcommand: ask — one-shot non-interactive question
@@ -840,6 +949,18 @@
                                  :type :with-flag :default false}
                                 {:option "web-tmux"
                                  :as "Tier 2: share via a private tmux session; the launching terminal stays a dashboard, drive locally from another terminal or the browser (env BY_WEB_TMUX)"
+                                 :type :with-flag :default false}
+                                {:option "sandbox"
+                                 :as "Run this session inside a macOS sandbox (sandbox-exec write-containment; macOS only; env BY_SANDBOX=1)"
+                                 :type :with-flag :default false}
+                                {:option "sandbox-profile"
+                                 :as "Path to a custom .sb seatbelt profile (overrides the generated default; env BY_SANDBOX_PROFILE)"
+                                 :type :string}
+                                {:option "sandbox-allow-write"
+                                 :as "Extra writable root inside the sandbox; repeat or comma-separate (env BY_SANDBOX_ALLOW_WRITE)"
+                                 :type :string :multiple true}
+                                {:option "sandbox-no-network"
+                                 :as "Deny all network from the sandboxed session (blocks LLM calls; env BY_SANDBOX_NO_NETWORK)"
                                  :type :with-flag :default false}]
                   :runs        cmd-run}
                  {:command     "ask"

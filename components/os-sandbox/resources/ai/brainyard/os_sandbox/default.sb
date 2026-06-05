@@ -1,0 +1,54 @@
+;; Brainyard --sandbox default policy — HUMAN-READABLE REFERENCE ONLY.
+;;
+;; This file is NOT loaded at runtime. The launcher generates the live profile
+;; in code (ai.brainyard.os-sandbox.core/build-profile-string) and passes it to
+;; sandbox-exec via `-p`, because the write allowlist is variable-length
+;; (--sandbox-allow-write adds roots) and SBPL cannot loop. This copy exists so
+;; the policy is reviewable as a file and as a starting point for a custom
+;; profile passed with `by --sandbox --sandbox-profile <file.sb>`.
+;;
+;; A custom profile (loaded with `-f`) receives these parameters via `-D`:
+;;   (param "HOME")  (param "CWD")  (param "PROJECT_DIR")  (param "TMPDIR")
+;;
+;; Policy: WRITE-CONTAINMENT. Read/network/exec are allowed; only writes are
+;; confined. Keep the read/exec/network baseline below or `by` won't even start
+;; (it must read its own binary, system dylibs, the CA bundle, etc.).
+
+(version 1)
+
+(deny default)
+
+;; Process — the agent runs tools/code (bash, code-eval, git, ttyd, tmux).
+(allow process-exec*)
+(allow process-fork)
+(allow signal (target self))
+
+;; Reads — broad (not the threat model). Binary + dylibs + config + .env/.git.
+(allow file-read*)
+(allow file-read-metadata)
+
+;; Devices — TUI raw mode needs /dev + ioctl (tcsetattr).
+(allow file-write* (subpath "/dev"))
+(allow file-ioctl (subpath "/dev"))
+(allow sysctl-read)
+(allow mach-lookup)
+
+;; POSIX named semaphores — the GraalVM native runtime sem_open()s one at startup
+;; for signal dispatch (CSunMiscSignal). Omit this and `by` dies immediately.
+(allow ipc-posix-sem*)
+
+;; Network — all-or-nothing in seatbelt. Drop this line to deny network.
+(allow network*)
+
+;; WRITE ALLOWLIST — the containment. /tmp and $TMPDIR are allowed in both
+;; symlinked and canonical (/private/...) forms because seatbelt matches the
+;; resolved path.
+(allow file-write* (subpath (param "TMPDIR")))
+(allow file-write* (subpath "/private/var/folders"))
+(allow file-write* (subpath "/var/folders"))
+(allow file-write* (subpath "/tmp"))
+(allow file-write* (subpath "/private/tmp"))
+(allow file-write* (subpath (string-append (param "HOME") "/.brainyard")))
+(allow file-write* (subpath (string-append (param "HOME") "/Library/Caches")))
+(allow file-write* (subpath (param "CWD")))
+(allow file-write* (subpath (param "PROJECT_DIR")))

@@ -59,6 +59,10 @@ by --help           # full help
 |  | `--[no-]web-readonly` | off | Web clients may watch but not type. |
 |  | `--web-max-clients N` | `0` | Max simultaneous web clients (`0` = unlimited). |
 |  | `--[no-]web-once` | off | Stop sharing after the first client disconnects. |
+|  | `--[no-]sandbox` | off | Run this session in a macOS seatbelt sandbox (write-containment; macOS only). Mutually exclusive with `--web`. See [sandboxing.md](sandboxing.md). |
+|  | `--sandbox-profile PATH` | — | Use a custom `.sb` seatbelt profile instead of the generated default. |
+|  | `--sandbox-allow-write PATH` | — | Extra writable root inside the sandbox; repeat or comma-separate. |
+|  | `--[no-]sandbox-no-network` | off | Deny all network from the sandboxed session (blocks LLM calls). |
 
 **Providers:** `claude-code` (default, no API key — drives the Claude CLI), `anthropic`, `openai`, `ollama`, `bedrock`, `apple-fm`, `deepseek`, `google`, `groq`, `mistral`. Run `by models` for the full provider/model matrix.
 
@@ -109,6 +113,24 @@ is reachable in a browser. Auth is always required, binding defaults to
 localhost, and `by` can run code/tools — so treat a writable session like a
 shared shell. Full guide, flags, env vars, and the security model:
 **[web-sharing.md](web-sharing.md)**.
+
+---
+
+## `by run --sandbox` — contain the session (macOS)
+
+```bash
+by --sandbox                                   # confine writes to ~/.brainyard + cwd + /tmp
+by --sandbox --sandbox-allow-write ~/scratch   # add a writable root (repeat or comma-separate)
+by --sandbox --sandbox-no-network              # also cut off the network
+by --sandbox --sandbox-profile ./my.sb         # use your own seatbelt profile
+```
+
+`--sandbox` re-execs `by run` under macOS `sandbox-exec` with a
+**write-containment** profile: reads, network and subprocess exec stay allowed,
+but writes are confined to `~/.brainyard`, the project/cwd subtree, `$TMPDIR` and
+`/tmp` — so an agent can't clobber `~/.ssh`, `~/.aws/credentials`, `/etc`, or
+other repos. macOS-only; mutually exclusive with `--web`. Full guide:
+**[sandboxing.md](sandboxing.md)**.
 
 ---
 
@@ -198,6 +220,7 @@ Variables prefixed with `BY_` are read by the **wrapper** (`by` shell script) or
 | `BY_NO_DOTENV` | wrapper | Skip `.env` discovery entirely. |
 | `BY_JAR` | wrapper | Run via `java -jar by.jar` instead of the native binary (JVM-mode debugging). |
 | `BY_WEB`, `BY_WEB_*` | binary (`--web`) | Defaults for web sharing (`BY_WEB`, `BY_WEB_TMUX`, `BY_WEB_PORT`, `BY_WEB_BIND`, `BY_WEB_USER`, `BY_WEB_PASS`, …). One per `--web*` flag; flag wins over env. See [web-sharing.md](web-sharing.md). |
+| `BY_SANDBOX`, `BY_SANDBOX_*` | binary (`--sandbox`) | Defaults for sandboxing (`BY_SANDBOX`, `BY_SANDBOX_PROFILE`, `BY_SANDBOX_ALLOW_WRITE`, `BY_SANDBOX_NO_NETWORK`). One per `--sandbox*` flag; flag wins over env. macOS-only. See [sandboxing.md](sandboxing.md). |
 | `BY_VERSION` | install.sh | Pin install to a specific release tag. |
 | `BY_INSTALL_DIR` | install.sh | Override install location (default: `~/.local/bin`). |
 | `BY_DOWNLOAD_BASE` | install.sh | Override the release download base URL (mirrors). |
