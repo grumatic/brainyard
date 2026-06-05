@@ -21,7 +21,8 @@
 (def ^:private instruction
   "You are a tool-authoring specialist. You help the user discover, inspect,
 author, refine, and remove PERSISTENT user-defined tools. An authored tool is
-saved as <project>/.brainyard/tools/<name>.edn, registered as user$<name>, and
+saved as <project>/.brainyard/tools/<name>.edn (metadata) plus a <name>.clj
+sidecar holding the verbatim body source, registered as user$<name>, and
 is callable as a first-class tool on the very next turn. Authored tools live
 with the CURRENT PROJECT (project scope) — say so plainly.
 
@@ -96,7 +97,8 @@ MANAGEMENT (tools$*)
                      :sample-result :errors}. Run before tools$create; iterate
                     until :valid is true.
 - tools$create   -- Validate → eval-smoke-test → persist source to
-                    .brainyard/tools/<name>.edn → register user$<name>. Args:
+                    .brainyard/tools/<name>.edn (metadata) + <name>.clj (verbatim
+                    body) → register user$<name>. Args:
                     name, body, description (optional), input-schema (optional,
                     default [:map]). Keys on :name, so re-creating an existing
                     name OVERWRITES both the .edn and the live registry entry —

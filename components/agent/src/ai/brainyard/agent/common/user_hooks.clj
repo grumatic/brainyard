@@ -36,6 +36,7 @@
    is a global kill-switch."
   (:require [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
             [ai.brainyard.agent.core.hooks :as hooks]
+            [ai.brainyard.agent.common.def-store :as def-store]
             [ai.brainyard.clj-sandbox.interface :as sb]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.edn :as edn]
@@ -251,9 +252,11 @@
      :body       - a string `(fn [event] ...)` of ONE map arg
      :dirs       - {:project-dir ...} resolving where to persist
 
-   Effects: validates + eval-smoke-tests the body, persists the source to
-   `.brainyard/hooks/<id>.edn`, and registers it via `hooks/register-hook!`.
-   Returns {:id :event :persisted}."
+   Effects: validates + eval-smoke-tests the body, persists the metadata to
+   `.brainyard/hooks/<id>.edn` and the verbatim body source to the
+   `.brainyard/hooks/<id>.clj` sidecar, and registers it via
+   `hooks/register-hook!`. Returns {:id :event :persisted} (:persisted is the
+   .edn path)."
   [& {:keys [id event match priority doc body dirs extra-bindings]}]
   (when-not (and (string? id) (re-matches hook-id-re id))
     (throw (ex-info "hook :id must match ^[a-z][a-z0-9-]*$" {:id id})))
@@ -270,15 +273,13 @@
       (build-match match-map)                       ;; validate scope (throws if bad)
       (hooks-sandbox extra-bindings)                ;; ensure + refresh tool palette
       (install-body! id body)                       ;; compile-now smoke test
-      (let [dir  (hooks-dir dirs)
-            file (str dir "/" id ".edn")
-            rec  {:id id :event event-kw :match match-map
-                  :priority (or priority 0) :doc doc :body body}]
-        (.mkdirs (io/file dir))
-        (spit file (pr-str rec))
+      (let [dir (hooks-dir dirs)
+            rec {:id id :event event-kw :match match-map
+                 :priority (or priority 0) :doc doc :body body}
+            {:keys [edn]} (def-store/write-def! dir id (dissoc rec :body) body)]
         (register! rec)
-        (mulog/info ::define-hook :id id :event event-kw :file file)
-        {:id id :event event-kw :persisted file}))))
+        (mulog/info ::define-hook :id id :event event-kw :file edn)
+        {:id id :event event-kw :persisted edn}))))
 
 (defn load-user-hooks!
   "Startup loader: re-eval every persisted body into the hooks sandbox and
@@ -286,16 +287,18 @@
    loaded."
   [& {:keys [dirs extra-bindings]}]
   (hooks-sandbox extra-bindings)                    ;; ensure + refresh tool palette
-  (let [dir (io/file (hooks-dir dirs))]
+  (let [dir-str (hooks-dir dirs)
+        dir     (io/file dir-str)]
     (if (.isDirectory dir)
       (let [recs (->> (.listFiles dir)
                       (filter #(str/ends-with? (.getName ^java.io.File %) ".edn"))
                       (keep (fn [^java.io.File f]
-                              (try (edn/read-string (slurp f))
-                                   (catch Exception e
-                                     (mulog/warn ::load-user-hook-read-failed
-                                                 :file (.getName f) :error (ex-message e))
-                                     nil))))
+                              (let [base (subs (.getName f) 0 (- (count (.getName f)) 4))]
+                                (try (def-store/read-def dir-str base)
+                                     (catch Exception e
+                                       (mulog/warn ::load-user-hook-read-failed
+                                                   :file (.getName f) :error (ex-message e))
+                                       nil)))))
                       vec)]
         (->> recs
              (keep (fn [rec]
@@ -358,23 +361,20 @@
 
 (defn read-user-hook
   "Full record for one user hook — {:id :event :match :priority :doc :body} —
-   read from the persisted source on disk."
+   read from the persisted metadata `.edn` + body `.clj` sidecar."
   [dirs id]
-  (let [f (io/file (str (hooks-dir dirs) "/" id ".edn"))]
-    (if (.exists f)
-      (edn/read-string (slurp f))
-      {:error (str "no user hook named " (pr-str id))})))
+  (or (def-store/read-def (hooks-dir dirs) id)
+      {:error (str "no user hook named " (pr-str id))}))
 
 (defn delete-user-hook!
-  "Unregister a user hook and delete its persisted source."
+  "Unregister a user hook and delete its persisted source (both .edn and .clj)."
   [dirs id]
-  (let [f     (io/file (str (hooks-dir dirs) "/" id ".edn"))
-        rec   (when (.exists f) (try (edn/read-string (slurp f)) (catch Exception _ nil)))
+  (let [rec   (def-store/read-def (hooks-dir dirs) id)
         event (or (:event rec) (find-registered-event id))]
-    (if (or (.exists f) event)
+    (if (or rec event)
       (do
         (when event (hooks/unregister-hook! event (handler-id id)))
-        (when (.exists f) (.delete f))
+        (def-store/delete-def! (hooks-dir dirs) id)
         (mulog/info ::delete-user-hook :id id)
         {:deleted id})
       {:error (str "no user hook named " (pr-str id))})))

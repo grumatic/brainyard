@@ -27,6 +27,7 @@
    flow through `call-tool`'s Malli coercion + hook/permission/depth guards, and
    get auto-bound into agent sandboxes as `user$<name>` callables."
   (:require [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
+            [ai.brainyard.agent.common.def-store :as def-store]
             [ai.brainyard.clj-sandbox.interface :as sb]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.edn :as edn]
@@ -150,9 +151,10 @@
      :body          - a string `(fn [args] ...)` of ONE map arg
      :dirs          - {:project-dir ...} resolving where to persist
 
-   Effects: validates + eval-smoke-tests the body, persists the source to
-   `.brainyard/tools/<name>.edn`, and registers it into !tool-defs. Returns
-   {:id :name :persisted}."
+   Effects: validates + eval-smoke-tests the body, persists the metadata to
+   `.brainyard/tools/<name>.edn` and the verbatim body source to the
+   `.brainyard/tools/<name>.clj` sidecar, and registers it into !tool-defs.
+   Returns {:id :name :persisted} (:persisted is the .edn path)."
   [& {:keys [name description input-schema body dirs extra-bindings]}]
   (when-not (and (string? name) (re-matches tool-name-re name))
     (throw (ex-info "tool :name must match ^[a-z][a-z0-9-]*$"
@@ -165,15 +167,13 @@
                     {:input-schema input-schema})))
   (tools-sandbox extra-bindings)                  ;; ensure + refresh tool palette
   (install-body! name body)                       ;; compile-now smoke test
-  (let [dir  (tools-dir dirs)
-        file (str dir "/" name ".edn")
-        rec  {:name name :description description
-              :input-schema (or input-schema [:map]) :body body}]
-    (.mkdirs (io/file dir))
-    (spit file (pr-str rec))
+  (let [dir   (tools-dir dirs)
+        rec   {:name name :description description
+               :input-schema (or input-schema [:map]) :body body}
+        {:keys [edn]} (def-store/write-def! dir name (dissoc rec :body) body)]
     (let [id (register! rec)]
-      (mulog/info ::define-tool :id id :file file)
-      {:id id :name name :persisted file})))
+      (mulog/info ::define-tool :id id :file edn)
+      {:id id :name name :persisted edn})))
 
 (defn load-user-tools!
   "Startup loader: re-eval every persisted body into the tools sandbox and
@@ -181,16 +181,18 @@
    loaded."
   [& {:keys [dirs extra-bindings]}]
   (tools-sandbox extra-bindings)                  ;; ensure + refresh tool palette
-  (let [dir (io/file (tools-dir dirs))]
+  (let [dir-str (tools-dir dirs)
+        dir     (io/file dir-str)]
     (if (.isDirectory dir)
       (let [recs (->> (.listFiles dir)
                       (filter #(str/ends-with? (.getName ^java.io.File %) ".edn"))
                       (keep (fn [^java.io.File f]
-                              (try (edn/read-string (slurp f))
-                                   (catch Exception e
-                                     (mulog/warn ::load-user-tool-read-failed
-                                                 :file (.getName f) :error (ex-message e))
-                                     nil))))
+                              (let [base (subs (.getName f) 0 (- (count (.getName f)) 4))]
+                                (try (def-store/read-def dir-str base)
+                                     (catch Exception e
+                                       (mulog/warn ::load-user-tool-read-failed
+                                                   :file (.getName f) :error (ex-message e))
+                                       nil)))))
                       vec)]
         ;; Pass 1: register all, binding every `user$<name>` symbol up front —
         ;; bodies may reference peer tools and .edn file order is undefined.
@@ -264,17 +266,15 @@
 
 (defn read-user-tool
   "Full record for one user tool — `{:name :description :input-schema :body}` —
-   read from the persisted source on disk, falling back to registry metadata
-   (without source) when the file is absent."
+   read from the persisted metadata `.edn` + body `.clj` sidecar, falling back
+   to registry metadata (without source) when neither file is present."
   [dirs name]
-  (let [f (io/file (str (tools-dir dirs) "/" name ".edn"))]
-    (cond
-      (.exists f) (edn/read-string (slurp f))
-      (contains? @tool/!tool-defs (tool-id name))
-      (-> (select-keys (:meta (get @tool/!tool-defs (tool-id name)))
-                       [:description :input-schema])
-          (assoc :name name :body nil :note "source not on disk"))
-      :else {:error (str "no user tool named " (pr-str name))})))
+  (or (def-store/read-def (tools-dir dirs) name)
+      (when (contains? @tool/!tool-defs (tool-id name))
+        (-> (select-keys (:meta (get @tool/!tool-defs (tool-id name)))
+                         [:description :input-schema])
+            (assoc :name name :body nil :note "source not on disk")))
+      {:error (str "no user tool named " (pr-str name))}))
 
 (defn delete-user-tool!
   "Unregister a user tool and delete its persisted source. The orphaned
@@ -283,9 +283,9 @@
   [dirs name]
   (let [id (tool-id name)]
     (if (contains? @tool/!tool-defs id)
-      (let [f (io/file (str (tools-dir dirs) "/" name ".edn"))]
+      (do
         (swap! tool/!tool-defs dissoc id)
-        (when (.exists f) (.delete f))
+        (def-store/delete-def! (tools-dir dirs) name)
         (mulog/info ::delete-user-tool :id id)
         {:deleted name})
       {:error (str "no user tool named " (pr-str name))})))
