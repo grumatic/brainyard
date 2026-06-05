@@ -241,7 +241,8 @@
 ;; ============================================================================
 
 (export-symbols ai.brainyard.agent.core.config
-                find-git-root resolve-working-dir resolve-project-dir resolve-dirs
+                find-git-root resolve-working-dir set-working-dir-override!
+                resolve-project-dir resolve-dirs
                 user-config-dir project-config-dir default-allowed-dirs
                 ensure-config-dirs! init-dirs! list-config-files read-config-file
                 load-brainyard-instructions read-edn-config write-edn-config!

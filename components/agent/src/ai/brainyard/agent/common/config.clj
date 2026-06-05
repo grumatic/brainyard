@@ -350,7 +350,7 @@
       {:scope-resolvable? false
        :requested         scope-arg
        :error             (case scope-arg
-                            :project "No project dir resolvable (not in a git repo and BRAINYARD_PROJECT_DIR not set)."
+                            :project "No project dir resolvable (not in a git repo and BY_PROJECT_DIR not set)."
                             :user    "No user home dir resolvable."
                             (str "Unknown scope: " scope-arg))})))
 

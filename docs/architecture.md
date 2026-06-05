@@ -167,7 +167,7 @@ quirks). Concretely:
 | `/tmp/<working-dir>/...` (sandbox truncation cache) | `<project>/.brainyard/temp/clj-sandbox/truncation/<class>` |
 | `/tmp/<working-dir>/...` (file-backed display blocks) | `<project>/.brainyard/temp/clj-sandbox/file-backed/<class>` |
 
-**Project-dir resolution**: `BRAINYARD_PROJECT_DIR` env → nearest `.git`
+**Project-dir resolution**: `BY_PROJECT_DIR` env → nearest `.git`
 ancestor of working-dir → **working-dir itself** (fallback). The
 working-dir fallback means `*-agent/` artifact dirs always have a sane
 location, even outside a git repo (they land under `<cwd>/.brainyard/`).

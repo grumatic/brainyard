@@ -592,13 +592,15 @@
         ;; agent.core.bt/chunk-factory-handler, invoked directly by BT actions.
         ;; :allowed-dirs / :permission-mode flow from .brainyard/config.edn
         ;; via load-global-config!'s bridge of [:permissions ...] → schema keys.
+        ;; working-dir is not a config key — the resolved `:dirs` map (seeded
+        ;; below via set-session-config) is the single carrier, read by
+        ;; config/working-dir + config/project-dir.
         ag (agent/invoke-tool agent-id
                               {:id inst-id
                                :setup-only? true
                                :agent-session {:user-id user-id :session-id sess-id}
                                :max-iterations max-iterations
-                               :session-store !session-store
-                               :config-extra {:working-dir (:working-dir dirs)}})]
+                               :session-store !session-store})]
     ;; Configure permission-fn and user-feedback-fn
     (swap! (:!session ag) agent/set-session-config :permission-fn (permissions/make-permission-fn input/!input-reader-thread))
     (swap! (:!session ag) agent/set-session-config :dirs dirs)

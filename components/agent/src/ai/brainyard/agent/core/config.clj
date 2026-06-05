@@ -202,11 +202,11 @@
    :react-keep-thoughts-n      {:type "integer" :default 3}
    :react-keep-observations-n  {:type "integer" :default 3}
    :react-keep-iterations-n    {:type "integer" :default 3}
-   ;; Agent's effective working directory. Resolved lazily from
-   ;; `user.dir` when no override is set; callers in the agent pipeline
-   ;; should read via `(config/working-dir agent)`.
-   :working-dir                {:type "string"
-                                :default-fn #(System/getProperty "user.dir")}
+   ;; NOTE: working-dir is intentionally NOT a config key. It is resolved
+   ;; purely at runtime by `resolve-working-dir` (flag / `BY_WORKING_DIR` env /
+   ;; `user.dir`) and surfaced via the `:dirs` map below + `(config/working-dir)`.
+   ;; Keeping it out of the schema means config.edn cannot set it, so there is
+   ;; one source of truth and no divergence between two notions.
    ;; Agent's main LM config map ({:provider :model :max-tokens ...}).
    ;; Default falls through to `(clj-llm/get-default-lm)` which honors
    ;; the LLM_PROVIDER env var.
@@ -347,18 +347,55 @@
         (.getCanonicalPath dir)
         (recur (.getParentFile dir))))))
 
+(defonce ^:private !working-dir-override
+  ;; Runtime-resolved effective working dir installed once at startup by
+  ;; `set-working-dir-override!` (from the `--working-dir`/`-C` flag), read by
+  ;; `resolve-working-dir`. nil = fall through to env / `user.dir`. Stays nil at
+  ;; native-image build time, so no cwd is baked into the binary.
+  (atom nil))
+
+(defn- valid-dir-canonical
+  "Canonical path of `s` if it names an existing directory, else nil.
+   Blank / nil / non-directory → nil."
+  [s]
+  (when-let [s (some-> s str/trim not-empty)]
+    (let [f (io/file s)]
+      (when (.isDirectory f) (.getCanonicalPath f)))))
+
+(defn set-working-dir-override!
+  "Install the process-wide effective working directory from the
+   `--working-dir`/`-C` flag value. The flag is strict: a non-blank path that
+   is not an existing directory throws `ex-info` (callers exit non-zero).
+   A blank / nil value clears the override (resolution falls back to
+   `BY_WORKING_DIR` env, then `user.dir`). Returns the canonical path
+   installed, or nil when cleared."
+  [dir]
+  (if (some-> dir str/trim not-empty)
+    (or (when-let [c (valid-dir-canonical dir)]
+          (reset! !working-dir-override c)
+          c)
+        (throw (ex-info (str "working-dir is not a directory: " dir) {:dir dir})))
+    (do (reset! !working-dir-override nil) nil)))
+
 (defn resolve-working-dir
-  "Resolve working directory — always the JVM's `user.dir` system property
-   (i.e. the actual process cwd). Distinct from `project-dir` by design:
-   the three scopes (user / project / working) carry separate meanings
-   and should each report truth, not paper over each other. For 'where
+  "Resolve the effective working directory at runtime (precedence high→low):
+   1. the `--working-dir`/`-C` override installed by `set-working-dir-override!`
+   2. `BY_WORKING_DIR` env var, or the same key bridged into a System Property
+      by `.env` loading (silently ignored when blank / not a directory)
+   3. the JVM's `user.dir` system property (the process cwd)
+
+   Distinct from `project-dir` by design: the three scopes (user / project /
+   working) carry separate meanings and should each report truth. For 'where
    should `.brainyard/` artifacts live?' see `project-dir` instead."
   []
-  (System/getProperty "user.dir"))
+  (or @!working-dir-override
+      (valid-dir-canonical (or (System/getenv "BY_WORKING_DIR")
+                               (System/getProperty "BY_WORKING_DIR")))
+      (System/getProperty "user.dir")))
 
 (defn resolve-project-dir
   "Resolve project directory:
-   1. BRAINYARD_PROJECT_DIR env (explicit override)
+   1. BY_PROJECT_DIR env (explicit override)
    2. Git root found walking up from working-dir
    3. working-dir itself (current working directory fallback)
 
@@ -368,7 +405,7 @@
    they land under `<cwd>/.brainyard/<agent>/` instead of silently leaking
    into the user's home dir."
   [working-dir]
-  (or (System/getenv "BRAINYARD_PROJECT_DIR")
+  (or (System/getenv "BY_PROJECT_DIR")
       (find-git-root working-dir)
       working-dir))
 
@@ -779,7 +816,7 @@
 (defn- schema-default-fn-value
   "Invoke the `:default-fn` for schema key `k`, or return nil when the
    entry has no `:default-fn`. Used by `get-config` as the final fallback
-   for runtime-resolved keys (`:lm-config`, `:working-dir`, etc.)."
+   for runtime-resolved keys (`:lm-config`, `:dirs`, etc.)."
   [k]
   (when-let [f (get-in config-schema [k :default-fn])]
     (f)))
@@ -867,16 +904,18 @@
 ;; canonicalization + permission-prompt + default-fallback logic in one
 ;; place — call sites no longer reach into `:!state` / `:!session` directly.
 ;;
-;; Both `:working-dir` and `:allowed-dirs` are schema keys with lazy
-;; defaults — see `config-schema` for their `:default-fn` entries. The
-;; helpers below are thin wrappers over `get-config` kept for call-site
-;; readability.
+;; `:allowed-dirs` is a schema key with a lazy default — see `config-schema`
+;; for its `:default-fn`. `working-dir` is NOT a schema key: it reads the
+;; resolved `:dirs` map (mirroring `project-dir`) so the two stay consistent,
+;; falling back to `resolve-working-dir` when no `:dirs` is in the chain.
 
 (defn working-dir
-  "Resolve the agent's effective working directory.
+  "Resolve the agent's effective working directory from the resolved `:dirs`
+   map, falling back to `resolve-working-dir` (flag / `BY_WORKING_DIR` env /
+   `user.dir`) when nothing in the chain provides `:dirs`.
    Arity-0 uses `proto/*current-agent*`."
-  ([] (get-config :working-dir))
-  ([agent] (get-config agent :working-dir)))
+  ([]      (or (:working-dir (get-config :dirs))       (resolve-working-dir)))
+  ([agent] (or (:working-dir (get-config agent :dirs)) (resolve-working-dir))))
 
 (defn project-dir
   "Resolve the agent's effective project root (git-root, or `:project-dir`

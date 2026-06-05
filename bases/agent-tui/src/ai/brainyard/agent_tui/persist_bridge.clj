@@ -68,7 +68,9 @@
                          {:user-id          user-id
                           :started-at       (System/currentTimeMillis)
                           :last-attached-at (System/currentTimeMillis)
-                          :working-dir      (System/getProperty "user.dir")}))))
+                          ;; Effective working dir (honors --working-dir/-C and
+                          ;; BY_WORKING_DIR), not the raw JVM cwd.
+                          :working-dir      (agent/resolve-working-dir)}))))
 
 (defn- on-session-closed [{:keys [session-id session]}]
   (when session-id

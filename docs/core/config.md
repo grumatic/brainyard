@@ -226,7 +226,7 @@ plus the `.brainyard/` config directories per scope:
 | Concept | Resolver | Notes |
 |---|---|---|
 | Working dir | `resolve-working-dir` / `:working-dir` schema | Always `user.dir` (the JVM's actual cwd). Not user-overridable — by design, the three scopes (user/project/working) are orthogonal and each report truth. |
-| Project dir | `resolve-project-dir` / `project-dir` | `BRAINYARD_PROJECT_DIR` env → git root walking up from working-dir → working-dir itself. Anchors `.brainyard/` artifacts. |
+| Project dir | `resolve-project-dir` / `project-dir` | `BY_PROJECT_DIR` env → git root walking up from working-dir → working-dir itself. Anchors `.brainyard/` artifacts. |
 | User dir | (inline in `resolve-dirs`) | `(System/getProperty "user.home")`. No env override. |
 | Allowed dirs | `allowed-dirs` / `:allowed-dirs` schema | Allow-list for filesystem-touching tools. Defaults to `/tmp` + project-dir + `~/.brainyard`. |
 | Project `.brainyard/` | `(:project-config-dir (resolve-dirs))` | Per-repo artifacts (plans, BRAINYARD.md, project config.edn). |
