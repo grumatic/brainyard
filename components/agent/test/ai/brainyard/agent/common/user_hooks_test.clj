@@ -256,3 +256,18 @@
       :dirs test-dirs :extra-bindings (bindings-with-sink))
     (hooks/fire! :agent.iteration/post {:iteration 1})
     (is (= [:x] @sink))))
+
+(deftest sidecar-layout
+  (testing "define-hook writes metadata .edn (no :body) + verbatim .clj sidecar"
+    (let [body "(fn [event]\n  (record! (:iteration event)))"]
+      (uh/define-hook :id "rec-iter" :event :agent.iteration/post
+        :match {:global true} :doc "demo"
+        :body body :dirs test-dirs :extra-bindings (bindings-with-sink))
+      (let [edn (io/file (str (:project-dir test-dirs) "/.brainyard/hooks/rec-iter.edn"))
+            clj (io/file (str (:project-dir test-dirs) "/.brainyard/hooks/rec-iter.clj"))]
+        (is (.exists edn))
+        (is (.exists clj))
+        (is (not (str/includes? (slurp edn) ":body")) "body lives in the .clj, not the .edn")
+        (is (str/includes? (slurp clj) "record!"))
+        ;; body round-trips verbatim through read-user-hook
+        (is (= body (:body (uh/read-user-hook test-dirs "rec-iter"))))))))

@@ -284,3 +284,18 @@
     (is (thrown? Exception
                  (ut/define-tool :name "okname" :description "x"
                    :body "(this is not valid clojure" :dirs test-dirs)))))
+
+(deftest sidecar-layout
+  (testing "define-tool writes metadata .edn (no :body) + verbatim .clj sidecar"
+    (let [body "(fn [{:keys [text]}]\n  {:words (count (clojure.string/split text #\"\\s+\"))})"]
+      (ut/define-tool :name "wc-test" :description "Count words."
+        :input-schema [:map [:text :string]]
+        :body body :dirs test-dirs)
+      (let [edn (io/file (str (:project-dir test-dirs) "/.brainyard/tools/wc-test.edn"))
+            clj (io/file (str (:project-dir test-dirs) "/.brainyard/tools/wc-test.clj"))]
+        (is (.exists edn))
+        (is (.exists clj))
+        (is (not (str/includes? (slurp edn) ":body")) "body lives in the .clj, not the .edn")
+        (is (str/includes? (slurp clj) "clojure.string/split"))
+        ;; body round-trips verbatim through read-user-tool
+        (is (= body (:body (ut/read-user-tool test-dirs "wc-test"))))))))

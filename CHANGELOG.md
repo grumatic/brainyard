@@ -9,6 +9,10 @@ All notable changes to Brainyard's public distribution are documented here. Vers
 - **User-defined hooks (`hook-agent`).** The agent can now author its own runtime hooks: `hooks$create` takes Clojure source and registers it as a persistent observer on a pre-defined Brainyard event (e.g. `:agent.tool-use/post`, `:agent.iteration/post`). Mirroring user-defined tools, the handler *source* is persisted to `.brainyard/hooks/<id>.edn` and re-evaled in a dedicated sandbox to rehydrate on fire and at session boot; the body composes the tool palette by direct symbol — `(write-file {…})`, `(bash {…})` — to enact its side effect. A `hooks$events` / `hooks$create` / `hooks$validate` / `hooks$list` / `hooks$read` / `hooks$delete` command family (mirroring `tools$*`) manages them, fronted by the new `hook-agent`. v1 is observer-only (gated events that block/modify/replace are reserved) and requires an explicit `:match` scope; safety rests on fail-open handler errors, a re-entrancy guard, and the `enable-user-hooks` kill-switch.
 - **Hook-agent tutorial.** A new recorded walkthrough (`21-hook-authoring`) takes the `hook-agent` through the full hook lifecycle across three turns — discover the hookable events, author a persistent `audit-bash` hook from a plain-English request, then read it back to confirm it is registered and active.
 
+### Changed
+
+- **Reviewable persistence for user-defined tools & hooks.** Each definition is now saved as a human-readable pair — a pretty-printed metadata `.edn` plus a `.clj` sidecar holding the body as **verbatim** Clojure source (`#()`, regex, quotes preserved exactly; no escaping; opens with editor highlighting) — instead of a single dense one-line `.edn` with the body as an escaped string. A shared `def-store` ns handles both `tools$*` and `hooks$*`; reads still go through the safe `clojure.edn` reader and transparently fall back to the legacy single-file format, which migrates to the pair on its next overwrite.
+
 ## [v0.2.6] — 2026-06-04
 
 ### Added

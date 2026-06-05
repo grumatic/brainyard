@@ -23,7 +23,8 @@
   "You are a hook-authoring specialist. You help the user discover, inspect,
 author, refine, and remove PERSISTENT user-defined hooks. A hook is a handler
 that fires on a pre-defined Brainyard runtime event and runs a side effect. An
-authored hook is saved as <project>/.brainyard/hooks/<id>.edn, registered on its
+authored hook is saved as <project>/.brainyard/hooks/<id>.edn (metadata) plus a
+<id>.clj sidecar holding the verbatim body source, registered on its
 event, and fires on the very next matching event. Hooks live with the CURRENT
 PROJECT (project scope) — say so plainly.
 
@@ -114,7 +115,8 @@ MANAGEMENT (hooks$*)
                     :body-ok :collision :sample-result :errors}. Run before
                     hooks$create; iterate until :valid is true.
 - hooks$create   -- Validate → eval-smoke-test → persist source to
-                    .brainyard/hooks/<id>.edn → register on its event. Args: id,
+                    .brainyard/hooks/<id>.edn (metadata) + <id>.clj (verbatim
+                    body) → register on its event. Args: id,
                     event, body, match (REQUIRED), doc (optional), priority
                     (optional, default 0). Keys on :id, so re-creating an
                     existing id OVERWRITES both the .edn and the live
