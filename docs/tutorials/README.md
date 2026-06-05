@@ -37,6 +37,7 @@ walkthrough.
 | 17 | The front-door router                      | main-agent — route questions to the right specialist     |
 | 18 | Authoring a persistent tool                | tool-agent — discover / author / verify & run            |
 | 19 | Using free LLM models                      | coact-agent — `/model auto` → :free-llm, free endpoint   |
+| 21 | Authoring a persistent hook                | hook-agent — discover events / author / verify           |
 
 ## Authoring & regenerating
 

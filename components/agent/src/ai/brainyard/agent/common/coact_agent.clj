@@ -33,6 +33,7 @@
             [ai.brainyard.agent.common.previous-turns :as prev-turns]
             [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
             [ai.brainyard.agent.common.user-tools :as ut]
+            [ai.brainyard.agent.common.user-hooks :as uh]
             [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.common.trace :as trace]
             [ai.brainyard.agent.common.trajectory :as trajectory]
@@ -1273,7 +1274,15 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
               (ut/ensure-loaded! :dirs (sb-bind/get-dirs agent)
                                  :extra-bindings (sb-bind/auto-tool-bindings agent))
               (catch Exception e
-                (mulog/warn ::load-user-tools-failed :error (ex-message e)))))
+                (mulog/warn ::load-user-tools-failed :error (ex-message e))))
+            ;; Session boot: rehydrate this project's persisted user hooks
+            ;; (idempotent per process) so they fire on the existing hook
+            ;; registry this turn. Mirrors the user-tools loader above.
+            (try
+              (uh/ensure-loaded! :dirs (sb-bind/get-dirs agent)
+                                 :extra-bindings (sb-bind/auto-tool-bindings agent))
+              (catch Exception e
+                (mulog/warn ::load-user-hooks-failed :error (ex-message e)))))
 
         ;; Build sandbox bindings (tool + usage + optional restore). Sub-LLM
         ;; dispatch (query$llm — single :prompt or batched :prompts) is a

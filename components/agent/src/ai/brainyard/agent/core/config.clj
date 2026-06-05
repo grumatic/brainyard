@@ -146,6 +146,10 @@
    ;; Subagent call management
    :max-agent-call-depth       {:type "integer" :default 3}
    :enable-subagent-calls      {:type "boolean" :default true}
+   ;; Global kill-switch for LLM-authored user hooks (.brainyard/hooks/*.edn,
+   ;; registered via hook-agent). When false, persisted user hooks stay on disk
+   ;; but do not fire. Read by ai.brainyard.agent.common.user-hooks.
+   :enable-user-hooks          {:type "boolean" :default true}
    ;; TUI thinking live block: when true, removes the block from scrollback when
    ;; thinking stops; when false, freezes it so it remains as scrollback history.
    :dispose-think-block        {:type "boolean" :default true}
