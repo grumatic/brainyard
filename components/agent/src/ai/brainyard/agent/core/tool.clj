@@ -150,7 +150,7 @@
            ;; survives the merge without colliding with caller args.
            merge-opts# ~merge-opts
            ;; Map-shaped "extras" must DEEP-merge so a caller adding their
-           ;; own entries (e.g. the TUI passing :config-extra {:working-dir
+           ;; own entries (e.g. a caller passing :config-extra {:permission-fn
            ;; …}) does not clobber defaults the defagent author put in the
            ;; same key (e.g. :config-extra {:enable-memory-capture true}).
            ;; Without this, the caller's :config-extra silently replaces

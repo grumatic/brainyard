@@ -31,6 +31,13 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
 - **`BY_USER_ID`** — user identity stamped onto sessions and memory (L1/L2/L3 are
   partitioned by it). Resolved once at startup: `--user-id`/`-u` flag >
   `BY_USER_ID` > the `user.name` system property (OS login) > `"by-user"`.
+- **`BY_WORKING_DIR`** — effective working directory for tools/agents (no real
+  JVM chdir; threaded through config). Resolved once at startup: `--working-dir`/`-C`
+  flag > `BY_WORKING_DIR` > the process cwd (`user.dir`). The flag is **strict** (a
+  non-directory path exits 1); a bad `BY_WORKING_DIR` env value silently falls back
+  to cwd. `project-dir` (where `.brainyard/` artifacts land) re-derives from it via
+  git-root walk, unless **`BY_PROJECT_DIR`** explicitly overrides the project root.
+  The `--web`/`--sandbox` launchers forward `-C` into the re-exec'd child.
 - **`AWS_PROFILE`** — Bedrock credential profile (`AWS_DEFAULT_PROFILE` is **not** honored).
 - **`BY_JAR=1`** — run the uberjar instead of the native binary (reflection-config debugging).
 - **`BY_ENV_FILE`** / **`BY_NO_DOTENV=1`** — force a specific `.env`, or skip `.env` discovery.

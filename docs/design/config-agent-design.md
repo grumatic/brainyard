@@ -54,10 +54,10 @@ Same minimal-diff pattern as the other specialist agents: one new agent file, on
 
 | Scope | Path | Resolution | Use for |
 |---|---|---|---|
-| **Project** | `<repo>/.brainyard/config.edn` | `BRAINYARD_PROJECT_DIR` env → nearest `.git` ancestor → **working-dir fallback** | Settings that travel with the repo: MCP servers used in this codebase, project-specific `:allowed-dirs`, repo-local sandbox mode |
+| **Project** | `<repo>/.brainyard/config.edn` | `BY_PROJECT_DIR` env → nearest `.git` ancestor → **working-dir fallback** | Settings that travel with the repo: MCP servers used in this codebase, project-specific `:allowed-dirs`, repo-local sandbox mode |
 | **User** | `~/.brainyard/config.edn` | `System/getProperty "user.home"` | Cross-project defaults: preferred `:default-agent`, global LLM cache, base `:allowed-dirs`, personal sandbox preferences |
 
-The working-dir fallback in project resolution means `resolve-project-dir` is **never nil** in normal operation. Outside a git repo and without `BRAINYARD_PROJECT_DIR`, project-scope writes land under `<cwd>/.brainyard/` instead of failing. The agent should still ask the user "is this really where you want it?" when running outside a repo — see SCOPE DISCIPLINE in §6.
+The working-dir fallback in project resolution means `resolve-project-dir` is **never nil** in normal operation. Outside a git repo and without `BY_PROJECT_DIR`, project-scope writes land under `<cwd>/.brainyard/` instead of failing. The agent should still ask the user "is this really where you want it?" when running outside a repo — see SCOPE DISCIPLINE in §6.
 
 **No auto-merge.** The runtime reads whichever scope's file the caller asks for; there is no deep-merge between them. When both files exist, `read-edn-config` with `:scope :auto` returns the **project** file (first-found-wins) — see `components/agent/src/ai/brainyard/agent/core/config.clj` `resolve-scope`. A key set in user scope but also present in project scope is shadowed by the project value as long as `:auto` resolves to project.
 

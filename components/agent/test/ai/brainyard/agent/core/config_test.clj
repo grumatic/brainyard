@@ -25,7 +25,7 @@
   (let [home (str "/tmp/by-core-config-test-home-" (System/nanoTime))
         proj (str "/tmp/by-core-config-test-proj-" (System/nanoTime))
         saved-home (System/getProperty "user.home")
-        saved-proj (System/getenv "BRAINYARD_PROJECT_DIR")]
+        saved-proj (System/getenv "BY_PROJECT_DIR")]
     (.mkdirs (io/file home))
     (.mkdirs (io/file proj))
     (System/setProperty "user.home" home)
@@ -35,14 +35,17 @@
               *saved-home* saved-home
               *saved-proj* saved-proj]
       (try
-        ;; Reset cache before each test
+        ;; Reset cache + working-dir override before each test (the override is
+        ;; a process-global atom — clear it so tests don't leak into each other).
         (cfg/invalidate-global-config!)
+        (cfg/set-working-dir-override! nil)
         (with-redefs [cfg/resolve-dirs
                       (fn [] {:user-dir    home
                               :project-dir proj
                               :working-dir proj})]
           (t))
         (finally
+          (cfg/set-working-dir-override! nil)
           (rm-rf (io/file home))
           (rm-rf (io/file proj))
           (when saved-home (System/setProperty "user.home" saved-home))
@@ -234,10 +237,43 @@
     (is (string? v))
     (is (not (clojure.string/blank? v)))))
 
-(deftest working-dir-respects-per-agent-override
+(deftest working-dir-reads-from-dirs-map
+  ;; working-dir is no longer a config key — it reads the resolved `:dirs`
+  ;; map (mirroring project-dir), so a per-agent `:dirs` override drives it.
   (cfg/invalidate-global-config!)
-  (let [ag (fake-agent {:working-dir "/tmp/agent-wd"})]
+  (let [ag (fake-agent {:dirs {:user-dir    "/tmp"
+                               :project-dir "/tmp/agent-wd"
+                               :working-dir "/tmp/agent-wd"}})]
     (is (= "/tmp/agent-wd" (cfg/working-dir ag)))))
+
+(deftest working-dir-and-dirs-map-agree
+  ;; The two surfaces must never diverge: config/working-dir and the
+  ;; :working-dir of the resolved :dirs map come from one resolver.
+  (cfg/invalidate-global-config!)
+  (is (= (:working-dir (cfg/get-config :dirs)) (cfg/working-dir))))
+
+(deftest resolve-working-dir-honors-override
+  (let [d (str "/tmp/by-wd-override-" (System/nanoTime))]
+    (.mkdirs (io/file d))
+    (try
+      (let [installed (cfg/set-working-dir-override! d)]
+        (is (= (.getCanonicalPath (io/file d)) installed)
+            "setter returns the canonical path")
+        (is (= installed (cfg/resolve-working-dir))
+            "resolver returns the installed override"))
+      (testing "clearing the override falls back to the process cwd"
+        (cfg/set-working-dir-override! nil)
+        (is (= (System/getProperty "user.dir") (cfg/resolve-working-dir))))
+      (finally
+        (cfg/set-working-dir-override! nil)
+        (rm-rf (io/file d))))))
+
+(deftest set-working-dir-override-rejects-non-directory
+  (is (thrown? clojure.lang.ExceptionInfo
+               (cfg/set-working-dir-override!
+                (str "/tmp/by-wd-does-not-exist-" (System/nanoTime))))
+      "a non-existent path on the strict flag throws")
+  (cfg/set-working-dir-override! nil))
 
 (deftest allowed-dirs-reads-per-agent-override
   ;; Post-b2c371c: :allowed-dirs is a flat schema key. The user-facing

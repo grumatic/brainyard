@@ -105,6 +105,11 @@
    :as "User identity for sessions/memory (default: $BY_USER_ID, else OS login name)"
    :type :string})
 
+(def working-dir-opt
+  {:option "working-dir" :short "C"
+   :as "Effective working directory for tools/agents (default: $BY_WORKING_DIR, else process cwd)"
+   :type :string})
+
 ;; ============================================================================
 ;; Legacy provider:model parsing
 ;; ============================================================================
@@ -363,6 +368,7 @@
     (not= (:provider opts) "claude-code") (into ["-p" (:provider opts)])
     (:model opts)          (into ["-m" (:model opts)])
     (:user-id opts)        (into ["-u" (:user-id opts)])
+    (:working-dir opts)    (into ["-C" (:working-dir opts)])
     (:inline opts)         (conj "-i")
     (:verbose opts)        (conj "-v")
     (:max-iterations opts) (into ["-n" (str (:max-iterations opts))])
@@ -498,6 +504,7 @@
     (not= (:provider opts) "claude-code") (into ["-p" (:provider opts)])
     (:model opts)          (into ["-m" (:model opts)])
     (:user-id opts)        (into ["-u" (:user-id opts)])
+    (:working-dir opts)    (into ["-C" (:working-dir opts)])
     (:inline opts)         (conj "-i")
     (:verbose opts)        (conj "-v")
     (:max-iterations opts) (into ["-n" (str (:max-iterations opts))])
@@ -559,6 +566,17 @@
     (print-sandbox-banner! cfg)
     (System/exit (.waitFor ^Process (:proc handle)))))
 
+(defn- install-working-dir!
+  "Install the `--working-dir`/`-C` override before any agent/tool boots.
+   The flag is strict: a non-existent / non-directory path exits 1. A nil/blank
+   flag clears the override, so resolution falls back to `BY_WORKING_DIR` env
+   then `user.dir`. Installing here (the parent) also validates the path early,
+   before a --web/--sandbox launcher spawns its child."
+  [opts]
+  (try (agent/set-working-dir-override! (:working-dir opts))
+       (catch clojure.lang.ExceptionInfo e
+         (exit-err! (str "Error: " (.getMessage e))))))
+
 (defn cmd-run
   "Dispatch the `run` subcommand. When already the guarded child of either
    launcher, run the TUI. Otherwise: --sandbox contains the session in a macOS
@@ -566,6 +584,7 @@
    share it over the web; else run locally."
   [opts]
   (let [opts (parse-legacy-provider opts)]
+    (install-working-dir! opts)
     (cond
       ;; Guarded child of EITHER launcher → just run the TUI.
       (or (web-child?) (sandbox-child?)) (run-tui! opts)
@@ -596,6 +615,7 @@
    Config precedence: CLI flags > config.edn > hardcoded defaults."
   [opts]
   (let [opts (parse-legacy-provider opts)
+        _ (install-working-dir! opts)
         file-config (agent/read-edn-config (agent/init-dirs!))
         question (first (:_arguments opts))
         cli-agent (:agent opts)
@@ -906,6 +926,7 @@
                                 provider-opt
                                 model-opt
                                 user-id-opt
+                                working-dir-opt
                                 {:option "inline" :short "i" :as "Inline mode (no alt screen)"
                                  :type :with-flag :default false}
                                 {:option "verbose" :short "v" :as "Verbose output"
@@ -969,6 +990,7 @@
                                 provider-opt
                                 model-opt
                                 user-id-opt
+                                working-dir-opt
                                 max-iter-opt]
                   :args        [{:arg "question" :as "Question to ask" :type :string}]
                   :runs        cmd-ask}

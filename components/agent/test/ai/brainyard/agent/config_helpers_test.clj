@@ -284,7 +284,7 @@
 
 (deftest write-edn-config-falls-back-to-user-dir
   ;; Regression: running `bb tui config` outside a git repo without
-  ;; BRAINYARD_PROJECT_DIR used to write to "/config.edn" (read-only fs)
+  ;; BY_PROJECT_DIR used to write to "/config.edn" (read-only fs)
   ;; because (project-config-dir dirs) returned nil but the write path
   ;; was built from nil. Now it falls back to user-config-dir.
   (let [user-dir (str *tmp-project* "/userdir")
@@ -536,7 +536,7 @@
       (fn []
        ;; No :project-dir, JVM cwd is the test runner's cwd which IS this
        ;; repo's git root → project IS resolvable. To force the error path,
-       ;; we set BRAINYARD_PROJECT_DIR explicitly to "" via the env... which
+       ;; we set BY_PROJECT_DIR explicitly to "" via the env... which
        ;; we can't do at runtime. Instead test the inner helper directly:
         (let [dirs {:user-dir user-home :project-dir nil :working-dir user-home}
               r    (ai.brainyard.agent.core.config/resolve-scope dirs :project)]
@@ -672,7 +672,7 @@
 ;; ============================================================================
 ;; resolve-project-dir working-dir fallback
 ;;
-;; Outside a git repo and without BRAINYARD_PROJECT_DIR, project-dir falls
+;; Outside a git repo and without BY_PROJECT_DIR, project-dir falls
 ;; back to the working directory rather than nil. This keeps *-agent
 ;; artifact dirs sane in non-repo contexts.
 ;; ============================================================================

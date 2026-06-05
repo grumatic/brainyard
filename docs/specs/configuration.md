@@ -59,7 +59,7 @@ grants ([reasoning](reasoning.md) CR-RSN-14).
 
 | ID | Contract | Status | Source |
 |---|---|---|---|
-| CR-CFG-09 | Directory resolution MUST consider `user.home` (user-dir), `user.dir` (working-dir), `BRAINYARD_PROJECT_DIR` and a git-root walk (project-dir). The three scopes are orthogonal and each report truth — no env var conflates them. | Implemented | `config.clj` (`resolve-dirs`) |
+| CR-CFG-09 | Directory resolution MUST consider `user.home` (user-dir), `user.dir` (working-dir), `BY_PROJECT_DIR` and a git-root walk (project-dir). The three scopes are orthogonal and each report truth — no env var conflates them. | Implemented | `config.clj` (`resolve-dirs`) |
 | CR-CFG-10 | `.brainyard` subdirectories MUST honor `subdir-scope-policy`: memory/sessions/logs are user-only, tasks/charts are project-only, config.edn/skills are both. | Implemented | `config.clj` (`brainyard-subdir`, `subdir-scope-policy`) |
 
 The scope policy is load-bearing for several other specs: sessions are

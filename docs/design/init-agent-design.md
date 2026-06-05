@@ -55,7 +55,7 @@ BRAINYARD.md exists at **two scopes**, both consumed by every agent's user-conte
 
 | Scope | Path | Resolution | What lives here |
 |---|---|---|---|
-| **Project** | `<repo>/.brainyard/BRAINYARD.md` | `BRAINYARD_PROJECT_DIR` env → nearest `.git` ancestor → **working-dir fallback** | Repo-specific: build commands, conventions, architecture notes, house rules for THIS codebase |
+| **Project** | `<repo>/.brainyard/BRAINYARD.md` | `BY_PROJECT_DIR` env → nearest `.git` ancestor → **working-dir fallback** | Repo-specific: build commands, conventions, architecture notes, house rules for THIS codebase |
 | **User** | `~/.brainyard/BRAINYARD.md` | `System/getProperty "user.home"` | Cross-project: personal coding preferences, global tooling notes, glossary terms you reuse |
 
 **No auto-merge.** `load-brainyard-instructions` returns both as a `{:user-instructions :project-instructions}` map; `coact-user-context` renders them as two labelled sections. The runtime never merges them — they are independent files.

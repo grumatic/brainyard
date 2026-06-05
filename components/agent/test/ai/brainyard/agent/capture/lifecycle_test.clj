@@ -197,30 +197,31 @@
   :config-extra {:enable-memory-capture true})
 
 (deftest config-extra-deep-merge-with-caller-test
-  (testing "caller :config-extra (e.g. TUI :working-dir) does NOT clobber defagent's :config-extra"
-    ;; This mirrors what the TUI does: it calls invoke-tool / setup-agent
-    ;; with its own :config-extra. Before the deep-merge fix, that map
-    ;; replaced the defagent's, so :enable-memory-capture from the author
-    ;; silently vanished.
+  (testing "caller :config-extra (e.g. TUI overrides) does NOT clobber defagent's :config-extra"
+    ;; This mirrors what callers do: invoke-tool / setup-agent with their own
+    ;; :config-extra. Before the deep-merge fix, that map replaced the
+    ;; defagent's, so :enable-memory-capture from the author silently vanished.
     ;;
     ;; Post-consolidation routing: setup-agent splits :config-extra into
-    ;;   - non-schema keys (:working-dir, :permissions) → @!state :config
-    ;;   - schema keys (:enable-memory-capture) → st-memory-init :config
+    ;;   - non-schema keys (:permissions) → @!state :config
+    ;;   - schema keys (:max-output-tokens, :enable-memory-capture) → st-memory-init :config
     ;; This test confirms BOTH halves survive the caller-side deep-merge.
+    ;; (:max-output-tokens is a plain schema key — unlike :max-iterations, which
+    ;; is centrally defaulted into st-memory-init and would mask a config-extra value.)
     (let [a (agent/invoke-tool :test-merge-agent
                                {:id            :merge-agent-1
                                 :agent-session {:user-id "u" :session-id "s"}
                                 :setup-only?   true
-                                :config-extra  {:working-dir "/tmp"
+                                :config-extra  {:max-output-tokens 12345
                                                 :permissions {}}})]
       (try
         (let [state-cfg  (:config @(:!state a))
               schema-cfg (some-> (:st-memory-init @(:!state a)) deref :config)
               created-mm (:memory-manager @(:!state a))]
           ;; Caller's keys survive the deep-merge, routed by schema membership:
-          ;; :working-dir is a config-schema key → st-memory-init :config;
+          ;; :max-output-tokens is a config-schema key → st-memory-init :config;
           ;; :permissions is non-schema → @!state :config.
-          (is (= "/tmp" (:working-dir schema-cfg)))
+          (is (= 12345 (:max-output-tokens schema-cfg)))
           (is (= {} (:permissions state-cfg)))
           ;; Author's schema key preserved across the merge, lands in
           ;; st-memory-init :config.

@@ -224,7 +224,7 @@ Variables prefixed with `BY_` are read by the **wrapper** (`by` shell script) or
 | `BY_VERSION` | install.sh | Pin install to a specific release tag. |
 | `BY_INSTALL_DIR` | install.sh | Override install location (default: `~/.local/bin`). |
 | `BY_DOWNLOAD_BASE` | install.sh | Override the release download base URL (mirrors). |
-| `BRAINYARD_PROJECT_DIR` | binary | Hint at the project root when `.env`/cwd discovery isn't enough. |
+| `BY_PROJECT_DIR` | binary | Hint at the project root when `.env`/cwd discovery isn't enough. |
 | `BRAINYARD_SESSION_ID` | binary | Use a deterministic session id (useful for tests/automation). |
 | `BRAINYARD_NREPL_ENABLED` | binary | Enable the embedded (security-gated) nREPL server. |
 | `BRAINYARD_NREPL_PORT` | binary | Port for the embedded nREPL server. |

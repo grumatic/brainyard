@@ -640,7 +640,7 @@ full policy.
   **`memory/`, `sessions/`, `logs/` are user-only by policy** — they
   hold per-account state that must not travel with a repo.
 
-Project-dir resolution: `BRAINYARD_PROJECT_DIR` env → nearest `.git`
+Project-dir resolution: `BY_PROJECT_DIR` env → nearest `.git`
 ancestor of cwd → **cwd itself** (fallback). The fallback means
 project-scope writes always have a target, even outside a git repo.
 
