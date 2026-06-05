@@ -16,6 +16,9 @@ This repo was seeded from the upstream `v0.2.0` snapshot and is now the source o
 - **Optional, runtime-only:** `ttyd` for `by --web` (browser-shared sessions);
   `tmux` additionally for `by --web-tmux`. Probed at runtime — neither is a
   build dependency. See `components/web-share` and `docs/web-sharing.md`.
+  `sandbox-exec` (ships with macOS) backs `by --sandbox` — probed at runtime,
+  macOS-only, not a build dependency. See `components/os-sandbox` and
+  `docs/sandboxing.md`.
 
 ## Runtime configuration (env vars)
 
@@ -35,6 +38,12 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   wins). The `--web` launcher sets **`BY_WEB_CHILD=1`** on the ttyd child as a
   re-entrancy guard so the relaunched TUI runs in-process instead of spawning
   another ttyd. See `docs/web-sharing.md`.
+- **`BY_SANDBOX`, `BY_SANDBOX_*`** — seatbelt sandbox defaults (one per
+  `--sandbox*` flag; flag wins). Default policy is **write-containment**: reads,
+  network and subprocess exec are allowed, writes are confined to `~/.brainyard`,
+  the cwd subtree, `$TMPDIR`/`/tmp`. The `--sandbox` launcher sets
+  **`BY_SANDBOX_CHILD=1`** on the re-exec'd child as the re-entrancy guard.
+  Mutually exclusive with `--web` in v1; macOS-only. See `docs/sandboxing.md`.
 
 ## Build & release pipeline
 
@@ -87,6 +96,21 @@ Ctrl-C — `by` should reap ttyd and free the port:
 BY_WEB_SELF=cat projects/agent-tui-app/target/by --web --web-port 7681 --web-pass test
 # elsewhere:  curl -s -o /dev/null -w '%{http_code}\n' -u by:test http://127.0.0.1:7681/   # → 200
 #             curl -s -o /dev/null -w '%{http_code}\n'           http://127.0.0.1:7681/    # → 401
+```
+
+Sandbox smoke test (macOS only). `BY_SANDBOX_SELF` points the seatbelt child at a
+stand-in script so the full TUI doesn't boot — the launcher injects a `run`
+subcommand token, so the stand-in must ignore its args:
+
+```bash
+cat > /tmp/by-probe.sh <<'EOF'
+#!/bin/sh
+echo x > /etc/x 2>&1 || echo write-blocked-ok          # denied: outside allowlist
+echo ok > "$HOME/.brainyard/e2e" && echo brainyard-write-ok   # allowed
+EOF
+chmod +x /tmp/by-probe.sh
+BY_SANDBOX_SELF=/tmp/by-probe.sh projects/agent-tui-app/target/by --sandbox
+# → "write-blocked-ok" then "brainyard-write-ok"
 ```
 
 For a real LLM round-trip (Bedrock works without API keys if `AWS_PROFILE` is set — note `AWS_DEFAULT_PROFILE` is **not** honored by the binary's SDK chain):
