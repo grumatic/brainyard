@@ -1,0 +1,90 @@
+;; docs/tutorials/scenarios/22-sandboxing-a-session.edn
+;;
+;; Showcases `by --sandbox` — running a TUI session inside a macOS seatbelt
+;; sandbox (sandbox-exec) with a write-containment policy. Like 20-sharing-over-
+;; web, this demos a LAUNCHER: `by run --sandbox` prints a one-line policy banner
+;; and then re-execs the TUI under sandbox-exec. Unlike --web (a dashboard +
+;; ttyd), the sandboxed session runs in the SAME terminal, so it IS interactive
+;; — the chapters below drive real agent turns inside the sandbox to show that a
+;; write in the workspace succeeds while a write outside it is denied by the OS.
+;;
+;; RECORDING REQUIREMENTS:
+;;   - macOS only — `--sandbox` uses /usr/bin/sandbox-exec (seatbelt). On other
+;;     platforms `by` warns and runs unsandboxed, so the demo is a no-op there.
+;;   - a v0.2.x+ native `by` on PATH (the re-exec resolves the native binary via
+;;     ProcessHandle; rebuild + `bb install:ata` if stale, or set BY_SANDBOX_SELF).
+;;   - chapter 1 writes a scratch file under <project>/.brainyard/ (allowed by
+;;     the sandbox); remove it after recording so it isn't committed.
+{:id          "22-sandboxing-a-session"
+ :title       "Containing a session in a sandbox (by --sandbox)"
+ :description "Launches `by run --sandbox` — the session runs inside a macOS
+               seatbelt sandbox with write-containment. The banner shows the
+               policy (writes confined to ~/.brainyard, the project subtree,
+               $TMPDIR and /tmp; network allowed), then two agent turns show an
+               in-workspace write succeeding and an out-of-workspace write being
+               denied by the OS. macOS only."
+
+ :walkthrough
+ "**What this is.** `by --sandbox` re-execs `by run` under macOS
+  [`sandbox-exec`](https://keith.github.io/xcode-man-pages/sandbox-exec.1.html)
+  (seatbelt) with a generated **write-containment** profile. It's a blast-radius
+  limiter for an agent that runs arbitrary tools and code: reads, network and
+  subprocess exec stay allowed, but filesystem **writes** are confined to a
+  small allowlist. The sandboxed session runs in the **same terminal** (unlike
+  `--web`'s PTY-over-network).
+
+  **Read the banner.** `🛡 Brainyard sandboxed session` prints the contained
+  write roots (`~/.brainyard`, the project/cwd subtree, `$TMPDIR`, `/tmp`) and
+  the network state (`allowed` unless you pass `--sandbox-no-network`).
+
+  **What's allowed vs denied.**
+  - ✅ **Read** anything — the binary must load its own dylibs, the CA bundle,
+    config and `.env`; reads aren't the threat model.
+  - ✅ **Network** — LLM calls work (toggle off with `--sandbox-no-network`).
+  - ✅ **Exec** — bash, code-eval, git, tmux all run; that's the agent's job.
+  - ⛔ **Write** anywhere outside the allowlist (`~/.ssh`, `~/.aws/credentials`,
+    `/etc`, sibling repos) fails with `Operation not permitted`.
+
+  **The two turns.** Turn 1 writes a file inside the project — it succeeds,
+  showing the session works normally. Turn 2 tries to write outside the
+  workspace (e.g. `/etc`) and reports the OS denial — the containment is a
+  kernel guarantee that sits *below* the agent's own permission layers.
+
+  **Knobs.** Add writable roots with `--sandbox-allow-write <path>` (repeatable
+  or comma-separated), cut the network with `--sandbox-no-network`, or bring your
+  own profile with `--sandbox-profile <file.sb>`. Every flag has a `BY_SANDBOX_*`
+  env equivalent. macOS-only; mutually exclusive with `--web` in v1. Full guide:
+  [`docs/sandboxing.md`](../../sandboxing.md)."
+
+ :terminal    {:cols 100 :rows 32 :title "brainyard tutorial — sandboxing"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 120
+
+ ;; `by run --sandbox` re-execs the TUI under sandbox-exec (the native binary
+ ;; resolves itself via ProcessHandle). The banner prints, then the TUI takes
+ ;; over the same terminal. Agent flags are forwarded to the sandboxed child.
+ :launch
+ {:binary "by"
+  :args   ["run" "--sandbox" "-a" "coact-agent" "-p" "claude-code" "-m" "opus"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"    "tutorial-22"}}
+
+ :preamble
+ [{:type :narrate :text "# by --sandbox: a session contained by a macOS seatbelt write-policy" :pause-ms 2000}]
+
+ :chapters
+ [{:id    :ch1
+   :label "In-workspace write — allowed"
+   :prompt "Using the bash tool, write the text 'contained ok' to .brainyard/sandbox-demo.txt in this project, then cat the file back to confirm it was written."
+   :expect {:contains ["contained ok"]}
+   :settle {:timeout-secs 180}}
+
+  {:id    :ch2
+   :label "Out-of-workspace write — denied by the OS"
+   :prompt "Using the bash tool, try to write 'should fail' to /etc/by-sandbox-demo and report exactly what happened. Do not use sudo."
+   :expect {:contains ["permitted"]}
+   :settle {:timeout-secs 180}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}

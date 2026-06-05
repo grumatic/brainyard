@@ -644,6 +644,45 @@ isn't committed.)
 
 _Recorded against `by` version: `v0.2.6-3-gff032dd`._
 
+---
+
+## Containing a session in a sandbox (by --sandbox)
+
+Launches `by run --sandbox` — the session runs inside a macOS seatbelt sandbox with write-containment. The banner shows the policy (writes confined to ~/.brainyard, the project subtree, $TMPDIR and /tmp; network allowed), then two agent turns show an in-workspace write succeeding and an out-of-workspace write being denied by the OS. macOS only.
+
+**What this is.** `by --sandbox` re-execs `by run` under macOS
+[`sandbox-exec`](https://keith.github.io/xcode-man-pages/sandbox-exec.1.html)
+(seatbelt) with a generated **write-containment** profile. It's a blast-radius
+limiter for an agent that runs arbitrary tools and code: reads, network and
+subprocess exec stay allowed, but filesystem **writes** are confined to a
+small allowlist. The sandboxed session runs in the **same terminal** (unlike
+`--web`'s PTY-over-network).
+
+**Read the banner.** `🛡 Brainyard sandboxed session` prints the contained
+write roots (`~/.brainyard`, the project/cwd subtree, `$TMPDIR`, `/tmp`) and
+the network state (`allowed` unless you pass `--sandbox-no-network`).
+
+**What's allowed vs denied.**
+- ✅ **Read** anything — the binary must load its own dylibs, the CA bundle,
+config and `.env`; reads aren't the threat model.
+- ✅ **Network** — LLM calls work (toggle off with `--sandbox-no-network`).
+- ✅ **Exec** — bash, code-eval, git, tmux all run; that's the agent's job.
+- ⛔ **Write** anywhere outside the allowlist (`~/.ssh`, `~/.aws/credentials`,
+`/etc`, sibling repos) fails with `Operation not permitted`.
+
+**The two turns.** Turn 1 writes a file inside the project — it succeeds,
+showing the session works normally. Turn 2 tries to write outside the
+workspace (e.g. `/etc`) and reports the OS denial — the containment is a
+kernel guarantee that sits *below* the agent's own permission layers.
+
+**Knobs.** Add writable roots with `--sandbox-allow-write <path>` (repeatable
+or comma-separated), cut the network with `--sandbox-no-network`, or bring your
+own profile with `--sandbox-profile <file.sb>`. Every flag has a `BY_SANDBOX_*`
+env equivalent. macOS-only; mutually exclusive with `--web` in v1. Full guide:
+[`docs/sandboxing.md`](../../sandboxing.md).
+
+_No terminal recording for this walkthrough — see the linked guide._
+
 
 <script src="assets/asciinema-player.min.js"></script>
 <script>
