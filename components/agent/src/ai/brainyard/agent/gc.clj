@@ -8,7 +8,7 @@
    Three classes, three sweeps:
 
      :tasks          <project>/.brainyard/tasks/task-N/   — count + age
-     :coact-scratch  <project>/.brainyard/agents/coact-agent/scratch/ — age (hours)
+     :coact-scratch  <project>/.brainyard/temp/coact-agent/scratch/ — age (hours)
      :sandbox-cache  <project>/.brainyard/temp/clj-sandbox/{truncation,file-backed}/
                                                           — count + bytes + age
 
@@ -112,11 +112,11 @@
 ;; ============================================================================
 
 (defn- coact-scratch-dir
-  "Resolve <project>/.brainyard/agents/coact-agent/scratch/ without creating it."
+  "Resolve <project>/.brainyard/temp/coact-agent/scratch/ without creating it."
   ^File [dirs]
   (let [dirs (or dirs (config/init-dirs!))]
     (when-let [pcd (config/project-config-dir dirs)]
-      (let [f (io/file pcd "agents" "coact-agent" "scratch")]
+      (let [f (io/file pcd "temp" "coact-agent" "scratch")]
         (when (.exists f) f)))))
 
 (defn sweep-coact-scratch!

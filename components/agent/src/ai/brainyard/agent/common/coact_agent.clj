@@ -2167,13 +2167,13 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 
 (defn- coact-scratch-path
   "Resolve a scratch-file path for a code block execution.
-   Prefers `<project>/.brainyard/agents/coact-agent/scratch/`, falls back to `/tmp/`
+   Prefers `<project>/.brainyard/temp/coact-agent/scratch/`, falls back to `/tmp/`
    only when the project-scope dir can't be created."
   [ext]
   (let [stamp (str (System/currentTimeMillis) "-"
                    (Math/abs (.nextInt (java.util.Random.))) ext)]
     (if-let [agent-dir (config/brainyard-subdir!
-                        (config/init-dirs!) "agents/coact-agent" :project)]
+                        (config/init-dirs!) "temp/coact-agent" :project)]
       (let [scratch (str agent-dir "/scratch")]
         (.mkdirs (java.io.File. scratch))
         (str scratch "/coact-" stamp))
@@ -2189,7 +2189,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                    (Math/abs (.nextInt (java.util.Random.))))
         fname (if filename (str stamp "-" filename) (str "verbatim-" stamp ext))]
     (if-let [agent-dir (config/brainyard-subdir!
-                        (config/init-dirs!) "agents/coact-agent" :project)]
+                        (config/init-dirs!) "temp/coact-agent" :project)]
       (let [scratch (str agent-dir "/scratch")]
         (.mkdirs (java.io.File. scratch))
         (str scratch "/coact-" fname))

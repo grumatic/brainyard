@@ -615,8 +615,9 @@ full policy.
 - **Project** — `<repo>/.brainyard/` next to `deps.edn`. Per-repo
   artifacts:
   - `*-agent/` runtime state (`explore-agent/`, `plan-agent/`,
-    `workflow-agent/`, `research-agent/<id>/`, …, plus
-    `coact-agent/scratch/` for code-block execution scratch files).
+    `workflow-agent/`, `research-agent/<id>/`, …).
+  - `temp/coact-agent/scratch/` — code-block execution + verbatim
+    content scratch files (rides the 24h GC sweep).
   - `charts/chart-<ts>.html` — Plotly exports from
     `chart-command$export-html`.
   - `clj-sandbox/truncation/<class>` — sandbox truncation recovery

@@ -117,7 +117,7 @@
 ;; ============================================================================
 
 (defn- mk-scratch-file! [filename age-hours]
-  (let [d (io/file *project* ".brainyard" "agents" "coact-agent" "scratch")
+  (let [d (io/file *project* ".brainyard" "temp" "coact-agent" "scratch")
         _ (.mkdirs d)
         f (io/file d filename)
         ts (- (System/currentTimeMillis) (* age-hours hour-ms))]

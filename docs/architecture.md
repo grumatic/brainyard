@@ -144,8 +144,8 @@ Every `.brainyard/<name>` entry is allowed at one or both scopes per
 | `config.edn`, `BRAINYARD.md`, `skills/` | ✓ | ✓ |
 | `config-agent/`, `init-agent/` (mirror the file they edit) | ✓ | ✓ |
 | `memory/` (SQLite DBs), `sessions/` (TUI state), `logs/` (mulog file publishers + crash dumps) | ✓ | — |
-| `charts/` (Plotly HTML exports), `clj-sandbox/` (truncation + file-backed display caches) | — | ✓ |
-| Other `*-agent/` (`explore-agent`, `plan-agent`, `todo-agent`, `workflow-agent`, `research-agent`, `update-agent`, `eval-agent`, `exec-agent`, `coact-agent/scratch/`, …) | — | ✓ |
+| `charts/` (Plotly HTML exports), `temp/clj-sandbox/` (truncation + file-backed display caches), `temp/coact-agent/scratch/` (code-block + verbatim scratch) | — | ✓ |
+| Other `*-agent/` (`explore-agent`, `plan-agent`, `todo-agent`, `workflow-agent`, `research-agent`, `update-agent`, `eval-agent`, `exec-agent`, …) | — | ✓ |
 
 Use `(brainyard-subdir dirs name scope)` to resolve a path that honors
 this policy; it returns nil for forbidden combos. Use `brainyard-subdir!`
@@ -163,7 +163,7 @@ quirks). Concretely:
 | `/tmp/agent-web-app.log` | `~/.brainyard/logs/agent-web-app.log` |
 | `/tmp/by-crash.log`, `/tmp/by-input-crash.log` | `~/.brainyard/logs/by-*.log` |
 | `/tmp/chart-<ts>.html` | `<project>/.brainyard/charts/chart-<ts>.html` |
-| `/tmp/coact-<ts>-<rand>.{sh,py,js}` | `<project>/.brainyard/agents/coact-agent/scratch/coact-*` |
+| `/tmp/coact-<ts>-<rand>.{sh,py,js}` | `<project>/.brainyard/temp/coact-agent/scratch/coact-*` |
 | `/tmp/<working-dir>/...` (sandbox truncation cache) | `<project>/.brainyard/temp/clj-sandbox/truncation/<class>` |
 | `/tmp/<working-dir>/...` (file-backed display blocks) | `<project>/.brainyard/temp/clj-sandbox/file-backed/<class>` |
 
