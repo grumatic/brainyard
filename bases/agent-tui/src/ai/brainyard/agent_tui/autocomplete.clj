@@ -908,27 +908,29 @@
         (and @input/!pasting? (not @paste-mode?)) (begin-paste!)
         (and (not @input/!pasting?) @paste-mode?) (commit-paste!))
       (let [key (terminal/read-key! in)
-            ;; Permission prompt intercept — when pending, route y/n/a keys
-            handled-permission? (when-let [p @tui-session/!pending-permission]
-                                  (when (string? key)
-                                    (case (str/lower-case key)
-                                      "y" (deliver p :yes)
-                                      "n" (deliver p :no)
-                                      "a" (deliver p :always)
-                                      nil))
-                                  true)
-            ;; User feedback intercept — route number keys when pending
-            handled-feedback? (when (and (not handled-permission?)
-                                         (string? key))
-                                (when-let [{:keys [promise options]} @tui-session/!pending-feedback]
-                                  (when-let [n (parse-long key)]
-                                    (when (and (>= n 1) (<= n (count options)))
-                                      (let [idx (dec n)
-                                            selected (nth options idx)]
-                                        (deliver promise {:selected (:label selected) :index idx})
-                                        true)))))]
+            ;; Unified feedback intercept (readline path) — when a prompt is
+            ;; pending, route keys to it by :kind, mirroring
+            ;; input/try-intercept-byte: :confirm letter-keys, :select
+            ;; number-keys. (:text is driven by the raw reader / stdin reader.)
+            handled-feedback?
+            (when (and (string? key) (seq key))
+              (when-let [{:keys [promise kind choices options]} @tui-session/!pending-feedback]
+                (case (or kind :select)
+                  :confirm
+                  (let [ch  (Character/toLowerCase (.charAt ^String key 0))
+                        hit (some #(when (= ch (Character/toLowerCase ^char (:key %))) %) choices)]
+                    (when hit
+                      (deliver promise {:value (:value hit) :key (:key hit)})
+                      true))
+                  :text nil
+                  ;; :select (default)
+                  (when-let [n (parse-long key)]
+                    (when (and (>= n 1) (<= n (count options)))
+                      (let [idx (dec n)
+                            selected (nth options idx)]
+                        (deliver promise {:selected (:label selected) :index idx})
+                        true))))))]
         (cond
-          handled-permission? (recur)
           handled-feedback?   (recur)
           ;; Bracketed paste in progress: capture printable chars and CR/LF
           ;; into paste-buf and drop everything else. The :unknown returned by

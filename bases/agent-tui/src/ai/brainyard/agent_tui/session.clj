@@ -46,11 +46,16 @@
          :mode        nil      ;; :A | :B (Mode C exits before start!) — see agent-tui.mode
          :started-at  nil}))
 
-;; Pending permission promise — set by permission-fn, read by input handler
-(defonce !pending-permission (atom nil))
-
-;; Pending user feedback — set by user-feedback-fn, read by input handler
-;; Value: {:promise <promise> :options <vec of {:label :description?}>} or nil
+;; Pending user feedback — the single interactive-input channel. Set by the
+;; unified feedback-fn (and its permission adapter), read/driven by the input
+;; handler. One channel for all kinds — permission no longer has its own atom.
+;; Value (nil when idle); shape depends on :kind:
+;;   :select  {:promise p :kind :select :options <vec of {:label :description? :free-input?}>
+;;             :mode :selecting|:awaiting-text :buf StringBuilder :free-idx int
+;;             :utf8-buf [..] :utf8-need int}
+;;   :text    {:promise p :kind :text :mode :awaiting-text :buf StringBuilder
+;;             :free-idx 0 :options [{:label question}] :utf8-buf [..] :utf8-need int}
+;;   :confirm {:promise p :kind :confirm :choices <vec of {:key char :label :value}>}
 (defonce !pending-feedback (atom nil))
 
 ;; TUI mulog publisher handle (verbose mode only)

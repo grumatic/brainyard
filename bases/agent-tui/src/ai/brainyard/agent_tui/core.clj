@@ -601,10 +601,15 @@
                                :agent-session {:user-id user-id :session-id sess-id}
                                :max-iterations max-iterations
                                :session-store !session-store})]
-    ;; Configure permission-fn and user-feedback-fn
-    (swap! (:!session ag) agent/set-session-config :permission-fn (permissions/make-permission-fn input/!input-reader-thread))
-    (swap! (:!session ag) agent/set-session-config :dirs dirs)
-    (swap! (:!session ag) agent/set-session-config :user-feedback-fn (permissions/make-user-feedback-fn input/!input-reader-thread))
+    ;; Configure the unified user-feedback fn (the single interactive-input
+    ;; primitive) and the permission adapter that rides on top of it. One
+    ;; feedback-fn instance is shared so permission + feedback serialize through
+    ;; the same lock / pending channel.
+    (let [feedback-fn (permissions/make-feedback-fn input/!input-reader-thread)]
+      (swap! (:!session ag) agent/set-session-config :user-feedback-fn feedback-fn)
+      (swap! (:!session ag) agent/set-session-config :dirs dirs)
+      (swap! (:!session ag) agent/set-session-config :permission-fn
+             (permissions/make-permission-fn input/!input-reader-thread feedback-fn)))
     ag))
 
 (defn load-input-history-for-session!

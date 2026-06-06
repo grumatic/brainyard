@@ -162,6 +162,11 @@
    ;; TUI sub-agent live block: when true, removes the block from scrollback when
    ;; the sub-agent call ends; when false, freezes it so it remains as scrollback history.
    :dispose-agent-block        {:type "boolean" :default true}
+   ;; TUI permission/feedback prompts: when true (and in Mode B with a
+   ;; popup-capable tmux client), prompts render as a tmux popup; when false,
+   ;; they always fall back to the in-stream live-block. Read by
+   ;; ai.brainyard.agent-tui.permissions/mode-b-popup-feasible?.
+   :enable-tmux-popup          {:type "boolean" :default true}
    ;; TUI resume: how many trailing bytes of the persisted `:stream` scrollback
    ;; to replay into the pane on `--resume` (NOT characters — raw ANSI bytes,
    ;; decoded UTF-8). Bounded by the on-disk cap (5 MiB/stream × rotations).

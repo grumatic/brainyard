@@ -399,10 +399,11 @@ Always discover exact tool ids via `(list-tools :pattern \"^mcp\\\\$\")` first �
 
 (def ^:private usage-user-feedback
   "## User Feedback
-- `(get-user-feedback \"question\" [\"opt1\" \"opt2\" \"opt3\"])` — present options to user, wait for selection
+- `(get-user-feedback \"question\" [\"opt1\" \"opt2\" \"opt3\"])` — select kind: present options, wait for choice
   Options: 2-6 items, strings or maps `{:label \"...\" :description \"...\"}`
   Last option may include `:free-input true` for typed text. Returns `{:selected \"...\" :index N}`.
   Always include a free-input option as the last choice. Use sparingly.
+- `(get-user-feedback \"question\" [] :kind \"text\")` — text kind: free-form answer (pass `[]` for options). Returns `{:answer \"...\"}`.
 - **Do NOT call in parallel blocks.** User feedback blocks the calling thread for terminal I/O;
   concurrent calls queue and display sequentially, defeating parallelism. Gather data in
   parallel, then ask the user in sequential code.")
