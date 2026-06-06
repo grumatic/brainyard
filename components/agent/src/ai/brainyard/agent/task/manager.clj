@@ -34,9 +34,9 @@
 (def     ^:private detach-poll-interval-ms 300)
 
 ;; Structured per-task progress snapshot (Layer 3). task-id -> a small map
-;; {:iteration :max-iterations :tools-completed :last-tool :last-tool-result
-;;  :observation} maintained by the subagent-progress hooks below and surfaced
-;; by task$detail as :progress. Only real running tasks get an entry (the
+;; {:iteration :tools-completed :last-tool :last-tool-result :observation}
+;; maintained by the subagent-progress hooks below and surfaced by
+;; task$detail as :progress. Only real running tasks get an entry (the
 ;; pre-adoption sentinel is never in !tasks); finalize-task! evicts on terminal
 ;; transition, so it can't leak.
 (defonce ^:private !task-progress (atom {}))
@@ -572,7 +572,7 @@
 (defn- on-iteration-pre
   [{:keys [iteration max-iterations]}]
   (emit-progress! (str "[iter " iteration "/" max-iterations "] thinking…"))
-  (update-progress! #(assoc % :iteration iteration :max-iterations max-iterations)))
+  (update-progress! #(assoc % :iteration iteration)))
 
 (defn- on-iteration-post
   [{:keys [observation]}]
