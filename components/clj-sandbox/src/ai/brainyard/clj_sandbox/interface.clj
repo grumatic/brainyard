@@ -303,8 +303,14 @@
 
 (def extract-all-code-blocks-multi
   "Extract ALL fenced code blocks with language tags (clojure, python, bash).
-   Returns [{:lang \"clojure\" :code \"...\"} ...]."
+   Returns [{:lang \"clojure\" :code \"...\"} ...]. Also extracts 4+-backtick
+   verbatim content fences (markdown/text/html) as
+   {:lang :code :verbatim? true :filename}."
   prompt/extract-all-code-blocks-multi)
+
+(def verbatim-lang?
+  "True when `lang` names a verbatim content block (markdown/text/html)."
+  prompt/verbatim-lang?)
 
 (def build-iterations-text-multi
   "Format iteration records with language tags into text for the user message."

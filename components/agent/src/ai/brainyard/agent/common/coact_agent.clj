@@ -91,7 +91,7 @@
    ::tool-calls [:vector {:desc "Tool invocations. Empty when using code-blocks or answer."}
                  ::tool-call]
 
-   ::code-blocks [:string {:desc "Markdown text containing fenced code blocks with language tags (clojure, bash, python, javascript). Blocks separated by a line containing only `<!-- ParallelBlock -->` run concurrently in forked sandboxes. Otherwise blocks run sequentially in source order. Empty when using tool-calls or answer."}]
+   ::code-blocks [:string {:desc "Markdown text containing fenced code blocks with language tags (clojure, bash, python, javascript). Blocks separated by a line containing only `<!-- ParallelBlock -->` run concurrently in forked sandboxes. Otherwise blocks run sequentially in source order. Four-backtick fences tagged markdown/text/html are verbatim content blocks: saved to a file (path returned), not executed. Empty when using tool-calls or answer."}]
 
    ;; ── Iteration record & history ──────────────────────────────────────────
    ::tool-result-entry [:map {:desc "One tool invocation + its result"}
@@ -100,8 +100,9 @@
                         [:tool-result [:string {:desc "printed result (print semantics — real newlines preserved), truncated"}]]]
 
    ::eval-entry [:map {:desc "One code-block execution result. All four langs (clojure/bash/python/javascript) share this shape — the underlying task manager is the single source of truth for in-flight evals."}
-                 [:lang [:enum {:desc "language of the block"}
-                         "clojure" "bash" "python" "javascript" "other"]]
+                 [:lang [:enum {:desc "language of the block (markdown/text/html are verbatim content blocks saved to a file, not executed)"}
+                         "clojure" "bash" "python" "javascript"
+                         "markdown" "text" "html" "other"]]
                  [:code [:string {:desc "code that was executed"}]]
                  [:result [:string {:desc "pr-str of evaluation result (or exit-code for shells)"}]]
                  [:output [:string {:desc "captured stdout (and stderr for shells)"}]]
@@ -172,6 +173,10 @@ a temp file and executed), `python` (temp file + python3), `javascript`
   - Parallel fan-out: separate independent blocks with a line containing only
     `<!-- ParallelBlock -->`. Each block in a parallel partition runs
     concurrently (forked sandbox for clojure; fresh process for shell/python/js).
+  - Producing document content (markdown/HTML/text report): use a FOUR-backtick
+    verbatim fence (```` ````markdown name.md ````). The body is saved verbatim
+    to a file and you get the path back — never hand-escape large content into a
+    string literal. See the code-blocks format help for details.
 
   Sequential example:
     ```clojure
@@ -343,6 +348,30 @@ Populate `tool-calls` as a JSON array to invoke one or more tools in a single it
 | ```bash / ```sh    | fresh subprocess, /bin/bash | raw — no escaping | stateless |
 | ```python / ```py  | fresh subprocess, python3   | raw | stateless |
 | ```javascript / ```js | fresh subprocess, node   | raw | stateless |
+| ````markdown / ````text / ````html | NOT executed — body saved verbatim to a file | raw — no escaping | returns the file path |
+
+### Verbatim content fences (markdown / text / html)
+To PRODUCE document content (a report, an HTML page, a long text blob), do NOT
+embed it as a string literal inside a clojure/python/bash block — escaping it
+by hand is error-prone. Instead emit a **four-backtick** verbatim fence:
+
+````markdown report.md
+# Title
+Even nested ```clojure (inc 1)``` fences stay literal — no escaping.
+````
+
+The body is written byte-for-byte to a scratch file and the eval result is its
+absolute path (`:result`) plus `Wrote N chars to <path>`. The optional token
+after the language (`report.md`) is a filename hint. Use **4+ backticks** so any
+ordinary ``` fences inside the content pass through untouched.
+
+To READ the file back in a later block, use the `read-file` tool, e.g. a clojure
+fence `(read-file {:path \"<path>\"})`. To PROMOTE it into the working tree (files
+are scratch, GC'd ~24h), copy it with a bash fence — `slurp`/`spit` are NOT
+available in the SCI sandbox:
+```bash
+cp \"<path>\" docs/report.md
+```
 
 ### Parallel execution (all-or-nothing)
 Insert `<!-- ParallelBlock -->` anywhere in `code-blocks` to run ALL fenced blocks
@@ -2150,6 +2179,22 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         (str scratch "/coact-" stamp))
       (str "/tmp/coact-" stamp))))
 
+(defn- coact-verbatim-path
+  "Resolve a scratch path for a verbatim content block. Like `coact-scratch-path`
+   but folds in the LLM's sanitized filename hint (for readable artifacts and a
+   correct extension), keeping a unique stamp prefix to avoid clobbering across
+   iterations. Lives in the same scratch dir, so it rides the 24h GC sweep."
+  [ext filename]
+  (let [stamp (str (System/currentTimeMillis) "-"
+                   (Math/abs (.nextInt (java.util.Random.))))
+        fname (if filename (str stamp "-" filename) (str "verbatim-" stamp ext))]
+    (if-let [agent-dir (config/brainyard-subdir!
+                        (config/init-dirs!) "agents/coact-agent" :project)]
+      (let [scratch (str agent-dir "/scratch")]
+        (.mkdirs (java.io.File. scratch))
+        (str scratch "/coact-" fname))
+      (str "/tmp/coact-" fname))))
+
 ;; ----------------------------------------------------------------------------
 ;; Code-block runners
 ;;
@@ -2742,6 +2787,25 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   [agent]
   (when agent (config/get-config agent :nrepl-session-id)))
 
+(defn- run-verbatim-block
+  "Write a verbatim content block (markdown/text/html) byte-for-byte to a
+   scratch file and return its absolute path as the eval result. No evaluation,
+   no task — a synchronous write, so escaping never enters the picture. The LLM
+   reads / transforms / promotes the file from a later code block (e.g.
+   `(spit \"docs/report.md\" (slurp <path>))`). The file rides the existing 24h
+   scratch GC sweep; it is intermediate, not a deliverable, until copied out."
+  [lang content filename]
+  (let [ext  (case lang "markdown" ".md" "html" ".html" ".txt")
+        path (coact-verbatim-path ext filename)]
+    (try
+      (spit path content)
+      {:lang lang :code "" :result path
+       :output (str "Wrote " (count content) " chars to " path)
+       :error ""}
+      (catch Exception e
+        {:lang lang :code "" :result nil :output ""
+         :error (str "Failed to write verbatim " lang " file: " (.getMessage e))}))))
+
 (defn- run-single-block
   "Dispatch one {:lang :code [:fence-error]} block by language. Used
    sequentially and (indirectly) in parallel mode.
@@ -2753,7 +2817,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 
    Blocks whose fence had unexpected trailing text (`:fence-error` set
    by `extract-all-code-blocks-multi`) short-circuit with that error."
-  [sandbox {:keys [lang code fence-error]}
+  [sandbox {:keys [lang code fence-error filename verbatim?]}
    {:keys [auto-bg-ms fast-eval-ms from-iteration agent]}]
   (when (Thread/interrupted)
     (throw (ex-info "Code eval interrupted" {:lang lang :interrupted true})))
@@ -2766,6 +2830,9 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
     (cond
       fence-error
       {:lang lang :code code :result nil :output "" :error fence-error}
+
+      verbatim?
+      (run-verbatim-block lang code filename)
 
       (= "clojure" lang)
       (let [backend    (agent-clj-backend agent)
@@ -2796,9 +2863,10 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   "All-or-nothing parallel runner. Splits blocks three ways: fence-errored
    blocks (short-circuit to an error entry), clojure blocks (go through
    clj-sandbox/eval-code-blocks-parallel — fork + merge-defs semantics,
-   FINAL disallowed), and shell/python/js blocks (each in its own future
-   against a separate temp file). Results are re-ordered to source
-   position."
+   FINAL disallowed), and the rest — shell/python/js plus verbatim
+   markdown/text/html — each in its own future via `run-single-block` (a
+   separate temp file per script; a synchronous file write per verbatim
+   block). Results are re-ordered to source position."
   [sandbox blocks dispatch-opts]
   (let [indexed         (map-indexed vector blocks)
         fence-err-indexed (filter (comp :fence-error second) indexed)

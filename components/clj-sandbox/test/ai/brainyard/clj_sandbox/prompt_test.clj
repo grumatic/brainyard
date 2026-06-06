@@ -48,6 +48,65 @@
       (is (= 1 (count blocks)))
       (is (str/includes? (first blocks) "defn foo")))))
 
+(deftest extract-verbatim-blocks-test
+  (testing "4-backtick verbatim fence is captured, not executed; body verbatim"
+    (let [text (str "````markdown report.md\n"
+                    "# Title\n"
+                    "Inline ```clojure (inc 1)``` stays literal.\n"
+                    "```bash\necho hi\n```\n"
+                    "````")
+          blocks (prompt/extract-all-code-blocks-multi text)]
+      ;; The nested ``` fences inside the verbatim body must NOT become their
+      ;; own executable blocks — exactly one block is returned.
+      (is (= 1 (count blocks)))
+      (let [b (first blocks)]
+        (is (= "markdown" (:lang b)))
+        (is (true? (:verbatim? b)))
+        (is (= "report.md" (:filename b)))
+        ;; Body preserved verbatim, fence lines excluded.
+        (is (str/includes? (:code b) "(inc 1)"))
+        (is (str/includes? (:code b) "echo hi"))
+        (is (not (str/includes? (:code b) "report.md"))))))
+
+  (testing "md/txt aliases normalize; missing filename is nil"
+    (let [b (first (prompt/extract-all-code-blocks-multi "````md\nhi\n````"))]
+      (is (= "markdown" (:lang b)))
+      (is (nil? (:filename b))))
+    (let [b (first (prompt/extract-all-code-blocks-multi "````txt\nplain\n````"))]
+      (is (= "text" (:lang b)))
+      (is (= "plain" (:code b)))))
+
+  (testing "verbatim and code fences interleave in source order"
+    (let [text (str "```clojure\n(def x 1)\n```\n"
+                    "````html page.html\n<h1>hi</h1>\n````\n"
+                    "```bash\nls\n```")
+          blocks (prompt/extract-all-code-blocks-multi text)]
+      (is (= ["clojure" "html" "bash"] (mapv :lang blocks)))
+      (is (= [nil true nil] (mapv :verbatim? blocks)))))
+
+  (testing "filename hint is sanitized to a safe basename"
+    (let [b (first (prompt/extract-all-code-blocks-multi
+                    "````markdown ../../etc/pa ss.md\nx\n````"))]
+      (is (not (str/includes? (:filename b) "/")))
+      (is (not (str/includes? (:filename b) " ")))))
+
+  (testing "verbatim-lang? predicate"
+    (is (true? (prompt/verbatim-lang? "markdown")))
+    (is (true? (prompt/verbatim-lang? "text")))
+    (is (true? (prompt/verbatim-lang? "html")))
+    (is (false? (prompt/verbatim-lang? "clojure")))
+    (is (false? (prompt/verbatim-lang? "bash"))))
+
+  (testing "build-iterations-text-multi elides verbatim body, keeps path"
+    (let [iters [{:iteration 1
+                  :eval-results [{:lang "markdown" :code ""
+                                  :result "/tmp/scratch/report.md"
+                                  :output "Wrote 6 chars to /tmp/scratch/report.md"
+                                  :error ""}]}]
+          hist (prompt/build-iterations-text-multi iters)]
+      (is (str/includes? hist "report.md"))
+      (is (str/includes? hist "saved verbatim")))))
+
 (deftest build-system-prompt-test
   (testing "builds raw mode prompt with critical rules and context discovery"
     (let [content (prompt/build-system-prompt :mode :raw)]

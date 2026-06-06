@@ -1007,35 +1007,104 @@ Topics: :truncation, :final, :discovery, :tool-priority, :agent-state, :mcp, :fe
   "Canonical language names for code block extraction."
   {"clj" "clojure" "py" "python" "sh" "bash"})
 
+(def ^:private verbatim-lang-aliases
+  "Canonical names for verbatim content fences (saved to a file, not executed)."
+  {"md" "markdown" "txt" "text"})
+
+(defn verbatim-lang?
+  "True when `lang` names a verbatim content block (markdown/text/html) — its
+   body is written to a scratch file rather than evaluated."
+  [lang]
+  (contains? #{"markdown" "text" "html"} lang))
+
+(def ^:private verbatim-fence-re
+  "4+ backtick fence carrying verbatim content. Deliberately longer than a code
+   fence so the body can contain ordinary ``` code fences with zero escaping
+   (CommonMark: a fence is closed only by a fence at least as long). The closing
+   fence must repeat the opening backtick run (`\\1`) on its own line.
+   Groups: 1=backticks 2=lang 3=info/filename 4=content."
+  #"(?m)^(`{4,})(markdown|md|text|txt|html)([^\n]*)\n([\s\S]*?)\n\1[ \t]*$")
+
+(def ^:private code-fence-re
+  "3-backtick executable code fence. Groups: 1=lang 2=info 3=code."
+  #"```(clojure|clj|python|py|bash|sh)([^\n]*)\n([\s\S]*?)```")
+
+(defn- sanitize-verbatim-filename
+  "Reduce an LLM-supplied fence filename hint to a safe basename, or nil."
+  [info]
+  (let [base (-> (or info "") str/trim
+                 (str/replace #".*[/\\]" "")          ; drop any directory part
+                 (str/replace #"[^A-Za-z0-9._-]" "_"))]
+    (when-not (str/blank? base) base)))
+
+(defn- blank-regions
+  "Overwrite each [start end) span of `text` with spaces, preserving length so
+   downstream match offsets stay aligned with the original string."
+  [^String text regions]
+  (if (empty? regions)
+    text
+    (let [sb (StringBuilder. text)]
+      (doseq [[s e] regions]
+        (dotimes [i (- (long e) (long s))]
+          (.setCharAt sb (+ (long s) i) \space)))
+      (.toString sb))))
+
 (defn extract-all-code-blocks-multi
-  "Extract ALL fenced code blocks with language tags from LLM response text.
-   Supports clojure/clj, python/py, bash/sh. Normalizes aliases.
+  "Extract ALL fenced blocks from LLM response text, in source order.
 
-   The opening fence accepts only the language token. Any non-whitespace
-   trailing text on the fence line is rejected — the block parses, but
-   `:fence-error` is populated and the dispatcher returns it to the LLM
-   as an error entry instead of executing. (Per-fence backend routing
-   like ```clojure :nrepl was removed; backend is configured per-agent
-   via `:clj-backend`.)
+   Two fence flavours:
+   - 3-backtick *code* fences (clojure/clj, python/py, bash/sh) → executed.
+     Aliases normalized; unexpected trailing fence text sets `:fence-error`
+     and the dispatcher returns it as an error entry instead of executing.
+     (Per-fence backend routing like ```clojure :nrepl was removed; backend
+     is configured per-agent via `:clj-backend`.)
+   - 4+-backtick *verbatim* fences (markdown/md, text/txt, html) → saved to a
+     file, never executed. The longer fence lets the body hold ordinary ```
+     code fences verbatim (no escaping). An optional token after the language
+     is taken as a filename hint. Returns `{:lang :code :verbatim? true
+     :filename}` — the content rides on `:code`.
 
-   Returns a vector of `{:lang \"clojure\" :code \"...\"}` with optional
-   `:fence-error` on malformed fences."
+   Verbatim spans are claimed first and masked out before code extraction, so a
+   ``` fence nested inside verbatim content is never mistaken for executable
+   code. Returns a vector of block maps ordered by position in `text`."
   [text]
   (if (str/blank? text)
     []
-    (let [pattern #"```(clojure|clj|python|py|bash|sh)([^\n]*)\n([\s\S]*?)```"
-          matches (re-seq pattern text)]
-      (mapv (fn [[_ lang info-raw code]]
-              (let [trailing (str/trim (or info-raw ""))]
-                (cond-> {:lang (get lang-aliases lang lang)
-                         :code (str/trim code)}
-                  (seq trailing)
-                  (assoc :fence-error
-                         (str "Unexpected text on code fence: \"" trailing "\". "
-                              "Fences take only the language token (e.g. ```"
-                              lang "). Code-execution backend is configured "
-                              "per-agent, not per-fence.")))))
-            matches))))
+    (let [;; First pass: claim verbatim (4+ backtick) regions and their offsets.
+          vm (re-matcher verbatim-fence-re text)
+          verbatim (loop [acc []]
+                     (if (.find vm)
+                       (recur (conj acc {:start (.start vm)
+                                         :end   (.end vm)
+                                         :block {:lang (let [l (.group vm 2)]
+                                                         (get verbatim-lang-aliases l l))
+                                                 :code (.group vm 4)
+                                                 :verbatim? true
+                                                 :filename (sanitize-verbatim-filename
+                                                            (.group vm 3))}}))
+                       acc))
+          ;; Mask verbatim spans (equal-length blanking keeps offsets aligned)
+          ;; so nested ``` fences inside them aren't seen as executable code.
+          masked (blank-regions text (map (juxt :start :end) verbatim))
+          cm (re-matcher code-fence-re masked)
+          code (loop [acc []]
+                 (if (.find cm)
+                   (let [lang     (.group cm 1)
+                         trailing (str/trim (or (.group cm 2) ""))]
+                     (recur (conj acc {:start (.start cm)
+                                       :end   (.end cm)
+                                       :block (cond-> {:lang (get lang-aliases lang lang)
+                                                       :code (str/trim (.group cm 3))}
+                                                (seq trailing)
+                                                (assoc :fence-error
+                                                       (str "Unexpected text on code fence: \"" trailing "\". "
+                                                            "Fences take only the language token (e.g. ```"
+                                                            lang "). Code-execution backend is configured "
+                                                            "per-agent, not per-fence.")))})))
+                   acc))]
+      (->> (concat verbatim code)
+           (sort-by :start)
+           (mapv :block)))))
 
 (defn build-iterations-text-multi
   "Format iteration records with language tags into text for the user message.
@@ -1048,15 +1117,22 @@ Topics: :truncation, :final, :discovery, :tool-priority, :agent-state, :mcp, :fe
         (.append sb (str "\n### Iteration " iteration "\n"))
         (doseq [{:keys [lang code result output error]} eval-results]
           (let [lang (or lang "clojure")]
-            (when (and code (not (str/blank? code)))
-              (.append sb (str "```" lang "\n" code "\n```\n")))
-            (when (and output (not (str/blank? output)))
-              (.append sb (str "stdout:\n" (subs output 0 (min (long *max-feedback-chars*) (count output))) "\n")))
-            (when (and error (not (str/blank? error)))
-              (.append sb (str "Error: " error "\n")))
-            (when (and (or (nil? error) (str/blank? error))
-                       (some? result) (not (str/blank? (str result))))
-              (.append sb (str (if (= lang "clojure") "=> " "exit-code: ") result "\n"))))))
+            (if (verbatim-lang? lang)
+              ;; Verbatim content blocks: never echo the body back into history
+              ;; — that is the whole point, keeping large content out of the
+              ;; token stream. Record only where it landed.
+              (when (and result (not (str/blank? (str result))))
+                (.append sb (str "[" lang " content saved verbatim → " result "]\n")))
+              (do
+                (when (and code (not (str/blank? code)))
+                  (.append sb (str "```" lang "\n" code "\n```\n")))
+                (when (and output (not (str/blank? output)))
+                  (.append sb (str "stdout:\n" (subs output 0 (min (long *max-feedback-chars*) (count output))) "\n")))
+                (when (and error (not (str/blank? error)))
+                  (.append sb (str "Error: " error "\n")))
+                (when (and (or (nil? error) (str/blank? error))
+                           (some? result) (not (str/blank? (str result))))
+                  (.append sb (str (if (= lang "clojure") "=> " "exit-code: ") result "\n"))))))))
       (.toString sb))))
 
 (defn build-iterations-text
