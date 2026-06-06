@@ -79,7 +79,11 @@
                                        (let [m (.lastModified f)]
                                          (when (pos? m) m)))))
                     last-output-age-ms (when (and last-mtime (nil? completed-at))
-                                         (max 0 (- now last-mtime)))]
+                                         (max 0 (- now last-mtime)))
+                    ;; Structured progress snapshot for a running subagent task —
+                    ;; one glance (iteration, tools-completed, last tool, latest
+                    ;; observation) instead of parsing the streamed log tail.
+                    progress     (manager/task-progress task-id)]
                 (cond-> {:id           (name (:id task))
                          :name         (:name task)
                          :status       (name (:status task))
@@ -93,6 +97,7 @@
                          :completed-at (:completed-at task)}
                   elapsed-ms         (assoc :elapsed-ms elapsed-ms)
                   last-output-age-ms (assoc :last-output-age-ms last-output-age-ms)
+                  progress           (assoc :progress progress)
                   last-n             (assoc :lines (vec (take-last last-n cached)))
                   output-file        (assoc :output-file output-file)
                   meta-file          (assoc :meta-file meta-file)))
@@ -112,6 +117,7 @@
                   [:truncated?   [:boolean {:desc "True when :total-lines > :cached-lines — older lines evicted from cache, still on disk"}]]
                   [:elapsed-ms   {:optional true} [:int {:desc "Wall-clock ms since the work started (to :completed-at if terminal, else now). Present once :started-at is set."}]]
                   [:last-output-age-ms {:optional true} [:int {:desc "ms since the last output line was written (output.log mtime). Liveness signal for a running task: small = actively producing; large but growing on re-poll = alive but quiet (e.g. a subagent mid-LLM-turn). DO NOT cancel a task on a quiet window alone. Present only while running."}]]
+                  [:progress     {:optional true} [:map {:desc "Structured progress snapshot for a running subagent task — {:iteration :max-iterations :tools-completed :last-tool :last-tool-result :observation}. Read this instead of parsing the log tail to judge how far along a subagent is. Absent for non-subagent tasks and once terminal."}]]
                   [:lines        {:optional true} [:vector  {:desc "Present only when :last-n was supplied — tail of the in-memory cache. Slurp :output-file when :truncated? is true or when you need lines beyond the cache."} :string]]
                   [:created-at   [:int     {:desc "Creation timestamp (epoch ms)"}]]
                   [:started-at   {:optional true} [:int     {:desc "Start timestamp (epoch ms); nil before start"}]]

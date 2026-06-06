@@ -33,6 +33,14 @@
 (defonce ^:private !watcher-future    (atom nil))
 (def     ^:private detach-poll-interval-ms 300)
 
+;; Structured per-task progress snapshot (Layer 3). task-id -> a small map
+;; {:iteration :max-iterations :tools-completed :last-tool :last-tool-result
+;;  :observation} maintained by the subagent-progress hooks below and surfaced
+;; by task$detail as :progress. Only real running tasks get an entry (the
+;; pre-adoption sentinel is never in !tasks); finalize-task! evicts on terminal
+;; transition, so it can't leak.
+(defonce ^:private !task-progress (atom {}))
+
 (declare create-task-manager start-detach-watcher!)
 
 (defn get-default-manager
@@ -238,6 +246,7 @@
                         :completed-at now
                         :result result))))
       (swap! !detached-handlers dissoc task-id)
+      (swap! !task-progress dissoc task-id)
       (let [updated (get @!tasks task-id)]
         (try (persist/close-appender! task-id updated)
              (catch Exception e
@@ -486,6 +495,7 @@
         (tp/cancel-task this task-id)))
     (stop-detach-watcher!)
     (reset! !detached-handlers {})
+    (reset! !task-progress {})
     (when-let [es @!executor-service]
       (.shutdownNow ^ExecutorService es)
       (reset! !executor-service nil))
@@ -544,13 +554,40 @@
   (when-let [tid (proto/current-task-id)]
     (append-task-output! tid line)))
 
+(defn- update-progress!
+  "Apply `f` to the current task's structured-progress map, when running inside
+   a real (registered) task. Guarded on `!tasks` membership so the pre-adoption
+   `:inline-tool-eval` sentinel never creates an orphan entry."
+  [f]
+  (when-let [tid (proto/current-task-id)]
+    (when (get @!tasks tid)
+      (swap! !task-progress update tid (fnil f {})))))
+
+(defn task-progress
+  "The structured-progress snapshot for `task-id`, or nil. Surfaced by
+   task$detail as :progress. Cleared when the task reaches a terminal status."
+  [task-id]
+  (get @!task-progress task-id))
+
 (defn- on-iteration-pre
   [{:keys [iteration max-iterations]}]
-  (emit-progress! (str "[iter " iteration "/" max-iterations "] thinking…")))
+  (emit-progress! (str "[iter " iteration "/" max-iterations "] thinking…"))
+  (update-progress! #(assoc % :iteration iteration :max-iterations max-iterations)))
+
+(defn- on-iteration-post
+  [{:keys [observation]}]
+  ;; Latest per-iteration observation — a "what is it doing now" proxy. Stored
+  ;; structured (truncated) so an LLM can read it without slurping the log tail.
+  (when (string? observation)
+    (update-progress! #(assoc % :observation (truncate observation 200)))))
 
 (defn- on-tool-use-post
   [{:keys [tool-name result]}]
-  (emit-progress! (str "  tool " (name tool-name) " → " (summarize-tool-result result))))
+  (let [summary (summarize-tool-result result)]
+    (emit-progress! (str "  tool " (name tool-name) " → " summary))
+    (update-progress! #(-> %
+                           (assoc :last-tool (name tool-name) :last-tool-result summary)
+                           (update :tools-completed (fnil inc 0))))))
 
 (defonce ^:private !progress-hooks-installed (atom false))
 
@@ -562,6 +599,8 @@
   (when (compare-and-set! !progress-hooks-installed false true)
     (hooks/register-hook! :agent.iteration/pre ::subagent-progress-iter
                           on-iteration-pre :source :task-progress)
+    (hooks/register-hook! :agent.iteration/post ::subagent-progress-iter-post
+                          on-iteration-post :source :task-progress)
     (hooks/register-hook! :agent.tool-use/post ::subagent-progress-tool
                           on-tool-use-post :source :task-progress)))
 
