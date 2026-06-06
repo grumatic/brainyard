@@ -133,6 +133,31 @@ JVM-mode parity check (catches reflection-config gaps):
 BY_JAR=1 projects/agent-tui-app/target/by ask …
 ```
 
+## Design decisions
+
+### Task output files are GC-reclaimed, not deleted on task removal
+
+Each task gets a project-scoped dir `<project>/.brainyard/tasks/<task-id>/`
+holding `output.log` (combined stdout+stderr) and `meta.edn` (lifecycle
+snapshot). The LLM reads these back after completion via `task$detail` /
+`format-task-output`.
+
+**Decision (2026-06-06): task removal and artifact removal are intentionally
+decoupled.** `agent/remove-task` (the protocol method behind the `/task del`
+command) only drops the in-memory registry entry; it leaves `output.log` /
+`meta.edn` on disk for post-mortem inspection. Disk reclamation is the GC
+layer's job — `gc/sweep-tasks!` via the `task$sweep` command, bounded by
+`:task-retention-count` (default 100) and `:task-retention-days` (default 7) in
+`core.config/config-schema`. The sweep skips dirs whose `meta.edn` reports a
+live task.
+
+So output files **outlive** task removal and are reclaimed in bulk by the
+retention sweep, rather than dying synchronously with the task. An opt-in
+helper `manager/remove-task-and-artifacts!` exists for immediate cleanup
+(removes the row *and* calls `persist/delete-task-dir!`), but it is deliberately
+**not** the default path and is not wired into `/task del`. See the retention
+note in `components/agent/src/ai/brainyard/agent/task/persist.clj`.
+
 ## bb task naming convention
 
 Tasks for the shipping project end in `:ata` (agent-tui-app): `compile:ata`, `uberjar:ata`, `native:ata`, `build:ata`, `install:ata`, `version:ata`, `check:ata` (native-image config drift gate), `size:ata`, `repl:ata`, `tracing:ata`, `docker:ata`. Workspace-wide tasks (`test`, `poly`) have no suffix.
