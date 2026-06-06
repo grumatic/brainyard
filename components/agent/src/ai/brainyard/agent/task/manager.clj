@@ -34,7 +34,7 @@
 (def     ^:private detach-poll-interval-ms 300)
 
 ;; Structured per-task progress snapshot (Layer 3). task-id -> a small map
-;; {:iteration :tools-completed :last-tool :last-tool-result :observation}
+;; {:iteration :tools-completed :last-tool :last-tool-result :last-reasoning}
 ;; maintained by the subagent-progress hooks below and surfaced by
 ;; task$detail as :progress. Only real running tasks get an entry (the
 ;; pre-adoption sentinel is never in !tasks); finalize-task! evicts on terminal
@@ -575,11 +575,12 @@
   (update-progress! #(assoc % :iteration iteration)))
 
 (defn- on-iteration-post
-  [{:keys [observation]}]
-  ;; Latest per-iteration observation — a "what is it doing now" proxy. Stored
-  ;; structured (truncated) so an LLM can read it without slurping the log tail.
-  (when (string? observation)
-    (update-progress! #(assoc % :observation (truncate observation 200)))))
+  [{:keys [last-reasoning]}]
+  ;; Latest per-iteration reasoning (the agent's "Think:" text) — a "what is it
+  ;; doing and why" snapshot. Stored structured (truncated) so an LLM can read
+  ;; it without slurping the log tail.
+  (when (string? last-reasoning)
+    (update-progress! #(assoc % :last-reasoning (truncate last-reasoning 200)))))
 
 (defn- on-tool-use-post
   [{:keys [tool-name result]}]
