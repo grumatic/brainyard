@@ -190,6 +190,37 @@
 ;; Agent Record
 ;; ============================================================================
 
+(defn- inject-resume-note!
+  "When the agent was resumed from a pause with a user note, fold the note into
+   the *running* loop so the next iteration's prompt carries it with directive
+   force. We append to st-memory `:question` — the ACTIVE TASK that both the
+   react and coact loops render as the primary objective each iteration — so
+   the note actually steers the remaining work. (Appending to `:conversation`
+   alone lands it in the auxiliary `## Conversation History` section, which the
+   LLM treats as background and deprioritizes against the original question — a
+   live test showed the agent ignoring it there.) A `:conversation` breadcrumb
+   and a session trace are kept for visibility. No-op when there is no pending
+   note or no `:question`. Called from `apply-resume-note!` at every BT
+   checkpoint, so it fires whether or not the loop actually parked on the pause."
+  [!state !session agent-id]
+  (when-let [note (runtime/take-resume-note! !state)]
+    (when-let [st (get-in @!state [:behavior-tree :context :st-memory])]
+      (swap! st (fn [s]
+                  (-> s
+                      (update :question
+                              (fn [q]
+                                (str (when-not (clojure.string/blank? (str q)) (str q "\n\n"))
+                                     "[MID-RUN STEERING — you were paused and the user resumed the "
+                                     "iteration loop with this added/updated instruction; treat it as "
+                                     "authoritative and adjust your remaining work now] " note)))
+                      (update :conversation (fnil conj [])
+                              {:role "user" :content (str "[resumed from pause] " note)})))))
+    (when @!session
+      (swap! !session session/update-data
+             {:trace {:agent-id agent-id
+                      :content (str "iteration loop **resumed** with user request: " note)}}))
+    (mulog/info ::resumed-with-user-note :agent-id agent-id)))
+
 (defrecord Agent [agent-id !state !session]
 
   ;; ---- IAgent ----
@@ -352,6 +383,9 @@
 
   (await-resume [_]
     (runtime/wait-if-paused !state))
+
+  (apply-resume-note! [_]
+    (inject-resume-note! !state !session agent-id))
 
   (create-action-promise [_ action-id]
     (runtime/create-action-promise !state action-id))

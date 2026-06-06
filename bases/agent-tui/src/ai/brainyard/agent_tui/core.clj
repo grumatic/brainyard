@@ -1153,7 +1153,12 @@
                 (do
                   (layout/scroll-to-bottom!)
                   (layout/redraw-chrome!)
-                  (let [input (str/trim line)]
+                  (let [input (str/trim line)
+                        paused-ag (when (seq input)
+                                    (when-let [ag (tui-session/get-active-agent)]
+                                      (when (try (agent/paused? (:!state ag))
+                                                 (catch Throwable _ false))
+                                        ag)))]
                     (if-let [{:keys [promise options]} @tui-session/!pending-feedback]
                       (if-let [n (parse-long input)]
                         (if (and (>= n 1) (<= n (count options)))
@@ -1165,9 +1170,17 @@
                               (recur)))
                         (do (tui-session/emit! (ansi/warning "Enter a number to select an option."))
                             (recur)))
-                      (let [result (commands/handle-input-line enqueue-input! input reader)]
-                        (when (not= result :quit)
-                          (recur)))))))))
+                      ;; Active agent paused → a typed line resumes the running
+                      ;; iteration loop carrying the line as a mid-run steering
+                      ;; note (the LLM is told it was resumed with this request),
+                      ;; rather than queueing a separate next turn.
+                      (if paused-ag
+                        (do (agent/resume-run (:!state paused-ag) input)
+                            (tui-session/emit! (ansi/muted "[resumed — steering the loop with your note]"))
+                            (recur))
+                        (let [result (commands/handle-input-line enqueue-input! input reader)]
+                          (when (not= result :quit)
+                            (recur))))))))))
           (catch Throwable t
             ;; Log crash to file so native-image issues are diagnosable.
             ;; Prefer ~/.brainyard/logs/; fall back to /tmp only when the

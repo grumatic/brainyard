@@ -10,7 +10,8 @@
    - Cooperative pause/resume parked on a Condition
    - Promise-based action permission system
    - Parent-agent relationship for sub-agents"
-  (:require [ai.brainyard.mulog.interface :as mulog])
+  (:require [ai.brainyard.mulog.interface :as mulog]
+            [clojure.string :as str])
   (:import [java.util.concurrent.locks ReentrantLock Condition]))
 
 ;; ============================================================================
@@ -165,16 +166,33 @@
 (defn resume-run
   "Clear the pause flag and signal any parked thread to wake up.
    Restores `:status` to whatever it was before `pause-run` flipped it
-   (defaulting to `:running` when no prior value was saved)."
+   (defaulting to `:running` when no prior value was saved).
+
+   With a non-blank `note`, stash it under `[:runtime :resume-note]` before
+   waking. The agent consumes it at its next BT checkpoint (`apply-resume-note!`
+   → `take-resume-note!`) and folds it into the running loop's active task — so
+   the iteration loop resumes *carrying* the user's mid-run request, and the LLM
+   is told it was resumed with that request."
+  ([!state] (resume-run !state nil))
+  ([!state note]
+   (when (and (string? note) (not (str/blank? note)))
+     (swap! !state assoc-in [:runtime :resume-note] note))
+   (swap! !state (fn [s]
+                   (let [prev (or (get-in s [:runtime :pre-pause-status]) :running)]
+                     (-> s
+                         (assoc-in [:runtime :paused?] false)
+                         (update :runtime dissoc :pre-pause-status)
+                         (assoc :status prev)))))
+   (signal-pause-condition! !state)
+   (mulog/info ::agent-run-resumed :with-note? (boolean (not (str/blank? (str note)))))))
+
+(defn take-resume-note!
+  "Return and clear the pending mid-run resume note set by `(resume-run !state
+   note)`, or nil. Consumed once at the agent's next BT checkpoint."
   [!state]
-  (swap! !state (fn [s]
-                  (let [prev (or (get-in s [:runtime :pre-pause-status]) :running)]
-                    (-> s
-                        (assoc-in [:runtime :paused?] false)
-                        (update :runtime dissoc :pre-pause-status)
-                        (assoc :status prev)))))
-  (signal-pause-condition! !state)
-  (mulog/info ::agent-run-resumed))
+  (let [n (get-in @!state [:runtime :resume-note])]
+    (when n (swap! !state update :runtime dissoc :resume-note))
+    n))
 
 (defn paused?
   "Check if a pause has been requested (also walks parent agents)."
@@ -225,6 +243,7 @@
          {:future nil
           :cancelled? false
           :paused? false
+          :resume-note nil
           :active-http nil
           :action-promises {}}))
 

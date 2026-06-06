@@ -288,7 +288,11 @@
                                  :exception (format "agent processing cancelled by user at %s so the processing agent aborted!" id)})
           (throw (ex-info "Cancelled" {:node-type node-type, :node-id id})))
         (.update-session-data agent
-                              {:trace {:agent-id (:agent-id agent) :depth depth :content (format "%s %s **resumed**." id (name node-type))}})))))
+                              {:trace {:agent-id (:agent-id agent) :depth depth :content (format "%s %s **resumed**." id (name node-type))}})))
+    ;; Always (parked or not): fold any pending user resume-note into the active
+    ;; task, so type-while-paused steers the loop even when pause+resume happened
+    ;; within a single LLM call (the loop never reached a checkpoint to park).
+    (.apply-resume-note! agent)))
 
 (defmethod p/tick :repeat
   [{:keys [id max-n condition-fn child depth]

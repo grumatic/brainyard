@@ -151,6 +151,11 @@
   (await-resume [this]
     "If paused, park the calling thread until resumed or cancelled.
      Returns :running | :resumed | :cancelled.")
+  (apply-resume-note! [this]
+    "Consume any pending resume note (set by `resume-run` with a note) and fold
+     it into the running loop's active task so the next iteration is steered by
+     it. No-op when none pending. Called at every BT checkpoint so it fires
+     whether or not the loop actually parked on the pause.")
   (create-action-promise [this action-id]
     "Create a promise for a user action request. Returns the promise.")
   (get-action-permission [this action-id]
