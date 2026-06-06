@@ -97,104 +97,129 @@
     (< b 0xF8)  4  ;; 4-byte (emoji, rare CJK)
     :else       0))
 
+(defn- intercept-select-digit!
+  "Handle a digit byte in :select :selecting mode. byte 49='1' → option 1.
+   A plain option delivers immediately; a :free-input option transitions the
+   pending feedback into :awaiting-text mode. Returns true if consumed."
+  [{:keys [promise options]} b]
+  (let [n (- b 48)]  ;; byte 49='1' → n=1, byte 54='6' → n=6
+    (when (and (>= n 1) (<= n (count options)))
+      (let [idx (dec n)
+            selected (nth options idx)]
+        (if (:free-input selected)
+          ;; Transition to text input mode
+          (do (swap! tui-session/!pending-feedback assoc
+                     :mode :awaiting-text
+                     :free-idx idx
+                     :buf (StringBuilder.))
+              ;; Drop the sticky live-block before the text-mode prompt
+              ;; so chars echo right after "Type your response: " in the
+              ;; scroll region (write-raw-chars! leaves cursor there).
+              (layout/dispose-live-block! permissions/user-feedback-block-id)
+              (tui-session/emit! (str "\n  " (ansi/muted "Type your response: ")))
+              true)
+          ;; Normal selection
+          (do (deliver promise {:selected (:label selected) :index idx})
+              true))))))
+
+(defn- intercept-text-byte!
+  "Handle a byte in :awaiting-text mode — the shared line editor for the :text
+   kind and for a :select :free-input option. Supports multi-byte UTF-8 (CJK)
+   via byte buffering, backspace (width-aware), and printable echo. On Enter,
+   delivers the typed text; the delivered shape depends on :kind — :text →
+   {:input <text> :index 0}; :select free-input → {:selected … :index … :input}.
+   Returns true if consumed."
+  [{:keys [promise kind options buf free-idx] :as fb} b]
+  (let [^StringBuilder sb buf
+        utf8-buf (:utf8-buf fb)
+        utf8-need (:utf8-need fb 0)]
+    (cond
+      ;; Collecting continuation bytes for a multi-byte sequence
+      (pos? utf8-need)
+      (if (and (>= b 0x80) (< b 0xC0))
+        ;; Valid continuation byte
+        (let [new-buf (conj utf8-buf b)
+              remaining (dec utf8-need)]
+          (if (zero? remaining)
+            ;; Complete UTF-8 sequence — decode, append, echo
+            (let [ba (byte-array (map unchecked-byte new-buf))
+                  ch-str (String. ba "UTF-8")]
+              (.append sb ch-str)
+              (layout/write-raw-chars! ch-str)
+              (swap! tui-session/!pending-feedback dissoc :utf8-buf :utf8-need)
+              true)
+            ;; Still need more bytes
+            (do (swap! tui-session/!pending-feedback assoc
+                       :utf8-buf new-buf :utf8-need remaining)
+                true)))
+        ;; Invalid continuation — discard buffer, don't consume byte
+        (do (swap! tui-session/!pending-feedback dissoc :utf8-buf :utf8-need)
+            true))
+
+      ;; Enter — deliver the typed text (shape depends on :kind)
+      (or (= b 13) (= b 10))
+      (let [text (.toString sb)]
+        (layout/write-raw-chars! "\r\n")
+        (if (= kind :text)
+          (deliver promise {:input text :index 0})
+          (let [selected (nth options free-idx)]
+            (deliver promise {:selected (:label selected) :index free-idx :input text})))
+        true)
+
+      ;; Backspace — erase last char (CJK = 2 columns, else 1)
+      (or (= b 127) (= b 8))
+      (do (when (pos? (.length sb))
+            (let [last-ch (.charAt sb (dec (.length sb)))]
+              (.deleteCharAt sb (dec (.length sb)))
+              (if (cjk-wide-char? last-ch)
+                (layout/write-raw-chars! "\b\b  \b\b")
+                (layout/write-raw-chars! "\b \b"))))
+          true)
+
+      ;; Printable ASCII — echo on same line
+      (and (>= b 32) (<= b 126))
+      (do (.append sb (char b))
+          (layout/write-raw-chars! (str (char b)))
+          true)
+
+      ;; UTF-8 multi-byte lead byte — start buffering
+      (>= b 0xC0)
+      (let [total (utf8-lead-byte-length b)]
+        (if (pos? total)
+          (do (swap! tui-session/!pending-feedback assoc
+                     :utf8-buf [b] :utf8-need (dec total))
+              true)
+          true))  ;; invalid lead byte — consume silently
+
+      ;; Consume other non-printable silently
+      :else true)))
+
 (defn try-intercept-byte
-  "Try to intercept a raw byte for pending permission or feedback prompts.
-   Returns true if intercepted (byte consumed), nil if not.
-   Permission: y/Y(yes), n/N(no), a/A(always).
-   Feedback: 1-6 (digit keys) in :selecting mode, full line in :awaiting-text mode.
-   Awaiting-text supports multi-byte UTF-8 (CJK) via byte buffering."
+  "Try to intercept a raw byte for the pending user-feedback prompt (the single
+   interactive-input channel — permission rides on it as a :confirm). Returns
+   true if intercepted (byte consumed), nil if not. Dispatches on the pending
+   request's :kind:
+     :confirm — single key matched (case-insensitive) against :choices keys.
+     :text    — straight into the :awaiting-text line editor.
+     :select  — digit 1-N in :selecting mode; :awaiting-text after a free-input
+                option (full UTF-8/CJK line editing)."
   [b]
-  (or (when-let [p @tui-session/!pending-permission]
-        (cond
-          (or (= b 121) (= b 89)) (do (deliver p :yes)    true)
-          (or (= b 110) (= b 78)) (do (deliver p :no)     true)
-          (or (= b 97)  (= b 65)) (do (deliver p :always) true)
-          :else nil))
-      (when-let [{:keys [promise options mode buf free-idx] :as fb} @tui-session/!pending-feedback]
-        (case (or mode :selecting)
-          :selecting
-          (let [n (- b 48)]  ;; byte 49='1' → n=1, byte 54='6' → n=6
-            (when (and (>= n 1) (<= n (count options)))
-              (let [idx (dec n)
-                    selected (nth options idx)]
-                (if (:free-input selected)
-                  ;; Transition to text input mode
-                  (do (swap! tui-session/!pending-feedback assoc
-                             :mode :awaiting-text
-                             :free-idx idx
-                             :buf (StringBuilder.))
-                      ;; Drop the sticky live-block before the text-mode prompt
-                      ;; so chars echo right after "Type your response: " in the
-                      ;; scroll region (write-raw-chars! leaves cursor there).
-                      (layout/dispose-live-block! permissions/user-feedback-block-id)
-                      (tui-session/emit! (str "\n  " (ansi/muted "Type your response: ")))
-                      true)
-                  ;; Normal selection
-                  (do (deliver promise {:selected (:label selected) :index idx})
-                      true)))))
+  (when-let [{:keys [kind choices mode] :as fb} @tui-session/!pending-feedback]
+    (case (or kind :select)
+      :confirm
+      (let [ch (Character/toLowerCase (char b))
+            hit (some #(when (= ch (Character/toLowerCase ^char (:key %))) %) choices)]
+        (when hit
+          (deliver (:promise fb) {:value (:value hit) :key (:key hit)})
+          true))
 
-          :awaiting-text
-          (let [^StringBuilder sb buf
-                utf8-buf (:utf8-buf fb)
-                utf8-need (:utf8-need fb 0)]
-            (cond
-              ;; Collecting continuation bytes for a multi-byte sequence
-              (pos? utf8-need)
-              (if (and (>= b 0x80) (< b 0xC0))
-                ;; Valid continuation byte
-                (let [new-buf (conj utf8-buf b)
-                      remaining (dec utf8-need)]
-                  (if (zero? remaining)
-                    ;; Complete UTF-8 sequence — decode, append, echo
-                    (let [ba (byte-array (map unchecked-byte new-buf))
-                          ch-str (String. ba "UTF-8")]
-                      (.append sb ch-str)
-                      (layout/write-raw-chars! ch-str)
-                      (swap! tui-session/!pending-feedback dissoc :utf8-buf :utf8-need)
-                      true)
-                    ;; Still need more bytes
-                    (do (swap! tui-session/!pending-feedback assoc
-                               :utf8-buf new-buf :utf8-need remaining)
-                        true)))
-                ;; Invalid continuation — discard buffer, don't consume byte
-                (do (swap! tui-session/!pending-feedback dissoc :utf8-buf :utf8-need)
-                    true))
+      :text
+      (intercept-text-byte! fb b)
 
-              ;; Enter — deliver the typed text
-              (or (= b 13) (= b 10))
-              (let [text (.toString sb)
-                    selected (nth options free-idx)]
-                (layout/write-raw-chars! "\r\n")
-                (deliver promise {:selected (:label selected) :index free-idx :input text})
-                true)
-
-              ;; Backspace — erase last char (CJK = 2 columns, else 1)
-              (or (= b 127) (= b 8))
-              (do (when (pos? (.length sb))
-                    (let [last-ch (.charAt sb (dec (.length sb)))]
-                      (.deleteCharAt sb (dec (.length sb)))
-                      (if (cjk-wide-char? last-ch)
-                        (layout/write-raw-chars! "\b\b  \b\b")
-                        (layout/write-raw-chars! "\b \b"))))
-                  true)
-
-              ;; Printable ASCII — echo on same line
-              (and (>= b 32) (<= b 126))
-              (do (.append sb (char b))
-                  (layout/write-raw-chars! (str (char b)))
-                  true)
-
-              ;; UTF-8 multi-byte lead byte — start buffering
-              (>= b 0xC0)
-              (let [total (utf8-lead-byte-length b)]
-                (if (pos? total)
-                  (do (swap! tui-session/!pending-feedback assoc
-                             :utf8-buf [b] :utf8-need (dec total))
-                      true)
-                  true))  ;; invalid lead byte — consume silently
-
-              ;; Consume other non-printable silently
-              :else true))))))
+      ;; :select (default)
+      (case (or mode :selecting)
+        :selecting     (intercept-select-digit! fb b)
+        :awaiting-text (intercept-text-byte! fb b)))))
 
 (defn start-input-reader!
   "Start a daemon thread that polls /dev/tty for raw bytes and queues them.

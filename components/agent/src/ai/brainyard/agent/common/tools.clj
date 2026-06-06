@@ -234,28 +234,49 @@
 ;; ============================================================================
 
 (deftool get-user-feedback
-  "Ask user to pick from options; blocks until they answer."
-  (fn [{:keys [question options timeout]}]
-    (let [timeout (or timeout 60000)
-          agent proto/*current-agent*
+  "Ask the user. kind=select (pick from options), text (free-form), or confirm (yes/no). Blocks until answered."
+  (fn [{:keys [question options timeout kind]}]
+    (let [timeout (or timeout 300000)
+          kind    (keyword (or kind "select"))
+          agent   proto/*current-agent*
           feedback-fn (when agent
                         (some-> (:!session agent) deref
                                 (session/get-session-config :user-feedback-fn)))]
-      (if feedback-fn
-        (let [result (feedback-fn {:question question
-                                   :options options
-                                   :timeout-ms timeout})]
+      (cond
+        (nil? feedback-fn)
+        {:error "User feedback not available (no interactive session)"}
+
+        (and (= kind :select) (< (count options) 2))
+        {:error "select requires 2-6 options"}
+
+        :else
+        (let [result (feedback-fn (cond-> {:kind kind :question question :timeout-ms timeout}
+                                    (seq options) (assoc :options options)))]
           (mulog/log ::user-feedback
                      :agent-id (when agent (:agent-id agent))
-                     :question question
-                     :options-count (count options)
-                     :result result)
-          result)
-        {:error "User feedback not available (no interactive session)"})))
+                     :kind kind :question question
+                     :options-count (count options) :result result)
+          (cond
+            (nil? result)     {:error "User feedback cancelled"}
+            (:error result)   result
+            (:timeout result) result
+            :else
+            (assoc result :answer
+                   (case kind
+                     :text    (:input result)
+                     :confirm (some-> (:value result) name)
+                     (str (:selected result)
+                          (when-let [in (:input result)] (str ": " in))))))))))
+  ;; Interactive prompt — must block the calling thread for terminal I/O.
+  ;; :sync true routes it through call-tool directly, bypassing the fast-eval/
+  ;; auto-background-detach path so a slow human answer never detaches the
+  ;; prompt into a background task.
+  :sync true
   :input-schema  [:map
                   [:question [:string {:desc "Question to present to user"}]]
-                  [:options  [:vector {:desc "Options for user to choose from"} :string]]
-                  [:timeout  {:optional true} [:int {:desc "Timeout in milliseconds (default 60000)" :default 60000}]]]
+                  [:options  [:vector {:desc "Options for select; pass [] for text/confirm"} :string]]
+                  [:kind     {:optional true} [:enum {:desc "select (default), text, or confirm"} "select" "text" "confirm"]]
+                  [:timeout  {:optional true} [:int {:desc "Timeout in milliseconds (default 300000)" :default 300000}]]]
   :output-schema [:map
                   [:answer [:string {:desc "User's selected option or typed response"}]]])
 
