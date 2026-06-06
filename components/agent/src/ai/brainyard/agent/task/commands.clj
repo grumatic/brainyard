@@ -63,7 +63,23 @@
                     output-file (persist/output-path nil task-id)
                     meta-file   (persist/meta-path nil task-id)
                     disk-cnt    (when output-file (persist/line-count nil task-id))
-                    truncated?  (and disk-cnt (> disk-cnt cached-cnt))]
+                    truncated?  (and disk-cnt (> disk-cnt cached-cnt))
+                    now          (System/currentTimeMillis)
+                    started-at   (:started-at task)
+                    completed-at (:completed-at task)
+                    ;; Liveness signals — let an LLM polling a long-running
+                    ;; subagent task distinguish "alive but quiet" from "wedged"
+                    ;; instead of cancelling on a frozen line count. last-output
+                    ;; is the output.log mtime (append-line! flushes every line),
+                    ;; so it advances with each streamed line / heartbeat.
+                    elapsed-ms   (when started-at (- (or completed-at now) started-at))
+                    last-mtime   (when output-file
+                                   (let [f (File. ^String output-file)]
+                                     (when (.exists f)
+                                       (let [m (.lastModified f)]
+                                         (when (pos? m) m)))))
+                    last-output-age-ms (when (and last-mtime (nil? completed-at))
+                                         (max 0 (- now last-mtime)))]
                 (cond-> {:id           (name (:id task))
                          :name         (:name task)
                          :status       (name (:status task))
@@ -75,9 +91,11 @@
                          :created-at   (:created-at task)
                          :started-at   (:started-at task)
                          :completed-at (:completed-at task)}
-                  last-n      (assoc :lines (vec (take-last last-n cached)))
-                  output-file (assoc :output-file output-file)
-                  meta-file   (assoc :meta-file meta-file)))
+                  elapsed-ms         (assoc :elapsed-ms elapsed-ms)
+                  last-output-age-ms (assoc :last-output-age-ms last-output-age-ms)
+                  last-n             (assoc :lines (vec (take-last last-n cached)))
+                  output-file        (assoc :output-file output-file)
+                  meta-file          (assoc :meta-file meta-file)))
               {:error (str "Task not found: " task-id-str)}))))
       {:error "Task manager not initialized"}))
   :input-schema  [:map
@@ -92,6 +110,8 @@
                   [:cached-lines [:int     {:desc "Lines held in the in-memory tail cache (capped by :max-output-lines, default 500)"}]]
                   [:total-lines  [:int     {:desc "Total lines written to disk (source of truth)"}]]
                   [:truncated?   [:boolean {:desc "True when :total-lines > :cached-lines — older lines evicted from cache, still on disk"}]]
+                  [:elapsed-ms   {:optional true} [:int {:desc "Wall-clock ms since the work started (to :completed-at if terminal, else now). Present once :started-at is set."}]]
+                  [:last-output-age-ms {:optional true} [:int {:desc "ms since the last output line was written (output.log mtime). Liveness signal for a running task: small = actively producing; large but growing on re-poll = alive but quiet (e.g. a subagent mid-LLM-turn). DO NOT cancel a task on a quiet window alone. Present only while running."}]]
                   [:lines        {:optional true} [:vector  {:desc "Present only when :last-n was supplied — tail of the in-memory cache. Slurp :output-file when :truncated? is true or when you need lines beyond the cache."} :string]]
                   [:created-at   [:int     {:desc "Creation timestamp (epoch ms)"}]]
                   [:started-at   {:optional true} [:int     {:desc "Start timestamp (epoch ms); nil before start"}]]

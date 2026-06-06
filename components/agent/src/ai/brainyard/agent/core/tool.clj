@@ -990,6 +990,15 @@
        " timeout, wait again or switch to task$wakeup)."
        " Peek progress with task$detail (add :last-n N); task$cancel to abort."))
 
+(def ^:private heartbeat-interval-ms
+  "How often an adopted tool/subagent task appends a liveness heartbeat line to
+   its output while still running. A :tool job never streams its own output
+   (unlike sandbox/nREPL), so without this its task$detail line count is frozen
+   for the whole run and the polling LLM mistakes a long-running subagent for a
+   wedged task. 10s — frequent enough to read as 'alive', sparse enough not to
+   flood the 500-line tail cache."
+  10000)
+
 (defn- adopt-tool-into-task
   "Adopt a timed-out tool future into the task manager, await remaining
    auto-bg window, return result or pending marker. Extracted to avoid
@@ -1001,7 +1010,7 @@
           tasks-atom  @(requiring-resolve 'ai.brainyard.agent.task.manager/!tasks)
           await-fn    @(requiring-resolve 'ai.brainyard.agent.task.commands/await-task)
           get-task-fn @(requiring-resolve 'ai.brainyard.agent.task.protocol/get-task)
-          poll-fn     @(requiring-resolve 'ai.brainyard.agent.task.executor/make-future-poll-fn)
+          hb-poll-fn  @(requiring-resolve 'ai.brainyard.agent.task.executor/make-heartbeat-poll-fn)
           tname       (str "tool: " (subs (str/replace (str tool-name) #"\n" " ")
                                           0 (min 60 (count (str tool-name)))))
           meta        (cond-> {:coact/lang (str tool-name)
@@ -1012,7 +1021,7 @@
           task        (adopt-fn tname :tool
                                 {:tool-id tool-id :tool-args tool-args}
                                 {:metadata meta :started-at t0}
-                                (poll-fn fut (java.io.StringWriter.) (str tool-name) identity)
+                                (hb-poll-fn fut (str tool-name) heartbeat-interval-ms t0)
                                 (fn [] (future-cancel fut)))
           _           (when !task-ref (proto/update-task-id! !task-ref (:id task)))
           mgr         (get-mgr)
@@ -1030,6 +1039,10 @@
         (let [tid    (:task-id r)
               marker (str "[" tool-name " STILL RUNNING — task-id=" tid
                           ". DO NOT re-call " tool-name " — it is already running."
+                          " It emits a periodic liveness heartbeat; a subagent can"
+                          " run for minutes with little output — read task$detail"
+                          " (:elapsed-ms, :last-output-age-ms) for liveness and DO NOT"
+                          " task$cancel just because output looks quiet."
                           (detached-wait-options tid) "]")]
           (tool-post-hook pre marker)
           marker)))
