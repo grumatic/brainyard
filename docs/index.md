@@ -207,7 +207,7 @@ Grouped by category; full list in the repo root `CLAUDE.md`.
 
 ## Built-in agents
 
-Nineteen `defagent`s ship in `components/agent`:
+Twenty-one `defagent`s ship in `components/agent`:
 
 | Agent | Purpose |
 |---|---|
@@ -225,6 +225,7 @@ Nineteen `defagent`s ship in `components/agent`:
 | `memory-agent` | LLM-driven steward of the layered memory stack |
 | `config-agent` | Conversational hub for `~/.brainyard/config.edn` |
 | `init-agent` | `BRAINYARD.md` authoring & maintenance |
+| `tool-agent` / `hook-agent` | Author user-defined tools (`tools$*`) and persistent runtime hooks (`hooks$*`) |
 
 See [core/agent.md](core/agent.md) and [core/reasoning.md](core/reasoning.md)
 for details.

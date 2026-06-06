@@ -416,9 +416,10 @@ Two driver pitfalls worth knowing before you write the loop:
   against a running `bb tui`:
   - `/agent` — subcommand picker (5 items: `status` / `new` / `switch`
     / `close` / `trace`).
-  - `/agent new` — agent-type picker (19 items, scrollable, the
+  - `/agent new` — agent-type picker (20 items, scrollable, the
     indicator `↓ N more` appears when entries overflow the visible
-    area).
+    area). That's every non-hidden agent type — 21 ship, but
+    `react-agent` is `:visibility :hidden`, so it isn't offered.
   - `/agent switch` — instance picker; entries shaped
     `<type>/<word>-<word>-<digits>` (e.g.
     `debug-agent/gold-goat-992`), with `← current` marking the active
