@@ -288,6 +288,38 @@
             (project-fn done-r))
           tp/still-running)))))
 
+(defn make-heartbeat-poll-fn
+  "make-on-poll builder for adopted futures that produce NO incremental output
+   of their own — i.e. :tool jobs (including subagent-as-tool calls), which
+   unlike sandbox/nREPL never bind *out* to a streamable writer, so their task
+   output is otherwise frozen at the initial 'Invoking…' line for the whole run.
+
+   A background heartbeat appends a liveness line to a shared StringWriter every
+   `interval-ms` while `fut` runs; the standard make-future-poll-fn drain pipe
+   then surfaces those lines through task$detail. This gives a polling LLM a
+   growing-output liveness signal so a long-running subagent isn't mistaken for
+   a wedged task and cancelled.
+
+   `t0` is the epoch-ms the underlying work actually started, so elapsed stays
+   accurate across the pre-adopt fast-eval window. The heartbeat self-stops when
+   `fut` finishes — cancel makes .isDone true within one interval, so the loop
+   exits and no thread leaks. The future's deref remains the terminal result
+   (project-fn identity); heartbeat lines live only on the streaming surface, not
+   in :result. Returns (fn [on-output] -> poll-fn) for adopt-detached!."
+  [^java.util.concurrent.Future fut label interval-ms t0]
+  (let [writer (java.io.StringWriter.)]
+    (future
+      (try
+        (loop []
+          (Thread/sleep (long interval-ms))
+          (when-not (.isDone fut)
+            (let [elapsed-s (quot (- (System/currentTimeMillis) (long t0)) 1000)]
+              (.write writer (str "[" label "] running… elapsed " elapsed-s "s\n")))
+            (recur)))
+        (catch InterruptedException _ nil)
+        (catch Throwable _ nil)))
+    (make-future-poll-fn fut writer label identity)))
+
 (defrecord ClojureSandboxJobExecutor []
   tp/IJobExecutor
   (execute-job [_ task on-output]
