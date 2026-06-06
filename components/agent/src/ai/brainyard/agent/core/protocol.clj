@@ -64,6 +64,15 @@
    if target agent-id already appears in chain, the call is rejected."
   [])
 
+(def ^:dynamic *subagent-capture*
+  "When bound to an atom by the fast-eval/detach tool path, the sub-agent
+   dispatch (do-call-tool--agent) CAS-writes the dispatched sub-agent's
+   instance-id into it — first-writer-wins, so nested dispatches don't clobber
+   the top one. Lets the adopted task's on-cancel resolve that sub-agent and
+   `runtime/cancel-run` it, cascading cancellation down the chain via the
+   upward parent-chain `cancelled?` walk. nil outside that path."
+  nil)
+
 (declare user-id session-id)
 
 (defn get-current-user-id

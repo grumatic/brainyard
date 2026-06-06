@@ -298,6 +298,12 @@
                                :session-id (proto/session-id agent)}
                               (:agent-session parsed-args))
               instance-id (or (:id parsed-args) (@!generate-instance-id target-id))
+              ;; Record the top-of-subtree sub-agent id for the adopted task's
+              ;; on-cancel (cascading cancel). First-writer-wins so a nested
+              ;; dispatch (this agent calling its own sub-agent) doesn't clobber
+              ;; the top one captured by the detach path.
+              _           (when-let [cap proto/*subagent-capture*]
+                            (compare-and-set! cap nil instance-id))
               ;; Sub-agent instances are ephemeral — auto-close after ask completes
               ;; so we don't accumulate dead entries in !agent-registry. The caller
               ;; may override by passing an explicit :auto-close? false in parsed-args.
@@ -1003,7 +1009,7 @@
   "Adopt a timed-out tool future into the task manager, await remaining
    auto-bg window, return result or pending marker. Extracted to avoid
    formatter mangling the try/let nesting in call-tool-with-fast-eval."
-  [pre fut tool-name tool-id tool-args from-iteration t0 auto-bg-ms fast-eval-ms !task-ref]
+  [pre fut tool-name tool-id tool-args from-iteration t0 auto-bg-ms fast-eval-ms !task-ref sub-agent-id]
   (try
     (let [adopt-fn    @(requiring-resolve 'ai.brainyard.agent.task.manager/adopt-detached!)
           get-mgr     @(requiring-resolve 'ai.brainyard.agent.task.manager/get-default-manager)
@@ -1011,18 +1017,30 @@
           await-fn    @(requiring-resolve 'ai.brainyard.agent.task.commands/await-task)
           get-task-fn @(requiring-resolve 'ai.brainyard.agent.task.protocol/get-task)
           hb-poll-fn  @(requiring-resolve 'ai.brainyard.agent.task.executor/make-heartbeat-poll-fn)
+          ;; Cascading cancel: when this task wraps a sub-agent, cancel-run its
+          ;; state on cancel. cancel-run sets the cooperative :cancelled? flag +
+          ;; closes its in-flight HTTP; every descendant sub-agent sees it via
+          ;; the upward parent-chain `cancelled?` walk and aborts at its next BT
+          ;; checkpoint — no child registry needed.
+          get-agent   (when sub-agent-id @(requiring-resolve 'ai.brainyard.agent.core.agent/get-agent))
+          cancel-run  (when sub-agent-id @(requiring-resolve 'ai.brainyard.agent.core.runtime/cancel-run))
           tname       (str "tool: " (subs (str/replace (str tool-name) #"\n" " ")
                                           0 (min 60 (count (str tool-name)))))
           meta        (cond-> {:coact/lang (str tool-name)
                                :coact/code (str tool-name " " (pr-str tool-args))
                                :coact/tool-id tool-name
                                :coact/tool-args tool-args}
-                        from-iteration (assoc :coact/pending-from-iter from-iteration))
+                        from-iteration (assoc :coact/pending-from-iter from-iteration)
+                        sub-agent-id   (assoc :coact/subagent-id sub-agent-id))
           task        (adopt-fn tname :tool
                                 {:tool-id tool-id :tool-args tool-args}
                                 {:metadata meta :started-at t0}
                                 (hb-poll-fn fut (str tool-name) heartbeat-interval-ms t0)
-                                (fn [] (future-cancel fut)))
+                                (fn []
+                                  (future-cancel fut)
+                                  (when sub-agent-id
+                                    (try (some-> (get-agent sub-agent-id) :!state cancel-run)
+                                         (catch Throwable _ nil)))))
           _           (when !task-ref (proto/update-task-id! !task-ref (:id task)))
           mgr         (get-mgr)
           remaining   (max 0 (- auto-bg-ms fast-eval-ms))
@@ -1099,10 +1117,14 @@
     (if sync?
       (call-tool tool-id tool-args
                  :agent agent :tools tools :tools-fn-map tools-fn-map)
-      (let [t0        (System/currentTimeMillis)
-            !task-ref (atom :inline-tool-eval)
+      (let [t0           (System/currentTimeMillis)
+            !task-ref    (atom :inline-tool-eval)
+            ;; Captures the dispatched sub-agent's instance-id (when this tool
+            ;; is an agent type) so the adopted task's on-cancel can cascade.
+            !sub-capture (atom nil)
             fut (future
-                  (binding [proto/*current-task* !task-ref]
+                  (binding [proto/*current-task*     !task-ref
+                            proto/*subagent-capture*  !sub-capture]
                     (try (call-tool tool-id tool-args
                                     :agent agent :tools tools
                                     :tools-fn-map tools-fn-map)
@@ -1113,4 +1135,4 @@
           r
           (adopt-tool-into-task nil fut tool-name tool-id tool-args
                                 from-iteration t0 auto-bg-ms fast-eval-ms
-                                !task-ref))))))
+                                !task-ref @!sub-capture))))))
