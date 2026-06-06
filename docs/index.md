@@ -66,6 +66,10 @@ Core reference — start at `core/agent.md` and follow the cross-links:
 9. [Configuration](core/config.md) — schema, precedence chain,
    persisted-EDN shape, directory resolution.
 
+[Garbage collection](gc.md) explains how on-disk transient artifacts
+(task logs, CoAct scratch, sandbox caches) are reclaimed — the two-tier
+eager-cleanup + bounded-sweep model behind `task$sweep`.
+
 Design notes (proposals, deep-dives) live in `docs/design/`. The
 `tui/` subdirectory covers the agent TUI ([architecture](tui/architecture.md),
 [renderer internals](tui/renderer.md), [live-binary testing](tui/testing.md)).
