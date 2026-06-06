@@ -324,6 +324,7 @@
                                                           :repeat-id id
                                                           :result child-result
                                                           :observation (:observation post-st)
+                                                          :last-reasoning (:last-reasoning post-st)
                                                           :goal-achieved (:goal-achieved post-st)
                                                           :goal-reasoning (:goal-reasoning post-st)}))]
                          (condp = child-result
