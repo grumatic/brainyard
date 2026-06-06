@@ -329,6 +329,10 @@ Layout (project-scoped):
 
 ### Retention / GC
 
+See [Garbage collection](../gc.md) for the full two-tier reclamation model
+(eager cleanup + bounded sweeps) across all artifact classes; the
+task-specific summary follows.
+
 The task lifecycle never deletes dirs — `remove-task` leaves artifacts for
 post-mortem. Cleanup is the GC layer's job: `ai.brainyard.agent.gc`'s
 `sweep-tasks!` / `sweep-coact-scratch!` / `sweep-sandbox-cache!`, surfaced
@@ -431,3 +435,5 @@ debug, in a live session, why a given tool did or didn't detach.
   switch from inline calls to task-based polling.
 - [config.md](config.md) — `:task-timeout-ms` and the `:task-retention-*`
   / `:sandbox-cache-*` GC bounds.
+- [gc.md](../gc.md) — on-disk artifact garbage collection: sweep classes,
+  retention bounds, the session-start hook, and `task$sweep`.
