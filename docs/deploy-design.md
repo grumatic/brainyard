@@ -49,8 +49,7 @@ brainyard/                              # this repo (public)
 ├── docs/
 │   ├── deploy-design.md                # this document                            [tracked]
 │   ├── install.md                      # long-form install instructions           [tracked]
-│   ├── usage.md                        # commands, flags, examples                [tracked]
-│   └── upstream-readme.md              # synced from agent-tui-app/TUI.md         [gitignored]
+│   └── usage.md                        # commands, flags, examples                [tracked]
 ├── bin/
 │   ├── sync-from-dev.sh                # pull publishable subset from upstream    [tracked]
 │   ├── install.sh                      # curl|bash installer                      [tracked]
@@ -122,7 +121,6 @@ A manual, idempotent shell script that copies the Polylith subset transitively r
    - `deps.edn`, `workspace.edn` → repo root (Polylith workspace descriptors)
    - `.clj-kondo/` → `.clj-kondo/`
    - `.sdkmanrc` → `.sdkmanrc`
-   - `projects/agent-tui-app/TUI.md` → `docs/upstream-readme.md` (for reference; not the public README)
 6. Excludes: `.git`, `target/`, `.cpcache/`, `.shadow-cljs/`, `node_modules/`, `benchmark-results/`, `.brainyard/`, `.env`, `.nrepl-port`, editor scratch files. The exclude list lives in `bin/sync-from-dev.sh` so it's reviewable in one place.
 7. Trim `workspace.edn` so the `:projects` map only references mirrored bricks; otherwise `bb poly:check` fails on missing bricks. The trim step is idempotent and uses `jq`/`bb` to manipulate edn, not hand-rolled sed.
 8. Write `SYNCED-FROM.txt` at repo root: upstream SHA, upstream branch, timestamp, user who ran sync, resolved brick list. **Gitignored** — consumed downstream by `bin/release-stage.sh`, which stamps the upstream SHA into `release/BUILD-INFO.txt`.
