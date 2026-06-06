@@ -66,7 +66,7 @@
           (do (agent/resume-run !state)
               (tui-session/emit! (ansi/muted "[resumed]")))
           (do (agent/pause-run !state)
-              (tui-session/emit! (ansi/muted "[paused] (Ctrl-\\ to resume, Ctrl-C to cancel)"))))
+              (tui-session/emit! (ansi/muted "[paused] Ctrl-\\ resume · Ctrl-C cancel · or type a message + Enter to resume with it"))))
         (try (tui-session/update-status-bar!) (catch Throwable _))
         (catch Throwable t
           (tui-session/emit! (ansi/failure (str "pause-toggle failed: " (.getMessage t)))))))))
