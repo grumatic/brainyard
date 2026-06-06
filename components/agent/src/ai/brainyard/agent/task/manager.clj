@@ -129,6 +129,15 @@
 ;; Ring Buffer Output Callback
 ;; ============================================================================
 
+(defn- push-ring!
+  "Conj `line` onto a tail-cache vector, evicting the oldest lines once the
+   vector exceeds `max-lines`. Pure — for use inside a `swap!`."
+  [lines max-lines line]
+  (let [lines (conj lines line)]
+    (if (> (count lines) max-lines)
+      (subvec lines (- (count lines) max-lines))
+      lines)))
+
 (defn- make-on-output
   "Create a thread-safe on-output callback with ring-buffer behavior.
    Also fans out each line to the per-task disk appender (best-effort —
@@ -136,13 +145,21 @@
    the in-memory ring buffer or executor future)."
   [output-lines-atom max-lines task-id]
   (fn [line]
-    (swap! output-lines-atom
-           (fn [lines]
-             (let [lines (conj lines line)]
-               (if (> (count lines) max-lines)
-                 (subvec lines (- (count lines) max-lines))
-                 lines))))
+    (swap! output-lines-atom push-ring! max-lines line)
     (persist/append-line! task-id line)))
+
+(defn append-task-output!
+  "Append `line` to a running task's output via the same ring-buffer + disk
+   path as the executor's on-output callback, given only a task-id (no
+   closure). For out-of-band emitters — e.g. the subagent-progress hook below —
+   that resolve a task-id from `proto/*current-task*` but don't hold the task's
+   on-output fn. No-op when the task is unknown or already terminal (so the
+   pre-adoption `:inline-tool-eval` sentinel and finished tasks are ignored)."
+  [task-id line]
+  (when-let [task (get @!tasks task-id)]
+    (when (= :running (:status task))
+      (swap! (:output-lines task) push-ring! (:max-output-lines task) line)
+      (persist/append-line! task-id line))))
 
 ;; ============================================================================
 ;; Task Factory Helper
@@ -492,6 +509,63 @@
     had?))
 
 ;; ============================================================================
+;; Subagent Progress Mirror (Layer 2)
+;; ============================================================================
+;;
+;; A subagent invoked as a tool runs its OWN bt loop on the future thread that
+;; `call-tool-with-fast-eval` wrapped in `(binding [proto/*current-task* …])`,
+;; and that binding is conveyed into the loop's pmap tool dispatch. So while a
+;; detached subagent runs, its per-iteration and per-tool events fire with
+;; `proto/*current-task*` bound to the adopted task — whereas the PARENT's
+;; iterations fire on the bare BT thread (no binding) and stay out. We mirror
+;; those events into the task's output as compact one-liners, so a polling LLM
+;; sees a meaningful growing trace, not just the Layer-1 liveness heartbeat.
+;;
+;; Observer-only (registered on non-gated events; return value ignored) and
+;; fail-open (hook system's default :on-error :log). No-op outside a task.
+
+(defn- truncate
+  [^String s n]
+  (if (> (count s) n) (str (subs s 0 n) "…") s))
+
+(defn- summarize-tool-result
+  "One short phrase for a tool result line — error text (truncated) or 'ok'.
+   Never dumps the full result map (which can be large)."
+  [result]
+  (cond
+    (not (map? result))      "ok"
+    (:error result)          (str "error: " (truncate (str (:error result)) 80))
+    (:error-message result)  (str "error: " (truncate (str (:error-message result)) 80))
+    :else                    "ok"))
+
+(defn- emit-progress!
+  "Append `line` to the current task's output when running inside one."
+  [line]
+  (when-let [tid (proto/current-task-id)]
+    (append-task-output! tid line)))
+
+(defn- on-iteration-pre
+  [{:keys [iteration max-iterations]}]
+  (emit-progress! (str "[iter " iteration "/" max-iterations "] thinking…")))
+
+(defn- on-tool-use-post
+  [{:keys [tool-name result]}]
+  (emit-progress! (str "  tool " (name tool-name) " → " (summarize-tool-result result))))
+
+(defonce ^:private !progress-hooks-installed (atom false))
+
+(defn- install-progress-hooks!
+  "Idempotently register the built-in subagent-progress mirror. Source
+   `:task-progress` so it can be torn down in bulk if ever needed. Called from
+   `create-task-manager` (the task subsystem's init point)."
+  []
+  (when (compare-and-set! !progress-hooks-installed false true)
+    (hooks/register-hook! :agent.iteration/pre ::subagent-progress-iter
+                          on-iteration-pre :source :task-progress)
+    (hooks/register-hook! :agent.tool-use/post ::subagent-progress-tool
+                          on-tool-use-post :source :task-progress)))
+
+;; ============================================================================
 ;; Factory
 ;; ============================================================================
 
@@ -527,6 +601,7 @@
   ;; never decrease a counter that's already ahead of disk.
   (swap! !task-counter max (persist/max-existing-task-id nil))
   (start-detach-watcher!)
+  (install-progress-hooks!)
   (->TaskManager {:bash             (executor/->BashJobExecutor)
                   :tool             (executor/->ToolJobExecutor)
                   :cli-client       (executor/->CliClientJobExecutor)
