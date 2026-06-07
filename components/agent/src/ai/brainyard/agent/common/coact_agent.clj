@@ -728,18 +728,66 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 ;; Context Assemblers
 ;; ============================================================================
 
+(def ^:private default-artifact-max-chars
+  "Fallback per-artifact truncation cap when a descriptor declares no
+   :max-chars (the resolver stamps the config value; this guards direct
+   callers)."
+  4000)
+
 (defn- format-live-artifacts
-  "Compact formatter for loaded skill files / extension instructions."
+  "Compact formatter for live-artifact descriptors (loaded skill files,
+   reference docs like CLAUDE.md/AGENTS.md, LLM-added notes). Honors each
+   descriptor's :max-chars and badges :origin :system / :pinned? so the LLM
+   can tell which artifacts it may remove. Legacy {:name :content} maps
+   render unchanged (origin/pinned absent → no badge)."
   [artifacts]
   (when (seq artifacts)
     (->> artifacts
-         (map (fn [{:keys [name content]}]
-                (str "### " (or name "artifact") "\n"
-                     (let [s (str content)]
-                       (if (> (count s) 2000)
-                         (str (subs s 0 2000) "…")
-                         s)))))
+         (map (fn [{:keys [name content origin pinned? max-chars]}]
+                (let [cap   (or max-chars default-artifact-max-chars)
+                      s     (str content)
+                      body  (if (> (count s) cap) (str (subs s 0 cap) "…") s)
+                      badge (str/join " " (cond-> []
+                                            (= origin :system) (conj "system")
+                                            pinned?            (conj "📌")))]
+                  (str "### " (or name "artifact")
+                       (when (seq badge) (str " (" badge ")")) "\n"
+                       body))))
          (str/join "\n\n"))))
+
+(defn- resolve-artifacts
+  "Materialize live-artifact descriptors for rendering. For :source :file,
+   load content fresh from disk (dropping descriptors whose file is missing or
+   unreadable) so on-disk edits show live. :source :inline and legacy
+   {:name :content} maps pass through. Stamps each surviving descriptor with an
+   effective :max-chars (its own, else `default`)."
+  [descriptors default]
+  (->> (or descriptors [])
+       (keep (fn [{:keys [source path content] :as d}]
+               (let [d (update d :max-chars #(or % default))]
+                 (cond
+                   (= source :file)
+                   (let [f (when path (java.io.File. ^String path))]
+                     (when (and f (.isFile f))
+                       (try (assoc d :content (slurp f))
+                            (catch Exception _ nil))))
+                   :else (when (some? content) d)))))
+       vec))
+
+(defn merge-artifact-descriptors
+  "Merge system-seeded (re-derived each turn) over persisted dynamic
+   descriptors, de-duped by :id (falling back to :name). System artifacts come
+   first for stable display; the first occurrence of an id wins. Public so the
+   artifact$* tools can dedupe on write."
+  [& descriptor-seqs]
+  (->> (apply concat descriptor-seqs)
+       (reduce (fn [acc d]
+                 (let [k (or (:id d) (:name d))]
+                   (if (contains? (:seen acc) k)
+                     acc
+                     (-> acc (update :seen conj k) (update :out conj d)))))
+               {:seen #{} :out []})
+       :out))
 
 (defn- format-previous-turns
   "Compact formatter for the previous-turns chain (Q/A + last few iterations).
@@ -1116,12 +1164,28 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                          (fmt/format-conversation trimmed)))
              (dissoc secs :conversation-history))))))
 
+   ;; Pin-aware: evict the OLDEST droppable artifact first — droppable =
+   ;; not :pinned? and not :origin :system. System reference files
+   ;; (CLAUDE.md/AGENTS.md) and explicitly-pinned artifacts are protected.
+   ;; When nothing is droppable the section is returned unchanged so
+   ;; `enforce` drops it wholesale as a last resort (rendering only — the
+   ;; persisted registry in st-memory-init is untouched, so it returns next
+   ;; turn).
    :drop-live-artifacts
    (fn [secs]
-     (let [arts (or (:live-artifacts @st-memory) [])]
-       (if (empty? arts)
-         (dissoc secs :live-artifacts)
-         (let [trimmed (vec (rest arts))]
+     (let [arts     (vec (or (:live-artifacts @st-memory) []))
+           drop-idx (->> arts
+                         (map-indexed vector)
+                         (some (fn [[i a]]
+                                 (when-not (or (:pinned? a)
+                                               (= (:origin a) :system))
+                                   i))))]
+       (cond
+         (empty? arts)   (dissoc secs :live-artifacts)
+         (nil? drop-idx) secs ; only pinned/system remain — let enforce drop
+         :else
+         (let [trimmed (into (subvec arts 0 drop-idx)
+                             (subvec arts (inc drop-idx)))]
            (swap! st-memory assoc :live-artifacts trimmed)
            (if (seq trimmed)
              (assoc secs :live-artifacts
@@ -1359,6 +1423,36 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                  (try (config/load-brainyard-instructions agent-dirs)
                                       (catch Exception _ nil)))
 
+        ;; Live artifacts: merge system-seeded reference files (re-derived
+        ;; fresh each turn from config :reference-artifact-paths, never
+        ;; persisted) over the persisted dynamic registry. Dynamic
+        ;; descriptors arrive via (:live-artifacts st) — the BT reset copies
+        ;; them from st-memory-init each turn, so LLM-added artifacts survive
+        ;; across turns within a session. Resolve loads :file content fresh
+        ;; and drops missing files; the result is written back to the
+        ;; per-turn st-memory so the :drop-live-artifacts budget strategy can
+        ;; re-render from it.
+        dynamic-artifacts (or (:live-artifacts st) [])
+        system-artifacts  (if agent-dirs
+                            (try (config/reference-artifact-descriptors
+                                  agent-dirs
+                                  (or (get cfg-snap :reference-artifact-paths)
+                                      ["CLAUDE.md" "AGENTS.md"])
+                                  ;; Dedupe against BRAINYARD.md (loaded as
+                                  ;; :system-context instructions) so a
+                                  ;; CLAUDE.md/AGENTS.md linked to the same file
+                                  ;; isn't loaded twice.
+                                  :exclude-identities
+                                  (:instruction-identities brainyard-instructions))
+                                 (catch Exception _ []))
+                            [])
+        artifact-max-chars (or (get cfg-snap :live-artifact-max-chars) 4000)
+        resolved-artifacts (resolve-artifacts
+                            (merge-artifact-descriptors system-artifacts
+                                                        dynamic-artifacts)
+                            artifact-max-chars)
+        _ (swap! st-memory assoc :live-artifacts resolved-artifacts)
+
         ;; Turn identity is read upfront so the per-turn :turn-info section
         ;; can be rendered before the assembler runs.
         turn-id     (:turn-id st)
@@ -1417,7 +1511,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                          :execution-model (execution-model-for agent)
                          :conversation           (:conversation st)
                          :previous-turns         previous-turns
-                         :live-artifacts         (:live-artifacts st)
+                         :live-artifacts         resolved-artifacts
                          :turn-info       turn-info-text
                          :parent-trail    parent-trail}
         merged-sections (sa/sections assembler assembler-state)

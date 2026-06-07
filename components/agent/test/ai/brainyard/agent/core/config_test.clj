@@ -445,3 +445,52 @@
   (cfg/invalidate-global-config!)
   (cfg/load-global-config!)
   (is (= 9 (cfg/get-config :max-iterations))))
+
+;; ---------------------------------------------------------------------------
+;; Reference-artifact dedup (BRAINYARD.md / CLAUDE.md / AGENTS.md linked)
+;; ---------------------------------------------------------------------------
+
+(defn- nio-path [s]
+  (java.nio.file.Paths/get s (make-array String 0)))
+
+(deftest reference-artifact-descriptors-dedupes-linked-files
+  (let [base (str (System/getProperty "java.io.tmpdir")
+                  "/refdedupe-" (System/nanoTime))
+        no-attrs (make-array java.nio.file.attribute.FileAttribute 0)]
+    (.mkdirs (io/file base))
+    (.mkdirs (io/file (str base "/.brainyard")))
+    (try
+      (spit (str base "/CLAUDE.md") "claude")
+      (spit (str base "/.brainyard/BRAINYARD.md") "brainyard")
+      ;; AGENTS.md is a symlink to CLAUDE.md (single source); HARD.md is a
+      ;; hardlink to CLAUDE.md; CLAUDE2.md is a symlink to BRAINYARD.md.
+      (java.nio.file.Files/createSymbolicLink
+       (nio-path (str base "/AGENTS.md")) (nio-path (str base "/CLAUDE.md")) no-attrs)
+      (java.nio.file.Files/createLink
+       (nio-path (str base "/HARD.md")) (nio-path (str base "/CLAUDE.md")))
+      (java.nio.file.Files/createSymbolicLink
+       (nio-path (str base "/CLAUDE2.md"))
+       (nio-path (str base "/.brainyard/BRAINYARD.md")) no-attrs)
+      (let [dirs {:project-dir base :working-dir base :user-dir base}]
+        (testing "symlinked CLAUDE.md + AGENTS.md collapse to one"
+          (is (= 1 (count (cfg/reference-artifact-descriptors
+                           dirs ["CLAUDE.md" "AGENTS.md"])))))
+        (testing "hardlinked files collapse to one"
+          (is (= 1 (count (cfg/reference-artifact-descriptors
+                           dirs ["CLAUDE.md" "HARD.md"])))))
+        (testing "distinct real files are kept"
+          (spit (str base "/OTHER.md") "other")
+          (is (= 2 (count (cfg/reference-artifact-descriptors
+                           dirs ["CLAUDE.md" "OTHER.md"])))))
+        (testing "load-brainyard-instructions exposes file identities"
+          (let [bi (cfg/load-brainyard-instructions dirs)]
+            (is (= "brainyard" (:project-instructions bi)))
+            (is (= 1 (count (:instruction-identities bi))))))
+        (testing ":exclude-identities drops a reference doc linked to BRAINYARD.md"
+          (let [ids (:instruction-identities (cfg/load-brainyard-instructions dirs))]
+            (is (= 0 (count (cfg/reference-artifact-descriptors
+                             dirs ["CLAUDE2.md"] :exclude-identities ids))))
+            ;; an unrelated doc still passes through
+            (is (= 1 (count (cfg/reference-artifact-descriptors
+                             dirs ["CLAUDE.md"] :exclude-identities ids)))))))
+      (finally (rm-rf (io/file base))))))

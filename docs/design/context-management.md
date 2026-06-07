@@ -140,9 +140,44 @@ keys that the BT dspy-action treats as stable:
                                        ; compact strategy :shrink-conversation
    :previous-turns           prio 50   ; Q + A + last 3 iterations per turn
                                        ; compact strategy :bump-previous-turns
-   :live-artifacts           prio 70   ; loaded skill files etc.
+   :live-artifacts           prio 70   ; reference docs / skill files / notes
                                        ; compact strategy :drop-live-artifacts
    ```
+
+   **Live Artifacts** is a single `## Live Artifacts` section composed each turn
+   from two streams, merged + de-duped by `:id` (system first, first id wins) in
+   `coact-init-action`, then resolved (`resolve-artifacts`) so `:source :file`
+   entries reload their content fresh from disk:
+
+   - **System artifacts** — reference files named by config
+     `:reference-artifact-paths` (default `["CLAUDE.md" "AGENTS.md"]`; relative
+     names resolve against project-dir then working-dir, absolute / `~` as-is,
+     missing files skipped). Re-seeded fresh every turn via
+     `config/reference-artifact-descriptors` → `:origin :system :pinned? true`.
+     Not persisted; never removable by the LLM.
+
+     *Link-dedup:* BRAINYARD.md, CLAUDE.md and AGENTS.md often point at one
+     source (a project may symlink/hardlink CLAUDE.md→AGENTS.md, or
+     CLAUDE.md→BRAINYARD.md, at project or user scope). Entries are de-duped by
+     `config/file-identity` (NIO `fileKey` = device+inode, which collapses both
+     symlinks and hardlinks), and the seeder passes BRAINYARD.md's identities as
+     `:exclude-identities` — so a reference doc linked to BRAINYARD.md (already
+     riding `:system-context` as instructions) is dropped rather than loaded
+     twice. The same content is never emitted more than once.
+   - **Dynamic artifacts** — added by the `artifact$*` tools
+     (`agent.common.artifacts`): `artifact$add` (`:path` — an absolute file path
+     such as a skill's SKILL.md — or inline `:content`), `artifact$list`,
+     `artifact$remove`, `artifact$pin`. Stored in
+     `st-memory-init` (`:origin :llm`) so they survive across turns within a
+     session — the BT turn reset copies `st-memory-init` into the per-turn
+     `st-memory`. Tools write `st-memory-init`, not the per-turn store, so edits
+     take effect from the next turn's assembly.
+
+   Each descriptor is `{:id :name :source :file|:inline :path|:content :origin
+   :pinned? :max-chars}`. The renderer (`format-live-artifacts`) badges
+   `:origin :system` / `:pinned?` and truncates to `:max-chars` (config
+   `:live-artifact-max-chars`, default 4000). Legacy `{:name :content}` maps
+   still render.
 
 Both strings ride the **system message** because the BT dspy-action has
 `:stable-keys #{:system-context :user-context}` on the `think-act-code` node. See
@@ -200,7 +235,11 @@ Strategies are defined in `coact-init-action`:
 
 - `:bump-previous-turns` — drop the oldest previous-turn entry, re-render.
 - `:shrink-conversation` — drop the oldest 2 conversation messages, re-render.
-- `:drop-live-artifacts` — drop the oldest live artifact, re-render.
+- `:drop-live-artifacts` — drop the oldest **droppable** live artifact (not
+  `:pinned?`, not `:origin :system`), re-render. When only pinned/system
+  artifacts remain the strategy makes no progress and `enforce` drops the whole
+  section as a last resort (rendering only — the persisted registry in
+  `st-memory-init` is untouched, so artifacts return next turn).
 
 System-context sections have **no `:compact` strategy**, so they are immutable for
 the turn. If the budget can't be met without touching them, `enforce` reports

@@ -802,6 +802,53 @@
       (is (contains? breakdown :instruction))
       (is (contains? breakdown :project-instructions)))))
 
+(deftest live-artifacts-helpers-test
+  (testing "format-live-artifacts badges origin/pin and honors :max-chars"
+    (let [fmt (deref #'rca/format-live-artifacts)
+          txt (fmt [{:name "Ref" :content "abcdefghij" :origin :system
+                     :pinned? true :max-chars 4}
+                    {:name "Note" :content "hello" :origin :llm}])]
+      (is (str/includes? txt "### Ref (system 📌)"))
+      (is (str/includes? txt "abcd…"))
+      (is (str/includes? txt "### Note\nhello"))))
+
+  (testing "resolve-artifacts loads :file fresh, drops missing, passes inline, stamps max-chars"
+    (let [resolve* (deref #'rca/resolve-artifacts)
+          f (java.io.File/createTempFile "art" ".md")
+          _ (spit f "file body")
+          out (resolve* [{:id "f" :name "F" :source :file :path (.getPath f)}
+                         {:id "miss" :name "M" :source :file :path "/no/such.md"}
+                         {:id "i" :name "I" :source :inline :content "inline body"}
+                         {:name "legacy" :content "legacy body"}]
+                        4000)]
+      (is (= 3 (count out)))
+      (is (= "file body" (:content (first out))))
+      (is (= 4000 (:max-chars (first out))))
+      (is (= #{"f" "i" nil} (set (map :id out))))))
+
+  (testing "merge-artifact-descriptors keeps system first, dedupes by id (first wins)"
+    (let [m (rca/merge-artifact-descriptors
+             [{:id "x" :name "sys-x" :origin :system}]
+             [{:id "x" :name "dyn-x" :origin :llm}
+              {:id "y" :name "dyn-y" :origin :llm}])]
+      (is (= ["x" "y"] (mapv :id m)))
+      (is (= "sys-x" (:name (first m))))))
+
+  (testing "drop-live-artifacts evicts oldest unpinned :llm, protects system/pinned"
+    (let [st (atom {:live-artifacts
+                    [{:id "ref:s" :origin :system :pinned? true :content "s"}
+                     {:id "note:a" :origin :llm :content "a"}
+                     {:id "note:b" :origin :llm :pinned? true :content "b"}
+                     {:id "note:c" :origin :llm :content "c"}]})
+          drop-fn (:drop-live-artifacts ((deref #'rca/coact-strategies) st))
+          secs0 {:live-artifacts "## Live Artifacts\nx"}
+          secs1 (drop-fn secs0)]
+      (is (= ["ref:s" "note:b" "note:c"] (mapv :id (:live-artifacts @st))))
+      (let [secs2 (drop-fn secs1)]
+        (is (= ["ref:s" "note:b"] (mapv :id (:live-artifacts @st))))
+        ;; only pinned/system remain -> strategy returns sections unchanged
+        (is (= secs2 (drop-fn secs2)))))))
+
 (deftest llm-fallback-consecutive-test
   (testing "2 consecutive non-fatal failures also terminate"
     (let [st (fresh-st-memory :dspy-error "parse error"

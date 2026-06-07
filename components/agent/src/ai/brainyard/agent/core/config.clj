@@ -30,7 +30,8 @@
             [clojure.pprint :as pprint]
             [clojure.string :as str])
   (:import [java.io File]
-           [java.nio.file FileSystems Path]))
+           [java.nio.file FileSystems Files LinkOption Path]
+           [java.nio.file.attribute BasicFileAttributes]))
 
 ;; ============================================================================
 ;; Config Schema
@@ -51,6 +52,15 @@
    ;; Token-budget enforcement on assembled prompt context (coact)
    :enable-context-budget      {:type "boolean" :default true}
    :context-budget-safety-ratio {:type "number" :default 0.10}
+   ;; Live-artifacts: reference files auto-seeded into the per-turn
+   ;; `## Live Artifacts` user-context section. Each entry is a path resolved
+   ;; against project-dir (then working-dir); absolute and ~-prefixed paths are
+   ;; used as-is. Missing files are silently skipped. Seeded artifacts are
+   ;; pinned (never dropped by the budget reducer, never removable by the LLM).
+   :reference-artifact-paths   {:type "vector"  :default ["CLAUDE.md" "AGENTS.md"]}
+   ;; Per-artifact truncation cap (chars) for the Live Artifacts renderer when a
+   ;; descriptor does not declare its own :max-chars.
+   :live-artifact-max-chars    {:type "integer" :default 4000}
    ;; CoAct system-context: include the full sandbox function directory
    ;; (categories + signatures for ALL bound callables). When false, the
    ;; system prompt shows only a compact category index instead.
@@ -504,17 +514,102 @@
         {:error (str "File not found: " relative-path
                      " (searched .brainyard/ in project and user directories)")})))
 
+(defn file-identity
+  "A value uniquely identifying the underlying file — NIO `fileKey`
+   (device+inode on POSIX), which collapses BOTH symlinks (followed) and
+   hardlinks to the same target. Falls back to the canonical path string when
+   `fileKey` is unavailable (some filesystems return nil). Returns nil for a
+   missing/unreadable file. Used to dedupe BRAINYARD.md / CLAUDE.md / AGENTS.md
+   when they are linked to one source so the same content isn't loaded twice."
+  [^File f]
+  (when (and f (.isFile f))
+    (or (try
+          (-> (Files/readAttributes (.toPath f) BasicFileAttributes
+                                    (make-array LinkOption 0))
+              (.fileKey))
+          (catch Exception _ nil))
+        (try (.getCanonicalPath f) (catch Exception _ (.getPath f))))))
+
 (defn load-brainyard-instructions
   "Load BRAINYARD.md from both user and project config dirs.
-   Returns {:user-instructions str-or-nil :project-instructions str-or-nil}."
+   Returns {:user-instructions str-or-nil :project-instructions str-or-nil
+            :instruction-identities #{file-identity ...}} — the identities let
+   callers dedupe reference artifacts (CLAUDE.md/AGENTS.md) that are linked to
+   the same file as a BRAINYARD.md."
   [dirs]
   (let [read-md (fn [config-dir]
                   (when config-dir
                     (let [f (File. ^String config-dir "BRAINYARD.md")]
                       (when (.isFile f)
-                        (str/trim (slurp f))))))]
-    {:user-instructions    (read-md (user-config-dir dirs))
-     :project-instructions (read-md (project-config-dir dirs))}))
+                        {:content  (str/trim (slurp f))
+                         :identity (file-identity f)}))))
+        u (read-md (user-config-dir dirs))
+        p (read-md (project-config-dir dirs))]
+    {:user-instructions      (:content u)
+     :project-instructions   (:content p)
+     :instruction-identities (set (keep :identity [u p]))}))
+
+(defn- expand-home
+  "Expand a leading `~`/`~/` against `user-dir`. Other paths pass through."
+  [^String path user-dir]
+  (cond
+    (nil? path)                  path
+    (= path "~")                 (or user-dir path)
+    (str/starts-with? path "~/") (str user-dir (subs path 1))
+    :else                        path))
+
+(defn reference-artifact-descriptors
+  "Build :origin :system live-artifact descriptors from `paths` (typically the
+   :reference-artifact-paths config value — e.g. [\"CLAUDE.md\" \"AGENTS.md\"]).
+
+   Resolution: absolute and ~-prefixed paths are used as-is; relative paths
+   resolve against :project-dir then :working-dir. Only existing files are
+   kept. Content is NOT read here — the per-turn resolver loads it fresh so
+   on-disk edits show live.
+
+   Dedup: entries are collapsed by `file-identity` (NIO fileKey), so reference
+   docs that are symlinked or hardlinked to ONE source load only once. The
+   optional `:exclude-identities` set drops entries whose underlying file is
+   already loaded elsewhere — pass the BRAINYARD.md identities so a CLAUDE.md /
+   AGENTS.md linked to BRAINYARD.md is not duplicated (BRAINYARD.md rides
+   :system-context as instructions).
+
+   Returns a vector of
+     {:id \"ref:<abs>\" :name <basename> :source :file :path <abs>
+      :origin :system :pinned? true}."
+  [dirs paths & {:keys [exclude-identities]}]
+  (let [{:keys [user-dir project-dir working-dir]} dirs
+        exclude (set exclude-identities)
+        resolve-one
+        (fn [p]
+          (let [p  (expand-home p user-dir)
+                f  (File. ^String p)
+                candidates (if (.isAbsolute f)
+                             [f]
+                             (keep (fn [base]
+                                     (when base (File. ^String base ^String p)))
+                                   [project-dir working-dir]))]
+            (some (fn [^File c] (when (.isFile c) c)) candidates)))]
+    (->> (or paths [])
+         (keep resolve-one)
+         (reduce (fn [acc ^File f]
+                   (let [id (file-identity f)]
+                     (if (or (nil? id)
+                             (contains? (:seen acc) id)
+                             (contains? exclude id))
+                       acc
+                       (let [abs (.getCanonicalPath f)]
+                         (-> acc
+                             (update :seen conj id)
+                             (update :out conj
+                                     {:id      (str "ref:" abs)
+                                      :name    (.getName f)
+                                      :source  :file
+                                      :path    abs
+                                      :origin  :system
+                                      :pinned? true}))))))
+                 {:seen #{} :out []})
+         :out)))
 
 ;; ============================================================================
 ;; EDN Config Read/Write (.brainyard/config.edn)
