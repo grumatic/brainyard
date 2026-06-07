@@ -1182,10 +1182,10 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    ;; Pin-aware: evict the OLDEST droppable artifact first — droppable =
    ;; not :pinned? and not :origin :system. System reference files
    ;; (CLAUDE.md/AGENTS.md) and explicitly-pinned artifacts are protected.
-   ;; When nothing is droppable the section is returned unchanged so
-   ;; `enforce` drops it wholesale as a last resort (rendering only — the
-   ;; persisted registry in st-memory-init is untouched, so it returns next
-   ;; turn).
+   ;; When nothing is droppable the section is returned unchanged; because the
+   ;; :live-artifacts policy sets :keep-floor? true, `enforce` keeps that floor
+   ;; (recorded :kept-floor) instead of dropping the section, so pinned/system
+   ;; artifacts are never evicted. See docs/design/compaction.md.
    :drop-live-artifacts
    (fn [secs]
      (let [arts     (vec (or (:live-artifacts @st-memory) []))

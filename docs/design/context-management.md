@@ -189,7 +189,7 @@ Per-iteration `inc-iter` resets `:tool-calls` / `:code-blocks` / `:last-reasonin
 grows monotonically (cap 10, each entry sanitized via `truncate-iter-field`, which
 caps each field at the `:max-output-chars` config knob, default 32000).
 
-### 2.4 Token-budget enforcement (per-turn only)
+### 2.4 Token-budget enforcement
 
 `coact-init-action` calls `agent.core.context-budget/enforce` after assembling the
 section maps:
@@ -208,23 +208,18 @@ enforce(...) → walks compactable sections in ascending :priority order;
                returns refined sections, total-tokens, and :over-budget?.
 ```
 
-Strategies are defined in `coact-init-action`:
+Strategies (in `coact-strategies`) trim user-context sections in ascending
+priority — `:bump-previous-turns`, `:shrink-conversation`, `:drop-live-artifacts`
+(pin-aware), `:collapse-iterations`, `:tools-tier`, `:bump-parent-trail`.
+System-context sections have **no `:compact` strategy** and are immutable; if the
+budget can't be met without them, `enforce` reports `:over-budget? true` and the
+turn proceeds anyway.
 
-- `:bump-previous-turns` — drop the oldest previous-turn entry, re-render.
-- `:shrink-conversation` — drop the oldest 2 conversation messages, re-render.
-- `:drop-live-artifacts` — drop the oldest **droppable** live artifact (not
-  `:pinned?`, not `:origin :system`), re-render. When only pinned/system
-  artifacts remain the strategy makes no progress; because the `:live-artifacts`
-  policy sets `:keep-floor? true`, `enforce` keeps that floor (recorded as
-  `:kept-floor`) instead of dropping the whole section, so pinned/system
-  artifacts are never evicted. See [artifacts.md](artifacts.md).
-
-System-context sections have **no `:compact` strategy**, so they are immutable for
-the turn. If the budget can't be met without touching them, `enforce` reports
-`:over-budget? true` and the turn proceeds anyway (with a `mulog/warn`).
-
-The enforcement runs **once, at `coact-init-action` time**. After that, `:iterations`
-grows iteration by iteration, but the budget is not re-checked.
+Enforcement runs at init **and** mid-turn: `coact-rebudget-action` re-runs
+`enforce` every `:rebudget-every-n-iter` iterations (default 10) as `:iterations`
+grows. The full strategy catalog, priority table, the `:keep-floor?` floor (which
+protects pinned live artifacts), and the cross-turn compactor are documented in
+**[compaction.md](compaction.md)**.
 
 ### 2.5 Cross-turn carrier: `previous-turns`
 
@@ -239,9 +234,11 @@ plus the answer into `proto/get-st-memory-init :previous-turns` via
 Subsequent turns format these into `:user-context` via `format-previous-turns`
 (keeping the last 3 iterations of each `:full` turn).
 
-A separate cross-turn carrier exists in `agent.common.context-compaction`
-(`/compact` command path): a multi-phase compactor that re-runs progressive
-compression with tighter passes and optionally LLM-summarizes `:agent-context`.
+Between turns, `agent.common.context-compaction/compact-context!` (the `/compact`
+command and the after-turn auto-compaction) re-applies the same progressive
+compression with tighter passes to pre-shrink the carryover toward
+`:compaction-target-ratio × :max-context-tokens` — deterministic, no LLM call.
+See **[compaction.md](compaction.md)**.
 
 ### 2.6 Sandbox: a third surface
 

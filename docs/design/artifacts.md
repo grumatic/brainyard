@@ -140,6 +140,9 @@ Two behaviours matter:
 
 ## Token-budget behaviour
 
+(For the budget loop itself — `enforce`, the strategy catalog, the cross-turn
+compactor — see [compaction.md](compaction.md).)
+
 The section is registered in `agent.core.context_budget/default-section-policies`
 as `:live-artifacts {:priority 70 :compact :drop-live-artifacts}` — below
 `previous-turns` (50) and `conversation-history` (60) in protection, above
