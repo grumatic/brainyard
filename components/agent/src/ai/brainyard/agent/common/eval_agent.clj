@@ -265,6 +265,32 @@ The eval-agent helpers (auto-bound):
                                        :slug (:slug pre)))
                         :user))
 
+BODY AUTHORING — the `body` passed to `(str fm body)` above (and the verdict
+body passed to eval$verdict-write):
+- Small, fence-free body → build it as a Clojure string. Simplest path.
+- Large body, or one that itself contains ``` code fences → do NOT hand-escape
+  it into a string literal (error-prone). Author it as a FOUR-backtick verbatim
+  fence, then promote it. The fenced body is written byte-for-byte to a scratch
+  file AND rides back on the eval result (its `:result` path + its `:code`), so
+  a later iteration reads it and feeds it back in as `body`. Two iterations:
+
+    Iteration 1 — emit ONLY the body (no frontmatter) as a verbatim fence; use
+    4+ backticks so any ordinary ``` fences inside pass through untouched:
+    ````markdown dossier-body.md
+    ## …section…
+    …even a nested ```clojure (inc 1)``` fence stays literal — no escaping…
+    ````
+    → eval result: `Wrote N chars to <path>`. Note <path>.
+
+    Iteration 2 — read it back, then run the SAME helper sequence above with
+    that content bound as `body` (frontmatter is still built by
+    eval$dossier-frontmatter):
+    ```clojure
+    (def body (:content (read-file {:path \"<path from iteration 1>\"})))
+    ;; …build `fm` via the helpers above, then:
+    (def res (eval$dossier-write :slug (:slug pre) :content (str fm body)))
+    ```
+
 If the auto-persist hook fires (LLM forgot the helpers), it writes a
 minimal dossier from the answer text. The verdict body is NOT auto-
 persisted — always call eval$verdict-write explicitly.
