@@ -214,9 +214,10 @@ Strategies are defined in `coact-init-action`:
 - `:shrink-conversation` — drop the oldest 2 conversation messages, re-render.
 - `:drop-live-artifacts` — drop the oldest **droppable** live artifact (not
   `:pinned?`, not `:origin :system`), re-render. When only pinned/system
-  artifacts remain the strategy makes no progress and `enforce` drops the whole
-  section as a last resort (rendering only — the persisted registry in
-  `st-memory-init` is untouched, so artifacts return next turn).
+  artifacts remain the strategy makes no progress; because the `:live-artifacts`
+  policy sets `:keep-floor? true`, `enforce` keeps that floor (recorded as
+  `:kept-floor`) instead of dropping the whole section, so pinned/system
+  artifacts are never evicted. See [artifacts.md](artifacts.md).
 
 System-context sections have **no `:compact` strategy**, so they are immutable for
 the turn. If the budget can't be met without touching them, `enforce` reports

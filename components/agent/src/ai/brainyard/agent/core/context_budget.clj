@@ -54,7 +54,11 @@
    :turn-info                 {:priority 88}
    :project-instructions      {:priority 85}
    :user-instructions         {:priority 85}
-   :live-artifacts            {:priority 70 :compact :drop-live-artifacts}
+   ;; :keep-floor? — when the compact strategy can no longer reduce this
+   ;; section (e.g. only pinned/system artifacts remain), keep its remaining
+   ;; "floor" content instead of dropping the whole section as a last resort.
+   :live-artifacts            {:priority 70 :compact :drop-live-artifacts
+                               :keep-floor? true}
    :conversation-history      {:priority 60 :compact :shrink-conversation}
    :previous-turns            {:priority 50 :compact :bump-previous-turns}
    ;; :parent-trail (M9) ships with sub-agent calls and is the cheapest
@@ -154,7 +158,11 @@
    commonly side-effect external state (e.g., mutate st-memory) since
    they are closed over by the caller. If a strategy makes no progress
    (same section token count), the section is dropped to avoid an
-   infinite loop.
+   infinite loop — UNLESS its policy sets `:keep-floor? true`, in which
+   case its remaining (floor) content is kept and the section is retired
+   from further compaction. Use `:keep-floor?` for sections that hold
+   protected content (e.g. pinned live artifacts) that must never be
+   dropped wholesale as a last resort.
 
    Inputs:
      :sections    {section-kw text}                 REQUIRED
@@ -177,6 +185,7 @@
          max-passes 32}}]
   (loop [secs sections
          compactions []
+         retired #{}     ; keep-floor sections that can't compact further
          pass 0]
     (let [current (total-tokens secs order)]
       (cond
@@ -191,7 +200,8 @@
              :compactions compactions :over-budget? true})
 
         :else
-        (let [candidates (compactable-keys secs order policies strategies)]
+        (let [candidates (remove retired
+                                 (compactable-keys secs order policies strategies))]
           (if (empty? candidates)
             (do (mulog/warn ::budget-still-exceeded-no-strategies
                             :total-tokens current :budget budget)
@@ -208,18 +218,39 @@
                                                :exception e)
                                    secs))
                   after     (estimate-tokens (get new-secs k ""))]
-              (if (= before after)
-                (recur (dissoc new-secs k)
-                       (conj compactions {:section k
-                                          :strategy :dropped
-                                          :before-tokens before
-                                          :after-tokens 0
-                                          :delta (- before)})
-                       (inc pass))
+              (cond
+                ;; Progress — keep going on the same candidate set.
+                (not= before after)
                 (recur new-secs
                        (conj compactions {:section k
                                           :strategy strat-key
                                           :before-tokens before
                                           :after-tokens after
                                           :delta (- after before)})
+                       retired
+                       (inc pass))
+
+                ;; No progress, but the section protects a floor (e.g. pinned
+                ;; live artifacts) — keep its remaining content and retire it
+                ;; from compaction rather than dropping it wholesale.
+                (get-in policies [k :keep-floor?])
+                (recur new-secs
+                       (conj compactions {:section k
+                                          :strategy :kept-floor
+                                          :before-tokens before
+                                          :after-tokens after
+                                          :delta 0})
+                       (conj retired k)
+                       (inc pass))
+
+                ;; No progress and no floor — drop the section to avoid an
+                ;; infinite loop and free its bytes (last resort).
+                :else
+                (recur (dissoc new-secs k)
+                       (conj compactions {:section k
+                                          :strategy :dropped
+                                          :before-tokens before
+                                          :after-tokens 0
+                                          :delta (- before)})
+                       retired
                        (inc pass))))))))))

@@ -136,6 +136,34 @@
       (is (= [:dropped] (mapv :strategy (:compactions result)))))))
 
 ;; ============================================================================
+;; enforce — :keep-floor? section is retained, not dropped, when stuck
+;; ============================================================================
+
+(deftest enforce-keep-floor-retains-section-test
+  (testing ":keep-floor? section keeps its floor (not dropped) when its strategy can't reduce"
+    ;; Uses default-section-policies: :live-artifacts has :keep-floor? true,
+    ;; :previous-turns does not. A no-op live-artifacts strategy models 'only
+    ;; pinned/system artifacts remain' — those bytes must survive.
+    (let [big (apply str (repeat 8000 "y"))    ; 2000 tokens each
+          secs {:previous-turns big :live-artifacts big}
+          order [:previous-turns :live-artifacts]
+          strategies {:bump-previous-turns (fn [s] (dissoc s :previous-turns))
+                      :drop-live-artifacts identity}   ; no progress
+          result (cb/enforce {:sections secs
+                              :order order
+                              :budget 100             ; far too tight
+                              :strategies strategies})]
+      ;; live-artifacts floor is KEPT verbatim despite remaining over budget
+      (is (contains? (:sections result) :live-artifacts))
+      (is (= big (:live-artifacts (:sections result))))
+      (is (true? (:over-budget? result)))
+      ;; audit trail marks it :kept-floor, not :dropped
+      (is (some #(and (= :live-artifacts (:section %)) (= :kept-floor (:strategy %)))
+                (:compactions result)))
+      ;; the non-floor section was still drained
+      (is (not (contains? (:sections result) :previous-turns))))))
+
+;; ============================================================================
 ;; enforce — over-budget when no strategies available
 ;; ============================================================================
 

@@ -148,10 +148,18 @@ nothing else volatile, so it is trimmed only after cheaper carryover.
 The `:drop-live-artifacts` strategy (in `coact-strategies`) is **pin-aware**: it
 evicts the *oldest droppable* artifact first, where droppable means **not
 `:pinned?` and not `:origin :system`**. System reference docs and explicitly
-pinned artifacts are protected. When only pinned/system artifacts remain the
-strategy makes no progress, so `enforce` drops the whole section as a last resort
-— but only from *this turn's rendering*; the registry in `st-memory-init` is
-untouched, so the artifacts return next turn.
+pinned artifacts are protected.
+
+When only pinned/system artifacts remain, the strategy makes no progress. The
+`:live-artifacts` policy carries `:keep-floor? true`, so `enforce` treats that as
+a **floor**: it keeps the remaining (pinned/system) content and retires the
+section from further compaction rather than dropping it wholesale. The pass is
+recorded as `:kept-floor` in the `:compactions` audit trail, and the turn
+proceeds `:over-budget? true` if nothing else can be trimmed. In other words,
+**pinned and system artifacts are never dropped, even as a last resort** — only
+the unpinned, LLM-added artifacts are evicted under pressure. (Without
+`:keep-floor?`, `enforce`'s generic no-progress guard would drop the whole
+section to break the loop.)
 
 ## Link-dedup (BRAINYARD.md / CLAUDE.md / AGENTS.md)
 
