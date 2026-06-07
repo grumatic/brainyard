@@ -22,13 +22,27 @@
 
 (defn- with-mode-b-installed
   [f]
-  (let [stub (tmux-iface/stub-tmux {:version "3.4"})]
+  (let [stub (tmux-iface/stub-tmux {:version "3.4"})
+        ;; Capture the real resolver so the stub can delegate non-popup keys.
+        real-get-config @#'ai.brainyard.agent.interface/get-config]
     (try
       (with-redefs [;; Skip the live tmux pane probe.
                     ai.brainyard.agent-tui.tmux-side/current-pane-id
                     (fn [_] "%99")
                     ;; Pretend the client is tall enough for popups.
-                    popup/feasible? (fn [_t] true)]
+                    popup/feasible? (fn [_t] true)
+                    ;; Be hermetic about the popup toggle: an ambient
+                    ;; .brainyard/config.edn (project or ~/.brainyard) may set
+                    ;; :enable-tmux-popup false, which would make Mode B
+                    ;; infeasible and route to the in-stream/stdin path (no TTY
+                    ;; in CI ⇒ 60s timeout). Force the default-on value here;
+                    ;; other keys delegate to the real resolver. The toggle
+                    ;; test overrides this inline for its :false case.
+                    ai.brainyard.agent.interface/get-config
+                    (fn [& args]
+                      (if (= (last args) :enable-tmux-popup)
+                        true
+                        (apply real-get-config args)))]
         (swap! tui-session/!tui-state assoc :mode :B)
         (tmux-side/install! {:tmux stub})
         (f stub))

@@ -124,7 +124,11 @@
     ;; wipe live state — the SCI var/closure is gone, only the .edn remains
     (uh/reset-hooks-sandbox!)
     (hooks/unregister-source! :user-hook)
-    (is (empty? (hooks/list-hooks :agent.iteration/post)))
+    ;; Only assert OUR source is gone — other components (e.g. task.manager's
+    ;; :task-progress hooks) may legitimately register on this event during a
+    ;; full-suite run, so a global-emptiness check is fragile.
+    (is (empty? (filter #(= :user-hook (:source %))
+                        (hooks/list-hooks :agent.iteration/post))))
     ;; reload from disk and confirm the hook fires again
     (is (= ["rec-iter"] (vec (uh/load-user-hooks! :dirs test-dirs
                                                   :extra-bindings (bindings-with-sink)))))
