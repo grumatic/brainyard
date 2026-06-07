@@ -734,19 +734,34 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    callers)."
   4000)
 
+(def ^:private file-artifact-preview-chars
+  "File-backed artifacts reload from disk every turn, so the prompt carries
+   only a short preview — past this many chars the body is cut and the LLM is
+   pointed at `read-file` for the full content."
+  400)
+
 (defn- format-live-artifacts
   "Compact formatter for live-artifact descriptors (loaded skill files,
-   reference docs like CLAUDE.md/AGENTS.md, LLM-added notes). Honors each
-   descriptor's :max-chars and badges :origin :system / :pinned? so the LLM
-   can tell which artifacts it may remove. Legacy {:name :content} maps
-   render unchanged (origin/pinned absent → no badge)."
+   reference docs like CLAUDE.md/AGENTS.md, LLM-added notes). Badges
+   :origin :system / :pinned? so the LLM can tell which artifacts it may remove.
+
+   File-backed artifacts (:source :file) render only a `file-artifact-preview-chars`
+   preview; when longer, the body is cut and a `(read-file {:path …})` pointer is
+   appended (the file reloads fresh each turn, so the full bytes need not ride
+   the prompt). Inline/legacy artifacts render their content up to :max-chars."
   [artifacts]
   (when (seq artifacts)
     (->> artifacts
-         (map (fn [{:keys [name content origin pinned? max-chars]}]
-                (let [cap   (or max-chars default-artifact-max-chars)
-                      s     (str content)
-                      body  (if (> (count s) cap) (str (subs s 0 cap) "…") s)
+         (map (fn [{:keys [name content origin pinned? max-chars source path]}]
+                (let [s     (str content)
+                      body  (if (= source :file)
+                              (if (> (count s) file-artifact-preview-chars)
+                                (str (subs s 0 file-artifact-preview-chars)
+                                     "…\n[truncated — `(read-file {:path \"" path
+                                     "\"})` for the full content]")
+                                s)
+                              (let [cap (or max-chars default-artifact-max-chars)]
+                                (if (> (count s) cap) (str (subs s 0 cap) "…") s)))
                       badge (str/join " " (cond-> []
                                             (= origin :system) (conj "system")
                                             pinned?            (conj "📌")))]

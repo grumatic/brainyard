@@ -175,9 +175,12 @@ keys that the BT dspy-action treats as stable:
 
    Each descriptor is `{:id :name :source :file|:inline :path|:content :origin
    :pinned? :max-chars}`. The renderer (`format-live-artifacts`) badges
-   `:origin :system` / `:pinned?` and truncates to `:max-chars` (config
-   `:live-artifact-max-chars`, default 4000). Legacy `{:name :content}` maps
-   still render.
+   `:origin :system` / `:pinned?`. **File-backed artifacts (`:source :file`)
+   render only a 400-char preview**; when longer, the body is cut and a
+   `` `(read-file {:path …})` `` pointer is appended — the file reloads fresh
+   each turn, so the full bytes need not ride the prompt. **Inline/legacy
+   artifacts** render their content up to `:max-chars` (config
+   `:live-artifact-max-chars`, default 4000).
 
 Both strings ride the **system message** because the BT dspy-action has
 `:stable-keys #{:system-context :user-context}` on the `think-act-code` node. See

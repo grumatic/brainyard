@@ -812,6 +812,23 @@
       (is (str/includes? txt "abcd…"))
       (is (str/includes? txt "### Note\nhello"))))
 
+  (testing "format-live-artifacts previews :file artifacts at 400 chars + read-file pointer"
+    (let [fmt (deref #'rca/format-live-artifacts)
+          long-body (apply str (repeat 500 "x"))
+          txt (fmt [{:name "CLAUDE.md" :source :file :path "/abs/CLAUDE.md"
+                     :content long-body :origin :system :pinned? true}
+                    {:name "Short" :source :file :path "/abs/short.md"
+                     :content "tiny"}])]
+      ;; long file → cut at 400 with a read-file pointer carrying the path
+      (is (str/includes? txt "read-file"))
+      (is (str/includes? txt "/abs/CLAUDE.md"))
+      (is (str/includes? txt "truncated"))
+      (is (str/includes? txt (subs long-body 0 400)))
+      (is (not (str/includes? txt (apply str (repeat 401 "x")))))
+      ;; short file → full content, no pointer
+      (is (str/includes? txt "### Short\ntiny"))
+      (is (not (str/includes? txt "/abs/short.md")))))
+
   (testing "resolve-artifacts loads :file fresh, drops missing, passes inline, stamps max-chars"
     (let [resolve* (deref #'rca/resolve-artifacts)
           f (java.io.File/createTempFile "art" ".md")
