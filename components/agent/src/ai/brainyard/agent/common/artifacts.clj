@@ -36,13 +36,23 @@
   (some-> proto/*current-agent* proto/get-st-memory-init))
 
 (defn- effective-artifacts
-  "The full set rendered THIS turn (system + dynamic, resolved) from the
-   per-turn BT st-memory; falls back to the persistent registry before the
-   first turn assembles."
+  "Everything the LLM can see or act on: the UNION (deduped by :id, bt first)
+   of the set rendered THIS turn (per-turn BT st-memory — system + already-merged
+   dynamic) and the persistent registry (st-memory-init — includes dynamic
+   artifacts added this turn that surface in the prompt only next turn). Without
+   the union, a just-added artifact would be invisible to list/remove until the
+   next turn even though it is already registered."
   []
-  (or (some-> proto/*current-agent* proto/get-bt-st-memory deref :live-artifacts)
-      (some-> (init-atom) deref :live-artifacts)
-      []))
+  (let [bt  (some-> proto/*current-agent* proto/get-bt-st-memory deref :live-artifacts)
+        reg (some-> (init-atom) deref :live-artifacts)]
+    (->> (concat (or bt []) (or reg []))
+         (reduce (fn [acc a]
+                   (let [k (:id a)]
+                     (if (contains? (:seen acc) k)
+                       acc
+                       (-> acc (update :seen conj k) (update :out conj a)))))
+                 {:seen #{} :out []})
+         :out)))
 
 (defn- slug [s]
   (-> (str s) str/trim str/lower-case

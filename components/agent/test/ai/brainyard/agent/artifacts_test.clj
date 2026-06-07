@@ -109,6 +109,29 @@
           (is (nil? (:error r)))
           (is (= [] (:live-artifacts @init))))))))
 
+(deftest artifact-union-view-test
+  ;; Regression (found via live e2e): list/remove must see registry artifacts
+  ;; even when the per-turn bt store already holds system artifacts. A freshly
+  ;; artifact$add'ed item lives only in st-memory-init until the next turn; if
+  ;; effective-artifacts read bt alone (non-empty), the new item was invisible.
+  (testing "list/remove see registry artifacts while bt already holds system ones"
+    (let [init (atom {})
+          bt   (atom {:live-artifacts
+                      [{:id "ref:/x/CLAUDE.md" :name "CLAUDE.md"
+                        :origin :system :pinned? true :source :file}]})]
+      (binding [proto/*current-agent* (mock-agent init bt)]
+        (art/artifact$add :content "fresh" :name "Fresh")
+        (testing "list is the union of bt (system) + registry (dynamic)"
+          (let [lst (art/artifact$list)]
+            (is (= 2 (:count lst)))
+            (is (= #{"ref:/x/CLAUDE.md" "note:fresh"}
+                   (set (map :id (:artifacts lst)))))))
+        (testing "just-added dynamic artifact is removable despite non-empty bt"
+          (is (nil? (:error (art/artifact$remove :id "note:fresh"))))
+          (is (= [] (:live-artifacts @init))))
+        (testing "system artifact (only in bt) is still refused"
+          (is (some? (:error (art/artifact$remove :id "ref:/x/CLAUDE.md")))))))))
+
 (deftest artifact-pin-test
   (testing "artifact$pin toggles the :pinned? flag"
     (let [init (atom {})]
