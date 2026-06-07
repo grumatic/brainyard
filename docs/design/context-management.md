@@ -145,42 +145,16 @@ keys that the BT dspy-action treats as stable:
    ```
 
    **Live Artifacts** is a single `## Live Artifacts` section composed each turn
-   from two streams, merged + de-duped by `:id` (system first, first id wins) in
-   `coact-init-action`, then resolved (`resolve-artifacts`) so `:source :file`
-   entries reload their content fresh from disk:
+   from two streams — config-seeded reference docs (`CLAUDE.md` / `AGENTS.md`,
+   pinned) and LLM-curated artifacts added via the `artifact$*` tools — merged,
+   resolved, and rendered (file artifacts as a 400-char preview + `read-file`
+   pointer; inline up to `:max-chars`). Dynamic artifacts persist for the session
+   in `st-memory-init`; the section is pin-aware under budget pressure and
+   de-dupes linked `BRAINYARD.md`/`CLAUDE.md`/`AGENTS.md` by inode.
 
-   - **System artifacts** — reference files named by config
-     `:reference-artifact-paths` (default `["CLAUDE.md" "AGENTS.md"]`; relative
-     names resolve against project-dir then working-dir, absolute / `~` as-is,
-     missing files skipped). Re-seeded fresh every turn via
-     `config/reference-artifact-descriptors` → `:origin :system :pinned? true`.
-     Not persisted; never removable by the LLM.
-
-     *Link-dedup:* BRAINYARD.md, CLAUDE.md and AGENTS.md often point at one
-     source (a project may symlink/hardlink CLAUDE.md→AGENTS.md, or
-     CLAUDE.md→BRAINYARD.md, at project or user scope). Entries are de-duped by
-     `config/file-identity` (NIO `fileKey` = device+inode, which collapses both
-     symlinks and hardlinks), and the seeder passes BRAINYARD.md's identities as
-     `:exclude-identities` — so a reference doc linked to BRAINYARD.md (already
-     riding `:system-context` as instructions) is dropped rather than loaded
-     twice. The same content is never emitted more than once.
-   - **Dynamic artifacts** — added by the `artifact$*` tools
-     (`agent.common.artifacts`): `artifact$add` (`:path` — an absolute file path
-     such as a skill's SKILL.md — or inline `:content`), `artifact$list`,
-     `artifact$remove`, `artifact$pin`. Stored in
-     `st-memory-init` (`:origin :llm`) so they survive across turns within a
-     session — the BT turn reset copies `st-memory-init` into the per-turn
-     `st-memory`. Tools write `st-memory-init`, not the per-turn store, so edits
-     take effect from the next turn's assembly.
-
-   Each descriptor is `{:id :name :source :file|:inline :path|:content :origin
-   :pinned? :max-chars}`. The renderer (`format-live-artifacts`) badges
-   `:origin :system` / `:pinned?`. **File-backed artifacts (`:source :file`)
-   render only a 400-char preview**; when longer, the body is cut and a
-   `` `(read-file {:path …})` `` pointer is appended — the file reloads fresh
-   each turn, so the full bytes need not ride the prompt. **Inline/legacy
-   artifacts** render their content up to `:max-chars` (config
-   `:live-artifact-max-chars`, default 4000).
+   See **[artifacts.md](artifacts.md)** for the full design — descriptor model,
+   per-turn lifecycle, persistence, rendering, link-dedup, and the `artifact$*`
+   tools.
 
 Both strings ride the **system message** because the BT dspy-action has
 `:stable-keys #{:system-context :user-context}` on the `think-act-code` node. See
