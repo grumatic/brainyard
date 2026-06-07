@@ -131,6 +131,35 @@ WHAT to write:
 - Close with explicit citations (file:path:line, url, mcp:server:tool,
   skill:backend:name).
 
+BODY AUTHORING — inline string vs. verbatim fence:
+- Small, fence-free body → build it as a Clojure string and pass it to
+  explore$write as `(str fm body)` (see CHECK 2). Simplest path.
+- Large body, or one that itself contains ``` code fences → do NOT hand-escape
+  it into a string literal (error-prone). Emit it as a FOUR-backtick verbatim
+  block, then promote it. The body is written byte-for-byte to a scratch file
+  AND rides back on the eval result (its `:result` path + its `:code`), so a
+  later iteration reads it and prepends the frontmatter. Two iterations:
+
+    Iteration 1 — emit ONLY the body (no frontmatter) as a verbatim fence.
+    Use 4+ backticks so any ordinary ``` fences inside pass through untouched:
+    ````markdown explore-body.md
+    # What was found
+    …even a nested ```clojure (inc 1)``` fence stays literal — no escaping…
+    ````
+    → eval result: `Wrote N chars to <path>`. Note <path> for the next step.
+
+    Iteration 2 — read it back, prepend the frontmatter, write the dossier:
+    ```clojure
+    (def slug (:slug (explore$slug :question \"<verbatim question>\")))
+    (def fm   (:frontmatter (explore$frontmatter :question \"<verbatim question>\"
+                              :slug slug :surfaces [\"filesystem\"] :entities {}
+                              :summary \"<one-paragraph summary>\")))
+    (def body (:content (read-file {:path \"<path from iteration 1>\"})))
+    (def res  (explore$write :slug slug :content (str fm body)))
+    (explore$index-append :path (:path res) :slug (:slug res)
+                          :surfaces [\"filesystem\"] :summary \"<same summary>\")
+    ```
+
 SLUG: kebab-case from the question, stopwords dropped, capped at 60 chars.
       If a result with the same slug exists, suffix with -2, -3, …
 
@@ -254,6 +283,10 @@ CHECK 2 — PERSIST. In a clojure fence, run these four calls in order:
                       :surfaces [\"<same surfaces as above>\"]
                       :summary  \"<same one-paragraph summary>\")
 ```
+
+  `body-markdown` above is a Clojure string. If the body is large or itself
+  contains ``` code fences, do NOT hand-escape it — author it as a verbatim
+  block first and read it back (see BODY AUTHORING in PERSISTENCE).
 
 CHECK 3 — ANSWER. Your `answer` field must end with this exact line format:
 
