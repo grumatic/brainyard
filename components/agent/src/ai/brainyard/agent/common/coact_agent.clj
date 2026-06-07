@@ -2793,17 +2793,23 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    no task — a synchronous write, so escaping never enters the picture. The LLM
    reads / transforms / promotes the file from a later code block (e.g.
    `(spit \"docs/report.md\" (slurp <path>))`). The file rides the existing 24h
-   scratch GC sweep; it is intermediate, not a deliverable, until copied out."
+   scratch GC sweep; it is intermediate, not a deliverable, until copied out.
+
+   The full content rides back in `:code` (like any other code block) so the
+   model keeps sight of what it generated across turns instead of only a path;
+   token economy is the iteration-record compaction layer's job, not this
+   writer's. On a write failure `:code` is the only surviving copy, so it is
+   carried then too."
   [lang content filename]
   (let [ext  (case lang "markdown" ".md" "html" ".html" ".txt")
         path (coact-verbatim-path ext filename)]
     (try
       (spit path content)
-      {:lang lang :code "" :result path
+      {:lang lang :code content :result path
        :output (str "Wrote " (count content) " chars to " path)
        :error ""}
       (catch Exception e
-        {:lang lang :code "" :result nil :output ""
+        {:lang lang :code content :result nil :output ""
          :error (str "Failed to write verbatim " lang " file: " (.getMessage e))}))))
 
 (defn- run-single-block

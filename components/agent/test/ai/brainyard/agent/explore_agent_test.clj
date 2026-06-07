@@ -14,8 +14,10 @@
             [clojure.string :as str]
             [ai.brainyard.agent.common.explore :as explore]
             [ai.brainyard.agent.common.explore-agent]
+            [ai.brainyard.agent.common.coact-agent :as rca]
             [ai.brainyard.agent.core.config :as config]
-            [ai.brainyard.agent.core.tool :as tool])
+            [ai.brainyard.agent.core.tool :as tool]
+            [ai.brainyard.clj-sandbox.interface :as clj-sandbox])
   (:import (java.nio.file Files)
            (java.nio.file.attribute FileAttribute)))
 
@@ -706,3 +708,113 @@
       (is (= :explore-agent (:source ours)))
       (is (fn? (:handler ours)))
       (is (fn? (:match ours))))))
+
+;; ============================================================================
+;; Integration — generate a dossier via a VERBATIM content block
+;;
+;; Exercises the realistic explore-agent path that the verbatim fence unlocks:
+;; the LLM emits the whole dossier (YAML frontmatter + markdown body, including
+;; a nested ``` code fence) as a four-backtick `markdown` block instead of
+;; hand-escaping it into a Clojure string, then promotes that content into a
+;; durable dossier via `explore$write`.
+;;
+;; This is the end-to-end proof of the `run-verbatim-block` change: the verbatim
+;; body now rides back on the eval-result's `:code` (previously ""), so the
+;; content is recoverable across the loop and can be fed to the dossier writer
+;; — not just a scratch path the model has lost sight of.
+;; ============================================================================
+
+(defn- minimal-sandbox []
+  (clj-sandbox/create-sandbox :context {} :bindings {}))
+
+(defn- st-with-code-blocks [sb code-blocks]
+  (atom {:iteration-count 0
+         :iterations []
+         :answer ""
+         :terminated false
+         :tool-calls []
+         :sandbox sb
+         :code-blocks code-blocks}))
+
+(deftest verbatim-block-generates-dossier-test
+  (let [tmp-dir (make-tmp-dir)
+        ;; The full dossier the LLM "wrote": frontmatter + body. The nested
+        ;; ```clojure fence inside is exactly what four-backtick verbatim
+        ;; fences exist for — it passes through with zero escaping.
+        dossier (str "---\n"
+                     "slug: verbatim-path\n"
+                     "question: How does the verbatim eval path carry content?\n"
+                     "created: 2026-06-07T00:00:00Z\n"
+                     "agent: explore-agent\n"
+                     "surfaces: [filesystem]\n"
+                     "entities:\n"
+                     "  files: [components/agent/.../coact_agent.clj]\n"
+                     "  urls: []\n"
+                     "  mcp_tools: []\n"
+                     "  skills: []\n"
+                     "summary: run-verbatim-block now returns the body on :code.\n"
+                     "---\n"
+                     "# What was found\n\n"
+                     "The verbatim body survives nested fences verbatim:\n\n"
+                     "```clojure\n"
+                     "(run-verbatim-block lang content filename)\n"
+                     "```\n\n"
+                     "# Where\n\n"
+                     "components/agent/src/ai/brainyard/agent/common/coact_agent.clj")
+        ;; Four-backtick fence so the inner ``` survives. This is the raw
+        ;; LLM output the CoAct loop receives in `:code-blocks`.
+        code-blocks (str "````markdown explore-dossier.md\n" dossier "\n````")
+        sb (minimal-sandbox)
+        st (st-with-code-blocks sb code-blocks)]
+    (try
+      ;; --- Iteration N: the verbatim block runs through the real eval seam ---
+      (rca/coact-code-eval-action {:st-memory st :agent nil})
+      (let [entries (:last-eval-results @st)
+            e       (first entries)]
+        (testing "the verbatim block produced exactly one eval entry"
+          (is (= :code (:last-channel @st)))
+          (is (= 1 (count entries)))
+          (is (= "markdown" (:lang e)))
+          (is (str/blank? (:error e))))
+
+        (testing "the full body rides back on :code (the run-verbatim-block change)"
+          (is (= dossier (:code e))
+              ":code must carry the verbatim body, not \"\" — this is what lets the
+               content reach the dossier writer in a later iteration"))
+
+        (testing ":result is a scratch path holding the byte-for-byte body"
+          (is (string? (:result e)))
+          (is (.isFile (io/file (:result e))))
+          (is (= dossier (slurp (io/file (:result e)))))
+          (is (str/includes? (:output e) "Wrote ")))
+
+        ;; --- Iteration N+1: promote the recovered content into a dossier ---
+        ;; The model takes the content it now still has sight of (`:code`) and
+        ;; writes a durable dossier with it. We use the eval-result's :code as
+        ;; the source to prove the round-trip, not the local `dossier` binding.
+        (let [recovered (:code e)
+              {:keys [path slug] :as res}
+              (explore/explore$write :slug "verbatim-path"
+                                     :content recovered
+                                     :base-dir tmp-dir)]
+          (testing "explore$write lands the dossier under the results dir"
+            (is (not (contains? res :error)))
+            (is (= "verbatim-path" slug))
+            (is (.isFile (io/file path)))
+            (is (str/includes? path
+                               ".brainyard/agents/explore-agent/results/")))
+
+          (testing "the persisted dossier is the verbatim content, intact"
+            (let [written (slurp (io/file path))]
+              (is (= recovered written))
+              (is (str/starts-with? written "---\n"))
+              (is (str/includes? written "agent: explore-agent"))
+              ;; the nested code fence survived the whole journey verbatim
+              (is (str/includes? written "```clojure"))
+              (is (str/includes? written
+                                 "(run-verbatim-block lang content filename)"))))))
+      (finally
+        ;; reclaim the scratch file the verbatim write left behind
+        (when-let [p (some-> (:last-eval-results @st) first :result)]
+          (.delete (io/file p)))
+        (delete-recursive (io/file tmp-dir))))))
