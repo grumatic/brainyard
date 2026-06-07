@@ -229,6 +229,31 @@ The todo-agent helpers (auto-bound) compress this:
                                                 :pre pre :post post))
                                               :user))
 
+BODY AUTHORING — the `body` passed to `(str fm body)` above:
+- Small, fence-free body → build it as a Clojure string. Simplest path.
+- Large body, or one that itself contains ``` code fences → do NOT hand-escape
+  it into a string literal (error-prone). Author it as a FOUR-backtick verbatim
+  fence, then promote it. The fenced body is written byte-for-byte to a scratch
+  file AND rides back on the eval result (its `:result` path + its `:code`), so
+  a later iteration reads it and feeds it back in as `body`. Two iterations:
+
+    Iteration 1 — emit ONLY the body (no frontmatter) as a verbatim fence; use
+    4+ backticks so any ordinary ``` fences inside pass through untouched:
+    ````markdown dossier-body.md
+    ## …section…
+    …even a nested ```clojure (inc 1)``` fence stays literal — no escaping…
+    ````
+    → eval result: `Wrote N chars to <path>`. Note <path>.
+
+    Iteration 2 — read it back, then run the SAME helper sequence above with
+    that content bound as `body` (frontmatter is still built by
+    todo$dossier-frontmatter):
+    ```clojure
+    (def body (:content (read-file {:path \"<path from iteration 1>\"})))
+    ;; …build `fm` via the helpers above, then:
+    (def res (todo$dossier-write :slug (:slug slug-info) :content (str fm body)))
+    ```
+
 If the auto-persist hook fires (LLM forgot to call the helpers), the
 hook writes a minimal dossier from the answer text. Don't rely on it —
 always call the helpers explicitly.
