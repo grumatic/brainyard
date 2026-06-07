@@ -412,6 +412,29 @@ work around the error by switching to :partial — fix the dossier instead.
   :one-line \"<≤ 200 char distillation>\")
 ```
 
+VERDICT BODY AUTHORING — the `:narrative` passed to research$write-verdict:
+- Short prose verdict → pass it inline as the `:narrative` string. Simplest.
+- Large narrative, or one containing ``` code fences → do NOT hand-escape it
+  into a string literal (error-prone). Author it as a FOUR-backtick verbatim
+  fence first; the body rides back on the eval result (its `:result` scratch
+  path + its `:code`), so a later iteration reads it and passes it as
+  `:narrative`. There is no frontmatter to build — research$write-verdict emits
+  the `---` block and the `## Verdict` heading itself. Two iterations:
+
+    Iteration 1 — emit the verdict body as a verbatim fence; use 4+ backticks so
+    any nested ``` fences pass through untouched (NO leading `## Verdict`
+    heading — the template adds it):
+    ````markdown verdict-body.md
+    The research reconciles … even a nested ```clojure (inc 1)``` fence is literal.
+    ````
+    → eval result: `Wrote N chars to <path>`. Note <path>.
+
+    Iteration 2 — read it back and write the verdict:
+    ```clojure
+    (def narrative (:content (read-file {:path \"<path from iteration 1>\"})))
+    (research$write-verdict :id rid :status :achieved :narrative narrative)
+    ```
+
 Step 4 — populate :answer with a markdown report DERIVED from verdict.md.
 ALWAYS end :answer with this exact line, on its own:
 
