@@ -3834,16 +3834,17 @@ playbook are in the system context above.")
                   [:answer [:string {:desc "Final answer to the user's question"}]]]
   :agent-tools {:tools (vec (distinct (concat common-tools/all-common-tools
                                               common-cmds/all-common-commands)))}
-  :config-extra {;; Memory capture (L2 event pipeline). Matches the
-                 ;; config-schema default (true) — capture is ON for coact and
-                 ;; every derived agent. Per-agent OPT-OUT: set
-                 ;; :enable-memory-capture false in a derived agent's
-                 ;; :config-extra or the caller's config.
-                 :enable-memory-capture true
-                 ;; End-of-turn essence distillation (L3, LLM call). OFF here;
-                 ;; fires only on root-agent turns (the hook predicate elides
-                 ;; sub-agents/specialists). Per-agent OPT-IN: set
-                 ;; :enable-memory-essence true in :config-extra or the
-                 ;; caller's config.
-                 :enable-memory-essence false}
+  ;; :config-extra resorts to the config-schema defaults — both keys below
+  ;; already equal their schema default, so they're left commented as a
+  ;; per-agent opt-in/opt-out reference rather than set explicitly.
+  :config-extra {;; Memory capture (L2 event pipeline) — schema default true,
+                 ;; so capture is ON for coact and every derived agent.
+                 ;; Per-agent OPT-OUT: uncomment as false.
+                 ;; :enable-memory-capture false
+                 ;; End-of-turn essence distillation (L3, LLM call) — schema
+                 ;; default false, so it's OFF; it fires only on root-agent
+                 ;; turns (the hook predicate elides sub-agents/specialists).
+                 ;; Per-agent OPT-IN: uncomment as true.
+                 ;; :enable-memory-essence true
+                 }
   :instruction coact-instruction)
