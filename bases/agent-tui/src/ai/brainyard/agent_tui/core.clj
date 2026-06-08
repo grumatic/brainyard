@@ -299,6 +299,8 @@
                         tui-session/compaction-post-handler :source :tui)
   (agent/register-hook! :agent.iteration/exhausted ::tui-iter-exhausted
                         tui-session/iteration-exhausted-handler :source :tui)
+  (agent/register-hook! :agent.recovery/retrying ::tui-recovery-retrying
+                        tui-session/recovery-retrying-handler :source :tui)
   (agent/register-hook! :agent.evaluation/started ::tui-eval-started
                         tui-session/evaluation-started-handler :source :tui)
   (agent/register-hook! :agent.evaluation/llm-calling ::tui-eval-llm-calling

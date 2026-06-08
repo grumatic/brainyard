@@ -11,6 +11,7 @@
                 refresh-terminal-size! terminal-columns terminal-rows
                 display-width format-number format-help format-welcome-banner
                 format-iteration-header format-iteration-exhausted
+                format-recovery-status
                 format-thought format-tool-calls format-tool-results
                 format-todo-progress format-todo-list
                 format-observation format-eval-sections format-goal-status

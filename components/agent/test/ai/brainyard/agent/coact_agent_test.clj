@@ -14,6 +14,7 @@
             [clojure.string :as str]
             [ai.brainyard.agent.common.coact-agent :as rca]
             [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
+            [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.protocol :as tp]
@@ -67,8 +68,9 @@
     (let [bt-config (rca/coact-behavior-tree 20)]
       (is (= :sequence (first bt-config)))
       (is (= :coact.sequence/main (get-in bt-config [1 :id])))
-      ;; [:sequence opts cond-q prep-conv prep-recall init fb-loop cond-a finalize-fb store maintain] = 11
-      (is (= 11 (count bt-config)))))
+      ;; [:sequence opts cond-q prep-conv prep-recall init fb-loop ensure-answer
+      ;;  cond-a finalize-fb store maintain] = 12
+      (is (= 12 (count bt-config)))))
 
   (testing "BT builds successfully with the BT engine"
     (let [bt-config (rca/coact-behavior-tree 10)
@@ -268,7 +270,12 @@
           stamp-code (rca/coact-stamp-channel :code)
           result (stamp-code {:st-memory st})]
       (is (= bt/success result))
-      (is (= :code (:last-channel @st))))))
+      (is (= :code (:last-channel @st)))))
+  (testing "a populated channel resets the malformed-output streak"
+    (let [st (fresh-st-memory :consecutive-llm-failures 2)]
+      ((rca/coact-stamp-channel :tool) {:st-memory st})
+      (is (= 0 (:consecutive-llm-failures @st))
+          "a productive (tool/code) iteration breaks any prior malformed streak"))))
 
 (deftest stamp-answer-action-test
   (testing "coact-stamp-answer-action fires the TUI watcher path"
@@ -276,11 +283,14 @@
                               :display-stage :think
                               ;; Stale entries from a prior code iteration
                               :eval-display [{:code "(+ 1 2)" :result "3"}])
+          _ (swap! st assoc :consecutive-llm-failures 2)
           result (rca/coact-stamp-answer-action {:st-memory st})]
       (is (= bt/success result))
       (is (= :answer (:last-channel @st)))
       (is (true? (:terminated @st)))
       (is (= :answer-channel (:terminated-by @st)))
+      (is (= 0 (:consecutive-llm-failures @st))
+          "terminal answer resets the malformed-output streak")
       ;; Flips to :eval-result so the TUI's final-code-shown? watcher fires
       (is (= :eval-result (:display-stage @st)))
       ;; Clears :eval-display so the TUI doesn't re-render the prior
@@ -538,10 +548,10 @@
                          "no action this iteration")))))
 
 (deftest repair-action-loop-guard-escalation-test
-  (testing "3rd consecutive :none escalates: terminate with synthesized answer"
+  (testing "exceeding max-retries-on-llm-no-action (default 3) escalates: terminate with synthesized answer"
     (let [st (fresh-st-memory
               :tool-calls [] :code-blocks "" :answer ""
-              :iteration-count 3
+              :iteration-count 5
               :iterations [{:iteration 1 :channel "tool"
                             :tool-results [{:tool-name "mcp$server"
                                             :tool-args {:op "list"}
@@ -550,10 +560,12 @@
                            {:iteration 2 :channel "none"
                             :tool-results [] :eval-results []}
                            {:iteration 3 :channel "none"
+                            :tool-results [] :eval-results []}
+                           {:iteration 4 :channel "none"
                             :tool-results [] :eval-results []}])]
       (rca/coact-repair-action {:st-memory st})
       (is (true? (boolean (:terminated @st)))
-          "3rd consecutive :none must terminate the turn")
+          "4th consecutive :none (streak ≥ 3) must terminate the turn")
       (is (= :answer (:last-channel @st)))
       (is (= :none-channel-loop-guard (:terminated-by @st)))
       (is (= :eval-result (:display-stage @st))
@@ -570,10 +582,33 @@
               :iterations [{:iteration 1 :channel "none"
                             :tool-results [] :eval-results []}
                            {:iteration 2 :channel "none"
+                            :tool-results [] :eval-results []}
+                           {:iteration 3 :channel "none"
                             :tool-results [] :eval-results []}])]
       (rca/coact-repair-action {:st-memory st})
       (is (true? (boolean (:terminated @st))))
-      (is (str/includes? (:answer @st) "no prior tool result captured")))))
+      (is (str/includes? (:answer @st) "Loop guard")
+          "still terminates with the loop-guard notice even with no tool result"))))
+
+(deftest repair-action-loop-guard-surfaces-latest-thought-test
+  (testing "with no tool result but a reasoning trail, the guard surfaces the
+            latest thought instead of a content-free placeholder"
+    (let [st (fresh-st-memory
+              :tool-calls [] :code-blocks "" :answer ""
+              :iterations [{:iteration 1 :channel "none"
+                            :thought "I should look at the config file first"
+                            :tool-results [] :eval-results []}
+                           {:iteration 2 :channel "none"
+                            :thought "Checking the next option"
+                            :tool-results [] :eval-results []}
+                           {:iteration 3 :channel "none"
+                            :thought "Still deciding how to start"
+                            :tool-results [] :eval-results []}])]
+      (rca/coact-repair-action {:st-memory st})
+      (is (true? (boolean (:terminated @st))))
+      (is (str/includes? (:answer @st) "Still deciding how to start")
+          "surfaces the most recent reasoning so the user sees where it got stuck")
+      (is (not (str/includes? (:answer @st) "no progress captured"))))))
 
 (deftest repair-action-non-consecutive-none-test
   (testing "an interrupting tool-channel iter resets the :none streak"
@@ -591,6 +626,54 @@
       (rca/coact-repair-action {:st-memory st})
       (is (false? (boolean (:terminated @st)))
           "only 1 trailing :none → still in nudge mode, not escalation"))))
+
+;; --- Ensure-answer: max-iterations exhaustion must never exit with nil answer ---
+
+(deftest ensure-answer-backfills-on-exhaustion-test
+  (testing "a blank answer after the loop is backfilled from the trajectory"
+    ;; The :none-streak guard only catches CONSECUTIVE empties; a turn that
+    ;; keeps calling tools/code productively but never sets :answer reaches
+    ;; max-iterations with a blank answer. The :repeat returns :success on
+    ;; exhaustion, so without ensure-answer the downstream answer-present gate
+    ;; fails → BT :failure with a nil answer.
+    (let [st (fresh-st-memory
+              :answer ""
+              :iteration-count 100
+              :iterations [{:iteration 99 :channel "tool"
+                            :thought "grepping"
+                            :tool-results [{:tool-name "grep" :tool-args {}
+                                            :tool-result "found 3 matches"}]
+                            :eval-results []}
+                           {:iteration 100 :channel "code"
+                            :thought "still working" :tool-results []
+                            :eval-results []}])]
+      (rca/coact-ensure-answer-action {:st-memory st})
+      (is (not (str/blank? (:answer @st)))
+          "exhaustion must leave a non-blank answer so :cond/answer-present passes")
+      (is (true? (boolean (:terminated @st))))
+      (is (= :max-iterations-exhausted (:terminated-by @st)))
+      (is (= :answer (:last-channel @st)))
+      (is (= :eval-result (:display-stage @st))
+          "must mirror coact-stamp-answer-action's TUI-watcher state")
+      (is (str/includes? (:answer @st) "found 3 matches")
+          "best-effort answer surfaces the latest captured progress"))))
+
+(deftest ensure-answer-noop-when-answer-present-test
+  (testing "a real answer is left completely untouched"
+    (let [st (fresh-st-memory :answer "the real answer" :terminated true
+                              :iterations [{:iteration 1 :channel "tool"
+                                            :tool-results [] :eval-results []}])]
+      (rca/coact-ensure-answer-action {:st-memory st})
+      (is (= "the real answer" (:answer @st)))
+      (is (nil? (:terminated-by @st))
+          "no-op path must not stamp a terminated-by reason"))))
+
+(deftest ensure-answer-empty-iterations-test
+  (testing "no progress at all still yields a non-blank answer (never a BT failure)"
+    (let [st (fresh-st-memory :answer "" :iterations [])]
+      (rca/coact-ensure-answer-action {:st-memory st})
+      (is (not (str/blank? (:answer @st))))
+      (is (= :max-iterations-exhausted (:terminated-by @st))))))
 
 ;; --- Empty-result retry with exponential backoff ---
 
@@ -616,7 +699,7 @@
                       ([k] (orig-get-config k))
                       ([agent k]
                        (case k
-                         :empty-result-max-retries   2
+                         :max-retries-on-llm-empty-result 2
                          :empty-result-retry-base-ms 1000
                          (orig-get-config agent k))))
                     rca/retry-sleep! (fn [ms] (swap! sleeps conj ms))
@@ -646,7 +729,7 @@
                       ([k] (orig-get-config k))
                       ([agent k]
                        (case k
-                         :empty-result-max-retries   3
+                         :max-retries-on-llm-empty-result 3
                          :empty-result-retry-base-ms 1000
                          (orig-get-config agent k))))
                     rca/retry-sleep! (fn [ms] (swap! sleeps conj ms))
@@ -679,24 +762,99 @@
           (is (= 0 @dspy-calls) "reasoning present → not an empty result → no retry")
           (is (= :none (:last-channel @st))))))))
 
-;; --- LLM fallback ---
+;; --- Recovery progress surface (:agent.recovery/retrying) ---
 
-(deftest llm-fallback-non-fatal-test
+(defn- capture-recovery-events
+  "Run `body-fn` with a temporary capturing hook on :agent.recovery/retrying;
+   return the vector of captured event-maps."
+  [body-fn]
+  (let [events (atom [])]
+    (hooks/register-hook! :agent.recovery/retrying ::test-capture
+                          (fn [ev] (swap! events conj ev))
+                          :source ::recovery-test)
+    (try (body-fn) (finally (hooks/unregister-source! ::recovery-test)))
+    @events))
+
+(deftest repair-empty-result-fires-recovery-events-test
+  (testing "each empty-result retry attempt fires :agent.recovery/retrying with progress"
+    (let [orig-get-config ai.brainyard.agent.core.config/get-config
+          events
+          (capture-recovery-events
+           (fn []
+             (with-redefs [ai.brainyard.agent.core.config/get-config
+                           (fn ([k] (orig-get-config k))
+                             ([agent k] (case k
+                                          :max-retries-on-llm-empty-result 3
+                                          :empty-result-retry-base-ms 1000
+                                          (orig-get-config agent k))))
+                           rca/retry-sleep! (fn [_] nil)
+                           bt/dspy (fn [_ctx] :success)]  ;; never recovers
+               (let [st (fresh-st-memory :tool-calls [] :code-blocks "" :answer ""
+                                         :last-reasoning nil :iteration-count 1)]
+                 (rca/coact-repair-action {:st-memory st :agent :fake-agent})))))
+          ;; The trailing no-channel nudge (retries exhausted → fall-through) is
+          ;; expected; assert on the empty-result retry events specifically.
+          retry-events (filter #(= :empty-result (:kind %)) events)]
+      (is (= 3 (count retry-events)) "one event per retry attempt (max-retries 3)")
+      (is (= [1 2 3] (mapv :attempt retry-events)) "attempt counter increments")
+      (is (every? #(= 3 (:max %)) retry-events)))))
+
+(deftest repair-no-action-fires-recovery-event-test
+  (testing "a deliberate no-action nudge fires one :no-action recovery event"
+    (let [events
+          (capture-recovery-events
+           (fn []
+             (let [st (fresh-st-memory
+                       :tool-calls [] :code-blocks "" :answer ""
+                       :last-reasoning "thinking it over"  ;; not empty → no retry
+                       :iterations [{:iteration 1 :channel "none"
+                                     :tool-results [] :eval-results []}])]
+               (rca/coact-repair-action {:st-memory st :agent :fake-agent}))))]
+      (is (= 1 (count events)))
+      (is (= :no-action (:kind (first events))))
+      (is (= 2 (:attempt (first events))) "2nd consecutive none (1 prior + this)")
+      (is (= 3 (:max (first events))) "bounded by max-retries-on-llm-no-action (default 3)"))))
+
+(deftest repair-loop-guard-fires-no-recovery-event-test
+  (testing "the terminal loop-guard escalation does NOT fire a recovery (retry) event"
+    (let [events
+          (capture-recovery-events
+           (fn []
+             ;; :last-reasoning present → a deliberate no-action (not an empty
+             ;; result), so it skips the retry loop and goes straight to the
+             ;; nudge/guard branch; streak ≥ 3 (default) → terminal escalation.
+             (let [st (fresh-st-memory
+                       :tool-calls [] :code-blocks "" :answer ""
+                       :last-reasoning "I have nothing actionable to add"
+                       :iterations [{:iteration 1 :channel "none"
+                                     :tool-results [] :eval-results []}
+                                    {:iteration 2 :channel "none"
+                                     :tool-results [] :eval-results []}
+                                    {:iteration 3 :channel "none"
+                                     :tool-results [] :eval-results []}])]
+               (rca/coact-repair-action {:st-memory st :agent :fake-agent}))))]
+      (is (empty? events) "escalation terminates the turn — not a 'retrying' state"))))
+
+;; --- Malformed-output recovery (unified into coact-repair-action; routed by
+;;     :dspy-error, which bt/dspy sets when the ThinkActCode call throws) ---
+
+(deftest repair-malformed-non-fatal-test
   (testing "non-fatal LLM error increments counter and pushes a FORMAT ERROR note"
     (let [st (fresh-st-memory :dspy-error "malformed JSON"
                               :consecutive-llm-failures 0)]
-      (rca/coact-llm-fallback-action {:st-memory st})
+      (rca/coact-repair-action {:st-memory st})
       (is (= 1 (:consecutive-llm-failures @st)))
-      (is (false? (:terminated @st)))
+      (is (false? (boolean (:terminated @st))))
       (is (= :none (:last-channel @st)))
+      (is (nil? (:dspy-error @st)) "malformed handler clears :dspy-error")
       (is (str/includes? (:error (first (:last-eval-results @st))) "FORMAT ERROR")))))
 
-(deftest llm-fallback-fatal-test
-  (testing "fatal LLM error (auth) terminates with apology answer"
+(deftest repair-malformed-fatal-test
+  (testing "fatal LLM error (auth) terminates with apology answer regardless of count"
     (let [st (fresh-st-memory :dspy-error "401 unauthorized"
                               :consecutive-llm-failures 0)]
-      (rca/coact-llm-fallback-action {:st-memory st})
-      (is (true? (:terminated @st)))
+      (rca/coact-repair-action {:st-memory st})
+      (is (true? (boolean (:terminated @st))))
       (is (str/includes? (:answer @st) "Agent stopped"))
       (is (= :llm-error (:terminated-by @st))))))
 
@@ -866,13 +1024,38 @@
         ;; only pinned/system remain -> strategy returns sections unchanged
         (is (= secs2 (drop-fn secs2)))))))
 
-(deftest llm-fallback-consecutive-test
-  (testing "2 consecutive non-fatal failures also terminate"
-    (let [st (fresh-st-memory :dspy-error "parse error"
-                              :consecutive-llm-failures 2)]
-      (rca/coact-llm-fallback-action {:st-memory st})
-      (is (true? (:terminated @st)))
-      (is (= :llm-error (:terminated-by @st))))))
+(deftest repair-malformed-consecutive-test
+  (testing "reaching max-retries-on-llm-malformed-output (default 3) terminates the turn"
+    (let [st-below (fresh-st-memory :dspy-error "parse error"
+                                    :consecutive-llm-failures 2)]
+      (rca/coact-repair-action {:st-memory st-below})
+      (is (false? (boolean (:terminated @st-below)))
+          "2 prior failures (< default 3) still re-prompts, does not abort")
+      (is (= 3 (:consecutive-llm-failures @st-below))))
+    (let [st-at (fresh-st-memory :dspy-error "parse error"
+                                 :consecutive-llm-failures 3)]
+      (rca/coact-repair-action {:st-memory st-at})
+      (is (true? (boolean (:terminated @st-at)))
+          "3rd prior failure (≥ default 3) aborts")
+      (is (= :llm-error (:terminated-by @st-at))))))
+
+(deftest repair-idempotent-within-iteration-test
+  (testing "after a malformed re-prompt (llm-guard slot), the router-slot re-entry
+            is a no-op — not re-classified as a no-action"
+    (let [st (fresh-st-memory :dspy-error "malformed JSON"
+                              :consecutive-llm-failures 0
+                              :iteration-count 7)]
+      ;; First call: llm-guard slot handles the malformed output.
+      (rca/coact-repair-action {:st-memory st})
+      (is (= 1 (:consecutive-llm-failures @st)))
+      (is (= 7 (:last-repair-iter @st)) "stamps the handled iteration")
+      (is (str/includes? (:error (first (:last-eval-results @st))) "FORMAT ERROR"))
+      ;; Second call in the SAME iteration (router Path D re-entry): no-op.
+      (rca/coact-repair-action {:st-memory st})
+      (is (= 1 (:consecutive-llm-failures @st))
+          "guard prevents a second increment / no-action re-classification")
+      (is (str/includes? (:error (first (:last-eval-results @st))) "FORMAT ERROR")
+          "eval-result unchanged — not overwritten by a no-action nudge"))))
 
 ;; ============================================================================
 ;; M5 — Tiered :tools compaction

@@ -711,6 +711,23 @@
                  "). Type /continue [N] to resume with more iterations.")]
     (str "\n" (ansi/warning msg))))
 
+(defn format-recovery-status
+  "Muted one-line progress notice for the CoAct loop working through a
+   transient stall (`:agent.recovery/retrying`). `kind` ∈
+   #{:empty-result :malformed-output :no-action}; `attempt`/`max` describe
+   progress (`max` may be nil)."
+  [kind attempt max]
+  (let [progress (cond
+                   max                        (str " (" attempt "/" max ")")
+                   (and attempt (> attempt 1)) (str " (x" attempt ")")
+                   :else                      "")
+        msg (case kind
+              :empty-result     (str "Model returned an empty response — retrying" progress "…")
+              :malformed-output (str "Malformed model output — re-prompting" progress "…")
+              :no-action        (str "No action this turn (no tool, code, or answer) — nudging the model" progress "…")
+              (str "Recovering" progress "…"))]
+    (ansi/muted (str "  " ansi/v-line " ⟳ " msg))))
+
 ;; ============================================================================
 ;; Thought / Reasoning
 ;; ============================================================================

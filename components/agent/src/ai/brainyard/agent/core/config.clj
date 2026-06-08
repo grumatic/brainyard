@@ -114,16 +114,30 @@
    ;; doesn't pass an explicit :timeout. Applies to both :bash and :tool
    ;; jobs, and to the foreground waiter's own deadline.
    :task-timeout-ms            {:type "integer" :default 120000}
-   ;; Max inline retries when a ThinkActCode call returns an empty result
-   ;; (blank reasoning + no channel) — the signature of a transient CLI
-   ;; hiccup (rate limit / nonzero exit / empty stream). The repair path
-   ;; re-runs the LLM call up to this many times before falling back to the
-   ;; no-action nudge. Set to 0 to disable retries.
-   :empty-result-max-retries   {:type "integer" :default 2}
+   ;; --- coact-repair-action recovery budgets (one per failure kind) ---
+   ;; Each attempt fires :agent.recovery/retrying so the TUI can surface a
+   ;; progress line.
+   ;;
+   ;; (1) Empty result — a ThinkActCode call SUCCEEDS but returns nothing usable
+   ;; (blank reasoning + no channel): the signature of a transient CLI hiccup
+   ;; (rate limit / nonzero exit / empty stream). The repair path re-runs the
+   ;; LLM call inline up to this many times (with exponential backoff) before
+   ;; falling through to the no-action nudge. Set to 0 to disable inline retries.
+   :max-retries-on-llm-empty-result    {:type "integer" :default 5}
    ;; Base delay (ms) for exponential backoff between empty-result retries.
    ;; Delay for attempt N is base * 2^(N-1): attempt 1 waits base, attempt 2
    ;; waits 2*base, etc. Gives a rate-limited backend time to recover.
    :empty-result-retry-base-ms {:type "integer" :default 1000}
+   ;; (2) Malformed output — the ThinkActCode call FAILS (DSPy/JSON parse error).
+   ;; The repair path re-prompts across iterations up to this many consecutive
+   ;; failures before aborting the turn. Fatal errors (auth / rate-limit /
+   ;; quota / billing) abort immediately regardless of this budget.
+   :max-retries-on-llm-malformed-output {:type "integer" :default 3}
+   ;; (3) No action — the call succeeds and the model reasons, but populates no
+   ;; channel (no tool-calls / code-blocks / answer). The repair path nudges up
+   ;; to this many consecutive no-action iterations before the loop-guard stops
+   ;; the turn with a best-effort progress answer.
+   :max-retries-on-llm-no-action       {:type "integer" :default 3}
    ;; On-disk artifact GC (ai.brainyard.agent.gc). Sweeps run async on
    ;; :agent.session/created (1h in-process throttle) and via task$sweep.
    ;; :tasks  — keep newest N task-N dirs OR ones younger than D days; union.

@@ -351,3 +351,25 @@
       (is (seq rows))
       (is (= 1 (count (distinct (map fmt/display-width rows))))
           "all │…│ rows must be equal width so the right border aligns"))))
+
+(deftest format-recovery-status-test
+  (testing "empty-result shows N/M progress"
+    (let [s (strip-ansi (fmt/format-recovery-status :empty-result 2 5))]
+      (is (str/includes? s "empty response"))
+      (is (str/includes? s "(2/5)"))))
+  (testing "malformed-output shows N/M progress"
+    (let [s (strip-ansi (fmt/format-recovery-status :malformed-output 1 3))]
+      (is (str/includes? s "Malformed"))
+      (is (str/includes? s "(1/3)"))))
+  (testing "no-action shows N/M progress"
+    (let [s (strip-ansi (fmt/format-recovery-status :no-action 2 3))]
+      (is (str/includes? s "nudging the model"))
+      (is (str/includes? s "(2/3)"))))
+  (testing "nil max degrades gracefully: no '/', count only past the first"
+    (let [s1 (strip-ansi (fmt/format-recovery-status :no-action 1 nil))
+          s2 (strip-ansi (fmt/format-recovery-status :no-action 2 nil))]
+      (is (not (str/includes? s1 "/")) "single occurrence shows no counter")
+      (is (str/includes? s2 "(x2)") "repeat shows an occurrence count")))
+  (testing "unknown kind degrades to a generic notice rather than throwing"
+    (is (str/includes? (strip-ansi (fmt/format-recovery-status :weird 1 nil))
+                       "Recovering"))))

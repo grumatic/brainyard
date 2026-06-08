@@ -56,6 +56,7 @@
                                     :eval-lm-label}
      :agent.evaluation/done    {:agent :round :verdict :detail}
      :agent.evaluation/verdict {:agent :score :verdict :reason}
+     :agent.recovery/retrying  {:agent :kind :attempt :max :detail}
      :agent.analytics/post     {:agent :analytics}
      :task/created             {:task}
      :task/completed           {:task}
@@ -151,6 +152,11 @@
    :agent.evaluation/llm-calling {:keys #{:agent :round :has-evidence :evidence-length :eval-lm-label}}
    :agent.evaluation/done       {:keys #{:agent :round :verdict :detail}}
    :agent.evaluation/verdict    {:keys #{:agent :score :verdict :reason}}
+   ;; Recovery progress (observer-only). Fired when the CoAct loop is working
+   ;; through a transient stall so the TUI can surface a status line. `:kind`
+   ;; ∈ #{:empty-result :malformed-output :no-action}; `:attempt`/`:max`
+   ;; describe progress (`:max` may be nil).
+   :agent.recovery/retrying     {:keys #{:agent :kind :attempt :max :detail}}
    :agent.analytics/post        {:keys #{:agent :analytics}}
    :task/created                {:keys #{:task}}
    :task/completed              {:keys #{:task}}

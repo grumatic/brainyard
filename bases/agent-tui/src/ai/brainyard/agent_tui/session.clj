@@ -2706,6 +2706,17 @@
   (with-agent-render-session agent
     (emit! (fmt/format-iteration-exhausted iteration-count max-iterations))))
 
+(defn recovery-retrying-handler
+  "Handler for :agent.recovery/retrying. Emits a muted progress line while the
+   CoAct loop works through a transient stall (empty model response, no-channel
+   nudge, or malformed output) so the backoff/retry isn't a silent pause."
+  [{:keys [agent kind attempt max]}]
+  (with-agent-render-session agent
+    (let [active? (render-active?)]
+      (when active? (stop-thinking-indicator!))
+      (emit! (fmt/format-recovery-status kind attempt max))
+      (when active? (start-thinking-indicator!)))))
+
 (defn evaluation-started-handler
   "Handler for :agent.evaluation/started. Mirrors the legacy
    `:evaluation-status :phase :started` watch branch."

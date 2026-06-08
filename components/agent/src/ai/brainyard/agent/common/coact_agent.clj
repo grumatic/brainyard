@@ -1922,7 +1922,10 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                       :last-channel      nil
                       :last-tool-results []
                       :last-eval-results []
-                      :eval-display      nil))))
+                      :eval-display      nil
+                      ;; Clear any stale DSPy error from a prior iteration so
+                      ;; coact-repair-action only reads THIS iteration's error.
+                      :dspy-error        nil))))
   (harvest-pending-tasks! st-memory)
   (inject-in-flight-roster! st-memory)
   bt/success)
@@ -2036,41 +2039,6 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                         :over-budget?   (:over-budget? enforced)}))))
     bt/success))
 
-(defn coact-llm-fallback-action
-  "BT action: on DSPy format errors push a synthetic eval-result describing the
-   failure, so the next LLM turn sees the problem. Aborts on fatal errors (auth,
-   rate-limit) or 2 consecutive failures."
-  [{:keys [st-memory]}]
-  (let [err (or (:dspy-error @st-memory) "LLM call failed")
-        fatal? (boolean
-                (re-find #"(?i)authentication|401|403|api.key|invalid.credentials|rate.limit|429|quota|billing"
-                         (str err)))
-        consecutive-failures (get @st-memory :consecutive-llm-failures 0)
-        should-abort? (or fatal? (>= consecutive-failures 2))]
-    (if should-abort?
-      (swap! st-memory assoc
-             :terminated true
-             :answer (str "Agent stopped: " err)
-             :terminated-by :llm-error
-             :tool-calls []
-             :code-blocks ""
-             :last-eval-results [{:lang "other" :code "" :result ""
-                                  :output "" :error (str "FATAL: " err ". Aborting.")
-                                  :parallel? false}]
-             :last-channel :none)
-      (swap! st-memory assoc
-             :tool-calls []
-             :code-blocks ""
-             :consecutive-llm-failures (inc consecutive-failures)
-             :last-eval-results [{:lang "other" :code "" :result ""
-                                  :output ""
-                                  :error (str "FORMAT ERROR: " err
-                                              ". You MUST respond with valid JSON matching the output schema. "
-                                              "Populate exactly ONE of `tool-calls` / `code-blocks` / `answer`.")
-                                  :parallel? false}]
-             :last-channel :none)))
-  bt/success)
-
 ;; ---- Display actions (TUI stage hooks) ----
 
 (defn coact-display-think-action
@@ -2153,10 +2121,15 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 ;; ---- Channel stamp helper ----
 
 (defn coact-stamp-channel
-  "Factory: return a BT action that stamps :last-channel with the given channel."
+  "Factory: return a BT action that stamps :last-channel with the given channel.
+   A populated channel is a productive iteration, so it also resets the
+   malformed-output streak (:consecutive-llm-failures) — see
+   `repair-malformed-output!`."
   [channel]
   (fn [{:keys [st-memory]}]
-    (swap! st-memory assoc :last-channel channel)
+    (swap! st-memory assoc
+           :last-channel channel
+           :consecutive-llm-failures 0)
     bt/success))
 
 (defn coact-stamp-answer-action
@@ -2174,6 +2147,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
          :last-channel   :answer
          :terminated     true
          :terminated-by  :answer-channel
+         :consecutive-llm-failures 0
          :eval-display   nil
          :display-stage  :eval-result)
   bt/success)
@@ -3183,6 +3157,29 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   [iterations]
   (count (take-while #(= "none" (:channel %)) (reverse iterations))))
 
+(defn- latest-thought-from-iterations
+  "Walk `iterations` newest-first and return the most recent non-blank
+   `:thought` (the LLM's reasoning for that iteration), or nil. Used as the
+   second-best progress signal when no tool ever ran — a stalled LLM still
+   reasons, so its last thought is more useful to the user than a content-free
+   placeholder."
+  [iterations]
+  (some (fn [{:keys [thought]}]
+          (when-not (str/blank? (str thought)) (str thought)))
+        (reverse iterations)))
+
+(defn- best-effort-progress-text
+  "Best-available 'here's where I got to' text for a turn that is ending
+   without a real `answer` (none-channel loop-guard, or max-iterations
+   exhaustion). Precedence: latest tool-result > latest non-blank thought >
+   deterministic iteration recap. Returns nil only when `iterations` is empty
+   (nothing happened at all)."
+  [iterations]
+  (or (latest-tool-result-from-iterations iterations)
+      (latest-thought-from-iterations iterations)
+      (let [s (summarize-iterations-deterministic iterations)]
+        (when-not (str/blank? (str s)) s))))
+
 (defn- backoff-delay-ms
   "Exponential backoff delay for a 1-based retry attempt: base * 2^(attempt-1).
    attempt 1 → base, attempt 2 → 2*base, attempt 3 → 4*base, …"
@@ -3234,86 +3231,168 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         ((coact-stamp-channel :tool) context)))
   bt/success)
 
+(defn- repair-malformed-output!
+  "Recover from a malformed ThinkActCode result — `bt/dspy` threw (DSPy/JSON
+   parse error) and stashed `:dspy-error`. Aborts the turn on a fatal error
+   (auth / rate-limit / quota / billing) or once `:consecutive-llm-failures`
+   reaches `:max-retries-on-llm-malformed-output`; otherwise re-prompts: pushes
+   a FORMAT ERROR eval-result and clears the channels so the next iteration's
+   ThinkActCode retries. Clears `:dspy-error` so the router-slot re-entry of
+   `coact-repair-action` doesn't re-classify it as malformed."
+  [{:keys [st-memory agent]}]
+  (let [err    (or (:dspy-error @st-memory) "LLM call failed")
+        max-r  (or (config/get-config agent :max-retries-on-llm-malformed-output) 3)
+        fatal? (boolean
+                (re-find #"(?i)authentication|401|403|api.key|invalid.credentials|rate.limit|429|quota|billing"
+                         (str err)))
+        consec (get @st-memory :consecutive-llm-failures 0)
+        abort? (or fatal? (>= consec max-r))]
+    (if abort?
+      (swap! st-memory assoc
+             :terminated true
+             :answer (str "Agent stopped: " err)
+             :terminated-by :llm-error
+             :tool-calls [] :code-blocks "" :dspy-error nil
+             :last-eval-results [{:lang "other" :code "" :result ""
+                                  :output "" :error (str "FATAL: " err ". Aborting.")
+                                  :parallel? false}]
+             :last-channel :none)
+      (do
+        ;; Progress surface: we're re-prompting the model rather than failing
+        ;; silently. (Skip on abort — the terminal answer already explains it.)
+        (when agent
+          (hooks/fire! :agent.recovery/retrying
+                       {:agent agent :kind :malformed-output
+                        :attempt (inc consec) :max max-r}))
+        (swap! st-memory assoc
+               :tool-calls [] :code-blocks "" :dspy-error nil
+               :consecutive-llm-failures (inc consec)
+               :last-eval-results [{:lang "other" :code "" :result "" :output ""
+                                    :error (str "FORMAT ERROR: " err
+                                                ". You MUST respond with valid JSON matching the output schema. "
+                                                "Populate exactly ONE of `tool-calls` / `code-blocks` / `answer`.")
+                                    :parallel? false}]
+               :last-channel :none)))))
+
+(defn- repair-no-action!
+  "Handle an iteration that succeeded but populated no channel (deliberate
+   no-action, or empty-result retries exhausted). A successful DSPy call breaks
+   any malformed-output streak, so reset `:consecutive-llm-failures`. Nudge up
+   to `:max-retries-on-llm-no-action` consecutive no-action iterations; on the
+   one past that, escalate via the loop-guard — terminate the turn with a
+   best-effort progress answer (mirrors `coact-stamp-answer-action`'s state)."
+  [{:keys [st-memory agent]}]
+  (let [iters       (or (:iterations @st-memory) [])
+        max-noact   (or (config/get-config agent :max-retries-on-llm-no-action) 3)
+        none-streak (trailing-none-channel-count iters)]
+    (swap! st-memory assoc :consecutive-llm-failures 0)
+    (if (>= none-streak max-noact)
+      (let [progress    (best-effort-progress-text iters)
+            answer-text (str repair-loop-guard-prefix
+                             (or progress "(no progress captured)")
+                             "\n```")]
+        (swap! st-memory assoc
+               :answer            answer-text
+               :last-channel      :answer
+               :terminated        true
+               :terminated-by     :none-channel-loop-guard
+               :last-tool-results []
+               :last-eval-results []
+               :eval-display      nil
+               :display-stage     :eval-result)
+        (mulog/log ::repair-loop-guard
+                   :iteration (:iteration-count @st-memory)
+                   :consecutive-none (inc none-streak)))
+      (do
+        ;; Progress surface: no actionable output this iteration; show the user
+        ;; we're nudging it before the loop-guard would stop the turn.
+        (when agent
+          (hooks/fire! :agent.recovery/retrying
+                       {:agent agent :kind :no-action
+                        :attempt (inc none-streak) :max max-noact}))
+        (swap! st-memory assoc
+               :last-channel :none
+               :last-tool-results []
+               :last-eval-results [{:lang "other"
+                                    :code ""
+                                    :result ""
+                                    :output ""
+                                    :error (str "You emitted no action this iteration — none of "
+                                                "`tool-calls`, `code-blocks`, `answer` was populated. "
+                                                "Populate exactly one next iteration.")
+                                    :parallel? false}])
+        (mulog/log ::repair
+                   :iteration (:iteration-count @st-memory)
+                   :consecutive-none (inc none-streak))))))
+
 (defn coact-repair-action
-  "BT action: the LLM populated NEITHER a channel NOR an answer.
+  "Unified recovery action for an unproductive ThinkActCode iteration. The same
+   fn sits in TWO behavior-tree slots and classifies the failure kind:
 
-   Empty-result retry: when the result is fully empty (blank reasoning AND
-   no channel) — the signature of a transient CLI hiccup (rate limit,
-   nonzero exit, empty stream) rather than a deliberate no-action — re-run
-   ThinkActCode inline up to `:empty-result-max-retries` times. If a retry
-   recovers a channel, dispatch it this same iteration (no wasted turn).
+   1. Malformed output (`:fallback/llm-guard` slot — `bt/dspy` threw, leaving
+      `:dspy-error`): re-prompt across iterations up to
+      `:max-retries-on-llm-malformed-output`, then abort (fatal errors abort
+      immediately). See `repair-malformed-output!`.
 
-   Default behavior (1st/2nd consecutive :none iteration): push a
-   synthetic :none-channel eval-result so the next LLM turn sees the
-   nudge to populate exactly one channel.
+   2. Empty result (router Path D — DSPy succeeded but returned blank reasoning
+      AND no channel, the signature of a transient CLI hiccup): re-run
+      ThinkActCode inline up to `:max-retries-on-llm-empty-result` times with
+      exponential backoff; if a retry recovers a channel, dispatch it this same
+      iteration (no wasted turn).
 
-   Loop-guard escalation (3rd+ consecutive :none iteration): terminate
-   the turn early by stamping `:answer` with the latest tool-result
-   wrapped in a `Loop guard` notice, and flipping the same TUI-watcher
-   state `coact-stamp-answer-action` would (terminated/eval-result).
-   Mirrors the existing redundant-tool-call guard in
-   `loop_guard_hook.clj` — `:none` channel almost always means an LLM
-   stuck repeating itself, and once we've nudged it twice without
-   effect there is no useful reason to keep spending tokens."
+   3. No action (router Path D — the model reasoned but populated no channel):
+      nudge up to `:max-retries-on-llm-no-action` consecutive iterations, then
+      the loop-guard stops the turn with a best-effort progress answer. See
+      `repair-no-action!`.
+
+   Idempotent within an iteration via `:last-repair-iter`: on a malformed-output
+   re-prompt the channels are left empty, so the router-slot copy of this action
+   re-enters in the same iteration — the guard makes that second call a no-op so
+   the re-prompt isn't re-classified as a no-action."
   [{:keys [st-memory agent] :as context}]
-  (let [max-retries (or (config/get-config agent :empty-result-max-retries) 2)
-        base-ms     (or (config/get-config agent :empty-result-retry-base-ms) 1000)]
-    ;; Retry transient empty results inline before treating the iteration as
-    ;; a no-op. Re-runs the same ThinkActCode call (inputs are unchanged in
-    ;; st-memory), with exponential backoff between attempts so a rate-limited
-    ;; backend gets progressively more time to recover.
-    (when (and agent (pos? max-retries) (empty-llm-result? context))
-      (loop [attempt 1]
-        (let [delay-ms (backoff-delay-ms attempt base-ms)]
-          (mulog/log ::repair-empty-result-retry
-                     :iteration (:iteration-count @st-memory)
-                     :attempt attempt :max max-retries :backoff-ms delay-ms)
-          (retry-sleep! delay-ms)
-          (bt/dspy (assoc context :opts
-                          {:id         :coact.action/repair-retry-think
-                           :signature  #'ThinkActCode
-                           :operation  :chain-of-thought
-                           :stable-keys #{:system-context :user-context}}))
-          (when (and (empty-llm-result? context) (< attempt max-retries))
-            (recur (inc attempt))))))
-    (if (any-channel-populated? context)
-      ;; A retry recovered a usable channel — dispatch it now, same iteration.
-      (coact-dispatch-channel! context)
-      ;; Deliberate no-action, or retries exhausted/still empty — nudge/guard.
-      (let [iters (or (:iterations @st-memory) [])
-            none-streak (trailing-none-channel-count iters)]
-        (if (>= none-streak 2)
-          (let [last-result (latest-tool-result-from-iterations iters)
-                answer-text (str repair-loop-guard-prefix
-                                 (or last-result "(no prior tool result captured)")
-                                 "\n```")]
-            (swap! st-memory assoc
-                   :answer            answer-text
-                   :last-channel      :answer
-                   :terminated        true
-                   :terminated-by     :none-channel-loop-guard
-                   :last-tool-results []
-                   :last-eval-results []
-                   :eval-display      nil
-                   :display-stage     :eval-result)
-            (mulog/log ::repair-loop-guard
-                       :iteration (:iteration-count @st-memory)
-                       :consecutive-none (inc none-streak)))
-          (do
-            (swap! st-memory assoc
-                   :last-channel :none
-                   :last-tool-results []
-                   :last-eval-results [{:lang "other"
-                                        :code ""
-                                        :result ""
-                                        :output ""
-                                        :error (str "You emitted no action this iteration — none of "
-                                                    "`tool-calls`, `code-blocks`, `answer` was populated. "
-                                                    "Populate exactly one next iteration.")
-                                        :parallel? false}])
-            (mulog/log ::repair
-                       :iteration (:iteration-count @st-memory)
-                       :consecutive-none (inc none-streak))))
+  (let [iter (:iteration-count @st-memory)]
+    (cond
+      ;; Already handled this iteration (llm-guard slot ran; router Path D
+      ;; re-enters with the same empty channels).
+      (= (:last-repair-iter @st-memory) iter)
+      bt/success
+
+      ;; (1) Malformed output — bt/dspy threw this iteration.
+      (some? (:dspy-error @st-memory))
+      (do (repair-malformed-output! context)
+          (swap! st-memory assoc :last-repair-iter iter)
+          bt/success)
+
+      ;; (2/3) DSPy succeeded but produced no usable channel.
+      :else
+      (let [max-empty (or (config/get-config agent :max-retries-on-llm-empty-result) 5)
+            base-ms   (or (config/get-config agent :empty-result-retry-base-ms) 1000)]
+        ;; Inline empty-result retries: re-run the (unchanged) ThinkActCode call
+        ;; with exponential backoff before treating the iteration as a no-op.
+        (when (and agent (pos? max-empty) (empty-llm-result? context))
+          (loop [attempt 1]
+            (let [delay-ms (backoff-delay-ms attempt base-ms)]
+              (mulog/log ::repair-empty-result-retry
+                         :iteration iter :attempt attempt :max max-empty :backoff-ms delay-ms)
+              ;; Progress surface: recovering from an empty model response rather
+              ;; than silently sleeping through the backoff.
+              (hooks/fire! :agent.recovery/retrying
+                           {:agent agent :kind :empty-result
+                            :attempt attempt :max max-empty})
+              (retry-sleep! delay-ms)
+              (bt/dspy (assoc context :opts
+                              {:id         :coact.action/repair-retry-think
+                               :signature  #'ThinkActCode
+                               :operation  :chain-of-thought
+                               :stable-keys #{:system-context :user-context}}))
+              (when (and (empty-llm-result? context) (< attempt max-empty))
+                (recur (inc attempt))))))
+        (if (any-channel-populated? context)
+          ;; A retry recovered a usable channel — dispatch it now, same iteration.
+          (coact-dispatch-channel! context)
+          ;; Deliberate no-action, or retries exhausted/still empty — nudge/guard.
+          (repair-no-action! context))
+        (swap! st-memory assoc :last-repair-iter iter)
         bt/success))))
 
 ;; ============================================================================
@@ -3389,6 +3468,45 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
     (when (or (nil? ans) (str/blank? ans))
       (swap! st-memory assoc :answer
              "*(Note: Processing encountered an error. Please try again.)*")))
+  bt/success)
+
+(def ^:private exhaustion-answer-prefix
+  "*(The agent hit its iteration limit without producing a final answer. Stopping. Latest progress:)*\n\n```\n")
+
+(defn coact-ensure-answer-action
+  "BT action: guarantee a non-blank `:answer` after the main loop.
+
+   The `:repeat` decorator returns `:success` on max-iterations exhaustion (it
+   does NOT fail), so the `:fallback/loop-guard`'s catastrophic-failure branch
+   never fires for the common 'ran out of iterations without ever populating
+   `answer`' case. The `:none`-streak loop-guard only catches *consecutive*
+   empty iterations — a turn that keeps calling tools/code productively but
+   never sets `answer` sails right past it to the ceiling. Without this action
+   the downstream `:cond/answer-present` would fail, returning a raw BT
+   `:failure` with a nil answer and nothing surfaced to the user.
+
+   When `:answer` is already non-blank (normal termination, llm-error abort, or
+   none-channel loop-guard) this is a no-op. Otherwise it stamps a best-effort
+   answer from the trajectory so the user sees where the agent got to, and
+   flips the same terminal state `coact-stamp-answer-action` would."
+  [{:keys [st-memory]}]
+  (let [{:keys [answer iterations]} @st-memory]
+    (when (str/blank? (str answer))
+      (let [progress    (best-effort-progress-text (or iterations []))
+            answer-text (str exhaustion-answer-prefix
+                             (or progress "(no progress captured)")
+                             "\n```")]
+        (swap! st-memory assoc
+               :answer            answer-text
+               :last-channel      :answer
+               :terminated        true
+               :terminated-by     :max-iterations-exhausted
+               :last-tool-results []
+               :last-eval-results []
+               :eval-display      nil
+               :display-stage     :eval-result)
+        (mulog/log ::ensure-answer-exhausted
+                   :iteration (:iteration-count @st-memory)))))
   bt/success)
 
 (defn- tool-call-pseudo-code
@@ -3562,10 +3680,10 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 
 (defn coact-loop-subtree
   "Main CoAct iteration loop. Exits when :answer is non-blank or :terminated
-   is set (via llm-fallback on fatal errors). Each iteration:
+   is set (coact-repair-action aborts on a fatal LLM error). Each iteration:
      1. inc counter + reset per-iter scratch
      2. compact context (if needed)
-     3. ThinkActCode DSPy call (with llm-fallback guard)
+     3. ThinkActCode DSPy call (coact-repair-action guards malformed output)
      4. display-think
      5. router (answer | code | tool | repair)
      6. accumulate iteration record"
@@ -3587,7 +3705,9 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
       [:action {:id (kw :action/await-pending)} coact-await-pending-action]
       [:action {:id (kw :action/rebudget)} coact-rebudget-action]
 
-      ;; One LLM call per iteration — ThinkActCode
+      ;; One LLM call per iteration — ThinkActCode. On failure (DSPy/JSON parse
+      ;; error) the same coact-repair-action handles the malformed-output kind
+      ;; (it reads :dspy-error); on success the router below dispatches.
       [:fallback {:id (kw :fallback/llm-guard)}
        [:action {:id (kw :action/think-act-code)
                  :signature #'ThinkActCode
@@ -3596,8 +3716,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                  :stable-keys #{:system-context :user-context}
                  :debug {:source :reasoning}}
         bt/dspy]
-       [:action {:id (kw :action/llm-fallback)}
-        coact-llm-fallback-action]]
+       [:action {:id (kw :action/repair-llm-guard)}
+        coact-repair-action]]
 
       [:action {:id (kw :action/display-think)} coact-display-think-action]
 
@@ -3679,6 +3799,13 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
      [:fallback {:id (kw :fallback/loop-guard)}
       (coact-loop-subtree max-iterations)
       [:action {:id (kw :action/loop-fallback)} coact-loop-fallback-action]]
+
+     ;; 3b. Guarantee a non-blank answer before the answer-present gate.
+     ;; The loop's :repeat returns :success on max-iterations exhaustion, so
+     ;; the loop-fallback above never fires for the common 'exhausted without
+     ;; an answer' case — this backfills a best-effort answer from the
+     ;; trajectory so the turn never exits with a nil answer / BT :failure.
+     [:action {:id (kw :action/ensure-answer)} coact-ensure-answer-action]
 
      ;; 4. Answer must exist by now
      [:condition {:id (kw :cond/answer-present)
