@@ -3834,10 +3834,16 @@ playbook are in the system context above.")
                   [:answer [:string {:desc "Final answer to the user's question"}]]]
   :agent-tools {:tools (vec (distinct (concat common-tools/all-common-tools
                                               common-cmds/all-common-commands)))}
-  :config-extra {:enable-memory-capture true
-                 ;; Phase 3 — fire-and-forget essence capture after every
-                 ;; root-agent turn. Sub-agents (specialists) do not have
-                 ;; their own root status so the hook predicate elides
-                 ;; them. Opt-out by setting to false in caller's config.
+  :config-extra {;; Memory capture (L2 event pipeline). Matches the
+                 ;; config-schema default (true) — capture is ON for coact and
+                 ;; every derived agent. Per-agent OPT-OUT: set
+                 ;; :enable-memory-capture false in a derived agent's
+                 ;; :config-extra or the caller's config.
+                 :enable-memory-capture true
+                 ;; End-of-turn essence distillation (L3, LLM call). OFF here;
+                 ;; fires only on root-agent turns (the hook predicate elides
+                 ;; sub-agents/specialists). Per-agent OPT-IN: set
+                 ;; :enable-memory-essence true in :config-extra or the
+                 ;; caller's config.
                  :enable-memory-essence false}
   :instruction coact-instruction)
