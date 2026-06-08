@@ -2,7 +2,7 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [v0.3.0] — 2026-06-08
 
 ### Added
 
@@ -11,6 +11,8 @@ All notable changes to Brainyard's public distribution are documented here. Vers
 ### Changed
 
 - **Pinned context is never dropped wholesale under budget pressure.** The token-budget reducer gains a `:keep-floor?` section policy: when a section's compaction strategy can no longer shrink it (e.g. only pinned/system live artifacts remain), its irreducible floor is kept and the section is retired from compaction instead of being dropped as a loop-breaking last resort. Live-artifact eviction is pin-aware — only unpinned, agent-added artifacts are dropped under pressure; pinned and system reference docs always survive. Design notes in [`docs/design/compaction.md`](docs/design/compaction.md).
+- **Memory capture is on by default.** The layered-memory capture pipeline (the S0/S1/S2 hooks that auto-populate the L2 episodic chronicle from lifecycle events) now runs for every agent unless explicitly disabled. The `:enable-memory-capture` config default flipped to `true`, and the capture-start gate now reads it through `config/get-config` — honoring schema defaults plus per-agent/session/global overrides — instead of a direct map lookup that bypassed the default. Previously capture only ran where a `defagent` opted in via `:config-extra`, so the schema default was dead config. Set `:enable-memory-capture false` to turn it off. (Per-turn LLM essence extraction, `:enable-memory-essence`, remains **off** by default.)
+- **Verbatim code blocks ride forward across turns.** A four-backtick verbatim block now carries its full body on the iteration record's `:code` (previously dropped to an empty string once written to a scratch path), so the model keeps sight of what it generated on later turns; token economy is left to the iteration-record compaction layer rather than the writer. The explore-agent uses this to author large or fence-heavy dossier bodies without hand-escaping YAML + markdown into a Clojure string — write the body verbatim, read it back, then prepend frontmatter via `explore$write`.
 
 ## [v0.2.7] — 2026-06-07
 
