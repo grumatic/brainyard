@@ -2,6 +2,17 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **A turn always ends with a usable answer.** Two cases that could previously leave a turn with no answer now resolve cleanly. (1) When the iteration loop hits its cap without the model ever producing a final answer, the agent now backfills a best-effort answer from the trajectory (the latest tool result, else the latest reasoning, else a deterministic recap) instead of exiting with nothing — the loop's `:repeat` returns success on exhaustion, so the old catastrophic-failure fallback never fired for this common "ran out of iterations" case. (2) The no-action loop guard (the model reasoned but populated no channel several iterations running) now surfaces that same best-effort progress rather than a stale or empty placeholder.
+- **Model-failure recovery is unified and shows progress.** The CoAct loop's two recovery paths (the LLM-call guard and the router's repair fallback) are folded into one action that classifies the failure and applies a per-kind retry budget: a **malformed** model response (DSPy/JSON parse error) re-prompts across iterations before aborting; an **empty** response (the model returned nothing usable) is retried inline with exponential backoff; a deliberate **no-action** turn is nudged before the loop guard stops it. Each retry now emits a muted progress line in the TUI (`⟳ Model returned an empty response — retrying (2/5)…`) instead of a silent pause. The budgets are configurable: `:max-retries-on-llm-empty-result` (**renamed** from `:empty-result-max-retries`, default raised to **5**), plus new `:max-retries-on-llm-malformed-output` (**3**) and `:max-retries-on-llm-no-action` (**3**). Anyone who set the old `:empty-result-max-retries` key must rename it — there is no legacy alias.
+
+### Fixed
+
+- **The abort reason survives a fatal LLM error.** When a turn aborts on an unrecoverable model error (auth / rate-limit / quota, or repeated malformed output), `:terminated-by` now reports `:llm-error` instead of being overwritten to `:answer-channel` by the terminal answer path. The recovery action stamps the abort answer before the router runs, and the router's answer handler was hard-setting the reason; it now preserves a pre-set one, and per-turn state is cleared at turn start so a prior turn's reason can't leak forward.
+
 ## [v0.3.0] — 2026-06-08
 
 ### Added
