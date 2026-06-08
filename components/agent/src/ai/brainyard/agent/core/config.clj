@@ -139,12 +139,14 @@
    :enable-finalize-answer     {:type "boolean" :default false}
    ;; Post-session analytics
    :enable-analytics           {:type "boolean" :default false}
-   ;; Memory capture pipeline — when true, root agents auto-start the
-   ;; capture pipeline on creation and auto-stop it when the last agent
-   ;; sharing the memory manager closes. Subscribes to :agent.ask/pre,
+   ;; Memory capture pipeline — when true (default), an agent auto-starts the
+   ;; capture pipeline on creation and auto-stops it when the last agent
+   ;; sharing the memory manager closes. Resolved via `get-config` at agent
+   ;; creation, so this default makes capture ON unless a per-agent / session /
+   ;; global override sets it false. Subscribes to :agent.ask/pre,
    ;; :agent.ask/post, :agent.tool-use/post, :agent.code-eval/post, :agent/exception hooks
    ;; and feeds events through the S1 parser into L2.
-   :enable-memory-capture      {:type "boolean" :default false}
+   :enable-memory-capture      {:type "boolean" :default true}
    ;; Memory-agent end-of-turn essence capture — when true, registers
    ;; a :agent.ask/post hook that fire-and-forget calls memory-agent
    ;; with :op :essence after each turn finishes. The LLM extracts

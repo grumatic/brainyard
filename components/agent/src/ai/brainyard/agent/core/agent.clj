@@ -519,17 +519,14 @@
         _ (when parent-agent
             (attach-activity-forward-watch! agent))
 
-        ;; Start the memory capture pipeline when enabled. The flag may
-        ;; arrive on:
-        ;;   - `:config` (low-level callers using @!state :config)
-        ;;   - `(:config st-memory-init)` (unified per-agent override slot
-        ;;     populated by setup-agent from defagent :config-extra schema
-        ;;     keys + caller options).
-        ;; start-capture! is idempotent per-manager, so calling it for
-        ;; every agent that shares the same manager is safe.
-        _ (when (and mm
-                     (or (:enable-memory-capture config)
-                         (:enable-memory-capture (:config st-memory-init))))
+        ;; Start the memory capture pipeline when enabled. Resolved via
+        ;; config/get-config, so it honors the full precedence chain AND the
+        ;; config-schema default — `:enable-memory-capture` defaults true, so
+        ;; capture is ON unless a per-agent (`(:config st-memory-init)`),
+        ;; session, or global override sets it false. start-capture! is
+        ;; idempotent per-manager, so calling it for every agent that shares
+        ;; the same manager is safe.
+        _ (when (and mm (config/get-config agent :enable-memory-capture))
             (try (mem/start-capture! mm)
                  (catch Exception e
                    (mulog/warn ::capture-start-failed

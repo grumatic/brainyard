@@ -4,7 +4,9 @@
 
 (ns ai.brainyard.agent.capture.lifecycle-test
   "Tests that the memory capture pipeline starts/stops automatically with
-  the agent lifecycle when :enable-memory-capture is set in agent config.
+  the agent lifecycle. `:enable-memory-capture` defaults true (config-schema),
+  resolved via config/get-config — so capture is ON unless a per-agent /
+  session / global override sets it false.
 
   Capture is per memory-manager: when multiple agents share one manager,
   capture should run while at least one is alive and stop only when the
@@ -49,15 +51,32 @@
         (finally
           (.close (:ds mm)))))))
 
-(deftest capture-not-started-when-flag-disabled-test
-  (testing "default config (flag missing/false) does NOT start capture"
+(deftest capture-on-by-default-test
+  (testing "flag absent → capture STARTS (config-schema default is true)"
+    (let [mm (make-mm)
+          a  (agent/create-agent "u" "s" "agent-default-cap"
+                                 :memory-manager mm
+                                 :config {:name "DefaultCap"})]
+      (try
+        (agent/start-agent a)
+        (is (mem/capture-running? mm)
+            "capture should start by default (enable-memory-capture defaults true)")
+        (.close a)
+        (is (not (mem/capture-running? mm)))
+        (finally
+          (.close (:ds mm)))))))
+
+(deftest capture-not-started-when-explicitly-disabled-test
+  (testing "explicit :enable-memory-capture false leaves capture off"
     (let [mm (make-mm)
           a  (agent/create-agent "u" "s" "agent-no-cap"
                                  :memory-manager mm
-                                 :config {:name "NoCap"})]
+                                 :config {:name "NoCap"}
+                                 :st-memory-init {:config {:enable-memory-capture false}})]
       (try
         (agent/start-agent a)
-        (is (not (mem/capture-running? mm)))
+        (is (not (mem/capture-running? mm))
+            "explicit false in st-memory-init :config must keep capture off")
         (.close a)
         (is (not (mem/capture-running? mm)))
         (finally
@@ -129,13 +148,13 @@
         (finally
           (.close (:ds mm))))))
 
-  (testing "missing flag in either place leaves capture off"
+  (testing "explicit false in st-memory-init :config leaves capture off"
     (let [mm (make-mm)
           a  (agent/create-agent
               "u" "s" "agent-rc-off"
               :memory-manager mm
               :config         {:name "RC-off"}
-              :st-memory-init {:config {}})]
+              :st-memory-init {:config {:enable-memory-capture false}})]
       (try
         (is (not (mem/capture-running? mm)))
         (.close a)
