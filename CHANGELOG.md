@@ -4,6 +4,14 @@ All notable changes to Brainyard's public distribution are documented here. Vers
 
 ## [Unreleased]
 
+### Added
+
+- **Live artifacts — reference docs in context + agent-curated material.** The agent's prompt now carries a `## Live Artifacts` section fed by two streams. **System reference docs** named by the new `:reference-artifact-paths` config (default `CLAUDE.md` / `AGENTS.md`; relative names resolve against the project/working dir, absolute and `~` paths as-is, e.g. `~/.claude/CLAUDE.md`) are seeded fresh every turn, pinned, and never removable by the LLM — so project/user guidance rides along automatically. **Dynamic artifacts** are material the agent pins itself via a new `artifact$add` (an absolute file `:path`, reloaded fresh each turn — e.g. a skill's `SKILL.md` — or inline `:content`) / `artifact$list` / `artifact$remove` / `artifact$pin` command family; these persist across turns within a session. File-backed artifacts render as a 400-char preview plus a `(read-file {:path …})` pointer (the file reloads each turn, so the full bytes needn't ride the prompt), while inline notes render up to `:live-artifact-max-chars` (default 4000). `BRAINYARD.md` / `CLAUDE.md` / `AGENTS.md` that are **linked to one source** (symlink or hardlink, at project or user scope) are de-duped by file identity, and a reference doc linked to `BRAINYARD.md` (already loaded as instructions) is dropped rather than emitted twice. Design notes in [`docs/design/artifacts.md`](docs/design/artifacts.md).
+
+### Changed
+
+- **Pinned context is never dropped wholesale under budget pressure.** The token-budget reducer gains a `:keep-floor?` section policy: when a section's compaction strategy can no longer shrink it (e.g. only pinned/system live artifacts remain), its irreducible floor is kept and the section is retired from compaction instead of being dropped as a loop-breaking last resort. Live-artifact eviction is pin-aware — only unpinned, agent-added artifacts are dropped under pressure; pinned and system reference docs always survive. Design notes in [`docs/design/compaction.md`](docs/design/compaction.md).
+
 ## [v0.2.7] — 2026-06-07
 
 ### Added
