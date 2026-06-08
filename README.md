@@ -1,6 +1,6 @@
 # Brainyard
 
-> **v0.2.7 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.2.7) · [changelog](CHANGELOG.md)) — **contain a session in a sandbox**: `by --sandbox` re-execs under macOS [`sandbox-exec`](https://keith.github.io/xcode-man-pages/sandbox-exec.1.html) with a **write-containment** profile so an agent (or any tool it runs) can't clobber `~/.ssh`, `~/.aws/credentials`, or unrelated repos — reads, network, and subprocess exec stay open (see [`docs/sandboxing.md`](docs/sandboxing.md)). This release also makes long-running subagents far more **observable and controllable** (live progress in `task$detail`, chain-wide `task$cancel`, and mid-run steering of a paused loop by typing), adds `by --working-dir`/`-C` to point a session at another directory, and lets the agent author its own persistent runtime hooks (`hook-agent`). Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
+> **v0.3.0 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.3.0) · [changelog](CHANGELOG.md)) — **reference docs ride in context**: the agent's prompt now carries a `## Live Artifacts` section, so your `CLAUDE.md` / `AGENTS.md` (and anything else you name via `:reference-artifact-paths`) are seeded fresh and pinned every turn, and the agent can pin its own files and notes through a new `artifact$add` / `artifact$list` / `artifact$remove` / `artifact$pin` family (see [`docs/design/artifacts.md`](docs/design/artifacts.md)). Pinned material is **never dropped wholesale** when the context budget tightens, and the layered-memory **capture pipeline now runs by default** so the L2 chronicle fills as you work. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
 
 Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 21 available agents across 6 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
 
@@ -23,7 +23,7 @@ On **macOS arm64** this installs the native binary under `~/.local/bin`:
 
 On other platforms (Linux, Intel macOS) — where a native binary isn't published yet — the installer automatically falls back to the **JVM uberjar**, installing a `by` launcher that runs `java -jar` (requires a JDK 21+ on `PATH`).
 
-Pin a specific version with `BY_VERSION=v0.2.7` before piping to bash. See [`docs/install.md`](docs/install.md) for manual install, checksum verification, and troubleshooting.
+Pin a specific version with `BY_VERSION=v0.3.0` before piping to bash. See [`docs/install.md`](docs/install.md) for manual install, checksum verification, and troubleshooting.
 
 ### Java users — uberjar
 
