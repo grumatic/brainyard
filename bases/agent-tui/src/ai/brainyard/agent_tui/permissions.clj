@@ -228,7 +228,8 @@
                   q (tmux-iface/feedback-questionnaire
                      {:question question :options opts})
                   reply (popup/show! (:tmux (tmux-side/state)) q
-                                     {:height (max 16 (+ 6 (count normalized)))})]
+                                     {:height (max 16 (+ 6 (count normalized)))
+                                      :timeout-ms timeout})]
               (case (:status reply)
                 :submitted (let [idx (get-in reply [:answers :feedback :value])
                                  selected (when (and (integer? idx)
@@ -241,10 +242,14 @@
                                            {:question (str (:label selected)
                                                            " — type your response")})
                                        treply (popup/show! (:tmux (tmux-side/state)) tq
-                                                           {:height 10})]
-                                   (when (= :submitted (:status treply))
-                                     {:selected (:label selected) :index idx
-                                      :input (or (get-in treply [:answers :answer :input]) "")}))
+                                                           {:height 10 :timeout-ms timeout})]
+                                   (case (:status treply)
+                                     :submitted {:selected (:label selected) :index idx
+                                                 :input (or (get-in treply [:answers :answer :input]) "")}
+                                     :timeout {:timeout true
+                                               :reason (str "User feedback timed out ("
+                                                            (/ timeout 1000) "s)")}
+                                     nil))
                                  {:selected (:label selected) :index idx})))
                 :timeout   {:timeout true
                             :reason (str "User feedback timed out ("
@@ -297,10 +302,14 @@
       (do (.lock feedback-lock)
           (try
             (let [q     (tmux-iface/text-questionnaire {:question question})
-                  reply (popup/show! (:tmux (tmux-side/state)) q {:height 10})]
+                  reply (popup/show! (:tmux (tmux-side/state)) q
+                                     {:height 10 :timeout-ms timeout})]
               (case (:status reply)
                 :submitted {:input (or (get-in reply [:answers :answer :input]) "")
                             :index 0}
+                :timeout   {:timeout true
+                            :reason (str "User feedback timed out ("
+                                         (/ timeout 1000) "s)")}
                 ;; cancelled (Esc/Ctrl-C) → nil, no answer
                 nil))
             (finally
@@ -354,7 +363,8 @@
                   q (tmux-iface/feedback-questionnaire
                      {:question question :options opts})
                   reply (popup/show! (:tmux (tmux-side/state)) q
-                                     {:height (max 12 (+ 6 (count choices)))})]
+                                     {:height (max 12 (+ 6 (count choices)))
+                                      :timeout-ms timeout})]
               (case (:status reply)
                 :submitted (let [v (get-in reply [:answers :feedback :value])
                                  hit (some #(when (= v (:value %)) %) choices)]

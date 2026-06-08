@@ -261,12 +261,16 @@
             (:error result)   result
             (:timeout result) result
             :else
-            (assoc result :answer
-                   (case kind
-                     :text    (:input result)
-                     :confirm (some-> (:value result) name)
-                     (str (:selected result)
-                          (when-let [in (:input result)] (str ": " in))))))))))
+            ;; Normalize free-text input here so every backend (in-stream raw,
+            ;; stdin, tmux popup, free-input select) trims consistently.
+            (let [result (cond-> result
+                           (string? (:input result)) (update :input str/trim))]
+              (assoc result :answer
+                     (case kind
+                       :text    (:input result)
+                       :confirm (some-> (:value result) name)
+                       (str (:selected result)
+                            (when-let [in (:input result)] (str ": " in)))))))))))
   ;; Interactive prompt — must block the calling thread for terminal I/O.
   ;; :sync true routes it through call-tool directly, bypassing the fast-eval/
   ;; auto-background-detach path so a slow human answer never detaches the

@@ -28,15 +28,15 @@
       (is (re-find #"Esc" s)))))
 
 (defn- result-path-from-command
-  "Extract the result-file path the popup script will write to.
-   The new command shape is:
-     bash \"script\" \"opts\" \"title\" \"prompt\" \"result\"
-   The result file is always the LAST whitespace-separated argument
-   (stripped of its surrounding double quotes)."
+  "Extract the result-file path the popup script will write to. Both the radio
+   and text commands end with `… \"result\" \"timeout_secs\"`, so the result
+   file is the SECOND-TO-LAST whitespace-separated argument (stripped of its
+   surrounding double quotes)."
   [^String command]
   (-> command
       clojure.string/trim
       (clojure.string/split #"\s+")
+      butlast                ;; drop the trailing timeout_secs arg
       last
       (clojure.string/replace #"^\"|\"$" "")))
 
@@ -106,7 +106,14 @@
 
     (testing "non-zero popup exit ⇒ cancelled"
       (let [stub (tmux-iface/stub-tmux {:popup-exit 130})]
-        (is (= :cancelled (:status (popup/show! stub text-q {}))))))))
+        (is (= :cancelled (:status (popup/show! stub text-q {}))))))
+
+    (testing "text popup writes 'T' ⇒ timeout"
+      (is (= :timeout (:status (popup/show! (fake-writing "T") text-q {})))))))
+
+(deftest show!-radio-timeout
+  (testing "radio popup writes '__TO__' ⇒ timeout"
+    (is (= :timeout (:status (popup/show! (fake-writing "__TO__") (yn-questionnaire) {}))))))
 
 (deftest feasible?-checks-version-and-height
   (testing "tmux 3.1 is too old"

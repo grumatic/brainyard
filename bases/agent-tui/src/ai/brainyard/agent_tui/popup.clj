@@ -72,12 +72,13 @@
     (or shortcut digit)))
 
 (def ^:private selector-script
-  "Interactive bash 3.2+ option selector. Args: opts prompt result.
+  "Interactive bash 3.2+ option selector. Args: opts prompt result timeout_secs.
 
    - opts file:  pairs of lines — shortcut (possibly empty), then label.
    - prompt file: prompt text.
    - result file: written on exit — shortcut letter or 1-based digit for
-     submit, empty for cancel.
+     submit, empty for cancel, '__TO__' on timeout.
+   - timeout_secs: >0 → write '__TO__' and exit after that many seconds idle/total.
 
    The popup title is rendered by tmux in the popup border (via
    `display-popup --title`), so the script does NOT re-render it inside
@@ -87,7 +88,7 @@
    Esc/Ctrl-C → cancel; letter/digit shortcuts → instant submit."
   "#!/usr/bin/env bash
 set -u
-opts_file=\"$1\"; prompt_file=\"$2\"; result_file=\"$3\"
+opts_file=\"$1\"; prompt_file=\"$2\"; result_file=\"$3\"; timeout_secs=\"${4:-0}\"
 
 labels=(); shortcuts=()
 while IFS= read -r sc && IFS= read -r lbl; do
@@ -100,7 +101,7 @@ prompt=$(cat \"$prompt_file\" 2>/dev/null || echo \"\")
 
 exec 3</dev/tty
 old=$(stty -g <&3 2>/dev/null || true)
-stty raw -echo -isig <&3 2>/dev/null || true
+stty raw -echo -isig min 0 time 10 <&3 2>/dev/null || true
 printf '\\e[?25l'  # hide cursor
 
 cleanup() {
@@ -144,7 +145,11 @@ cancel_exit() { : > \"$result_file\"; exit 0; }
 
 draw
 
+deadline=$(( SECONDS + timeout_secs ))
 while true; do
+  if [ \"$timeout_secs\" -gt 0 ] && [ \"$SECONDS\" -ge \"$deadline\" ]; then
+    printf '__TO__' > \"$result_file\"; exit 0
+  fi
   key=$(dd bs=1 count=1 2>/dev/null <&3)
   case \"$key\" in
     $'\\r'|$'\\n')           submit_idx \"$sel\" ;;
@@ -153,7 +158,7 @@ while true; do
     $'\\e')
       stty -icanon time 1 min 0 <&3 2>/dev/null || true
       seq=$(dd bs=4 count=1 2>/dev/null <&3)
-      stty -icanon time 0 min 1 <&3 2>/dev/null || true
+      stty min 0 time 10 <&3 2>/dev/null || true
       case \"$seq\" in
         '[A'|'OA')  sel=$(( (sel - 1 + n) % n )); draw ;;
         '[B'|'OB')  sel=$(( (sel + 1) % n )); draw ;;
@@ -199,24 +204,25 @@ done
                     options)))
 
 (def ^:private text-entry-script
-  "Interactive bash 3.2+ free-text entry field. Args: prompt mask result.
+  "Interactive bash 3.2+ free-text entry field. Args: prompt mask result timeout_secs.
 
    - prompt file: prompt text rendered above the field.
    - mask: non-empty → echo '*' per char (password).
-   - result file (LAST arg): written on exit — 'S' followed by the typed text
-     on submit (so an empty submit is the single byte 'S'); empty on cancel.
+   - result file: written on exit — 'S' followed by the typed text on submit
+     (so an empty submit is the single byte 'S'); empty on cancel; 'T' on timeout.
+   - timeout_secs: >0 → write 'T' and exit after that many seconds idle/total.
 
    Enter → submit; Esc / Ctrl-C → cancel; Backspace → delete last char;
    printable bytes append to the buffer (multi-byte UTF-8 accumulates byte by
    byte)."
   "#!/usr/bin/env bash
 set -u
-prompt_file=\"$1\"; mask=\"$2\"; result_file=\"$3\"
+prompt_file=\"$1\"; mask=\"$2\"; result_file=\"$3\"; timeout_secs=\"${4:-0}\"
 prompt=$(cat \"$prompt_file\" 2>/dev/null || echo \"\")
 
 exec 3</dev/tty
 old=$(stty -g <&3 2>/dev/null || true)
-stty raw -echo -isig <&3 2>/dev/null || true
+stty raw -echo -isig min 0 time 10 <&3 2>/dev/null || true
 printf '\\e[?25h'  # show cursor for text entry
 
 cleanup() {
@@ -244,7 +250,11 @@ draw() {
 
 draw
 
+deadline=$(( SECONDS + timeout_secs ))
 while true; do
+  if [ \"$timeout_secs\" -gt 0 ] && [ \"$SECONDS\" -ge \"$deadline\" ]; then
+    printf 'T' > \"$result_file\"; exit 0
+  fi
   key=$(dd bs=1 count=1 2>/dev/null <&3)
   case \"$key\" in
     $'\\r'|$'\\n')      printf 'S%s' \"$buf\" > \"$result_file\"; exit 0 ;;
@@ -253,7 +263,7 @@ while true; do
     $'\\e')
       stty -icanon time 1 min 0 <&3 2>/dev/null || true
       seq=$(dd bs=4 count=1 2>/dev/null <&3)
-      stty -icanon time 0 min 1 <&3 2>/dev/null || true
+      stty min 0 time 10 <&3 2>/dev/null || true
       if [ -z \"$seq\" ]; then : > \"$result_file\"; exit 0; fi
       draw
       ;;
@@ -273,20 +283,23 @@ done
 
 (defn- show-text!
   "Show a single `:text` / `:password` tab as an interactive free-text tmux
-   popup. Returns `{:status :submitted :answers {<tab-id> {:input s}}}` or
-   `{:status :cancelled …}`."
-  [tmux-impl questionnaire tab {:keys [width height]
+   popup. With `:timeout-ms` > 0 the field self-closes after that long and
+   returns `{:status :timeout}`. Returns `{:status :submitted :answers {<tab-id>
+   {:input s}}}`, `{:status :timeout …}`, or `{:status :cancelled …}`."
+  [tmux-impl questionnaire tab {:keys [width height timeout-ms]
                                 :or {width 70 height 10}}]
   (let [prompt-file (doto (File/createTempFile "by-popup-prompt-" ".txt") (.deleteOnExit))
         result-file (doto (File/createTempFile "by-popup-result-" ".txt") (.deleteOnExit))
         script-file (write-text-script!)
         mask        (if (= :password (:type tab)) "1" "")
+        tsecs       (quot (or timeout-ms 0) 1000)
         _ (spit prompt-file (or (:prompt tab) ""))
         cmd (str "bash "
                  (pr-str (.getAbsolutePath script-file)) " "
                  (pr-str (.getAbsolutePath prompt-file)) " "
                  (pr-str mask) " "
-                 (pr-str (.getAbsolutePath result-file)))
+                 (pr-str (.getAbsolutePath result-file)) " "
+                 (pr-str (str tsecs)))
         exit (try (tmux/display-popup! tmux-impl
                                        {:command cmd
                                         :width width
@@ -297,31 +310,40 @@ done
         raw  (try (slurp result-file) (catch Throwable _ ""))]
     (doseq [^java.io.File f [prompt-file result-file script-file]]
       (try (.delete f) (catch Throwable _)))
-    (if (and (number? exit) (zero? exit)
-             (seq raw) (= \S (.charAt ^String raw 0)))
+    (cond
+      (and (number? exit) (zero? exit)
+           (seq raw) (= \S (.charAt ^String raw 0)))
       {:status :submitted :id (:id questionnaire)
        :answers {(:id tab) {:input (subs raw 1)}}}
+
+      (and (seq raw) (= \T (.charAt ^String raw 0)))
+      {:status :timeout :id (:id questionnaire) :answers {}}
+
+      :else
       {:status :cancelled :id (:id questionnaire) :answers {}})))
 
 (defn- show-radio!
   "Show a single `:radio` / `:checkbox` tab as the interactive option selector.
    Tab/Shift-Tab + Arrow Up/Down navigation, Enter to confirm, Esc / Ctrl-C to
-   cancel; letter and digit shortcuts instant-submit. Returns a reply map
-   `{:status :submitted | :cancelled :id … :answers {<tab-id> {:value v}}}`."
-  [tmux-impl questionnaire {:keys [width height]
+   cancel; letter and digit shortcuts instant-submit. With `:timeout-ms` > 0 the
+   popup self-closes after that long and returns `{:status :timeout}`. Returns a
+   reply map `{:status :submitted | :timeout | :cancelled :id … :answers …}`."
+  [tmux-impl questionnaire {:keys [width height timeout-ms]
                             :or {width 70 height 16}}]
   (let [tab         (first (:tabs questionnaire))
         opts-file   (doto (File/createTempFile "by-popup-opts-" ".txt") (.deleteOnExit))
         prompt-file (doto (File/createTempFile "by-popup-prompt-" ".txt") (.deleteOnExit))
         result-file (doto (File/createTempFile "by-popup-result-" ".txt") (.deleteOnExit))
         script-file (write-script!)
+        tsecs       (quot (or timeout-ms 0) 1000)
         _ (spit opts-file (options->opts-file (:options tab)))
         _ (spit prompt-file (or (:prompt tab) ""))
         cmd (str "bash "
                  (pr-str (.getAbsolutePath script-file)) " "
                  (pr-str (.getAbsolutePath opts-file)) " "
                  (pr-str (.getAbsolutePath prompt-file)) " "
-                 (pr-str (.getAbsolutePath result-file)))
+                 (pr-str (.getAbsolutePath result-file)) " "
+                 (pr-str (str tsecs)))
         exit (try (tmux/display-popup! tmux-impl
                                        {:command cmd
                                         :width width
@@ -333,6 +355,9 @@ done
     (doseq [^java.io.File f [opts-file prompt-file result-file script-file]]
       (try (.delete f) (catch Throwable _)))
     (cond
+      (= (str/trim raw) "__TO__")
+      {:status :timeout :id (:id questionnaire) :answers {}}
+
       (or (not (number? exit))
           (not (zero? exit))
           (str/blank? raw))
