@@ -438,7 +438,7 @@ The handler fires-and-forgets — essence extraction running ~2s should never bl
 - `:agent.compaction/post` → after a CoAct context compaction, queue a `:op :essence` for the compacted window so distilled lessons survive even though the raw messages were truncated.
 - `:agent/exception` → write the exception + tool-call snapshot as an L2 episode with `keep_flag=1` and `:tags #{"event:exception"}` so postmortems can recall failure modes.
 
-All three handlers can be disabled via config; defaults are on for the root coact-agent and research-agent, off for short-lived specialists (plan/todo/exec/eval already write their own dossiers).
+All three handlers can be disabled via config. (Originally default-on for the root coact-agent and research-agent, off for short-lived specialists. **As shipped today** `:enable-memory-essence` defaults to `false` schema-wide — see §18.1 — so these handlers are off everywhere until a config flips the key on.)
 
 ---
 
@@ -654,7 +654,7 @@ All five phases shipped end-to-end. Test coverage: 135 tests / 900 assertions ac
 **Cross-cutting modifications:**
 
 - `components/agent/src/ai/brainyard/agent/core/config.clj` — added `:enable-memory-essence` config-schema key (default `false`).
-- `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` — set `:enable-memory-essence true` in `:config-extra`; research-agent inherits.
+- `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` — originally set `:enable-memory-essence true` in `:config-extra` (research-agent inherits). **Update (post-ship, commit `b98c59a`):** the `:config-extra` memory keys were commented out and coact now resorts to the schema default — and `:enable-memory-essence` defaults to **`false`** in `agent.core.config`. So per-turn essence capture currently ships **off** (only the always-on capture pipeline, `:enable-memory-capture`, runs by default — and that key now defaults `true`). Re-enabling essence is a one-line `:config-extra` flip pending dogfood evaluation of its per-turn LLM cost.
 - `bases/agent-tui/src/ai/brainyard/agent_tui/commands.clj` — `/memory <subcmd>` slash-command.
 
 **Tool surface (20 primitives):**

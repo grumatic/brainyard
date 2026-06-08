@@ -60,7 +60,9 @@ general.
 
 The `memory.interface` namespace re-exports these as `write-entry`,
 `read-entries`, **`promote-entry`** (wraps `promote`), **`forget-entry`**
-(wraps `forget`), and `consolidate-layer`. Cross-layer recall is a
+(wraps `forget`), and **`consolidate-l2!`** (a thin wrapper that calls
+`proto/consolidate-layer` with `:from-layer :l2`; the bare
+`consolidate-layer` method stays protocol-only). Cross-layer recall is a
 separate `UnifiedMemory` protocol method, `contextual-recall`. (The
 working / episodic / semantic accessors and `compact` were removed in the
 unified-store refactor.)
@@ -87,8 +89,9 @@ Every entry has a stable schema:
 ```
 
 The real SQL columns hold `tags / sources / keep / archived / tombstoned / entry_id`;
-the JSON `metadata` column packs `:ttl :data :metadata`. L1 has default
-quotas of 100 keys / 50 KB enforced atomically inside each `swap!`.
+the JSON `metadata` column packs `:ttl :data :metadata`. (L1 key/byte
+quotas were removed in the L1 simplification refactor — see
+`l1_store.clj`; writes are still applied atomically inside each `swap!`.)
 
 The `unified-store` composite dispatches by `:layer`. Cross-layer
 `promote` stamps `:sources [{:type :promotion …}]` so the L3 provenance
@@ -203,8 +206,12 @@ hook event ──► S0 dispatcher ──► S1 parser ──► sidecar thread 
   currently warns and falls back to the heuristic. Auto-marks source
   episodes `keep_flag=1` so the L3 `:sources` chain stays valid forever.
 
-The pipeline is gated behind `start-capture!` (default off per agent;
-`coact-agent` opts in via `:config-extra {:enable-memory-capture true}`).
+The pipeline is gated behind `start-capture!`, driven by the
+`:enable-memory-capture` config key, which **defaults to `true`** in
+`agent.core.config`'s schema (so capture is on for every agent unless a
+config explicitly disables it). `coact-agent` no longer needs a
+`:config-extra` override — the keys are commented out there and it
+inherits the schema default.
 
 ---
 
@@ -291,9 +298,9 @@ one-liner during debugging.
 
 ## Mutation-safety notes
 
-- **L1 writes** go through `swap!`-equivalent atomic operations; the
-  quota check runs inside the same callback as the assoc, so there is
-  no window for a reader to observe an over-quota map.
+- **L1 writes** go through `swap!`-equivalent atomic operations. (The
+  per-layer key/byte quotas were removed in the L1 simplification
+  refactor, so there is no longer a quota check inside the callback.)
 - **Knowledge sections** are now read via a single `read-entries` call
   per turn (TOCTOU fix from the implementation) rather than the
   deref-then-iterate pattern.
@@ -327,8 +334,9 @@ explain  explain-session
 ```
 
 Higher-level helpers in `components/agent/src/ai/brainyard/agent/core/memory.clj`
-wrap the store for the agent runtime: `recall`, `remember`,
-`build-recall-query`, `consolidate!`.
+wrap the store for the agent runtime: `recall`, `remember`, and
+`build-recall-query`. (On-demand L2→L3 consolidation is the store-level
+`memory/consolidate-l2!`, not an `agent.core.memory` helper.)
 
 ---
 
@@ -343,6 +351,7 @@ wrap the store for the agent runtime: `recall`, `remember`,
 | `memory/core/episodic.clj` | L2 SQLite store |
 | `memory/core/semantic.clj` | L3 SQLite store |
 | `memory/core/unified_store.clj` | Composite store dispatching by layer |
+| `memory/core/manager.clj` | `MemoryManager` lifecycle + factory wiring |
 | `memory/core/recall_v2.clj` | Layered recall (per-layer pmap + RRF merge + briefing) |
 | `memory/core/recall.clj` | Legacy flat recall (kept for back-compat) |
 | `memory/core/capture/dispatcher.clj` | S0 — hook subscription, debounce/dedup |
