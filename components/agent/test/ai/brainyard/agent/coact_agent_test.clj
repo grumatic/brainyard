@@ -290,7 +290,14 @@
       (is (true? (:terminated @st)))
       (is (= :answer-channel (:terminated-by @st)))
       (is (= 0 (:consecutive-llm-failures @st))
-          "terminal answer resets the malformed-output streak")
+          "terminal answer resets the malformed-output streak")))
+  (testing "a pre-set :terminated-by is preserved (e.g. an llm-error abort that
+            stamped :answer in the llm-guard slot before the router's Path A)"
+    (let [st (fresh-st-memory :answer "Agent stopped: boom"
+                              :terminated-by :llm-error)]
+      (rca/coact-stamp-answer-action {:st-memory st})
+      (is (= :llm-error (:terminated-by @st))
+          "router Path A must not overwrite the abort reason with :answer-channel")
       ;; Flips to :eval-result so the TUI's final-code-shown? watcher fires
       (is (= :eval-result (:display-stage @st)))
       ;; Clears :eval-display so the TUI doesn't re-render the prior

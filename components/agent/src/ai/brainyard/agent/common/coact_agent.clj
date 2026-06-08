@@ -1601,6 +1601,9 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
              :iterations       []
              :answer           ""
              :terminated       false
+             :terminated-by    nil
+             :consecutive-llm-failures 0
+             :last-repair-iter nil
              :iteration-count  0
              :previous-turns   final-previous-turns
              :turn-id          turn-id
@@ -2138,6 +2141,12 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    answer watcher fires (matches CoAct's FINAL-termination signalling shape —
    see agent_tui/session.clj `final-code-shown?`).
 
+   Preserves a pre-set :terminated-by (e.g. :llm-error from a malformed-output
+   abort, which stamps :answer in the llm-guard slot *before* the router runs
+   this Path A action) so the abort reason survives; defaults to :answer-channel
+   for the normal answer path. coact-init-action clears :terminated-by per turn,
+   so a prior turn's reason can't leak in.
+
    Clears :eval-display so the TUI's :display-stage :eval-result branch
    (session.clj render-eval-result) has nothing to render between the thought
    and the answer box. Without this, a prior iteration's eval-display would
@@ -2146,7 +2155,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   (swap! st-memory assoc
          :last-channel   :answer
          :terminated     true
-         :terminated-by  :answer-channel
+         :terminated-by  (or (:terminated-by @st-memory) :answer-channel)
          :consecutive-llm-failures 0
          :eval-display   nil
          :display-stage  :eval-result)
