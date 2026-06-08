@@ -198,16 +198,116 @@ done
                       [(if shortcut (str shortcut) "") (or label "")])
                     options)))
 
-(defn show!
-  "Show `questionnaire` as an interactive tmux popup using `tmux-impl`.
+(def ^:private text-entry-script
+  "Interactive bash 3.2+ free-text entry field. Args: prompt mask result.
 
-   Blocks until the user submits a choice or cancels.  Returns a reply
-   map `{:status :submitted | :cancelled :id … :answers {<tab-id>
-   {:value v}}}`.
+   - prompt file: prompt text rendered above the field.
+   - mask: non-empty → echo '*' per char (password).
+   - result file (LAST arg): written on exit — 'S' followed by the typed text
+     on submit (so an empty submit is the single byte 'S'); empty on cancel.
 
-   The popup supports Tab/Shift-Tab + Arrow Up/Down navigation with
-   Enter to confirm and Esc / Ctrl-C to cancel; letter and digit
-   shortcuts still instant-submit for back-compat."
+   Enter → submit; Esc / Ctrl-C → cancel; Backspace → delete last char;
+   printable bytes append to the buffer (multi-byte UTF-8 accumulates byte by
+   byte)."
+  "#!/usr/bin/env bash
+set -u
+prompt_file=\"$1\"; mask=\"$2\"; result_file=\"$3\"
+prompt=$(cat \"$prompt_file\" 2>/dev/null || echo \"\")
+
+exec 3</dev/tty
+old=$(stty -g <&3 2>/dev/null || true)
+stty raw -echo -isig <&3 2>/dev/null || true
+printf '\\e[?25h'  # show cursor for text entry
+
+cleanup() {
+  [ -n \"$old\" ] && stty \"$old\" <&3 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+buf=\"\"
+
+draw() {
+  printf '\\e[H\\e[2J'
+  printf '\\r\\n'
+  if [ -n \"$prompt\" ]; then
+    printf '  %s\\r\\n\\r\\n' \"$prompt\"
+  fi
+  printf '  \\e[2mEnter confirm   Esc cancel   Backspace delete\\e[0m\\r\\n\\r\\n'
+  if [ -n \"$mask\" ]; then
+    local shown=\"\" i=0
+    while [ \"$i\" -lt \"${#buf}\" ]; do shown=\"$shown*\"; i=$((i+1)); done
+    printf '  > %s' \"$shown\"
+  else
+    printf '  > %s' \"$buf\"
+  fi
+}
+
+draw
+
+while true; do
+  key=$(dd bs=1 count=1 2>/dev/null <&3)
+  case \"$key\" in
+    $'\\r'|$'\\n')      printf 'S%s' \"$buf\" > \"$result_file\"; exit 0 ;;
+    $'\\x03')           : > \"$result_file\"; exit 0 ;;
+    $'\\x7f'|$'\\x08')  buf=\"${buf%?}\"; draw ;;
+    $'\\e')
+      stty -icanon time 1 min 0 <&3 2>/dev/null || true
+      seq=$(dd bs=4 count=1 2>/dev/null <&3)
+      stty -icanon time 0 min 1 <&3 2>/dev/null || true
+      if [ -z \"$seq\" ]; then : > \"$result_file\"; exit 0; fi
+      draw
+      ;;
+    '')                 : ;;
+    *)                  buf=\"$buf$key\"; draw ;;
+  esac
+done
+")
+
+(defn- ^File write-text-script!
+  "Write `text-entry-script` to a temp executable file (deleteOnExit-tagged)."
+  []
+  (let [f (doto (File/createTempFile "by-popup-text-" ".sh") (.deleteOnExit))]
+    (spit f text-entry-script)
+    (.setExecutable f true)
+    f))
+
+(defn- show-text!
+  "Show a single `:text` / `:password` tab as an interactive free-text tmux
+   popup. Returns `{:status :submitted :answers {<tab-id> {:input s}}}` or
+   `{:status :cancelled …}`."
+  [tmux-impl questionnaire tab {:keys [width height]
+                                :or {width 70 height 10}}]
+  (let [prompt-file (doto (File/createTempFile "by-popup-prompt-" ".txt") (.deleteOnExit))
+        result-file (doto (File/createTempFile "by-popup-result-" ".txt") (.deleteOnExit))
+        script-file (write-text-script!)
+        mask        (if (= :password (:type tab)) "1" "")
+        _ (spit prompt-file (or (:prompt tab) ""))
+        cmd (str "bash "
+                 (pr-str (.getAbsolutePath script-file)) " "
+                 (pr-str (.getAbsolutePath prompt-file)) " "
+                 (pr-str mask) " "
+                 (pr-str (.getAbsolutePath result-file)))
+        exit (try (tmux/display-popup! tmux-impl
+                                       {:command cmd
+                                        :width width
+                                        :height height
+                                        :title (:title questionnaire)
+                                        :close-on-exit? true})
+                  (catch Throwable _ -1))
+        raw  (try (slurp result-file) (catch Throwable _ ""))]
+    (doseq [^java.io.File f [prompt-file result-file script-file]]
+      (try (.delete f) (catch Throwable _)))
+    (if (and (number? exit) (zero? exit)
+             (seq raw) (= \S (.charAt ^String raw 0)))
+      {:status :submitted :id (:id questionnaire)
+       :answers {(:id tab) {:input (subs raw 1)}}}
+      {:status :cancelled :id (:id questionnaire) :answers {}})))
+
+(defn- show-radio!
+  "Show a single `:radio` / `:checkbox` tab as the interactive option selector.
+   Tab/Shift-Tab + Arrow Up/Down navigation, Enter to confirm, Esc / Ctrl-C to
+   cancel; letter and digit shortcuts instant-submit. Returns a reply map
+   `{:status :submitted | :cancelled :id … :answers {<tab-id> {:value v}}}`."
   [tmux-impl questionnaire {:keys [width height]
                             :or {width 70 height 16}}]
   (let [tab         (first (:tabs questionnaire))
@@ -242,6 +342,21 @@ done
       (if-let [v (match-key tab raw)]
         {:status :submitted :id (:id questionnaire) :answers {(:id tab) {:value v}}}
         {:status :cancelled :id (:id questionnaire) :answers {}}))))
+
+(defn show!
+  "Show `questionnaire` as an interactive tmux popup using `tmux-impl`.
+   Dispatches on the first tab's `:type`:
+     :radio / :checkbox — option selector (Tab/arrows + shortcuts, Enter
+                          confirm); reply `{:answers {<id> {:value v}}}`.
+     :text / :password  — free-text field (typed chars + Backspace, Enter
+                          confirm); reply `{:answers {<id> {:input s}}}`.
+   Esc / Ctrl-C cancels either. Blocks until submit/cancel; returns a reply
+   map `{:status :submitted | :cancelled :id … :answers …}`."
+  [tmux-impl questionnaire opts]
+  (let [tab (first (:tabs questionnaire))]
+    (if (contains? #{:text :password} (:type tab))
+      (show-text! tmux-impl questionnaire tab opts)
+      (show-radio! tmux-impl questionnaire opts))))
 
 (defn feasible?
   "True iff this tmux server can render an interactive popup right now: the

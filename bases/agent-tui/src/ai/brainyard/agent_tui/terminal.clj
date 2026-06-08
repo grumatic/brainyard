@@ -317,8 +317,13 @@
 
    cursor-pos is the 0-based char position within the buffer text."
   [buffer cursor-pos]
-  (let [prompt (ansi/style "> " ansi/bold ansi/bright-cyan)
-        prompt-w 2                          ;; visible columns of "> "
+  (let [;; Answer-mode indicator: when a user-feedback prompt is pending, the
+        ;; input line is answering the agent's question rather than starting a
+        ;; new turn — flag it with a distinct yellow "? " prompt + a per-kind
+        ;; hint (shared with permissions' open/close refresh via session). Both
+        ;; prompts are 2 visible columns so the cursor math below is unchanged.
+        {:keys [prompt placeholder]} (tui-session/feedback-prompt-parts)
+        prompt-w 2                          ;; visible columns of the prompt
         indent (apply str (repeat prompt-w \space))
         buf-empty? (empty? buffer)
         cols (or (:cols @layout/!layout) 80)
@@ -359,7 +364,7 @@
                     {:keys [text]} (nth visual-lines vl-idx)
                     line-prefix (if (zero? vl-idx) prompt indent)
                     body (if (and buf-empty? (zero? screen-i))
-                           (ansi/muted "Alt+Enter: newline, /help for commands")
+                           (ansi/muted placeholder)
                            text)]
                 (.append sb (ansi/cursor-to row 1))
                 (.append sb ^String ansi/erase-line)
@@ -381,7 +386,7 @@
            (fn [w] (layout/raw-write-unsafe! w (.toString sb))))))
       ;; Inline mode — single-line with placeholder behavior preserved
       (let [line (if buf-empty?
-                   (str prompt (ansi/muted "Alt+Enter: newline, /help for commands"))
+                   (str prompt (ansi/muted placeholder))
                    (str prompt buffer))
             col-num (if buf-empty? 3 (+ prompt-w (fmt/display-width (subs buffer 0 cursor-pos)) 1))
             cursor-col (str ansi/esc (str col-num) "G")]

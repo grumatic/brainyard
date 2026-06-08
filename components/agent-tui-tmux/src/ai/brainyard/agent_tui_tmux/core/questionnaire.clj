@@ -205,6 +205,21 @@
                :required? true
                :options opts}]})))
 
+(defn text-questionnaire
+  "Build a single free-text questionnaire from `{:question :placeholder}`.
+   Returns a one-tab `:text` questionnaire; its submitted reply carries the
+   typed string at `{:answers {:answer {:input <string>}}}`."
+  [{:keys [question placeholder id]}]
+  (make
+   {:id    id
+    :title "Feedback"
+    :tabs  [{:id          :answer
+             :label       "Answer"
+             :prompt      (or question "")
+             :type        :text
+             :required?   false
+             :placeholder placeholder}]}))
+
 (defn permission-decision
   "Pull the user's decision keyword (`:yes`, `:no`, `:always`, `:never`,
    `:cancel`) from a permission popup reply."

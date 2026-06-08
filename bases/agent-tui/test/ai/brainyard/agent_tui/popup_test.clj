@@ -75,6 +75,39 @@
       (is (= :submitted (:status reply)))
       (is (= :no (get-in reply [:answers :decision :value]))))))
 
+(defn- fake-writing
+  "A Tmux impl whose display-popup! writes `s` to the script's result file and
+   exits 0 — used to drive show!'s reply parsing without a real shellout."
+  [s]
+  (reify ai.brainyard.agent-tui-tmux.core.protocol/Tmux
+    (display-popup! [_ {:keys [command]}]
+      (spit (result-path-from-command command) s)
+      0)
+    (display-message [_ _] "")
+    (probe-version [_] [3 4])
+    (version [_] "3.4")
+    (running? [_] true)))
+
+(deftest show!-text-entry-paths
+  (let [text-q (tmux-iface/text-questionnaire {:question "Name the release?"})]
+    (testing "text popup writes 'S<input>' ⇒ submitted with :input"
+      (let [reply (popup/show! (fake-writing "Shello world") text-q {})]
+        (is (= :submitted (:status reply)))
+        (is (= "hello world" (get-in reply [:answers :answer :input])))))
+
+    (testing "empty submit ('S') ⇒ submitted with empty :input"
+      (let [reply (popup/show! (fake-writing "S") text-q {})]
+        (is (= :submitted (:status reply)))
+        (is (= "" (get-in reply [:answers :answer :input])))))
+
+    (testing "blank result ⇒ cancelled"
+      (let [reply (popup/show! (fake-writing "") text-q {})]
+        (is (= :cancelled (:status reply)))))
+
+    (testing "non-zero popup exit ⇒ cancelled"
+      (let [stub (tmux-iface/stub-tmux {:popup-exit 130})]
+        (is (= :cancelled (:status (popup/show! stub text-q {}))))))))
+
 (deftest feasible?-checks-version-and-height
   (testing "tmux 3.1 is too old"
     (let [stub (tmux-iface/stub-tmux {:version "3.1"})]

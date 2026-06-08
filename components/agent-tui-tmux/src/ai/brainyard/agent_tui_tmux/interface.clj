@@ -69,6 +69,7 @@
 (def permission-questionnaire  questionnaire/permission-questionnaire)
 (def confirm-questionnaire     questionnaire/confirm-questionnaire)
 (def feedback-questionnaire    questionnaire/feedback-questionnaire)
+(def text-questionnaire        questionnaire/text-questionnaire)
 (def permission-decision       questionnaire/permission-decision)
 
 ;; -- Sinks (per-pane ANSI byte routing) --------------------------------------

@@ -97,30 +97,49 @@
     (< b 0xF8)  4  ;; 4-byte (emoji, rare CJK)
     :else       0))
 
-(defn- intercept-select-digit!
-  "Handle a digit byte in :select :selecting mode. byte 49='1' → option 1.
-   A plain option delivers immediately; a :free-input option transitions the
-   pending feedback into :awaiting-text mode. Returns true if consumed."
-  [{:keys [promise options]} b]
-  (let [n (- b 48)]  ;; byte 49='1' → n=1, byte 54='6' → n=6
-    (when (and (>= n 1) (<= n (count options)))
-      (let [idx (dec n)
-            selected (nth options idx)]
-        (if (:free-input selected)
-          ;; Transition to text input mode
-          (do (swap! tui-session/!pending-feedback assoc
-                     :mode :awaiting-text
-                     :free-idx idx
-                     :buf (StringBuilder.))
-              ;; Drop the sticky live-block before the text-mode prompt
-              ;; so chars echo right after "Type your response: " in the
-              ;; scroll region (write-raw-chars! leaves cursor there).
-              (layout/dispose-live-block! permissions/user-feedback-block-id)
-              (tui-session/emit! (str "\n  " (ansi/muted "Type your response: ")))
-              true)
-          ;; Normal selection
-          (do (deliver promise {:selected (:label selected) :index idx})
-              true))))))
+(defn handle-feedback-key!
+  "Validate + dispatch a single printable key string (from the readline editor,
+   i.e. the sticky input line) against the pending :confirm / :select prompt.
+   Single-key fast-path with reject-on-invalid:
+     :confirm — a matching choice key (case-insensitive) delivers immediately;
+                any other key is rejected (consumed, never echoed).
+     :select  — a number 1-N delivers that option immediately (a :free-input
+                option instead transitions to byte-driven text collection);
+                non-digits / out-of-range are rejected (consumed).
+   Returns true when the key is consumed (delivered or rejected), so the editor
+   does not treat it as line input. Returns nil for kinds the editor edits
+   normally (:text, or a :select already in :awaiting-text free-input mode).
+   Delivering also clears !pending-feedback so a fast follow-up key can't be
+   mis-routed before the agent thread wakes."
+  [{:keys [kind choices options mode promise] :as _fb} ^String key]
+  (case (or kind :select)
+    :confirm
+    (let [ch  (Character/toLowerCase (.charAt key 0))
+          hit (some #(when (= ch (Character/toLowerCase ^char (:key %))) %) choices)]
+      (when hit
+        (deliver promise {:value (:value hit) :key (:key hit)})
+        (reset! tui-session/!pending-feedback nil))
+      true)                                  ;; consume every key (reject invalid)
+
+    :text nil                                ;; free text — editor edits the line
+
+    ;; :select (default)
+    (if (= mode :awaiting-text)
+      nil                                    ;; free-input text — byte layer collects it
+      (do
+        (when-let [n (parse-long key)]
+          (when (and (>= n 1) (<= n (count options)))
+            (let [idx (dec n)
+                  selected (nth options idx)]
+              (if (:free-input selected)
+                ;; Transition to byte-driven free-input text collection.
+                (do (swap! tui-session/!pending-feedback assoc
+                           :mode :awaiting-text :free-idx idx :buf (StringBuilder.))
+                    (layout/dispose-live-block! permissions/user-feedback-block-id)
+                    (tui-session/emit! (str "\n  " (ansi/muted "Type your response: "))))
+                (do (deliver promise {:selected (:label selected) :index idx})
+                    (reset! tui-session/!pending-feedback nil))))))
+        true))))                             ;; consume every key (reject invalid)
 
 (defn- intercept-text-byte!
   "Handle a byte in :awaiting-text mode — the shared line editor for the :text
@@ -195,31 +214,19 @@
       :else true)))
 
 (defn try-intercept-byte
-  "Try to intercept a raw byte for the pending user-feedback prompt (the single
-   interactive-input channel — permission rides on it as a :confirm). Returns
-   true if intercepted (byte consumed), nil if not. Dispatches on the pending
-   request's :kind:
-     :confirm — single key matched (case-insensitive) against :choices keys.
-     :text    — straight into the :awaiting-text line editor.
-     :select  — digit 1-N in :selecting mode; :awaiting-text after a free-input
-                option (full UTF-8/CJK line editing)."
+  "Try to intercept a raw byte for the pending user-feedback prompt. Returns
+   true if intercepted (byte consumed), nil otherwise.
+
+   Only the byte-driven free-input text collection (:select :awaiting-text,
+   reached after picking a `:free-input` option) is handled here. :confirm,
+   :select digits, and :text all pass through to !raw-input-queue → read-key!
+   → the readline editor (the sticky input line), which validates + delivers
+   via `handle-feedback-key!` / the editor's submit path. This keeps every
+   user-feedback response flowing through one input channel."
   [b]
-  (when-let [{:keys [kind choices mode] :as fb} @tui-session/!pending-feedback]
-    (case (or kind :select)
-      :confirm
-      (let [ch (Character/toLowerCase (char b))
-            hit (some #(when (= ch (Character/toLowerCase ^char (:key %))) %) choices)]
-        (when hit
-          (deliver (:promise fb) {:value (:value hit) :key (:key hit)})
-          true))
-
-      :text
-      (intercept-text-byte! fb b)
-
-      ;; :select (default)
-      (case (or mode :selecting)
-        :selecting     (intercept-select-digit! fb b)
-        :awaiting-text (intercept-text-byte! fb b)))))
+  (when-let [{:keys [mode] :as fb} @tui-session/!pending-feedback]
+    (when (= mode :awaiting-text)
+      (intercept-text-byte! fb b))))
 
 (defn start-input-reader!
   "Start a daemon thread that polls /dev/tty for raw bytes and queues them.

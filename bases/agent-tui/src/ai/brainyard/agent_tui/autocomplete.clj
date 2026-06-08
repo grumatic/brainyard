@@ -908,28 +908,16 @@
         (and @input/!pasting? (not @paste-mode?)) (begin-paste!)
         (and (not @input/!pasting?) @paste-mode?) (commit-paste!))
       (let [key (terminal/read-key! in)
-            ;; Unified feedback intercept (readline path) — when a prompt is
-            ;; pending, route keys to it by :kind, mirroring
-            ;; input/try-intercept-byte: :confirm letter-keys, :select
-            ;; number-keys. (:text is driven by the raw reader / stdin reader.)
+            ;; Unified feedback intercept (the sticky input line) — when a
+            ;; :confirm / :select prompt is pending, validate the typed key:
+            ;; a valid choice key / option number delivers immediately
+            ;; (single-key fast-path), an invalid one is rejected (consumed,
+            ;; never echoed into the line). :text falls through to normal line
+            ;; editing and is delivered at the Enter/submit branch below.
             handled-feedback?
             (when (and (string? key) (seq key))
-              (when-let [{:keys [promise kind choices options]} @tui-session/!pending-feedback]
-                (case (or kind :select)
-                  :confirm
-                  (let [ch  (Character/toLowerCase (.charAt ^String key 0))
-                        hit (some #(when (= ch (Character/toLowerCase ^char (:key %))) %) choices)]
-                    (when hit
-                      (deliver promise {:value (:value hit) :key (:key hit)})
-                      true))
-                  :text nil
-                  ;; :select (default)
-                  (when-let [n (parse-long key)]
-                    (when (and (>= n 1) (<= n (count options)))
-                      (let [idx (dec n)
-                            selected (nth options idx)]
-                        (deliver promise {:selected (:label selected) :index idx})
-                        true))))))]
+              (when-let [fb @tui-session/!pending-feedback]
+                (input/handle-feedback-key! fb key)))]
         (cond
           handled-feedback?   (recur)
           ;; Bracketed paste in progress: capture printable chars and CR/LF
@@ -1039,28 +1027,60 @@
                         ;; paste markers in the buffer back to full content
                         ;; before returning the line.
                         (let [_ (dismiss-menu!)
-                              line (expand-paste! (.toString buf))]
+                              line (expand-paste! (.toString buf))
+                              pending @tui-session/!pending-feedback
+                              fb-kind (:kind pending)
+                              fb-open? (and fb-kind
+                                            (not (realized? (:promise pending))))]
                           (layout/scroll-to-bottom!)
                           (maybe-deselect!)
                           (layout/set-input-cursor-col! 3)
                           ;; Collapse multi-row input area back to single row
                           (layout/set-input-height! 1)
-                          (when-not (str/blank? line)
-                            (let [hist @terminal/!input-history]
-                              (when (or (empty? hist) (not= (peek hist) line))
-                                (let [hist' (swap! terminal/!input-history
-                                                   (fn [h]
-                                                     (let [h' (conj h line)]
-                                                       (if (> (count h') terminal/max-history-size)
-                                                         (subvec h' (- (count h') terminal/max-history-size))
-                                                         h'))))]
-                                  ;; Persist per-session so resume restores history.
-                                  ;; Soft-failure: never crash the input loop on a
-                                  ;; disk hiccup — the worst case is a lost line.
-                                  (when-let [asid (:agent-session-id (sessions/get-active-session))]
-                                    (try (persist/write-snap! asid :input-history hist')
-                                         (catch Throwable _)))))))
-                          line))
+                          (cond
+                            ;; A free-text feedback prompt is pending — this Enter
+                            ;; answers it instead of starting a new turn. Deliver
+                            ;; the typed line, clear the box, and keep reading.
+                            ;; Clear !pending-feedback here (not just in do-text on
+                            ;; the agent thread) to close the intercept window so a
+                            ;; fast follow-up keystroke isn't mis-routed.
+                            (and (= :text fb-kind) fb-open?)
+                            (do (deliver (:promise pending)
+                                         {:input (str/trim line) :index 0})
+                                (reset! tui-session/!pending-feedback nil)
+                                (.setLength buf 0)
+                                (vreset! cursor-pos 0)
+                                (terminal/redraw-input-line! "" 0)
+                                (recur))
+
+                            ;; A :select / :confirm prompt is pending — valid
+                            ;; answers already submit on keypress (single-key
+                            ;; fast-path), so a bare Enter is ignored: clear and
+                            ;; keep waiting rather than submitting a blank turn.
+                            fb-open?
+                            (do (.setLength buf 0)
+                                (vreset! cursor-pos 0)
+                                (terminal/redraw-input-line! "" 0)
+                                (recur))
+
+                            :else
+                            (do
+                              (when-not (str/blank? line)
+                                (let [hist @terminal/!input-history]
+                                  (when (or (empty? hist) (not= (peek hist) line))
+                                    (let [hist' (swap! terminal/!input-history
+                                                       (fn [h]
+                                                         (let [h' (conj h line)]
+                                                           (if (> (count h') terminal/max-history-size)
+                                                             (subvec h' (- (count h') terminal/max-history-size))
+                                                             h'))))]
+                                      ;; Persist per-session so resume restores history.
+                                      ;; Soft-failure: never crash the input loop on a
+                                      ;; disk hiccup — the worst case is a lost line.
+                                      (when-let [asid (:agent-session-id (sessions/get-active-session))]
+                                        (try (persist/write-snap! asid :input-history hist')
+                                             (catch Throwable _)))))))
+                              line))))
 
             ;; Up/Down: menu navigation when active, scroll when inactive
             :scroll-up

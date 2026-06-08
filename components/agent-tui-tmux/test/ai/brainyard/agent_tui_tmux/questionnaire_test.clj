@@ -84,3 +84,12 @@
     (is (= "Feedback" (:title q)))
     (is (= 3 (count (-> q :tabs first :options))))
     (is (= [0 1 2] (mapv :value (-> q :tabs first :options))))))
+
+(deftest text-questionnaire-test
+  (let [q (q/text-questionnaire {:question "Name the release?"})]
+    (testing "builds a valid single :text tab carrying the question"
+      (is (= "Name the release?" (-> q :tabs first :prompt)))
+      (is (= :text  (-> q :tabs first :type)))
+      (is (= :answer (-> q :tabs first :id)))
+      ;; make/validate accepted it (no options required for :text)
+      (is (q/validate q)))))

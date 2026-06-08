@@ -56,6 +56,18 @@
   (when (layout/fullscreen?)
     (layout/dispose-live-block! user-feedback-block-id)))
 
+(defn- refresh-feedback-prompt!
+  "Repaint the input prompt to reflect (`fb-kind`) or clear (nil) answer-mode.
+   The editor is parked in read-key! while a prompt is open, so it does not
+   repaint the prompt itself on open/close — do-select/confirm/text call this so
+   the yellow '? ' indicator appears immediately, not only once the user types.
+   Safe because the input buffer is empty while a prompt is open (the user has
+   already submitted their turn). No-op outside fullscreen."
+  [fb-kind]
+  (when (layout/fullscreen?)
+    (let [{:keys [prompt placeholder]} (tui-session/feedback-prompt-parts fb-kind)]
+      (layout/draw-input-prompt! (str prompt (ansi/muted placeholder))))))
+
 (defn- mode-b-popup-feasible?
   "True when we should route a permission/feedback dialog through a tmux
    popup rather than the in-stream codepath.  Requires the `enable-tmux-popup`
@@ -110,12 +122,13 @@
     [(ansi/warning question)
      (str "  " (ansi/muted (str hint ": ")))]))
 
-(defn format-text-prompt
-  "Plain prompt string for a free-text (:text) question. Used for both the raw
-   and non-raw paths — the raw input handler echoes typed chars right after it."
+(defn format-text-lines
+  "Build the :text prompt as a vector of ANSI-styled lines for the sticky
+   user-feedback block. The answer is typed into the main input line (whose
+   prompt flips to an answer-mode indicator), so this is just the question."
   [question]
-  (str "\n" (ansi/style question ansi/bold ansi/bright-cyan)
-       "\n  " (ansi/muted "Type your response: ")))
+  [(ansi/style question ansi/bold ansi/bright-cyan)
+   (str "  " (ansi/muted "Type your answer below, Enter to submit"))])
 
 ;; ============================================================================
 ;; Non-raw stdin reader (one temporary thread per prompt)
@@ -190,10 +203,10 @@
 
 (defn- do-select
   "Handle a :select request — pick one of 2-6 options. Optional Mode-B popup
-   backend (when feasible and no :free-input options), else raw in-stream
-   live-block, else non-raw stdin. Returns {:selected <label> :index <int>}
-   (+ :input for a free-input option), {:timeout true …}, {:error …}, or nil
-   (Mode-B cancel)."
+   backend (a :free-input pick opens a follow-up free-text popup), else raw
+   in-stream live-block, else non-raw stdin. Returns {:selected <label> :index
+   <int>} (+ :input for a free-input option), {:timeout true …}, {:error …},
+   or nil (Mode-B cancel)."
   [{:keys [question options timeout-ms]} ^ReentrantLock feedback-lock !input-reader-thread]
   (let [timeout (or timeout-ms 60000)
         normalized (mapv (fn [opt]
@@ -204,10 +217,9 @@
       (or (< n 2) (> n 6))
       {:error (str "Options must have 2-6 items, got " n)}
 
-      ;; Optional Mode-B popup backend. Free-input options fall through to the
-      ;; in-stream path (the popup has no inline text entry for them).
-      (and (mode-b-popup-feasible?)
-           (not-any? :free-input normalized))
+      ;; Optional Mode-B popup backend. A :free-input pick opens a follow-up
+      ;; free-text popup for the typed answer.
+      (mode-b-popup-feasible?)
       (do (.lock feedback-lock)
           (try
             (let [opts (mapv (fn [i {:keys [label]}]
@@ -223,7 +235,17 @@
                                                      (< idx (count normalized)))
                                             (nth normalized idx))]
                              (when selected
-                               {:selected (:label selected) :index idx}))
+                               (if (:free-input selected)
+                                 ;; Follow-up free-text popup for the typed answer.
+                                 (let [tq (tmux-iface/text-questionnaire
+                                           {:question (str (:label selected)
+                                                           " — type your response")})
+                                       treply (popup/show! (:tmux (tmux-side/state)) tq
+                                                           {:height 10})]
+                                   (when (= :submitted (:status treply))
+                                     {:selected (:label selected) :index idx
+                                      :input (or (get-in treply [:answers :answer :input]) "")}))
+                                 {:selected (:label selected) :index idx})))
                 :timeout   {:timeout true
                             :reason (str "User feedback timed out ("
                                          (/ timeout 1000) "s)")}
@@ -241,12 +263,14 @@
                   _  (if raw-mode?
                        (show-user-feedback-block! (format-feedback-lines question normalized))
                        (tui-session/emit! (format-feedback-prompt question normalized)))
+                  _  (refresh-feedback-prompt! :select)
                   done-latch (CountDownLatch. 1)
                   stdin-thread (when-not raw-mode?
                                  (start-feedback-stdin-reader! done-latch))
                   resp (deref p timeout :timeout)]
               (reset! tui-session/!pending-feedback nil)
               (hide-user-feedback-block!)
+              (refresh-feedback-prompt! nil)
               (when stdin-thread
                 (when-not (.await done-latch 100 TimeUnit/MILLISECONDS)
                   (.interrupt ^Thread stdin-thread)))
@@ -257,35 +281,59 @@
               (.unlock feedback-lock)))))))
 
 (defn- do-text
-  "Handle a :text request — read a free-form line. No popup backend: renders
-   in-stream (raw input handler echoes typed chars) or via the non-raw stdin
-   reader. Returns {:input <text> :index 0} or {:timeout true …}."
+  "Handle a :text request — read a free-form line. Optional Mode-B popup
+   backend (a free-text entry field), else in-stream. In raw mode the answer
+   is typed into the normal sticky input line: the readline editor
+   (`autocomplete/read-line-raw!`) sees the pending :text request and delivers
+   the typed line on Enter, so the question shows as a sticky-bottom block and
+   the input prompt flips to its answer-mode indicator. In non-raw mode a
+   temporary stdin reader reads one line. Returns {:input <text> :index 0},
+   {:timeout true …}, or nil (Mode-B cancel)."
   [{:keys [question timeout-ms]} ^ReentrantLock feedback-lock !input-reader-thread]
   (let [timeout (or timeout-ms 60000)]
-    (.lock feedback-lock)
-    (try
-      (let [p (promise)
-            raw-mode? (boolean @!input-reader-thread)
-            _  (reset! tui-session/!pending-feedback
-                       {:promise p :kind :text :mode :awaiting-text
-                        :buf (StringBuilder.) :free-idx 0
-                        :options [{:label question}]})
-            ;; Emit the prompt as plain scrollback (not a sticky block) so the
-            ;; raw input handler's echo lands right after "Type your response:".
-            _  (tui-session/emit! (format-text-prompt question))
-            done-latch (CountDownLatch. 1)
-            stdin-thread (when-not raw-mode?
-                           (start-feedback-stdin-reader! done-latch))
-            resp (deref p timeout :timeout)]
-        (reset! tui-session/!pending-feedback nil)
-        (when stdin-thread
-          (when-not (.await done-latch 100 TimeUnit/MILLISECONDS)
-            (.interrupt ^Thread stdin-thread)))
-        (if (= resp :timeout)
-          {:timeout true :reason (str "User feedback timed out (" (/ timeout 1000) "s)")}
-          resp))
-      (finally
-        (.unlock feedback-lock)))))
+    (cond
+      ;; Optional Mode-B popup backend — a free-text entry field.
+      (mode-b-popup-feasible?)
+      (do (.lock feedback-lock)
+          (try
+            (let [q     (tmux-iface/text-questionnaire {:question question})
+                  reply (popup/show! (:tmux (tmux-side/state)) q {:height 10})]
+              (case (:status reply)
+                :submitted {:input (or (get-in reply [:answers :answer :input]) "")
+                            :index 0}
+                ;; cancelled (Esc/Ctrl-C) → nil, no answer
+                nil))
+            (finally
+              (.unlock feedback-lock))))
+
+      :else
+      (do
+        (.lock feedback-lock)
+        (try
+          (let [p (promise)
+                raw-mode? (boolean @!input-reader-thread)
+                ;; Minimal shape: the readline editor only needs :promise + :kind.
+                ;; No :buf/:mode — the editor owns the line buffer and echo.
+                _  (reset! tui-session/!pending-feedback {:promise p :kind :text})
+                ;; Show the question as a sticky-bottom block above the input and
+                ;; flip the input prompt to answer-mode immediately.
+                _  (show-user-feedback-block! (format-text-lines question))
+                _  (refresh-feedback-prompt! :text)
+                done-latch (CountDownLatch. 1)
+                stdin-thread (when-not raw-mode?
+                               (start-feedback-stdin-reader! done-latch))
+                resp (deref p timeout :timeout)]
+            (reset! tui-session/!pending-feedback nil)
+            (hide-user-feedback-block!)
+            (refresh-feedback-prompt! nil)
+            (when stdin-thread
+              (when-not (.await done-latch 100 TimeUnit/MILLISECONDS)
+                (.interrupt ^Thread stdin-thread)))
+            (if (= resp :timeout)
+              {:timeout true :reason (str "User feedback timed out (" (/ timeout 1000) "s)")}
+              resp))
+          (finally
+            (.unlock feedback-lock)))))))
 
 (defn- do-confirm
   "Handle a :confirm request — single-key choice from `:choices` (default
@@ -325,9 +373,11 @@
                   _ (reset! tui-session/!pending-feedback
                             {:promise p :kind :confirm :choices choices})
                   _ (show-user-feedback-block! (format-confirm-lines question choices))
+                  _ (refresh-feedback-prompt! :confirm)
                   resp (deref p timeout :timeout)]
               (reset! tui-session/!pending-feedback nil)
               (hide-user-feedback-block!)
+              (refresh-feedback-prompt! nil)
               (if (= resp :timeout)
                 {:timeout true :reason (str "Confirm timed out (" (/ timeout 1000) "s)")}
                 resp))

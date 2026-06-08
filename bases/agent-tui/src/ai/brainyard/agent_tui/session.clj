@@ -50,13 +50,31 @@
 ;; unified feedback-fn (and its permission adapter), read/driven by the input
 ;; handler. One channel for all kinds — permission no longer has its own atom.
 ;; Value (nil when idle); shape depends on :kind:
-;;   :select  {:promise p :kind :select :options <vec of {:label :description? :free-input?}>
-;;             :mode :selecting|:awaiting-text :buf StringBuilder :free-idx int
-;;             :utf8-buf [..] :utf8-need int}
-;;   :text    {:promise p :kind :text :mode :awaiting-text :buf StringBuilder
-;;             :free-idx 0 :options [{:label question}] :utf8-buf [..] :utf8-need int}
+;;   :select  {:promise p :kind :select :options <vec of {:label :description? :free-input?}>}
+;;             — a :free-input pick adds :mode :awaiting-text :buf StringBuilder
+;;               :free-idx int (byte-driven text collection)
+;;   :text    {:promise p :kind :text}   — typed into the sticky input line
 ;;   :confirm {:promise p :kind :confirm :choices <vec of {:key char :label :value}>}
 (defonce !pending-feedback (atom nil))
+
+(defn feedback-prompt-parts
+  "Input-line prompt look for a feedback `fb-kind` (nil = idle). Shared by the
+   editor's redraw (`terminal/redraw-input-line!`) and the open/close refresh
+   (`permissions`) so both agree on the answer-mode indicator. Returns
+   {:prompt <styled 2-col string> :placeholder <raw hint string>}. While a
+   prompt is open the prompt is a yellow '? ' with a per-kind hint; idle it is
+   the normal cyan '> '. Both prompts are 2 visible columns."
+  ([] (feedback-prompt-parts (:kind @!pending-feedback)))
+  ([fb-kind]
+   (if fb-kind
+     {:prompt (ansi/style "? " ansi/bold ansi/bright-yellow)
+      :placeholder (case fb-kind
+                     :text    "Answer the prompt above, Enter to submit"
+                     :confirm "Press a highlighted key to answer"
+                     :select  "Press the option number to answer"
+                     "Answer the prompt above")}
+     {:prompt (ansi/style "> " ansi/bold ansi/bright-cyan)
+      :placeholder "Alt+Enter: newline, /help for commands"})))
 
 ;; TUI mulog publisher handle (verbose mode only)
 (defonce ^:private !tui-publisher (atom nil))
