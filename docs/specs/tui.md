@@ -29,7 +29,7 @@ Status legend and contract-ID conventions: see [README](README.md).
 | CR-TUI-03 | `-i`/inline MUST force a no-alt-screen, no-raw line-reader loop. | Implemented | `core.clj` (`force-inline?`) |
 | CR-TUI-04 | `ask` MUST do a single one-shot turn, print the answer, and exit 0/1 (session id `ask-<millis>`). | Implemented | `main.clj` (`cmd-ask`) |
 | CR-TUI-05 | The tmux mode (A/B/C) MUST be decided pre-boot from `--with-tmux` / `$TMUX` / a `tmux`-on-PATH probe; an unsatisfiable explicit `--with-tmux` (Mode C) MUST print guidance and exit 1. | Implemented | `bases/agent-tui/.../mode.clj` (`probe`), `main.clj` |
-| CR-TUI-06 | Resume wiring MUST support bare `--resume` (resume latest persisted session, fresh if none), `--resume <id>` (error+exit if absent), and `--select-resume` (interactive picker). No resume flag → fresh session; `--new` is a deprecated no-op kept for back-compat. | Implemented | `main.clj` (`inject-bare-resume-sentinel`, `latest-session-id`, `pick-session-interactive!`) |
+| CR-TUI-06 | Resume wiring MUST support bare `--resume` (interactive picker; fresh if none) and `--resume <id>` (error+exit if absent). No resume flag → fresh session; `--new` is a deprecated no-op kept for back-compat. | Implemented | `main.clj` (`inject-bare-resume-sentinel`, `pick-session-interactive!`) |
 | CR-TUI-07 | `config` MUST launch the config wizard; `sessions list`/`sessions prune` MUST manage persisted sessions. | Implemented | `main.clj`, `bases/agent-tui/.../config_wizard.clj` |
 
 **CR-TUI-07 (reconciled May 2026, T-8):** the wizard's write path was

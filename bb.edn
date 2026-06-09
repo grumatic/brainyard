@@ -76,13 +76,11 @@
     -i, --inline             Inline mode (no alt screen, for CliClient testing)
     -v, --verbose            Verbose output
     -n, --max-iterations N   Max iterations (default from agent config)
-    -r, --resume [ID]        Resume: bare = latest session; with ID = that session
-        --select-resume      Pick a session to resume from an interactive menu
+    -r, --resume [ID]        Resume: bare = pick from a menu; with ID = that session
 
   Examples: bb tui                                    # default: run with claude-code:haiku
-            bb tui --resume                            # resume the latest session
+            bb tui --resume                            # pick a session from a menu
             bb tui --resume agt-1780236629321-928      # resume a specific session
-            bb tui --select-resume                     # pick from a menu
             bb tui -p claude-code -m sonnet            # short form (run implied)
             bb tui run -p anthropic -m claude-sonnet-4-6
             bb tui run -a coact-agent -i        # inline mode

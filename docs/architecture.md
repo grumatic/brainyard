@@ -109,8 +109,7 @@ the `run` path (preserving the legacy `bb tui coact-agent` and
 |---|---|
 | `-i / --inline` | Inline mode — no alt-screen (used by CliClient tests). |
 | `--with-tmux` | Require a tmux session for side panes and popups; exit 1 if not in tmux. |
-| `-r / --resume` | Bare: resume the latest persisted session (fresh if none). With an id (`--resume <id>`): resume that session — error + exit 1 if absent. Implies hydration + scrollback replay. |
-| `--select-resume` | Pick a persisted session to resume from an interactive menu. |
+| `-r / --resume` | Bare: pick a persisted session to resume from an interactive menu (fresh if none). With an id (`--resume <id>`): resume that session — error + exit 1 if absent. Implies hydration + scrollback replay. |
 | `--new` | Deprecated no-op (sessions start fresh by default) — still accepted. |
 
 `main.clj` loads `ai.brainyard.agent.interface`, which `:require`s every

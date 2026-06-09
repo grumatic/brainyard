@@ -153,22 +153,11 @@
 
 (declare format-bytes format-age-millis)
 
-(def ^:private resume-latest-sentinel
+(def ^:private resume-pick-sentinel
   "Placeholder value injected by `-main` when bare `--resume` is given (no id),
-   meaning 'resume the latest persisted session'.  The leading dashes guarantee
+   meaning 'open the interactive session picker'.  The leading dashes guarantee
    it can never collide with a real (timestamp/uuid-shaped) session-id."
-  "--by-resume-latest--")
-
-(defn- latest-session-id
-  "Return the id of the most-recently-active persisted session (by
-   `:last-attached-at`, falling back to `:started-at`), or nil when none exist."
-  []
-  (->> (persist/summarise-sessions)
-       (sort-by (fn [s] (- 0 (long (or (:last-attached-at s)
-                                       (:started-at s)
-                                       0)))))
-       first
-       :session-id))
+  "--by-resume-pick--")
 
 (defn- pick-session-interactive!
   "Show a numbered list of persisted sessions (newest first) plus an [N]ew
@@ -260,22 +249,16 @@
 
         ;; Resume wiring.  Default (no flags) starts a fresh session.
         ;;   --resume <id>   → resume that session (error+exit if absent)
-        ;;   --resume (bare) → resume the latest persisted session, else fresh
+        ;;   --resume (bare) → interactive picker (fresh if none)
         ;;                     (-main rewrites bare --resume to the sentinel)
-        ;;   --select-resume → interactive picker
         ;; --new is a deprecated no-op (fresh is already the default).
-        select-resume? (:select-resume opts)
         resume-arg (:resume opts)
         existing (set (persist/list-sessions))
         [session-id resume?]
         (cond
-          select-resume?
-          (let [picked (pick-session-interactive! existing)]
-            (if picked [picked true] [nil false]))
-
-          (= resume-arg resume-latest-sentinel)
-          (if-let [lid (latest-session-id)]
-            [lid true]
+          (= resume-arg resume-pick-sentinel)
+          (if-let [picked (pick-session-interactive! existing)]
+            [picked true]
             [nil false])
 
           resume-arg
@@ -373,7 +356,6 @@
     (:verbose opts)        (conj "-v")
     (:max-iterations opts) (into ["-n" (str (:max-iterations opts))])
     (:with-tmux opts)      (conj "--with-tmux")
-    (:select-resume opts)  (conj "--select-resume")
     (:resume opts)         (into ["-r" (:resume opts)])))
 
 (defn- print-web-banner!
@@ -509,7 +491,6 @@
     (:verbose opts)        (conj "-v")
     (:max-iterations opts) (into ["-n" (str (:max-iterations opts))])
     (:with-tmux opts)      (conj "--with-tmux")
-    (:select-resume opts)  (conj "--select-resume")
     (:resume opts)         (into ["-r" (:resume opts)])))
 
 (defn- resolve-sandbox-config!
@@ -936,11 +917,8 @@
                                  :type :with-flag :default false}
                                 max-iter-opt
                                 {:option "resume" :short "r"
-                                 :as "Resume a persisted session: bare = latest; --resume <id> = that session"
+                                 :as "Resume a persisted session: bare = pick from a menu; --resume <id> = that session"
                                  :type :string}
-                                {:option "select-resume"
-                                 :as "Pick a persisted session to resume from an interactive menu"
-                                 :type :with-flag :default false}
                                 {:option "new"
                                  :as "(deprecated; sessions start fresh by default — accepted as a no-op)"
                                  :type :with-flag :default false}
@@ -1053,7 +1031,7 @@
              nxt (get v (inc i))]
          (if (and (#{"-r" "--resume"} tok)
                   (or (nil? nxt) (str/starts-with? nxt "-")))
-           (conj acc tok resume-latest-sentinel)
+           (conj acc tok resume-pick-sentinel)
            (conj acc tok))))
      []
      (range (count v)))))

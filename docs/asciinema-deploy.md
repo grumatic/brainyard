@@ -10,7 +10,7 @@
 > - Readiness is signalled by the **input prompt rendered in the pane**, not a
 >   startup "lock" file (the persist lock is a transient mutex). (§5.4)
 > - Sessions now start fresh by default, so no flag is needed to avoid the
->   resume picker (it appears only with `--select-resume`). Existing launch
+>   resume picker (it appears only with a bare `--resume`). Existing launch
 >   args may still pass **`--new`** — it is a harmless deprecated no-op. (§6)
 > - `BRAINYARD_SESSION_ID` is now honored by the TUI startup (the env hook the
 >   DSL assumed). (§4, §6)
@@ -293,7 +293,7 @@ The orchestrator normalizes these — for `bb` modes it shells through
 identical otherwise.
 
 **[as-built]** Sessions start fresh by default now, so launch args no longer
-need a flag to avoid the resume picker (it only shows with `--select-resume`),
+need a flag to avoid the resume picker (it only shows with a bare `--resume`),
 and the TUI lands in a fresh agent named by `BRAINYARD_SESSION_ID`. Existing
 scenarios still carry **`--new`** in `:launch :args` — it is a harmless
 deprecated no-op and can stay or be dropped. JVM modes

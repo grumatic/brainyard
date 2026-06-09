@@ -47,8 +47,7 @@ by --help           # full help
 |---|---|---|---|
 | `-i` | `--[no-]inline` | off | Inline mode (no alt-screen). Useful when running `by` from inside another TUI/CLI. |
 | `-v` | `--[no-]verbose` | off | Verbose output (debug logs to stderr). |
-| `-r` | `--resume [ID]` | — | Resume a persisted session. Bare `--resume` = latest; `--resume <id>` = that session. |
-|  | `--[no-]select-resume` | off | Pick a session to resume from an interactive menu. |
+| `-r` | `--resume [ID]` | — | Resume a persisted session. Bare `--resume` = pick from an interactive menu; `--resume <id>` = that session. |
 |  | `--[no-]with-tmux` | off | Require tmux side panes / popups (exit 1 if not in a tmux session). |
 |  | `--[no-]new` | — | Deprecated no-op — sessions start fresh by default. |
 |  | `--[no-]web` | off | Share this session over the web via [ttyd](https://github.com/tsl0922/ttyd). See [web-sharing.md](web-sharing.md). |
@@ -86,9 +85,8 @@ by                                              # default: coact-agent on claude
 by -p claude-code -m sonnet                     # change provider/model
 by run -p anthropic -m claude-sonnet-4-6
 by run -a coact-agent -i                        # inline mode
-by run --resume                                 # resume the latest session
+by run --resume                                 # pick a session from a menu
 by run --resume agt-1779952718824-5844          # resume a specific session
-by run --select-resume                          # pick a session from a menu
 ```
 
 Inside the TUI:

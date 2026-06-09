@@ -223,8 +223,8 @@ know to look for it.
   (no resume flags) starts a fresh session immediately — there is no
   interactive picker on the default path, so nREPL bootstrap is never
   blocked waiting on a prompt. The interactive *"N persisted session(s)
-  — pick one to resume"* picker now appears **only** with
-  `--select-resume`; avoid that flag in unattended launches. (`--new`
+  — pick one to resume"* picker now appears **only** with a bare
+  `--resume`; avoid that flag in unattended launches. (`--new`
   is still accepted as a deprecated no-op, so older recipes that pass
   `bb tui run --new` keep working.) If you ever do launch a picker
   interactively, dismiss it with `tmux send-keys -t by-debug "N" Enter`
@@ -275,7 +275,7 @@ an *external* driver just issues the raw `tmux` commands.)
 #    -x/-y forces a pane size so the renderer isn't squeezed by a tiny
 #    default geometry (80x24 is too small for several TUI panels).
 #    No resume flag → fresh session, so bootstrap never pauses at a
-#    picker (the picker only appears with --select-resume). `--new` is
+#    picker (the picker only appears with a bare --resume). `--new` is
 #    kept here as a harmless no-op for back-compat.
 tmux new-session -d -s by-debug -x 200 -y 50 \
   "BRAINYARD_NREPL_ENABLED=true BRAINYARD_NREPL_PORT=7890 \

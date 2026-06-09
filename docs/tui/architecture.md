@@ -361,9 +361,8 @@ exposes six subcommands (`known-subcommands`,
 
 - `-i` / `--inline` — disable alt-screen.
 - `--with-tmux` — require Mode B; fail (Mode C) if conditions not met.
-- `-r` / `--resume` — bare: resume the latest persisted session (fresh if none).
+- `-r` / `--resume` — bare: pick a persisted session to resume from an interactive menu (fresh if none).
 - `-r <id>` / `--resume <id>` — resume that specific session (error + exit 1 if absent).
-- `--select-resume` — pick a persisted session from an interactive menu.
 - No resume flag → fresh session. (`--new` is a deprecated no-op, still accepted.)
 
 On resume the trailing bytes of `scrollback.stream.txt` are replayed into the

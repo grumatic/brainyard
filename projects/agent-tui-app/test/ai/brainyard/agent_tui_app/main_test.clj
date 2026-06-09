@@ -16,7 +16,7 @@
    [ai.brainyard.agent-tui-app.main :as main]))
 
 (def ^:private inject @#'main/inject-bare-resume-sentinel)
-(def ^:private sentinel @#'main/resume-latest-sentinel)
+(def ^:private sentinel @#'main/resume-pick-sentinel)
 
 (deftest inject-bare-resume-sentinel-test
   (testing "bare --resume / -r (no value) gets the sentinel spliced in"

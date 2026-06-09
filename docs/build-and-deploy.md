@@ -67,8 +67,7 @@ bb tui -- claude-code:sonnet              # legacy provider:model syntax
 | `--verbose` | `-v` | Verbose output (BT traces, timings, costs). |
 | `--max-iterations` | `-n` | Override BT repeat cap. |
 | `--with-tmux` |   | `run` only — require a tmux session for side panes / popups; exit 1 if not in tmux. |
-| `--resume` | `-r` | Bare: resume the **latest** persisted session (fresh if none). With an id (`--resume <id>`): resume that session — error + exit 1 if absent. Implies hydration + scrollback replay. |
-| `--select-resume` |   | Pick a persisted session to resume from an interactive menu. |
+| `--resume` | `-r` | Bare: **pick** a persisted session to resume from an interactive menu (fresh if none). With an id (`--resume <id>`): resume that session — error + exit 1 if absent. Implies hydration + scrollback replay. |
 | `--new` |   | Deprecated no-op (sessions start fresh by default) — still accepted so existing launch args keep working. |
 
 ### ACP-driven TUI
