@@ -26,6 +26,7 @@
             [ai.brainyard.agent.common.log :as log]
             [ai.brainyard.clj-llm.interface :as clj-llm]
             [ai.brainyard.memory.interface :as mem]
+            [ai.brainyard.memory.interface.protocol :as mproto]
             [clojure.string :as str]))
 
 ;; ============================================================================
@@ -113,6 +114,26 @@
 (def ^:private match-kw
   {"or" :or "and" :and "phrase" :phrase})
 
+(def ^:private layer->valid-kinds
+  "Canonical kinds per memory layer (see memory protocol)."
+  {:l1 mproto/entry-kinds
+   :l2 mproto/episode-types
+   :l3 mproto/fact-types})
+
+(defn- invalid-kind-error
+  "When `kind-kw` is a non-nil kind that isn't valid for layer `lyr`, return
+   an actionable {:error ...} enumerating the valid kinds — so the LLM (which
+   tends to invent plausible-but-wrong kinds) retries with a good one instead
+   of looping on an opaque write failure or a silently-empty recall. Returns
+   nil when the kind is nil or valid. `kind-str` is the raw user input, echoed
+   verbatim in the message."
+  [lyr kind-kw kind-str]
+  (when-let [valid (layer->valid-kinds lyr)]
+    (when (and kind-kw (not (contains? valid kind-kw)))
+      {:error (format "Invalid kind \"%s\" for layer %s. Valid kinds: %s."
+                      kind-str (name lyr)
+                      (str/join ", " (sort (map name valid))))})))
+
 (defn- current-mm []
   (some-> proto/*current-agent* :!state deref :memory-manager))
 
@@ -123,40 +144,51 @@
   "Store one memory entry. Pick :layer by lifetime — l3=durable cross-session, l2=session timeline, l1=session-only pin."
   (fn [& {:keys [layer kind content tags role confidence]}]
     (if-let [mm (current-mm)]
-      (if (str/blank? content)
-        {:error "content is required"}
-        (let [lyr (or (layer-kw layer) :l3)
-              sid (current-session-id)
-              entry (cond-> {:content content}
-                      kind            (assoc :kind (keyword kind))
-                      (seq tags)      (assoc :tags (set tags))
-                      (and role
-                           (not (str/blank? role)))
-                      (assoc :role role)
-                      (and (= lyr :l3)
-                           (some? confidence))
-                      (assoc :confidence confidence)
-                      (contains? #{:l1 :l2} lyr)
-                      (assoc :session-id sid))
-              entry (cond-> entry
-                      (and (= lyr :l1) (nil? (:kind entry)))
-                      (assoc :kind :user-context)
-                      (and (= lyr :l2) (nil? (:kind entry)))
-                      (assoc :kind :observation)
-                      (and (= lyr :l3) (nil? (:kind entry)))
-                      (assoc :kind :fact))
-              result (agent-mem/remember mm lyr [entry])
-              persisted (-> result lyr first)]
-          (if persisted
-            {:result (format "Stored in %s (kind: %s, id: %s)"
-                             (name lyr) (name (:kind entry)) (:id persisted))
-             :entry-id (:id persisted)
-             :layer (name lyr)}
-            {:error (format "Write to %s returned no entry" (name lyr))})))
+      (let [lyr      (or (layer-kw layer) :l3)
+            kind-kw  (when-not (str/blank? kind) (keyword kind))
+            kind-err (invalid-kind-error lyr kind-kw kind)]
+        (cond
+          (str/blank? content)
+          {:error "content is required"}
+
+          ;; Reject an explicit-but-unknown kind up front with the valid
+          ;; set, so the LLM retries with a good kind instead of looping
+          ;; on the opaque "returned no entry" error.  (Omitted kind falls
+          ;; through to the per-layer default below.)
+          kind-err kind-err
+
+          :else
+          (let [sid (current-session-id)
+                entry (cond-> {:content content}
+                        kind-kw         (assoc :kind kind-kw)
+                        (seq tags)      (assoc :tags (set tags))
+                        (and role
+                             (not (str/blank? role)))
+                        (assoc :role role)
+                        (and (= lyr :l3)
+                             (some? confidence))
+                        (assoc :confidence confidence)
+                        (contains? #{:l1 :l2} lyr)
+                        (assoc :session-id sid))
+                entry (cond-> entry
+                        (and (= lyr :l1) (nil? (:kind entry)))
+                        (assoc :kind :user-context)
+                        (and (= lyr :l2) (nil? (:kind entry)))
+                        (assoc :kind :observation)
+                        (and (= lyr :l3) (nil? (:kind entry)))
+                        (assoc :kind :fact))
+                result (agent-mem/remember mm lyr [entry])
+                persisted (-> result lyr first)]
+            (if persisted
+              {:result (format "Stored in %s (kind: %s, id: %s)"
+                               (name lyr) (name (:kind entry)) (:id persisted))
+               :entry-id (:id persisted)
+               :layer (name lyr)}
+              {:error (format "Write to %s returned no entry" (name lyr))}))))
       {:error "current agent has no memory manager"}))
   :input-schema  [:map
                   [:layer {:optional true} [:string {:desc "memory layer: l1 | l2 | l3 (default l3)" :default "l3"}]]
-                  [:kind {:optional true} [:string {:desc "entry kind (varies by layer; see command docstring)"}]]
+                  [:kind {:optional true} [:string {:desc "entry kind, must match the layer — l1: system-context|user-context|episode|fact|observation (default user-context); l2: conversation|action|observation|thought|evaluation|error (default observation); l3: summary|fact|preference|entity|concept|relationship (default fact)"}]]
                   [:content [:string {:desc "entry content (required)"}]]
                   [:tags {:optional true} [:vector {:desc "tags for the entry"} :string]]
                   [:role {:optional true} [:string {:desc "L2 only: message role (user/assistant/system/tool)"}]]
@@ -175,8 +207,20 @@
             lim (or limit 10)
             mtch (or (match-kw match) :or)
             sid (current-session-id)
-            kind-kw (when-not (str/blank? kind) (keyword kind))]
-        (if lyr
+            kind-kw (when-not (str/blank? kind) (keyword kind))
+            kind-err (invalid-kind-error lyr kind-kw kind)]
+        (cond
+          ;; A kind filter only applies to a specific layer; cross-layer
+          ;; recall ignores :kind. Surface that instead of silently
+          ;; returning unfiltered results the LLM thinks were filtered.
+          (and kind-kw (nil? lyr))
+          {:error "kind filtering requires a specific :layer (l1/l2/l3); cross-layer recall ignores :kind."}
+
+          ;; An unknown kind for the chosen layer would silently match
+          ;; nothing (looks like 'memory is empty'); error with the valid set.
+          kind-err kind-err
+
+          lyr
           (let [layer-opts
                 (cond-> {:limit lim}
                   (= lyr :l1)        (assoc :session-id sid)
@@ -197,6 +241,8 @@
              :entries (mapv #(select-keys % [:id :kind :content :role :tags
                                              :confidence :session-id :created-at])
                             entries)})
+
+          :else
           (let [combined (agent-mem/recall mm
                                            :query (or query "")
                                            :session-id sid
@@ -213,7 +259,7 @@
                   [:layer {:optional true} [:string {:desc "specific layer: l1 | l2 | l3 (omit for cross-layer)"}]]
                   [:limit {:optional true} [:int {:desc "max results (default 10)" :default 10}]]
                   [:match {:optional true} [:string {:desc "FTS multi-word mode: or | and | phrase (default or)" :default "or"}]]
-                  [:kind {:optional true} [:string {:desc "kind filter (varies by layer)"}]]
+                  [:kind {:optional true} [:string {:desc "kind filter, requires :layer (cross-layer recall ignores it) — l1: system-context|user-context|episode|fact|observation; l2: conversation|action|observation|thought|evaluation|error; l3: summary|fact|preference|entity|concept|relationship"}]]
                   [:min-confidence {:optional true} [:double {:desc "L3 only: minimum confidence"}]]]
   :output-schema [:map
                   [:layer {:optional true} [:string {:desc "Layer queried, or 'combined' for cross-layer recall"}]]
