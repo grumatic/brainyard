@@ -199,7 +199,7 @@
                             (remove (fn [[k _]] (omit? k)) args))
           fmt-v    (fn [v]
                      (cond
-                       (string? v)             (clamp (collapse-ws v) 50)
+                       (string? v)             (clamp (collapse-ws v) 150)
                        (or (vector? v) (seq? v)) (clamp (pr-str (vec v)) 60)
                        (map? v) (str "{…" (count v) "k}")
                        :else    (pr-str v)))]
