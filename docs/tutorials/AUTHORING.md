@@ -100,6 +100,8 @@ tool and `.brainyard/` writes must not touch this repo), add a `:workspace`:
 ```edn
  :workspace
  {:git-init true                       ; default true — needed so project-dir = this dir
+  :dir-name "demo-site"                ; optional — names the throwaway folder
+  :env-file true                       ; optional — give `by` the repo's .env (real creds)
   :seed [{:path "src/cli.py" :content "..."}
          {:path "README.md"  :content "..."}]}
 ```
@@ -111,6 +113,18 @@ bash/agent-artifact lands in /tmp, not the repo. Pairs naturally with
 `:binary "by"` (the shipped native binary). Test the setup standalone with
 `bb scripts/asciinema/drive-scenario.bb workspace <scenario.edn>` (prints the
 dir it created).
+
+Two optional keys tailor the setup:
+
+- `:dir-name "demo-site"` — creates the seeded tree at `<temp-dir>/demo-site`
+  instead of the bare `by-tut-…` temp dir, so the cast shows a meaningful path.
+- `:env-file true` — exports **`BY_ENV_FILE=<repo>/.env`** into the recorded
+  `by` process. The native binary discovers `.env` only by walking up from its
+  cwd, so a `by` launched in `/tmp` otherwise finds **no provider credentials**;
+  this points it at the repo `.env` so a **real-LLM** tutorial works in the
+  isolated folder. The path is resolved per-machine from the repo root by the
+  recorder (portable — nothing is hard-coded or committed, and no secret is
+  written to `/tmp`). Pairs with `:binary "by"`.
 
 ## Multi-turn — one chapter per turn
 

@@ -93,6 +93,12 @@
       (err ":chapters is present but empty")
       (and (:workspace m) (not (map? (:workspace m))))
       (err ":workspace must be a map (e.g. {:git-init true :seed [{:path .. :content ..}]})")
+      (and (map? (:workspace m)) (contains? (:workspace m) :dir-name)
+           (not (string? (get-in m [:workspace :dir-name]))))
+      (err ":workspace :dir-name must be a string")
+      (and (map? (:workspace m)) (contains? (:workspace m) :env-file)
+           (not (boolean? (get-in m [:workspace :env-file]))))
+      (err ":workspace :env-file must be a boolean")
       (and (:walkthrough m) (not (string? (:walkthrough m))))
       (err ":walkthrough must be a string (markdown, rendered verbatim under the player)")
       :always
@@ -562,17 +568,24 @@
    project-dir resolves to it, isolating all tool/agent writes from the repo).
 
    :workspace {:git-init true                     ; default true
+               :dir-name \"demo-site\"               ; optional: friendly folder name
                :seed [{:path \"src/cli.py\" :content \"...\"} ...]}
 
    The seed files are written, then (when :git-init) `git init` + an initial
-   commit so the tree is clean and project-dir = git-root = this directory."
+   commit so the tree is clean and project-dir = git-root = this directory.
+
+   :dir-name (optional) names the seeded tree `<temp-dir>/<dir-name>` instead of
+   the bare temp dir, so the cast shows a meaningful path (e.g. `demo-site`)
+   rather than a random `by-tut-…` prefix."
   [scenario-path]
   (let [scn (load-scenario scenario-path)
         ws  (:workspace scn)]
     (when-not (map? ws)
       (binding [*out* *err*] (println "ERROR: scenario has no :workspace map"))
       (System/exit 1))
-    (let [dir (str (fs/create-temp-dir {:prefix (str "by-tut-" (:id scn) "-")}))]
+    (let [base (str (fs/create-temp-dir {:prefix (str "by-tut-" (:id scn) "-")}))
+          dir  (if-let [nm (:dir-name ws)] (str (fs/file base nm)) base)]
+      (fs/create-dirs dir)
       (doseq [{:keys [path content]} (:seed ws)]
         (let [f (fs/file dir path)]
           (fs/create-dirs (fs/parent f))
@@ -611,6 +624,11 @@
     (println (str "SCN_STARTUP=" (or (:startup-timeout-secs scn) 20)))
     (println (str "SCN_SID=" (sh-quote (or sid ""))))
     (println (str "SCN_WORKSPACE=" (if (:workspace scn) "1" "")))
+    ;; When the workspace requests :env-file, record-scenario.sh exports
+    ;; BY_ENV_FILE=<repo>/.env into the `by` process so a native-binary,
+    ;; real-LLM tutorial running in /tmp gets the repo's provider credentials.
+    (println (str "SCN_ENV_FROM_REPO=" (if (get-in scn [:workspace :env-file]) "1" "")))
+    (println (str "SCN_DIR_NAME=" (sh-quote (or (get-in scn [:workspace :dir-name]) ""))))
     (println (str "SCN_ENV_EXPORTS=" (sh-quote exports)))))
 
 ;; =============================================================================

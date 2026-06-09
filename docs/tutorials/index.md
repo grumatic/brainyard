@@ -683,6 +683,47 @@ env equivalent. macOS-only; mutually exclusive with `--web` in v1. Full guide:
 
 _No terminal recording for this walkthrough — see the linked guide._
 
+---
+
+## Building, running &amp; introspecting a project
+
+A guided tour of working on a real project with `by`: scaffold a tiny static site, serve it as a background task, read that task's output log, safely edit a file, then cancel the task — all inside an isolated /tmp workspace where the repo's .env supplies credentials. Recorded live against the native binary on claude-code/opus.
+
+**What this is.** A single session that walks the everyday loop of building on a
+project with `by` — scaffold, run, inspect, edit, stop — showing how the agent
+reaches for code-eval, background **tasks**, and safe file edits as needed.
+
+**Setup.** `by` (the native binary) runs inside a fresh, git-inited `/tmp`
+folder named `demo-site`, so every file the agent writes — and all its
+`.brainyard/` artifacts — stay out of this repo. The workspace's `:env-file`
+flag points `by` at the repo's `.env` (via `BY_ENV_FILE`) so the real LLM has
+credentials even though the cwd is a throwaway `/tmp` tree.
+
+**Turn 1 — scaffold.** Asked for a minimal static site, the agent writes
+`index.html` (a heading and a `Click me` button) and `styles.css` through its
+code/file channel.
+
+**Turn 2 — run it as a background task.** `python3 -m http.server 8000` is
+launched as a **background task** (`task$run`) — the agent hands back a task id
+and the live URL while the server keeps serving.
+
+**Turn 3 — introspect the task.** Asked to check the server's output log, the
+agent reads it back with `task$detail` — the same per-task `output.log` the GC
+layer later reclaims, surfaced on demand.
+
+**Turn 4 — a safe edit.** Renaming the button label `Click me` → `Click Me!`
+goes through `update-file` (probe → apply → verify), with the diff shown.
+
+**Turn 5 — stop the task.** `task$cancel` tears the server down and confirms
+the port is no longer served — closing the loop.
+
+<div class="ascii-cast"
+     data-cast="casts/23-building-a-project.cast"
+     data-cols="110" data-rows="34"
+     data-idle="2.5" data-poster="npt:4:29"></div>
+
+_Recorded against `by` version: `v0.3.0-9-g41f948c-dirty`._
+
 
 <script src="assets/asciinema-player.min.js"></script>
 <script>

@@ -47,7 +47,11 @@ if [[ "$DRY_RUN" == 1 ]]; then
   $DRIVE plan "$SCENARIO"
   log "would launch tmux session: $SESSION (${SCN_COLS}x${SCN_ROWS})"
   log "would record: $SCN_BINARY $SCN_ARGS  ->  $CAST  (version: $VERSION)"
-  [[ -n "${SCN_WORKSPACE:-}" ]] && log "would git-init a /tmp workspace and run \`by\` there (isolated cwd)"
+  if [[ -n "${SCN_WORKSPACE:-}" ]]; then
+    log "would git-init a /tmp workspace and run \`by\` there (isolated cwd)"
+    [[ -n "${SCN_DIR_NAME:-}" ]] && log "  workspace folder name: $SCN_DIR_NAME"
+  fi
+  [[ -n "${SCN_ENV_FROM_REPO:-}" ]] && log "would export BY_ENV_FILE=$ROOT/.env (repo credentials) into the \`by\` process"
   exit 0
 fi
 
@@ -63,9 +67,21 @@ if [[ -n "${SCN_WORKSPACE:-}" ]]; then
   log "workspace: $WORKDIR (git-inited; \`by\` runs here, isolated from the repo)"
 fi
 
+# Optional: feed the repo's `.env` to the native `by` via BY_ENV_FILE. The
+# native binary discovers `.env` only by cwd-walkup, so a `by` launched in a
+# /tmp workspace finds no credentials — this points it at the repo `.env`
+# (resolved per-machine from $ROOT, never committed). Gated by the scenario's
+# :workspace :env-file flag (SCN_ENV_FROM_REPO).
+ENV_FROM_REPO_TOKEN=""
+if [[ -n "${SCN_ENV_FROM_REPO:-}" ]]; then
+  [[ -f "$ROOT/.env" ]] || die "scenario requests :workspace :env-file but $ROOT/.env not found"
+  ENV_FROM_REPO_TOKEN="BY_ENV_FILE='$ROOT/.env'"
+  log "BY_ENV_FILE=$ROOT/.env (repo credentials) -> \`by\` process"
+fi
+
 # 2-3. Build the pane command: env exports + asciinema rec + child `by`.
 #      Pin asciicast-v2 for max asciinema-player / cat compatibility.
-PANE_CMD="env $SCN_ENV_EXPORTS BRAINYARD_VERSION='$VERSION' \
+PANE_CMD="env $ENV_FROM_REPO_TOKEN $SCN_ENV_EXPORTS BRAINYARD_VERSION='$VERSION' \
   asciinema rec \
     --output-format asciicast-v2 \
     --overwrite \

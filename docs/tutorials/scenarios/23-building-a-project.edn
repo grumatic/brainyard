@@ -1,0 +1,119 @@
+;; docs/tutorials/scenarios/23-building-a-project.edn
+;;
+;; A wide-range "light tour" of working on a real project with `by`: scaffold a
+;; tiny static site, serve it as a BACKGROUND TASK, introspect that task's output
+;; log, make a safe in-file edit, then cancel the task. It exercises a broad slice
+;; of coact-agent's capabilities in one session — code-eval + file writes,
+;; task$run / task$detail / task$cancel, and update-file — without the npm flake
+;; of a full framework build.
+;;
+;; SETUP (the three pieces this scenario stitches together):
+;;   1. a fresh target app folder in /tmp     -> :workspace :dir-name "demo-site"
+;;   2. the repo's .env reachable by `by`      -> :workspace :env-file true
+;;                                                (recorder exports BY_ENV_FILE=<repo>/.env)
+;;   3. cd there and run the native `by`        -> :binary "by", launched via
+;;                                                `tmux new-session -c <workspace>`
+;;
+;; Runs the native `by` binary on claude-code/opus (subscription, no per-call
+;; cost). The background-server chapter assumes `python3` is on PATH. Real-LLM,
+;; so output is non-deterministic — no golden frame (verify is for 01-hello only).
+{:id          "23-building-a-project"
+ :title       "Building, running & introspecting a project"
+ :description "A guided tour of working on a real project with `by`: scaffold a
+               tiny static site, serve it as a background task, read that task's
+               output log, safely edit a file, then cancel the task — all inside
+               an isolated /tmp workspace where the repo's .env supplies
+               credentials. Recorded live against the native binary on
+               claude-code/opus."
+
+ :walkthrough
+ "**What this is.** A single session that walks the everyday loop of building on a
+  project with `by` — scaffold, run, inspect, edit, stop — showing how the agent
+  reaches for code-eval, background **tasks**, and safe file edits as needed.
+
+  **Setup.** `by` (the native binary) runs inside a fresh, git-inited `/tmp`
+  folder named `demo-site`, so every file the agent writes — and all its
+  `.brainyard/` artifacts — stay out of this repo. The workspace's `:env-file`
+  flag points `by` at the repo's `.env` (via `BY_ENV_FILE`) so the real LLM has
+  credentials even though the cwd is a throwaway `/tmp` tree.
+
+  **Turn 1 — scaffold.** Asked for a minimal static site, the agent writes
+  `index.html` (a heading and a `Click me` button) and `styles.css` through its
+  code/file channel.
+
+  **Turn 2 — run it as a background task.** `python3 -m http.server 8000` is
+  launched as a **background task** (`task$run`) — the agent hands back a task id
+  and the live URL while the server keeps serving.
+
+  **Turn 3 — introspect the task.** Asked to check the server's output log, the
+  agent reads it back with `task$detail` — the same per-task `output.log` the GC
+  layer later reclaims, surfaced on demand.
+
+  **Turn 4 — a safe edit.** Renaming the button label `Click me` → `Click Me!`
+  goes through `update-file` (probe → apply → verify), with the diff shown.
+
+  **Turn 5 — stop the task.** `task$cancel` tears the server down and confirms
+  the port is no longer served — closing the loop."
+
+ :terminal    {:cols 110 :rows 34 :title "brainyard tutorial — building a project"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 30
+
+ ;; Native binary (~2s start), coact-agent on claude-code/opus (subscription, no
+ ;; per-call cost). NO -i -> fullscreen, so the live iteration / think / tool
+ ;; blocks render. --new skips the resume picker.
+ :launch
+ {:binary "by"
+  :args   ["run" "-a" "coact-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
+           "BRAINYARD_SESSION_ID"     "tutorial-23-build"}}
+
+ ;; Fresh git-inited /tmp folder named `demo-site`; :env-file feeds the repo's
+ ;; .env to `by` (BY_ENV_FILE) so the real LLM has credentials in the isolated
+ ;; cwd. Seeded with a single .gitignore so runtime .brainyard/ writes don't
+ ;; dirty the baseline (and the initial commit gives a clean project-dir).
+ :workspace
+ {:git-init true
+  :dir-name "demo-site"
+  :env-file true
+  :seed [{:path ".gitignore" :content ".brainyard/\n"}]}
+
+ :preamble
+ [{:type :narrate
+   :text "# by — build, run & introspect a small project (native binary, /tmp workspace)"
+   :pause-ms 2400}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Scaffold a tiny static site"
+   :prompt "Create a tiny static website here: an index.html with a heading and a button labeled \"Click me\", plus a styles.css with a little styling. Keep it minimal — no framework, no build step."
+   :expect {:contains ["index.html"]}
+   :settle {:timeout-secs 240}}
+
+  {:id    :ch2
+   :label "Serve it as a background task"
+   :prompt "Serve this folder on port 8000 as a background task using `python3 -m http.server 8000`. Give me the task id and the URL."
+   :expect {:contains ["8000"]}
+   :settle {:timeout-secs 180}}
+
+  {:id    :ch3
+   :label "Check the server task's output log"
+   :prompt "Check the output log of that server task and show me what it printed."
+   :expect {:contains ["http.server"]}
+   :settle {:timeout-secs 180}}
+
+  {:id    :ch4
+   :label "Safely edit the button label"
+   :prompt "Change the button label from \"Click me\" to \"Click Me!\" in index.html, and show me the diff."
+   :expect {:contains ["Click Me!"]}
+   :settle {:timeout-secs 240}}
+
+  {:id    :ch5
+   :label "Cancel the server task"
+   :prompt "Cancel that server task."
+   :expect {:contains ["ancel"]}
+   :settle {:timeout-secs 120}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}
