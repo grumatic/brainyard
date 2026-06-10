@@ -14,7 +14,7 @@
         ;; Clj-Nrepl — live-runtime eval backend for code$eval. Loaded on classpath
         ;; so the task executor + code-eval surface can require it directly; the
         ;; nREPL *server* is only started when a base/project opts in (Integrant
-        ;; key or BRAINYARD_NREPL_ENABLED).  See docs/design/clj-nrepl-eval.md.
+        ;; key or BY_NREPL_ENABLED).  See docs/design/clj-nrepl-eval.md.
         ai.brainyard/clj-nrepl {:local/root "../clj-nrepl"}
         ;; ACP client — soft dependency (requiring-resolve) for the acp-agent defagent.
         ;; On classpath so the agent is invokable without consumers needing extra wiring.

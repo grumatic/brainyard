@@ -32,7 +32,7 @@
                         :nrepl-grant    \"read-only:15m\"}}
      (or \"mutate:5m\" for hot-patching). Manage via config-agent's
      config$apply for the snapshot/diff/dossier safety net.
-   - BRAINYARD_NREPL_ENABLED / BRAINYARD_NREPL_GRANT env vars (transient
+   - BY_NREPL_ENABLED / BY_NREPL_GRANT env vars (transient
      env-fallback layer of the same schema keys)."
   (:require [ai.brainyard.agent.core.tool :refer [defagent defcommand]]
             [ai.brainyard.agent.core.protocol :as proto]

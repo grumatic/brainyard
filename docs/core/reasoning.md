@@ -240,7 +240,7 @@ to `:nrepl`). There is **no per-fence override** — ` ```clojure :nrepl `
 and ` ```clojure :sandbox ` are *fence errors* that surface to the LLM as
 `:error` entries, not routing hints; the fence accepts only the language
 token. The `:nrepl` backend is gated by `:nrepl-enabled?` /
-`:nrepl-grant` (env `BRAINYARD_NREPL_ENABLED` / `BRAINYARD_NREPL_GRANT`);
+`:nrepl-grant` (env `BY_NREPL_ENABLED` / `BY_NREPL_GRANT`);
 mutating evals require the `:mutate` grant and are recorded with audit and
 drift markers so live hot-patches are traceable.
 

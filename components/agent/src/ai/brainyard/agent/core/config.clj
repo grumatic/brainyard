@@ -270,17 +270,17 @@
    ;; The in-process nREPL server backing `code$eval :backend :nrepl` is
    ;; off by default. Operators enable it durably by setting
    ;; `[:agent :config :nrepl-enabled?] true` in .brainyard/config.edn,
-   ;; or transiently via BRAINYARD_NREPL_ENABLED=true (the env-fallback
+   ;; or transiently via BY_NREPL_ENABLED=true (the env-fallback
    ;; layer below). Same precedence applies to :nrepl-port (0 = ephemeral)
    ;; and :nrepl-grant (e.g. "read-only:15m" or "mutate:5m").
    :nrepl-enabled?             {:type "boolean"
-                                :default-fn #(= "true" (System/getenv "BRAINYARD_NREPL_ENABLED"))}
+                                :default-fn #(= "true" (System/getenv "BY_NREPL_ENABLED"))}
    :nrepl-port                 {:type "integer"
-                                :default-fn #(or (some-> (System/getenv "BRAINYARD_NREPL_PORT")
+                                :default-fn #(or (some-> (System/getenv "BY_NREPL_PORT")
                                                          parse-long)
                                                  0)}
    :nrepl-grant                {:type "string"
-                                :default-fn #(System/getenv "BRAINYARD_NREPL_GRANT")}
+                                :default-fn #(System/getenv "BY_NREPL_GRANT")}
    ;; Clojure code-execution backend for ```clojure blocks in CoAct agents.
    ;; :sandbox — SCI sandbox (default, safe for arbitrary agents).
    ;; :nrepl   — live brainyard JVM via clj-nrepl (debug-agent; needs server).

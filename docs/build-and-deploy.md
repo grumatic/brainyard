@@ -528,7 +528,7 @@ Sync is **manual and gated**, performed by running
 `bin/sync-from-dev.sh` in the public repo:
 
 1. Resolves upstream commit SHA (in `~/MyDev/brainyard` by default;
-   overridable via `BRAINYARD_DEV_REPO`).
+   overridable via `BY_DEV_REPO`).
 2. Computes the publishable brick set by walking `:local/root` edges
    from `projects/agent-tui-app` to a fixed point (currently 1 base
    + 12 components, but re-derived on every run because upstream may

@@ -394,7 +394,7 @@
           :title (or (:title m) (:title hdr) id)
           :description (:description m)
           :walkthrough (:walkthrough m)
-          :version (when has-cast? (get-in hdr [:env :BRAINYARD_VERSION]))
+          :version (when has-cast? (get-in hdr [:env :BY_VERSION]))
           :cols (or (-> m :terminal :cols) (:width hdr))
           :rows (or (-> m :terminal :rows) (:height hdr))
           :idle (or (:idle-time-limit m) (:idle_time_limit hdr))
@@ -610,7 +610,7 @@
         launch (:launch scn)
         term   (:terminal scn)
         env    (:env launch)
-        sid    (get env "BRAINYARD_SESSION_ID")
+        sid    (get env "BY_SESSION_ID")
         exports (->> env
                      (map (fn [[k v]] (str k "=" v)))
                      (str/join " "))]

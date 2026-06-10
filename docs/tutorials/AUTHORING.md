@@ -40,7 +40,7 @@ the regenerated `index.md` together.
   ;; --new  -> REQUIRED, skips the interactive resume picker.
   ;; opus via claude-code is subscription-based (no per-call cost) — use it.
   :args   ["-a" "coact-agent" "-p" "claude-code" "-m" "opus" "--new"]
-  :env    {"BRAINYARD_SESSION_ID" "tutorial-02"}}  ; deterministic session dir
+  :env    {"BY_SESSION_ID" "tutorial-02"}}  ; deterministic session dir
 
  :preamble  [{:type :narrate :text "# Demo: tools & skills" :pause-ms 1500}]
  :chapters
@@ -54,7 +54,7 @@ the regenerated `index.md` together.
 
 ### Required fields
 `:id`, `:title`, `:launch` (with a string `:binary`). `:launch :env
-BRAINYARD_SESSION_ID` is required by `record`/`verify` so the session paths are
+BY_SESSION_ID` is required by `record`/`verify` so the session paths are
 deterministic. Each chapter needs `:id` (keyword) and `:prompt` (string).
 
 ## Step types
@@ -85,12 +85,12 @@ Checked by `bb tutorial:verify` against the rendered frame:
 
 | `:binary`      | Runs                              | Use for                                            |
 |----------------|-----------------------------------|----------------------------------------------------|
-| `"by"`         | Native binary on `$PATH`          | Matches the shipped artifact (~2s start). NOTE: a stale `by` may predate the `BRAINYARD_SESSION_ID` env hook — rebuild with `bb install:ata`. |
+| `"by"`         | Native binary on `$PATH`          | Matches the shipped artifact (~2s start). NOTE: a stale `by` may predate the `BY_SESSION_ID` env hook — rebuild with `bb install:ata`. |
 | `"bb tui"`     | JVM REPL TUI                      | **Default for showcase tutorials** — runs from source (env hook present). Slow cold start (bump `:startup-timeout-secs` ~120). |
 | `"bb tui:acp"` | ACP stub TUI                      | Hermetic smoke test / CI golden anchor (01-hello) — no network or API keys. |
 
 Always include `--new` in `:args` so the TUI skips the interactive resume
-picker and lands in a fresh session named by `BRAINYARD_SESSION_ID`.
+picker and lands in a fresh session named by `BY_SESSION_ID`.
 
 ## Isolated workspace (`:workspace`) — run `by` in a throwaway /tmp git tree
 

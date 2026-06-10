@@ -49,8 +49,8 @@
  ;; the resume picker. opus via claude-code is subscription-based (free).
  {:binary "by"
   :args   ["run" "-a" "coact-agent" "-p" "claude-code" "-m" "opus" "--new"]
-  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
-           "BRAINYARD_SESSION_ID"     "tutorial-07-multiturn"}}
+  :env    {"BY_TUTORIAL_MODE" "1"
+           "BY_SESSION_ID"     "tutorial-07-multiturn"}}
 
  ;; Isolated git workspace: a tiny Python CLI project. `by` runs here, so
  ;; reads/writes/grep/bash and the agents' .brainyard/ artifacts stay in /tmp.

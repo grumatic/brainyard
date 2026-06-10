@@ -66,8 +66,8 @@
  :launch
  {:binary "by"
   :args   ["run" "--sandbox" "-a" "coact-agent" "-p" "claude-code" "-m" "opus"]
-  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
-           "BRAINYARD_SESSION_ID"    "tutorial-22"}}
+  :env    {"BY_TUTORIAL_MODE" "1"
+           "BY_SESSION_ID"    "tutorial-22"}}
 
  :preamble
  [{:type :narrate :text "# by --sandbox: a session contained by a macOS seatbelt write-policy" :pause-ms 2000}]

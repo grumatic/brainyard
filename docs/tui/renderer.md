@@ -111,7 +111,7 @@ same lifecycle events to disk without touching the renderer.
 Before May 2026 the renderer also ran an `add-watch`-on-st-memory
 pipeline: `make-st-memory-watch`, `make-streaming-watch`,
 `handle-st-memory-change`, and an `iter-blocks-enabled?` predicate
-flipped between the two pipelines via `BRAINYARD_ITER_LIVE_BLOCKS`.
+flipped between the two pipelines via `BY_ITER_LIVE_BLOCKS`.
 That migration completed (Phase 4 removed the watch path, Phase 5
 cleaned up the docs); hooks are the only rendering pipeline now.
 

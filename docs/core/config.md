@@ -98,15 +98,15 @@ is routed into the per-agent override slot at startup.
  :permission-mode   {:type "keyword" :default :ask-each-time}
  :clj-backend       {:type "keyword" :default :sandbox}     ;; :sandbox | :nrepl (per-agent code-eval backend)
  :acp-backend       {:type "keyword" :default :stub}
- :nrepl-enabled?    {:type "boolean" :default-fn #(env BRAINYARD_NREPL_ENABLED)}
- :nrepl-port        {:type "integer" :default-fn #(env BRAINYARD_NREPL_PORT)}    ;; 0 = ephemeral
- :nrepl-grant       {:type "string"  :default-fn #(env BRAINYARD_NREPL_GRANT)}   ;; e.g. "read-only:15m" / "mutate:5m"
+ :nrepl-enabled?    {:type "boolean" :default-fn #(env BY_NREPL_ENABLED)}
+ :nrepl-port        {:type "integer" :default-fn #(env BY_NREPL_PORT)}    ;; 0 = ephemeral
+ :nrepl-grant       {:type "string"  :default-fn #(env BY_NREPL_GRANT)}   ;; e.g. "read-only:15m" / "mutate:5m"
  ...}
 ```
 
 The `:clj-backend` key selects the per-agent code-execution backend (see
 [reasoning.md](reasoning.md)); it replaced the older `:default-clj-backend`
-name. The `:nrepl-*` keys were promoted from raw `BRAINYARD_NREPL_*` env
+name. The `:nrepl-*` keys were promoted from raw `BY_NREPL_*` env
 vars into the schema so they can be read through `get-config` and persisted
 under `[:agent :config]`, while still honouring the env var as the lazy
 default.

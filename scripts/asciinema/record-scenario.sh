@@ -7,7 +7,7 @@
 #   1. resolve + validate the scenario
 #   2. allocate a detached tmux session sized to :terminal
 #   3. launch `asciinema rec --command "<binary> <args>"` inside the pane,
-#      with the scenario's :env exported so BRAINYARD_SESSION_ID is honored
+#      with the scenario's :env exported so BY_SESSION_ID is honored
 #   4. wait for the TUI lock file (ready)
 #   5. drive preamble -> chapters -> postamble via drive-scenario.bb
 #   6. let the postamble /quit exit `by`, flushing the cast; kill the session
@@ -37,7 +37,7 @@ DRIVE="bb $ROOT/scripts/asciinema/drive-scenario.bb"
 # 1. Validate + load meta.
 $DRIVE parse "$SCENARIO" >/dev/null || die "scenario failed validation"
 eval "$($DRIVE meta "$SCENARIO")"
-[[ -n "${SCN_SID:-}" ]] || die "scenario must set :env BRAINYARD_SESSION_ID (deterministic session id)"
+[[ -n "${SCN_SID:-}" ]] || die "scenario must set :env BY_SESSION_ID (deterministic session id)"
 
 VERSION="$(resolve_version "$SCN_BINARY")"
 SESSION="$(tmux_session_name "$SCENARIO_ID")"
@@ -81,13 +81,13 @@ fi
 
 # 2-3. Build the pane command: env exports + asciinema rec + child `by`.
 #      Pin asciicast-v2 for max asciinema-player / cat compatibility.
-PANE_CMD="env $ENV_FROM_REPO_TOKEN $SCN_ENV_EXPORTS BRAINYARD_VERSION='$VERSION' \
+PANE_CMD="env $ENV_FROM_REPO_TOKEN $SCN_ENV_EXPORTS BY_VERSION='$VERSION' \
   asciinema rec \
     --output-format asciicast-v2 \
     --overwrite \
     --idle-time-limit '$SCN_IDLE' \
     --title '$SCN_TITLE' \
-    --capture-env BRAINYARD_VERSION,BRAINYARD_SESSION_ID \
+    --capture-env BY_VERSION,BY_SESSION_ID \
     --command '$SCN_BINARY $SCN_ARGS' \
     '$ROOT/$CAST'"
 

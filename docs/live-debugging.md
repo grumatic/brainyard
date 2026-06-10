@@ -164,9 +164,9 @@ durable form (`.brainyard/config.edn`) and an env-var fallback:
 
 | Concern | Config key (`[:agent :config …]`) | Env-var fallback | Default |
 |---|---|---|---|
-| Enable the server | `:nrepl-enabled?` | `BRAINYARD_NREPL_ENABLED=true` | `false` |
-| Port | `:nrepl-port` | `BRAINYARD_NREPL_PORT=7890` | `0` (ephemeral) |
-| Grant (gated path) | `:nrepl-grant` | `BRAINYARD_NREPL_GRANT=read-only:15m` | none |
+| Enable the server | `:nrepl-enabled?` | `BY_NREPL_ENABLED=true` | `false` |
+| Port | `:nrepl-port` | `BY_NREPL_PORT=7890` | `0` (ephemeral) |
+| Grant (gated path) | `:nrepl-grant` | `BY_NREPL_GRANT=read-only:15m` | none |
 
 A note on what the original framing assumed:
 
@@ -185,7 +185,7 @@ A note on what the original framing assumed:
 - The port **defaults to `0` (ephemeral)** — the OS picks one and the
   bound value is written to the port file. There is no built-in default
   of `7890`; to *pin* `7890` you must set `:nrepl-port 7890` (or
-  `BRAINYARD_NREPL_PORT=7890`). Pinning a known port is convenient for a
+  `BY_NREPL_PORT=7890`). Pinning a known port is convenient for a
   driver, but reading the port file is the robust approach because it
   always reflects the actual bound port.
 - The **grant only matters for Path B** (the gated client). A raw Path A
@@ -198,9 +198,9 @@ A note on what the original framing assumed:
 
 ```bash
 # Pin a known port + start with a mutate grant so debug-agent can hot-patch.
-BRAINYARD_NREPL_ENABLED=true \
-BRAINYARD_NREPL_PORT=7890 \
-BRAINYARD_NREPL_GRANT=mutate:5m \
+BY_NREPL_ENABLED=true \
+BY_NREPL_PORT=7890 \
+BY_NREPL_GRANT=mutate:5m \
 bb tui
 ```
 
@@ -248,13 +248,13 @@ know to look for it.
   session is using; this doc uses `by-debug` specifically to keep the
   harness separate from any user-facing session named `by`.
 - **Project `.brainyard/config.edn` silently overrides
-  `BRAINYARD_NREPL_*` env vars.** Per the precedence chain — schema
+  `BY_NREPL_*` env vars.** Per the precedence chain — schema
   default (env-var is only the default-fn) ← `!global-config` (the
   file's `[:agent :config]` subtree) ← session ← per-agent — any
   `:nrepl-enabled?` / `:nrepl-port` / `:nrepl-grant` already persisted
   in the project's `.brainyard/config.edn` *wins* over the env-var
   fallback. So
-  `BRAINYARD_NREPL_PORT=7891 bb tui run --new` will still bind whatever
+  `BY_NREPL_PORT=7891 bb tui run --new` will still bind whatever
   port the file says — the env var is silently ignored, with no
   warning. Before debugging "wrong port" or "Address already in use"
   symptoms, `grep nrepl .brainyard/config.edn` and either remove the
@@ -278,8 +278,8 @@ an *external* driver just issues the raw `tmux` commands.)
 #    picker (the picker only appears with a bare --resume). `--new` is
 #    kept here as a harmless no-op for back-compat.
 tmux new-session -d -s by-debug -x 200 -y 50 \
-  "BRAINYARD_NREPL_ENABLED=true BRAINYARD_NREPL_PORT=7890 \
-   BRAINYARD_NREPL_GRANT=mutate:5m bb tui run --new"
+  "BY_NREPL_ENABLED=true BY_NREPL_PORT=7890 \
+   BY_NREPL_GRANT=mutate:5m bb tui run --new"
 
 # 2. Send input (a slash command, a prompt, or a keystroke). Note that
 #    `agents` is a `bb tui` subcommand — *not* an in-TUI slash command.
@@ -722,7 +722,7 @@ Concretely, the following are still manual or unbuilt:
 
 Run 2026-05-23 against a freshly-launched harness (`bb tui` in detached
 tmux, nREPL on port 7890, `:mutate` grant from this project's pinned
-`.brainyard/config.edn` `:nrepl-grant "mutate:24h"` — `BRAINYARD_NREPL_*`
+`.brainyard/config.edn` `:nrepl-grant "mutate:24h"` — `BY_NREPL_*`
 env vars were ignored per the precedence note in §3 "Pre-flight";
 debug-agent instance auto-created via `/agent new debug-agent`). Single
 prompt:

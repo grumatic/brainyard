@@ -300,7 +300,7 @@ The bootstrap log file is its own contract — a fourth test reads it after each
 
 ## 14. Open Questions
 
-1. **Should bootstrap also write a `BRAINYARD_DEFAULT_PROVIDER` line to `~/.brainyard/env`?** Would let `bb` tasks pick up the provider without re-reading `config.edn`. Probably yes, but punt to follow-up.
+1. **Should bootstrap also write a `BY_DEFAULT_PROVIDER` line to `~/.brainyard/env`?** Would let `bb` tasks pick up the provider without re-reading `config.edn`. Probably yes, but punt to follow-up.
 2. **Does `config-agent` get write access to `:llm.default-provider`?** Current design says no (bootstrap owns it). If users start asking config-agent to "switch me to Claude" we may relax this, gated on the same smoke test.
 3. **Apple FM ranking.** Today rung (f) sits below the Ollama install rung. On Apple Silicon with macOS 26+, the user almost certainly prefers `apple-fm` over a 7 GB pull. Consider promoting (f) above (e) when the OS / arch match. Not done in this revision because the Apple FM `apfel` server is still gated behind a separate install we haven't automated.
 4. **GLM model choice.** GLM-4.5-Air is recommended on size + agent-tuning grounds. If a smaller, well-supported alternative ships (Qwen3-Coder small? Gemma 3 4B?), revisit; the ladder rung is the same shape, only the default `model` string changes.

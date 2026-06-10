@@ -48,8 +48,8 @@
  :launch
  {:binary "by"
   :args   ["run" "-a" "rlm-agent" "-p" "claude-code" "-m" "opus" "--new"]
-  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
-           "BRAINYARD_SESSION_ID"     "tutorial-14-rlm"}}
+  :env    {"BY_TUTORIAL_MODE" "1"
+           "BY_SESSION_ID"     "tutorial-14-rlm"}}
 
  ;; A handful of log files with clearly categorizable error lines, so the
  ;; map step has real per-chunk work to do and the reduce produces real counts.

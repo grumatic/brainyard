@@ -8,10 +8,10 @@
    These tests issue real LLM calls and exercise the full agent loop:
    setup → ask → tool invocation → answer.
 
-   They are gated by the BRAINYARD_RUN_INTEGRATION env var so they do
+   They are gated by the BY_RUN_INTEGRATION env var so they do
    not run during `clojure -M:test` by default. To run them:
 
-     BRAINYARD_RUN_INTEGRATION=1 clojure -M:test \\
+     BY_RUN_INTEGRATION=1 clojure -M:test \\
        -e \"(require 'clojure.test 'ai.brainyard.agent.integration-test)
             (clojure.test/run-tests 'ai.brainyard.agent.integration-test)
             (shutdown-agents)\"
@@ -36,15 +36,15 @@
 ;; ============================================================================
 
 (defn- run-integration?
-  "Skip integration tests unless BRAINYARD_RUN_INTEGRATION is truthy AND a
+  "Skip integration tests unless BY_RUN_INTEGRATION is truthy AND a
    default LM is configured. Returns the LM map when ready, nil otherwise."
   []
-  (when (System/getenv "BRAINYARD_RUN_INTEGRATION")
+  (when (System/getenv "BY_RUN_INTEGRATION")
     (try (llm/get-default-lm) (catch Throwable _ nil))))
 
 (defn- skip-notice [test-name]
   (println (str "[SKIP] " test-name
-                " — set BRAINYARD_RUN_INTEGRATION=1 and configure default LM "
+                " — set BY_RUN_INTEGRATION=1 and configure default LM "
                 "(e.g. (llm/configure-default-lm! ...)) to run this test.")))
 
 ;; ============================================================================

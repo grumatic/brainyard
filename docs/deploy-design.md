@@ -109,9 +109,9 @@ Conventions:
 A manual, idempotent shell script that copies the Polylith subset transitively required by `agent-tui-app` from the dev repo into this repo.
 
 ### Behavior
-1. Read `BRAINYARD_DEV_REPO` env var (default: `$HOME/MyDev/brainyard`). Abort if the path does not exist or is not a git repo.
+1. Read `BY_DEV_REPO` env var (default: `$HOME/MyDev/brainyard`). Abort if the path does not exist or is not a git repo.
 2. Verify the upstream working tree is clean (no uncommitted changes), or run with `--allow-dirty` to override. Reason: every public release must be traceable to a specific upstream SHA.
-3. Resolve the upstream commit SHA (`git -C "$BRAINYARD_DEV_REPO" rev-parse HEAD`).
+3. Resolve the upstream commit SHA (`git -C "$BY_DEV_REPO" rev-parse HEAD`).
 4. Compute the **publishable brick set**: start from `projects/agent-tui-app` and walk `:local/root` edges (and the `dev`/`build`/`uberdeps` aliases' `:extra-deps`) recursively until a fixed point. The current root set is documented in §1 (1 base + 12 components); the script must re-derive it on every run because upstream may add components. A `--list-bricks` flag prints the resolved set and exits, for debugging.
 5. `rsync` (with `--delete` and an explicit allow-list per directory) the following from upstream into this repo, preserving relative paths so the `:local/root` graph stays intact:
    - `projects/agent-tui-app/{deps.edn,src,resources,scripts}` → `projects/agent-tui-app/…`

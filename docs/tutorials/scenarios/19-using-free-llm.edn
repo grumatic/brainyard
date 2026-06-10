@@ -57,8 +57,8 @@
  :launch
  {:binary "bb tui"
   :args   ["-a" "coact-agent" "-p" "claude-code" "-m" "opus" "--new"]
-  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
-           "BRAINYARD_SESSION_ID"     "tutorial-19-free-llm"}}
+  :env    {"BY_TUTORIAL_MODE" "1"
+           "BY_SESSION_ID"     "tutorial-19-free-llm"}}
 
  :preamble
  [{:type :narrate

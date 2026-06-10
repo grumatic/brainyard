@@ -38,8 +38,8 @@
  ;; Fullscreen (no -i) so the per-iteration live blocks are captured.
  {:binary "bb tui"
   :args   ["-a" "plan-agent" "-p" "claude-code" "-m" "opus" "--new"]
-  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
-           "BRAINYARD_SESSION_ID"     "tutorial-05-plan"}}
+  :env    {"BY_TUTORIAL_MODE" "1"
+           "BY_SESSION_ID"     "tutorial-05-plan"}}
 
  :preamble
  [{:type :narrate :text "# plan-agent: pre-flight gate, blueprint, post-flight rubric" :pause-ms 2000}]

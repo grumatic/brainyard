@@ -2,7 +2,7 @@
 ;;
 ;; Walks the skill-agent through the skill lifecycle: discover -> create ->
 ;; verify. Recorded live against claude-code/opus via the bb tui JVM launch
-;; mode (the BRAINYARD_SESSION_ID env hook ships in source).
+;; mode (the BY_SESSION_ID env hook ships in source).
 ;;
 ;; NOTE: chapter 2 writes a real skill to <project>/.brainyard/skills/. The
 ;; demo skill is removed after recording (see the recorder notes) so it isn't
@@ -31,8 +31,8 @@
  :launch
  {:binary "bb tui"
   :args   ["-a" "skill-agent" "-p" "claude-code" "-m" "opus" "--new"]
-  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
-           "BRAINYARD_SESSION_ID"     "tutorial-03-skills"}}
+  :env    {"BY_TUTORIAL_MODE" "1"
+           "BY_SESSION_ID"     "tutorial-03-skills"}}
 
  :preamble
  [{:type :narrate :text "# skill-agent: discover, author, and verify skills" :pause-ms 2000}]

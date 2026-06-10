@@ -57,9 +57,9 @@
 ;; ============================================================================
 ;; Env-var bootstrap
 ;;
-;; BRAINYARD_NREPL_GRANT=read-only:15m  →  read-only grant, 15 min TTL
-;; BRAINYARD_NREPL_GRANT=read-only      →  read-only grant, default TTL
-;; BRAINYARD_NREPL_GRANT=mutate:5m      →  mutate grant (Phase 2)
+;; BY_NREPL_GRANT=read-only:15m  →  read-only grant, 15 min TTL
+;; BY_NREPL_GRANT=read-only      →  read-only grant, default TTL
+;; BY_NREPL_GRANT=mutate:5m      →  mutate grant (Phase 2)
 ;; ============================================================================
 
 (def ^:private duration-re #"^(\d+)([smh])$")
@@ -73,10 +73,10 @@
         "h" (* n 60 60 1000)))))
 
 (defn maybe-grant-from-env!
-  "Read BRAINYARD_NREPL_GRANT and issue a grant when present.
+  "Read BY_NREPL_GRANT and issue a grant when present.
    Format: <scope>[:<ttl>] e.g. 'read-only:15m' or 'read-only'.
    Returns the grant map (or nil when no env var / unrecognized scope)."
-  ([] (maybe-grant-from-env! (System/getenv "BRAINYARD_NREPL_GRANT")))
+  ([] (maybe-grant-from-env! (System/getenv "BY_NREPL_GRANT")))
   ([raw]
    (when (and raw (not (str/blank? raw)))
      (let [[scope-s ttl-s] (str/split raw #":" 2)
@@ -84,7 +84,7 @@
            ttl-ms (or (parse-duration-ms ttl-s) default-ttl-ms)]
        (if (#{:read-only :mutate} scope)
          (grant! :scope scope :ttl-ms ttl-ms
-                 :reason "env BRAINYARD_NREPL_GRANT")
+                 :reason "env BY_NREPL_GRANT")
          (mulog/warn ::env-grant-rejected
                      :raw raw
                      :reason "unknown scope"))))))

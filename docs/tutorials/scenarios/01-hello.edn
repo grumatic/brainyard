@@ -26,7 +26,7 @@
  :idle-time-limit 2.0
  ;; `bb tui:acp` is a JVM (clojure -M) cold start, not the native binary —
  ;; allow generous startup. `--new` skips the resume picker so we land in a
- ;; fresh agent (named by BRAINYARD_SESSION_ID via the env hook) without
+ ;; fresh agent (named by BY_SESSION_ID via the env hook) without
  ;; blocking on interactive input.
  :startup-timeout-secs 90
 
@@ -35,8 +35,8 @@
  :launch
  {:binary  "bb tui:acp"
   :args    ["-i" "--new"]
-  :env     {"BRAINYARD_TUTORIAL_MODE" "1"
-            "BRAINYARD_SESSION_ID"     "tutorial-01-hello"}}
+  :env     {"BY_TUTORIAL_MODE" "1"
+            "BY_SESSION_ID"     "tutorial-01-hello"}}
 
  :preamble
  [{:type :narrate :text "# brainyard `by` — hello world" :pause-ms 1200}

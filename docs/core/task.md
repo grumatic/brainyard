@@ -183,9 +183,9 @@ loopback nREPL server (`components/clj-nrepl`). Symmetric to
   both `:clj-sandbox-eval` and `:clj-nrepl-eval` as "clojure" job-types
   and projects nREPL's already-string-printed `:value` verbatim (vs.
   the sandbox path which `pr-str`s the raw Clojure value).
-- Only active when the host has opted in via `BRAINYARD_NREPL_ENABLED=true`
+- Only active when the host has opted in via `BY_NREPL_ENABLED=true`
   on the bb tui / web base — the server is OFF by default. Eval requires
-  an active grant from `BRAINYARD_NREPL_GRANT=<scope>[:<ttl>]`. See
+  an active grant from `BY_NREPL_GRANT=<scope>[:<ttl>]`. See
   `docs/design/clj-nrepl-eval.md` and `docs/design/debug-agent-design.md`.
 
 ---

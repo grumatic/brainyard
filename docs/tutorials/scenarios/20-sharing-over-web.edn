@@ -67,8 +67,8 @@
  {:binary "by"
   :args   ["--web-tmux" "--web-port" "7681" "--web-pass" "demo"
            "-a" "coact-agent" "-p" "claude-code" "-m" "opus"]
-  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
-           "BRAINYARD_SESSION_ID"    "tutorial-20"}}
+  :env    {"BY_TUTORIAL_MODE" "1"
+           "BY_SESSION_ID"    "tutorial-20"}}
 
  ;; No :preamble — the dashboard isn't an interactive readline, so typed
  ;; narration would land on the banner. No :chapters — there are no agent turns

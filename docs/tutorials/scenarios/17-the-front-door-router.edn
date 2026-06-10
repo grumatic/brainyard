@@ -53,8 +53,8 @@
  :launch
  {:binary "by"
   :args   ["run" "-a" "main-agent" "-p" "claude-code" "-m" "opus" "--new"]
-  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
-           "BRAINYARD_SESSION_ID"     "tutorial-17-main"}}
+  :env    {"BY_TUTORIAL_MODE" "1"
+           "BY_SESSION_ID"     "tutorial-17-main"}}
 
  :workspace
  {:git-init true

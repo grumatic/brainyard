@@ -72,7 +72,7 @@
 
       (not (grant/active?))
       (err-result code
-                  "no clj-nrepl grant active — set BRAINYARD_NREPL_GRANT=read-only:15m")
+                  "no clj-nrepl grant active — set BY_NREPL_GRANT=read-only:15m")
 
       (classifier/denied? code)
       (err-result code

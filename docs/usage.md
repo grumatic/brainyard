@@ -210,7 +210,7 @@ Sessions are persisted to SQLite under `~/.brainyard/`. Resume one with `by run 
 
 ## Environment variables
 
-Variables prefixed with `BY_` are read by the **wrapper** (`by` shell script) or the **installer** — not the binary itself. `BRAINYARD_*` variables are read by the binary.
+Variables prefixed with `BY_` are read by the **wrapper** (`by` shell script) or the **installer** — not the binary itself. `BY_*` variables are read by the binary.
 
 | Variable | Read by | Purpose |
 |---|---|---|
@@ -223,10 +223,10 @@ Variables prefixed with `BY_` are read by the **wrapper** (`by` shell script) or
 | `BY_INSTALL_DIR` | install.sh | Override install location (default: `~/.local/bin`). |
 | `BY_DOWNLOAD_BASE` | install.sh | Override the release download base URL (mirrors). |
 | `BY_PROJECT_DIR` | binary | Hint at the project root when `.env`/cwd discovery isn't enough. |
-| `BRAINYARD_SESSION_ID` | binary | Use a deterministic session id (useful for tests/automation). |
-| `BRAINYARD_NREPL_ENABLED` | binary | Enable the embedded (security-gated) nREPL server. |
-| `BRAINYARD_NREPL_PORT` | binary | Port for the embedded nREPL server. |
-| `BRAINYARD_NREPL_GRANT` | binary | Pre-grant nREPL eval permission (skip the interactive confirm). |
+| `BY_SESSION_ID` | binary | Use a deterministic session id (useful for tests/automation). |
+| `BY_NREPL_ENABLED` | binary | Enable the embedded (security-gated) nREPL server. |
+| `BY_NREPL_PORT` | binary | Port for the embedded nREPL server. |
+| `BY_NREPL_GRANT` | binary | Pre-grant nREPL eval permission (skip the interactive confirm). |
 
 LLM provider credentials are read from the environment by their conventional names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AWS_PROFILE`, `AWS_REGION`, …), typically placed in a project-local `.env` that the wrapper sources.
 

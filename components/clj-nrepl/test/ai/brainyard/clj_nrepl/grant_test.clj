@@ -23,7 +23,7 @@
       "TTL of 1ms should be expired by now"))
 
 (deftest env-bootstrap-parses-duration
-  (testing "BRAINYARD_NREPL_GRANT=read-only:15m"
+  (testing "BY_NREPL_GRANT=read-only:15m"
     (let [g (grant/maybe-grant-from-env! "read-only:15m")]
       (is (= :read-only (:scope g)))
       (is (= :read-only (grant/scope)))))

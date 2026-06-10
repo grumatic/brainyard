@@ -45,8 +45,8 @@
  :launch
  {:binary "by"
   :args   ["run" "-a" "init-agent" "-p" "claude-code" "-m" "opus" "--new"]
-  :env    {"BRAINYARD_TUTORIAL_MODE" "1"
-           "BRAINYARD_SESSION_ID"     "tutorial-11-init"}}
+  :env    {"BY_TUTORIAL_MODE" "1"
+           "BY_SESSION_ID"     "tutorial-11-init"}}
 
  :workspace
  {:git-init true

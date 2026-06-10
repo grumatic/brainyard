@@ -36,7 +36,7 @@ stack. See [Startup-path changes](#startup-path-changes) below.
 | What | How |
 |------|-----|
 | Running `bb tui` | In a tmux pane (any session) |
-| nREPL server | Auto-started by `bb tui` when `BRAINYARD_NREPL_ENABLED=true` in `.env`, or via `bb repl:ata` in a separate terminal |
+| nREPL server | Auto-started by `bb tui` when `BY_NREPL_ENABLED=true` in `.env`, or via `bb repl:ata` in a separate terminal |
 | `clj-nrepl-eval` | On `$PATH` — the CLI tool for evaluating Clojure via nREPL |
 | tmux | For sending keystrokes to the TUI pane |
 

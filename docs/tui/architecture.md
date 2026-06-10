@@ -389,7 +389,7 @@ These artifacts of the two-process design are gone from trunk:
   stream paints the current terminal directly.
 - ❌ `add-watch` rendering pipeline (`make-streaming-watch`,
   `make-st-memory-watch`, `handle-st-memory-change`, the
-  `iter-blocks-enabled?` predicate, `BRAINYARD_ITER_LIVE_BLOCKS`
+  `iter-blocks-enabled?` predicate, `BY_ITER_LIVE_BLOCKS`
   env flag). Replaced wholesale by the typed hooks pipeline (see
   [renderer.md](renderer.md)). Migration completed across five
   phases; the watch path is no longer reachable.

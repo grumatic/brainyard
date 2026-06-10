@@ -12,7 +12,7 @@
 > - Sessions now start fresh by default, so no flag is needed to avoid the
 >   resume picker (it appears only with a bare `--resume`). Existing launch
 >   args may still pass **`--new`** — it is a harmless deprecated no-op. (§6)
-> - `BRAINYARD_SESSION_ID` is now honored by the TUI startup (the env hook the
+> - `BY_SESSION_ID` is now honored by the TUI startup (the env hook the
 >   DSL assumed). (§4, §6)
 > - The post-hoc **trim step was removed** — asciinema 3.x's
 >   `--idle-time-limit` embeds the limit in the cast header and the **player**
@@ -161,10 +161,10 @@ magic strings.
  :launch
  {:binary  "by"           ;; or "bb" "tui" — see §6 launch modes
   :args    ["-a" "coact-agent" "-p" "claude-code" "-m" "haiku" "-i"]
-  :env     {"BRAINYARD_TUTORIAL_MODE" "1"
+  :env     {"BY_TUTORIAL_MODE" "1"
             ;; Stable session id keeps `~/.brainyard/sessions/<id>` paths
             ;; deterministic, so the driver can find the stamp file.
-            "BRAINYARD_SESSION_ID" "tutorial-02"}}
+            "BY_SESSION_ID" "tutorial-02"}}
 
  ;; Optional pre-roll narration before the first prompt — typed into a
  ;; comment line so it appears on screen but is harmless to the agent.
@@ -294,7 +294,7 @@ identical otherwise.
 
 **[as-built]** Sessions start fresh by default now, so launch args no longer
 need a flag to avoid the resume picker (it only shows with a bare `--resume`),
-and the TUI lands in a fresh agent named by `BRAINYARD_SESSION_ID`. Existing
+and the TUI lands in a fresh agent named by `BY_SESSION_ID`. Existing
 scenarios still carry **`--new`** in `:launch :args` — it is a harmless
 deprecated no-op and can stay or be dropped. JVM modes
 (`bb tui*`) also want a higher `:startup-timeout-secs` (~90) for clojure cold
@@ -383,8 +383,8 @@ We default to (a) and treat (b) as an opt-in nice-to-have.
 
 Each `.cast` carries the `by --version` string (`git describe
 --tags --always --dirty`) in its `env` header. **[as-built]** The recorder
-exports `BRAINYARD_VERSION` and passes `--capture-env
-BRAINYARD_VERSION,BRAINYARD_SESSION_ID` so asciinema writes them into the
+exports `BY_VERSION` and passes `--capture-env
+BY_VERSION,BY_SESSION_ID` so asciinema writes them into the
 header `env` map — no hand-editing of the JSON. `bb tutorial:embed`
 surfaces this version next to each player so readers know which
 build the demo targets. The version is *not* in the filename, so
@@ -519,7 +519,7 @@ Suggested PR sequence (each PR independently mergeable):
 
 1. **Skeleton.** ✅ **[done]** Dirs, `bb tutorial:{list,dry-run,doctor}`
    wired, scenario parser + validation in `drive-scenario.bb`, plus the
-   `BRAINYARD_SESSION_ID` env hook in the TUI startup.
+   `BY_SESSION_ID` env hook in the TUI startup.
 2. **Recorder.** ✅ **[done]** `record-scenario.sh` + `lib.sh` + asciinema
    integration + `tutorial:record` / `tutorial:play` tasks. `01-hello.edn`
    (ACP-stub smoke test) records and validates end-to-end.

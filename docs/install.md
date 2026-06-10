@@ -147,7 +147,7 @@ bin/release-stage.sh
 
 Prerequisites:
 
-- Access to the private upstream dev repo (`BRAINYARD_DEV_REPO` env var, default `~/Projects/MyDev/brainyard`).
+- Access to the private upstream dev repo (`BY_DEV_REPO` env var, default `~/Projects/MyDev/brainyard`).
 - **GraalVM 25** (matches `.sdkmanrc`). The build is also verified against GraalVM 21.0.9.
 - **Babashka** for the `bb` task runner.
 - **Clojure CLI tools** (`clj`).

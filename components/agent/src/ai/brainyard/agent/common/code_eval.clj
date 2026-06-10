@@ -29,7 +29,7 @@
             [ai.brainyard.mulog.interface :as mulog]))
 
 (defn- dispatch-nrepl-eval
-  "Synchronous :nrepl arm. Bootstraps the grant from BRAINYARD_NREPL_GRANT
+  "Synchronous :nrepl arm. Bootstraps the grant from BY_NREPL_GRANT
    on first use, then defers to clj-nrepl/eval-string (which runs the
    classifier + audit). The enclosing ToolJobExecutor already wraps tool
    calls in a future with timeout, so a sync call here is bounded
@@ -39,7 +39,7 @@
     (clj-nrepl/maybe-grant-from-env!))
   (cond
     (not (clj-nrepl/running?))
-    {:error "clj-nrepl server is not running (set BRAINYARD_NREPL_ENABLED=true on bootstrap)"
+    {:error "clj-nrepl server is not running (set BY_NREPL_ENABLED=true on bootstrap)"
      :code code :output "" :backend :nrepl}
 
     :else
@@ -62,7 +62,7 @@
 (defcommand code$eval
   "Evaluate Clojure code. Two backends:
      :sandbox  SCI sandbox (default, safe). Use a ```clojure fence in CoAct.
-     :nrepl    LIVE brainyard runtime (requires BRAINYARD_NREPL_GRANT).
+     :nrepl    LIVE brainyard runtime (requires BY_NREPL_GRANT).
                Use to observe / debug / extend the running system."
   (fn [{:keys [code backend session timeout-ms]}]
     ;; When the caller doesn't pin :backend, default to the current agent's

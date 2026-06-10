@@ -117,11 +117,11 @@ The server is gated by three schema keys in `agent.core.config/config-schema` (`
 
 ```clojure
 :nrepl-enabled?  {:type "boolean"
-                  :default-fn #(= "true" (System/getenv "BRAINYARD_NREPL_ENABLED"))}
+                  :default-fn #(= "true" (System/getenv "BY_NREPL_ENABLED"))}
 :nrepl-port      {:type "integer"
-                  :default-fn #(or (some-> (System/getenv "BRAINYARD_NREPL_PORT") parse-long) 0)}
+                  :default-fn #(or (some-> (System/getenv "BY_NREPL_PORT") parse-long) 0)}
 :nrepl-grant     {:type "string"
-                  :default-fn #(System/getenv "BRAINYARD_NREPL_GRANT")}
+                  :default-fn #(System/getenv "BY_NREPL_GRANT")}
 ```
 
 Precedence is the standard `get-config` chain — schema `:default-fn` (env var) < `!global-config` (`.brainyard/config.edn`) < session-config < per-agent override. Operators enable nREPL durably with:
@@ -132,7 +132,7 @@ Precedence is the standard `get-config` chain — schema `:default-fn` (env var)
                   :nrepl-grant    "read-only:15m"}}}
 ```
 
-…and existing `BRAINYARD_NREPL_*` scripts keep working as the env layer. config-agent can flip these knobs transactionally via `config$apply` (snapshot + diff + dossier); the `[:agent :config :*]` validator type-checks against `config-schema` automatically.
+…and existing `BY_NREPL_*` scripts keep working as the env layer. config-agent can flip these knobs transactionally via `config$apply` (snapshot + diff + dossier); the `[:agent :config :*]` validator type-checks against `config-schema` automatically.
 
 The earlier proposal threaded the server through an Integrant key + Aero config; the shipped implementation puts the knobs in the runtime config schema instead and keeps the server as a `defonce !nrepl-server` in each base (§5.3) — symmetric with `agent-web`'s `defonce !server` and with no new Integrant wiring to maintain.
 
@@ -232,7 +232,7 @@ The throughline: **the sandbox backend is always available and always safe; the 
 
 ## 10. Phased Rollout
 
-1. **Phase 1 — Server + self-observe (read-only).** ✅ Shipped. `components/clj-nrepl` (server + client + session + grant + classifier + audit), Integrant key, `code$eval` with `:sandbox` (default) and `:nrepl` (gated) backends, `NreplEvalJobExecutor` (`:clj-nrepl-eval` job type) for detach-capable lifecycle, opt-in bootstrap in both bases gated by `BRAINYARD_NREPL_ENABLED`. Grant from `BRAINYARD_NREPL_GRANT=read-only:15m`. (The Phase-1 ` ```clojure :nrepl ` per-fence routing was removed in a later cleanup — see the §14 note. Backend selection lives entirely on the per-agent `:clj-backend` config.)
+1. **Phase 1 — Server + self-observe (read-only).** ✅ Shipped. `components/clj-nrepl` (server + client + session + grant + classifier + audit), Integrant key, `code$eval` with `:sandbox` (default) and `:nrepl` (gated) backends, `NreplEvalJobExecutor` (`:clj-nrepl-eval` job type) for detach-capable lifecycle, opt-in bootstrap in both bases gated by `BY_NREPL_ENABLED`. Grant from `BY_NREPL_GRANT=read-only:15m`. (The Phase-1 ` ```clojure :nrepl ` per-fence routing was removed in a later cleanup — see the §14 note. Backend selection lives entirely on the per-agent `:clj-backend` config.)
 2. **Phase 2 — Debug loop with mutation grant.** ✅ Shipped as two halves:
    - **2a** — `:mutate` grant scope, host-injectable confirmation fn (first mutating eval per session), runtime-drift marker. Deny-list moved out of the classifier into its own gate that applies regardless of scope.
    - **2b** — `debug-agent` defagent (CoAct-derived specialist) with per-instance pinned nREPL session, `:clj-backend :nrepl`, custom `:execution-model` system-prompt section. See `docs/design/debug-agent-design.md`. *(Note: not the eval-agent — that's a different agent for plan/todo/exec verdict production. A new specialist was created.)*
@@ -254,7 +254,7 @@ The throughline: **the sandbox backend is always available and always safe; the 
 ## 12. Open Questions
 
 1. **Mutation classifier strictness.** Phase 1–2 shipped the soft variant (per-form classifier + audit + confirmation). The stronger op-allowlist variant remains open as a Phase 4 hardening option if prompt-injection soak reveals abuse.
-2. **Grant UX.** ✅ Resolved in Phase 1: env-var bootstrap (`BRAINYARD_NREPL_GRANT=<scope>[:<ttl>]`) shipped as the operator entry point. TUI slash-command and inline permission-prompt variants remain open follow-ups; both can be added without breaking the env path.
+2. **Grant UX.** ✅ Resolved in Phase 1: env-var bootstrap (`BY_NREPL_GRANT=<scope>[:<ttl>]`) shipped as the operator entry point. TUI slash-command and inline permission-prompt variants remain open follow-ups; both can be added without breaking the env path.
 3. **Runtime-drift surfacing.** ✅ Resolved in Phase 2a': bold-yellow `drifted (N)` chip on the TUI status bar (between tasks/queue and the calls counter). Stays visible until `clj-nrepl/drift-clear!` or process restart. Banner-on-resume / refuse-to-persist variants remain open if drift becomes common enough to warrant louder warnings.
 4. **Shared image with human CIDER.** Still open. The Phase 2b per-instance pinning means a debug-agent always opens its OWN server-issued session, so a developer attached via CIDER and the agent never share namespace state. Whether to *expose* the CIDER user's session to the agent (or vice versa) for collaborative debugging is unexplored.
 5. **Phase 3 syntax-aware promotion.** Pattern-mode shipped covers the single-`defn`/`def` swap case. Cross-line whole-form rewrites need rewrite-clj plumbing on the artifact side; trigger is real demand.
@@ -286,7 +286,7 @@ Differences from the original revision-1 proposal worth flagging for readers com
 - **Drift marks on *attempt*, not on *full success*.** Clojure top-level forms evaluate sequentially; a `(def x 1)` followed by `(broken-thing)` leaves `x` defined despite the block surfacing `:error`. The drift gate therefore marks whenever a mutating block REACHED the server, regardless of whether all forms succeeded. Caught by a real-LLM test where the agent emitted SCI-style helpers (`pprint`, bare tool-name-as-fn) in a block whose first form was a successful `def`; the marker was being suppressed.
 - **System prompt's "## Execution Model" section is per-agent overridable.** CoAct's hardcoded "sandboxed Clojure interpreter (SCI)" text is wrong for debug-agent. Phase 2b parameterized `:execution-model` in `coact-system-context`; debug-agent's `:agent.instance/created` hook writes an nREPL-aware override. Any future specialist routing to a non-SCI backend can use the same mechanism.
 - **TUI confirm-fn wire is not installed yet.** `clj-nrepl/set-confirm-fn!` is exposed; no base calls it. Default-allow with audit warning is the current behaviour — production hosts should install a real fn (e.g. reusing `permissions/make-permission-fn` in `bases/agent-tui`).
-- **Bootstrap knobs live in `agent.core.config/config-schema`, not Aero/Integrant.** §5.2's original `:ai.brainyard.clj-nrepl/server` Integrant key was never built; instead `:nrepl-enabled?` / `:nrepl-port` / `:nrepl-grant` are first-class schema entries (`[:agent :config :*]` in the persisted EDN). Both bases read them via `agent/get-config`; env vars (`BRAINYARD_NREPL_*`) survive as the schema `:default-fn` layer. Operators get durable opt-in through `~/.brainyard/config.edn` and transactional edits through config-agent's `config$apply`, with the existing schema-leaf validator type-checking writes.
+- **Bootstrap knobs live in `agent.core.config/config-schema`, not Aero/Integrant.** §5.2's original `:ai.brainyard.clj-nrepl/server` Integrant key was never built; instead `:nrepl-enabled?` / `:nrepl-port` / `:nrepl-grant` are first-class schema entries (`[:agent :config :*]` in the persisted EDN). Both bases read them via `agent/get-config`; env vars (`BY_NREPL_*`) survive as the schema `:default-fn` layer. Operators get durable opt-in through `~/.brainyard/config.edn` and transactional edits through config-agent's `config$apply`, with the existing schema-leaf validator type-checking writes.
 
 **Validated end-to-end against real Bedrock haiku.** Each phase has a captured tmux session in the commit history:
 - Phase 1 routing: `(System/getProperty "java.version")` returned `"25.0.3"` via `:clj-nrepl-eval` (SCI denies this call).

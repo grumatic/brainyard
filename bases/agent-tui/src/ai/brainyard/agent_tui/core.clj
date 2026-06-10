@@ -53,7 +53,7 @@
 ;; The in-process nREPL server backs `code$eval :backend :nrepl`. Off by
 ;; default. Operators enable it durably via the brainyard runtime config
 ;; (.brainyard/config.edn, [:agent :config :nrepl-enabled?] true) or
-;; transiently via BRAINYARD_NREPL_ENABLED=true (the env-fallback layer of
+;; transiently via BY_NREPL_ENABLED=true (the env-fallback layer of
 ;; the :nrepl-enabled? schema key). The port (:nrepl-port, 0 = ephemeral)
 ;; and grant (:nrepl-grant, e.g. "read-only:15m") follow the same chain.
 ;; See docs/design/clj-nrepl-eval.md §5 / §8.
@@ -706,7 +706,7 @@
   (try (tui-log/start-file-publisher!) (catch Exception _))
   (agent/set-app-log-path! (tui-log/default-log-path))
 
-  ;; 2d. clj-nrepl server (opt-in). When BRAINYARD_NREPL_ENABLED=true,
+  ;; 2d. clj-nrepl server (opt-in). When BY_NREPL_ENABLED=true,
   ;;     starts a loopback nREPL server so `code$eval :backend :nrepl`
   ;;     can reach the LIVE runtime. Off by default — never started in
   ;;     unattended runs unless explicitly enabled. See §5 of the design.
@@ -765,10 +765,10 @@
 
   (let [;; Honor an explicit session id from the environment when the caller
         ;; didn't pass one. Tutorial recording / scripted drivers set
-        ;; BRAINYARD_SESSION_ID so `~/.brainyard/sessions/<id>/` paths (lock,
+        ;; BY_SESSION_ID so `~/.brainyard/sessions/<id>/` paths (lock,
         ;; turn.complete) are deterministic and `bb tui:drive -S <id>` can
         ;; target this instance. Explicit :session-id still wins.
-        env-sid (let [v (System/getenv "BRAINYARD_SESSION_ID")]
+        env-sid (let [v (System/getenv "BY_SESSION_ID")]
                   (when (and v (not (.isBlank ^String v))) (.trim ^String v)))
         agt-sess-id (or session-id env-sid (agent/generate-session-id "agt"))
         resuming? (and resume? agt-sess-id

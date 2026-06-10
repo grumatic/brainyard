@@ -35,7 +35,7 @@ DRIVE="bb $ROOT/scripts/asciinema/drive-scenario.bb"
 
 $DRIVE parse "$SCENARIO" >/dev/null || die "scenario failed validation"
 eval "$($DRIVE meta "$SCENARIO")"
-[[ -n "${SCN_SID:-}" ]] || die "scenario must set :env BRAINYARD_SESSION_ID"
+[[ -n "${SCN_SID:-}" ]] || die "scenario must set :env BY_SESSION_ID"
 
 SESSION="by-verify-${SCENARIO_ID}-$(short_sha)"
 
