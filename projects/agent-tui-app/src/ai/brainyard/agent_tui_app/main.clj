@@ -356,7 +356,15 @@
     (:verbose opts)        (conj "-v")
     (:max-iterations opts) (into ["-n" (str (:max-iterations opts))])
     (:with-tmux opts)      (conj "--with-tmux")
-    (:resume opts)         (into ["-r" (:resume opts)])))
+    ;; Resume: a concrete id forwards as `-r <id>`. Bare `--resume` (the
+    ;; picker sentinel) must NOT be forwarded as a value — its `--` prefix
+    ;; would make the child's inject-bare-resume-sentinel double-inject and
+    ;; strand a stray positional. Forward a bare `-r` (emitted last) so the
+    ;; child re-derives the sentinel and runs the picker in its own PTY.
+    (= (:resume opts) resume-pick-sentinel) (conj "-r")
+    (and (:resume opts)
+         (not= (:resume opts) resume-pick-sentinel))
+    (into ["-r" (:resume opts)])))
 
 (defn- print-web-banner!
   [{:keys [url session socket]} {:keys [user pass generated?]} bind port writable? tmux?]
@@ -491,7 +499,12 @@
     (:verbose opts)        (conj "-v")
     (:max-iterations opts) (into ["-n" (str (:max-iterations opts))])
     (:with-tmux opts)      (conj "--with-tmux")
-    (:resume opts)         (into ["-r" (:resume opts)])))
+    ;; See web-child-argv: forward bare `-r` for the picker sentinel, never
+    ;; its `--`-prefixed value (which the child would mis-parse as a flag).
+    (= (:resume opts) resume-pick-sentinel) (conj "-r")
+    (and (:resume opts)
+         (not= (:resume opts) resume-pick-sentinel))
+    (into ["-r" (:resume opts)])))
 
 (defn- resolve-sandbox-config!
   "Resolve the sandbox launch config: probe sandbox-exec + macOS, resolve how to
