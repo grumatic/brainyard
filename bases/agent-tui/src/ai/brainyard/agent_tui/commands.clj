@@ -434,19 +434,22 @@
                  (ansi/success (str (name k) " = " coerced)))))))))))
 
 (def ^:private effort-presets
-  {"low"    {:enable-finalize-answer false :max-refinements 0}
-   "medium" {:enable-finalize-answer true  :max-refinements 0}
-   "high"   {:enable-finalize-answer true  :max-refinements 2}})
+  ;; Effort now maps purely to the in-loop refinement budget. The old
+  ;; finalize-answer polish pass was merged into ThinkActCode's answer channel
+  ;; (goal-achieved / next-user-prompt are always produced), so the only knob
+  ;; that varies by effort is how many answer rejections the loop will refine
+  ;; through before accepting.
+  {"low"    {:max-refinements 0}
+   "medium" {:max-refinements 1}
+   "high"   {:max-refinements 2}})
 
 (defn- current-effort-level
   "Derive the current effort level from the agent's merged config view,
    or nil if custom."
   [ag]
-  (let [fa  (agent/get-config ag :enable-finalize-answer)
-        mr  (agent/get-config ag :max-refinements)]
+  (let [mr (agent/get-config ag :max-refinements)]
     (some (fn [[level preset]]
-            (when (and (= fa (:enable-finalize-answer preset))
-                       (= mr (:max-refinements preset)))
+            (when (= mr (:max-refinements preset))
               level))
           effort-presets)))
 
@@ -470,8 +473,7 @@
                 (tui-session/emit!
                  (ansi/success
                   (str "effort = " level
-                       "  (enable-finalize-answer=" (:enable-finalize-answer preset)
-                       ", max-refinements=" (:max-refinements preset) ")"))))
+                       "  (max-refinements=" (:max-refinements preset) ")"))))
             (tui-session/emit!
              (ansi/warning (str "Unknown effort level: " level ". Valid: low, medium, high")))))))))
 

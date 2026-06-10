@@ -2134,18 +2134,19 @@
         (let [st     @st-atom
               answer (or (:answer st)
                          (when (string? result) result))
-              finalize? (boolean (agent/get-config agent :enable-finalize-answer))
+              ;; goal-achieved / next-user-prompt now come from ThinkActCode's
+              ;; answer channel (the old FinalizeAnswer pass was merged in), so
+              ;; they're surfaced unconditionally whenever present.
               goal-achieved (:goal-achieved st)]
           (when (and (string? answer) (not (str/blank? answer)))
             (when (render-active?) (stop-thinking-indicator!))
             (emit! (fmt/format-answer answer))
-            (when (and finalize? (some? goal-achieved))
+            (when (some? goal-achieved)
               (emit! (fmt/format-goal-status goal-achieved nil)))
-            ;; Suggested follow-up (FinalizeAnswer :next-user-prompt) — only when
-            ;; the finalize pass ran. format-next-prompt returns nil if blank.
-            (when finalize?
-              (when-let [np (fmt/format-next-prompt (:next-user-prompt st))]
-                (emit! np))))))))
+            ;; Suggested follow-up (:next-user-prompt). format-next-prompt
+            ;; returns nil if blank.
+            (when-let [np (fmt/format-next-prompt (:next-user-prompt st))]
+              (emit! np)))))))
   ;; Sub-agent: stamp :done in the consolidated subagents block (handled
   ;; centrally in `mark-sub-agent-done!` — also auto-freezes the block
   ;; if this was the last running sub-agent under the root) and emit the
@@ -2164,11 +2165,10 @@
               st      (when st-atom @st-atom)
               answer  (or (:answer st)
                           (when (string? result) result))
-              finalize? (boolean (agent/get-config agent :enable-finalize-answer))
               goal-achieved (:goal-achieved st)]
           (when (and (string? answer) (not (str/blank? answer)))
             (sessions/emit-to-session! sidx (fmt/format-answer answer))
-            (when (and finalize? (some? goal-achieved))
+            (when (some? goal-achieved)
               (sessions/emit-to-session!
                sidx (fmt/format-goal-status goal-achieved nil))))
           (sessions/emit-to-session!

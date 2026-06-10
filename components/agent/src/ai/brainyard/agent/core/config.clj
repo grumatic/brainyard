@@ -155,7 +155,6 @@
    :sandbox-cache-max-files     {:type "integer" :default 200}
    :sandbox-cache-max-bytes     {:type "integer" :default 52428800}
    :sandbox-cache-max-age-days  {:type "integer" :default 7}
-   :enable-finalize-answer     {:type "boolean" :default false}
    ;; Post-session analytics
    :enable-analytics           {:type "boolean" :default false}
    ;; Memory capture pipeline — when true (default), an agent auto-starts the

@@ -13,6 +13,7 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.string :as str]
             [ai.brainyard.agent.common.coact-agent :as rca]
+            [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.tool :as tool]
@@ -68,33 +69,32 @@
     (let [bt-config (rca/coact-behavior-tree 20)]
       (is (= :sequence (first bt-config)))
       (is (= :coact.sequence/main (get-in bt-config [1 :id])))
-      ;; [:sequence opts cond-q prep-conv prep-recall prep-refine-loop
-      ;;  repeat-refine cond-a finalize-fb store maintain] = 11
-      ;; (init + main-loop + ensure-answer + evaluation now live INSIDE the
-      ;;  refinement :repeat node)
+      ;; Flat tree (no outer refinement :repeat, no finalize subtree — refinement
+      ;; moved INTO the loop's answer path; FinalizeAnswer merged into
+      ;; ThinkActCode):
+      ;; [:sequence opts cond-q prep-conv prep-recall init loop-guard
+      ;;  ensure-answer cond-a store maintain] = 11
       (is (= 11 (count bt-config)))))
 
-  (testing "top-level BT wraps the work in a refinement :repeat node"
+  (testing "top-level BT runs init once, then the loop guard (no outer refine loop)"
     (let [bt-config (rca/coact-behavior-tree 20)
-          refine (first (filter #(and (vector? %)
-                                      (= :repeat (first %))
-                                      (= :coact.repeat/refine (get-in % [1 :id])))
-                                bt-config))]
-      (is (some? refine) "refinement :repeat node is present")
-      (is (fn? (get-in refine [1 :max-n])))
-      (is (fn? (get-in refine [1 :condition-fn])))
-      (let [round-seq (nth refine 2)
-            ids (->> round-seq
-                     (filter vector?)
-                     (map #(get-in % [1 :id]))
-                     set)]
-        ;; The round runs init → main loop → ensure-answer → evaluation.
-        (is (contains? ids :coact.action/init))
-        (is (contains? ids :coact.fallback/loop-guard))
-        (is (contains? ids :coact.action/ensure-answer))
-        (is (contains? ids :coact.action/prepare-evaluation))
-        (is (contains? ids :coact.fallback/eval-llm-guard))
-        (is (contains? ids :coact.fallback/refine-guard)))))
+          ids (->> bt-config
+                   (filter vector?)
+                   (map #(get-in % [1 :id]))
+                   set)]
+      ;; init runs ONCE at top level now — not inside an outer :repeat.
+      (is (contains? ids :coact.action/init))
+      (is (contains? ids :coact.fallback/loop-guard))
+      (is (contains? ids :coact.action/ensure-answer))
+      (is (contains? ids :coact.action/store-results))
+      ;; The outer refinement :repeat and finalize subtree are gone.
+      (is (nil? (first (filter #(and (vector? %)
+                                     (= :repeat (first %))
+                                     (= :coact.repeat/refine (get-in % [1 :id])))
+                               bt-config)))
+          "outer refinement :repeat node is removed")
+      (is (not (contains? ids :coact.fallback/finalize-guard))
+          "finalize subtree is removed")))
 
   (testing "BT builds successfully with the BT engine"
     (let [bt-config (rca/coact-behavior-tree 10)
@@ -108,34 +108,55 @@
       (is (= "test question" (:question @(get-in built [:context :st-memory])))))))
 
 (deftest loop-subtree-structure-test
-  (testing "loop subtree uses :repeat with answer-non-blank exit condition"
-    (let [sub (rca/coact-loop-subtree 5)]
+  (testing "loop subtree uses :repeat with a :terminated exit condition"
+    (let [sub (rca/coact-loop-subtree 5)
+          cond-fn (get-in sub [1 :condition-fn])]
       (is (= :repeat (first sub)))
       (is (= :coact.repeat/iterate (get-in sub [1 :id])))
-      (is (fn? (get-in sub [1 :condition-fn])))
-      (is (fn? (get-in sub [1 :max-n])))))
+      (is (fn? cond-fn))
+      (is (fn? (get-in sub [1 :max-n])))
+      ;; Exit only on :terminated (stamp-answer / fatal repair) — a non-blank
+      ;; answer alone no longer exits (a rejected answer is blanked + re-looped).
+      (is (true? (cond-fn {:st-memory (atom {:terminated true})})))
+      (is (not (cond-fn {:st-memory (atom {:answer "non-blank but not terminated"})})))))
 
-  (testing "iteration sequence contains router and accumulate"
+  (testing "iteration sequence contains router; answer path carries the hybrid gate"
     (let [sub (rca/coact-loop-subtree 5)
           iter-seq (nth sub 2)]
       (is (= :sequence (first iter-seq)))
       (is (= :coact.sequence/iteration (get-in iter-seq [1 :id])))
-      ;; Find the router fallback by ID
       (let [router (first (filter #(and (vector? %)
                                         (= :fallback (first %))
                                         (= :coact.fallback/router
                                            (get-in % [1 :id])))
                                   iter-seq))]
         (is (some? router))
-        ;; Router is [:fallback opts answer-path code-path tool-path repair] = 6 elements
-        (is (= 6 (count router)))))))
+        ;; Router is [:fallback opts answer-path code-path tool-path repair] = 6
+        (is (= 6 (count router)))
+        ;; The answer path now carries capture-answer-meta + the answer-gate
+        ;; fallback (accept | refine-self | eval-confirm).
+        (let [answer-path (first (filter #(and (vector? %)
+                                               (= :coact.sequence/answer-path
+                                                  (get-in % [1 :id])))
+                                         router))
+              ids (->> (tree-seq coll? seq answer-path)
+                       (filter #(and (vector? %) (map? (second %))))
+                       (keep #(get-in % [1 :id]))
+                       set)]
+          (is (contains? ids :coact.action/capture-answer-meta))
+          (is (contains? ids :coact.fallback/answer-gate))
+          (is (contains? ids :coact.action/stamp-answer))
+          (is (contains? ids :coact.action/refine-self))
+          (is (contains? ids :coact.action/prepare-eval))
+          (is (contains? ids :coact.action/evaluate-answer))
+          (is (contains? ids :coact.action/process-eval)))))))
 
 ;; ============================================================================
 ;; 2. ThinkActCode Signature Shape
 ;; ============================================================================
 
 (deftest signature-shape-test
-  (testing "ThinkActCode signature has 4 inputs and 3 outputs"
+  (testing "ThinkActCode signature has 4 inputs and 5 outputs"
     (let [{:keys [input-keys output-keys]} (clj-llm/extract-signature-metadata
                                             @#'rca/ThinkActCode)]
       ;; :system-context and :user-context are stable-keys (embedded in the
@@ -147,10 +168,10 @@
              (set input-keys)))
       ;; :thought is NOT a signature output — reasoning comes from the
       ;; DSPy chain-of-thought layer (:last-reasoning in st-memory).
-      ;; Code-block deadlines are no longer LLM-tunable: each block runs
-      ;; sync/foreground; auto-detach into background happens after the
-      ;; agent's :auto-background-timeout-ms config knob.
-      (is (= #{:tool-calls :code-blocks :answer}
+      ;; :goal-achieved / :next-user-prompt are the answer-channel
+      ;; self-assessment outputs (the old standalone FinalizeAnswer pass, now
+      ;; folded in — populated only when `answer` is non-blank).
+      (is (= #{:tool-calls :code-blocks :answer :goal-achieved :next-user-prompt}
              (set output-keys))))))
 
 (deftest stable-keys-wiring-test
@@ -327,6 +348,134 @@
       ;; Clears :eval-display so the TUI doesn't re-render the prior
       ;; iteration's Code/Output on this (code-less) answer iteration.
       (is (nil? (:eval-display @st))))))
+
+;; --- In-loop refinement: hybrid gate, feedback injection, eval processing ---
+
+(deftest capture-answer-meta-decision-test
+  (testing "budget exhausted (round >= max-refinements) -> :accept"
+    (with-redefs [config/get-config (fn [_ k] (when (= k :max-refinements) 2))]
+      (let [st (fresh-st-memory :answer "## done" :goal-achieved false
+                                :refinement-round 2)]
+        (rca/coact-capture-answer-meta {:st-memory st :agent :stub})
+        (is (= :accept (:answer-decision @st)))
+        (is (= "## done" (:pending-answer @st))))))
+  (testing "goal-achieved=true with budget remaining -> :needs-eval"
+    (with-redefs [config/get-config (fn [_ k] (when (= k :max-refinements) 2))]
+      (let [st (fresh-st-memory :answer "## done" :goal-achieved true
+                                :refinement-round 0)]
+        (rca/coact-capture-answer-meta {:st-memory st :agent :stub})
+        (is (= :needs-eval (:answer-decision @st))))))
+  (testing "goal-achieved=false with budget remaining -> :refine-self"
+    (with-redefs [config/get-config (fn [_ k] (when (= k :max-refinements) 2))]
+      (let [st (fresh-st-memory :answer "## partial" :goal-achieved false
+                                :refinement-round 0)]
+        (rca/coact-capture-answer-meta {:st-memory st :agent :stub})
+        (is (= :refine-self (:answer-decision @st))))))
+  (testing "max-refinements=0 always accepts (low/medium effort)"
+    (let [st (fresh-st-memory :answer "## done" :goal-achieved true
+                              :refinement-round 0)]
+      ;; agent nil -> config/get-config returns nil -> max-refs 0
+      (rca/coact-capture-answer-meta {:st-memory st :agent nil})
+      (is (= :accept (:answer-decision @st))))))
+
+(deftest answer-decision-is-test
+  (testing "factory matches the stamped :answer-decision"
+    (let [st (fresh-st-memory :answer-decision :refine-self)]
+      (is (true? ((rca/answer-decision-is? :refine-self) {:st-memory st})))
+      (is (not ((rca/answer-decision-is? :accept) {:st-memory st}))))))
+
+(deftest refine-self-action-test
+  (testing "injects an [evaluation] record, blanks answer, bumps round, does NOT terminate"
+    (let [st (fresh-st-memory :answer "## partial"
+                              :pending-answer "## partial"
+                              :next-user-prompt "add the missing totals"
+                              :iteration-count 3
+                              :refinement-round 0
+                              :iterations [{:iteration 1 :channel "code"
+                                            :tool-results [] :code-results []}])
+          result (rca/coact-refine-self-action {:st-memory st})
+          iters (:iterations @st)
+          eval-rec (last iters)]
+      (is (= bt/success result))
+      (is (= "" (:answer @st)) "answer blanked so the loop continues")
+      (is (not (:terminated @st)) "refinement does not terminate the loop")
+      (is (= 1 (:refinement-round @st)) "round incremented")
+      (is (= "## partial" (:previous-answer @st)))
+      (is (= "evaluation" (:channel eval-rec)))
+      (is (= "SELF" (:verdict eval-rec)))
+      (is (str/includes? (:feedback eval-rec) "add the missing totals"))
+      (is (= "## partial" (:rejected-answer eval-rec))))))
+
+(deftest process-eval-in-loop-test
+  (testing "COMPLETE verdict -> accept and terminate"
+    (let [st (fresh-st-memory :answer "## done" :pending-answer "## done"
+                              :goal-achieved true :verdict "COMPLETE"
+                              :detail "looks good" :refinement-round 0)
+          result (rca/coact-process-eval-in-loop-action {:st-memory st :agent nil})]
+      (is (= bt/success result))
+      (is (true? (:terminated @st)) "COMPLETE terminates via stamp-answer")
+      (is (= :answer (:last-channel @st)))
+      (is (true? (:goal-achieved @st)))))
+  (testing "INCOMPLETE verdict -> inject feedback and continue"
+    (let [st (fresh-st-memory :answer "## thin" :pending-answer "## thin"
+                              :goal-achieved true :verdict "INCOMPLETE"
+                              :detail "missing the per-region breakdown"
+                              :iteration-count 4 :refinement-round 0
+                              :iterations [])
+          result (rca/coact-process-eval-in-loop-action {:st-memory st :agent nil})
+          eval-rec (last (:iterations @st))]
+      (is (= bt/success result))
+      (is (not (:terminated @st)) "INCOMPLETE keeps looping")
+      (is (= "" (:answer @st)))
+      (is (= 1 (:refinement-round @st)))
+      (is (= "INCOMPLETE" (:verdict eval-rec)))
+      (is (str/includes? (:feedback eval-rec) "per-region breakdown"))))
+  (testing "HALLUCINATED verdict -> inject feedback and continue"
+    (let [st (fresh-st-memory :answer "## made-up" :pending-answer "## made-up"
+                              :goal-achieved true :verdict "HALLUCINATED"
+                              :detail "invented the revenue figure"
+                              :iteration-count 4 :refinement-round 1
+                              :iterations [])
+          result (rca/coact-process-eval-in-loop-action {:st-memory st :agent nil})
+          eval-rec (last (:iterations @st))]
+      (is (= bt/success result))
+      (is (not (:terminated @st)))
+      (is (= 2 (:refinement-round @st)))
+      (is (= "HALLUCINATED" (:verdict eval-rec)))
+      (is (str/includes? (:feedback eval-rec) "HALLUCINATED")))))
+
+(deftest prepare-eval-action-test
+  (testing "no evidence -> phase :skipped (eval-needs-llm? false -> accept-on-skip)"
+    (let [st (fresh-st-memory :answer "general-knowledge answer"
+                              :iterations [{:iteration 1 :channel "none"
+                                            :tool-results [] :code-results []}])]
+      (rca/coact-prepare-eval-action {:st-memory st :agent nil})
+      (is (= :skipped (get-in @st [:evaluation-status :phase])))
+      (is (not (rca/coact-eval-needs-llm? {:st-memory st})))))
+  (testing "with evidence -> phase :llm-calling (eval-needs-llm? true)"
+    (let [st (fresh-st-memory
+              :answer "## from tools"
+              :iterations [{:iteration 1 :channel "tool"
+                            :tool-results [{:tool-name "fetch"
+                                            :tool-args {}
+                                            :tool-result "REGION=us rev=42"}]
+                            :code-results []}])]
+      (rca/coact-prepare-eval-action {:st-memory st :agent nil})
+      (is (= :llm-calling (get-in @st [:evaluation-status :phase])))
+      (is (rca/coact-eval-needs-llm? {:st-memory st})))))
+
+(deftest format-iterations-evaluation-record-test
+  (testing "format-iterations-block renders an [evaluation] record with verdict + feedback"
+    (let [render @#'rca/format-iterations-block
+          out (render [{:iteration 5 :channel "evaluation"
+                        :rejected-answer "## partial answer text"
+                        :verdict "INCOMPLETE"
+                        :feedback "add the per-region totals"
+                        :tool-results [] :code-results []}])]
+      (is (str/includes? out "[evaluation]"))
+      (is (str/includes? out "REJECTED INCOMPLETE"))
+      (is (str/includes? out "add the per-region totals"))
+      (is (str/includes? out "## partial answer text")))))
 
 ;; --- Tool dispatch (via a mock defcommand) ---
 

@@ -93,6 +93,12 @@
 
    ::code-blocks [:string {:desc "Markdown text containing fenced code blocks with language tags (clojure, bash, python, javascript). Blocks separated by a line containing only `<!-- ParallelBlock -->` run concurrently in forked sandboxes. Otherwise blocks run sequentially in source order. Four-backtick fences tagged markdown/text/html are verbatim content blocks: saved to a file (path returned), not executed. Empty when using tool-calls or answer."}]
 
+   ;; Answer-channel self-assessment (replaces the old standalone FinalizeAnswer
+   ;; DSPy call). Optional outputs — populated only when `answer` is non-blank;
+   ;; left default (false / empty string) on tool-calls / code-blocks turns.
+   ::goal-achieved [:boolean {:desc "Set ONLY when populating `answer`: true iff the question is fully and accurately answered with evidence support. false signals you are answering but not yet confident — the loop may refine. Leave false on tool-calls/code-blocks turns."}]
+   ::next-user-prompt [:string {:desc "Set ONLY when populating `answer`: a concise one-line follow-up the USER could send next to build on this answer. Phrase it as the user's own request (imperative, ~12 words max), not a question back to the user. Empty string when no useful follow-up exists or when not answering."}]
+
    ;; ── Iteration record & history ──────────────────────────────────────────
    ::tool-result-entry [:map {:desc "One tool invocation + its result"}
                         [:tool-name [:string {:desc "tool id"}]]
@@ -117,10 +123,14 @@
    ::iteration [:map {:desc "One CoAct iteration record"}
                 [:iteration [:int {:desc "1-based index"}]]
                 [:thought ::thought]
-                [:channel [:enum {:desc "which channel executed"}
-                           "tool" "code" "none"]]
+                [:channel [:enum {:desc "which channel executed. \"evaluation\" is a synthetic record injected when an emitted answer was rejected (self-reported not-done or EvaluateAnswer verdict) so the next iteration sees the critique."}
+                           "tool" "code" "none" "evaluation"]]
                 [:tool-results [:vector {:desc "non-empty iff channel = tool"} ::tool-result-entry]]
-                [:code-results [:vector {:desc "non-empty iff channel = code"} ::eval-entry]]]
+                [:code-results [:vector {:desc "non-empty iff channel = code"} ::eval-entry]]
+                ;; ── Evaluation-record fields (channel = "evaluation" only) ──
+                [:rejected-answer {:optional true} [:string {:desc "the answer draft that was rejected"}]]
+                [:verdict {:optional true} [:string {:desc "rejection reason: \"SELF\" (you reported goal-achieved=false), \"INCOMPLETE\", or \"HALLUCINATED\""}]]
+                [:feedback {:optional true} [:string {:desc "what to fix before answering again"}]]]
 
    ::iterations [:vector {:desc "Full iteration history (capped + truncated for context budget)"}
                  ::iteration]})
@@ -213,8 +223,22 @@ ANSWER CHANNEL — use when:
   - You cannot make further progress (include the reason), OR
   - You need user clarification (ask in the answer).
 
+  When you populate `answer`, ALSO set the two self-assessment outputs:
+    - `goal-achieved`: true ONLY if the question is fully and accurately
+      answered with support from the evidence in `iterations`. Set false if you
+      are answering but uncertain, partial, or blocked — the loop may refine.
+    - `next-user-prompt`: one concise line (~12 words max) the USER could send
+      next to build on this answer, phrased as the user's own imperative request
+      (NOT a question back to them). Empty string when no useful follow-up.
+  Leave both at their defaults (false / \"\") on tool-calls and code-blocks turns.
+
+  If a prior `[evaluation]` record in `iterations` shows your previous answer was
+  REJECTED, read its feedback, FIX the issue (re-run tools/code if data is
+  missing), and do not simply repeat the rejected text.
+
   Output shape:
     answer: \"## Markdown answer\\n- bullet\\n- caveat: ...\"
+    goal-achieved: true   next-user-prompt: \"add error handling to the script\"
     tool-calls: []   code-blocks: \"\"
 
 ---------------------------------------------------------------------------
@@ -272,9 +296,11 @@ can continue. A LATER iteration receives the resolved result as an
              :context-briefing ::context-briefing
              :recalled-memory  ::acs/recalled-memory
              :iterations       ::iterations}
-   :outputs {:tool-calls  ::tool-calls
-             :code-blocks ::code-blocks
-             :answer      ::acs/answer}})
+   :outputs {:tool-calls       ::tool-calls
+             :code-blocks      ::code-blocks
+             :answer           ::acs/answer
+             :goal-achieved    ::goal-achieved
+             :next-user-prompt ::next-user-prompt}})
 
 ;; ============================================================================
 ;; Section Strings — CoAct-native
@@ -960,34 +986,16 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 
    When :return-breakdown? is true, returns {:content str :sections {kw text}}
    with one entry per non-blank section."
-  [{:keys [conversation previous-turns live-artifacts turn-info parent-trail
-           refinement-feedback previous-answer]}
+  [{:keys [conversation previous-turns live-artifacts turn-info parent-trail]}
    & {:keys [return-breakdown?]}]
   ;; P4.6: :project-instructions and :user-instructions moved to
   ;; :system-context (above the cross-turn cache breakpoint). The
   ;; user-context now holds only per-turn-volatile sections.
+  ;; NOTE: refinement feedback is NO LONGER a user-context section — in-loop
+  ;; refinement injects the critique as an [evaluation] record in :iterations
+  ;; (a live DSPy input), since user-context is a cached stable-key built once
+  ;; per turn and would not re-render mid-loop.
   (let [sections (cond-> {}
-                   ;; Refinement feedback (answer-evaluation retry). Rendered
-                   ;; first so a retried round can't miss the critique that
-                   ;; rejected its previous answer. Present only on rounds > 0.
-                   ;; When the rejected answer is available it is shown verbatim
-                   ;; (capped) so the model can see — and avoid repeating — what
-                   ;; it got wrong.
-                   (and refinement-feedback (not (str/blank? refinement-feedback)))
-                   (assoc :refinement-feedback
-                          (str "## Refinement Feedback\n"
-                               "Your previous answer was rejected by the answer evaluator. "
-                               "Address this before answering again:\n\n"
-                               refinement-feedback
-                               (when-not (str/blank? (str previous-answer))
-                                 (let [pa (str previous-answer)
-                                       pa (if (> (count pa) 2000)
-                                            (str (subs pa 0 2000) "…")
-                                            pa)]
-                                   (str "\n\n### Your previous (rejected) answer\n"
-                                        "Do not simply repeat it — fix the issues above:\n\n"
-                                        pa)))))
-
                    (and turn-info (not (str/blank? turn-info)))
                    (assoc :turn-info turn-info)
 
@@ -1013,7 +1021,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                    (assoc :live-artifacts
                           (str "## Live Artifacts\n"
                                (format-live-artifacts live-artifacts))))
-        section-order [:refinement-feedback :turn-info :parent-trail
+        section-order [:turn-info :parent-trail
                        :conversation-history :previous-turns :live-artifacts]
         content (if (seq sections)
                   (str/join "\n\n" (keep #(get sections %) section-order))
@@ -1108,7 +1116,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
     (->> iterations
          (map-indexed
           (fn [idx {:keys [iteration channel thought tool-results code-results
-                           async-completion? in-flight-roster?] :as rec}]
+                           async-completion? in-flight-roster?
+                           rejected-answer verdict feedback] :as rec}]
             (cond
               in-flight-roster?
               (format-in-flight-roster-line
@@ -1117,6 +1126,15 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
               async-completion?
               (format-async-completion-line
                (assoc rec :iteration (or iteration (inc idx))))
+
+              (= channel "evaluation")
+              (let [n (or iteration (inc idx))
+                    snip (let [s (str rejected-answer)]
+                           (if (> (count s) 200) (str (subs s 0 200) "…") s))]
+                (str "(" n ") [evaluation] REJECTED " (or verdict "") ": "
+                     (str feedback)
+                     (when-not (str/blank? snip)
+                       (str " | your rejected answer: " snip))))
 
               :else
               (let [n (or iteration (inc idx))
@@ -1294,8 +1312,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                :return-breakdown? true)
           usr (coact-user-context
                (select-keys state [:conversation :previous-turns
-                                   :live-artifacts :turn-info :parent-trail
-                                   :refinement-feedback :previous-answer])
+                                   :live-artifacts :turn-info :parent-trail])
                :return-breakdown? true)]
       (merge (:sections sys) (:sections usr))))
   (system-order [_]
@@ -1307,7 +1324,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
      :project-instructions :user-instructions
      :footer])
   (user-order [_]
-    [:refinement-feedback :turn-info :parent-trail
+    [:turn-info :parent-trail
      :conversation-history :previous-turns :live-artifacts])
   (policies [_] cb/default-section-policies)
   (strategies [_ st-memory] (coact-strategies st-memory)))
@@ -1551,14 +1568,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                          :previous-turns         previous-turns
                          :live-artifacts         resolved-artifacts
                          :turn-info       turn-info-text
-                         :parent-trail    parent-trail
-                         ;; Present only on refinement rounds (> 0); rendered
-                         ;; as the leading user-context section so the retry
-                         ;; sees the evaluator's critique. :previous-answer is
-                         ;; the rejected attempt, shown (capped) inside that
-                         ;; section so the model can see what it got wrong.
-                         :refinement-feedback (:refinement-feedback st)
-                         :previous-answer     (:previous-answer st)}
+                         :parent-trail    parent-trail}
         merged-sections (sa/sections assembler assembler-state)
         sys-order       (sa/system-order assembler)
         usr-order       (sa/user-order assembler)
@@ -1632,11 +1642,21 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
              :answer           ""
              :terminated       false
              :terminated-by    nil
-             ;; Cleared at the start of every round so a prior round's
-             ;; exhaustion flag can't make this round's answer look exhausted;
-             ;; coact-ensure-answer-action re-sets it after the loop if this
-             ;; round actually hits the iteration ceiling.
+             ;; Cleared at turn start so a prior turn's exhaustion flag can't
+             ;; make this turn's answer look exhausted; coact-ensure-answer-action
+             ;; re-sets it after the loop if this turn hits the iteration ceiling.
              :iterations-exhausted false
+             ;; Per-turn answer-evaluation / in-loop refinement bookkeeping.
+             ;; init runs ONCE per turn now (refinement no longer re-inits), so
+             ;; these reset here rather than in a separate pre-loop action.
+             :refinement-round   0
+             :refinement-feedback nil
+             :answer-complete    nil
+             :previous-answer    nil
+             :pending-answer     nil
+             :answer-decision    nil
+             :goal-achieved      nil
+             :next-user-prompt   nil
              :consecutive-llm-failures 0
              :last-repair-iter nil
              :iteration-count  0
@@ -1961,6 +1981,14 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                       :last-tool-results []
                       :last-code-results []
                       :eval-display      nil
+                      ;; Reset the answer-channel self-assessment outputs so an
+                      ;; optional output the model omits this iteration can't
+                      ;; leak a prior iteration's value into the answer path /
+                      ;; the hybrid refine gate (capture-answer-meta reads these
+                      ;; fresh). :answer-decision is the per-answer routing key.
+                      :goal-achieved     nil
+                      :next-user-prompt  nil
+                      :answer-decision   nil
                       ;; Clear any stale DSPy error from a prior iteration so
                       ;; coact-repair-action only reads THIS iteration's error.
                       :dspy-error        nil))))
@@ -2187,13 +2215,21 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    and the answer box. Without this, a prior iteration's eval-display would
    re-render here because our answer iteration produced no code."
   [{:keys [st-memory]}]
-  (swap! st-memory assoc
-         :last-channel   :answer
-         :terminated     true
-         :terminated-by  (or (:terminated-by @st-memory) :answer-channel)
-         :consecutive-llm-failures 0
-         :eval-display   nil
-         :display-stage  :eval-result)
+  (swap! st-memory
+         (fn [m]
+           (assoc m
+                  :last-channel   :answer
+                  :terminated     true
+                  :terminated-by  (or (:terminated-by m) :answer-channel)
+                  :consecutive-llm-failures 0
+                  :eval-display   nil
+                  :display-stage  :eval-result
+                  ;; Finalize the answer-channel self-assessment (folded in from
+                  ;; the old FinalizeAnswer pass). goal-achieved is coerced to a
+                  ;; definite boolean; next-user-prompt rides through verbatim.
+                  ;; Both are surfaced by the TUI + flow into the agent result.
+                  :goal-achieved    (boolean (:goal-achieved m))
+                  :next-user-prompt (or (:next-user-prompt m) ""))))
   bt/success)
 
 ;; ============================================================================
@@ -3575,6 +3611,10 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                ;; retries with "be more efficient" feedback when refinement
                ;; budget remains.
                :iterations-exhausted true
+               ;; Exhaustion backfill is not a goal-achieved answer; surface a
+               ;; definite false (the self-assessment the answer path would set).
+               :goal-achieved     false
+               :next-user-prompt  ""
                :last-tool-results []
                :last-code-results []
                :eval-display      nil
@@ -3584,45 +3624,194 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   bt/success)
 
 ;; ============================================================================
-;; Answer-evaluation / refinement loop
+;; Answer-evaluation / in-loop refinement
+;;
+;; Refinement is folded INTO the iteration loop's answer path (no outer loop, no
+;; re-init). When ThinkActCode emits an answer it also self-reports
+;; `goal-achieved` / `next-user-prompt` (the old standalone FinalizeAnswer). The
+;; hybrid gate then decides per answer:
+;;   round >= max-refinements  → :accept       (terminate; covers max-refs=0)
+;;   goal-achieved = true       → :needs-eval   (independent EvaluateAnswer confirm)
+;;   else                       → :refine-self  (model said not-done → refine now)
+;; A rejection appends a synthetic [evaluation] iteration record (the critique)
+;; and blanks :answer so the SAME loop continues — sandbox / defs / trajectory
+;; are preserved and the next ThinkActCode sees the feedback via :iterations.
 ;; ============================================================================
 
-(defn coact-prepare-refinement-loop-action
-  "BT action: per-turn reset of answer-evaluation state, run ONCE before the
-   refinement loop. The refinement loop re-runs `coact-init-action` each round
-   (which resets the per-round loop state), but the cross-round evaluation
-   bookkeeping — round counter, pending feedback, completion flag — must start
-   clean for every new turn and is therefore reset here, outside the loop."
-  [{:keys [st-memory]}]
-  (swap! st-memory assoc
-         :refinement-round 0
-         :refinement-feedback nil
-         :answer-complete nil
-         :iterations-exhausted false)
-  bt/success)
-
-(defn coact-refinement-incomplete?
-  "BT condition: true when the answer evaluator has NOT accepted the answer
-   (i.e. another refinement round is warranted). Drives the prepare-refinement
-   branch inside the refinement loop."
-  [{:keys [st-memory]}]
-  (not (true? (:answer-complete @st-memory))))
-
 (defn coact-eval-needs-llm?
-  "BT condition: true only when `prepare-evaluation-action` chose the LLM
+  "BT condition: true only when `coact-prepare-eval-action` chose the LLM
    hallucination-check path (it stamps `:evaluation-status {:phase :llm-calling}`).
-   On its early-exit branches (no answer / max rounds / exhausted) it sets
-   `:answer-complete` directly and leaves the phase elsewhere, so the
-   EvaluateAnswer DSPy call must be skipped."
+   When there is no evidence to check against it leaves the phase :skipped, so
+   the eval-guard falls through to accept-on-skip (stamp-answer)."
   [{:keys [st-memory]}]
   (= :llm-calling (get-in @st-memory [:evaluation-status :phase])))
 
-(defn coact-noop-action
-  "BT action: unconditional success. Used as the trailing branch of an
-   evaluation/refinement `:fallback` so the guard always succeeds when its
-   conditional branch does not apply."
-  [_context]
+(defn answer-decision-is?
+  "Factory: BT condition true when the hybrid-gate decision stamped by
+   `coact-capture-answer-meta` equals `decision`."
+  [decision]
+  (fn [{:keys [st-memory]}]
+    (= decision (:answer-decision @st-memory))))
+
+(defn coact-capture-answer-meta
+  "Answer path entry: the ThinkActCode iteration populated `answer` (and,
+   per the signature, the optional `goal-achieved` / `next-user-prompt`
+   self-assessment). Stash the draft and compute the hybrid refine/accept
+   decision into `:answer-decision`. Does NOT terminate — the downstream
+   answer-gate fallback dispatches on the decision."
+  [{:keys [st-memory agent]}]
+  (let [m        @st-memory
+        round    (or (:refinement-round m) 0)
+        max-refs (or (config/get-config agent :max-refinements) 0)
+        ga       (:goal-achieved m)
+        decision (cond
+                   (>= round max-refs) :accept
+                   (true? ga)          :needs-eval
+                   :else               :refine-self)]
+    (swap! st-memory assoc
+           :pending-answer  (:answer m)
+           :answer-decision decision)
+    (mulog/log ::capture-answer-meta
+               :round round :max-refinements max-refs
+               :goal-achieved ga :decision decision)
+    bt/success))
+
+(defn- append-evaluation-record!
+  "Append a synthetic `channel \"evaluation\"` record carrying the rejected
+   answer + critique to `:iterations`, blank `:answer`, and bump the refinement
+   round so the SAME loop continues. The next ThinkActCode call observes the
+   record via its `:iterations` input (no context rebuild — user-context is a
+   cached stable-key)."
+  [st-memory {:keys [verdict feedback]}]
+  (let [m        @st-memory
+        n        (:iteration-count m)
+        rejected (str (or (:pending-answer m) (:answer m) ""))
+        record   {:iteration       n
+                  :channel         "evaluation"
+                  :thought         (or (:last-reasoning m) "")
+                  :rejected-answer rejected
+                  :verdict         (str verdict)
+                  :feedback        (str feedback)
+                  :tool-results    []
+                  :code-results    []}]
+    (swap! st-memory
+           (fn [s]
+             (-> s
+                 (update :iterations (fnil conj []) record)
+                 (assoc :answer           ""
+                        :answer-complete  false
+                        :previous-answer  rejected
+                        :refinement-round (inc (or (:refinement-round s) 0))
+                        :pending-answer   nil
+                        :goal-achieved    nil
+                        :next-user-prompt nil
+                        :answer-decision  nil
+                        :display-stage    :think))))
+    ;; Cap :iterations to the last 10 (parity with accumulate). The just-conj'd
+    ;; evaluation record is most-recent, so take-last always keeps it.
+    (let [max-n 10
+          iters (:iterations @st-memory)]
+      (when (> (count iters) max-n)
+        (swap! st-memory assoc :iterations (vec (take-last max-n iters)))))
+    (mulog/log ::inject-refinement-feedback
+               :iteration n :verdict verdict)))
+
+(defn coact-refine-self-action
+  "Answer path, :refine-self branch: the model emitted an answer but reported
+   goal-achieved=false (or omitted it) while refinement budget remains. Inject a
+   synthetic [evaluation] record carrying the model's own follow-up as feedback
+   so the next iteration refines — WITHOUT a separate EvaluateAnswer call and
+   WITHOUT terminating the loop."
+  [{:keys [st-memory]}]
+  (let [np (:next-user-prompt @st-memory)
+        fb (if (str/blank? (str np))
+             (str "You reported the goal was not achieved. Identify the remaining "
+                  "gap, gather any missing data via tools/code, then produce a "
+                  "complete answer.")
+             (str "You reported the goal was not yet achieved. Your own suggested "
+                  "next step: " np ". Act on it, then produce a complete answer."))]
+    (append-evaluation-record! st-memory {:verdict "SELF" :feedback fb}))
   bt/success)
+
+(defn coact-prepare-eval-action
+  "Answer path, :needs-eval branch: build evidence + eval-context for the
+   independent EvaluateAnswer hallucination check and flag :llm-calling so
+   `coact-eval-needs-llm?` lets the DSPy node run. When there is no evidence to
+   check against (pure general-knowledge answer, or tool/code produced nothing),
+   skip the check — leave the phase :skipped so the eval-guard falls through to
+   accept-on-skip."
+  [{:keys [st-memory agent]}]
+  (let [m          @st-memory
+        iterations (or (:iterations m) (:full-iterations m))
+        round      (or (:refinement-round m) 0)
+        evidence   (evaluation/build-iteration-evidence (or iterations []))
+        eval-ctx   (evaluation/build-evaluation-context m)]
+    (if (str/blank? evidence)
+      (do (swap! st-memory assoc :evaluation-status {:phase :skipped :round round})
+          (mulog/log ::eval-skipped-no-evidence :round round)
+          bt/success)
+      (let [eval-lm-label (let [e (config/get-config agent :eval-lm-config)]
+                            (when-not (str/blank? (str e)) e))]
+        (swap! st-memory assoc
+               :evidence     evidence
+               :eval-context (if (str/blank? eval-ctx) "No additional context" eval-ctx)
+               :evaluation-status {:phase :llm-calling :round round
+                                   :has-evidence true
+                                   :evidence-length (count evidence)
+                                   :eval-lm-label eval-lm-label})
+        (when agent
+          (hooks/fire! :agent.evaluation/started {:agent agent :round round})
+          (hooks/fire! :agent.evaluation/llm-calling
+                       {:agent agent :round round :has-evidence true
+                        :evidence-length (count evidence)
+                        :eval-lm-label eval-lm-label}))
+        bt/success))))
+
+(defn coact-process-eval-in-loop-action
+  "Answer path, :needs-eval branch, after EvaluateAnswer. On COMPLETE (or an
+   unrecognized verdict) → accept and terminate via `coact-stamp-answer-action`.
+   On HALLUCINATED / INCOMPLETE → inject the verdict as feedback and continue
+   the loop. Fires :agent.evaluation/done so the TUI eval widget resolves."
+  [{:keys [st-memory agent] :as ctx}]
+  (let [m       @st-memory
+        verdict (:verdict m)
+        detail  (or (:detail m) "")
+        round   (or (:refinement-round m) 0)
+        done!   (fn [verdict-kw]
+                  (when agent
+                    (hooks/fire! :agent.evaluation/done
+                                 {:agent agent :round round
+                                  :verdict verdict-kw :detail detail})))]
+    (case verdict
+      "HALLUCINATED"
+      (do (swap! st-memory assoc :evaluation-status
+                 {:phase :done :round round :verdict :hallucinated
+                  :detail detail :reasoning (:last-reasoning m)})
+          (done! :hallucinated)
+          (append-evaluation-record! st-memory
+                                     {:verdict "HALLUCINATED"
+                                      :feedback (str "CRITICAL: your previous answer contained HALLUCINATED data. "
+                                                     detail
+                                                     " Use ONLY data from actual tool/code outputs — re-run them and verify with (pprint result) before answering.")})
+          bt/success)
+
+      "INCOMPLETE"
+      (do (swap! st-memory assoc :evaluation-status
+                 {:phase :done :round round :verdict :incomplete
+                  :detail detail :reasoning (:last-reasoning m)})
+          (done! :incomplete)
+          (append-evaluation-record! st-memory
+                                     {:verdict "INCOMPLETE"
+                                      :feedback (str "Your previous answer was INCOMPLETE. " detail
+                                                     " Address the gap and produce a better answer.")})
+          bt/success)
+
+      ;; COMPLETE or unrecognized -> accept
+      (do (swap! st-memory assoc :evaluation-status
+                 {:phase :done :round round :verdict :complete
+                  :detail detail :reasoning (:last-reasoning m)})
+          (done! :complete)
+          (coact-stamp-answer-action ctx)))))
 
 (defn- tool-call-pseudo-code
   "Synthesize a compact pseudo-code string for a tool invocation — used when
@@ -3679,6 +3868,12 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
     :as rec}]
   (cond
     in-flight-roster?
+    nil
+
+    ;; Synthetic in-loop refinement records are a within-turn artifact (the
+    ;; evaluator's critique fed back to the same loop). They carry no code/tool
+    ;; result worth persisting, so drop them from the cross-turn briefing.
+    (= channel "evaluation")
     nil
 
     async-completion?
@@ -3759,7 +3954,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
     ;; Save compact iteration summary + answer into st-memory-init for the next turn
     (when agent
       (let [compact-iters (->> iterations
-                               (mapv compact-iteration-record)
+                               (keep compact-iteration-record)
+                               vec
                                (#(if (> (count %) 30) (vec (take-last 30 %)) %)))
             new-turn {:question question
                       :iterations compact-iters
@@ -3794,13 +3990,15 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 ;; ============================================================================
 
 (defn coact-loop-subtree
-  "Main CoAct iteration loop. Exits when :answer is non-blank or :terminated
-   is set (coact-repair-action aborts on a fatal LLM error). Each iteration:
+  "Main CoAct iteration loop. Exits when :terminated is set — the ONLY
+   terminator is `coact-stamp-answer-action` (an accepted answer) or
+   `coact-repair-action` (fatal LLM error). A rejected answer is blanked and
+   re-injected as an [evaluation] record, so the loop continues. Each iteration:
      1. inc counter + reset per-iter scratch
      2. compact context (if needed)
      3. ThinkActCode DSPy call (coact-repair-action guards malformed output)
      4. display-think
-     5. router (answer | code | tool | repair)
+     5. router (answer[+hybrid refine gate] | code | tool | repair)
      6. accumulate iteration record"
   [max-iterations]
   (let [kw (fn [suffix] (keyword (str "coact." (namespace suffix)) (name suffix)))]
@@ -3809,10 +4007,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
       :max-n (fn [{:keys [agent]}]
                (or (config/get-config agent :max-iterations) max-iterations))
       :condition-fn (fn [{:keys [st-memory]}]
-                      (let [{:keys [answer terminated]} @st-memory]
-                        (or terminated
-                            (and (string? answer)
-                                 (not (str/blank? answer))))))}
+                      (:terminated @st-memory))}
 
      [:sequence {:id (kw :sequence/iteration)}
 
@@ -3839,12 +4034,57 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
       ;; Router — precedence: answer > code > tool > repair
       [:fallback {:id (kw :fallback/router)}
 
-       ;; Path A — terminal: answer non-blank
+       ;; Path A — answer channel + in-loop hybrid refine gate.
+       ;; capture-answer-meta stamps :answer-decision; the answer-gate fallback
+       ;; dispatches: :accept → terminate; :refine-self → inject + continue;
+       ;; :needs-eval → EvaluateAnswer confirm (COMPLETE → terminate, reject →
+       ;; inject + continue; no-evidence / eval-failure → accept-on-skip).
        [:sequence {:id (kw :sequence/answer-path)}
         [:condition {:id (kw :cond/answer-non-blank)}
          coact-answer-non-blank?]
-        [:action {:id (kw :action/stamp-answer)}
-         coact-stamp-answer-action]]
+        [:action {:id (kw :action/capture-answer-meta)}
+         coact-capture-answer-meta]
+
+        [:fallback {:id (kw :fallback/answer-gate)}
+
+         ;; A1 — accept outright (refinement budget exhausted; also the
+         ;; max-refinements=0 low/medium-effort case).
+         [:sequence {:id (kw :sequence/answer-accept)}
+          [:condition {:id (kw :cond/answer-accept)}
+           (answer-decision-is? :accept)]
+          [:action {:id (kw :action/stamp-answer)}
+           coact-stamp-answer-action]]
+
+         ;; A2 — self-reported not-done, budget remains → refine without an
+         ;; eval call (inject the model's own follow-up as feedback).
+         [:sequence {:id (kw :sequence/answer-refine-self)}
+          [:condition {:id (kw :cond/answer-refine-self)}
+           (answer-decision-is? :refine-self)]
+          [:action {:id (kw :action/refine-self)}
+           coact-refine-self-action]]
+
+         ;; A3 — goal-achieved=true, budget remains → independent EvaluateAnswer
+         ;; confirm. prepare-eval skips (phase :skipped) when there's no
+         ;; evidence; the guard then falls through to accept-on-skip.
+         [:sequence {:id (kw :sequence/answer-eval)}
+          [:action {:id (kw :action/prepare-eval)}
+           coact-prepare-eval-action]
+          [:fallback {:id (kw :fallback/eval-llm-guard)}
+           [:sequence {:id (kw :sequence/eval-llm)}
+            [:condition {:id (kw :cond/eval-needs-llm)}
+             coact-eval-needs-llm?]
+            [:action {:id (kw :action/evaluate-answer)
+                      :signature #'evaluation/EvaluateAnswer
+                      :operation :chain-of-thought
+                      :lm-config (fn [context]
+                                   (config/resolve-eval-lm (:agent context)))
+                      :debug {:source :reasoning}}
+             bt/dspy]
+            [:action {:id (kw :action/process-eval)}
+             coact-process-eval-in-loop-action]]
+           ;; accept-on-skip: no evidence to check, or EvaluateAnswer failed.
+           [:action {:id (kw :action/eval-accept-on-skip)}
+            coact-stamp-answer-action]]]]]
 
        ;; Path B — code channel
        [:sequence {:id (kw :sequence/code-path)}
@@ -3906,111 +4146,41 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
      [:action {:id (kw :action/prepare-recalled-memory)}
       ctx-actions/prepare-recalled-memory-action]
 
-     ;; 2b. Reset cross-round answer-evaluation state once per turn (round
-     ;; counter, pending feedback, completion flag) before the refinement loop.
-     [:action {:id (kw :action/prepare-refinement-loop)}
-      coact-prepare-refinement-loop-action]
+     ;; 3. Init sandbox + stable contexts + seeded st-memory (ONCE per turn).
+     ;; coact-init-action also resets the per-turn answer-evaluation bookkeeping
+     ;; (:refinement-round, :answer-complete, :iterations-exhausted). Refinement
+     ;; no longer re-runs init — it happens inside the loop's answer path, which
+     ;; preserves the sandbox / defs / trajectory and feeds the evaluator's
+     ;; critique back through :iterations (no context rebuild).
+     [:action {:id (kw :action/init)}
+      coact-init-action]
 
-     ;; 3. Refinement loop. The body runs exactly once when :max-refinements
-     ;; is 0 (effort low/medium) — `prepare-evaluation-action` accepts
-     ;; immediately and no EvaluateAnswer LLM call is made. When
-     ;; :max-refinements > 0 (effort high) the answer evaluator may reject the
-     ;; answer (HALLUCINATED / INCOMPLETE / iterations-exhausted) and the loop
-     ;; re-runs init + the main loop with feedback, up to (inc :max-refinements)
-     ;; total attempts.
-     [:repeat
-      {:id (kw :repeat/refine)
-       :max-n (fn [{:keys [agent]}]
-                (inc (or (config/get-config agent :max-refinements) 0)))
-       :condition-fn (fn [{:keys [st-memory]}]
-                       (true? (:answer-complete @st-memory)))
-       ;; This is an outer control-flow loop, not a user-visible iteration —
-       ;; suppress the "Iteration N / M" widget the inner main loop renders.
-       :emit-iteration-events? false}
+     ;; 4. Main loop (with catastrophic-failure guard). The hybrid refine gate
+     ;; lives in the loop's answer path: an answer is accepted (terminate) or
+     ;; rejected (inject an [evaluation] record + continue), bounded by
+     ;; :max-refinements rejections and :max-iterations total iterations.
+     [:fallback {:id (kw :fallback/loop-guard)}
+      (coact-loop-subtree max-iterations)
+      [:action {:id (kw :action/loop-fallback)} coact-loop-fallback-action]]
 
-      [:sequence {:id (kw :sequence/refine-round)}
+     ;; 5. Guarantee a non-blank answer. The :repeat returns :success on
+     ;; max-iterations exhaustion (it does NOT fail), so the loop-guard's
+     ;; fallback branch never fires for the common 'exhausted without an answer'
+     ;; case — this backfills a best-effort answer from the trajectory.
+     [:action {:id (kw :action/ensure-answer)} coact-ensure-answer-action]
 
-       ;; 3a. Init sandbox + stable contexts + seeded st-memory. Re-running
-       ;; this each round resets the per-round loop state (:iterations,
-       ;; :answer, :terminated, :iteration-count) and rebuilds the
-       ;; user-context — which now carries any :refinement-feedback.
-       [:action {:id (kw :action/init)}
-        coact-init-action]
-
-       ;; 3b. Main loop (with catastrophic-failure guard)
-       [:fallback {:id (kw :fallback/loop-guard)}
-        (coact-loop-subtree max-iterations)
-        [:action {:id (kw :action/loop-fallback)} coact-loop-fallback-action]]
-
-       ;; 3c. Guarantee a non-blank answer before evaluation.
-       ;; The loop's :repeat returns :success on max-iterations exhaustion, so
-       ;; the loop-fallback above never fires for the common 'exhausted without
-       ;; an answer' case — this backfills a best-effort answer from the
-       ;; trajectory (and flags :iterations-exhausted for the evaluator).
-       [:action {:id (kw :action/ensure-answer)} coact-ensure-answer-action]
-
-       ;; 3d. Answer evaluation. prepare-evaluation either accepts/rejects
-       ;; directly (no answer / max rounds / exhausted) or preps inputs for the
-       ;; EvaluateAnswer hallucination check; the LLM check runs only when
-       ;; prepare-evaluation chose it (coact-eval-needs-llm?).
-       [:action {:id (kw :action/prepare-evaluation)}
-        evaluation/prepare-evaluation-action]
-       [:fallback {:id (kw :fallback/eval-llm-guard)}
-        [:sequence {:id (kw :sequence/eval-llm)}
-         [:condition {:id (kw :cond/eval-needs-llm)}
-          coact-eval-needs-llm?]
-         [:action {:id (kw :action/evaluate-answer)
-                   :signature #'evaluation/EvaluateAnswer
-                   :operation :chain-of-thought
-                   ;; Honor the :eval-lm-config — run the hallucination check on
-                   ;; a dedicated model when set, else the agent's main LM.
-                   ;; bt/dspy's resolve-lm-config invokes this fn with the live
-                   ;; context (which carries :agent).
-                   :lm-config (fn [context]
-                                (config/resolve-eval-lm (:agent context)))
-                   :debug {:source :reasoning}}
-          bt/dspy]
-         [:action {:id (kw :action/process-evaluation)}
-          evaluation/process-evaluation-action]]
-        [:action {:id (kw :action/eval-skip)} coact-noop-action]]
-
-       ;; 3e. If the evaluator did not accept the answer, stash the rejected
-       ;; attempt and clear loop state so the next round retries with feedback.
-       [:fallback {:id (kw :fallback/refine-guard)}
-        [:sequence {:id (kw :sequence/refine)}
-         [:condition {:id (kw :cond/refine-needed)}
-          coact-refinement-incomplete?]
-         [:action {:id (kw :action/prepare-refinement)}
-          evaluation/prepare-refinement-action]]
-        [:action {:id (kw :action/refine-skip)} coact-noop-action]]]]
-
-     ;; 4. Answer must exist by now
+     ;; 6. Answer must exist by now
      [:condition {:id (kw :cond/answer-present)
                   :path [:answer]
                   :schema ::acs/answer
                   :debug {:source :st-memory}}
       st-memory-has-value?]
 
-     ;; 5. Optional polish pass (no-op unless :enable-finalize-answer is set)
-     [:fallback {:id (kw :fallback/finalize-guard)}
-      [:sequence {:id (kw :sequence/finalize)}
-       [:action {:id (kw :action/prepare-finalize)}
-        evaluation/prepare-finalize-action]
-       [:action {:id (kw :action/finalize-answer)
-                 :signature #'evaluation/FinalizeAnswer
-                 :operation :chain-of-thought
-                 :debug {:source :reasoning}}
-        bt/dspy]
-       [:action {:id (kw :action/finalize-postprocess)}
-        evaluation/finalize-postprocess-action]]
-      [:action {:id (kw :action/finalize-fallback)}
-       evaluation/finalize-fallback-action]]
-
-     ;; 6. Store trajectory + append previous-turns
+     ;; 7. Store trajectory + append previous-turns
      [:action {:id (kw :action/store-results)}
       coact-store-results-action]
 
-     ;; 7. Conversation bookkeeping
+     ;; 8. Conversation bookkeeping
      [:action {:id (kw :action/maintain-conversation)}
       trace/default-maintain-conversation]]))
 
