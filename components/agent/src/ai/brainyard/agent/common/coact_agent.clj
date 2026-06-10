@@ -3279,27 +3279,41 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   bt/success)
 
 (defn- repair-malformed-output!
-  "Recover from a malformed ThinkActCode result — `bt/dspy` threw (DSPy/JSON
-   parse error) and stashed `:dspy-error`. Aborts the turn on a fatal error
-   (auth / rate-limit / quota / billing) or once `:consecutive-llm-failures`
-   reaches `:max-retries-on-llm-malformed-output`; otherwise re-prompts: pushes
-   a FORMAT ERROR eval-result and clears the channels so the next iteration's
-   ThinkActCode retries. Clears `:dspy-error` so the router-slot re-entry of
-   `coact-repair-action` doesn't re-classify it as malformed."
+  "Recover from a malformed ThinkActCode result. Two triggers, same remedy:
+     1. `bt/dspy` threw a DSPy/JSON parse error and stashed `:dspy-error`.
+     2. `bt/dspy` succeeded but the parsed response failed output-schema
+        validation (`:dspy-validation-errors`, set by dspy-action) — e.g. the
+        model wrapped its output in placeholder/wrong keys (`$PARAMETER_NAME`)
+        and populated no usable channel.
+   Aborts the turn on a fatal error (auth / rate-limit / quota / billing) or
+   once `:consecutive-llm-failures` reaches `:max-retries-on-llm-malformed-output`;
+   otherwise re-prompts: pushes a FORMAT ERROR eval-result naming the schema and
+   clears the channels so the next iteration's ThinkActCode retries. Clears both
+   error keys so the router-slot re-entry of `coact-repair-action` doesn't
+   re-classify the same failure."
   [{:keys [st-memory agent]}]
-  (let [err    (or (:dspy-error @st-memory) "LLM call failed")
-        max-r  (or (config/get-config agent :max-retries-on-llm-malformed-output) 3)
-        fatal? (boolean
-                (re-find #"(?i)authentication|401|403|api.key|invalid.credentials|rate.limit|429|quota|billing"
-                         (str err)))
-        consec (get @st-memory :consecutive-llm-failures 0)
-        abort? (or fatal? (>= consec max-r))]
+  (let [dspy-err (:dspy-error @st-memory)
+        verrs    (:dspy-validation-errors @st-memory)
+        err      (or dspy-err
+                     (when (seq verrs)
+                       (str "your previous output did not match the required schema "
+                            (pr-str verrs)))
+                     "LLM call failed")
+        ;; Distinguish a schema-validation failure from a hard parse/throw so
+        ;; the TUI can show the right progress line.
+        kind     (if (and (nil? dspy-err) (seq verrs)) :validation-failure :malformed-output)
+        max-r    (or (config/get-config agent :max-retries-on-llm-malformed-output) 3)
+        fatal?   (boolean
+                  (re-find #"(?i)authentication|401|403|api.key|invalid.credentials|rate.limit|429|quota|billing"
+                           (str err)))
+        consec   (get @st-memory :consecutive-llm-failures 0)
+        abort?   (or fatal? (>= consec max-r))]
     (if abort?
       (swap! st-memory assoc
              :terminated true
              :answer (str "Agent stopped: " err)
              :terminated-by :llm-error
-             :tool-calls [] :code-blocks "" :dspy-error nil
+             :tool-calls [] :code-blocks "" :dspy-error nil :dspy-validation-errors nil
              :last-code-results [{:lang "other" :code "" :result ""
                                   :output "" :error (str "FATAL: " err ". Aborting.")
                                   :parallel? false}]
@@ -3309,15 +3323,17 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         ;; silently. (Skip on abort — the terminal answer already explains it.)
         (when agent
           (hooks/fire! :agent.recovery/retrying
-                       {:agent agent :kind :malformed-output
+                       {:agent agent :kind kind
                         :attempt (inc consec) :max max-r}))
         (swap! st-memory assoc
-               :tool-calls [] :code-blocks "" :dspy-error nil
+               :tool-calls [] :code-blocks "" :dspy-error nil :dspy-validation-errors nil
                :consecutive-llm-failures (inc consec)
                :last-code-results [{:lang "other" :code "" :result "" :output ""
                                     :error (str "FORMAT ERROR: " err
                                                 ". You MUST respond with valid JSON matching the output schema. "
-                                                "Populate exactly ONE of `tool-calls` / `code-blocks` / `answer`.")
+                                                "Populate exactly ONE of `tool-calls` / `code-blocks` / `answer` "
+                                                "using those exact field names — do NOT wrap your output in "
+                                                "placeholder keys like $PARAMETER_NAME.")
                                     :parallel? false}]
                :last-channel :none)))))
 
@@ -3404,8 +3420,14 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
       (= (:last-repair-iter @st-memory) iter)
       bt/success
 
-      ;; (1) Malformed output — bt/dspy threw this iteration.
-      (some? (:dspy-error @st-memory))
+      ;; (1) Malformed output — bt/dspy threw (:dspy-error), OR the parsed
+      ;; response failed output-schema validation (:dspy-validation-errors,
+      ;; e.g. placeholder/wrong keys) and populated no channel. Both get a
+      ;; schema-reminder re-prompt rather than a blind re-run of the same call
+      ;; (which usually repeats the mistake) — this is the split from the
+      ;; genuinely-empty-stream backoff retry below.
+      (or (some? (:dspy-error @st-memory))
+          (seq (:dspy-validation-errors @st-memory)))
       (do (repair-malformed-output! context)
           (swap! st-memory assoc :last-repair-iter iter)
           bt/success)

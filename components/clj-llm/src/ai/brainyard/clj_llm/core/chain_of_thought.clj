@@ -118,6 +118,9 @@
         usage-map (::llm/usage response)]
     (when-not (:valid? validation)
       (mulog/warn ::output-validation-failed :signature-name (:name signature) :errors (:errors validation)))
-    (cond-> {:outputs outputs}
+    ;; Surface the validation outcome so callers (e.g. the agent repair path)
+    ;; can distinguish a schema-validation failure from an empty/blank response.
+    (cond-> {:outputs outputs :valid? (:valid? validation)}
       reasoning (assoc :reasoning reasoning)
-      usage-map (assoc :usage usage-map))))
+      usage-map (assoc :usage usage-map)
+      (not (:valid? validation)) (assoc :validation-errors (:errors validation)))))

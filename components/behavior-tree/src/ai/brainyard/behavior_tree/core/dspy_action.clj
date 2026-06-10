@@ -184,9 +184,10 @@
         result (apply clj-llm/chain-of-thought sig (:inputs inputs)
                       (build-llm-call-opts context lm-config usage-tracker
                                            on-chunk text token-breakdown zones))]
-    {:outputs (:outputs result)
-     :reasoning (:reasoning result)
-     :usage (:usage result)}))
+    (cond-> {:outputs (:outputs result)
+             :reasoning (:reasoning result)
+             :usage (:usage result)}
+      (:validation-errors result) (assoc :validation-errors (:validation-errors result)))))
 
 (defn dspy
   "Main DSPy action function for use in behavior trees.
@@ -259,7 +260,14 @@
                                m)
                            m (if-let [usage (:usage result)]
                                (update m :lm-usage (fnil conj []) usage)
-                               m)]
+                               m)
+                           ;; Surface output-schema validation failures so the
+                           ;; agent's repair path can re-prompt with a schema
+                           ;; reminder instead of blindly retrying. Cleared on a
+                           ;; valid result so a stale failure can't leak forward.
+                           m (if-let [verrs (:validation-errors result)]
+                               (assoc m :dspy-validation-errors verrs)
+                               (dissoc m :dspy-validation-errors))]
                        m)))
             ;; Enrich the last tracker history entry with turn/iteration context
             ;; so /usage can display per-turn, per-iteration token breakdowns.
