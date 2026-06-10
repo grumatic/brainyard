@@ -333,8 +333,7 @@
                                                           :result child-result
                                                           :observation (:observation post-st)
                                                           :last-reasoning (:last-reasoning post-st)
-                                                          :goal-achieved (:goal-achieved post-st)
-                                                          :goal-reasoning (:goal-reasoning post-st)}))]
+                                                          :goal-achieved (:goal-achieved post-st)}))]
                          (condp = child-result
                            p/success (if (check-condition-fn id depth (condition-fn context) agent)
                                        p/success

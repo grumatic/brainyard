@@ -36,7 +36,7 @@
      :agent.ask/post           {:agent :input :result}
      :agent.iteration/pre      {:agent :iteration :max-iterations :repeat-id}
      :agent.iteration/post     {:agent :iteration :max-iterations :repeat-id :result
-                                :observation :goal-achieved :goal-reasoning}
+                                :observation :goal-achieved}
      :agent.iteration/exhausted {:agent :iteration-count :max-iterations}
      :agent.dspy-action/pre    {:agent :node-id :signature :operation :stable-keys :inputs}
      :agent.dspy-action/chunk  {:agent :node-id :signature :chunk :accumulated}
@@ -117,7 +117,7 @@
    :agent.ask/finalize          {:keys #{:agent :input :result} :gates? true}
    :agent.iteration/pre         {:keys #{:agent :iteration :max-iterations :repeat-id}}
    :agent.iteration/post        {:keys #{:agent :iteration :max-iterations :repeat-id :result
-                                         :observation :goal-achieved :goal-reasoning}}
+                                         :observation :goal-achieved}}
    :agent.iteration/exhausted   {:keys #{:agent :iteration-count :max-iterations}}
    :agent.dspy-action/pre       {:keys #{:agent :node-id :signature :operation :stable-keys :inputs}}
    :agent.dspy-action/chunk     {:keys #{:agent :node-id :signature :chunk :accumulated}}

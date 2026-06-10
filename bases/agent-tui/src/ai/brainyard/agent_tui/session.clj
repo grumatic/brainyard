@@ -1161,19 +1161,16 @@
         (when (seq (:tool-results data))
           (emit! (str prefix (fmt/format-tool-results (:tool-results data)))))
 
+        ;; :observe / :observe-v2 — surface only the observation. The
+        ;; goal-achieved verdict is no longer shown per-iteration (for sub-agents
+        ;; either); it surfaces once per turn in ask-post-handler.
         :observe
-        (do (when (:observation data)
-              (emit! (str prefix (fmt/format-observation (:observation data)))))
-            (when (:goal-achieved data)
-              (emit! (str prefix (fmt/format-goal-status (:goal-achieved data)
-                                                         (:goal-reasoning data))))))
+        (when (:observation data)
+          (emit! (str prefix (fmt/format-observation (:observation data)))))
 
         :observe-v2
-        (do (when (:observation data)
-              (emit! (str prefix (fmt/format-observation (:observation data)))))
-            (when (:goal-achieved data)
-              (emit! (str prefix (fmt/format-goal-status (:goal-achieved data)
-                                                         (:goal-reasoning data))))))
+        (when (:observation data)
+          (emit! (str prefix (fmt/format-observation (:observation data)))))
 
         :code-display
         (when-let [ed (:eval-display data)]
@@ -1187,10 +1184,8 @@
             (when (seq lines)
               (emit! (str prefix (str/join "\n" lines))))))
 
-        :goal-status
-        (when (:goal-achieved data)
-          (emit! (str prefix (fmt/format-goal-status (:goal-achieved data)
-                                                     (:goal-reasoning data)))))
+        ;; :goal-status — removed. The goal-achieved verdict surfaces once per
+        ;; turn in ask-post-handler, not per-iteration.
 
         ;; :todo-update — skip for sub-agents (too noisy)
         ;; Unknown stages — ignore
@@ -2142,7 +2137,7 @@
             (when (render-active?) (stop-thinking-indicator!))
             (emit! (fmt/format-answer answer))
             (when (some? goal-achieved)
-              (emit! (fmt/format-goal-status goal-achieved nil)))
+              (emit! (fmt/format-goal-status goal-achieved)))
             ;; Suggested follow-up (:next-user-prompt). format-next-prompt
             ;; returns nil if blank.
             (when-let [np (fmt/format-next-prompt (:next-user-prompt st))]
@@ -2170,7 +2165,7 @@
             (sessions/emit-to-session! sidx (fmt/format-answer answer))
             (when (some? goal-achieved)
               (sessions/emit-to-session!
-               sidx (fmt/format-goal-status goal-achieved nil))))
+               sidx (fmt/format-goal-status goal-achieved))))
           (sessions/emit-to-session!
            sidx (str (ansi/muted (str "[" (name agent-id) " completed]"))))
           ;; Only mark the session :completed when it's a legacy per-sub-agent
@@ -2302,15 +2297,16 @@
 
 (defn iteration-post-handler
   "Handler for :agent.iteration/post. Event:
-   {:agent :iteration :max-iterations :repeat-id :result
-    :observation :goal-achieved :goal-reasoning}.
+   {:agent :iteration :max-iterations :repeat-id :result :observation}.
    Sets the final result, freezes the live block immediately, and removes the
    in-memory entry. Lines stay in scrollback as a frozen record.
 
-   After the widget freezes, emits the iteration's observation and
-   goal-status as separate scrollback lines (when present) — these used to
-   be rendered by the legacy `:display-stage :observe` / `:goal-status`
-   watch branch and have no surface inside the iter-block widget.
+   After the widget freezes, emits the iteration's observation as a separate
+   scrollback line (when present) — this used to be rendered by the legacy
+   `:display-stage :observe` watch branch and has no surface inside the
+   iter-block widget. The goal-achieved verdict + suggested next-user-prompt
+   are NO LONGER shown per-iteration — they surface once per turn in
+   `ask-post-handler` (the turn-completion handler) instead.
 
    When this iteration belongs to a sub-agent (an entry under its
    root's consolidated subagents block, established by
@@ -2318,7 +2314,7 @@
    total iterations, total tokens, and the last iteration's outcome —
    so the one-line summary in the subagents block reflects the latest
    completed iteration."
-  [{:keys [agent iteration repeat-id result observation goal-achieved goal-reasoning]}]
+  [{:keys [agent iteration repeat-id result observation]}]
   (let [aid (:agent-id agent)
         rid (str (or repeat-id "_"))
         k [aid rid iteration]
@@ -2374,19 +2370,17 @@
             (when (and origin-idx (not= origin-idx active-idx))
               (sessions/update-session! origin-idx update :live-blocks dissoc block-id)))))
       (swap! !iteration-blocks dissoc k))
-    ;; Surface observation + goal-status from the post payload as separate
-    ;; scrollback lines, matching the legacy `:observe` / `:goal-status`
-    ;; watch branches. Emitted after the widget freezes so they appear
-    ;; just below the frozen iteration record. Route through the origin
-    ;; session so a sub-agent's lines land in the sub-agent's :output
-    ;; session even when the parent session is currently active.
-    ;; Suppressed in :quiet verbosity (answer-only mode).
+    ;; Surface the iteration's observation as a separate scrollback line,
+    ;; matching the legacy `:observe` watch branch. Emitted after the widget
+    ;; freezes so it appears just below the frozen iteration record. Route
+    ;; through the origin session so a sub-agent's line lands in the sub-agent's
+    ;; :output session even when the parent session is currently active.
+    ;; Suppressed in :quiet verbosity (answer-only mode). The goal-achieved
+    ;; verdict + next-user-prompt are surfaced once per turn by ask-post-handler.
     (when-not (quiet?)
       (let [origin-idx (:session-idx outgoing)]
         (when (and observation (not (clojure.string/blank? (str observation))))
-          (emit! (fmt/format-observation observation) origin-idx))
-        (when (some? goal-achieved)
-          (emit! (fmt/format-goal-status goal-achieved goal-reasoning) origin-idx))))
+          (emit! (fmt/format-observation observation) origin-idx))))
     ;; Sub-agent rollup: when this iteration belongs to a sub-agent
     ;; tracked in the consolidated subagents block (under its root),
     ;; bump that entry's :iter-rollup so the one-line summary stays

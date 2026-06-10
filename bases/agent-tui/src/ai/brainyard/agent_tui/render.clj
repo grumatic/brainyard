@@ -1023,19 +1023,17 @@
 
 (defn goal-status-line
   "Render the iteration's goal-achieved verdict.  When `goal-achieved?`
-   is truthy, show ✓ Goal achieved (with optional reasoning); else
-   ✗ Goal not yet achieved.  Mirrors legacy `format-goal-status`."
-  [{:keys [goal-achieved? goal-reasoning]}]
+   is truthy, show ✓ Goal achieved; else ✗ Goal not yet achieved.
+   Mirrors `format-goal-status`. (The separate goal-reasoning output was
+   removed; the verdict now stands on its own.)"
+  [{:keys [goal-achieved?]}]
   (let [glyph (if goal-achieved?
                 (style "✓ Goal achieved" bold bright-green)
-                (style "✗ Goal not yet achieved" bold bright-yellow))
-        reason (when (and goal-reasoning
-                          (not (clojure.string/blank? (str goal-reasoning))))
-                 (str " " (muted (str "(" (clamp (collapse-ws goal-reasoning) 200) ")"))))]
+                (style "✗ Goal not yet achieved" bold bright-yellow))]
     ;; Leading "\n" so the verdict visually separates from whichever block
     ;; preceded it (reasoning, code-display, eval-result, or another emit
     ;; that ended with a single trailing newline).
-    (str "\n  " glyph reason "\n")))
+    (str "\n  " glyph "\n")))
 
 (defn- eval-section
   "Render one labeled section of an eval-display entry.  `body` is the

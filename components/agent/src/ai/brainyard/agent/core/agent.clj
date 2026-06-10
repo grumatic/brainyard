@@ -139,7 +139,7 @@
                                     (select-keys new
                                                  [:iteration-count :last-reasoning
                                                   :tool-calls :tool-results
-                                                  :observation :goal-achieved :goal-reasoning
+                                                  :observation :goal-achieved
                                                   :eval-display :todo-list :answer
                                                   :terminated :iterations-exhausted
                                                   :question]))]

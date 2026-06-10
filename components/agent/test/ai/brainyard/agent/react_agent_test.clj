@@ -50,15 +50,14 @@
     (is (m/validate ::react/observation "Found 3 results about Clojure."))
     (is (m/validate ::react/observations ["obs 1" "obs 2"]))
     (is (m/validate ::react/goal-achieved true))
-    (is (m/validate ::react/goal-reasoning "All tasks completed."))
+    (is (m/validate ::react/next-user-prompt "Ask a follow-up question."))
     (is (m/validate ::react/request-for-information false))
     (is (m/validate ::react/iterations
                     [{:iteration 1
                       :thought "Let me search"
                       :actions [{:tool-name "search" :tool-args [] :tool-result "ok"}]
                       :observation "Found results"
-                      :evaluation {:goal-achieved false
-                                   :goal-reasoning "Need more info"}}]))))
+                      :evaluation {:goal-achieved false}}]))))
 
 ;; ============================================================================
 ;; Test 2: DSPy Signature Structure
@@ -92,7 +91,10 @@
       (is (contains? output-keys :tool-calls))
       (is (contains? output-keys :observation))
       (is (contains? output-keys :goal-achieved))
-      (is (contains? output-keys :goal-reasoning))
+      ;; :goal-reasoning was dropped; :next-user-prompt added (mirrors CoAct's
+      ;; answer-channel self-assessment — surfaced once per turn).
+      (is (not (contains? output-keys :goal-reasoning)))
+      (is (contains? output-keys :next-user-prompt))
       (is (contains? output-keys :request-for-information))
       (is (contains? output-keys :answer))))
 

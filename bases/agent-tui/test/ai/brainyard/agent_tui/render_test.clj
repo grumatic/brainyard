@@ -807,24 +807,18 @@
       (is (every? #(<= (count %) 34) rows) "rows fit within :cols + margin"))))
 
 (deftest goal-status-line-achieved
-  (let [out (strip-ansi (render/goal-status-line
-                         {:goal-achieved? true
-                          :goal-reasoning "user request fully addressed"}))]
-    (is (str/includes? out "✓ Goal achieved"))
-    (is (str/includes? out "user request fully addressed"))))
+  (let [out (strip-ansi (render/goal-status-line {:goal-achieved? true}))]
+    (is (str/includes? out "✓ Goal achieved"))))
 
 (deftest goal-status-line-not-achieved
-  (let [out (strip-ansi (render/goal-status-line
-                         {:goal-achieved? false
-                          :goal-reasoning "still need to verify"}))]
-    (is (str/includes? out "✗ Goal not yet achieved"))
-    (is (str/includes? out "still need to verify"))))
+  (let [out (strip-ansi (render/goal-status-line {:goal-achieved? false}))]
+    (is (str/includes? out "✗ Goal not yet achieved"))))
 
-(deftest goal-status-line-omits-blank-reasoning
+(deftest goal-status-line-verdict-stands-alone
+  ;; goal-reasoning was removed; the verdict is just the glyph line, no parens.
   (let [out (strip-ansi (render/goal-status-line {:goal-achieved? true}))]
     (is (str/includes? out "✓ Goal achieved"))
-    (is (not (str/includes? out "()"))
-        "no empty parens for missing reasoning")))
+    (is (not (str/includes? out "(")) "no reasoning parens")))
 
 (deftest goal-status-line-has-leading-blank-line
   (testing "goal verdict prepends a newline so it separates visually from the previous emit"

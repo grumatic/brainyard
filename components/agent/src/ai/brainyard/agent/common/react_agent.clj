@@ -58,7 +58,7 @@
    ::observations [:vector {:desc "History of observations"} ::observation]
 
    ::goal-achieved [:boolean {:desc "True if the goal has been achieved"}]
-   ::goal-reasoning [:string {:desc "Why goal has been achieved or not"}]
+   ::next-user-prompt [:string {:desc "Set ONLY when goal-achieved=true (you are answering): a concise one-line follow-up the USER could send next to build on this answer. Phrase it as the user's own request (imperative, ~12 words max), not a question back to the user. Empty string when no useful follow-up exists or when not yet answering."}]
    ::request-for-information [:boolean {:desc "True if more information from user is required to achieve the goal"}]
 
    ::iteration-count [:int {:desc "Current iteration number"}]
@@ -70,8 +70,7 @@
                   [:actions ::acs/tool-results]
                   [:observation ::observation]
                   [:evaluation [:map {:desc "Evaluation result"}
-                                [:goal-achieved ::goal-achieved]
-                                [:goal-reasoning ::goal-reasoning]]]]]
+                                [:goal-achieved ::goal-achieved]]]]]
 
    ::think-and-act-result [:map {:desc "Combined thought and tool selection"}
                            [:thought ::thought]
@@ -80,7 +79,6 @@
    ::observe-and-evaluate-result [:map {:desc "Combined observation and evaluation"}
                                   [:observation ::observation]
                                   [:goal-achieved ::goal-achieved]
-                                  [:goal-reasoning ::goal-reasoning]
                                   [:request-for-information ::request-for-information]]
 
    ::think-act-evaluate-result [:map {:desc "Combined think, act, observe, evaluate, and answer in one step"}
@@ -88,7 +86,7 @@
                                 [:tool-calls ::acs/tool-calls]
                                 [:observation ::observation]
                                 [:goal-achieved ::goal-achieved]
-                                [:goal-reasoning ::goal-reasoning]
+                                [:next-user-prompt ::next-user-prompt]
                                 [:request-for-information ::request-for-information]
                                 [:answer [:string {:desc "Final answer when goal-achieved is true, empty string otherwise"}]]]})
 
@@ -143,9 +141,13 @@ IF goal-achieved = TRUE:
   2. Synthesizes insights from all thoughts, actions, observations
   3. Provides clear, actionable information with rich-text markdown format
   4. Acknowledges any limitations or uncertainties
+- ALSO set next-user-prompt: one concise line (~12 words max) the USER could
+  send next to build on this answer, phrased as the user's own imperative
+  request (NOT a question back to them). Empty string if no useful follow-up.
 
 IF goal-achieved = FALSE:
 - Set answer to empty string
+- Leave next-user-prompt as an empty string
 - Select appropriate tools based on your reasoning:
   - Align tool selection with your thought
   - Avoid tools already used (check observations)
@@ -173,7 +175,7 @@ IF goal-achieved = FALSE:
    :outputs {:tool-calls ::acs/tool-calls
              :observation ::observation
              :goal-achieved ::goal-achieved
-             :goal-reasoning ::goal-reasoning
+             :next-user-prompt ::next-user-prompt
              :request-for-information ::request-for-information
              :answer ::acs/answer}})
 
@@ -459,7 +461,6 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
                                    :actions []
                                    :observation ""
                                    :evaluation {:goal-achieved false
-                                                :goal-reasoning "summary"
                                                 :request-for-information false}}]
                                  recent)]
              (swap! st-memory assoc :iterations new-iters)
@@ -817,7 +818,6 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
                            (or (:reason b) "no reason")))
       (swap! st-memory assoc
              :goal-achieved true
-             :goal-reasoning (str "Blocked by :agent.tool-use/pre hook: " (:reason b))
              :answer (or (:answer b)
                          (str "*(Tool dispatch blocked: " (:reason b) ")*"))))
     ;; Always succeed: a tool error lands in :tool-results as an observation
@@ -864,7 +864,12 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
            (swap! st-memory #(-> % (update :iteration-count (fnil inc 0))
                                  (assoc :display-stage :iteration-start
                                         :tool-calls []
-                                        :observation "")))
+                                        :observation ""
+                                        ;; Reset the answer-channel follow-up so a
+                                        ;; non-answering iteration (goal-achieved
+                                        ;; false, dspy omits it) can't leak a stale
+                                        ;; value into the turn-completion display.
+                                        :next-user-prompt "")))
            (let [harvest! @(requiring-resolve 'ai.brainyard.agent.common.coact-agent/harvest-pending-tasks!)
                  roster!  @(requiring-resolve 'ai.brainyard.agent.common.coact-agent/inject-in-flight-roster!)]
              (harvest! st-memory)
@@ -945,7 +950,7 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
          {:id (kw :action/finalize-iteration)}
          (fn [{:keys [st-memory]}]
            (let [{:keys [iteration-count last-reasoning tool-calls tool-results observation
-                         goal-achieved goal-reasoning request-for-information]} @st-memory
+                         goal-achieved request-for-information]} @st-memory
                  actions (vec (take-last (count tool-calls) tool-results))
                  actions (mapv (fn [tr]
                                  (update tr :tool-result #(util/abbreviate (str %) 1024 1024)))
@@ -956,7 +961,6 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
                      :actions actions
                      :observation observation
                      :evaluation {:goal-achieved goal-achieved
-                                  :goal-reasoning goal-reasoning
                                   :request-for-information request-for-information}})
              bt/success))]
 

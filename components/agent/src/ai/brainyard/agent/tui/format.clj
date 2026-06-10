@@ -1086,14 +1086,13 @@
 ;; ============================================================================
 
 (defn format-goal-status
-  "Format goal achieved status with reasoning."
-  [goal-achieved goal-reasoning]
+  "Format the goal-achieved verdict line. (The separate goal-reasoning output was
+   removed; the verdict now stands on its own.)"
+  [goal-achieved]
   (let [status-str (if goal-achieved
                      (ansi/success (str ansi/check " Goal achieved"))
-                     (ansi/failure (str ansi/cross-mark " Goal not yet achieved")))
-        reason-str (when (and goal-reasoning (not (str/blank? goal-reasoning)))
-                     (str " " (ansi/muted (str "(" (truncate goal-reasoning 200) ")"))))]
-    (str "  " status-str reason-str)))
+                     (ansi/failure (str ansi/cross-mark " Goal not yet achieved")))]
+    (str "  " status-str)))
 
 (defn format-next-prompt
   "Format a suggested one-line follow-up prompt for the user (from
