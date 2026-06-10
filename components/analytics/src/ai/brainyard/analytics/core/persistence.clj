@@ -213,8 +213,45 @@
 ;; Batch Persistence
 ;; ============================================================================
 
+(defn- forget-prior-session-facts!
+  "Delete any previously-persisted analytics facts for this session so a
+   re-run replaces them instead of appending (upsert-by-session).
+
+   Analytics runs once per turn, but every fact is keyed only by
+   `analytics:session:<session-id>` — so without this sweep N turns leave
+   N PQS/usage/waste facts under the same session source, polluting
+   cross-session trends and making `query-session-analytics`' first-wins
+   read nondeterministic. Clearing the prior set keeps L3 at one fact-set
+   per session, reflecting the latest turn.
+
+   Best-effort: a missing read/forget fn or a read error leaves prior
+   facts in place (the write still succeeds, just non-idempotently)."
+  [memory-manager session-id]
+  (let [read-fn   (resolve-mem-fn 'ai.brainyard.memory.interface/read-entries)
+        forget-fn (resolve-mem-fn 'ai.brainyard.memory.interface/forget-entry)]
+    (when (and read-fn forget-fn session-id)
+      (try
+        (let [query         (str "analytics session " session-id)
+              ;; Limit is generous so a first run after upgrading from the
+              ;; old append behavior can also reclaim accumulated duplicates.
+              results       (read-fn memory-manager :l3 {:text query} {:limit 50})
+              source-prefix (str "analytics:session:" session-id)
+              stale         (->> results
+                                 (filter #(let [src (:source %)]
+                                            (and src (.startsWith (str src) source-prefix))))
+                                 (filter #(#{:pqs-score :usage-metric :waste-detection}
+                                           (:kind %))))]
+          (doseq [{:keys [id]} stale]
+            (when id (forget-fn memory-manager :l3 id))))
+        (catch Exception e
+          (mulog/warn ::forget-prior-session-facts-failed
+                      :message "Failed to clear prior analytics facts" :exception e))))))
+
 (defn persist-analytics!
   "Persist all analytics results for a session.
+
+   Upsert-by-session: clears any prior fact-set for this session before
+   writing, so re-running each turn replaces rather than appends.
 
    Parameters:
      memory-manager - MemoryManager instance
@@ -224,6 +261,7 @@
   [memory-manager analytics]
   (let [session-id (:session-id analytics)
         stored (atom 0)]
+    (forget-prior-session-facts! memory-manager session-id)
     (when (:pqs analytics)
       (when (store-pqs-score! memory-manager session-id (:pqs analytics))
         (swap! stored inc)))
