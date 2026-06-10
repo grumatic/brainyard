@@ -1103,6 +1103,33 @@
     (str "  " (ansi/muted (str "↳ Try next: "
                                (truncate (str/trim next-prompt) 200))))))
 
+(defn format-eval-verdict
+  "Render an answer-evaluation verdict line (`:agent.evaluation/done`): an icon
+   plus label, colored by outcome. The `:detail` explanation is
+   whitespace-collapsed to a single line and truncated WITH an ellipsis (via
+   `truncate`) so a long HALLUCINATED/INCOMPLETE explanation can't break the
+   one-line status or look abruptly cut. Returns the styled string (no
+   leading indent)."
+  [verdict detail]
+  (let [detail*  (some-> detail str (str/replace #"\s+" " ") str/trim)
+        has?     (and detail* (not (str/blank? detail*)))
+        tail     (when has? (str " — " (truncate detail* 200)))
+        icon     (case verdict
+                   (:complete :accepted)       ansi/check
+                   (:hallucinated :incomplete) ansi/cross-mark
+                   "?")
+        color-fn (case verdict
+                   (:complete :accepted)       ansi/success
+                   (:hallucinated :incomplete) ansi/failure
+                   ansi/muted)
+        label    (case verdict
+                   :complete     "PASS — answer verified"
+                   :accepted     (str "ACCEPTED" tail)
+                   :hallucinated (str "HALLUCINATED" tail)
+                   :incomplete   (str "INCOMPLETE" tail)
+                   (str "UNKNOWN" (or tail (str ": " detail))))]
+    (color-fn (str icon " " label))))
+
 ;; ============================================================================
 ;; Final Answer
 ;; ============================================================================

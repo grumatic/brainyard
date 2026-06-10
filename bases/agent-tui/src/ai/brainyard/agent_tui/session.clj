@@ -2755,27 +2755,14 @@
    `:evaluation-status :phase :done` watch branch."
   [{:keys [agent verdict detail]}]
   (with-agent-render-session agent
-    (let [active? (render-active?)
-          icon     (case verdict
-                     :complete     ansi/check
-                     :hallucinated ansi/cross-mark
-                     :incomplete   ansi/cross-mark
-                     :accepted     ansi/check
-                     "?")
-          color-fn (case verdict
-                     :complete     ansi/success
-                     :hallucinated ansi/failure
-                     :incomplete   ansi/failure
-                     :accepted     ansi/success
-                     ansi/muted)
-          label    (case verdict
-                     :complete     "PASS — answer verified"
-                     :hallucinated (str "HALLUCINATED — " (when detail (subs detail 0 (min (count detail) 120))))
-                     :incomplete   (str "INCOMPLETE — " (when detail (subs detail 0 (min (count detail) 120))))
-                     :accepted     (str "ACCEPTED" (when detail (str " — " (subs detail 0 (min (count detail) 120)))))
-                     (str "UNKNOWN: " detail))]
+    (let [active? (render-active?)]
       (when active? (stop-thinking-indicator!))
-      (emit! (str "  " (color-fn (str icon " " label)) "\n")))))
+      (emit! (str "  " (fmt/format-eval-verdict verdict detail) "\n"))
+      ;; The turn continues after evaluation (refine / finalize / answer), so
+      ;; resume the sticky-bottom indicator — otherwise the cursor is left on
+      ;; the emitted verdict line instead of returning to the working/input
+      ;; line. Mirrors evaluation-started / evaluation-llm-calling handlers.
+      (when active? (start-thinking-indicator!)))))
 
 (defn analytics-post-handler
   "Handler for :agent.analytics/post. Mirrors the legacy `:analytics`
