@@ -201,7 +201,12 @@ the results back to you.")
 - When `goal-achieved` is false, leave `answer` empty and select tools (or
   produce a thought-only step) to make progress.
 - Tool calls follow the exact JSON shape documented in the `## tool-calls
-  Format` section of system-context.")
+  Format` section of system-context.
+- **Large/truncated tool results:** a big result is truncated inline and its
+  full content saved to a temp file, marked `--- … TRUNCATED (… saved to: PATH) ---`
+  with a `Recovery:` line. Do NOT re-call the same tool to get more — instead use
+  the `read-file` tool on PATH (with `:lines`/`:offset`/`:limit` chunks per the
+  marker) to recover the parts you need, then answer.")
 
 (def ^:private react-tool-call-format
   "## tool-calls Format (JSON array)
@@ -587,6 +592,10 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
            :system-context         system-context
            :user-context           user-context
            :prompt-token-breakdown prompt-token-breakdown
+           ;; Per-turn reset of the degenerate-iteration guard (see
+           ;; normalize-evaluation-action).
+           :consecutive-empty      0
+           :react-degenerate-stop  false
            ;; Stash for M3 rebudget action (lands in a follow-up commit).
            :cached-sections        (:sections enforced)
            :sys-order              sys-order
@@ -700,6 +709,39 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
 ;; Thinking Loop (single-mode only)
 ;; ============================================================================
 
+(def ^:private max-consecutive-empty
+  "Stop the ReAct loop after this many consecutive degenerate iterations — the
+   LLM returned nothing usable (empty structured-output completion), e.g. after
+   an oversized tool result wedged the model. Bounds a stuck loop so it can't
+   burn the whole iteration budget; the post-loop ensure-answer then backfills."
+  2)
+
+(defn- normalize-evaluation-action
+  "Runs right after ThinkActAndEvaluate. Coerces the boolean evaluation fields to
+   STRICT booleans: structured-output can return \"\" (empty string — which is
+   truthy in Clojure) when the LLM yields a degenerate/empty completion, e.g.
+   after an oversized tool result. Left as-is, \"\" would falsely satisfy the
+   loop-exit condition `(or goal-achieved request-for-information)` and end the
+   turn with no answer. Also counts consecutive degenerate iterations (no answer,
+   no tool-calls, no observation, goal not achieved) and flags `:react-degenerate-stop`
+   so the loop terminates instead of spinning to the ceiling."
+  [{:keys [st-memory]}]
+  (swap! st-memory
+         (fn [m]
+           (let [ga          (true? (:goal-achieved m))
+                 rfi         (true? (:request-for-information m))
+                 degenerate? (and (not ga) (not rfi)
+                                  (str/blank? (str (:answer m)))
+                                  (empty? (:tool-calls m))
+                                  (str/blank? (str (:observation m))))
+                 empties     (if degenerate? (inc (or (:consecutive-empty m) 0)) 0)]
+             (assoc m
+                    :goal-achieved           ga
+                    :request-for-information rfi
+                    :consecutive-empty       empties
+                    :react-degenerate-stop   (>= empties max-consecutive-empty)))))
+  bt/success)
+
 (defn- fallback-answer
   "Construct a partial answer from observations/thoughts when LLM synthesis fails."
   [st-memory agent error-prefix]
@@ -722,13 +764,19 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
      agent {:trace {:agent-id (:agent-id agent) :depth depth :content content}})))
 
 (defn- truncate-result
-  "Truncate a tool result to fit within the LLM token budget.
-   Returns {:result-str truncated :simplified brief-summary}."
+  "Truncate a tool result for the LLM. Oversized results spill to a temp file
+   with a recovery marker (read-file guidance) — the same large-results playbook
+   CoAct uses — instead of an opaque inline ellipsis. This keeps a giant blob out
+   of the context window (which can wedge a structured-output completion into an
+   empty/degenerate response) and gives the model a path to recover the full
+   content. Returns {:result-str truncated :simplified brief-summary}."
   [result]
-  (let [raw-str (pr-str result)
-        max-chars (config/get-config :max-output-chars)
-        half (quot max-chars 2)
-        result-str (util/abbreviate raw-str half half)
+  (let [raw-str    (cond (nil? result)    ""
+                         (string? result) result
+                         :else            (pr-str result))
+        max-chars  (config/get-config :max-output-chars)
+        result-str (sandbox/truncate-to-file raw-str max-chars "tool-result"
+                                             :label "tool-result")
         simplified (util/abbreviate result-str 100)]
     {:result-str result-str :simplified simplified}))
 
@@ -847,8 +895,15 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
        {:id (kw :repeat/think-act-evaluate)
         :max-n max-iterations
         :condition-fn (fn [{:keys [st-memory]}]
-                        (let [{:keys [goal-achieved request-for-information]} @st-memory]
-                          (or goal-achieved request-for-information)))}
+                        ;; Strict booleans only — a degenerate "" goal-achieved
+                        ;; (truthy in Clojure) must NOT exit the loop. The
+                        ;; degenerate-stop flag (set by normalize-evaluation after
+                        ;; N empty iterations) is the bounded escape hatch.
+                        (let [{:keys [goal-achieved request-for-information
+                                      react-degenerate-stop]} @st-memory]
+                          (or (true? goal-achieved)
+                              (true? request-for-information)
+                              (true? react-degenerate-stop))))}
 
        [:sequence
         {:id (kw :sequence/iteration)}
@@ -895,6 +950,13 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
           :stable-keys #{:system-context :user-context}
           :debug {:source :reasoning}}
          bt/dspy]
+
+        ;; Coerce evaluation booleans to strict booleans and track degenerate
+        ;; (empty) iterations — guards against an oversized-tool-result-induced
+        ;; empty completion falsely terminating the loop with no answer.
+        [:action
+         {:id (kw :action/normalize-evaluation)}
+         normalize-evaluation-action]
 
         [:action
          {:id (kw :action/display-think)}
@@ -1018,6 +1080,20 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
       {:id (kw :fallback/check-context)}
 
       (thinking-loop-subtree max-iterations)]
+
+     ;; Guarantee a non-blank answer. The loop's :repeat returns :success on
+     ;; both a normal goal-achieved exit AND a degenerate-stop / max-iterations
+     ;; exit — the repeat-fallback only fires on :failure, so a turn that stops
+     ;; without synthesizing an answer (e.g. after an oversized tool result
+     ;; wedged the model) would otherwise fail the answer-present condition
+     ;; below. Backfill a best-effort answer from collected findings.
+     [:action
+      {:id (kw :action/ensure-answer)}
+      (fn [{:keys [st-memory agent]}]
+        (when (str/blank? (str (:answer @st-memory)))
+          (fallback-answer st-memory agent
+                           "*(Note: stopped without a synthesized final answer. Collected findings below.)*\n\n"))
+        bt/success)]
 
      [:condition
       {:id (kw :condition/st-memory.answer)

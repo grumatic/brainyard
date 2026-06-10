@@ -128,10 +128,10 @@
       (is (= :sequence (first bt-config)))
       (is (= :react.sequence/main
              (get-in bt-config [1 :id])))
-      ;; After M2: condition(question), action(prepare-conversation),
+      ;; condition(question), action(prepare-conversation),
       ;; action(prepare-recalled-memory), action(init), fallback(thinking-loop),
-      ;; condition(answer), action(maintain-conversation)
-      (is (= 9 (count bt-config))))) ;; [:sequence opts cond act act act fallback cond act]
+      ;; action(ensure-answer), condition(answer), action(maintain-conversation)
+      (is (= 10 (count bt-config))))) ;; [:sequence opts cond act act act fallback act cond act]
 
   (testing "BT can be built with behavior-tree engine"
     (let [bt-config (react/react-behavior-tree 3)
@@ -143,6 +143,63 @@
       (is (some? (:context built)))
       (is (instance? clojure.lang.Atom (get-in built [:context :st-memory])))
       (is (= "test question" (:question @(get-in built [:context :st-memory])))))))
+
+;; ============================================================================
+;; Test 3b: Hardening against oversized tool results / degenerate iterations
+;; ============================================================================
+
+(deftest normalize-evaluation-coerces-booleans
+  (let [normalize @#'react/normalize-evaluation-action]
+    (testing "real boolean true is preserved (loop may exit)"
+      (let [st (atom {:goal-achieved true :request-for-information false
+                      :answer "done" :tool-calls [] :observation "obs"})]
+        (normalize {:st-memory st})
+        (is (true? (:goal-achieved @st)))
+        (is (= 0 (:consecutive-empty @st)))
+        (is (false? (:react-degenerate-stop @st)))))
+    (testing "empty-string goal-achieved (degenerate) is coerced to false and counted"
+      (let [st (atom {:goal-achieved "" :request-for-information ""
+                      :answer "" :tool-calls [] :observation ""
+                      :consecutive-empty 0})]
+        (normalize {:st-memory st})
+        (is (false? (:goal-achieved @st)) "\"\" must not stay truthy")
+        (is (false? (:request-for-information @st)))
+        (is (= 1 (:consecutive-empty @st)))
+        (is (false? (:react-degenerate-stop @st)) "one empty iter is below threshold")))
+    (testing "consecutive degenerate iterations trip the stop flag"
+      (let [st (atom {:goal-achieved "" :request-for-information ""
+                      :answer "" :tool-calls [] :observation ""
+                      :consecutive-empty 1})]
+        (normalize {:st-memory st})
+        (is (= 2 (:consecutive-empty @st)))
+        (is (true? (:react-degenerate-stop @st)) "second empty iter trips the stop")))
+    (testing "a productive iteration resets the empty counter"
+      (let [st (atom {:goal-achieved false :request-for-information false
+                      :answer "" :tool-calls [{:tool-name "x"}] :observation ""
+                      :consecutive-empty 1})]
+        (normalize {:st-memory st})
+        (is (= 0 (:consecutive-empty @st)))
+        (is (false? (:react-degenerate-stop @st)))))))
+
+(deftest loop-condition-strict-on-degenerate-goal
+  (testing "loop-exit condition ignores a degenerate \"\" goal-achieved but honors the stop flag"
+    (let [sub (react/thinking-loop-subtree 5)
+          fallback (nth sub 2)
+          repeat-node (nth fallback 2)
+          cond-fn (get-in repeat-node [1 :condition-fn])]
+      (is (not (cond-fn {:st-memory (atom {:goal-achieved "" :request-for-information ""})}))
+          "\"\" goal-achieved must NOT exit the loop")
+      (is (cond-fn {:st-memory (atom {:goal-achieved true})}))
+      (is (cond-fn {:st-memory (atom {:react-degenerate-stop true})})
+          "degenerate-stop flag exits the loop"))))
+
+(deftest truncate-result-spills-oversized-to-file
+  (let [truncate @#'react/truncate-result
+        big (apply str (repeat 200000 "x"))
+        {:keys [result-str]} (truncate big)]
+    (is (< (count result-str) (count big)) "oversized result is truncated")
+    (is (re-find #"TRUNCATED" result-str) "carries a recovery marker")
+    (is (re-find #"saved to:" result-str) "points at the spill file")))
 
 ;; ============================================================================
 ;; Test 4: Skill and Agent Registration
