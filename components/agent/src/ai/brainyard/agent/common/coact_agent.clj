@@ -120,7 +120,7 @@
                 [:channel [:enum {:desc "which channel executed"}
                            "tool" "code" "none"]]
                 [:tool-results [:vector {:desc "non-empty iff channel = tool"} ::tool-result-entry]]
-                [:eval-results [:vector {:desc "non-empty iff channel = code"} ::eval-entry]]]
+                [:code-results [:vector {:desc "non-empty iff channel = code"} ::eval-entry]]]
 
    ::iterations [:vector {:desc "Full iteration history (capped + truncated for context budget)"}
                  ::iteration]})
@@ -223,7 +223,7 @@ EACH ITERATION — FOLLOW THESE STEPS
 
 STEP 1 — REVIEW
 Read `iterations`. Each record shows your prior thought, the channel you
-took, and the concrete result (tool-results or eval-results with `lang`).
+took, and the concrete result (tool-results or code-results with `lang`).
 Do NOT re-do work whose result is already in the history.
 
 STEP 2 — REASON (captured by chain-of-thought)
@@ -1060,8 +1060,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
      `(N) [↺ async from iter M] task-id=task-7 status=resolved => snippet`
 
    Falls back to `from iter ?` when the provenance metadata is missing."
-  [{:keys [iteration eval-results]}]
-  (let [sources (->> eval-results
+  [{:keys [iteration code-results]}]
+  (let [sources (->> code-results
                      (keep :from-iteration)
                      distinct
                      sort
@@ -1072,7 +1072,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                         " "
                         (str/join "," sources))
                    "from iter ?")
-        entries (or eval-results [])
+        entries (or code-results [])
         head (str "(" iteration ") [↺ async " from-tag "]")
         per-entry
         (mapv
@@ -1107,7 +1107,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   (when (seq iterations)
     (->> iterations
          (map-indexed
-          (fn [idx {:keys [iteration channel thought tool-results eval-results
+          (fn [idx {:keys [iteration channel thought tool-results code-results
                            async-completion? in-flight-roster?] :as rec}]
             (cond
               in-flight-roster?
@@ -1134,7 +1134,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                                 (str (subs r 0 100) "…")
                                                 r))))
                                      tool-results))
-                      (seq eval-results)
+                      (seq code-results)
                       (str/join "; "
                                 (map (fn [{:keys [lang result]}]
                                        (str lang ":"
@@ -1142,7 +1142,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                               (if (> (count r) 100)
                                                 (str (subs r 0 100) "…")
                                                 r))))
-                                     eval-results))
+                                     code-results))
                       :else "")]
                 (cond-> (str "(" n ") [" ch "] " th)
                   (not (str/blank? result-snip))
@@ -1252,7 +1252,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                  :channel "summary"
                                  :thought summary-text
                                  :tool-results []
-                                 :eval-results []}]
+                                 :code-results []}]
                                recent)]
            (swap! st-memory assoc :iterations new-iters)
            (assoc secs :iterations
@@ -1764,7 +1764,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                                  (str/join ", " ids) ")")
                          :channel           channel
                          :tool-results      tool-entries
-                         :eval-results      code-entries
+                         :code-results      code-entries
                          :async-completion? true}]
             ;; Mark harvested so we never project them twice. The task stays
             ;; in the registry (visible in /tasks and the activity panel)
@@ -1833,7 +1833,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 
 (defn resolve-pending-entries!
   "Rewrite :pending entries in :iterations with completed task results so the
-   LLM sees them as synchronous completions. For eval-results: replaces the
+   LLM sees them as synchronous completions. For code-results: replaces the
    entry. For tool-results/actions: replaces the pending marker string,
    matching by task-id extracted from the marker."
   [st-memory]
@@ -1854,8 +1854,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                            (if (:in-flight-roster? record)
                              record
                              (cond-> record
-                               (:eval-results record)
-                               (update :eval-results
+                               (:code-results record)
+                               (update :code-results
                                        (fn [entries]
                                          (mapv (fn [e]
                                                  (if-let [t (and (= :pending (:status e))
@@ -1921,7 +1921,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                         :thought           in-flight-roster-thought
                         :channel           "none"
                         :tool-results      []
-                        :eval-results      []
+                        :code-results      []
                         :tasks             roster
                         :in-flight-roster? true}]
             (swap! st-memory assoc :iterations (conj cleaned-iters record))
@@ -1959,7 +1959,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                       :last-reasoning    nil
                       :last-channel      nil
                       :last-tool-results []
-                      :last-eval-results []
+                      :last-code-results []
                       :eval-display      nil
                       ;; Clear any stale DSPy error from a prior iteration so
                       ;; coact-repair-action only reads THIS iteration's error.
@@ -2097,14 +2097,14 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 
 (defn coact-display-eval-action
   [{:keys [st-memory]}]
-  (let [eval-results (or (:last-eval-results @st-memory) [])
+  (let [code-results (or (:last-code-results @st-memory) [])
         eval-display (mapv (fn [{:keys [code result output error]}]
                              (cond-> {:code code}
                                (and error (not (str/blank? error))) (assoc :error error)
                                (and output (not (str/blank? output))) (assoc :output output)
                                (and (or (nil? error) (str/blank? error))
                                     (some? result)) (assoc :result result)))
-                           eval-results)]
+                           code-results)]
     (swap! st-memory assoc
            :eval-display eval-display
            :display-stage :eval-result))
@@ -2264,7 +2264,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                       :by (:by (:raw blocked)))
           (swap! st-memory assoc
                  :last-tool-results clean
-                 :last-eval-results []
+                 :last-code-results []
                  :last-channel :tool
                  :answer (or (:answer (:raw blocked))
                              (str "*(Tool dispatch blocked: " (:reason (:raw blocked)) ")*"))
@@ -2272,7 +2272,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         (do
           (swap! st-memory assoc
                  :last-tool-results clean
-                 :last-eval-results []
+                 :last-code-results []
                  :last-channel :tool)
           (mulog/log ::tool-dispatch
                      :iteration (:iteration-count @st-memory)
@@ -3039,7 +3039,10 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         clj-results
         (when (seq clj-indexed)
           (let [codes (mapv (comp :code second) clj-indexed)
-                {:keys [eval-results]}
+                ;; clj-sandbox's eval API returns {:eval-results [...]} — bind it
+                ;; to the local `code-results` (the agent-side name for the
+                ;; code channel; the sandbox component keeps its own key).
+                {code-results :eval-results}
                 (clj-sandbox/eval-code-blocks-parallel
                  sandbox codes
                  :timeout-ms (:auto-bg-ms dispatch-opts))]
@@ -3061,7 +3064,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                          (= :timeout (:status r))
                          (assoc :status :timeout))]))
                   clj-indexed
-                  eval-results)))
+                  code-results)))
 
         ;; Non-clojure partition: each block runs as a future
         script-futures
@@ -3080,7 +3083,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 
 (defn coact-code-eval-action
   "BT action: parse :code-blocks, execute each fenced block, and populate
-   :last-eval-results. CoAct terminates ONLY via the signature's `answer`
+   :last-code-results. CoAct terminates ONLY via the signature's `answer`
    output field — it does not promote sandbox-level `FINAL` into `:answer`.
 
    Every code block runs as a task in synchronous foreground mode. If a
@@ -3155,7 +3158,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                       entry)))
                 blocks))]
     (swap! st-memory assoc
-           :last-eval-results entries
+           :last-code-results entries
            :last-tool-results []
            :last-channel      :code)
     (mulog/log ::code-eval
@@ -3297,7 +3300,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
              :answer (str "Agent stopped: " err)
              :terminated-by :llm-error
              :tool-calls [] :code-blocks "" :dspy-error nil
-             :last-eval-results [{:lang "other" :code "" :result ""
+             :last-code-results [{:lang "other" :code "" :result ""
                                   :output "" :error (str "FATAL: " err ". Aborting.")
                                   :parallel? false}]
              :last-channel :none)
@@ -3311,7 +3314,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         (swap! st-memory assoc
                :tool-calls [] :code-blocks "" :dspy-error nil
                :consecutive-llm-failures (inc consec)
-               :last-eval-results [{:lang "other" :code "" :result "" :output ""
+               :last-code-results [{:lang "other" :code "" :result "" :output ""
                                     :error (str "FORMAT ERROR: " err
                                                 ". You MUST respond with valid JSON matching the output schema. "
                                                 "Populate exactly ONE of `tool-calls` / `code-blocks` / `answer`.")
@@ -3341,7 +3344,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                :terminated        true
                :terminated-by     :none-channel-loop-guard
                :last-tool-results []
-               :last-eval-results []
+               :last-code-results []
                :eval-display      nil
                :display-stage     :eval-result)
         (mulog/log ::repair-loop-guard
@@ -3357,7 +3360,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         (swap! st-memory assoc
                :last-channel :none
                :last-tool-results []
-               :last-eval-results [{:lang "other"
+               :last-code-results [{:lang "other"
                                     :code ""
                                     :result ""
                                     :output ""
@@ -3468,24 +3471,24 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    thought output."
   [{:keys [st-memory]}]
   (let [{:keys [iteration-count last-reasoning last-channel
-                last-tool-results last-eval-results]} @st-memory
+                last-tool-results last-code-results]} @st-memory
         thought (or last-reasoning "")
         record (case last-channel
                  :tool {:iteration iteration-count
                         :thought thought
                         :channel "tool"
                         :tool-results (mapv sanitize-tool-result (or last-tool-results []))
-                        :eval-results []}
+                        :code-results []}
                  :code {:iteration iteration-count
                         :thought thought
                         :channel "code"
                         :tool-results []
-                        :eval-results (mapv sanitize-eval-entry (or last-eval-results []))}
+                        :code-results (mapv sanitize-eval-entry (or last-code-results []))}
                  :none {:iteration iteration-count
                         :thought thought
                         :channel "none"
                         :tool-results []
-                        :eval-results (mapv sanitize-eval-entry (or last-eval-results []))}
+                        :code-results (mapv sanitize-eval-entry (or last-code-results []))}
                  ;; :answer — no record; the loop is about to exit
                  nil)]
     (when record
@@ -3551,7 +3554,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                ;; budget remains.
                :iterations-exhausted true
                :last-tool-results []
-               :last-eval-results []
+               :last-code-results []
                :eval-display      nil
                :display-stage     :eval-result)
         (mulog/log ::ensure-answer-exhausted
@@ -3617,8 +3620,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    the LLM first emitted it) with a `[↺ async-completion …]` marker line
    so the LLM can connect the resolved value back to the originating iter
    without re-reading the source. Errors and output ride along verbatim."
-  [{:keys [iteration eval-results]}]
-  (let [code-strs   (->> eval-results
+  [{:keys [iteration code-results]}]
+  (let [code-strs   (->> code-results
                          (map (fn [{:keys [task-id from-iteration status]}]
                                 (str "[↺ async-completion"
                                      (when from-iteration
@@ -3627,9 +3630,9 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                      " · status=" (or (some-> status name) "resolved")
                                      "]")))
                          vec)
-        result-strs (->> eval-results (keep :result) (remove str/blank?) vec)
-        output-strs (->> eval-results (keep :output) (remove str/blank?) vec)
-        error-strs  (->> eval-results (keep :error)  (remove str/blank?) vec)]
+        result-strs (->> code-results (keep :result) (remove str/blank?) vec)
+        output-strs (->> code-results (keep :output) (remove str/blank?) vec)
+        error-strs  (->> code-results (keep :error)  (remove str/blank?) vec)]
     (cond-> {:iteration iteration :async-completion? true}
       (seq code-strs)   (assoc :code   code-strs)
       (seq result-strs) (assoc :result result-strs)
@@ -3641,7 +3644,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    {:iteration :code :result :output :error} — so prior-turn iterations render
    under `### Conversation History` in the briefing. Tool-channel iterations
    synthesize a pseudo-code line from `tool-name(args)`; the tool result rides
-   as `:result`. Code-channel iterations project `:eval-results` directly.
+   as `:result`. Code-channel iterations project `:code-results` directly.
 
    Async-completion records (`:async-completion? true`) take a distinct
    projection — see `compact-async-completion-record`.
@@ -3649,7 +3652,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    cross-turn projections — the roster is freshly recomputed each
    iteration from the live task manager, so stale snapshots from a prior
    turn are misleading."
-  [{:keys [iteration channel tool-results eval-results
+  [{:keys [iteration channel tool-results code-results
            async-completion? in-flight-roster?]
     :as rec}]
   (cond
@@ -3662,7 +3665,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
     :else
     (let [code-strs   (case channel
                         "tool" (mapv tool-call-pseudo-code tool-results)
-                        "code" (->> eval-results
+                        "code" (->> code-results
                                     (keep (fn [{:keys [lang code]}]
                                             (cond
                                               (str/blank? code) nil
@@ -3672,12 +3675,12 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                         [])
           result-strs (case channel
                         "tool" (->> tool-results (keep :tool-result) (remove str/blank?) vec)
-                        "code" (->> eval-results (keep :result)      (remove str/blank?) vec)
+                        "code" (->> code-results (keep :result)      (remove str/blank?) vec)
                         [])
           output-strs (case channel
-                        "code" (->> eval-results (keep :output) (remove str/blank?) vec)
+                        "code" (->> code-results (keep :output) (remove str/blank?) vec)
                         [])
-          error-strs  (->> eval-results (keep :error) (remove str/blank?) vec)]
+          error-strs  (->> code-results (keep :error) (remove str/blank?) vec)]
       (cond-> {:iteration iteration}
         (seq code-strs)   (assoc :code   code-strs)
         (seq result-strs) (assoc :result result-strs)

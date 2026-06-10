@@ -239,7 +239,7 @@
                               :last-reasoning "prior CoT reasoning"
                               :last-channel :code
                               :last-tool-results [{:tool-name "x"}]
-                              :last-eval-results [{:lang "clojure"}]
+                              :last-code-results [{:lang "clojure"}]
                               :eval-display [{:code "(+ 1 2)" :result "3"}])]
       (rca/coact-inc-iter-action {:st-memory st})
       (is (= 4 (:iteration-count @st)))
@@ -249,7 +249,7 @@
       (is (nil? (:last-reasoning @st)))
       (is (nil? (:last-channel @st)))
       (is (empty? (:last-tool-results @st)))
-      (is (empty? (:last-eval-results @st)))
+      (is (empty? (:last-code-results @st)))
       ;; :eval-display must be nil — the TUI's :eval-result render-branch uses
       ;; `when-let` on :eval-display, so nil prevents a non-code iteration from
       ;; re-rendering the previous iteration's output.
@@ -354,8 +354,8 @@
           st (fresh-st-memory :sandbox sb :code-blocks "")]
       (rca/coact-code-eval-action {:st-memory st :agent nil})
       (is (= :code (:last-channel @st)))
-      (is (= 1 (count (:last-eval-results @st))))
-      (is (str/includes? (:error (first (:last-eval-results @st)))
+      (is (= 1 (count (:last-code-results @st))))
+      (is (str/includes? (:error (first (:last-code-results @st)))
                          "No fenced code blocks")))))
 
 (deftest code-eval-sequential-clojure-test
@@ -364,7 +364,7 @@
           st (fresh-st-memory :sandbox sb
                               :code-blocks "```clojure\n(+ 1 2 3)\n```")]
       (rca/coact-code-eval-action {:st-memory st :agent nil})
-      (let [entries (:last-eval-results @st)]
+      (let [entries (:last-code-results @st)]
         (is (= 1 (count entries)))
         (let [e (first entries)]
           (is (= "clojure" (:lang e)))
@@ -383,7 +383,7 @@
       (is (= "" (:answer @st))
           ":answer must remain blank — FINAL no longer terminates CoAct")
       (is (= :code (:last-channel @st)))
-      (let [entry (first (:last-eval-results @st))]
+      (let [entry (first (:last-code-results @st))]
         (is (= "clojure" (:lang entry)))
         (is (clojure.string/includes? (:error entry) "FINAL is not supported"))))))
 
@@ -401,7 +401,7 @@
       ;; (no FINAL was called, and parallel mode disables the promotion path entirely).
       (is (str/blank? (:answer @st)))
       (is (= :code (:last-channel @st)))
-      (is (every? :parallel? (:last-eval-results @st))))))
+      (is (every? :parallel? (:last-code-results @st))))))
 
 ;; --- Parallel-mode detection ---
 
@@ -467,7 +467,7 @@
                          :fast-eval-timeout-ms       50
                          (orig-get-config agent k))))]
         (rca/coact-code-eval-action {:st-memory st :agent nil}))
-      (let [entry (first (:last-eval-results @st))]
+      (let [entry (first (:last-code-results @st))]
         (is (= :pending (:status entry))
             "slow eval auto-detaches at the configured auto-bg deadline")
         (is (some? (:task-id entry))
@@ -491,7 +491,7 @@
               "iteration :thought sourced from :last-reasoning (CoT layer)")
           (is (= "tool" (:channel rec)))
           (is (= 1 (count (:tool-results rec))))
-          (is (empty? (:eval-results rec))))))))
+          (is (empty? (:code-results rec))))))))
 
 (deftest accumulate-code-channel-test
   (testing "accumulate records a code-channel iteration"
@@ -499,23 +499,23 @@
               :iteration-count 2
               :last-reasoning "compose"
               :last-channel :code
-              :last-eval-results [{:lang "clojure" :code "(+ 1 2)"
+              :last-code-results [{:lang "clojure" :code "(+ 1 2)"
                                    :result "3" :output "" :error ""
                                    :parallel? false}])]
       (rca/coact-accumulate-iteration-action {:st-memory st})
       (let [rec (last (:iterations @st))]
         (is (= "code" (:channel rec)))
         (is (= "compose" (:thought rec)))
-        (is (= 1 (count (:eval-results rec))))
+        (is (= 1 (count (:code-results rec))))
         (is (empty? (:tool-results rec)))))))
 
 (deftest accumulate-none-channel-test
-  (testing "repair (:none) channel also accumulates the eval-results note"
+  (testing "repair (:none) channel also accumulates the code-results note"
     (let [st (fresh-st-memory
               :iteration-count 3
               :last-reasoning nil
               :last-channel :none
-              :last-eval-results [{:lang "other" :code "" :result ""
+              :last-code-results [{:lang "other" :code "" :result ""
                                    :output "" :error "no action"
                                    :parallel? false}])]
       (rca/coact-accumulate-iteration-action {:st-memory st})
@@ -523,7 +523,7 @@
         (is (= "none" (:channel rec)))
         (is (= "" (:thought rec))
             "nil :last-reasoning falls back to empty string")
-        (is (str/includes? (:error (first (:eval-results rec))) "no action"))))))
+        (is (str/includes? (:error (first (:code-results rec))) "no action"))))))
 
 (deftest accumulate-answer-channel-skipped-test
   (testing "answer channel (:last-channel nil because no stamp) is NOT appended"
@@ -538,7 +538,7 @@
   (testing "iterations are capped at the most recent 10"
     (let [existing (mapv (fn [i]
                            {:iteration i :thought "" :channel "code"
-                            :tool-results [] :eval-results []})
+                            :tool-results [] :code-results []})
                          (range 1 11))
           st (fresh-st-memory :iteration-count 11
                               :last-reasoning "next"
@@ -559,8 +559,8 @@
     (let [st (fresh-st-memory :tool-calls [] :code-blocks "" :answer "")]
       (rca/coact-repair-action {:st-memory st})
       (is (= :none (:last-channel @st)))
-      (is (= 1 (count (:last-eval-results @st))))
-      (is (str/includes? (:error (first (:last-eval-results @st)))
+      (is (= 1 (count (:last-code-results @st))))
+      (is (str/includes? (:error (first (:last-code-results @st)))
                          "no action this iteration"))
       (is (false? (boolean (:terminated @st)))
           "1st :none must NOT terminate the turn"))))
@@ -570,12 +570,12 @@
     (let [st (fresh-st-memory
               :tool-calls [] :code-blocks "" :answer ""
               :iterations [{:iteration 1 :channel "none"
-                            :tool-results [] :eval-results []}])]
+                            :tool-results [] :code-results []}])]
       (rca/coact-repair-action {:st-memory st})
       (is (= :none (:last-channel @st)))
       (is (false? (boolean (:terminated @st)))
           "2nd :none must NOT terminate the turn — the LLM still gets a nudge")
-      (is (str/includes? (:error (first (:last-eval-results @st)))
+      (is (str/includes? (:error (first (:last-code-results @st)))
                          "no action this iteration")))))
 
 (deftest repair-action-loop-guard-escalation-test
@@ -587,13 +587,13 @@
                             :tool-results [{:tool-name "mcp$server"
                                             :tool-args {:op "list"}
                                             :tool-result "{:servers […]}"}]
-                            :eval-results []}
+                            :code-results []}
                            {:iteration 2 :channel "none"
-                            :tool-results [] :eval-results []}
+                            :tool-results [] :code-results []}
                            {:iteration 3 :channel "none"
-                            :tool-results [] :eval-results []}
+                            :tool-results [] :code-results []}
                            {:iteration 4 :channel "none"
-                            :tool-results [] :eval-results []}])]
+                            :tool-results [] :code-results []}])]
       (rca/coact-repair-action {:st-memory st})
       (is (true? (boolean (:terminated @st)))
           "4th consecutive :none (streak ≥ 3) must terminate the turn")
@@ -611,11 +611,11 @@
     (let [st (fresh-st-memory
               :tool-calls [] :code-blocks "" :answer ""
               :iterations [{:iteration 1 :channel "none"
-                            :tool-results [] :eval-results []}
+                            :tool-results [] :code-results []}
                            {:iteration 2 :channel "none"
-                            :tool-results [] :eval-results []}
+                            :tool-results [] :code-results []}
                            {:iteration 3 :channel "none"
-                            :tool-results [] :eval-results []}])]
+                            :tool-results [] :code-results []}])]
       (rca/coact-repair-action {:st-memory st})
       (is (true? (boolean (:terminated @st))))
       (is (str/includes? (:answer @st) "Loop guard")
@@ -628,13 +628,13 @@
               :tool-calls [] :code-blocks "" :answer ""
               :iterations [{:iteration 1 :channel "none"
                             :thought "I should look at the config file first"
-                            :tool-results [] :eval-results []}
+                            :tool-results [] :code-results []}
                            {:iteration 2 :channel "none"
                             :thought "Checking the next option"
-                            :tool-results [] :eval-results []}
+                            :tool-results [] :code-results []}
                            {:iteration 3 :channel "none"
                             :thought "Still deciding how to start"
-                            :tool-results [] :eval-results []}])]
+                            :tool-results [] :code-results []}])]
       (rca/coact-repair-action {:st-memory st})
       (is (true? (boolean (:terminated @st))))
       (is (str/includes? (:answer @st) "Still deciding how to start")
@@ -646,14 +646,14 @@
     (let [st (fresh-st-memory
               :tool-calls [] :code-blocks "" :answer ""
               :iterations [{:iteration 1 :channel "none"
-                            :tool-results [] :eval-results []}
+                            :tool-results [] :code-results []}
                            {:iteration 2 :channel "tool"
                             :tool-results [{:tool-name "t"
                                             :tool-args {}
                                             :tool-result "r"}]
-                            :eval-results []}
+                            :code-results []}
                            {:iteration 3 :channel "none"
-                            :tool-results [] :eval-results []}])]
+                            :tool-results [] :code-results []}])]
       (rca/coact-repair-action {:st-memory st})
       (is (false? (boolean (:terminated @st)))
           "only 1 trailing :none → still in nudge mode, not escalation"))))
@@ -674,10 +674,10 @@
                             :thought "grepping"
                             :tool-results [{:tool-name "grep" :tool-args {}
                                             :tool-result "found 3 matches"}]
-                            :eval-results []}
+                            :code-results []}
                            {:iteration 100 :channel "code"
                             :thought "still working" :tool-results []
-                            :eval-results []}])]
+                            :code-results []}])]
       (rca/coact-ensure-answer-action {:st-memory st})
       (is (not (str/blank? (:answer @st)))
           "exhaustion must leave a non-blank answer so :cond/answer-present passes")
@@ -693,7 +693,7 @@
   (testing "a real answer is left completely untouched"
     (let [st (fresh-st-memory :answer "the real answer" :terminated true
                               :iterations [{:iteration 1 :channel "tool"
-                                            :tool-results [] :eval-results []}])]
+                                            :tool-results [] :code-results []}])]
       (rca/coact-ensure-answer-action {:st-memory st})
       (is (= "the real answer" (:answer @st)))
       (is (nil? (:terminated-by @st))
@@ -769,7 +769,7 @@
       (is (= 3 @dspy-calls) "retried up to max-retries")
       (is (= [1000 2000 4000] @sleeps) "exponential backoff across 3 attempts")
       (is (= :none (:last-channel @st)) "still empty → no-action nudge")
-      (is (str/includes? (:error (first (:last-eval-results @st)))
+      (is (str/includes? (:error (first (:last-code-results @st)))
                          "no action this iteration")))))
 
 (deftest repair-no-retry-when-agent-absent-test
@@ -839,7 +839,7 @@
                        :tool-calls [] :code-blocks "" :answer ""
                        :last-reasoning "thinking it over"  ;; not empty → no retry
                        :iterations [{:iteration 1 :channel "none"
-                                     :tool-results [] :eval-results []}])]
+                                     :tool-results [] :code-results []}])]
                (rca/coact-repair-action {:st-memory st :agent :fake-agent}))))]
       (is (= 1 (count events)))
       (is (= :no-action (:kind (first events))))
@@ -858,11 +858,11 @@
                        :tool-calls [] :code-blocks "" :answer ""
                        :last-reasoning "I have nothing actionable to add"
                        :iterations [{:iteration 1 :channel "none"
-                                     :tool-results [] :eval-results []}
+                                     :tool-results [] :code-results []}
                                     {:iteration 2 :channel "none"
-                                     :tool-results [] :eval-results []}
+                                     :tool-results [] :code-results []}
                                     {:iteration 3 :channel "none"
-                                     :tool-results [] :eval-results []}])]
+                                     :tool-results [] :code-results []}])]
                (rca/coact-repair-action {:st-memory st :agent :fake-agent}))))]
       (is (empty? events) "escalation terminates the turn — not a 'retrying' state"))))
 
@@ -878,7 +878,7 @@
       (is (false? (boolean (:terminated @st))))
       (is (= :none (:last-channel @st)))
       (is (nil? (:dspy-error @st)) "malformed handler clears :dspy-error")
-      (is (str/includes? (:error (first (:last-eval-results @st))) "FORMAT ERROR")))))
+      (is (str/includes? (:error (first (:last-code-results @st))) "FORMAT ERROR")))))
 
 (deftest repair-malformed-fatal-test
   (testing "fatal LLM error (auth) terminates with apology answer regardless of count"
@@ -1080,12 +1080,12 @@
       (rca/coact-repair-action {:st-memory st})
       (is (= 1 (:consecutive-llm-failures @st)))
       (is (= 7 (:last-repair-iter @st)) "stamps the handled iteration")
-      (is (str/includes? (:error (first (:last-eval-results @st))) "FORMAT ERROR"))
+      (is (str/includes? (:error (first (:last-code-results @st))) "FORMAT ERROR"))
       ;; Second call in the SAME iteration (router Path D re-entry): no-op.
       (rca/coact-repair-action {:st-memory st})
       (is (= 1 (:consecutive-llm-failures @st))
           "guard prevents a second increment / no-action re-classification")
-      (is (str/includes? (:error (first (:last-eval-results @st))) "FORMAT ERROR")
+      (is (str/includes? (:error (first (:last-code-results @st))) "FORMAT ERROR")
           "eval-result unchanged — not overwritten by a no-action nudge"))))
 
 ;; ============================================================================
@@ -1236,7 +1236,7 @@
                      :tool-args {:text "hi"}
                      :tool-result (str "echo: hi-" n)}]
                    [])
-   :eval-results (if (= channel "code")
+   :code-results (if (= channel "code")
                    [{:lang "clojure"
                      :code (str "(+ 1 " n ")")
                      :result (str (+ 1 n))
@@ -1435,13 +1435,13 @@
         normal-rec {:iteration 1
                     :channel "code"
                     :thought "executing slow research call"
-                    :eval-results [{:lang "clojure"
+                    :code-results [{:lang "clojure"
                                     :result "{:answer 42}"}]}
         async-rec  {:iteration 4
                     :channel "code"
                     :thought "(async eval from iter 2 completed: task-7)"
                     :async-completion? true
-                    :eval-results [{:lang "clojure"
+                    :code-results [{:lang "clojure"
                                     :result "{:answer 42}"
                                     :status :resolved
                                     :task-id "task-7"
@@ -1467,7 +1467,7 @@
 
     (testing "missing :from-iteration falls back to '?'"
       (let [out (format-fn [(assoc async-rec
-                                   :eval-results
+                                   :code-results
                                    [{:lang "clojure"
                                      :result "{}"
                                      :status :resolved
@@ -1480,7 +1480,7 @@
                  [{:iteration 7
                    :channel "code"
                    :async-completion? true
-                   :eval-results [{:lang "clojure" :result "a"
+                   :code-results [{:lang "clojure" :result "a"
                                    :status :resolved :task-id "task-1"
                                    :from-iteration 2}
                                   {:lang "clojure" :result "b"
@@ -1502,7 +1502,7 @@
         async-rec {:iteration 4
                    :channel "code"
                    :async-completion? true
-                   :eval-results [{:lang     "clojure"
+                   :code-results [{:lang     "clojure"
                                    :code     "(research-agent {...})"
                                    :result   "{:answer 42}"
                                    :output   "ok"
@@ -1527,7 +1527,7 @@
     (testing "normal records bypass the async branch and use the legacy code projection"
       (let [normal-rec {:iteration 1
                         :channel "code"
-                        :eval-results [{:lang "clojure"
+                        :code-results [{:lang "clojure"
                                         :code "(+ 1 2)"
                                         :result "3"
                                         :output ""}]}
@@ -1538,7 +1538,7 @@
 
     (testing "error-status async completion carries the error"
       (let [out (compact (-> async-rec
-                             (update-in [:eval-results 0]
+                             (update-in [:code-results 0]
                                         assoc
                                         :status :error
                                         :error "boom"
@@ -1569,7 +1569,7 @@
       (rca/coact-inc-iter-action {:st-memory st})
       (let [iters (:iterations @st)
             rec   (first iters)
-            entry (first (:eval-results rec))]
+            entry (first (:code-results rec))]
         (is (= 1 (count iters)))
         (is (true? (:async-completion? rec)))
         (is (= 3 (:iteration rec)) "lands on the current iter")
@@ -1618,7 +1618,7 @@
                                       "```")
                     :iteration-count 1})]
       (rca/coact-code-eval-action {:st-memory st :agent nil})
-      (let [[ok bad] (:last-eval-results @st)]
+      (let [[ok bad] (:last-code-results @st)]
         (is (= ":alpha" (:result ok))
             "code-fence keyword :alpha reaches the handler and is echoed")
         (is (str/includes? (str (:result bad)) "should be either")

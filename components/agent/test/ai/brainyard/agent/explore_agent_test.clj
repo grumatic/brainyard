@@ -769,7 +769,7 @@
     (try
       ;; --- Iteration N: the verbatim block runs through the real eval seam ---
       (rca/coact-code-eval-action {:st-memory st :agent nil})
-      (let [entries (:last-eval-results @st)
+      (let [entries (:last-code-results @st)
             e       (first entries)]
         (testing "the verbatim block produced exactly one eval entry"
           (is (= :code (:last-channel @st)))
@@ -815,6 +815,6 @@
                                  "(run-verbatim-block lang content filename)"))))))
       (finally
         ;; reclaim the scratch file the verbatim write left behind
-        (when-let [p (some-> (:last-eval-results @st) first :result)]
+        (when-let [p (some-> (:last-code-results @st) first :result)]
           (.delete (io/file p)))
         (delete-recursive (io/file tmp-dir))))))

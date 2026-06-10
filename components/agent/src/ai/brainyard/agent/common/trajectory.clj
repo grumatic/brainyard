@@ -48,16 +48,16 @@
   "Build a single trajectory entry from an RLM iteration.
 
    Args:
-     iteration-data - Map with :iteration, :eval-results, :error keys
+     iteration-data - Map with :iteration, :code-results, :error keys
      response-text  - Raw LLM response text (optional, for reasoning extraction)
 
    Returns:
      {:iteration N :code [...] :output [...] :reasoning \"...\"}"
-  [{:keys [iteration eval-results error]} & [response-text]]
-  (let [codes (when (seq eval-results)
-                (vec (keep :code eval-results)))
-        outputs (if (seq eval-results)
-                  (->> eval-results
+  [{:keys [iteration code-results error]} & [response-text]]
+  (let [codes (when (seq code-results)
+                (vec (keep :code code-results)))
+        outputs (if (seq code-results)
+                  (->> code-results
                        (keep :output)
                        (remove str/blank?)
                        vec)

@@ -423,7 +423,7 @@ Iteration N-1 — HELPER FENCE (NO :answer, NO contract line)
   iteration's history.
 
 Iteration N — :ANSWER (verdict.md is now on disk)
-  Read your previous iteration's eval-results to confirm step 2 returned
+  Read your previous iteration's code-results to confirm step 2 returned
   `{:path \"…/verdict.md\"}` and step 3 returned `{:appended true}`.
   Optionally read-file verdict.md to derive the user-facing prose from
   the source of truth. THEN populate :answer with the markdown report,

@@ -46,7 +46,7 @@
   (testing "builds entry from iteration data"
     (let [entry (trajectory/build-trajectory-entry
                  {:iteration 1
-                  :eval-results [{:code "(+ 1 2)" :output "=> 3"}]})]
+                  :code-results [{:code "(+ 1 2)" :output "=> 3"}]})]
       (is (= 1 (:iteration entry)))
       (is (= ["(+ 1 2)"] (:code entry)))
       (is (= ["=> 3"] (:output entry)))))
@@ -54,7 +54,7 @@
   (testing "handles error in iteration"
     (let [entry (trajectory/build-trajectory-entry
                  {:iteration 2
-                  :eval-results [{:code "(/ 1 0)" :output ""}]
+                  :code-results [{:code "(/ 1 0)" :output ""}]
                   :error "Divide by zero"})]
       (is (= 2 (:iteration entry)))
       (is (some #(str/starts-with? % "ERROR:") (:output entry)))))

@@ -111,7 +111,7 @@ RULES:
 
 (defn build-iteration-evidence
   "Extract actual outputs from CoAct iterations as ground-truth evidence.
-   Covers BOTH the code channel (`:eval-results`) and the tool channel
+   Covers BOTH the code channel (`:code-results`) and the tool channel
    (`:tool-results`) so tool-only turns still produce evidence — without this,
    a tool-driven answer reaches FinalizeAnswer/EvaluateAnswer with empty
    evidence, which can make the model blank or distrust a perfectly good answer.
@@ -119,21 +119,21 @@ RULES:
    Returns a string summarizing what tools/code actually returned."
   [iterations]
   (let [evidence (->> iterations
-                      (keep (fn [{:keys [iteration eval-results tool-results error]}]
-                              (let [outputs (when (seq eval-results)
-                                              (->> eval-results
+                      (keep (fn [{:keys [iteration code-results tool-results error]}]
+                              (let [outputs (when (seq code-results)
+                                              (->> code-results
                                                    (keep :output)
                                                    (remove str/blank?)
                                                    (map recover-truncated-text)))
-                                    result-strs (when (and (seq eval-results) (empty? outputs))
+                                    result-strs (when (and (seq code-results) (empty? outputs))
                                                   (keep #(when (some? (:result %))
                                                            (let [s (pr-str (:result %))]
                                                              (when-not (str/blank? s) s)))
-                                                        eval-results))
-                                    codes (when (seq eval-results)
-                                            (keep :code eval-results))
-                                    script-contents (when (seq eval-results)
-                                                      (->> eval-results
+                                                        code-results))
+                                    codes (when (seq code-results)
+                                            (keep :code code-results))
+                                    script-contents (when (seq code-results)
+                                                      (->> code-results
                                                            (keep :script-content)
                                                            (remove str/blank?)))
                                     tool-strs (when (seq tool-results)
@@ -193,11 +193,11 @@ RULES:
 
 (defn build-evidence
   "Build evidence from iterations, auto-detecting format (CoAct/code-channel vs React).
-   CoAct/code-channel iterations have :eval-results; React iterations have :actions/:observation."
+   CoAct/code-channel iterations have :code-results; React iterations have :actions/:observation."
   [iterations]
   (if (empty? iterations)
     ""
-    (if (:eval-results (first iterations))
+    (if (:code-results (first iterations))
       (build-iteration-evidence iterations)
       (build-react-evidence iterations))))
 

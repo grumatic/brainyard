@@ -1643,7 +1643,7 @@
                         (when-let [n (:num-turns event)] (str " turns=" n)))
 
                    ;; Fallback: show event name + safe subset of keys
-                   (let [skip-keys #{:messages :response-text :eval-results :usage :body :request :response}
+                   (let [skip-keys #{:messages :response-text :eval-results :code-results :usage :body :request :response}
                          user-keys (->> (keys event)
                                         (remove #(or (= "mulog" (namespace %))
                                                      (contains? skip-keys (keyword (name %)))))
@@ -1853,7 +1853,7 @@
                  :response-body (:response event)})
 
               ;; Fallback — pick safe keys only (skip large values)
-              (let [skip-keys #{:messages :response-text :eval-results :usage :body :request :response}
+              (let [skip-keys #{:messages :response-text :eval-results :code-results :usage :body :request :response}
                     user-keys (->> (keys event)
                                    (remove #(or (= "mulog" (namespace %))
                                                 (contains? skip-keys (keyword (name %)))))

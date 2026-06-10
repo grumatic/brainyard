@@ -208,7 +208,7 @@
           (is (= 12 (:iteration rec)))
           (is (= "code" (:channel rec)))
           (is (re-find #"iter 11" (:thought rec)))
-          (let [entry (first (:eval-results rec))]
+          (let [entry (first (:code-results rec))]
             (is (= "clojure" (:lang entry)))
             (is (= :resolved (:status entry)))
             (is (= ":recovered" (:result entry)))
@@ -269,5 +269,5 @@
           (harvest-pending-tasks! st-memory)
           (let [iters (:iterations @st-memory)]
             (is (= 1 (count iters)) "all completions batched into a single record")
-            (let [langs (set (map :lang (:eval-results (first iters))))]
+            (let [langs (set (map :lang (:code-results (first iters))))]
               (is (= #{"clojure" "bash"} langs)))))))))
