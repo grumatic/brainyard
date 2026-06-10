@@ -90,7 +90,7 @@ is routed into the per-agent override slot at startup.
 ```clojure
 {:max-iterations    {:type "integer" :default 100}
  :show-llm-streaming {:type "boolean" :default false}
- :eval-lm           {:type "string"  :default "claude-code:opus"}
+ :eval-lm-config    {:type "string"  :default nil}
  :working-dir       {:type "string"  :default-fn #(System/getProperty "user.dir")}
  :lm-config         {:type "object"  :default-fn #(clj-llm/get-default-lm)}
  :dirs              {:type "object"  :default-fn #(resolve-dirs)}

@@ -2140,7 +2140,12 @@
             (when (render-active?) (stop-thinking-indicator!))
             (emit! (fmt/format-answer answer))
             (when (and finalize? (some? goal-achieved))
-              (emit! (fmt/format-goal-status goal-achieved nil))))))))
+              (emit! (fmt/format-goal-status goal-achieved nil)))
+            ;; Suggested follow-up (FinalizeAnswer :next-user-prompt) — only when
+            ;; the finalize pass ran. format-next-prompt returns nil if blank.
+            (when finalize?
+              (when-let [np (fmt/format-next-prompt (:next-user-prompt st))]
+                (emit! np))))))))
   ;; Sub-agent: stamp :done in the consolidated subagents block (handled
   ;; centrally in `mark-sub-agent-done!` — also auto-freezes the block
   ;; if this was the last running sub-agent under the root) and emit the

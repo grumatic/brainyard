@@ -295,9 +295,13 @@
     (.apply-resume-note! agent)))
 
 (defmethod p/tick :repeat
-  [{:keys [id max-n condition-fn child depth]
+  [{:keys [id max-n condition-fn child depth emit-iteration-events?]
     :or {id "?" depth 0 max-n 5
-         condition-fn (fn [_] true)} :as _node}
+         condition-fn (fn [_] true)
+         ;; Control-flow `:repeat` nodes (e.g. the CoAct refinement loop) set
+         ;; this false so they don't render a spurious "Iteration N / M" widget
+         ;; — only the genuine per-turn iteration loop should surface one.
+         emit-iteration-events? true} :as _node}
    {:keys [st-memory ^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent] :as context}]
 
   (let [max-n (or (if (fn? max-n) (max-n context) max-n) 5)]
@@ -312,7 +316,7 @@
                      (if (< n max-n)
                        (let [iter-num     (inc n)
                              _            (check-interrupt-cancel-pause! agent depth id :repeat)
-                             _            (when agent
+                             _            (when (and agent emit-iteration-events?)
                                             (hooks/fire! :agent.iteration/pre
                                                          {:agent agent
                                                           :iteration iter-num
@@ -320,7 +324,7 @@
                                                           :repeat-id id}))
                              child-result (p/tick (assoc child :depth (inc depth)) context)
                              post-st      @st-memory
-                             _            (when agent
+                             _            (when (and agent emit-iteration-events?)
                                             (hooks/fire! :agent.iteration/post
                                                          {:agent agent
                                                           :iteration iter-num

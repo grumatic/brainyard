@@ -87,7 +87,12 @@
    ;; RLM iteration / evaluation / refinement
    :max-iterations             {:type "integer" :default 100}
    :max-refinements            {:type "integer" :default 0}
-   :eval-lm                    {:type "string"  :default "claude-code:opus"}
+   ;; Model used for the answer-evaluation (hallucination/completeness) check
+   ;; that gates refinement. nil/blank → evaluate with the agent's main
+   ;; :lm-config. A non-blank "provider:model" label (e.g. "claude-code:opus")
+   ;; routes the check to a dedicated model. Parallels :sub-lm-config. See
+   ;; `resolve-eval-lm`.
+   :eval-lm-config             {:type "string"  :default nil}
    ;; Sub-LLM query configuration (llm-query, rlm-query in sandbox)
    :sub-lm-config              {:type "string"  :default nil}
    :llm-query-max-depth        {:type "integer" :default 1}
@@ -1118,4 +1123,20 @@
          sub-str (get-config agent :sub-lm-config)]
      (if (and sub-str (not (str/blank? sub-str)))
        (or (clj-llm/parse-lm-str sub-str) main-lm)
+       main-lm))))
+
+(defn resolve-eval-lm
+  "Resolve the LM for the answer-evaluation check (EvaluateAnswer). Pattern:
+     :eval-lm-config (string) → parsed via `clj-llm/parse-lm-str` if non-blank
+     otherwise → the agent's main `:lm-config`
+   Mirrors `resolve-sub-lm`: an unparseable label falls back to the main LM
+   rather than nil (a nil lm-config would make the dspy call dispatch to the
+   wrong provider). Wired as the per-node `:lm-config` fn on the EvaluateAnswer
+   BT action; `bt/dspy`'s resolve-lm-config invokes it with the live context."
+  ([] (resolve-eval-lm proto/*current-agent*))
+  ([agent]
+   (let [main-lm  (get-config agent :lm-config)
+         eval-str (get-config agent :eval-lm-config)]
+     (if (and eval-str (not (str/blank? eval-str)))
+       (or (clj-llm/parse-lm-str eval-str) main-lm)
        main-lm))))

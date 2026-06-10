@@ -424,10 +424,10 @@
         (cfg/migrate-legacy-edn-shape
          {:agent {:max-iterations 30
                   :default-agent :coact-agent
-                  :config {:eval-lm "claude-code:opus"}}})]
+                  :config {:eval-lm-config "claude-code:opus"}}})]
     (is changed?)
     (is (= 30   (get-in config [:agent :config :max-iterations])))
-    (is (= "claude-code:opus" (get-in config [:agent :config :eval-lm]))
+    (is (= "claude-code:opus" (get-in config [:agent :config :eval-lm-config]))
         "existing :agent.config keys are preserved")
     (is (= :coact-agent (get-in config [:agent :default-agent])))
     (is (not (contains? (:agent config) :max-iterations))

@@ -3,7 +3,7 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent.common.evaluation
-  "DSPy evaluation signatures and BT evaluation actions for the RLM agent.
+  "DSPy evaluation signatures and BT evaluation actions for the CoAct agent.
 
    Provides:
    - EvaluateAnswer / FinalizeAnswer DSPy signatures
@@ -57,13 +57,15 @@ It is NOT hallucination if the agent:
 ;; ============================================================================
 
 (defschemas finalize-domain
-  {::goal-achieved [:boolean {:desc "Whether the question was fully and accurately answered"}]})
+  {::goal-achieved [:boolean {:desc "Whether the question was fully and accurately answered"}]
+   ::next-user-prompt [:string {:desc "A concise one-line follow-up the USER could send next to build on this answer. Phrase it as the user's own request (imperative), not a question back to the user. Empty string when no useful follow-up exists."}]})
 
 (defsignature FinalizeAnswer
-  "You are finalizing the answer from an AI agent that writes Clojure code in a sandbox REPL.
+  "You are finalizing the answer from a CoAct agent that works through tool calls and Clojure
+code blocks in a sandbox.
 
-The agent produced a DRAFT answer via `(FINAL \"...\")` during code execution. Your job is to
-synthesize a comprehensive, polished answer using ALL available evidence from the sandbox iterations.
+The agent produced a DRAFT answer via its answer channel. Your job is to
+synthesize a comprehensive, polished answer using ALL available evidence from the agent's iterations.
 
 RULES:
 1. Use the EVIDENCE (sandbox outputs) as ground truth — do NOT fabricate data
@@ -71,14 +73,19 @@ RULES:
 3. If the evidence is insufficient, say so honestly rather than guessing
 4. Preserve any data tables, code examples, or structured content from the evidence
 5. Format the answer clearly with markdown when appropriate
-6. Set goal-achieved to true only if the question is fully answered with evidence support"
+6. Set goal-achieved to true only if the question is fully answered with evidence support
+7. Suggest next-user-prompt: a single concise line (~12 words or fewer) the user
+   could send as their next message to build naturally on this answer. Phrase it
+   as the user's own request (imperative), not a question back to them. Leave it
+   empty when no sensible follow-up exists."
   {:inputs {:question [:string {:desc "User question"}]
             :answer [:string {:desc "Answer to the question"}]
             :evidence [:string {:desc "All sandbox code outputs and results from iterations (ground truth)"}]
             :eval-context [:string {:desc "System instructions and conversation context"}]
             :todo-list [:any {:desc "Current task progress list (may be nil)"}]}
    :outputs {:answer [:string {:desc "Answer to the question"}]
-             :goal-achieved ::goal-achieved}})
+             :goal-achieved ::goal-achieved
+             :next-user-prompt ::next-user-prompt}})
 
 ;; ============================================================================
 ;; Evidence Helpers
@@ -103,12 +110,16 @@ RULES:
     text))
 
 (defn build-iteration-evidence
-  "Extract actual sandbox outputs from RLM iterations as ground-truth evidence.
+  "Extract actual outputs from CoAct iterations as ground-truth evidence.
+   Covers BOTH the code channel (`:eval-results`) and the tool channel
+   (`:tool-results`) so tool-only turns still produce evidence — without this,
+   a tool-driven answer reaches FinalizeAnswer/EvaluateAnswer with empty
+   evidence, which can make the model blank or distrust a perfectly good answer.
    Auto-recovers truncated outputs from temp files when available.
-   Returns a string summarizing what tools actually returned."
+   Returns a string summarizing what tools/code actually returned."
   [iterations]
   (let [evidence (->> iterations
-                      (keep (fn [{:keys [iteration eval-results error]}]
+                      (keep (fn [{:keys [iteration eval-results tool-results error]}]
                               (let [outputs (when (seq eval-results)
                                               (->> eval-results
                                                    (keep :output)
@@ -124,8 +135,18 @@ RULES:
                                     script-contents (when (seq eval-results)
                                                       (->> eval-results
                                                            (keep :script-content)
-                                                           (remove str/blank?)))]
-                                (when (or (seq outputs) (seq result-strs) error)
+                                                           (remove str/blank?)))
+                                    tool-strs (when (seq tool-results)
+                                                (->> tool-results
+                                                     (keep (fn [{:keys [tool-name tool-args tool-result]}]
+                                                             (let [r (str tool-result)]
+                                                               (when-not (str/blank? r)
+                                                                 (str "Tool: " tool-name
+                                                                      (when (seq tool-args)
+                                                                        (str " " (pr-str tool-args)))
+                                                                      "\nResult: " (recover-truncated-text r))))))
+                                                     vec))]
+                                (when (or (seq outputs) (seq result-strs) (seq tool-strs) error)
                                   (str "--- Iteration " iteration " ---\n"
                                        (when (seq codes)
                                          (str "Code: " (first codes) "\n"))
@@ -136,7 +157,9 @@ RULES:
                                        (when (seq outputs)
                                          (str "Output:\n" (str/join "\n" outputs) "\n"))
                                        (when (seq result-strs)
-                                         (str "Result: " (str/join ", " result-strs) "\n"))))))))
+                                         (str "Result: " (str/join ", " result-strs) "\n"))
+                                       (when (seq tool-strs)
+                                         (str (str/join "\n" tool-strs) "\n"))))))))
         joined (str/join "\n" evidence)]
     (if (> (count joined) 400000)
       (subs joined 0 400000)
@@ -169,8 +192,8 @@ RULES:
       joined)))
 
 (defn build-evidence
-  "Build evidence from iterations, auto-detecting format (RLM/CodeAct vs React).
-   RLM/CodeAct iterations have :eval-results; React iterations have :actions/:observation."
+  "Build evidence from iterations, auto-detecting format (CoAct/code-channel vs React).
+   CoAct/code-channel iterations have :eval-results; React iterations have :actions/:observation."
   [iterations]
   (if (empty? iterations)
     ""
@@ -187,7 +210,7 @@ RULES:
 (defn build-evaluation-context
   "Build a brief context summary for FinalizeAnswer/EvaluateAnswer.
    Only includes agent-specific instruction, agent-context, and tool-context
-   (each capped at 500 chars). The full RLM system prompt and sandbox docs
+   (each capped at 500 chars). The full CoAct system prompt and sandbox docs
    are NOT included — the evaluator only needs to understand the agent's
    task and constraints, not the sandbox execution environment."
   [st-memory-snapshot]
@@ -211,9 +234,11 @@ RULES:
   (let [st @st-memory
         answer (:answer st)
         question (:question st)
-        iterations (:full-iterations st)
+        ;; CoAct accumulates into :iterations; the legacy RLM path used
+        ;; :full-iterations. Prefer the live key, fall back for compatibility.
+        iterations (or (:iterations st) (:full-iterations st))
         round (or (:refinement-round st) 0)
-        max-refs (config/get-config agent :max-refinements)]
+        max-refs (or (config/get-config agent :max-refinements) 0)]
     (cond
       ;; No answer -> incomplete
       (or (nil? answer) (str/blank? answer))
@@ -228,13 +253,13 @@ RULES:
       (do (swap! st-memory assoc :answer-complete true)
           bt/success)
 
-      ;; RLM exhausted (hit max-iterations without FINAL) -> retry with feedback
+      ;; Exhausted (hit max-iterations without producing an answer) -> retry with feedback
       (:iterations-exhausted st)
       (do (swap! st-memory assoc
                  :answer-complete false
                  :refinement-feedback (str "The previous attempt ran out of iterations without producing a final answer. "
                                            "Be more efficient: skip unnecessary exploration, use the data you already have, "
-                                           "and call (FINAL answer) as soon as you have enough information.")
+                                           "and answer directly (via the answer channel) as soon as you have enough information.")
                  :refinement-round (inc round))
           bt/success)
 
@@ -248,7 +273,11 @@ RULES:
               eval-ctx (build-evaluation-context st)
               has-evidence (not (str/blank? evidence))
               evidence-length (count (or evidence ""))
-              eval-lm-label (config/get-config agent :eval-lm)]
+              ;; Blank :eval-lm-config means "use the agent's main LM" — surface
+              ;; that as nil so the TUI handler falls back to "via LLM" rather
+              ;; than rendering an empty label.
+              eval-lm-label (let [e (config/get-config agent :eval-lm-config)]
+                              (when-not (str/blank? e) e))]
           (swap! st-memory assoc
                  :evidence (if (str/blank? evidence) "No sandbox outputs available" evidence)
                  :eval-context (if (str/blank? eval-ctx) "No additional context" eval-ctx)
@@ -340,7 +369,7 @@ RULES:
   [{:keys [st-memory ^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent] :as _context}]
   (let [st @st-memory
         answer (:answer st)
-        iterations (:full-iterations st)
+        iterations (or (:iterations st) (:full-iterations st))
         enable? (config/get-config agent :enable-finalize-answer)]
     (if (or (not enable?)
             (str/blank? answer)
@@ -351,7 +380,10 @@ RULES:
             eval-context (build-evaluation-context st)]
         (swap! st-memory assoc
                :evidence evidence
-               :eval-context eval-context)
+               :eval-context eval-context
+               ;; Stash the draft so finalize-postprocess-action can restore it
+               ;; if FinalizeAnswer returns a blank/degraded answer.
+               :pre-finalize-answer answer)
         ;; Notify UI of finalization phase
         (when agent
           (.update-session-data agent
@@ -359,9 +391,30 @@ RULES:
                                           :message "Finalizing answer..."}}))
         bt/success))))
 
+(defn finalize-postprocess-action
+  "BT action: runs after the FinalizeAnswer DSPy call. Guards against the model
+   returning a blank/whitespace answer — when that happens the original draft
+   (stashed by `prepare-finalize-action`) is restored so a successful turn never
+   ends answerless (observed on tool-only turns where finalize saw thin
+   evidence). Then flips display-stage to :think for the TUI."
+  [{:keys [st-memory] :as _context}]
+  (let [st        @st-memory
+        finalized (:answer st)
+        draft     (:pre-finalize-answer st)]
+    (when (and (str/blank? (str finalized))
+               (not (str/blank? (str draft))))
+      (mulog/warn ::finalize-blank-answer
+                  :message "FinalizeAnswer returned a blank answer — restoring pre-finalize draft")
+      (swap! st-memory assoc
+             :answer draft
+             :goal-achieved (boolean (:goal-achieved st))))
+    (swap! st-memory (fn [m] (-> m (assoc :display-stage :think)
+                                 (dissoc :pre-finalize-answer))))
+    bt/success))
+
 (defn finalize-fallback-action
   "BT action: fallback when FinalizeAnswer DSPy fails.
-   Keeps the draft answer from the RLM loop as-is."
+   Keeps the draft answer from the CoAct loop as-is."
   [{:keys [st-memory] :as _context}]
   (mulog/debug ::finalize-answer-fallback :message "FinalizeAnswer failed or skipped — keeping draft answer")
   ;; Ensure goal-achieved has a default value
@@ -370,8 +423,10 @@ RULES:
   bt/success)
 
 (defn prepare-refinement-action
-  "BT action: prepare st-memory for a refinement RLM loop.
-   Clears the previous answer and sets up state for retry."
+  "BT action: prepare st-memory for a refinement loop.
+   Stashes the rejected answer into `:previous-answer` (surfaced to the retry
+   inside the `## Refinement Feedback` section so the model sees what it got
+   wrong) and clears the loop-control state for the next attempt."
   [{:keys [st-memory ^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent] :as context}]
   (let [st @st-memory
         prev-answer (:answer st)
@@ -381,11 +436,16 @@ RULES:
        agent {:trace {:agent-id (:agent-id agent)
                       :depth (or (:depth context) 0)
                       :content (format "Answer incomplete (round %d) — refining with feedback" round)}}))
+    ;; Stash the rejected attempt, then clear loop-control state. The
+    ;; refinement round's `coact-init-action` also resets :iterations /
+    ;; :answer / :terminated / :iteration-count, but clearing here keeps
+    ;; this action correct for any caller that re-enters the loop directly.
     (swap! st-memory assoc
            :answer nil
+           :iterations nil
            :full-iterations nil
+           :terminated nil
            :terminated-by nil
            :iterations-exhausted nil
-           :previous-answer prev-answer
-           :previous-iterations (:full-iterations st))
+           :previous-answer prev-answer)
     bt/success))

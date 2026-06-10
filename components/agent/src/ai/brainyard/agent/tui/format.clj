@@ -1094,6 +1094,14 @@
                      (str " " (ansi/muted (str "(" (truncate goal-reasoning 200) ")"))))]
     (str "  " status-str reason-str)))
 
+(defn format-next-prompt
+  "Format a suggested one-line follow-up prompt for the user (from
+   FinalizeAnswer's :next-user-prompt output). Returns nil when blank."
+  [next-prompt]
+  (when (and next-prompt (not (str/blank? next-prompt)))
+    (str "  " (ansi/muted (str "↳ Try next: "
+                               (truncate (str/trim next-prompt) 200))))))
+
 ;; ============================================================================
 ;; Final Answer
 ;; ============================================================================

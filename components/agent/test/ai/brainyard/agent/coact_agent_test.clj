@@ -68,9 +68,33 @@
     (let [bt-config (rca/coact-behavior-tree 20)]
       (is (= :sequence (first bt-config)))
       (is (= :coact.sequence/main (get-in bt-config [1 :id])))
-      ;; [:sequence opts cond-q prep-conv prep-recall init fb-loop ensure-answer
-      ;;  cond-a finalize-fb store maintain] = 12
-      (is (= 12 (count bt-config)))))
+      ;; [:sequence opts cond-q prep-conv prep-recall prep-refine-loop
+      ;;  repeat-refine cond-a finalize-fb store maintain] = 11
+      ;; (init + main-loop + ensure-answer + evaluation now live INSIDE the
+      ;;  refinement :repeat node)
+      (is (= 11 (count bt-config)))))
+
+  (testing "top-level BT wraps the work in a refinement :repeat node"
+    (let [bt-config (rca/coact-behavior-tree 20)
+          refine (first (filter #(and (vector? %)
+                                      (= :repeat (first %))
+                                      (= :coact.repeat/refine (get-in % [1 :id])))
+                                bt-config))]
+      (is (some? refine) "refinement :repeat node is present")
+      (is (fn? (get-in refine [1 :max-n])))
+      (is (fn? (get-in refine [1 :condition-fn])))
+      (let [round-seq (nth refine 2)
+            ids (->> round-seq
+                     (filter vector?)
+                     (map #(get-in % [1 :id]))
+                     set)]
+        ;; The round runs init → main loop → ensure-answer → evaluation.
+        (is (contains? ids :coact.action/init))
+        (is (contains? ids :coact.fallback/loop-guard))
+        (is (contains? ids :coact.action/ensure-answer))
+        (is (contains? ids :coact.action/prepare-evaluation))
+        (is (contains? ids :coact.fallback/eval-llm-guard))
+        (is (contains? ids :coact.fallback/refine-guard)))))
 
   (testing "BT builds successfully with the BT engine"
     (let [bt-config (rca/coact-behavior-tree 10)

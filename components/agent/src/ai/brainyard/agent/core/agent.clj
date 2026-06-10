@@ -777,7 +777,7 @@
      :st-memory-extra - map merged into :st-memory-init
      :session-store   - custom session store
 
-   Schema-key options at the top level of `options` (e.g. :eval-lm,
+   Schema-key options at the top level of `options` (e.g. :eval-lm-config,
    :max-refinements) are extracted into st-memory-init :config and win
    over defagent author defaults supplied via :config-extra. Read them
    back via (config/get-config agent :key)."
