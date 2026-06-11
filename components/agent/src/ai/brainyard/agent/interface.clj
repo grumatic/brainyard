@@ -302,13 +302,13 @@
 
 ;; ============================================================================
 ;; ============================================================================
-;; Trajectory Export
+;; Trajectory Recording — per-session append-only trajectory.edn
 ;; ============================================================================
 
 (export-symbols ai.brainyard.agent.common.trajectory
-                build-trajectory store-trajectory! get-trajectories get-trajectory
-                clear-trajectories! set-export-dir! trajectory-summary
-                format-trajectory-for-export)
+                project-iteration build-turn-trajectory
+                append-trajectory! read-trajectories latest-trajectory
+                session-trajectory-file)
 
 ;; ============================================================================
 ;; Task Management — direct exports for low-level access

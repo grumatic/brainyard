@@ -77,6 +77,9 @@
    :max-collapsed-lines        {:type "integer" :default 20}
    :max-expanded-lines         {:type "integer" :default 200}
    :enable-sandbox-persistence {:type "boolean" :default true}
+   ;; Append one EDN record per turn to ~/.brainyard/sessions/<id>/trajectory.edn
+   ;; (all iterations + final answer). Disable to skip trajectory recording.
+   :enable-trajectory-recording {:type "boolean" :default true}
    :enable-budget-monitoring   {:type "boolean" :default false}
    ;; Cross-turn context compaction. Gated (along with the per-iteration /
    ;; turn-init budget reducer) by the single `:enable-context-budget` knob;

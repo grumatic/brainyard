@@ -3,249 +3,183 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent.trajectory-test
-  "Tests for the trajectory export module."
+  "Tests for per-session trajectory recording (append-only trajectory.edn)."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [ai.brainyard.agent.common.trajectory :as trajectory]))
 
 ;; ============================================================================
-;; Fixtures
+;; Fixtures — redirect the sessions root to a throwaway temp dir
 ;; ============================================================================
 
-(defn cleanup-store [f]
-  (trajectory/clear-trajectories!)
-  (f)
-  (trajectory/clear-trajectories!))
+(def ^:dynamic *tmp-root* nil)
 
-(use-fixtures :each cleanup-store)
+(defn- delete-tree! [^java.io.File f]
+  (when (.exists f)
+    (doseq [^java.io.File c (reverse (file-seq f))] (.delete c))))
 
-;; ============================================================================
-;; extract-reasoning tests
-;; ============================================================================
+(defn with-tmp-root [f]
+  (let [dir (io/file (System/getProperty "java.io.tmpdir")
+                     (str "by-traj-test-" (System/nanoTime)))]
+    (.mkdirs dir)
+    (binding [trajectory/*sessions-root* (.getAbsolutePath dir)
+              *tmp-root* dir]
+      (try (f)
+           (finally (delete-tree! dir))))))
 
-(deftest extract-reasoning-test
-  (testing "extracts text excluding code blocks"
-    (let [response "I'll analyze the data first.\n\n```clojure\n(+ 1 2)\n```\n\nThis gives us the answer."
-          result (#'trajectory/extract-reasoning response)]
-      (is (string? result))
-      (is (str/includes? result "analyze the data"))
-      (is (str/includes? result "gives us the answer"))
-      (is (not (str/includes? result "(+ 1 2)")))))
-
-  (testing "returns nil for nil input"
-    (is (nil? (#'trajectory/extract-reasoning nil))))
-
-  (testing "returns nil for code-only response"
-    (is (nil? (#'trajectory/extract-reasoning "```clojure\n(+ 1 2)\n```")))))
+(use-fixtures :each with-tmp-root)
 
 ;; ============================================================================
-;; build-trajectory-entry tests
+;; project-iteration
 ;; ============================================================================
 
-(deftest build-trajectory-entry-test
-  (testing "builds entry from iteration data"
-    (let [entry (trajectory/build-trajectory-entry
-                 {:iteration 1
-                  :code-results [{:code "(+ 1 2)" :output "=> 3"}]})]
-      (is (= 1 (:iteration entry)))
+(deftest project-iteration-test
+  (testing "code-channel iteration keeps code/result/output/error"
+    (let [entry (trajectory/project-iteration
+                 {:iteration 1 :thought "summing" :channel "code"
+                  :code-results [{:lang "clojure" :code "(+ 1 2)"
+                                  :result "3" :output "" :error ""}]})]
+      (is (= 1 (:n entry)))
+      (is (= "code" (:channel entry)))
+      (is (= "summing" (:thought entry)))
       (is (= ["(+ 1 2)"] (:code entry)))
-      (is (= ["=> 3"] (:output entry)))))
+      (is (= ["3"] (:result entry)))
+      ;; blank output/error are dropped
+      (is (nil? (:output entry)))
+      (is (nil? (:error entry)))))
 
-  (testing "handles error in iteration"
-    (let [entry (trajectory/build-trajectory-entry
-                 {:iteration 2
-                  :code-results [{:code "(/ 1 0)" :output ""}]
-                  :error "Divide by zero"})]
-      (is (= 2 (:iteration entry)))
-      (is (some #(str/starts-with? % "ERROR:") (:output entry)))))
+  (testing "tool-channel iteration keeps full per-tool detail"
+    (let [entry (trajectory/project-iteration
+                 {:iteration 2 :thought "reading" :channel "tool"
+                  :tool-results [{:tool-name "read-file"
+                                  :tool-args {:path "deps.edn"}
+                                  :tool-result "…contents…"}]})]
+      (is (= 2 (:n entry)))
+      (is (= "tool" (:channel entry)))
+      (is (= [{:name "read-file" :args {:path "deps.edn"} :result "…contents…"}]
+             (:tools entry)))))
 
-  (testing "handles nil/blank outputs"
-    (let [entry (trajectory/build-trajectory-entry
-                 {:iteration 1
-                  :code ["(def x 1)"]
-                  :output ["" nil ""]})]
-      (is (= 1 (:iteration entry)))
-      ;; blank outputs should be filtered
-      (is (empty? (or (:output entry) [])))))
+  (testing "async-completion records are tagged"
+    (let [entry (trajectory/project-iteration
+                 {:iteration 3 :channel "code" :async-completion? true
+                  :code-results [{:code "x" :result "y"}]})]
+      (is (true? (:async? entry)))))
 
-  (testing "handles nil code"
-    (let [entry (trajectory/build-trajectory-entry
-                 {:iteration 1
-                  :code [nil]
-                  :output ["=> 42"]})]
-      (is (= 1 (:iteration entry)))
-      ;; nil code items should be filtered
-      (is (empty? (or (:code entry) []))))))
+  (testing "in-flight-roster records are dropped"
+    (is (nil? (trajectory/project-iteration
+               {:iteration 4 :channel "none" :in-flight-roster? true}))))
 
-;; ============================================================================
-;; build-trajectory tests
-;; ============================================================================
-
-(deftest build-trajectory-test
-  (testing "builds complete trajectory from RLM result"
-    (let [result {:answer "The answer is 42"
-                  :iterations [{:iteration 1
-                                :code ["(FINAL \"The answer is 42\")"]
-                                :output [nil]}]
-                  :terminated-by :final
-                  :total-iterations 1}
-          traj (trajectory/build-trajectory "What is the answer?" result
-                                            :model "claude-sonnet-4-20250514"
-                                            :agent-id "test-agent"
-                                            :session-id "test-session")]
-      (is (= "What is the answer?" (:query traj)))
-      (is (= "The answer is 42" (:answer traj)))
-      (is (true? (:success traj)))
-      (is (= :final (:terminated-by traj)))
-      (is (= 1 (:total-iterations traj)))
-      (is (= "claude-sonnet-4-20250514" (:model traj)))
-      (is (= "test-agent" (get-in traj [:metadata :agent-id])))
-      (is (= "test-session" (get-in traj [:metadata :session-id])))
-      (is (= 1 (count (:trajectory traj))))))
-
-  (testing "marks failed trajectories"
-    (let [result {:answer nil
-                  :iterations [{:iteration 1 :code ["(+ 1 2)"] :output ["3"]}
-                               {:iteration 2 :code ["(+ 3 4)"] :output ["7"]}]
-                  :terminated-by :max-iterations
-                  :total-iterations 2}
-          traj (trajectory/build-trajectory "test" result)]
-      (is (false? (:success traj)))
-      (is (= :max-iterations (:terminated-by traj)))
-      (is (= 2 (count (:trajectory traj))))))
-
-  (testing "includes timing when started-at provided"
-    (let [started (- (System/currentTimeMillis) 1000)
-          result {:answer "done" :iterations [] :terminated-by :final :total-iterations 0}
-          traj (trajectory/build-trajectory "q" result :started-at started)]
-      (is (some? (:timing traj)))
-      (is (>= (get-in traj [:timing :duration-ms]) 0))
-      (is (= started (get-in traj [:timing :started-at])))))
-
-  (testing "includes cost from usage summary"
-    (let [result {:answer "done" :iterations [] :terminated-by :final :total-iterations 0}
-          traj (trajectory/build-trajectory "q" result
-                                            :usage-summary {:totals {:total-cost 0.0042}})]
-      (is (= 0.0042 (:cost traj))))))
+  (testing "oversized fields are truncated with a marker"
+    (let [big (apply str (repeat (+ trajectory/max-field-chars 100) "x"))
+          entry (trajectory/project-iteration
+                 {:iteration 5 :channel "code"
+                  :code-results [{:code big}]})]
+      (is (str/includes? (first (:code entry)) "[truncated"))
+      (is (<= (count (first (:code entry)))
+              (+ trajectory/max-field-chars 40))))))
 
 ;; ============================================================================
-;; store/retrieve tests
+;; build-turn-trajectory
 ;; ============================================================================
 
-(deftest store-and-retrieve-test
-  (testing "stores and retrieves trajectories"
-    (let [traj (trajectory/build-trajectory "test query"
-                                            {:answer "test answer"
-                                             :iterations [{:iteration 1 :code ["(+ 1 2)"] :output ["3"]}]
-                                             :terminated-by :final
-                                             :total-iterations 1}
-                                            :session-id "sess-1")
-          stored (trajectory/store-trajectory! traj)]
-      (is (some? (:id stored)))
-      (is (some? (:exported-at stored)))
+(deftest build-turn-trajectory-test
+  (testing "covers all iterations + final answer with metadata"
+    (let [rec (trajectory/build-turn-trajectory
+               {:session-id "sess-1" :agent-id "ag-1" :turn-id 2
+                :question "what is 2+2?" :answer "4"
+                :iterations [{:iteration 1 :channel "code"
+                              :code-results [{:code "(+ 2 2)" :result "4"}]}
+                             {:iteration 2 :channel "none"
+                              :code-results [{:code "(FINAL 4)"}]}]
+                :success true :terminated-by :answer :total-iterations 2
+                :model "free-llm:auto"
+                :usage-summary {:totals {:total-cost 0.0
+                                         :input-tokens 100 :output-tokens 20}}
+                :started-at (- (System/currentTimeMillis) 500)})]
+      (is (= 2 (:v rec)))
+      (is (= "sess-1" (:session rec)))
+      (is (= "ag-1" (:agent rec)))
+      (is (= 2 (:turn rec)))
+      (is (= "what is 2+2?" (:question rec)))
+      (is (= "4" (:answer rec)))
+      (is (true? (:success rec)))
+      (is (= :answer (:terminated-by rec)))
+      (is (= 2 (:total-iterations rec)))
+      (is (= 2 (count (:iterations rec))))
+      (is (= "free-llm:auto" (:model rec)))
+      (is (= 0.0 (:cost rec)))
+      (is (= {:in 100 :out 20} (:usage rec)))
+      (is (>= (:duration-ms rec) 0))))
 
-      ;; Retrieve all
-      (let [all (trajectory/get-trajectories)]
-        (is (= 1 (count all)))
-        (is (= (:id stored) (:id (first all)))))
+  (testing "marks unsuccessful / exhausted turns"
+    (let [rec (trajectory/build-turn-trajectory
+               {:session-id "s" :question "q" :answer nil
+                :iterations [] :success false :terminated-by :max-iterations})]
+      (is (false? (:success rec)))
+      (is (= :max-iterations (:terminated-by rec)))
+      (is (= 0 (:total-iterations rec)))))
 
-      ;; Retrieve by ID
-      (let [found (trajectory/get-trajectory (:id stored))]
-        (is (some? found))
-        (is (= "test query" (:query found))))))
-
-  (testing "filters by session-id"
-    (trajectory/clear-trajectories!)
-    (let [traj1 (trajectory/build-trajectory "q1" {:answer "a1" :iterations [] :terminated-by :final :total-iterations 0}
-                                             :session-id "sess-A")
-          traj2 (trajectory/build-trajectory "q2" {:answer "a2" :iterations [] :terminated-by :final :total-iterations 0}
-                                             :session-id "sess-B")]
-      (trajectory/store-trajectory! traj1)
-      (trajectory/store-trajectory! traj2)
-
-      (is (= 2 (count (trajectory/get-trajectories))))
-      (is (= 1 (count (trajectory/get-trajectories :session-id "sess-A"))))
-      (is (= 1 (count (trajectory/get-trajectories :session-id "sess-B"))))))
-
-  (testing "filters by success"
-    (trajectory/clear-trajectories!)
-    (let [success-traj (trajectory/build-trajectory "q1" {:answer "a1" :iterations [] :terminated-by :final :total-iterations 0})
-          fail-traj (trajectory/build-trajectory "q2" {:answer nil :iterations [] :terminated-by :max-iterations :total-iterations 0})]
-      (trajectory/store-trajectory! success-traj)
-      (trajectory/store-trajectory! fail-traj)
-
-      (is (= 1 (count (trajectory/get-trajectories :successful true))))
-      (is (= 1 (count (trajectory/get-trajectories :successful false))))))
-
-  (testing "bounded ring buffer (max 50)"
-    (trajectory/clear-trajectories!)
-    (dotimes [i 55]
-      (trajectory/store-trajectory!
-       (trajectory/build-trajectory (str "q" i) {:answer (str "a" i) :iterations [] :terminated-by :final :total-iterations 0})))
-
-    (is (= 50 (count (trajectory/get-trajectories))))))
+  (testing "answer is truncated when oversized"
+    (let [big (apply str (repeat (+ trajectory/max-answer-chars 50) "a"))
+          rec (trajectory/build-turn-trajectory
+               {:session-id "s" :question "q" :answer big :iterations []})]
+      (is (str/includes? (:answer rec) "[truncated")))))
 
 ;; ============================================================================
-;; trajectory-summary tests
+;; append / read round-trip
 ;; ============================================================================
 
-(deftest trajectory-summary-test
-  (testing "creates lightweight summary"
-    (let [traj {:id "test-id"
-                :query "What is the answer to life, the universe, and everything?"
-                :success true
-                :terminated-by :final
-                :total-iterations 3
-                :cost 0.005
-                :model "claude-sonnet"
-                :timing {:started-at 1000 :ended-at 4000 :duration-ms 3000}
-                :metadata {:agent-id "ag-1" :session-id "sess-1"}
-                :trajectory [{:iteration 1 :code ["(+ 1 2)"] :output ["3"]}
-                             {:iteration 2 :code nil :output nil}
-                             {:iteration 3 :code ["(FINAL 42)"] :output ["ERROR: oops"]}]}
-          summary (trajectory/trajectory-summary traj)]
-      (is (= "test-id" (:id summary)))
-      (is (true? (:success summary)))
-      (is (= 3 (:total-iterations summary)))
-      (is (= 0.005 (:cost summary)))
-      (is (= 3000 (:duration-ms summary)))
-      (is (= 3 (count (:iterations summary))))
-      ;; First iteration has code
-      (is (true? (get-in summary [:iterations 0 :has-code])))
-      ;; Second iteration has no code
-      (is (false? (get-in summary [:iterations 1 :has-code])))
-      ;; Third iteration has error
-      (is (true? (get-in summary [:iterations 2 :has-error]))))))
+(deftest append-and-read-test
+  (testing "appends one EDN line per turn and reads them back in order"
+    (let [r1 (trajectory/build-turn-trajectory
+              {:session-id "sx" :turn-id 1 :question "q1" :answer "a1" :iterations []})
+          r2 (trajectory/build-turn-trajectory
+              {:session-id "sx" :turn-id 2 :question "q2" :answer "a2" :iterations []})]
+      (trajectory/append-trajectory! "sx" r1)
+      (trajectory/append-trajectory! "sx" r2)
+      (let [back (trajectory/read-trajectories "sx")]
+        (is (= 2 (count back)))
+        (is (= "q1" (:question (first back))))
+        (is (= "q2" (:question (second back))))
+        (is (= 2 (:turn (trajectory/latest-trajectory "sx")))))))
 
-;; ============================================================================
-;; format-trajectory-for-export tests
-;; ============================================================================
+  (testing "file lands at sessions/<id>/trajectory.edn"
+    (trajectory/append-trajectory!
+     "where" (trajectory/build-turn-trajectory
+              {:session-id "where" :question "q" :answer "a" :iterations []}))
+    (let [^java.io.File f (trajectory/session-trajectory-file "where")]
+      (is (.exists f))
+      (is (= "trajectory.edn" (.getName f)))
+      (is (= "where" (.getName (.getParentFile f))))))
 
-(deftest format-for-export-test
-  (testing "strips internal metadata for training export"
-    (let [traj {:id "internal-id"
-                :exported-at 12345
-                :query "test"
-                :context-summary "Context keys: conversation"
-                :trajectory [{:iteration 1 :code ["x"] :output ["y"]}]
-                :answer "42"
-                :success true
-                :cost 0.01
-                :model "claude-sonnet"
-                :total-iterations 1
-                :timing {:started-at 1 :ended-at 2 :duration-ms 1}
-                :metadata {:agent-id "ag" :session-id "ss"}}
-          exported (trajectory/format-trajectory-for-export traj)]
-      ;; Includes training-relevant fields
-      (is (= "test" (:query exported)))
-      (is (= "42" (:answer exported)))
-      (is (true? (:success exported)))
-      (is (= 0.01 (:cost exported)))
-      (is (= "claude-sonnet" (:model exported)))
-      (is (some? (:trajectory exported)))
-      ;; Excludes internal fields
-      (is (nil? (:id exported)))
-      (is (nil? (:exported-at exported)))
-      (is (nil? (:timing exported)))
-      (is (nil? (:metadata exported)))
-      (is (nil? (:terminated-by exported))))))
+  (testing "embedded newlines in content stay on a single physical line"
+    (let [rec (trajectory/build-turn-trajectory
+               {:session-id "nl" :question "multi\nline\nquestion"
+                :answer "line1\nline2"
+                :iterations [{:iteration 1 :channel "code"
+                              :code-results [{:code "(let [x 1]\n  (+ x 2))"}]}]})]
+      (trajectory/append-trajectory! "nl" rec)
+      (let [^java.io.File f (trajectory/session-trajectory-file "nl")
+            raw (slurp f)
+            physical-lines (remove str/blank? (str/split-lines raw))]
+        ;; one turn → exactly one physical line, despite embedded \n in strings
+        (is (= 1 (count physical-lines)))
+        ;; and it round-trips back to the original multi-line content
+        (let [back (first (trajectory/read-trajectories "nl"))]
+          (is (= "multi\nline\nquestion" (:question back)))
+          (is (= "line1\nline2" (:answer back)))
+          (is (= ["(let [x 1]\n  (+ x 2))"] (get-in back [:iterations 0 :code])))))))
+
+  (testing "read-trajectories returns nil when no file exists"
+    (is (nil? (trajectory/read-trajectories "never-written"))))
+
+  (testing "a corrupt tail line does not poison reads"
+    (trajectory/append-trajectory!
+     "corrupt" (trajectory/build-turn-trajectory
+                {:session-id "corrupt" :question "ok" :answer "a" :iterations []}))
+    ;; simulate a half-written line appended after a crash
+    (spit (trajectory/session-trajectory-file "corrupt") "{:v 2 :half-writ" :append true)
+    (let [back (trajectory/read-trajectories "corrupt")]
+      (is (= 1 (count back)))
+      (is (= "ok" (:question (first back)))))))

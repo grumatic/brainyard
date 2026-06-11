@@ -1639,6 +1639,10 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
              :prompt-token-breakdown prompt-token-breakdown
              :context-briefing briefing
              :iterations       []
+             ;; Uncapped mirror of :iterations for trajectory recording. Unlike
+             ;; :iterations (capped to 10 + compacted for context budget), this
+             ;; retains every iteration so trajectory.edn covers the full turn.
+             :trajectory-iterations []
              :answer           ""
              :terminated       false
              :terminated-by    nil
@@ -1797,6 +1801,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                               (assoc-in existing [:metadata :harvested?] true))))
                    (catch Exception _)))
             (swap! st-memory update :iterations (fnil conj []) record)
+            ;; Uncapped mirror for trajectory recording.
+            (swap! st-memory update :trajectory-iterations (fnil conj []) record)
             (mulog/info ::async-completions-harvested
                         :count (count candidates)
                         :iteration iteration-count
@@ -3551,6 +3557,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                  nil)]
     (when record
       (swap! st-memory update :iterations (fnil conj []) record)
+      ;; Uncapped mirror for trajectory recording (full turn, no budget cap).
+      (swap! st-memory update :trajectory-iterations (fnil conj []) record)
       ;; Cap :iterations to the last 10
       (let [max-n 10
             iters (:iterations @st-memory)]
@@ -3913,10 +3921,13 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         answer (:answer st)
         terminated-by (or (:terminated-by st) :answer)
         iterations (:iterations st)
-        total-iterations (count iterations)
+        ;; Uncapped, full-turn iteration list for trajectory recording.
+        traj-iterations (or (:trajectory-iterations st) iterations)
+        total-iterations (count traj-iterations)
         previous-turns (or (:previous-turns st) [])
         cfg-snap (config/get-config-snapshot agent)
         enable-sandbox-persistence (:enable-sandbox-persistence cfg-snap)
+        enable-trajectory-recording (get cfg-snap :enable-trajectory-recording true)
         lm-config (or (get-in context [:opts :lm-config])
                       (config/get-config agent :lm-config))
         usage-tracker (or (get-in context [:opts :usage-tracker])
@@ -3927,29 +3938,40 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
     (when (and agent (:sandbox st) (not (:existing-sandbox-reused st)))
       (swap! (:!state agent) assoc :sandbox (:sandbox st)))
 
-    ;; Build + store trajectory
-    (try
-      (let [model-id (when (map? lm-config) (:model lm-config))
-            usage-summary (when usage-tracker
-                            (try (ai.brainyard.clj-llm.interface/get-usage-summary usage-tracker)
-                                 (catch Exception _ nil)))
-            result {:answer answer
-                    :iterations iterations
-                    :terminated-by terminated-by
-                    :total-iterations total-iterations}
-            traj (trajectory/build-trajectory
-                  question result
-                  :model model-id
-                  :usage-summary usage-summary
-                  :agent-id (when agent (str (proto/agent-id agent)))
-                  :session-id (when agent (str (proto/session-id agent)))
-                  :depth (or (:depth context) 0)
-                  :context-keys (keys (or (:sandbox-context st) {}))
-                  :started-at (:started-at st))
-            stored (trajectory/store-trajectory! traj)]
-        (swap! st-memory assoc :last-trajectory-id (:id stored)))
-      (catch Exception e
-        (mulog/debug ::trajectory-store-failed :message (ex-message e))))
+    ;; Append one trajectory record (all iterations + answer) to the session's
+    ;; trajectory.edn. Best-effort: a write failure never breaks the turn.
+    (when (and enable-trajectory-recording agent (proto/session-id agent))
+      (try
+        (let [model-id (when (map? lm-config) (:model lm-config))
+              usage-summary (when usage-tracker
+                              (try (ai.brainyard.clj-llm.interface/get-usage-summary usage-tracker)
+                                   (catch Exception _ nil)))
+              session-id (str (proto/session-id agent))
+              traj (trajectory/build-turn-trajectory
+                    {:session-id session-id
+                     :agent-id (str (proto/agent-id agent))
+                     :turn-id (:turn-id st)
+                     :question question
+                     :answer answer
+                     :iterations traj-iterations
+                     ;; Success = a real answer that did NOT terminate on a
+                     ;; failure path (exhaustion / llm-error / none-channel guard).
+                     :success (boolean
+                               (and answer (not (str/blank? answer))
+                                    (not (:iterations-exhausted st))
+                                    (not (contains? #{:max-iterations-exhausted
+                                                      :llm-error
+                                                      :none-channel-loop-guard}
+                                                    terminated-by))))
+                     :terminated-by terminated-by
+                     :total-iterations total-iterations
+                     :model model-id
+                     :usage-summary usage-summary
+                     :started-at (:started-at st)})]
+          (trajectory/append-trajectory! session-id traj)
+          (swap! st-memory assoc :last-trajectory-turn (:turn-id st)))
+        (catch Exception e
+          (mulog/debug ::trajectory-store-failed :message (ex-message e)))))
 
     ;; Save compact iteration summary + answer into st-memory-init for the next turn
     (when agent
