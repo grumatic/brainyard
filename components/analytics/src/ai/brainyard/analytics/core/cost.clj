@@ -167,7 +167,7 @@
        :output-tokens-per-sec (if (pos? duration-sec)
                                 (Math/round (/ (double total-output) duration-sec))
                                 0)
-       :avg-latency-ms (Math/round avg-latency)
+       :avg-latency-ms (Math/round (double avg-latency))
        :total-latency-ms total-latency
        :calls (count usage-history)})))
 

@@ -18,6 +18,6 @@
                 format-next-prompt format-eval-verdict
                 format-answer format-usage-summary format-usage-table
                 format-conversation-message format-conversation-history
-                format-status-summary format-analytics-display
+                format-status-summary
                 format-trace format-mulog-event format-mulog-event-data)
 

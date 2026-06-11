@@ -158,8 +158,17 @@
    :sandbox-cache-max-files     {:type "integer" :default 200}
    :sandbox-cache-max-bytes     {:type "integer" :default 52428800}
    :sandbox-cache-max-age-days  {:type "integer" :default 7}
-   ;; Post-session analytics
-   :enable-analytics           {:type "boolean" :default false}
+   ;; Session analytics — now on-demand via the `session$analytics` command
+   ;; (trajectory-sourced), not a per-turn gate. `:enable-trajectory-recording`
+   ;; above is the master data switch.
+   ;; LM config for the optional LLM-enhanced analytics pass
+   ;; (`session$analytics :deep true`). nil → fall back to `:lm-config` when
+   ;; :deep is requested; set explicitly to point analytics at a cheaper model.
+   :analytics-lm-config        {:type "object" :default nil}
+   ;; Optional override for the composite Session Health Score weights, e.g.
+   ;; {:pqs 0.2 :tce 0.2 :oga 0.2 :ice 0.15 :tur 0.15 :lt 0.10}. Must sum to 1.0
+   ;; (falls back to defaults on mismatch). nil → built-in defaults.
+   :analytics-shs-weights      {:type "object" :default nil}
    ;; Memory capture pipeline — when true (default), an agent auto-starts the
    ;; capture pipeline on creation and auto-stops it when the last agent
    ;; sharing the memory manager closes. Resolved via `get-config` at agent

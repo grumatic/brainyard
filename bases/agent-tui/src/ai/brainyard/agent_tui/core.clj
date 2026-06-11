@@ -306,9 +306,7 @@
   (agent/register-hook! :agent.evaluation/llm-calling ::tui-eval-llm-calling
                         tui-session/evaluation-llm-calling-handler :source :tui)
   (agent/register-hook! :agent.evaluation/done ::tui-eval-done
-                        tui-session/evaluation-done-handler :source :tui)
-  (agent/register-hook! :agent.analytics/post ::tui-analytics-post
-                        tui-session/analytics-post-handler :source :tui))
+                        tui-session/evaluation-done-handler :source :tui))
 
 ;; ============================================================================
 ;; Dynamic Skill Registration (once per process, at runtime)

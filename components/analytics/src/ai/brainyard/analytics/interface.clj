@@ -15,6 +15,7 @@
   (:require [ai.brainyard.analytics.core.pqs :as pqs]
             [ai.brainyard.analytics.core.waste :as waste]
             [ai.brainyard.analytics.core.cost :as cost]
+            [ai.brainyard.analytics.core.trajectory :as traj]
             [ai.brainyard.analytics.core.persistence :as persistence]
             [clojure.string :as str]
             [ai.brainyard.mulog.interface :as mulog]))
@@ -246,3 +247,87 @@
                               (:avg-latency-ms tp 0))))))
 
     (.toString sb)))
+
+;; ============================================================================
+;; Trajectory-Sourced Session Analytics (on-demand, whole session)
+;; ============================================================================
+
+(defn analyze-trajectory
+  "Run the full analyzer suite over a vector of `:v 2` trajectory turn records.
+   Always computes all metrics (PQS, TCE, ICE, TUR, LT, cache, OGA, waste, SHS).
+   Pure — the caller supplies records and (for the deep pass) the resolved
+   lm-config. Returns the analytics result map.
+
+   Options:
+     :lm-config         - LM config for the optional LLM-refined pass
+     :skip-llm-analysis - heuristics only when true (default true)
+     :shs-weights       - override map for the composite weights"
+  [turn-records & {:keys [lm-config skip-llm-analysis shs-weights]
+                   :or {skip-llm-analysis true}}]
+  (traj/analyze-all turn-records
+                    :lm-config lm-config
+                    :skip-llm-analysis skip-llm-analysis
+                    :shs-weights shs-weights))
+
+(defn- pct [x] (* 100.0 (double (or x 0))))
+
+(defn format-session-analytics
+  "Format an `analyze-trajectory` result for display. `level` is :summary
+   (default), :full, or :raw. Returns a string."
+  ([result] (format-session-analytics result :summary))
+  ([result level]
+   (case (keyword (or level :summary))
+     :raw (pr-str result)
+     (let [{:keys [turns health-score pqs cost iteration tools latency cache outcome]} result
+           sb (StringBuilder.)
+           score-line (fn [label score detail]
+                        (.append sb (format "  %-26s%s   %s\n"
+                                            label
+                                            (if score (format "%3d/100" (long score)) "   —  ")
+                                            (or detail ""))))]
+       (.append sb (format "=== Session Health: %d/100 (%s) ===  (%d turns, $%.4f, %d tool calls)\n"
+                           (long (:score health-score 0)) (:grade health-score "—")
+                           (long turns)
+                           (double (get-in cost [:actual :total-cost] 0))
+                           (long (:total-tool-calls tools 0))))
+       (score-line "Prompt Quality (PQS)" (:overall-score pqs)
+                   (format "specificity %d/25, atomicity %d/25"
+                           (get-in pqs [:dimensions :specificity] 0)
+                           (get-in pqs [:dimensions :task-atomicity] 0)))
+       (score-line "Token/Cost Efficiency" (:efficiency-score cost)
+                   (format "cache-hit %.0f%%, $%.4f/successful-turn"
+                           (pct (:cache-hit-rate cost))
+                           (double (:cost-per-successful-turn cost 0))))
+       (score-line "Outcome (OGA)" (:score outcome)
+                   (format "success %.0f%%" (pct (:success-rate outcome))))
+       (score-line "Iteration Convergence" (:score iteration)
+                   (format "avg %.1f iters; %d hit max-iterations"
+                           (double (:avg-iterations iteration 0))
+                           (get-in iteration [:terminated-by :max-iterations] 0)))
+       (score-line "Tool Reliability" (:score tools)
+                   (format "%d calls, %.0f%% error rate, %d redundant"
+                           (:total-tool-calls tools 0)
+                           (pct (:error-rate tools))
+                           (:redundant-calls tools 0)))
+       (score-line "Latency" (:score latency)
+                   (format "p90 turn %dms; output %d tok/s"
+                           (long (:p90-ms latency 0))
+                           (:output-tokens-per-sec latency 0)))
+       (when (seq (:recommendations pqs))
+         (.append sb "  Recommendations:\n")
+         (doseq [r (:recommendations pqs)]
+           (.append sb (format "    - %s\n" r))))
+       (when (= :full (keyword level))
+         (.append sb "\n  --- Per-turn PQS ---\n")
+         (doseq [{:keys [turn score]} (:per-turn pqs)]
+           (.append sb (format "    turn %-3d  %d/100\n" (long (or turn 0)) (long score))))
+         (.append sb "\n  --- Slowest turns ---\n")
+         (doseq [{:keys [turn duration-ms]} (:slowest-turns latency)]
+           (.append sb (format "    turn %-3d  %dms\n" (long (or turn 0)) (long duration-ms))))
+         (.append sb "\n  --- Top tools ---\n")
+         (doseq [{:keys [name count]} (:top-tools tools)]
+           (.append sb (format "    %-24s %d\n" name count)))
+         (when (:degrading? cache)
+           (.append sb (format "\n  Cache hit-rate is degrading (now %.0f%%) — context churning.\n"
+                               (pct (:hit-rate cache))))))
+       (.toString sb)))))

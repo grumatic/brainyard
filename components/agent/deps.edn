@@ -9,6 +9,10 @@
         ai.brainyard/mulog {:local/root "../mulog"}
         ai.brainyard/util {:local/root "../util"}
         ai.brainyard/display-block {:local/root "../display-block"}
+        ;; Analytics — pure session analyzers, driven by the session$analytics
+        ;; command (common/analytics_commands.clj). No cycle: analytics' runtime
+        ;; deps are data.json + mulog only.
+        ai.brainyard/analytics {:local/root "../analytics"}
         ;; Clj-Sandbox — soft dependency (requiring-resolve), but on classpath for coact-agent
         ai.brainyard/clj-sandbox {:local/root "../clj-sandbox"}
         ;; Clj-Nrepl — live-runtime eval backend for code$eval. Loaded on classpath

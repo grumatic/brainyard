@@ -22,6 +22,7 @@
             [ai.brainyard.agent.core.memory :as agent-mem]
             [ai.brainyard.agent.core.runtime :as runtime]
             [ai.brainyard.agent.task.commands :as task-cmds]
+            [ai.brainyard.agent.common.analytics-commands :as analytics-cmds]
             [ai.brainyard.agent.common.artifacts :as artifacts]
             [ai.brainyard.agent.common.log :as log]
             [ai.brainyard.clj-llm.interface :as clj-llm]
@@ -576,4 +577,5 @@
                llm-commands
                artifacts/artifact-commands
                task-cmds/task-commands
+               analytics-cmds/analytics-commands
                log/log-commands)))

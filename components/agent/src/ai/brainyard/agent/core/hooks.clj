@@ -57,7 +57,6 @@
      :agent.evaluation/done    {:agent :round :verdict :detail}
      :agent.evaluation/verdict {:agent :score :verdict :reason}
      :agent.recovery/retrying  {:agent :kind :attempt :max :detail}
-     :agent.analytics/post     {:agent :analytics}
      :task/created             {:task}
      :task/completed           {:task}
 
@@ -157,7 +156,6 @@
    ;; ∈ #{:empty-result :malformed-output :no-action}; `:attempt`/`:max`
    ;; describe progress (`:max` may be nil).
    :agent.recovery/retrying     {:keys #{:agent :kind :attempt :max :detail}}
-   :agent.analytics/post        {:keys #{:agent :analytics}}
    :task/created                {:keys #{:task}}
    :task/completed              {:keys #{:task}}
    :todo/updated                {:keys #{:agent :todo-list :active-slug}}

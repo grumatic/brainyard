@@ -2758,14 +2758,6 @@
       ;; line. Mirrors evaluation-started / evaluation-llm-calling handlers.
       (when active? (start-thinking-indicator!)))))
 
-(defn analytics-post-handler
-  "Handler for :agent.analytics/post. Mirrors the legacy `:analytics`
-   watch branch."
-  [{:keys [agent analytics]}]
-  (when analytics
-    (with-agent-render-session agent
-      (emit! (fmt/format-analytics-display analytics)))))
-
 ;; ============================================================================
 ;; In-process iteration sink (wraps `agent-tui.layout` live-block primitives)
 ;; ============================================================================

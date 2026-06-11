@@ -31,10 +31,10 @@
             [clojure.string :as str]
             [ai.brainyard.mulog.interface :as mulog]))
 
-;; Analytics is not a hard dep of the agent component — cache with delay.
-(def ^:private !analyze-session-fn
-  (delay (try (requiring-resolve 'ai.brainyard.analytics.interface/analyze-session)
-              (catch Exception _ nil))))
+;; Session analytics is no longer fired per-turn. It is now an on-demand,
+;; trajectory-sourced command — `session$analytics` (see
+;; agent.common.analytics-commands). Trajectory recording in
+;; coact-store-results-action is what feeds it and is untouched here.
 
 ;; The previous :conversation working-memory buffer was removed in the
 ;; unified-store refactor — `agent.core.agent/ask` already writes user
@@ -101,34 +101,6 @@
                                   :question question))
     {:st-memory-atom st-memory-atom :generation generation}))
 
-(defn- run-analytics-async!
-  "Launch async session analytics if enabled. Guards stale writes with generation check."
-  [agent st-memory-atom !state generation state]
-  (when-let [analyze-fn @!analyze-session-fn]
-    (let [agent-cfg (:config state)]
-      (when (or (:enable-analytics agent-cfg)
-                (config/get-config agent :enable-analytics))
-        (future
-          (try
-            (let [analytics-result
-                  (analyze-fn {:session-id (proto/session-id agent)
-                               :user-id    (proto/user-id agent)
-                               :messages   (some-> (:!session agent) deref :messages)
-                               :usage-tracker (some-> (:!session agent)
-                                                      deref
-                                                      (get-in [:config :usage-tracker]))}
-                              :memory-manager (:memory-manager state)
-                              :persist true
-                              :lm-config (:analytics-lm-config agent-cfg)
-                              :skip-llm-analysis (not (:analytics-lm-config agent-cfg)))]
-              (when (and analytics-result
-                         (= generation (:bt-generation @!state)))
-                (swap! st-memory-atom assoc :analytics analytics-result)
-                (hooks/fire! :agent.analytics/post
-                             {:agent agent :analytics analytics-result})))
-            (catch Exception e
-              (mulog/warn ::post-session-analytics-failed :message (ex-message e)))))))))
-
 (defn run-bt
   "Run the agent's behavior tree.
 
@@ -149,16 +121,15 @@
     (when-not bt
       (throw (ex-info "No behavior tree configured" {:agent-id (proto/agent-id agent)})))
 
-    (let [{:keys [st-memory-atom generation]} (reset-st-memory! !state bt question)
-          result (volatile! nil)
+    ;; Reset st-memory + stamp the question (side effect); the returned handles
+    ;; were only needed by the old per-turn analytics trigger, now removed.
+    (reset-st-memory! !state bt question)
+    (let [result (volatile! nil)
           bt-error (volatile! nil)]
       (try
         (vreset! result (bt/run bt))
         (catch Exception e
           (vreset! bt-error e)))
-
-      (when-not @bt-error
-        (run-analytics-async! agent st-memory-atom !state generation state))
 
       (when-let [e @bt-error]
         (throw e))
