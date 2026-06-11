@@ -32,13 +32,13 @@
     (is (fn? (get-in (agent-def) [:meta :bt-factory])))))
 
 (deftest agent-tools-positive
-  (testing "tool-agent's roster is exactly the tools$* lifecycle surface"
+  (testing "tool-agent's roster is exactly the tool-agent$* lifecycle surface"
     (let [ids (tool-ids)]
-      (is (contains? ids :tools$create))
-      (is (contains? ids :tools$validate))
-      (is (contains? ids :tools$list))
-      (is (contains? ids :tools$read))
-      (is (contains? ids :tools$delete)))))
+      (is (contains? ids :tool-agent$create))
+      (is (contains? ids :tool-agent$validate))
+      (is (contains? ids :tool-agent$list))
+      (is (contains? ids :tool-agent$read))
+      (is (contains? ids :tool-agent$delete)))))
 
 (deftest agent-tools-negative
   (testing "tool-agent does NOT carry sibling-specialist write surfaces"
@@ -50,7 +50,7 @@
 (deftest instruction-anchors
   (testing "instruction encodes the validate-before-create + verify discipline"
     (let [instr @#'ai.brainyard.agent.common.tool-agent/instruction]
-      (is (str/includes? instr "tools$validate"))
-      (is (str/includes? instr "tools$create"))
+      (is (str/includes? instr "tool-agent$validate"))
+      (is (str/includes? instr "tool-agent$create"))
       (is (str/includes? instr "user$tool$<name>"))
       (is (str/includes? instr ".brainyard/tools")))))

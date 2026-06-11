@@ -314,7 +314,7 @@
     :else       (throw (ex-info "tool :input-schema must be an EDN string like \"[:map ...]\""
                                 {:input-schema v}))))
 
-(defcommand tools$create
+(defcommand tool-agent$create
   "Author a reusable, PERSISTENT tool from Clojure source. :body is a string
    `(fn [args] ...)` taking one map; :input-schema is a Malli [:map ...] passed
    as an EDN string. The tool survives restarts, registers as `user$tool$<name>`
@@ -329,7 +329,7 @@
           :body (:body args)
           :dirs (current-dirs)
           :extra-bindings extra))
-      (catch Exception e {:error (str "tools$create failed: " (.getMessage e))})))
+      (catch Exception e {:error (str "tool-agent$create failed: " (.getMessage e))})))
   :input-schema  [:map
                   [:name        [:string {:desc "lowercase-kebab tool name (no user$tool$ prefix)"}]]
                   [:body        [:string {:desc "Clojure source: a `(fn [args] ...)` of one map"}]]
@@ -341,13 +341,13 @@
                   [:persisted [:string {:desc "Path the source was written to"}]]
                   [:error     [:string {:desc "Error if definition failed"}]]])
 
-(defcommand tools$list
-  "List user-defined tools (authored via tools$create). Returns id, description, schema."
+(defcommand tool-agent$list
+  "List user-defined tools (authored via tool-agent$create). Returns id, description, schema."
   (fn [& _] {:tools (list-user-tools)})
   :input-schema  [:map]
   :output-schema [:map [:tools [:any {:desc "Vector of {:id :description :input-schema}"}]]])
 
-(defcommand tools$read
+(defcommand tool-agent$read
   "Read a user-defined tool's source + schema by name (without the user$tool$ prefix)."
   (fn [& {:as args}]
     (if (str/blank? (:name args))
@@ -361,7 +361,7 @@
                   [:body         [:string {:desc "Clojure source `(fn [args] ...)`"}]]
                   [:error        [:string {:desc "Error if not found"}]]])
 
-(defcommand tools$delete
+(defcommand tool-agent$delete
   "Delete a user-defined tool: unregister it and remove its persisted source."
   (fn [& {:as args}]
     (if (str/blank? (:name args))
@@ -372,12 +372,12 @@
                   [:deleted [:string {:desc "Name of the deleted tool"}]]
                   [:error   [:string {:desc "Error if not found"}]]])
 
-(defcommand tools$validate
+(defcommand tool-agent$validate
   "Dry-run a user-tool draft: parse + eval-smoke-test the body and check the
    schema/name in a THROWAWAY fork of the tools sandbox — persists nothing,
-   registers nothing, mutates no live state. Use before tools$create to iterate
+   registers nothing, mutates no live state. Use before tool-agent$create to iterate
    safely. Optionally pass :sample (an args map) to run the body once and see
-   its result. Mirrors tools$create's arg names so a validated draft promotes
+   its result. Mirrors tool-agent$create's arg names so a validated draft promotes
    to a create call with no reshaping. Returns a structured report (never throws)."
   (fn [& {:as args}]
     (try
@@ -389,7 +389,7 @@
                            (and (vector? input-schema) (= :map (first input-schema))))
             ;; Fork the LIVE tools sandbox WITH the agent's tool palette bound,
             ;; so a draft body that composes (read-file {…}) / (bash {…}) /
-            ;; (user$tool$peer {…}) evals here exactly as it would under tools$create.
+            ;; (user$tool$peer {…}) evals here exactly as it would under tool-agent$create.
             ;; The fork is discarded on return — nothing leaks into the live sandbox.
             fork       (sb/fork-sandbox (tools-sandbox (current-extra-bindings)))
             evald      (when (string? body)
@@ -414,7 +414,7 @@
           (map? sample)   (assoc :sample-result sample-res)))
       (catch Exception e
         {:valid false :collision false :schema-ok false :body-ok false
-         :errors [(str "tools$validate failed: " (.getMessage e))]})))
+         :errors [(str "tool-agent$validate failed: " (.getMessage e))]})))
   :input-schema  [:map
                   [:body         [:string {:desc "Clojure source: a `(fn [args] ...)` of one map"}]]
                   [:name         {:optional true} [:string {:desc "Proposed name; enables name + collision check"}]]
@@ -432,4 +432,4 @@
 (def tools-commands
   "All user-tool management commands, for binding into tool-agent. Mirrors
    `skills/skills-commands`."
-  [#'tools$create #'tools$validate #'tools$list #'tools$read #'tools$delete])
+  [#'tool-agent$create #'tool-agent$validate #'tool-agent$list #'tool-agent$read #'tool-agent$delete])

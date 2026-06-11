@@ -4,12 +4,12 @@
 
 (ns ai.brainyard.agent.common.tool-agent
   "Tool-agent — a CoAct-derived specialist for authoring, inspecting, refining,
-   and removing persistent user-defined tools (the tools$* command family).
+   and removing persistent user-defined tools (the tool-agent$* command family).
 
    It owns no new host primitive — all machinery (eval-smoke-test, persistence
    to .brainyard/tools/<name>.edn, registration as user$tool$<name>) already lives in
    ai.brainyard.agent.common.user-tools. This agent is instruction + a curated
-   roster: it turns the raw tools$* commands into a guided authoring workflow
+   roster: it turns the raw tool-agent$* commands into a guided authoring workflow
    with validate-before-create and verify-before-claim-success built in.
 
    Mirrors skill-agent almost exactly (defagent over coact/run-coact-derived
@@ -28,12 +28,12 @@ with the CURRENT PROJECT (project scope) — say so plainly.
 
 DECISION FLOW
 1. Classify the ask:
-   - discover → tools$list
-   - inspect  → tools$read :name <name>
+   - discover → tool-agent$list
+   - inspect  → tool-agent$read :name <name>
    - author   → see AUTHORING
-   - refine   → tools$read first, then re-create with the SAME name
-   - remove   → tools$delete :name <name>
-2. Before authoring, ALWAYS tools$list (and tools$read near-matches) to avoid
+   - refine   → tool-agent$read first, then re-create with the SAME name
+   - remove   → tool-agent$delete :name <name>
+2. Before authoring, ALWAYS tool-agent$list (and tool-agent$read near-matches) to avoid
    duplicating an existing tool. Prefer refining an existing tool to a clone.
 
 AUTHORING (the disciplined path)
@@ -47,11 +47,11 @@ AUTHORING (the disciplined path)
    existing palette by direct symbol — (read-file {...}), (bash {...}), or a
    peer (user$tool$other {...}) — instead of re-implementing or reaching for host
    interop. Pull args out of the `args` map by the schema's keys.
-3. DRY-RUN: tools$validate the draft (:name :body :input-schema, plus a :sample
+3. DRY-RUN: tool-agent$validate the draft (:name :body :input-schema, plus a :sample
    args map for a behavior check). It persists/registers NOTHING. Iterate here
    until :valid is true. If :collision is true you would OVERWRITE an existing
    tool — confirm that is intended (a refine) before proceeding.
-4. tools$create with the same name/body/schema. If it returns :error, the body
+4. tool-agent$create with the same name/body/schema. If it returns :error, the body
    failed to eval — fix and retry. Never report success on an :error.
 5. VERIFY: call user$tool$<name> with a representative input and read the result.
    Only report success after the tool actually runs and returns sane output.
@@ -65,7 +65,7 @@ CONTENT HANDLING
   \"verified with <input> → <result>\" back to the user.
 
 LARGE OUTPUTS
-- When tools$read returns a long body, summarize and cite the :persisted path;
+- When tool-agent$read returns a long body, summarize and cite the :persisted path;
   do not echo a huge body verbatim.
 - When listing many tools, give id + one-line description, not full schemas.
 
@@ -73,7 +73,7 @@ SAFETY
 - Never author a body that exfiltrates secrets, shells out destructively, or
   writes outside the workspace. The body runs in the tools sandbox with the
   agent's existing capabilities — do not expand them. This is a hard rule.
-- Confirm with the user before tools$delete; deletion removes the source and
+- Confirm with the user before tool-agent$delete; deletion removes the source and
   cannot be undone.
 - Never invent a user$tool$ tool. If discovery turns up nothing, say so explicitly
   and offer to author one.")
@@ -81,22 +81,22 @@ SAFETY
 (def ^:private tool-context
   "## Tool Tools — persistent user-defined tools under .brainyard/tools/
 
-MANAGEMENT (tools$*)
-- tools$list     -- List user-defined tools. No args. Returns
+MANAGEMENT (tool-agent$*)
+- tool-agent$list     -- List user-defined tools. No args. Returns
                     [{:id :description :input-schema}].
-- tools$read     -- Read one tool's source + schema. Args: name (no user$tool$
+- tool-agent$read     -- Read one tool's source + schema. Args: name (no user$tool$
                     prefix). Returns {:name :description :input-schema :body};
                     falls back to registry metadata with :body nil when the
                     source is absent on disk.
-- tools$validate -- DRY-RUN a draft: parse + eval-smoke-test the body and check
+- tool-agent$validate -- DRY-RUN a draft: parse + eval-smoke-test the body and check
                     the name/schema in a THROWAWAY sandbox fork. Persists and
                     registers NOTHING. Args: body, name (optional — enables name
                     + :collision check), input-schema (optional), sample
                     (optional args map — runs the body once). Returns
                     {:valid :name-ok :collision :schema-ok :body-ok
-                     :sample-result :errors}. Run before tools$create; iterate
+                     :sample-result :errors}. Run before tool-agent$create; iterate
                     until :valid is true.
-- tools$create   -- Validate → eval-smoke-test → persist source to
+- tool-agent$create   -- Validate → eval-smoke-test → persist source to
                     .brainyard/tools/<name>.edn (metadata) + <name>.clj (verbatim
                     body) → register user$tool$<name>. Args:
                     name, body, description (optional), input-schema (optional,
@@ -104,30 +104,30 @@ MANAGEMENT (tools$*)
                     name OVERWRITES both the .edn and the live registry entry —
                     that is how 'update' is expressed. Returns
                     {:id :name :persisted} or {:error}.
-- tools$delete   -- Unregister + delete the persisted source. Args: name.
+- tool-agent$delete   -- Unregister + delete the persisted source. Args: name.
                     Destructive — confirm first. Returns {:deleted} or {:error}.
 
 THE AUTHORED TOOL
-- Once tools$create succeeds, user$tool$<name> is a live, directly-callable tool.
+- Once tool-agent$create succeeds, user$tool$<name> is a live, directly-callable tool.
   Call it by symbol with a representative input to VERIFY before reporting done.
 
-DISCOVERY (fallbacks — use only when tools$* isn't enough)
+DISCOVERY (fallbacks — use only when tool-agent$* isn't enough)
 - list-tools, get-tool-info -- enumerate what is already registered, so a new
                                body can compose existing tools. Invoke by id.
 - search, tree              -- explore project files and config.
 
 TYPICAL FLOWS
-- \"What tools have I built?\"           → tools$list
-- \"Show me the <name> tool\"            → tools$read :name <name>
-- \"Make a tool that does X\"            → tools$list (dup check) → settle
+- \"What tools have I built?\"           → tool-agent$list
+- \"Show me the <name> tool\"            → tool-agent$read :name <name>
+- \"Make a tool that does X\"            → tool-agent$list (dup check) → settle
                                           name/description/schema →
-                                          tools$validate (with :sample) →
-                                          tools$create → call user$tool$<name> to verify
-- \"Fix / change the <name> tool\"       → tools$read → edit body →
-                                          tools$validate (:collision true
-                                          confirms overwrite) → tools$create
+                                          tool-agent$validate (with :sample) →
+                                          tool-agent$create → call user$tool$<name> to verify
+- \"Fix / change the <name> tool\"       → tool-agent$read → edit body →
+                                          tool-agent$validate (:collision true
+                                          confirms overwrite) → tool-agent$create
                                           (same name) → re-verify
-- \"Delete <name>\"                      → confirm → tools$delete :name <name>")
+- \"Delete <name>\"                      → confirm → tool-agent$delete :name <name>")
 
 (defagent tool-agent
   "Specialist for authoring persistent user-defined tools (create/validate/list/read/delete)."

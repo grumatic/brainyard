@@ -21,13 +21,13 @@
   runs a side effect (it cannot block or rewrite agent behavior in v1).
 
   **Turn 1 — discover.** Lists the runtime events a hook may target (via
-  `hooks$events`) — each with the payload its handler receives and whether it is
+  `hook-agent$events`) — each with the payload its handler receives and whether it is
   gated — plus any hooks already registered for the project.
 
   **Turn 2 — author.** From a plain-English request, it authors a new
   `audit-bash` hook — a `(fn [event] …)` body scoped with `{:tool-name \"bash\"}`
   to the `:agent.tool-use/post` event. It dry-runs the draft with
-  `hooks$validate`, then `hooks$create` persists the source to
+  `hook-agent$validate`, then `hook-agent$create` persists the source to
   `<project>/.brainyard/hooks/audit-bash.edn` and registers it as
   `:user-hook/audit-bash` (firing on the very next matching bash call). The body
   composes the tool palette by direct symbol — `(write-file {…})` — to append

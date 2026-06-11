@@ -152,9 +152,9 @@
   (uh/define-hook :id "rec-iter" :event :agent.iteration/post
     :match {:global true} :doc "Demo hook."
     :body "(fn [event] nil)" :dirs test-dirs)
-  (testing "registered-user-hooks + hooks$list surface the active hook (dir-independent)"
+  (testing "registered-user-hooks + hook-agent$list surface the active hook (dir-independent)"
     (is (some #(= "rec-iter" (:id %)) (uh/registered-user-hooks)))
-    (is (some #(= "rec-iter" (:id %)) (:hooks (tool/invoke-tool :hooks$list {})))))
+    (is (some #(= "rec-iter" (:id %)) (:hooks (tool/invoke-tool :hook-agent$list {})))))
   (testing "list-user-hooks reads the persisted record at an explicit dir"
     (is (some #(= "rec-iter" (:id %)) (uh/list-user-hooks test-dirs))))
   (testing "read-user-hook returns the persisted record + body"
@@ -163,9 +163,9 @@
       (is (= :agent.iteration/post (:event r)))
       (is (= {:global true} (:match r)))
       (is (str/includes? (:body r) "fn [event]"))))
-  (testing "hooks$read / hooks$delete require :id (registry Malli guard)"
-    (is (str/includes? (:error-message (tool/call-tool :hooks$read {})) "missing required key"))
-    (is (str/includes? (:error-message (tool/call-tool :hooks$delete {})) "missing required key")))
+  (testing "hook-agent$read / hook-agent$delete require :id (registry Malli guard)"
+    (is (str/includes? (:error-message (tool/call-tool :hook-agent$read {})) "missing required key"))
+    (is (str/includes? (:error-message (tool/call-tool :hook-agent$delete {})) "missing required key")))
   (testing "delete-user-hook! unregisters and removes the persisted source"
     (let [edn (io/file (str (:project-dir test-dirs) "/.brainyard/hooks/rec-iter.edn"))]
       (is (.exists edn))
@@ -177,22 +177,22 @@
     (is (str/includes? (:error (uh/delete-user-hook! test-dirs "nope")) "no user hook"))))
 
 (deftest hooks-create-command
-  (testing "hooks$create is registered as a command"
-    (is (contains? (tool/get-tool-defs) :hooks$create)))
-  (testing "hooks$create routes through define-hook (bad id -> :error)"
-    (let [r (tool/call-tool :hooks$create
+  (testing "hook-agent$create is registered as a command"
+    (is (contains? (tool/get-tool-defs) :hook-agent$create)))
+  (testing "hook-agent$create routes through define-hook (bad id -> :error)"
+    (let [r (tool/call-tool :hook-agent$create
                             {:id "Bad Id" :event "agent.iteration/post"
                              :match "{:global true}" :body "(fn [event] nil)"})]
-      (is (str/includes? (:error r) "hooks$create failed"))))
-  (testing "hooks$create rejects a gated event (observer-only)"
-    (let [r (tool/call-tool :hooks$create
+      (is (str/includes? (:error r) "hook-agent$create failed"))))
+  (testing "hook-agent$create rejects a gated event (observer-only)"
+    (let [r (tool/call-tool :hook-agent$create
                             {:id "gated-x" :event "agent.tool-use/pre"
                              :match "{:global true}" :body "(fn [event] nil)"})]
       (is (str/includes? (:error r) "gated")))))
 
 (deftest hooks-events-command
-  (testing "hooks$events lists the catalog with gated/available flags"
-    (let [evs (:events (tool/invoke-tool :hooks$events {}))
+  (testing "hook-agent$events lists the catalog with gated/available flags"
+    (let [evs (:events (tool/invoke-tool :hook-agent$events {}))
           by  (into {} (map (juxt :event identity)) evs)]
       (is (true?  (:available? (get by :agent.iteration/post))))
       (is (false? (:gated?     (get by :agent.iteration/post))))
@@ -201,11 +201,11 @@
       (is (contains? (set (:payload-keys (get by :agent.tool-use/post))) :tool-name)))))
 
 (deftest hooks-validate-dry-run
-  (testing "hooks$validate is registered as a command"
-    (is (contains? (tool/get-tool-defs) :hooks$validate)))
+  (testing "hook-agent$validate is registered as a command"
+    (is (contains? (tool/get-tool-defs) :hook-agent$validate)))
   (testing "a valid draft reports :valid true and PERSISTS/REGISTERS NOTHING"
     (let [edn (io/file (str (:project-dir test-dirs) "/.brainyard/hooks/never-made.edn"))
-          r   (tool/invoke-tool :hooks$validate
+          r   (tool/invoke-tool :hook-agent$validate
                                 {:id "never-made"
                                  :event "agent.iteration/post"
                                  :match "{:global true}"
@@ -227,21 +227,21 @@
 
 (deftest hooks-validate-checks
   (testing "gated event flips :event-gated and populates :errors"
-    (let [r (tool/invoke-tool :hooks$validate
+    (let [r (tool/invoke-tool :hook-agent$validate
                               {:id "x" :event "agent.tool-use/pre"
                                :match "{:global true}" :body "(fn [event] nil)"})]
       (is (false? (:valid r)))
       (is (true? (:event-gated r)))
       (is (some #(str/includes? % "gated") (:errors r)))))
   (testing "missing :match flips :match-ok"
-    (let [r (tool/invoke-tool :hooks$validate
+    (let [r (tool/invoke-tool :hook-agent$validate
                               {:id "x" :event "agent.iteration/post"
                                :body "(fn [event] nil)"})]
       (is (false? (:valid r)))
       (is (false? (:match-ok r)))
       (is (some #(str/includes? % ":match is required") (:errors r)))))
   (testing "uncompilable body flips :body-ok with the eval message"
-    (let [r (tool/invoke-tool :hooks$validate
+    (let [r (tool/invoke-tool :hook-agent$validate
                               {:id "x" :event "agent.iteration/post"
                                :match "{:global true}" :body "(this is not valid"})]
       (is (false? (:valid r)))

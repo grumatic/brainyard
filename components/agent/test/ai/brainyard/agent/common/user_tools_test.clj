@@ -134,17 +134,17 @@
     :input-schema [:map [:text :string]]
     :body "(fn [{:keys [text]}] {:words 1})"
     :dirs test-dirs)
-  (testing "list-user-tools + tools$list surface the registered user tool"
+  (testing "list-user-tools + tool-agent$list surface the registered user tool"
     (is (some #(= "user$tool$wc-test" (:id %)) (ut/list-user-tools)))
-    (is (some #(= "user$tool$wc-test" (:id %)) (:tools (tool/invoke-tool :tools$list {})))))
+    (is (some #(= "user$tool$wc-test" (:id %)) (:tools (tool/invoke-tool :tool-agent$list {})))))
   (testing "read-user-tool returns the persisted source + schema"
     (let [r (ut/read-user-tool test-dirs "wc-test")]
       (is (= "wc-test" (:name r)))
       (is (= [:map [:text :string]] (:input-schema r)))
       (is (str/includes? (:body r) ":words"))))
-  (testing "tools$read / tools$delete require :name (registry Malli guard)"
-    (is (str/includes? (:error-message (tool/call-tool :tools$read {})) "missing required key"))
-    (is (str/includes? (:error-message (tool/call-tool :tools$delete {})) "missing required key")))
+  (testing "tool-agent$read / tool-agent$delete require :name (registry Malli guard)"
+    (is (str/includes? (:error-message (tool/call-tool :tool-agent$read {})) "missing required key"))
+    (is (str/includes? (:error-message (tool/call-tool :tool-agent$delete {})) "missing required key")))
   (testing "delete-user-tool! unregisters and removes the persisted source"
     (let [edn (io/file (str (:project-dir test-dirs) "/.brainyard/tools/wc-test.edn"))]
       (is (.exists edn))
@@ -155,20 +155,20 @@
     (is (str/includes? (:error (ut/delete-user-tool! test-dirs "nope")) "no user tool"))))
 
 (deftest tools-create-command
-  (testing "tools$create is registered as a command"
-    (is (contains? (tool/get-tool-defs) :tools$create)))
-  (testing "tools$create routes through define-tool (bad name -> :error, no disk write)"
-    (let [r (tool/call-tool :tools$create {:name "Bad Name" :body "(fn [_] 1)"})]
-      (is (str/includes? (:error r) "tools$create failed")))))
+  (testing "tool-agent$create is registered as a command"
+    (is (contains? (tool/get-tool-defs) :tool-agent$create)))
+  (testing "tool-agent$create routes through define-tool (bad name -> :error, no disk write)"
+    (let [r (tool/call-tool :tool-agent$create {:name "Bad Name" :body "(fn [_] 1)"})]
+      (is (str/includes? (:error r) "tool-agent$create failed")))))
 
 (deftest tools-create-input-schema-as-edn-string
-  ;; Regression: the LLM reaches tools$create via a JSON tool-call, so it passes
+  ;; Regression: the LLM reaches tool-agent$create via a JSON tool-call, so it passes
   ;; :input-schema as an EDN STRING (JSON cannot express a keyword-headed vector).
   ;; Before the [:string]+coerce fix the field was [:any], and define-tool's
   ;; (vector? input-schema) check threw on the string — every create with a schema
   ;; failed. This exercises the full tool/call-tool (Malli) path.
   (testing "a string :input-schema is parsed and drives the new tool's validation"
-    (let [r (tool/call-tool :tools$create
+    (let [r (tool/call-tool :tool-agent$create
                             {:name        "shout-test"
                              :description "Uppercase the text."
                              :input-schema "[:map [:text :string]]"
@@ -179,25 +179,25 @@
       (is (str/includes? (:error-message (tool/call-tool :user$tool$shout-test {}))
                          "missing required key"))))
   (testing "a non-[:map] EDN string is rejected by define-tool (no registration)"
-    (let [r (tool/call-tool :tools$create
+    (let [r (tool/call-tool :tool-agent$create
                             {:name "bad-schema-test" :input-schema "[:vector :string]"
                              :body "(fn [_] 1)"})]
-      (is (str/includes? (:error r) "tools$create failed"))
+      (is (str/includes? (:error r) "tool-agent$create failed"))
       (is (not (contains? (tool/get-tool-defs) :user$tool$bad-schema-test)))))
   (testing "unreadable EDN is reported as an error, not crashed through"
-    (let [r (tool/call-tool :tools$create
+    (let [r (tool/call-tool :tool-agent$create
                             {:name "unreadable-test" :input-schema "[:map ["
                              :body "(fn [_] 1)"})]
-      (is (str/includes? (:error r) "tools$create failed"))
+      (is (str/includes? (:error r) "tool-agent$create failed"))
       (is (not (contains? (tool/get-tool-defs) :user$tool$unreadable-test))))))
 
 (deftest tools-validate-dry-run
-  (testing "tools$validate is registered as a command"
-    (is (contains? (tool/get-tool-defs) :tools$validate)))
+  (testing "tool-agent$validate is registered as a command"
+    (is (contains? (tool/get-tool-defs) :tool-agent$validate)))
   (testing "a valid draft reports :valid true and PERSISTS/REGISTERS NOTHING"
     (let [before (tool/get-tool-defs)
           edn    (io/file (str (:project-dir test-dirs) "/.brainyard/tools/never-made.edn"))
-          r      (tool/invoke-tool :tools$validate
+          r      (tool/invoke-tool :tool-agent$validate
                                    {:name "never-made"
                                     :body "(fn [{:keys [text]}] {:n (count text)})"
                                     :input-schema [:map [:text :string]]})]
@@ -214,24 +214,24 @@
 
 (deftest tools-validate-checks
   (testing "bad name flips :name-ok and populates :errors"
-    (let [r (tool/invoke-tool :tools$validate {:name "Bad Name" :body "(fn [_] 1)"})]
+    (let [r (tool/invoke-tool :tool-agent$validate {:name "Bad Name" :body "(fn [_] 1)"})]
       (is (false? (:valid r)))
       (is (false? (:name-ok r)))
       (is (some #(str/includes? % "^[a-z]") (:errors r)))))
   (testing "non-[:map] schema flips :schema-ok"
-    (let [r (tool/invoke-tool :tools$validate
+    (let [r (tool/invoke-tool :tool-agent$validate
                               {:name "okname" :body "(fn [_] 1)"
                                :input-schema [:vector :string]})]
       (is (false? (:valid r)))
       (is (false? (:schema-ok r)))))
   (testing "uncompilable body flips :body-ok with the eval message"
-    (let [r (tool/invoke-tool :tools$validate
+    (let [r (tool/invoke-tool :tool-agent$validate
                               {:name "okname" :body "(this is not valid clojure"})]
       (is (false? (:valid r)))
       (is (false? (:body-ok r)))
       (is (some #(str/includes? % "body failed to eval") (:errors r)))))
   (testing ":name-ok is omitted when :name is not supplied"
-    (let [r (tool/invoke-tool :tools$validate {:body "(fn [_] 1)"})]
+    (let [r (tool/invoke-tool :tool-agent$validate {:body "(fn [_] 1)"})]
       (is (true? (:valid r)))
       (is (not (contains? r :name-ok))))))
 
@@ -241,14 +241,14 @@
       :input-schema [:map [:text :string]]
       :body "(fn [{:keys [text]}] {:words 1})"
       :dirs test-dirs)
-    (is (true?  (:collision (tool/invoke-tool :tools$validate
+    (is (true?  (:collision (tool/invoke-tool :tool-agent$validate
                                               {:name "wc-test" :body "(fn [_] 1)"}))))
-    (is (false? (:collision (tool/invoke-tool :tools$validate
+    (is (false? (:collision (tool/invoke-tool :tool-agent$validate
                                               {:name "totally-fresh" :body "(fn [_] 1)"}))))))
 
 (deftest tools-validate-sample
   (testing ":sample runs the body once and returns its result without registering"
-    (let [r (tool/invoke-tool :tools$validate
+    (let [r (tool/invoke-tool :tool-agent$validate
                               {:name "wc-sample"
                                :body "(fn [{:keys [text]}] {:words (count (clojure.string/split text #\"\\s+\"))})"
                                :input-schema [:map [:text :string]]
@@ -260,8 +260,8 @@
 (deftest tools-validate-composes-palette
   (testing "a draft body composing a builtin (bash) validates true in the fork"
     ;; Guards the extra-bindings fix: the fork must carry the tool palette so a
-    ;; body that composes (bash {…}) evals here exactly as under tools$create.
-    (let [r (tool/invoke-tool :tools$validate
+    ;; body that composes (bash {…}) evals here exactly as under tool-agent$create.
+    (let [r (tool/invoke-tool :tool-agent$validate
                               {:name "echo-validate"
                                :body "(fn [_] {:echoed (clojure.string/trim (:output (bash {:command \"echo hi\"})))})"
                                :sample {}})]

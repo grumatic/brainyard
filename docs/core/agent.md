@@ -119,8 +119,8 @@ unified tool registry (see [tool.md](tool.md)):
 | `memory-agent` | `common/memory_agent.clj` | LLM-driven steward of the layered memory stack — `:op ∈ stats / remember / essence / consolidate / purge / verify-fact / correct` (default `:max-iterations` 10) |
 | `config-agent` | `common/config_agent.clj` | Conversational hub for `~/.brainyard/config.edn` — read→diff→confirm→snapshot→apply, reversible via `config$revert` |
 | `init-agent` | `common/init_agent.clj` | `BRAINYARD.md` authoring/maintenance (project + user scope); seeds from `CLAUDE.md`/`AGENTS.md`, reversible via `init$revert` |
-| `tool-agent` | `common/tool_agent.clj` | Author user-defined tools — `tools$create`/`list`/`read`/`delete`, persisted to `.brainyard/tools/` |
-| `hook-agent` | `common/hook_agent.clj` | Author persistent runtime hooks — `hooks$events`/`create`/`validate`/`list`/`read`/`delete`, persisted to `.brainyard/hooks/` |
+| `tool-agent` | `common/tool_agent.clj` | Author user-defined tools — `tool-agent$create`/`list`/`read`/`delete`, persisted to `.brainyard/tools/` |
+| `hook-agent` | `common/hook_agent.clj` | Author persistent runtime hooks — `hook-agent$events`/`create`/`validate`/`list`/`read`/`delete`, persisted to `.brainyard/hooks/` |
 
 `coact-agent` and `react-agent` are the reasoning primitives. The rest are
 specialist BT configurations built from the same primitives

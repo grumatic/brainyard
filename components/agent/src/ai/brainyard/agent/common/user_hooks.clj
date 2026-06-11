@@ -262,7 +262,7 @@
     (throw (ex-info "hook :id must match ^[a-z][a-z0-9-]*$" {:id id})))
   (let [event-kw (coerce-event event)]
     (when-not (hooks/known-event? event-kw)
-      (throw (ex-info (str "unknown event " event-kw "; call hooks$events for the catalog")
+      (throw (ex-info (str "unknown event " event-kw "; call hook-agent$events for the catalog")
                       {:event event-kw})))
     (when (hooks/gated-event? event-kw)
       (throw (ex-info (str event-kw " is a gated event; user-defined hooks are observer-only in v1")
@@ -403,10 +403,10 @@
      agent)))
 
 ;; ============================================================================
-;; Commands — mirrors the tools$* family
+;; Commands — mirrors the tool-agent$* family
 ;; ============================================================================
 
-(defcommand hooks$events
+(defcommand hook-agent$events
   "List the pre-defined Brainyard hook events a user hook may target, with each
    event's payload keys (what the handler's `event` map will contain) and whether
    it is gated. Only events with :available? true accept a user-defined hook in
@@ -424,12 +424,12 @@
   :input-schema  [:map]
   :output-schema [:map [:events [:any {:desc "Vector of {:event :payload-keys :gated? :available?}"}]]])
 
-(defcommand hooks$validate
+(defcommand hook-agent$validate
   "Dry-run a user-hook draft: parse + eval-smoke-test the body and check the
    id/event/match in a THROWAWAY fork of the hooks sandbox — persists nothing,
-   registers nothing, mutates no live state. Use before hooks$create to iterate
+   registers nothing, mutates no live state. Use before hook-agent$create to iterate
    safely. Optionally pass :sample (an event map) to run the body once. Mirrors
-   hooks$create's arg names. Returns a structured report (never throws)."
+   hook-agent$create's arg names. Returns a structured report (never throws)."
   (fn [& {:as args}]
     (try
       (let [{:keys [id event body sample]} args
@@ -472,7 +472,7 @@
       (catch Exception e
         {:valid false :event-ok false :event-gated false :match-ok false
          :body-ok false :collision false
-         :errors [(str "hooks$validate failed: " (.getMessage e))]})))
+         :errors [(str "hook-agent$validate failed: " (.getMessage e))]})))
   :input-schema  [:map
                   [:body     [:string {:desc "Clojure source: a `(fn [event] ...)` of one map"}]]
                   [:id       {:optional true} [:string {:desc "Proposed id; enables id + collision check"}]]
@@ -490,10 +490,10 @@
                   [:sample-result {:optional true} [:any {:desc "Result of running the body on :sample"}]]
                   [:errors        [:any {:desc "Vector of human-readable failure lines"}]]])
 
-(defcommand hooks$create
+(defcommand hook-agent$create
   "Author a reusable, PERSISTENT observer hook from Clojure source. :body is a
    string `(fn [event] ...)` taking the sanitized event map; :event is a
-   non-gated event key (see hooks$events); :match is a REQUIRED declarative scope
+   non-gated event key (see hook-agent$events); :match is a REQUIRED declarative scope
    passed as an EDN string. The hook survives restarts, fires on every matching
    event, and its body may compose other tools by their direct symbol, e.g.
    (bash {…}) or (read-file {…}). Observer-only: the return value is ignored — a
@@ -509,10 +509,10 @@
           :body (:body args)
           :dirs (current-dirs)
           :extra-bindings extra))
-      (catch Exception e {:error (str "hooks$create failed: " (.getMessage e))})))
+      (catch Exception e {:error (str "hook-agent$create failed: " (.getMessage e))})))
   :input-schema  [:map
                   [:id       [:string {:desc "lowercase-kebab hook id (no prefix)"}]]
-                  [:event    [:string {:desc "Non-gated event key from hooks$events, e.g. \"agent.tool-use/post\""}]]
+                  [:event    [:string {:desc "Non-gated event key from hook-agent$events, e.g. \"agent.tool-use/post\""}]]
                   [:body     [:string {:desc "Clojure source: a `(fn [event] ...)` of one map"}]]
                   [:match    [:string {:desc "REQUIRED scope as EDN string: \"{:tool-name \\\"bash\\\"}\", \"{:defagent-type \\\"main-agent\\\"}\", or \"{:global true}\""}]]
                   [:doc      {:optional true} [:string {:desc "one-line description"}]]
@@ -523,8 +523,8 @@
                   [:persisted [:string {:desc "Path the source was written to"}]]
                   [:error     [:string {:desc "Error if definition failed"}]]])
 
-(defcommand hooks$list
-  "List ACTIVE user-defined hooks (authored via hooks$create) from the live
+(defcommand hook-agent$list
+  "List ACTIVE user-defined hooks (authored via hook-agent$create) from the live
    registry. Returns id, event, priority, enriched best-effort with match/doc
    from the persisted source."
   (fn [& _]
@@ -534,7 +534,7 @@
   :input-schema  [:map]
   :output-schema [:map [:hooks [:any {:desc "Vector of {:id :event :priority :match :doc}"}]]])
 
-(defcommand hooks$read
+(defcommand hook-agent$read
   "Read a user-defined hook's full record (incl. body) by id."
   (fn [& {:as args}]
     (if (str/blank? (:id args))
@@ -550,7 +550,7 @@
                   [:body     [:string {:desc "Clojure source `(fn [event] ...)`"}]]
                   [:error    [:string {:desc "Error if not found"}]]])
 
-(defcommand hooks$delete
+(defcommand hook-agent$delete
   "Delete a user-defined hook: unregister it and remove its persisted source."
   (fn [& {:as args}]
     (if (str/blank? (:id args))
@@ -564,4 +564,4 @@
 (def hooks-commands
   "All user-hook management commands, for binding into hook-agent. Mirrors
    `user-tools/tools-commands`."
-  [#'hooks$events #'hooks$create #'hooks$validate #'hooks$list #'hooks$read #'hooks$delete])
+  [#'hook-agent$events #'hook-agent$create #'hook-agent$validate #'hook-agent$list #'hook-agent$read #'hook-agent$delete])

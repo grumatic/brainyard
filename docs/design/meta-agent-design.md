@@ -20,7 +20,7 @@ only prose that steers them.
 
 That thinness is the opening. If a useful specialist is "CoAct + an instruction
 + a tool-context," then a *user* should be able to mint one at runtime without
-recompiling the binary — the same way `tools$create` lets the LLM mint a
+recompiling the binary — the same way `tool-agent$create` lets the LLM mint a
 first-class tool and `skills$write` lets it author a skill. A consultant who
 keeps asking "review this Terraform diff against our tagging policy," a writer
 who wants a house-style copy-editor, a team with a fixed incident-triage drill —
@@ -112,13 +112,13 @@ offers to author one. It does not fabricate a `user$agent$…` that was never de
 
 ## 2A. Scope — Project vs User
 
-`meta-agent$create` persists to `<project>/.brainyard/agents/user-agent/<name>/` by
+`meta-agent$create` persists to `<project>/.brainyard/agents/user$agent/<name>/` by
 default — project scope, mirroring `.brainyard/tools`, `.brainyard/skills`, and
 `.brainyard/plans`. A user-defined agent authored in a checkout is a shared
 project asset, and the project dir is already the working directory, so the
 agent travels with the repo and the team gets it on checkout.
 
-A `:scope :user` variant rooted at `~/.brainyard/agents/user-agent/` is the
+A `:scope :user` variant rooted at `~/.brainyard/agents/user$agent/` is the
 natural extension for personal/global personas (a copy-editor you want
 everywhere), exactly as `skill-agent` offers `:user` scope for skills. The
 specialist's instruction is written so adding a `:scope` argument later is a
@@ -135,7 +135,7 @@ human will want to read and edit in an editor with Markdown rendering. So the
 unit of persistence is a **directory per agent**, the layout the request fixes:
 
 ```
-.brainyard/agents/user-agent/<name>/
+.brainyard/agents/user$agent/<name>/
   agent.edn          metadata: {:name :description :scope :version :created :updated}
   instruction.md     the :instruction block (prose)
   tool-context.md    the :tool-context block (prose)
@@ -177,7 +177,7 @@ target for `main-agent`, and can be composed by a peer agent's tool-call channel
 — all without a recompile.
 
 Like its siblings, the manager stays flat: it does not clone-self, and it writes
-only under `.brainyard/agents/user-agent/`, reached only through the `meta-agent$*`
+only under `.brainyard/agents/user$agent/`, reached only through the `meta-agent$*`
 commands. It never writes to sibling-specialist storage.
 
 ## 4. Capability Surface
@@ -221,7 +221,7 @@ mirroring `user-tools/tools-commands` and `skills/skills-commands`:
 | Command | Args | Effect |
 |---|---|---|
 | `meta-agent$validate` | `:name?`, `:description?`, `:instruction`, `:tool-context?`, `:sample?` | Dry-run: structural checks on the name/instruction/tool-context plus a collision check — **persists nothing, registers nothing**. With `:sample` (a question string), optionally registers into a throwaway registry fork and runs one ask. Returns a structured report (§5B). |
-| `meta-agent$create` | `:name`, `:instruction`, `:description?`, `:tool-context?` | Validate → persist the three files to `.brainyard/agents/user-agent/<name>/` → register `user$agent$<name>` as a CoAct-derived `:type :agent` in `!tool-defs`. Returns `{:id :name :persisted}` or `{:error}`. |
+| `meta-agent$create` | `:name`, `:instruction`, `:description?`, `:tool-context?` | Validate → persist the three files to `.brainyard/agents/user$agent/<name>/` → register `user$agent$<name>` as a CoAct-derived `:type :agent` in `!tool-defs`. Returns `{:id :name :persisted}` or `{:error}`. |
 | `meta-agent$list` | — | `{:agents [{:id :description}]}` for every user-defined agent. |
 | `meta-agent$read` | `:name` | `{:name :description :instruction :tool-context}` from disk (falls back to registry metadata when files are absent). |
 | `meta-agent$delete` | `:name` | Unregister + delete the persisted directory. Returns `{:deleted}` or `{:error}`. |
@@ -348,7 +348,7 @@ Optional behavioral smoke (`:sample` a question string, **opt-in, costs an LLM
 round-trip**): register the draft into a *throwaway fork* of the registry, run a
 single ask, capture the answer, discard the fork. This lets the specialist
 confirm the persona behaves before anything is persisted — the agent analogue of
-`tools$validate`'s `:sample` body run. Because it is an LLM call (slow,
+`tool-agent$validate`'s `:sample` body run. Because it is an LLM call (slow,
 metered), it is never implicit: the specialist runs it only when the user asks
 to "try it first," and otherwise reserves the post-create ask (§6 step 5) for
 final confirmation against the truly-registered agent.
@@ -378,7 +378,7 @@ handling, and a safety block. Sketch:
 ```
 You are an agent-authoring specialist. You help the user discover, inspect,
 author, refine, and remove PERSISTENT user-defined agents. An authored agent is
-a CoAct-derived specialist saved under <project>/.brainyard/agents/user-agent/
+a CoAct-derived specialist saved under <project>/.brainyard/agents/user$agent/
 <name>/ (agent.edn + instruction.md + tool-context.md), registered as
 user$agent$<name>, and callable as a first-class agent on the very next turn. It
 inherits the full CoAct loop and tool palette — you NEVER bind tools to it; you
@@ -460,7 +460,7 @@ adds one:
   agents. Distinct from `:tool-lifecycle` (in-process `(fn [args] …)` tools),
   `:skill-lifecycle` (SKILL.md prose workflows), and `:mcp-lifecycle` (external
   MCP servers): this is for **whole CoAct personas** persisted under
-  `.brainyard/agents/user-agent`.
+  `.brainyard/agents/user$agent`.
 
 Concretely: add `:agent-lifecycle` to `valid-shapes` in `main.clj` (as the next
 letter, V), add the cue + the `→ meta-agent` line to the specialist table in
@@ -558,7 +558,7 @@ logic — it is a curated front end over those commands.
    `{:valid true :collision false :instruction-ok true :unknown-tools []}`.
    Nothing persisted.
 6. `meta-agent$create` → `{:id "user$agent$tf-reviewer" :persisted
-   ".brainyard/agents/user-agent/tf-reviewer/"}`.
+   ".brainyard/agents/user$agent/tf-reviewer/"}`.
 7. Verify: ask `user$agent$tf-reviewer :question "review the staged diff"` and read
    that it enumerates resources and flags missing tags.
 8. Report: created `user$agent$tf-reviewer`, reaches for `bash`/`read-file`/`search`,
@@ -723,7 +723,7 @@ tool-context without resupplying the instruction, or vice versa) would be cleane
 once refinement becomes the dominant flow.
 
 **User scope.** Default project and offer `:scope :user`
-(`~/.brainyard/agents/user-agent/`), exactly as `skill-agent` does for skills?
+(`~/.brainyard/agents/user$agent/`), exactly as `skill-agent` does for skills?
 Recommended yes, once the storage variant lands.
 
 **Per-agent config.** Should an authored agent carry overrides

@@ -225,7 +225,7 @@ Twenty-one `defagent`s ship in `components/agent`:
 | `memory-agent` | LLM-driven steward of the layered memory stack |
 | `config-agent` | Conversational hub for `~/.brainyard/config.edn` |
 | `init-agent` | `BRAINYARD.md` authoring & maintenance |
-| `tool-agent` / `hook-agent` | Author user-defined tools (`tools$*`) and persistent runtime hooks (`hooks$*`) |
+| `tool-agent` / `hook-agent` | Author user-defined tools (`tool-agent$*`) and persistent runtime hooks (`hook-agent$*`) |
 
 See [core/agent.md](core/agent.md) and [core/reasoning.md](core/reasoning.md)
 for details.

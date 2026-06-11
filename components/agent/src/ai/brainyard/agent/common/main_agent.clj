@@ -133,7 +133,7 @@ LIFECYCLE & EXTERNAL
 
 - tool-agent     → user-defined tool lifecycle: author/inspect/refine/
                    remove persistent (fn [args] …) tools under
-                   .brainyard/tools (the tools$* family). Use for 'make
+                   .brainyard/tools (the tool-agent$* family). Use for 'make
                    me a tool that …', 'add a command for …', 'fix my
                    <name> tool', 'delete <name>'. NOT for skills
                    (skill-agent), MCP servers (mcp-agent), or one-off
@@ -473,7 +473,7 @@ instruction §6 (DECISION TABLE) for the full per-agent rule. Headline:
 - rlm-agent        → MapReduce over too-big context.
 - skill-agent      → skill lifecycle (write/install).
 - mcp-agent        → MCP lifecycle + write-side calls.
-- tool-agent       → user-defined tool lifecycle (tools$* author/refine/remove).
+- tool-agent       → user-defined tool lifecycle (tool-agent$* author/refine/remove).
 - memory-agent     → long-term memory read/write.
 - init-agent       → project bootstrap.
 - config-agent     → .brainyard/config tuning.

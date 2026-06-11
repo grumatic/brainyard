@@ -13,7 +13,7 @@
   (:require [ai.brainyard.agent.common.plan :as plan]
             [ai.brainyard.agent.common.commands]
             [ai.brainyard.agent.common.tools]
-            [ai.brainyard.agent.common.user-tools]   ;; bare — registers tools$create/list/read/delete
+            [ai.brainyard.agent.common.user-tools]   ;; bare — registers tool-agent$create/list/read/delete
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.session :as session]
             [ai.brainyard.agent.core.tool :as tool]
