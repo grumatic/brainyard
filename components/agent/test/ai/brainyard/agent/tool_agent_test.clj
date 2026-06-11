@@ -52,5 +52,5 @@
     (let [instr @#'ai.brainyard.agent.common.tool-agent/instruction]
       (is (str/includes? instr "tools$validate"))
       (is (str/includes? instr "tools$create"))
-      (is (str/includes? instr "user$<name>"))
+      (is (str/includes? instr "user$tool$<name>"))
       (is (str/includes? instr ".brainyard/tools")))))

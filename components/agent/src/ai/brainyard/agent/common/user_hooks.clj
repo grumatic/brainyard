@@ -55,7 +55,7 @@
 (defn- hooks-sandbox
   "The live hooks sandbox, created on first use. `extra-bindings` (the agent's
    `auto-tool-bindings`) expose registered tools as DIRECT symbols a handler body
-   may compose — `(bash {…})`, `(read-file {…})`, `(user$peer {…})`."
+   may compose — `(bash {…})`, `(read-file {…})`, `(user$tool$peer {…})`."
   ([] (hooks-sandbox nil))
   ([extra-bindings]
    (let [sbx (or @!hooks-sandbox

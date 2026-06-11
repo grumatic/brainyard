@@ -17,7 +17,7 @@
    call for isolation). The body is a `(fn [args] ...)` of one map argument and
    may compose other registered tools by their DIRECT symbol — builtins like
    `(bash {…})` / `(read-file {…})` (supplied via :extra-bindings) and other
-   user tools as `(user$<name> {…})` (bound on registration). call-tool is
+   user tools as `(user$tool$<name> {…})` (bound on registration). call-tool is
    intentionally hidden, so composition is by symbol, not via call-tool. User
    tools are macros over the existing tool palette, not new host primitives (no
    new privilege beyond what the sandbox already grants).
@@ -25,7 +25,7 @@
    Registration goes into the SAME `agent.core.tool/!tool-defs` registry that
    `deftool` uses, so user tools immediately show up in `list-tools` / `search`,
    flow through `call-tool`'s Malli coercion + hook/permission/depth guards, and
-   get auto-bound into agent sandboxes as `user$<name>` callables."
+   get auto-bound into agent sandboxes as `user$tool$<name>` callables."
   (:require [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
             [ai.brainyard.agent.common.def-store :as def-store]
             [ai.brainyard.clj-sandbox.interface :as sb]
@@ -47,7 +47,7 @@
   "The live tools sandbox, created on first use. `extra-bindings` (typically the
    agent's `auto-tool-bindings`) expose registered tools as DIRECT symbols a body
    can call — builtins like `(bash {…})` / `(read-file {…})` and other user
-   tools as `(user$<name> {…})`. There is no generic `call-tool` helper here:
+   tools as `(user$tool$<name> {…})`. There is no generic `call-tool` helper here:
    call-tool is intentionally hidden (`:visibility :hidden`), so a tool is
    composed by its own symbol, not through call-tool."
   ([] (tools-sandbox nil))
@@ -76,7 +76,7 @@
 ;; ============================================================================
 
 (def ^:private tool-name-re
-  "User tool names: lowercase kebab, leading letter. Keeps `user$<name>` a clean
+  "User tool names: lowercase kebab, leading letter. Keeps `user$tool$<name>` a clean
    symbol/keyword and a safe filename."
   #"^[a-z][a-z0-9-]*$")
 
@@ -89,7 +89,7 @@
   [dirs]
   (str (or (:project-dir dirs) (:working-dir dirs) ".") "/.brainyard/tools"))
 
-(defn- tool-id [name] (keyword (str "user$" name)))
+(defn- tool-id [name] (keyword (str "user$tool$" name)))
 
 (defn- install-body!
   "Eval `(def __ut_<name> <body>)` into the tools sandbox so it is a callable
@@ -104,7 +104,7 @@
 
 (defn- register!
   "Register (or replace) the tool in the shared !tool-defs registry AND bind its
-   direct `user$<name>` symbol in the tools sandbox so other user tool bodies can
+   direct `user$tool$<name>` symbol in the tools sandbox so other user tool bodies can
    compose it by symbol after registration. The registry :fn rehydrates by
    forking the tools sandbox and calling `__ut_<name>` with the args map bound as
    `args`."
@@ -135,7 +135,7 @@
     ;; (tool/call-tool) so it still gets Malli coercion + hook/permission/depth
     ;; guards — not through the hidden call-tool helper.
     (sb/set-var! (tools-sandbox)
-                 (symbol (str "user$" name))
+                 (symbol (str "user$tool$" name))
                  (fn [args]
                    (let [r (tool/call-tool id (or args {}))]
                      (if (:error-message r) {:error (:error-message r)} r))))
@@ -194,7 +194,7 @@
                                                    :file (.getName f) :error (ex-message e))
                                        nil)))))
                       vec)]
-        ;; Pass 1: register all, binding every `user$<name>` symbol up front —
+        ;; Pass 1: register all, binding every `user$tool$<name>` symbol up front —
         ;; bodies may reference peer tools and .edn file order is undefined.
         (doseq [rec recs] (register! rec))
         ;; Pass 2: install bodies (now all peer symbols resolve); roll a tool
@@ -242,7 +242,7 @@
 (defn- current-extra-bindings
   "Resolve the current agent's `auto-tool-bindings` — the full tool palette as
    direct symbols a tool body may compose ((bash {…}), (read-file {…}),
-   (user$peer {…})). Runtime-resolved to avoid a static require cycle
+   (user$tool$peer {…})). Runtime-resolved to avoid a static require cycle
    (sandbox-bindings requires this ns for registration). Returns {} when no
    agent is bound (e.g. in tests)."
   []
@@ -278,7 +278,7 @@
 
 (defn delete-user-tool!
   "Unregister a user tool and delete its persisted source. The orphaned
-   `__ut_<name>` / `user$<name>` sandbox vars are harmless (registry dispatch is
+   `__ut_<name>` / `user$tool$<name>` sandbox vars are harmless (registry dispatch is
    gone) and clear on the next sandbox rebuild."
   [dirs name]
   (let [id (tool-id name)]
@@ -317,9 +317,9 @@
 (defcommand tools$create
   "Author a reusable, PERSISTENT tool from Clojure source. :body is a string
    `(fn [args] ...)` taking one map; :input-schema is a Malli [:map ...] passed
-   as an EDN string. The tool survives restarts, registers as `user$<name>`
+   as an EDN string. The tool survives restarts, registers as `user$tool$<name>`
    (callable directly as a tool on the next turn), and its body may compose
-   other tools by their direct symbol, e.g. (bash {…}) or (user$other {…})."
+   other tools by their direct symbol, e.g. (bash {…}) or (user$tool$other {…})."
   (fn [& {:as args}]
     (try
       (let [extra (current-extra-bindings)]
@@ -331,12 +331,12 @@
           :extra-bindings extra))
       (catch Exception e {:error (str "tools$create failed: " (.getMessage e))})))
   :input-schema  [:map
-                  [:name        [:string {:desc "lowercase-kebab tool name (no user$ prefix)"}]]
+                  [:name        [:string {:desc "lowercase-kebab tool name (no user$tool$ prefix)"}]]
                   [:body        [:string {:desc "Clojure source: a `(fn [args] ...)` of one map"}]]
                   [:description {:optional true} [:string {:desc "one-line description"}]]
                   [:input-schema {:optional true} [:string {:desc "Malli arg schema as an EDN string, e.g. \"[:map [:x :int]]\" (default [:map])"}]]]
   :output-schema [:map
-                  [:id        [:string {:desc "Registered tool id, e.g. user$shout"}]]
+                  [:id        [:string {:desc "Registered tool id, e.g. user$tool$shout"}]]
                   [:name      [:string {:desc "Tool name"}]]
                   [:persisted [:string {:desc "Path the source was written to"}]]
                   [:error     [:string {:desc "Error if definition failed"}]]])
@@ -348,12 +348,12 @@
   :output-schema [:map [:tools [:any {:desc "Vector of {:id :description :input-schema}"}]]])
 
 (defcommand tools$read
-  "Read a user-defined tool's source + schema by name (without the user$ prefix)."
+  "Read a user-defined tool's source + schema by name (without the user$tool$ prefix)."
   (fn [& {:as args}]
     (if (str/blank? (:name args))
       {:error "name is required"}
       (read-user-tool (current-dirs) (:name args))))
-  :input-schema  [:map [:name [:string {:desc "User tool name, e.g. \"shout\" (no user$ prefix)"}]]]
+  :input-schema  [:map [:name [:string {:desc "User tool name, e.g. \"shout\" (no user$tool$ prefix)"}]]]
   :output-schema [:map
                   [:name         [:string {:desc "Tool name"}]]
                   [:description  [:string {:desc "Description"}]]
@@ -367,7 +367,7 @@
     (if (str/blank? (:name args))
       {:error "name is required"}
       (delete-user-tool! (current-dirs) (:name args))))
-  :input-schema  [:map [:name [:string {:desc "User tool name to delete (no user$ prefix)"}]]]
+  :input-schema  [:map [:name [:string {:desc "User tool name to delete (no user$tool$ prefix)"}]]]
   :output-schema [:map
                   [:deleted [:string {:desc "Name of the deleted tool"}]]
                   [:error   [:string {:desc "Error if not found"}]]])
@@ -389,7 +389,7 @@
                            (and (vector? input-schema) (= :map (first input-schema))))
             ;; Fork the LIVE tools sandbox WITH the agent's tool palette bound,
             ;; so a draft body that composes (read-file {…}) / (bash {…}) /
-            ;; (user$peer {…}) evals here exactly as it would under tools$create.
+            ;; (user$tool$peer {…}) evals here exactly as it would under tools$create.
             ;; The fork is discarded on return — nothing leaks into the live sandbox.
             fork       (sb/fork-sandbox (tools-sandbox (current-extra-bindings)))
             evald      (when (string? body)

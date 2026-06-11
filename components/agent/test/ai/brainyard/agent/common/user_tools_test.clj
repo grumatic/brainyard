@@ -21,8 +21,8 @@
   {:project-dir (str (System/getProperty "java.io.tmpdir") "/by-user-tools-test")})
 
 (def ^:private our-ids
-  [:user$wc-test :user$long-test :user$echo-test
-   :user$shout-test :user$bad-schema-test :user$unreadable-test])
+  [:user$tool$wc-test :user$tool$long-test :user$tool$echo-test
+   :user$tool$shout-test :user$tool$bad-schema-test :user$tool$unreadable-test])
 
 (defn- rm-rf! [^java.io.File f]
   (when (.isDirectory f) (doseq [c (.listFiles f)] (rm-rf! c)))
@@ -39,18 +39,18 @@
 (use-fixtures :each (fn [f] (clean!) (try (f) (finally (clean!)))))
 
 (deftest define-and-invoke
-  (testing "define-tool persists source and registers under user$<name>"
+  (testing "define-tool persists source and registers under user$tool$<name>"
     (let [r (ut/define-tool
               :name "wc-test"
               :description "Count words."
               :input-schema [:map [:text :string]]
               :body "(fn [{:keys [text]}] {:words (count (clojure.string/split text #\"\\s+\"))})"
               :dirs test-dirs)]
-      (is (= :user$wc-test (:id r)))
+      (is (= :user$tool$wc-test (:id r)))
       (is (.exists (io/file (:persisted r))))
-      (is (contains? (tool/get-tool-defs) :user$wc-test))))
+      (is (contains? (tool/get-tool-defs) :user$tool$wc-test))))
   (testing "invokes through the real tool/call-tool dispatcher"
-    (is (= {:words 4} (tool/call-tool :user$wc-test {:text "the quick brown fox"})))))
+    (is (= {:words 4} (tool/call-tool :user$tool$wc-test {:text "the quick brown fox"})))))
 
 (deftest malli-validation
   (ut/define-tool :name "wc-test" :description "Count words."
@@ -58,9 +58,9 @@
     :body "(fn [{:keys [text]}] {:words (count (clojure.string/split text #\"\\s+\"))})"
     :dirs test-dirs)
   (testing "missing required arg is rejected by the registry Malli path"
-    (is (str/includes? (:error-message (tool/call-tool :user$wc-test {})) "missing required key")))
+    (is (str/includes? (:error-message (tool/call-tool :user$tool$wc-test {})) "missing required key")))
   (testing "wrong type is rejected"
-    (is (str/includes? (:error-message (tool/call-tool :user$wc-test {:text 42})) "should be a string"))))
+    (is (str/includes? (:error-message (tool/call-tool :user$tool$wc-test {:text 42})) "should be a string"))))
 
 (deftest composes-another-tool
   (testing "a user tool body composes another user tool by its DIRECT symbol"
@@ -70,10 +70,10 @@
       :dirs test-dirs)
     (ut/define-tool :name "long-test" :description "More than 3 words?"
       :input-schema [:map [:text :string]]
-      :body "(fn [{:keys [text]}] {:long? (> (:words (user$wc-test {:text text})) 3)})"
+      :body "(fn [{:keys [text]}] {:long? (> (:words (user$tool$wc-test {:text text})) 3)})"
       :dirs test-dirs)
-    (is (= {:long? true}  (tool/call-tool :user$long-test {:text "the quick brown fox jumps"})))
-    (is (= {:long? false} (tool/call-tool :user$long-test {:text "just three words"})))))
+    (is (= {:long? true}  (tool/call-tool :user$tool$long-test {:text "the quick brown fox jumps"})))
+    (is (= {:long? false} (tool/call-tool :user$tool$long-test {:text "just three words"})))))
 
 (deftest composes-builtin-bash
   (testing "a body calls a builtin tool by its DIRECT symbol (via :extra-bindings)"
@@ -82,7 +82,7 @@
       :body "(fn [_] {:echoed (clojure.string/trim (:output (bash {:command \"echo direct\"})))})"
       :dirs test-dirs
       :extra-bindings (sb-bind/auto-tool-bindings nil))
-    (is (= {:echoed "direct"} (tool/call-tool :user$echo-test {})))))
+    (is (= {:echoed "direct"} (tool/call-tool :user$tool$echo-test {})))))
 
 (deftest rehydrates-after-restart
   (testing "persisted source survives a simulated restart (sandbox + registry wiped)"
@@ -92,17 +92,17 @@
       :dirs test-dirs)
     (ut/define-tool :name "long-test" :description "More than 3 words?"
       :input-schema [:map [:text :string]]
-      :body "(fn [{:keys [text]}] {:long? (> (:words (user$wc-test {:text text})) 3)})"
+      :body "(fn [{:keys [text]}] {:long? (> (:words (user$tool$wc-test {:text text})) 3)})"
       :dirs test-dirs)
     ;; wipe live state — closures are gone, only the .edn source remains
     (ut/reset-tools-sandbox!)
-    (swap! tool/!tool-defs dissoc :user$wc-test :user$long-test)
-    (is (not (contains? (tool/get-tool-defs) :user$wc-test)))
+    (swap! tool/!tool-defs dissoc :user$tool$wc-test :user$tool$long-test)
+    (is (not (contains? (tool/get-tool-defs) :user$tool$wc-test)))
     ;; reload from disk and confirm BOTH the tool and its composed dependency work
     (let [loaded (set (ut/load-user-tools! :dirs test-dirs))]
       (is (contains? loaded "wc-test"))
       (is (contains? loaded "long-test")))
-    (is (= {:long? true} (tool/call-tool :user$long-test {:text "the quick brown fox jumps"})))))
+    (is (= {:long? true} (tool/call-tool :user$tool$long-test {:text "the quick brown fox jumps"})))))
 
 (deftest discoverable-via-list-tools
   (testing "user tools show up in list-tools with their schema"
@@ -110,9 +110,9 @@
       :input-schema [:map [:text :string]]
       :body "(fn [{:keys [text]}] {:words 1})"
       :dirs test-dirs)
-    (let [hits (tool/invoke-tool :list-tools {:pattern "user\\$wc-test"})]
+    (let [hits (tool/invoke-tool :list-tools {:pattern "user\\$tool\\$wc-test"})]
       (is (= 1 (count hits)))
-      (is (= "user$wc-test" (:id (first hits))))
+      (is (= "user$tool$wc-test" (:id (first hits))))
       (is (= [:map [:text :string]] (:input-schema (first hits)))))))
 
 (deftest ensure-loaded-idempotent
@@ -124,9 +124,9 @@
       (is (str/ends-with? (:persisted r) "/.brainyard/tools/wc-test.edn"))))
   (testing "ensure-loaded! loads once then no-ops for the same project dir"
     (ut/reset-tools-sandbox!)                       ;; also clears the loaded-dirs set
-    (swap! tool/!tool-defs dissoc :user$wc-test)
+    (swap! tool/!tool-defs dissoc :user$tool$wc-test)
     (is (= ["wc-test"] (ut/ensure-loaded! :dirs test-dirs)))
-    (is (contains? (tool/get-tool-defs) :user$wc-test))
+    (is (contains? (tool/get-tool-defs) :user$tool$wc-test))
     (is (nil? (ut/ensure-loaded! :dirs test-dirs)))))
 
 (deftest management-list-read-delete
@@ -135,8 +135,8 @@
     :body "(fn [{:keys [text]}] {:words 1})"
     :dirs test-dirs)
   (testing "list-user-tools + tools$list surface the registered user tool"
-    (is (some #(= "user$wc-test" (:id %)) (ut/list-user-tools)))
-    (is (some #(= "user$wc-test" (:id %)) (:tools (tool/invoke-tool :tools$list {})))))
+    (is (some #(= "user$tool$wc-test" (:id %)) (ut/list-user-tools)))
+    (is (some #(= "user$tool$wc-test" (:id %)) (:tools (tool/invoke-tool :tools$list {})))))
   (testing "read-user-tool returns the persisted source + schema"
     (let [r (ut/read-user-tool test-dirs "wc-test")]
       (is (= "wc-test" (:name r)))
@@ -149,7 +149,7 @@
     (let [edn (io/file (str (:project-dir test-dirs) "/.brainyard/tools/wc-test.edn"))]
       (is (.exists edn))
       (is (= {:deleted "wc-test"} (ut/delete-user-tool! test-dirs "wc-test")))
-      (is (not (contains? (tool/get-tool-defs) :user$wc-test)))
+      (is (not (contains? (tool/get-tool-defs) :user$tool$wc-test)))
       (is (not (.exists edn)))))
   (testing "deleting a missing tool errors"
     (is (str/includes? (:error (ut/delete-user-tool! test-dirs "nope")) "no user tool"))))
@@ -173,23 +173,23 @@
                              :description "Uppercase the text."
                              :input-schema "[:map [:text :string]]"
                              :body        "(fn [{:keys [text]}] {:loud (clojure.string/upper-case text)})"})]
-      (is (= :user$shout-test (:id r)) (str "expected success, got " (pr-str r)))
-      (is (contains? (tool/get-tool-defs) :user$shout-test))
-      (is (= {:loud "HI"} (tool/call-tool :user$shout-test {:text "hi"})))
-      (is (str/includes? (:error-message (tool/call-tool :user$shout-test {}))
+      (is (= :user$tool$shout-test (:id r)) (str "expected success, got " (pr-str r)))
+      (is (contains? (tool/get-tool-defs) :user$tool$shout-test))
+      (is (= {:loud "HI"} (tool/call-tool :user$tool$shout-test {:text "hi"})))
+      (is (str/includes? (:error-message (tool/call-tool :user$tool$shout-test {}))
                          "missing required key"))))
   (testing "a non-[:map] EDN string is rejected by define-tool (no registration)"
     (let [r (tool/call-tool :tools$create
                             {:name "bad-schema-test" :input-schema "[:vector :string]"
                              :body "(fn [_] 1)"})]
       (is (str/includes? (:error r) "tools$create failed"))
-      (is (not (contains? (tool/get-tool-defs) :user$bad-schema-test)))))
+      (is (not (contains? (tool/get-tool-defs) :user$tool$bad-schema-test)))))
   (testing "unreadable EDN is reported as an error, not crashed through"
     (let [r (tool/call-tool :tools$create
                             {:name "unreadable-test" :input-schema "[:map ["
                              :body "(fn [_] 1)"})]
       (is (str/includes? (:error r) "tools$create failed"))
-      (is (not (contains? (tool/get-tool-defs) :user$unreadable-test))))))
+      (is (not (contains? (tool/get-tool-defs) :user$tool$unreadable-test))))))
 
 (deftest tools-validate-dry-run
   (testing "tools$validate is registered as a command"
@@ -208,7 +208,7 @@
       (is (false? (:collision r)))
       (is (empty? (:errors r)))
       ;; the load-bearing dry-run guarantee: live state is untouched
-      (is (not (contains? (tool/get-tool-defs) :user$never-made)))
+      (is (not (contains? (tool/get-tool-defs) :user$tool$never-made)))
       (is (= before (tool/get-tool-defs)))
       (is (not (.exists edn))))))
 
@@ -255,7 +255,7 @@
                                :sample {:text "the quick brown fox"}})]
       (is (true? (:valid r)))
       (is (= {:words 4} (:sample-result r)))
-      (is (not (contains? (tool/get-tool-defs) :user$wc-sample))))))
+      (is (not (contains? (tool/get-tool-defs) :user$tool$wc-sample))))))
 
 (deftest tools-validate-composes-palette
   (testing "a draft body composing a builtin (bash) validates true in the fork"
@@ -268,7 +268,7 @@
       (is (true? (:body-ok r)))
       (is (true? (:valid r)))
       (is (= {:echoed "hi"} (:sample-result r)))
-      (is (not (contains? (tool/get-tool-defs) :user$echo-validate))))))
+      (is (not (contains? (tool/get-tool-defs) :user$tool$echo-validate))))))
 
 (deftest rejects-bad-definitions
   (testing "invalid name"

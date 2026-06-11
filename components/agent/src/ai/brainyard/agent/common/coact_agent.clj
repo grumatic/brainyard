@@ -1416,7 +1416,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 
         ;; Session boot: load this project's persisted user-defined tools
         ;; (idempotent per process) BEFORE make-tool-bindings, so they register
-        ;; in !tool-defs and auto-bind as `user$<name>` symbols this turn.
+        ;; in !tool-defs and auto-bind as `user$tool$<name>` symbols this turn.
         _ (when (nil? existing-sandbox)
             (try
               (ut/ensure-loaded! :dirs (sb-bind/get-dirs agent)

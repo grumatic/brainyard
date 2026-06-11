@@ -11,7 +11,7 @@
 takes a name, a one-line description, a Malli `[:map …]` input schema, and a
 `(fn [args] …)` body string; it eval-smoke-tests the body, persists the source
 to `.brainyard/tools/<name>.edn`, and registers it into the shared
-`agent.core.tool/!tool-defs` registry as `user$<name>` — discoverable, coerced,
+`agent.core.tool/!tool-defs` registry as `user$tool$<name>` — discoverable, coerced,
 and callable on the very next turn. `tools$list`, `tools$read`, and
 `tools$delete` round out the lifecycle.
 
@@ -49,7 +49,7 @@ string other agents see. The agent always settles the `:name` /
 
 It composes, never re-implements. A tool body is a macro over the existing
 palette, not a new privilege. The agent prefers a body that calls
-`(read-file {…})`, `(bash {…})`, or a peer `(user$other {…})` over one that
+`(read-file {…})`, `(bash {…})`, or a peer `(user$tool$other {…})` over one that
 reaches for raw host interop. This is also the security posture: user tools
 grant no capability the sandbox does not already grant (see §10).
 
@@ -61,7 +61,7 @@ is caught while it is still a draft, not after it has overwritten a working tool
 
 It verifies before it claims success. `tools$create` also eval-smoke-tests the
 body, but a body that *parses* is not a body that *works*. The agent runs the
-freshly registered `user$<name>` against a representative input and reads the
+freshly registered `user$tool$<name>` against a representative input and reads the
 result before reporting done — the standard specialist verification step.
 
 It refuses to duplicate. Mirroring `skill-agent`'s "find before create" rule,
@@ -69,7 +69,7 @@ the agent runs `tools$list` (and inspects near-matches with `tools$read`)
 before authoring, and prefers refining an existing tool to minting a near-clone.
 
 It never invents tools. If discovery turns up nothing, it says so and offers to
-author one — it does not fabricate a `user$…` that was never defined.
+author one — it does not fabricate a `user$tool$…` that was never defined.
 
 ## 2A. Scope — Project vs User
 
@@ -114,7 +114,7 @@ verification call):
 2. Inspect — "show me the `count-words` tool" → `tools$read :name "count-words"`.
 3. Author — "make a tool that …" → `tools$list` (dup check) → settle
    name/description/schema → `tools$validate` (dry-run) → `tools$create` →
-   invoke `user$<name>` to verify.
+   invoke `user$tool$<name>` to verify.
 4. Refine — "fix / change the `count-words` tool" → `tools$read` →
    `tools$validate` the edited draft → re-`tools$create` with the same name
    (create overwrites in place) → re-verify.
@@ -143,12 +143,12 @@ var (mirroring `skills/skills-commands`) so the roster is declared in one place:
 | Command | Args | Effect |
 |---|---|---|
 | `tools$validate` | `:body`, `:input-schema?`, `:name?`, `:sample?` | Dry-run: parse + eval-smoke-test the body and check the schema in a throwaway fork — **persists nothing, registers nothing**. Returns a structured report (§5A). |
-| `tools$create` | `:name`, `:body`, `:description?`, `:input-schema?` | Validate → eval-smoke-test → persist source to `.brainyard/tools/<name>.edn` → register `user$<name>`. Returns `{:id :name :persisted}` or `{:error}`. |
+| `tools$create` | `:name`, `:body`, `:description?`, `:input-schema?` | Validate → eval-smoke-test → persist source to `.brainyard/tools/<name>.edn` → register `user$tool$<name>`. Returns `{:id :name :persisted}` or `{:error}`. |
 | `tools$list` | — | `{:tools [{:id :description :input-schema}]}` for every user-defined tool. |
 | `tools$read` | `:name` | `{:name :description :input-schema :body}` from disk (falls back to registry metadata, `:body nil`, when source is absent). |
 | `tools$delete` | `:name` | Unregister + delete persisted source. Returns `{:deleted}` or `{:error}`. |
 
-The authored tool itself — once `tools$create` succeeds, `user$<name>` is a
+The authored tool itself — once `tools$create` succeeds, `user$tool$<name>` is a
 live, directly-callable tool. The agent calls it by id/symbol to verify.
 
 Discovery fallbacks (use only when the `tools$*` surface is not enough):
@@ -173,7 +173,7 @@ many times as it likes before committing.
 Semantics. `tools$validate` performs exactly the checks `define-tool` /
 `install-body!` perform today, but against a *throwaway fork* of the tools
 sandbox and with **no `spit`, no `swap!` into `!tool-defs`, and no
-`user$<name>` binding**:
+`user$tool$<name>` binding**:
 
 - Name check (when `:name` supplied) — matches `^[a-z][a-z0-9-]*$`, and reports
   whether the name collides with an already-registered tool (so "author" vs.
@@ -255,7 +255,7 @@ draft promotes to a create call with no reshaping: validate `{:name :body
 `tools$validate` is also the right home for the `:sample` smoke that §6's
 verification step would otherwise do post-create — for risky bodies the agent
 can confirm behavior *before* anything is written, and reserve the post-create
-`user$<name>` call for final confirmation against the truly-registered tool.
+`user$tool$<name>` call for final confirmation against the truly-registered tool.
 
 ## 6. Instruction Shape
 
@@ -266,7 +266,7 @@ name/schema/body triple, large-output handling, and a safety block. Sketch:
 ```
 You are a tool-authoring specialist. You help the user discover, inspect,
 author, refine, and remove PERSISTENT user-defined tools. An authored tool is
-saved as <project>/.brainyard/tools/<name>.edn, registered as user$<name>, and
+saved as <project>/.brainyard/tools/<name>.edn, registered as user$tool$<name>, and
 is callable as a first-class tool on the next turn.
 
 DECISION FLOW
@@ -282,13 +282,13 @@ DECISION FLOW
 AUTHORING (the disciplined path)
 1. Settle the triple BEFORE writing the body:
    - :name          lowercase-kebab, leading letter, matches ^[a-z][a-z0-9-]*$
-                    (no user$ prefix). It becomes the filename and the symbol.
+                    (no user$tool$ prefix). It becomes the filename and the symbol.
    - :description   one tight line — this is what other agents see in discovery.
    - :input-schema  a Malli [:map ...]; every field [:k [:type {:desc "..."}]].
                     The schema drives coercion, the sandbox arglist, and docs.
 2. Write :body as a string "(fn [args] ...)" of ONE map argument. COMPOSE the
    existing palette by direct symbol — (read-file {...}), (bash {...}), or a
-   peer (user$other {...}) — instead of re-implementing or reaching for host
+   peer (user$tool$other {...}) — instead of re-implementing or reaching for host
    interop. Pull args out of the `args` map by the schema's keys.
 3. DRY-RUN: tools$validate the draft (:name :body :input-schema, plus a :sample
    args map for a behavior check). Persists nothing. Iterate here until :valid
@@ -296,7 +296,7 @@ AUTHORING (the disciplined path)
    confirm that is intended (a refine) before proceeding.
 4. tools$create with the same name/body/schema. If it returns :error, the body
    failed to eval — fix and retry.
-5. VERIFY: call user$<name> with a representative input and read the result.
+5. VERIFY: call user$tool$<name> with a representative input and read the result.
    Only report success after the tool actually runs and returns sane output.
 
 CONTENT HANDLING
@@ -315,7 +315,7 @@ SAFETY
   writes outside the workspace. The body runs in the tools sandbox with the
   agent's existing capabilities — do not expand them.
 - Confirm with the user before tools$delete; deletion removes the source.
-- Never invent a user$ tool. If discovery finds nothing, say so and offer to
+- Never invent a user$tool$ tool. If discovery finds nothing, say so and offer to
   author one.
 ```
 
@@ -407,10 +407,10 @@ over commands that ship today.
    :sample {:path "README.md"}` → `{:valid true :collision false :schema-ok true
    :body-ok true :sample-result {:path "README.md" :word-count 412}}`. Nothing
    persisted yet — the draft already runs.
-5. `tools$create` → `{:id "user$count-words" :persisted ".brainyard/tools/count-words.edn"}`.
-6. Verify against the registered tool: `(user$count-words {:path "README.md"})`
+5. `tools$create` → `{:id "user$tool$count-words" :persisted ".brainyard/tools/count-words.edn"}`.
+6. Verify against the registered tool: `(user$tool$count-words {:path "README.md"})`
    → `{:path "README.md" :word-count 412}`.
-7. Report: created `user$count-words`, verified on `README.md` → 412 words.
+7. Report: created `user$tool$count-words`, verified on `README.md` → 412 words.
 
 (This is the exact tool already checked into `.brainyard/tools/count-words.edn`,
 which makes a good regression fixture for the agent's authoring path.)
@@ -431,7 +431,7 @@ which makes a good regression fixture for the agent's authoring path.)
 
 > "Add a tool that greps a pattern and counts the matching files."
 
-The body calls `(bash {…})` for the grep and composes the peer `user$count-words`
+The body calls `(bash {…})` for the grep and composes the peer `user$tool$count-words`
 only if relevant — demonstrating body-to-body composition by direct symbol. The
 agent confirms the peer tool exists (`tools$list`) before referencing it.
 
@@ -448,7 +448,7 @@ dumped.
 > "Delete `shout`."
 
 Confirm intent, `tools$delete :name "shout"` → `{:deleted "shout"}`. Note that
-the orphaned `__ut_shout` / `user$shout` sandbox vars are harmless (registry
+the orphaned `__ut_shout` / `user$tool$shout` sandbox vars are harmless (registry
 dispatch is gone) and clear on the next sandbox rebuild.
 
 ## 10. Edge Cases & Safety
@@ -483,7 +483,7 @@ destructive shell commands, writes outside the workspace). This is a hard rule
 in the safety block, not a soft preference.
 
 Peer-composition ordering. At session boot, `load-user-tools!` registers all
-tools (binding every `user$<name>` symbol) before installing any body, so a body
+tools (binding every `user$tool$<name>` symbol) before installing any body, so a body
 may reference a peer regardless of `.edn` file order. The agent does not need to
 worry about ordering when authoring tools that compose each other.
 
@@ -510,7 +510,7 @@ registering anything.
 Agent level (new, mirroring `skill_agent`/`config_agent` tests under
 `components/agent/test/ai/brainyard/agent/`): `tool-agent` self-registers in
 `!tool-defs` with `:type :agent`; routes an "author a tool" question through
-`tools$create` and then invokes `user$<name>` to verify; runs `tools$list`
+`tools$create` and then invokes `user$tool$<name>` to verify; runs `tools$list`
 before authoring (dup check); refuses to delete without the named tool existing;
 summarizes rather than dumps long bodies.
 
@@ -563,7 +563,7 @@ behind a tool-use-control or human-confirm gate distinct from invoking an
 existing tool? The capability boundary argument (§10) says the risk is bounded
 by the sandbox, but a project may still want create/delete behind a confirm.
 
-Discoverability of authored tools to *other* specialists. Once `user$<name>` is
+Discoverability of authored tools to *other* specialists. Once `user$tool$<name>` is
 registered it is visible to every agent via `auto-tool-bindings`. Is that always
 desired, or should some authored tools be scoped to the authoring session /
 hidden from the router? Ties into the visibility (`:tool-use-control`) story.
