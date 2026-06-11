@@ -24,7 +24,7 @@ model.
      data-cols="100" data-rows="30"
      data-idle="2.0" data-poster="npt:0:12"></div>
 
-_Recorded against `by` version: `v0.1.1-213-g4ad0e05-dirty`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -48,7 +48,7 @@ I/O.
      data-cols="100" data-rows="32"
      data-idle="2.5" data-poster="npt:0:45"></div>
 
-_Recorded against `by` version: `v0.1.1-231-g145a0ed-dirty`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -71,7 +71,7 @@ loop. (The demo skill is removed after recording so it isn't committed.)
      data-cols="100" data-rows="32"
      data-idle="2.5" data-poster="npt:0:59"></div>
 
-_Recorded against `by` version: `v0.1.1-232-gb7accdc-dirty`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -97,7 +97,7 @@ agents can consume — then reports back.
      data-cols="100" data-rows="32"
      data-idle="2.5" data-poster="npt:1:04"></div>
 
-_Recorded against `by` version: `v0.1.1-233-g2d115e3-dirty`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -122,7 +122,7 @@ hands off to the todo-agent — which tutorial 06 picks up.
      data-cols="100" data-rows="32"
      data-idle="2.5" data-poster="npt:1:42"></div>
 
-_Recorded against `by` version: `v0.1.1-234-g1d321ef-dirty`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -146,7 +146,7 @@ planning only, not implementation (which also keeps the recording bounded).
      data-cols="100" data-rows="32"
      data-idle="2.5" data-poster="npt:1:20"></div>
 
-_Recorded against `by` version: `v0.1.1-235-gaca29fc-dirty`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -173,7 +173,7 @@ summarizes — one agent orchestrating another, context carried across turns.
      data-cols="110" data-rows="34"
      data-idle="2.5" data-poster="npt:5:03"></div>
 
-_Recorded against `by` version: `v0.1.1-258-g9d16b65-dirty`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -209,7 +209,7 @@ shape).
      data-cols="112" data-rows="38"
      data-idle="2.5" data-poster="npt:8:40"></div>
 
-_Recorded against `by` version: `v0.1.1-248-gad15922`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -238,7 +238,7 @@ and summarizes the content. Discover the tool, call it by id.
      data-cols="110" data-rows="34"
      data-idle="2.5" data-poster="npt:1:06"></div>
 
-_Recorded against `by` version: `v0.1.1-259-g46f49b2`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -265,7 +265,7 @@ recording.
      data-cols="110" data-rows="34"
      data-idle="2.5" data-poster="npt:1:32"></div>
 
-_Recorded against `by` version: `v0.1.1-259-g46f49b2`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -298,7 +298,7 @@ that's actually there — not a generic template.
      data-cols="110" data-rows="36"
      data-idle="2.5" data-poster="npt:2:12"></div>
 
-_Recorded against `by` version: `v0.1.1-274-g8886b92`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -331,7 +331,7 @@ untouched.
      data-cols="110" data-rows="34"
      data-idle="2.5" data-poster="npt:2:30"></div>
 
-_Recorded against `by` version: `v0.1.1-274-g8886b92`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -364,7 +364,7 @@ One file, one reviewable, reversible change.
      data-cols="110" data-rows="34"
      data-idle="2.5" data-poster="npt:1:03"></div>
 
-_Recorded against `by` version: `v0.1.1-274-g8886b92`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -398,7 +398,7 @@ hundreds of files the same way.
      data-cols="110" data-rows="36"
      data-idle="2.5" data-poster="npt:1:25"></div>
 
-_Recorded against `by` version: `v0.1.1-276-g30a8845`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -433,7 +433,7 @@ No plan stage, no code written — investigate and recommend, then stop.
      data-cols="110" data-rows="36"
      data-idle="2.5" data-poster="npt:1:53"></div>
 
-_Recorded against `by` version: `v0.1.1-274-g8886b92`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -469,7 +469,7 @@ threaded dossier, a verdict — without an unbounded implementation run.
      data-cols="112" data-rows="38"
      data-idle="2.5" data-poster="npt:4:00"></div>
 
-_Recorded against `by` version: `v0.1.1-274-g8886b92`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -504,7 +504,7 @@ One front door; the right specialist behind it each time.
      data-cols="110" data-rows="36"
      data-idle="2.5" data-poster="npt:6:33"></div>
 
-_Recorded against `by` version: `v0.1.1-274-g8886b92`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -531,7 +531,7 @@ demo tool is removed after recording so it isn't committed.)
      data-cols="100" data-rows="32"
      data-idle="2.5" data-poster="npt:1:42"></div>
 
-_Recorded against `by` version: `v0.2.4-18-gdea2ab8-dirty`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -569,7 +569,7 @@ not just chat. Still `$0.0000`.
      data-cols="100" data-rows="32"
      data-idle="2.5" data-poster="npt:0:37"></div>
 
-_Recorded against `by` version: `v0.2.5-1-g841a92e-dirty`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -642,7 +642,7 @@ isn't committed.)
      data-cols="100" data-rows="32"
      data-idle="2.5" data-poster="npt:1:39"></div>
 
-_Recorded against `by` version: `v0.2.6-3-gff032dd`._
+_Recorded against `by` version: `unknown`._
 
 ---
 
@@ -722,7 +722,44 @@ the port is no longer served — closing the loop.
      data-cols="110" data-rows="34"
      data-idle="2.5" data-poster="npt:4:29"></div>
 
-_Recorded against `by` version: `v0.3.0-9-g41f948c-dirty`._
+_Recorded against `by` version: `unknown`._
+
+---
+
+## Authoring a persistent agent with the meta-agent
+
+The meta-agent lists user-defined agents, authors a new persistent CoAct persona from a plain-English request — an instruction plus a tool-context, no bound tools — then reads it back to confirm it is registered. Recorded live against claude-code/opus.
+
+The meta-agent walks the full user-defined-agent lifecycle across three turns.
+An authored agent is a CoAct-derived specialist: it inherits the full reasoning
+loop and tool palette and is shaped entirely by two prose blocks — an
+INSTRUCTION (who it is / how it works) and a TOOL-CONTEXT (which inherited
+tools to reach for). It binds no tools of its own.
+
+**Turn 1 — discover.** Lists the user-defined agents already registered for the
+project (the `user$agent$` namespace under `<project>/.brainyard/agents/
+user$agent/`, via `meta-agent$list`) and notes which built-in specialists
+already cover common needs — so a useful persona isn't cloned needlessly.
+
+**Turn 2 — author.** From a plain-English request, it authors a new
+`line-summarizer` agent — a focused instruction plus a tool-context naming
+`read-file`. It dry-runs the draft with `meta-agent$validate` (`:valid true`,
+`:unknown-tools []`), then `meta-agent$create` persists the three companion
+files to `<project>/.brainyard/agents/user$agent/line-summarizer/`
+(`agent.edn` + `instruction.md` + `tool-context.md`) and registers it as
+`user$agent$line-summarizer` (callable as a first-class agent on the next
+turn).
+
+**Turn 3 — verify.** Reads the agent definition it just wrote back and confirms
+it is registered and active. (The demo agent is removed after recording so it
+isn't committed.)
+
+<div class="ascii-cast"
+     data-cast="casts/24-authoring-an-agent.cast"
+     data-cols="100" data-rows="32"
+     data-idle="2.5" data-poster="npt:3:13"></div>
+
+_Recorded against `by` version: `v0.3.0-28-g9c24ce1-dirty`._
 
 
 <script src="assets/asciinema-player.min.js"></script>

@@ -40,6 +40,8 @@ walkthrough.
 | 20 | Sharing a session over the web             | `by --web` / `--web-tmux` — ttyd launcher (walkthrough only) |
 | 21 | Authoring a persistent hook                | hook-agent — discover events / author / verify           |
 | 22 | Containing a session in a sandbox          | `by --sandbox` — macOS seatbelt write-containment (macOS only) |
+| 23 | Building, running & introspecting a project | `by` — scaffold / run / introspect a real project        |
+| 24 | Authoring a persistent agent               | meta-agent — discover / author / verify                  |
 
 ## Authoring & regenerating
 

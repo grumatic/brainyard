@@ -1,0 +1,77 @@
+;; docs/tutorials/scenarios/24-authoring-an-agent.edn
+;;
+;; Walks the meta-agent through the user-defined-agent lifecycle: discover ->
+;; author -> verify. Recorded live against claude-code/opus via the bb tui JVM
+;; launch mode (so the meta-agent ships from source).
+;;
+;; NOTE: chapter 2 writes a real persistent agent to
+;; <project>/.brainyard/agents/user$agent/line-summarizer/ (registered as
+;; user$agent$line-summarizer). The demo agent is removed after recording (see
+;; the recorder notes) so it isn't committed and doesn't linger in the registry.
+{:id          "24-authoring-an-agent"
+ :title       "Authoring a persistent agent with the meta-agent"
+ :description "The meta-agent lists user-defined agents, authors a new persistent
+               CoAct persona from a plain-English request — an instruction plus a
+               tool-context, no bound tools — then reads it back to confirm it is
+               registered. Recorded live against claude-code/opus."
+
+ :walkthrough
+ "The meta-agent walks the full user-defined-agent lifecycle across three turns.
+  An authored agent is a CoAct-derived specialist: it inherits the full reasoning
+  loop and tool palette and is shaped entirely by two prose blocks — an
+  INSTRUCTION (who it is / how it works) and a TOOL-CONTEXT (which inherited
+  tools to reach for). It binds no tools of its own.
+
+  **Turn 1 — discover.** Lists the user-defined agents already registered for the
+  project (the `user$agent$` namespace under `<project>/.brainyard/agents/
+  user$agent/`, via `meta-agent$list`) and notes which built-in specialists
+  already cover common needs — so a useful persona isn't cloned needlessly.
+
+  **Turn 2 — author.** From a plain-English request, it authors a new
+  `line-summarizer` agent — a focused instruction plus a tool-context naming
+  `read-file`. It dry-runs the draft with `meta-agent$validate` (`:valid true`,
+  `:unknown-tools []`), then `meta-agent$create` persists the three companion
+  files to `<project>/.brainyard/agents/user$agent/line-summarizer/`
+  (`agent.edn` + `instruction.md` + `tool-context.md`) and registers it as
+  `user$agent$line-summarizer` (callable as a first-class agent on the next
+  turn).
+
+  **Turn 3 — verify.** Reads the agent definition it just wrote back and confirms
+  it is registered and active. (The demo agent is removed after recording so it
+  isn't committed.)"
+
+ :terminal    {:cols 100 :rows 32 :title "brainyard tutorial — authoring an agent"}
+ :idle-time-limit 2.5
+ :startup-timeout-secs 120
+
+ :launch
+ {:binary "bb tui"
+  :args   ["-a" "meta-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :env    {"BY_TUTORIAL_MODE" "1"
+           "BY_SESSION_ID"     "tutorial-24-agents"}}
+
+ :preamble
+ [{:type :narrate :text "# meta-agent: discover, author, and verify a persistent agent" :pause-ms 2000}]
+
+ :chapters
+ [{:id    :ch1
+   :label "Discover — list user-defined agents"
+   :prompt "What user-defined agents are registered in this project, and which built-in specialists already exist?"
+   :expect {:contains ["agent"]}
+   :settle {:timeout-secs 180}}
+
+  {:id    :ch2
+   :label "Author — create a persistent agent"
+   :prompt "Create a persistent agent named line-summarizer that reads a file at a given path and summarizes its contents in a single sentence. Validate it first, then create it."
+   :expect {:contains ["line-summarizer"]}
+   :settle {:timeout-secs 240}}
+
+  {:id    :ch3
+   :label "Verify — read it back and confirm it is registered"
+   :prompt "Read back the line-summarizer agent you just created and confirm it is registered and active."
+   :expect {:contains ["line-summarizer"]}
+   :settle {:timeout-secs 240}}]
+
+ :postamble
+ [{:type :keys :send "/quit" :pause-ms 500}
+  {:type :keys :send "C-m"   :pause-ms 1000}]}
