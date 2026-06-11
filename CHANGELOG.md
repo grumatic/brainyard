@@ -4,6 +4,10 @@ All notable changes to Brainyard's public distribution are documented here. Vers
 
 ## [Unreleased]
 
+### Added
+
+- **User-defined agents (`meta-agent`).** The agent can now author its own persistent specialists at runtime: `meta-agent$create` takes a `:name`, a one-line `:description`, an `:instruction` block, and a `:tool-context` block, and registers a **CoAct-derived agent** — `user$agent$<name>` — that is discoverable, routable, and callable as a sub-agent on the next turn. The authored agent inherits the full CoAct loop and tool palette, so it binds **no tools**; it is shaped entirely by its two prose blocks. Persistence is a directory per agent (`<project>/.brainyard/agents/user$agent/<name>/` — `agent.edn` + `instruction.md` + `tool-context.md`), so the prose stays editable Markdown. Unlike user tools/hooks there is no body to eval and no sandbox to rehydrate — an authored agent grants no capability `coact-agent` lacks; it is a persona over the same guarded palette. A `meta-agent$create` / `meta-agent$validate` / `meta-agent$list` / `meta-agent$read` / `meta-agent$delete` command family (mirroring `tool-agent$*` / `hook-agent$*`) manages them, fronted by the new `meta-agent` specialist; `main-agent` gains an `:agent-lifecycle` routing shape that delegates "make me an agent that …" asks to it. Design in [`docs/design/meta-agent-design.md`](docs/design/meta-agent-design.md).
+
 ### Changed
 
 - **User-defined tool/hook command families renamed to `tool-agent$*` / `hook-agent$*`.** The `tools$*` command family (`create`, `validate`, `list`, `read`, `delete`) is now `tool-agent$*`, and the `hooks$*` family (`events`, `create`, `validate`, `list`, `read`, `delete`) is now `hook-agent$*` — each command is namespaced under the specialist agent that owns it (`tool-agent`, `hook-agent`), matching the `<owner>$<verb>` convention. Straight rename with no legacy alias: update any prompt, script, or skill that invoked the old names (e.g. `tools$create` → `tool-agent$create`, `hooks$events` → `hook-agent$events`). Persisted definitions under `.brainyard/tools/` and `.brainyard/hooks/` are unaffected.

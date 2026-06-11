@@ -57,6 +57,7 @@
             [ai.brainyard.agent.common.mcp-agent]
             [ai.brainyard.agent.common.tool-agent]
             [ai.brainyard.agent.common.hook-agent]
+            [ai.brainyard.agent.common.meta-agent]
             [ai.brainyard.agent.common.research-agent]
             [ai.brainyard.agent.common.memory-agent]
             [ai.brainyard.agent.common.workflow-agent]

@@ -95,7 +95,7 @@ safety (see [tool.md](tool.md)).
 
 ## Built-in agents
 
-Twenty-one `defagent`s ship with the component, all registered through the
+Twenty-two `defagent`s ship with the component, all registered through the
 unified tool registry (see [tool.md](tool.md)):
 
 | Agent | File | Purpose |
@@ -121,6 +121,7 @@ unified tool registry (see [tool.md](tool.md)):
 | `init-agent` | `common/init_agent.clj` | `BRAINYARD.md` authoring/maintenance (project + user scope); seeds from `CLAUDE.md`/`AGENTS.md`, reversible via `init$revert` |
 | `tool-agent` | `common/tool_agent.clj` | Author user-defined tools — `tool-agent$create`/`list`/`read`/`delete`, persisted to `.brainyard/tools/` |
 | `hook-agent` | `common/hook_agent.clj` | Author persistent runtime hooks — `hook-agent$events`/`create`/`validate`/`list`/`read`/`delete`, persisted to `.brainyard/hooks/` |
+| `meta-agent` | `common/meta_agent.clj` | Author persistent user-defined agents (CoAct personas) — `meta-agent$create`/`validate`/`list`/`read`/`delete`, persisted to `.brainyard/agents/user$agent/` |
 
 `coact-agent` and `react-agent` are the reasoning primitives. The rest are
 specialist BT configurations built from the same primitives

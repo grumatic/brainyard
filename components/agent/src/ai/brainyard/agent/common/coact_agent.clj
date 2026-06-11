@@ -34,6 +34,7 @@
             [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
             [ai.brainyard.agent.common.user-tools :as ut]
             [ai.brainyard.agent.common.user-hooks :as uh]
+            [ai.brainyard.agent.common.user-agents :as ua]
             [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.common.trace :as trace]
             [ai.brainyard.agent.common.trajectory :as trajectory]
@@ -1430,7 +1431,15 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
               (uh/ensure-loaded! :dirs (sb-bind/get-dirs agent)
                                  :extra-bindings (sb-bind/auto-tool-bindings agent))
               (catch Exception e
-                (mulog/warn ::load-user-hooks-failed :error (ex-message e)))))
+                (mulog/warn ::load-user-hooks-failed :error (ex-message e))))
+            ;; Session boot: register this project's persisted user-defined
+            ;; agents (idempotent per process) so they are routable / callable
+            ;; this turn. No sandbox to rehydrate — an agent has no eval-able
+            ;; body, only prose — so this is just "read each dir, register".
+            (try
+              (ua/ensure-loaded! :dirs (sb-bind/get-dirs agent))
+              (catch Exception e
+                (mulog/warn ::load-user-agents-failed :error (ex-message e)))))
 
         ;; Build sandbox bindings (tool + usage + optional restore). Sub-LLM
         ;; dispatch (query$llm — single :prompt or batched :prompts) is a

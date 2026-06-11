@@ -32,8 +32,8 @@
 (def ^:private index-rel (str base-rel "/INDEX.md"))
 
 (def valid-shapes
-  "The 21 routing-decision shapes from docs/design/main-agent-design.md §6
-   (decision-table letter labels A–U). Validated by `main$append-log` so
+  "The 22 routing-decision shapes from docs/design/main-agent-design.md §6
+   (decision-table letter labels A–V). Validated by `main$append-log` so
    typos surface immediately rather than poisoning the log."
   #{:direct-answer    ;; A — answer channel; greeting / factual / explain
     :tool-fetch       ;; B — tool channel; one-shot RPC
@@ -55,7 +55,8 @@
     :acp              ;; R — acp-agent
     :meta-resume      ;; S — answer channel from routing.log
     :clarify          ;; T — answer channel; ambiguity clarification
-    :tool-lifecycle}) ;; U — tool-agent (lifecycle sibling of N skill / O mcp)
+    :tool-lifecycle   ;; U — tool-agent (lifecycle sibling of N skill / O mcp)
+    :agent-lifecycle}) ;; V — meta-agent (authors user-defined agents)
 
 ;; ============================================================================
 ;; Time formatters

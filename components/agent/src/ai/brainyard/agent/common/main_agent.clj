@@ -139,6 +139,17 @@ LIFECYCLE & EXTERNAL
                    (skill-agent), MCP servers (mcp-agent), or one-off
                    computation the model can just do inline.
 
+- meta-agent     → user-defined AGENT lifecycle: author/inspect/refine/
+                   remove persistent CoAct-derived agents (personas) under
+                   .brainyard/agents/user$agent (the meta-agent$* family).
+                   Use for 'make me an agent that …', 'what agents have I
+                   built', 'tweak my <name> agent', 'delete <name>'. An
+                   authored agent is a whole reusable specialist (an
+                   instruction + tool-context), NOT a single tool
+                   (tool-agent), skill (skill-agent), or MCP server
+                   (mcp-agent). Do NOT route here to merely USE an existing
+                   user agent — call it directly.
+
 - memory-agent   → long-term memory read/write/consolidate. Use for
                    'remember that …', 'what do you remember about …',
                    'forget …', 'consolidate L2 into L3'.
@@ -308,11 +319,19 @@ U. TOOL-LIFECYCLE  → tool-agent
            user-defined (fn [args] …) tools under .brainyard/tools. NOT
            skills (N), NOT MCP (O), NOT one-off inline computation.
 
+V. AGENT-LIFECYCLE → meta-agent
+   Shapes: 'make me an agent that …', 'what agents have I built', 'tweak
+           my <name> agent', 'delete <name>'. For user-defined
+           CoAct-derived agents (personas = instruction + tool-context)
+           under .brainyard/agents/user$agent. A whole reusable
+           specialist, NOT a single tool (U), skill (N), or MCP (O). Do
+           NOT route here to merely USE an existing user agent — call it.
+
 The 21 shape keywords for `main$append-log :shape …` are:
   :direct-answer :tool-fetch :code-compose :explore :update :plan-author
   :decompose :execute :evaluate :research :workflow :rlm :memory
   :skill-lifecycle :mcp-lifecycle :tool-lifecycle :init :config :acp
-  :meta-resume :clarify
+  :meta-resume :clarify :agent-lifecycle
 
 ────────────────────────────────────────────────────────────────────────────
 ROUTING LOG DISCIPLINE (after every move)

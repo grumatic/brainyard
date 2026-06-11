@@ -226,6 +226,7 @@ Twenty-one `defagent`s ship in `components/agent`:
 | `config-agent` | Conversational hub for `~/.brainyard/config.edn` |
 | `init-agent` | `BRAINYARD.md` authoring & maintenance |
 | `tool-agent` / `hook-agent` | Author user-defined tools (`tool-agent$*`) and persistent runtime hooks (`hook-agent$*`) |
+| `meta-agent` | Author user-defined agents — CoAct personas (`meta-agent$*`) persisted under `.brainyard/agents/user$agent/` |
 
 See [core/agent.md](core/agent.md) and [core/reasoning.md](core/reasoning.md)
 for details.

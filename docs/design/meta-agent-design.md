@@ -1,11 +1,15 @@
 # Meta-Agent — LLM-Mediated Authoring of Persistent User-Defined Agents (CoAct-derived)
 
-> Status: design proposal. Sibling of the shipped `tool-agent` (user-defined
-> *tools*, `docs/design/tool-agent-design.md`) and `skill-agent` (user-defined
-> *skills*). Companion machinery would live in a new
-> `components/agent/src/ai/brainyard/agent/common/user_agents.clj`, mirroring
-> `user_tools.clj`. Related: `main-agent-design.md` (router),
-> `config-agent-design.md`, `mcp-agent-design.md`.
+> Status: **implemented** (Phases 1–2). Sibling of the shipped `tool-agent`
+> (user-defined *tools*, `docs/design/tool-agent-design.md`) and `skill-agent`
+> (user-defined *skills*). Machinery lives in
+> `components/agent/src/ai/brainyard/agent/common/user_agents.clj` (commands +
+> persistence + runtime registration) and `meta_agent.clj` (the manager
+> defagent), mirroring `user_tools.clj` / `tool_agent.clj`; routing is wired via
+> the `:agent-lifecycle` shape in `main.clj` / `main_agent.clj`. Related:
+> `main-agent-design.md` (router), `config-agent-design.md`, `mcp-agent-design.md`.
+> Phase 3 items (a real `meta-agent$update`, `:scope :user`, per-agent config,
+> router auto-advertisement, few-shot `examples.md`) remain open — see §13.
 
 ## 1. Motivation
 
