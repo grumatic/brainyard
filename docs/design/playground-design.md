@@ -398,22 +398,37 @@ The browser→`by` path is working end-to-end:
 
 - **`frontend/playground-ui`** — the Replicant SPA (login · dashboard · xterm
   terminal). xterm.js loads as a CDN UMD global (Closure can't bundle it).
-- **`bases/playground-http`** — the control plane. `routes.clj` (REST + cookie
-  auth + SPA serving), `sessions.clj` (in-memory store + lifecycle),
-  **`workspace.clj`** (the `workspace-runtime` Docker driver — `docker run` a
-  container per session on a loopback-published ephemeral port, health-check
-  ttyd), **`proxy.clj`** (the `playground-proxy` WS bridge: browser ⇄ container
-  ttyd over a `java.net.http` WebSocket, injecting the ttyd `AuthToken`), and
-  `tty.clj` (echo, fake mode only).
+- **`bases/playground-http`** — the control plane:
+  - `auth.clj` (`playground-auth`) — **real OIDC** authorization-code flow when
+    `OIDC_ISSUER` is set (bare-cookie stub otherwise); the OIDC `sub` → a
+    sha-256 `user-id`.
+  - `store.clj` (`playground-store`) — durable session records in **Postgres**
+    (`PG_DATABASE_URL`) or in-memory; only non-secret fields persisted.
+  - `sessions.clj` — the broker: lifecycle policy, **user-scoped** ownership,
+    and a **restart-safe reconcile** that rebuilds runtime state (host port +
+    ttyd password) from running containers — secrets never hit the DB.
+  - `workspace.clj` (`workspace-runtime`) — the Docker driver (`docker run` a
+    container per session on a loopback-published ephemeral port; health-check
+    ttyd; mount `~/.aws` for Bedrock).
+  - `proxy.clj` (`playground-proxy`) — the WS bridge: browser ⇄ container ttyd
+    over a `java.net.http` WebSocket, injecting the ttyd `AuthToken`.
+  - `routes.clj` (REST + SPA serving), `tty.clj` (echo, fake mode only).
 - **`deploy/playground-workspace`** — the workspace image: `temurin:21-jre` +
   ttyd + tmux + git + the `by` uberjar, launched via the `--web-tmux` flag.
+  Provider via `PG_WORKSPACE_PROVIDER` (OpenAI + Bedrock/Claude both verified).
 - Build/run: `bb playground:ui`, `bb playground:image`, `bb playground:run`.
 
-Still stubbed (Phase 1+): `playground-auth` (OIDC/JWT) is a bare cookie;
-`playground-store` (Postgres) and `playground-secrets` (Vault) are an in-memory
-atom + a shared `.env`; no warm pool, idle reaper, egress allowlist, or
-gVisor/Firecracker yet. These bricks also still live as namespaces inside the
-base — they graduate to `components/` with the `playground-server` project.
+Verified end-to-end against a mock OIDC IdP + a Postgres container: full OIDC
+login → authenticated dashboard; two users isolated (each sees only their own
+sessions; cross-tenant access 404); control-plane restart loses nothing (state
+in Postgres, runtime reconciled from live containers).
+
+Still to do (Phase 1+): `playground-secrets` (Vault) — currently a shared
+`.env` + mounted `~/.aws`; signature/nonce verification on the id_token;
+session-broker scheduling (warm pool, idle reaper); egress allowlist;
+gVisor/Firecracker. And the structural step: these bricks still live as
+namespaces inside the base — they graduate to `components/` with a
+`playground-server` Polylith project + `workspace.edn` entry.
 
 ---
 
