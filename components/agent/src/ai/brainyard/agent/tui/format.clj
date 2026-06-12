@@ -990,7 +990,15 @@
                      (if (re-find block/marker-re line)
                        [(decorate-one line)]
                        (mapv decorate-one (ansi-aware-word-wrap line max-w))))
-          trimmed  (str/trim body-str)
+          ;; Trim only surrounding BLANK LINES — never the first content
+          ;; line's leading indentation. A whole-string `str/trim` strips the
+          ;; leading whitespace of the FIRST line only (e.g. `cat -n`'s left
+          ;; padding), shifting that one row left relative to the rest. Tabs
+          ;; are deliberately preserved (tab-stops are valid for text
+          ;; rendering; the terminal expands them per visual row).
+          trimmed  (-> body-str
+                       (str/replace #"\A(?:[ \t]*\r?\n)+" "")  ; leading blank lines
+                       str/trimr)                              ; trailing whitespace / blank lines
           text     ((eval-block-fn class) trimmed
                                           (cond-> {:max-collapsed-lines (config/get-config :max-collapsed-lines)
                                                    :max-expanded-lines  (config/get-config :max-expanded-lines)
