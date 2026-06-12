@@ -43,19 +43,35 @@
   (let [up-ref   (atom nil)     ; upstream WebSocket, set once connected
         sock-ref (atom nil)     ; browser-side ring Socket
         pending  (atom [])      ; client frames buffered until upstream is up
+        ;; Reassembly: java.net.http may deliver ONE ttyd WS message across
+        ;; several onBinary/onText calls (last=false until the final part). A
+        ;; ttyd frame carries its command byte ('0'=OUTPUT) only at byte 0 and
+        ;; the browser strips byte 0 of every frame it gets — so forwarding a
+        ;; continuation part as its own frame eats a byte and corrupts the
+        ;; escape sequences (garbled menu redraws). Buffer until `last`.
+        bin-acc  (java.io.ByteArrayOutputStream.)
+        txt-acc  (StringBuilder.)
         cred     (b64 (str ttyd-user ":" ttyd-pass))
         origin   (str "http://127.0.0.1:" host-port)
         uri      (URI. (str "ws://127.0.0.1:" host-port "/ws"))
         up-listener
         (reify WebSocket$Listener
           (onOpen [_ up] (.request up 1))
-          ;; ttyd → browser frames arrive as binary; forward verbatim. (ttyd
-          ;; never sends text post-handshake, but forward those too for safety.)
+          ;; ttyd → browser: reassemble fragments, then forward the COMPLETE
+          ;; message as one frame so the browser strips byte 0 exactly once.
           (onText [_ up data last]
-            (when-let [s @sock-ref] (ws/send s (str data)))
+            (.append txt-acc ^CharSequence data)
+            (when last
+              (let [s' (.toString txt-acc)]
+                (.setLength txt-acc 0)
+                (when-let [s @sock-ref] (ws/send s s'))))
             (.request up 1) (java.util.concurrent.CompletableFuture/completedFuture nil))
           (onBinary [_ up data last]
-            (when-let [s @sock-ref] (ws/send s (ByteBuffer/wrap (bb->bytes data))))
+            (.write bin-acc (bb->bytes data))
+            (when last
+              (let [b (.toByteArray bin-acc)]
+                (.reset bin-acc)
+                (when-let [s @sock-ref] (ws/send s (ByteBuffer/wrap b)))))
             (.request up 1) (java.util.concurrent.CompletableFuture/completedFuture nil))
           (onError [_ up err]
             (when-let [s @sock-ref] (ws/close s)))
