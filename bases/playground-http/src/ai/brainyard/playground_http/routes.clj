@@ -22,35 +22,28 @@
             [reitit.ring :as ring]
             [ring.middleware.cookies :refer [wrap-cookies]]
             [ring.middleware.params :refer [wrap-params]]
+            [ai.brainyard.playground-http.auth :as auth]
             [ai.brainyard.playground-http.sessions :as sessions]
             [ai.brainyard.playground-http.proxy :as proxy]
             [ai.brainyard.playground-http.tty :as tty]))
-
-(def ^:private cookie-name "pg_session")
 
 (defn- json [status body]
   {:status  status
    :headers {"Content-Type" "application/json"}
    :body    (j/write-value-as-string body)})
 
-(defn- authed? [req]
-  (boolean (some-> req :cookies (get cookie-name) :value seq)))
-
-(defn- user-id [_req]
-  ;; Stub identity — a single demo tenant. OIDC (playground-auth) replaces this
-  ;; with the verified JWT `sub`; the rest of the broker is already user-scoped.
-  "demo-user")
+(defn- user-id [req] (:user-id (auth/identity-of req)))
 
 (defn- current-user [req]
-  (let [uid (user-id req)]
-    {:userId uid
-     :email  "demo@grumatic.com"
-     :quota  {:workspaces 5 :used (count (sessions/list-for uid))}}))
+  (let [{:keys [user-id email]} (auth/identity-of req)]
+    {:userId user-id
+     :email  email
+     :quota  {:workspaces 5 :used (count (sessions/list-for user-id))}}))
 
 ;; --- handlers --------------------------------------------------------------
 
 (defn- me [req]
-  (if (authed? req)
+  (if (auth/identity-of req)
     (json 200 (current-user req))
     (json 401 {:error "unauthenticated"})))
 
@@ -84,24 +77,11 @@
       ((proxy/handler up) req)
       ((tty/handler id) req))))
 
-(defn- auth-login [_]
-  {:status  302
-   :headers {"Location" "/"}
-   :cookies {cookie-name {:value     (str (random-uuid))
-                          :http-only true
-                          :path      "/"
-                          :same-site :lax}}})
-
-(defn- auth-logout [_]
-  {:status  302
-   :headers {"Location" "/"}
-   :cookies {cookie-name {:value "" :http-only true :path "/" :max-age 0}}})
-
 ;; --- middleware ------------------------------------------------------------
 
 (defn- wrap-require-auth [handler]
   (fn [req]
-    (if (authed? req)
+    (if (auth/identity-of req)
       (handler req)
       (json 401 {:error "unauthenticated"}))))
 
@@ -119,8 +99,9 @@
      ["/sessions/:id/tty-token"  {:post (wrap-require-auth tty-token)}]
      ["/sessions/:id/tty"        {:get  (wrap-require-auth tty-ws)}]]
     ["/auth"
-     ["/login"  {:get auth-login}]
-     ["/logout" {:get auth-logout}]]]))
+     ["/login"    {:get auth/login}]
+     ["/callback" {:get auth/callback}]
+     ["/logout"   {:get auth/logout}]]]))
 
 (defn- index-html [_]
   (if-let [r (io/resource "public/index.html")]

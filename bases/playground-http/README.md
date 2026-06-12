@@ -11,8 +11,8 @@ It runs in two modes:
 - **fake** (`PG_FAKE=1`, or no Docker daemon): no containers; `/tty` falls back
   to an echo stub. Lets the SPA + REST/auth flow run with no Docker.
 
-Auth (`playground-auth`/OIDC) and durable storage (`playground-store`/Postgres)
-are still stubbed (a bare cookie + an in-memory atom). See
+Auth is **real OIDC** when `OIDC_ISSUER` is set (bare-cookie stub otherwise) and
+state is **Postgres** when `PG_DATABASE_URL` is set (in-memory otherwise). See
 [`docs/design/playground-design.md`](../../docs/design/playground-design.md)
 §5–6 for the target architecture.
 
@@ -20,11 +20,11 @@ are still stubbed (a bare cookie + an in-memory atom). See
 
 | Endpoint | Phase-0 behavior | Still stubbed → real component |
 |---|---|---|
-| `GET /api/me` | cookie present → demo user | playground-auth (OIDC + JWT) |
-| `GET/POST /api/sessions`, `:id`, `/resume`, `DELETE` | in-memory store; **real Docker container per session** | session-broker policy + playground-store (Postgres) |
+| `GET /api/me` | **OIDC identity** (or demo user in stub mode) | — (`playground-auth`, `auth.clj`) |
+| `GET/POST /api/sessions`, `:id`, `/resume`, `DELETE` | **Postgres store** + **real Docker container per session**; user-scoped + ownership-checked | session-broker scheduling policy (warm pool, reaper) |
 | `POST /api/sessions/:id/tty-token` | random token (unverified) | session-broker |
-| `GET /api/sessions/:id/tty` | **proxied to the container's ttyd** (echo when fake) | — (this is `playground-proxy`, implemented in `proxy.clj`) |
-| `GET /auth/login` / `logout` | set / clear a stub cookie | playground-auth |
+| `GET /api/sessions/:id/tty` | **proxied to the container's ttyd** (echo when fake) | — (`playground-proxy`, `proxy.clj`) |
+| `GET /auth/login` · `/callback` · `/logout` | **OIDC authorization-code flow** (or stub cookie) | — (`playground-auth`) |
 | `*` | serve the SPA (static + index.html fallback) | (same) |
 
 ## Run
@@ -59,6 +59,10 @@ ttyd WebSocket is most reliable same-origin (build with `bb playground:ui`).
 | Var | Meaning |
 |---|---|
 | `PG_FAKE=1` | disable containers; `/tty` echoes (also auto-on when no Docker) |
+| `PG_DATABASE_URL` | Postgres JDBC URL for the store; in-memory when unset |
+| `OIDC_ISSUER` | OIDC issuer URL → enables real auth; bare-cookie stub when unset |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | OIDC client credentials |
+| `OIDC_REDIRECT_URI` | callback (default `http://localhost:8090/auth/callback`) |
 | `PG_WORKSPACE_IMAGE` | workspace image tag (default `brainyard/workspace:dev`) |
 | `PG_WORKSPACE_ENV_FILE` | `.env` passed into each container (`by` provider creds) |
 | `PG_WORKSPACE_PROVIDER` | `by` provider for the workspace agent, e.g. `openai`, `bedrock` |
@@ -80,9 +84,11 @@ clojure -M:run
 ## Files
 
 ```
-server.clj     http-kit lifecycle + -main
-routes.clj     reitit-ring routes, handlers, cookie-auth, static fallback
-sessions.clj   session store + lifecycle (drives the workspace runtime)
+server.clj     http-kit lifecycle + -main (runs sessions/init! on startup)
+routes.clj     reitit-ring routes, handlers, static fallback
+auth.clj       playground-auth — OIDC authorization-code flow (or stub cookie)
+store.clj      playground-store — durable session records (Postgres / in-memory)
+sessions.clj   session broker — lifecycle policy, user-scoping, restart reconcile
 workspace.clj  Docker runtime driver — start!/stop!/status, ttyd health-check
 proxy.clj      authz'd WS reverse proxy: browser ⇄ container ttyd (java.net.http)
 tty.clj        echo ttyd-protocol WebSocket (fake mode only)
