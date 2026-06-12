@@ -152,3 +152,19 @@
   (let [{:keys [exit out]} (sh "docker" "inspect" "-f" "{{.State.Status}}"
                                (str "pg-" session-id))]
     (when (zero? exit) (not-empty out))))
+
+(defn running?
+  "True when the session's container is up."
+  [session-id]
+  (= "running" (status session-id)))
+
+(defn rederive-upstream
+  "Re-read {:host-port :ttyd-user :ttyd-pass} from a running container, or nil.
+   Used to rebuild the in-memory upstream cache after a control-plane restart —
+   the password lives only in the container's env, never in the store."
+  [session-id]
+  (let [cid (str "pg-" session-id)]
+    (when-let [port (published-host-port cid)]
+      (let [{:keys [exit out]} (sh "docker" "exec" cid "printenv" "BY_WEB_PASS")]
+        (when (and (zero? exit) (not (str/blank? out)))
+          {:host-port port :ttyd-user ttyd-user :ttyd-pass (str/trim out)})))))

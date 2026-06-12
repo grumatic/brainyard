@@ -36,11 +36,16 @@
 (defn- authed? [req]
   (boolean (some-> req :cookies (get cookie-name) :value seq)))
 
-(defn- current-user [_req]
-  ;; Stub identity; real impl decodes the session/JWT -> user + quota.
-  {:userId "demo-user"
-   :email  "demo@grumatic.com"
-   :quota  {:workspaces 5 :used (count (sessions/list-all))}})
+(defn- user-id [_req]
+  ;; Stub identity — a single demo tenant. OIDC (playground-auth) replaces this
+  ;; with the verified JWT `sub`; the rest of the broker is already user-scoped.
+  "demo-user")
+
+(defn- current-user [req]
+  (let [uid (user-id req)]
+    {:userId uid
+     :email  "demo@grumatic.com"
+     :quota  {:workspaces 5 :used (count (sessions/list-for uid))}}))
 
 ;; --- handlers --------------------------------------------------------------
 
@@ -49,21 +54,21 @@
     (json 200 (current-user req))
     (json 401 {:error "unauthenticated"})))
 
-(defn- list-sessions   [_]   (json 200 (sessions/list-all)))
-(defn- create-session  [_]   (json 201 (sessions/create!)))
+(defn- list-sessions   [req] (json 200 (sessions/list-for (user-id req))))
+(defn- create-session  [req] (json 201 (sessions/create! (user-id req))))
 
 (defn- get-session [req]
-  (if-let [s (sessions/get-one (-> req :path-params :id))]
+  (if-let [s (sessions/get-for (user-id req) (-> req :path-params :id))]
     (json 200 s)
     (json 404 {:error "not found"})))
 
 (defn- resume-session [req]
-  (if-let [s (sessions/resume! (-> req :path-params :id))]
+  (if-let [s (sessions/resume! (user-id req) (-> req :path-params :id))]
     (json 200 s)
     (json 404 {:error "not found"})))
 
 (defn- destroy-session [req]
-  (sessions/destroy! (-> req :path-params :id))
+  (sessions/destroy! (user-id req) (-> req :path-params :id))
   {:status 204})
 
 (defn- tty-token [_]
@@ -75,7 +80,7 @@
   ;; Proxy to the session's container ttyd when it has one; otherwise (fake
   ;; mode / no container) fall back to the echo stub so the SPA still works.
   (let [id (-> req :path-params :id)]
-    (if-let [up (sessions/upstream id)]
+    (if-let [up (sessions/upstream (user-id req) id)]
       ((proxy/handler up) req)
       ((tty/handler id) req))))
 

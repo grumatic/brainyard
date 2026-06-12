@@ -8,7 +8,8 @@
    The front-end dev server (shadow-cljs on :8080) proxies /api, /auth and the
    /tty WebSocket here, so the SPA runs end-to-end against this stub."
   (:require [org.httpkit.server :as hk]
-            [ai.brainyard.playground-http.routes :as routes])
+            [ai.brainyard.playground-http.routes :as routes]
+            [ai.brainyard.playground-http.sessions :as sessions])
   (:gen-class))
 
 (defonce ^:private server (atom nil))
@@ -22,9 +23,12 @@
   ([] (start! {}))
   ([{:keys [port] :or {port 8090}}]
    (stop!)
+   ;; Build the store + reconcile runtime state against running containers.
+   (sessions/init!)
    ;; #'routes/app (a var) so a REPL reload is picked up without a restart.
    (reset! server (hk/run-server #'routes/app {:port port :legacy-return-value? false}))
-   (println (str "playground-http (stub) listening on http://localhost:" port))
+   (println (str "playground-http listening on http://localhost:" port
+                 (when (sessions/fake-mode?) "  (fake mode — no Docker)")))
    @server))
 
 (defn -main [& [port]]

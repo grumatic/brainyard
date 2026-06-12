@@ -1,23 +1,26 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
 ;; SPDX-License-Identifier: MIT
 (ns ai.brainyard.playground-http.sessions
-  "Session store + lifecycle glue — the in-memory stand-in for session-broker +
-   playground-store. Holds one record per workspace and drives the
-   `workspace` runtime (Docker) to start/stop the container behind each.
+  "Session broker — lifecycle policy over the durable `store` and the Docker
+   `workspace` runtime. Each session is owned by a `user-id`; cross-tenant
+   access is refused by checking ownership on every per-id operation (design
+   §5.3), so guessing another user's id yields nothing.
 
-   Two modes:
-   - real  (default): each session is a `brainyard/workspace` container running
-     `by --web-tmux`; `create!` blocks until ttyd is reachable, then the `/tty`
-     route proxies to it.
-   - fake  (`PG_FAKE=1`, or Docker unavailable): no container; the `/tty` route
-     falls back to the echo stub. Lets the SPA/REST flow run with no Docker.
+   Split of state:
+   - **durable** (in `store`, Postgres or in-memory): id, user, status,
+     created-at, container-id — the authoritative record, restart-safe.
+   - **runtime** (in `upstream-cache`, always in memory): the published host
+     port + the ephemeral ttyd password. Secret + disposable, never persisted;
+     rebuilt from the running container by `init!`'s reconcile after a restart.
 
-   Internal fields (`:host-port`, `:ttyd-pass`, `:container-id`) NEVER leave this
-   ns — `public` strips them so credentials can't reach the client or logs."
+   Modes: real (Docker) vs fake (`PG_FAKE=1` / no Docker) — fake sessions skip
+   the container and the `/tty` route falls back to the echo stub."
   (:require [clojure.string :as str]
+            [ai.brainyard.playground-http.store :as store]
             [ai.brainyard.playground-http.workspace :as workspace]))
 
-(defonce ^:private store (atom {}))   ; id -> full session record
+(defonce ^:private db (atom nil))                 ; the Store instance
+(defonce ^:private upstream-cache (atom {}))      ; id -> {:host-port :ttyd-user :ttyd-pass}
 
 (def ^:private ready-timeout-ms 30000)
 
@@ -31,67 +34,94 @@
   (subs (str/replace (str (random-uuid)) "-" "") 0 12))
 
 (defn- public
-  "Client-safe projection: identity + status only, no credentials/ports."
-  [s]
-  (when s (select-keys s [:id :status :created-at])))
+  "Client-safe projection: identity + status only, no credentials/ports/owner."
+  [rec]
+  (when rec (select-keys rec [:id :status :created-at])))
+
+(defn- owned
+  "The record if owned by `user-id`, else nil (the tenant boundary)."
+  [user-id id]
+  (let [rec (store/fetch @db id)]
+    (when (and rec (= user-id (:user-id rec))) rec)))
+
+;; --- startup ---------------------------------------------------------------
+
+(defn init!
+  "Build the store and reconcile in-memory runtime state against reality:
+   for each persisted non-fake session, rebuild the upstream cache if its
+   container is still running, else mark it suspended (container gone)."
+  []
+  (reset! db (store/make-store))
+  (reset! upstream-cache {})
+  (when-not (fake-mode?)
+    (doseq [rec (store/all @db) :when (not (:fake rec))]
+      (let [id (:id rec)]
+        (if-let [up (and (workspace/running? id) (workspace/rederive-upstream id))]
+          (do (swap! upstream-cache assoc id up)
+              (when (not= "ready" (:status rec))
+                (store/save! @db (assoc rec :status "ready"))))
+          (when (not= "suspended" (:status rec))
+            (store/save! @db (assoc rec :status "suspended")))))))
+  @db)
+
+(defn- store! [] (or @db (init!)))
 
 ;; --- queries ---------------------------------------------------------------
 
-(defn list-all []
-  (->> (vals @store) (sort-by :created-at) (map public) vec))
+(defn list-for [user-id]
+  (->> (store/by-user (store!) user-id) (map public) vec))
 
-(defn get-one [id]
-  (public (get @store id)))
+(defn get-for [user-id id]
+  (public (owned user-id id)))
 
 (defn upstream
-  "Proxy target for `id` — {:host-port :ttyd-user :ttyd-pass} — or nil when the
-   session has no live container (fake mode / not ready)."
-  [id]
-  (when-let [s (get @store id)]
-    (when (:host-port s)
-      (select-keys s [:host-port :ttyd-user :ttyd-pass]))))
+  "Proxy target for `id` if owned by `user-id` and live — else nil."
+  [user-id id]
+  (when (owned user-id id)
+    (get @upstream-cache id)))
 
 ;; --- lifecycle -------------------------------------------------------------
 
+(defn- provision!
+  "Start a container for `rec`, block until ttyd answers, cache upstream. Returns
+   the rec with final :status (ready|failed) and :container-id."
+  [rec]
+  (let [id  (:id rec)
+        res (workspace/start! id)]
+    (if (:error res)
+      (assoc rec :status "failed")
+      (let [ready? (workspace/wait-ready! (:host-port res) ready-timeout-ms)]
+        (if ready?
+          (do (swap! upstream-cache assoc id (select-keys res [:host-port :ttyd-user :ttyd-pass]))
+              (assoc rec :status "ready" :container-id (:container-id res)))
+          (do (workspace/stop! id)
+              (assoc rec :status "failed")))))))
+
 (defn create!
-  "Allocate a workspace. In real mode, start a container and block until its
-   ttyd answers (or fail). Returns the public projection (with :status
-   ready|failed)."
-  []
-  (let [id  (gen-id)
-        now (System/currentTimeMillis)]
-    (if (fake-mode?)
-      (let [s {:id id :status "ready" :created-at now :fake true}]
-        (swap! store assoc id s)
-        (public s))
-      (let [res (workspace/start! id)]
-        (if (:error res)
-          (let [s {:id id :status "failed" :created-at now :error (:error res)}]
-            (swap! store assoc id s)
-            (public s))
-          (let [ready? (workspace/wait-ready! (:host-port res) ready-timeout-ms)
-                s (merge {:id id :created-at now
-                          :status (if ready? "ready" "failed")}
-                         res)]
-            (when-not ready? (workspace/stop! id))
-            (swap! store assoc id s)
-            (public s)))))))
+  "Allocate a workspace for `user-id`. Returns the public projection."
+  [user-id]
+  (let [base {:id (gen-id) :user-id user-id :created-at (System/currentTimeMillis)}
+        rec  (if (fake-mode?)
+               (assoc base :status "ready" :fake true)
+               (provision! (assoc base :status "provisioning" :fake false)))]
+    (store/save! (store!) rec)
+    (public rec)))
 
 (defn resume!
-  "Phase-0 resume: restart a stopped container (real) or flip status (fake)."
-  [id]
-  (when-let [s (get @store id)]
-    (if (:fake s)
-      (do (swap! store assoc-in [id :status] "ready") (public (get @store id)))
-      (let [res (workspace/start! id)]
-        (if (:error res)
-          (do (swap! store assoc-in [id :status] "failed") (public (get @store id)))
-          (let [ready? (workspace/wait-ready! (:host-port res) ready-timeout-ms)]
-            (swap! store update id merge res {:status (if ready? "ready" "failed")})
-            (public (get @store id))))))))
+  "Restart a stopped workspace owned by `user-id` (fake: just flip status)."
+  [user-id id]
+  (when-let [rec (owned user-id id)]
+    (let [rec' (if (:fake rec)
+                 (assoc rec :status "ready")
+                 (provision! rec))]
+      (store/save! @db rec')
+      (public rec'))))
 
-(defn destroy! [id]
-  (when-let [s (get @store id)]
-    (when-not (:fake s) (workspace/stop! id)))
-  (swap! store dissoc id)
+(defn destroy!
+  "Reap a workspace owned by `user-id` (idempotent; no-op if not owned)."
+  [user-id id]
+  (when-let [rec (owned user-id id)]
+    (when-not (:fake rec) (workspace/stop! id))
+    (swap! upstream-cache dissoc id)
+    (store/remove! @db id))
   nil)
