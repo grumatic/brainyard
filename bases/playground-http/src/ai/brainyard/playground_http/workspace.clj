@@ -65,6 +65,16 @@
    (when-let [m (System/getenv "PG_WORKSPACE_MODEL")]    ["-m" m])
    (when-let [a (System/getenv "PG_WORKSPACE_AGENT")]    ["-a" a])))
 
+(defn- aws-mount-args
+  "When PG_WORKSPACE_AWS_DIR points at a readable dir (e.g. ~/.aws), mount it
+   read-only at the container user's $HOME/.aws so the Bedrock SDK finds the
+   profile (`AWS_PROFILE`/`AWS_REGION` arrive via the env-file). Phase-0
+   stand-in for playground-secrets resolving per-user cloud creds."
+  []
+  (when-let [d (System/getenv "PG_WORKSPACE_AWS_DIR")]
+    (when (.isDirectory (io/file d))
+      ["-v" (str d ":/home/by/.aws:ro")])))
+
 (defn- published-host-port
   "Resolve the ephemeral host port Docker mapped to the container's 7681."
   [container-id]
@@ -92,6 +102,7 @@
                       ;; stable identity for `by` memory partitioning
                       "-e" (str "BY_USER_ID=" session-id)]
                      (env-file-args)
+                     (aws-mount-args)
                      [image]
                      (by-args))
         {:keys [exit out err]} (apply sh args)]

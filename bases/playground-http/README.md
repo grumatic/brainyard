@@ -61,6 +61,21 @@ ttyd WebSocket is most reliable same-origin (build with `bb playground:ui`).
 | `PG_FAKE=1` | disable containers; `/tty` echoes (also auto-on when no Docker) |
 | `PG_WORKSPACE_IMAGE` | workspace image tag (default `brainyard/workspace:dev`) |
 | `PG_WORKSPACE_ENV_FILE` | `.env` passed into each container (`by` provider creds) |
+| `PG_WORKSPACE_PROVIDER` | `by` provider for the workspace agent, e.g. `openai`, `bedrock` |
+| `PG_WORKSPACE_MODEL` | model id (required for `bedrock`; openai defaults to gpt-4.1-mini) |
+| `PG_WORKSPACE_AGENT` | agent to launch (default `coact-agent`) |
+| `PG_WORKSPACE_AWS_DIR` | host `~/.aws` to mount read-only for Bedrock creds |
+
+**Bedrock/Claude workspace example** (creds via the mounted `~/.aws` profile +
+`AWS_PROFILE`/`AWS_REGION` from `.env`):
+
+```bash
+PG_WORKSPACE_ENV_FILE="$PWD/../../.env" \
+PG_WORKSPACE_PROVIDER=bedrock \
+PG_WORKSPACE_MODEL=global.anthropic.claude-haiku-4-5-20251001-v1:0 \
+PG_WORKSPACE_AWS_DIR="$HOME/.aws" \
+clojure -M:run
+```
 
 ## Files
 
