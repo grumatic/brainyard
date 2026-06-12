@@ -109,6 +109,14 @@
     {:status 404 :headers {"Content-Type" "text/plain"}
      :body "playground-ui not built. Run `npm run release` in frontend/playground-ui."}))
 
+(defn- wrap-no-cache
+  "Always revalidate. The SPA bundle has a fixed name (`main.js`), so without
+   this browsers heuristically serve a stale bundle after a rebuild/redeploy."
+  [handler]
+  (fn [req]
+    (some-> (handler req)
+            (update :headers assoc "Cache-Control" "no-cache"))))
+
 (def app
   "Top handler: API/auth routes, then static SPA assets, then index.html
    fallback so client-side routes (e.g. /workspace/:id) deep-link correctly."
@@ -117,4 +125,4 @@
    (ring/routes
     (ring/create-resource-handler {:path "/" :root "public"})
     index-html)
-   {:middleware [wrap-cookies wrap-params]}))
+   {:middleware [wrap-cookies wrap-params wrap-no-cache]}))

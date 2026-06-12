@@ -8,7 +8,7 @@
   (:require [ai.brainyard.playground-ui.terminal :as terminal]))
 
 (defn login-view []
-  [:div.center
+  [:div.center {:replicant/key :view/login}
    [:h1 "Brainyard Playground"]
    [:p "Sign in to launch your sandboxed " [:code "by"] " environment."]
    [:button.btn {:on {:click [[:auth/login]]}} "Sign in"]])
@@ -24,7 +24,11 @@
     [:button.danger {:on {:click [[:session/destroy id]]}} "Destroy"]]])
 
 (defn dashboard-view [{:keys [user sessions]}]
-  [:div.dashboard
+  ;; Distinct :replicant/key per top-level view so Replicant REPLACES the subtree
+  ;; on navigation instead of diffing dashboard<->workspace in place. The
+  ;; workspace subtree contains xterm's imperative (foreign) DOM; diffing across
+  ;; that boundary corrupts Replicant's vdom tracking and wedges later renders.
+  [:div.dashboard {:replicant/key :view/dashboard}
    [:header
     [:h1 "Workspaces"]
     [:div.spacer]
@@ -36,7 +40,7 @@
      [:p.empty "No workspaces yet — create one to start."])])
 
 (defn workspace-view [state id]
-  [:div.workspace
+  [:div.workspace {:replicant/key :view/workspace}
    [:header
     [:button {:on {:click [[:nav/dashboard]]}} "← Workspaces"]
     [:span.id id]
@@ -48,7 +52,7 @@
   "Top-level view chosen by auth state, then route."
   [{:keys [user route] :as state}]
   (cond
-    (nil? user)   [:div.center [:p "Loading…"]]
+    (nil? user)   [:div.center {:replicant/key :view/loading} [:p "Loading…"]]
     (false? user) (login-view)
     :else
     (case (:name route)
