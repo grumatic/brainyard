@@ -1133,6 +1133,29 @@
 ;; Final Answer
 ;; ============================================================================
 
+(defn- expand-tabs
+  "Expand TAB characters to spaces on a tab stop of 4, per line. Applied to the
+   raw (pre-ANSI) answer text so the fixed-width box layout measures what the
+   terminal actually renders: a literal TAB advances to the next tab stop in the
+   terminal, but `display-width` counts it as a single column — which desyncs
+   right-bordered boxes. The classic trigger is the tab-indented file list from
+   long-form `git status`. Fast-paths to the input when there is no TAB."
+  [^String s]
+  (if (neg? (.indexOf s (int \tab)))
+    s
+    (let [tab-stop 4]
+      (str/join "\n"
+                (for [line (str/split s #"\n" -1)]
+                  (let [sb (StringBuilder.)]
+                    (reduce (fn [col ch]
+                              (if (= ch \tab)
+                                (let [n (- tab-stop (mod col tab-stop))]
+                                  (dotimes [_ n] (.append sb \space))
+                                  (+ col n))
+                                (do (.append sb ch) (inc col))))
+                            0 line)
+                    (.toString sb)))))))
+
 (defn format-answer
   "Format the final answer with a highlighted box.
    Markdown is converted to ANSI styling. Border chars are bright-green.
@@ -1145,7 +1168,11 @@
   ([answer-str cols]
    (when (and answer-str (not (str/blank? answer-str)))
      (let [wrap-w   (-> cols (- 4) (max 40))
-           lines    (render-markdown (str/trim answer-str) wrap-w)
+           ;; Expand TABs to spaces before layout so the box's width/padding math
+           ;; (display-width-based) matches what the terminal renders — a raw TAB
+           ;; would otherwise advance to a tab stop and shove the right border out
+           ;; (e.g. the tab-indented file list from long-form `git status`).
+           lines    (render-markdown (expand-tabs (str/trim answer-str)) wrap-w)
            ;; Fit-to-content: box width = longest rendered line, floored at 40
            ;; and capped at the pane width. Short answers no longer stretch
            ;; edge-to-edge on a wide pane.

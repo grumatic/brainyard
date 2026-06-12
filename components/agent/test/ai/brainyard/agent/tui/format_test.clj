@@ -373,3 +373,27 @@
   (testing "unknown kind degrades to a generic notice rather than throwing"
     (is (str/includes? (strip-ansi (fmt/format-recovery-status :weird 1 nil))
                        "Recovering"))))
+
+(deftest format-answer-expands-tabs-keeps-box-rectangular
+  ;; Regression: long-form `git status` indents untracked files with a literal
+  ;; TAB. A raw TAB advances to a terminal tab stop but display-width counts it
+  ;; as one column, so the right box border desynced (ragged right edge). TABs
+  ;; are now expanded to spaces (tab stop 4) before the box is laid out.
+  (testing "tab-indented content does not break the answer box"
+    (let [answer (str "```\n"
+                      "Untracked files:\n"
+                      "\t.gitignore\n"
+                      "\tpackage.json\n"
+                      "```")
+          out    (fmt/format-answer answer 80)
+          clean  (str/replace out #"\[[0-9;]*m" "")
+          box    (->> (str/split-lines clean)
+                      (filter #(str/starts-with? % "│")))]
+      ;; (1) no raw TAB survives into the rendered output (the desync source)
+      (is (not (str/includes? out "\t")) "tabs expanded before layout")
+      ;; (2) the leading TAB became 4 spaces (tab stop 4 at column 0)
+      (is (str/includes? clean "    .gitignore") "leading tab -> 4 spaces")
+      (is (not (str/includes? clean "\t.gitignore")))
+      ;; (3) every bordered content row is the same visible width -> rectangular
+      (is (= 1 (count (set (map count box))))
+          (str "box rows must be equal width; got " (sort (set (map count box))))))))

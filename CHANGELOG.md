@@ -6,6 +6,7 @@ All notable changes to Brainyard's public distribution are documented here. Vers
 
 ### Fixed
 
+- **The answer box no longer breaks on tab-indented content (e.g. `git status`).** Long-form `git status` indents untracked files with a literal TAB; the answer-box layout measured width with `display-width` (which counts a TAB as one column) while the terminal expanded the TAB to a tab stop, so the right border was shoved out and the box edge went ragged on every tab-indented line. TABs in the answer are now expanded to spaces (tab stop 4) before layout, so the measured and rendered widths match and the box stays rectangular.
 - **Resuming a session whose agent type is no longer registered no longer crashes.** A persisted session records its agent type; if that type isn't registered this run — a deleted user-defined agent (`user$agent$…` / a tool/hook authored then removed), a renamed/removed built-in, or a plugin agent not loaded — `create-tui-agent!` previously got an `{:error-message …}` map back from `invoke-tool` and `swap!`-ed its `nil` `:!session`, throwing an opaque `NullPointerException` that aborted the whole resume. The TUI now detects an unregistered agent type and falls back to the default `coact-agent` (with a one-line notice), so the session's conversation history still opens; a residual setup failure is surfaced as a clear error instead of a nil-`swap!` NPE.
 
 ## [v0.3.1] — 2026-06-11
