@@ -12,8 +12,13 @@
             [clojure.string :as str])
   (:import [java.io File]))
 
-(def ^:dynamic *root*
-  "Root directory for persisted sessions.
+(def ^:dynamic *root-resolver*
+  "Thunk returning the sessions-root `File`. This component is
+   dependency-free and cannot resolve project-dir itself, so a layer that can
+   (the agent-tui base) installs the project-scoped resolver via
+   `set-root-resolver!` — `(fn [] (io/file (config/sessions-root)))`. The thunk
+   defers to call time, so it always reflects the current project-dir (honoring
+   `-C` / `BY_PROJECT_DIR`) and there is no path captured at one startup moment.
 
    Scope contract: `sessions/` is PROJECT-SCOPE per
    `ai.brainyard.agent.core.config/subdir-scope-policy` — sessions are
@@ -21,22 +26,19 @@
    and trajectory all describe work in one codebase), so they live under
    `<project>/.brainyard/sessions/`.
 
-   This component is dependency-free and cannot resolve project-dir itself, so
-   the app layer installs the resolved root at startup via `set-root!`
-   (computed by `config/sessions-root`, which honors `-C` / `BY_PROJECT_DIR`).
-   Until injected, this falls back to `~/.brainyard/sessions/` so standalone
-   use and pre-init reads still work. Tests rebind via `with-root`."
-  (io/file (System/getProperty "user.home") ".brainyard" "sessions"))
+   Defaults to the legacy `~/.brainyard/sessions/` location so standalone /
+   pre-wiring / test use still works. Tests rebind via `with-root` (which pins
+   this resolver to a constant)."
+  (fn [] (io/file (System/getProperty "user.home") ".brainyard" "sessions")))
 
-(defn set-root!
-  "Permanently install the sessions root (via `alter-var-root`, not a
+(defn set-root-resolver!
+  "Install the sessions-root resolver process-wide (via `alter-var-root`, not a
    thread-local `binding`) so every thread — host, control-server connections,
-   GC sweeps — observes it. Called once at app startup from
-   `persist/set-root!` with `(config/sessions-root)`. Tests still override
-   locally with `with-root`/`binding`. Accepts any path-like; returns the
-   installed File."
-  [dir]
-  (alter-var-root #'*root* (constantly (io/file dir))))
+   GC sweeps — observes it. `f` is a 0-arg thunk returning a path-like; it is
+   invoked on every `root-dir` call. Called once by the base when it wires
+   persist to `config/sessions-root`."
+  [f]
+  (alter-var-root #'*root-resolver* (constantly f)))
 
 (defn- ^File ensure-dir!
   [^File f]
@@ -44,9 +46,10 @@
   f)
 
 (defn root-dir
-  "Return (and create on demand) the sessions root directory."
+  "Return (and create on demand) the sessions root directory, resolved fresh
+   via `*root-resolver*`."
   ^File []
-  (ensure-dir! *root*))
+  (ensure-dir! (io/file (*root-resolver*))))
 
 (defn session-dir
   "Directory for a specific agent-session-id. Creates if missing."

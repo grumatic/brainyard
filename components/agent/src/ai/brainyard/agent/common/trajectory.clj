@@ -40,9 +40,10 @@
 
    NOTE: this namespace deliberately avoids a Polylith dep on `agent-tui-persist`
    (same cross-reference pattern as `memory_agent`). It resolves the
-   project-scoped sessions root through `config/sessions-root` at call time so
-   it stays in lock-step with `agent-tui-persist.core.paths/*root*` (which the
-   app layer injects from the same source)."
+   project-scoped sessions root through `config/sessions-root` — the single
+   authority — at call time, so there is no private root mirror to drift. Tests
+   redirect writes by binding `config/*sessions-root-override*` (or the
+   `agent/with-sessions-root` macro)."
   (:require [ai.brainyard.agent.core.config :as config]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
@@ -53,21 +54,13 @@
 ;; Layout
 ;; ============================================================================
 
-(def ^:dynamic *sessions-root*
-  "Override for the persisted-sessions root. `nil` (the default) means resolve
-   the project-scoped root lazily via `config/sessions-root` — kept in sync with
-   `agent-tui-persist.core.paths/*root*`. Tests `binding` this to a temp dir so
-   trajectory writes land there."
-  nil)
-
 (def trajectory-filename "trajectory.edn")
 
 (defn session-trajectory-file
   "The `trajectory.edn` File for a session-id (not created on demand).
-   Resolves the sessions root from `*sessions-root*` when bound, else from
-   `config/sessions-root` (project-scoped)."
+   Resolves the project-scoped sessions root via `config/sessions-root`."
   ^File [session-id]
-  (io/file (str (or *sessions-root* (config/sessions-root)))
+  (io/file (str (config/sessions-root))
            (name session-id) trajectory-filename))
 
 ;; ============================================================================

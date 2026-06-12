@@ -209,6 +209,15 @@
   [agent & body]
   `(binding [protocol/*current-agent* ~agent] ~@body))
 
+;; Macro — binds the SOURCE override var (a by-value re-export would lose
+;; binding identity), so this is the public seam for redirecting every session
+;; writer (persist resolver, trajectory, memory-agent) at once.
+(defmacro with-sessions-root
+  "Pin the project-scoped sessions root to `dir` (a path string) for `body`.
+   Used by tests/REPL to redirect session persistence into a temp dir."
+  [dir & body]
+  `(binding [ai.brainyard.agent.core.config/*sessions-root-override* (str ~dir)] ~@body))
+
 ;; ============================================================================
 ;; Queue Management
 ;; ============================================================================

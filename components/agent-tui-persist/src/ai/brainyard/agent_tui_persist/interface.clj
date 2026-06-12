@@ -8,8 +8,9 @@
    Per docs/tmux-based-agent-tui.md §11 — every persistent session lives at
    <project>/.brainyard/sessions/<agent-session-id>/.  This namespace is the
    only entry point exposed to bases; internal namespaces are implementation
-   detail. The app layer installs the project-scoped root at startup via
-   `set-root!`."
+   detail. The base wires the project-scoped root once via `set-root-resolver!`
+   — `(fn [] (io/file (config/sessions-root)))` — so this dependency-free
+   component never has to know about project-dir resolution."
   (:require [ai.brainyard.agent-tui-persist.core.edn-io :as edn-io]
             [ai.brainyard.agent-tui-persist.core.eviction :as eviction]
             [ai.brainyard.agent-tui-persist.core.lock :as lock]
@@ -23,26 +24,24 @@
 ;; -- Paths --------------------------------------------------------------------
 
 (def root-dir              paths/root-dir)
-(def set-root!             paths/set-root!)
+(def set-root-resolver!    paths/set-root-resolver!)
 (def session-dir           paths/session-dir)
 (def session-file          paths/session-file)
 (def file-of               paths/file-of)
 (def list-sessions         paths/list-sessions)
 (def delete-session-dir!   paths/delete-session-dir!)
 
-;; Re-export the dynamic var so callers can rebind for tests.
-(def ^:dynamic *root* paths/*root*)
-
 (defn with-root*
-  "Run `f` with the persistence root rebound to `dir` (a path-like)."
+  "Run `f` with the persistence root pinned to `dir` (a path-like) — used by
+   tests. Binds the resolver to a constant thunk."
   [dir f]
-  (binding [paths/*root* (clojure.java.io/file dir)]
+  (binding [paths/*root-resolver* (constantly (clojure.java.io/file dir))]
     (f)))
 
 (defmacro with-root
-  "Bind the persistence root to `dir` for `body`.  Used by tests."
+  "Pin the persistence root to `dir` for `body`.  Used by tests."
   [dir & body]
-  `(binding [paths/*root* (clojure.java.io/file ~dir)]
+  `(binding [paths/*root-resolver* (constantly (clojure.java.io/file ~dir))]
      ~@body))
 
 ;; -- Append-only event log ----------------------------------------------------

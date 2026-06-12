@@ -40,6 +40,20 @@
   (:import [java.io BufferedReader InputStreamReader]))
 
 ;; ============================================================================
+;; Persistence root wiring
+;; ============================================================================
+;;
+;; The persist component is dependency-free and cannot resolve project-dir, so
+;; the base — which depends on both `agent` and `persist` — wires the
+;; project-scoped sessions root once, here, at namespace load. The thunk defers
+;; to call time, so EVERY entry path (`start!`/`run!` REPL use, the cli-matic
+;; `main`, the tmux host, control-server connections, GC sweeps) lands under
+;; `<project>/.brainyard/sessions/` with no per-entry-point injection
+;; discipline. `agent/sessions-root` is the single authority (honors
+;; `-C`/`BY_PROJECT_DIR` and `config/*sessions-root-override*`).
+(persist/set-root-resolver! (fn [] (agent/sessions-root)))
+
+;; ============================================================================
 ;; Queue State
 ;; ============================================================================
 
@@ -123,7 +137,7 @@
     (when session-id
       (try
         ;; Resolve through the persist layer so the stamp lands under the
-        ;; project-scoped sessions root (persist/*root*), not a user-global dir.
+        ;; project-scoped sessions root (persist/*root-resolver*), not a user-global dir.
         (let [stamp (persist/session-file session-id "turn.complete")]
           (spit stamp (pr-str payload)))
         (catch Exception e

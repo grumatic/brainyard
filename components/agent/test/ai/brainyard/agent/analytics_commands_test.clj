@@ -9,6 +9,7 @@
             [clojure.java.io :as io]
             [ai.brainyard.agent.common.analytics-commands :as ac]
             [ai.brainyard.agent.common.trajectory :as trajectory]
+            [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.analytics.core.trajectory :as atraj]))
 
@@ -24,7 +25,7 @@
   (let [dir (io/file (System/getProperty "java.io.tmpdir")
                      (str "by-analytics-test-" (System/nanoTime)))]
     (.mkdirs dir)
-    (binding [trajectory/*sessions-root* (.getAbsolutePath dir)]
+    (binding [config/*sessions-root-override* (.getAbsolutePath dir)]
       (try (f) (finally (delete-tree! dir))))))
 
 (use-fixtures :each with-tmp-root)

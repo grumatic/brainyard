@@ -797,18 +797,27 @@
     (.mkdirs (io/file p))
     p))
 
+(def ^:dynamic *sessions-root-override*
+  "Test/REPL override for the project-scoped sessions root. When non-nil,
+   `sessions-root` returns it verbatim. This is the SINGLE override knob —
+   trajectory, memory-agent, and the persist root resolver all flow through
+   `sessions-root`, so binding this one var redirects every session writer at
+   once (e.g. into a temp dir for a test)."
+  nil)
+
 (defn sessions-root
   "Absolute path of the project-scoped sessions dir
    (`<project>/.brainyard/sessions`). Single source of truth for where
    persisted agent sessions live.
 
    Honors the `--working-dir`/`-C` and `BY_PROJECT_DIR` overrides because it
-   flows through `resolve-dirs` → `resolve-project-dir`. The persist component
-   (`agent-tui-persist`) is dependency-free and cannot call this; the app layer
-   injects the result into `paths/*root*` at startup via `persist/set-root!`.
-   Sites inside this component (trajectory, memory-agent orphan detection) call
-   it directly at point of use."
-  ([] (sessions-root (resolve-dirs)))
+   flows through `resolve-dirs` → `resolve-project-dir`, and the
+   `*sessions-root-override*` dynamic var for tests/REPL. The persist component
+   (`agent-tui-persist`) is dependency-free and cannot call this; the base wires
+   a resolver `(fn [] (config/sessions-root))` into it via
+   `persist/set-root-resolver!`. Sites inside this component (trajectory,
+   memory-agent orphan detection) call it directly at point of use."
+  ([] (or *sessions-root-override* (sessions-root (resolve-dirs))))
   ([dirs] (brainyard-subdir dirs "sessions" :project)))
 
 (defn read-edn-config

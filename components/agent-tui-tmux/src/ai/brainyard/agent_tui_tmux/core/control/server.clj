@@ -73,7 +73,7 @@
                                    ch pw in (atom false))
                 _    (.put ^ConcurrentHashMap (:connections !state) (:id conn) conn)
                 ;; bound-fn propagates dynamic bindings (e.g. tests' rooted
-                ;; `agent-tui-persist/*root*`) into the per-connection
+                ;; `agent-tui-persist/*root-resolver*`) into the per-connection
                 ;; reader thread.  Without it, `on-input` callbacks that
                 ;; touch persistence — `persist/append-event!`,
                 ;; `persist/session-dir`, etc. — write into the *real*
@@ -143,7 +143,7 @@
                   (when (= :hello (:type msg)) (on-connect conn))
                   (on-message conn msg))
         ;; bound-fn so the accept-loop captures the caller's dynamic
-        ;; bindings (e.g. tests' `agent-tui-persist/*root*`) — those
+        ;; bindings (e.g. tests' `agent-tui-persist/*root-resolver*`) — those
         ;; propagate to per-connection threads spawned inside
         ;; accept-loop, which themselves re-wrap with bound-fn.
         ^Runnable accept-runnable (bound-fn [] (accept-loop server handler !state))

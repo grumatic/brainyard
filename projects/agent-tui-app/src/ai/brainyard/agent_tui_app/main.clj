@@ -561,27 +561,23 @@
     (System/exit (.waitFor ^Process (:proc handle)))))
 
 (defn- install-working-dir!
-  "Install the `--working-dir`/`-C` override before any agent/tool boots, then
-   pin the project-scoped sessions root so persistence lands under
-   `<project>/.brainyard/sessions/` rather than the user-global dir.
+  "Install the `--working-dir`/`-C` override before any agent/tool boots.
 
    The flag is strict: a non-existent / non-directory path exits 1. A nil/blank
    flag clears the override, so resolution falls back to `BY_WORKING_DIR` env
    then `user.dir`. Installing here (the parent) also validates the path early,
    before a --web/--sandbox launcher spawns its child.
 
-   The sessions-root injection MUST follow the working-dir override (so
-   `project-dir` is correct) and precede any persistence read (resume picker,
-   `run-tui!`, sessions list). `agent/sessions-root` honors `-C` / `BY_PROJECT_DIR`;
-   `persist/set-root!` installs it process-wide via `alter-var-root`, so the
-   host, control-server threads, and GC sweeps all observe it. Re-exec'd
-   --web/--sandbox children re-enter through this path with `-C` forwarded, so
-   they pin the same root."
+   The project-scoped sessions root is NOT pinned here — the agent-tui base
+   wires `persist/set-root-resolver!` to `(agent/sessions-root)` at load, and
+   that thunk resolves project-dir fresh on every persistence call. So this just
+   needs to install the working-dir override (which `sessions-root` reads via
+   `resolve-project-dir`) before any persistence happens. Re-exec'd
+   --web/--sandbox children re-enter through this path with `-C` forwarded."
   [opts]
   (try (agent/set-working-dir-override! (:working-dir opts))
        (catch clojure.lang.ExceptionInfo e
-         (exit-err! (str "Error: " (.getMessage e)))))
-  (persist/set-root! (agent/sessions-root)))
+         (exit-err! (str "Error: " (.getMessage e))))))
 
 (defn cmd-run
   "Dispatch the `run` subcommand. When already the guarded child of either

@@ -7,7 +7,8 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [ai.brainyard.agent.common.trajectory :as trajectory]))
+            [ai.brainyard.agent.common.trajectory :as trajectory]
+            [ai.brainyard.agent.core.config :as config]))
 
 ;; ============================================================================
 ;; Fixtures — redirect the sessions root to a throwaway temp dir
@@ -23,7 +24,7 @@
   (let [dir (io/file (System/getProperty "java.io.tmpdir")
                      (str "by-traj-test-" (System/nanoTime)))]
     (.mkdirs dir)
-    (binding [trajectory/*sessions-root* (.getAbsolutePath dir)
+    (binding [config/*sessions-root-override* (.getAbsolutePath dir)
               *tmp-root* dir]
       (try (f)
            (finally (delete-tree! dir))))))
