@@ -81,7 +81,7 @@ live-binary harness. Reach for this guide when stubs are not enough.
 # 1. Clean state — remove any persisted session data + stale tmux
 #    sessions that would confuse mode probing or session resumption.
 tmux kill-session -t by-test 2>/dev/null
-rm -rf ~/.brainyard/sessions/{agt-d-*,smoke-*,real-test}
+rm -rf .brainyard/sessions/{agt-d-*,smoke-*,real-test}
 
 # 2. Create a tmux session whose window 0 is a bash shell. The
 #    renderer launches from this shell; its stderr/stdout go to
@@ -152,7 +152,7 @@ Useful flags:
 
 ```bash
 # Did the renderer create the per-pane FIFOs?
-ls -la ~/.brainyard/sessions/real-test/panes/real-test/
+ls -la .brainyard/sessions/real-test/panes/real-test/
 
 # What FIFOs has the renderer's multi-sink actually opened? Sinks
 # open the FIFO lazily on first write; the activity FIFO won't
@@ -178,7 +178,7 @@ compare:
 ```bash
 # Reproduce what BY_TMUX_DEBUG logged:
 tmux split-window -d -h -t %213 -P -F '#{pane_id}' -p 30 \
-  'cat /Users/me/.brainyard/sessions/real-test/panes/real-test/activity.fifo'
+  'cat .brainyard/sessions/real-test/panes/real-test/activity.fifo'
 sleep 1
 tmux list-panes -aF '#{pane_id} #{pane_current_command}' | tail
 ```
@@ -222,7 +222,7 @@ A worked example of the technique:
 # Tear down the test setup so the next run starts clean.
 tmux kill-session -t by-test 2>/dev/null
 pkill -9 -f 'agent-tui-app.main' 2>/dev/null
-rm -rf ~/.brainyard/sessions/real-test /tmp/by.log
+rm -rf .brainyard/sessions/real-test /tmp/by.log
 ```
 
 ---

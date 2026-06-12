@@ -224,7 +224,7 @@ The built-in roster (non-exhaustive):
 | `/queue [cancel …]` | Input queue management. |
 | `/activity show|hide|toggle` *(Mode B)* | Split / kill a tmux side pane for the activity stream. |
 | `/log show|hide` *(Mode B)* | Split / kill a tmux side pane tailing the session's app log. |
-| `/scrollback dump` *(Mode B)* | Capture the main pane's scrollback to `~/.brainyard/sessions/<id>/scrollback-<ts>.ans`. |
+| `/scrollback dump` *(Mode B)* | Capture the main pane's scrollback to `<project>/.brainyard/sessions/<id>/scrollback-<ts>.ans`. |
 | `/popup test` *(Mode B)* | Open a no-op questionnaire popup (smoke test). |
 | `/quit` | Stop the TUI. |
 

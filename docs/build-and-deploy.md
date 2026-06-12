@@ -668,7 +668,7 @@ The currently-loaded runtime-config is visible via `:status` in the TUI.
 ### Persisted sessions
 
 Session state for the tmux-based TUI lives under
-`~/.brainyard/sessions/<agent-session-id>/` (EDN I/O, lock, eviction,
+`<project>/.brainyard/sessions/<agent-session-id>/` (EDN I/O, lock, eviction,
 scrollback, snapshots). Use `bb tui sessions list` and
 `bb tui sessions prune -s <id>` to inspect and clean up.
 See `docs/tui/` for the architectural details.

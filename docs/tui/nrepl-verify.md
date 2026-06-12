@@ -262,6 +262,61 @@ clj-nrepl-eval -p $PORT \
 
 ---
 
+## Verifying session persistence (project-scoped)
+
+Persisted sessions are **project-scoped**: they live under
+`<project>/.brainyard/sessions/<id>/`, where `<project>` is the git root
+(`config/sessions-root`, honoring `-C` / `BY_PROJECT_DIR`), **not**
+`~/.brainyard/sessions/`. Because `bb tui` `cd`s into
+`projects/agent-tui-app/`, this also exercises git-root resolution — the
+session must land at the repo root, not the cwd subdir. Verify against a
+live session:
+
+```bash
+PORT=<discovered>
+SID=<from the banner: "session agt-…">
+
+# 1. Live root resolves to the project, via the base resolver → agent/sessions-root
+clj-nrepl-eval -p $PORT '(str (ai.brainyard.agent-tui-persist.interface/root-dir))'
+clj-nrepl-eval -p $PORT '(ai.brainyard.agent.interface/sessions-root)'
+#   => "<repo-root>/.brainyard/sessions"
+
+# 2. After a turn, every file is written under the project root
+ls "$(git rev-parse --show-toplevel)/.brainyard/sessions/$SID/"
+#   => messages.log session.edn scrollback.stream.txt trajectory.edn turn.complete …
+
+# 3. No leak: the session is NOT under the user-global dir
+ls ~/.brainyard/sessions/$SID 2>&1   # => No such file or directory
+```
+
+### Resume + resume picker
+
+`--resume <id>` and bare `--resume` (interactive picker) both read from the
+project-scoped root, so the picker lists only the **current repo's**
+sessions — never the user-global set. After a restart the nREPL port
+changes (re-run `--discover-ports`).
+
+```bash
+# Specific id (restart, then resume)
+BY_NREPL_ENABLED=true bb tui -p claude-code -m opus --resume "$SID"
+
+# Bare picker — capture the menu, then pick by number (cooked read-line → plain CR)
+BY_NREPL_ENABLED=true bb tui -p claude-code -m opus --resume
+tmux capture-pane -t $PANE -p          # menu lists only this project's sessions
+tmux send-keys   -t $PANE '2' C-m      # pick #2
+
+# Confirm the resumed session + restored conversation (new PORT after restart)
+clj-nrepl-eval -p $NEWPORT \
+  '(let [ag (ai.brainyard.agent-tui.session/get-active-agent)]
+     {:sid (ai.brainyard.agent.interface/session-id ag)
+      :msgs (mapv :role (:messages @(:!session ag)))})'
+```
+
+The active agent is briefly nil right after the pick while the session
+restores — poll until `get-active-agent` is non-nil before inspecting.
+
+---
+
 ## Multi-agent smoke test
 
 Switch through agents and send a simple prompt to each:

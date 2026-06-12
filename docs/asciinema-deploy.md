@@ -89,7 +89,7 @@ We reuse three existing brainyard primitives:
 - **`bb tui:attach-ask`** — synchronous nREPL one-shot. Used for
   *headless verification* in CI (no tmux, no asciinema), not for the
   recording itself.
-- **per-session stamps** under `~/.brainyard/sessions/<id>/` — the
+- **per-session stamps** under `<project>/.brainyard/sessions/<id>/` — the
   driver waits on `turn.complete` rather than guessing sleep
   durations, so timing is bounded by the agent, not by a magic
   `sleep 5`.
@@ -162,7 +162,7 @@ magic strings.
  {:binary  "by"           ;; or "bb" "tui" — see §6 launch modes
   :args    ["-a" "coact-agent" "-p" "claude-code" "-m" "haiku" "-i"]
   :env     {"BY_TUTORIAL_MODE" "1"
-            ;; Stable session id keeps `~/.brainyard/sessions/<id>` paths
+            ;; Stable session id keeps `<project>/.brainyard/sessions/<id>` paths
             ;; deterministic, so the driver can find the stamp file.
             "BY_SESSION_ID" "tutorial-02"}}
 
@@ -407,7 +407,7 @@ predicates against the captured frame via `drive-scenario.bb check`.
 Exit codes: `0` match + expectations pass, `2` golden drift (prints the diff),
 `3` `:expect` failure, `1` setup error. `:contains` / `:matches` are checked
 against the frame; `:tool-called` / `:max-tokens` need the session log and are
-skipped with a note (a follow-up can read `~/.brainyard/sessions/<sid>/`).
+skipped with a note (a follow-up can read `<project>/.brainyard/sessions/<sid>/`).
 
 **[as-built]** CI is **two-tier**, because the frame check needs the full JVM
 stack (and the agent-tui-app project pulls Datomic, which needs creds):

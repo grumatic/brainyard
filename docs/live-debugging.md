@@ -325,7 +325,7 @@ again). Two TUI affordances make output legible to a driver:
   ```
 - **Atomic per-session settle stamp (preferred over the mulog tail).**
   In addition to the mulog event, `emit-turn-complete!` writes a small
-  EDN file at `~/.brainyard/sessions/<session-id>/turn.complete` with
+  EDN file at `<project>/.brainyard/sessions/<session-id>/turn.complete` with
   the same `{:ts :agent-id :session-id :input-preview :result-length}`
   payload. Drivers can `inotifywait` (Linux) / `fswatch` (macOS) on
   the stamp and read its content without parsing the multi-MB mulog
@@ -334,12 +334,12 @@ again). Two TUI affordances make output legible to a driver:
   ```bash
   # Linux: block until next turn, then print which agent + result-length.
   SID=agt-1779515068327-1883
-  inotifywait -qq -e close_write ~/.brainyard/sessions/$SID/turn.complete \
-    && cat ~/.brainyard/sessions/$SID/turn.complete
+  inotifywait -qq -e close_write .brainyard/sessions/$SID/turn.complete \
+    && cat .brainyard/sessions/$SID/turn.complete
 
   # macOS:
-  fswatch -1 ~/.brainyard/sessions/$SID/turn.complete \
-    && cat ~/.brainyard/sessions/$SID/turn.complete
+  fswatch -1 .brainyard/sessions/$SID/turn.complete \
+    && cat .brainyard/sessions/$SID/turn.complete
   ```
 - **Non-interactive entry points** sidestep the screen-scraping problem
   entirely. `bb tui ask -a debug-agent "<question>"` runs one agent turn
@@ -651,7 +651,7 @@ Concretely, the following are still manual or unbuilt:
    - `bb tui:drive -s TMUX-SESSION [-S BY-SESSION-ID] [-T SECS] "prompt"` —
      tmux mode, owns `tmux send-keys` + multi-stamp watch +
      `tmux capture-pane`. Watches every `turn.complete` file in
-     `~/.brainyard/sessions/` and detects which one's mtime advances
+     `<project>/.brainyard/sessions/` and detects which one's mtime advances
      after send-keys, filtering by an `:input-preview` prefix match so
      sub-agent ticks and concurrent instances don't cross-fire. Pane
      capture includes scrollback so verbose iteration trails don't
@@ -678,7 +678,7 @@ Concretely, the following are still manual or unbuilt:
      mulog event on every `:agent.ask/post`, regardless of agent type
      (drivers `tail -F` the mulog log — see §4).
    - **v2:** atomic per-session stamp file at
-     `~/.brainyard/sessions/<session-id>/turn.complete`, small EDN
+     `<project>/.brainyard/sessions/<session-id>/turn.complete`, small EDN
      payload, best-effort write (non-fatal failure). Drivers
      `inotifywait` (Linux) / `fswatch` (macOS) on the stamp instead
      of parsing the multi-MB mulog log — see §4 for the recipe.
