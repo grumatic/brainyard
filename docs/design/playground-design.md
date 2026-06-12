@@ -423,12 +423,16 @@ login → authenticated dashboard; two users isolated (each sees only their own
 sessions; cross-tenant access 404); control-plane restart loses nothing (state
 in Postgres, runtime reconciled from live containers).
 
-Still to do (Phase 1+): `playground-secrets` (Vault) — currently a shared
-`.env` + mounted `~/.aws`; signature/nonce verification on the id_token;
-session-broker scheduling (warm pool, idle reaper); egress allowlist;
-gVisor/Firecracker. And the structural step: these bricks still live as
-namespaces inside the base — they graduate to `components/` with a
-`playground-server` Polylith project + `workspace.edn` entry.
+Also done: `playground-secrets` injects per-user creds from **Vault** (KV v2)
+via a private temp env-file (shared `.env` fallback), and the id_token's RS256
+signature is verified against the IdP **JWKS** plus a bound **nonce**.
+
+Still to do (Phase 1+): session-broker scheduling (warm pool, idle reaper);
+egress allowlist; gVisor/Firecracker. And the structural step: these bricks
+still live as namespaces inside the base — graduating them to `components/`
+(with interface namespaces) under a `playground-server` Polylith project +
+`workspace.edn` entry is deferred (zero behavior change; keeps one runnable
+artifact for now).
 
 ---
 
