@@ -372,11 +372,15 @@
         (rca/coact-capture-answer-meta {:st-memory st :agent :stub})
         (is (= :refine-self (:answer-decision @st))))))
   (testing "max-refinements=0 always accepts (low/medium effort)"
-    (let [st (fresh-st-memory :answer "## done" :goal-achieved true
-                              :refinement-round 0)]
-      ;; agent nil -> config/get-config returns nil -> max-refs 0
-      (rca/coact-capture-answer-meta {:st-memory st :agent nil})
-      (is (= :accept (:answer-decision @st))))))
+    ;; Hermetic: pin max-refinements to 0 like the sibling branches rather than
+    ;; relying on the nil-agent fallthrough, which reads the ambient
+    ;; .brainyard/config.edn (this repo sets :max-refinements 2, so the
+    ;; fallthrough would resolve 2 and yield :needs-eval).
+    (with-redefs [config/get-config (fn [_ k] (when (= k :max-refinements) 0))]
+      (let [st (fresh-st-memory :answer "## done" :goal-achieved true
+                                :refinement-round 0)]
+        (rca/coact-capture-answer-meta {:st-memory st :agent nil})
+        (is (= :accept (:answer-decision @st)))))))
 
 (deftest answer-decision-is-test
   (testing "factory matches the stamped :answer-decision"
