@@ -35,6 +35,29 @@
                        "exec clojure -M -m ai.brainyard.acp-stub-agent.core "
                        (clojure.string/join " " args))))}
 
+  ;; --------------- Playground (web multi-tenant by) ---------------
+  playground:image
+  {:doc "Build the workspace Docker image (needs the uberjar: bb uberjar:ata).
+  Pass a tag to override the default brainyard/workspace:dev."
+   :task (shell "bash" "-c"
+                (str "exec bash deploy/playground-workspace/build.sh "
+                     (clojure.string/join " " *command-line-args*)))}
+
+  playground:ui
+  {:doc "Build the playground SPA (shadow-cljs release) into the control-plane base."
+   :task (shell "bash" "-c" "cd frontend/playground-ui && npm install && npm run release")}
+
+  playground:run
+  {:doc "Run the playground control plane on :8090 (real Docker workspaces unless
+  PG_FAKE=1). Workspaces inherit provider creds from .env. Build the UI + image
+  first: bb playground:ui && bb uberjar:ata && bb playground:image."
+   :task (shell "bash" "-c"
+                (str "cd bases/playground-http && "
+                     "PG_WORKSPACE_ENV_FILE=\"$(pwd)/../../.env\" "
+                     "PG_WORKSPACE_PROVIDER=\"${PG_WORKSPACE_PROVIDER:-openai}\" "
+                     "exec clojure -M:run "
+                     (clojure.string/join " " *command-line-args*)))}
+
   ;; --------------- ACP-driven TUI ---------------
   tui:acp
   {:doc "Run the Agent TUI driven by an ACP backend (default: in-tree :stub).

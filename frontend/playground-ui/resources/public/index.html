@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Brainyard Playground</title>
+    <!-- xterm.css must match the @xterm/xterm version pinned in package.json -->
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css"
+    />
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+        background: #0b0e14;
+        color: #c9d1d9;
+      }
+      .center {
+        min-height: 100vh;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: .75rem;
+      }
+      .btn {
+        background: #2563eb; color: #fff; border: 0;
+        padding: .55rem 1rem; border-radius: 6px; cursor: pointer; font-size: .9rem;
+      }
+      .btn.primary { background: #16a34a; }
+      button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+               padding: .35rem .7rem; border-radius: 6px; cursor: pointer; }
+      button.danger { border-color: #f85149; color: #f85149; }
+      header { display: flex; align-items: center; gap: .75rem; padding: .75rem 1rem;
+               border-bottom: 1px solid #21262d; }
+      .spacer { flex: 1; }
+      .dashboard, .workspace { max-width: 980px; margin: 0 auto; padding: 1rem; }
+      .workspace { max-width: none; height: 100vh; display: flex; flex-direction: column; }
+      ul.sessions { list-style: none; padding: 0; }
+      li.session { display: flex; align-items: center; gap: .75rem;
+                   padding: .6rem .25rem; border-bottom: 1px solid #21262d; }
+      li.session .id { font-family: ui-monospace, monospace; }
+      li.session .actions { margin-left: auto; display: flex; gap: .4rem; }
+      .status { font-size: .75rem; padding: .1rem .5rem; border-radius: 999px;
+                background: #21262d; }
+      .status.ready, .status.active { color: #3fb950; }
+      .status.suspended, .status.idle { color: #d29922; }
+      .empty { color: #8b949e; }
+      .terminal-host { flex: 1; min-height: 0; padding: .25rem; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <!-- xterm.js loaded as UMD globals (window.Terminal / window.FitAddon),
+         NOT bundled: Closure advanced can't compile xterm's minified ES module.
+         Versions must match @xterm/* in package.json. Must load before main.js. -->
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+    <script src="/js/main.js"></script>
+  </body>
+</html>
