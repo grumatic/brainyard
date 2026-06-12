@@ -30,6 +30,15 @@ RUN printf '#!/bin/sh\nexec java -jar /opt/by/by.jar "$@"\n' > /usr/local/bin/by
 RUN useradd --create-home --shell /bin/bash by \
  && mkdir -p /workspace \
  && chown -R by:by /workspace /home/by
+
+# Disable the tmux status bar. web-share's serve-tmux! starts a tmux server that
+# loads ~/.tmux.conf; its bottom status row redraws independently and fights the
+# TUI's scroll-region/absolute-cursor menu redraws over xterm.js, leaving the
+# autocomplete/model-picker menu overlapped and duplicated. With status off the
+# TUI owns the whole pane and renders cleanly. (The TUI draws its own status row.)
+RUN printf 'set -g status off\n' > /home/by/.tmux.conf \
+ && chown by:by /home/by/.tmux.conf
+
 USER by
 WORKDIR /workspace
 
