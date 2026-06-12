@@ -16,7 +16,9 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [jsonista.core :as j])
-  (:import [java.util.concurrent TimeUnit]))
+  (:import [java.nio.file Files]
+           [java.nio.file.attribute FileAttribute PosixFilePermissions]
+           [java.util.concurrent TimeUnit]))
 
 (def ^:private image
   (or (System/getenv "PG_WORKSPACE_IMAGE") "brainyard/workspace:dev"))
@@ -86,34 +88,55 @@
 
 ;; --- lifecycle -------------------------------------------------------------
 
+(defn- write-secret-env-file
+  "Write env vars to an owner-only (0600) temp file as K=V lines, returning its
+   path. Secrets go through `--env-file`, never the docker command line (which
+   `ps` would expose). Created with restrictive perms atomically; the caller
+   deletes it right after `docker run` consumes it."
+  ^String [env-map]
+  (let [perms (PosixFilePermissions/asFileAttribute
+               (PosixFilePermissions/fromString "rw-------"))
+        path  (Files/createTempFile "pg-secrets-" ".env"
+                                    (into-array FileAttribute [perms]))]
+    (spit (.toFile path)
+          (->> env-map (map (fn [[k v]] (str k "=" v))) (str/join "\n")))
+    (str path)))
+
 (defn start!
-  "Start a workspace container for `session-id`. Returns
-   {:container-id :host-port :ttyd-user :ttyd-pass} or {:error msg}.
-   Binds ttyd to a random host port on 127.0.0.1 (host-reachable, not public)."
-  [session-id]
-  (let [pass (gen-pass)
-        name (str "pg-" session-id)
-        args (concat ["docker" "run" "-d" "--rm"
-                      "--name" name
-                      ;; ephemeral host port on loopback -> container 7681
-                      "-p" (str "127.0.0.1:0:" container-port)
-                      ;; per-session ttyd basic-auth password
-                      "-e" (str "BY_WEB_PASS=" pass)
-                      ;; stable identity for `by` memory partitioning
-                      "-e" (str "BY_USER_ID=" session-id)]
-                     (env-file-args)
-                     (aws-mount-args)
-                     [image]
-                     (by-args))
-        {:keys [exit out err]} (apply sh args)]
-    (if-not (zero? exit)
-      {:error (str "docker run failed: " (not-empty err) (not-empty out))}
-      (let [cid  (first (str/split-lines out))
-            port (published-host-port cid)]
-        (if port
-          {:container-id cid :host-port port :ttyd-user ttyd-user :ttyd-pass pass}
-          (do (sh "docker" "rm" "-f" cid)
-              {:error "could not resolve published host port"}))))))
+  "Start a workspace container for `session-id`. `user-env` is an optional map of
+   per-user secret env vars (from playground-secrets) injected via a private
+   env-file — overriding the shared one. Returns {:container-id :host-port
+   :ttyd-user :ttyd-pass} or {:error msg}. Binds ttyd to a random host port on
+   127.0.0.1 (host-reachable, not public)."
+  ([session-id] (start! session-id nil))
+  ([session-id user-env]
+   (let [pass (gen-pass)
+         name (str "pg-" session-id)
+         secret-file (when (seq user-env) (write-secret-env-file user-env))
+         args (concat ["docker" "run" "-d" "--rm"
+                       "--name" name
+                       ;; ephemeral host port on loopback -> container 7681
+                       "-p" (str "127.0.0.1:0:" container-port)
+                       ;; per-session ttyd basic-auth password
+                       "-e" (str "BY_WEB_PASS=" pass)
+                       ;; stable identity for `by` memory partitioning
+                       "-e" (str "BY_USER_ID=" session-id)]
+                      (env-file-args)                                  ; shared base
+                      (when secret-file ["--env-file" secret-file])    ; per-user wins
+                      (aws-mount-args)
+                      [image]
+                      (by-args))
+         {:keys [exit out err]} (apply sh args)]
+     ;; The daemon has read the file by the time `docker run` returns; remove it.
+     (when secret-file (io/delete-file secret-file true))
+     (if-not (zero? exit)
+       {:error (str "docker run failed: " (not-empty err) (not-empty out))}
+       (let [cid  (first (str/split-lines out))
+             port (published-host-port cid)]
+         (if port
+           {:container-id cid :host-port port :ttyd-user ttyd-user :ttyd-pass pass}
+           (do (sh "docker" "rm" "-f" cid)
+               {:error "could not resolve published host port"})))))))
 
 (defn ttyd-ready?
   "True once the container's ttyd answers on the published port. ttyd requires

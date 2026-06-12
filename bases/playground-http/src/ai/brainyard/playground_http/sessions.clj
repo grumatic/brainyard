@@ -16,6 +16,7 @@
    Modes: real (Docker) vs fake (`PG_FAKE=1` / no Docker) — fake sessions skip
    the container and the `/tty` route falls back to the echo stub."
   (:require [clojure.string :as str]
+            [ai.brainyard.playground-http.secrets :as secrets]
             [ai.brainyard.playground-http.store :as store]
             [ai.brainyard.playground-http.workspace :as workspace]))
 
@@ -87,7 +88,7 @@
    the rec with final :status (ready|failed) and :container-id."
   [rec]
   (let [id  (:id rec)
-        res (workspace/start! id)]
+        res (workspace/start! id (secrets/env-for-user (:user-id rec)))]
     (if (:error res)
       (assoc rec :status "failed")
       (let [ready? (workspace/wait-ready! (:host-port res) ready-timeout-ms)]

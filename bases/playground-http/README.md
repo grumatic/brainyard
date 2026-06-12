@@ -63,6 +63,8 @@ ttyd WebSocket is most reliable same-origin (build with `bb playground:ui`).
 | `OIDC_ISSUER` | OIDC issuer URL → enables real auth; bare-cookie stub when unset |
 | `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | OIDC client credentials |
 | `OIDC_REDIRECT_URI` | callback (default `http://localhost:8090/auth/callback`) |
+| `VAULT_ADDR` / `VAULT_TOKEN` | enable per-user secrets from Vault (KV v2); shared `.env` otherwise |
+| `VAULT_KV_MOUNT` / `VAULT_USER_PREFIX` | Vault mount (default `secret`) + path prefix (default `playground/users`) |
 | `PG_WORKSPACE_IMAGE` | workspace image tag (default `brainyard/workspace:dev`) |
 | `PG_WORKSPACE_ENV_FILE` | `.env` passed into each container (`by` provider creds) |
 | `PG_WORKSPACE_PROVIDER` | `by` provider for the workspace agent, e.g. `openai`, `bedrock` |
@@ -88,6 +90,7 @@ server.clj     http-kit lifecycle + -main (runs sessions/init! on startup)
 routes.clj     reitit-ring routes, handlers, static fallback
 auth.clj       playground-auth — OIDC authorization-code flow (or stub cookie)
 store.clj      playground-store — durable session records (Postgres / in-memory)
+secrets.clj    playground-secrets — per-user creds (Vault KV v2 / shared .env)
 sessions.clj   session broker — lifecycle policy, user-scoping, restart reconcile
 workspace.clj  Docker runtime driver — start!/stop!/status, ttyd health-check
 proxy.clj      authz'd WS reverse proxy: browser ⇄ container ttyd (java.net.http)
