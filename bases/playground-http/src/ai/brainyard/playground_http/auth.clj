@@ -11,17 +11,18 @@
    - **stub** otherwise: a bare cookie = one demo tenant, so the dev / `PG_FAKE`
      flow runs with no IdP.
 
-   The id_token is obtained over the TLS back channel directly from the token
-   endpoint, so per OIDC Core §3.1.3.7(6) we validate iss/aud/exp and rely on
-   transport security in place of verifying the JWT signature. Signature + nonce
-   verification (and moving sessions into the store for a stateless control
-   plane) are Phase-1 hardening."
+   The id_token is verified: its RS256 signature is checked against the IdP's
+   JWKS (fetched from discovery, keyed by `kid`), and iss/aud/exp + the `nonce`
+   (bound to the login request) are validated. Moving the server-side session
+   into the store (for a fully stateless control plane) is Phase-1 hardening."
   (:require [clojure.string :as str]
             [jsonista.core :as j])
-  (:import [java.net URI URLEncoder]
+  (:import [java.math BigInteger]
+           [java.net URI URLEncoder]
            [java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers
             HttpResponse$BodyHandlers]
-           [java.security MessageDigest]
+           [java.security KeyFactory MessageDigest Signature]
+           [java.security.spec RSAPublicKeySpec]
            [java.util Base64]))
 
 (def cookie-name "pg_session")
@@ -30,7 +31,8 @@
 
 (defonce ^:private http (delay (HttpClient/newHttpClient)))
 (defonce ^:private disco-cache (atom nil))
-(defonce ^:private states   (atom {}))   ; csrf state -> created-ms
+(defonce ^:private jwks-cache  (atom nil))   ; kid -> JWK map
+(defonce ^:private states   (atom {}))   ; csrf state -> {:created :nonce}
 (defonce ^:private sessions (atom {}))   ; sid -> {:user-id :email :exp}
 
 ;; --- config ----------------------------------------------------------------
@@ -70,13 +72,43 @@
       (some->> (http-get (str (issuer) "/.well-known/openid-configuration"))
                ->json (reset! disco-cache))))
 
-(defn- jwt-claims
-  "Decode (NOT verify) a JWT's payload segment — trusted because fetched over
-   the TLS back channel from the token endpoint."
+(defn- b64url->bytes ^bytes [^String s]
+  (.decode (Base64/getUrlDecoder) s))
+
+(defn- jwt-segment->map [seg]
+  (when seg (-> (b64url->bytes seg) (String. "UTF-8") ->json)))
+
+(defn- jwks
+  "kid -> JWK, fetched from the discovered jwks_uri (cached)."
+  []
+  (or @jwks-cache
+      (let [ks (some-> (discover) :jwks_uri http-get ->json :keys)]
+        (when (seq ks)
+          (reset! jwks-cache (into {} (map (juxt :kid identity)) ks))))))
+
+(defn- jwk->public-key [{:keys [n e]}]
+  (let [bi (fn [^String s] (BigInteger. 1 (b64url->bytes s)))]
+    (.generatePublic (KeyFactory/getInstance "RSA")
+                     (RSAPublicKeySpec. (bi n) (bi e)))))
+
+(defn- verify-rs256? [^String jwt jwk]
+  (try
+    (let [[h p s] (str/split jwt #"\.")
+          sig (doto (Signature/getInstance "SHA256withRSA")
+                (.initVerify (jwk->public-key jwk))
+                (.update (.getBytes (str h "." p) "UTF-8")))]
+      (.verify sig (b64url->bytes s)))
+    (catch Exception _ false)))
+
+(defn- verify-and-decode
+  "Verify the id_token's RS256 signature against the JWKS (keyed by `kid`) and
+   return its claims, or nil if the signature is missing/unknown/invalid."
   [^String jwt]
-  (let [seg (second (str/split jwt #"\."))]
-    (when seg
-      (-> (.decode (Base64/getUrlDecoder) ^String seg) (String. "UTF-8") ->json))))
+  (let [[h _ _] (str/split jwt #"\.")
+        {:keys [kid alg]} (jwt-segment->map h)
+        jwk (get (jwks) kid)]
+    (when (and jwk (= "RS256" (or alg "RS256")) (verify-rs256? jwt jwk))
+      (jwt-segment->map (second (str/split jwt #"\."))))))
 
 (defn- sub->user-id
   "Stable, filesystem-safe id from the OIDC sub (sha-256 hex, truncated)."
@@ -110,34 +142,36 @@
 (defn login [_req]
   (if (configured?)
     (let [state (rand-tok)
-          _     (swap! states assoc state (now))
+          nonce (rand-tok)
+          _     (swap! states assoc state {:created (now) :nonce nonce})
           d     (discover)
           url   (str (:authorization_endpoint d)
                      "?response_type=code"
                      "&client_id="    (enc (client-id))
                      "&redirect_uri=" (enc (redirect-uri))
                      "&scope="        (enc "openid email profile")
-                     "&state="        state)]
+                     "&state="        state
+                     "&nonce="        nonce)]
       {:status 302 :headers {"Location" url}})
     ;; stub: a bare cookie = the demo tenant
     {:status 302 :headers {"Location" "/"} :cookies (set-cookie (rand-tok))}))
 
-(defn- valid-claims? [claims]
+(defn- valid-claims? [claims expected-nonce]
   (and claims
        (= (:iss claims) (issuer))
        (let [aud (:aud claims)]
          (if (coll? aud) (some #{(client-id)} aud) (= aud (client-id))))
+       (= (:nonce claims) expected-nonce)
        (or (nil? (:exp claims)) (> (* 1000 (long (:exp claims))) (now)))))
 
 (defn callback
-  "OIDC redirect target: exchange code -> id_token -> session cookie."
+  "OIDC redirect target: exchange code -> verify id_token -> session cookie."
   [req]
-  (let [{:strs [code state]} (:query-params req)]
+  (let [{:strs [code state]} (:query-params req)
+        st (get @states state)]
     (cond
-      (not (configured?))            {:status 404 :body "OIDC not configured"}
-      (not (and code state
-                (contains? @states state)))
-      {:status 400 :body "invalid state or code"}
+      (not (configured?))       {:status 404 :body "OIDC not configured"}
+      (not (and code state st)) {:status 400 :body "invalid state or code"}
       :else
       (do
         (swap! states dissoc state)
@@ -150,8 +184,8 @@
                                       "client_id"     (client-id)
                                       "client_secret" (client-secret)})
               claims (when (= 200 status)
-                       (some-> (->json body) :id_token jwt-claims))]
-          (if (valid-claims? claims)
+                       (some-> (->json body) :id_token verify-and-decode))]
+          (if (valid-claims? claims (:nonce st))
             (let [sid (rand-tok)]
               (swap! sessions assoc sid
                      {:user-id (sub->user-id (:sub claims))
