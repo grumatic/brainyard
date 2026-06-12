@@ -4,6 +4,10 @@ All notable changes to Brainyard's public distribution are documented here. Vers
 
 ## [Unreleased]
 
+### Fixed
+
+- **Resuming a session whose agent type is no longer registered no longer crashes.** A persisted session records its agent type; if that type isn't registered this run — a deleted user-defined agent (`user$agent$…` / a tool/hook authored then removed), a renamed/removed built-in, or a plugin agent not loaded — `create-tui-agent!` previously got an `{:error-message …}` map back from `invoke-tool` and `swap!`-ed its `nil` `:!session`, throwing an opaque `NullPointerException` that aborted the whole resume. The TUI now detects an unregistered agent type and falls back to the default `coact-agent` (with a one-line notice), so the session's conversation history still opens; a residual setup failure is surfaced as a clear error instead of a nil-`swap!` NPE.
+
 ## [v0.3.1] — 2026-06-11
 
 ### Added

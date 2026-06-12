@@ -582,7 +582,24 @@
   (let [user-id  (or user-id (helpers/resolve-user-id))
         sess-id  (or session-id
                      (throw (ex-info "create-tui-agent! requires :session-id" {})))
-        inst-id  (or instance-id (agent/generate-instance-id agent-id))
+        ;; Resolve the effective agent type. A persisted session may name an
+        ;; agent that is no longer registered this run — a deleted user-defined
+        ;; agent (user$agent$/user$tool$…), a renamed/removed built-in, or a
+        ;; plugin agent not loaded. invoke-tool would then return an
+        ;; {:error-message …} map (not an Agent), and the swap! below would NPE
+        ;; on its nil :!session. Fall back to the default so the session's
+        ;; history still opens, with a one-line notice.
+        registered? (some? (agent/get-tool-defs :id agent-id))
+        _ (when-not registered?
+            (println (ansi/style
+                      (str "⚠ agent '" (name agent-id)
+                           "' is no longer registered — resuming with coact-agent")
+                      ansi/bright-yellow)))
+        agent-id (if registered? agent-id :coact-agent)
+        ;; A stale instance-id (for the now-unregistered type) must not carry
+        ;; over to the fallback — regenerate it from the effective type.
+        inst-id  (or (when registered? instance-id)
+                     (agent/generate-instance-id agent-id))
         dirs (dirs/init-dirs!)
         ;; Clean up existing agent if present (flat registry: by agent-id only)
         _ (when-let [^java.io.Closeable existing (agent/get-agent inst-id)]
@@ -600,7 +617,14 @@
                                :setup-only? true
                                :agent-session {:user-id user-id :session-id sess-id}
                                :max-iterations max-iterations
-                               :session-store !session-store})]
+                               :session-store !session-store})
+        ;; Defense-in-depth: the fallback above guarantees a registered type, so
+        ;; invoke-tool returns a real Agent — but surface any residual setup
+        ;; failure as a clear error rather than a downstream nil-swap! NPE.
+        _ (when (or (nil? ag) (:error-message ag) (nil? (:!session ag)))
+            (throw (ex-info (str "Could not create TUI agent for '" (name agent-id)
+                                 "': " (or (:error-message ag) "agent setup returned no session"))
+                            {:agent-id agent-id :result ag})))]
     ;; Configure the unified user-feedback fn (the single interactive-input
     ;; primitive) and the permission adapter that rides on top of it. One
     ;; feedback-fn instance is shared so permission + feedback serialize through
