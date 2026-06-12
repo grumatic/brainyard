@@ -93,7 +93,7 @@
      1. A uniform `:ai.brainyard.agent-tui.core/turn-complete` mulog
         event (v1, regardless of agent type).
      2. An atomic per-session stamp file at
-        `~/.brainyard/sessions/<session-id>/turn.complete` (v2) — small
+        `<project>/.brainyard/sessions/<session-id>/turn.complete` (v2) — small
         EDN file, best-effort write, non-fatal on failure. Drivers can
         `inotifywait -e close_write <stamp>` (Linux) or
         `fswatch -1 <stamp>` (macOS) and read the stamp's EDN payload
@@ -122,11 +122,9 @@
                 :result-length result-len)
     (when session-id
       (try
-        (let [stamp (java.io.File. (str (System/getProperty "user.home")
-                                        "/.brainyard/sessions/"
-                                        session-id "/turn.complete"))]
-          (when-let [parent (.getParentFile stamp)]
-            (when-not (.exists parent) (.mkdirs parent)))
+        ;; Resolve through the persist layer so the stamp lands under the
+        ;; project-scoped sessions root (persist/*root*), not a user-global dir.
+        (let [stamp (persist/session-file session-id "turn.complete")]
           (spit stamp (pr-str payload)))
         (catch Exception e
           (mulog/warn ::turn-stamp-write-failed
@@ -680,7 +678,7 @@
                        !tui-state so later phases (popups, side panes) can
                        branch on it.
      :resume?        - When true, hydrate the agent's in-memory session from
-                       `~/.brainyard/sessions/<session-id>/` before creating
+                       `<project>/.brainyard/sessions/<session-id>/` before creating
                        the agent, then replay the tail of the persisted
                        scrollback to stdout. Caller must also pass
                        `:session-id` of an existing on-disk session.
@@ -787,7 +785,7 @@
 
   (let [;; Honor an explicit session id from the environment when the caller
         ;; didn't pass one. Tutorial recording / scripted drivers set
-        ;; BY_SESSION_ID so `~/.brainyard/sessions/<id>/` paths (lock,
+        ;; BY_SESSION_ID so `<project>/.brainyard/sessions/<id>/` paths (lock,
         ;; turn.complete) are deterministic and `bb tui:drive -S <id>` can
         ;; target this instance. Explicit :session-id still wins.
         env-sid (let [v (System/getenv "BY_SESSION_ID")]
@@ -921,7 +919,7 @@
 
     ;; 5b. In Mode B, install the Tmux side-channel pointing at the agent's
     ;; persistence dir so /scrollback dump and side-pane FIFOs land under
-    ;; ~/.brainyard/sessions/<agent-session-id>/. Failures are non-fatal.
+    ;; <project>/.brainyard/sessions/<agent-session-id>/. Failures are non-fatal.
     (when (= :B mode)
       (try (tmux-side/install!
             {:session-dir (.getAbsolutePath ^java.io.File (persist/session-dir agt-sess-id))})

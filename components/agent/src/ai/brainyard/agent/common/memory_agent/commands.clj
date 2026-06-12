@@ -656,19 +656,21 @@
 ;; memory$forget (and, in Phase 5, memory$verify-fact) per candidate.
 ;; ============================================================================
 
-(def ^:const persist-sessions-root
-  "Default agent-tui-persist session directory. Cross-referenced when
-   detecting orphan sessions — anything in the memory DB but not in
-   here AND not in the agent-registry is orphan. We read directly
-   instead of taking a polylith dep on agent-tui-persist."
-  (str (System/getProperty "user.home") "/.brainyard/sessions"))
+(defn persist-sessions-root
+  "Project-scoped agent-tui-persist session directory. Cross-referenced when
+   detecting orphan sessions — anything in the memory DB but not in here AND
+   not in the agent-registry is orphan. Resolved at call time via
+   `config/sessions-root` instead of taking a polylith dep on agent-tui-persist,
+   so it tracks the same `<project>/.brainyard/sessions` root the persist layer uses."
+  []
+  (config/sessions-root))
 
 (defn live-sessions-on-disk
   "Set of session-id strings present under the persist root. Returns #{}
    when the directory doesn't exist or is unreadable. Public so tests
    can `with-redefs` over it."
   []
-  (let [^java.io.File root (io/file persist-sessions-root)]
+  (let [^java.io.File root (io/file (persist-sessions-root))]
     (if (and (.isDirectory root) (.canRead root))
       (into #{} (comp (filter (fn [^java.io.File f]
                                 (and (.isDirectory f)

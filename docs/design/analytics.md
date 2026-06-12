@@ -99,7 +99,7 @@ Already implemented and wired in; no new capture work is required.
 - **Reader / layout:** `agent/common/trajectory.clj` —
   `read-trajectories`, `latest-trajectory`, `session-trajectory-file`. One
   newline-delimited EDN record per line under
-  `~/.brainyard/sessions/<session-id>/trajectory.edn`; corrupt tail lines are
+  `<project>/.brainyard/sessions/<session-id>/trajectory.edn`; corrupt tail lines are
   skipped on read.
 
 ### Record shape (schema `:v 2`)
@@ -164,7 +164,7 @@ entry point that does session I/O; the analytics component stays I/O-free.
   "Analyze this session from its trajectory log (all turns up to now) and
    report Prompt Quality, Token/Cost Efficiency, iteration convergence, tool
    reliability, latency, cache efficiency, outcome quality, and a composite
-   Session Health Score. Reads ~/.brainyard/sessions/<id>/trajectory.edn — no
+   Session Health Score. Reads <project>/.brainyard/sessions/<id>/trajectory.edn — no
    per-turn cost. Use when the user asks how the session is going, where time/
    tokens went, or how to prompt more efficiently."
   (fn [& {:keys [format deep persist trends]}] …)

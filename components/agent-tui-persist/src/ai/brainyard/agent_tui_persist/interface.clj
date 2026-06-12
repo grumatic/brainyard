@@ -6,8 +6,10 @@
   "Public API for persisted agent TUI sessions.
 
    Per docs/tmux-based-agent-tui.md §11 — every persistent session lives at
-   ~/.brainyard/sessions/<agent-session-id>/.  This namespace is the only entry
-   point exposed to bases; internal namespaces are implementation detail."
+   <project>/.brainyard/sessions/<agent-session-id>/.  This namespace is the
+   only entry point exposed to bases; internal namespaces are implementation
+   detail. The app layer installs the project-scoped root at startup via
+   `set-root!`."
   (:require [ai.brainyard.agent-tui-persist.core.edn-io :as edn-io]
             [ai.brainyard.agent-tui-persist.core.eviction :as eviction]
             [ai.brainyard.agent-tui-persist.core.lock :as lock]
@@ -21,6 +23,7 @@
 ;; -- Paths --------------------------------------------------------------------
 
 (def root-dir              paths/root-dir)
+(def set-root!             paths/set-root!)
 (def session-dir           paths/session-dir)
 (def session-file          paths/session-file)
 (def file-of               paths/file-of)

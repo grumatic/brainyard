@@ -493,7 +493,7 @@ Both paths write through the same `IMemoryStore` and can coexist. When both prod
 
 ### 13.2 With `agent-tui-persist`
 
-`agent-tui-persist` knows which sessions have ever existed on disk (`~/.brainyard/sessions/<id>/`). Memory-agent's purge pass cross-references that directory plus the in-memory agent registry to detect orphan sessions. A session is "orphan" only if it appears in neither — sessions on disk but not in the registry (e.g. a tab the user closed but might reopen) are *not* orphan.
+`agent-tui-persist` knows which sessions have ever existed on disk (`<project>/.brainyard/sessions/<id>/`). Memory-agent's purge pass cross-references that directory plus the in-memory agent registry to detect orphan sessions. A session is "orphan" only if it appears in neither — sessions on disk but not in the registry (e.g. a tab the user closed but might reopen) are *not* orphan.
 
 ### 13.3 With `memory_audit`
 

@@ -110,7 +110,7 @@
    `:agent-id` (kw) is the per-instance id (e.g. :coact-agent/lavender-koala-244)
    used for in-memory dispatch. `:agent-session-id` (string) is the agent's
    stable session id (e.g. \"agt-1700000000-1234\") that keys the on-disk
-   directory at `~/.brainyard/sessions/<agent-session-id>/`. Per design doc
+   directory at `<project>/.brainyard/sessions/<agent-session-id>/`. Per design doc
    §6.3 the persistence layer is keyed on the latter; the TUI's `:id` is
    process-local and never used as a primary key on disk."
   [id opts]

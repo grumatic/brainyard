@@ -120,7 +120,7 @@ and `--with-tmux` was not passed.
   iteration / think / todo blocks until answered, intercepted by the
   input reader (`input.clj` → `try-intercept-byte`).
 - Persistence is best-effort: scrollback, snapshots, and the input
-  draft are written to `~/.brainyard/sessions/<agent-session-id>/`
+  draft are written to `<project>/.brainyard/sessions/<agent-session-id>/`
   on normal exit so the next launch can offer a resume.
 
 ### Mode B — in tmux
@@ -177,7 +177,7 @@ This is the only mode that refuses to start. The default — without
 | **Renderer** (in-process) | Alt-screen, scroll region, live blocks, raw input, popover gate, slash command dispatch, status bar. | `bases/agent-tui/` |
 | **Mode probe** | Inspect `$TMUX`, `$PATH`, `--with-tmux`, server reachability. Decide A / B / C. | `bases/agent-tui/.../mode.clj` |
 | **Tmux side-channel** | Split / kill side panes, write to per-pane FIFOs, open popups, capture pane snapshots. Active only in Mode B. | `bases/agent-tui/.../tmux_side.clj` (consumer) + `components/agent-tui-tmux` (protocol + backends) |
-| **Persistence** | Per-session EDN store at `~/.brainyard/sessions/<id>/`: input draft, scrollback ring, snapshot, pending dialogs. | `components/agent-tui-persist` |
+| **Persistence** | Per-session EDN store at `<project>/.brainyard/sessions/<id>/`: input draft, scrollback ring, snapshot, pending dialogs. | `components/agent-tui-persist` |
 | **Agent runtime** | Hooks, BT, queues, MCP, memory, sessions. Unchanged; never imports tmux. | `components/agent` |
 
 The dependency graph collapses: there is no `agent-tui-ui` base, no
@@ -227,7 +227,7 @@ future redesign needs to re-introduce a host/UI split.
 
 ## 5. `components/agent-tui-persist`
 
-Per-session directory at `~/.brainyard/sessions/<agent-session-id>/`:
+Per-session directory at `<project>/.brainyard/sessions/<agent-session-id>/`:
 
 ```
 meta.edn               agent-id, defagent-id, model, started-at, working-dir,
@@ -355,7 +355,7 @@ exposes six subcommands (`known-subcommands`,
 | `agents` | List registered agents. |
 | `models` | List available providers / models. |
 | `config` | Interactive environment bootstrap wizard. |
-| `sessions list` / `prune` | Inspect / clean up persisted agent sessions under `~/.brainyard/sessions/`. |
+| `sessions list` / `prune` | Inspect / clean up persisted agent sessions under `<project>/.brainyard/sessions/`. |
 
 `run` adds session-management flags:
 
@@ -383,7 +383,7 @@ These artifacts of the two-process design are gone from trunk:
   No replacement.
 - ❌ `bb tui daemon`, `bb tui ui [--auto]`. The corresponding
   subcommands and their `main.clj` dispatchers no longer exist.
-- ❌ Control socket (`~/.brainyard/sessions/<id>/control.sock`).
+- ❌ Control socket (`<project>/.brainyard/sessions/<id>/control.sock`).
   Renderer ↔ runtime is in-process function calls.
 - ❌ Per-pane named pipe protocol for the *main* stream. The main
   stream paints the current terminal directly.

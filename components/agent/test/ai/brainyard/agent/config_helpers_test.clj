@@ -585,7 +585,8 @@
 ;; .brainyard/ subdir scope policy
 ;;
 ;; Codifies WHICH scopes each .brainyard/<name> entry is allowed at:
-;;   - memory/, sessions/ → :user only
+;;   - memory/, logs/ → :user only
+;;   - sessions/ → :project only (sessions are project-specific)
 ;;   - config-agent/, init-agent/ → both (mirror the file they edit)
 ;;   - explore-agent/, plan-agent/, etc. (*-agent fallthrough) → :project only
 ;;   - config.edn, BRAINYARD.md, skills/ → both
@@ -594,8 +595,9 @@
 (deftest subdir-allowed-scopes-known-entries
   (testing "user-only subdirs"
     (is (= #{:user} (ai.brainyard.agent.core.config/subdir-allowed-scopes "memory")))
-    (is (= #{:user} (ai.brainyard.agent.core.config/subdir-allowed-scopes "sessions")))
     (is (= #{:user} (ai.brainyard.agent.core.config/subdir-allowed-scopes "logs"))))
+  (testing "project-only: sessions"
+    (is (= #{:project} (ai.brainyard.agent.core.config/subdir-allowed-scopes "sessions"))))
   (testing "dual-scope files / dirs"
     (is (= #{:user :project} (ai.brainyard.agent.core.config/subdir-allowed-scopes "config.edn")))
     (is (= #{:user :project} (ai.brainyard.agent.core.config/subdir-allowed-scopes "BRAINYARD.md")))
@@ -648,9 +650,12 @@
              (ai.brainyard.agent.core.config/brainyard-subdir dirs "skills" :user)))
       (is (= (str *tmp-project* "/.brainyard/skills")
              (ai.brainyard.agent.core.config/brainyard-subdir dirs "skills" :project))))
+    (testing "sessions resolve at :project scope"
+      (is (= (str *tmp-project* "/.brainyard/sessions")
+             (ai.brainyard.agent.core.config/brainyard-subdir dirs "sessions" :project))))
     (testing "forbidden combos return nil"
       (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir dirs "memory" :project)))
-      (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir dirs "sessions" :project)))
+      (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir dirs "sessions" :user)))
       (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir dirs "logs" :project)))
       (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir dirs "explore-agent" :user)))
       (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir dirs "plan-agent" :user)))

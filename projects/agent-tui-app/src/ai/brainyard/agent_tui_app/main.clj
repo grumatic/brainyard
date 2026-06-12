@@ -561,15 +561,27 @@
     (System/exit (.waitFor ^Process (:proc handle)))))
 
 (defn- install-working-dir!
-  "Install the `--working-dir`/`-C` override before any agent/tool boots.
+  "Install the `--working-dir`/`-C` override before any agent/tool boots, then
+   pin the project-scoped sessions root so persistence lands under
+   `<project>/.brainyard/sessions/` rather than the user-global dir.
+
    The flag is strict: a non-existent / non-directory path exits 1. A nil/blank
    flag clears the override, so resolution falls back to `BY_WORKING_DIR` env
    then `user.dir`. Installing here (the parent) also validates the path early,
-   before a --web/--sandbox launcher spawns its child."
+   before a --web/--sandbox launcher spawns its child.
+
+   The sessions-root injection MUST follow the working-dir override (so
+   `project-dir` is correct) and precede any persistence read (resume picker,
+   `run-tui!`, sessions list). `agent/sessions-root` honors `-C` / `BY_PROJECT_DIR`;
+   `persist/set-root!` installs it process-wide via `alter-var-root`, so the
+   host, control-server threads, and GC sweeps all observe it. Re-exec'd
+   --web/--sandbox children re-enter through this path with `-C` forwarded, so
+   they pin the same root."
   [opts]
   (try (agent/set-working-dir-override! (:working-dir opts))
        (catch clojure.lang.ExceptionInfo e
-         (exit-err! (str "Error: " (.getMessage e))))))
+         (exit-err! (str "Error: " (.getMessage e)))))
+  (persist/set-root! (agent/sessions-root)))
 
 (defn cmd-run
   "Dispatch the `run` subcommand. When already the guarded child of either
@@ -821,8 +833,10 @@
         :else      "just now"))))
 
 (defn cmd-sessions-list
-  "Print a summary of every persisted agent session."
-  [_opts]
+  "Print a summary of every persisted agent session (project-scoped)."
+  [opts]
+  ;; Pin the project-scoped sessions root (from cwd's project-dir) before reading.
+  (install-working-dir! opts)
   (let [sessions (persist/summarise-sessions)]
     (if (empty? sessions)
       (println "No persisted sessions.")
@@ -891,6 +905,8 @@
    shows an interactive picker so the user can choose one (like the
    first-start session picker)."
   [opts]
+  ;; Pin the project-scoped sessions root (from cwd's project-dir) before reading.
+  (install-working-dir! opts)
   (let [arg (or (first (:_arguments opts)) (:session-id opts))
         target (or arg
                    (if (some? (System/console))

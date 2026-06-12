@@ -77,7 +77,7 @@
    :max-collapsed-lines        {:type "integer" :default 20}
    :max-expanded-lines         {:type "integer" :default 200}
    :enable-sandbox-persistence {:type "boolean" :default true}
-   ;; Append one EDN record per turn to ~/.brainyard/sessions/<id>/trajectory.edn
+   ;; Append one EDN record per turn to <project>/.brainyard/sessions/<id>/trajectory.edn
    ;; (all iterations + final answer). Disable to skip trajectory recording.
    :enable-trajectory-recording {:type "boolean" :default true}
    :enable-budget-monitoring   {:type "boolean" :default false}
@@ -724,8 +724,13 @@
    listed here is treated as :project-only by `subdir-allowed-scopes`."
   {;; user-only: per-account state
    "memory"        :user-only
-   "sessions"      :user-only
    "logs"          :user-only
+
+   ;; project-only: sessions are project-specific. Their scrollback, message
+   ;; log, todo, queue, permissions and trajectory all describe work done in
+   ;; one codebase, so they live under <project>/.brainyard/sessions/ (gitignored)
+   ;; rather than a user-global junk drawer shared across every repo.
+   "sessions"      :project-only
 
    ;; both scopes: dual-scope files/dirs the runtime reads from either layer
    "config.edn"    :both
@@ -791,6 +796,20 @@
   (when-let [p (brainyard-subdir dirs name scope)]
     (.mkdirs (io/file p))
     p))
+
+(defn sessions-root
+  "Absolute path of the project-scoped sessions dir
+   (`<project>/.brainyard/sessions`). Single source of truth for where
+   persisted agent sessions live.
+
+   Honors the `--working-dir`/`-C` and `BY_PROJECT_DIR` overrides because it
+   flows through `resolve-dirs` → `resolve-project-dir`. The persist component
+   (`agent-tui-persist`) is dependency-free and cannot call this; the app layer
+   injects the result into `paths/*root*` at startup via `persist/set-root!`.
+   Sites inside this component (trajectory, memory-agent orphan detection) call
+   it directly at point of use."
+  ([] (sessions-root (resolve-dirs)))
+  ([dirs] (brainyard-subdir dirs "sessions" :project)))
 
 (defn read-edn-config
   "Read and parse config.edn from project or user config dir.

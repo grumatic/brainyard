@@ -530,7 +530,7 @@
 
    Path 1 / 2 already tee to the persisted scrollback inside `emit-to-session!`.
    Path 4 tees here so the default \"active session\" write path also reaches
-   `~/.brainyard/sessions/<asid>/scrollback.stream.txt`. Path 3 (out-sink) is
+   `<project>/.brainyard/sessions/<asid>/scrollback.stream.txt`. Path 3 (out-sink) is
    the daemon mode — the daemon writes through its own per-pane FIFOs which
    are responsible for any persistence."
   ([s] (emit! s nil))

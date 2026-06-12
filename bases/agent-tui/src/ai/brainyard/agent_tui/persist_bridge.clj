@@ -6,7 +6,7 @@
   "Single shared bridge from agent hooks → agent-tui-persist.
 
    Subscribes once to the agent component's hook registry on TUI `start!` and
-   routes every event to the right `~/.brainyard/sessions/<agent-session-id>/`
+   routes every event to the right `<project>/.brainyard/sessions/<agent-session-id>/`
    directory. Tabs come and go without bridge lifecycle changes; new
    agents/tabs are picked up automatically because every hook event carries an
    `:agent`, and the bridge routes by `(agent/session-id agent)`.

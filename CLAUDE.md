@@ -28,9 +28,14 @@ real shell env var always wins; otherwise the binary loads the nearest `.env`
 full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
 `scripts/by-wrapper.sh` for the loader.
 
-- **`BY_USER_ID`** — user identity stamped onto sessions and memory (L1/L2/L3 are
-  partitioned by it). Resolved once at startup: `--user-id`/`-u` flag >
+- **`BY_USER_ID`** — user identity stamped onto sessions and memory; **memory**
+  (L1/L2/L3) is partitioned by it under `~/.brainyard/memory/<user-id>.db`.
+  Resolved once at startup: `--user-id`/`-u` flag >
   `BY_USER_ID` > the `user.name` system property (OS login) > `"by-user"`.
+  Note: persisted TUI **sessions** are **project-scoped**, not user-scoped — they
+  live under `<project>/.brainyard/sessions/<id>/` (a session belongs to one repo),
+  so `by sessions list` / `--resume` only surface the current project's sessions.
+  The app installs that root at startup via `agent/sessions-root` → `persist/set-root!`.
 - **`BY_WORKING_DIR`** — effective working directory for tools/agents (no real
   JVM chdir; threaded through config). Resolved once at startup: `--working-dir`/`-C`
   flag > `BY_WORKING_DIR` > the process cwd (`user.dir`). The flag is **strict** (a

@@ -6,7 +6,7 @@
   "Per-session trajectory recording for agent execution traces.
 
    One **EDN record per turn** is appended (newline-delimited, EDN-lines) to
-   `~/.brainyard/sessions/<session-id>/trajectory.edn` — a sibling of the other
+   `<project>/.brainyard/sessions/<session-id>/trajectory.edn` — a sibling of the other
    well-known session files (`session.edn`, `usage-tracker.edn`, `messages.log`).
    Each record covers ALL iterations of the turn plus the final answer, so the
    file is a complete, append-only log of how the agent reached every answer.
@@ -38,11 +38,13 @@
    occupies exactly one physical line). Records are read back with
    `clojure.edn/read-string` (no eval — native-image safe).
 
-   NOTE: this namespace deliberately computes the sessions root directly rather
-   than taking a Polylith dep on `agent-tui-persist` (same cross-reference
-   pattern as `memory_agent`). The default mirrors
-   `agent-tui-persist.core.paths/*root*`; keep them in sync."
-  (:require [clojure.edn :as edn]
+   NOTE: this namespace deliberately avoids a Polylith dep on `agent-tui-persist`
+   (same cross-reference pattern as `memory_agent`). It resolves the
+   project-scoped sessions root through `config/sessions-root` at call time so
+   it stays in lock-step with `agent-tui-persist.core.paths/*root*` (which the
+   app layer injects from the same source)."
+  (:require [ai.brainyard.agent.core.config :as config]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.io File]))
@@ -52,18 +54,21 @@
 ;; ============================================================================
 
 (def ^:dynamic *sessions-root*
-  "Root directory for persisted sessions — `~/.brainyard/sessions` by default.
-   Mirrors `agent-tui-persist.core.paths/*root*`. Bind for tests or non-default
-   installs so trajectory writes land in a temp dir."
-  (str (System/getProperty "user.home") File/separator ".brainyard"
-       File/separator "sessions"))
+  "Override for the persisted-sessions root. `nil` (the default) means resolve
+   the project-scoped root lazily via `config/sessions-root` — kept in sync with
+   `agent-tui-persist.core.paths/*root*`. Tests `binding` this to a temp dir so
+   trajectory writes land there."
+  nil)
 
 (def trajectory-filename "trajectory.edn")
 
 (defn session-trajectory-file
-  "The `trajectory.edn` File for a session-id (not created on demand)."
+  "The `trajectory.edn` File for a session-id (not created on demand).
+   Resolves the sessions root from `*sessions-root*` when bound, else from
+   `config/sessions-root` (project-scoped)."
   ^File [session-id]
-  (io/file (str *sessions-root*) (name session-id) trajectory-filename))
+  (io/file (str (or *sessions-root* (config/sessions-root)))
+           (name session-id) trajectory-filename))
 
 ;; ============================================================================
 ;; Truncation — keep individual lines bounded

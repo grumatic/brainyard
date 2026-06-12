@@ -248,7 +248,7 @@
                 ensure-config-dirs! init-dirs! list-config-files read-config-file
                 load-brainyard-instructions read-edn-config write-edn-config!
                 subdir-scope-policy subdir-allowed-scopes subdir-scope-allowed?
-                brainyard-subdir brainyard-subdir!
+                brainyard-subdir brainyard-subdir! sessions-root
                 working-dir allowed-dirs set-allowed-dirs! resolve-agent-dirs)
 
 ;; ============================================================================

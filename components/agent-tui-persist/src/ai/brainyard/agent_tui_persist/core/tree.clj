@@ -8,7 +8,7 @@
    plus utilities to walk and render the tree.
 
    Per docs/tmux-based-agent-tui.md §11.3 (\"Persistence layout\"), every
-   session has its own directory under `~/.brainyard/sessions/<id>/`.
+   session has its own directory under `<project>/.brainyard/sessions/<id>/`.
    This namespace owns just the `meta.edn` shape:
 
      {:id          \"<session-id>\"

@@ -215,7 +215,7 @@ location, even outside a git repo (they land under `<cwd>/.brainyard/`).
 │  rendering)   /env detect)  ured logs)                                │
 │                                                                       │
 │ agent-tui-tmux  agent-tui-persist                                     │
-│ (Tmux protocol, (~/.brainyard/sessions/<id>/                          │
+│ (Tmux protocol, (<project>/.brainyard/sessions/<id>/                          │
 │  RealTmux/Stub,  EDN I/O, lock, eviction,                             │
 │  popups)         scrollback, snapshots)                               │
 └───────────────────────────────────────────────────────────────────────┘
@@ -357,7 +357,7 @@ Three bricks cooperate:
   out) / `StubTmux` (test recorder), questionnaire popup primitive,
   sinks for the per-pane FIFOs.
 - `components/agent-tui-persist` — per-session store at
-  `~/.brainyard/sessions/<agent-session-id>/` (EDN I/O, lock,
+  `<project>/.brainyard/sessions/<agent-session-id>/` (EDN I/O, lock,
   eviction, scrollback, snapshots).
 
 An earlier two-process design (`by-host` daemon + `by-ui`

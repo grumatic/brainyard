@@ -77,7 +77,7 @@
                 ;; reader thread.  Without it, `on-input` callbacks that
                 ;; touch persistence — `persist/append-event!`,
                 ;; `persist/session-dir`, etc. — write into the *real*
-                ;; ~/.brainyard/sessions/ even when the test fixture
+                ;; <project>/.brainyard/sessions/ even when the test fixture
                 ;; rebinds the root to a temp dir.
                 ^Runnable runnable
                 (bound-fn []

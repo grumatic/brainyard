@@ -6,22 +6,37 @@
   "File-system layout for persisted agent sessions.
 
    Per docs/tmux-based-agent-tui.md §11.3 — every persisted session lives under
-   ~/.brainyard/sessions/<agent-session-id>/ with a fixed set of well-known files."
+   <project>/.brainyard/sessions/<agent-session-id>/ with a fixed set of
+   well-known files."
   (:require [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.io File]))
 
 (def ^:dynamic *root*
-  "Root directory for persisted sessions. Defaults to ~/.brainyard/sessions/.
-   Bind for tests or non-default installs.
+  "Root directory for persisted sessions.
 
-   Scope contract: `sessions/` is USER-SCOPE only per
-   `ai.brainyard.agent.core.config/subdir-scope-policy`. Sessions hold
-   per-account TUI state (scrollback, input history, queues) that must not
-   travel with a repo. The default root pulls from `user.home` directly
-   with no project-path option — uphold this by construction, do not
-   introduce a project-scope sessions dir."
+   Scope contract: `sessions/` is PROJECT-SCOPE per
+   `ai.brainyard.agent.core.config/subdir-scope-policy` — sessions are
+   project-specific (their scrollback, message log, todo, queue, permissions
+   and trajectory all describe work in one codebase), so they live under
+   `<project>/.brainyard/sessions/`.
+
+   This component is dependency-free and cannot resolve project-dir itself, so
+   the app layer installs the resolved root at startup via `set-root!`
+   (computed by `config/sessions-root`, which honors `-C` / `BY_PROJECT_DIR`).
+   Until injected, this falls back to `~/.brainyard/sessions/` so standalone
+   use and pre-init reads still work. Tests rebind via `with-root`."
   (io/file (System/getProperty "user.home") ".brainyard" "sessions"))
+
+(defn set-root!
+  "Permanently install the sessions root (via `alter-var-root`, not a
+   thread-local `binding`) so every thread — host, control-server connections,
+   GC sweeps — observes it. Called once at app startup from
+   `persist/set-root!` with `(config/sessions-root)`. Tests still override
+   locally with `with-root`/`binding`. Accepts any path-like; returns the
+   installed File."
+  [dir]
+  (alter-var-root #'*root* (constantly (io/file dir))))
 
 (defn- ^File ensure-dir!
   [^File f]

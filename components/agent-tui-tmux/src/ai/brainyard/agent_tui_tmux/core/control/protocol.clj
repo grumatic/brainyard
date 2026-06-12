@@ -11,7 +11,7 @@
    See `docs/tui/architecture.md` §9 and `docs/specs/tui.md` CR-TUI-20.
 
    Per docs/tmux-based-agent-tui.md §7.1 — `by-ui` connects to
-   `~/.brainyard/sessions/<id>/control.sock` and exchanges EDN-encoded maps,
+   `<project>/.brainyard/sessions/<id>/control.sock` and exchanges EDN-encoded maps,
    one per line.
 
    Inbound messages (`by-ui` → `by-host`):

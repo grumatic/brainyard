@@ -32,7 +32,7 @@
          :host-pane   nil    ;; pane id that hosts the renderer (never killed)
          :activity    nil    ;; {:pane-id, :fifo-path, :writer} or nil
          :log         nil    ;; same shape
-         :session-dir nil    ;; ~/.brainyard/sessions/<id>/ for FIFO/scrollback files
+         :session-dir nil    ;; <project>/.brainyard/sessions/<id>/ for FIFO/scrollback files
          :prior-mouse nil})) ;; pre-install tmux `mouse` value, restored on uninstall!
 
 (defn state
@@ -145,7 +145,7 @@
 (defn install!
   "Wire the side channel to a Tmux implementation. `opts`:
      :tmux        — the impl (defaults to `(tmux-iface/real-tmux)`)
-     :session-dir — `~/.brainyard/sessions/<id>/` for FIFO and scrollback files
+     :session-dir — `<project>/.brainyard/sessions/<id>/` for FIFO and scrollback files
    Returns the resolved state map. Idempotent: re-installing replaces state.
 
    Side effects: enables `mouse on` and installs WheelUp/Down -> Up/Down
