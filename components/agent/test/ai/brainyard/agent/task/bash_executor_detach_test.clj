@@ -13,6 +13,8 @@
    bash-executor-*-test and task-manager-*-test in task_test.clj — Step E
    preserves those."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [clojure.java.shell :as shell]
+            [clojure.string :as str]
             [ai.brainyard.agent.task.manager :as manager]
             [ai.brainyard.agent.task.protocol :as tp]))
 
@@ -79,6 +81,40 @@
       (let [final (tp/get-task m (:id task))]
         (is (= :cancelled (:status final)))
         (is (= {:error "cancelled"} (:result final)))))))
+
+;; ============================================================================
+;; Shutdown destroys detached subprocess trees (orphan-on-exit regression)
+;; ============================================================================
+;;
+;; Regression for: quitting the TUI (/quit or double-Ctrl-C) left a detached
+;; task's subprocess (e.g. `npm run dev`) running as an orphaned OS process.
+;; The app's exit path (stop! + JVM shutdown hook) now calls task-shutdown →
+;; tp/shutdown, which must cancel each running detached task and destroy its
+;; proc tree. This asserts the load-bearing manager.shutdown contract directly.
+
+(defn- proc-alive?
+  "True when an OS process whose command line contains `marker` is visible to
+   pgrep. pgrep excludes its own process, so a match means a real lingering proc."
+  [marker]
+  (let [{:keys [out]} (shell/sh "pgrep" "-f" marker)]
+    (pos? (count (str/trim (or out ""))))))
+
+(deftest shutdown-destroys-detached-proc-tree
+  (testing "tp/shutdown cancels a running detached task and kills its subprocess — no orphan"
+    (let [marker   (str "BYORPHAN_" (java.util.UUID/randomUUID))
+          ;; A compound command (`;`) keeps /bin/sh from exec-optimizing into the
+          ;; sleep — so the marker survives in the parent sh's argv (visible to
+          ;; pgrep -f) and we get a real proc tree (sh → sleep), mirroring the
+          ;; npm→node→next-server chain destroy-process-tree! must reap.
+          [m task] (start-bash (str ": " marker " ; sleep 300") :timeout-ms 150)]
+      (is (wait-for #(manager/detached? (:id task)) 2000)
+          "long sleep should detach")
+      (is (wait-for #(proc-alive? marker) 2000)
+          "the spawned proc should be visible before shutdown (sanity)")
+      ;; The exact teardown stop! / the JVM shutdown hook invoke.
+      (tp/shutdown m)
+      (is (wait-for #(not (proc-alive? marker)) 3000)
+          "shutdown must destroy the detached task's proc tree — no orphaned OS process"))))
 
 (deftest detached-bash-keeps-streaming-output
   (testing "post-detach stdout is captured by the still-alive reader and lands in output-lines"

@@ -385,9 +385,13 @@
     (throw (ex-info "Task manager not initialized" {}))))
 
 (defn task-shutdown
-  "Shutdown the task manager, cancelling all running tasks."
+  "Shutdown the task manager, cancelling all running tasks (which drives each
+   detached task's :on-cancel — destroying its subprocess tree). No-op when no
+   manager was ever created. Uses `peek-default-manager` so a shutdown path
+   never spins up a fresh manager just to tear it down; safe to call twice (the
+   second call sees nil)."
   []
-  (when-let [mgr (task-mgr/get-default-manager)]
+  (when-let [mgr (task-mgr/peek-default-manager)]
     (task-proto/shutdown mgr)
     (task-mgr/set-default-manager! nil)))
 

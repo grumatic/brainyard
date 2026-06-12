@@ -628,8 +628,13 @@
 
    The pool's worker threads are daemon threads, so the JVM exits
    cleanly when the user's main code returns even if a background
-   task is still running.  Callers don't need to remember to invoke
-   `tp/shutdown` from a `stop!` path — process exit handles it."
+   task is still running.  Note daemon-ness only governs whether the
+   JVM *waits* for these threads — it does NOT kill subprocesses a
+   task spawned via ProcessBuilder (those are independent OS processes
+   that outlive the JVM).  An app's exit path MUST call `tp/shutdown`
+   (e.g. via `agent/task-shutdown` from `stop!` and the JVM shutdown
+   hook) so each detached task's :on-cancel destroys its proc tree;
+   otherwise `npm run dev`-style tasks orphan."
   [& {:keys [pool-size] :or {pool-size 4}}]
   (when-not @!executor-service
     (reset! !executor-service

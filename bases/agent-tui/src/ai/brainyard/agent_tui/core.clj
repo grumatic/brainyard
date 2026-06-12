@@ -1018,12 +1018,14 @@
   (when-let [!queue @!input-queue]
     (agent/stop-queue! !queue)
     (reset! !input-queue nil))
-  ;; Task manager cleanup is no longer needed here — `stop!` is the
-  ;; process-exit path, and the executor's worker threads are daemon
-  ;; (see `agent.task.manager/create-task-manager`), so the JVM exits
-  ;; without waiting for them.  Tests that need a fresh manager
-  ;; between cases still call `set-default-manager! nil` in their
-  ;; fixtures.
+  ;; Shut down the task manager: cancel every running task, which drives each
+  ;; detached task's :on-cancel and destroys its subprocess tree. The pool's
+  ;; worker threads are daemon, so the JVM *exits* without waiting — but a
+  ;; subprocess spawned via ProcessBuilder (e.g. `npm run dev`) is NOT a daemon
+  ;; thread; it's an independent OS process that survives JVM exit unless we
+  ;; explicitly kill it here. Best-effort. The double-Ctrl-C / SIGTERM paths
+  ;; bypass `stop!` and get the same teardown from the JVM shutdown hook below.
+  (try (agent/task-shutdown) (catch Throwable _))
   ;; Close all sessions (closes their agents and detaches watches)
   (doseq [idx (sessions/session-indices)]
     (sessions/close-session! idx))
@@ -1159,12 +1161,20 @@
           reader   (when-not use-raw?
                      (BufferedReader. (InputStreamReader. System/in)))]
       (let [cleanup-hook (Thread. ^Runnable (fn []
+                                              ;; Double-Ctrl-C / SIGTERM / crash bypass `stop!`,
+                                              ;; so this hook is the only teardown they get.
+                                              ;; Kill any detached task subprocesses first —
+                                              ;; without this a `npm run dev`-style background
+                                              ;; task is orphaned as a live OS process after the
+                                              ;; TUI exits. Idempotent: the /quit path already
+                                              ;; ran this via stop! and cleared the manager, so
+                                              ;; here it's a no-op.
+                                              (try (agent/task-shutdown) (catch Throwable _))
                                               ;; Tear down tmux side panes + wheel bindings
                                               ;; + restore prior `mouse` setting before
-                                              ;; restoring local terminal state. Double-Ctrl-C
-                                              ;; / SIGTERM / crash bypass `stop!`, so without
-                                              ;; this the /log pane (and friends) survive the
-                                              ;; JVM exit. `uninstall!` is idempotent so the
+                                              ;; restoring local terminal state. Without this
+                                              ;; the /log pane (and friends) survive the JVM
+                                              ;; exit. `uninstall!` is idempotent so the
                                               ;; /quit path (which already called it via stop!)
                                               ;; stays safe.
                                               (try (tmux-side/uninstall!) (catch Exception _))
