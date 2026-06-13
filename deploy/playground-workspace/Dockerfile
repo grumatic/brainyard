@@ -25,6 +25,14 @@ COPY by.jar /opt/by/by.jar
 RUN printf '#!/bin/sh\nexec java -jar /opt/by/by.jar "$@"\n' > /usr/local/bin/by \
  && chmod +x /usr/local/bin/by
 
+# ttyd shim (resolved before /usr/bin/ttyd on PATH, which web-share's `which
+# ttyd` picks up): inject client options. A smaller fontSize gives a wider grid
+# (~150 cols vs ttyd's default ~80), matching a normal terminal; theme matches
+# the playground's dark background.
+RUN printf '#!/bin/sh\nexec /usr/bin/ttyd -t fontSize=13 -t '\''theme={"background":"#0b0e14"}'\'' "$@"\n' \
+      > /usr/local/bin/ttyd \
+ && chmod +x /usr/local/bin/ttyd
+
 # Non-root tenant. Home holds ~/.brainyard (memory/sessions/config); /workspace
 # is the project tree. Both writable; the rest of the fs is the tenant boundary.
 RUN useradd --create-home --shell /bin/bash by \
