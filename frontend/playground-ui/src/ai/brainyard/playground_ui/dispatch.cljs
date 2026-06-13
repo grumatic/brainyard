@@ -27,9 +27,9 @@
 
 (defn- load-env! []
   (-> (api/get-env)
-      (.then (fn [{:keys [env]}]
+      (.then (fn [{:keys [env suggested]}]
                (swap! state/app-state assoc :settings
-                      {:rows (env->rows env) :status nil})))))
+                      {:rows (env->rows env) :suggested (vec suggested) :status nil})))))
 
 (defn- run-action [dom-event [action & args]]
   (case action
@@ -55,7 +55,7 @@
       (swap! state/app-state assoc-in [:settings :status] :saving)
       (-> (api/put-env env)
           (.then (fn [{:keys [env]}]
-                   (swap! state/app-state assoc :settings
+                   (swap! state/app-state update :settings merge
                           {:rows (env->rows env) :status :saved})))
           (.catch (fn [_] (swap! state/app-state assoc-in [:settings :status] :error)))))
 

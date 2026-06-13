@@ -61,9 +61,32 @@
     (json 200 (current-user req))
     (json 401 {:error "unauthenticated"})))
 
+;; Suggested env-var names for the settings dropdown (free-text still allowed).
+(def ^:private builtin-env-names
+  ["OPENAI_API_KEY" "ANTHROPIC_API_KEY" "GOOGLE_API_KEY" "GEMINI_API_KEY"
+   "GROQ_API_KEY" "MISTRAL_API_KEY" "DEEPSEEK_API_KEY" "OPENROUTER_API_KEY"
+   "TOGETHER_API_KEY" "FIREWORKS_API_KEY" "AZURE_OPENAI_API_KEY"
+   "FREELLM_API_KEY" "FREELLM_BASE_URL"
+   "AWS_PROFILE" "AWS_REGION" "AWS_DEFAULT_REGION"])
+
+(defn- env-name-suggestions
+  "Var names from `.env.example` next to PG_WORKSPACE_ENV_FILE (the maintained
+   template), falling back to the built-in list."
+  []
+  (or (when-let [ef (System/getenv "PG_WORKSPACE_ENV_FILE")]
+        (let [ex (io/file (.getParentFile (.getCanonicalFile (io/file ef))) ".env.example")]
+          (when (.canRead ex)
+            (not-empty
+             (->> (str/split-lines (slurp ex))
+                  (keep #(second (re-matches #"([A-Z][A-Z0-9_]*)=.*" %)))
+                  distinct vec)))))
+      builtin-env-names))
+
 ;; BYO env (settings). GET returns the owner's own values (editable form);
 ;; behind auth + same-origin. A hardening pass would mask/write-only these.
-(defn- get-env [req] (json 200 {:env (sessions/get-env (user-id req))}))
+;; `:suggested` feeds the name dropdown (free-text still allowed).
+(defn- get-env [req] (json 200 {:env       (sessions/get-env (user-id req))
+                                :suggested (env-name-suggestions)}))
 
 (defn- put-env [req]
   (let [env (sanitize-env (get (json-body req) "env"))]

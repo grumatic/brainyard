@@ -41,7 +41,7 @@
      [:ul.sessions (map session-row (vals sessions))]
      [:p.empty "No workspaces yet — create one to start."])])
 
-(defn settings-view [{:keys [user] {:keys [rows status]} :settings}]
+(defn settings-view [{:keys [user] {:keys [rows status suggested]} :settings}]
   [:div.settings {:replicant/key :view/settings}
    [:header
     [:button {:on {:click [[:nav/dashboard]]}} "← Workspaces"]
@@ -53,12 +53,15 @@
     [:p.hint "Variables injected into your workspaces — e.g. provider keys like "
      [:code "OPENAI_API_KEY"] " or " [:code "ANTHROPIC_API_KEY"]
      ". Applied to newly created or resumed workspaces."]
+    ;; Suggestions for the name field; the input stays free-text (type anything).
+    [:datalist {:id "env-names"}
+     (for [n suggested] [:option {:replicant/key n :value n}])]
     [:table.env
      [:tbody
       (map-indexed
        (fn [i [k v]]
          [:tr {:replicant/key i}
-          [:td [:input.k {:placeholder "NAME" :value k
+          [:td [:input.k {:placeholder "NAME" :value k :list "env-names"
                           :on {:input [[:settings/set-row i 0 :event/target.value]]}}]]
           [:td [:input.v {:placeholder "value" :value v
                           :on {:input [[:settings/set-row i 1 :event/target.value]]}}]]
