@@ -21,6 +21,26 @@
 
 (def ^:private Terminal js/Terminal)             ; window.Terminal — the class
 (def ^:private FitAddon (.-FitAddon js/FitAddon)) ; window.FitAddon.FitAddon
+(def ^:private WebglAddon  (some-> js/window .-WebglAddon  .-WebglAddon))
+(def ^:private CanvasAddon (some-> js/window .-CanvasAddon .-CanvasAddon))
+
+(defn- load-renderer!
+  "Attach a buffer-redrawing renderer (WebGL, Canvas fallback), matching ttyd.
+   xterm 5.x's default DOM renderer leaves stale/duplicated rows on the rapid
+   scroll-region redraws the TUI emits for the menu picker; WebGL/Canvas repaint
+   the viewport from the buffer each frame, so the display always matches state.
+   Must run AFTER `.open` (the renderer needs the attached DOM node)."
+  [term]
+  (letfn [(canvas! [] (when CanvasAddon
+                        (try (.loadAddon term (CanvasAddon.)) (catch :default _ nil))))]
+    (if WebglAddon
+      (try
+        (let [addon (WebglAddon.)]
+          (.loadAddon term addon)
+          ;; If the GPU drops the WebGL context, fall back to Canvas.
+          (.onContextLoss addon (fn [_] (.dispose addon) (canvas!))))
+        (catch :default _ (canvas!)))
+      (canvas!))))
 
 (def ^:private OUTPUT "0")   ; server -> client
 (def ^:private INPUT  "0")   ; client -> server
@@ -88,6 +108,7 @@
                           (send-resize! @ws-ref term))]
       (.loadAddon term fit)
       (.open term node)
+      (load-renderer! term)
       (.fit fit)
       ;; keystrokes -> server (guarded until the socket is open)
       (.onData term (fn [data] (send! @ws-ref (str INPUT data))))
