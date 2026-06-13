@@ -15,10 +15,47 @@
 
 FROM eclipse-temurin:21-jre
 
-# ttyd (PTY-over-WebSocket), tmux (detached live session for reconnect), git.
+# ttyd (PTY-over-WebSocket), tmux (detached live session for reconnect), git,
+# plus the dev toolchain + fs/web utilities the agent uses via bash:
+#   search/fs : ripgrep (rg), fd, jq, tree, less, find/grep (coreutils)
+#   web/fetch : curl, wget
+#   python    : python3 + pip + venv (uv/uvx added below)
+#   build/clj : rlwrap (for `clj`), unzip, ca-certificates
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ttyd tmux git ca-certificates \
+ && apt-get install -y --no-install-recommends \
+      ttyd tmux git ca-certificates curl wget unzip rlwrap less tree jq \
+      ripgrep fd-find python3 python3-pip python3-venv \
+ && ln -s "$(command -v fdfind)" /usr/local/bin/fd \
  && rm -rf /var/lib/apt/lists/*
+
+# Node.js LTS (node / npm / npx) via NodeSource.
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm config set update-notifier false
+
+# uv / uvx (Astral) — fast Python package+runtime manager, installed system-wide.
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
+ && uv --version && uvx --version
+
+# Clojure CLI (clj/clojure) + Babashka (bb), system-wide.
+RUN curl -fsSL https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh -o /tmp/clj-install.sh \
+ && bash /tmp/clj-install.sh && rm /tmp/clj-install.sh \
+ && curl -fsSL https://raw.githubusercontent.com/babashka/babashka/master/install -o /tmp/bb-install.sh \
+ && bash /tmp/bb-install.sh --dir /usr/local/bin && rm /tmp/bb-install.sh \
+ && clojure --version && bb --version
+
+# clj-nrepl-eval: a bb wrapper around bhauman/clojure-mcp-light's nREPL-eval main
+# (an nREPL CLIENT — the agent starts an nREPL server, then evaluates against it).
+# Add the project as a :local/root dep (via --config) so its `src` is on the
+# classpath without changing the agent's CWD (clj-nrepl-eval discovers
+# .nrepl-port from CWD). Warm the deps at build so first use is fast.
+RUN git clone --depth 1 https://github.com/bhauman/clojure-mcp-light.git /opt/clojure-mcp-light \
+ && printf '{:deps {local/deps {:local/root "/opt/clojure-mcp-light"}}}\n' > /opt/clj-nrepl-eval.edn \
+ && printf '#!/usr/bin/env bash\nexec bb --deps-root /opt/clojure-mcp-light --config /opt/clj-nrepl-eval.edn -m clojure-mcp-light.nrepl-eval -- "$@"\n' \
+      > /usr/local/bin/clj-nrepl-eval \
+ && chmod +x /usr/local/bin/clj-nrepl-eval \
+ && (cd /tmp && clj-nrepl-eval --discover-ports >/dev/null 2>&1 || true)
 
 # The agent's uberjar + a `by` shim so `which by` / BY_WEB_SELF resolve to it.
 COPY by.jar /opt/by/by.jar
@@ -49,6 +86,10 @@ RUN printf 'set -g status off\n' > /home/by/.tmux.conf \
 
 USER by
 WORKDIR /workspace
+
+# Warm clj-nrepl-eval's deps for the `by` user (Clojure tools + project deps),
+# so the agent's first Clojure eval doesn't stall ~30s downloading them.
+RUN cd /tmp && clj-nrepl-eval --discover-ports >/dev/null 2>&1 || true
 
 # `by` reads these at startup; the launcher (web-share) wraps `by run` in ttyd
 # inside a detached tmux session. BY_WEB_SELF makes ttyd relaunch the child via
