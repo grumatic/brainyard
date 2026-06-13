@@ -62,7 +62,14 @@
               (when (not= "ready" (:status rec))
                 (store/save! @db (assoc rec :status "ready"))))
           (when (not= "suspended" (:status rec))
-            (store/save! @db (assoc rec :status "suspended")))))))
+            (store/save! @db (assoc rec :status "suspended"))))))
+    ;; Orphan-volume sweep: reclaim per-session volumes with no store record
+    ;; (e.g. a crash between stop! and store removal during destroy). Runs at
+    ;; startup before serving, so there are no concurrent creates to race.
+    (let [live (set (map :id (store/all @db)))]
+      (doseq [id (workspace/data-volume-session-ids)
+              :when (not (contains? live id))]
+        (workspace/remove-data-volumes! id))))
   @db)
 
 (defn- store! [] (or @db (init!)))

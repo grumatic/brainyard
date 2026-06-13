@@ -191,6 +191,18 @@
       (str "pg-state-" session-id) (str "pg-work-" session-id))
   nil)
 
+(defn data-volume-session-ids
+  "Set of session-ids that currently have a persistent volume (`pg-state-*` /
+   `pg-work-*`). Feeds the startup orphan sweep that reclaims volumes whose
+   session record is gone (e.g. a crash between `stop!` and store removal)."
+  []
+  (let [{:keys [exit out]} (sh "docker" "volume" "ls" "--format" "{{.Name}}")]
+    (if-not (zero? exit)
+      #{}
+      (into #{}
+            (keep #(second (re-matches #"pg-(?:state|work)-(.+)" (str/trim %))))
+            (str/split-lines out)))))
+
 (defn status
   "Docker state string for the session's container, or nil if absent."
   [session-id]
