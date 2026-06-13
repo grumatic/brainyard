@@ -3,20 +3,26 @@
 (ns ai.brainyard.playground-http.store
   "Durable control-plane state — the `playground-store`. Persists the
    authoritative session records so the control plane is stateless and
-   restart-safe (design §5.4). Two backends behind one `Store` protocol:
+   restart-safe (design §5.4). One `JdbcStore` (next.jdbc) serves two engines,
+   plus an in-memory fallback, selected by `make-store`:
 
-   - **jdbc** (Postgres) when `PG_DATABASE_URL` is set — the real path.
-   - **mem** (atom) otherwise — keeps the dev/`PG_FAKE` flow dependency-free.
+   - **SQLite** (default) — a file at `~/.brainyard/playground.db` (override
+     with `PLAYGROUND_DB`). Zero-ops, durable across restarts, single-node.
+   - **Postgres** when `PG_DATABASE_URL` is set — opt-in, for multi-node
+     scale-out. The SQL is portable; only the datasource differs.
+   - **mem** (atom) when `PG_FAKE=1` — the dependency-free dev/test path.
 
    Only DURABLE, non-secret fields live here: `:id :user-id :status :created-at
    :container-id :fake`. The ephemeral ttyd password + published host port are
    runtime-only and secret — they stay in memory in `sessions` and are
    re-derived from the running container on restart, never written to the DB."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [jsonista.core :as j]
             [next.jdbc :as jdbc]
-            [next.jdbc.result-set :as rs]
-            [next.jdbc.sql :as sql]))
+            [next.jdbc.result-set :as rs])
+  (:import [org.sqlite SQLiteConfig SQLiteConfig$JournalMode
+            SQLiteConfig$SynchronousMode SQLiteDataSource]))
 
 (defprotocol Store
   (save! [s rec]        "Upsert a session record (by :id).")
@@ -41,7 +47,11 @@
 
 (defn mem-store [] (->MemStore (atom {}) (atom {})))
 
-;; --- postgres --------------------------------------------------------------
+;; --- jdbc (sqlite | postgres) ----------------------------------------------
+;; DDL is kept dialect-neutral so the same statements run on both engines:
+;; `bigint`/`integer` are accepted by SQLite's flexible typing, and `fake` is an
+;; INTEGER 0/1 (not a `boolean` literal, which SQLite only learned recently) —
+;; coerced back to a Clojure boolean by `row->rec`.
 
 (def ^:private ddl
   "CREATE TABLE IF NOT EXISTS workspaces (
@@ -50,7 +60,7 @@
      status       text NOT NULL,
      created_at   bigint NOT NULL,
      container_id text,
-     fake         boolean NOT NULL DEFAULT false)")
+     fake         integer NOT NULL DEFAULT 0)")
 
 (def ^:private ddl-idx
   "CREATE INDEX IF NOT EXISTS workspaces_user_id_idx ON workspaces (user_id)")
@@ -63,8 +73,17 @@
 
 (def ^:private opts {:builder-fn rs/as-unqualified-kebab-maps})
 
+(defn- ->bool
+  "Coerce a DB `fake` value to a Clojure boolean. SQLite returns 0/1 (and
+   `(boolean 0)` is truthy in Clojure!), Postgres returns a real Boolean."
+  [v]
+  (cond (boolean? v) v
+        (number? v)  (not (zero? v))
+        (string? v)  (contains? #{"1" "t" "true"} (str/lower-case v))
+        :else        (boolean v)))
+
 (defn- row->rec [row]
-  (when row (update row :fake boolean)))
+  (when row (update row :fake ->bool)))
 
 (defrecord JdbcStore [ds]
   Store
@@ -75,7 +94,7 @@
        VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (id) DO UPDATE
        SET status = EXCLUDED.status, container_id = EXCLUDED.container_id"
-      id user-id status created-at container-id (boolean fake)])
+      id user-id status created-at container-id (if fake 1 0)])
     {:id id :user-id user-id :status status :created-at created-at
      :container-id container-id :fake (boolean fake)})
   (fetch [_ id]
@@ -97,22 +116,53 @@
     env))
 
 (defn jdbc-store
-  "Build a Postgres-backed store from a JDBC URL and create the schema."
-  [jdbc-url]
-  (let [ds (jdbc/get-datasource {:jdbcUrl jdbc-url})]
-    (jdbc/execute! ds [ddl])
-    (jdbc/execute! ds [ddl-idx])
-    (jdbc/execute! ds [ddl-env])
-    (->JdbcStore ds)))
+  "Wrap a ready datasource and create the schema (idempotent)."
+  [ds]
+  (jdbc/execute! ds [ddl])
+  (jdbc/execute! ds [ddl-idx])
+  (jdbc/execute! ds [ddl-env])
+  (->JdbcStore ds))
+
+;; --- datasources -----------------------------------------------------------
+
+(defn- pg-datasource [jdbc-url]
+  (jdbc/get-datasource {:jdbcUrl jdbc-url}))
+
+(defn- sqlite-datasource
+  "A SQLiteDataSource at `path` with WAL + a busy timeout so the http-kit worker
+   threads don't trip over 'database is locked' under light concurrency. Pragmas
+   are set on the config so EVERY connection the datasource hands out inherits
+   them (a URL alone would not). Creates the parent dir if missing."
+  [path]
+  (let [f (io/file path)]
+    (some-> (.getParentFile (.getAbsoluteFile f)) (.mkdirs))
+    (let [cfg (doto (SQLiteConfig.)
+                (.setJournalMode SQLiteConfig$JournalMode/WAL)
+                (.setSynchronous SQLiteConfig$SynchronousMode/NORMAL)
+                (.setBusyTimeout 5000))]
+      (doto (SQLiteDataSource. cfg)
+        (.setUrl (str "jdbc:sqlite:" (.getAbsolutePath f)))))))
+
+(defn- default-sqlite-path []
+  (.getAbsolutePath (io/file (System/getProperty "user.home") ".brainyard" "playground.db")))
 
 ;; --- selection -------------------------------------------------------------
 
 (defn make-store
-  "Postgres store when PG_DATABASE_URL is set (e.g.
-   `jdbc:postgresql://localhost:5432/playground?user=pg&password=pg`),
-   otherwise an in-memory store."
+  "Pick a backend by environment:
+   - `PG_FAKE=1`        -> in-memory (dependency-free dev/test).
+   - `PG_DATABASE_URL`  -> Postgres (multi-node opt-in).
+   - otherwise (default)-> SQLite file at `PLAYGROUND_DB` or
+                           `~/.brainyard/playground.db` — durable, zero-ops."
   []
-  (if-let [url (not-empty (System/getenv "PG_DATABASE_URL"))]
-    (let [url (if (str/starts-with? url "jdbc:") url (str "jdbc:" url))]
-      (jdbc-store url))
-    (mem-store)))
+  (cond
+    (= "1" (System/getenv "PG_FAKE"))
+    (mem-store)
+
+    (not-empty (System/getenv "PG_DATABASE_URL"))
+    (let [url (System/getenv "PG_DATABASE_URL")]
+      (jdbc-store (pg-datasource (if (str/starts-with? url "jdbc:") url (str "jdbc:" url)))))
+
+    :else
+    (jdbc-store (sqlite-datasource (or (not-empty (System/getenv "PLAYGROUND_DB"))
+                                       (default-sqlite-path))))))
