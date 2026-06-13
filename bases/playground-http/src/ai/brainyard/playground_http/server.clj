@@ -15,6 +15,7 @@
 (defonce ^:private server (atom nil))
 
 (defn stop! []
+  (sessions/stop-reaper!)
   (when-let [s @server]
     (hk/server-stop! s)
     (reset! server nil)))
@@ -25,6 +26,8 @@
    (stop!)
    ;; Build the store + reconcile runtime state against running containers.
    (sessions/init!)
+   ;; Idle reaper: suspend workspaces with no connected client (daemon thread).
+   (sessions/start-reaper!)
    ;; #'routes/app (a var) so a REPL reload is picked up without a restart.
    (reset! server (hk/run-server #'routes/app {:port port :legacy-return-value? false}))
    (println (str "playground-http listening on http://localhost:" port

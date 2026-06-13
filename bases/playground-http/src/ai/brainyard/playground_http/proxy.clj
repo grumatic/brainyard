@@ -119,8 +119,12 @@
 (defn listener
   "Build a Ring-WebSocket Listener (map form) bridging the browser socket to the
    upstream ttyd described by `{:host-port :ttyd-user :ttyd-pass}`. Returned as a
-   plain map; ring-core extends IPersistentMap to the Listener protocol."
-  [{:keys [host-port ttyd-user ttyd-pass]}]
+   plain map; ring-core extends IPersistentMap to the Listener protocol.
+
+   `hooks` may carry `:on-open`/`:on-close` thunks (no args) — the control plane
+   uses them to track connected clients for the idle reaper. The proxy stays
+   generic; the caller (routes) wires them to a session id."
+  [{:keys [host-port ttyd-user ttyd-pass]} {:keys [on-open on-close] :as _hooks}]
   (let [up-ref   (atom nil)     ; upstream WebSocket, set once connected
         sock-ref (atom nil)     ; browser-side ring Socket
         pending  (atom [])      ; client frames buffered until upstream is up
@@ -161,6 +165,7 @@
             (java.util.concurrent.CompletableFuture/completedFuture nil)))]
     {:on-open
      (fn [browser-sock]
+       (when on-open (on-open))
        (reset! sock-ref browser-sock)
        (-> (.buildAsync (-> (.newWebSocketBuilder ^HttpClient @http-client)
                             (.header "Authorization" (str "Basic " cred))
@@ -196,13 +201,17 @@
              (swap! pending conj b)))))
      :on-close
      (fn [_browser-sock _code _reason]
+       (when on-close (on-close))
        (when-let [^WebSocket up @up-ref]
          (.sendClose up WebSocket/NORMAL_CLOSURE "")))}))
 
 (defn handler
   "Ring handler upgrading the browser request to a `tty` WebSocket proxied to
-   the session's container ttyd (`upstream` = {:host-port :ttyd-user :ttyd-pass})."
-  [upstream]
-  (fn [_req]
-    {:ring.websocket/protocol "tty"
-     :ring.websocket/listener (listener upstream)}))
+   the session's container ttyd (`upstream` = {:host-port :ttyd-user :ttyd-pass}).
+   Optional `hooks` ({:on-open :on-close}) fire on browser connect/disconnect —
+   the control plane uses them for idle tracking."
+  ([upstream] (handler upstream nil))
+  ([upstream hooks]
+   (fn [_req]
+     {:ring.websocket/protocol "tty"
+      :ring.websocket/listener (listener upstream hooks)})))

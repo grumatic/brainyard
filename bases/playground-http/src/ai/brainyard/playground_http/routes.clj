@@ -149,7 +149,9 @@
 (defn- term-ws [req]
   (let [id (-> req :path-params :id)]
     (if-let [up (sessions/upstream (user-id req) id)]
-      ((proxy/handler up) req)
+      ;; Track connect/disconnect so the idle reaper knows when nobody's watching.
+      ((proxy/handler up {:on-open  #(sessions/client-connected! id)
+                          :on-close #(sessions/client-disconnected! id)}) req)
       ((tty/handler id) req))))   ; fake mode (no container) -> echo stub
 
 ;; --- middleware ------------------------------------------------------------

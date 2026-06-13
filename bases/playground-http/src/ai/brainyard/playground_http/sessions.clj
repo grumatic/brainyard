@@ -23,6 +23,10 @@
 (defonce ^:private db (atom nil))                 ; the Store instance
 (defonce ^:private upstream-cache (atom {}))      ; id -> {:host-port :ttyd-user :ttyd-pass}
 
+;; Idle-reaper activity clock — defined in the reaper section below, but seeded
+;; by init!/provision! above it.
+(declare touch!)
+
 (def ^:private ready-timeout-ms 30000)
 
 (defn fake-mode?
@@ -59,6 +63,7 @@
       (let [id (:id rec)]
         (if-let [up (and (workspace/running? id) (workspace/rederive-upstream id))]
           (do (swap! upstream-cache assoc id up)
+              (touch! id)                       ; start the idle clock for reconciled sessions
               (when (not= "ready" (:status rec))
                 (store/save! @db (assoc rec :status "ready"))))
           (when (not= "suspended" (:status rec))
@@ -111,6 +116,98 @@
       (store/save! @db (assoc rec :status "suspended"))))
   nil)
 
+;; --- idle reaper -----------------------------------------------------------
+;; Suspend (NOT destroy) workspaces with no connected client for the idle
+;; window. Non-destructive thanks to persistent volumes + --resume-latest: the
+;; dashboard shows Resume and the container comes back where it left off.
+;; Idle = "no client connected for PG_IDLE_TIMEOUT_MIN" (default 30; 0 = off).
+
+(defonce ^:private activity (atom {}))   ; id -> {:clients n :last-activity ms}
+(defonce ^:private reaper   (atom nil))  ; ScheduledExecutorService or nil
+
+(defn touch!
+  "Reset `id`'s idle clock (called when a session goes ready). Preserves the
+   current connected-client count."
+  [id]
+  (swap! activity update id
+         #(assoc % :last-activity (System/currentTimeMillis) :clients (or (:clients %) 0)))
+  nil)
+
+(defn client-connected!
+  "A browser opened the terminal for `id` (from the proxy WS bridge)."
+  [id]
+  (swap! activity update id
+         (fn [a] (-> a (update :clients (fnil inc 0))
+                     (assoc :last-activity (System/currentTimeMillis)))))
+  nil)
+
+(defn client-disconnected!
+  "A browser closed the terminal for `id`. Starts the idle clock once the last
+   client is gone."
+  [id]
+  (swap! activity update id
+         (fn [a] (-> a (update :clients (fn [c] (max 0 (dec (or c 0)))))
+                     (assoc :last-activity (System/currentTimeMillis)))))
+  nil)
+
+(defn suspend!
+  "System-level suspend (the reaper): stop the container (volumes survive), drop
+   the upstream cache + activity, mark suspended. No user check — the reaper acts
+   on ids directly. No-op for fake/non-ready sessions."
+  [id]
+  (when-let [rec (store/fetch @db id)]
+    (when (and (not (:fake rec)) (= "ready" (:status rec)))
+      (workspace/stop! id)
+      (swap! upstream-cache dissoc id)
+      (swap! activity dissoc id)
+      (store/save! @db (assoc rec :status "suspended"))))
+  nil)
+
+(defn- idle-timeout-ms []
+  (long (* 60000 (or (some-> (System/getenv "PG_IDLE_TIMEOUT_MIN")
+                             str/trim not-empty parse-double)
+                     30.0))))
+
+(defn- reaper-tick-ms []
+  (long (* 1000 (or (some-> (System/getenv "PG_REAPER_TICK_SEC")
+                            str/trim not-empty parse-double)
+                    60.0))))
+
+(defn- reap-once!
+  "One sweep: suspend every ready, client-less session idle past the window."
+  []
+  (let [timeout (idle-timeout-ms)]
+    (when (pos? timeout)
+      (let [now (System/currentTimeMillis)]
+        (doseq [rec (store/all @db)
+                :when (and (= "ready" (:status rec)) (not (:fake rec)))]
+          (let [id (:id rec) a (get @activity id)]
+            (cond
+              (nil? a)                       (touch! id)   ; first sight → seed clock
+              (pos? (or (:clients a) 0))     nil           ; someone's watching
+              (> (- now (or (:last-activity a) now)) timeout) (suspend! id))))))))
+
+(defn stop-reaper! []
+  (when-let [e @reaper]
+    (.shutdownNow ^java.util.concurrent.ExecutorService e)
+    (reset! reaper nil)))
+
+(defn start-reaper!
+  "Start the background idle-reaper (daemon thread). No-op in fake mode or when
+   PG_IDLE_TIMEOUT_MIN <= 0."
+  []
+  (stop-reaper!)
+  (when (and (not (fake-mode?)) (pos? (idle-timeout-ms)))
+    (let [exec (java.util.concurrent.Executors/newSingleThreadScheduledExecutor
+                (reify java.util.concurrent.ThreadFactory
+                  (newThread [_ r] (doto (Thread. ^Runnable r "pg-idle-reaper")
+                                     (.setDaemon true)))))
+          tick (reaper-tick-ms)]
+      (.scheduleAtFixedRate ^java.util.concurrent.ScheduledExecutorService exec
+                            ^Runnable #(try (reap-once!) (catch Throwable _ nil))
+                            tick tick java.util.concurrent.TimeUnit/MILLISECONDS)
+      (reset! reaper exec))))
+
 ;; --- lifecycle -------------------------------------------------------------
 
 (defn- provision!
@@ -128,6 +225,7 @@
       (let [ready? (workspace/wait-ready! (:host-port res) ready-timeout-ms)]
         (if ready?
           (do (swap! upstream-cache assoc id (select-keys res [:host-port :ttyd-user :ttyd-pass]))
+              (touch! id)                       ; start the idle clock
               (assoc rec :status "ready" :container-id (:container-id res)))
           (do (workspace/stop! id)
               (assoc rec :status "failed")))))))
