@@ -19,8 +19,10 @@
    ttyd's. We DROP that frame and inject the correct ttyd AuthToken upstream
    ourselves — the browser never sees the workspace credential."
   (:require [ring.websocket :as ws])
-  (:import [java.net URI]
-           [java.net.http HttpClient WebSocket WebSocket$Listener]
+  (:import [java.io ByteArrayInputStream]
+           [java.net URI]
+           [java.net.http HttpClient HttpClient$Version HttpRequest
+            HttpResponse$BodyHandlers WebSocket WebSocket$Listener]
            [java.nio ByteBuffer]
            [java.util Base64]
            [java.util.function Consumer]))
@@ -29,6 +31,29 @@
 
 (defn- b64 ^String [^String s]
   (.encodeToString (Base64/getEncoder) (.getBytes s "UTF-8")))
+
+(defn http-proxy
+  "Proxy a GET to the container's ttyd at `path` (e.g. \"/\" the self-contained
+   client page, or \"/token\"), injecting basic auth so the browser never sees
+   the workspace credential. Returns a Ring response. Used to serve ttyd's OWN
+   web client same-origin (the workspace iframe), which renders the TUI exactly
+   as ttyd intends — no hand-rolled xterm client to keep in lock-step."
+  [{:keys [host-port ttyd-user ttyd-pass]} ^String path]
+  (let [cred (b64 (str ttyd-user ":" ttyd-pass))
+        resp (.send @http-client
+                    (-> (HttpRequest/newBuilder (URI/create (str "http://127.0.0.1:" host-port path)))
+                        ;; ttyd (libwebsockets) is HTTP/1.1 only; java.net.http
+                        ;; defaults to HTTP/2 and the h2c upgrade makes ttyd drop
+                        ;; the connection (EOF). Pin HTTP/1.1.
+                        (.version HttpClient$Version/HTTP_1_1)
+                        (.header "Authorization" (str "Basic " cred))
+                        (.GET) (.build))
+                    (HttpResponse$BodyHandlers/ofByteArray))
+        ctype (-> (.headers resp) (.firstValue "content-type")
+                  (.orElse "application/octet-stream"))]
+    {:status  (.statusCode resp)
+     :headers {"Content-Type" ctype}
+     :body    (ByteArrayInputStream. (.body resp))}))
 
 (defn- bb->bytes ^bytes [^ByteBuffer bb]
   (let [a (byte-array (.remaining bb))] (.get bb a) a))

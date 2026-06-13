@@ -3,9 +3,9 @@
 (ns ai.brainyard.playground-ui.views
   "Pure render: app-state -> hiccup. No side effects, no DOM access. Event
    handlers are DATA (`:on {:click [[:action ...]]}`) interpreted by `dispatch`.
-   The only imperative corner — the xterm.js terminal — is encapsulated behind
-   `terminal/terminal`, which renders a node with life-cycle hooks."
-  (:require [ai.brainyard.playground-ui.terminal :as terminal]))
+   The terminal is ttyd's own self-contained client, embedded same-origin via an
+   iframe (`/api/sessions/:id/term/`) — so the TUI renders exactly as ttyd
+   intends, with no hand-rolled xterm client to maintain.")
 
 (defn login-view []
   [:div.center {:replicant/key :view/login}
@@ -39,14 +39,15 @@
      [:ul.sessions (map session-row (vals sessions))]
      [:p.empty "No workspaces yet — create one to start."])])
 
-(defn workspace-view [state id]
+(defn workspace-view [_state id]
   [:div.workspace {:replicant/key :view/workspace}
    [:header
     [:button {:on {:click [[:nav/dashboard]]}} "← Workspaces"]
-    [:span.id id]
-    [:span.conn (name (get-in state [:conn id] :idle))]]
-   ;; Stable node: the terminal mounts here once and survives header re-renders.
-   (terminal/terminal id)])
+    [:span.id id]]
+   ;; ttyd's own client, proxied same-origin. Stable :replicant/key so the iframe
+   ;; (and its live ttyd session) survives header re-renders.
+   [:iframe.term {:replicant/key (str "term-" id)
+                  :src (str "/api/sessions/" id "/term/")}]])
 
 (defn root
   "Top-level view chosen by auth state, then route."

@@ -4,11 +4,6 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Brainyard Playground</title>
-    <!-- xterm.css must match the @xterm/xterm version pinned in package.json -->
-    <link
-      rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css"
-    />
     <style>
       :root { color-scheme: dark; }
       * { box-sizing: border-box; }
@@ -46,21 +41,13 @@
       .status.ready, .status.active { color: #3fb950; }
       .status.suspended, .status.idle { color: #d29922; }
       .empty { color: #8b949e; }
-      .terminal-host { flex: 1; min-height: 0; padding: .25rem; }
+      iframe.term { flex: 1; min-height: 0; width: 100%; border: 0; background: #0b0e14; }
     </style>
   </head>
   <body>
     <div id="app"></div>
-    <!-- xterm.js loaded as UMD globals (window.Terminal / window.FitAddon),
-         NOT bundled: Closure advanced can't compile xterm's minified ES module.
-         Versions must match @xterm/* in package.json. Must load before main.js. -->
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
-    <!-- Renderer addon (window.WebglAddon / window.CanvasAddon). xterm 5.x
-         defaults to the DOM renderer, which leaves stale/duplicated rows on
-         rapid scroll-region redraws (the menu picker). ttyd uses WebGL; match it. -->
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-canvas@0.7.0/lib/addon-canvas.js"></script>
+    <!-- The terminal is ttyd's own client, embedded via an iframe in the
+         workspace view; no xterm.js is bundled or loaded here anymore. -->
     <script src="/js/main.js"></script>
   </body>
 </html>

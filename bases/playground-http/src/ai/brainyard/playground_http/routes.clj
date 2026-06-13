@@ -64,18 +64,30 @@
   (sessions/destroy! (user-id req) (-> req :path-params :id))
   {:status 204})
 
-(defn- tty-token [_]
-  ;; Short-lived per-socket token. The stub doesn't verify it; playground-proxy
-  ;; will. Returning it keeps the front-end handshake identical to production.
-  (json 200 {:token (str (random-uuid))}))
+;; --- terminal: serve the container's OWN ttyd client, same-origin -----------
+;; The workspace embeds `/api/sessions/:id/term/` in an iframe. ttyd's client
+;; (a self-contained page) then derives its endpoints from the URL it loaded at:
+;;   tokenUrl = <path>/token   wsUrl = <path>/ws
+;; so we proxy those three to the container ttyd, injecting basic auth. Using
+;; ttyd's real client means the TUI renders exactly as ttyd intends.
 
-(defn- tty-ws [req]
-  ;; Proxy to the session's container ttyd when it has one; otherwise (fake
-  ;; mode / no container) fall back to the echo stub so the SPA still works.
+(defn- term-resource
+  "Proxy a ttyd HTTP resource (the page or /token) for the owned session."
+  [req ttyd-path]
+  (let [id (-> req :path-params :id)]
+    (if-let [up (sessions/upstream (user-id req) id)]
+      (proxy/http-proxy up ttyd-path)
+      {:status 503 :headers {"Content-Type" "text/plain"}
+       :body "workspace terminal not available (no running container)"})))
+
+(defn- term-page  [req] (term-resource req "/"))
+(defn- term-token [req] (term-resource req "/token"))
+
+(defn- term-ws [req]
   (let [id (-> req :path-params :id)]
     (if-let [up (sessions/upstream (user-id req) id)]
       ((proxy/handler up) req)
-      ((tty/handler id) req))))
+      ((tty/handler id) req))))   ; fake mode (no container) -> echo stub
 
 ;; --- middleware ------------------------------------------------------------
 
@@ -96,8 +108,11 @@
      ["/sessions/:id"            {:get    (wrap-require-auth get-session)
                                   :delete (wrap-require-auth destroy-session)}]
      ["/sessions/:id/resume"     {:post (wrap-require-auth resume-session)}]
-     ["/sessions/:id/tty-token"  {:post (wrap-require-auth tty-token)}]
-     ["/sessions/:id/tty"        {:get  (wrap-require-auth tty-ws)}]]
+     ;; ttyd's own client, proxied same-origin (workspace iframe)
+     ["/sessions/:id/term"       {:get (wrap-require-auth term-page)}]
+     ["/sessions/:id/term/"      {:get (wrap-require-auth term-page)}]
+     ["/sessions/:id/term/token" {:get (wrap-require-auth term-token)}]
+     ["/sessions/:id/term/ws"    {:get (wrap-require-auth term-ws)}]]
     ["/auth"
      ["/login"    {:get auth/login}]
      ["/callback" {:get auth/callback}]

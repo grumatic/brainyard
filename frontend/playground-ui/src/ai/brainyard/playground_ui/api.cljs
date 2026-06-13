@@ -34,5 +34,6 @@
 (defn resume!         [id] (request "POST"   (str "/api/sessions/" id "/resume") {}))
 (defn destroy!        [id] (request "DELETE" (str "/api/sessions/" id) nil))
 
-;; Short-lived, per-socket token for the ttyd WebSocket upgrade (see §6.4).
-(defn tty-token!      [id] (request "POST"   (str "/api/sessions/" id "/tty-token") {}))
+;; The terminal is ttyd's own client embedded via an iframe at
+;; /api/sessions/:id/term/ — it handles its own WS/token handshake, so the SPA
+;; no longer mints a tty token.
