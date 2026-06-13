@@ -1,0 +1,28 @@
+;; Copyright (c) 2024-2026 Grumatic, Inc.
+;; SPDX-License-Identifier: MIT
+;;
+;; shadow-cljs build for the Brainyard Playground front-end (Replicant SPA).
+;;
+;;   dev:      npx shadow-cljs watch app    → http://localhost:8080
+;;             (unmatched requests proxy to the JVM control plane on :8090)
+;;   release:  npx shadow-cljs release app  → compiles into the playground-http
+;;             base's resources/public/js so the base serves it same-origin.
+{:source-paths ["src"]
+
+ :dependencies [[no.cjohansen/replicant   "2025.12.1"]
+                [metosin/reitit-frontend  "0.7.2"]]
+
+ ;; Dev server: serves the SPA from resources/public and proxies anything it
+ ;; can't find (/api/*, /auth/*, the /tty websocket) to the control plane, so
+ ;; cookies + WSS behave as same-origin exactly like they will in production.
+ :dev-http {8080 {:root      "resources/public"
+                  :proxy-url "http://localhost:8090"}}
+
+ :builds
+ {:app {:target     :browser
+        :output-dir "resources/public/js"
+        :asset-path "/js"
+        :modules    {:main {:init-fn ai.brainyard.playground-ui.core/init}}
+        :devtools   {:after-load ai.brainyard.playground-ui.core/after-load}
+        ;; Production build lands in the base so playground-http serves it.
+        :release    {:output-dir "../../bases/playground-http/resources/public/js"}}}}

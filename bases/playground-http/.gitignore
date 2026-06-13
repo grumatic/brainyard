@@ -1,0 +1,5 @@
+# Front-end build artifacts: produced by `npm run release` in
+# frontend/playground-ui (shadow-cljs output + the copied SPA shell).
+# Not source — regenerated on every release build.
+/resources/public/js/
+/resources/public/index.html

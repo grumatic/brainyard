@@ -1,0 +1,4 @@
+# Only the Dockerfile + the staged by.jar belong in the build context.
+*
+!Dockerfile
+!by.jar

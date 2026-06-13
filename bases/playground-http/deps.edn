@@ -1,0 +1,19 @@
+;; Copyright (c) 2024-2026 Grumatic, Inc.
+;; SPDX-License-Identifier: MIT
+;;
+;; Brainyard Playground control-plane base (Phase-0 stub).
+;; Run standalone for dev:  cd bases/playground-http && clojure -M:run
+;; (In production this base is composed into the playground-server project,
+;;  which owns the :run/build aliases — the alias here is a dev convenience.)
+{:paths ["src" "resources"]
+
+ :deps {org.clojure/clojure  {:mvn/version "1.12.0"}
+        http-kit/http-kit    {:mvn/version "2.8.1"}   ; HTTP server + WebSocket
+        metosin/reitit-ring  {:mvn/version "0.7.2"}   ; routing (matches FE reitit)
+        metosin/jsonista     {:mvn/version "1.0.0"}   ; JSON encode/decode
+        ring/ring-core       {:mvn/version "1.15.4"}  ; cookies + params middleware
+        com.github.seancorfield/next.jdbc {:mvn/version "1.3.939"} ; control-plane store
+        org.postgresql/postgresql         {:mvn/version "42.7.4"}}
+
+ :aliases
+ {:run {:main-opts ["-m" "ai.brainyard.playground-http.server"]}}}
