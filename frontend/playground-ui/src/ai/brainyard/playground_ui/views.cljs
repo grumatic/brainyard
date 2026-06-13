@@ -83,7 +83,10 @@
     [:span.id id]]
    ;; ttyd's own client, proxied same-origin. Stable :replicant/key so the iframe
    ;; (and its live ttyd session) survives header re-renders.
+   ;; `allow` grants clipboard access so the proxy-injected copy-on-select
+   ;; (Shift-drag to select past the TUI's mouse mode) can write to the clipboard.
    [:iframe.term {:replicant/key (str "term-" id)
+                  :allow "clipboard-read; clipboard-write"
                   :src (str "/api/sessions/" id "/term/")}]])
 
 (defn root

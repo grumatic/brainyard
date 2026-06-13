@@ -32,6 +32,60 @@
 (defn- b64 ^String [^String s]
   (.encodeToString (Base64/getEncoder) (.getBytes s "UTF-8")))
 
+;; The `by` TUI enables mouse tracking, so a plain click-drag is sent to the app
+;; instead of selecting text. xterm only does a LOCAL selection when its
+;; "force selection" modifier is held — and that modifier is platform-specific:
+;;   shouldForceSelection(e) = isMac ? (e.altKey && macOptionClickForcesSelection)
+;;                                    : e.shiftKey
+;; So on macOS NO modifier selects by default (Shift isn't it, and the Option
+;; path is gated behind macOptionClickForcesSelection, default false). We fix
+;; that in `enableSelect`: turn the public option on (so Option+drag works) and,
+;; when xterm's selection service is reachable, widen the bypass so BOTH Shift
+;; and Option force a selection on every platform. Then `wire` adds copy-on-
+;; select: on mouseup, copy any selection to the clipboard (mouseup is a user
+;; gesture, so navigator.clipboard.writeText is allowed — the iframe is granted
+;; clipboard-write; execCommand fallback for older engines).
+;;
+;; Also suppress the browser's native right-click context menu: the TUI's mouse
+;; tracking already forwards right-click to the app (its own popup), so the
+;; browser menu just doubles up. preventDefault on `contextmenu` kills only the
+;; browser menu — the app's menu rides on mousedown/up reporting, untouched.
+(def ^:private copy-on-select-script
+  "<script>(function(){
+  document.addEventListener('contextmenu',function(e){e.preventDefault();},false);
+  function copy(s){if(!s)return;
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(s).catch(function(){fb(s);});}else{fb(s);}}
+  function fb(s){try{var a=document.activeElement,t=document.createElement('textarea');
+    t.value=s;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);
+    t.select();document.execCommand('copy');document.body.removeChild(t);
+    if(a&&a.focus)a.focus();}catch(e){}}
+  function enableSelect(term){
+    try{term.options.macOptionClickForcesSelection=true;}catch(e){}
+    try{var ss=term._core&&term._core._selectionService;
+      if(ss&&typeof ss.shouldForceSelection==='function')
+        ss.shouldForceSelection=function(e){return !!(e.shiftKey||e.altKey);};}catch(e){}}
+  function wire(){var term=window.term,el=document.querySelector('.xterm');
+    if(!term||!el){return setTimeout(wire,300);}
+    enableSelect(term);
+    el.addEventListener('mouseup',function(){
+      var s=term.getSelection&&term.getSelection();if(s&&s.trim())copy(s);});}
+  wire();})();</script>")
+
+(defn- inject-copy-script
+  "Splice the copy-on-select script into ttyd's HTML page (before </body>, else
+   append). No-op for non-HTML bodies."
+  ^bytes [^bytes body ^String ctype]
+  (if (and ctype (.contains ctype "text/html"))
+    (let [html (String. body "UTF-8")
+          out  (if (.contains html "</body>")
+                 (.replaceFirst html "(?i)</body>"
+                                (str (java.util.regex.Matcher/quoteReplacement copy-on-select-script)
+                                     "</body>"))
+                 (str html copy-on-select-script))]
+      (.getBytes out "UTF-8"))
+    body))
+
 (defn http-proxy
   "Proxy a GET to the container's ttyd at `path` (e.g. \"/\" the self-contained
    client page, or \"/token\"), injecting basic auth so the browser never sees
@@ -53,7 +107,9 @@
                   (.orElse "application/octet-stream"))]
     {:status  (.statusCode resp)
      :headers {"Content-Type" ctype}
-     :body    (ByteArrayInputStream. (.body resp))}))
+     ;; Inject copy-on-select into the ttyd client page so selections are
+     ;; copyable (see copy-on-select-script). Other resources pass through.
+     :body    (ByteArrayInputStream. (inject-copy-script (.body resp) ctype))}))
 
 (defn- bb->bytes ^bytes [^ByteBuffer bb]
   (let [a (byte-array (.remaining bb))] (.get bb a) a))
