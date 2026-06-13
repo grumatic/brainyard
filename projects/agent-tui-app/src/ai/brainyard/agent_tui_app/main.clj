@@ -152,6 +152,8 @@
 ;; ============================================================================
 
 (declare format-bytes format-age-millis)
+;; Defined further down (web/env helpers) but used by run-tui!'s resume logic.
+(declare env-truthy?)
 
 (def ^:private resume-pick-sentinel
   "Placeholder value injected by `-main` when bare `--resume` is given (no id),
@@ -209,6 +211,19 @@
             (when (and (>= i 1) (<= i n))
               (:session-id (nth summaries (dec i))))))))))
 
+(defn- latest-session-id
+  "The newest persisted session-id (by last-attached-at, then started-at) among
+   `existing-ids`, or nil if none. The non-interactive counterpart to the picker:
+   used by `--resume-latest` / `BY_RESUME_LATEST` so a relaunched session (e.g. a
+   playground workspace whose container was recreated) reattaches to where the
+   user left off, falling back to a fresh session when there are none."
+  [existing-ids]
+  (->> (persist/summarise-sessions)
+       (filter #(contains? existing-ids (:session-id %)))
+       (sort-by (fn [s] (- 0 (long (or (:last-attached-at s) (:started-at s) 0)))))
+       first
+       :session-id))
+
 ;; ============================================================================
 ;; Subcommand: run — interactive TUI
 ;; ============================================================================
@@ -253,6 +268,10 @@
         ;;                     (-main rewrites bare --resume to the sentinel)
         ;; --new is a deprecated no-op (fresh is already the default).
         resume-arg (:resume opts)
+        ;; --resume-latest / BY_RESUME_LATEST: non-interactive "resume newest,
+        ;; else fresh". Lets a relaunched workspace reattach without a stdin
+        ;; picker. An explicit --resume <id> / bare picker still takes precedence.
+        resume-latest? (or (:resume-latest opts) (env-truthy? "BY_RESUME_LATEST"))
         existing (set (persist/list-sessions))
         [session-id resume?]
         (cond
@@ -268,6 +287,11 @@
                 (println (str "Error: no persisted session named '" resume-arg "'.")))
               (System/exit 1))
             [resume-arg true])
+
+          resume-latest?
+          (if-let [latest (latest-session-id existing)]
+            [latest true]
+            [nil false])
 
           :else
           [nil false])
@@ -364,7 +388,8 @@
     (= (:resume opts) resume-pick-sentinel) (conj "-r")
     (and (:resume opts)
          (not= (:resume opts) resume-pick-sentinel))
-    (into ["-r" (:resume opts)])))
+    (into ["-r" (:resume opts)])
+    (:resume-latest opts) (conj "--resume-latest")))
 
 (defn- print-web-banner!
   [{:keys [url session socket]} {:keys [user pass generated?]} bind port writable? tmux?]
@@ -504,7 +529,8 @@
     (= (:resume opts) resume-pick-sentinel) (conj "-r")
     (and (:resume opts)
          (not= (:resume opts) resume-pick-sentinel))
-    (into ["-r" (:resume opts)])))
+    (into ["-r" (:resume opts)])
+    (:resume-latest opts) (conj "--resume-latest")))
 
 (defn- resolve-sandbox-config!
   "Resolve the sandbox launch config: probe sandbox-exec + macOS, resolve how to
@@ -944,6 +970,9 @@
                                 {:option "resume" :short "r"
                                  :as "Resume a persisted session: bare = pick from a menu; --resume <id> = that session"
                                  :type :string}
+                                {:option "resume-latest"
+                                 :as "Resume the most-recent persisted session non-interactively (fresh if none); env BY_RESUME_LATEST"
+                                 :type :with-flag :default false}
                                 {:option "new"
                                  :as "(deprecated; sessions start fresh by default — accepted as a no-op)"
                                  :type :with-flag :default false}
