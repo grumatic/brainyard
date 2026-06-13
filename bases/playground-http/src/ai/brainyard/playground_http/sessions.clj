@@ -75,6 +75,19 @@
 (defn get-for [user-id id]
   (public (owned user-id id)))
 
+;; --- BYO env (settings) — injected into the user's workspace at provision -----
+
+(defn get-env
+  "The user's BYO env vars (settings screen): {name->value}, or {}."
+  [user-id]
+  (or (store/env-get (store!) user-id) {}))
+
+(defn set-env!
+  "Replace the user's BYO env vars. Takes effect for newly provisioned/resumed
+   workspaces (env is injected at container start)."
+  [user-id env]
+  (store/env-set! (store!) user-id env))
+
 (defn upstream
   "Proxy target for `id` if owned by `user-id` and live — else nil."
   [user-id id]
@@ -88,7 +101,11 @@
    the rec with final :status (ready|failed) and :container-id."
   [rec]
   (let [id  (:id rec)
-        res (workspace/start! id (secrets/env-for-user (:user-id rec)))]
+        ;; Per-user env injected into the container: Vault secrets, overlaid with
+        ;; the user's BYO settings (BYO wins — it's their explicit choice).
+        env (not-empty (merge (secrets/env-for-user (:user-id rec))
+                              (store/env-get @db (:user-id rec))))
+        res (workspace/start! id env)]
     (if (:error res)
       (assoc rec :status "failed")
       (let [ready? (workspace/wait-ready! (:host-port res) ready-timeout-ms)]

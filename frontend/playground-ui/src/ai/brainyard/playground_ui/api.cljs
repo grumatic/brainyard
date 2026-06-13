@@ -34,6 +34,10 @@
 (defn resume!         [id] (request "POST"   (str "/api/sessions/" id "/resume") {}))
 (defn destroy!        [id] (request "DELETE" (str "/api/sessions/" id) nil))
 
+;; BYO env (settings). env is a {name -> value} map.
+(defn get-env         []    (get-json "/api/me/env"))
+(defn put-env         [env] (request "PUT" "/api/me/env" {:env env}))
+
 ;; The terminal is ttyd's own client embedded via an iframe at
 ;; /api/sessions/:id/term/ — it handles its own WS/token handshake, so the SPA
 ;; no longer mints a tty token.

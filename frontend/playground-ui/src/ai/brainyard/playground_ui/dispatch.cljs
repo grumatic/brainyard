@@ -7,7 +7,8 @@
    which keeps the views pure and the whole UI replayable/testable.
 
    An action is `[:action/name & args]`; a handler is a collection of them."
-  (:require [clojure.walk :as walk]
+  (:require [clojure.string :as str]
+            [clojure.walk :as walk]
             [reitit.frontend.easy :as rfe]
             [ai.brainyard.playground-ui.state :as state]
             [ai.brainyard.playground-ui.api :as api]
@@ -19,6 +20,17 @@
                (swap! state/app-state assoc :sessions
                       (into {} (map (juxt :id identity)) sessions))))))
 
+(defn- env->rows
+  "Server env map (keywordized) -> ordered [[name value] ...] for the editor."
+  [env]
+  (->> env (map (fn [[k v]] [(name k) v])) (sort-by first) vec))
+
+(defn- load-env! []
+  (-> (api/get-env)
+      (.then (fn [{:keys [env]}]
+               (swap! state/app-state assoc :settings
+                      {:rows (env->rows env) :status nil})))))
+
 (defn- run-action [dom-event [action & args]]
   (case action
     ;; --- pure state -------------------------------------------------------
@@ -27,6 +39,25 @@
     ;; --- navigation -------------------------------------------------------
     :nav/dashboard (rfe/push-state :route/dashboard)
     :nav/workspace (rfe/push-state :route/workspace {:id (first args)})
+    :nav/settings  (rfe/push-state :route/settings)
+
+    ;; --- settings: BYO env editor -----------------------------------------
+    :settings/load       (load-env!)
+    :settings/set-row    (let [[idx field v] args]      ; field 0=name, 1=value
+                           (swap! state/app-state assoc-in [:settings :rows idx field] v))
+    :settings/add-row    (swap! state/app-state update-in [:settings :rows] (fnil conj []) ["" ""])
+    :settings/remove-row (let [idx (first args)]
+                           (swap! state/app-state update-in [:settings :rows]
+                                  #(into (subvec % 0 idx) (subvec % (inc idx)))))
+    :settings/save
+    (let [rows (get-in @state/app-state [:settings :rows])
+          env  (into {} (for [[k v] rows :when (not (str/blank? k))] [(str/trim k) v]))]
+      (swap! state/app-state assoc-in [:settings :status] :saving)
+      (-> (api/put-env env)
+          (.then (fn [{:keys [env]}]
+                   (swap! state/app-state assoc :settings
+                          {:rows (env->rows env) :status :saved})))
+          (.catch (fn [_] (swap! state/app-state assoc-in [:settings :status] :error)))))
 
     ;; --- auth -------------------------------------------------------------
     :auth/login    (auth/login!)

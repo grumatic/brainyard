@@ -34,10 +34,44 @@
     [:div.spacer]
     [:span.user (:email user)]
     [:button {:on {:click [[:auth/logout]]}} "Sign out"]]
-   [:button.btn.primary {:on {:click [[:session/create]]}} "New workspace"]
+   [:div.toolbar
+    [:button.btn.primary {:on {:click [[:session/create]]}} "New workspace"]
+    [:button {:on {:click [[:nav/settings]]}} "Settings"]]
    (if (seq sessions)
      [:ul.sessions (map session-row (vals sessions))]
      [:p.empty "No workspaces yet — create one to start."])])
+
+(defn settings-view [{:keys [user] {:keys [rows status]} :settings}]
+  [:div.settings {:replicant/key :view/settings}
+   [:header
+    [:button {:on {:click [[:nav/dashboard]]}} "← Workspaces"]
+    [:h1 "Settings"]
+    [:div.spacer]
+    [:span.user (:email user)]]
+   [:section
+    [:h2 "Workspace environment"]
+    [:p.hint "Variables injected into your workspaces — e.g. provider keys like "
+     [:code "OPENAI_API_KEY"] " or " [:code "ANTHROPIC_API_KEY"]
+     ". Applied to newly created or resumed workspaces."]
+    [:table.env
+     [:tbody
+      (map-indexed
+       (fn [i [k v]]
+         [:tr {:replicant/key i}
+          [:td [:input.k {:placeholder "NAME" :value k
+                          :on {:input [[:settings/set-row i 0 :event/target.value]]}}]]
+          [:td [:input.v {:placeholder "value" :value v
+                          :on {:input [[:settings/set-row i 1 :event/target.value]]}}]]
+          [:td [:button.danger {:on {:click [[:settings/remove-row i]]}} "✕"]]])
+       rows)]]
+    [:div.toolbar
+     [:button {:on {:click [[:settings/add-row]]}} "+ Add variable"]
+     [:button.btn.primary {:on {:click [[:settings/save]]}} "Save"]
+     (case status
+       :saving [:span.hint "Saving…"]
+       :saved  [:span.hint.ok "Saved ✓"]
+       :error  [:span.hint.err "Save failed"]
+       nil)]]])
 
 (defn workspace-view [_state id]
   [:div.workspace {:replicant/key :view/workspace}
@@ -58,4 +92,5 @@
     :else
     (case (:name route)
       :route/workspace (workspace-view state (-> route :params :id))
+      :route/settings  (settings-view state)
       (dashboard-view state))))

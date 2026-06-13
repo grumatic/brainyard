@@ -19,13 +19,16 @@
 
 (def routes
   [["/"               {:name :route/dashboard}]
-   ["/workspace/:id"  {:name :route/workspace}]])
+   ["/workspace/:id"  {:name :route/workspace}]
+   ["/settings"       {:name :route/settings}]])
 
 (defn- on-navigate [m]
   (when m
-    (swap! state/app-state assoc :route
-           {:name   (-> m :data :name)
-            :params (:path-params m)})))
+    (let [name (-> m :data :name)]
+      (swap! state/app-state assoc :route {:name name :params (:path-params m)})
+      ;; Load BYO env when entering settings (covers in-app nav + deep-link).
+      (when (= name :route/settings)
+        (dispatch/handle {} [[:settings/load]])))))
 
 (defn init []
   ;; 1. event handlers + life-cycle hooks expressed as data flow through here

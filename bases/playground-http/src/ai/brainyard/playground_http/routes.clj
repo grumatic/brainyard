@@ -18,6 +18,7 @@
 
    Auth here is a stub cookie. Real impl: playground-auth (OIDC) + JWT."
   (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [jsonista.core :as j]
             [reitit.ring :as ring]
             [ring.middleware.cookies :refer [wrap-cookies]]
@@ -34,6 +35,19 @@
 
 (defn- user-id [req] (:user-id (auth/identity-of req)))
 
+(defn- json-body [req]
+  (some-> (:body req) slurp not-empty (j/read-value (j/object-mapper))))
+
+(defn- sanitize-env
+  "Keep only valid env-var entries: name matches [A-Za-z_][A-Za-z0-9_]*, value
+   coerced to string. Defends against junk/injection in the settings payload."
+  [m]
+  (when (map? m)
+    (into {} (for [[k v] m
+                   :let  [k (str k)]
+                   :when (re-matches #"[A-Za-z_][A-Za-z0-9_]*" k)]
+               [k (str v)]))))
+
 (defn- current-user [req]
   (let [{:keys [user-id email]} (auth/identity-of req)]
     {:userId user-id
@@ -46,6 +60,15 @@
   (if (auth/identity-of req)
     (json 200 (current-user req))
     (json 401 {:error "unauthenticated"})))
+
+;; BYO env (settings). GET returns the owner's own values (editable form);
+;; behind auth + same-origin. A hardening pass would mask/write-only these.
+(defn- get-env [req] (json 200 {:env (sessions/get-env (user-id req))}))
+
+(defn- put-env [req]
+  (let [env (sanitize-env (get (json-body req) "env"))]
+    (sessions/set-env! (user-id req) (or env {}))
+    (json 200 {:env (sessions/get-env (user-id req))})))
 
 (defn- list-sessions   [req] (json 200 (sessions/list-for (user-id req))))
 (defn- create-session  [req] (json 201 (sessions/create! (user-id req))))
@@ -103,6 +126,8 @@
   (ring/router
    [["/api"
      ["/me"                      {:get me}]
+     ["/me/env"                  {:get (wrap-require-auth get-env)
+                                  :put (wrap-require-auth put-env)}]
      ["/sessions"                {:get  (wrap-require-auth list-sessions)
                                   :post (wrap-require-auth create-session)}]
      ["/sessions/:id"            {:get    (wrap-require-auth get-session)
