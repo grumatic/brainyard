@@ -396,47 +396,68 @@ A thin MVP for Phase 0 can ship behind a feature flag without touching
 `agent-tui-app` at all — the playground is an additive project that *invokes*
 the existing `by` binary, so the core TUI keeps shipping independently.
 
-### As-built (Phase 0, implemented)
+### As-built (Phases 0–1, implemented)
 
-The browser→`by` path is working end-to-end:
+The browser→`by` path is working end-to-end, and **Phase 1 is complete**:
 
-- **`frontend/playground-ui`** — the Replicant SPA (login · dashboard · xterm
-  terminal). xterm.js loads as a CDN UMD global (Closure can't bundle it).
-- **`bases/playground-server`** — the control plane:
+- **`frontend/playground-ui`** — the Replicant SPA: **login · dashboard ·
+  workspace · settings**. The terminal is **ttyd's own client embedded
+  same-origin in an `<iframe>`** (`/api/sessions/:id/term/`), not a hand-rolled
+  xterm — the custom-xterm approach was dropped after vdom/rendering problems.
+  The iframe is granted `clipboard-write`; the proxy injects a small script for
+  **copy-on-select** (Shift- or ⌥-drag past the TUI's mouse mode) and
+  **browser-context-menu suppression**. **Settings** edits per-user BYO env
+  (provider keys, etc.) with a datalist of suggested names.
+- **`bases/playground-server`** — the control plane (renamed from
+  `playground-http`):
   - `auth.clj` (`playground-auth`) — **real OIDC** authorization-code flow when
     `OIDC_ISSUER` is set (bare-cookie stub otherwise); the OIDC `sub` → a
-    sha-256 `user-id`.
-  - `store.clj` (`playground-store`) — durable session records in **Postgres**
-    (`PG_DATABASE_URL`) or in-memory; only non-secret fields persisted.
-  - `sessions.clj` — the broker: lifecycle policy, **user-scoped** ownership,
-    and a **restart-safe reconcile** that rebuilds runtime state (host port +
-    ttyd password) from running containers — secrets never hit the DB.
-  - `workspace.clj` (`workspace-runtime`) — the Docker driver (`docker run` a
-    container per session on a loopback-published ephemeral port; health-check
-    ttyd; mount `~/.aws` for Bedrock).
+    sha-256 `user-id`. id_token RS256 verified against the IdP **JWKS** + nonce.
+  - `store.clj` (`playground-store`) — one `JdbcStore` over portable DDL:
+    **SQLite by default** (`~/.brainyard/playground.db`; `PLAYGROUND_DB`
+    override), **Postgres** when `PG_DATABASE_URL` is set, in-memory for
+    `PG_FAKE`. Holds session records + per-user BYO env; only non-secret fields.
+  - `sessions.clj` — the broker: **user-scoped** ownership, **restart-safe
+    reconcile** (rebuilds host port + ttyd password from live containers —
+    secrets never hit the DB), the **idle reaper** (suspends a workspace with no
+    connected client after `PG_IDLE_TIMEOUT_MIN`, default 30; non-destructive),
+    and BYO-env overlay over Vault.
+  - `workspace.clj` (`workspace-runtime`) — the Docker driver: a container per
+    session on a loopback-published ephemeral port; health-check ttyd; `~/.aws`
+    mount for Bedrock; **persistent per-session volumes** (`pg-state-<id>` →
+    `~/.brainyard`, `pg-work-<id>` → `/workspace`) so suspend/resume restores
+    state; a startup **orphan-volume sweep**.
   - `proxy.clj` (`playground-proxy`) — the WS bridge: browser ⇄ container ttyd
-    over a `java.net.http` WebSocket, injecting the ttyd `AuthToken`.
-  - `routes.clj` (REST + SPA serving), `tty.clj` (echo, fake mode only).
+    over a `java.net.http` WebSocket (fragment reassembly, `AuthToken`
+    injection) plus an HTTP proxy that serves ttyd's own client; client
+    connect/disconnect hooks feed the reaper.
+  - `routes.clj` (REST + SPA serving), `secrets.clj` (Vault), `tty.clj` (echo,
+    fake mode only).
 - **`deploy/playground-workspace`** — the workspace image: `temurin:21-jre` +
-  ttyd + tmux + git + the `by` uberjar, launched via the `--web-tmux` flag.
-  Provider via `PG_WORKSPACE_PROVIDER` (OpenAI + Bedrock/Claude both verified).
+  ttyd + tmux + git + a **dev toolchain** (clj/bb/clj-nrepl-eval, python/uv,
+  node/npm, fs/web utilities) + the `by` uberjar. Launched via the `--web-tmux`
+  flag with `BY_RESUME_LATEST=1` so a recreated container **reattaches to the
+  newest session**. Provider via `PG_WORKSPACE_PROVIDER` (OpenAI + Bedrock/Claude
+  verified); workspace env injected from a container-safe **`.env.playground`**.
+- **`by` binary support:** `--resume-latest` / `BY_RESUME_LATEST` (a general
+  flag, used by the image) reattaches to the newest persisted session.
 - Build/run: `bb playground:ui`, `bb playground:image`, `bb playground:run`.
 
-Verified end-to-end against a mock OIDC IdP + a Postgres container: full OIDC
-login → authenticated dashboard; two users isolated (each sees only their own
-sessions; cross-tenant access 404); control-plane restart loses nothing (state
-in Postgres, runtime reconciled from live containers).
+Verified end-to-end: OIDC login → authenticated dashboard; two users isolated
+(each sees only their own sessions; cross-tenant access 404); control-plane
+restart loses nothing (records in the store, runtime reconciled from live
+containers); **suspend/resume restores files + conversation** (persistent
+volumes + `--resume-latest`); the **idle reaper** suspends client-less
+workspaces and a connected client keeps one alive; terminal **copy-on-select**
+and context-menu suppression work; `playground-secrets` injects per-user Vault
+creds via a private temp env-file.
 
-Also done: `playground-secrets` injects per-user creds from **Vault** (KV v2)
-via a private temp env-file (shared `.env` fallback), and the id_token's RS256
-signature is verified against the IdP **JWKS** plus a bound **nonce**.
-
-Still to do (Phase 1+): session-broker scheduling (warm pool, idle reaper);
-egress allowlist; gVisor/Firecracker. And the structural step: these bricks
-still live as namespaces inside the base — graduating them to `components/`
-(with interface namespaces) under a `playground-server` Polylith project +
-`workspace.edn` entry is deferred (zero behavior change; keeps one runnable
-artifact for now).
+Remaining (**Phase 2**): egress allowlist; gVisor/Firecracker driver; warm pool;
+node autoscaling; snapshot suspend/restore; quota enforcement; audit log; and
+the production secrets cut-over (Vault replacing the shared `.env.playground`).
+The bricks-→-`components/` graduation under a separate Polylith project was
+judged unnecessary — the base was simply renamed `playground-http` →
+`playground-server`.
 
 ---
 
