@@ -70,10 +70,13 @@ RUN printf '#!/bin/sh\nexec /usr/bin/ttyd -t fontSize=13 -t '\''theme={"backgrou
       > /usr/local/bin/ttyd \
  && chmod +x /usr/local/bin/ttyd
 
-# Non-root tenant. Home holds ~/.brainyard (memory/sessions/config); /workspace
-# is the project tree. Both writable; the rest of the fs is the tenant boundary.
+# Non-root tenant. Home holds ~/.brainyard (memory/config); /workspace is the
+# project tree (TUI sessions + files). Both writable; the rest of the fs is the
+# tenant boundary. ~/.brainyard is pre-created so the per-session named volume
+# mounted there (see playground workspace.clj) seeds from a by-owned dir — a
+# missing mount point would be created root-owned and break the tenant's writes.
 RUN useradd --create-home --shell /bin/bash by \
- && mkdir -p /workspace \
+ && mkdir -p /workspace /home/by/.brainyard \
  && chown -R by:by /workspace /home/by
 
 # Disable the tmux status bar. web-share's serve-tmux! starts a tmux server that
@@ -103,10 +106,15 @@ RUN cd /tmp && clj-nrepl-eval --discover-ports >/dev/null 2>&1 || true
 # `--web-tmux` FLAG in the ENTRYPOINT instead (flags aren't forwarded to the
 # child by web-child-argv), so the child sees neither flag nor env and runs the
 # TUI. BY_WEB_BIND/PORT/SELF are safe as env — alone they don't trigger sharing.
+# BY_RESUME_LATEST: UNLIKE BY_WEB_TMUX above, we WANT this inherited by the child
+# `by run` — it makes the TUI reattach to the newest persisted session (restored
+# from the /workspace volume on resume), falling back to a fresh session on first
+# boot. The web-tmux re-entrancy concern doesn't apply (it's not a --web* flag).
 ENV BY_WEB_BIND=0.0.0.0 \
     BY_WEB_PORT=7681 \
     BY_WEB_SELF=by \
-    BY_USER_ID=playground
+    BY_USER_ID=playground \
+    BY_RESUME_LATEST=1
 
 EXPOSE 7681
 

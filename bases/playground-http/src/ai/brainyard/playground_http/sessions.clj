@@ -146,10 +146,14 @@
       (public rec'))))
 
 (defn destroy!
-  "Reap a workspace owned by `user-id` (idempotent; no-op if not owned)."
+  "Reap a workspace owned by `user-id` (idempotent; no-op if not owned). Destroy
+   is the only path that discards persistent state: stop the container, then
+   delete its volumes (resume must NOT — that's why suspend keeps them)."
   [user-id id]
   (when-let [rec (owned user-id id)]
-    (when-not (:fake rec) (workspace/stop! id))
+    (when-not (:fake rec)
+      (workspace/stop! id)
+      (workspace/remove-data-volumes! id))
     (swap! upstream-cache dissoc id)
     (store/remove! @db id))
   nil)

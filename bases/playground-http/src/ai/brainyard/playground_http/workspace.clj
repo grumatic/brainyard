@@ -117,6 +117,16 @@
                        "--name" name
                        ;; ephemeral host port on loopback -> container 7681
                        "-p" (str "127.0.0.1:0:" container-port)
+                       ;; Persistent per-session state. `--rm` discards the
+                       ;; container's writable layer on stop, so without these
+                       ;; volumes a resume = a blank container. Named volumes
+                       ;; survive `--rm`/`docker rm` and are seeded from the
+                       ;; image (owning user preserved) on first start, then
+                       ;; restored on resume. Two narrow mounts so we keep the
+                       ;; agent memory + TUI sessions + files but NOT duplicate
+                       ;; the big clj/maven caches under the rest of $HOME.
+                       "-v" (str "pg-state-" session-id ":/home/by/.brainyard")
+                       "-v" (str "pg-work-"  session-id ":/workspace")
                        ;; per-session ttyd basic-auth password
                        "-e" (str "BY_WEB_PASS=" pass)
                        ;; stable identity for `by` memory partitioning
@@ -164,9 +174,21 @@
         :else (do (Thread/sleep 250) (recur))))))
 
 (defn stop!
-  "Stop + remove the container for `session-id` (idempotent)."
+  "Stop + remove the container for `session-id` (idempotent). The per-session
+   named volumes are deliberately left intact so a later resume restores state —
+   only `destroy!` (via `remove-data-volumes!`) reclaims them."
   [session-id]
   (sh "docker" "rm" "-f" (str "pg-" session-id))
+  nil)
+
+(defn remove-data-volumes!
+  "Delete a session's persistent volumes (state + workspace). Call only when the
+   session is being destroyed for good — NOT on stop/suspend. Idempotent: `-f`
+   ignores absent volumes. The container must be gone first (a volume in use by
+   a running container can't be removed); `destroy!` calls `stop!` before this."
+  [session-id]
+  (sh "docker" "volume" "rm" "-f"
+      (str "pg-state-" session-id) (str "pg-work-" session-id))
   nil)
 
 (defn status
