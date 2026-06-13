@@ -382,11 +382,15 @@ reload server proxying `/api` and `/auth` to the JVM control plane. The SPA is
   terminal" wired to the `xterm.js` client. Proves the end-to-end browser→`by`
   path. *Trusted users only.*
 - **Phase 1 — durable & secure-enough for a wider beta.** Persistent volumes,
-  `playground-secrets` (Vault), `playground-store` (Postgres), idle reaper,
-  resume, audit log. Front-end grows the full **dashboard** (multi-workspace
-  list, status, resume/destroy) and **settings**.
+  `playground-secrets` (Vault), `playground-store` (SQLite by default, Postgres
+  opt-in), idle reaper, resume. Front-end grows the full **dashboard**
+  (multi-workspace list, status, resume/destroy) and **settings**.
 - **Phase 2 — multi-tenant-grade.** Egress allowlist, gVisor/Firecracker driver,
-  warm pool, node autoscaling, snapshot suspend/restore, quotas.
+  warm pool, node autoscaling, snapshot suspend/restore, quotas, audit log, and
+  **per-user secret isolation in production** — move workspaces off the shared
+  `.env.playground` fallback onto per-user `playground-secrets` (Vault) so
+  tenants no longer run on the operator's shared credentials. (The Vault backend
+  already exists; this is the operational cut-over + provisioning/rotation.)
 
 A thin MVP for Phase 0 can ship behind a feature flag without touching
 `agent-tui-app` at all — the playground is an additive project that *invokes*
