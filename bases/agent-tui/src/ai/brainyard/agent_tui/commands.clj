@@ -317,16 +317,15 @@
           ;; Check popular models first (handles short names like "haiku" → :claude-code)
           popular-match (some #(when (= model-name (:model %)) %) (clj-llm/get-popular-models))
           new-provider  (or (:provider popular-match) (clj-llm/get-provider-from-model model-name))
-          api-key       (when-not (#{:claude-code :ollama} new-provider)
-                          (if (= new-provider (:provider current-lm))
-                            (:api-key current-lm)
-                            (let [env-vars {:openai "OPENAI_API_KEY"
-                                            :anthropic "ANTHROPIC_API_KEY"
-                                            :google "GOOGLE_API_KEY"
-                                            :deepseek "DEEPSEEK_API_KEY"
-                                            :groq "GROQ_API_KEY"}]
-                              (or (some-> (get env-vars new-provider) System/getenv)
-                                  (:api-key current-lm)))))
+          ;; Reuse the current key ONLY when staying on the same provider. On a
+          ;; provider switch, leave :api-key unset and let create-lm resolve the
+          ;; new provider's key from its own :api-key-env. Do NOT carry the old
+          ;; key over (an OpenAI key sent to free-llm as Bearer → 401) and do NOT
+          ;; keep a partial env-var map here — it drifts out of sync with the
+          ;; provider catalog (free-llm, mistral, together, … were all missing).
+          api-key       (when (and (= new-provider (:provider current-lm))
+                                   (not (#{:claude-code :ollama} new-provider)))
+                          (:api-key current-lm))
           ;; Bedrock entries in get-popular-models may pin a :region (e.g. us-east-1
           ;; for vendors not yet in ap-northeast-2). Honor it so a /model pick
           ;; doesn't silently fall back to AWS_REGION and fail with ValidationException.
