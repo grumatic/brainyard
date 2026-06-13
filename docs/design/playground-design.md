@@ -76,7 +76,7 @@ in front of a **data plane** of per-session isolated **workspaces**.
                                           │ /auth, /api  │ /tty (WSS)
                                 ┌─────────▼─────────┐    │
                                 │   CONTROL PLANE   │    │  (auth",authz'd
-                                │  (playground-http)│    │   ws upgrade)
+                                │  (playground-server)│    │   ws upgrade)
                                 │                   │    │
                                 │  playground-auth  │    │
                                 │   OIDC, JWT/cookie│    │
@@ -130,8 +130,8 @@ components, reusing existing bricks. Mirrors how `agent-tui-app` composes
 
 ```
 bases/
-  playground-http/                 # HTTP/WS entry point (Ring/Jetty or http-kit)
-    src/ai/brainyard/playground_http/
+  playground-server/                 # HTTP/WS entry point (Ring/Jetty or http-kit)
+    src/ai/brainyard/playground_server/
       core.clj                     # router: /auth/*, /api/*, /tty
       server.clj                   # jetty lifecycle, ws upgrade
 
@@ -170,7 +170,7 @@ projects/
   playground-server/
     deps.edn                       # composes base + components above
     # release build: shadow-cljs compiles playground-ui →
-    #   bases/playground-http/resources/public/  (served same-origin by the base)
+    #   bases/playground-server/resources/public/  (served same-origin by the base)
 ```
 
 `workspace.edn` gains a `"playground-server"` project entry; the
@@ -266,7 +266,7 @@ Layered, because the agent runs untrusted code:
 The control plane exposes JSON + a ttyd WebSocket, but nothing renders them. The
 front-end is the **only thing the user actually touches**: log in, see your
 workspaces, open a terminal, drive `by`. It is a single-page app served
-**same-origin** by `playground-http`, so the JWT cookie and the `WSS /tty`
+**same-origin** by `playground-server`, so the JWT cookie and the `WSS /tty`
 upgrade Just Work without CORS or cross-site cookie headaches.
 
 ### 6.1 Language & stack — **decision: ClojureScript + Replicant**
@@ -329,7 +329,7 @@ past logout.
 
 ### 6.5 Build & serve
 `shadow-cljs release app` compiles `playground-ui` to static JS/CSS whose output
-dir is `bases/playground-http/resources/public/`. The base serves `index.html`
+dir is `bases/playground-server/resources/public/`. The base serves `index.html`
 + assets as same-origin static files; in dev, `shadow-cljs watch` runs a hot-
 reload server proxying `/api` and `/auth` to the JVM control plane. The SPA is
 **not a Polylith brick** (it's CLJS, outside brick scanning) — it lives under
@@ -375,7 +375,7 @@ reload server proxying `/api` and `/auth` to the JVM control plane. The SPA is
 
 ## 9. Phased delivery
 
-- **Phase 0 — internal preview (single node).** `playground-http` + `playground-auth`
+- **Phase 0 — internal preview (single node).** `playground-server` + `playground-auth`
   (OIDC) + `session-broker` + `workspace-runtime/docker` + `playground-proxy`.
   One Docker container per user running `by --web-tmux`; ephemeral volume; keys
   via env. Plus a minimal **`playground-ui`**: login + a one-button "open
@@ -402,7 +402,7 @@ The browser→`by` path is working end-to-end:
 
 - **`frontend/playground-ui`** — the Replicant SPA (login · dashboard · xterm
   terminal). xterm.js loads as a CDN UMD global (Closure can't bundle it).
-- **`bases/playground-http`** — the control plane:
+- **`bases/playground-server`** — the control plane:
   - `auth.clj` (`playground-auth`) — **real OIDC** authorization-code flow when
     `OIDC_ISSUER` is set (bare-cookie stub otherwise); the OIDC `sub` → a
     sha-256 `user-id`.

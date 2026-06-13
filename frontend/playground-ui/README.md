@@ -35,16 +35,16 @@ npm run watch            # http://localhost:8080, hot-reloaded
 ```
 
 Unmatched requests (`/api/*`, `/auth/*`, the `/tty` WebSocket) are proxied to
-the JVM control plane at `http://localhost:8090` — run `playground-http`
+the JVM control plane at `http://localhost:8090` — run `playground-server`
 locally on that port so cookies and the terminal socket behave as same-origin.
 
 ## Build for production
 
 ```bash
-npm run release          # compiles to ../../bases/playground-http/resources/public/js
+npm run release          # compiles to ../../bases/playground-server/resources/public/js
 ```
 
-`playground-http` then serves `index.html` + `/js/main.js` same-origin. The
+`playground-server` then serves `index.html` + `/js/main.js` same-origin. The
 `release` script compiles `main.js` into the base's `resources/public/js/` **and**
 copies `index.html` alongside it, so both land in the base automatically (both
 are gitignored there as build artifacts).

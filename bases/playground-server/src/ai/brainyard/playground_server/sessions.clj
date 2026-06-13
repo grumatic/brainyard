@@ -1,6 +1,6 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
 ;; SPDX-License-Identifier: MIT
-(ns ai.brainyard.playground-http.sessions
+(ns ai.brainyard.playground-server.sessions
   "Session broker — lifecycle policy over the durable `store` and the Docker
    `workspace` runtime. Each session is owned by a `user-id`; cross-tenant
    access is refused by checking ownership on every per-id operation (design
@@ -16,9 +16,9 @@
    Modes: real (Docker) vs fake (`PG_FAKE=1` / no Docker) — fake sessions skip
    the container and the `/tty` route falls back to the echo stub."
   (:require [clojure.string :as str]
-            [ai.brainyard.playground-http.secrets :as secrets]
-            [ai.brainyard.playground-http.store :as store]
-            [ai.brainyard.playground-http.workspace :as workspace]))
+            [ai.brainyard.playground-server.secrets :as secrets]
+            [ai.brainyard.playground-server.store :as store]
+            [ai.brainyard.playground-server.workspace :as workspace]))
 
 (defonce ^:private db (atom nil))                 ; the Store instance
 (defonce ^:private upstream-cache (atom {}))      ; id -> {:host-port :ttyd-user :ttyd-pass}

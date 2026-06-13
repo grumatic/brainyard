@@ -52,7 +52,7 @@
   PG_FAKE=1). Workspaces inherit provider creds from .env. Build the UI + image
   first: bb playground:ui && bb uberjar:ata && bb playground:image."
    :task (shell "bash" "-c"
-                (str "cd bases/playground-http && "
+                (str "cd bases/playground-server && "
                      "PG_WORKSPACE_ENV_FILE=\"$(pwd)/../../.env.playground\" "
                      "PG_WORKSPACE_PROVIDER=\"${PG_WORKSPACE_PROVIDER:-openai}\" "
                      "exec clojure -M:run "

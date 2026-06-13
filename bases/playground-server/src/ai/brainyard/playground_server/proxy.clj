@@ -1,6 +1,6 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
 ;; SPDX-License-Identifier: MIT
-(ns ai.brainyard.playground-http.proxy
+(ns ai.brainyard.playground-server.proxy
   "Authz'd WebSocket reverse proxy: browser <-> the container's ttyd. This is
    the data path the design calls `playground-proxy` — it owns ONLY the WS
    bridge (no lifecycle, no secrets beyond the per-session ttyd credential it is

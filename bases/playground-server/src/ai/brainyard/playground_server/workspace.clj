@@ -1,6 +1,6 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
 ;; SPDX-License-Identifier: MIT
-(ns ai.brainyard.playground-http.workspace
+(ns ai.brainyard.playground-server.workspace
   "Workspace runtime — the *mechanism* for running one tenant's `by` inside an
    isolated boundary. Phase-0 driver: a Docker container per session running the
    workspace image (ttyd + tmux + `by run`) bound to container-internal 7681,

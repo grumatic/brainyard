@@ -1,7 +1,7 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
 ;; SPDX-License-Identifier: MIT
 (ns ai.brainyard.playground-ui.api
-  "Thin wrappers over the playground-http control-plane REST API. Every call
+  "Thin wrappers over the playground-server control-plane REST API. Every call
    sends the httpOnly session cookie (`:credentials \"include\"`) and returns a
    JS Promise resolving to keywordized Clojure data (or rejecting with
    {:status n}).")

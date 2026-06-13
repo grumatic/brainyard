@@ -2,7 +2,7 @@
 ;; SPDX-License-Identifier: MIT
 ;;
 ;; Brainyard Playground control-plane base (Phase-0 stub).
-;; Run standalone for dev:  cd bases/playground-http && clojure -M:run
+;; Run standalone for dev:  cd bases/playground-server && clojure -M:run
 ;; (In production this base is composed into the playground-server project,
 ;;  which owns the :run/build aliases — the alias here is a dev convenience.)
 {:paths ["src" "resources"]
@@ -17,4 +17,4 @@
         org.postgresql/postgresql         {:mvn/version "42.7.4"}}  ; opt-in (PG_DATABASE_URL)
 
  :aliases
- {:run {:main-opts ["-m" "ai.brainyard.playground-http.server"]}}}
+ {:run {:main-opts ["-m" "ai.brainyard.playground-server.server"]}}}

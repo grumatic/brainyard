@@ -1,6 +1,6 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
 ;; SPDX-License-Identifier: MIT
-(ns ai.brainyard.playground-http.store
+(ns ai.brainyard.playground-server.store
   "Durable control-plane state — the `playground-store`. Persists the
    authoritative session records so the control plane is stateless and
    restart-safe (design §5.4). One `JdbcStore` (next.jdbc) serves two engines,

@@ -1,6 +1,6 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
 ;; SPDX-License-Identifier: MIT
-(ns ai.brainyard.playground-http.auth
+(ns ai.brainyard.playground-server.auth
   "Identity — the `playground-auth` component. Two modes behind one surface:
 
    - **OIDC** when `OIDC_ISSUER` is set: standard authorization-code flow against

@@ -1,4 +1,4 @@
-# playground-http (Phase-0)
+# playground-server (Phase-0)
 
 The Brainyard Playground **control-plane base** — an http-kit server that
 implements the REST + WebSocket contract the front-end
@@ -43,7 +43,7 @@ bb playground:run         # control plane on :8090 (workspaces inherit .env cred
 gets a provider configured. Equivalent manual form:
 
 ```bash
-cd bases/playground-http
+cd bases/playground-server
 PG_WORKSPACE_ENV_FILE="$PWD/../../.env" clojure -M:run [port]
 ```
 

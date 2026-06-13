@@ -5,7 +5,7 @@
 ;;
 ;;   dev:      npx shadow-cljs watch app    → http://localhost:8080
 ;;             (unmatched requests proxy to the JVM control plane on :8090)
-;;   release:  npx shadow-cljs release app  → compiles into the playground-http
+;;   release:  npx shadow-cljs release app  → compiles into the playground-server
 ;;             base's resources/public/js so the base serves it same-origin.
 {:source-paths ["src"]
 
@@ -24,5 +24,5 @@
         :asset-path "/js"
         :modules    {:main {:init-fn ai.brainyard.playground-ui.core/init}}
         :devtools   {:after-load ai.brainyard.playground-ui.core/after-load}
-        ;; Production build lands in the base so playground-http serves it.
-        :release    {:output-dir "../../bases/playground-http/resources/public/js"}}}}
+        ;; Production build lands in the base so playground-server serves it.
+        :release    {:output-dir "../../bases/playground-server/resources/public/js"}}}}

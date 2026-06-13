@@ -1,2 +1,2 @@
 # The playground-ui release build (`npm run release`) lands in this directory
-# as index.html + js/main.js, served same-origin by playground-http.
+# as index.html + js/main.js, served same-origin by playground-server.

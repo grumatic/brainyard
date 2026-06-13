@@ -5,7 +5,7 @@
   "description": "Brainyard Playground front-end — ClojureScript + Replicant SPA",
   "scripts": {
     "watch": "shadow-cljs watch app",
-    "release": "shadow-cljs release app && cp resources/public/index.html ../../bases/playground-http/resources/public/index.html",
+    "release": "shadow-cljs release app && cp resources/public/index.html ../../bases/playground-server/resources/public/index.html",
     "clean": "rm -rf resources/public/js .shadow-cljs"
   },
   "devDependencies": {

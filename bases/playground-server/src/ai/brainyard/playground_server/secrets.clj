@@ -1,6 +1,6 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
 ;; SPDX-License-Identifier: MIT
-(ns ai.brainyard.playground-http.secrets
+(ns ai.brainyard.playground-server.secrets
   "Per-user credential resolution — the `playground-secrets` component. Resolves
    the env a user's workspace should run with (LLM/MCP keys, etc.) and hands it
    to the runtime to inject at container start. Keys never get baked into the

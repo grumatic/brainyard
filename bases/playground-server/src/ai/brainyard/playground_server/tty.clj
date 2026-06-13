@@ -1,6 +1,6 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
 ;; SPDX-License-Identifier: MIT
-(ns ai.brainyard.playground-http.tty
+(ns ai.brainyard.playground-server.tty
   "Stub ttyd WebSocket. Speaks just enough of ttyd's wire protocol to drive the
    front-end terminal: it greets on open and echoes keystrokes back as output.
    It stands in for `playground-proxy`, which in production bridges this socket

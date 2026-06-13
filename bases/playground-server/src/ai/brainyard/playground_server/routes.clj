@@ -1,6 +1,6 @@
 ;; Copyright (c) 2024-2026 Grumatic, Inc.
 ;; SPDX-License-Identifier: MIT
-(ns ai.brainyard.playground-http.routes
+(ns ai.brainyard.playground-server.routes
   "HTTP surface for the playground control plane (Phase-0 stub). Implements the
    exact contract the front-end (`playground-ui`) calls:
 
@@ -23,10 +23,10 @@
             [reitit.ring :as ring]
             [ring.middleware.cookies :refer [wrap-cookies]]
             [ring.middleware.params :refer [wrap-params]]
-            [ai.brainyard.playground-http.auth :as auth]
-            [ai.brainyard.playground-http.sessions :as sessions]
-            [ai.brainyard.playground-http.proxy :as proxy]
-            [ai.brainyard.playground-http.tty :as tty]))
+            [ai.brainyard.playground-server.auth :as auth]
+            [ai.brainyard.playground-server.sessions :as sessions]
+            [ai.brainyard.playground-server.proxy :as proxy]
+            [ai.brainyard.playground-server.tty :as tty]))
 
 (defn- json [status body]
   {:status  status
