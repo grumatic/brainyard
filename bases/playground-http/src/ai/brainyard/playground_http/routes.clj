@@ -94,14 +94,31 @@
 ;; so we proxy those three to the container ttyd, injecting basic auth. Using
 ;; ttyd's real client means the TUI renders exactly as ttyd intends.
 
+(defn- term-down-page
+  "Shown in the iframe when the workspace has no running container."
+  [id]
+  {:status  200
+   :headers {"Content-Type" "text/html; charset=utf-8"}
+   :body    (str "<!doctype html><meta charset=utf-8>"
+                 "<body style='margin:0;font:14px ui-sans-serif,system-ui;"
+                 "background:#0b0e14;color:#c9d1d9;padding:2rem'>"
+                 "<h3 style='margin:0 0 .5rem'>Workspace not running</h3>"
+                 "<p style='color:#8b949e'>This workspace (<code>" id "</code>) has no "
+                 "running container. Go back to <b>← Workspaces</b> and Resume it, "
+                 "or create a new one.</p></body>")})
+
 (defn- term-resource
-  "Proxy a ttyd HTTP resource (the page or /token) for the owned session."
+  "Proxy a ttyd HTTP resource (the page or /token) for the owned session. If the
+   container is gone/unreachable, mark the session down and show a friendly page
+   instead of a 500."
   [req ttyd-path]
-  (let [id (-> req :path-params :id)]
-    (if-let [up (sessions/upstream (user-id req) id)]
-      (proxy/http-proxy up ttyd-path)
-      {:status 503 :headers {"Content-Type" "text/plain"}
-       :body "workspace terminal not available (no running container)"})))
+  (let [uid (user-id req) id (-> req :path-params :id)]
+    (if-let [up (sessions/upstream uid id)]
+      (try (proxy/http-proxy up ttyd-path)
+           (catch Exception _
+             (sessions/mark-down! uid id)
+             (term-down-page id)))
+      (term-down-page id))))
 
 (defn- term-page  [req] (term-resource req "/"))
 (defn- term-token [req] (term-resource req "/token"))

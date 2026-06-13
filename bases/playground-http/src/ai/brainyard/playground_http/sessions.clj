@@ -94,6 +94,16 @@
   (when (owned user-id id)
     (get @upstream-cache id)))
 
+(defn mark-down!
+  "The container for `id` is gone/unreachable: drop its stale upstream cache and
+   mark it suspended so the dashboard shows Resume. No-op if not owned/fake."
+  [user-id id]
+  (when-let [rec (owned user-id id)]
+    (when-not (:fake rec)
+      (swap! upstream-cache dissoc id)
+      (store/save! @db (assoc rec :status "suspended"))))
+  nil)
+
 ;; --- lifecycle -------------------------------------------------------------
 
 (defn- provision!
