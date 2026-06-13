@@ -53,7 +53,7 @@
   first: bb playground:ui && bb uberjar:ata && bb playground:image."
    :task (shell "bash" "-c"
                 (str "cd bases/playground-http && "
-                     "PG_WORKSPACE_ENV_FILE=\"$(pwd)/../../.env\" "
+                     "PG_WORKSPACE_ENV_FILE=\"$(pwd)/../../.env.playground\" "
                      "PG_WORKSPACE_PROVIDER=\"${PG_WORKSPACE_PROVIDER:-openai}\" "
                      "exec clojure -M:run "
                      (clojure.string/join " " *command-line-args*)))}
