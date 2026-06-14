@@ -37,3 +37,17 @@
   (testing "absent :timeout → nil in :options, 30s default applies"
     (let [client (mcp-client/create-client :http {})]
       (is (nil? (:timeout (:options client)))))))
+
+(deftest stderr-drain-reads-all-lines-and-terminates
+  (testing "drain-stderr-lines! forwards every line to the sink and returns at EOF (no hang/blocking)"
+    (let [collected (atom [])
+          rdr (java.io.BufferedReader.
+               (java.io.StringReader.
+                "Connecting...\nPlease authorize: https://accounts.google.com/o/oauth2/v2/auth?x=1\nDone\n"))
+          drain @#'mcp-client/drain-stderr-lines!]
+      (drain rdr (fn [l] (swap! collected conj l)))
+      (is (= ["Connecting..."
+              "Please authorize: https://accounts.google.com/o/oauth2/v2/auth?x=1"
+              "Done"]
+             @collected)
+          "all stderr lines drained, including the auth URL; loop exits at EOF"))))

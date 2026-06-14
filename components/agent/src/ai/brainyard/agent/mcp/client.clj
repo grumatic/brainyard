@@ -167,6 +167,40 @@
 ;; STDIO Transport Implementation
 ;; =============================================================================
 
+(defn- drain-stderr-lines!
+  "Read every line from `rdr`, calling `(sink line)` per line, returning when the
+   reader reaches EOF or is closed. Pure I/O loop, separated from the threading
+   so it is unit-testable with a StringReader + collecting sink."
+  [^java.io.BufferedReader rdr sink]
+  (try
+    (loop []
+      (when-let [line (.readLine rdr)]
+        (sink line)
+        (recur)))
+    (catch java.io.IOException _ nil)
+    (catch Exception _ nil)))
+
+(defn- start-stderr-drain!
+  "Continuously drain a stdio MCP child's stderr to mulog on a daemon thread.
+   Without this the child's stderr pipe (~64KB) can fill and wedge the process —
+   e.g. mcp-remote during a slow OAuth flow — and its human-facing output (most
+   importantly the authorization URL) would be invisible. URL-bearing lines are
+   logged at info as ::mcp-stderr-url so the auth link is queryable via log$events.
+   The thread exits when stderr is closed (disconnect! closes it). Returns the Thread."
+  [server-name ^java.io.BufferedReader stderr]
+  (doto (Thread.
+         ^Runnable
+         (fn []
+           (drain-stderr-lines!
+            stderr
+            (fn [line]
+              (if (re-find #"https?://\S+" line)
+                (mulog/info  ::mcp-stderr-url :server server-name :line line)
+                (mulog/debug ::mcp-stderr     :server server-name :line line)))))
+         (str "mcp-stderr-drain-" (or server-name "mcp")))
+    (.setDaemon true)
+    (.start)))
+
 (defrecord StdioMCPClient [process stdin stdout stderr server-info capabilities pending-requests]
   MCPClient
 
@@ -190,6 +224,11 @@
           stderr (BufferedReader. (InputStreamReader. (.getErrorStream proc)))]
 
       (mulog/info ::server-process-started :command command :args args)
+
+      ;; Drain the child's stderr on a daemon thread so its pipe can't fill and
+      ;; wedge the process (e.g. mcp-remote mid-OAuth), and so its auth URL /
+      ;; progress is captured. Terminates when disconnect! closes stderr.
+      (start-stderr-drain! (:name client) stderr)
 
       ;; Initialize connection
       (let [init-request (make-request (:initialize mcp-methods)
