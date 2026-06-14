@@ -665,7 +665,10 @@
 
    "google-calendar"
    {:transport :stdio
+    ;; :timeout — per-request read budget (ms); raise above the 30s default
+    ;; since calendar calls over mcp-remote can be slow (parity with gmail).
     :config {:command "bash"
+             :timeout 90000
              :args ["-c"
                     "npx -y mcp-remote https://calendarmcp.googleapis.com/mcp/v1 --static-oauth-client-info \"{\\\"client_id\\\":\\\"$GCP_OAUTH_CLIENT_ID\\\",\\\"client_secret\\\":\\\"$GCP_OAUTH_CLIENT_SECRET\\\"}\""]}
     :enabled false
