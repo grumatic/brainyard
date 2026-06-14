@@ -55,6 +55,15 @@
 
 (defonce ^:private !mcp-initialized (atom false))
 
+(defonce ^:private !server-tool-overrides
+  ;; {server-name {:arg-key value ...}} — per-server tool-arg overrides from a
+  ;; server config's `:tool-arg-overrides`. Force-applied (winning over the
+  ;; LLM-supplied value) to every tool call whose schema declares that arg, so
+  ;; an identity/config concern like `:user_google_email` is supplied by config
+  ;; instead of being guessed by the model. Populated at connect, cleared at
+  ;; disconnect.
+  (atom {}))
+
 (defn mcp-initialized?
   "Return true if the MCP system has been initialized."
   []
@@ -182,10 +191,13 @@
   (ensure! string? server-name "server-name must be a string")
   (ensure! map? server-config "server-config must be a map")
 
-  (let [{:keys [transport config]} server-config
+  (let [{:keys [transport config tool-arg-overrides]} server-config
         client (mcp-client/create-client transport config)
         connected-client (mcp-client/connect! client config)]
 
+    ;; Record per-server tool-arg overrides before tool registration so the
+    ;; wrapper fns can apply them on every call.
+    (swap! !server-tool-overrides assoc server-name tool-arg-overrides)
     (mcp-client/register-client! server-name connected-client)
     (mulog/info ::server-connected :server server-name :transport transport)
 
@@ -206,6 +218,7 @@
       (mulog/warn ::mcp-tool-unregistration-failed
                   :server server-name :error (ex-message e))))
   (mcp-client/unregister-client! server-name)
+  (swap! !server-tool-overrides dissoc server-name)
   (mulog/info ::server-disconnected :server server-name))
 
 (defn reconnect-mcp-server!
@@ -454,12 +467,19 @@
 
 (defn- make-mcp-wrapper-fn
   "The :fn body for a registered MCP tool. Receives a flat keyword-map
-   (post-validation) and dispatches to call-server-tool with string keys.
-   Returns {:error-message ...} on failure to match registry conventions."
-  [server-name tool-name]
+   (post-validation), force-applies any per-server `:tool-arg-overrides` whose
+   key this tool declares (`accepted-keys`), then dispatches to call-server-tool
+   with string keys. Returns {:error-message ...} on failure to match registry
+   conventions."
+  [server-name tool-name accepted-keys]
   (fn [& {:as call-args}]
-    (let [string-args (reduce-kv (fn [m k v] (assoc m (name k) v))
-                                 {} (or call-args {}))]
+    (let [overrides   (when (seq accepted-keys)
+                        (select-keys (get @!server-tool-overrides server-name)
+                                     accepted-keys))
+          ;; overrides win over the LLM-supplied value (config is authoritative
+          ;; for identity/config args like :user_google_email).
+          string-args (reduce-kv (fn [m k v] (assoc m (name k) v))
+                                 {} (merge (or call-args {}) overrides))]
       (try
         (let [r (call-server-tool server-name tool-name string-args)]
           (if (:success r)
@@ -509,6 +529,13 @@
                         (try
                           (let [id           (mcp-tool-id server-name name)
                                 input-schema (mcp-json-schema->input-schema parameters)
+                                ;; Param keys this tool declares — limits which
+                                ;; :tool-arg-overrides we inject so we never send
+                                ;; an arg the tool doesn't accept.
+                                accepted-keys (set (map keyword
+                                                        (keys (or (:properties parameters)
+                                                                  (get parameters "properties")
+                                                                  {}))))
                                 meta    {:id id
                                          :type :tool
                                          :description (or description "MCP tool")
@@ -516,7 +543,7 @@
                                          :output-schema [:map]
                                          :mcp-server server-name
                                          :mcp-tool name}
-                                fn-impl (make-mcp-wrapper-fn server-name name)
+                                fn-impl (make-mcp-wrapper-fn server-name name accepted-keys)
                                 v       (intern-mcp-tool-var id meta fn-impl)]
                             (swap! tool/!tool-defs assoc id
                                    {:id id :type :tool :fn v :meta meta})
@@ -666,6 +693,13 @@
    ;; wouldn't expand $VAR); OAUTHLIB_INSECURE_TRANSPORT=1 is required for the
    ;; http://localhost callback. Ships :enabled false — turn on via
    ;; `/mcp google-workspace start`, then complete the browser consent once.
+   ;;
+   ;; The Gmail/Calendar tools take a required `user_google_email` arg. Rather
+   ;; than let the model guess it (it defaults to BY_USER_ID, which may not be
+   ;; the account you authorized), set a per-server default in config.edn — it
+   ;; is force-applied to every call:
+   ;;   {:mcp {:servers {:google-workspace
+   ;;          {:tool-arg-overrides {:user_google_email "you@gmail.com"}}}}}
    "google-workspace"
    {:transport :stdio
     :config {:command "bash"
