@@ -654,7 +654,10 @@
    ;; Both ship :enabled false — turn on via `/mcp <name> start`.
    "gmail"
    {:transport :stdio
+    ;; :timeout — per-request read budget (ms). Gmail search/thread calls over
+    ;; mcp-remote routinely exceed the 30s send-request! default, so raise it.
     :config {:command "bash"
+             :timeout 90000
              :args ["-c"
                     "npx -y mcp-remote https://gmailmcp.googleapis.com/mcp/v1 --static-oauth-client-info \"{\\\"client_id\\\":\\\"$GCP_OAUTH_CLIENT_ID\\\",\\\"client_secret\\\":\\\"$GCP_OAUTH_CLIENT_SECRET\\\"}\""]}
     :enabled false
