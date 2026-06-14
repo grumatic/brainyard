@@ -637,9 +637,15 @@
 ;; =============================================================================
 
 (defn create-stdio-client
-  "Create a new STDIO MCP client"
+  "Create a new STDIO MCP client. Carries an optional per-request `:timeout`
+   (ms) from config onto the record so a slow stdio server (e.g. Gmail/Calendar
+   via mcp-remote) can raise the 30s `send-request!` default — mirrors
+   `create-http-client`. `connect!` threads the client through `assoc`, so the
+   value survives onto the connected, registered record that `send-request!`
+   reads via `(:timeout client)`. Absent → nil → the 30s default applies."
   [config]
-  (->StdioMCPClient nil nil nil nil nil {:roots {:listChanged false} :sampling {}} nil))
+  (cond-> (->StdioMCPClient nil nil nil nil nil {:roots {:listChanged false} :sampling {}} nil)
+    (:timeout config) (assoc :timeout (:timeout config))))
 
 (defn create-http-client
   "Create a new HTTP MCP client"
