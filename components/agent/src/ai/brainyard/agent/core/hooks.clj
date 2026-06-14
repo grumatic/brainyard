@@ -57,6 +57,7 @@
      :agent.evaluation/done    {:agent :round :verdict :detail}
      :agent.evaluation/verdict {:agent :score :verdict :reason}
      :agent.recovery/retrying  {:agent :kind :attempt :max :detail}
+     :agent.suggestion/next-user-prompt {:agent :prompt :input}
      :task/created             {:task}
      :task/completed           {:task}
 
@@ -156,6 +157,11 @@
    ;; ∈ #{:empty-result :malformed-output :no-action}; `:attempt`/`:max`
    ;; describe progress (`:max` may be nil).
    :agent.recovery/retrying     {:keys #{:agent :kind :attempt :max :detail}}
+   ;; Observer-only. Fires when an answer carries a non-blank self-reported
+   ;; next-user-prompt (a concise follow-up the user could send next). Apps
+   ;; (TUI input-bar tip, web bridge) subscribe to surface it. Sub-agents
+   ;; fire too; consumers scope to root agents via `match-root-agent`.
+   :agent.suggestion/next-user-prompt {:keys #{:agent :prompt :input}}
    :task/created                {:keys #{:task}}
    :task/completed              {:keys #{:task}}
    :todo/updated                {:keys #{:agent :todo-list :active-slug}}

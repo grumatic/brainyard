@@ -306,6 +306,23 @@
   [active?]
   (swap! !layout assoc :input-active (boolean active?)))
 
+(defn input-active?
+  "True when the user is at the input prompt (loop top → submit)."
+  []
+  (boolean (:input-active @!layout)))
+
+(defn set-input-empty!
+  "Record whether the input buffer is currently empty (the placeholder/help
+   tip is showing). Stamped by the input redraw so background writers can
+   tell an idle prompt from one the user is mid-typing into."
+  [empty?]
+  (swap! !layout assoc :input-empty? (boolean empty?)))
+
+(defn input-empty?
+  "True when the input buffer is currently empty (placeholder visible)."
+  []
+  (boolean (:input-empty? @!layout)))
+
 (defn- maybe-show-cursor
   "Return show-cursor only when :input-active is true, else empty string."
   []

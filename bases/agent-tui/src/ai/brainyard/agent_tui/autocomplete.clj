@@ -5,6 +5,7 @@
 (ns ai.brainyard.agent-tui.autocomplete
   "Autocomplete menu and raw line-reading for the TUI."
   (:require [ai.brainyard.agent-tui.layout :as layout]
+            [ai.brainyard.agent-tui.help-tips :as help-tips]
             [ai.brainyard.agent-tui.session :as tui-session]
             [ai.brainyard.agent-tui.sessions :as sessions]
             [ai.brainyard.agent-tui.input :as input]
@@ -1151,11 +1152,24 @@
                 (recur))
 
             :arrow-right
-            (do (when (< @cursor-pos (.length buf))
-                  (vswap! cursor-pos inc)
+            (cond
+              ;; Cursor mid-buffer → normal move right.
+              (< @cursor-pos (.length buf))
+              (do (vswap! cursor-pos inc)
                   (vreset! preferred-col nil)
-                  (terminal/redraw-input-line! (.toString buf) @cursor-pos))
+                  (terminal/redraw-input-line! (.toString buf) @cursor-pos)
+                  (recur))
+              ;; Cursor at end + a live agent suggestion → accept it into the
+              ;; buffer for editing/submitting (ghost-text accept).
+              (help-tips/agent-suggestion)
+              (let [s (help-tips/agent-suggestion)]
+                (.append buf s)
+                (vreset! cursor-pos (.length buf))
+                (vreset! preferred-col nil)
+                (help-tips/clear-agent-suggestion!)
+                (terminal/redraw-input-line! (.toString buf) @cursor-pos)
                 (recur))
+              :else (recur))
 
             :ctrl-a
             (do (logical-line-start) (recur))

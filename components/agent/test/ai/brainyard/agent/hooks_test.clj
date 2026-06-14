@@ -58,6 +58,18 @@
                           :on-error :throw)
     (is (thrown? Exception (hooks/fire! :agent.instance/created {:agent :x})))))
 
+(deftest suggestion-event-cataloged
+  (testing ":agent.suggestion/next-user-prompt is a known, observer-only event"
+    (is (hooks/known-event? :agent.suggestion/next-user-prompt))
+    (is (not (hooks/gated-event? :agent.suggestion/next-user-prompt))))
+  (testing "firing the suggestion event reaches its handler with the prompt"
+    (let [seen (atom nil)]
+      (hooks/register-hook! :agent.suggestion/next-user-prompt ::t
+                            (fn [ev] (reset! seen ev)))
+      (hooks/fire! :agent.suggestion/next-user-prompt
+                   {:agent :dummy :prompt "do the next thing" :input "x"})
+      (is (= "do the next thing" (:prompt @seen))))))
+
 (deftest unregister
   (testing "unregister-hook! removes a specific handler"
     (hooks/reset-hooks!)

@@ -1149,14 +1149,11 @@
 
 (defn draw-prompt!
   "Draw the input prompt with placeholder hint.
-   Cursor positioned right after '> ', not at end of placeholder."
+   Cursor positioned right after '> ', not at end of placeholder.
+   Delegates to `tui-session/redraw-idle-prompt!` so the loop-top draw and the
+   agent-suggestion hook share one source of truth for the idle prompt line."
   []
-  (let [prompt (ansi/style "> " ansi/bold ansi/bright-cyan)
-        display (str prompt (ansi/muted "Alt+Enter: newline, /help for commands"))
-        cursor-col3 (str ansi/esc "3G")]
-    (if (layout/fullscreen?)
-      (layout/draw-input-prompt! (str display cursor-col3))
-      (tui-session/emit-inline! (str display cursor-col3)))))
+  (tui-session/redraw-idle-prompt!))
 
 (defn emit-command-header!
   "Emit the full command as a user-input-style header before command output."

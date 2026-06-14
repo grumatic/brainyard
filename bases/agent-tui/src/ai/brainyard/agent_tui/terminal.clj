@@ -326,6 +326,10 @@
         prompt-w 2                          ;; visible columns of the prompt
         indent (apply str (repeat prompt-w \space))
         buf-empty? (empty? buffer)
+        ;; Record idle/empty state so background writers (e.g. the agent
+        ;; suggestion hook) can repaint the placeholder without clobbering a
+        ;; buffer the user is mid-typing into.
+        _ (layout/set-input-empty! buf-empty?)
         cols (or (:cols @layout/!layout) 80)
         rows (or (:rows @layout/!layout) 24)
         fullscreen? (layout/fullscreen?)

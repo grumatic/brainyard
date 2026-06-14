@@ -13,6 +13,7 @@
    (pending-permission, spinner, writer) stays in !tui-state."
   (:require [ai.brainyard.agent.interface.tui.format :as fmt]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
+            [ai.brainyard.agent-tui.help-tips :as help-tips]
             [ai.brainyard.agent-tui.iteration-sink :as iter-sink]
             [ai.brainyard.agent-tui.layout :as layout]
             [ai.brainyard.agent-tui.output-sink :as out-sink]
@@ -74,7 +75,9 @@
                      :select  "Press the option number to answer"
                      "Answer the prompt above")}
      {:prompt (ansi/style "> " ansi/bold ansi/bright-cyan)
-      :placeholder "Alt+Enter: newline, /help for commands"})))
+      ;; Idle help tip: agent suggestion (top priority) or a rotating static
+      ;; hint. The redraw mutes this string just like the old fixed placeholder.
+      :placeholder (help-tips/current-placeholder)})))
 
 ;; TUI mulog publisher handle (verbose mode only)
 (defonce ^:private !tui-publisher (atom nil))
@@ -554,6 +557,24 @@
     (cond
       (out-sink/route! s)  nil
       (render-active?)     (layout/write-inline! s))))
+
+(defn redraw-idle-prompt!
+  "Repaint the idle input prompt line (empty buffer) with the current
+   placeholder — prompt + muted help tip, cursor just after the prompt.
+
+   Shared by the loop-top `commands/draw-prompt!` and the agent-suggestion
+   hook: because a turn is dispatched asynchronously, the loop redraws the
+   prompt before the turn sets a suggestion, so the hook calls this to make a
+   freshly-captured tip appear without waiting for a keystroke. Marks the
+   input buffer empty (this only ever draws the empty/idle line)."
+  []
+  (let [{:keys [prompt placeholder]} (feedback-prompt-parts)
+        display (str prompt (ansi/muted placeholder))
+        cursor-col3 (str ansi/esc "3G")]
+    (layout/set-input-empty! true)
+    (if (layout/fullscreen?)
+      (layout/draw-input-prompt! (str display cursor-col3))
+      (emit-inline! (str display cursor-col3)))))
 
 (defn capture-writer!
   "Capture current *out* as the output target."
@@ -2018,6 +2039,17 @@
    iteration/dspy-action/tool-calls hook handlers (which read the routing
    from `find-session-for-agent` → `with-agent-render-session`)."
   [{:keys [agent input]}]
+  ;; A new turn makes any prior next-user-prompt suggestion stale — drop it so
+  ;; the idle prompt falls back to the rotating static tips until the agent
+  ;; emits a fresh suggestion at turn end. Repaint the idle prompt if the user
+  ;; is sitting at it empty, so a stale tip doesn't linger when this turn
+  ;; produces no follow-up of its own.
+  (when (help-tips/agent-suggestion)
+    (help-tips/clear-agent-suggestion!)
+    (when (and (layout/input-active?)
+               (layout/input-empty?)
+               (not (layout/popover-active?)))
+      (try (redraw-idle-prompt!) (catch Exception _))))
   (when-let [_parent (get-in @(:!state agent) [:runtime :parent-agent])]
     (let [agent-id (:agent-id agent)
           st-mem-atom (try (agent/get-bt-st-memory agent) (catch Throwable _ nil))
@@ -2086,6 +2118,31 @@
                    (iter-sink/freeze-widget! bid))
                  (catch Exception _)))
           (swap! !iteration-blocks dissoc k))))))
+
+(defn agent-suggestion-handler
+  "Handler for :agent.suggestion/next-user-prompt. Event: {:agent :prompt :input}.
+
+   Records the agent's self-reported follow-up so the idle input line can offer
+   it as a top-priority help tip (and right-arrow can accept it into the
+   buffer). Registered with `match-root-agent`, so only root answers feed the
+   shared input bar — sub-agent suggestions are filtered out. The tip is shown
+   on the next prompt draw (the ask wrapper returns to the input loop right
+   after firing this), so no manual redraw is needed here.
+
+   Gated by the `:enable-input-suggestions` config key (default true); when
+   off, only the rotating static help tips show.
+
+   Because the turn is dispatched asynchronously, the input loop has already
+   redrawn the (static) idle prompt by the time this fires. Repaint it so the
+   tip shows immediately — but only when the user is sitting at an empty idle
+   prompt (not mid-typing, no popover open), so we never clobber input."
+  [{:keys [agent prompt]}]
+  (when (agent/get-config agent :enable-input-suggestions)
+    (help-tips/set-agent-suggestion! prompt)
+    (when (and (layout/input-active?)
+               (layout/input-empty?)
+               (not (layout/popover-active?)))
+      (try (redraw-idle-prompt!) (catch Exception _)))))
 
 (defn ask-post-handler
   "Handler for :agent.ask/post. Event: {:agent :input :result}.

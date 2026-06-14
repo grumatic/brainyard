@@ -633,6 +633,18 @@
         ;; Post-ask hook: after process, before status :idle
           (hooks/fire! :agent.ask/post {:agent agent :input input :result result})
 
+        ;; Suggestion hook (observer): surface the agent's self-reported
+        ;; next-user-prompt so apps can offer it as an input-bar tip. Read
+        ;; from BT state (the authoritative source — the result map doesn't
+        ;; carry it). Fired AFTER :agent.ask/post so a TUI repaint of the idle
+        ;; prompt lands after the answer box / chrome render, not before it.
+        ;; Sub-agents fire too; consumers scope to root agents.
+          (let [np (some-> ^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent
+                           .get-bt-st-memory deref :next-user-prompt str)]
+            (when-not (clojure.string/blank? np)
+              (hooks/fire! :agent.suggestion/next-user-prompt
+                           {:agent agent :prompt (clojure.string/trim np) :input input})))
+
           (swap! !state assoc :status :idle)
           result)
 

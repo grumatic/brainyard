@@ -209,6 +209,12 @@
    ;; they always fall back to the in-stream live-block. Read by
    ;; ai.brainyard.agent-tui.permissions/mode-b-popup-feasible?.
    :enable-tmux-popup          {:type "boolean" :default true}
+   ;; TUI input-bar agent suggestions: when true, the agent's self-reported
+   ;; next-user-prompt is captured (via the :agent.suggestion/next-user-prompt
+   ;; hook) and offered as a right-arrow-acceptable help tip on the idle input
+   ;; line. When false, only the rotating static help tips show. Read by
+   ;; ai.brainyard.agent-tui.session/agent-suggestion-handler.
+   :enable-input-suggestions   {:type "boolean" :default true}
    ;; TUI resume: how many trailing bytes of the persisted `:stream` scrollback
    ;; to replay into the pane on `--resume` (NOT characters — raw ANSI bytes,
    ;; decoded UTF-8). Bounded by the on-disk cap (5 MiB/stream × rotations).

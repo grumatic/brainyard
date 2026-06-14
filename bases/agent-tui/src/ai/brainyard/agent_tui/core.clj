@@ -18,6 +18,7 @@
   (:require [ai.brainyard.agent-tui.session :as tui-session]
             [ai.brainyard.agent-tui.sessions :as sessions]
             [ai.brainyard.agent-tui.log :as tui-log]
+            [ai.brainyard.agent-tui.help-tips :as help-tips]
             [ai.brainyard.agent-tui.layout :as layout]
             [ai.brainyard.agent-tui.dirs :as dirs]
             [ai.brainyard.agent-tui.helpers :as helpers]
@@ -318,7 +319,12 @@
   (agent/register-hook! :agent.evaluation/llm-calling ::tui-eval-llm-calling
                         tui-session/evaluation-llm-calling-handler :source :tui)
   (agent/register-hook! :agent.evaluation/done ::tui-eval-done
-                        tui-session/evaluation-done-handler :source :tui))
+                        tui-session/evaluation-done-handler :source :tui)
+  ;; Agent suggestion → idle input-bar help tip. Scoped to root agents so a
+  ;; sub-agent's follow-up doesn't hijack the shared input bar.
+  (agent/register-hook! :agent.suggestion/next-user-prompt ::tui-agent-suggestion
+                        tui-session/agent-suggestion-handler
+                        :match (agent/match-root-agent) :source :tui))
 
 ;; ============================================================================
 ;; Dynamic Skill Registration (once per process, at runtime)
@@ -1189,6 +1195,10 @@
           (terminal/install-sigwinch-handler!)
           (loop []
             (layout/set-input-active! true)
+            ;; Rotate the static help tip once per fresh idle prompt so
+            ;; successive prompts surface different hints (a live agent
+            ;; suggestion still takes priority over the static set).
+            (help-tips/rotate-static!)
             (commands/draw-prompt!)
             (let [line (if use-raw?
                          (autocomplete/read-line-raw! System/in)
