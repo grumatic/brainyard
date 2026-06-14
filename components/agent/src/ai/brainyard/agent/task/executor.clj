@@ -158,13 +158,24 @@
                        :timeout-ms timeout-ms})
                   (let [elapsed (- (System/currentTimeMillis) start-ms)]
                     (on-output (str "Completed in " elapsed "ms"))
-                    (on-output (str "Result: " (pr-str r)))
+                    ;; Bound the result print: a pathological tool payload
+                    ;; (deeply nested / very large) must not blow the stack or
+                    ;; flood the log just to surface a liveness line.
+                    (on-output (str "Result: "
+                                    (binding [*print-level* 12 *print-length* 200]
+                                      (pr-str r))))
                     {:result r})))
-              (catch Exception e
+              ;; Catch Throwable, not Exception: a runaway tool can throw an
+              ;; Error (StackOverflowError, MissingReflectionRegistrationError
+              ;; under native-image). An uncaught Error here escapes the task
+              ;; future as an ExecutionException and crashes the agent loop;
+              ;; contain it as a normal {:error …} result instead.
+              (catch Throwable e
                 (future-cancel tool-future)
-                (let [elapsed (- (System/currentTimeMillis) start-ms)]
-                  (on-output (str "Failed after " elapsed "ms: " (ex-message e)))
-                  {:error (ex-message e)}))))))))
+                (let [elapsed (- (System/currentTimeMillis) start-ms)
+                      msg (or (ex-message e) (.. e getClass getName))]
+                  (on-output (str "Failed after " elapsed "ms: " msg))
+                  {:error msg}))))))))
 
   (cancel-job [_ _task] false)
   (job-type [_] :tool))

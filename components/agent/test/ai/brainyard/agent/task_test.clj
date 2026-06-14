@@ -428,6 +428,42 @@
           (is (some #(re-find #"Failed after" %) @output)))
         (finally (unregister-test-tool! tid))))))
 
+(deftest tool-executor-error-throwable-test
+  (testing "ToolJobExecutor contains a java.lang.Error (e.g. StackOverflowError) as {:error ...} rather than letting it escape"
+    (let [tid (register-test-tool! :test-overflow-tool
+                                   (fn [& _] (throw (StackOverflowError.))))]
+      (try
+        (let [exec (executor/->ToolJobExecutor)
+              output (atom [])
+              task (tp/->Task :test-t-sof "overflow tool" :tool
+                              {:tool-id :test-overflow-tool :tool-args {}} :running
+                              (System/currentTimeMillis)
+                              (System/currentTimeMillis) nil nil
+                              (atom []) 10000 nil nil {})
+              ;; The pre-fix code caught only Exception here; a StackOverflowError
+              ;; surfaced via the deref as an ExecutionException is an Exception so
+              ;; it was already contained — but a direct Error must be too.
+              result (tp/execute-job exec task (fn [line] (swap! output conj line)))]
+          (is (some? (:error result)))
+          (is (re-find #"StackOverflowError" (:error result)))
+          (is (some #(re-find #"Failed after" %) @output)))
+        (finally (unregister-test-tool! tid))))))
+
+(deftest fast-eval-contains-error-throwable-test
+  (testing "call-tool-with-fast-eval contains a tool-thrown Error as {:error-message ...} instead of escaping into the BT loop"
+    (let [tid (register-test-tool! :test-overflow-tool2
+                                   (fn [& _] (throw (StackOverflowError.))))]
+      (try
+        ;; :fast-eval-ms routes through the future+deref fast path (the site that
+        ;; previously let an ExecutionException-wrapped Error bubble to the caller).
+        ;; This must return an error map, never throw.
+        (let [result (tool/call-tool-with-fast-eval
+                      "test-overflow-tool2" {} {:fast-eval-ms 2000})]
+          (is (map? result))
+          (is (string? (:error-message result)))
+          (is (re-find #"StackOverflowError" (:error-message result))))
+        (finally (unregister-test-tool! tid))))))
+
 ;; ============================================================================
 ;; TaskManager Tool Task Tests
 ;; ============================================================================

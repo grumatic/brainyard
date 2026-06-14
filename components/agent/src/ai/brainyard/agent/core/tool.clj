@@ -1128,9 +1128,20 @@
                     (try (call-tool tool-id tool-args
                                     :agent agent :tools tools
                                     :tools-fn-map tools-fn-map)
-                         (catch Exception e
-                           {:error-message (ex-message e)}))))
-            r   (deref fut fast-eval-ms ::timeout)]
+                         ;; Throwable, not Exception: an Error (StackOverflowError,
+                         ;; native-image reflection Errors) thrown by the tool would
+                         ;; otherwise complete the future exceptionally and escape the
+                         ;; unguarded deref below as an ExecutionException, crashing the
+                         ;; agent loop. Contain it as a normal {:error-message …}.
+                         (catch Throwable e
+                           {:error-message (or (ex-message e) (.. e getClass getName))}))))
+            r   (try (deref fut fast-eval-ms ::timeout)
+                     ;; Defensive: the future body above already maps Throwable to a
+                     ;; result, so this should not fire — but never let a stray
+                     ;; ExecutionException from deref bubble into the BT loop.
+                     (catch java.util.concurrent.ExecutionException e
+                       (let [c (or (ex-cause e) e)]
+                         {:error-message (or (ex-message c) (.. c getClass getName))})))]
         (if (not= r ::timeout)
           r
           (adopt-tool-into-task nil fut tool-name tool-id tool-args
