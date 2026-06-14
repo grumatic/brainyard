@@ -93,8 +93,11 @@
        (persist/append-event! sid
                               {:kind :agent.instance/created
                                :payload {:agent-id aid}}))
-      (swallow (persist/save-meta! sid (cond-> {:agent-id aid}
-                                         defid (assoc :defagent-id defid)))))))
+      (swallow (persist/save-meta! sid
+                                   (let [model (some-> (clj-llm/get-default-lm) :model)]
+                                     (cond-> {:agent-id aid}
+                                       defid (assoc :defagent-id defid)
+                                       model (assoc :model model))))))))
 
 (defn- on-instance-closed [{:keys [agent]}]
   (when-let [sid (safe-session-id agent)]

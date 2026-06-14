@@ -7,6 +7,7 @@
    Covers inspection, config, tasks, sandbox, MCP, and the input dispatcher."
   (:require [ai.brainyard.agent-tui.session :as tui-session]
             [ai.brainyard.agent-tui.sessions :as sessions]
+            [ai.brainyard.agent-tui.session-summary :as ssum]
             [ai.brainyard.agent-tui.layout :as layout]
             [ai.brainyard.agent-tui.helpers :as helpers]
             [ai.brainyard.agent-tui.input :as input]
@@ -1437,22 +1438,35 @@
 ;; Session Commands
 ;; ============================================================================
 
-;; The persisted-session handlers (handle-tree-command, handle-fork-command,
-;; handle-resume-command) are defined later in this file but referenced from
-;; handle-session-command's subcommand dispatch — declare them forward.
-(declare handle-tree-command handle-fork-command handle-resume-command)
+;; The persisted-session handlers are defined later in this file but referenced
+;; from handle-session-command's subcommand dispatch — declare them forward.
+(declare handle-tree-command handle-fork-command handle-resume-command
+         handle-persisted-list-command handle-show-command active-session-id)
 
 (defn- handle-session-command
-  "Handle /session subcommands: list, switch, new, close, rename,
-   tree, fork, resume."
+  "Handle /session subcommands.
+
+   Two domains, distinct subcommands:
+   - LIVE in-memory tabs: `tabs` (default), `switch <N>`, `new`, `close`, `rename`
+   - PERSISTED on-disk sessions: `list`, `show`, `label`, `tree`, `fork`, `resume`"
   [args]
   (let [parts (when-not (str/blank? args) (str/split (str/trim args) #"\s+" 2))
         subcmd (first parts)
         subcmd-args (second parts)]
     (cond
-      ;; /session (no args) or /session list — list all
-      (or (nil? subcmd) (= subcmd "list"))
+      ;; /session (no args) or /session tabs — list LIVE in-memory tabs
+      (or (nil? subcmd) (= subcmd "tabs"))
       (tui-session/emit! (sessions/format-session-list))
+
+      ;; /session list — list PERSISTED on-disk sessions (mirrors `by sessions
+      ;; list`). Shared renderer with the CLI. (`list` was the old name for the
+      ;; live-tab list — that is now `tabs`.)
+      (= subcmd "list")
+      (handle-persisted-list-command subcmd-args)
+
+      ;; /session show <id> — full detail for one persisted session
+      (= subcmd "show")
+      (handle-show-command (or subcmd-args ""))
 
       ;; /session tree — persisted-on-disk session tree
       (= subcmd "tree")
@@ -1497,23 +1511,30 @@
                     (tui-session/update-status-bar!))
                 (tui-session/emit! (ansi/warning (str "Session " idx " not found."))))))))
 
-      ;; /session rename <label> — rename current session
-      (= subcmd "rename")
+      ;; /session rename <label> (alias: label) — rename the current tab AND
+      ;; persist the label on disk so `by sessions list` / the resume picker
+      ;; show the same name.
+      (or (= subcmd "rename") (= subcmd "label"))
       (if (str/blank? subcmd-args)
-        (tui-session/emit! (ansi/warning "Usage: /session rename <label>"))
-        (do (sessions/rename-session! subcmd-args)
-            (tui-session/emit! (ansi/muted (str "Renamed to: " subcmd-args)))
-            (tui-session/update-status-bar!)))
+        (tui-session/emit! (ansi/warning (str "Usage: /session " subcmd " <label>")))
+        (let [label (str/trim subcmd-args)]
+          (sessions/rename-session! label)
+          (when-let [sid (active-session-id)]
+            (try (persist/set-session-label! (name sid) label) (catch Throwable _)))
+          (tui-session/emit! (ansi/muted (str "Renamed to: " label)))
+          (tui-session/update-status-bar!)))
 
-      ;; /session N — switch to session N
+      ;; /session N (or /session switch N) — switch to LIVE tab N
       :else
-      (if-let [idx (parse-long subcmd)]
+      (if-let [idx (parse-long (if (= subcmd "switch") (or subcmd-args "") subcmd))]
         (if (sessions/get-session idx)
           (do (sessions/switch-to! idx)
               (tui-session/update-status-bar!)
               (tui-session/emit! (ansi/muted (str "Switched to session " idx "."))))
           (tui-session/emit! (ansi/warning (str "Session " idx " not found."))))
-        (tui-session/emit! (ansi/warning "Usage: /session [N|new|close|rename|list|tree|fork|resume]"))))))
+        (tui-session/emit! (ansi/warning
+                            (str "Usage: /session [tabs|list|show <id>|label <text>|"
+                                 "tree|fork|resume|new|close|switch N]")))))))
 
 ;; ============================================================================
 ;; Session-tree commands (/tree /fork /name /resume-session)
@@ -1529,18 +1550,43 @@
   (when-let [ag (tui-session/get-active-agent)]
     (agent/session-id ag)))
 
+(defn- handle-persisted-list-command
+  "List PERSISTED on-disk sessions (mirrors `by sessions list`) using the
+   shared `session-summary` renderer. The active session is marked ▸."
+  [_args]
+  (let [rows   (ssum/enriched-summaries)
+        active (some-> (active-session-id) name)]
+    (tui-session/emit!
+     (if (empty? rows)
+       (ansi/muted "No persisted sessions.")
+       (str (ansi/header "Persisted sessions") "\n"
+            (str/join "\n" (ssum/format-table rows {:ansi? true :active active})))))))
+
+(defn- handle-show-command
+  "Show full detail for one persisted session (shared with `by sessions show`)."
+  [args]
+  (let [id (when-not (str/blank? args) (str/trim args))]
+    (cond
+      (nil? id)
+      (tui-session/emit! (ansi/warning "Usage: /session show <session-id>"))
+
+      (not (some #{id} (persist/list-sessions)))
+      (tui-session/emit! (ansi/failure (str "Session not found: " id)))
+
+      :else
+      (let [row (first (filter #(= id (:session-id %)) (ssum/enriched-summaries)))]
+        (tui-session/emit! (str/join "\n" (ssum/format-detail row {:ansi? true})))))))
+
 (defn- handle-tree-command
   "Render the session tree (parents + forks across all persisted
    sessions) to scrollback. Marks the currently-active session with ▸."
   [_args]
-  (let [sid     (active-session-id)
-        tree    (persist/session-tree)
-        active  (when sid (name sid))
-        lines   (persist/render-session-tree tree {:active active})
-        title   (ansi/header "Session tree")
-        help    (ansi/muted (str "  " (count (:nodes tree)) " session(s); ▸ = active"))]
+  (let [active (some-> (active-session-id) name)
+        n      (count (:nodes (persist/session-tree)))
+        title  (ansi/header "Session tree")
+        help   (ansi/muted (str "  " n " session(s); ▸ = active"))]
     (tui-session/emit! (str title "\n" help "\n"
-                            (str/join "\n" lines)))))
+                            (str/join "\n" (ssum/format-tree {:active active}))))))
 
 (defn- handle-fork-command
   "Fork the active session at its current event count. Optional positional
@@ -1582,34 +1628,15 @@
         (tui-session/emit! (ansi/failure (str "Unknown session: " arg))))
 
       :else
-      (let [tree   (persist/session-tree)
-            active (active-session-id)
-            ;; Order by update time (last-attached-at, falling back to
-            ;; started-at), newest first — matches the CLI --select-resume
-            ;; picker and the docstring's "most-recent" promise. Bare
-            ;; list-sessions is alphabetical, which reads as create-order.
-            metas  (into {} (for [sid (persist/list-sessions)]
-                              [sid (persist/read-meta sid)]))
-            update-ts (fn [sid] (long (or (:last-attached-at (metas sid))
-                                          (:started-at (metas sid))
-                                          0)))
-            sids   (sort-by update-ts > (keys metas))
-            lines  (for [sid sids
-                         :let [lbl (some-> (get-in tree [:nodes sid :meta :label]))
-                               ts  (let [t (update-ts sid)]
-                                     (when (pos? t) (str (java.util.Date. t))))
-                               marker (if (= sid (when active (name active))) "▸" " ")]]
-                     (str " " marker " "
-                          (ansi/header sid)
-                          (when (and lbl (not (str/blank? lbl)))
-                            (str " " (ansi/iter-label lbl)))
-                          (when ts
-                            (str "   " (ansi/iter-usage ts)))))]
+      ;; Ordered newest-first via the shared enricher, rendered with the same
+      ;; formatter as `by sessions list` (preview + label + ▸ active marker).
+      (let [rows   (ssum/enriched-summaries)
+            active (some-> (active-session-id) name)]
         (tui-session/emit!
          (str (ansi/header "Sessions") "  "
-              (ansi/muted (str (count sids) " total"))
+              (ansi/muted (str (count rows) " total"))
               "\n"
-              (str/join "\n" lines)))))))
+              (str/join "\n" (ssum/format-table rows {:ansi? true :active active}))))))))
 
 ;; ============================================================================
 ;; Run pause/resume (cooperative — checked at BT iteration boundaries)

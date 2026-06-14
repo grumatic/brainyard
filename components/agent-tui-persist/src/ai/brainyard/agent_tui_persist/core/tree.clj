@@ -152,8 +152,13 @@
   []
   (into {}
         (for [sid (paths/list-sessions)]
-          [sid (or (read-meta sid)
-                   {:id sid :created-at nil :last-active nil})])))
+          ;; meta.edn written via snapshots/save-meta! (the common path) has no
+          ;; :id — only ensure-meta!/touch!/fork! set it. Default :id to the sid
+          ;; so the rendered tree/lineage always shows a session identifier.
+          [sid (let [m (read-meta sid)]
+                 (if m
+                   (update m :id #(or % sid))
+                   {:id sid :created-at nil :last-active nil}))])))
 
 (defn tree-of
   "Build a full session tree from disk.

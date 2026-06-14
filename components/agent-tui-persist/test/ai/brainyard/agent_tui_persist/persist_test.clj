@@ -71,6 +71,21 @@
     (persist/append-event! "agt-2" {:kind :foo})
     (is (= 3 (persist/count-events "agt-2")))))
 
+(deftest scan-session-test
+  (testing "empty / missing log yields zeroed summary"
+    (is (= {:event-count 0 :first-user-input nil :last-answer nil}
+           (persist/scan-session "agt-none"))))
+  (testing "scan captures count, first user input, and last answer in one pass"
+    (persist/append-event! "agt-s" {:kind :agent.instance/created :payload {:agent-id :coact-agent}})
+    (persist/append-event! "agt-s" {:kind :agent.ask/pre  :payload {:input "first prompt"}})
+    (persist/append-event! "agt-s" {:kind :agent.ask/post :payload {:answer "answer one"}})
+    (persist/append-event! "agt-s" {:kind :agent.ask/pre  :payload {:input "second prompt"}})
+    (persist/append-event! "agt-s" {:kind :agent.ask/post :payload {:answer "answer two"}})
+    (let [{:keys [event-count first-user-input last-answer]} (persist/scan-session "agt-s")]
+      (is (= 5 event-count))
+      (is (= "first prompt" first-user-input))   ; FIRST ask/pre, not the second
+      (is (= "answer two" last-answer)))))        ; LAST ask/post
+
 (deftest scrollback-test
   (testing "append-scrollback! grows the file"
     (persist/append-scrollback! "agt-1" :stream "hello ")

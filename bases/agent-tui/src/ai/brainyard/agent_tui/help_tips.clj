@@ -57,7 +57,7 @@
   "Curated usage hints rotated across idle prompts. The first entry preserves
    the historical single placeholder."
   ["Alt+Enter: newline · /help for commands"
-   "/agent to switch agents · /sessions to manage sessions"
+   "/agent to switch agents · /session to manage sessions"
    "Ctrl-C to interrupt · /quit to exit"
    "Tab cycles output blocks · /model to change model"])
 

@@ -13,6 +13,7 @@
   (:gen-class)
   (:require
    [ai.brainyard.agent-tui.core :as tui]
+   [ai.brainyard.agent-tui.session-summary :as ssum]
    [ai.brainyard.agent-tui.helpers :as helpers]
    [ai.brainyard.agent-tui.mode :as mode]
    [ai.brainyard.agent-tui.log :as tui-log]
@@ -151,7 +152,6 @@
 ;; Resume picker (plain stdin/stdout, runs before alt-screen)
 ;; ============================================================================
 
-(declare format-bytes format-age-millis)
 ;; Defined further down (web/env helpers) but used by run-tui!'s resume logic.
 (declare env-truthy?)
 
@@ -171,34 +171,15 @@
    the cooked terminal directly.  No-op when there are no persisted
    sessions (caller filters)."
   [existing-ids]
-  (let [summaries (->> (persist/summarise-sessions)
-                       (filter #(contains? existing-ids (:session-id %)))
-                       (sort-by (fn [s]
-                                  (- 0 (long (or (:last-attached-at s)
-                                                 (:started-at s)
-                                                 0))))))
-        n (count summaries)]
+  (let [rows (->> (ssum/enriched-summaries)
+                  (filterv #(contains? existing-ids (:session-id %))))
+        n (count rows)]
     (when (pos? n)
       (println)
       (println (str n " persisted session(s) — pick one to resume, or [N] for a new session:"))
-      (println (apply str (repeat 72 \-)))
-      (println (format " %3s  %-30s %-14s %-18s %-10s %s"
-                       "#" "session-id" "label" "agent" "size" "last"))
-      (println (apply str (repeat 88 \-)))
-      (doseq [[i s] (map-indexed vector summaries)]
-        (println (format " %3d  %-30s %-14s %-18s %-10s %s"
-                         (inc i)
-                         (:session-id s)
-                         (or (:label s) "-")
-                         (or (some-> (:defagent-id s) name)
-                             (some-> (:agent-id s) name)
-                             "-")
-                         (format-bytes (or (:bytes s) 0))
-                         (or (format-age-millis (or (:last-attached-at s)
-                                                    (:started-at s)))
-                             "-"))))
+      (doseq [line (ssum/format-table rows {:numbered? true})] (println line))
       (println)
-      (print "Choice [1-" n "] / (N)ew: ")
+      (print (str "Choice [1-" n "] / (N)ew: "))
       (flush)
       (let [line (try (read-line) (catch Throwable _ nil))
             choice (some-> line str/trim)]
@@ -209,7 +190,7 @@
           :else
           (when-let [i (try (Long/parseLong choice) (catch Throwable _ nil))]
             (when (and (>= i 1) (<= i n))
-              (:session-id (nth summaries (dec i))))))))))
+              (:session-id (nth rows (dec i))))))))))
 
 (defn- latest-session-id
   "The newest persisted session-id (by last-attached-at, then started-at) among
@@ -218,9 +199,8 @@
    playground workspace whose container was recreated) reattaches to where the
    user left off, falling back to a fresh session when there are none."
   [existing-ids]
-  (->> (persist/summarise-sessions)
+  (->> (ssum/enriched-summaries)
        (filter #(contains? existing-ids (:session-id %)))
-       (sort-by (fn [s] (- 0 (long (or (:last-attached-at s) (:started-at s) 0)))))
        first
        :session-id))
 
@@ -836,80 +816,91 @@
 ;; Subcommand: sessions — list / prune persisted sessions
 ;; ============================================================================
 
-(defn- format-bytes [n]
-  (cond
-    (< n 1024)            (str n " B")
-    (< n (* 1024 1024))   (format "%.1f KB" (/ (double n) 1024))
-    :else                 (format "%.1f MB" (/ (double n) 1024 1024))))
+(defn- emit-err! [msg]
+  (binding [*out* *err*] (println msg)))
 
-(defn- format-age-millis [ms]
-  (when ms
-    (let [age (- (System/currentTimeMillis) (long ms))
-          mins (quot age 60000)
-          hrs  (quot mins 60)
-          days (quot hrs 24)]
-      (cond
-        (> days 1) (str days "d ago")
-        (> hrs 1)  (str hrs "h ago")
-        (> mins 1) (str mins "m ago")
-        :else      "just now"))))
+(defn- known-session? [id]
+  (and id (contains? (set (persist/list-sessions)) id)))
+
+(defn- confirm!
+  "Read a y/N confirmation from the console. False (decline) when there is no
+   interactive console."
+  [prompt]
+  (if (some? (System/console))
+    (do (print prompt) (flush)
+        (boolean (#{"y" "Y" "yes"} (some-> (try (read-line) (catch Throwable _ nil))
+                                           str str/trim))))
+    false))
 
 (defn cmd-sessions-list
-  "Print a summary of every persisted agent session (project-scoped)."
+  "List every persisted agent session (project-scoped). `--tree` renders the
+   fork/lineage tree instead of the flat table. Shared formatting with the TUI
+   `/session list` via `agent-tui.session-summary`."
   [opts]
   ;; Pin the project-scoped sessions root (from cwd's project-dir) before reading.
   (install-working-dir! opts)
-  (let [sessions (persist/summarise-sessions)]
-    (if (empty? sessions)
-      (println "No persisted sessions.")
-      (do
-        (println (format "%-30s %-14s %-18s %-10s %s"
-                         "session-id" "label" "agent" "size" "last-attached"))
-        (println (apply str (repeat 88 \-)))
-        (doseq [{:keys [session-id label defagent-id agent-id bytes
-                        last-attached-at started-at]} sessions]
-          (println (format "%-30s %-14s %-18s %-10s %s"
-                           session-id
-                           (or label "-")
-                           (or (some-> defagent-id name)
-                               (some-> agent-id name)
-                               "-")
-                           (format-bytes (or bytes 0))
-                           (or (format-age-millis (or last-attached-at started-at))
-                               "-"))))))))
+  (if (:tree opts)
+    (doseq [line (ssum/format-tree {})] (println line))
+    (let [rows (ssum/enriched-summaries)]
+      (if (empty? rows)
+        (println "No persisted sessions.")
+        (doseq [line (ssum/format-table rows {})] (println line))))))
+
+(defn cmd-sessions-show
+  "Print full detail for one persisted session (meta, lineage, counts, first
+   user message, last answer)."
+  [opts]
+  (install-working-dir! opts)
+  (let [id (or (:session-id opts) (first (:_arguments opts)))]
+    (cond
+      (str/blank? (str id))
+      (do (emit-err! "Usage: by sessions show <session-id>") (System/exit 1))
+
+      (not (known-session? id))
+      (do (emit-err! (str "Session not found: " id)) (System/exit 1))
+
+      :else
+      (let [row (first (filter #(= id (:session-id %)) (ssum/enriched-summaries)))]
+        (doseq [line (ssum/format-detail row)] (println line))))))
+
+(defn cmd-sessions-label
+  "Set (or clear) a persisted session's label. Usage:
+     by sessions label <session-id> <text…>   ; set
+     by sessions label <session-id>           ; clear"
+  [opts]
+  (install-working-dir! opts)
+  (let [args  (:_arguments opts)
+        id    (or (:session-id opts) (first args))
+        ;; Everything after the id is the label (so multi-word works unquoted).
+        words (if (:session-id opts) args (rest args))
+        text  (when (seq words) (str/trim (str/join " " words)))
+        label (when-not (str/blank? (str text)) text)]
+    (cond
+      (str/blank? (str id))
+      (do (emit-err! "Usage: by sessions label <session-id> <text>") (System/exit 1))
+
+      (not (known-session? id))
+      (do (emit-err! (str "Session not found: " id)) (System/exit 1))
+
+      :else
+      (do (persist/set-session-label! id label)
+          (println (if label
+                     (str "Labeled " id ": " label)
+                     (str "Cleared label on " id)))))))
 
 (defn- pick-session-to-prune!
   "Show a numbered list of persisted sessions (newest first) and prompt the
    user to pick one to delete. Returns the chosen session-id, or nil for
    cancel."
   []
-  (let [summaries (->> (persist/summarise-sessions)
-                       (sort-by (fn [s]
-                                  (- 0 (long (or (:last-attached-at s)
-                                                 (:started-at s)
-                                                 0))))))
-        n (count summaries)]
+  (let [rows (ssum/enriched-summaries)
+        n    (count rows)]
     (when (pos? n)
       (println)
       (println (str n " persisted session(s) — pick one to prune, or (C)ancel:"))
-      (println (apply str (repeat 88 \-)))
-      (println (format " %3s  %-30s %-14s %-18s %-10s %s"
-                       "#" "session-id" "label" "agent" "size" "last"))
-      (println (apply str (repeat 88 \-)))
-      (doseq [[i s] (map-indexed vector summaries)]
-        (println (format " %3d  %-30s %-14s %-18s %-10s %s"
-                         (inc i)
-                         (:session-id s)
-                         (or (:label s) "-")
-                         (or (some-> (:defagent-id s) name)
-                             (some-> (:agent-id s) name)
-                             "-")
-                         (format-bytes (or (:bytes s) 0))
-                         (or (format-age-millis (or (:last-attached-at s)
-                                                    (:started-at s)))
-                             "-"))))
+      (doseq [line (ssum/format-table rows {:numbered? true})] (println line))
       (println)
-      (print "Choice [1-" n "] / (C)ancel: ")
+      (print (str "Choice [1-" n "] / (C)ancel: "))
       (flush)
       (let [line (try (read-line) (catch Throwable _ nil))
             choice (some-> line str/trim)]
@@ -920,29 +911,49 @@
           :else
           (when-let [i (try (Long/parseLong choice) (catch Throwable _ nil))]
             (when (and (>= i 1) (<= i n))
-              (:session-id (nth summaries (dec i))))))))))
+              (:session-id (nth rows (dec i))))))))))
 
 (defn cmd-sessions-prune
-  "Delete a persisted session's directory. When no session-id is given,
-   shows an interactive picker so the user can choose one (like the
-   first-start session picker)."
+  "Delete persisted session(s):
+     by sessions prune <id>        ; one session
+     by sessions prune             ; interactive picker
+     by sessions prune --expired   ; every session past its TTL (--ttl-days N)
+     by sessions prune --all       ; every session (confirm or --yes)"
   [opts]
   ;; Pin the project-scoped sessions root (from cwd's project-dir) before reading.
   (install-working-dir! opts)
-  (let [arg (or (first (:_arguments opts)) (:session-id opts))
-        target (or arg
-                   (if (some? (System/console))
-                     (pick-session-to-prune!)
-                     (throw (ex-info "Usage: by sessions prune <session-id>" {}))))]
-    (cond
-      (nil? target)
-      (println "Cancelled.")
+  (cond
+    (:expired opts)
+    (let [ttl (or (:ttl-days opts) 14)
+          deleted (persist/purge-expired! ttl)]
+      (println (str "Purged " (count deleted) " expired session(s)"
+                    (when (seq deleted) (str ": " (str/join ", " deleted))))))
 
-      (persist/delete-session-dir! target)
-      (println (str "Deleted session: " target))
+    (:all opts)
+    (let [ids (persist/list-sessions)]
+      (if (empty? ids)
+        (println "No persisted sessions.")
+        (if (or (:yes opts)
+                (confirm! (str "Delete ALL " (count ids) " persisted session(s)? [y/N] ")))
+          (do (doseq [id ids] (persist/delete-session-dir! id))
+              (println (str "Deleted " (count ids) " session(s).")))
+          (println "Cancelled."))))
 
-      :else
-      (println (str "Session not found: " target)))))
+    :else
+    (let [arg    (or (first (:_arguments opts)) (:session-id opts))
+          target (or arg
+                     (if (some? (System/console))
+                       (pick-session-to-prune!)
+                       (throw (ex-info "Usage: by sessions prune <session-id>" {}))))]
+      (cond
+        (nil? target)
+        (println "Cancelled.")
+
+        (persist/delete-session-dir! target)
+        (println (str "Deleted session: " target))
+
+        :else
+        (println (str "Session not found: " target))))))
 
 ;; ============================================================================
 ;; CLI configuration
@@ -1052,14 +1063,39 @@
                                 {:option "log" :as "Override bootstrap-log path" :type :string}]
                   :runs        cmd-config}
                  {:command     "sessions"
-                  :description "List or prune persisted agent sessions"
+                  :description "List, show, label, or prune persisted agent sessions"
                   :subcommands [{:command     "list"
                                  :description "List all persisted sessions"
+                                 :opts        [{:option "tree"
+                                                :as "Render the fork/lineage tree instead of a flat list"
+                                                :type :with-flag :default false}]
                                  :runs        cmd-sessions-list}
-                                {:command     "prune"
-                                 :description "Delete a persisted session"
+                                {:command     "show"
+                                 :description "Show full detail for one session"
                                  :opts        [{:option "session-id" :short "s"
                                                 :as "Session ID" :type :string}]
+                                 :runs        cmd-sessions-show}
+                                {:command     "label"
+                                 :description "Set or clear a session's label (no text = clear)"
+                                 :opts        [{:option "session-id" :short "s"
+                                                :as "Session ID" :type :string}]
+                                 :runs        cmd-sessions-label}
+                                {:command     "prune"
+                                 :description "Delete persisted session(s)"
+                                 :opts        [{:option "session-id" :short "s"
+                                                :as "Session ID" :type :string}
+                                               {:option "expired"
+                                                :as "Delete sessions past their TTL"
+                                                :type :with-flag :default false}
+                                               {:option "ttl-days"
+                                                :as "TTL in days for --expired (default 14)"
+                                                :type :int}
+                                               {:option "all"
+                                                :as "Delete ALL persisted sessions"
+                                                :type :with-flag :default false}
+                                               {:option "yes" :short "y"
+                                                :as "Skip the confirmation prompt for --all"
+                                                :type :with-flag :default false}]
                                  :runs        cmd-sessions-prune}]}]})
 
 ;; ============================================================================

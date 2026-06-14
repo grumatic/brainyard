@@ -14,7 +14,10 @@
    The log is append-only.  Reading it back replays the conversation without
    needing the rendered ANSI scrollback."
   (:require [ai.brainyard.agent-tui-persist.core.edn-io :as edn-io]
-            [ai.brainyard.agent-tui-persist.core.paths :as paths]))
+            [ai.brainyard.agent-tui-persist.core.paths :as paths]
+            [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [clojure.string :as str]))
 
 (defn- now-millis ^long [] (System/currentTimeMillis))
 
@@ -54,3 +57,41 @@
   "Number of events currently in the log."
   [session-id]
   (count (edn-io/read-lines (paths/file-of session-id :messages))))
+
+(defn scan-log
+  "Single streaming pass over the session's messages.log, returning a compact
+   summary without materialising the whole log:
+
+     {:event-count       n        ; total events
+      :first-user-input  s|nil    ; first :agent.ask/pre :input (the user's first prompt)
+      :last-answer       s|nil}   ; last :agent.ask/post :answer
+
+   Parses each line once and stops growing memory — suitable for enumerating
+   many sessions (e.g. `by sessions list`). A missing/empty log yields
+   {:event-count 0 :first-user-input nil :last-answer nil}. Lines that fail to
+   parse are skipped (the count still advances on readable lines only)."
+  [session-id]
+  (let [^java.io.File file (paths/file-of session-id :messages)]
+    (if-not (.exists file)
+      {:event-count 0 :first-user-input nil :last-answer nil}
+      (with-open [r (io/reader file)]
+        (reduce
+         (fn [acc line]
+           (let [trimmed (str/trim line)]
+             (if (empty? trimmed)
+               acc
+               (let [ev (try (edn/read-string {:readers *data-readers*} trimmed)
+                             (catch Exception _ ::skip))]
+                 (if (= ev ::skip)
+                   acc
+                   (let [acc (update acc :event-count inc)]
+                     (case (:kind ev)
+                       :agent.ask/pre
+                       (cond-> acc
+                         (nil? (:first-user-input acc))
+                         (assoc :first-user-input (get-in ev [:payload :input])))
+                       :agent.ask/post
+                       (assoc acc :last-answer (get-in ev [:payload :answer]))
+                       acc)))))))
+         {:event-count 0 :first-user-input nil :last-answer nil}
+         (line-seq r))))))

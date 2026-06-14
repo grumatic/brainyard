@@ -51,6 +51,7 @@
 (def read-events-since messages/read-since)
 (def last-event     messages/last-event)
 (def count-events   messages/count-events)
+(def scan-session   messages/scan-log)
 
 ;; -- ANSI scrollback streams --------------------------------------------------
 
