@@ -645,42 +645,54 @@
    ;; (HTTP + OAuth 2.0). brainyard's native :http transport can't run the OAuth
    ;; handshake (same reason as notion/linear above), so bridge through
    ;; mcp-remote (stdio) — it runs the browser consent flow on first start.
-   ;; Google requires a PRE-REGISTERED OAuth client (no dynamic registration):
-   ;; create one in the Google Cloud console and export its id/secret as
-   ;; GCP_OAUTH_CLIENT_ID / GCP_OAUTH_CLIENT_SECRET (e.g. in .env). The command
-   ;; runs under `bash -c` so the shell expands those env vars into
-   ;; --static-oauth-client-info — the server process is spawned directly (no
-   ;; shell), so a bare $VAR in argv would not expand, hence the wrapper.
-   ;; Both ship :enabled false — turn on via `/mcp <name> start`.
-   "gmail"
+   ;; ── Google: Gmail + Calendar ──────────────────────────────────────────────
+   ;; PRIMARY: taylorwilsdon/google_workspace_mcp (`uvx workspace-mcp`) — a local
+   ;; stdio server that runs its OWN OAuth loopback callback
+   ;; (http://localhost:8000/oauth2callback) and manages its own token cache.
+   ;;
+   ;; This replaces the hosted-Google + mcp-remote seeds (kept commented below).
+   ;; mcp-remote never binds its callback listener for servers that allow an
+   ;; unauthenticated `initialize` and defer auth to tool-call time — which
+   ;; gmailmcp/calendarmcp.googleapis.com do — so its browser redirect always
+   ;; landed on a dead port (ERR_CONNECTION_REFUSED). Confirmed via --debug:
+   ;; discovery + "Browser opened" happen, but no callback server is ever started
+   ;; (upstream race; PR #260 unreleased). This server owns the callback
+   ;; end-to-end, sidestepping the bug.
+   ;;
+   ;; Setup: a GCP **Desktop** OAuth client (loopback any port) with the Gmail +
+   ;; Calendar APIs enabled; export its id/secret as GCP_OAUTH_CLIENT_ID /
+   ;; GCP_OAUTH_CLIENT_SECRET (e.g. in .env). The `bash -c` wrapper remaps those
+   ;; to the GOOGLE_OAUTH_* names the server expects (a directly-spawned process
+   ;; wouldn't expand $VAR); OAUTHLIB_INSECURE_TRANSPORT=1 is required for the
+   ;; http://localhost callback. Ships :enabled false — turn on via
+   ;; `/mcp google-workspace start`, then complete the browser consent once.
+   "google-workspace"
    {:transport :stdio
-    ;; :timeout — per-request read budget (ms). Gmail search/thread calls over
-    ;; mcp-remote routinely exceed the 30s send-request! default, so raise it.
-    ;; Pin the OAuth callback port (3334) + raise --auth-timeout to 300s:
-    ;; mcp-remote's default 30s callback window expires during a slow Google
-    ;; consent, and a random fallback port leaves stale browser tabs pointing
-    ;; at a dead listener (ERR_CONNECTION_REFUSED). Google loopback clients
-    ;; accept any localhost port, so a fixed one is safe.
     :config {:command "bash"
-             :timeout 90000
+             ;; First `uvx` run resolves+installs workspace-mcp — allow generous
+             ;; connect time. :timeout is the per-request budget (slow Gmail).
+             :connect-timeout-ms 180000
+             :timeout 120000
              :args ["-c"
-                    "npx -y mcp-remote https://gmailmcp.googleapis.com/mcp/v1 3334 --auth-timeout 300 --static-oauth-client-info \"{\\\"client_id\\\":\\\"$GCP_OAUTH_CLIENT_ID\\\",\\\"client_secret\\\":\\\"$GCP_OAUTH_CLIENT_SECRET\\\"}\""]}
+                    ;; --single-user: local one-person stdio setup — bypass
+                    ;; multi-user session mapping so OAuth is a simple one-time
+                    ;; browser consent. stdio is the default transport.
+                    "GOOGLE_OAUTH_CLIENT_ID=\"$GCP_OAUTH_CLIENT_ID\" GOOGLE_OAUTH_CLIENT_SECRET=\"$GCP_OAUTH_CLIENT_SECRET\" OAUTHLIB_INSECURE_TRANSPORT=1 exec uvx workspace-mcp --single-user --tools gmail calendar"]}
     :enabled false
     :auto-register-tools true}
 
-   "google-calendar"
-   {:transport :stdio
-    ;; :timeout — per-request read budget (ms); raise above the 30s default
-    ;; since calendar calls over mcp-remote can be slow (parity with gmail).
-    ;; Pin a DISTINCT callback port (3335) so gmail (3334) + calendar can run
-    ;; concurrently without colliding, and raise --auth-timeout to 300s. See
-    ;; the gmail seed for the rationale.
-    :config {:command "bash"
-             :timeout 90000
-             :args ["-c"
-                    "npx -y mcp-remote https://calendarmcp.googleapis.com/mcp/v1 3335 --auth-timeout 300 --static-oauth-client-info \"{\\\"client_id\\\":\\\"$GCP_OAUTH_CLIENT_ID\\\",\\\"client_secret\\\":\\\"$GCP_OAUTH_CLIENT_SECRET\\\"}\""]}
-    :enabled false
-    :auto-register-tools true}})
+   ;; ── DISABLED — non-functional, kept for reference only ────────────────────
+   ;; Hosted Google MCP via mcp-remote. Do NOT re-enable without an mcp-remote
+   ;; that binds its callback before browser auth. Full form in git history.
+   ;;   "gmail" {:transport :stdio
+   ;;            :config {:command "bash" :timeout 90000
+   ;;                     :args ["-c" "npx -y mcp-remote https://gmailmcp.googleapis.com/mcp/v1 3334 --auth-timeout 300 --static-oauth-client-info {...$GCP_OAUTH_CLIENT_ID...}"]}
+   ;;            :enabled false :auto-register-tools true}
+   ;;   "google-calendar" {:transport :stdio
+   ;;            :config {:command "bash" :timeout 90000
+   ;;                     :args ["-c" "npx -y mcp-remote https://calendarmcp.googleapis.com/mcp/v1 3335 --auth-timeout 300 --static-oauth-client-info {...$GCP_OAUTH_CLIENT_ID...}"]}
+   ;;            :enabled false :auto-register-tools true}
+   })
 
 ;; =============================================================================
 ;; config.edn-backed configuration (builtin defaults + config.edn overlay)
