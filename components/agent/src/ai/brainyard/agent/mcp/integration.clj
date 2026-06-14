@@ -656,10 +656,15 @@
    {:transport :stdio
     ;; :timeout — per-request read budget (ms). Gmail search/thread calls over
     ;; mcp-remote routinely exceed the 30s send-request! default, so raise it.
+    ;; Pin the OAuth callback port (3334) + raise --auth-timeout to 300s:
+    ;; mcp-remote's default 30s callback window expires during a slow Google
+    ;; consent, and a random fallback port leaves stale browser tabs pointing
+    ;; at a dead listener (ERR_CONNECTION_REFUSED). Google loopback clients
+    ;; accept any localhost port, so a fixed one is safe.
     :config {:command "bash"
              :timeout 90000
              :args ["-c"
-                    "npx -y mcp-remote https://gmailmcp.googleapis.com/mcp/v1 --static-oauth-client-info \"{\\\"client_id\\\":\\\"$GCP_OAUTH_CLIENT_ID\\\",\\\"client_secret\\\":\\\"$GCP_OAUTH_CLIENT_SECRET\\\"}\""]}
+                    "npx -y mcp-remote https://gmailmcp.googleapis.com/mcp/v1 3334 --auth-timeout 300 --static-oauth-client-info \"{\\\"client_id\\\":\\\"$GCP_OAUTH_CLIENT_ID\\\",\\\"client_secret\\\":\\\"$GCP_OAUTH_CLIENT_SECRET\\\"}\""]}
     :enabled false
     :auto-register-tools true}
 
@@ -667,10 +672,13 @@
    {:transport :stdio
     ;; :timeout — per-request read budget (ms); raise above the 30s default
     ;; since calendar calls over mcp-remote can be slow (parity with gmail).
+    ;; Pin a DISTINCT callback port (3335) so gmail (3334) + calendar can run
+    ;; concurrently without colliding, and raise --auth-timeout to 300s. See
+    ;; the gmail seed for the rationale.
     :config {:command "bash"
              :timeout 90000
              :args ["-c"
-                    "npx -y mcp-remote https://calendarmcp.googleapis.com/mcp/v1 --static-oauth-client-info \"{\\\"client_id\\\":\\\"$GCP_OAUTH_CLIENT_ID\\\",\\\"client_secret\\\":\\\"$GCP_OAUTH_CLIENT_SECRET\\\"}\""]}
+                    "npx -y mcp-remote https://calendarmcp.googleapis.com/mcp/v1 3335 --auth-timeout 300 --static-oauth-client-info \"{\\\"client_id\\\":\\\"$GCP_OAUTH_CLIENT_ID\\\",\\\"client_secret\\\":\\\"$GCP_OAUTH_CLIENT_SECRET\\\"}\""]}
     :enabled false
     :auto-register-tools true}})
 
