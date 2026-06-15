@@ -51,7 +51,12 @@
 ;; browser menu just doubles up. preventDefault on `contextmenu` kills only the
 ;; browser menu — the app's menu rides on mousedown/up reporting, untouched.
 (def ^:private copy-on-select-script
-  "<script>(function(){
+  ;; The leading <style> kills two dead scrollbars: ttyd's document scrollbar
+  ;; (html,body) and — the one actually visible — xterm's always-on
+  ;; `.xterm-viewport` bar (`overflow-y:scroll` with nothing to scroll in the
+  ;; TUI's fullscreen alt-screen). The bar is hidden but scroll capability is
+  ;; kept (scrollbar-width/::-webkit-scrollbar), so real scrollback still works.
+  "<style>html,body{margin:0;overflow:hidden}.xterm-viewport{scrollbar-width:none}.xterm-viewport::-webkit-scrollbar{display:none}</style><script>(function(){
   document.addEventListener('contextmenu',function(e){e.preventDefault();},false);
   function copy(s){if(!s)return;
     if(navigator.clipboard&&navigator.clipboard.writeText){
