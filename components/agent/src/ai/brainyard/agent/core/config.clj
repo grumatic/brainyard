@@ -303,7 +303,19 @@
    ;; :nrepl   — live brainyard JVM via clj-nrepl (debug-agent; needs server).
    ;; Per-agent override layer (lifecycle hook → `:!state :st-memory-init
    ;; :config`); not persisted to .brainyard/config.edn.
-   :clj-backend                {:type "keyword" :default :sandbox}})
+   :clj-backend                {:type "keyword" :default :sandbox}
+   ;; Side ask channel (docs/design/ask-attach-channel.md). Each TUI session
+   ;; opens a per-session AF_UNIX socket (<session-dir>/ask.sock) so
+   ;; `by ask --attach <session-id>` can inject a question into the live turn
+   ;; queue. On by default; disable durably via `[:agent :config
+   ;; :ask-channel-enabled?] false` or transiently via BY_ASK_CHANNEL=0.
+   ;; :ask-timeout-ms caps a single side-ask turn server-side.
+   :ask-channel-enabled?       {:type "boolean"
+                                :default-fn #(not= "0" (System/getenv "BY_ASK_CHANNEL"))}
+   :ask-timeout-ms             {:type "integer"
+                                :default-fn #(or (some-> (System/getenv "BY_ASK_TIMEOUT_MS")
+                                                         parse-long)
+                                                 120000)}})
 
 (def config-keys (set (keys config-schema)))
 

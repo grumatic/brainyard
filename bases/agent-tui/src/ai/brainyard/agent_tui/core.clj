@@ -33,6 +33,7 @@
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.agent-tui-persist.interface :as persist]
+            [ai.brainyard.ask-channel.interface :as ask-channel]
             [ai.brainyard.clj-llm.interface :as clj-llm]
             [ai.brainyard.clj-nrepl.interface :as clj-nrepl]
             [ai.brainyard.clj-sandbox.interface :as clj-sandbox]
@@ -73,6 +74,12 @@
 ;; and grant (:nrepl-grant, e.g. "read-only:15m") follow the same chain.
 ;; See docs/design/clj-nrepl-eval.md §5 / §8.
 (defonce !nrepl-server (atom nil))
+
+;; Side ask channel (docs/design/ask-attach-channel.md). One AF_UNIX listener
+;; per session, keyed by the agent's on-disk session-id. On by default; gated
+;; by config :ask-channel-enabled?. Lifecycle mirrors the nREPL pair but is
+;; per-session: started in create-tui-agent!, stopped on session close / stop!.
+(defonce !ask-listeners (atom {}))
 
 (defn- tui-confirm-mutation
   "v1 confirm-fn (visibility-only) — emits a scrollback notice and a mulog
@@ -461,13 +468,17 @@
         targeted? (some? (:agent opts))
         sidx      (when ag (tui-session/session-idx-for-agent ag))]
     (cond
-      (nil? ag) nil
+      ;; A side-ask (`:reply` promise in opts) must always settle its promise so
+      ;; the attach client never hangs — even on the skip branches below.
+      (nil? ag)
+      (do (some-> (:reply opts) (deliver {:error "no active agent"})) nil)
 
       ;; Targeted resume (wakeup) whose session was closed before the timer
       ;; fired — nothing to render into; skip rather than hijack the active
       ;; session.
       (and targeted? (nil? sidx))
-      (mulog/warn ::wakeup-target-session-closed :agent-id (:agent-id ag))
+      (do (some-> (:reply opts) (deliver {:error "target session closed"}))
+          (mulog/warn ::wakeup-target-session-closed :agent-id (:agent-id ag)))
 
       :else
       ;; For a targeted resume (wakeup) pin emit-routing to the parked agent's
@@ -476,12 +487,15 @@
       ;; original active-terminal path is unchanged.
       (binding [tui-session/*render-session-idx* (when targeted? sidx)]
         (let [origin-sidx (if targeted? sidx (sessions/active-idx))
-              active?     (= origin-sidx (sessions/active-idx))]
-          ;; Queue path leaves status-bar transitions to its notify-fn, so no
-          ;; :idle here; surfaces errors as a line (the worker swallows throws).
-          (run-ask-lifecycle {:ag ag :input input :opts opts
-                              :origin-sidx origin-sidx :active? active?
-                              :set-idle? false :error-mode :emit}))))))
+              active?     (= origin-sidx (sessions/active-idx))
+              ;; Queue path leaves status-bar transitions to its notify-fn, so no
+              ;; :idle here; surfaces errors as a line (the worker swallows throws).
+              result      (run-ask-lifecycle {:ag ag :input input :opts opts
+                                              :origin-sidx origin-sidx :active? active?
+                                              :set-idle? false :error-mode :emit})]
+          ;; Hand the result back to a side-ask attach client, if one is waiting.
+          (some-> (:reply opts) (deliver result))
+          result)))))
 
 (defn- wrap-to-width
   "Greedy word-wrap plain `s` to `width` display columns. Returns a vector of
@@ -587,6 +601,79 @@
            (tui-session/emit! (ansi/warning "Input queue is full (max 10). Please wait."))))))))
 
 ;; ============================================================================
+;; Side ask channel — per-session AF_UNIX listener
+;; ============================================================================
+;;
+;; `by ask --attach <session-id>` connects to <session-dir>/ask.sock and injects
+;; a question into THIS session's turn queue, then blocks for the answer. The
+;; question rides the same path as a keyboard turn (serialized, visible in the
+;; tab) by enqueuing with `{:agent ag :source :side-ask :reply <promise>}` — the
+;; queue process-fn delivers the ask result to the promise. See
+;; docs/design/ask-attach-channel.md.
+
+(defn inject-side-ask!
+  "Enqueue `question` as a turn for the specific agent `ag`, returning a promise
+   that resolves to the ask result map (`{:answer …}` / `{:error …}`) when the
+   turn completes, or nil if it was cancelled. Targets `ag` directly (bypassing
+   the active-session output-only guard in `enqueue-input!`) so a side-ask lands
+   on the right tab regardless of which one is on screen."
+  [ag question]
+  (let [p      (promise)
+        !queue (ensure-input-queue!)
+        result (agent/enqueue! !queue question {:agent ag :source :side-ask :reply p})]
+    (when (:error result)
+      (deliver p {:error "input queue is full (max 10)"}))
+    p))
+
+(defn- ask-handle-fn
+  "Request handler for a session's ask listener. Injects the question, awaits
+   the reply (bounded by the lesser of the client timeout and the server cap),
+   and shapes the EDN wire response."
+  [ag cap-ms]
+  (fn [{:keys [question timeout-ms]}]
+    (if (or (nil? question) (str/blank? question))
+      {:status :error :error "empty question"}
+      (let [tmo (min cap-ms (or timeout-ms cap-ms))
+            res (deref (inject-side-ask! ag question) tmo ::timeout)]
+        (cond
+          (= ::timeout res) {:status :error :error (str "timed out after " tmo "ms")}
+          (nil? res)        {:status :error :error "no answer (turn cancelled or failed)"}
+          (:error res)      {:status :error :error (:error res)}
+          :else             {:status :ok :answer (:answer res) :usage (:usage res)})))))
+
+(defn start-ask-listener!
+  "Open the per-session ask socket for agent `ag` when :ask-channel-enabled?.
+   Idempotent per session-id; persists :ask-socket-path into meta.edn. Failures
+   are non-fatal — the session runs fine without an attach socket."
+  [ag]
+  (when (agent/get-config :ask-channel-enabled?)
+    (let [sid (try (agent/session-id ag) (catch Throwable _ nil))]
+      (when (and sid (not (contains? @!ask-listeners sid)))
+        (try
+          (let [path   (.getAbsolutePath ^java.io.File (persist/file-of sid :ask-sock))
+                cap-ms (or (agent/get-config :ask-timeout-ms) 120000)
+                handle (ask-channel/start-listener! path (ask-handle-fn ag cap-ms))]
+            (swap! !ask-listeners assoc sid handle)
+            (try (persist/save-meta! sid {:ask-socket-path path}) (catch Throwable _))
+            (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
+          (catch Throwable e
+            (mulog/warn ::ask-listener-bootstrap-failed :session-id sid :error (.getMessage e))))))))
+
+(defn stop-ask-listener!
+  "Stop and unregister the ask listener for `sid` (a session-id string).
+   Idempotent and non-throwing."
+  [sid]
+  (when-let [handle (get @!ask-listeners sid)]
+    (try (ask-channel/stop-listener! handle) (catch Throwable _))
+    (swap! !ask-listeners dissoc sid)))
+
+(defn stop-all-ask-listeners!
+  "Stop every ask listener — used by `stop!` and the JVM shutdown hook."
+  []
+  (doseq [sid (keys @!ask-listeners)]
+    (stop-ask-listener! sid)))
+
+;; ============================================================================
 ;; Public API — Lifecycle
 ;; ============================================================================
 
@@ -652,6 +739,9 @@
       (swap! (:!session ag) agent/set-session-config :dirs dirs)
       (swap! (:!session ag) agent/set-session-config :permission-fn
              (permissions/make-permission-fn input/!input-reader-thread feedback-fn)))
+    ;; Open this session's side-ask socket (on by default; non-fatal on failure)
+    ;; so `by ask --attach <session-id>` can inject questions into its turn queue.
+    (start-ask-listener! ag)
     ag))
 
 (defn load-input-history-for-session!
@@ -751,6 +841,17 @@
   ;;     can reach the LIVE runtime. Off by default — never started in
   ;;     unattended runs unless explicitly enabled. See §5 of the design.
   (start-nrepl-server-if-enabled!)
+
+  ;; 2e. Side ask channel: stop a session's ask listener when its tab closes.
+  ;;     Per-session sockets are opened in create-tui-agent!; this hook is the
+  ;;     teardown counterpart (idempotent on key, safe across reloads).
+  (sessions/register-before-close-hook!
+   :ask-channel
+   (fn [_idx session]
+     (doseq [ag (or (seq (:agent-instances session))
+                    (some-> (:agent session) vector))]
+       (when-let [sid (try (agent/session-id ag) (catch Throwable _ nil))]
+         (stop-ask-listener! sid)))))
 
   ;; 3. Initialize autocomplete sub-menu registry.
   ;; Built-in defagent namespaces are registered at agent.interface load time
@@ -1045,6 +1146,8 @@
   (try (tui-log/stop-file-publisher!) (catch Exception _))
   ;; Stop in-process nREPL server if we started one
   (stop-nrepl-server!)
+  ;; Close every per-session ask socket
+  (try (stop-all-ask-listeners!) (catch Exception _))
   ;; Tear down any Mode-B side panes/FIFOs. No-op when not installed.
   (try (tmux-side/uninstall!) (catch Exception _))
   (tui-session/clear-agent!)
@@ -1176,6 +1279,10 @@
                                               ;; ran this via stop! and cleared the manager, so
                                               ;; here it's a no-op.
                                               (try (agent/task-shutdown) (catch Throwable _))
+                                              ;; Unlink any per-session ask sockets so a
+                                              ;; crashed/killed TUI doesn't leave stale
+                                              ;; ask.sock files behind. Idempotent with stop!.
+                                              (try (stop-all-ask-listeners!) (catch Throwable _))
                                               ;; Tear down tmux side panes + wheel bindings
                                               ;; + restore prior `mouse` setting before
                                               ;; restoring local terminal state. Without this

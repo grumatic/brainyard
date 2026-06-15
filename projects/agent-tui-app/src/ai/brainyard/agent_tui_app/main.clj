@@ -21,6 +21,7 @@
    [ai.brainyard.agent-tui-app.dotenv :as dotenv]
    [ai.brainyard.agent.interface :as agent]
    [ai.brainyard.agent-tui-persist.interface :as persist]
+   [ai.brainyard.ask-channel.interface :as ask-channel]
    [ai.brainyard.web-share.interface :as web-share]
    [ai.brainyard.os-sandbox.interface :as os-sandbox]
    [ai.brainyard.clj-llm.interface :as clj-llm]
@@ -110,6 +111,16 @@
   {:option "working-dir" :short "C"
    :as "Effective working directory for tools/agents (default: $BY_WORKING_DIR, else process cwd)"
    :type :string})
+
+(def attach-opt
+  {:option "attach" :short "A"
+   :as "Ask a RUNNING session over its side channel (session-id; see `by sessions list`)"
+   :type :string})
+
+(def ask-timeout-opt
+  {:option "timeout" :short "t"
+   :as "Seconds to wait for an --attach answer (default 120)"
+   :type :int})
 
 ;; ============================================================================
 ;; Legacy provider:model parsing
@@ -618,10 +629,49 @@
 ;; Subcommand: ask — one-shot non-interactive question
 ;; ============================================================================
 
+(defn cmd-ask-attach
+  "Ask a question of an already-running session over its side ask channel.
+   Resolves <project>/.brainyard/sessions/<session-id>/ask.sock, sends the
+   question, prints the answer. Bypasses all agent setup — the live TUI runs
+   the turn. See docs/design/ask-attach-channel.md."
+  [opts session-id]
+  (install-working-dir! opts)            ;; so the sessions root resolves to this project
+  (let [question (first (:_arguments opts))]
+    (when (or (nil? question) (str/blank? question))
+      (println "Error: question argument is required.")
+      (println "Usage: by ask --attach <session-id> [options] QUESTION")
+      (System/exit 1))
+    (let [^java.io.File sock (persist/file-of session-id :ask-sock)]
+      (when-not (and sock (.exists sock))
+        (println (str "Error: session '" session-id "' is not attachable "
+                      "(no live ask socket)."))
+        (println "  It must be open in a running `by run` TUI in this project.")
+        (println "  List sessions with: by sessions list")
+        (System/exit 1))
+      (let [timeout-ms (* 1000 (or (:timeout opts) 120))
+            resp (try
+                   (ask-channel/ask-via-socket!
+                    {:path (.getAbsolutePath sock)
+                     :question question
+                     :timeout-ms timeout-ms})
+                   (catch Exception e
+                     {:status :error
+                      :error (str "could not reach session: " (.getMessage e)
+                                  " (is it still running?)")}))]
+        (if (= :ok (:status resp))
+          (do (println (or (:answer resp) ""))
+              (System/exit 0))
+          (do (println (str "Error: " (:error resp)))
+              (System/exit 1)))))))
+
 (defn cmd-ask
   "Ask a one-shot question and print the answer.
+   With --attach <session-id>, ask a running session over its side channel
+   instead of spinning up a throwaway agent.
    Config precedence: CLI flags > config.edn > hardcoded defaults."
   [opts]
+  (when-let [sid (:attach opts)]
+    (cmd-ask-attach opts sid))           ;; exits the process; never returns
   (let [opts (parse-legacy-provider opts)
         _ (install-working-dir! opts)
         file-config (agent/read-edn-config (agent/init-dirs!))
@@ -1028,13 +1078,15 @@
                                  :type :with-flag :default false}]
                   :runs        cmd-run}
                  {:command     "ask"
-                  :description "Ask a one-shot question (non-interactive)"
+                  :description "Ask a one-shot question (non-interactive); --attach to ask a running session"
                   :opts        [agent-opt
                                 provider-opt
                                 model-opt
                                 user-id-opt
                                 working-dir-opt
-                                max-iter-opt]
+                                max-iter-opt
+                                attach-opt
+                                ask-timeout-opt]
                   :args        [{:arg "question" :as "Question to ask" :type :string}]
                   :runs        cmd-ask}
                  {:command     "agents"

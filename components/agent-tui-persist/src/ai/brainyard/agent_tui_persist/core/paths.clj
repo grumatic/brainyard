@@ -76,6 +76,7 @@
    :status           "status.edn"
    :input-history    "input-history.edn"
    :usage-tracker    "usage-tracker.edn"
+   :ask-sock         "ask.sock"
    :lock             "by-host.lock"})
 
 (defn file-of
