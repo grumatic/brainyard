@@ -115,8 +115,19 @@
          secret-file (when (seq user-env) (write-secret-env-file user-env))
          args (concat ["docker" "run" "-d" "--rm"
                        "--name" name
+                       ;; TEST: run as root so in-container ops (apt, sudo,
+                       ;; writing system paths) don't hit a password prompt.
+                       "-u" "root"
                        ;; ephemeral host port on loopback -> container 7681
                        "-p" (str "127.0.0.1:0:" container-port)
+                       ;; TEST: publish dev-server ports 3000-3010 to ephemeral
+                       ;; host ports on the loopback, so a dev server started
+                       ;; inside the workspace (e.g. `npm run dev` on :3000) is
+                       ;; reachable from the host browser. Ephemeral (empty host
+                       ;; port) avoids collisions with whatever already holds
+                       ;; 3000-3010 on the host; find the mapping with
+                       ;; `docker port pg-<session-id>`.
+                       "-p" "127.0.0.1::3000-3010"
                        ;; Persistent per-session state. `--rm` discards the
                        ;; container's writable layer on stop, so without these
                        ;; volumes a resume = a blank container. Named volumes
