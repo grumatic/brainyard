@@ -4,6 +4,8 @@ All notable changes to Brainyard's public distribution are documented here. Vers
 
 ## [Unreleased]
 
+## [v0.3.2] — 2026-06-15
+
 ### Added
 
 - **`by run --resume-latest` reattaches to the newest session non-interactively.** A new flag — and the matching `BY_RESUME_LATEST` env var — resumes the most-recent persisted session (newest by last-attached-at, then started-at), falling back to a fresh session when there are none. It fills the gap between bare `--resume` (which opens the interactive stdin picker) and `--resume <id>` (which exits 1 if the id is absent): neither suits an automated relaunch. The flag is forwarded through the `--web`/`--sandbox` child launch, so a session whose process was relaunched — e.g. a hosted workspace whose container was recreated — lands back exactly where the user left off instead of in a blank session.
