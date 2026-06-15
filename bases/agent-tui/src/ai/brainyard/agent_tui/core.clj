@@ -1193,6 +1193,9 @@
           (when use-raw? (input/start-input-reader! System/in))
           (terminal/install-sigint-handler!)
           (terminal/install-sigwinch-handler!)
+          ;; Alternate the idle placeholder between a live agent suggestion and
+          ;; rotating static help tips (daemon; self-guards to empty idle prompt).
+          (tui-session/start-idle-tip-ticker!)
           (loop []
             (layout/set-input-active! true)
             ;; Rotate the static help tip once per fresh idle prompt so

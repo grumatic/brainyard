@@ -576,6 +576,53 @@
       (layout/draw-input-prompt! (str display cursor-col3))
       (emit-inline! (str display cursor-col3)))))
 
+;; ============================================================================
+;; Idle-Tip Ticker (alternates suggestion / static tip on the idle prompt)
+;; ============================================================================
+
+(defonce ^:private !idle-tip-ticker-thread (atom nil))
+
+(def ^:private idle-tip-interval-ms
+  "How long each placeholder frame (suggestion vs. static tip) stays on screen."
+  4000)
+
+(defn stop-idle-tip-ticker!
+  "Stop the idle-tip ticker thread. Idempotent."
+  []
+  (when-let [t @!idle-tip-ticker-thread]
+    (reset! !idle-tip-ticker-thread nil)
+    (try (.interrupt ^Thread t) (catch Exception _))))
+
+(defn start-idle-tip-ticker!
+  "Start a daemon thread that, while the user is sitting at an empty idle
+   prompt with a live agent suggestion, alternates the placeholder between the
+   suggestion and a rotating static help tip every `idle-tip-interval-ms`.
+
+   Self-guards on every tick (only repaints when input is active, empty, no
+   popover, and a suggestion is live), so it is a no-op during a turn, while
+   the user is typing, or when no suggestion has been captured. Runs for the
+   process lifetime; idempotent — won't start a second ticker."
+  []
+  (when-not @!idle-tip-ticker-thread
+    (let [t (Thread.
+             (fn []
+               (try
+                 (loop []
+                   (Thread/sleep (long idle-tip-interval-ms))
+                   (when (and (help-tips/agent-suggestion)
+                              (layout/input-active?)
+                              (layout/input-empty?)
+                              (not (layout/popover-active?)))
+                     (help-tips/tick-frame!)
+                     (try (redraw-idle-prompt!) (catch Exception _)))
+                   (recur))
+                 (catch InterruptedException _))
+               (reset! !idle-tip-ticker-thread nil)))]
+      (.setDaemon t true)
+      (.setName t "idle-tip-ticker")
+      (.start t)
+      (reset! !idle-tip-ticker-thread t))))
+
 (defn capture-writer!
   "Capture current *out* as the output target."
   []

@@ -1159,14 +1159,18 @@
                   (vreset! preferred-col nil)
                   (terminal/redraw-input-line! (.toString buf) @cursor-pos)
                   (recur))
-              ;; Cursor at end + a live agent suggestion → accept it into the
-              ;; buffer for editing/submitting (ghost-text accept).
-              (help-tips/agent-suggestion)
+              ;; Empty buffer + a live agent suggestion → accept it into the
+              ;; buffer for editing/submitting (ghost-text accept). Do NOT
+              ;; clear the suggestion: it stays live until the next turn starts
+              ;; (ask-pre-handler clears it), so the user can re-summon it after
+              ;; clearing the input. The empty-buffer guard (it only renders as
+              ;; a placeholder on an empty line anyway) prevents re-appending it
+              ;; on a second right-arrow.
+              (and (zero? (.length buf)) (help-tips/agent-suggestion))
               (let [s (help-tips/agent-suggestion)]
                 (.append buf s)
                 (vreset! cursor-pos (.length buf))
                 (vreset! preferred-col nil)
-                (help-tips/clear-agent-suggestion!)
                 (terminal/redraw-input-line! (.toString buf) @cursor-pos)
                 (recur))
               :else (recur))
