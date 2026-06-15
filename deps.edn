@@ -23,6 +23,7 @@
                 ai.brainyard/acp               {:local/root "components/acp"}
                 ai.brainyard/acp-client        {:local/root "components/acp-client"}
                 ai.brainyard/web-share         {:local/root "components/web-share"}
+                ai.brainyard/ask-channel       {:local/root "components/ask-channel"}
                 ;; Bases
                 ai.brainyard/agent-tui         {:local/root "bases/agent-tui"}
                 ai.brainyard/acp-stub-agent    {:local/root "bases/acp-stub-agent"}}}
