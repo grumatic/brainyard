@@ -1440,7 +1440,7 @@
 
 ;; The persisted-session handlers are defined later in this file but referenced
 ;; from handle-session-command's subcommand dispatch — declare them forward.
-(declare handle-tree-command handle-fork-command handle-resume-command
+(declare handle-tree-command handle-fork-command
          handle-persisted-list-command handle-show-command active-session-id)
 
 (defn- handle-session-command
@@ -1448,7 +1448,7 @@
 
    Two domains, distinct subcommands:
    - LIVE in-memory tabs: `tabs` (default), `switch <N>`, `new`, `close`, `rename`
-   - PERSISTED on-disk sessions: `list`, `show`, `label`, `tree`, `fork`, `resume`"
+   - PERSISTED on-disk sessions: `list`, `show`, `label`, `tree`, `fork`"
   [args]
   (let [parts (when-not (str/blank? args) (str/split (str/trim args) #"\s+" 2))
         subcmd (first parts)
@@ -1475,10 +1475,6 @@
       ;; /session fork [label] — fork the active session on disk
       (= subcmd "fork")
       (handle-fork-command (or subcmd-args ""))
-
-      ;; /session resume [id] — list (or report switch target for) disk sessions
-      (= subcmd "resume")
-      (handle-resume-command (or subcmd-args ""))
 
       ;; /session new [agent-id] — create new session
       (= subcmd "new")
@@ -1534,10 +1530,10 @@
           (tui-session/emit! (ansi/warning (str "Session " idx " not found."))))
         (tui-session/emit! (ansi/warning
                             (str "Usage: /session [tabs|list|show <id>|label <text>|"
-                                 "tree|fork|resume|new|close|switch N]")))))))
+                                 "tree|fork|new|close|switch N]")))))))
 
 ;; ============================================================================
-;; Session-tree commands (/tree /fork /name /resume-session)
+;; Session-tree commands (/tree /fork /name)
 ;;
 ;; These operate on the persisted session tree (`agent-tui-persist`'s
 ;; meta.edn per session) — independent from the in-process multi-session
@@ -1606,37 +1602,6 @@
       (catch Exception e
         (tui-session/emit! (ansi/failure (str "Fork failed: " (.getMessage e))))))
     (tui-session/emit! (ansi/warning "No active session to fork"))))
-
-(defn- handle-resume-command
-  "List persisted sessions ordered by most-recent. Without arguments,
-   prints a one-line-per-session summary the user can read to pick. Live
-   popup integration — `tmux display-popup` driving the SelectList state
-   machine — is a follow-up; for now /resume-session is read-only.
-
-   Optional positional arg `<session-id>` reports the would-be switch
-   target without actually switching (the switch needs deeper rewiring of
-   the active-agent slot — also a follow-up)."
-  [args]
-  (let [arg (when-not (str/blank? args) (str/trim args))]
-    (cond
-      arg
-      (if (some #{arg} (persist/list-sessions))
-        (tui-session/emit!
-         (str (ansi/muted "would switch to ")
-              (ansi/header arg)
-              (ansi/muted "  (live switch is a follow-up)")))
-        (tui-session/emit! (ansi/failure (str "Unknown session: " arg))))
-
-      :else
-      ;; Ordered newest-first via the shared enricher, rendered with the same
-      ;; formatter as `by sessions list` (preview + label + ▸ active marker).
-      (let [rows   (ssum/enriched-summaries)
-            active (some-> (active-session-id) name)]
-        (tui-session/emit!
-         (str (ansi/header "Sessions") "  "
-              (ansi/muted (str (count rows) " total"))
-              "\n"
-              (str/join "\n" (ssum/format-table rows {:ansi? true :active active}))))))))
 
 ;; ============================================================================
 ;; Run pause/resume (cooperative — checked at BT iteration boundaries)

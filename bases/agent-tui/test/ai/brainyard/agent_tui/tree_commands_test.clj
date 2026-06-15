@@ -4,7 +4,7 @@
 
 (ns ai.brainyard.agent-tui.tree-commands-test
   "Smoke + unit tests for the persisted-session handlers
-   (/session tree, /session fork, /session resume) in
+   (/session tree, /session fork) in
    `bases/agent-tui/.../commands.clj`. Stubs the active agent and the
    persist root so the handlers operate against a tmp directory."
   (:require [ai.brainyard.agent-tui-persist.interface :as persist]
@@ -94,30 +94,3 @@
       (#'commands/handle-fork-command ""))
     (is (some #(str/includes? % "No active session") @emitted))))
 
-;; -- /session resume ---------------------------------------------------------
-
-(deftest resume-command-no-args-lists-sessions
-  (let [emitted (atom [])]
-    (persist/ensure-session-meta! "s1" "first")
-    (persist/ensure-session-meta! "s2" "second")
-    (with-stub-active-agent "s1" emitted
-      (fn [] (#'commands/handle-resume-command "")))
-    (let [out   (str/join "\n" @emitted)
-          plain (str/replace out #"\x1b\[[0-9;]*[A-Za-z]" "")]
-      (is (str/includes? plain "Sessions"))
-      (is (str/includes? plain "s1"))
-      (is (str/includes? plain "s2"))
-      (is (re-find #"▸\s+s1" plain) "active session marked"))))
-
-(deftest resume-command-known-id-reports-would-switch
-  (let [emitted (atom [])]
-    (persist/ensure-session-meta! "target")
-    (with-stub-active-agent "current" emitted
-      (fn [] (#'commands/handle-resume-command "target")))
-    (is (some #(str/includes? % "would switch to") @emitted))))
-
-(deftest resume-command-unknown-id-fails
-  (let [emitted (atom [])]
-    (with-stub-active-agent "anything" emitted
-      (fn [] (#'commands/handle-resume-command "nope")))
-    (is (some #(str/includes? % "Unknown session") @emitted))))

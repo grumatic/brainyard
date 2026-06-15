@@ -650,8 +650,7 @@
                    ["show"   "Show one persisted session's detail (ID)"]
                    ["label"  "Set/clear the active session's disk label"]
                    ["tree"   "Render persisted session tree (parents + forks)"]
-                   ["fork"   "Fork the active session on disk (optional label)"]
-                   ["resume" "List persisted sessions (or report switch target)"]]}]
+                   ["fork"   "Fork the active session on disk (optional label)"]]}]
    ["/status"           ""                        "Show agent status"]
    ["/task"             " [subcmd] [args]"        "Manage background tasks"
     {:completions [["list"   "List all background tasks"]
