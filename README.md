@@ -1,6 +1,6 @@
 # Brainyard
 
-> **v0.3.1 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.3.1) · [changelog](CHANGELOG.md)) — **author your own agents**: the new `meta-agent` lets you mint persistent, CoAct-derived specialists from plain English — an `:instruction` plus a `:tool-context`, no plumbing — persisted under `.brainyard/agents/user$agent/`, registered as `user$agent$<name>`, and callable on the next turn (see [`docs/design/meta-agent-design.md`](docs/design/meta-agent-design.md)). Alongside it, the user-defined tool/hook command families are namespaced under the specialist that owns them (`tool-agent$*` / `hook-agent$*`) and authored tool ids become `user$tool$<name>`, so the whole `user$*` space is partitioned by asset type. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
+> **v0.3.2 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.3.2) · [changelog](CHANGELOG.md)) — **a friendlier input bar**: the agent's suggested follow-up now sits on the empty prompt as a right-arrow-acceptable ghost (`↳ … (→ to use)`) and time-shares the line with rotating help tips, persisting until your next turn. `by run --resume-latest` (and `BY_RESUME_LATEST`) reattaches to the newest session for automated relaunches; the never-implemented `/session resume` subcommand is removed; plus fixes for provider-switch API keys, orphaned subprocesses on quit, the tab-indented answer box, and resuming an agent whose type is no longer registered. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
 
 Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 22 available agents across 6 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
 
@@ -23,7 +23,7 @@ On **macOS arm64** this installs the native binary under `~/.local/bin`:
 
 On other platforms (Linux, Intel macOS) — where a native binary isn't published yet — the installer automatically falls back to the **JVM uberjar**, installing a `by` launcher that runs `java -jar` (requires a JDK 21+ on `PATH`).
 
-Pin a specific version with `BY_VERSION=v0.3.1` before piping to bash. See [`docs/install.md`](docs/install.md) for manual install, checksum verification, and troubleshooting.
+Pin a specific version with `BY_VERSION=v0.3.2` before piping to bash. See [`docs/install.md`](docs/install.md) for manual install, checksum verification, and troubleshooting.
 
 ### Java users — uberjar
 
@@ -77,6 +77,27 @@ bin/release-stage.sh              # stage release/ artifacts + BUILD-INFO.txt
 ```
 
 Run the test suite with `bb test`. See [`CLAUDE.md`](CLAUDE.md) for the build/release pipeline and tagging discipline, and [`docs/`](docs/) for architecture and design notes.
+
+## Playground — web multi-tenant `by`
+
+The repo also contains the **Brainyard Playground**: a hosted, multi-tenant web service where each user logs in (OIDC) and drives `by` from a browser terminal in their own isolated, pre-provisioned workspace. It turns the single-user `--web` / `--sandbox` launchers into a **control plane** (auth + session orchestration + WebSocket proxy) in front of a **data plane** of per-session Docker containers.
+
+Phases 0–1 are implemented and verified end-to-end:
+
+- **`frontend/playground-ui`** — a ClojureScript + [Replicant](https://replicant.fun/) SPA: login · dashboard · workspace · settings. The terminal embeds ttyd's own client same-origin in an iframe (with copy-on-select); **Settings** holds per-user BYO provider keys.
+- **`bases/playground-server`** — the JVM control plane: real OIDC (JWKS-verified, with a bare-cookie stub when no `OIDC_ISSUER` is set), a portable store (**SQLite by default**, **Postgres** via `PG_DATABASE_URL`), a user-scoped session broker with a restart-safe reconcile and an idle reaper, a Docker `workspace-runtime` with persistent per-session volumes (suspend/resume), and an authorized WebSocket proxy to each container's ttyd.
+- **`deploy/playground-workspace`** — the workspace image (`temurin:21-jre` + ttyd + tmux + git + a dev toolchain + the `by` uberjar), launched with `--web-tmux` + `BY_RESUME_LATEST=1` so a recreated container reattaches to the newest session.
+
+Run it locally (real Docker workspaces unless `PG_FAKE=1`):
+
+```bash
+bb playground:ui            # build the SPA into the control-plane base
+bb uberjar:ata              # the by uberjar baked into the workspace image
+bb playground:image         # build the workspace Docker image
+bb playground:run           # control plane on :8090
+```
+
+Tenant isolation today is **Docker-per-session** (a real OS boundary, not seatbelt). Phase 2 — egress allowlist, gVisor/Firecracker driver, warm pool, autoscaling, quotas, audit log, and the production Vault cut-over — is still ahead. Full design and as-built notes: [`docs/design/playground-design.md`](docs/design/playground-design.md).
 
 ## Contributing
 
