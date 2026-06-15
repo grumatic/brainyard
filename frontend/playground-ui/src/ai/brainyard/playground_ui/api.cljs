@@ -33,6 +33,7 @@
 (defn create-session! []   (request "POST"   "/api/sessions" {}))
 (defn resume!         [id] (request "POST"   (str "/api/sessions/" id "/resume") {}))
 (defn destroy!        [id] (request "DELETE" (str "/api/sessions/" id) nil))
+(defn ports           [id] (get-json (str "/api/sessions/" id "/ports")))
 
 ;; BYO env (settings). env is a {name -> value} map.
 (defn get-env         []    (get-json "/api/me/env"))

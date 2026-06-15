@@ -86,6 +86,32 @@
       (some-> (last (str/split-lines out))
               (str/split #":") last str/trim Integer/parseInt))))
 
+(def ^:private dev-port-range
+  "Container ports published for in-workspace dev servers (see `start!`'s
+   `-p 127.0.0.1::3000-3010`). ttyd's 7681 is intentionally excluded."
+  (set (range 3000 3011)))
+
+(defn published-dev-ports
+  "Resolve the host ports Docker mapped to the session's dev ports (3000-3010).
+   Returns a container-port-sorted vector [{:container 3000 :host 59789} ...],
+   or [] when the container is gone. Parses `docker port pg-<id>` lines like
+   `3000/tcp -> 127.0.0.1:59789`; deduped per container port (one loopback
+   binding each)."
+  [session-id]
+  (let [{:keys [exit out]} (sh "docker" "port" (str "pg-" session-id))]
+    (if-not (zero? exit)
+      []
+      (->> (str/split-lines out)
+           (keep (fn [line]
+                   (when-let [[_ cp hp] (re-matches #"(\d+)/tcp\s*->\s*\S+:(\d+)"
+                                                    (str/trim line))]
+                     (let [c (Integer/parseInt cp)]
+                       (when (contains? dev-port-range c)
+                         [c {:container c :host (Integer/parseInt hp)}])))))
+           (into (sorted-map))
+           vals
+           vec))))
+
 ;; --- lifecycle -------------------------------------------------------------
 
 (defn- write-secret-env-file

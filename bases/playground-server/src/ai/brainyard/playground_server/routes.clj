@@ -9,6 +9,7 @@
      POST   /api/sessions                 -> 201 session
      GET    /api/sessions/:id             -> 200 session | 404
      POST   /api/sessions/:id/resume      -> 200 session | 404
+     GET    /api/sessions/:id/ports       -> 200 {:ports [...]} | 404
      DELETE /api/sessions/:id             -> 204
      POST   /api/sessions/:id/tty-token   -> 200 {:token ...}
      GET    /api/sessions/:id/tty         -> WebSocket (ttyd protocol)
@@ -101,6 +102,15 @@
     (json 200 s)
     (json 404 {:error "not found"})))
 
+(defn- session-ports
+  "Dev-port mappings (3000-3010 -> host) for the owned session, for the
+   workspace header's port dropdown."
+  [req]
+  (let [uid (user-id req) id (-> req :path-params :id)]
+    (if (sessions/get-for uid id)
+      (json 200 {:ports (or (sessions/ports uid id) [])})
+      (json 404 {:error "not found"}))))
+
 (defn- resume-session [req]
   (if-let [s (sessions/resume! (user-id req) (-> req :path-params :id))]
     (json 200 s)
@@ -175,6 +185,7 @@
      ["/sessions/:id"            {:get    (wrap-require-auth get-session)
                                   :delete (wrap-require-auth destroy-session)}]
      ["/sessions/:id/resume"     {:post (wrap-require-auth resume-session)}]
+     ["/sessions/:id/ports"      {:get (wrap-require-auth session-ports)}]
      ;; ttyd's own client, proxied same-origin (workspace iframe)
      ["/sessions/:id/term"       {:get (wrap-require-auth term-page)}]
      ["/sessions/:id/term/"      {:get (wrap-require-auth term-page)}]

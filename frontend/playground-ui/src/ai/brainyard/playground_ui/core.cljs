@@ -28,7 +28,10 @@
       (swap! state/app-state assoc :route {:name name :params (:path-params m)})
       ;; Load BYO env when entering settings (covers in-app nav + deep-link).
       (when (= name :route/settings)
-        (dispatch/handle {} [[:settings/load]])))))
+        (dispatch/handle {} [[:settings/load]]))
+      ;; Load the dev-port mappings when entering a workspace (in-app + deep-link).
+      (when (= name :route/workspace)
+        (dispatch/handle {} [[:ports/load (-> m :path-params :id)]])))))
 
 (defn init []
   ;; 1. event handlers + life-cycle hooks expressed as data flow through here

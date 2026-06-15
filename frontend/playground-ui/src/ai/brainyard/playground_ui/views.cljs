@@ -76,11 +76,25 @@
        :error  [:span.hint.err "Save failed"]
        nil)]]])
 
-(defn workspace-view [_state id]
+(defn port-menu
+  "Dev-port dropdown for the workspace header: selecting a container port opens
+   its mapped host address (http://127.0.0.1:<host>) in a new tab. `ports` is
+   [{:container n :host n} ...] loaded on workspace nav."
+  [ports]
+  [:select.ports {:title "Open a workspace dev port in a new tab"
+                  :on {:change [[:ports/open :event/target.value]]}}
+   [:option {:value ""} (if (seq ports) "Ports ▾" "No ports")]
+   (for [{:keys [container host]} ports]
+     [:option {:replicant/key container :value host}
+      (str ":" container " → 127.0.0.1:" host)])])
+
+(defn workspace-view [{:keys [ports]} id]
   [:div.workspace {:replicant/key :view/workspace}
    [:header
     [:button {:on {:click [[:nav/dashboard]]}} "← Workspaces"]
-    [:span.id id]]
+    [:span.id id]
+    [:div.spacer]
+    (port-menu (get ports id))]
    ;; ttyd's own client, proxied same-origin. Stable :replicant/key so the iframe
    ;; (and its live ttyd session) survives header re-renders.
    ;; `allow` grants clipboard access so the proxy-injected copy-on-select

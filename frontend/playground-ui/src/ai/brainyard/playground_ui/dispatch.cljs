@@ -74,6 +74,20 @@
     :session/resume  (-> (api/resume!  (first args)) (.then reload-sessions!))
     :session/destroy (-> (api/destroy! (first args)) (.then reload-sessions!))
 
+    ;; --- workspace dev-port dropdown --------------------------------------
+    :ports/load
+    (let [id (first args)]
+      (-> (api/ports id)
+          (.then (fn [{:keys [ports]}]
+                   (swap! state/app-state assoc-in [:ports id] (vec ports))))
+          (.catch (fn [_] nil))))
+    :ports/open
+    (let [host (first args)]
+      (when-not (str/blank? (str host))
+        (js/window.open (str "http://127.0.0.1:" host) "_blank" "noopener"))
+      ;; reset the <select> back to its placeholder so it reads as a menu
+      (when-let [t (some-> dom-event .-target)] (set! (.-value t) "")))
+
     ;; --- escape hatch for imperative event control ------------------------
     :event/prevent-default (some-> dom-event .preventDefault)
 

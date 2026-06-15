@@ -12,4 +12,7 @@
          ;; :route — {:name :route/dashboard|:route/workspace, :params {...}}
          :route    nil
          ;; :sessions — id -> session map {:id :status :created-at}
-         :sessions {}}))
+         :sessions {}
+         ;; :ports — session-id -> [{:container n :host n} ...] for the
+         ;; workspace header's dev-port dropdown (loaded on workspace nav)
+         :ports {}}))

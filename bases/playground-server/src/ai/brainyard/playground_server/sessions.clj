@@ -106,6 +106,16 @@
   (when (owned user-id id)
     (get @upstream-cache id)))
 
+(defn ports
+  "Published dev-port mappings (container 3000-3010 -> host) for a session owned
+   by `user-id`: a vector [{:container n :host n} ...]. [] when the workspace
+   isn't running (fake/suspended), nil when not owned (the tenant boundary)."
+  [user-id id]
+  (when-let [rec (owned user-id id)]
+    (if (and (not (:fake rec)) (workspace/running? id))
+      (workspace/published-dev-ports id)
+      [])))
+
 (defn mark-down!
   "The container for `id` is gone/unreachable: drop its stale upstream cache and
    mark it suspended so the dashboard shows Resume. No-op if not owned/fake."
