@@ -584,7 +584,7 @@
 
 (def ^:private idle-tip-interval-ms
   "How long each placeholder frame (suggestion vs. static tip) stays on screen."
-  4000)
+  15000)
 
 (defn stop-idle-tip-ticker!
   "Stop the idle-tip ticker thread. Idempotent."
