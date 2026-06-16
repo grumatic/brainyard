@@ -76,14 +76,18 @@
 
 (defn- env-name-suggestions
   "Var names from `.env.example` next to PG_WORKSPACE_ENV_FILE (the maintained
-   template), falling back to the built-in list."
+   template), falling back to the built-in list. Includes commented-out optional
+   vars (e.g. the AWS static keys and gh tokens kept commented so a copied `.env`
+   doesn't export them empty) — `#?` allows a leading comment marker. App-config
+   vars (BY_*) are filtered out; only provider/credential names are suggested."
   []
   (or (when-let [ef (System/getenv "PG_WORKSPACE_ENV_FILE")]
         (let [ex (io/file (.getParentFile (.getCanonicalFile (io/file ef))) ".env.example")]
           (when (.canRead ex)
             (not-empty
              (->> (str/split-lines (slurp ex))
-                  (keep #(second (re-matches #"([A-Z][A-Z0-9_]*)=.*" %)))
+                  (keep #(second (re-find #"^#?\s*([A-Z][A-Z0-9_]*)=" %)))
+                  (remove #(str/starts-with? % "BY_"))
                   distinct vec)))))
       builtin-env-names))
 
