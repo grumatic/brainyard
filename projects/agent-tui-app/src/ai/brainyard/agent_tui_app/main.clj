@@ -711,7 +711,13 @@
           ag (agent/setup-agent-by-id agent-id
                                       :agent-session {:user-id (helpers/resolve-user-id (:user-id opts))
                                                       :session-id sess-id}
-                                      :max-iterations max-iterations)]
+                                      :max-iterations max-iterations
+                                      ;; The one-shot `ask-<millis>` session is ephemeral — don't
+                                      ;; leave a `.brainyard/sessions/ask-*/trajectory.edn` behind.
+                                      ;; A top-level schema key flows into the per-agent override
+                                      ;; (st-memory-init :config), NOT .brainyard/config.edn, so it
+                                      ;; scopes to this run only and never affects TUI sessions.
+                                      :enable-trajectory-recording false)]
       (try
         (let [result (agent/ask ag question)]
           (if (:error result)
