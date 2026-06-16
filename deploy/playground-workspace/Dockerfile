@@ -34,6 +34,18 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
  && rm -rf /var/lib/apt/lists/* \
  && npm config set update-notifier false
 
+# Next.js + Playwright, installed globally so `next` / `playwright` are on PATH
+# for every tenant. PLAYWRIGHT_BROWSERS_PATH points the browser download at a
+# world-readable system dir (the default is per-user ~/.cache, which the non-root
+# `by` user wouldn't share); `--with-deps chromium` also pulls the apt libs the
+# browser needs to launch headless. Chromium only — the full browser set would
+# bloat the image; add firefox/webkit here if a tenant needs them.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npm install -g next playwright \
+ && playwright install --with-deps chromium \
+ && chmod -R a+rX /ms-playwright \
+ && rm -rf /var/lib/apt/lists/*
+
 # uv / uvx (Astral) — fast Python package+runtime manager, installed system-wide.
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
  && uv --version && uvx --version
