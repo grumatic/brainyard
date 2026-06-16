@@ -109,6 +109,18 @@ Mirrors the opt-in clj-nrepl server precedent (`start-nrepl-server-if-enabled!`
 
 A process-global registry atom `!ask-listeners` maps `session-id → handle`.
 
+### Provider / model / agent resolution
+
+`--attach` delegates the turn to the **live session's** agent, so the answer is
+produced with that session's own provider, model, and agent — whatever it was
+launched with or `/model`-switched to mid-session. The attach client
+(`cmd-ask-attach`) reads only the question and `--timeout`; it never sets up an
+LM. The `ask` subcommand's LM-selection flags (`-p/--provider`, `-m/--model`,
+`-a/--agent`, `-n/--max-iterations`) therefore **do not apply** to `--attach` —
+they belong to the one-shot path that mints a throwaway agent. To avoid the
+footgun of silently ignoring them, the client emits a one-line stderr warning
+when any are passed alongside `--attach` (stdout stays a clean answer).
+
 ## 7. Config
 
 Two keys in `core.config/config-schema`:

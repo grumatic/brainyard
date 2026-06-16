@@ -648,6 +648,22 @@
         (println "  It must be open in a running `by run` TUI in this project.")
         (println "  List sessions with: by sessions list")
         (System/exit 1))
+      ;; --attach delegates to the LIVE session's agent, so the LM-selection
+      ;; flags don't apply — the session answers with its OWN provider/model/
+      ;; agent. Warn (on stderr, keeping stdout a clean answer) rather than
+      ;; silently ignoring them. Provider/agent defaults ("claude-code" /
+      ;; "coact-agent") aren't flagged; model/max-iterations have no default,
+      ;; so any presence is an explicit pass.
+      (let [ignored (cond-> []
+                      (some? (:model opts))                 (conj "-m/--model")
+                      (some? (:max-iterations opts))        (conj "-n/--max-iterations")
+                      (not= "claude-code" (:provider opts)) (conj "-p/--provider")
+                      (not= "coact-agent" (:agent opts))    (conj "-a/--agent"))]
+        (when (seq ignored)
+          (binding [*out* *err*]
+            (println (str "⚠  --attach uses the running session's own provider/model/agent; "
+                          (str/join ", " ignored)
+                          " ignored.")))))
       (let [timeout-ms (* 1000 (or (:timeout opts) 120))
             resp (try
                    (ask-channel/ask-via-socket!
