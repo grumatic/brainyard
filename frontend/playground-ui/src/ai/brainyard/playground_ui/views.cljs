@@ -72,12 +72,24 @@
          (let [secret? (secret-name? k)
                shown?  (contains? (set reveal) i)]
            [:tr {:replicant/key i}
+            ;; Suppress the browser's autofill / password-manager popup (it would
+            ;; treat NAME as a "username" and overlay the datalist arrow). The
+            ;; `:list` datalist suggestions are unaffected by autocomplete=off.
             [:td [:input.k {:placeholder "NAME" :value k :list "env-names"
+                            :autocomplete "off" :autocorrect "off"
+                            :autocapitalize "off" :spellcheck false
+                            :data-1p-ignore "true" :data-lpignore "true"
                             :on {:input [[:settings/set-row i 0 :event/target.value]]}}]]
             [:td.v-cell
              [:input.v {:placeholder "value" :value v
                         ;; Mask credential values; toggled to text by the eye.
                         :type (if (and secret? (not shown?)) "password" "text")
+                        ;; new-password is the value Chrome honors to stop the
+                        ;; saved-password dropdown over a type=password field.
+                        :autocomplete (if secret? "new-password" "off")
+                        :autocorrect "off" :autocapitalize "off" :spellcheck false
+                        :data-1p-ignore "true" :data-lpignore "true"
+                        :data-form-type "other"
                         :on {:input [[:settings/set-row i 1 :event/target.value]]}}]
              (when secret?
                [:button.reveal {:type "button"
