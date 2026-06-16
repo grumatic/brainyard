@@ -42,6 +42,7 @@
    [ai.brainyard.aws-client.interface]
    [ai.brainyard.mulog.interface :as mulog]
    [cli-matic.core :as cli]
+   [clojure.data.json :as json]
    [clojure.edn :as edn]
    [clojure.java.io :as io]
    [clojure.string :as str]))
@@ -111,6 +112,24 @@
   {:option "working-dir" :short "C"
    :as "Effective working directory for tools/agents (default: $BY_WORKING_DIR, else process cwd)"
    :type :string})
+
+(def json-opt
+  {:option "json" :as "Output machine-readable JSON instead of a table"
+   :type :with-flag :default false})
+
+(defn- print-json!
+  "Serialize `data` to a single line of JSON on stdout. Keyword keys/values
+   become strings; any value data.json can't encode is stringified via str so a
+   --json call never throws mid-stream."
+  [data]
+  (println (json/write-str data
+                           :key-fn (fn [k] (if (keyword? k) (name k) (str k)))
+                           :value-fn (fn [_k v]
+                                       (cond
+                                         (keyword? v) (name v)
+                                         (or (nil? v) (number? v) (boolean? v)
+                                             (string? v) (map? v) (sequential? v)) v
+                                         :else (str v))))))
 
 (def attach-opt
   {:option "attach" :short "A"
@@ -812,11 +831,21 @@
     (println)))
 
 (defn cmd-agents
-  "List available agents."
-  [_opts]
+  "List available agents. `--json` emits a machine-readable array instead of
+   the table."
+  [opts]
   (let [agent-defs (agent/get-tool-defs :type :agent)]
-    (if (empty? agent-defs)
+    (cond
+      (:json opts)
+      (print-json! (->> (sort-by key agent-defs)
+                        (mapv (fn [[id entry]]
+                                {:id (name id)
+                                 :description (get-in entry [:meta :description])}))))
+
+      (empty? agent-defs)
       (println "No agents registered.")
+
+      :else
       (do
         (println (str (count agent-defs) " agent(s) available:"))
         (format-agents-table agent-defs)))))
@@ -911,8 +940,16 @@
   [opts]
   ;; Pin the project-scoped sessions root (from cwd's project-dir) before reading.
   (install-working-dir! opts)
-  (if (:tree opts)
+  (cond
+    ;; --json wins over --tree: the flat array carries :parent-id so a consumer
+    ;; can rebuild the lineage itself. Always valid JSON ([] when empty).
+    (:json opts)
+    (print-json! (ssum/enriched-summaries))
+
+    (:tree opts)
     (doseq [line (ssum/format-tree {})] (println line))
+
+    :else
     (let [rows (ssum/enriched-summaries)]
       (if (empty? rows)
         (println "No persisted sessions.")
@@ -1113,6 +1150,7 @@
                   :runs        cmd-ask}
                  {:command     "agents"
                   :description "List available agents"
+                  :opts        [json-opt]
                   :runs        cmd-agents}
                  {:command     "models"
                   :description "List available LLM models (provider/model)"
@@ -1142,7 +1180,8 @@
                                  :description "List all persisted sessions"
                                  :opts        [{:option "tree"
                                                 :as "Render the fork/lineage tree instead of a flat list"
-                                                :type :with-flag :default false}]
+                                                :type :with-flag :default false}
+                                               json-opt]
                                  :runs        cmd-sessions-list}
                                 {:command     "show"
                                  :description "Show full detail for one session"
@@ -1216,7 +1255,10 @@
   ;; precedence; see dotenv.clj for resolution order.
   (let [{:keys [paths loaded-count]} (dotenv/load-from-dotenv!)]
     (when (pos? loaded-count)
-      (binding [*err* *err*]
+      ;; Diagnostic banner → stderr, so stdout stays clean for piping
+      ;; (`by ask`, `--json`, etc.). (Was a no-op `*err* *err*` binding that
+      ;; left it on stdout.)
+      (binding [*out* *err*]
         (println (format "[dotenv] loaded %d key(s) from %s"
                          loaded-count
                          (str/join ", " (map :path paths)))))))
