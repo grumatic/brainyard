@@ -52,6 +52,26 @@ RUN npm install -g next playwright \
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
  && uv --version && uvx --version
 
+# GitHub CLI (gh) — from GitHub's apt repo (keyring + arch-matched source).
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/* \
+ && gh --version
+
+# AWS CLI v2 — official zip installer. `uname -m` (x86_64 / aarch64) matches
+# Amazon's asset naming, so the image builds on either arch.
+RUN arch="$(uname -m)" \
+ && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o /tmp/awscliv2.zip \
+ && unzip -q /tmp/awscliv2.zip -d /tmp \
+ && /tmp/aws/install \
+ && rm -rf /tmp/awscliv2.zip /tmp/aws \
+ && aws --version
+
 # Clojure CLI (clj/clojure) + Babashka (bb), system-wide.
 RUN curl -fsSL https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh -o /tmp/clj-install.sh \
  && bash /tmp/clj-install.sh && rm /tmp/clj-install.sh \
@@ -83,6 +103,11 @@ RUN printf '#!/bin/sh\nexec java -jar /opt/by/by.jar "$@"\n' > /usr/local/bin/by
 RUN printf '#!/bin/sh\nexec /usr/bin/ttyd -t fontSize=13 -t '\''theme={"background":"#0b0e14"}'\'' "$@"\n' \
       > /usr/local/bin/ttyd \
  && chmod +x /usr/local/bin/ttyd
+
+# Entrypoint supervisor: bootstraps the workspace (git init, `by config --auto`)
+# then runs `by --web-tmux` in a restart loop. See entrypoint.sh + ENTRYPOINT.
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Non-root tenant. Home holds ~/.brainyard (memory/config); /workspace is the
 # project tree (TUI sessions + files). Both writable; the rest of the fs is the
@@ -140,5 +165,9 @@ ENV BY_WEB_BIND=0.0.0.0 \
 
 EXPOSE 7681
 
-# The flag launches ttyd → tmux → `by run`; the child runs the real TUI.
-ENTRYPOINT ["by", "--web-tmux"]
+# entrypoint.sh bootstraps the workspace (git init + `by config --auto`) then
+# supervises `by --web-tmux` in a restart loop so the published ttyd port keeps
+# serving if the launcher exits. The `--web-tmux` FLAG (not env) launches
+# ttyd → tmux → `by run`; the child runs the real TUI. Provider/model/agent
+# flags appended by the control plane reach the script as "$@" and are forwarded.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

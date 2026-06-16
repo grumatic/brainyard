@@ -1,4 +1,5 @@
-# Only the Dockerfile + the staged by.jar belong in the build context.
+# Only the Dockerfile + the staged by.jar + the entrypoint belong in the context.
 *
 !Dockerfile
 !by.jar
+!entrypoint.sh
