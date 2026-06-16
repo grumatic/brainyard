@@ -141,9 +141,13 @@
          secret-file (when (seq user-env) (write-secret-env-file user-env))
          args (concat ["docker" "run" "-d" "--rm"
                        "--name" name
-                       ;; TEST: run as root so in-container ops (apt, sudo,
-                       ;; writing system paths) don't hit a password prompt.
-                       "-u" "root"
+                       ;; Run as the image's non-root `by` tenant (the Dockerfile
+                       ;; sets USER by and chowns /workspace + /home/by to it — the
+                       ;; tenant boundary). We deliberately do NOT pass `-u root`:
+                       ;; that overrode USER by, ran every tenant process as root,
+                       ;; and left the named volumes root-owned. In-container privesc
+                       ;; (apt, npm -g, system writes) goes through passwordless
+                       ;; `sudo`, baked into the image for `by`.
                        ;; ephemeral host port on loopback -> container 7681
                        "-p" (str "127.0.0.1:0:" container-port)
                        ;; TEST: publish dev-server ports 3000-3010 to ephemeral

@@ -21,10 +21,12 @@ FROM eclipse-temurin:21-jre
 #   web/fetch : curl, wget
 #   python    : python3 + pip + venv (uv/uvx added below)
 #   build/clj : rlwrap (for `clj`), unzip, ca-certificates
+#   privesc   : sudo (tenant runs as non-root `by`; passwordless sudo below
+#               lets it apt-install / npm -g without a prompt — see USER by)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ttyd tmux git ca-certificates curl wget unzip rlwrap less tree jq \
-      ripgrep fd-find python3 python3-pip python3-venv \
+      ripgrep fd-find python3 python3-pip python3-venv sudo \
  && ln -s "$(command -v fdfind)" /usr/local/bin/fd \
  && rm -rf /var/lib/apt/lists/*
 
@@ -89,7 +91,9 @@ RUN printf '#!/bin/sh\nexec /usr/bin/ttyd -t fontSize=13 -t '\''theme={"backgrou
 # missing mount point would be created root-owned and break the tenant's writes.
 RUN useradd --create-home --shell /bin/bash by \
  && mkdir -p /workspace /home/by/.brainyard \
- && chown -R by:by /workspace /home/by
+ && chown -R by:by /workspace /home/by \
+ && echo 'by ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/by \
+ && chmod 0440 /etc/sudoers.d/by
 
 # Disable the tmux status bar. web-share's serve-tmux! starts a tmux server that
 # loads ~/.tmux.conf; its bottom status row redraws independently and fights the
@@ -122,6 +126,12 @@ RUN cd /tmp && clj-nrepl-eval --discover-ports >/dev/null 2>&1 || true
 # `by run` — it makes the TUI reattach to the newest persisted session (restored
 # from the /workspace volume on resume), falling back to a fresh session on first
 # boot. The web-tmux re-entrancy concern doesn't apply (it's not a --web* flag).
+#
+# BY_USER_ID is a fallback only: the control plane's `start!` always passes
+# `-e BY_USER_ID=<session-id>` (per-session memory partitioning under
+# ~/.brainyard/memory/<user-id>.db), which overrides this. The "playground"
+# default just gives a sane identity if the image is run standalone (e.g. the
+# `docker run … brainyard/workspace:dev` smoke test) without that -e.
 ENV BY_WEB_BIND=0.0.0.0 \
     BY_WEB_PORT=7681 \
     BY_WEB_SELF=by \
