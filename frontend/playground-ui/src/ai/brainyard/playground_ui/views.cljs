@@ -5,7 +5,8 @@
    handlers are DATA (`:on {:click [[:action ...]]}`) interpreted by `dispatch`.
    The terminal is ttyd's own self-contained client, embedded same-origin via an
    iframe (`/api/sessions/:id/term/`) — so the TUI renders exactly as ttyd
-   intends, with no hand-rolled xterm client to maintain.")
+   intends, with no hand-rolled xterm client to maintain."
+  (:require [clojure.string :as str]))
 
 (defn login-view []
   [:div.center {:replicant/key :view/login}
@@ -41,7 +42,15 @@
      [:ul.sessions (map session-row (vals sessions))]
      [:p.empty "No workspaces yet — create one to start."])])
 
-(defn settings-view [{:keys [user] {:keys [rows status suggested]} :settings}]
+(defn- secret-name?
+  "Heuristic: a variable whose name mentions a key/secret/token/password holds a
+   credential, so its value is masked (type=password) by default with a reveal
+   toggle. Plain vars (AWS_REGION, *_BASE_URL, …) stay visible."
+  [k]
+  ;; lower-case + flagless regex: JS RegExp has no inline (?i), so normalise.
+  (boolean (re-find #"key|secret|token|pass|credential" (str/lower-case (str k)))))
+
+(defn settings-view [{:keys [user] {:keys [rows status suggested reveal]} :settings}]
   [:div.settings {:replicant/key :view/settings}
    [:header
     [:button {:on {:click [[:nav/dashboard]]}} "← Workspaces"]
@@ -60,12 +69,23 @@
      [:tbody
       (map-indexed
        (fn [i [k v]]
-         [:tr {:replicant/key i}
-          [:td [:input.k {:placeholder "NAME" :value k :list "env-names"
-                          :on {:input [[:settings/set-row i 0 :event/target.value]]}}]]
-          [:td [:input.v {:placeholder "value" :value v
-                          :on {:input [[:settings/set-row i 1 :event/target.value]]}}]]
-          [:td [:button.danger {:on {:click [[:settings/remove-row i]]}} "✕"]]])
+         (let [secret? (secret-name? k)
+               shown?  (contains? (set reveal) i)]
+           [:tr {:replicant/key i}
+            [:td [:input.k {:placeholder "NAME" :value k :list "env-names"
+                            :on {:input [[:settings/set-row i 0 :event/target.value]]}}]]
+            [:td.v-cell
+             [:input.v {:placeholder "value" :value v
+                        ;; Mask credential values; toggled to text by the eye.
+                        :type (if (and secret? (not shown?)) "password" "text")
+                        :on {:input [[:settings/set-row i 1 :event/target.value]]}}]
+             (when secret?
+               [:button.reveal {:type "button"
+                                :title (if shown? "Hide value" "Show value")
+                                :aria-label (if shown? "Hide value" "Show value")
+                                :on {:click [[:settings/toggle-reveal i]]}}
+                (if shown? "🙈" "👁")])]
+            [:td [:button.danger {:on {:click [[:settings/remove-row i]]}} "✕"]]]))
        rows)]]
     [:div.toolbar
      [:button {:on {:click [[:settings/add-row]]}} "+ Add variable"]

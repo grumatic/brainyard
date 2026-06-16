@@ -29,7 +29,8 @@
   (-> (api/get-env)
       (.then (fn [{:keys [env suggested]}]
                (swap! state/app-state assoc :settings
-                      {:rows (env->rows env) :suggested (vec suggested) :status nil})))))
+                      {:rows (env->rows env) :suggested (vec suggested)
+                       :reveal #{} :status nil})))))
 
 (defn- run-action [dom-event [action & args]]
   (case action
@@ -47,16 +48,31 @@
                            (swap! state/app-state assoc-in [:settings :rows idx field] v))
     :settings/add-row    (swap! state/app-state update-in [:settings :rows] (fnil conj []) ["" ""])
     :settings/remove-row (let [idx (first args)]
-                           (swap! state/app-state update-in [:settings :rows]
-                                  #(into (subvec % 0 idx) (subvec % (inc idx)))))
+                           (swap! state/app-state update :settings
+                                  (fn [s]
+                                    (-> s
+                                        (update :rows #(into (subvec % 0 idx) (subvec % (inc idx))))
+                                        ;; reveal tracks row indices; drop the removed
+                                        ;; one and shift the rest down to stay aligned.
+                                        (update :reveal
+                                                (fn [r] (into #{} (comp (remove #{idx})
+                                                                        (map #(if (> % idx) (dec %) %)))
+                                                              (set r))))))))
+    ;; Toggle plaintext reveal of a masked credential value (eye button).
+    :settings/toggle-reveal (let [idx (first args)]
+                              (swap! state/app-state update-in [:settings :reveal]
+                                     (fn [r] (let [r (set r)]
+                                               (if (contains? r idx) (disj r idx) (conj r idx))))))
     :settings/save
     (let [rows (get-in @state/app-state [:settings :rows])
           env  (into {} (for [[k v] rows :when (not (str/blank? k))] [(str/trim k) v]))]
       (swap! state/app-state assoc-in [:settings :status] :saving)
       (-> (api/put-env env)
           (.then (fn [{:keys [env]}]
+                   ;; Rows come back re-sorted; re-mask (clear reveal) so a stale
+                   ;; index can't expose a different row's secret.
                    (swap! state/app-state update :settings merge
-                          {:rows (env->rows env) :status :saved})))
+                          {:rows (env->rows env) :reveal #{} :status :saved})))
           (.catch (fn [_] (swap! state/app-state assoc-in [:settings :status] :error)))))
 
     ;; --- auth -------------------------------------------------------------

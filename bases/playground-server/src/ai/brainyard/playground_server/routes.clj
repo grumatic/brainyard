@@ -68,7 +68,11 @@
    "GROQ_API_KEY" "MISTRAL_API_KEY" "DEEPSEEK_API_KEY" "OPENROUTER_API_KEY"
    "TOGETHER_API_KEY" "FIREWORKS_API_KEY" "AZURE_OPENAI_API_KEY"
    "FREELLM_API_KEY" "FREELLM_BASE_URL"
-   "AWS_PROFILE" "AWS_REGION" "AWS_DEFAULT_REGION"])
+   ;; AWS (Bedrock + aws CLI): a profile/region, or explicit static credentials.
+   "AWS_PROFILE" "AWS_REGION" "AWS_DEFAULT_REGION"
+   "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_SESSION_TOKEN"
+   ;; GitHub CLI (gh) auth — gh reads either; GH_TOKEN wins.
+   "GH_TOKEN" "GITHUB_TOKEN"])
 
 (defn- env-name-suggestions
   "Var names from `.env.example` next to PG_WORKSPACE_ENV_FILE (the maintained
