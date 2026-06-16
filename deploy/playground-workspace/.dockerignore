@@ -1,5 +1,7 @@
-# Only the Dockerfile + the staged by.jar + the entrypoint belong in the context.
+# Only the Dockerfile + the staged by.jar + the entrypoint + the seed
+# BRAINYARD.md belong in the context.
 *
 !Dockerfile
 !by.jar
 !entrypoint.sh
+!BRAINYARD.md

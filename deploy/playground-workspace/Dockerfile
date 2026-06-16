@@ -120,6 +120,12 @@ RUN useradd --create-home --shell /bin/bash by \
  && echo 'by ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/by \
  && chmod 0440 /etc/sudoers.d/by
 
+# User-scope BRAINYARD.md — `by` reads ~/.brainyard/BRAINYARD.md as User
+# Instructions each turn, guiding the LLM on the workspace environment + tools.
+# Seeded into the pg-state-<id> named volume on first start (it mounts here and
+# copies the image content); --chown keeps it by-owned so the tenant can edit it.
+COPY --chown=by:by BRAINYARD.md /home/by/.brainyard/BRAINYARD.md
+
 # Disable the tmux status bar. web-share's serve-tmux! starts a tmux server that
 # loads ~/.tmux.conf; its bottom status row redraws independently and fights the
 # TUI's scroll-region/absolute-cursor menu redraws over xterm.js, leaving the
