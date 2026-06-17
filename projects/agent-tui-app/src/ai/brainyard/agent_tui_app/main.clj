@@ -655,17 +655,23 @@
    the turn. See docs/design/ask-attach-channel.md."
   [opts session-id]
   (install-working-dir! opts)            ;; so the sessions root resolves to this project
-  (let [question (first (:_arguments opts))]
+  (let [json?    (:json opts)
+        question (first (:_arguments opts))]
     (when (or (nil? question) (str/blank? question))
-      (println "Error: question argument is required.")
-      (println "Usage: by ask --attach <session-id> [options] QUESTION")
+      (if json?
+        (print-json! {:success false :error "question argument is required" :session-id session-id})
+        (do (println "Error: question argument is required.")
+            (println "Usage: by ask --attach <session-id> [options] QUESTION")))
       (System/exit 1))
     (let [^java.io.File sock (persist/file-of session-id :ask-sock)]
       (when-not (and sock (.exists sock))
-        (println (str "Error: session '" session-id "' is not attachable "
-                      "(no live ask socket)."))
-        (println "  It must be open in a running `by run` TUI in this project.")
-        (println "  List sessions with: by sessions list")
+        (if json?
+          (print-json! {:success false :session-id session-id
+                        :error (str "session '" session-id "' is not attachable (no live ask socket)")})
+          (do (println (str "Error: session '" session-id "' is not attachable "
+                            "(no live ask socket)."))
+              (println "  It must be open in a running `by run` TUI in this project.")
+              (println "  List sessions with: by sessions list")))
         (System/exit 1))
       ;; --attach delegates to the LIVE session's agent, so the LM-selection
       ;; flags don't apply — the session answers with its OWN provider/model/
@@ -693,11 +699,21 @@
                      {:status :error
                       :error (str "could not reach session: " (.getMessage e)
                                   " (is it still running?)")}))]
-        (if (= :ok (:status resp))
-          (do (println (or (:answer resp) ""))
-              (System/exit 0))
-          (do (println (str "Error: " (:error resp)))
-              (System/exit 1)))))))
+        (let [ok? (= :ok (:status resp))]
+          (if json?
+            (print-json! (if ok?
+                           (cond-> {:success true
+                                    :answer (or (:answer resp) "")
+                                    :provider (:provider resp)
+                                    :model (:model resp)
+                                    :agent (:agent resp)
+                                    :session-id session-id}
+                             (:usage resp) (assoc :usage (:usage resp)))
+                           {:success false :error (:error resp) :session-id session-id}))
+            (if ok?
+              (println (or (:answer resp) ""))
+              (println (str "Error: " (:error resp)))))
+          (System/exit (if ok? 0 1)))))))
 
 (defn cmd-ask
   "Ask a one-shot question and print the answer.
@@ -707,7 +723,9 @@
   [opts]
   (when-let [sid (:attach opts)]
     (cmd-ask-attach opts sid))           ;; exits the process; never returns
-  (let [opts (parse-legacy-provider opts)
+  (let [json?    (:json opts)
+        real-out *out*
+        opts (parse-legacy-provider opts)
         _ (install-working-dir! opts)
         file-config (agent/read-edn-config (agent/init-dirs!))
         question (first (:_arguments opts))
@@ -722,52 +740,74 @@
         model (or (:model opts) (get-in file-config [:llm :default-model]))
         max-iter (:max-iterations opts)]
     (when (or (nil? question) (str/blank? question))
-      (println "Error: question argument is required.")
-      (println "Usage: by ask [options] QUESTION")
+      (if json?
+        (print-json! {:success false :error "question argument is required"})
+        (do (println "Error: question argument is required.")
+            (println "Usage: by ask [options] QUESTION")))
       (System/exit 1))
 
-    ;; Suppress JUL cookie warnings
-    (helpers/suppress-jul-cookie-warnings!)
-
-    ;; Setup LM
-    (helpers/setup-lm! provider :model model)
-
-    ;; Setup mulog (slf4j bridge + file publisher) — without setup-app-log!
-    ;; the per-iteration trace events from one-shot ask runs never reach
-    ;; /tmp/agent-tui-app.log, so post-mortems are blind. setup-app-log!
-    ;; is idempotent (defonce-protected).
-    (mulog/setup-slf4j-bridge!)
-    (setup-app-log!)
-
-    (let [sess-id (str "ask-" (System/currentTimeMillis))
-          max-iterations (or max-iter
-                             (:max-iterations (:meta (agent/get-tool-defs :id agent-id)))
-                             (get agent/default-config :max-iterations 20))
-          ag (agent/setup-agent-by-id agent-id
-                                      :agent-session {:user-id (helpers/resolve-user-id (:user-id opts))
-                                                      :session-id sess-id}
-                                      :max-iterations max-iterations
-                                      ;; The one-shot `ask-<millis>` session is ephemeral — don't
-                                      ;; leave a `.brainyard/sessions/ask-*/trajectory.edn` behind.
-                                      ;; A top-level schema key flows into the per-agent override
-                                      ;; (st-memory-init :config), NOT .brainyard/config.edn, so it
-                                      ;; scopes to this run only and never affects TUI sessions.
-                                      :enable-trajectory-recording false)]
-      (try
-        (let [result (agent/ask ag question)]
-          (if (:error result)
-            (do (println (str "Error: " (:error result)))
-                (teardown-app-log!)
-                (System/exit 1))
-            (do (println (or (:answer result) (:result result) ""))
-                (teardown-app-log!)
-                (System/exit 0))))
-        (catch Exception e
-          (println (str "Error: " (.getMessage e)))
-          (teardown-app-log!)
-          (System/exit 1))
-        (finally
-          (.close ^java.io.Closeable ag))))))
+    ;; Run setup + ask, collecting the result and the LM actually used. When
+    ;; --json, run under *out*→*err* so incidental console output ("LM
+    ;; configured", any agent emit!) lands on stderr and stdout stays pure JSON.
+    ;; (In one-shot mode emit!/write-output! resolve to *out*, so this captures
+    ;; them; JUL/SQLite warnings already go to System.err.)
+    (let [run (fn []
+                (helpers/suppress-jul-cookie-warnings!)
+                (helpers/setup-lm! provider :model model)
+                (mulog/setup-slf4j-bridge!)
+                (setup-app-log!)
+                (let [sess-id (str "ask-" (System/currentTimeMillis))
+                      max-iterations (or max-iter
+                                         (:max-iterations (:meta (agent/get-tool-defs :id agent-id)))
+                                         (get agent/default-config :max-iterations 20))
+                      ag (agent/setup-agent-by-id agent-id
+                                                  :agent-session {:user-id (helpers/resolve-user-id (:user-id opts))
+                                                                  :session-id sess-id}
+                                                  :max-iterations max-iterations
+                                                  ;; The one-shot `ask-<millis>` session is ephemeral — don't
+                                                  ;; leave a `.brainyard/sessions/ask-*/trajectory.edn` behind.
+                                                  ;; A top-level schema key flows into the per-agent override
+                                                  ;; (st-memory-init :config), NOT .brainyard/config.edn, so it
+                                                  ;; scopes to this run only and never affects TUI sessions.
+                                                  :enable-trajectory-recording false)]
+                  (try
+                    (let [result (agent/ask ag question)
+                          lm     (clj-llm/get-default-lm)]
+                      {:result result :sess-id sess-id
+                       :provider (some-> (:provider lm) name) :model (:model lm)})
+                    (catch Exception e
+                      {:result {:error (.getMessage e)} :sess-id sess-id
+                       :provider (name provider) :model model})
+                    (finally
+                      (teardown-app-log!)
+                      (.close ^java.io.Closeable ag)))))
+          {:keys [result sess-id] rprov :provider rmodel :model}
+          (if json?
+            ;; In --json mode a setup failure (e.g. missing API key, thrown by
+            ;; setup-lm! before the inner try) must still surface as JSON, not a
+            ;; raw stack trace. Non-json mode keeps the original behavior (let it
+            ;; propagate to cli-matic's error handler).
+            (binding [*out* *err*]
+              (try (run)
+                   (catch Exception e
+                     {:result {:error (.getMessage e)} :provider (name provider) :model model})))
+            (run))
+          err    (:error result)
+          answer (or (:answer result) (:result result))]
+      (if json?
+        (binding [*out* real-out]
+          (print-json! (cond-> {:success (not (boolean err))
+                                :answer (when-not err (or answer ""))
+                                :provider rprov
+                                :model rmodel
+                                :agent (name agent-id)
+                                :session-id sess-id}
+                         (:usage result) (assoc :usage (:usage result))
+                         err             (assoc :error err))))
+        (if err
+          (println (str "Error: " err))
+          (println (or answer ""))))
+      (System/exit (if err 1 0)))))
 
 ;; ============================================================================
 ;; Subcommand: agents — list available agents
@@ -1145,7 +1185,8 @@
                                 working-dir-opt
                                 max-iter-opt
                                 attach-opt
-                                ask-timeout-opt]
+                                ask-timeout-opt
+                                json-opt]
                   :args        [{:arg "question" :as "Question to ask" :type :string}]
                   :runs        cmd-ask}
                  {:command     "agents"

@@ -71,8 +71,12 @@ the natural lingua franca.
 | Direction | Message |
 |-----------|---------|
 | client → server | `{:op :ask :question "…" :timeout-ms 120000}` |
-| server → client | `{:status :ok :answer "…" :usage {…}}` |
+| server → client | `{:status :ok :answer "…" :usage {…} :provider "openai" :model "gpt-4o-mini" :agent "coact-agent"}` |
 | server → client | `{:status :error :error "…"}` |
+
+The OK response stamps the live session's `:provider`/`:model`/`:agent` (read
+at answer time) so a `--json` attach client can report which LM actually
+answered — see §11.
 
 `:op` is reserved for forward-compatibility (future `:cancel`, `:status`, a
 streaming variant). Unknown ops return `{:status :error :error "unknown op"}`.
@@ -166,3 +170,24 @@ one real native risk: it is validated on the **native binary** (not just
 - **Cross-project** attach (sessions are project-scoped).
 - **Auth beyond filesystem perms** — the 0600 socket inside the project's
   `.brainyard` inherits the directory's trust boundary, same as `nrepl-port`.
+
+## 11. JSON output (`by ask --json`)
+
+`by ask --json` emits a single JSON object on stdout instead of the bare
+answer, for scripting:
+
+```json
+{"success":true,"answer":"4","provider":"openai","model":"gpt-4o-mini",
+ "agent":"coact-agent","session-id":"ask-…","usage":{…}}
+```
+
+- Works for **both** the one-shot path and `--attach`. For `--attach` the
+  provider/model/agent are the live session's (stamped by the server, §4); for
+  the one-shot path they're the throwaway agent's resolved LM.
+- Failures yield `{"success":false,"error":"…"}` with exit 1 (covers a missing
+  question, an unreachable/absent session, a missing API key, and a turn error).
+- stdout stays **pure JSON**: incidental console output ("LM configured", agent
+  `emit!`) is redirected to stderr for the duration of the run. (The dotenv
+  banner already goes to stderr.)
+- Shares the `json-opt` flag and `print-json!` helper with
+  `by sessions list --json` / `by agents --json`.

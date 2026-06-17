@@ -639,7 +639,19 @@
           (= ::timeout res) {:status :error :error (str "timed out after " tmo "ms")}
           (nil? res)        {:status :error :error "no answer (turn cancelled or failed)"}
           (:error res)      {:status :error :error (:error res)}
-          :else             {:status :ok :answer (:answer res) :usage (:usage res)})))))
+          :else
+          ;; Stamp the live session's provider/model/agent so a --json attach
+          ;; client can report which LM actually answered. The LM is process-
+          ;; global (set by setup-lm! / `/model`), with a per-agent :lm-config
+          ;; override falling back to it.
+          (let [lm (try (or (agent/get-config ag :lm-config) (clj-llm/get-default-lm))
+                        (catch Throwable _ nil))]
+            {:status   :ok
+             :answer   (:answer res)
+             :usage    (:usage res)
+             :provider (some-> (:provider lm) name)
+             :model    (:model lm)
+             :agent    (some-> (try (agent/defagent-type ag) (catch Throwable _ nil)) name)}))))))
 
 (defn start-ask-listener!
   "Open the per-session ask socket for agent `ag` when :ask-channel-enabled?.
