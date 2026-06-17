@@ -53,6 +53,9 @@
    ;; --- user-context (volatile — strategies live here) ----------------
    :turn-info                 {:priority 88}
    :project-instructions      {:priority 85}
+   ;; Project memory index — immutable, session-stable BRAINYARD.md tier.
+   ;; Already char-capped at seed time (:project-memory-max-chars).
+   :project-memory            {:priority 85}
    :user-instructions         {:priority 85}
    ;; :keep-floor? — when the compact strategy can no longer reduce this
    ;; section (e.g. only pinned/system artifacts remain), keep its remaining

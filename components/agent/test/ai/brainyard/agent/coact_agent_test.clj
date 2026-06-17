@@ -239,6 +239,44 @@
       (is (str/includes? role "Pick exactly one")
           "must enforce one-channel-per-turn discipline"))))
 
+(deftest project-memory-section-test
+  (let [fmt (resolve 'ai.brainyard.agent.common.coact-agent/format-project-memory-section)
+        sys (resolve 'ai.brainyard.agent.common.coact-agent/coact-system-context)]
+    (testing "renders the protocol + live index when content is present"
+      (let [out (fmt {:content "- [Auth](auth.md) — jwt flow" :max-chars 4000})]
+        (is (str/includes? out "## Project Memory (.brainyard/memory/)"))
+        (is (str/includes? out "RECALL"))
+        (is (str/includes? out "REMEMBER"))
+        (is (str/includes? out "### Index"))
+        (is (str/includes? out "- [Auth](auth.md) — jwt flow"))))
+
+    (testing "empty-state stub when no index exists yet"
+      (let [out (fmt {:content nil :max-chars 4000})]
+        (is (str/includes? out "## Project Memory"))
+        (is (str/includes? out "empty — no memories yet"))))
+
+    (testing "truncates an oversized index to ~max-chars (+ protocol preamble)"
+      (let [big  (apply str (repeat 5000 "x"))
+            full (fmt {:content big :max-chars 4000})
+            out  (fmt {:content big :max-chars 100})]
+        (is (str/includes? out "index truncated"))
+        ;; capped index keeps the output far below the untruncated render
+        (is (< (count out) (count full)))
+        (is (< (count out) 2000))))
+
+    (testing "coact-system-context includes the section only when :project-memory is non-nil"
+      (let [with    (:sections (sys {:project-memory {:content "- [X](x.md) — note"}}
+                                    :return-breakdown? true))
+            without (:sections (sys {:project-memory nil} :return-breakdown? true))
+            order   (:order (sys {:project-memory {:content "x"}} :return-breakdown? true))]
+        (is (contains? with :project-memory))
+        (is (str/includes? (:project-memory with) "- [X](x.md) — note"))
+        (is (not (contains? without :project-memory)))
+        ;; sits between project- and user-instructions in display order
+        (is (< (.indexOf ^java.util.List order :project-instructions)
+               (.indexOf ^java.util.List order :project-memory)
+               (.indexOf ^java.util.List order :user-instructions)))))))
+
 ;; ============================================================================
 ;; 5. Action-Level Unit Tests
 ;; ============================================================================
@@ -1112,9 +1150,9 @@
                     :return-breakdown? true)]
         (is (contains? sections :project-instructions))
         (is (contains? sections :user-instructions))
-      ;; Order places BRAINYARD.md between :agent-context and :footer
+      ;; Order places BRAINYARD.md (+ project-memory) between :agent-context and :footer
         (is (= (vec (drop-while #(not= % :project-instructions) order))
-               [:project-instructions :user-instructions :footer])))))
+               [:project-instructions :project-memory :user-instructions :footer])))))
 
   (testing "coact-user-context returns blank content + empty sections when nothing supplied"
     (let [user-fn (deref #'rca/coact-user-context)

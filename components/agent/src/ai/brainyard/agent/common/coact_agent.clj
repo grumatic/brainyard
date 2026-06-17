@@ -477,6 +477,43 @@ Detailed recipes + worked examples: `(usage :truncation)`.")
 - If the last iteration's results already contain the answer, write it immediately —
   don't re-fetch.")
 
+(def ^:private coact-project-memory-protocol
+  "Durable, project-scoped notes for THIS repo, kept as plain files under
+`.brainyard/memory/` and persisting across sessions. The index below lists what
+is stored; each entry points to a colocated `<slug>.md` topic file. You manage
+these with the ordinary read-file / write-file / update-file tools — no special
+tools, and `.brainyard/` writes never prompt for permission.
+
+- RECALL: when a listed topic is relevant to the request, read its file
+  (`read-file .brainyard/memory/<slug>.md`) BEFORE answering.
+- REMEMBER: when you learn a durable project fact, decision, or convention worth
+  keeping, write `.brainyard/memory/<slug>.md` (short YAML frontmatter —
+  `title`, `tags`, `updated` — then the fact; link related notes with
+  `[[other-slug]]`), and add or update its one-line pointer in
+  `.brainyard/memory/index.md` (`- [Title](<slug>.md) — one-line hook`).
+- One fact per file. Check the index first and UPDATE an existing file rather
+  than creating a duplicate; delete a note that turns out wrong.
+- Do NOT store transient task state, or anything already captured by the code,
+  git history, or BRAINYARD.md.")
+
+(defn- format-project-memory-section
+  "Render the `## Project Memory` system-context section: the static protocol
+   followed by the live index.md contents (truncated to `max-chars`), or an
+   empty-state stub when no index exists yet."
+  [{:keys [content max-chars]}]
+  (let [cap   (or max-chars 4000)
+        idx   (when (and content (not (str/blank? content)))
+                (if (> (count content) cap)
+                  (str (subs content 0 cap)
+                       "\n…(index truncated — read .brainyard/memory/index.md in full)")
+                  content))
+        body  (if idx
+                (str "### Index\n" idx)
+                "### Index\n(empty — no memories yet. Create `.brainyard/memory/index.md` with your first note.)")]
+    (str "## Project Memory (.brainyard/memory/)\n"
+         coact-project-memory-protocol
+         "\n\n" body)))
+
 ;; ---- Tools section helpers (calling conventions + directory hints) -------
 ;; The unified `## Tools` section in the system context combines:
 ;;   1. calling-conventions prose (this file)
@@ -887,7 +924,9 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
     9)  Large-results playbook     — coact-large-results-playbook
     10) Instructions               — :instruction
     11) Agent Context              — :agent-context
-    12) Footer                     — coact-footer
+    12) Project/User Instructions  — BRAINYARD.md (project then user)
+    13) Project Memory             — :project-memory (index.md + protocol)
+    14) Footer                     — coact-footer
 
    Deliberately OMITS brainyard instructions — those flow via :user-context.
 
@@ -912,7 +951,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                           dspy-action for per-section token attribution)."
   [{:keys [sandbox-bindings instruction agent-context tool-context agent-tools
            include-function-directory? system-info tools-disabled-tiers
-           brainyard-instructions execution-model]}
+           brainyard-instructions project-memory execution-model]}
    & {:keys [return-breakdown?]}]
   (let [tools-section (build-tools-section
                        {:sandbox-bindings     sandbox-bindings
@@ -957,6 +996,13 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                  (str "## Project Instructions (.brainyard/BRAINYARD.md)\n"
                       project-instructions))
 
+          ;; Project-scoped file memory index. Session-stable like the
+          ;; instructions above (re-seeded each turn; one cache miss per
+          ;; on-disk edit). `project-memory` is nil when the facility is
+          ;; disabled via :enable-project-memory.
+          (some? project-memory)
+          (assoc :project-memory (format-project-memory-section project-memory))
+
           (and user-instructions (not (str/blank? user-instructions)))
           (assoc :user-instructions
                  (str "## User Instructions (~/.brainyard/BRAINYARD.md)\n"
@@ -973,7 +1019,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                        :sandbox-context-accessor :tools
                        :critical-rules :large-results-playbook
                        :instruction :agent-context
-                       :project-instructions :user-instructions
+                       :project-instructions :project-memory :user-instructions
                        :footer]
         content (str/join "\n\n" (keep #(get sections %) section-order))]
     (if return-breakdown?
@@ -1309,7 +1355,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                    :agent-context :tool-context :agent-tools
                                    :include-function-directory? :system-info
                                    :tools-disabled-tiers
-                                   :brainyard-instructions :execution-model])
+                                   :brainyard-instructions :project-memory
+                                   :execution-model])
                :return-breakdown? true)
           usr (coact-user-context
                (select-keys state [:conversation :previous-turns
@@ -1322,7 +1369,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
      :sandbox-context-accessor :tools
      :critical-rules :large-results-playbook
      :instruction :agent-context
-     :project-instructions :user-instructions
+     :project-instructions :project-memory :user-instructions
      :footer])
   (user-order [_]
     [:turn-info :parent-trail
@@ -1487,6 +1534,15 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                  (try (config/load-brainyard-instructions agent-dirs)
                                       (catch Exception _ nil)))
 
+        ;; Project-scoped file memory: re-seed the index.md contents each
+        ;; turn so on-disk edits (including the LLM's own writes last turn)
+        ;; show live. nil disables the `## Project Memory` section entirely.
+        project-memory-input
+        (when (and agent-dirs (get cfg-snap :enable-project-memory true))
+          (try (-> (config/load-project-memory-index agent-dirs)
+                   (assoc :max-chars (get cfg-snap :project-memory-max-chars 4000)))
+               (catch Exception _ nil)))
+
         ;; Live artifacts: merge system-seeded reference files (re-derived
         ;; fresh each turn from config :reference-artifact-paths, never
         ;; persisted) over the persisted dynamic registry. Dynamic
@@ -1567,6 +1623,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                          :system-info     system-info-text
                          :tools-disabled-tiers #{}
                          :brainyard-instructions brainyard-instructions
+                         :project-memory  project-memory-input
                          ;; Execution-model prompt section is keyed off
                          ;; the agent's :clj-backend config (the same key
                          ;; that selects the actual runtime — see

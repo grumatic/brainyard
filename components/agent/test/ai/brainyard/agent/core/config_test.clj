@@ -494,3 +494,41 @@
             (is (= 1 (count (cfg/reference-artifact-descriptors
                              dirs ["CLAUDE.md"] :exclude-identities ids)))))))
       (finally (rm-rf (io/file base))))))
+
+;; ============================================================================
+;; load-project-memory-index — project-scoped file memory
+;; ============================================================================
+
+(deftest load-project-memory-index-reads-index-and-counts-files
+  (let [base (str (System/getProperty "java.io.tmpdir")
+                  "/projmem-" (System/nanoTime))
+        mem  (io/file base ".brainyard" "memory")
+        dirs {:project-dir base :working-dir base :user-dir base}]
+    (.mkdirs mem)
+    (try
+      (testing "absent index → nil content, zero files"
+        (let [r (cfg/load-project-memory-index dirs)]
+          (is (nil? (:content r)))
+          (is (= 0 (:file-count r)))))
+      (testing "present index → trimmed content; *.md topic files counted (index.md excluded)"
+        (spit (io/file mem "index.md") "  # Project Memory\n- [Auth](auth.md) — jwt flow  \n")
+        (spit (io/file mem "auth.md") "the auth note")
+        (spit (io/file mem "deploy.md") "the deploy note")
+        (let [r (cfg/load-project-memory-index dirs)]
+          (is (= "# Project Memory\n- [Auth](auth.md) — jwt flow" (:content r)))
+          (is (= 2 (:file-count r)))))
+      (testing "blank index → nil content"
+        (spit (io/file mem "index.md") "   \n  ")
+        (is (nil? (:content (cfg/load-project-memory-index dirs)))))
+      (finally (rm-rf (io/file base))))))
+
+(deftest load-project-memory-index-nil-project-dir-is-safe
+  (is (= {:content nil :file-count 0}
+         (cfg/load-project-memory-index {:project-dir nil :user-dir "/tmp"}))))
+
+(deftest memory-subdir-allowed-at-both-scopes
+  ;; The SQLite L1/L2/L3 store is user-scoped; the file-based project memory
+  ;; is project-scoped — both live under the `memory/` name.
+  (is (= #{:user :project} (cfg/subdir-allowed-scopes "memory")))
+  (is (cfg/subdir-scope-allowed? "memory" :project))
+  (is (cfg/subdir-scope-allowed? "memory" :user)))

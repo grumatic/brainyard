@@ -61,6 +61,15 @@
    ;; Per-artifact truncation cap (chars) for the Live Artifacts renderer when a
    ;; descriptor does not declare its own :max-chars.
    :live-artifact-max-chars    {:type "integer" :default 4000}
+   ;; Project-scoped, file-based memory: a `## Project Memory` system-context
+   ;; section seeded each turn from `<project-dir>/.brainyard/memory/index.md`.
+   ;; The LLM reads/writes the index + colocated `<slug>.md` topic files with
+   ;; the ordinary read-file/write-file/update-file tools (no special agent
+   ;; tools). Distinct from the L1/L2/L3 SQLite memory (user-scoped, auto-
+   ;; captured); this is explicit, durable, project-local, human-editable.
+   :enable-project-memory      {:type "boolean" :default true}
+   ;; Truncation cap (chars) for the injected index.md contents.
+   :project-memory-max-chars   {:type "integer" :default 4000}
    ;; CoAct system-context: include the full sandbox function directory
    ;; (categories + signatures for ALL bound callables). When false, the
    ;; system prompt shows only a compact category index instead.
@@ -599,6 +608,40 @@
      :project-instructions   (:content p)
      :instruction-identities (set (keep :identity [u p]))}))
 
+(defn load-project-memory-index
+  "Load the project-scoped memory index from
+   `<project-config-dir>/memory/index.md`.
+
+   Project memory is a durable, file-based knowledge base for the current
+   repo: an `index.md` listing one line per topic, each pointing to a
+   colocated `<slug>.md` file. The LLM reads/writes these with the ordinary
+   read-file/write-file/update-file tools (`.brainyard/` is auto-allowed);
+   no special agent tools are involved. Distinct from the L1/L2/L3 SQLite
+   memory (user-scoped, auto-captured).
+
+   Returns {:content str-or-nil :file-count int} — :content is the trimmed
+   index.md body (nil when absent/empty); :file-count counts colocated
+   `*.md` topic files (excluding index.md). Never throws."
+  [dirs]
+  (let [base (project-config-dir dirs)]
+    (if-not base
+      {:content nil :file-count 0}
+      (let [mem-dir (File. ^String base "memory")
+            idx     (File. mem-dir "index.md")
+            content (when (.isFile idx)
+                      (let [s (str/trim (slurp idx))]
+                        (when-not (str/blank? s) s)))
+            files   (when (.isDirectory mem-dir)
+                      (->> (.listFiles mem-dir)
+                           (filter (fn [^File f]
+                                     (and (.isFile f)
+                                          (let [n (.getName f)]
+                                            (and (str/ends-with? n ".md")
+                                                 (not= n "index.md"))))))
+                           count))]
+        {:content    content
+         :file-count (or files 0)}))))
+
 (defn- expand-home
   "Expand a leading `~`/`~/` against `user-dir`. Other paths pass through."
   [^String path user-dir]
@@ -740,8 +783,12 @@
 
    The map is explicit for named entries; anything ending in `-agent` not
    listed here is treated as :project-only by `subdir-allowed-scopes`."
-  {;; user-only: per-account state
-   "memory"        :user-only
+  {;; dual-scope: the L1/L2/L3 SQLite store is user-scoped
+   ;; (`~/.brainyard/memory/<user-id>.db`, per-account, must not leak across
+   ;; projects), while the file-based project memory (`index.md` + colocated
+   ;; `<slug>.md` topic files) is project-scoped. Distinct files at distinct
+   ;; scopes under the same `memory/` name — the runtime does not merge them.
+   "memory"        :both
    "logs"          :user-only
 
    ;; project-only: sessions are project-specific. Their scrollback, message
