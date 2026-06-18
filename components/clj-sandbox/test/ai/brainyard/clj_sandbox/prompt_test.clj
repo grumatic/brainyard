@@ -76,6 +76,33 @@
       (is (= "text" (:lang b)))
       (is (= "plain" (:code b)))))
 
+  (testing "4-backtick CODE fence lets the body hold ``` fences (executed, not saved)"
+    ;; Regression: code building a markdown string with embedded ```clojure
+    ;; fences must NOT close at the first inner ```. A 4-backtick code fence is
+    ;; closed only by a 4-backtick run, so the inner ``` passes through.
+    (let [text (str "````clojure\n"
+                    "(def body \"# Doc\n"
+                    "```clojure\n"
+                    "(detached-task-marker auto-bg-ms tid)\n"
+                    "```\n"
+                    "tail\")\n"
+                    "````")
+          blocks (prompt/extract-all-code-blocks-multi text)]
+      (is (= 1 (count blocks)))
+      (let [b (first blocks)]
+        (is (= "clojure" (:lang b)))
+        (is (nil? (:verbatim? b)))
+        (is (nil? (:fence-error b)))
+        ;; The whole body — including the inner fences — is one code block.
+        (is (str/includes? (:code b) "detached-task-marker"))
+        (is (str/includes? (:code b) "```clojure"))
+        (is (str/includes? (:code b) "tail")))))
+
+  (testing "3-backtick code fence still closes at the first inner ``` (unchanged)"
+    (let [blocks (prompt/extract-all-code-blocks-multi "```clojure\n(+ 1 2)\n```")]
+      (is (= 1 (count blocks)))
+      (is (= "(+ 1 2)" (:code (first blocks))))))
+
   (testing "verbatim and code fences interleave in source order"
     (let [text (str "```clojure\n(def x 1)\n```\n"
                     "````html page.html\n<h1>hi</h1>\n````\n"

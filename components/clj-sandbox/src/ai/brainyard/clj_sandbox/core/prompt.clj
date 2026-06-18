@@ -139,9 +139,9 @@ ALL actions must be Clojure code in ```clojure fences. For shell commands, use: 
   [text]
   (if (str/blank? text)
     []
-    (let [pattern #"```(?:clojure|clj)\s*\n([\s\S]*?)```"
+    (let [pattern #"(?m)^(`{3,})(?:clojure|clj)[^\n]*\n([\s\S]*?\n)\1[ \t]*$"
           matches (re-seq pattern text)
-          all-blocks (vec (distinct (map second matches)))]
+          all-blocks (vec (distinct (map #(nth % 2) matches)))]
       (if (<= (count all-blocks) 1)
         all-blocks
         (with-meta [(first all-blocks)]
@@ -999,9 +999,9 @@ Topics: :truncation, :final, :discovery, :tool-priority, :agent-state, :mcp, :fe
   [text]
   (if (str/blank? text)
     []
-    (let [pattern #"```(?:clojure|clj)\s*\n([\s\S]*?)```"
+    (let [pattern #"(?m)^(`{3,})(?:clojure|clj)[^\n]*\n([\s\S]*?\n)\1[ \t]*$"
           matches (re-seq pattern text)]
-      (vec (distinct (map second matches))))))
+      (vec (distinct (map #(nth % 2) matches))))))
 
 (def ^:private lang-aliases
   "Canonical language names for code block extraction."
@@ -1026,8 +1026,13 @@ Topics: :truncation, :final, :discovery, :tool-priority, :agent-state, :mcp, :fe
   #"(?m)^(`{4,})(markdown|md|text|txt|html)([^\n]*)\n([\s\S]*?)\n\1[ \t]*$")
 
 (def ^:private code-fence-re
-  "3-backtick executable code fence. Groups: 1=lang 2=info 3=code."
-  #"```(clojure|clj|python|py|bash|sh)([^\n]*)\n([\s\S]*?)```")
+  "Executable code fence. Variable-length (3+ backtick) — like `verbatim-fence-re`
+   — so a body that contains ordinary ``` code fences (e.g. code building a
+   markdown string) can be wrapped in a longer fence (````clojure) with zero
+   escaping (CommonMark: a fence is closed only by a fence at least as long). The
+   closing fence repeats the opening backtick run (`\\1`) on its own line.
+   Groups: 1=backticks 2=lang 3=info 4=code."
+  #"(?m)^(`{3,})(clojure|clj|python|py|bash|sh)([^\n]*)\n([\s\S]*?)\n\1[ \t]*$")
 
 (defn- sanitize-verbatim-filename
   "Reduce an LLM-supplied fence filename hint to a safe basename, or nil."
@@ -1053,11 +1058,15 @@ Topics: :truncation, :final, :discovery, :tool-priority, :agent-state, :mcp, :fe
   "Extract ALL fenced blocks from LLM response text, in source order.
 
    Two fence flavours:
-   - 3-backtick *code* fences (clojure/clj, python/py, bash/sh) → executed.
+   - *code* fences (clojure/clj, python/py, bash/sh) → executed.
      Aliases normalized; unexpected trailing fence text sets `:fence-error`
      and the dispatcher returns it as an error entry instead of executing.
      (Per-fence backend routing like ```clojure :nrepl was removed; backend
      is configured per-agent via `:clj-backend`.)
+     Variable-length (3+ backtick): code whose body contains ordinary ```
+     fences (e.g. building a markdown string) can be wrapped in a longer fence
+     (````clojure) — closed only by a matching backtick run on its own line, so
+     the inner ``` passes through unescaped.
    - 4+-backtick *verbatim* fences (markdown/md, text/txt, html) → saved to a
      file, never executed. The longer fence lets the body hold ordinary ```
      code fences verbatim (no escaping). An optional token after the language
@@ -1089,12 +1098,12 @@ Topics: :truncation, :final, :discovery, :tool-priority, :agent-state, :mcp, :fe
           cm (re-matcher code-fence-re masked)
           code (loop [acc []]
                  (if (.find cm)
-                   (let [lang     (.group cm 1)
-                         trailing (str/trim (or (.group cm 2) ""))]
+                   (let [lang     (.group cm 2)
+                         trailing (str/trim (or (.group cm 3) ""))]
                      (recur (conj acc {:start (.start cm)
                                        :end   (.end cm)
                                        :block (cond-> {:lang (get lang-aliases lang lang)
-                                                       :code (str/trim (.group cm 3))}
+                                                       :code (str/trim (.group cm 4))}
                                                 (seq trailing)
                                                 (assoc :fence-error
                                                        (str "Unexpected text on code fence: \"" trailing "\". "

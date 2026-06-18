@@ -415,6 +415,11 @@ For mixed pipelines (\"A then B+C parallel then D\"), span multiple iterations.
 - **Fences take only the language token** — no per-block modifiers. ```clojure
   (not ```clojure :nrepl, not ```clj :sandbox). Code-execution backend is
   fixed per-agent; the dispatcher errors on unexpected fence text.
+- **Code whose body contains ``` fences** (e.g. building a markdown string with
+  embedded code fences) must be wrapped in a LONGER fence — open with 4 backticks
+  ````clojure … ```` — so the inner ``` passes through unparsed. A 3-backtick
+  fence closes at the first inner ```. (To merely *save* such content to a file,
+  prefer a 4-backtick ````markdown verbatim fence instead — it is not executed.)
 - **SCI string escaping** (clojure fences only): only `\\n` `\\t` `\\\"` `\\\\` are valid. For
   regex in shell strings, double the backslashes (`\"grep '\\\\d+' …\"`). For multi-line
   shell, here-docs, or template literals: use a raw ```bash / ```python fence instead — the
