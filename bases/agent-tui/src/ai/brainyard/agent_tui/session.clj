@@ -79,7 +79,7 @@
      {:prompt (ansi/style "> " ansi/bold ansi/bright-cyan)
       ;; Idle help tip: agent suggestion (top priority) or a rotating static
       ;; hint. The redraw mutes this string just like the old fixed placeholder.
-      :placeholder (help-tips/current-placeholder)})))
+      :placeholder (help-tips/current-placeholder (sessions/active-idx))})))
 
 ;; TUI mulog publisher handle (verbose mode only)
 (defonce ^:private !tui-publisher (atom nil))
@@ -711,7 +711,7 @@
                (try
                  (loop []
                    (Thread/sleep (long idle-tip-interval-ms))
-                   (when (and (help-tips/agent-suggestion)
+                   (when (and (help-tips/agent-suggestion (sessions/active-idx))
                               (layout/input-active?)
                               (layout/input-empty?)
                               (not (layout/popover-active?)))
@@ -2325,12 +2325,13 @@
   ;; emits a fresh suggestion at turn end. Repaint the idle prompt if the user
   ;; is sitting at it empty, so a stale tip doesn't linger when this turn
   ;; produces no follow-up of its own.
-  (when (help-tips/agent-suggestion)
-    (help-tips/clear-agent-suggestion!)
-    (when (and (layout/input-active?)
-               (layout/input-empty?)
-               (not (layout/popover-active?)))
-      (try (redraw-idle-prompt!) (catch Exception _))))
+  (let [sidx (session-idx-for-agent agent)]
+    (when (help-tips/agent-suggestion sidx)
+      (help-tips/clear-agent-suggestion! sidx)
+      (when (and (layout/input-active?)
+                 (layout/input-empty?)
+                 (not (layout/popover-active?)))
+        (try (redraw-idle-prompt!) (catch Exception _)))))
   (when-let [_parent (get-in @(:!state agent) [:runtime :parent-agent])]
     (let [agent-id (:agent-id agent)
           st-mem-atom (try (agent/get-bt-st-memory agent) (catch Throwable _ nil))
@@ -2419,11 +2420,18 @@
    prompt (not mid-typing, no popover open), so we never clobber input."
   [{:keys [agent prompt]}]
   (when (agent/get-config agent :enable-input-suggestions)
-    (help-tips/set-agent-suggestion! prompt)
-    (when (and (layout/input-active?)
-               (layout/input-empty?)
-               (not (layout/popover-active?)))
-      (try (redraw-idle-prompt!) (catch Exception _)))))
+    ;; Store the follow-up on the root agent's OWN tab (handler is registered
+    ;; with match-root-agent), so a background tab's suggestion never clobbers
+    ;; the active tab's idle line.
+    (let [sidx (session-idx-for-agent agent)]
+      (help-tips/set-agent-suggestion! sidx prompt)
+      ;; Only repaint the idle prompt when this is the foreground tab (its
+      ;; suggestion is what the active idle line would show).
+      (when (and (= sidx (sessions/active-idx))
+                 (layout/input-active?)
+                 (layout/input-empty?)
+                 (not (layout/popover-active?)))
+        (try (redraw-idle-prompt!) (catch Exception _))))))
 
 (defn ask-post-handler
   "Handler for :agent.ask/post. Event: {:agent :input :result}.

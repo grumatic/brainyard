@@ -27,8 +27,11 @@
 ;; Dynamic: agent suggestion (top priority)
 ;; ----------------------------------------------------------------------
 
-(defonce ^{:doc "Live agent suggestion: nil | {:text \"<raw follow-up prompt>\"}."}
-  !agent-suggestion (atom nil))
+(defonce ^{:doc "Per-tab agent suggestions: {key → {:text \"<raw prompt>\"}}.
+                 `key` is opaque to this leaf ns — callers pass the owning
+                 (or active) session index. Per-key so a background tab's
+                 follow-up doesn't clobber the active tab's idle suggestion."}
+  !agent-suggestions (atom {}))
 
 (defonce ^{:private true
            :doc "Alternation frame for the idle-tip ticker. Even = show the
@@ -37,26 +40,27 @@
   !frame (atom 0))
 
 (defn set-agent-suggestion!
-  "Record a dynamic agent suggestion (raw follow-up prompt text). A blank
-   value clears it. Resets the alternation frame so the suggestion is shown
-   first."
-  [text]
+  "Record a dynamic agent suggestion (raw follow-up prompt text) for tab `k`.
+   A blank value clears it. Resets the alternation frame so the suggestion is
+   shown first."
+  [k text]
   (reset! !frame 0)
   (if (str/blank? (str text))
-    (reset! !agent-suggestion nil)
-    (reset! !agent-suggestion {:text (str/trim (str text))})))
+    (swap! !agent-suggestions dissoc k)
+    (swap! !agent-suggestions assoc k {:text (str/trim (str text))})))
 
 (defn clear-agent-suggestion!
-  "Drop the current agent suggestion. Called when a new turn starts
+  "Drop tab `k`'s agent suggestion. Called when a new turn starts
    (`ask-pre-handler`); accepting it via right-arrow keeps it live so it
    persists across idle prompts until the next turn."
-  []
-  (reset! !agent-suggestion nil))
+  [k]
+  (swap! !agent-suggestions dissoc k))
 
 (defn agent-suggestion
-  "Raw suggestion text for accept-into-buffer, or nil when none is live."
-  []
-  (:text @!agent-suggestion))
+  "Raw suggestion text for tab `k` (accept-into-buffer / liveness check), or
+   nil when none is live."
+  [k]
+  (get-in @!agent-suggestions [k :text]))
 
 ;; ----------------------------------------------------------------------
 ;; Static: rotating usage hints (floor priority)
@@ -122,10 +126,10 @@
       (str (subs s 0 (max 0 (dec n))) "…"))))
 
 (defn current-tip
-  "Resolve the active tip by priority: agent-suggestion > static.
+  "Resolve tab `k`'s active tip by priority: agent-suggestion > static.
    Returns {:source :agent-suggestion|:static :raw \"<text>\"} or nil."
-  []
-  (if-let [sug (agent-suggestion)]
+  [k]
+  (if-let [sug (agent-suggestion k)]
     {:source :agent-suggestion :raw sug}
     (when-let [st (current-static)]
       {:source :static :raw st})))
@@ -148,8 +152,8 @@
    suggestion atom, not the rendered text); the odd-frame suffix keeps that
    discoverable. With no live suggestion, the static tip renders verbatim.
    Returns \"\" when no tip is available."
-  []
-  (let [sug (agent-suggestion)
+  [k]
+  (let [sug (agent-suggestion k)
         st  (current-static)]
     (cond
       ;; Live suggestion + a static tip available → alternate by frame.

@@ -1166,8 +1166,8 @@
               ;; clearing the input. The empty-buffer guard (it only renders as
               ;; a placeholder on an empty line anyway) prevents re-appending it
               ;; on a second right-arrow.
-              (and (zero? (.length buf)) (help-tips/agent-suggestion))
-              (let [s (help-tips/agent-suggestion)]
+              (and (zero? (.length buf)) (help-tips/agent-suggestion (sessions/active-idx)))
+              (let [s (help-tips/agent-suggestion (sessions/active-idx))]
                 (.append buf s)
                 (vreset! cursor-pos (.length buf))
                 (vreset! preferred-col nil)
