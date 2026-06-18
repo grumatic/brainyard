@@ -1,0 +1,92 @@
+;; Copyright (c) 2024-2026 Grumatic, Inc.
+;; SPDX-License-Identifier: MIT
+;; Licensed under the MIT License. See LICENSE at the repository root.
+
+(ns ai.brainyard.agent-tui.task-block-session-test
+  "Regression tests: a per-task live block must reach its final settled state
+   in its ORIGIN session even when the user has switched the active session to
+   a different tab (e.g. a shared sub-output session) while the task runs.
+
+   Bug (pre-fix): `update-task-block!` was gated on `(= origin-idx
+   (active-idx))` and `finalize-task-block!` ignored the origin session,
+   writing only to the foreground layout. So a task that finished while its
+   origin session was backgrounded left a stale `running` block frozen in that
+   session's saved scrollback — visible on switch-back. The per-task block now
+   routes through the same session-aware helpers the subagents block uses."
+  (:require [ai.brainyard.agent-tui.session :as session]
+            [ai.brainyard.agent-tui.sessions :as sessions]
+            [ai.brainyard.agent-tui.layout :as layout]
+            [clojure.string :as str]
+            [clojure.test :refer [deftest is testing use-fixtures]]))
+
+(def ^:private bid (keyword "task-block" "t1"))
+
+(defn- reset-state-fixture [t]
+  (let [saved-sessions @sessions/!sessions
+        saved-tasks    @session/!task-blocks
+        saved-sb       @layout/!scrollback
+        saved-blocks   @layout/!live-blocks]
+    (reset! layout/!scrollback [])
+    (reset! layout/!live-blocks {})
+    (try (t)
+         (finally
+           (reset! sessions/!sessions saved-sessions)
+           (reset! session/!task-blocks saved-tasks)
+           (reset! layout/!scrollback saved-sb)
+           (reset! layout/!live-blocks saved-blocks)))))
+
+(use-fixtures :each reset-state-fixture)
+
+(defn- two-sessions!
+  "Origin chat session at idx 0 (backgrounded) already holds the task's
+   `running` live block in its saved scrollback; active session is idx 1."
+  []
+  (reset! sessions/!sessions
+          {:active-idx 1
+           :next-id    2
+           :sessions   {0 {:id          0
+                           :scrollback  ["t1 - running"]
+                           :live-blocks {bid {:start-idx 0 :line-count 1}}}
+                        1 {:id 1 :scrollback [] :live-blocks {}}}}))
+
+(defn- origin-scrollback [] (:scrollback (sessions/get-session 0)))
+
+(deftest task-block-update-reaches-backgrounded-origin-session
+  (testing "completed status is patched into the backgrounded origin session"
+    (two-sessions!)
+    (reset! session/!task-blocks
+            {:t1 {:status       :completed
+                  :session-idx  0
+                  :start-time   (System/currentTimeMillis)
+                  :job-type     :tool
+                  :output-lines []
+                  :output-count 0}})
+    (#'session/update-task-block! :t1)
+    (let [sb (origin-scrollback)]
+      (is (some #(str/includes? % "done") sb)
+          "origin session's saved scrollback shows final 'done' status")
+      (is (not-any? #(str/includes? % "running") sb)
+          "the stale 'running' line was replaced, not left behind"))
+    (is (empty? (:scrollback (sessions/get-session 1)))
+        "the active (foreground) session is untouched")))
+
+(deftest task-block-finalize-targets-origin-session
+  (testing "finalize removes the block from the backgrounded origin session"
+    (two-sessions!)
+    (#'session/finalize-task-block! bid 0)
+    (is (nil? (get-in @sessions/!sessions [:sessions 0 :live-blocks bid]))
+        "finalize cleared the task block from the origin session's saved state")))
+
+(deftest task-block-without-origin-idx-falls-back-to-layout
+  (testing "a task block with no :session-idx renders to the foreground layout"
+    (two-sessions!)
+    (reset! session/!task-blocks
+            {:t1 {:status       :running
+                  :session-idx  nil
+                  :start-time   (System/currentTimeMillis)
+                  :job-type     :tool
+                  :output-lines []
+                  :output-count 0}})
+    (#'session/update-task-block! :t1)
+    (is (contains? @layout/!live-blocks bid)
+        "nil origin-idx routes to layout/update-live-block! (foreground)")))

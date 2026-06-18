@@ -950,14 +950,23 @@
 
 (defn- update-task-block!
   "Re-render a task's live block with the current spinner frame.
-   Only renders if the task's originating session is currently active."
+
+   Routes through `sessions/update-live-block-in-session!` keyed on the task's
+   originating session, so the update lands in that session's saved scrollback
+   even when the user has switched to a different tab (e.g. the shared
+   sub-output session) while the task is still running. Without it, a task that
+   finishes while its origin session is backgrounded would leave a stale
+   `running` block frozen in that session's scrollback. Mirrors
+   `update-subagents-block!`."
   [task-id]
   (when-let [state (get @!task-blocks task-id)]
-    (let [origin-idx (:session-idx state)]
-      (when (or (nil? origin-idx) (= origin-idx (sessions/active-idx)))
-        (let [spinner-char (nth subagents-spinner-frames @!subagents-spinner-idx)
-              lines (render-task-block-lines task-id state spinner-char)]
-          (layout/update-live-block! (task-block-id task-id) lines))))))
+    (let [origin-idx   (:session-idx state)
+          spinner-char (nth subagents-spinner-frames @!subagents-spinner-idx)
+          lines        (render-task-block-lines task-id state spinner-char)]
+      (if origin-idx
+        (sessions/update-live-block-in-session!
+         origin-idx (task-block-id task-id) lines)
+        (layout/update-live-block! (task-block-id task-id) lines)))))
 
 ;; ============================================================================
 ;; Iteration live block (per-iteration LLM step within a turn)
@@ -1137,17 +1146,30 @@
                  (or eval-section-lines [])))))
 
 (defn- update-iteration-block!
-  "Re-render an iteration block. Only renders if the originating session is active.
+  "Re-render an iteration block.
+
+   When the originating session is active (or unknown), render through the
+   iteration sink to the foreground surface. When it is backgrounded, patch
+   the origin session's saved scrollback via
+   `sessions/update-live-block-in-session!` so a status transition that lands
+   while the user is on another tab — e.g. a tool entry flipping
+   `:called → :done` during a sub-agent's run on a different session — is
+   preserved when they switch back. Without this the block would freeze with
+   the stale pre-switch snapshot (a `called` tool line that never settles),
+   because `iteration-post-handler`'s `already-buffered?` guard trusts the
+   last rendered snapshot. Mirrors the per-task and subagents blocks.
+
    Suppressed entirely in :quiet verbosity — only the answer box is shown."
   [agent-id repeat-id iteration]
   (when-not (quiet?)
     (when-let [state (get @!iteration-blocks [agent-id repeat-id iteration])]
-      (let [origin-idx (:session-idx state)]
-        (when (or (nil? origin-idx) (= origin-idx (sessions/active-idx)))
-          (let [spinner-char (nth subagents-spinner-frames @!subagents-spinner-idx)
-                lines (render-iteration-block-lines state spinner-char)]
-            (iter-sink/write-widget!
-             (iteration-block-id agent-id repeat-id iteration) lines)))))))
+      (let [origin-idx   (:session-idx state)
+            block-id     (iteration-block-id agent-id repeat-id iteration)
+            spinner-char (nth subagents-spinner-frames @!subagents-spinner-idx)
+            lines        (render-iteration-block-lines state spinner-char)]
+        (if (or (nil? origin-idx) (= origin-idx (sessions/active-idx)))
+          (iter-sink/write-widget! block-id lines)
+          (sessions/update-live-block-in-session! origin-idx block-id lines))))))
 
 (def ^:private todo-block-id :todo)
 (def ^:private todo-auto-dispose-ms 5000)
@@ -1381,11 +1403,22 @@
 
 (defn- finalize-task-block!
   "Freeze or dispose `block-id` based on the global :dispose-task-block
-   config (default true → dispose)."
-  [block-id]
-  (if (boolean (agent/get-config :dispose-task-block))
-    (layout/dispose-live-block! block-id)
-    (layout/freeze-live-block! block-id)))
+   config (default true → dispose).
+
+   With a `session-idx`, routes through the session-aware helpers so the
+   action lands in that session's saved state even when the user has switched
+   tabs (mirrors the subagents-block finalize path). Without it, operates on
+   the foreground layout directly — used by the session-agnostic
+   `:task-activity` aggregate block."
+  ([block-id] (finalize-task-block! block-id nil))
+  ([block-id session-idx]
+   (if (boolean (agent/get-config :dispose-task-block))
+     (if session-idx
+       (sessions/dispose-live-block-in-session! session-idx block-id)
+       (layout/dispose-live-block! block-id))
+     (if session-idx
+       (sessions/freeze-live-block-in-session! session-idx block-id)
+       (layout/freeze-live-block! block-id)))))
 
 (defn- refresh-task-activity!
   "Read current running tasks and update the task activity display.
@@ -1680,9 +1713,10 @@
    single-line scrollback marker noting the transition. Used when display-mode
    flips :foreground → :background while the task is still running."
   [task-id reason]
-  (when (get @!task-blocks task-id)
-    (let [bid (task-block-id task-id)]
-      (finalize-task-block! bid)
+  (when-let [state (get @!task-blocks task-id)]
+    (let [bid  (task-block-id task-id)
+          sidx (:session-idx state)]
+      (finalize-task-block! bid sidx)
       (swap! !task-blocks dissoc task-id)
       (emit! (ansi/muted
               (str "[" (clojure.core/name task-id)
@@ -1724,10 +1758,11 @@
                       :output-lines last-2
                       :output-count (count (or output []))}))
             (update-task-block! task-id)
-            (let [bid (task-block-id task-id)]
+            (let [bid  (task-block-id task-id)
+                  sidx (:session-idx (get @!task-blocks task-id))]
               (future
                 (Thread/sleep 2000)
-                (finalize-task-block! bid)
+                (finalize-task-block! bid sidx)
                 (swap! !task-blocks dissoc task-id)))))
         ;; Refresh output-lines for running tasks with an active block
         (when (and (= :running new-status) (get @!task-blocks task-id))
@@ -2363,10 +2398,11 @@
                 :output-lines last-2
                 :output-count (count (or output []))})
         (update-task-block! tid)
-        (let [bid (task-block-id tid)]
+        (let [bid  (task-block-id tid)
+              sidx (:session-idx (get @!task-blocks tid))]
           (future
             (Thread/sleep 2000)
-            (finalize-task-block! bid)
+            (finalize-task-block! bid sidx)
             (swap! !task-blocks dissoc tid)))))))
 
 ;; ============================================================================
