@@ -143,3 +143,23 @@
     (#'session/create-task-block! :t1 {:name "skill$x" :job-type :tool})
     (is (= 1 (:session-idx (get @session/!task-blocks :t1)))
         "unresolved owner falls back to the active session (1)")))
+
+(deftest create-task-block-prefers-metadata-owner-session-id
+  (testing ":owner-session-id in task metadata wins over the bridge and the active session"
+    ;; This is the reliable path for fast-eval/detach tool tasks (e.g. a slow
+    ;; skill$… call): the owning agent's session-id is stamped into metadata at
+    ;; creation because *current-agent* is NOT bound on the adopting BT thread.
+    (reset! sessions/!sessions
+            {:active-idx 1
+             :next-id    2
+             :sessions   {0 {:id 0 :agent-session-id "agt-main"
+                             :scrollback [] :live-blocks {}}
+                          1 {:id 1 :agent-session-id "agt-other"
+                             :scrollback [] :live-blocks {}}}})
+    ;; Bridge deliberately points at the (wrong) active session — metadata must win.
+    (reset! !task-owner-session {:t1 1})
+    (#'session/create-task-block!
+     :t1 {:name "skill$heka-finops" :job-type :tool
+          :metadata {:owner-session-id "agt-main"}})
+    (is (= 0 (:session-idx (get @session/!task-blocks :t1)))
+        "metadata owner (agt-main → session 0) wins over bridge (1) and active (1)")))

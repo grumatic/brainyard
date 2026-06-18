@@ -28,6 +28,7 @@
 (declare update-status-bar!)
 (declare handle-session-change)
 (declare find-session-for-agent)
+(declare session-idx-for-agent-session-id)
 (declare format-iter-elapsed)
 
 ;; ============================================================================
@@ -1643,16 +1644,22 @@
                          active (filterv #(= :running (:status (val %))) blocks)]
                      (when (seq active)
                        (swap! !subagents-spinner-idx #(mod (inc %) (count subagents-spinner-frames)))
-                       ;; Refresh output lines from task atoms
+                       ;; Refresh output lines from task atoms. Guard each
+                       ;; task's update so a transient render error doesn't kill
+                       ;; the ticker that animates every other task block.
                        (doseq [[tid _] active]
-                         (when-let [task (get @agent/!tasks tid)]
-                           (let [output (when-let [ol (:output-lines task)]
-                                          (if (instance? clojure.lang.IDeref ol) @ol ol))
-                                 last-2 (vec (take-last 2 (or output [])))]
-                             (swap! !task-blocks update tid assoc
-                                    :output-lines last-2
-                                    :output-count (count (or output [])))))
-                         (update-task-block! tid))
+                         (try
+                           (when-let [task (get @agent/!tasks tid)]
+                             (let [output (when-let [ol (:output-lines task)]
+                                            (if (instance? clojure.lang.IDeref ol) @ol ol))
+                                   last-2 (vec (take-last 2 (or output [])))]
+                               (swap! !task-blocks update tid assoc
+                                      :output-lines last-2
+                                      :output-count (count (or output [])))))
+                           (update-task-block! tid)
+                           (catch Throwable e
+                             (mulog/log ::task-block-tick-error :task-id tid
+                                        :error (ex-message e)))))
                        (Thread/sleep (long 1000))
                        (recur))))
                  (catch InterruptedException _))
@@ -1708,12 +1715,21 @@
           :job-type (:job-type new-task)
           :lang (get-in new-task [:metadata :coact/lang])
           :status :running
-          ;; Anchor to the owning agent's session (captured at :task/created),
-          ;; NOT whatever session is active now — a task created by a background
-          ;; or sub- agent, or while the user switched tabs mid-turn, must still
-          ;; settle in its origin session. Falls back to the active session when
-          ;; the owner couldn't be resolved.
-          :session-idx (or (get @!task-owner-session task-id) (sessions/active-idx))
+          ;; Anchor to the OWNING agent's session, NOT whatever session is
+          ;; active now — a task created by a background agent, or while the
+          ;; user switched tabs, must still settle in its origin session.
+          ;; Resolution order:
+          ;;   1. :owner-session-id stamped into task metadata at creation
+          ;;      (the reliable signal — travels with the task; set by the
+          ;;      fast-eval/detach tool path where *current-agent* is NOT bound
+          ;;      on the adopting BT thread).
+          ;;   2. the !task-owner-session bridge captured at :task/created
+          ;;      (for paths where *current-agent* IS bound at creation).
+          ;;   3. the active session (last resort).
+          :session-idx (or (some-> (get-in new-task [:metadata :owner-session-id])
+                                   session-idx-for-agent-session-id)
+                           (get @!task-owner-session task-id)
+                           (sessions/active-idx))
           :start-time (or (:started-at new-task) (System/currentTimeMillis))
           :output-lines []
           :output-count 0})

@@ -1002,8 +1002,16 @@
    formatter mangling the try/let nesting in call-tool-with-fast-eval.
 
    `heartbeat-ms` is the liveness-heartbeat cadence (config
-   `:task-heartbeat-interval-ms`); 0 disables the 'running… elapsed Ns' lines."
-  [pre fut tool-name tool-id tool-args from-iteration t0 auto-bg-ms fast-eval-ms heartbeat-ms !task-ref sub-agent-id]
+   `:task-heartbeat-interval-ms`); 0 disables the 'running… elapsed Ns' lines.
+
+   `agent` is the calling agent — always a top-level/root agent here, since
+   the fast-eval/detach path is sync-only for sub-agents (see
+   `call-tool-with-fast-eval`). Its session-id is stamped into the task
+   metadata as `:owner-session-id` so the TUI can anchor the per-task live
+   block to the owning agent's session. We cannot rely on `*current-agent*`
+   at task-creation time: adopt runs on the BT thread, while the binding is
+   established only inside the tool future on a different thread."
+  [pre agent fut tool-name tool-id tool-args from-iteration t0 auto-bg-ms fast-eval-ms heartbeat-ms !task-ref sub-agent-id]
   (try
     (let [adopt-fn    @(requiring-resolve 'ai.brainyard.agent.task.manager/adopt-detached!)
           get-mgr     @(requiring-resolve 'ai.brainyard.agent.task.manager/get-default-manager)
@@ -1020,10 +1028,14 @@
           cancel-run  (when sub-agent-id @(requiring-resolve 'ai.brainyard.agent.core.runtime/cancel-run))
           tname       (str "tool: " (subs (str/replace (str tool-name) #"\n" " ")
                                           0 (min 60 (count (str tool-name)))))
+          owner-sid   (when agent (try (proto/session-id agent) (catch Throwable _ nil)))
+          owner-aid   (when agent (try (proto/agent-id agent) (catch Throwable _ nil)))
           meta        (cond-> {:coact/lang (str tool-name)
                                :coact/code (str tool-name " " (pr-str tool-args))
                                :coact/tool-id tool-name
                                :coact/tool-args tool-args}
+                        owner-sid      (assoc :owner-session-id owner-sid)
+                        owner-aid      (assoc :coact/owner-agent-id owner-aid)
                         from-iteration (assoc :coact/pending-from-iter from-iteration)
                         sub-agent-id   (assoc :coact/subagent-id sub-agent-id))
           task        (adopt-fn tname :tool
@@ -1139,6 +1151,6 @@
         (if (not= r ::timeout)
           r
           (let [heartbeat-ms (or (@!get-config agent :task-heartbeat-interval-ms) 0)]
-            (adopt-tool-into-task nil fut tool-name tool-id tool-args
+            (adopt-tool-into-task nil agent fut tool-name tool-id tool-args
                                   from-iteration t0 auto-bg-ms fast-eval-ms
                                   heartbeat-ms !task-ref @!sub-capture)))))))
