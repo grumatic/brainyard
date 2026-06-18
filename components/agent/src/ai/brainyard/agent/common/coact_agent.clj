@@ -1783,6 +1783,9 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
 
 ;; Forward decls — defined further down with the code-block runners.
 (declare delete-coact-tmp-file! project-terminal-task->eval-entry)
+;; Owner-scoping predicate for the in-flight task surfaces — defined with
+;; in-flight-coact-tasks below; used here by harvest-pending-tasks!.
+(declare task-owned-by-agent?)
 
 (defn harvest-pending-tasks!
   "Walk the task manager for any coact-tagged code-eval tasks that reached
@@ -1802,8 +1805,12 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    Returns the vector of surfaced task-id keywords (or nil) so the caller —
    which holds the `agent` — can report them to auto-notify via `mark-surfaced!`
    (a completion the live loop just folded in is dropped from the idle-resume
-   inbox, avoiding a redundant auto-ask)."
-  [st-memory]
+   inbox, avoiding a redundant auto-ask).
+
+   With `agent`, only tasks owned by that agent instance are harvested into its
+   narrative (see `task-owned-by-agent?`) — a sub-agent must not fold in the
+   parent task that wraps it. Nil agent → no owner filter."
+  [st-memory agent]
   (let [{:keys [iteration-count]} @st-memory
         mgr (task-mgr/get-default-manager)]
     (when mgr
@@ -1812,7 +1819,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
             harvested?     (fn [t] (get-in t [:metadata :harvested?]))
             done-coact?    (fn [t] (and (coact-pending? t)
                                         (terminal-set (:status t))
-                                        (not (harvested? t))))
+                                        (not (harvested? t))
+                                        (task-owned-by-agent? t agent)))
             candidates (try (filterv done-coact? (tp/list-tasks mgr))
                             (catch Exception e
                               (mulog/warn ::harvest-list-tasks-error
@@ -1911,18 +1919,37 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
        " Use task$detail (add :last-n N) to peek at the output tail mid-flight,"
        " and task$cancel only to stop a task."))
 
+(defn- task-owned-by-agent?
+  "True when task `t` belongs in `agent`'s in-flight task surfaces — i.e. it
+   was created by that exact agent instance, OR it carries no owner tag at all
+   (legacy/untagged tasks stay visible to everyone — backward-compatible). The
+   owner is the creating agent's INSTANCE id (`proto/agent-id`), not its
+   session-id: a sub-agent inherits its parent's session-id, so only the
+   instance id distinguishes a skill-agent's tasks from the parent task that
+   wraps it. `agent` nil → no filter (every task passes)."
+  [t agent]
+  (let [owner (get-in t [:metadata :coact/owner-agent-id])]
+    (or (nil? owner)
+        (nil? agent)
+        (= owner (proto/agent-id agent)))))
+
 (defn in-flight-coact-tasks
-  "Return coact-tagged tasks that are still running (not terminal, not harvested)."
-  []
-  (let [mgr (task-mgr/get-default-manager)]
-    (when mgr
-      (let [terminal-set #{:completed :failed :cancelled}]
-        (try (filterv (fn [t]
-                        (and (some? (get-in t [:metadata :coact/pending-from-iter]))
-                             (not (terminal-set (:status t)))
-                             (not (get-in t [:metadata :harvested?]))))
-                      (tp/list-tasks mgr))
-             (catch Exception _ []))))))
+  "Return coact-tagged tasks that are still running (not terminal, not
+   harvested). With `agent`, scopes to tasks owned by that agent instance
+   (see `task-owned-by-agent?`) so a sub-agent doesn't surface the parent
+   task that wraps it. Zero-arg / nil agent → no owner filter."
+  ([] (in-flight-coact-tasks nil))
+  ([agent]
+   (let [mgr (task-mgr/get-default-manager)]
+     (when mgr
+       (let [terminal-set #{:completed :failed :cancelled}]
+         (try (filterv (fn [t]
+                         (and (some? (get-in t [:metadata :coact/pending-from-iter]))
+                              (not (terminal-set (:status t)))
+                              (not (get-in t [:metadata :harvested?]))
+                              (task-owned-by-agent? t agent)))
+                       (tp/list-tasks mgr))
+              (catch Exception _ [])))))))
 
 (defn- resolve-tool-entries
   "Resolve pending tool-result entries by matching the task-id embedded in the
@@ -1950,8 +1977,11 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    matching by task-id extracted from the marker.
 
    Returns the vector of resolved task-id keywords (or nil) so the caller can
-   report them to auto-notify via `mark-surfaced!`."
-  [st-memory]
+   report them to auto-notify via `mark-surfaced!`.
+
+   With `agent`, only resolves tasks owned by that agent instance (see
+   `task-owned-by-agent?`). Nil agent → no owner filter."
+  [st-memory agent]
   (let [mgr (task-mgr/get-default-manager)]
     (when mgr
       (let [terminal-set #{:completed :failed :cancelled}
@@ -1960,7 +1990,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                  (filter (fn [t]
                            (and (some? (get-in t [:metadata :coact/pending-from-iter]))
                                 (terminal-set (:status t))
-                                (not (get-in t [:metadata :harvested?])))))
+                                (not (get-in t [:metadata :harvested?]))
+                                (task-owned-by-agent? t agent))))
                  (reduce (fn [m t] (assoc m (clojure.core/name (:id t)) t)) {}))]
         (when (seq terminal-tasks)
           (swap! st-memory update :iterations
@@ -2006,10 +2037,14 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    the task is still running. The prescriptive in-line marker on the
    :pending eval-entry (see run-task-block) tells the LLM 'do not
    re-emit this code'; this roster reinforces it with a fresh top-level
-   view that survives across iterations until the task resolves."
-  [st-memory]
+   view that survives across iterations until the task resolves.
+
+   With `agent`, the roster is scoped to that agent instance's own tasks
+   (see `task-owned-by-agent?`) so a sub-agent doesn't list the parent task
+   that wraps it. Nil agent → no owner filter."
+  [st-memory agent]
   (let [{:keys [iteration-count]} @st-memory
-        tasks (or (in-flight-coact-tasks) [])]
+        tasks (or (in-flight-coact-tasks agent) [])]
     (when (some? (task-mgr/get-default-manager))
       (let [now-ms (System/currentTimeMillis)
             roster (mapv (fn [t]
@@ -2092,8 +2127,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   ;; Harvest folds resolved background tasks into :iterations and returns the
   ;; surfaced ids; reporting them to auto-notify drops them from the idle-resume
   ;; inbox so the turn-settle flush won't re-announce an already-seen result.
-  (auto-notify/mark-surfaced! agent (harvest-pending-tasks! st-memory))
-  (inject-in-flight-roster! st-memory)
+  (auto-notify/mark-surfaced! agent (harvest-pending-tasks! st-memory agent))
+  (inject-in-flight-roster! st-memory agent)
   bt/success)
 
 (defn coact-await-pending-action
@@ -2105,14 +2140,14 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   [{:keys [st-memory agent]}]
   (if-not (config/get-config agent :enable-iteration-hold)
     bt/success
-    (let [pending (in-flight-coact-tasks)]
+    (let [pending (in-flight-coact-tasks agent)]
       (if (empty? pending)
         bt/success
         (let [max-wait  (or (config/get-config agent :hold-max-wait-ms) 300000)
               !wake     (atom false)
               hook-key  (keyword "await-pending" (str (System/currentTimeMillis)))
               check-fn  (fn []
-                          (when (empty? (in-flight-coact-tasks))
+                          (when (empty? (in-flight-coact-tasks agent))
                             (reset! !wake true)))]
           (hooks/register-hook! :task/completed hook-key
                                 (fn [_] (check-fn))
@@ -2131,8 +2166,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                 (recur (+ elapsed 500))))
             (finally
               (hooks/unregister-hook! :task/completed hook-key)))
-          (auto-notify/mark-surfaced! agent (resolve-pending-entries! st-memory))
-          (inject-in-flight-roster! st-memory)
+          (auto-notify/mark-surfaced! agent (resolve-pending-entries! st-memory agent))
+          (inject-in-flight-roster! st-memory agent)
           (hooks/fire! :agent.iteration/hold-complete {:agent agent})
           bt/success)))))
 
@@ -2498,8 +2533,9 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    `:detached` immediately for every task — that is an implementation
    detail. Only `await-task`'s `:on-timeout :detach` branch (the sync →
    async waiter hand-off) flips the per-task block to `:background`."
-  [{:keys [lang from-iteration tmp-file code]}]
+  [{:keys [lang from-iteration tmp-file code owner-agent-id]}]
   (cond-> {:coact/lang lang}
+    owner-agent-id (assoc :coact/owner-agent-id owner-agent-id)
     from-iteration (assoc :coact/pending-from-iter from-iteration)
     tmp-file       (assoc :coact/tmp-file tmp-file)
     code           (assoc :coact/code code)))
@@ -2755,7 +2791,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   "Write code to a temp file and execute via shell. When `fast-eval-ms` is set,
    tries inline process execution first — only promotes to a tracked task on
    timeout. Returns an eval-entry map."
-  [lang code auto-bg-ms & {:keys [from-iteration fast-eval-ms subagent?]}]
+  [lang code auto-bg-ms & {:keys [from-iteration fast-eval-ms subagent? owner-agent-id]}]
   (let [ext (case lang "bash" ".sh" "python" ".py" "javascript" ".js" ".txt")
         cmd-prefix (case lang
                      "bash" "bash "
@@ -2833,7 +2869,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                                    {:lang lang
                                                     :from-iteration from-iteration
                                                     :tmp-file tmp-file
-                                                    :code     code})})]
+                                                    :code     code
+                                                    :owner-agent-id owner-agent-id})})]
               (tp/start-task mgr (:id task))
               task))})
         (let [t0 (System/currentTimeMillis)
@@ -2871,7 +2908,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                    :error (if (zero? exit-code) "" (str "Exit code: " exit-code))}))
             (let [meta (coact-task-metadata
                         {:lang lang :from-iteration from-iteration
-                         :tmp-file tmp-file :code code})]
+                         :tmp-file tmp-file :code code
+                         :owner-agent-id owner-agent-id})]
               (adopt-and-await-task
                {:task-name    (task-label (str lang ": ") code)
                 :job-type     :bash
@@ -2921,7 +2959,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   "Evaluate a clojure block in the SCI sandbox. When inside a task context or
    invoked by a sub-agent, runs inline (no detach). When `fast-eval-ms` is set,
    tries inline eval first — only promotes to a tracked task on timeout."
-  [sandbox code auto-bg-ms & {:keys [from-iteration fast-eval-ms subagent?]}]
+  [sandbox code auto-bg-ms & {:keys [from-iteration fast-eval-ms subagent? owner-agent-id]}]
   (cond
     (or (proto/in-task-context?) subagent?)
     (let [[thunk _] (clj-sandbox/eval-sandbox-thunk sandbox code)]
@@ -2940,7 +2978,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                    {:metadata (coact-task-metadata
                                                {:lang "clojure" :backend :sandbox
                                                 :from-iteration from-iteration
-                                                :code code})})]
+                                                :code code
+                                                :owner-agent-id owner-agent-id})})]
           (tp/start-task mgr (:id task))
           task))})
 
@@ -2954,7 +2993,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         (project-fast-eval-result code :sandbox r)
         (let [meta (coact-task-metadata
                     {:lang "clojure" :backend :sandbox
-                     :from-iteration from-iteration :code code})]
+                     :from-iteration from-iteration :code code
+                     :owner-agent-id owner-agent-id})]
           (adopt-and-await-task
            {:task-name    (task-label "clj: " code)
             :job-type     :clj-sandbox-eval
@@ -2974,7 +3014,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    task context or invoked by a sub-agent, runs inline (no detach). When
    `fast-eval-ms` is set, tries inline eval first — only promotes to a tracked
    task on timeout."
-  [code auto-bg-ms & {:keys [from-iteration nrepl-session-id fast-eval-ms subagent?]}]
+  [code auto-bg-ms & {:keys [from-iteration nrepl-session-id fast-eval-ms subagent? owner-agent-id]}]
   (cond
     (or (proto/in-task-context?) subagent?)
     (let [[thunk _] (clj-nrepl/eval-nrepl-thunk
@@ -2998,7 +3038,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                                {:lang "clojure" :backend :nrepl
                                                 :nrepl-session-id nrepl-session-id
                                                 :from-iteration from-iteration
-                                                :code code})})]
+                                                :code code
+                                                :owner-agent-id owner-agent-id})})]
           (tp/start-task mgr (:id task))
           task))})
 
@@ -3016,7 +3057,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         (let [meta (coact-task-metadata
                     {:lang "clojure" :backend :nrepl
                      :nrepl-session-id nrepl-session-id
-                     :from-iteration from-iteration :code code})]
+                     :from-iteration from-iteration :code code
+                     :owner-agent-id owner-agent-id})]
           (adopt-and-await-task
            {:task-name    (task-label "nrepl-clj: " code)
             :job-type     :clj-nrepl-eval
@@ -3098,7 +3140,11 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   ;; would orphan the task). Mirrors the tool path's subagent guard. The
   ;; runners already inline when `in-task-context?`; this extends that to the
   ;; subagent case where *current-task* may not be bound (e.g. fast-eval off).
-  (let [subagent? (tool/subagent? agent)]
+  (let [subagent?      (tool/subagent? agent)
+        ;; Tag the task with the creating agent instance so the in-flight
+        ;; surfaces (roster/harvest/resolve) can scope to it — keeps a
+        ;; sub-agent from listing the parent task that wraps it.
+        owner-agent-id (try (proto/agent-id agent) (catch Throwable _ nil))]
     (cond
       fence-error
       {:lang lang :code code :result nil :output "" :error fence-error}
@@ -3115,17 +3161,20 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                         :from-iteration   from-iteration
                                         :nrepl-session-id session-id
                                         :fast-eval-ms     fast-eval-ms
-                                        :subagent?        subagent?)
+                                        :subagent?        subagent?
+                                        :owner-agent-id   owner-agent-id)
           :sandbox (run-clj-sandbox-block sandbox code auto-bg-ms
                                           :from-iteration from-iteration
                                           :fast-eval-ms   fast-eval-ms
-                                          :subagent?      subagent?)))
+                                          :subagent?      subagent?
+                                          :owner-agent-id owner-agent-id)))
 
       (#{"bash" "python" "javascript"} lang)
       (run-script-block lang code auto-bg-ms
                         :from-iteration from-iteration
                         :fast-eval-ms   fast-eval-ms
-                        :subagent?      subagent?)
+                        :subagent?      subagent?
+                        :owner-agent-id owner-agent-id)
 
       :else
       {:lang "other" :code code :result nil :output ""

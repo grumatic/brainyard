@@ -200,7 +200,7 @@
           ;; Wait for the underlying task to terminate.
           _ (is (wait-for #(= :completed (:status (tp/get-task mgr tid))) 2000))
           st-memory (atom {:iteration-count 12 :iterations []})]
-      (harvest-pending-tasks! st-memory)
+      (harvest-pending-tasks! st-memory nil)
       (let [iters (:iterations @st-memory)]
         (is (= 1 (count iters)))
         (let [rec (first iters)]
@@ -223,7 +223,7 @@
             "harvested task should be marked :harvested? true"))
       ;; Second harvest is a no-op — the :harvested? marker filters it out.
       (let [before-count (count (:iterations @st-memory))]
-        (harvest-pending-tasks! st-memory)
+        (harvest-pending-tasks! st-memory nil)
         (is (= before-count (count (:iterations @st-memory)))
             "re-harvesting a marked task must NOT produce a duplicate record")))))
 
@@ -237,7 +237,7 @@
           tid (keyword (:task-id pending))
           st-memory (atom {:iteration-count 4 :iterations []})]
       ;; Harvest immediately — task is still running, so nothing to project.
-      (harvest-pending-tasks! st-memory)
+      (harvest-pending-tasks! st-memory nil)
       (is (= [] (:iterations @st-memory)))
       (is (= :running (:status (tp/get-task mgr tid)))
           "still-running task should remain in the registry")
@@ -247,7 +247,7 @@
 (deftest harvest-no-op-when-no-coact-tagged-tasks
   (testing "harvest-pending-tasks! does nothing when no coact-tagged tasks exist"
     (let [st-memory (atom {:iteration-count 1 :iterations []})]
-      (harvest-pending-tasks! st-memory)
+      (harvest-pending-tasks! st-memory nil)
       (is (= [] (:iterations @st-memory))))))
 
 (deftest harvest-batches-multi-lang-completions
@@ -266,7 +266,7 @@
                             (= :completed (:status (tp/get-task mgr t2))))
                       3000))
         (let [st-memory (atom {:iteration-count 10 :iterations []})]
-          (harvest-pending-tasks! st-memory)
+          (harvest-pending-tasks! st-memory nil)
           (let [iters (:iterations @st-memory)]
             (is (= 1 (count iters)) "all completions batched into a single record")
             (let [langs (set (map :lang (:code-results (first iters))))]

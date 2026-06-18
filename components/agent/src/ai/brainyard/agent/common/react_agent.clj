@@ -910,7 +910,7 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
 
         [:action
          {:id (kw :action/inc-iteration-count)}
-         (fn [{:keys [st-memory]}]
+         (fn [{:keys [st-memory agent]}]
            ;; Per-iteration reset: clear the LLM-produced :tool-calls and
            ;; :observation so a thinking-only iteration (where dspy omits them)
            ;; can't re-dispatch last turn's calls or re-record its observation.
@@ -927,8 +927,8 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
                                         :next-user-prompt "")))
            (let [harvest! @(requiring-resolve 'ai.brainyard.agent.common.coact-agent/harvest-pending-tasks!)
                  roster!  @(requiring-resolve 'ai.brainyard.agent.common.coact-agent/inject-in-flight-roster!)]
-             (harvest! st-memory)
-             (roster! st-memory))
+             (harvest! st-memory agent)
+             (roster! st-memory agent))
            bt/success)]
 
         [:action
