@@ -345,12 +345,18 @@
         current-idx (:active-idx state)
         new-session (get-in state [:sessions idx])]
     (when (and new-session (not= idx current-idx))
-      ;; NOTE: we deliberately do NOT stop the think spinner here. Think blocks
-      ;; are per-root-agent now: the leaving tab's spinner is saved (frozen) into
-      ;; its session snapshot by save-current-session-state! below and resumes
-      ;; when switched back; the entering tab's own spinner (if its agent is
-      ;; running) is restored and the shared ticker repaints it. A global stop
-      ;; would wrongly kill a still-running agent's spinner on every tab switch.
+      ;; Think blocks are per-root-agent. We do NOT globally stop the spinner on
+      ;; switch (that would kill a still-running agent's). Instead: DETACH the
+      ;; leaving tab's spinner from the layout BEFORE saving (so it isn't
+      ;; persisted at a stale position — task/iteration blocks created while the
+      ;; tab is backgrounded would otherwise land below it, breaking the
+      ;; sticky-bottom anchor), then REATTACH the entering tab's spinner at the
+      ;; sticky bottom after its layout loads. Both acquire spinner-lock and run
+      ;; OUTSIDE switch-lock (emit! orders spinner→switch; matching that here
+      ;; avoids a lock-order-reversal deadlock).
+      (when-let [detach (requiring-resolve
+                         'ai.brainyard.agent-tui.session/detach-think-block-for-session!)]
+        (try (detach current-idx) (catch Throwable _)))
       (locking switch-lock
         ;; 1. Save current session state
         (save-current-session-state!)
@@ -374,6 +380,11 @@
           (when-let [load-fn (requiring-resolve
                               'ai.brainyard.agent-tui.core/load-input-history-for-session!)]
             (try (load-fn asid) (catch Throwable _)))))
+      ;; Recreate the entering tab's spinner at the sticky bottom (after layout
+      ;; load, outside switch-lock). No-op if its agent already finished.
+      (when-let [reattach (requiring-resolve
+                           'ai.brainyard.agent-tui.session/reattach-think-block-for-session!)]
+        (try (reattach idx) (catch Throwable _)))
       (redraw-tab-strip!))))
 
 (defn next-session!

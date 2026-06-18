@@ -18,15 +18,20 @@
 (def ^:private root-aid :coact-agent/root-x)
 (def ^:private bid (keyword "think-block" "root-x"))
 
+(def ^:private !think-blocks @#'session/!think-blocks)
+
 (defn- reset-fixture [t]
   (let [saved-sessions @sessions/!sessions
+        saved-think    @!think-blocks
         saved-sb       @layout/!scrollback
         saved-blocks   @layout/!live-blocks]
     (reset! layout/!scrollback [])
     (reset! layout/!live-blocks {})
+    (reset! !think-blocks {})
     (try (t)
          (finally
            (reset! sessions/!sessions saved-sessions)
+           (reset! !think-blocks saved-think)
            (reset! layout/!scrollback saved-sb)
            (reset! layout/!live-blocks saved-blocks)))))
 
@@ -69,3 +74,49 @@
     (is (not= (#'session/think-block-id :coact-agent/maroon-lion-800)
               (#'session/think-block-id :coact-agent/scarlet-toad-3072))
         "two live root agents map to different live-block ids")))
+
+(deftest reattach-recreates-think-block-at-sticky-bottom
+  (testing "a stale think block (not at the bottom) is moved to the sticky bottom on switch-back"
+    (let [tbid (#'session/think-block-id root-aid)]
+      ;; Active session is 0 so update-think-block! renders to the layout.
+      (reset! sessions/!sessions {:active-idx 0 :next-id 1 :sessions {0 {:id 0}}})
+      ;; Layout: an iteration block, then a STALE think block in the middle,
+      ;; then a task block — i.e. the spinner is NOT at the bottom (as happens
+      ;; when task/iter blocks land below it while the tab was backgrounded).
+      (reset! layout/!scrollback ["iter" "stale-think" "task"])
+      (reset! layout/!live-blocks
+              {:iter {:start-idx 0 :line-count 1}
+               tbid  {:start-idx 1 :line-count 1}
+               :task {:start-idx 2 :line-count 1}})
+      ;; A live think entry for this root in session 0 (agent still running).
+      (reset! !think-blocks
+              {root-aid {:session-idx 0 :shuffled-words ["Thinking"]
+                         :spinner-idx (volatile! 0)
+                         :start-time (System/currentTimeMillis) :activity nil}})
+      (#'session/reattach-think-block-for-session! 0)
+      (let [tb     (get @layout/!live-blocks tbid)
+            others (->> (dissoc @layout/!live-blocks tbid) vals (map :start-idx))]
+        (is (some? tb) "think block present after reattach")
+        (is (every? #(< % (:start-idx tb)) others)
+            "think block sits below every other live block (sticky bottom)")))))
+
+(deftest detach-reattach-preserves-elapsed-start-time
+  (testing "detach/reattach keep the entry's :start-time so the elapsed timer is continuous"
+    (let [t0 (- (System/currentTimeMillis) 5000)] ;; started 5s ago
+      (reset! sessions/!sessions {:active-idx 0 :next-id 1 :sessions {0 {:id 0}}})
+      (reset! !think-blocks
+              {root-aid {:session-idx 0 :shuffled-words ["Thinking"]
+                         :spinner-idx (volatile! 0) :start-time t0 :activity nil}})
+      (#'session/detach-think-block-for-session! 0)
+      (#'session/reattach-think-block-for-session! 0)
+      (is (= t0 (:start-time (get @!think-blocks root-aid)))
+          ":start-time is preserved (detach/reattach only touch the layout block, not the entry)")
+      ;; Elapsed is wall-clock from the preserved start-time → the rendered
+      ;; spinner reflects the ~5s that have passed, not a reset to 0.
+      (let [{:keys [shuffled-words spinner-idx start-time activity]}
+            (get @!think-blocks root-aid)
+            line (first (#'session/render-think-block-lines
+                         shuffled-words @spinner-idx "⠋" start-time
+                         (#'session/fresh-activity-text activity)))]
+        (is (re-find #"5\.\ds" line)
+            "elapsed shows ~5s (wall-clock from the preserved start-time), not 0")))))

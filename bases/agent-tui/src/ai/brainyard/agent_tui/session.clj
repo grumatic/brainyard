@@ -585,6 +585,41 @@
            (reset! !spinner {:thread nil :running (atom true)
                              :iteration-label iteration-label})))))))
 
+(defn detach-think-block-for-session!
+  "Remove (from the foreground layout) the think block(s) belonging to session
+   `sidx`, WITHOUT dropping their `!think-blocks` entry. Called on switch-AWAY,
+   before the leaving session's layout is saved, so the spinner isn't persisted
+   into the snapshot at a stale position — task/iteration blocks created while
+   the tab is backgrounded land at the snapshot tail (sticky-bottom is a
+   foreground-only invariant) and would otherwise sit BELOW the frozen spinner.
+   The block is recreated fresh at the sticky bottom on switch-back. Caller
+   must NOT hold switch-lock (this takes spinner-lock; switch-to! orders them
+   spinner→switch to match emit!)."
+  [sidx]
+  (locking spinner-lock
+    (doseq [[root-aid state] @!think-blocks]
+      (when (= sidx (:session-idx state))
+        (try (layout/dispose-live-block! (think-block-id root-aid))
+             (catch Exception _))))))
+
+(defn reattach-think-block-for-session!
+  "Recreate (at the sticky bottom) the think block(s) belonging to session
+   `sidx`. Called on switch-BACK, after the entering session's layout is loaded,
+   so a still-running agent's spinner reappears anchored at the bottom of the
+   live-block region. Disposes any restored/stale instance FIRST, then
+   re-renders — this normalizes the spinner to the bottom regardless of where it
+   may have been persisted (e.g. if detach lost a race, or task/iteration blocks
+   landed below it while backgrounded). No-op for sessions whose agent has since
+   finished (no `!think-blocks` entry)."
+  [sidx]
+  (locking spinner-lock
+    (doseq [[root-aid state] @!think-blocks]
+      (when (= sidx (:session-idx state))
+        (try
+          (layout/dispose-live-block! (think-block-id root-aid))
+          (update-think-block! root-aid)
+          (catch Exception _))))))
+
 (defn install-output-sink!
   "Install a daemon-mode output sink (see `agent-tui.output-sink`).  Pass
    nil to revert."
