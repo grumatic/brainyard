@@ -417,6 +417,23 @@
 ;; Forward decl for spinner-idx volatile (used in atom — keep simple)
 (defn- new-spinner-idx [] (volatile! 0))
 
+(defn- finalize-think-block-in-session!
+  "Dispose (or freeze) the think live block, routed to its `origin-idx`
+   session. When that session is backgrounded — the user switched to another
+   tab mid-turn — go through the session-aware helpers so the spinner is
+   cleared from the origin session's SAVED scrollback rather than left frozen
+   there (and a no-op disposal aimed at the foreground tab). Falls back to the
+   foreground layout when origin is the active session or unknown. Mirrors the
+   per-task / iteration block origin handling."
+  [origin-idx dispose?]
+  (if (and origin-idx (not= origin-idx (sessions/active-idx)))
+    (if dispose?
+      (sessions/dispose-live-block-in-session! origin-idx think-block-id)
+      (sessions/freeze-live-block-in-session! origin-idx think-block-id))
+    (if dispose?
+      (layout/dispose-live-block! think-block-id)
+      (layout/freeze-live-block! think-block-id))))
+
 (defn stop-thinking-indicator!
   "Stop spinner and clear its line. Thread-safe via spinner-lock."
   []
@@ -427,23 +444,32 @@
     ;; - freeze  (false): leave the block's lines as plain scrollback history,
     ;;   BUT only if the block actually has a streaming snippet (more than the
     ;;   bare "Thinking..." header). Empty think-blocks are always disposed.
-    (when-let [{:keys [thread running st-mem-atom]} @!think-block]
+    (when-let [{:keys [thread running st-mem-atom session-idx]} @!think-block]
       (when running (reset! running false))
       (when thread
         (try (.join ^Thread thread 200) (catch Exception _)))
-      (let [ag (:agent (sessions/get-active-session))
+      (let [origin-idx  session-idx
+            background?  (and origin-idx (not= origin-idx (sessions/active-idx)))
+            ;; Read config from the block's OWNING session's agent (not the
+            ;; currently-active tab, which may be a different agent / a
+            ;; sub-output tab with no agent).
+            ag (:agent (or (when origin-idx (sessions/get-session origin-idx))
+                           (sessions/get-active-session)))
             config-dispose? (boolean (agent/get-config ag :dispose-think-block))
             ;; Inspect the live block's content: empty snippet → just one line
             ;; (the header). Anything more means real content was streamed.
-            block-info (get @layout/!live-blocks think-block-id)
+            ;; When backgrounded, the block lives in the origin session's SAVED
+            ;; :live-blocks, not the foreground layout.
+            block-info (if background?
+                         (get-in (sessions/get-session origin-idx)
+                                 [:live-blocks think-block-id])
+                         (get @layout/!live-blocks think-block-id))
             empty? (or (nil? block-info)
                        (<= (or (:line-count block-info) 0) 1))
             dispose? (or config-dispose? empty?)]
         (reset! !think-block nil)
         (try
-          (if dispose?
-            (layout/dispose-live-block! think-block-id)
-            (layout/freeze-live-block! think-block-id))
+          (finalize-think-block-in-session! origin-idx dispose?)
           (catch Exception _)))
       ;; Refresh status bar (drop any spinner-left text left over)
       (let [brand-left (build-status-left nil)
@@ -480,10 +506,19 @@
   ([iteration-label]
    (locking spinner-lock
      ;; Stop any existing think-block ticker (keeps think state alive briefly)
-     (when-let [{:keys [thread running]} @!think-block]
+     (when-let [{:keys [thread running session-idx]} @!think-block]
        (when running (reset! running false))
        (when thread
          (try (.join ^Thread thread 200) (catch Exception _)))
+       ;; The think-block is a global singleton. If the previous one belonged
+       ;; to a DIFFERENT session — e.g. the user switched to a sub-agent's tab
+       ;; mid-turn and that agent is now taking over the spinner — dispose it
+       ;; from its origin session so it doesn't orphan a stale spinner there.
+       ;; (Same-session replacement is handled by update-live-block! overwriting
+       ;; the block in place below.)
+       (when (and session-idx (not= session-idx (sessions/active-idx)))
+         (try (sessions/dispose-live-block-in-session! session-idx think-block-id)
+              (catch Exception _)))
        (reset! !think-block nil))
      ;; Stop legacy spinner (inline mode)
      (when-let [{:keys [thread running]} @!spinner]
