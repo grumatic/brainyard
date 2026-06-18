@@ -159,6 +159,35 @@ Long eval content collapses behind an expandable marker via the
 scans markers in scrollback and can splice the expanded body or hand it to
 `$EDITOR`.
 
+### Origin session & cross-session settling
+
+Every non-think block is pinned to an **origin session** — the TUI session of
+the agent that owns it, *not* whichever session happens to be active when the
+block updates. This matters because a block can finish (or a tool entry can
+flip `:called → :done`, or a task can go `running → done`) while the user is
+looking at a different tab — e.g. a root agent's task running while the user
+watches the consolidated sub-output session.
+
+- **Resolving the origin.** Iteration and subagent blocks derive it from
+  `find-session-for-agent` (which also handles the shared sub-output tab for
+  sub-agents). Task blocks can't: the `!tasks` watch (`handle-tasks-change`)
+  is global with no agent in scope, and the `:running` flip may land on a
+  task-pool thread. So `task-created-handler` captures the owner at
+  `:task/created` — fired synchronously on the creating agent's thread where
+  `*current-agent*` is still bound — resolving the agent's stable session-id to
+  a TUI index (`:agent-session-id`) into a bridge atom that `create-task-block!`
+  reads (falling back to the active session when unresolved). The think block
+  is the deliberate exception: it is turn-scoped, created in the active (=
+  agent's) session and disposed at turn end, so it uses `active-idx`.
+- **Routing updates.** When a block's origin session is in the **foreground**,
+  re-renders go straight to the layout / iteration sink. When it is in the
+  **background**, they route through `sessions/update-live-block-in-session!`
+  (and `freeze-` / `dispose-live-block-in-session!`), which patch that
+  session's *saved* `:scrollback` + `:live-blocks` in place. The change is
+  invisible until the user switches back — at which point the block shows its
+  true settled state instead of a stale `running` / `called` snapshot frozen at
+  the moment of the switch.
+
 ### Wide-character width
 
 Column math (wrapping, status-bar fit, marker alignment) goes through the
@@ -305,6 +334,9 @@ pattern by returning `{:result :block :answer …}`.
 - Per-session scrollback + collapsed iteration content.
 - Session switcher: `Ctrl-N` / `Ctrl-P`, or `/session N`.
 - Each session has its own agent (or sub-agents), memory, and queue.
+- Live blocks survive a switch: a task / iteration / subagent block whose
+  agent finishes while another tab is foreground still settles in its origin
+  session — see [Origin session & cross-session settling](#origin-session--cross-session-settling).
 
 The TUI session's `:id` is process-local (auto-increment from 1).
 The persisted directory is keyed on the **agent session id** — see
