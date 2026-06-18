@@ -319,16 +319,20 @@
    in :result. Returns (fn [on-output] -> poll-fn) for adopt-detached!."
   [^java.util.concurrent.Future fut label interval-ms t0]
   (let [writer (java.io.StringWriter.)]
-    (future
-      (try
-        (loop []
-          (Thread/sleep (long interval-ms))
-          (when-not (.isDone fut)
-            (let [elapsed-s (quot (- (System/currentTimeMillis) (long t0)) 1000)]
-              (.write writer (str "[" label "] running… elapsed " elapsed-s "s\n")))
-            (recur)))
-        (catch InterruptedException _ nil)
-        (catch Throwable _ nil)))
+    ;; interval-ms <= 0 disables the heartbeat: no liveness lines are written
+    ;; (the poll-fn just drains the — empty — writer). Used when the runtime's
+    ;; auto-task-notify owns liveness, so the LLM no longer polls for it.
+    (when (pos? (long interval-ms))
+      (future
+        (try
+          (loop []
+            (Thread/sleep (long interval-ms))
+            (when-not (.isDone fut)
+              (let [elapsed-s (quot (- (System/currentTimeMillis) (long t0)) 1000)]
+                (.write writer (str "[" label "] running… elapsed " elapsed-s "s\n")))
+              (recur)))
+          (catch InterruptedException _ nil)
+          (catch Throwable _ nil))))
     (make-future-poll-fn fut writer label identity)))
 
 (defrecord ClojureSandboxJobExecutor []

@@ -903,7 +903,9 @@
                     tid-str " - " meta-str
                     "  " status-str
                     (when elapsed (str "  " (ansi/muted (str "(" elapsed ")")))))
-        body-lines   (vec (take-last 2 output-lines))
+        ;; Drop blank/whitespace-only lines so the block shows the last 2
+        ;; meaningful lines, not empty tree rows.
+        body-lines   (vec (take-last 2 (remove str/blank? output-lines)))
         n (count body-lines)
         tree (map-indexed
               (fn [i line]
@@ -1324,9 +1326,10 @@
         more-tasks-line (when show-more-tasks?
                           [(ansi/muted (str "  +" (- n 2) " more task"
                                             (when (> (- n 2) 1) "s")))])
-        ;; Output lines from primary (first) task
+        ;; Output lines from primary (first) task. Drop blank/whitespace-only
+        ;; lines so the activity area shows meaningful output, not empty rows.
         primary-task (first running-tasks)
-        all-output (when primary-task @(:output-lines primary-task))
+        all-output (when primary-task (vec (remove str/blank? @(:output-lines primary-task))))
         output-count (count (or all-output []))
         show-overflow? (and (pos? output-budget) (> output-count output-budget))
         visible-output (cond

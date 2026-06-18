@@ -144,6 +144,13 @@
    ;; doesn't pass an explicit :timeout. Applies to both :bash and :tool
    ;; jobs, and to the foreground waiter's own deadline.
    :task-timeout-ms            {:type "integer" :default 120000}
+   ;; Cadence (ms) of the liveness "running… elapsed Ns" heartbeat appended to a
+   ;; detached :tool/subagent task's output (which has no stdout of its own).
+   ;; 0 disables it (default): runtime auto-task-notify now resumes/parks the
+   ;; agent on completion, so the LLM no longer needs a polling liveness signal,
+   ;; and the TUI task block already shows elapsed time in its header. Set > 0
+   ;; (e.g. 10000) to restore the per-N-seconds heartbeat lines.
+   :task-heartbeat-interval-ms {:type "integer" :default 0}
    ;; --- coact-repair-action recovery budgets (one per failure kind) ---
    ;; Each attempt fires :agent.recovery/retrying so the TUI can surface a
    ;; progress line.

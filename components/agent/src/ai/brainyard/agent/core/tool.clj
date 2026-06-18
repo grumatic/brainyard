@@ -996,20 +996,14 @@
        " timeout, wait again or switch to task$wakeup)."
        " Peek progress with task$detail (add :last-n N); task$cancel to abort."))
 
-(def ^:private heartbeat-interval-ms
-  "How often an adopted tool/subagent task appends a liveness heartbeat line to
-   its output while still running. A :tool job never streams its own output
-   (unlike sandbox/nREPL), so without this its task$detail line count is frozen
-   for the whole run and the polling LLM mistakes a long-running subagent for a
-   wedged task. 10s — frequent enough to read as 'alive', sparse enough not to
-   flood the 500-line tail cache."
-  10000)
-
 (defn- adopt-tool-into-task
   "Adopt a timed-out tool future into the task manager, await remaining
    auto-bg window, return result or pending marker. Extracted to avoid
-   formatter mangling the try/let nesting in call-tool-with-fast-eval."
-  [pre fut tool-name tool-id tool-args from-iteration t0 auto-bg-ms fast-eval-ms !task-ref sub-agent-id]
+   formatter mangling the try/let nesting in call-tool-with-fast-eval.
+
+   `heartbeat-ms` is the liveness-heartbeat cadence (config
+   `:task-heartbeat-interval-ms`); 0 disables the 'running… elapsed Ns' lines."
+  [pre fut tool-name tool-id tool-args from-iteration t0 auto-bg-ms fast-eval-ms heartbeat-ms !task-ref sub-agent-id]
   (try
     (let [adopt-fn    @(requiring-resolve 'ai.brainyard.agent.task.manager/adopt-detached!)
           get-mgr     @(requiring-resolve 'ai.brainyard.agent.task.manager/get-default-manager)
@@ -1035,7 +1029,7 @@
           task        (adopt-fn tname :tool
                                 {:tool-id tool-id :tool-args tool-args}
                                 {:metadata meta :started-at t0}
-                                (hb-poll-fn fut (str tool-name) heartbeat-interval-ms t0)
+                                (hb-poll-fn fut (str tool-name) heartbeat-ms t0)
                                 (fn []
                                   (future-cancel fut)
                                   (when sub-agent-id
@@ -1144,6 +1138,7 @@
                          {:error-message (or (ex-message c) (.. c getClass getName))})))]
         (if (not= r ::timeout)
           r
-          (adopt-tool-into-task nil fut tool-name tool-id tool-args
-                                from-iteration t0 auto-bg-ms fast-eval-ms
-                                !task-ref @!sub-capture))))))
+          (let [heartbeat-ms (or (@!get-config agent :task-heartbeat-interval-ms) 0)]
+            (adopt-tool-into-task nil fut tool-name tool-id tool-args
+                                  from-iteration t0 auto-bg-ms fast-eval-ms
+                                  heartbeat-ms !task-ref @!sub-capture)))))))
