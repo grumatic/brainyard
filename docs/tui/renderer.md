@@ -125,15 +125,18 @@ base); `layout.clj` provides the primitives it builds on
 `!scrollback`, `!live-blocks`). Several distinct block families render
 concurrently above the input prompt:
 
-- **Think block** (`!think-block`). While the LLM call is in flight the
-  renderer shows a single sticky line: a braille spinner
-  (`think-ticker-frames`) + a rotating activity verb
-  (`think-words` / `stamp-think-activity!`) + the elapsed timer. A
-  background ticker (`start-think-block-ticker!`, ~150 ms) advances the
-  spinner and elapsed counter without new hook events; the block is
-  capped at `think-max-lines` (10) and disposed when the answer/iteration
-  resolves. `start-thinking-indicator!` / `stop-thinking-indicator!`
-  bracket its lifetime.
+- **Think block** (`!think-blocks`, keyed per **root agent**). While an LLM
+  call is in flight the renderer shows a single sticky line: a braille spinner
+  (`think-ticker-frames`) + a rotating activity verb (`think-words` /
+  `stamp-think-activity!`) + the elapsed timer. One block per root agent so
+  concurrent chat tabs each animate their own spinner — and a sub-agent's
+  activity rolls up to its root's tab. A single shared ticker
+  (`start-think-block-ticker!`, ~150 ms) advances every block, but only the one
+  whose session is foreground re-renders: a backgrounded tab's spinner freezes
+  in its scrollback (its elapsed keeps counting from `:start-time`) and is
+  re-anchored at the sticky bottom on switch-back (`detach-`/
+  `reattach-think-block-for-session!`). `start-thinking-indicator!` /
+  `stop-thinking-indicator!` (both take the agent) bracket its lifetime.
 - **Iteration blocks** (`!iteration-blocks`). One per BT iteration,
   opened by `iteration-pre-handler` and frozen by
   `iteration-post-handler` (`freeze-pending-iterations!`). The header
@@ -161,12 +164,13 @@ scans markers in scrollback and can splice the expanded body or hand it to
 
 ### Origin session & cross-session settling
 
-Every non-think block is pinned to an **origin session** — the TUI session of
-the agent that owns it, *not* whichever session happens to be active when the
-block updates. This matters because a block can finish (or a tool entry can
-flip `:called → :done`, or a task can go `running → done`) while the user is
-looking at a different tab — e.g. a root agent's task running while the user
-watches the consolidated sub-output session.
+Every live block is pinned to an **origin session** — the TUI session of the
+agent that owns it, *not* whichever session happens to be active when the block
+updates. This matters because a block can finish (or a tool entry can flip
+`:called → :done`, or a task can go `running → done`) while the user is looking
+at a different tab — e.g. a root agent's task running while the user watches the
+consolidated sub-output session, or any tab that's backgrounded while its agent
+keeps working (tabs run concurrently).
 
 - **Resolving the origin.** Iteration and subagent blocks derive it from
   `find-session-for-agent` (which also handles the shared sub-output tab for
@@ -176,9 +180,11 @@ watches the consolidated sub-output session.
   `:task/created` — fired synchronously on the creating agent's thread where
   `*current-agent*` is still bound — resolving the agent's stable session-id to
   a TUI index (`:agent-session-id`) into a bridge atom that `create-task-block!`
-  reads (falling back to the active session when unresolved). The think block
-  is the deliberate exception: it is turn-scoped, created in the active (=
-  agent's) session and disposed at turn end, so it uses `active-idx`.
+  reads (falling back to the active session when unresolved). For the
+  fast-eval/detach tool path the owner is instead stamped into the task
+  metadata (`:owner-session-id`), because adopt runs on the BT thread where
+  `*current-agent*` is unbound. The think block keys per **root agent**
+  (`root-agent-id`) and anchors to the root's chat session.
 - **Routing updates.** When a block's origin session is in the **foreground**,
   re-renders go straight to the layout / iteration sink. When it is in the
   **background**, they route through `sessions/update-live-block-in-session!`
@@ -203,18 +209,29 @@ glyphs (`✓ ★ ⤴ ⬅ ⤵`) as wide. (`render.clj` carries a simpler ASCII-on
 
 ## Input queue
 
-Typing while the agent is processing does not block. Input is
-captured, appended to a queue, and a status-bar badge shows
-`Queued (#N)`.
+Typing while an agent is processing does not block — input is captured,
+**tagged with the agent active at enqueue time**, and routed to that agent's
+queue. Queues are **per root agent** (`core/!input-queues`, keyed by
+`root-agent-id`), each with its own worker, so **chat tabs run concurrently**:
+a turn in one tab does not block a turn in another, and an input typed in one
+tab can't be misrouted to another after a tab switch. The status-bar badge
+`Queued (#N)` shows the *active tab's* pending count (stored per session, read
+by the status bar).
 
-- `Ctrl-C` cancels the *current* run; queued items remain.
-- `/queue` — list queued items.
-- `/queue cancel all` — clear everything.
-- `/queue cancel <uuid>` — drop a specific item.
+- `Ctrl-C` cancels the **active tab's** current run only (per-session
+  `input/!ask-threads` → `cancel-active-ask!`); turns in other tabs keep
+  running.
+- `/queue` — list the active tab's queued items.
+- `/queue cancel all` / `/queue cancel <uuid>` — drop items from the active
+  tab's queue.
 
-The queue lives in `core/queue.clj` of the agent component; it is
-also exposed to the web bridge over WebSocket messages
-(`:agent/queue-update`, `:agent/queue-cancel`,
+The queue primitive lives in `core/queue.clj` of the agent component (each
+`create-queue` starts an independent worker); the TUI keeps one instance per
+root and tears it down when that chat session closes. Output-only (sub-output)
+tabs have **no root agent → no queue**: keyboard input there is rejected, but a
+`task$wakeup` resume still routes to its own background agent's queue regardless
+of which tab is on screen. The queue component is also exposed to the web bridge
+over WebSocket messages (`:agent/queue-update`, `:agent/queue-cancel`,
 `:agent/queue-cancel-all`).
 
 ---
@@ -328,25 +345,33 @@ pattern by returning `{:result :block :answer …}`.
 
 ## Multi-session
 
-`sessions.clj` lets a single TUI host hold multiple TUI sessions
-(each potentially bound to its own agent):
+`sessions.clj` lets a single TUI host hold multiple TUI sessions, each bound to
+its own **root agent** and running **concurrently** (one input queue + worker
+per root):
 
 - Per-session scrollback + collapsed iteration content.
-- Session switcher: `Ctrl-N` / `Ctrl-P`, or `/session N`.
-- Each session has its own agent (or sub-agents), memory, and queue.
-- Live blocks survive a switch: a task / iteration / subagent block whose
-  agent finishes while another tab is foreground still settles in its origin
-  session — see [Origin session & cross-session settling](#origin-session--cross-session-settling).
+- Session switcher: `Ctrl-N` / `Ctrl-P`, `/session N`, or `Ctrl-T` (new tab).
+- **Everything that's "live" is per tab**: agent, memory, input queue + worker,
+  think spinner, pending count, `next-user-prompt` suggestion, and `Ctrl-C`
+  scope. So turns in different tabs run side by side without blocking, and one
+  tab's spinner / activity / suggestion can't bleed into another. (Each of
+  these was a global singleton before the per-root-agent refactor.)
+- Tabs get a unique `mainN` label (`next-root-tab-label!`, which skips any
+  label already in use so live tabs never collide — resume-safe). A root's
+  shared sub-output tab inherits the root's label with a `↓` suffix.
+- Live blocks survive a switch: a task / iteration / think / subagent block
+  whose agent finishes while another tab is foreground still settles in its
+  origin session — see [Origin session & cross-session settling](#origin-session--cross-session-settling).
 
-The TUI session's `:id` is process-local (auto-increment from 1).
-The persisted directory is keyed on the **agent session id** — see
-[architecture.md §5](architecture.md). `/fork` creates a new
-agent-session-id with a `:parent-id` link; `/tree` navigates the
-fork tree; `/name <label>` labels a session.
+The TUI session's `:id` is process-local; the persisted directory is keyed on
+the **agent session id** — see [architecture.md §5](architecture.md). `/fork`
+creates a new agent-session-id with a `:parent-id` link; `/tree` navigates the
+fork tree; `/session rename` relabels a tab.
 
-Side-by-side comparisons across reasoning styles (e.g. ReAct vs
-CoAct) are achieved by running *two `by` instances* in two tmux
-panes of the user's choice — one process drives one renderer.
+Side-by-side comparisons across reasoning styles (e.g. ReAct vs CoAct) can run
+as **concurrent tabs in one process** (`Ctrl-T` a second agent, submit in both).
+Two separate `by` instances in two tmux panes remain an option when full
+process isolation is wanted.
 
 ---
 
