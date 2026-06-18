@@ -628,20 +628,37 @@
    queue — used by task$wakeup resumes so they serialize with user turns."
   ([input] (enqueue-input! input nil))
   ([input opts]
-   (if (= :output (:session-type (sessions/get-active-session)))
-     (tui-session/emit!
-      (ansi/warning "This is an output-only session. Use /session <N> to switch to a chat session, or /session close to close this one."))
-     ;; Resolve the owning agent: an explicit :agent (task$wakeup resume of a
-     ;; possibly-background agent) wins; otherwise the active tab's agent. Tag
-     ;; it into opts so the turn runs against the tab it was typed in even after
-     ;; a tab switch, and ROUTE it to that agent's root queue so tabs run
-     ;; concurrently.
-     (let [ag (or (:agent opts) (tui-session/get-active-agent))]
-       (when-not ag
-         (throw (ex-info "No TUI agent running. Call (start! :agent-id) first." {})))
-       (let [root-aid (tui-session/root-agent-id ag)
-             !queue   (ensure-input-queue-for-root! root-aid)
-             result   (agent/enqueue! !queue input (merge {:agent ag} opts))]
+   ;; Resolve the owning agent: an explicit :agent (task$wakeup resume of a
+   ;; possibly-background agent) wins; otherwise the active tab's agent. Tag it
+   ;; into opts so the turn runs against the tab it was typed in even after a
+   ;; tab switch, and ROUTE it to that agent's root queue so tabs run
+   ;; concurrently.
+   (let [targeted? (some? (:agent opts))
+         ag        (or (:agent opts) (tui-session/get-active-agent))
+         root-aid  (tui-session/root-agent-id ag)]
+     (cond
+       ;; Normal keyboard input into an output-only tab (a shared sub-output
+       ;; tab has no root agent of its own) → reject. A TARGETED resume bypasses
+       ;; this: it runs against a specific background agent, not whatever tab is
+       ;; on screen, so it must not be blocked by an output tab being active.
+       (and (not targeted?)
+            (= :output (:session-type (sessions/get-active-session))))
+       (tui-session/emit!
+        (ansi/warning "This is an output-only session. Use /session <N> to switch to a chat session, or /session close to close this one."))
+
+       (nil? ag)
+       (throw (ex-info "No TUI agent running. Call (start! :agent-id) first." {}))
+
+       ;; No root agent to own a queue (e.g. an output / agentless session, or a
+       ;; resume whose target has no resolvable root) — nothing to run against;
+       ;; skip rather than create a bogus nil-keyed queue.
+       (nil? root-aid)
+       (mulog/warn ::enqueue-no-root-agent :targeted? targeted?
+                   :agent-id (when ag (try (agent/agent-id ag) (catch Throwable _ nil))))
+
+       :else
+       (let [!queue (ensure-input-queue-for-root! root-aid)
+             result (agent/enqueue! !queue input (merge {:agent ag} opts))]
          (when (:error result)
            (tui-session/emit! (ansi/warning "Input queue is full (max 10). Please wait."))))))))
 
