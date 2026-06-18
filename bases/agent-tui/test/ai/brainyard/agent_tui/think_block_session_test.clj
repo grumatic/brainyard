@@ -14,7 +14,9 @@
             [ai.brainyard.agent-tui.layout :as layout]
             [clojure.test :refer [deftest is testing use-fixtures]]))
 
-(def ^:private bid :think-block)
+;; Think blocks are keyed per root agent: id = (think-block-id root-aid).
+(def ^:private root-aid :coact-agent/root-x)
+(def ^:private bid (keyword "think-block" "root-x"))
 
 (defn- reset-fixture [t]
   (let [saved-sessions @sessions/!sessions
@@ -43,7 +45,7 @@
 (deftest finalize-think-block-disposes-from-backgrounded-origin
   (testing "dispose routes to the origin session's saved scrollback, not the active tab"
     (two-sessions-with-think-in-origin!)
-    (#'session/finalize-think-block-in-session! 0 true)
+    (#'session/finalize-think-block-in-session! root-aid 0 true)
     (is (nil? (get-in @sessions/!sessions [:sessions 0 :live-blocks bid]))
         "think block removed from origin session's saved live-blocks")
     (is (empty? (:scrollback (sessions/get-session 0)))
@@ -54,8 +56,16 @@
 (deftest finalize-think-block-freeze-keeps-lines-in-origin
   (testing "freeze drops the live entry but keeps the lines as origin history"
     (two-sessions-with-think-in-origin!)
-    (#'session/finalize-think-block-in-session! 0 false)
+    (#'session/finalize-think-block-in-session! root-aid 0 false)
     (is (nil? (get-in @sessions/!sessions [:sessions 0 :live-blocks bid]))
         "block entry removed from origin live-blocks (no longer live)")
     (is (= ["think line 1" "think line 2"] (:scrollback (sessions/get-session 0)))
         "frozen lines remain in the origin session's scrollback")))
+
+(deftest think-block-id-is-per-root
+  (testing "each root agent gets a distinct think-block id so concurrent tabs don't collide"
+    (is (= :think-block/maroon-lion-800
+           (#'session/think-block-id :coact-agent/maroon-lion-800)))
+    (is (not= (#'session/think-block-id :coact-agent/maroon-lion-800)
+              (#'session/think-block-id :coact-agent/scarlet-toad-3072))
+        "two live root agents map to different live-block ids")))

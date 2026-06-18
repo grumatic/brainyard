@@ -413,8 +413,12 @@
   [{:keys [ag input opts origin-sidx active? set-idle? error-mode]}]
   (let [usage-before (helpers/get-usage-totals ag)]
     (when active?
-      (tui-session/update-status-bar! :running)
-      (tui-session/start-thinking-indicator!))
+      (tui-session/update-status-bar! :running))
+    ;; Start the per-root think spinner regardless of which tab is foreground —
+    ;; a background tab's spinner is painted by the shared ticker the moment the
+    ;; user switches to it. Keyed per root agent, so concurrent tabs don't
+    ;; collide.
+    (tui-session/start-thinking-indicator! ag)
     (reset! input/!ask-thread (Thread/currentThread))
     (try
       (let [result        (agent/ask ag input opts)
@@ -423,7 +427,7 @@
             usage-after   (helpers/get-usage-totals ag)
             diff          (helpers/usage-diff usage-before usage-after)
             still-active? (= origin-sidx (sessions/active-idx))]
-        (when active? (tui-session/stop-thinking-indicator!))
+        (tui-session/stop-thinking-indicator! ag)
         (cond
           cancelled?
           (tui-session/emit! (str "\n" (ansi/warning "Cancelled.")) origin-sidx)
@@ -443,7 +447,7 @@
         result)
       (catch Exception e
         (Thread/interrupted)
-        (when active? (tui-session/stop-thinking-indicator!))
+        (tui-session/stop-thinking-indicator! ag)
         (when (= origin-sidx (sessions/active-idx))
           (layout/redraw-chrome!)
           (when set-idle? (tui-session/update-status-bar! :idle)))

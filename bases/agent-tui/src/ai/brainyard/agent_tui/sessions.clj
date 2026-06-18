@@ -345,10 +345,12 @@
         current-idx (:active-idx state)
         new-session (get-in state [:sessions idx])]
     (when (and new-session (not= idx current-idx))
-      ;; Stop the spinner BEFORE acquiring switch-lock to avoid deadlock
-      ;; (emit! acquires spinner-lock then switch-lock; reverse order here would deadlock)
-      (when-let [stop-fn (requiring-resolve 'ai.brainyard.agent-tui.session/stop-thinking-indicator!)]
-        (stop-fn))
+      ;; NOTE: we deliberately do NOT stop the think spinner here. Think blocks
+      ;; are per-root-agent now: the leaving tab's spinner is saved (frozen) into
+      ;; its session snapshot by save-current-session-state! below and resumes
+      ;; when switched back; the entering tab's own spinner (if its agent is
+      ;; running) is restored and the shared ticker repaints it. A global stop
+      ;; would wrongly kill a still-running agent's spinner on every tab switch.
       (locking switch-lock
         ;; 1. Save current session state
         (save-current-session-state!)

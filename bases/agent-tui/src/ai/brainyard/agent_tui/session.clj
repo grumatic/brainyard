@@ -29,6 +29,7 @@
 (declare handle-session-change)
 (declare find-session-for-agent)
 (declare session-idx-for-agent-session-id)
+(declare root-of-agent)
 (declare format-iter-elapsed)
 
 ;; ============================================================================
@@ -162,15 +163,38 @@
 ;;            :start-ms long}}
 (defonce !compaction-blocks (atom {}))
 
-;; Singleton "thinking" live block for the active agent. Tail-of-scrollback
-;; widget that animates a Knight Rider ticker + a randomly-picked synonym +
-;; the latest LLM streaming snippet (multi-line, wrapped to terminal width,
-;; capped at think-max-lines).
-;; nil = no active thinking block.
-;; {:word str :session-idx int :spinner-idx atom :running atom :thread Thread
-;;  :st-mem-atom atom}
-(defonce ^:private !think-block (atom nil))
-(def ^:private think-block-id :think-block)
+;; Per-ROOT-agent "thinking" live block. Tail-of-scrollback widget that
+;; animates a Knight Rider ticker + a randomly-picked synonym + the latest
+;; activity snippet. Keyed by the ROOT agent's id so multiple chat tabs each
+;; animate their own spinner concurrently — and a sub-agent's activity rolls
+;; up to its root's tab. (Previously a global singleton, which meant two live
+;; tabs fought over one spinner and one tab's activity bled into another.)
+;; Each entry:
+;; {:session-idx int :shuffled-words vec :iteration-label str|nil
+;;  :spinner-idx volatile<int> :st-mem-atom atom :start-time long
+;;  :activity {:text str :ts long}|nil}
+(defonce ^:private !think-blocks (atom {}))
+;; Single shared animation ticker (150ms) iterating every root's think block —
+;; mirrors the task/iteration tickers. nil when no think blocks are live.
+(defonce ^:private !think-ticker-thread (atom nil))
+
+(defn- think-block-id
+  "Live-block id for a root agent's think spinner."
+  [root-aid]
+  (keyword "think-block" (name root-aid)))
+
+(defn- think-key
+  "Resolve `[root-aid session-idx]` for `agent`'s think block: keyed per ROOT
+   agent and anchored to the root's chat session (so a sub-agent's activity
+   rolls up to its root's tab). Returns nil when `agent` or its root has no
+   resolvable id."
+  [agent]
+  (when agent
+    (try
+      (when-let [root (first (root-of-agent agent))]
+        (when-let [root-aid (:agent-id root)]
+          [root-aid (:id (find-session-for-agent root))]))
+      (catch Throwable _ nil))))
 
 ;; Render context: when bound to a session-idx, emit! routes output to that session's
 ;; scrollback buffer (via emit-to-session!) instead of the active terminal.
@@ -247,32 +271,32 @@
 ;; Tick count between word rotations. 10 frames * 300ms = 3s per word.
 (def ^:private think-word-rotate-ticks 10)
 
-;; Activity from agent trace events. Single global atom — `{:text str :ts ms}`
-;; or nil. Stamped by hook handlers (iteration/pre, dspy-action/pre,
-;; tool-calls/pre, tool-use/pre, code-eval/pre). The think-block renderer
-;; shows `:text` when fresher than `think-activity-ttl-ms`; otherwise it
-;; falls back to the rotating word. Latest write wins across all agents.
-(defonce ^:private !think-activity (atom nil))
-
 ;; Milliseconds an activity stays "fresh" before the think-block falls back
 ;; to the rotating thinking word. 3s — long enough to read a tool-call line,
 ;; short enough that the spinner doesn't feel stuck on a stale event.
 (def ^:private think-activity-ttl-ms 3000)
 
 (defn- stamp-think-activity!
-  "Record the most recent agent activity for the thinking live block.
-   `text` should be a single short line (will be truncated by the renderer)."
-  [text]
+  "Record the most recent activity for `agent`'s (root) thinking live block.
+   `text` should be a single short line (truncated by the renderer). No-op
+   when the agent's root has no live think block yet — the block is created at
+   turn start (`start-thinking-indicator!`); activity only refines it.
+   Stamped by hook handlers (iteration/pre, dspy-action/pre, tool-calls/pre,
+   tool-use/pre, code-eval/pre)."
+  [agent text]
   (when (string? text)
-    (reset! !think-activity {:text text :ts (System/currentTimeMillis)})))
+    (when-let [[root-aid _] (think-key agent)]
+      (when (get @!think-blocks root-aid)
+        (swap! !think-blocks assoc-in [root-aid :activity]
+               {:text text :ts (System/currentTimeMillis)})))))
 
-(defn- fresh-activity
-  "Return {:text str :ts ms} if the latest activity is still within TTL,
-   else nil. Read-only."
-  []
-  (when-let [{:keys [ts] :as a} @!think-activity]
+(defn- fresh-activity-text
+  "Return the activity text if `activity` ({:text :ts}) is still within TTL,
+   else nil."
+  [activity]
+  (when-let [{:keys [text ts]} activity]
     (when (< (- (System/currentTimeMillis) ts) think-activity-ttl-ms)
-      a)))
+      text)))
 
 ;; Cap on Think-section line count in iteration widgets (re-used here for the
 ;; multi-line `Think:` block in `render-iteration-block-lines`). The thinking
@@ -340,7 +364,7 @@
      dropped otherwise. Shown muted, separated from elapsed by ` · `.
 
    The line is truncated with `…` when it exceeds terminal width."
-  [shuffled-words spinner-idx frame start-time]
+  [shuffled-words spinner-idx frame start-time activity]
   (let [cols (or (:cols @layout/!layout) 80)
         bracketed-spinner (str (ansi/muted "[")
                                (ansi/spinner-active frame)
@@ -352,7 +376,6 @@
         elapsed-ms (- (System/currentTimeMillis)
                       (or start-time (System/currentTimeMillis)))
         elapsed-str (format-iter-elapsed elapsed-ms)
-        activity (some-> (fresh-activity) :text)
         suffix-plain (str " ("
                           elapsed-str
                           (when (and activity (not (str/blank? activity)))
@@ -373,46 +396,51 @@
     [(str bracketed-spinner " " body-styled)]))
 
 (defn- update-think-block!
-  "Re-render the thinking live block (single-line braille spinner + body).
-   Skips rendering if the originating session isn't active.
-   Marked `:sticky-bottom?` so the spinner stays anchored at the bottom
-   of the live-block region — any task / iteration / sub-agent blocks
-   spawned afterward insert above it instead of below."
-  []
-  (when-let [state @!think-block]
+  "Re-render root `root-aid`'s thinking live block (single-line braille spinner
+   + body). Skips rendering when that block's session isn't active — a
+   backgrounded tab's spinner stays frozen in its saved scrollback and resumes
+   when the user switches back. Marked `:sticky-bottom?` so the spinner stays
+   anchored at the bottom of the live-block region — any task / iteration /
+   sub-agent blocks spawned afterward insert above it instead of below."
+  [root-aid]
+  (when-let [state (get @!think-blocks root-aid)]
     (let [origin-idx (:session-idx state)]
       (when (or (nil? origin-idx) (= origin-idx (sessions/active-idx)))
-        (let [{:keys [shuffled-words spinner-idx start-time]} state
+        (let [{:keys [shuffled-words spinner-idx start-time activity]} state
               tick   @spinner-idx
               frame  (nth think-ticker-frames
                           (mod tick (count think-ticker-frames)))
               lines  (render-think-block-lines shuffled-words tick frame
-                                               start-time)]
-          (layout/update-live-block! think-block-id lines
+                                               start-time
+                                               (fresh-activity-text activity))]
+          (layout/update-live-block! (think-block-id root-aid) lines
                                      {:sticky-bottom? true}))))))
 
 (defn- start-think-block-ticker!
-  "Start a 150ms ticker that animates the thinking live block. Idempotent —
-   does nothing if a ticker is already running."
+  "Start the single shared 150ms ticker that animates EVERY root's thinking
+   live block. Idempotent — does nothing if the ticker is already running.
+   Self-stops when no think blocks remain. Each block's spinner advances
+   independently (per-block `:spinner-idx`); only blocks whose session is
+   active actually re-render (see `update-think-block!`)."
   []
-  (when-let [state @!think-block]
-    (when-not (:thread state)
-      (let [running (atom true)
-            spinner-idx (:spinner-idx state)
-            thread (Thread.
-                    (fn []
-                      (try
-                        (loop []
-                          (when @running
-                            (try (update-think-block!)
-                                 (catch Exception _))
-                            (vswap! spinner-idx inc)
+  (when-not @!think-ticker-thread
+    (let [thread (Thread.
+                  (fn []
+                    (try
+                      (loop []
+                        (let [blocks @!think-blocks]
+                          (when (seq blocks)
+                            (doseq [[root-aid state] blocks]
+                              (try (vswap! (:spinner-idx state) inc)
+                                   (update-think-block! root-aid)
+                                   (catch Throwable _)))
                             (Thread/sleep (long 150))
-                            (recur)))
-                        (catch InterruptedException _))))]
-        (.setDaemon thread true)
-        (swap! !think-block assoc :thread thread :running running)
-        (.start thread)))))
+                            (recur))))
+                      (catch InterruptedException _))
+                    (reset! !think-ticker-thread nil)))]
+      (.setDaemon thread true)
+      (reset! !think-ticker-thread thread)
+      (.start thread))))
 
 ;; Forward decl for spinner-idx volatile (used in atom — keep simple)
 (defn- new-spinner-idx [] (volatile! 0))
@@ -425,52 +453,45 @@
    there (and a no-op disposal aimed at the foreground tab). Falls back to the
    foreground layout when origin is the active session or unknown. Mirrors the
    per-task / iteration block origin handling."
-  [origin-idx dispose?]
-  (if (and origin-idx (not= origin-idx (sessions/active-idx)))
-    (if dispose?
-      (sessions/dispose-live-block-in-session! origin-idx think-block-id)
-      (sessions/freeze-live-block-in-session! origin-idx think-block-id))
-    (if dispose?
-      (layout/dispose-live-block! think-block-id)
-      (layout/freeze-live-block! think-block-id))))
+  [root-aid origin-idx dispose?]
+  (let [bid (think-block-id root-aid)]
+    (if (and origin-idx (not= origin-idx (sessions/active-idx)))
+      (if dispose?
+        (sessions/dispose-live-block-in-session! origin-idx bid)
+        (sessions/freeze-live-block-in-session! origin-idx bid))
+      (if dispose?
+        (layout/dispose-live-block! bid)
+        (layout/freeze-live-block! bid)))))
 
-(defn stop-thinking-indicator!
-  "Stop spinner and clear its line. Thread-safe via spinner-lock."
-  []
-  (locking spinner-lock
-    ;; Fullscreen: stop think-block ticker, then either dispose (default) or
-    ;; freeze the live block based on :dispose-think-block runtime config.
-    ;; - dispose (true): remove the block's lines from scrollback entirely
-    ;; - freeze  (false): leave the block's lines as plain scrollback history,
-    ;;   BUT only if the block actually has a streaming snippet (more than the
-    ;;   bare "Thinking..." header). Empty think-blocks are always disposed.
-    (when-let [{:keys [thread running st-mem-atom session-idx]} @!think-block]
-      (when running (reset! running false))
-      (when thread
-        (try (.join ^Thread thread 200) (catch Exception _)))
-      (let [origin-idx  session-idx
-            background?  (and origin-idx (not= origin-idx (sessions/active-idx)))
-            ;; Read config from the block's OWNING session's agent (not the
-            ;; currently-active tab, which may be a different agent / a
-            ;; sub-output tab with no agent).
-            ag (:agent (or (when origin-idx (sessions/get-session origin-idx))
-                           (sessions/get-active-session)))
-            config-dispose? (boolean (agent/get-config ag :dispose-think-block))
-            ;; Inspect the live block's content: empty snippet → just one line
-            ;; (the header). Anything more means real content was streamed.
-            ;; When backgrounded, the block lives in the origin session's SAVED
-            ;; :live-blocks, not the foreground layout.
-            block-info (if background?
-                         (get-in (sessions/get-session origin-idx)
-                                 [:live-blocks think-block-id])
-                         (get @layout/!live-blocks think-block-id))
-            empty? (or (nil? block-info)
-                       (<= (or (:line-count block-info) 0) 1))
-            dispose? (or config-dispose? empty?)]
-        (reset! !think-block nil)
-        (try
-          (finalize-think-block-in-session! origin-idx dispose?)
-          (catch Exception _)))
+(defn- finalize-root-think-block!
+  "Dispose (default) or freeze root `root-aid`'s think block per the
+   `:dispose-think-block` config (empty blocks are always disposed), routed to
+   its origin session so a backgrounded tab is cleared from its SAVED
+   scrollback. Removes the entry and refreshes the status bar. Caller holds
+   spinner-lock."
+  [root-aid origin-idx]
+  (when-let [state (get @!think-blocks root-aid)]
+    (let [origin-idx  (or origin-idx (:session-idx state))
+          background?  (and origin-idx (not= origin-idx (sessions/active-idx)))
+          bid         (think-block-id root-aid)
+          ;; Read config from the block's OWNING session's agent (not the
+          ;; currently-active tab, which may be a different agent / a
+          ;; sub-output tab with no agent).
+          ag (:agent (or (when origin-idx (sessions/get-session origin-idx))
+                         (sessions/get-active-session)))
+          config-dispose? (boolean (agent/get-config ag :dispose-think-block))
+          ;; Inspect content: empty snippet → just the one header line. When
+          ;; backgrounded, the block lives in the origin session's SAVED
+          ;; :live-blocks, not the foreground layout.
+          block-info (if background?
+                       (get-in (sessions/get-session origin-idx) [:live-blocks bid])
+                       (get @layout/!live-blocks bid))
+          empty? (or (nil? block-info)
+                     (<= (or (:line-count block-info) 0) 1))
+          dispose? (or config-dispose? empty?)]
+      (swap! !think-blocks dissoc root-aid)
+      (try (finalize-think-block-in-session! root-aid origin-idx dispose?)
+           (catch Exception _))
       ;; Refresh status bar (drop any spinner-left text left over)
       (let [brand-left (build-status-left nil)
             session-indicator (sessions/format-session-indicator)
@@ -478,48 +499,55 @@
                         (and session-indicator brand-left) (str brand-left " " session-indicator)
                         session-indicator session-indicator
                         :else brand-left)]
-        (layout/draw-status-bar! full-left (:status-text @layout/!layout))))
-    ;; Legacy / inline-mode spinner cleanup
-    (when-let [{:keys [thread running]} @!spinner]
-      (reset! running false)
-      (reset! !spinner nil)
-      (when thread
-        (try (.join ^Thread thread 200) (catch Exception _)))
-      (when-not (layout/fullscreen?)
-        ;; In inline mode, clear spinner line with carriage return
-        (locking output-lock
-          (let [w (if (thread-bound? #'*out*) *out* (:writer @!tui-state))]
-            (when w
-              (.write ^java.io.Writer w "\r                         \r")
-              (.flush ^java.io.Writer w))))))))
+        (layout/draw-status-bar! full-left (:status-text @layout/!layout))))))
+
+(defn- stop-inline-spinner!
+  "Stop the legacy inline-mode spinner (single global spinner — inline mode has
+   no tabs). Caller holds spinner-lock."
+  []
+  (when-let [{:keys [thread running]} @!spinner]
+    (reset! running false)
+    (reset! !spinner nil)
+    (when thread
+      (try (.join ^Thread thread 200) (catch Exception _)))
+    (when-not (layout/fullscreen?)
+      (locking output-lock
+        (let [w (if (thread-bound? #'*out*) *out* (:writer @!tui-state))]
+          (when w
+            (.write ^java.io.Writer w "\r                         \r")
+            (.flush ^java.io.Writer w)))))))
+
+(defn stop-thinking-indicator!
+  "Stop and finalize a thinking spinner. With `agent`, finalizes that agent's
+   ROOT think block. With no arg (emit! / session-switch cleanup), finalizes
+   the think block belonging to the currently-active session. Either way the
+   block is disposed/frozen via its origin session and the shared ticker
+   self-stops once no blocks remain. Thread-safe via spinner-lock."
+  ([]
+   (locking spinner-lock
+     (let [aidx (sessions/active-idx)]
+       (doseq [[root-aid state] @!think-blocks]
+         (when (= aidx (:session-idx state))
+           (finalize-root-think-block! root-aid (:session-idx state)))))
+     (stop-inline-spinner!)))
+  ([agent]
+   (locking spinner-lock
+     (when-let [[root-aid origin-idx] (think-key agent)]
+       (finalize-root-think-block! root-aid origin-idx))
+     (stop-inline-spinner!))))
 
 (defn start-thinking-indicator!
-  "Start the thinking indicator for the active agent.
-   In fullscreen mode: creates a singleton :think-block live block at the tail of
-   scrollback that animates a spinner + iteration label + LLM streaming snippet
-   every 300ms. Bound to the current session (skips updates when not active).
-   On stop-thinking-indicator!, the live block is disposed (removed from scrollback).
-   In inline mode: prints a static spinner line (no animation).
-   When iteration-label is provided, it is appended after 'Thinking...'.
-   Thread-safe via spinner-lock — prevents concurrent ticker threads."
-  ([] (start-thinking-indicator! nil))
-  ([iteration-label]
+  "Start `agent`'s (root) thinking spinner.
+   In fullscreen mode: create/replace the ROOT agent's think live block (keyed
+   per root so concurrent chat tabs each animate their own spinner) anchored to
+   the root's chat session, and ensure the single shared 150ms ticker is
+   running. A backgrounded tab's spinner stays frozen in its scrollback and
+   resumes on switch-back.
+   In inline mode: print a static spinner line (no animation, single session).
+   Thread-safe via spinner-lock."
+  ([agent] (start-thinking-indicator! agent nil))
+  ([agent iteration-label]
    (locking spinner-lock
-     ;; Stop any existing think-block ticker (keeps think state alive briefly)
-     (when-let [{:keys [thread running session-idx]} @!think-block]
-       (when running (reset! running false))
-       (when thread
-         (try (.join ^Thread thread 200) (catch Exception _)))
-       ;; The think-block is a global singleton. If the previous one belonged
-       ;; to a DIFFERENT session — e.g. the user switched to a sub-agent's tab
-       ;; mid-turn and that agent is now taking over the spinner — dispose it
-       ;; from its origin session so it doesn't orphan a stale spinner there.
-       ;; (Same-session replacement is handled by update-live-block! overwriting
-       ;; the block in place below.)
-       (when (and session-idx (not= session-idx (sessions/active-idx)))
-         (try (sessions/dispose-live-block-in-session! session-idx think-block-id)
-              (catch Exception _)))
-       (reset! !think-block nil))
      ;; Stop legacy spinner (inline mode)
      (when-let [{:keys [thread running]} @!spinner]
        (reset! running false)
@@ -531,24 +559,20 @@
            st-mem-atom (or (:st-memory-atom (sessions/get-active-session))
                            (:st-memory-atom @!tui-state))
            fs?         (layout/fullscreen?)]
-       ;; Clear any stale activity from a previous cycle — fresh cycles start
-       ;; with the rotating word until a hook stamps the first real event.
-       (reset! !think-activity nil)
        (if fs?
-         ;; Fullscreen: create think live block + start ticker
-         (do
-           (reset! !think-block
-                   {:shuffled-words shuffled
-                    :iteration-label iteration-label
-                    :session-idx (sessions/active-idx)
-                    :spinner-idx (volatile! 0)
-                    :st-mem-atom st-mem-atom
-                    :start-time (System/currentTimeMillis)
-                    :thread nil
-                    :running nil})
-           ;; Initial paint
-           (try (update-think-block!) (catch Exception _))
-           ;; Start animation ticker
+         ;; Fullscreen: create/replace this root's think live block + ensure the
+         ;; shared ticker runs. `:activity` starts nil — fresh cycles show the
+         ;; rotating word until a hook stamps the first real event.
+         (when-let [[root-aid sidx] (think-key agent)]
+           (swap! !think-blocks assoc root-aid
+                  {:shuffled-words shuffled
+                   :iteration-label iteration-label
+                   :session-idx sidx
+                   :spinner-idx (volatile! 0)
+                   :st-mem-atom st-mem-atom
+                   :start-time (System/currentTimeMillis)
+                   :activity nil})
+           (try (update-think-block! root-aid) (catch Exception _))
            (start-think-block-ticker!))
          ;; Inline: print once, no animation loop (static, no live streaming)
          (do
@@ -2545,6 +2569,7 @@
    :start-time) persists across every iteration of the turn."
   [{:keys [agent iteration max-iterations repeat-id]}]
   (stamp-think-activity!
+   agent
    (str "Iter " iteration (when max-iterations (str "/" max-iterations))))
   (let [aid (:agent-id agent)
         rid (str (or repeat-id "_"))
@@ -2688,7 +2713,7 @@
 (defn dspy-pre-handler
   "Handler for :agent.dspy-action/pre. Stamps stage :think on the current iter."
   [{:keys [agent]}]
-  (stamp-think-activity! "Reasoning…")
+  (stamp-think-activity! agent "Reasoning…")
   (when-let [[aid rid iter] (iter-current-key agent)]
     (when (get @!iteration-blocks [aid rid iter])
       (swap! !iteration-blocks update [aid rid iter]
@@ -2727,7 +2752,7 @@
 (defn tool-calls-pre-handler
   "Handler for :agent.tool-calls/pre. Stamps stage :tools, resets tool-batch."
   [{:keys [agent]}]
-  (stamp-think-activity! "Calling tools…")
+  (stamp-think-activity! agent "Calling tools…")
   (when-let [[aid rid iter] (iter-current-key agent)]
     (when (get @!iteration-blocks [aid rid iter])
       (swap! !iteration-blocks update [aid rid iter]
@@ -2762,7 +2787,7 @@
   "Handler for :agent.tool-use/pre. Appends a :called entry to the current
    iteration's :tool-batch (unless suppressed for code-stage)."
   [{:keys [agent tool-name args call-id]}]
-  (stamp-think-activity! (str "→ " tool-name))
+  (stamp-think-activity! agent (str "→ " tool-name))
   (when-let [[aid rid iter] (iter-current-key agent)]
     (let [k [aid rid iter]
           state (get @!iteration-blocks k)]
@@ -2849,7 +2874,7 @@
    :parallel-batch-index; sequential mode appends) and re-renders the
    eval section with stable display-block provider ids."
   [{:keys [agent code parallel? parallel-batch-index]}]
-  (stamp-think-activity! "Running code…")
+  (stamp-think-activity! agent "Running code…")
   (when-let [[aid rid iter] (iter-current-key agent)]
     (when (get @!iteration-blocks [aid rid iter])
       (swap! !iteration-blocks update [aid rid iter]
@@ -3016,9 +3041,9 @@
   [{:keys [agent kind attempt max]}]
   (with-agent-render-session agent
     (let [active? (render-active?)]
-      (when active? (stop-thinking-indicator!))
+      (when active? (stop-thinking-indicator! agent))
       (emit! (fmt/format-recovery-status kind attempt max))
-      (when active? (start-thinking-indicator!)))))
+      (when active? (start-thinking-indicator! agent)))))
 
 (defn auto-parked-handler
   "Handler for :agent.iteration/auto-parked. Emits a muted line when the loop
@@ -3027,10 +3052,10 @@
   [{:keys [agent task-id]}]
   (with-agent-render-session agent
     (let [active? (render-active?)]
-      (when active? (stop-thinking-indicator!))
+      (when active? (stop-thinking-indicator! agent))
       (emit! (ansi/muted (str "\n  " ansi/v-line " ⏸ Parked on " task-id
                               " — will auto-resume on completion.")))
-      (when active? (start-thinking-indicator!)))))
+      (when active? (start-thinking-indicator! agent)))))
 
 (defn auto-resumed-handler
   "Handler for :agent.task/auto-resumed. Emits a muted line when a backgrounded
@@ -3046,9 +3071,9 @@
   [{:keys [agent round]}]
   (with-agent-render-session agent
     (let [active? (render-active?)]
-      (when active? (stop-thinking-indicator!))
+      (when active? (stop-thinking-indicator! agent))
       (emit! (ansi/muted (str "\n  " ansi/v-line " Evaluating answer quality (round " round ")...")))
-      (when active? (start-thinking-indicator!)))))
+      (when active? (start-thinking-indicator! agent)))))
 
 (defn evaluation-llm-calling-handler
   "Handler for :agent.evaluation/llm-calling. Mirrors the legacy
@@ -3056,7 +3081,7 @@
   [{:keys [agent has-evidence evidence-length eval-lm-label]}]
   (with-agent-render-session agent
     (let [active? (render-active?)]
-      (when active? (stop-thinking-indicator!))
+      (when active? (stop-thinking-indicator! agent))
       (emit! (ansi/muted (str "  " ansi/v-line " Checking against "
                               (if has-evidence
                                 (str "sandbox evidence (" evidence-length " chars)")
@@ -3066,7 +3091,7 @@
         (layout/draw-status-bar!
          (ansi/muted "Evaluating...")
          (:status-text @layout/!layout))
-        (start-thinking-indicator!)))))
+        (start-thinking-indicator! agent)))))
 
 (defn evaluation-done-handler
   "Handler for :agent.evaluation/done. Mirrors the legacy
@@ -3074,13 +3099,13 @@
   [{:keys [agent verdict detail]}]
   (with-agent-render-session agent
     (let [active? (render-active?)]
-      (when active? (stop-thinking-indicator!))
+      (when active? (stop-thinking-indicator! agent))
       (emit! (str "  " (fmt/format-eval-verdict verdict detail) "\n"))
       ;; The turn continues after evaluation (refine / finalize / answer), so
       ;; resume the sticky-bottom indicator — otherwise the cursor is left on
       ;; the emitted verdict line instead of returning to the working/input
       ;; line. Mirrors evaluation-started / evaluation-llm-calling handlers.
-      (when active? (start-thinking-indicator!)))))
+      (when active? (start-thinking-indicator! agent)))))
 
 ;; ============================================================================
 ;; In-process iteration sink (wraps `agent-tui.layout` live-block primitives)

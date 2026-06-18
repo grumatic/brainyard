@@ -191,53 +191,52 @@
 
 (deftest think-live-block-is-one-line-braille
   (testing "render-think-block-lines returns a single line: [<braille>] <body>"
-    (reset! @#'s/!think-activity nil)  ;; ensure no stale activity bleeds in
-    (let [lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" (System/currentTimeMillis))
+    (let [lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" (System/currentTimeMillis) nil)
           text  (joined lines)]
       (is (= 1 (count lines)) "single line — no leading/trailing blank padding")
       (is (str/starts-with? text "[⠋]") "starts with the bracketed braille frame")
       (is (str/includes? text "Pondering...") "rotating word + ellipsis is present")))
 
   (testing "frame argument is rendered as-is (any of the braille frames)"
-    (reset! @#'s/!think-activity nil)
-    (let [lines (#'s/render-think-block-lines ["Cogitating"] 0 "⠙" (System/currentTimeMillis))
+    (let [lines (#'s/render-think-block-lines ["Cogitating"] 0 "⠙" (System/currentTimeMillis) nil)
           text  (joined lines)]
       (is (str/includes? text "[⠙]") "the requested braille frame is shown")
       (is (str/includes? text "Cogitating...") "word is rendered with ellipsis")))
 
   (testing "word rotates as spinner-idx advances (one word per 10 ticks)"
-    (reset! @#'s/!think-activity nil)
     (let [words ["alpha" "beta" "gamma"]
           now   (System/currentTimeMillis)
-          at-0  (joined (#'s/render-think-block-lines words 0 "⠋" now))
-          at-10 (joined (#'s/render-think-block-lines words 10 "⠋" now))
-          at-30 (joined (#'s/render-think-block-lines words 30 "⠋" now))]
+          at-0  (joined (#'s/render-think-block-lines words 0 "⠋" now nil))
+          at-10 (joined (#'s/render-think-block-lines words 10 "⠋" now nil))
+          at-30 (joined (#'s/render-think-block-lines words 30 "⠋" now nil))]
       (is (str/includes? at-0 "alpha..."))
       (is (str/includes? at-10 "beta..."))
       ;; 30 / 10 = 3 → wraps back to index 0 (alpha)
       (is (str/includes? at-30 "alpha..."))))
 
-  (testing "fresh activity is appended in the suffix alongside the rotating word"
-    (let [now (System/currentTimeMillis)]
-      (reset! @#'s/!think-activity {:text "→ bash" :ts now})
-      (try
-        (let [lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" now)
-              text  (joined lines)]
-          (is (str/includes? text "→ bash") "activity text is shown in the suffix")
-          (is (str/includes? text "Pondering...")
-              "rotating word remains visible while activity is fresh"))
-        (finally (reset! @#'s/!think-activity nil)))))
+  (testing "activity text (passed in) is appended in the suffix alongside the word"
+    (let [now   (System/currentTimeMillis)
+          lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" now "→ bash")
+          text  (joined lines)]
+      (is (str/includes? text "→ bash") "activity text is shown in the suffix")
+      (is (str/includes? text "Pondering...")
+          "rotating word remains visible while activity is shown")))
 
-  (testing "stale activity (older than TTL) is dropped, leaving the rotating word"
+  (testing "nil activity → just the rotating word, no activity suffix"
+    (let [now   (System/currentTimeMillis)
+          lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" now nil)
+          text  (joined lines)]
+      (is (str/includes? text "Pondering...") "word is shown")
+      (is (not (str/includes? text "→")) "no activity arrow when activity is nil"))))
+
+(deftest fresh-activity-text-ttl
+  (testing "fresh-activity-text returns the text within TTL, nil once stale / absent"
     (let [now (System/currentTimeMillis)]
-      (reset! @#'s/!think-activity {:text "→ old" :ts (- now (long 10000))})
-      (try
-        (let [lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" now)
-              text  (joined lines)]
-          (is (not (str/includes? text "→ old"))
-              "expired activity is not shown")
-          (is (str/includes? text "Pondering...") "word is shown"))
-        (finally (reset! @#'s/!think-activity nil))))))
+      (is (= "→ new" (#'s/fresh-activity-text {:text "→ new" :ts now}))
+          "fresh activity (just stamped) is returned")
+      (is (nil? (#'s/fresh-activity-text {:text "→ old" :ts (- now (long 10000))}))
+          "activity older than the TTL is dropped")
+      (is (nil? (#'s/fresh-activity-text nil)) "nil activity → nil"))))
 
 ;; ----------------------------------------------------------------------------
 ;; Handlers — full lifecycle
