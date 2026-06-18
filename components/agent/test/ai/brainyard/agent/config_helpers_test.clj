@@ -585,7 +585,8 @@
 ;; .brainyard/ subdir scope policy
 ;;
 ;; Codifies WHICH scopes each .brainyard/<name> entry is allowed at:
-;;   - memory/, logs/ → :user only
+;;   - logs/ → :user only
+;;   - memory/ → both (user-scoped SQLite store + project-scoped file memory)
 ;;   - sessions/ → :project only (sessions are project-specific)
 ;;   - config-agent/, init-agent/ → both (mirror the file they edit)
 ;;   - explore-agent/, plan-agent/, etc. (*-agent fallthrough) → :project only
@@ -594,11 +595,12 @@
 
 (deftest subdir-allowed-scopes-known-entries
   (testing "user-only subdirs"
-    (is (= #{:user} (ai.brainyard.agent.core.config/subdir-allowed-scopes "memory")))
     (is (= #{:user} (ai.brainyard.agent.core.config/subdir-allowed-scopes "logs"))))
   (testing "project-only: sessions"
     (is (= #{:project} (ai.brainyard.agent.core.config/subdir-allowed-scopes "sessions"))))
   (testing "dual-scope files / dirs"
+    ;; memory is :both — user-scoped SQLite store + project-scoped file memory.
+    (is (= #{:user :project} (ai.brainyard.agent.core.config/subdir-allowed-scopes "memory")))
     (is (= #{:user :project} (ai.brainyard.agent.core.config/subdir-allowed-scopes "config.edn")))
     (is (= #{:user :project} (ai.brainyard.agent.core.config/subdir-allowed-scopes "BRAINYARD.md")))
     (is (= #{:user :project} (ai.brainyard.agent.core.config/subdir-allowed-scopes "skills"))))
@@ -624,8 +626,11 @@
            (ai.brainyard.agent.core.config/subdir-allowed-scopes "completely-unknown")))))
 
 (deftest subdir-scope-allowed-predicate
+  ;; memory is :both; logs is the user-only example.
   (is (true?  (ai.brainyard.agent.core.config/subdir-scope-allowed? "memory" :user)))
-  (is (false? (ai.brainyard.agent.core.config/subdir-scope-allowed? "memory" :project)))
+  (is (true?  (ai.brainyard.agent.core.config/subdir-scope-allowed? "memory" :project)))
+  (is (true?  (ai.brainyard.agent.core.config/subdir-scope-allowed? "logs" :user)))
+  (is (false? (ai.brainyard.agent.core.config/subdir-scope-allowed? "logs" :project)))
   (is (true?  (ai.brainyard.agent.core.config/subdir-scope-allowed? "explore-agent" :project)))
   (is (false? (ai.brainyard.agent.core.config/subdir-scope-allowed? "explore-agent" :user)))
   (is (true?  (ai.brainyard.agent.core.config/subdir-scope-allowed? "agents/init-agent" :user)))
@@ -638,6 +643,9 @@
     (testing "allowed combos return paths"
       (is (= (str user-dir "/.brainyard/memory")
              (ai.brainyard.agent.core.config/brainyard-subdir dirs "memory" :user)))
+      ;; memory is :both — also resolves at :project scope (file-based memory).
+      (is (= (str *tmp-project* "/.brainyard/memory")
+             (ai.brainyard.agent.core.config/brainyard-subdir dirs "memory" :project)))
       (is (= (str user-dir "/.brainyard/logs")
              (ai.brainyard.agent.core.config/brainyard-subdir dirs "logs" :user)))
       (is (= (str *tmp-project* "/.brainyard/agents/explore-agent")
@@ -654,7 +662,6 @@
       (is (= (str *tmp-project* "/.brainyard/sessions")
              (ai.brainyard.agent.core.config/brainyard-subdir dirs "sessions" :project))))
     (testing "forbidden combos return nil"
-      (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir dirs "memory" :project)))
       (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir dirs "sessions" :user)))
       (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir dirs "logs" :project)))
       (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir dirs "explore-agent" :user)))
@@ -671,8 +678,9 @@
     (is (.isDirectory (io/file logs))
         "brainyard-subdir! must create the directory on demand"))
   (testing "forbidden scope returns nil and creates nothing"
+    ;; logs is user-only, so :project is forbidden (memory is now :both).
     (let [dirs {:user-dir "/tmp/nope" :project-dir "/tmp/nope" :working-dir "/tmp/nope"}]
-      (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir! dirs "memory" :project))))))
+      (is (nil? (ai.brainyard.agent.core.config/brainyard-subdir! dirs "logs" :project))))))
 
 ;; ============================================================================
 ;; resolve-project-dir working-dir fallback

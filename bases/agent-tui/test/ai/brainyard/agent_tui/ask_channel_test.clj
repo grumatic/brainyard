@@ -44,7 +44,12 @@
               (let [resp (ask/ask-via-socket! {:path (.getAbsolutePath sock)
                                                :question "hi"
                                                :timeout-ms 5000})]
-                (is (= {:status :ok :answer "ECHO:hi" :usage nil} resp))))
+                ;; The response also carries LM metadata (:provider/:model/:agent,
+                ;; added by the `--json` ask feature) sourced from the process-global
+                ;; default LM — irrelevant to and unstable for this channel-roundtrip
+                ;; test, so assert only the roundtrip essentials.
+                (is (= {:status :ok :answer "ECHO:hi" :usage nil}
+                       (select-keys resp [:status :answer :usage])))))
 
             (testing "an empty question is rejected without injecting"
               (let [resp (ask/ask-via-socket! {:path (.getAbsolutePath sock)
