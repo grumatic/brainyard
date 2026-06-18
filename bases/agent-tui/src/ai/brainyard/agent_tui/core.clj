@@ -603,8 +603,14 @@
      (let [ag (tui-session/get-active-agent)]
        (when-not ag
          (throw (ex-info "No TUI agent running. Call (start! :agent-id) first." {})))
+       ;; Tag the input with the agent active AT ENQUEUE time so it's processed
+       ;; against the tab it was typed in — the single global queue is serial,
+       ;; and resolving the agent at PROCESS time would mis-run it against
+       ;; whatever tab the user has since switched to. `merge` preserves an
+       ;; explicit `:agent` (e.g. a task$wakeup resume targeting a background
+       ;; agent), which must NOT be overridden by the active agent.
        (let [!queue (ensure-input-queue!)
-             result (agent/enqueue! !queue input opts)]
+             result (agent/enqueue! !queue input (merge {:agent ag} opts))]
          (when (:error result)
            (tui-session/emit! (ansi/warning "Input queue is full (max 10). Please wait."))))))))
 
