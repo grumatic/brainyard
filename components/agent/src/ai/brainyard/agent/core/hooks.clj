@@ -162,6 +162,12 @@
    ;; (TUI input-bar tip, web bridge) subscribe to surface it. Sub-agents
    ;; fire too; consumers scope to root agents via `match-root-agent`.
    :agent.suggestion/next-user-prompt {:keys #{:agent :prompt :input}}
+   ;; Runtime-driven detached-task notification (ai.brainyard.agent.common.auto-notify).
+   ;; Observer-only. `:auto-resumed` fires when a backgrounded task completed
+   ;; while idle and the runtime injected a resume turn; `:auto-parked` fires
+   ;; when the turn was force-parked after repeated polls of a running task.
+   :agent.task/auto-resumed     {:keys #{:agent :task-ids :source}}
+   :agent.iteration/auto-parked {:keys #{:agent :task-id :polls}}
    :task/created                {:keys #{:task}}
    :task/completed              {:keys #{:task}}
    :todo/updated                {:keys #{:agent :todo-list :active-slug}}

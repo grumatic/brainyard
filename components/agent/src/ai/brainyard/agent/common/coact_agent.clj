@@ -35,6 +35,7 @@
             [ai.brainyard.agent.common.user-tools :as ut]
             [ai.brainyard.agent.common.user-hooks :as uh]
             [ai.brainyard.agent.common.user-agents :as ua]
+            [ai.brainyard.agent.common.auto-notify :as auto-notify]
             [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.common.trace :as trace]
             [ai.brainyard.agent.common.trajectory :as trajectory]
@@ -1744,6 +1745,12 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
     (trace-agent agent (or (:depth context) 0)
                  "CoAct initialized -- ThinkActCode loop starting...")
 
+    ;; Runtime detached-task notification: install the always-on hooks once
+    ;; (idempotent, runtime-only) and clear this turn's poll counters so the
+    ;; deflect/auto-park threshold is per-turn.
+    (auto-notify/ensure-global-hooks!)
+    (auto-notify/reset-poll-counts! st-memory)
+
     (when agent
       (hooks/fire! :agent.context/budgeted
                    {:agent          agent
@@ -1785,7 +1792,12 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    `:resolved`. Harvested tasks are *marked* `:metadata :harvested? true`
    (rather than removed) so they remain visible in `/tasks` and the task list
    view — the marker is what prevents double-harvest. Any leaked tmp-files
-   (from run-script-block) are cleaned up."
+   (from run-script-block) are cleaned up.
+
+   Returns the vector of surfaced task-id keywords (or nil) so the caller —
+   which holds the `agent` — can report them to auto-notify via `mark-surfaced!`
+   (a completion the live loop just folded in is dropped from the idle-resume
+   inbox, avoiding a redundant auto-ask)."
   [st-memory]
   (let [{:keys [iteration-count]} @st-memory
         mgr (task-mgr/get-default-manager)]
@@ -1873,7 +1885,10 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                         :count (count candidates)
                         :iteration iteration-count
                         :task-ids ids
-                        :from-iterations sources)))))))
+                        :from-iterations sources)
+            ;; Return the surfaced ids so the caller (which holds the agent)
+            ;; can drop them from the auto-notify idle-resume inbox.
+            (mapv :id candidates)))))))
 
 (def ^:private in-flight-roster-thought
   "Section-title text the LLM sees verbatim in the synthesized in-flight
@@ -1927,7 +1942,10 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   "Rewrite :pending entries in :iterations with completed task results so the
    LLM sees them as synchronous completions. For code-results: replaces the
    entry. For tool-results/actions: replaces the pending marker string,
-   matching by task-id extracted from the marker."
+   matching by task-id extracted from the marker.
+
+   Returns the vector of resolved task-id keywords (or nil) so the caller can
+   report them to auto-notify via `mark-surfaced!`."
   [st-memory]
   (let [mgr (task-mgr/get-default-manager)]
     (when mgr
@@ -1967,7 +1985,9 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
           (doseq [[_ t] terminal-tasks]
             (try (swap! task-mgr/!tasks update (:id t)
                         (fn [ex] (when ex (assoc-in ex [:metadata :harvested?] true))))
-                 (catch Exception _))))))))
+                 (catch Exception _)))
+          ;; Return resolved ids so the caller can mark them surfaced.
+          (mapv :id (vals terminal-tasks)))))))
 
 (defn inject-in-flight-roster!
   "Snapshot all coact-tagged code-eval tasks that are still mid-flight
@@ -2040,7 +2060,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
    call observes them. After harvest, refreshes the in-flight-roster
    record so the next LLM call has an explicit list of still-running
    tasks (anti-re-emission)."
-  [{:keys [st-memory]}]
+  [{:keys [st-memory agent]}]
   (swap! st-memory
          (fn [m]
            (-> m
@@ -2064,7 +2084,10 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                       ;; Clear any stale DSPy error from a prior iteration so
                       ;; coact-repair-action only reads THIS iteration's error.
                       :dspy-error        nil))))
-  (harvest-pending-tasks! st-memory)
+  ;; Harvest folds resolved background tasks into :iterations and returns the
+  ;; surfaced ids; reporting them to auto-notify drops them from the idle-resume
+  ;; inbox so the turn-settle flush won't re-announce an already-seen result.
+  (auto-notify/mark-surfaced! agent (harvest-pending-tasks! st-memory))
   (inject-in-flight-roster! st-memory)
   bt/success)
 
@@ -2103,7 +2126,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                 (recur (+ elapsed 500))))
             (finally
               (hooks/unregister-hook! :task/completed hook-key)))
-          (resolve-pending-entries! st-memory)
+          (auto-notify/mark-surfaced! agent (resolve-pending-entries! st-memory))
           (inject-in-flight-roster! st-memory)
           (hooks/fire! :agent.iteration/hold-complete {:agent agent})
           bt/success)))))
@@ -2599,6 +2622,9 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
   (str "[detached to background after " auto-bg-ms
        "ms — task-id=" tid " STILL RUNNING."
        " DO NOT re-emit this code; the task is in flight."
+       " Its result will be delivered to you AUTOMATICALLY when ready"
+       " (folded into a later iteration, and the session auto-resumes if the"
+       " turn has ended) — do NOT poll it repeatedly."
        (tool/detached-wait-options tid) "]"))
 
 (defn- run-task-block
@@ -3269,6 +3295,10 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
            :last-code-results entries
            :last-tool-results []
            :last-channel      :code)
+    ;; Auto-detached blocks (:status :pending): arm runtime auto-notify so the
+    ;; agent is auto-resumed on completion instead of relying on the LLM to poll
+    ;; or call task$wakeup. No-op on headless / sub-agent / disabled.
+    (auto-notify/arm-pending-entries! agent entries)
     (mulog/log ::code-eval
                :iteration (:iteration-count @st-memory)
                :blocks (count blocks)

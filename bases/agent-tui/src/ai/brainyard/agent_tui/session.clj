@@ -2820,6 +2820,26 @@
       (emit! (fmt/format-recovery-status kind attempt max))
       (when active? (start-thinking-indicator!)))))
 
+(defn auto-parked-handler
+  "Handler for :agent.iteration/auto-parked. Emits a muted line when the loop
+   force-parks the turn after repeated polls of a still-running background task
+   (the agent will be auto-resumed when the task completes)."
+  [{:keys [agent task-id]}]
+  (with-agent-render-session agent
+    (let [active? (render-active?)]
+      (when active? (stop-thinking-indicator!))
+      (emit! (ansi/muted (str "\n  " ansi/v-line " ⏸ Parked on " task-id
+                              " — will auto-resume on completion.")))
+      (when active? (start-thinking-indicator!)))))
+
+(defn auto-resumed-handler
+  "Handler for :agent.task/auto-resumed. Emits a muted line when a backgrounded
+   task completed while idle and the runtime injected a resume turn."
+  [{:keys [agent task-ids]}]
+  (with-agent-render-session agent
+    (emit! (ansi/muted (str "\n  " ansi/v-line " ↺ Auto-resumed: background task(s) "
+                            (clojure.string/join ", " task-ids) " completed.")))))
+
 (defn evaluation-started-handler
   "Handler for :agent.evaluation/started. Mirrors the legacy
    `:evaluation-status :phase :started` watch branch."

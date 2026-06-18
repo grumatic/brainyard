@@ -319,6 +319,10 @@
                         tui-session/compaction-post-handler :source :tui)
   (agent/register-hook! :agent.iteration/exhausted ::tui-iter-exhausted
                         tui-session/iteration-exhausted-handler :source :tui)
+  (agent/register-hook! :agent.iteration/auto-parked ::tui-auto-parked
+                        tui-session/auto-parked-handler :source :tui)
+  (agent/register-hook! :agent.task/auto-resumed ::tui-auto-resumed
+                        tui-session/auto-resumed-handler :source :tui)
   (agent/register-hook! :agent.recovery/retrying ::tui-recovery-retrying
                         tui-session/recovery-retrying-handler :source :tui)
   (agent/register-hook! :agent.evaluation/started ::tui-eval-started

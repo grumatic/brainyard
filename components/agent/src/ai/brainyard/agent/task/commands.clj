@@ -16,6 +16,12 @@
             [clojure.string :as str])
   (:import [java.io File]))
 
+;; Resolved lazily to avoid a load cycle (auto-notify requires task.manager, a
+;; sibling of this ns). Arms runtime auto-resume on `task$run :sync false` so a
+;; backgrounded task notifies the agent on completion without the LLM polling.
+(def ^:private !arm-auto-notify
+  (delay (requiring-resolve 'ai.brainyard.agent.common.auto-notify/arm-auto-notify!)))
+
 (defcommand task$list
   "List all background tasks with their status."
   (fn [& {:as args}]
@@ -401,7 +407,14 @@
                   nil   {:error ":job-type is required (:bash or :tool)"}
                   {:error (str "Unknown :job-type '" job-type "'. Valid: :bash :tool")})]
       (if (or (not sync?) (:error start))
-        start
+        ;; Async launch (or error): on a clean async start, arm runtime
+        ;; auto-notify so the agent is auto-resumed when this backgrounded task
+        ;; terminates (no-op headless / sub-agent / disabled).
+        (do (when (and (not sync?) (not (:error start)))
+              (when-let [tid (get-in start [:result :task-id])]
+                (try (@!arm-auto-notify proto/*current-agent* (keyword tid))
+                     (catch Throwable _ nil))))
+            start)
         (await-task (manager/get-default-manager)
                     (keyword (get-in start [:result :task-id]))
                     (or (some-> (:timeout args) parse-long) (config/get-config proto/*current-agent* :task-timeout-ms))

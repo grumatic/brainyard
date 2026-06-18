@@ -599,9 +599,9 @@
       ;; parent's id; wakeup auto-ask: system message (not a user question).
       (swap! !session session/add-message
              (cond
-               parent             (session/assistant-message input (:agent-id parent))
-               (= source :wakeup) (session/system-message input)
-               :else              (session/user-message input))))
+               parent                          (session/assistant-message input (:agent-id parent))
+               (#{:wakeup :auto-resume} source) (session/system-message input)
+               :else                           (session/user-message input))))
 
     ;; Pre-ask hook: after status :running, before process
     (hooks/fire! :agent.ask/pre {:agent agent :input input :source source})

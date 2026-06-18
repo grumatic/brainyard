@@ -127,6 +127,19 @@
    ;; Max time (ms) the iteration hold waits for pending tasks before
    ;; falling through. Only applies when :enable-iteration-hold is true.
    :hold-max-wait-ms            {:type "integer" :default 300000}
+   ;; Runtime-driven async notification for detached/background tasks
+   ;; (ai.brainyard.agent.common.auto-notify). When true (default) AND the host
+   ;; is interactive (a turn-submitter is registered — TUI/web, not headless
+   ;; `by ask`): a backgrounded task that terminates while no turn is running
+   ;; AUTO-RESUMES the agent (same effect as task$wakeup, without the LLM having
+   ;; to call it); and a still-running task that the LLM polls repeatedly is
+   ;; deflected and, after :auto-park-after-polls redundant polls, the turn is
+   ;; force-parked instead of spinning to :max-iterations.
+   :enable-auto-task-notify     {:type "boolean" :default true}
+   ;; Redundant polls (task$detail/task$wait) of a still-running armed task
+   ;; tolerated before the turn is force-parked. The first poll is always
+   ;; allowed; polls 2..N-1 are deflected with a nudge; poll N parks.
+   :auto-park-after-polls       {:type "integer" :default 2}
    ;; Default timeout (ms) for tasks launched via task$run when the caller
    ;; doesn't pass an explicit :timeout. Applies to both :bash and :tool
    ;; jobs, and to the foreground waiter's own deadline.
