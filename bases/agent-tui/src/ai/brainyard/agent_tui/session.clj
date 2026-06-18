@@ -146,6 +146,13 @@
 (defonce !task-blocks (atom {}))
 (defonce ^:private !task-ticker-thread (atom nil))
 
+;; Bridge: task-id → owning TUI session index, captured at `:task/created`
+;; time (where the creating agent's `*current-agent*` binding is live) so the
+;; per-task block can be anchored to the AGENT'S session rather than whatever
+;; session happens to be active when the :pending→:running watch fires. See
+;; `task-created-handler` / `create-task-block!`.
+(defonce ^:private !task-owner-session (atom {}))
+
 ;; Per-agent live compaction block state. Keyed by agent-id. Reset on post.
 ;; {agent-id {:trigger kw
 ;;            :before-tokens long
@@ -1701,7 +1708,12 @@
           :job-type (:job-type new-task)
           :lang (get-in new-task [:metadata :coact/lang])
           :status :running
-          :session-idx (sessions/active-idx)
+          ;; Anchor to the owning agent's session (captured at :task/created),
+          ;; NOT whatever session is active now — a task created by a background
+          ;; or sub- agent, or while the user switched tabs mid-turn, must still
+          ;; settle in its origin session. Falls back to the active session when
+          ;; the owner couldn't be resolved.
+          :session-idx (or (get @!task-owner-session task-id) (sessions/active-idx))
           :start-time (or (:started-at new-task) (System/currentTimeMillis))
           :output-lines []
           :output-count 0})
@@ -2051,6 +2063,17 @@
   (when-let [parent (get-in @(:!state agent) [:runtime :parent-agent])]
     (:id (first (filter #(identical? (:agent %) parent) (sessions/session-list))))))
 
+(defn- session-idx-for-agent-session-id
+  "Resolve an agent's stable session-id (string, e.g. \"agt-…\") to the TUI
+   session index that owns it, by matching the session map's
+   `:agent-session-id`. Returns nil when no session matches (e.g. a sub-agent
+   that shares its parent's output tab — callers fall back to the active
+   session)."
+  [agent-session-id]
+  (when agent-session-id
+    (:id (first (filter #(= (:agent-session-id %) agent-session-id)
+                        (sessions/session-list))))))
+
 (defn agent-created-handler
   "Handler for :agent.instance/created. Event: {:agent}.
 
@@ -2377,11 +2400,21 @@
 
 (defn task-created-handler
   "Handler for :task/created. Event: {:task}.
-   No-op for the live block — block creation is deferred to the :pending
-   → :running transition in `handle-tasks-change` so the user sees a single
-   block render instead of a pending-then-running flicker (the :pending
-   window is microseconds for the common create-then-start path)."
-  [_event])
+
+   Block creation itself is deferred to the :pending → :running transition in
+   `handle-tasks-change` (so the user sees a single block render instead of a
+   pending-then-running flicker). But THIS event fires synchronously on the
+   creating agent's thread, where `*current-agent*` is still bound — the only
+   point at which the task's owning session is knowable. (`handle-tasks-change`
+   is a global `!tasks` watch with no agent in scope, and the :running flip may
+   land on a task-pool thread.) Record task-id → owning TUI session index so
+   `create-task-block!` can anchor the block to the agent's session instead of
+   whatever session is active when the watch fires. Unresolved owners (e.g. a
+   shared-output sub-agent) leave no entry; `create-task-block!` falls back to
+   the active session."
+  [{:keys [task]}]
+  (when-let [sidx (session-idx-for-agent-session-id (agent/get-current-session-id))]
+    (swap! !task-owner-session assoc (:id task) sidx)))
 
 (defn task-completed-handler
   "Handler for :task/completed. Event: {:task}.
@@ -2389,6 +2422,10 @@
   [{:keys [task]}]
   (let [tid (:id task)
         final-status (or (:status task) :completed)]
+    ;; Drop the owner-session bridge entry on any terminal task — including
+    ;; fast-eval tasks that completed without ever creating a block — so the
+    ;; map doesn't grow unbounded.
+    (swap! !task-owner-session dissoc tid)
     (when (get @!task-blocks tid)
       (let [output (when-let [ol (:output-lines task)]
                      (if (instance? clojure.lang.IDeref ol) @ol ol))

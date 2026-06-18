@@ -21,17 +21,23 @@
 
 (def ^:private bid (keyword "task-block" "t1"))
 
+(def ^:private !task-owner-session @#'session/!task-owner-session)
+
 (defn- reset-state-fixture [t]
   (let [saved-sessions @sessions/!sessions
         saved-tasks    @session/!task-blocks
+        saved-owner    @!task-owner-session
         saved-sb       @layout/!scrollback
         saved-blocks   @layout/!live-blocks]
     (reset! layout/!scrollback [])
     (reset! layout/!live-blocks {})
+    (reset! !task-owner-session {})
     (try (t)
          (finally
+           (#'session/stop-task-block-ticker!)
            (reset! sessions/!sessions saved-sessions)
            (reset! session/!task-blocks saved-tasks)
+           (reset! !task-owner-session saved-owner)
            (reset! layout/!scrollback saved-sb)
            (reset! layout/!live-blocks saved-blocks)))))
 
@@ -90,3 +96,50 @@
     (#'session/update-task-block! :t1)
     (is (contains? @layout/!live-blocks bid)
         "nil origin-idx routes to layout/update-live-block! (foreground)")))
+
+;; ---------------------------------------------------------------------------
+;; Origin = the OWNING AGENT's session, not whatever session is active when the
+;; task block is created. (Bug: create-task-block! captured (sessions/active-idx),
+;; so a task spawned by a background/sub- agent — or while the user switched tabs
+;; mid-turn — anchored to the viewer's session and settled in the wrong place.)
+;; ---------------------------------------------------------------------------
+
+(deftest session-idx-for-agent-session-id-matches-by-agent-session-id
+  (testing "resolves the TUI session whose :agent-session-id matches"
+    (reset! sessions/!sessions
+            {:active-idx 1
+             :next-id    2
+             :sessions   {0 {:id 0 :agent-session-id "agt-main"}
+                          1 {:id 1 :agent-session-id "agt-other"}}})
+    (is (= 0 (#'session/session-idx-for-agent-session-id "agt-main")))
+    (is (= 1 (#'session/session-idx-for-agent-session-id "agt-other")))
+    (is (nil? (#'session/session-idx-for-agent-session-id "agt-unknown")))
+    (is (nil? (#'session/session-idx-for-agent-session-id nil)))))
+
+(deftest create-task-block-anchors-to-owner-session-not-active
+  (testing "the block's :session-idx is the captured owner, not the active session"
+    ;; Owning agent's session is idx 0 (backgrounded); the user is viewing idx 1.
+    (reset! sessions/!sessions
+            {:active-idx 1
+             :next-id    2
+             :sessions   {0 {:id 0 :agent-session-id "agt-main"
+                             :scrollback [] :live-blocks {}}
+                          1 {:id 1 :agent-session-id "agt-other"
+                             :scrollback [] :live-blocks {}}}})
+    ;; task-created-handler recorded the owner at :task/created time.
+    (reset! !task-owner-session {:t1 0})
+    (#'session/create-task-block! :t1 {:name "skill$x" :job-type :tool})
+    (is (= 0 (:session-idx (get @session/!task-blocks :t1)))
+        "block anchored to the owning agent's session (0), not the active one (1)")))
+
+(deftest create-task-block-falls-back-to-active-when-owner-unresolved
+  (testing "no owner entry → block anchors to the active session"
+    (reset! sessions/!sessions
+            {:active-idx 1
+             :next-id    2
+             :sessions   {0 {:id 0 :scrollback [] :live-blocks {}}
+                          1 {:id 1 :scrollback [] :live-blocks {}}}})
+    (reset! !task-owner-session {})
+    (#'session/create-task-block! :t1 {:name "skill$x" :job-type :tool})
+    (is (= 1 (:session-idx (get @session/!task-blocks :t1)))
+        "unresolved owner falls back to the active session (1)")))
