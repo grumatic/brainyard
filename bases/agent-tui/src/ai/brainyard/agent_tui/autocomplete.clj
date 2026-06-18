@@ -1255,12 +1255,16 @@
                           (recur))
 
             :ctrl-t   (do (dismiss-menu!)
-                          ;; Create a new session with its own agent (inherits current agent type)
+                          ;; Create a new session with its own agent (inherits current agent type).
+                          ;; Assign a unique `mainN` root-tab label (same as /session new and
+                          ;; session 0) so multiple live tabs don't all collide on the defagent
+                          ;; name (e.g. every Ctrl-T tab labelled "coact").
                           (try
                             (let [agent-id (or (tui-session/get-active-defagent-id) :coact-agent)
-                                  idx (sessions/create-session! {:agent-id agent-id})]
+                                  label    (sessions/next-root-tab-label!)
+                                  idx (sessions/create-session! {:label label :agent-id agent-id})]
                               (sessions/switch-to! idx)
-                              (tui-session/emit! (ansi/muted (str "Created session " idx " [" (name agent-id) "]"))))
+                              (tui-session/emit! (ansi/muted (str "Created session " idx " [" label "]"))))
                             (catch Exception e
                               (tui-session/emit! (ansi/failure (str "Failed to create session: " (.getMessage e))))))
                           (tui-session/update-status-bar!)

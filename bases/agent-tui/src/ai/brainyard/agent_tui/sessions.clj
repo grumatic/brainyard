@@ -30,15 +30,21 @@
 (defonce ^:private !root-tab-counter (atom 0))
 
 (defn next-root-tab-label!
-  "Return the next `mainN` label and post-increment the counter. Used at
-   every root-tab creation site (core.clj session 0, /session new in
-   commands.clj) so sub-output tabs — which inherit the root's label and
-   append `↓` — stay distinguishable even when multiple roots run in the
-   same TUI process."
+  "Return the next UNUSED `mainN` label and advance the counter past it. Used
+   at every root-tab creation site (core.clj session 0, /session new in
+   commands.clj, Ctrl-T in autocomplete.clj) so each live root tab — and the
+   sub-output tabs that inherit the root's label + `↓` — stays distinguishable.
+
+   Skips any `mainN` already held by a live session, so labels stay unique even
+   when the counter trails the live set (e.g. a resumed session carries a
+   persisted `mainN` while the process-local counter restarted at 0)."
   []
-  (let [n @!root-tab-counter]
-    (swap! !root-tab-counter inc)
-    (str "main" n)))
+  (let [in-use (into #{} (map :label) (vals (:sessions @!sessions)))]
+    (loop []
+      (let [n     @!root-tab-counter
+            label (str "main" n)]
+        (swap! !root-tab-counter inc)
+        (if (contains? in-use label) (recur) label)))))
 
 ;; Guards against race between emit-to-session! (checking active-idx + writing)
 ;; and switch-to!/close-session! (swapping scrollback + changing active-idx).

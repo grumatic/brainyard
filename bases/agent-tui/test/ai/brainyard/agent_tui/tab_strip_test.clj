@@ -32,6 +32,17 @@
     (sessions/reset-sessions!)
     (is (= "main0" (sessions/next-root-tab-label!)))))
 
+(deftest next-root-tab-label-skips-in-use
+  (testing "skips mainN labels already held by a live session, so multiple alive tabs never collide"
+    ;; Two live tabs labelled main0 and main2 (gap at main1) — e.g. a resumed
+    ;; session carrying a persisted mainN while the counter restarted at 0.
+    (sessions/create-session! {:id 0 :label "main0" :skip-agent-creation true})
+    (sessions/create-session! {:id 1 :label "main2" :skip-agent-creation true})
+    ;; counter starts at 0: main0 taken → main1; main2 taken → main3; then main4.
+    (is (= "main1" (sessions/next-root-tab-label!)))
+    (is (= "main3" (sessions/next-root-tab-label!)))
+    (is (= "main4" (sessions/next-root-tab-label!)))))
+
 (deftest format-tab-strip-render-shape
   (testing "single root tab: `main0*` (active, idle, no leading space on marker)"
     (sessions/create-session! {:id 0
