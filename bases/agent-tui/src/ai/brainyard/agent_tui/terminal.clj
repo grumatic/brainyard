@@ -448,10 +448,7 @@
                         (reset! input/!last-ctrl-c-ms now)
                         (if (< (- now last) 1000)
                           (System/exit 0)
-                          (if-let [t @input/!ask-thread]
-                            (do (when-let [ag (tui-session/get-active-agent)]
-                                  (agent/cancel-run (:!state ag)))
-                                (.interrupt ^Thread t))
+                          (when-not (input/cancel-active-ask!)
                             (tui-session/emit!
                              (ansi/muted "Press Ctrl-C again to quit, or type /quit")))))))]
       (reset! !old-sigint-handler (sun.misc.Signal/handle signal handler)))

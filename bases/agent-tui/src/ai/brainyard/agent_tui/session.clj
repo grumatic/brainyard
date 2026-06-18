@@ -2167,6 +2167,15 @@
   [agent]
   (:id (find-session-for-agent agent)))
 
+(defn root-agent-id
+  "The root agent's instance id for `agent` (the agent itself when it is a
+   root). Used to key the per-root input queue + think block so each chat tab
+   runs independently. Returns nil for a nil agent."
+  [agent]
+  (when agent
+    (try (:agent-id (first (root-of-agent agent)))
+         (catch Throwable _ nil))))
+
 (defn- find-session-for-parent
   "Find the TUI session index for the parent agent. Returns nil if not found."
   [agent]

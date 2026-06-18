@@ -17,11 +17,11 @@
 ;; Ctrl-C / Cancellation State
 ;; ============================================================================
 
-(defonce !ask-thread (atom nil))
+;; Per-SESSION ask threads: {session-idx → Thread}. Tabs run concurrently
+;; (one input queue + worker per root agent), so the currently-running ask is
+;; no longer a singleton — Ctrl-C must target the ACTIVE tab's turn.
+(defonce !ask-threads (atom {}))
 (defonce !last-ctrl-c-ms (atom 0))
-
-;; Input queue for non-blocking ask processing
-(defonce !input-queue (atom nil))
 
 ;; Input reader thread infrastructure: a daemon thread reads stdin and queues
 ;; bytes. Ctrl-C (byte 3) is handled inline — cancel agent or emit hint.
@@ -35,9 +35,25 @@
 
 (defonce !tty-stream (atom nil))
 
+(defn cancel-active-ask!
+  "Cancel the currently-running ask on the ACTIVE tab (cooperative cancel +
+   thread interrupt). With per-root concurrent queues each tab has its own ask
+   thread (keyed by session-idx in `!ask-threads`); this targets only the
+   foreground one, leaving background tabs' turns running. Returns true if a
+   turn was actually running, else false (so callers fall back to the hint)."
+  []
+  (let [ag   (tui-session/get-active-agent)
+        aidx (some-> ag tui-session/session-idx-for-agent)
+        t    (when aidx (get @!ask-threads aidx))]
+    (if t
+      (do (when ag (try (agent/cancel-run (:!state ag)) (catch Throwable _)))
+          (.interrupt ^Thread t)
+          true)
+      false)))
+
 (defn handle-ctrl-c!
   "Handle Ctrl-C press. Called from the input reader thread.
-   Single press: cancel running ask or emit hint.
+   Single press: cancel the active tab's running ask, or emit hint.
    Double press within 1s: exit."
   []
   (let [now  (System/currentTimeMillis)
@@ -46,12 +62,10 @@
     (if (< (- now last) 1000)
       ;; Double Ctrl-C within 1s → exit (shutdown hook cleans up terminal)
       (System/exit 0)
-      ;; Single Ctrl-C → cancel if agent running, else queue hint
-      (if-let [t @!ask-thread]
-        (do (when-let [ag (tui-session/get-active-agent)]
-              (agent/cancel-run (:!state ag)))
-            (.interrupt ^Thread t))
-        ;; No ask running — queue :sigint so read-line-raw! can show hint
+      ;; Single Ctrl-C → cancel active tab's ask, else queue hint
+      (when-not (cancel-active-ask!)
+        ;; No ask running on the active tab — queue :sigint so read-line-raw!
+        ;; can show the hint.
         (.put ^LinkedBlockingQueue !raw-input-queue :sigint)))))
 
 (defn handle-ctrl-backslash!

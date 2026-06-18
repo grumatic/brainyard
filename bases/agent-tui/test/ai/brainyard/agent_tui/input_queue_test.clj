@@ -20,17 +20,19 @@
    `active-ag`, capturing the opts handed to `agent/enqueue!`."
   [active-ag input opts]
   (let [captured (atom :uncalled)
-        saved-q  @core/!input-queue]
+        saved-q  @core/!input-queues]
     (try
-      ;; Non-nil queue → ensure-input-queue! short-circuits (no real queue /
-      ;; turn-submitter registration).
-      (reset! core/!input-queue :stub-queue)
+      ;; Seed the per-root queue map so ensure-input-queue-for-root! returns a
+      ;; stub instead of creating a real queue/worker.
+      (reset! core/!input-queues {:root-a :stub-queue})
       (with-redefs [sessions/get-active-session (constantly {:session-type :chat})
                     tui-session/get-active-agent (constantly active-ag)
+                    tui-session/root-agent-id (constantly :root-a)
+                    agent/register-turn-submitter! (fn [_] nil)
                     agent/enqueue! (fn [_q _input o] (reset! captured o) {})]
         (core/enqueue-input! input opts))
       @captured
-      (finally (reset! core/!input-queue saved-q)))))
+      (finally (reset! core/!input-queues saved-q)))))
 
 (deftest enqueue-tags-input-with-active-agent
   (testing "untagged keyboard input is tagged with the agent active at enqueue time"

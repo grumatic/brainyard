@@ -1638,15 +1638,26 @@
 ;; Queue Command (consolidated)
 ;; ============================================================================
 
+(defn- active-input-queue
+  "The input queue for the ACTIVE tab's root agent (or nil). Input queues are
+   per-root now (tabs run concurrently), so /queue operates on the current
+   tab's queue. requiring-resolve avoids a circular require with core."
+  []
+  (let [queues  @(requiring-resolve 'ai.brainyard.agent-tui.core/!input-queues)
+        root-id (requiring-resolve 'ai.brainyard.agent-tui.session/root-agent-id)
+        ag      (tui-session/get-active-agent)]
+    (get @queues (when ag (root-id ag)))))
+
 (defn- handle-queue-command
-  "Handle /queue with subcommands: list, cancel."
+  "Handle /queue with subcommands: list, cancel. Operates on the ACTIVE tab's
+   per-root input queue."
   [args]
   (let [parts   (when-not (str/blank? args) (str/split (str/trim args) #"\s+" 2))
         subcmd  (first parts)
         subcmd-args (or (second parts) "")]
     (case subcmd
       ("list" nil)
-      (let [!queue @(requiring-resolve 'ai.brainyard.agent-tui.core/!input-queue)]
+      (let [!queue (active-input-queue)]
         (if (and !queue (seq (:items @!queue)))
           (let [items (:items @!queue)]
             (tui-session/emit!
@@ -1662,7 +1673,7 @@
           (tui-session/emit! (ansi/muted "No items in queue."))))
 
       "cancel"
-      (let [!queue @(requiring-resolve 'ai.brainyard.agent-tui.core/!input-queue)]
+      (let [!queue (active-input-queue)]
         (if-not !queue
           (tui-session/emit! (ansi/muted "No queue active."))
           (if (or (str/blank? subcmd-args) (= subcmd-args "all"))

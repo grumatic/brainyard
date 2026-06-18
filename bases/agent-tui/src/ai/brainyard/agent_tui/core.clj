@@ -59,7 +59,16 @@
 ;; Queue State
 ;; ============================================================================
 
-(defonce !input-queue (atom nil))
+;; Per-ROOT-agent input queues: {root-aid → queue}. Each root gets its own
+;; queue + worker (queue/create-queue starts an independent worker future) so
+;; chat tabs run CONCURRENTLY. Rendering is already session-scoped (per-root
+;; think block, session-aware emit, owner-anchored task/iter blocks), so a
+;; background tab's turn buffers into its own session. The per-tab pending
+;; count is each queue's own queue-length.
+(defonce !input-queues (atom {}))
+;; The task$wakeup turn-submitter is global (one registration) and routes via
+;; enqueue-input!; this guards against re-registering per queue.
+(defonce ^:private !turn-submitter-registered? (atom false))
 (defonce !session-store (agent/create-session-store))
 
 ;; ============================================================================
@@ -419,7 +428,9 @@
     ;; user switches to it. Keyed per root agent, so concurrent tabs don't
     ;; collide.
     (tui-session/start-thinking-indicator! ag)
-    (reset! input/!ask-thread (Thread/currentThread))
+    ;; Register this turn's thread under its session so Ctrl-C on THIS tab
+    ;; cancels it (tabs run concurrently — multiple asks in flight at once).
+    (swap! input/!ask-threads assoc origin-sidx (Thread/currentThread))
     (try
       (let [result        (agent/ask ag input opts)
             _             (Thread/interrupted)
@@ -459,7 +470,7 @@
             :emit    (do (tui-session/emit! (ansi/failure (str "Error: " (.getMessage e))) origin-sidx)
                          nil))))
       (finally
-        (reset! input/!ask-thread nil)))))
+        (swap! input/!ask-threads dissoc origin-sidx)))))
 
 (defn- tui-queue-process-fn
   "Process function for the TUI input queue. Runs agent/ask with full TUI lifecycle.
@@ -533,62 +544,82 @@
          (mapcat #(wrap-to-width % avail))
          (str/join "\n  "))))
 
+(defn- session-idx-for-root-aid
+  "The chat session index whose root agent instance id is `root-aid`, or nil."
+  [root-aid]
+  (when root-aid
+    (:id (first (filter #(= root-aid (:agent-id %)) (sessions/session-list))))))
+
 (defn- tui-queue-notify-fn
-  "Notification function for TUI input queue state changes."
-  [event item queue-info]
-  (let [queue-len (:queue-length queue-info)]
+  "Notification for ONE root's input queue (`root-aid` is curried in at queue
+   creation). Tabs run concurrently, so each event must land on the queue's own
+   tab: the pending count is stored on that session (the status bar reads the
+   ACTIVE session's `:queue-count`), and the :idle/:running status transition is
+   applied ONLY when that tab is foreground — a background tab finishing must
+   not flip the active tab to idle."
+  [root-aid event item queue-info]
+  (let [queue-len (:queue-length queue-info)
+        sidx      (or (some-> (:agent (:opts item)) tui-session/session-idx-for-agent)
+                      (session-idx-for-root-aid root-aid))
+        active?   (and sidx (= sidx (sessions/active-idx)))
+        set-count! (fn [n] (when sidx (sessions/update-session! sidx assoc :queue-count n)))
+        ;; :idle only when the finishing turn is on the active tab; otherwise
+        ;; just re-render (active tab's own status/count unchanged).
+        idle-or-redraw (fn [] (if active?
+                                (tui-session/update-status-bar! :idle)
+                                (tui-session/update-status-bar!)))]
     (case event
       :enqueued
-      (do (swap! tui-session/!tui-state assoc :queue-count queue-len)
-          (tui-session/update-status-bar!))
+      (do (set-count! queue-len) (tui-session/update-status-bar!))
 
       :processing
       (let [echo      (str "\n" (ansi/user-text (format-user-input-display (:input item))))
-            target-ag (:agent (:opts item))
-            sidx      (some-> target-ag tui-session/session-idx-for-agent)]
-        ;; Route the input echo to the right session: a targeted resume
-        ;; (task$wakeup, :agent in opts) echoes into the parked agent's session
-        ;; — not the active view. Targeted-but-session-gone → skip echo (the
-        ;; worker skips the turn too). Normal input → active session.
+            target-ag (:agent (:opts item))]
+        ;; Route the input echo to the queue's session (targeted resume or the
+        ;; tab the input was typed in) rather than whatever's on screen.
         (cond
           sidx      (tui-session/emit! echo sidx)
           target-ag nil
           :else     (tui-session/emit! echo))
-        (swap! tui-session/!tui-state assoc :queue-count queue-len)
+        (set-count! queue-len)
         (tui-session/update-status-bar!))
 
-      :completed
-      (do (swap! tui-session/!tui-state assoc :queue-count queue-len)
-          (tui-session/update-status-bar! :idle))
-
-      :error
-      (do (swap! tui-session/!tui-state assoc :queue-count queue-len)
-          (tui-session/update-status-bar! :idle))
-
-      :cancelled
-      (do (swap! tui-session/!tui-state assoc :queue-count queue-len)
-          (tui-session/update-status-bar!))
-
-      :queue-empty
-      (do (swap! tui-session/!tui-state assoc :queue-count 0)
-          (tui-session/update-status-bar! :idle))
+      :completed  (do (set-count! queue-len) (idle-or-redraw))
+      :error      (do (set-count! queue-len) (idle-or-redraw))
+      :cancelled  (do (set-count! queue-len) (tui-session/update-status-bar!))
+      :queue-empty (do (set-count! 0) (idle-or-redraw))
 
       nil)))
 
 (declare enqueue-input!)
 
-(defn- ensure-input-queue!
-  "Ensure the TUI input queue exists, creating it lazily. On first creation,
-   register a host turn-submitter so task$wakeup resumes flow through THIS
-   queue (serialized with user turns) rather than racing on a separate
-   executor."
-  []
-  (when-not @!input-queue
-    (reset! !input-queue
-            (agent/create-queue tui-queue-process-fn tui-queue-notify-fn))
+(defn- ensure-input-queue-for-root!
+  "Return (lazily creating) the input queue for root agent `root-aid`. Each
+   root gets its own queue + worker so tabs run concurrently. The task$wakeup
+   turn-submitter is registered once, globally, and routes via enqueue-input!
+   (which dispatches to the right root's queue)."
+  [root-aid]
+  (when (compare-and-set! !turn-submitter-registered? false true)
     (agent/register-turn-submitter!
      (fn [agent input opts] (enqueue-input! input (assoc opts :agent agent)))))
-  @!input-queue)
+  (or (get @!input-queues root-aid)
+      (-> (swap! !input-queues
+                 (fn [m] (if (contains? m root-aid)
+                           m
+                           (assoc m root-aid
+                                  (agent/create-queue
+                                   tui-queue-process-fn
+                                   (fn [event item info]
+                                     (tui-queue-notify-fn root-aid event item info)))))))
+          (get root-aid))))
+
+(defn stop-input-queue-for-root!
+  "Stop + drop root `root-aid`'s input queue (called when its chat session
+   closes). Idempotent."
+  [root-aid]
+  (when-let [!queue (get @!input-queues root-aid)]
+    (try (agent/stop-queue! !queue) (catch Exception _))
+    (swap! !input-queues dissoc root-aid)))
 
 (defn enqueue-input!
   "Enqueue an input for processing. User text is displayed by :processing event.
@@ -600,17 +631,17 @@
    (if (= :output (:session-type (sessions/get-active-session)))
      (tui-session/emit!
       (ansi/warning "This is an output-only session. Use /session <N> to switch to a chat session, or /session close to close this one."))
-     (let [ag (tui-session/get-active-agent)]
+     ;; Resolve the owning agent: an explicit :agent (task$wakeup resume of a
+     ;; possibly-background agent) wins; otherwise the active tab's agent. Tag
+     ;; it into opts so the turn runs against the tab it was typed in even after
+     ;; a tab switch, and ROUTE it to that agent's root queue so tabs run
+     ;; concurrently.
+     (let [ag (or (:agent opts) (tui-session/get-active-agent))]
        (when-not ag
          (throw (ex-info "No TUI agent running. Call (start! :agent-id) first." {})))
-       ;; Tag the input with the agent active AT ENQUEUE time so it's processed
-       ;; against the tab it was typed in — the single global queue is serial,
-       ;; and resolving the agent at PROCESS time would mis-run it against
-       ;; whatever tab the user has since switched to. `merge` preserves an
-       ;; explicit `:agent` (e.g. a task$wakeup resume targeting a background
-       ;; agent), which must NOT be overridden by the active agent.
-       (let [!queue (ensure-input-queue!)
-             result (agent/enqueue! !queue input (merge {:agent ag} opts))]
+       (let [root-aid (tui-session/root-agent-id ag)
+             !queue   (ensure-input-queue-for-root! root-aid)
+             result   (agent/enqueue! !queue input (merge {:agent ag} opts))]
          (when (:error result)
            (tui-session/emit! (ansi/warning "Input queue is full (max 10). Please wait."))))))))
 
@@ -633,7 +664,7 @@
    on the right tab regardless of which one is on screen."
   [ag question]
   (let [p      (promise)
-        !queue (ensure-input-queue!)
+        !queue (ensure-input-queue-for-root! (tui-session/root-agent-id ag))
         result (agent/enqueue! !queue question {:agent ag :source :side-ask :reply p})]
     (when (:error result)
       (deliver p {:error "input queue is full (max 10)"}))
@@ -1147,10 +1178,11 @@
   (try (agent/unregister-source! :tui) (catch Exception _))
   ;; Tear down the persist bridge (unregisters the :persist hook source).
   (try (persist-bridge/stop!) (catch Exception _))
-  ;; Stop input queue
-  (when-let [!queue @!input-queue]
-    (agent/stop-queue! !queue)
-    (reset! !input-queue nil))
+  ;; Stop every per-root input queue
+  (doseq [[_ !queue] @!input-queues]
+    (try (agent/stop-queue! !queue) (catch Exception _)))
+  (reset! !input-queues {})
+  (reset! !turn-submitter-registered? false)
   ;; Shut down the task manager: cancel every running task, which drives each
   ;; detached task's :on-cancel and destroys its subprocess tree. The pool's
   ;; worker threads are daemon, so the JVM *exits* without waiting — but a

@@ -313,6 +313,12 @@
           (try (.close ag) (catch Exception _)))
         (doseq [^java.io.Closeable ag (:agent-instances session)]
           (try (.close ag) (catch Exception _))))
+      ;; Tear down this root's per-root input queue (chat sessions only).
+      ;; requiring-resolve avoids a circular require with core / session.
+      (when (not= :output (:session-type session))
+        (when-let [root-id (requiring-resolve 'ai.brainyard.agent-tui.session/root-agent-id)]
+          (when-let [stop-q (requiring-resolve 'ai.brainyard.agent-tui.core/stop-input-queue-for-root!)]
+            (try (stop-q (root-id (:agent session))) (catch Throwable _)))))
       ;; Remove watches
       (doseq [{:keys [atom key]} (:watches session)]
         (when atom (remove-watch atom key)))
