@@ -724,12 +724,21 @@
     (< ms 3600000)           (format "%.1fm" (/ ms 60000.0))
     :else                    (format "%.1fh" (/ ms 3600000.0))))
 
-(defn- render-sub-agent-line
-  "Build one line for a sub-agent inside the subagents block.
-   Format: `{indent}{marker} {agent-id}  [{type}]  {status}  Iter N/M  ({tok})  {elapsed}`
-   Children are indented under their parent with `↳ ` per depth level."
+(defn- render-sub-agent-lines
+  "Build the line(s) for a sub-agent inside the subagents block.
+
+   Summary line:
+     `{indent}{marker} {agent-id}  [{type}]  {status}  Iter N/M  ({tok})  {elapsed}`
+   Children are indented under their parent with `↳ ` per depth level.
+
+   While `:running`, up to two muted activity lines follow (recent tool usage
+   and recent code-blocks evaluated), plus a muted totals footer
+   `(+N tools used, +M code-blocks used)`. Finished sub-agents (:done/:error)
+   and not-yet-started ones (:created) collapse to just the summary line.
+   Returns a vector of ANSI strings."
   [{:keys [agent-id defagent-id status start-time end-time
-           st-mem-atom iter-rollup depth]}
+           st-mem-atom iter-rollup depth
+           recent-tools recent-code tools-used code-blocks-used]}
    spinner-char]
   (let [indent (apply str (repeat (or depth 0) "  "))
         prefix (if (pos? (or depth 0)) (str indent "↳ ") indent)
@@ -764,17 +773,52 @@
                      :running (ansi/style "running" ansi/bright-cyan)
                      :done    (ansi/iter-marker-success "done")
                      :error   (ansi/iter-marker-failure "error")
-                     (ansi/muted (str (or status "?"))))]
-    (str prefix
-         marker " "
-         ;; Display the full agent-id (namespace/name), dropping the
-         ;; leading colon. Matches the legacy agent-block label.
-         (ansi/header (subs (str agent-id) 1))
-         (when type-tag (str "  " type-tag))
-         "  " status-str
-         (when iter-text (str "  " (ansi/muted iter-text)))
-         (when tokens   (str "  " (ansi/muted tokens)))
-         (when elapsed  (str "  " (ansi/muted elapsed))))))
+                     (ansi/muted (str (or status "?"))))
+        summary (str prefix
+                     marker " "
+                     ;; Display the full agent-id (namespace/name), dropping the
+                     ;; leading colon. Matches the legacy agent-block label.
+                     (ansi/header (subs (str agent-id) 1))
+                     (when type-tag (str "  " type-tag))
+                     "  " status-str
+                     (when iter-text (str "  " (ansi/muted iter-text)))
+                     (when tokens   (str "  " (ansi/muted tokens)))
+                     (when elapsed  (str "  " (ansi/muted elapsed))))]
+    (if (not= status :running)
+      ;; Collapsed: created / done / error show only the summary line.
+      [summary]
+      ;; Running: append recent-activity lines + a muted totals footer.
+      (let [cols       (or (:cols @layout/!layout) 80)
+            child-ind  (str indent "  ")
+            max-text   (max 8 (- cols (count child-ind) 4))
+            trunc      (fn [s] (let [s (str s)]
+                                 (if (> (count s) max-text)
+                                   (str (subs s 0 (max 1 (- max-text 1))) "…")
+                                   s)))
+            act-items  (cond-> []
+                         (seq recent-tools)
+                         (conj (str "tools: "
+                                    (str/join " · " (take-last 3 recent-tools))))
+                         (seq recent-code)
+                         (conj (str "code-blocks: "
+                                    (str/join " · "
+                                              (map #(str (:lang %) " " (:lines %) " lines")
+                                                   (take-last 3 recent-code))))))
+            n          (count act-items)
+            tree-lines (map-indexed
+                        (fn [i text]
+                          (let [branch (if (= i (dec n)) "└ " "├ ")]
+                            (str child-ind (ansi/muted (str branch (trunc text))))))
+                        act-items)
+            foot-parts (cond-> []
+                         (pos? (or tools-used 0))
+                         (conj (str "+" tools-used " tools used"))
+                         (pos? (or code-blocks-used 0))
+                         (conj (str "+" code-blocks-used " code-blocks used")))
+            footer     (when (seq foot-parts)
+                         (str child-ind
+                              (ansi/muted (str "(" (str/join ", " foot-parts) ")"))))]
+        (into [summary] (filterv some? (concat tree-lines [footer])))))))
 
 (defn- subagents-rendering-order
   "Sort sub-agents for display: chronological within each parent, with
@@ -798,31 +842,16 @@
 (defn- render-subagents-block-lines
   "Build the ANSI lines for the consolidated subagents block.
 
-   Header (live mode) is a centered separator: `── subagents (N running, M done) ──`.
-   Body is one line per sub-agent (depth-indented with ↳).
-
-   When `final?` is true the running/done counter header is omitted — frozen
-   scrollback only needs the per-sub-agent summary lines (each carries its
-   own static ✓/✗ marker and final iter/token/elapsed numbers), and the
-   running counter is meaningless once the block is no longer animating."
+   No separator header — the block is just the per-sub-agent lines: one summary
+   line each (depth-indented with ↳), plus, for running sub-agents, recent
+   tool/code-block activity lines and a totals footer (see
+   `render-sub-agent-lines`). `final?` is retained for call-site compatibility;
+   it no longer changes the output (finished sub-agents already collapse to
+   their summary line, so live and frozen renders converge)."
   ([state spinner-char] (render-subagents-block-lines state spinner-char false))
-  ([{:keys [sub-agents]} spinner-char final?]
-   (let [ordered (subagents-rendering-order sub-agents)
-         body    (mapv #(render-sub-agent-line % spinner-char) ordered)]
-     (if final?
-       (vec body)
-       (let [cols    (or (:cols @layout/!layout) 80)
-             agents  (vals sub-agents)
-             n-run   (count (filter #(= :running (:status %)) agents))
-             n-done  (count (filter #(#{:done :error} (:status %)) agents))
-             label   (str " subagents (" n-run " running, " n-done " done) ")
-             label-len (count label)
-             left-len  (max 3 (quot (- cols label-len) 2))
-             right-len (max 3 (- cols label-len left-len))
-             separator (str (ansi/style (apply str (repeat left-len ansi/h-line)) ansi/dim)
-                            (ansi/style label ansi/bold ansi/bright-magenta)
-                            (ansi/style (apply str (repeat right-len ansi/h-line)) ansi/dim))]
-         (vec (cons separator body)))))))
+  ([{:keys [sub-agents]} spinner-char _final?]
+   (let [ordered (subagents-rendering-order sub-agents)]
+     (into [] (mapcat #(render-sub-agent-lines % spinner-char) ordered)))))
 
 (defn- update-subagents-block!
   "Re-render the consolidated subagents block for the given root.
@@ -1453,6 +1482,25 @@
            merge updates)
     (update-subagents-block! root-aid)))
 
+(defn- keep-last
+  "Append `xs` (a seq) onto vector `v`, keeping at most the last `n`."
+  [v xs n]
+  (vec (take-last n (into (or v []) xs))))
+
+(defn- accumulate-sub-activity!
+  "When `agent` is a tracked sub-agent, compute activity updates via
+   `(f sub-state)` and merge them into its entry in the root's subagents block.
+   No-op for root agents or untracked sub-agents. Mirrors the iter-rollup bump
+   in `iteration-post-handler` — driven by tool-calls/post + code-eval/post."
+  [agent f]
+  (when (get-in @(:!state agent) [:runtime :parent-agent])
+    (let [[root _]  (root-of-agent agent)
+          root-aid  (:agent-id root)
+          aid       (:agent-id agent)
+          sub-state (get-in @!subagents-blocks [root-aid :sub-agents aid])]
+      (when sub-state
+        (update-sub-agent! root-aid aid (f sub-state))))))
+
 (defn- all-sub-agents-done?
   [block-state]
   (every? #(#{:done :error} (:status %))
@@ -2002,6 +2050,12 @@
                        :end-time        nil
                        :st-mem-atom     st-mem-atom
                        :iter-rollup     nil
+                       ;; Activity counters accumulated by tool-calls/post +
+                       ;; code-eval/post hooks (see accumulate-sub-activity!).
+                       :tools-used       0
+                       :recent-tools     []
+                       :code-blocks-used 0
+                       :recent-code      []
                        :parent-agent-id parent-aid
                        :depth           display-depth}))))
 
@@ -2558,11 +2612,20 @@
 
 (defn tool-calls-post-handler
   "Handler for :agent.tool-calls/post. No per-tool changes — the per-tool
-   handlers already populated :tool-batch. Just signals batch end."
-  [{:keys [agent]}]
+   handlers already populated :tool-batch. Just signals batch end.
+
+   For sub-agents, also accumulates this batch's tool usage into the
+   consolidated subagents block (count + recent names)."
+  [{:keys [agent calls]}]
   (when-let [[aid rid iter] (iter-current-key agent)]
     (when (get @!iteration-blocks [aid rid iter])
-      (update-iteration-block! aid rid iter))))
+      (update-iteration-block! aid rid iter)))
+  (when (seq calls)
+    (let [names (keep #(some-> (:tool-name %) str) calls)]
+      (accumulate-sub-activity!
+       agent
+       (fn [s] {:tools-used   (+ (:tools-used s 0) (count calls))
+                :recent-tools (keep-last (:recent-tools s) names 3)})))))
 
 (defn- iter-tool-suppressed?
   "RLM caveat: when an iteration is in :code stage, tool-use events come
@@ -2678,7 +2741,7 @@
    re-renders. Parallel events arrive in any order — :parallel-batch-index
    targets the right slot. Sequential events update the most-recently
    appended entry (the matching :pre)."
-  [{:keys [agent code result output error duration-ms
+  [{:keys [agent code result output error duration-ms lang
            parallel? parallel-batch-index]}]
   (when-let [[aid rid iter] (iter-current-key agent)]
     (when (get @!iteration-blocks [aid rid iter])
@@ -2691,7 +2754,17 @@
                                         :output output
                                         :error error
                                         :duration-ms duration-ms}))))
-      (render-eval-display! aid rid iter))))
+      (render-eval-display! aid rid iter)))
+  ;; For sub-agents, record this code-block in the consolidated subagents block
+  ;; (count + recent {lang, line-count}).
+  (when-not (str/blank? (str code))
+    (let [lang  (or lang "?")
+          lines (count (str/split-lines (str code)))]
+      (accumulate-sub-activity!
+       agent
+       (fn [s] {:code-blocks-used (inc (:code-blocks-used s 0))
+                :recent-code      (keep-last (:recent-code s)
+                                             [{:lang lang :lines lines}] 3)})))))
 
 ;; ============================================================================
 ;; Hook handlers for events that don't have a per-iteration widget surface

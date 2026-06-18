@@ -132,9 +132,11 @@
    ;; `:backend` is :sandbox or :nrepl — added in clj-nrepl-eval Phase 1
    ;; (docs/design/clj-nrepl-eval.md §4.2). Observers should branch on it
    ;; if they care which backend ran the code (e.g. audit shims).
-   :agent.code-eval/pre         {:keys #{:agent :code :backend}}
+   ;; `:lang` is the fence language (clojure/bash/python/javascript/…) — used by
+   ;; the TUI subagents block to render a per-code-block activity line.
+   :agent.code-eval/pre         {:keys #{:agent :code :backend :lang}}
    ;; Memory capture pipeline (P3 — see ai.brainyard.memory.core.capture).
-   :agent.code-eval/post        {:keys #{:agent :code :result :output :error :duration-ms :backend}}
+   :agent.code-eval/post        {:keys #{:agent :code :result :output :error :duration-ms :backend :lang}}
    ;; Cross-turn context compaction lifecycle (deterministic, no LLM).
    ;; `:trigger` ∈ #{:manual :auto}; identifies whether /compact or the
    ;; after-turn auto-compact initiated this run. Sizes are token estimates.

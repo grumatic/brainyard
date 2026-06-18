@@ -3257,9 +3257,9 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
             ;; The :parallel? + :parallel-batch-index markers let observers
             ;; (e.g. TUI render) accumulate all blocks of one partition
             ;; into a single eval-display instead of overwriting.
-            (doseq [[idx {:keys [code]}] (map-indexed vector blocks)]
+            (doseq [[idx {:keys [code lang]}] (map-indexed vector blocks)]
               (hooks/fire! :agent.code-eval/pre
-                           {:agent agent :code code :backend :sandbox
+                           {:agent agent :code code :backend :sandbox :lang lang
                             :parallel? true
                             :parallel-batch-index idx
                             :parallel-batch-total batch-total}))
@@ -3274,7 +3274,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                   :sandbox)]
                     (hooks/fire! :agent.code-eval/pre
                                  {:agent agent :code (:code block)
-                                  :backend backend})
+                                  :backend backend :lang (:lang block)})
                     (let [start-ms (System/currentTimeMillis)
                           entry    (assoc (run-single-block sandbox block dispatch-opts)
                                           :parallel? false
@@ -3288,7 +3288,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                                     :output (:output entry)
                                     :error (:error entry)
                                     :duration-ms elapsed
-                                    :backend backend})
+                                    :backend backend
+                                    :lang (:lang entry)})
                       entry)))
                 blocks))]
     (swap! st-memory assoc
@@ -3307,13 +3308,14 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
     ;; :backend is :sandbox in this branch — see the parallel :pre block.
     (when parallel?
       (let [batch-total (count entries)]
-        (doseq [[idx {:keys [code result output error duration-ms]}]
+        (doseq [[idx {:keys [code result output error duration-ms lang]}]
                 (map-indexed vector entries)]
           (hooks/fire! :agent.code-eval/post
                        {:agent agent :code code
                         :result result :output output :error error
                         :duration-ms duration-ms
                         :backend :sandbox
+                        :lang lang
                         :parallel? true
                         :parallel-batch-index idx
                         :parallel-batch-total batch-total}))))

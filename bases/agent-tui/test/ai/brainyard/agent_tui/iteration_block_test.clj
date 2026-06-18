@@ -419,9 +419,9 @@
       (finally (swap! @#'s/!subagents-blocks dissoc root-aid)))))
 
 (deftest subagents-block-renders-one-line-per-sub-agent
-  ;; The consolidated renderer produces a header separator + one body
-  ;; line per sub-agent (depth-indented under each parent). No Thinking
-  ;; snippet — that's intentionally dropped per the redesign.
+  ;; The consolidated renderer produces one summary line per sub-agent
+  ;; (depth-indented under each parent), with NO `── subagents … ──`
+  ;; separator header. No Thinking snippet — intentionally dropped.
   (let [now (System/currentTimeMillis)
         block-state
         {:block-id    :subagents/test
@@ -454,9 +454,8 @@
            :depth           1})}
         lines (#'s/render-subagents-block-lines block-state "●")
         text  (joined lines)]
-    (is (str/includes? text "subagents") "header includes the label")
-    (is (str/includes? text "1 running") "header counts running sub-agents")
-    (is (str/includes? text "1 done") "header counts done sub-agents")
+    (is (not (str/includes? text "subagents ("))
+        "no `── subagents (N running, M done) ──` separator header")
     (is (str/includes? text "research-agent/abc")
         "first sub-agent (depth 0) appears")
     (is (str/includes? text "[research-agent]")
@@ -482,14 +481,76 @@
                             :last-iteration 3 :last-result :success}
               :parent-agent-id :root
               :depth       0}
-        running-text (joined [(#'s/render-sub-agent-line
-                               (assoc base :status :running) "●")])
-        done-text    (joined [(#'s/render-sub-agent-line
-                               (assoc base :status :done :end-time
-                                      (+ (:start-time base) 5000)) "●")])]
+        running-text (joined (#'s/render-sub-agent-lines
+                              (assoc base :status :running) "●"))
+        done-text    (joined (#'s/render-sub-agent-lines
+                              (assoc base :status :done :end-time
+                                     (+ (:start-time base) 5000)) "●"))]
     (is (str/includes? running-text "running"))
     (is (str/includes? done-text "done"))
     (is (str/includes? done-text "✓") "done status uses ✓ marker")))
+
+(deftest subagents-block-shows-activity-for-running-only
+  (let [base {:agent-id    :sub/act
+              :defagent-id :coact-agent
+              :start-time  (System/currentTimeMillis)
+              :st-mem-atom (atom {:iteration-count 2 :config {:max-iterations 5}})
+              :iter-rollup {:total-iterations 2 :total-tokens 600}
+              :parent-agent-id :root
+              :depth       0
+              :tools-used       5
+              :recent-tools     ["plan$read" "grep"]
+              :code-blocks-used 2
+              :recent-code      [{:lang "clj" :lines 12} {:lang "bash" :lines 3}]}
+        running (#'s/render-sub-agent-lines (assoc base :status :running) "●")
+        done    (#'s/render-sub-agent-lines (assoc base :status :done) "●")
+        rtext   (joined running)]
+    (testing "running sub-agent shows tools, code-blocks, and a totals footer"
+      (is (str/includes? rtext "tools: plan$read · grep"))
+      (is (str/includes? rtext "code-blocks: clj 12 lines · bash 3 lines"))
+      (is (str/includes? rtext "(+5 tools used, +2 code-blocks used)"))
+      (is (>= (count running) 4) "summary + 2 activity lines + footer"))
+    (testing "finished sub-agent collapses to a single summary line"
+      (is (= 1 (count done)))
+      (is (not (str/includes? (joined done) "tools:"))))))
+
+(deftest subagent-hooks-accumulate-tools-and-code-blocks
+  ;; Drive the REAL tool-calls/post + code-eval/post handlers for a sub-agent
+  ;; and assert they accumulate into !subagents-blocks — the hook wiring that
+  ;; the render-only test above does not exercise.
+  (let [root (stub-agent {:agent-id :root/r})
+        sub  (stub-agent {:agent-id :explore-agent/s :parent root})
+        seed {:agent-id :explore-agent/s :defagent-id :explore-agent
+              :status :running :start-time (System/currentTimeMillis)
+              :tools-used 0 :recent-tools [] :code-blocks-used 0 :recent-code []
+              :parent-agent-id :root/r :depth 0}]
+    (swap! @#'s/!subagents-blocks assoc :root/r
+           {:block-id :subagents/t :session-idx 0
+            :sub-agents (sorted-map :explore-agent/s seed)})
+    (with-stub-agent sub
+      (fn []
+        ;; two tool-channel calls
+        (#'s/tool-calls-post-handler
+         {:agent sub :calls [{:tool-name "grep"} {:tool-name "read-file"}]})
+        ;; a clojure block (2 lines) then a bash block (1 line)
+        (#'s/code-eval-post-handler
+         {:agent sub :lang "clojure" :code "(+ 1 2)\n(println :x)"
+          :result "3" :output "" :error "" :duration-ms 5})
+        (#'s/code-eval-post-handler
+         {:agent sub :lang "bash" :code "echo hi"
+          :result "0" :output "hi" :error "" :duration-ms 9})))
+    (let [final (get-in @@#'s/!subagents-blocks
+                        [:root/r :sub-agents :explore-agent/s])]
+      (is (= 2 (:tools-used final)) "tool count accrues from the batch")
+      (is (= ["grep" "read-file"] (:recent-tools final)))
+      (is (= 2 (:code-blocks-used final)) "one per code-eval/post block")
+      (is (= [{:lang "clojure" :lines 2} {:lang "bash" :lines 1}]
+             (:recent-code final))
+          "lang from the event, line count from the code")
+      (let [text (joined (#'s/render-sub-agent-lines final "●"))]
+        (is (str/includes? text "tools: grep · read-file"))
+        (is (str/includes? text "code-blocks: clojure 2 lines · bash 1 lines"))
+        (is (str/includes? text "(+2 tools used, +2 code-blocks used)"))))))
 
 ;; ----------------------------------------------------------------------------
 ;; Iteration-sink protocol — recording sink replays handler call shape
