@@ -1242,17 +1242,20 @@
                                                {:option "live"
                                                 :as "Only sessions open in a running `by` process right now"
                                                 :type :with-flag :default false}
+                                               working-dir-opt
                                                json-opt]
                                  :runs        cmd-sessions-list}
                                 {:command     "show"
                                  :description "Show full detail for one session"
                                  :opts        [{:option "session-id" :short "s"
-                                                :as "Session ID" :type :string}]
+                                                :as "Session ID" :type :string}
+                                               working-dir-opt]
                                  :runs        cmd-sessions-show}
                                 {:command     "label"
                                  :description "Set or clear a session's label (no text = clear)"
                                  :opts        [{:option "session-id" :short "s"
-                                                :as "Session ID" :type :string}]
+                                                :as "Session ID" :type :string}
+                                               working-dir-opt]
                                  :runs        cmd-sessions-label}
                                 {:command     "prune"
                                  :description "Delete persisted session(s)"
@@ -1269,7 +1272,8 @@
                                                 :type :with-flag :default false}
                                                {:option "yes" :short "y"
                                                 :as "Skip the confirmation prompt for --all"
-                                                :type :with-flag :default false}]
+                                                :type :with-flag :default false}
+                                               working-dir-opt]
                                  :runs        cmd-sessions-prune}]}]})
 
 ;; ============================================================================

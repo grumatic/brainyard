@@ -30,8 +30,8 @@ a pre-existing multi-process race.
 - ✅ **§2 discovery (shipped)** — `enriched-summaries` rows now carry the full connect
   descriptor `:live?` / `:owner-pid` / `:ask-socket-path` / `:ops`; `by sessions list`
   gained `--live` and a `●live` table marker; `--json` surfaces it all; `meta.edn`
-  advertises `:ops`. (Follow-up: `sessions` subcommands don't accept `-C` yet — use
-  `BY_PROJECT_DIR`/`BY_WORKING_DIR` to target a project.)
+  advertises `:ops`. (`by sessions <list|show|label|prune>` accept `-C/--working-dir` to
+  target a specific project, same as `run`.)
 - ✅ **§4 `:op :inject` data connector (shipped)** — three sinks: `:as :artifact`
   (explicit-agent `agent/add-artifact!`, seen next turn, no forced turn — the canonical
   connector), `:as :turn` (`:await? false` fire-and-forget event trigger, else blocks
