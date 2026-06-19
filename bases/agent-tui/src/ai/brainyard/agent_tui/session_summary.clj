@@ -67,11 +67,22 @@
 
 (defn enriched-summaries
   "Every persisted session as an enriched row (meta + scanned log fields),
-   newest first by last-attached-at (then started-at)."
+   newest first by last-attached-at (then started-at). Each row carries the
+   discovery descriptor an external environment needs to find and connect to a
+   running session — `:live?` (its lockfile names a currently-running `by`
+   process), `:owner-pid` (that PID, or nil), `:ask-socket-path` (its ask.sock),
+   and `:ops` (the socket verbs it answers) — see
+   docs/design/session-channel-extensions.md §2."
   []
   (->> (persist/summarise-sessions)
        (map (fn [{:keys [session-id] :as s}]
-              (merge s (persist/scan-session session-id))))
+              (let [meta (persist/read-meta session-id)]
+                (-> s
+                    (merge (persist/scan-session session-id))
+                    (assoc :live?           (persist/session-live? session-id)
+                           :owner-pid       (persist/owner-pid session-id)
+                           :ask-socket-path (:ask-socket-path meta)
+                           :ops             (:ops meta))))))
        (sort-by (fn [s] (- 0 (long (or (:last-attached-at s) (:started-at s) 0)))))
        vec))
 
@@ -89,7 +100,7 @@
   ([rows {:keys [ansi? numbered? active]}]
    (vec
     (mapcat
-     (fn [i {:keys [session-id label model bytes event-count
+     (fn [i {:keys [session-id label model bytes event-count live?
                     last-attached-at started-at parent-id first-user-input] :as row}]
        (let [marker  (cond (= session-id active) "▸"
                            parent-id             "↳"
@@ -98,6 +109,7 @@
              head    (str (or idx "")
                           marker " "
                           (sty ansi? session-id ansi/bold ansi/bright-cyan)
+                          (when live? (str " " (sty ansi? "●live" ansi/green)))
                           "  " (agent-name row)
                           (when model (str " · " model))
                           "  " (dim ansi? (str (format-bytes bytes)

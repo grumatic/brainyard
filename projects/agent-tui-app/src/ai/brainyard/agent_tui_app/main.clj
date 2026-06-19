@@ -987,24 +987,29 @@
 
 (defn cmd-sessions-list
   "List every persisted agent session (project-scoped). `--tree` renders the
-   fork/lineage tree instead of the flat table. Shared formatting with the TUI
+   fork/lineage tree instead of the flat table; `--live` keeps only sessions
+   open in a running `by` process. Each row carries `:live?`/`:owner-pid` (see
+   docs/design/session-channel-extensions.md §2). Shared formatting with the TUI
    `/session list` via `agent-tui.session-summary`."
   [opts]
   ;; Pin the project-scoped sessions root (from cwd's project-dir) before reading.
   (install-working-dir! opts)
-  (cond
-    ;; --json wins over --tree: the flat array carries :parent-id so a consumer
-    ;; can rebuild the lineage itself. Always valid JSON ([] when empty).
-    (:json opts)
-    (print-json! (ssum/enriched-summaries))
+  (let [live-only? (:live opts)
+        rows       (cond->> (ssum/enriched-summaries)
+                     live-only? (filterv :live?))]
+    (cond
+      ;; --json wins over --tree: the flat array carries :parent-id so a consumer
+      ;; can rebuild the lineage itself. Always valid JSON ([] when empty).
+      (:json opts)
+      (print-json! rows)
 
-    (:tree opts)
-    (doseq [line (ssum/format-tree {})] (println line))
+      ;; --tree ignores --live (lineage needs the full set); honored only without --json.
+      (and (:tree opts) (not live-only?))
+      (doseq [line (ssum/format-tree {})] (println line))
 
-    :else
-    (let [rows (ssum/enriched-summaries)]
+      :else
       (if (empty? rows)
-        (println "No persisted sessions.")
+        (println (if live-only? "No live sessions." "No persisted sessions."))
         (doseq [line (ssum/format-table rows {})] (println line))))))
 
 (defn cmd-sessions-show
@@ -1233,6 +1238,9 @@
                                  :description "List all persisted sessions"
                                  :opts        [{:option "tree"
                                                 :as "Render the fork/lineage tree instead of a flat list"
+                                                :type :with-flag :default false}
+                                               {:option "live"
+                                                :as "Only sessions open in a running `by` process right now"
                                                 :type :with-flag :default false}
                                                json-opt]
                                  :runs        cmd-sessions-list}

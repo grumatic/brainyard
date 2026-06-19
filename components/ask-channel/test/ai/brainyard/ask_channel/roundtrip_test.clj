@@ -8,9 +8,21 @@
             [ai.brainyard.ask-channel.interface :as ask]
             [ai.brainyard.ask-channel.core.protocol :as proto]
             [ai.brainyard.ask-channel.core.server :as server])
-  (:import [java.io BufferedReader StringReader StringWriter]
+  (:import [java.io BufferedReader InputStreamReader OutputStreamWriter StringReader StringWriter]
+           [java.net UnixDomainSocketAddress]
+           [java.nio.channels Channels SocketChannel]
            [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]))
+
+(defn- raw-request
+  "Send one raw EDN request frame to the socket and read one response — used to
+   exercise ops the typed client (`ask-via-socket!`, always `:ask`) never sends."
+  [path msg]
+  (with-open [ch (SocketChannel/open (UnixDomainSocketAddress/of (.toPath (io/file path))))
+              w  (OutputStreamWriter. (Channels/newOutputStream ch) "UTF-8")
+              r  (BufferedReader. (InputStreamReader. (Channels/newInputStream ch) "UTF-8"))]
+    (proto/write-msg! w msg)
+    (proto/read-msg r)))
 
 (defn- tmp-sock-path
   "A socket path inside a throwaway dir. Unix socket paths are length-limited
@@ -47,18 +59,27 @@
       (testing "socket file is unlinked on stop"
         (is (not (.exists (io/file path))))))))
 
-(deftest unknown-op-rejected
-  (testing "a non-:ask op is rejected without invoking handle-fn"
-    (let [path    (tmp-sock-path)
-          called  (atom false)
-          handle  (ask/start-listener! path (fn [_] (reset! called true) {:status :ok}))]
+(deftest server-forwards-all-ops-to-handle-fn
+  (testing "the transport no longer gates :ask — handle-fn owns op dispatch (§3a)"
+    (let [path   (tmp-sock-path)
+          handle (ask/start-listener! path (fn [{:keys [op]}] {:status :ok :echoed-op op}))]
       (try
-        ;; Hand-roll a raw request with a bad op via the client's socket path.
-        (let [resp (ask/ask-via-socket! {:path path :question "x" :timeout-ms 1000})]
-          ;; ask-via-socket! always sends :op :ask, so to exercise the reject
-          ;; path we assert the happy path here and cover unknown-op at the
-          ;; server layer below.
-          (is (= :ok (:status resp))))
+        (is (= {:status :ok :echoed-op :status}     (raw-request path {:op :status})))
+        (is (= {:status :ok :echoed-op :frobnicate} (raw-request path {:op :frobnicate})))
+        (finally (ask/stop-listener! handle))))))
+
+(deftest unknown-op-is-handler-rejected
+  (testing "op-dispatch is the handler's responsibility; transport just forwards"
+    (let [path   (tmp-sock-path)
+          handle (ask/start-listener!
+                  path
+                  (fn [{:keys [op]}]
+                    (if (= :ask op)
+                      {:status :ok}
+                      {:status :error :error (str "unknown op: " op)})))]
+      (try
+        (is (= {:status :ok} (raw-request path {:op :ask})))
+        (is (= {:status :error :error "unknown op: :bogus"} (raw-request path {:op :bogus})))
         (finally (ask/stop-listener! handle))))))
 
 (deftest connect-failure-throws

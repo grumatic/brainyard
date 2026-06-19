@@ -693,33 +693,67 @@
       (deliver p {:error "input queue is full (max 10)"}))
     p))
 
+(defn- session-lm
+  "The live session's effective LM (per-agent :lm-config override, else the
+   process-global default set by setup-lm! / `/model`). nil-safe."
+  [ag]
+  (try (or (agent/get-config ag :lm-config) (clj-llm/get-default-lm))
+       (catch Throwable _ nil)))
+
+(defn- handle-ask-op
+  "Inject the question as a turn, await the reply (bounded by the lesser of the
+   client timeout and the server cap), and shape the EDN wire response."
+  [ag cap-ms {:keys [question timeout-ms]}]
+  (if (or (nil? question) (str/blank? question))
+    {:status :error :error "empty question"}
+    (let [tmo (min cap-ms (or timeout-ms cap-ms))
+          res (deref (inject-side-ask! ag question) tmo ::timeout)]
+      (cond
+        (= ::timeout res) {:status :error :error (str "timed out after " tmo "ms")}
+        (nil? res)        {:status :error :error "no answer (turn cancelled or failed)"}
+        (:error res)      {:status :error :error (:error res)}
+        :else
+        ;; Stamp the live session's provider/model/agent so a --json attach
+        ;; client can report which LM actually answered.
+        (let [lm (session-lm ag)]
+          {:status   :ok
+           :answer   (:answer res)
+           :usage    (:usage res)
+           :provider (some-> (:provider lm) name)
+           :model    (:model lm)
+           :agent    (some-> (try (agent/defagent-type ag) (catch Throwable _ nil)) name)})))))
+
+(defn- handle-status-op
+  "Non-blocking snapshot of the live session — never injects a turn. Lets an
+   external scheduler/connector decide whether to poke. See
+   docs/design/session-channel-extensions.md §3 (Mode A)."
+  [ag]
+  (let [sidx     (try (tui-session/session-idx-for-agent ag) (catch Throwable _ nil))
+        running? (boolean (and sidx (get @input/!ask-threads sidx)))
+        root-aid (try (tui-session/root-agent-id ag) (catch Throwable _ nil))
+        !queue   (when root-aid (get @!input-queues root-aid))
+        pending  (if !queue (count (:items (agent/get-queue-info !queue))) 0)
+        lm       (session-lm ag)]
+    {:status        :ok
+     :state         (if running? :running :idle)
+     :pending-turns pending
+     :session-id    (try (agent/session-id ag) (catch Throwable _ nil))
+     :agent         (some-> (try (agent/defagent-type ag) (catch Throwable _ nil)) name)
+     :provider      (some-> (:provider lm) name)
+     :model         (:model lm)
+     :pid           (.pid (java.lang.ProcessHandle/current))}))
+
 (defn- ask-handle-fn
-  "Request handler for a session's ask listener. Injects the question, awaits
-   the reply (bounded by the lesser of the client timeout and the server cap),
-   and shapes the EDN wire response."
+  "Op-dispatcher for a session's ask socket. `:ask` injects a question and blocks
+   for the answer; `:status` returns a non-blocking snapshot. Unknown ops get a
+   clear error. New verbs (`:inject`, `:cancel`, `:subscribe`) hang off here —
+   see docs/design/session-channel-extensions.md."
   [ag cap-ms]
-  (fn [{:keys [question timeout-ms]}]
-    (if (or (nil? question) (str/blank? question))
-      {:status :error :error "empty question"}
-      (let [tmo (min cap-ms (or timeout-ms cap-ms))
-            res (deref (inject-side-ask! ag question) tmo ::timeout)]
-        (cond
-          (= ::timeout res) {:status :error :error (str "timed out after " tmo "ms")}
-          (nil? res)        {:status :error :error "no answer (turn cancelled or failed)"}
-          (:error res)      {:status :error :error (:error res)}
-          :else
-          ;; Stamp the live session's provider/model/agent so a --json attach
-          ;; client can report which LM actually answered. The LM is process-
-          ;; global (set by setup-lm! / `/model`), with a per-agent :lm-config
-          ;; override falling back to it.
-          (let [lm (try (or (agent/get-config ag :lm-config) (clj-llm/get-default-lm))
-                        (catch Throwable _ nil))]
-            {:status   :ok
-             :answer   (:answer res)
-             :usage    (:usage res)
-             :provider (some-> (:provider lm) name)
-             :model    (:model lm)
-             :agent    (some-> (try (agent/defagent-type ag) (catch Throwable _ nil)) name)}))))))
+  (fn [{:keys [op] :as req}]
+    (case op
+      :ask    (handle-ask-op ag cap-ms req)
+      :status (handle-status-op ag)
+      {:status :error :error (str "unknown op: " op)})))
 
 (defn start-ask-listener!
   "Open the per-session ask socket for agent `ag` when :ask-channel-enabled?.
@@ -734,7 +768,11 @@
                 cap-ms (or (agent/get-config :ask-timeout-ms) 120000)
                 handle (ask-channel/start-listener! path (ask-handle-fn ag cap-ms))]
             (swap! !ask-listeners assoc sid handle)
-            (try (persist/save-meta! sid {:ask-socket-path path}) (catch Throwable _))
+            ;; Record the socket path + the verbs this listener answers, so a
+            ;; discovery client (`by sessions list`) can advertise capability
+            ;; without connecting. Keep in sync with `ask-handle-fn`'s dispatch.
+            (try (persist/save-meta! sid {:ask-socket-path path :ops [:ask :status]})
+                 (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
           (catch clojure.lang.ExceptionInfo e
             (if (= :live-owner (:reason (ex-data e)))

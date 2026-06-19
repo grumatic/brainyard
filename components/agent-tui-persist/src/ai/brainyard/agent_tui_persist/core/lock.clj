@@ -73,6 +73,14 @@
    (when-let [p (owner-pid session-id)]
      (and (not= p (pid)) (alive? p)))))
 
+(defn session-live?
+  "True when `session-id`'s lockfile names a currently-alive PID — i.e. some
+   `by` process owns it right now, whether or not that's this process. Read-only.
+   The basis for `by sessions list` liveness: a clean exit unlinks the lockfile
+   (→ false), a crash leaves a stale lockfile whose dead PID also reads false."
+  [session-id]
+  (boolean (some-> (owner-pid session-id) alive?)))
+
 (defn release!
   "Release a lock handle returned by `try-acquire!`."
   [{:keys [^FileLock lock ^RandomAccessFile raf ^File file]}]

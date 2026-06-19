@@ -22,7 +22,16 @@ a pre-existing multi-process race.
   (bare AF_UNIX connect probe → throws `{:reason :live-owner}`; only a stale file is
   unlinked before rebind), and `stop-listener!` unlinks only the socket it bound
   (fileKey identity), so a closing orphan can't sever a successor. The connect probe
-  needs no protocol change — `:status` (§3) is deferred to where it's actually consumed.
+  needs no protocol change.
+- ✅ **§3a op-dispatch + §3b `:op :status` (shipped)** — the transport no longer gates
+  `:ask`; `handle-fn` owns dispatch (`ask-handle-fn` `case` on `:op`). `:op :status`
+  returns a non-blocking snapshot (`:state` idle/running, `:pending-turns`,
+  `:provider`/`:model`/`:agent`/`:pid`). New verbs hang off the same dispatcher.
+- ✅ **§2 discovery (shipped)** — `enriched-summaries` rows now carry the full connect
+  descriptor `:live?` / `:owner-pid` / `:ask-socket-path` / `:ops`; `by sessions list`
+  gained `--live` and a `●live` table marker; `--json` surfaces it all; `meta.edn`
+  advertises `:ops`. (Follow-up: `sessions` subcommands don't accept `-C` yet — use
+  `BY_PROJECT_DIR`/`BY_WORKING_DIR` to target a project.)
 
 ---
 

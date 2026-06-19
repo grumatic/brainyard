@@ -177,6 +177,25 @@
         (is (= dead (persist/owner-pid "agt-stale")))
         (is (false? (persist/held-by-other-live-process? "agt-stale")))))))
 
+(deftest session-live-test
+  (let [lockfile #(io/file (persist/session-dir %) "by-host.lock")]
+    (testing "no lockfile → not live"
+      (is (false? (persist/session-live? "agt-nolive"))))
+    (testing "our own held lock → live; released (lockfile unlinked) → not live"
+      (let [h (persist/try-acquire-lock! "agt-mine")]
+        (is (true? (persist/session-live? "agt-mine")))
+        (persist/release-lock! h)
+        (is (false? (persist/session-live? "agt-mine")))))
+    (testing "another LIVE pid (1 = init/launchd) → live"
+      (spit (lockfile "agt-foreign-live") "1\n")
+      (is (true? (persist/session-live? "agt-foreign-live"))))
+    (testing "a dead pid → not live (stale lock)"
+      (let [proc (.start (ProcessBuilder. ["/usr/bin/true"]))
+            dead (.pid proc)]
+        (.waitFor proc)
+        (spit (lockfile "agt-dead") (str dead "\n"))
+        (is (false? (persist/session-live? "agt-dead")))))))
+
 (deftest eviction-test
   (testing "summarise-sessions reports each session"
     (persist/save-meta! "agt-a" {:agent-id :a})

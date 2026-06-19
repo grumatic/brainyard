@@ -72,17 +72,19 @@
 
 (defn- handle-connection!
   "Read one request frame, dispatch via `handle-fn`, write the response. All
-   errors are contained — a bad client must never take down the accept loop."
+   errors are contained — a bad client must never take down the accept loop.
+
+   `handle-fn` owns op-dispatch (`:ask`, `:status`, …) and returns the
+   unknown-op error for verbs it doesn't recognize — the transport only frames
+   requests and guarantees a response."
   [^SocketChannel ch handle-fn]
   (with-open [ch ch
               reader (BufferedReader. (InputStreamReader. (Channels/newInputStream ch) "UTF-8"))
               writer (OutputStreamWriter. (Channels/newOutputStream ch) "UTF-8")]
     (let [resp (try
-                 (let [req (proto/read-msg reader)]
-                   (cond
-                     (nil? req)                 {:status :error :error "empty request"}
-                     (not= :ask (:op req))      {:status :error :error (str "unknown op: " (:op req))}
-                     :else                      (handle-fn req)))
+                 (if-let [req (proto/read-msg reader)]
+                   (handle-fn req)
+                   {:status :error :error "empty request"})
                  (catch Throwable t
                    {:status :error :error (str "server error: " (.getMessage t))}))]
       (try (proto/write-msg! writer resp)
