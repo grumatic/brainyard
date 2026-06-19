@@ -32,6 +32,12 @@ a pre-existing multi-process race.
   gained `--live` and a `●live` table marker; `--json` surfaces it all; `meta.edn`
   advertises `:ops`. (Follow-up: `sessions` subcommands don't accept `-C` yet — use
   `BY_PROJECT_DIR`/`BY_WORKING_DIR` to target a project.)
+- ✅ **§4 `:op :inject` data connector (shipped)** — three sinks: `:as :artifact`
+  (explicit-agent `agent/add-artifact!`, seen next turn, no forced turn — the canonical
+  connector), `:as :turn` (`:await? false` fire-and-forget event trigger, else blocks
+  like `:ask`), `:as :memory` (writes `<project-config-dir>/memory/<slug>.md`). `:ops`
+  now advertises `[:ask :status :inject]`. The artifact path uses an explicit-agent API
+  because `proto/*current-agent*` is unbound on the listener thread.
 
 ---
 

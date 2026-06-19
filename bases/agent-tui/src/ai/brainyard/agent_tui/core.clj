@@ -743,16 +743,78 @@
      :model         (:model lm)
      :pid           (.pid (java.lang.ProcessHandle/current))}))
 
+(defn- inject-memory!
+  "Write external data into the project's file-based memory as
+   `<project-config-dir>/memory/<slug>.md` — the same store the LLM curates with
+   plain write-file (index.md is left to the curator). Returns the wire response."
+  [ag slug content]
+  (cond
+    (str/blank? (str slug))    {:status :error :error ":slug is required for :as :memory"}
+    (str/blank? (str content)) {:status :error :error ":content is required for :as :memory"}
+    :else
+    (try
+      (let [pcd (some-> (agent/get-config ag :dirs) agent/project-config-dir)]
+        (if (nil? pcd)
+          {:status :error :error "no project config dir (project memory unavailable)"}
+          (let [safe    (-> (str slug) str/trim str/lower-case
+                            (str/replace #"[^a-z0-9]+" "-") (str/replace #"^-+|-+$" ""))
+                mem-dir (java.io.File. ^String pcd "memory")
+                f       (java.io.File. mem-dir (str safe ".md"))]
+            (.mkdirs mem-dir)
+            (spit f content)
+            {:status :ok :injected :memory :slug safe :path (.getAbsolutePath f)})))
+      (catch Throwable e
+        {:status :error :error (str "memory write failed: " (.getMessage e))}))))
+
+(defn- handle-inject-op
+  "Data-connector verb: push external data INTO the session via one of three
+   sinks (see docs/design/session-channel-extensions.md §4).
+     :as :artifact — a live artifact, seen next turn, no forced turn (the
+                     canonical data connector); :path (file) or :content (inline).
+     :as :turn     — inject as a turn; :await? false (default) is fire-and-forget
+                     (event trigger), :await? true blocks for the answer.
+     :as :memory   — write a `<slug>.md` into project file memory."
+  [ag cap-ms {:keys [as name content path slug text await? timeout-ms pin?]}]
+  (case as
+    :artifact
+    (let [r (agent/add-artifact! ag {:path path :content content :name name :pinned pin?})]
+      (if (:error r)
+        {:status :error :error (:error r)}
+        {:status :ok :injected :artifact :id (:id r) :name (:name r)}))
+
+    :turn
+    (let [turn-text (or text content)]
+      (if (str/blank? (str turn-text))
+        {:status :error :error "empty :text for :as :turn"}
+        (let [p (inject-side-ask! ag turn-text)]
+          (if (false? await?)
+            {:status :ok :injected :turn :queued true}
+            (let [tmo (min cap-ms (or timeout-ms cap-ms))
+                  res (deref p tmo ::timeout)]
+              (cond
+                (= ::timeout res) {:status :error :error (str "timed out after " tmo "ms")}
+                (nil? res)        {:status :error :error "no answer (turn cancelled or failed)"}
+                (:error res)      {:status :error :error (:error res)}
+                :else             {:status :ok :injected :turn :answer (:answer res)}))))))
+
+    :memory
+    (inject-memory! ag slug content)
+
+    {:status :error
+     :error  (str "unknown inject target :as " (pr-str as)
+                  " (want :artifact, :turn, or :memory)")}))
+
 (defn- ask-handle-fn
   "Op-dispatcher for a session's ask socket. `:ask` injects a question and blocks
-   for the answer; `:status` returns a non-blocking snapshot. Unknown ops get a
-   clear error. New verbs (`:inject`, `:cancel`, `:subscribe`) hang off here —
-   see docs/design/session-channel-extensions.md."
+   for the answer; `:status` returns a non-blocking snapshot; `:inject` pushes
+   external data in (artifact / turn / memory). Unknown ops get a clear error.
+   See docs/design/session-channel-extensions.md."
   [ag cap-ms]
   (fn [{:keys [op] :as req}]
     (case op
       :ask    (handle-ask-op ag cap-ms req)
       :status (handle-status-op ag)
+      :inject (handle-inject-op ag cap-ms req)
       {:status :error :error (str "unknown op: " op)})))
 
 (defn start-ask-listener!
@@ -771,7 +833,7 @@
             ;; Record the socket path + the verbs this listener answers, so a
             ;; discovery client (`by sessions list`) can advertise capability
             ;; without connecting. Keep in sync with `ask-handle-fn`'s dispatch.
-            (try (persist/save-meta! sid {:ask-socket-path path :ops [:ask :status]})
+            (try (persist/save-meta! sid {:ask-socket-path path :ops [:ask :status :inject]})
                  (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
           (catch clojure.lang.ExceptionInfo e

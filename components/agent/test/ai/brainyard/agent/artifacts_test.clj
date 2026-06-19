@@ -143,6 +143,26 @@
         (is (false? (:pinned? (first (:live-artifacts @init)))))
         (is (some? (:error (art/artifact$pin :id "missing" :pinned true))))))))
 
+(deftest add-artifact-explicit-agent-test
+  (testing "add-artifact! upserts into the EXPLICIT agent (no *current-agent* binding)"
+    (let [init (atom {})
+          ag   (mock-agent init (atom {}))]
+      ;; deliberately NOT binding proto/*current-agent* — proves the off-BT-thread
+      ;; path (the ask socket's :op :inject) works via the explicit agent.
+      (let [r (art/add-artifact! ag {:content "ext data" :name "DB Orders"})]
+        (is (nil? (:error r)))
+        (is (= "note:db-orders" (:id r)))
+        (let [d (first (:live-artifacts @init))]
+          (is (= :inline (:source d)))
+          (is (= "ext data" (:content d)))))
+      (testing "dedupe by id holds on the explicit path"
+        (art/add-artifact! ag {:content "v2" :name "DB Orders"})
+        (is (= 1 (count (:live-artifacts @init))))
+        (is (= "v2" (:content (first (:live-artifacts @init))))))
+      (testing "missing source → error; nil agent → error"
+        (is (some? (:error (art/add-artifact! ag {}))))
+        (is (some? (:error (art/add-artifact! nil {:content "x"}))))))))
+
 (deftest artifact-tools-require-running-agent-test
   (testing "tools error cleanly when no agent is bound"
     (binding [proto/*current-agent* nil]

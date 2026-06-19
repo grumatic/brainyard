@@ -59,11 +59,11 @@
       (str/replace #"[^a-z0-9]+" "-")
       (str/replace #"^-+|-+$" "")))
 
-(defn- upsert!
-  "Add or replace (by :id) a descriptor in the persistent registry. Returns the
-   descriptor, or nil when no agent is running."
-  [descriptor]
-  (when-let [a (init-atom)]
+(defn- upsert-into!
+  "Add or replace (by :id) a descriptor in the registry atom `a`. Returns the
+   descriptor, or nil when `a` is nil."
+  [a descriptor]
+  (when a
     (swap! a update :live-artifacts
            (fn [arts]
              (let [arts (vec (or arts []))
@@ -73,44 +73,73 @@
                  (conj arts descriptor)))))
     descriptor))
 
+(defn- upsert!
+  "Upsert into the running agent's persistent registry (proto/*current-agent*).
+   Returns the descriptor, or nil when no agent is running."
+  [descriptor]
+  (upsert-into! (init-atom) descriptor))
+
+(defn- build-descriptor
+  "Build a live-artifact descriptor from {:path|:content :name :pinned}, or
+   return {:error …} when neither source is given / the :path file is missing.
+   Shared by the artifact$add tool and the explicit-agent `add-artifact!`."
+  [{:keys [path content name pinned]}]
+  (cond
+    (not (str/blank? (str path)))
+    (let [f (File. ^String path)]
+      (if-not (.isFile f)
+        {:error (str "file not found: " path " (use an absolute path)")}
+        (let [abs (.getCanonicalPath f)]
+          {:id      (str "file:" abs)
+           :name    (or (not-empty name) (.getName f))
+           :source  :file
+           :path    abs
+           :origin  :llm
+           :pinned? (boolean pinned)})))
+
+    (not (str/blank? (str content)))
+    (let [nm (or (not-empty name) "note")]
+      {:id      (str "note:" (slug nm))
+       :name    nm
+       :source  :inline
+       :content content
+       :origin  :llm
+       :pinned? (boolean pinned)})
+
+    :else {:error "provide :path or :content"}))
+
+(defn add-artifact!
+  "Programmatic, explicit-agent live-artifact insert — for callers OFF the BT
+   thread (e.g. the ask socket's `:op :inject :as :artifact`) where
+   `proto/*current-agent*` is unbound. Builds the same descriptor as the
+   artifact$add tool and upserts it into `agent`'s cross-turn st-memory-init, so
+   the next turn sees it in `## Live Artifacts` (a file-backed artifact reloads
+   fresh each turn — the data-connector pattern). Returns `{:id … :name …}` or
+   `{:error …}`. Never relies on the dynamic var."
+  [agent opts]
+  (let [a (some-> agent proto/get-st-memory-init)]
+    (if (nil? a)
+      {:error "agent has no cross-turn store"}
+      (let [d (build-descriptor opts)]
+        (if (:error d)
+          d
+          (do (upsert-into! a d)
+              {:id (:id d) :name (:name d)}))))))
+
 ;; ── tools ─────────────────────────────────────────────────────────────────
 
 (defcommand artifact$add
   "Pin reference material into your Live Artifacts context — a file by absolute :path (reloaded fresh each turn, e.g. a skill's SKILL.md) or inline :content. Persists across turns this session."
-  (fn [& {:keys [path content name pinned]}]
-    (cond
-      (nil? (init-atom))
+  (fn [& {:as opts}]
+    (if (nil? (init-atom))
       {:error "current agent is not running"}
-
-      (not (str/blank? path))
-      (let [f (File. ^String path)]
-        (if-not (.isFile f)
-          {:error (str "file not found: " path " (use an absolute path)")}
-          (let [abs (.getCanonicalPath f)
-                d {:id      (str "file:" abs)
-                   :name    (or (not-empty name) (.getName f))
-                   :source  :file
-                   :path    abs
-                   :origin  :llm
-                   :pinned? (boolean pinned)}]
-            (upsert! d)
-            {:result (str "Pinned file '" (.getName f) "' to Live Artifacts.")
-             :id (:id d)})))
-
-      (not (str/blank? content))
-      (let [nm (or (not-empty name) "note")
-            d  {:id      (str "note:" (slug nm))
-                :name    nm
-                :source  :inline
-                :content content
-                :origin  :llm
-                :pinned? (boolean pinned)}]
-        (upsert! d)
-        {:result (str "Pinned note '" nm "' to Live Artifacts.")
-         :id (:id d)})
-
-      :else
-      {:error "provide :path or :content"}))
+      (let [d (build-descriptor opts)]
+        (if (:error d)
+          d
+          (do (upsert! d)
+              {:result (str "Pinned " (if (= :file (:source d)) "file" "note")
+                            " '" (:name d) "' to Live Artifacts.")
+               :id (:id d)})))))
   :input-schema  [:map
                   [:path       {:optional true} [:string {:desc "Absolute path to a file to pin, e.g. a skill's SKILL.md (reloaded fresh each turn)"}]]
                   [:content    {:optional true} [:string {:desc "Inline text to pin"}]]
