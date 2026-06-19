@@ -58,6 +58,17 @@
                           :on-error :throw)
     (is (thrown? Exception (hooks/fire! :agent.instance/created {:agent :x})))))
 
+(deftest display-event-cataloged
+  (testing ":display is a known, observer-only event for the display-sink subscription"
+    (is (hooks/known-event? :display))
+    (is (not (hooks/gated-event? :display))))
+  (testing "firing :display reaches its handler with :session-id and :text"
+    (let [seen (atom nil)]
+      (hooks/register-hook! :display ::disp (fn [m] (reset! seen m)) :source ::disp-test)
+      (hooks/fire! :display {:session-id "agt-x" :text "hello"})
+      (hooks/unregister-source! ::disp-test)
+      (is (= {:session-id "agt-x" :text "hello"} @seen)))))
+
 (deftest suggestion-event-cataloged
   (testing ":agent.suggestion/next-user-prompt is a known, observer-only event"
     (is (hooks/known-event? :agent.suggestion/next-user-prompt))

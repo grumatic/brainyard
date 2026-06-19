@@ -47,9 +47,12 @@ a pre-existing multi-process race.
   teardown via `unregister-source!` on disconnect — no leak), session-scoped, payloads
   sanitized to EDN via `edn-safe` (drops the `:agent`), backpressure = a bounded queue
   that drops for a slow consumer. `:ops` now `[:ask :status :inject :cancel :subscribe]`.
-- ⬜ **§5b display sink** — file-tail first (per decision): `tail -F
-  <session>/scrollback.stream.txt` works today with no code. A socket `:subscribe
-  [:display]` would need a `:display` hook event (not yet emitted) — deferred.
+- ✅ **§5b display sink (shipped)** — two paths: file-tail (`tail -F
+  <session>/scrollback.stream.txt`, zero code) and a real-time socket sink. The latter
+  is the new `:display` hook event, fired from `persist_bridge/tee-scrollback!` (the
+  single choke point both emit paths funnel through) with `{:session-id :text}`; an
+  ask-socket `:subscribe [:display]` streams it. The subscribe session-filter now scopes
+  on `:session-id` or `:agent`. `:text` is the raw rendered chunk (may contain ANSI).
 
 ---
 

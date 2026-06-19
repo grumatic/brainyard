@@ -102,7 +102,12 @@
 (def event-catalog
   "Known hook events. `:gates?` true marks events whose handlers' decisions
    are consumed via `fire-decision!`; all other events are fire-and-forget."
-  {:agent.session/created       {:keys #{:session-id :user-id :session}}
+  {;; User-facing display output — fired once per `emit!` (the same text that is
+   ;; teed to `scrollback.stream.txt`). Carries `:session-id` (not `:agent`) so
+   ;; external display-sink subscribers can scope by session. `:text` may contain
+   ;; ANSI. See docs/design/session-channel-extensions.md §5b.
+   :display                     {:keys #{:session-id :text}}
+   :agent.session/created       {:keys #{:session-id :user-id :session}}
    :agent.session/resumed       {:keys #{:session-id :user-id :session}}
    :agent.session/closed        {:keys #{:session-id :user-id :session}}
    :agent.instance/created      {:keys #{:agent}}

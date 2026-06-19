@@ -836,7 +836,8 @@
              (agent/register-hook!
               ek src
               (fn [payload]
-                (let [ev-sid (try (some-> (:agent payload) agent/session-id) (catch Throwable _ nil))]
+                (let [ev-sid (or (:session-id payload)
+                                 (try (some-> (:agent payload) agent/session-id) (catch Throwable _ nil)))]
                   ;; session-scoped: this session's events (+ agentless process events)
                   (when (or (nil? ev-sid) (nil? sid) (= ev-sid sid))
                     (.offer q {:event ek :sid sid :payload (edn-safe (dissoc payload :agent))}))))

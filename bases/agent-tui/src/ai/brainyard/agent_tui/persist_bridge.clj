@@ -192,7 +192,13 @@
   [session-id ^String s]
   (when (and session-id (string? s) (pos? (.length s)))
     (let [terminated (if (.endsWith s "\n") s (str s "\n"))]
-      (swallow (persist/append-scrollback! session-id :stream terminated)))))
+      (swallow (persist/append-scrollback! session-id :stream terminated))
+      ;; Fire the `:display` hook so an ask-socket `:subscribe [:display]` mirrors
+      ;; what the session renders, in real time — the socket counterpart of
+      ;; tailing scrollback.stream.txt. Cheap when nobody is subscribed; never
+      ;; throws into the emit path. See docs/design/session-channel-extensions.md §5b.
+      (try (agent/fire! :display {:session-id session-id :text s})
+           (catch Throwable _ nil)))))
 
 ;; --- Lifecycle ---------------------------------------------------------------
 

@@ -200,6 +200,7 @@ event keys come from the agent runtime's hook catalog — common ones:
 | `:agent.tool-use/post` | a tool call returns |
 | `:agent.code-eval/post` | a code block finishes |
 | `:task/created` / `:task/completed` | a background task starts / ends |
+| `:display` | the session renders output (see [Display sink](#display-sink-mirroring-what-the-agent-shows)) |
 
 > An external **event trigger** is `:subscribe` (watch) plus
 > `:inject :as :turn` (react) — subscribe to a session, and when an event of
@@ -210,7 +211,21 @@ event keys come from the agent runtime's hook catalog — common ones:
 ## Display sink (mirroring what the agent shows)
 
 To mirror a session's rendered output (for a remote view, a logger, a TTS
-reader), tail its scrollback stream — it's written live, no socket needed:
+reader), you have two options.
+
+**Real-time, over the socket** — subscribe to the `:display` event. One frame is
+pushed per `emit!`, scoped to the session:
+
+```python
+subscribe(sock, [":display"])
+# {:event :display, :sid "agt-…", :payload {:session-id "agt-…", :text "…"}}
+```
+
+`:text` is the exact chunk the session rendered, so it **may contain ANSI escape
+codes** — strip them if you want plain text. (`:display` is the socket
+counterpart of the file tail below; it carries the same content.)
+
+**Zero-code, from disk** — tail the scrollback stream, written live:
 
 ```bash
 tail -F <project>/.brainyard/sessions/<session-id>/scrollback.stream.txt
