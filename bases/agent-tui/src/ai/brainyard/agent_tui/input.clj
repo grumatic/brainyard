@@ -35,21 +35,29 @@
 
 (defonce !tty-stream (atom nil))
 
-(defn cancel-active-ask!
-  "Cancel the currently-running ask on the ACTIVE tab (cooperative cancel +
-   thread interrupt). With per-root concurrent queues each tab has its own ask
-   thread (keyed by session-idx in `!ask-threads`); this targets only the
-   foreground one, leaving background tabs' turns running. Returns true if a
-   turn was actually running, else false (so callers fall back to the hint)."
-  []
-  (let [ag   (tui-session/get-active-agent)
-        aidx (some-> ag tui-session/session-idx-for-agent)
+(defn cancel-ask-for-agent!
+  "Cancel the currently-running ask for `ag`'s session (cooperative cancel +
+   thread interrupt), regardless of which tab is on screen. Targets the ask
+   thread keyed by `ag`'s session-idx in `!ask-threads`. Returns true if a turn
+   was actually running, else false. Backs both Ctrl-C (active tab) and the ask
+   socket's `:op :cancel` (a specific session)."
+  [ag]
+  (let [aidx (some-> ag tui-session/session-idx-for-agent)
         t    (when aidx (get @!ask-threads aidx))]
     (if t
       (do (when ag (try (agent/cancel-run (:!state ag)) (catch Throwable _)))
           (.interrupt ^Thread t)
           true)
       false)))
+
+(defn cancel-active-ask!
+  "Cancel the currently-running ask on the ACTIVE tab (cooperative cancel +
+   thread interrupt). With per-root concurrent queues each tab has its own ask
+   thread; this targets only the foreground one, leaving background tabs' turns
+   running. Returns true if a turn was actually running, else false (so callers
+   fall back to the hint)."
+  []
+  (cancel-ask-for-agent! (tui-session/get-active-agent)))
 
 (defn handle-ctrl-c!
   "Handle Ctrl-C press. Called from the input reader thread.

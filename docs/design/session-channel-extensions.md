@@ -35,9 +35,21 @@ a pre-existing multi-process race.
 - ✅ **§4 `:op :inject` data connector (shipped)** — three sinks: `:as :artifact`
   (explicit-agent `agent/add-artifact!`, seen next turn, no forced turn — the canonical
   connector), `:as :turn` (`:await? false` fire-and-forget event trigger, else blocks
-  like `:ask`), `:as :memory` (writes `<project-config-dir>/memory/<slug>.md`). `:ops`
-  now advertises `[:ask :status :inject]`. The artifact path uses an explicit-agent API
-  because `proto/*current-agent*` is unbound on the listener thread.
+  like `:ask`), `:as :memory` (writes `<project-config-dir>/memory/<slug>.md`). The
+  artifact path uses an explicit-agent API because `proto/*current-agent*` is unbound on
+  the listener thread.
+- ✅ **§3c `:op :cancel` (shipped)** — cancels the running turn for the socket's session
+  (`input/cancel-ask-for-agent!`, shared with Ctrl-C); returns `{:cancelled bool}`.
+- ✅ **§5a `:op :subscribe` (shipped)** — Mode B streaming. The transport gained a
+  `stream-response` path: `handle-connection!` keeps the connection open and runs the
+  handler's `(fn [emit! alive?] …)`, with a daemon watcher flipping `alive?` on client
+  EOF. `handle-subscribe-op` registers a hooks listener per requested event (bulk
+  teardown via `unregister-source!` on disconnect — no leak), session-scoped, payloads
+  sanitized to EDN via `edn-safe` (drops the `:agent`), backpressure = a bounded queue
+  that drops for a slow consumer. `:ops` now `[:ask :status :inject :cancel :subscribe]`.
+- ⬜ **§5b display sink** — file-tail first (per decision): `tail -F
+  <session>/scrollback.stream.txt` works today with no code. A socket `:subscribe
+  [:display]` would need a `:display` hook event (not yet emitted) — deferred.
 
 ---
 

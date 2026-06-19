@@ -804,17 +804,67 @@
      :error  (str "unknown inject target :as " (pr-str as)
                   " (want :artifact, :turn, or :memory)")}))
 
+(defn- edn-safe
+  "Coerce an arbitrary hook payload into EDN-roundtrippable data for the wire:
+   scalars pass through, collections recurse, and anything else (records,
+   exceptions, fns, the Agent instance) is stringified. Keeps subscription
+   frames small and `pr-str`-safe."
+  [v]
+  (cond
+    (or (nil? v) (string? v) (boolean? v) (keyword? v) (symbol? v) (number? v)) v
+    (map? v)  (persistent! (reduce-kv (fn [m k vv] (assoc! m (edn-safe k) (edn-safe vv)))
+                                      (transient {}) v))
+    (coll? v) (mapv edn-safe v)
+    :else     (str v)))
+
+(defn- handle-subscribe-op
+  "Streaming verb (Mode B): keep the connection open and push one frame per
+   matching runtime event until the client disconnects. Scoped to THIS session
+   (sub-agents inherit the session-id; process-level events with no agent are
+   included). Backpressure: a bounded queue drops events for a slow consumer
+   rather than stalling the agent. See docs/design/session-channel-extensions.md §5."
+  [ag {:keys [events]}]
+  (let [event-keys (->> events (map keyword) (filter some?) distinct vec)
+        sid        (try (agent/session-id ag) (catch Throwable _ nil))]
+    (if (empty? event-keys)
+      {:status :error :error ":events must be a non-empty vector of event keys"}
+      (ask-channel/stream-response
+       (fn [emit! alive?]
+         (let [q   (java.util.concurrent.LinkedBlockingQueue. 512)
+               src (keyword "ask-sub" (str (gensym)))]
+           (doseq [ek event-keys]
+             (agent/register-hook!
+              ek src
+              (fn [payload]
+                (let [ev-sid (try (some-> (:agent payload) agent/session-id) (catch Throwable _ nil))]
+                  ;; session-scoped: this session's events (+ agentless process events)
+                  (when (or (nil? ev-sid) (nil? sid) (= ev-sid sid))
+                    (.offer q {:event ek :sid sid :payload (edn-safe (dissoc payload :agent))}))))
+              :source src))
+           (try
+             (emit! {:status :ok :subscribed event-keys})
+             (loop []
+               (when (alive?)
+                 (when-let [frame (.poll q 1 java.util.concurrent.TimeUnit/SECONDS)]
+                   (emit! frame))
+                 (recur)))
+             (finally
+               (agent/unregister-source! src)))))))))
+
 (defn- ask-handle-fn
   "Op-dispatcher for a session's ask socket. `:ask` injects a question and blocks
    for the answer; `:status` returns a non-blocking snapshot; `:inject` pushes
-   external data in (artifact / turn / memory). Unknown ops get a clear error.
-   See docs/design/session-channel-extensions.md."
+   external data in (artifact / turn / memory); `:cancel` stops the running turn;
+   `:subscribe` streams runtime events until disconnect. Unknown ops get a clear
+   error. See docs/design/session-channel-extensions.md."
   [ag cap-ms]
   (fn [{:keys [op] :as req}]
     (case op
       :ask    (handle-ask-op ag cap-ms req)
       :status (handle-status-op ag)
-      :inject (handle-inject-op ag cap-ms req)
+      :inject    (handle-inject-op ag cap-ms req)
+      :cancel    {:status :ok :cancelled (boolean (input/cancel-ask-for-agent! ag))}
+      :subscribe (handle-subscribe-op ag req)
       {:status :error :error (str "unknown op: " op)})))
 
 (defn start-ask-listener!
@@ -833,7 +883,8 @@
             ;; Record the socket path + the verbs this listener answers, so a
             ;; discovery client (`by sessions list`) can advertise capability
             ;; without connecting. Keep in sync with `ask-handle-fn`'s dispatch.
-            (try (persist/save-meta! sid {:ask-socket-path path :ops [:ask :status :inject]})
+            (try (persist/save-meta! sid {:ask-socket-path path
+                                          :ops [:ask :status :inject :cancel :subscribe]})
                  (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
           (catch clojure.lang.ExceptionInfo e

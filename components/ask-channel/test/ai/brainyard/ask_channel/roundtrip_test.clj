@@ -68,6 +68,32 @@
         (is (= {:status :ok :echoed-op :frobnicate} (raw-request path {:op :frobnicate})))
         (finally (ask/stop-listener! handle))))))
 
+(deftest streaming-response-test
+  (testing "a stream-response keeps the connection open and pushes multiple frames"
+    (let [path    (tmp-sock-path)
+          handler (fn [{:keys [op]}]
+                    (if (= :sub op)
+                      (ask/stream-response
+                       (fn [emit! alive?]
+                         (emit! {:status :ok :subscribed [:x]})
+                         (emit! {:event :x :n 1})
+                         (emit! {:event :x :n 2})
+                         (loop [] (when (alive?) (Thread/sleep 20) (recur)))))
+                      {:status :ok :echoed op}))
+          handle  (ask/start-listener! path handler)]
+      (try
+        (with-open [ch (SocketChannel/open (UnixDomainSocketAddress/of (.toPath (io/file path))))
+                    w  (OutputStreamWriter. (Channels/newOutputStream ch) "UTF-8")
+                    r  (BufferedReader. (InputStreamReader. (Channels/newInputStream ch) "UTF-8"))]
+          (proto/write-msg! w {:op :sub})
+          (is (= {:status :ok :subscribed [:x]} (proto/read-msg r)) "ack frame first")
+          (is (= {:event :x :n 1} (proto/read-msg r)) "first event frame")
+          (is (= {:event :x :n 2} (proto/read-msg r)) "second event frame"))
+        ;; closing the client connection makes alive? flip → the stream loop exits;
+        ;; one-shot ops still work on a fresh connection afterward.
+        (is (= {:status :ok :echoed :ping} (raw-request path {:op :ping})))
+        (finally (ask/stop-listener! handle))))))
+
 (deftest unknown-op-is-handler-rejected
   (testing "op-dispatch is the handler's responsibility; transport just forwards"
     (let [path   (tmp-sock-path)

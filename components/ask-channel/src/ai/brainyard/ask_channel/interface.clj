@@ -30,6 +30,15 @@
   [handle]
   (server/stop-listener! handle))
 
+(defn stream-response
+  "Wrap a streaming handler for a `handle-fn` to return (e.g. for `:subscribe`):
+   the transport keeps the connection open and runs `stream-fn`
+   (`(fn [emit! alive?] …)`) instead of writing a single response. `emit!` writes
+   one EDN frame; `alive?` is false once the client disconnects. See
+   docs/design/session-channel-extensions.md §5."
+  [stream-fn]
+  (server/stream-response stream-fn))
+
 ;; -- Client -------------------------------------------------------------------
 
 (defn ask-via-socket!

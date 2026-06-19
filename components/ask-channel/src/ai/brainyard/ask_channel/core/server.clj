@@ -15,7 +15,7 @@
   (:require [ai.brainyard.ask-channel.core.protocol :as proto]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.java.io :as io])
-  (:import [java.io BufferedReader InputStreamReader OutputStreamWriter]
+  (:import [java.io BufferedReader InputStreamReader OutputStreamWriter Writer]
            [java.net StandardProtocolFamily UnixDomainSocketAddress]
            [java.nio.channels Channels ServerSocketChannel SocketChannel]
            [java.nio.file Files LinkOption Path]
@@ -70,13 +70,52 @@
            true)
          (catch Exception _ false))))
 
+(defn stream-response
+  "Wrap a streaming handler so the transport keeps the connection OPEN and runs
+   `stream-fn` instead of writing a single response. `stream-fn` is
+   `(fn [emit! alive?] …)`: `emit!` writes one EDN frame to the client; `alive?`
+   returns false once the client disconnects. The fn should emit an ack, loop
+   emitting frames while `(alive?)`, and tear down its event source in a finally.
+   Returned by a `handle-fn` for verbs like `:subscribe`."
+  [stream-fn]
+  {::stream stream-fn})
+
+(defn- run-stream!
+  "Drive a streaming response: provide `emit!`/`alive?` to `stream-fn` and watch
+   the read side for EOF (client disconnect) on a daemon thread. `emit!` is
+   called only from the stream-fn's own thread, so the writer has a single
+   writer and needs no locking."
+  [^BufferedReader reader ^Writer writer stream-fn]
+  (let [alive? (atom true)
+        emit!  (fn [frame] (proto/write-msg! writer frame))
+        watcher (doto (Thread. ^Runnable
+                       (fn []
+                         (try
+                           (loop []
+                             (if (nil? (.readLine reader))
+                               (reset! alive? false)   ; EOF → client gone
+                               (recur)))
+                           (catch Throwable _ (reset! alive? false))))
+                               "by-ask-sub-watcher")
+                  (.setDaemon true)
+                  (.start))]
+    (try
+      (stream-fn emit! (fn [] @alive?))
+      (catch Throwable t
+        (mulog/warn ::ask-stream-failed :error (.getMessage t)))
+      (finally
+        (reset! alive? false)
+        (.interrupt watcher)))))
+
 (defn- handle-connection!
   "Read one request frame, dispatch via `handle-fn`, write the response. All
    errors are contained — a bad client must never take down the accept loop.
 
    `handle-fn` owns op-dispatch (`:ask`, `:status`, …) and returns the
-   unknown-op error for verbs it doesn't recognize — the transport only frames
-   requests and guarantees a response."
+   unknown-op error for verbs it doesn't recognize. A handler may instead return
+   a `stream-response` (e.g. `:subscribe`), in which case the connection stays
+   open and streams frames until the client disconnects — the transport only
+   frames requests and guarantees a response."
   [^SocketChannel ch handle-fn]
   (with-open [ch ch
               reader (BufferedReader. (InputStreamReader. (Channels/newInputStream ch) "UTF-8"))
@@ -87,8 +126,10 @@
                    {:status :error :error "empty request"})
                  (catch Throwable t
                    {:status :error :error (str "server error: " (.getMessage t))}))]
-      (try (proto/write-msg! writer resp)
-           (catch Exception _ nil)))))
+      (if-let [stream-fn (and (map? resp) (::stream resp))]
+        (run-stream! reader writer stream-fn)
+        (try (proto/write-msg! writer resp)
+             (catch Exception _ nil))))))
 
 (defn- accept-loop!
   [^ServerSocketChannel server handle-fn]
