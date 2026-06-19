@@ -77,6 +77,12 @@ Design notes (proposals, deep-dives) live in `docs/design/`. The
 from an external coding agent over tmux + nREPL. The `reference/`
 subdirectory contains historical / migration notes.
 
+Integration guides: [Talking to a running session](session-channel.md)
+covers the per-session ask socket — discovering live sessions and the
+`ask` / `status` / `inject` / `cancel` / `subscribe` verbs an external
+process uses to drive or watch a session; [Web sharing](web-sharing.md)
+and [Sandboxing](sandboxing.md) cover `by --web` and `by --sandbox`.
+
 ---
 
 ## Quick start
