@@ -6,7 +6,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.java.io :as io]
             [ai.brainyard.ask-channel.interface :as ask]
-            [ai.brainyard.ask-channel.core.protocol :as proto])
+            [ai.brainyard.ask-channel.core.protocol :as proto]
+            [ai.brainyard.ask-channel.core.server :as server])
   (:import [java.io BufferedReader StringReader StringWriter]
            [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]))
@@ -65,3 +66,43 @@
     (is (thrown? Exception
                  (ask/ask-via-socket! {:path (tmp-sock-path)
                                        :question "x" :timeout-ms 1000})))))
+
+;; -- fix #1: bind-as-liveness-token (refuse to clobber a live owner) ----------
+
+(deftest live-owner-refuses-bind
+  (testing "binding over a LIVE socket is refused with {:reason :live-owner}"
+    (let [path (tmp-sock-path)
+          h1   (ask/start-listener! path (fn [req] {:status :ok :answer (:question req)}))]
+      (try
+        (let [ex (try (ask/start-listener! path (fn [_] {:status :ok}))
+                      nil
+                      (catch clojure.lang.ExceptionInfo e e))]
+          (is (some? ex) "second bind while first is live must throw")
+          (is (= :live-owner (:reason (ex-data ex)))))
+        ;; the original owner is untouched and still answers
+        (is (= "alive" (:answer (ask/ask-via-socket! {:path path :question "alive" :timeout-ms 2000}))))
+        (finally (ask/stop-listener! h1)))
+      (testing "after the owner stops, the path is free for a new owner"
+        (let [h2 (ask/start-listener! path (fn [req] {:status :ok :answer (:question req)}))]
+          (try
+            (is (= "fresh" (:answer (ask/ask-via-socket! {:path path :question "fresh" :timeout-ms 2000}))))
+            (finally (ask/stop-listener! h2))))))))
+
+(deftest stale-socket-file-does-not-block-bind
+  (testing "a leftover (non-live) file at the path is replaced, not refused"
+    (let [path (tmp-sock-path)]
+      (spit (io/file path) "stale")               ; a file with nobody listening
+      (is (.exists (io/file path)))
+      (let [h (ask/start-listener! path (fn [req] {:status :ok :answer (:question req)}))]
+        (try
+          (is (= "ok" (:answer (ask/ask-via-socket! {:path path :question "ok" :timeout-ms 2000}))))
+          (finally (ask/stop-listener! h)))))))
+
+;; -- fix #2: stop-by-identity (don't delete a successor's socket) -------------
+
+(deftest should-unlink-logic
+  (testing "unlink only the file we bound — never a successor's, never a gone file"
+    (is (true?  (#'server/should-unlink? :k :k))   "same identity → ours, unlink")
+    (is (false? (#'server/should-unlink? :k :other)) "different identity → successor's, keep")
+    (is (false? (#'server/should-unlink? :k nil))  "file already gone → nothing to unlink")
+    (is (true?  (#'server/should-unlink? nil :k))  "no fingerprint captured → legacy cleanup")))

@@ -18,8 +18,11 @@ a pre-existing multi-process race.
   session another live `by` process owns (read-only PID-checked probe; a stale lock from
   a crashed process does not block). Lock is released on tab-close, `stop!`, and the JVM
   shutdown hook.
-- ⬜ **§1 fixes 1 & 2 (open)** — `ask.sock`-bind-as-liveness-token and stop-by-identity
-  remain belt-and-suspenders hardening for the narrow pre-flight↔bind race.
+- ✅ **§1 fixes 1 & 2 (shipped)** — `start-listener!` refuses to bind over a live owner
+  (bare AF_UNIX connect probe → throws `{:reason :live-owner}`; only a stale file is
+  unlinked before rebind), and `stop-listener!` unlinks only the socket it bound
+  (fileKey identity), so a closing orphan can't sever a successor. The connect probe
+  needs no protocol change — `:status` (§3) is deferred to where it's actually consumed.
 
 ---
 
@@ -72,14 +75,17 @@ Many external envs may subscribe and read; only the owner mutates.
 
 ### 1.3 Fixes (cheapest first — all reuse existing infra)
 
-1. **Make `ask.sock` bind the liveness token (no new infra).** Replace the
-   unconditional `delete-quietly!` with: try to `connect` to an existing socket and send
-   `{:op :status}`; if a live owner answers, **refuse to open as owner** and offer
-   attach-client / fork-session instead. Only unlink when the connect fails (genuinely
-   stale). The socket *becomes* the advisory lock.
-2. **Stop-by-identity.** `stop-listener!` must unlink only the socket it actually bound
-   (guard with a "did I bind this" flag / inode compare), so an orphan's shutdown can
-   never delete a successor's socket.
+1. **Make `ask.sock` bind the liveness token.** ✅ *Implemented.* `start-listener!`
+   replaces the unconditional `delete-quietly!` with a `live-owner?` probe — a bare
+   AF_UNIX **connect** (a live listener accepts; a crashed process's leftover file is
+   refused). A live owner → throw `{:reason :live-owner}` (never clobber); only a stale
+   file is unlinked before rebind. `start-ask-listener!` catches the refusal and logs
+   `::ask-socket-owned-by-live-process` (session opens without an attach socket). The
+   connect probe needs no `:op :status` verb — that's deferred to §3 where it's consumed.
+2. **Stop-by-identity.** ✅ *Implemented.* The handle records the socket's `fileKey`
+   (device+inode) at bind; `stop-listener!` unlinks only when the file still at the path
+   has that identity (`should-unlink?`), so a closing orphan can't delete a successor's
+   rebound socket. (Inode-reuse caveat documented in `file-identity`.)
 3. **Wire the existing lock.** ✅ *Implemented.* `create-tui-agent!` acquires the lock
    (`agent-tui core/acquire-session-lock!` → `persist/try-acquire-lock!`), registers the
    handle in `!session-locks`, and stamps `:pid` into `meta.edn`. `run-tui!`'s resume
@@ -87,9 +93,10 @@ Many external envs may subscribe and read; only the owner mutates.
    Release is wired into the before-close hook, `stop!`, and the JVM shutdown hook.
    Tests: `agent-tui-persist persist_test/owner-pid-and-liveness-test`.
 
-Land **fix 1 or 3 before** any §3–§5 surface. Fix 3 (authoritative refusal) is done;
-fixes 2 (stop-by-identity) and 1 (bind-as-token) remain as hardening for the narrow
-pre-flight↔bind race.
+All three fixes are now implemented: fix 3 (PID-lock resume refusal) is the front-line
+guard; fixes 1 (bind-as-token) and 2 (stop-by-identity) close the residual
+pre-flight↔bind race at the socket layer. The single-owner invariant the §3–§5 surfaces
+rely on now holds.
 
 ---
 

@@ -736,6 +736,15 @@
             (swap! !ask-listeners assoc sid handle)
             (try (persist/save-meta! sid {:ask-socket-path path}) (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
+          (catch clojure.lang.ExceptionInfo e
+            (if (= :live-owner (:reason (ex-data e)))
+              ;; Another live process already owns this session's socket — never
+              ;; clobber it. The resume pre-flight normally refuses earlier; this
+              ;; is the deep guard for the pre-flight↔bind race. Session still
+              ;; opens, just without an attach socket.
+              (mulog/warn ::ask-socket-owned-by-live-process :session-id sid
+                          :path (:path (ex-data e)))
+              (mulog/warn ::ask-listener-bootstrap-failed :session-id sid :error (.getMessage e))))
           (catch Throwable e
             (mulog/warn ::ask-listener-bootstrap-failed :session-id sid :error (.getMessage e))))))))
 
