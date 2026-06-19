@@ -306,6 +306,18 @@
           :else
           [nil false])
 
+        ;; Refuse to resume a session already owned by another LIVE `by` process.
+        ;; Co-ownership silently corrupts the session's snapshots and clobbers its
+        ;; ask.sock (last-opener-wins). Read-only PID-checked probe — a stale lock
+        ;; from a crashed process does not block. See
+        ;; docs/design/session-channel-extensions.md §1.
+        _ (when (and resume? session-id
+                     (persist/held-by-other-live-process? session-id))
+            (binding [*out* *err*]
+              (println (str "Error: session '" session-id "' is already open in another "
+                            "running `by` process (pid " (persist/owner-pid session-id) ").")))
+            (System/exit 1))
+
         ;; Decide Mode A / B / C before booting the renderer. On Mode C the
         ;; user explicitly asked for tmux integration (`--with-tmux`) and we
         ;; can't deliver it — print guidance and exit 1 so CI scripts get a

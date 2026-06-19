@@ -86,6 +86,8 @@
 
 (def try-acquire-lock! lock/try-acquire!)
 (def release-lock!     lock/release!)
+(def owner-pid         lock/owner-pid)
+(def held-by-other-live-process? lock/held-by-other-live-process?)
 
 (defmacro with-session-lock
   "Run `body` while holding the per-session lock.  Throws ex-info on contention."

@@ -152,6 +152,31 @@
         (is (nil? h2)))
       (persist/release-lock! h1))))
 
+(deftest owner-pid-and-liveness-test
+  (let [self (.pid (java.lang.ProcessHandle/current))
+        lockfile #(io/file (persist/session-dir %) "by-host.lock")]
+    (testing "no lockfile → owner-pid nil, not held by anyone"
+      (is (nil? (persist/owner-pid "agt-nolock")))
+      (is (false? (persist/held-by-other-live-process? "agt-nolock"))))
+    (testing "this process's own lock → owner-pid is self, not 'other'"
+      (let [h (persist/try-acquire-lock! "agt-self")]
+        (is (= self (persist/owner-pid "agt-self")))
+        ;; self-ownership must never refuse — same PID is not an 'other' process.
+        (is (false? (persist/held-by-other-live-process? "agt-self")))
+        (persist/release-lock! h)))
+    (testing "a lockfile naming another LIVE pid (1 = init/launchd) → held"
+      (spit (lockfile "agt-foreign") "1\n")
+      (is (= 1 (persist/owner-pid "agt-foreign")))
+      (is (true? (persist/held-by-other-live-process? "agt-foreign"))))
+    (testing "a lockfile naming a dead pid → stale, not held (read-only probe)"
+      ;; A reaped child's pid is guaranteed dead. Spawn `true`, wait, reuse its pid.
+      (let [proc (.start (ProcessBuilder. ["/usr/bin/true"]))
+            dead (.pid proc)]
+        (.waitFor proc)
+        (spit (lockfile "agt-stale") (str dead "\n"))
+        (is (= dead (persist/owner-pid "agt-stale")))
+        (is (false? (persist/held-by-other-live-process? "agt-stale")))))))
+
 (deftest eviction-test
   (testing "summarise-sessions reports each session"
     (persist/save-meta! "agt-a" {:agent-id :a})

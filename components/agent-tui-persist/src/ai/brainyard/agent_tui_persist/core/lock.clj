@@ -56,6 +56,23 @@
                :lock lock
                :pid (pid)}))))))
 
+(defn owner-pid
+  "Return the PID recorded in `session-id`'s lockfile, or nil when no lockfile
+   exists / it is unreadable. Pure read — does NOT acquire or modify the lock,
+   so it is safe for a pre-flight liveness probe."
+  [session-id]
+  (read-pid (paths/file-of session-id :lock)))
+
+(defn held-by-other-live-process?
+  "True when `session-id`'s lockfile names a PID that is both (a) not this
+   process and (b) currently alive. Read-only — the basis for refusing to open
+   a session another running `by` already owns. A stale lock (dead PID) or no
+   lockfile yields false."
+  [session-id]
+  (boolean
+   (when-let [p (owner-pid session-id)]
+     (and (not= p (pid)) (alive? p)))))
+
 (defn release!
   "Release a lock handle returned by `try-acquire!`."
   [{:keys [^FileLock lock ^RandomAccessFile raf ^File file]}]

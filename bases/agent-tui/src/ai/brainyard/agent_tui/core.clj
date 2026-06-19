@@ -90,6 +90,12 @@
 ;; per-session: started in create-tui-agent!, stopped on session close / stop!.
 (defonce !ask-listeners (atom {}))
 
+;; Per-session ownership lock (by-host.lock). Acquired in create-tui-agent!
+;; alongside the ask listener, released on the same teardown paths, so exactly
+;; one live process owns a session's on-disk state + ask.sock. Keyed by
+;; session-id → the persist lock handle. See docs/design/session-channel-extensions.md §1.
+(defonce !session-locks (atom {}))
+
 (defn- tui-confirm-mutation
   "v1 confirm-fn (visibility-only) — emits a scrollback notice and a mulog
    audit on the first mutating eval per session, then auto-approves.
@@ -747,6 +753,38 @@
   (doseq [sid (keys @!ask-listeners)]
     (stop-ask-listener! sid)))
 
+(defn acquire-session-lock!
+  "Claim the per-session ownership lock for agent `ag` and stamp the owning PID
+   into meta.edn (discovery surface). Idempotent per session-id; same-process
+   re-acquire is allowed by the lock. A cross-process holder shouldn't reach here
+   (the resume pre-flight in main.clj refuses first) — if it does we log and run
+   on best-effort, never blocking session boot. Non-throwing."
+  [ag]
+  (let [sid (try (agent/session-id ag) (catch Throwable _ nil))]
+    (when (and sid (not (contains? @!session-locks sid)))
+      (try
+        (if-let [handle (persist/try-acquire-lock! sid)]
+          (do (swap! !session-locks assoc sid handle)
+              (try (persist/save-meta! sid {:pid (:pid handle)}) (catch Throwable _))
+              (mulog/info ::session-lock-acquired :session-id sid :pid (:pid handle)))
+          (mulog/warn ::session-lock-contended :session-id sid
+                      :owner-pid (try (persist/owner-pid sid) (catch Throwable _ nil))))
+        (catch Throwable e
+          (mulog/warn ::session-lock-failed :session-id sid :error (.getMessage e)))))))
+
+(defn release-session-lock!
+  "Release and unregister the ownership lock for `sid`. Idempotent, non-throwing."
+  [sid]
+  (when-let [handle (get @!session-locks sid)]
+    (try (persist/release-lock! handle) (catch Throwable _))
+    (swap! !session-locks dissoc sid)))
+
+(defn release-all-session-locks!
+  "Release every session lock — used by `stop!` and the JVM shutdown hook."
+  []
+  (doseq [sid (keys @!session-locks)]
+    (release-session-lock! sid)))
+
 ;; ============================================================================
 ;; Public API — Lifecycle
 ;; ============================================================================
@@ -813,6 +851,10 @@
       (swap! (:!session ag) agent/set-session-config :dirs dirs)
       (swap! (:!session ag) agent/set-session-config :permission-fn
              (permissions/make-permission-fn input/!input-reader-thread feedback-fn)))
+    ;; Claim the per-session ownership lock (stamps :pid into meta.edn) so a
+    ;; second live process can't silently co-own this session's state + socket.
+    ;; Non-fatal: the resume pre-flight already refused a live cross-process open.
+    (acquire-session-lock! ag)
     ;; Open this session's side-ask socket (on by default; non-fatal on failure)
     ;; so `by ask --attach <session-id>` can inject questions into its turn queue.
     (start-ask-listener! ag)
@@ -925,7 +967,8 @@
      (doseq [ag (or (seq (:agent-instances session))
                     (some-> (:agent session) vector))]
        (when-let [sid (try (agent/session-id ag) (catch Throwable _ nil))]
-         (stop-ask-listener! sid)))))
+         (stop-ask-listener! sid)
+         (release-session-lock! sid)))))
 
   ;; 3. Initialize autocomplete sub-menu registry.
   ;; Built-in defagent namespaces are registered at agent.interface load time
@@ -1223,6 +1266,8 @@
   (stop-nrepl-server!)
   ;; Close every per-session ask socket
   (try (stop-all-ask-listeners!) (catch Exception _))
+  ;; Release every per-session ownership lock
+  (try (release-all-session-locks!) (catch Exception _))
   ;; Tear down any Mode-B side panes/FIFOs. No-op when not installed.
   (try (tmux-side/uninstall!) (catch Exception _))
   (tui-session/clear-agent!)
@@ -1358,6 +1403,10 @@
                                               ;; crashed/killed TUI doesn't leave stale
                                               ;; ask.sock files behind. Idempotent with stop!.
                                               (try (stop-all-ask-listeners!) (catch Throwable _))
+                                              ;; Release per-session ownership locks (unlinks
+                                              ;; by-host.lock) so a crash doesn't leave a session
+                                              ;; looking owned. Idempotent with stop!.
+                                              (try (release-all-session-locks!) (catch Throwable _))
                                               ;; Tear down tmux side panes + wheel bindings
                                               ;; + restore prior `mouse` setting before
                                               ;; restoring local terminal state. Without this

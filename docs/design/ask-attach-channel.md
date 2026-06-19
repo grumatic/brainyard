@@ -163,6 +163,11 @@ one real native risk: it is validated on the **native binary** (not just
 `BY_JAR=1`) in the verification step, since channel providers occasionally need
 `--enable-native-access` or a resource hint that only surfaces in the AOT image.
 
+> **Generalizing the channel.** Extending `ask.sock` into a full session control
+> channel (live-session discovery, `:op :inject` data connectors, `:op :subscribe`
+> event/display streams) — and the single-owner enforcement those require — is designed
+> in [`session-channel-extensions.md`](session-channel-extensions.md).
+
 ## 10. Out of scope (v1)
 
 - **Streaming** intermediate iterations to the client (the protocol reserves
