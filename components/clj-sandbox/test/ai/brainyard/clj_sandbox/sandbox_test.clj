@@ -54,9 +54,34 @@
         (is (nil? (:error r)))
         (is (= "hi" (:result r))))))
 
-  (testing "fork inherits the parent's interop level"
-    (is (= :full (:interop (sandbox/fork-sandbox
-                            (sandbox/create-sandbox :interop :full)))))
+  (testing ":full exposes file/shell libraries (slurp/spit/sh, clojure.java.io)"
+    (let [sb   (sandbox/create-sandbox :interop :full)
+          path (str "/tmp/by-sandbox-interop-test-" (System/nanoTime) ".txt")
+          rt   (sandbox/eval-code
+                sb (str "(do (spit \"" path "\" \"payload-42\") (slurp \"" path "\"))"))]
+      (is (nil? (:error rt)))
+      (is (= "payload-42" (:result rt)))
+      ;; clojure.java.io returns a File whose interop needs the :full class palette
+      (let [r (sandbox/eval-code sb (str "(.getName (clojure.java.io/file \"" path "\"))"))]
+        (is (nil? (:error r)))
+        (is (str/ends-with? (str (:result r)) ".txt")))
+      (let [r (sandbox/eval-code sb "(clojure.string/trim (:out (sh \"echo\" \"sh-ok\")))")]
+        (is (nil? (:error r)))
+        (is (= "sh-ok" (:result r))))
+      (.delete (java.io.File. path))))
+
+  (testing ":restricted does NOT expose slurp/spit/sh"
+    (let [sb (sandbox/create-sandbox)]
+      (is (some? (:error (sandbox/eval-code sb "(slurp \"/tmp/nope\")"))))
+      (is (some? (:error (sandbox/eval-code sb "(spit \"/tmp/nope\" \"x\")"))))
+      (is (some? (:error (sandbox/eval-code sb "(sh \"echo\" \"x\")"))))))
+
+  (testing "fork inherits the parent's interop level AND its :full library surface"
+    (let [full-fork (sandbox/fork-sandbox (sandbox/create-sandbox :interop :full))]
+      (is (= :full (:interop full-fork)))
+      ;; copy-ns'd namespaces + aliases survive the fork's env snapshot
+      (is (= "sh-ok" (:result (sandbox/eval-code
+                               full-fork "(clojure.string/trim (:out (sh \"echo\" \"sh-ok\")))")))))
     (is (= :restricted (:interop (sandbox/fork-sandbox
                                   (sandbox/create-sandbox)))))))
 

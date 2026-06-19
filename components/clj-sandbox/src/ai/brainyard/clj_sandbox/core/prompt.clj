@@ -37,7 +37,8 @@ and the results (return value, stdout, or error) are sent back for the next iter
 - **Errors are non-fatal**: Exceptions show the error message; sandbox state is preserved.
 "
        (if (= interop :full)
-         "- **Full Java interop**: arbitrary Java interop is available (System, Runtime, ProcessBuilder, reflection, etc.) — you are running in a container sandbox."
+         (str "- **Full Java interop**: arbitrary Java interop is available (System, Runtime, ProcessBuilder, reflection, etc.) — you are running in a container sandbox.\n"
+              "- **File/shell libraries**: `slurp`, `spit`, `sh` (`(sh \"ls\" \"-l\")`), plus `clojure.java.io/*` (file, copy, reader…) and `clojure.java.shell/*` are available.")
          "- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied.")
        "
 - **Timeout**: 30s per code block."))

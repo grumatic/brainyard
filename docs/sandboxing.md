@@ -164,8 +164,20 @@ the **`:sandbox-interop`** config key:
 | Value | Effect |
 |---|---|
 | `:restricted` | **default** — whitelist + denylist. The only safe posture on a host. |
-| `:full` | Broad JDK class palette, no denylist. Arbitrary Java interop. **Only safe inside a container.** |
+| `:full` | Broad JDK class palette, no denylist. Arbitrary Java interop **plus a richer Clojure library surface** (see below). **Only safe inside a container.** |
 | `:auto` | `:full` when a container is detected (`env-detect` sees Docker/devcontainer), else `:restricted`. |
+
+**Library surface at `:full`.** SCI deliberately withholds I/O functions from its
+defaults. At `:full` the sandbox additionally exposes (via compile-time
+`sci/copy-ns`, so it is GraalVM-native-safe — all are Clojure core, zero new
+deps): `slurp`, `spit`, `sh` (shorthand for `clojure.java.shell/sh`), and the
+full `clojure.java.io/*` and `clojure.java.shell/*` namespaces. These are gated
+to `:full` not only for safety but for *correctness* — they return `File` /
+`Process` objects whose method calls need the `:full` class palette. The
+`sci.configs` ecosystem was evaluated and is frontend/cljs-focused (reagent,
+re-frame, …), so it is not used here. (The injected `bash`/`read-file`/
+`write-file` tools remain available at every level — this just lets agent code
+do the same I/O natively in Clojure.)
 
 Set it in `.brainyard/config.edn`:
 
@@ -191,7 +203,8 @@ never auto-relaxes unless you set `:full` or `:auto`.
 > reflection config.
 
 Implementation: `components/clj-sandbox/.../core/sandbox.clj` (`sci-init-opts`,
-`full-classes`) is the mechanism; `ai.brainyard.agent.core.config/resolve-sandbox-interop`
+`full-classes`, and the `:full`-only `full-namespaces` / `full-user-aliases`) is
+the mechanism; `ai.brainyard.agent.core.config/resolve-sandbox-interop`
 resolves the policy (config key + `env-detect`) and threads the level into every
 `create-sandbox` call site.
 

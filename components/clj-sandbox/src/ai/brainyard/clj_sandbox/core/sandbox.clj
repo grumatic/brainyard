@@ -17,6 +17,11 @@
             [clojure.data]
             [clojure.data.json :as json]
             [clojure.pprint :as pprint]
+            ;; Required at compile time so `sci/copy-ns` can snapshot their public
+            ;; vars into the `:full` namespace surface (GraalVM-safe — copy-ns
+            ;; expands at build time; both are Clojure core, always on classpath).
+            [clojure.java.io]
+            [clojure.java.shell]
             [ai.brainyard.mulog.interface :as mulog]
             [edamame.core :as edamame]
             [ai.brainyard.clj-sandbox.core.context-accessors :as ctx-acc])
@@ -191,15 +196,45 @@
                             'write     json/write}
    'clojure.data           {'diff clojure.data/diff}})
 
+(def ^:private full-namespaces
+  "Additional library namespaces exposed ONLY at the `:full` interop level.
+   `sci/copy-ns` snapshots the whole public surface of each (compile-time macro,
+   so this is GraalVM-native-safe; both namespaces are Clojure core). These are
+   I/O libraries deliberately withheld by SCI's defaults — exposing them is safe
+   only alongside `:full`, which also supplies the class palette their return
+   values (File, Process) need for interop (see `full-classes`)."
+  {'clojure.java.io    (sci/copy-ns clojure.java.io    (sci/create-ns 'clojure.java.io))
+   'clojure.java.shell (sci/copy-ns clojure.java.shell (sci/create-ns 'clojure.java.shell))})
+
+(def ^:private full-user-aliases
+  "Short `user`-namespace aliases for common I/O fns, merged in ONLY at the
+   `:full` interop level. SCI omits slurp/spit from its defaults (I/O boundary);
+   these expose them plus a `sh` shorthand for clojure.java.shell/sh."
+  {'slurp (with-meta slurp
+            {:doc "Read a file/URL/stream into a string. (:full interop only.)"
+             :arglists '([f] [f & opts]) :category :io})
+   'spit  (with-meta spit
+            {:doc "Write content to a file (overwrites). Options: :append true. (:full interop only.)"
+             :arglists '([f content] [f content & opts]) :category :io})
+   'sh    (with-meta clojure.java.shell/sh
+            {:doc "Run a shell command, return {:exit :out :err}. e.g. (sh \"ls\" \"-l\"). (:full interop only.)"
+             :arglists '([& args]) :category :io})})
+
 (defn- build-sci-namespaces
   "Build the full SCI namespace map: whitelisted library namespaces plus the
    user namespace with core bindings (FINAL, parse-json, to-json, pprint)
    merged with caller-supplied extra-bindings (e.g. llm-query, tool closures,
    context accessors). The short aliases (pprint, parse-json, to-json) coexist
    with the fully-qualified forms exposed via library-namespaces.
+
+   At the `:full` interop level the namespace map is enriched with
+   `full-namespaces` (clojure.java.io, clojure.java.shell) and the `user` ns
+   gains `full-user-aliases` (slurp/spit/sh) — these are withheld at
+   `:restricted` because they do I/O and need the `:full` class palette.
+
    Output capture is handled by binding both Clojure *out* and SCI sci/out
    to the sandbox output-writer in eval-code."
-  [final-fn extra-bindings]
+  [final-fn extra-bindings interop]
   (let [parse-json (fn [s & {:keys [key-fn] :or {key-fn str}}]
                      (json/read-str s :key-fn key-fn))
         to-json    (fn [v & {:keys [escape-slash] :or {escape-slash true}}]
@@ -219,8 +254,13 @@
                        'pprint (with-meta pprint/pprint
                                  {:doc "Pretty-print any value to stdout"
                                   :arglists '([object])
-                                  :category :core})}]
-    (assoc library-namespaces 'user (merge user-bindings extra-bindings))))
+                                  :category :core})}
+        full? (= interop :full)
+        base-namespaces (cond-> library-namespaces
+                          full? (merge full-namespaces))
+        user-ns (cond-> (merge user-bindings extra-bindings)
+                  full? (merge full-user-aliases))]
+    (assoc base-namespaces 'user user-ns)))
 
 ;; ============================================================================
 ;; Sandbox Creation
@@ -361,7 +401,7 @@
         extra-bindings (cond-> (or bindings {})
                          ;; Merge accessor functions (context-index, context-get, etc.)
                          (some? context-accessors) (merge context-accessors))
-        namespaces (build-sci-namespaces final-fn extra-bindings)
+        namespaces (build-sci-namespaces final-fn extra-bindings interop)
         sci-ctx (sci/init (merge {:namespaces namespaces}
                                  (sci-init-opts interop)))
         ;; Capture initial user-namespace symbols for extract-user-vars filtering
