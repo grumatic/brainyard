@@ -144,6 +144,35 @@
       (is (= "input-history.edn" (.getName ^File f)))
       (is (.exists ^File f)))))
 
+(deftest ask-sock-path-fallback-test
+  (testing "a short root keeps the natural <session-dir>/ask.sock"
+    ;; Use an explicitly short root — on macOS the default $TMPDIR-based test
+    ;; root is itself ~80-100 chars, close enough to the limit to trip the
+    ;; fallback (which is exactly why this fix is needed for normal paths too).
+    (let [short-root (io/file "/tmp" (str "byp-" (System/nanoTime)))]
+      (try
+        (persist/with-root short-root
+          (let [p (.getAbsolutePath ^File (persist/file-of "agt-short" :ask-sock))]
+            (is (.endsWith p (str File/separator "agt-short" File/separator "ask.sock")))
+            (is (< (count p) 100) "natural path fits under the limit")))
+        (finally (doseq [^File f (reverse (file-seq short-root))] (.delete f))))))
+  (testing "a deep root that would overflow sun_path falls back to a short temp path"
+    (let [deep (apply io/file *tmp-root* (repeat 10 "verylongsegment-padding-xx"))]
+      (persist/with-root deep
+        (let [sock (persist/file-of "agt-deep-1700000000000-7" :ask-sock)
+              path (.getAbsolutePath ^File sock)]
+          (is (< (count path) 104) "fallback path is under the AF_UNIX limit")
+          (is (not (.contains path "verylongsegment")) "not under the deep session dir")
+          (is (.startsWith (.getName ^File sock) "by-"))
+          (is (.endsWith path ".sock"))
+          (testing "deterministic across calls (owner & client derive the same path)"
+            (is (= path (.getAbsolutePath ^File (persist/file-of "agt-deep-1700000000000-7" :ask-sock)))))
+          (testing "a different session id gets a different fallback path"
+            (is (not= path (.getAbsolutePath ^File (persist/file-of "agt-deep-1700000000000-8" :ask-sock)))))
+          (testing "non-socket tags are unaffected (still under the deep root)"
+            (is (.contains (.getAbsolutePath ^File (persist/file-of "agt-deep-1700000000000-7" :meta))
+                           "verylongsegment"))))))))
+
 (deftest lock-test
   (testing "first acquire succeeds, second from same process is blocked"
     (let [h1 (persist/try-acquire-lock! "agt-locked")]

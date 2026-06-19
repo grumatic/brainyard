@@ -31,7 +31,12 @@ a pre-existing multi-process race.
   descriptor `:live?` / `:owner-pid` / `:ask-socket-path` / `:ops`; `by sessions list`
   gained `--live` and a `●live` table marker; `--json` surfaces it all; `meta.edn`
   advertises `:ops`. (`by sessions <list|show|label|prune>` accept `-C/--working-dir` to
-  target a specific project, same as `run`.)
+  target a specific project, same as `run`.) **Socket path fallback:** AF_UNIX paths are
+  capped (~104 bytes, macOS), so for deep project trees `persist/file-of :ask-sock` —
+  the single choke point both the listener and the attach client derive through —
+  relocates the socket to a short deterministic `<tmpdir>/by-<sha256-16>.sock` when the
+  natural `<session-dir>/ask.sock` would overflow. The resolved path is recorded in
+  `:ask-socket-path`; clients must use that, not reconstruct the natural path.
 - ✅ **§4 `:op :inject` data connector (shipped)** — three sinks: `:as :artifact`
   (explicit-agent `agent/add-artifact!`, seen next turn, no forced turn — the canonical
   connector), `:as :turn` (`:await? false` fire-and-forget event trigger, else blocks

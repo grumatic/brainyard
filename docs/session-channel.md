@@ -64,7 +64,7 @@ reachable and how:
 | `session-id` | the id to pass to `--attach` / connect to |
 | `live?` | `true` when a `by` process currently owns it (PID-checked) |
 | `owner-pid` | the owning process id (or `null`) |
-| `ask-socket-path` | absolute path of its ask socket |
+| `ask-socket-path` | absolute path of its ask socket — **always use this value**; for deep project trees it is relocated under the temp dir (see note below) |
 | `ops` | the verbs this session's socket answers, e.g. `["ask","status","inject","cancel","subscribe"]` |
 | `label`, `agent`, `model` | display metadata |
 
@@ -94,6 +94,13 @@ request frame, and read response frame(s).
 
 Request shape: `{:op <verb> …}`. Response shape: `{:status :ok …}` or
 `{:status :error :error "…"}`.
+
+> **Always connect to the `ask-socket-path` from discovery — don't reconstruct
+> `<session-dir>/ask.sock`.** Unix socket paths are length-limited (~104 bytes on
+> macOS). When a session lives under a deep project tree, the natural path would
+> overflow that, so `by` binds the socket at a short fallback path under the temp
+> dir (`<tmpdir>/by-<hash>.sock`) instead and records the real location in
+> `ask-socket-path`. (`by ask --attach` handles this for you.)
 
 | verb | mode | what it does |
 |---|---|---|

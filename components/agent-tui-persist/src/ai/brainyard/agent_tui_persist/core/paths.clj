@@ -79,11 +79,43 @@
    :ask-sock         "ask.sock"
    :lock             "by-host.lock"})
 
+(def ^:private sun-path-max
+  "Conservative AF_UNIX `sun_path` budget. The kernel caps a unix-domain socket
+   path at ~104 bytes (macOS) / ~108 (Linux) INCLUDING the NUL terminator, and
+   `bind` fails when a deep `<project>/.brainyard/sessions/<id>/ask.sock`
+   overflows it (seen with nested project trees, e.g. the playground's per-tenant
+   workspaces). Stay well under so the natural path is used whenever it fits."
+  100)
+
+(defn- short-sock-path
+  "A short, deterministic AF_UNIX path for `session-id` under the temp dir, used
+   only as the `:ask-sock` fallback when the natural path would overflow
+   `sun-path-max`. Deterministic (SHA-256 of the session-id) so the owning
+   process and an independent attach client derive the SAME path from `file-of`
+   with no shared state."
+  ^File [session-id]
+  (let [digest (-> (java.security.MessageDigest/getInstance "SHA-256")
+                   (.digest (.getBytes (name session-id) "UTF-8")))
+        hex    (apply str (map #(format "%02x" (bit-and % 0xff)) digest))
+        tmp    (or (System/getProperty "java.io.tmpdir") "/tmp")]
+    (io/file tmp (str "by-" (subs hex 0 16) ".sock"))))
+
 (defn file-of
-  "Resolve a well-known session file by tag (one of the keys of `filenames`)."
+  "Resolve a well-known session file by tag (one of the keys of `filenames`).
+
+   For `:ask-sock`, when the natural `<session-dir>/ask.sock` path would exceed
+   the AF_UNIX `sun_path` limit (deep project trees), fall back to a short,
+   deterministic temp path (`<tmpdir>/by-<hash>.sock`). The listener
+   (`start-ask-listener!`) and the attach client both derive the socket through
+   this one function, so they stay in sync; the resolved path is also recorded in
+   meta.edn `:ask-socket-path` for discovery. All other tags are unaffected."
   ^File [session-id tag]
   (when-let [filename (get filenames tag)]
-    (session-file session-id filename)))
+    (let [natural (session-file session-id filename)]
+      (if (and (= tag :ask-sock)
+               (>= (count (.getAbsolutePath natural)) sun-path-max))
+        (short-sock-path session-id)
+        natural))))
 
 (defn list-sessions
   "Return a sorted vector of session-id strings present under the root."
