@@ -25,15 +25,22 @@
 ;; --- Decomposed sandbox environment subsections ---
 ;; These are split so they can be individually included in system prompt or as on-demand usage-* bindings.
 
-(def ^:private execution-model-core
-  "## Execution Model
+(defn- execution-model-core
+  "## Execution Model section. The interop bullet is conditional on the SCI
+   interop level (`:restricted` default vs `:full` in a container sandbox)."
+  [interop]
+  (str "## Execution Model
 Your code runs in a **sandboxed Clojure interpreter** (SCI). Each ```clojure block is evaluated,
 and the results (return value, stdout, or error) are sent back for the next iteration.
 - **State persists**: `def` variables survive across iterations.
 - **Captured output**: `println`/`pprint` output is captured and returned to you.
 - **Errors are non-fatal**: Exceptions show the error message; sandbox state is preserved.
-- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied.
-- **Timeout**: 30s per code block.")
+"
+       (if (= interop :full)
+         "- **Full Java interop**: arbitrary Java interop is available (System, Runtime, ProcessBuilder, reflection, etc.) — you are running in a container sandbox."
+         "- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied.")
+       "
+- **Timeout**: 30s per code block."))
 
 (def ^:private available-clojure-guide
   "## Available Clojure
@@ -761,10 +768,12 @@ Topics: :truncation, :final, :discovery, :tool-priority, :agent-state, :mcp, :fe
      :brainyard-instructions - Map {:user-instructions :project-instructions} loaded
                                via config/load-brainyard-instructions. Rendered as a
                                '## Brainyard Instructions' section when either side is non-blank.
+     :interop                - SCI interop level (:restricted default | :full). Controls the
+                               interop bullet in the Execution Model section.
      :return-breakdown?      - When true, returns {:content str :token-breakdown map}"
   [& {:keys [mode max-iterations instruction agent-context tool-context
-             function-directory brainyard-instructions return-breakdown?]
-      :or {mode :raw max-iterations 20}}]
+             function-directory brainyard-instructions interop return-breakdown?]
+      :or {mode :raw max-iterations 20 interop :restricted}}]
   (let [brainyard-section (when brainyard-instructions
                             (format-brainyard-instructions brainyard-instructions))
         sections
@@ -773,7 +782,7 @@ Topics: :truncation, :final, :discovery, :tool-priority, :agent-state, :mcp, :fe
           (str (if (= mode :raw)
                  "You are an AI agent that accomplishes tasks by writing and executing code."
                  "You are an AI agent that answers queries by writing Clojure code in a REPL sandbox.")
-               "\n\n" execution-model-core)
+               "\n\n" (execution-model-core interop))
           :critical-rules
           (if (= mode :raw)
             critical-rules-raw

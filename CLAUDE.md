@@ -56,6 +56,15 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   the cwd subtree, `$TMPDIR`/`/tmp`. The `--sandbox` launcher sets
   **`BY_SANDBOX_CHILD=1`** on the re-exec'd child as the re-entrancy guard.
   Mutually exclusive with `--web` in v1; macOS-only. See `docs/sandboxing.md`.
+- **`BY_SANDBOX_INTEROP`** — seeds the `:sandbox-interop` config default
+  (`restricted` | `full` | `auto`) controlling Java interop in the **in-process
+  SCI code-eval sandbox** (distinct from `--sandbox`, which is the OS seatbelt).
+  `restricted` (default) denies System/Runtime/ProcessBuilder/ClassLoader;
+  `full` permits arbitrary interop (container-only); `auto` relaxes to `full`
+  only when a container is detected via `env-detect`. Explicit opt-in — never
+  auto-relaxes unless set. `.brainyard/config.edn` overrides it. Mechanism in
+  `components/clj-sandbox` (`sci-init-opts`/`full-classes`); policy in
+  `agent.core.config/resolve-sandbox-interop`. See `docs/sandboxing.md`.
 
 ## Build & release pipeline
 

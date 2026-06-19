@@ -1268,7 +1268,9 @@
                   state    (:sandbox-state sess)
                   bindings (when (seq state) (clj-sandbox/build-restore-bindings state))]
               (when (seq bindings)
-                (let [sandbox (clj-sandbox/create-sandbox :bindings bindings)]
+                (let [sandbox (clj-sandbox/create-sandbox
+                               :bindings bindings
+                               :interop (agent/resolve-sandbox-interop ag))]
                   (swap! (:!state ag) assoc :sandbox sandbox)
                   (count bindings))))
             (catch Throwable _ nil)))

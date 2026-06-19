@@ -60,6 +60,7 @@
      :on-chunk        - Streaming callback for LLM responses
      :initial-messages  - Pre-built messages vector for resumption
      :initial-bindings  - Additional sandbox bindings for resumption
+     :interop           - SCI interop level for a fresh sandbox (:restricted | :full)
 
    Returns:
      {:answer          str
@@ -76,7 +77,9 @@
 
 (def create-sandbox
   "Create a new RLM sandbox. For advanced use and testing.
-   See ai.brainyard.clj-sandbox.core.sandbox/create-sandbox for details."
+   Accepts `:interop` (`:restricted` default | `:full`) to control the SCI
+   Java-interop surface — `:full` permits arbitrary interop and is only safe
+   inside a container. See ai.brainyard.clj-sandbox.core.sandbox/create-sandbox."
   sandbox/create-sandbox)
 
 (def eval-code

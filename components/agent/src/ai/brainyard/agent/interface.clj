@@ -236,7 +236,7 @@
                 migrate-legacy-edn-shape
                 !global-config load-global-config! invalidate-global-config!
                 get-config get-config-snapshot set-config!
-                resolve-sub-lm)
+                resolve-sub-lm resolve-sandbox-interop)
 
 ;; ============================================================================
 ;; Async Runtime

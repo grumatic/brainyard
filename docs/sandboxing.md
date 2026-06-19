@@ -144,12 +144,65 @@ Sandboxing the session running inside a web share is planned but not yet wired.
   profile is your responsibility.
 - **Not the same as `clj-sandbox`.** `clj-sandbox` is the in-process SCI layer
   that contains *Clojure code-eval*; `--sandbox` (this) is an OS-level wrapper
-  around the *whole `by` process*. Different layers, different concerns.
+  around the *whole `by` process*. Different layers, different concerns. See the
+  next section for relaxing that in-process layer inside a container.
+
+## The other direction: relaxing SCI code-eval interop (`:sandbox-interop`)
+
+The OS seatbelt above *contains* the whole process. The in-process **SCI
+sandbox** (`clj-sandbox`) is the opposite concern: it restricts the Clojure
+code the agent writes and evaluates. By default that code runs with **no Java
+interop** — `System`, `Runtime`, `ProcessBuilder`, `ClassLoader` are denied and
+only a whitelist of pure classes (Math, numerics, `java.time.*`) is reachable.
+This is the right posture on a host.
+
+When `by` itself runs inside a disposable container (Docker, devcontainer),
+that restriction can be safely relaxed so the agent can use full Java interop
+(`System/getenv`, process spawning, reflection, networking, …). Controlled by
+the **`:sandbox-interop`** config key:
+
+| Value | Effect |
+|---|---|
+| `:restricted` | **default** — whitelist + denylist. The only safe posture on a host. |
+| `:full` | Broad JDK class palette, no denylist. Arbitrary Java interop. **Only safe inside a container.** |
+| `:auto` | `:full` when a container is detected (`env-detect` sees Docker/devcontainer), else `:restricted`. |
+
+Set it in `.brainyard/config.edn`:
+
+```clojure
+{:agent {:config {:sandbox-interop :full}}}
+```
+
+…or via the **`BY_SANDBOX_INTEROP`** env var (`restricted` | `full` | `auto`),
+which seeds the schema default. The default is **explicit opt-in**: detection
+never auto-relaxes unless you set `:full` or `:auto`.
+
+> ⚠ **`:full` removes the in-process code-eval guardrail.** Agent-written
+> Clojure can then spawn processes, read/write any path the process can, and
+> open sockets. The injected `bash`/`read-file`/`write-file` tools already grant
+> shell and filesystem access regardless of this knob; `:full` additionally
+> opens *raw Java interop*. Pair it with a container (or the OS seatbelt) for
+> blast-radius containment — do not set `:full` on a developer workstation.
+
+> **Native-binary caveat.** SCI interop resolves classes via reflection, so in
+> the native `by` binary only classes already in the native-image reflection
+> config work at runtime. The `:full` palette is fully usable under the JVM
+> uberjar (`BY_JAR=1`); under the native binary it is bounded by the baked-in
+> reflection config.
+
+Implementation: `components/clj-sandbox/.../core/sandbox.clj` (`sci-init-opts`,
+`full-classes`) is the mechanism; `ai.brainyard.agent.core.config/resolve-sandbox-interop`
+resolves the policy (config key + `env-detect`) and threads the level into every
+`create-sandbox` call site.
 
 ## Troubleshooting
 
 - **`Operation not permitted` on a path you need to write** — add it with
   `--sandbox-allow-write <path>`.
+- **Agent code-eval says `System/...` is denied but you're in a container** —
+  set `:sandbox-interop :full` (or `:auto`), or `BY_SANDBOX_INTEROP=full`. Note
+  the sandbox fixes its interop level at creation, so change it before the
+  session's first code-eval (or restart the session).
 - **The binary won't start under a custom profile** — you over-tightened it;
   restore `(allow file-read*)` and `(allow process-exec*)`.
 - **`could not resolve how to relaunch the TUI`** — only in unusual dev setups;

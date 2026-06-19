@@ -31,6 +31,35 @@
     (let [sb (sandbox/create-sandbox :bindings {'my-data [1 2 3]})]
       (is (= [1 2 3] (sandbox/get-var sb 'my-data))))))
 
+(deftest interop-level-test
+  (testing "default :restricted denies System/Runtime/ProcessBuilder interop"
+    (let [sb (sandbox/create-sandbox)]
+      (is (= :restricted (:interop sb)))
+      (is (some? (:error (sandbox/eval-code sb "(System/getenv \"HOME\")")))
+          "System/getenv is denied")
+      (is (some? (:error (sandbox/eval-code sb "(ProcessBuilder. [\"echo\" \"x\"])")))
+          "ProcessBuilder is denied")))
+
+  (testing ":full permits Java interop (System, getProperty, ProcessBuilder)"
+    (let [sb (sandbox/create-sandbox :interop :full)]
+      (is (= :full (:interop sb)))
+      (is (nil? (:error (sandbox/eval-code sb "(boolean (System/getenv \"HOME\"))"))))
+      (is (string? (:result (sandbox/eval-code sb "(System/getProperty \"os.name\")"))))
+      (let [r (sandbox/eval-code
+               sb "(let [p (.start (ProcessBuilder. [\"echo\" \"hi\"]))
+                         br (java.io.BufferedReader.
+                              (java.io.InputStreamReader. (.getInputStream p)))]
+                     (.waitFor p)
+                     (.readLine br))")]
+        (is (nil? (:error r)))
+        (is (= "hi" (:result r))))))
+
+  (testing "fork inherits the parent's interop level"
+    (is (= :full (:interop (sandbox/fork-sandbox
+                            (sandbox/create-sandbox :interop :full)))))
+    (is (= :restricted (:interop (sandbox/fork-sandbox
+                                  (sandbox/create-sandbox)))))))
+
 (deftest eval-code-basic-test
   (testing "evaluates simple expressions"
     (let [sb (sandbox/create-sandbox)

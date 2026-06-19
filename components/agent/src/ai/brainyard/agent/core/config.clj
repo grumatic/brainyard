@@ -344,7 +344,24 @@
    :ask-timeout-ms             {:type "integer"
                                 :default-fn #(or (some-> (System/getenv "BY_ASK_TIMEOUT_MS")
                                                          parse-long)
-                                                 120000)}})
+                                                 120000)}
+   ;; SCI sandbox interop level for the CoAct/RLM code sandbox.
+   ;;   :restricted (default) — whitelisted pure classes + denylist
+   ;;                (System/Runtime/ProcessBuilder/ClassLoader denied). Only
+   ;;                safe posture on a host.
+   ;;   :full       — arbitrary Java interop (no denylist). Only appropriate
+   ;;                inside a disposable container. In the NATIVE binary full
+   ;;                interop is bounded by the reflection config; it is complete
+   ;;                only under the JVM uberjar (BY_JAR=1).
+   ;;   :auto       — :full when a container (Docker/devcontainer) is detected
+   ;;                via env-detect, else :restricted. Resolved by
+   ;;                `resolve-sandbox-interop`.
+   ;; Default reads BY_SANDBOX_INTEROP (restricted|full|auto); explicit opt-in,
+   ;; never auto-relaxes unless set to :full or :auto.
+   :sandbox-interop            {:type "keyword"
+                                :default-fn #(keyword
+                                              (or (not-empty (System/getenv "BY_SANDBOX_INTEROP"))
+                                                  "restricted"))}})
 
 (def config-keys (set (keys config-schema)))
 
@@ -1107,6 +1124,39 @@
      (merge (get-config-snapshot)
             (or (session-config agent) {})
             (or (agent-config agent) {})))))
+
+(defn- container-detected?
+  "Soft-dep probe for a container environment (Docker/devcontainer) via
+   env-detect. Returns false when the env-detect component is not on the
+   classpath (clj-sandbox/agent can run standalone in tests)."
+  []
+  (try
+    (if-let [f (requiring-resolve
+                'ai.brainyard.env-detect.interface/detect-sandbox-environment)]
+      (let [{:keys [details]} (f)]
+        (boolean (or (:docker? details) (:devcontainer? details))))
+      false)
+    (catch Throwable _ false)))
+
+(defn resolve-sandbox-interop
+  "Resolve the configured `:sandbox-interop` value to a concrete SCI interop
+   level (`:restricted` | `:full`) suitable to pass to
+   `clj-sandbox/create-sandbox`.
+
+   `:auto` consults env-detect: `:full` when a container (Docker/devcontainer)
+   is detected, else `:restricted`. Any other value passes through, defaulting
+   to `:restricted` for nil/unknown. Accepts the same agent-or-st forms as
+   `get-config` (1-arity uses the global/schema layers only)."
+  ([] (resolve-sandbox-interop nil))
+  ([agent-or-st]
+   (let [v (if agent-or-st
+             (get-config agent-or-st :sandbox-interop)
+             (get-config :sandbox-interop))]
+     (case v
+       :auto       (if (container-detected?) :full :restricted)
+       :full       :full
+       :restricted :restricted
+       :restricted))))
 
 (defn- write-persisted-key!
   "Write a single `[:agent :config k]` leaf to `.brainyard/config.edn` at

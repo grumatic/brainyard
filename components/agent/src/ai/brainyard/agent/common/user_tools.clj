@@ -27,6 +27,7 @@
    flow through `call-tool`'s Malli coercion + hook/permission/depth guards, and
    get auto-bound into agent sandboxes as `user$tool$<name>` callables."
   (:require [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
+            [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.common.def-store :as def-store]
             [ai.brainyard.clj-sandbox.interface :as sb]
             [ai.brainyard.mulog.interface :as mulog]
@@ -54,7 +55,8 @@
   ([extra-bindings]
    (let [sbx (or @!tools-sandbox
                  (reset! !tools-sandbox
-                         (sb/create-sandbox :bindings (or extra-bindings {}))))]
+                         (sb/create-sandbox :bindings (or extra-bindings {})
+                                            :interop (config/resolve-sandbox-interop))))]
      (when (seq extra-bindings)
        (sb/update-bindings! sbx extra-bindings))
      sbx)))

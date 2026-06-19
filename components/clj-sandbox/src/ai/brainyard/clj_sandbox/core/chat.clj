@@ -338,6 +338,8 @@
      :system-prompt   - Override system message (string or {:role \"system\" :content ...}).
                          When nil, builds a lean system prompt with context-access docs.
      :bindings        - Additional sandbox bindings {symbol value}, passed to create-sandbox.
+     :interop         - SCI interop level for a freshly created sandbox: :restricted
+                        (default) or :full. Ignored when reusing a passed-in :sandbox.
      :initial-messages  - Pre-built messages vector for resumption (replaces default [system-msg user-msg]).
      :initial-bindings  - Additional sandbox bindings for resumption, merged into :bindings.
      :max-context-tokens - Context window size for compaction (default 128000)
@@ -362,13 +364,14 @@
                            eval-timeout-ms usage-tracker on-iteration on-chunk
                            system-prompt bindings initial-messages initial-bindings
                            max-context-tokens compaction-opts feedback-opts budget-opts
-                           enable-parallel sandbox]
+                           enable-parallel sandbox interop]
                     :or {max-iterations 20
                          max-depth 1
                          current-depth 0
                          eval-timeout-ms 30000
                          max-context-tokens 128000
-                         enable-parallel false}}]
+                         enable-parallel false
+                         interop :restricted}}]
   (let [lm-config (resolve-lm-config lm-config)
         sub-lm-config (resolve-lm-config (or sub-lm-config lm-config))
         llm-query-fn (clj-llm/create-llm-query-fn sub-lm-config usage-tracker)
@@ -383,7 +386,8 @@
              (do (sandbox/update-bindings! sandbox llm-bindings)
                  sandbox)
              (sandbox/create-sandbox :context context
-                                     :bindings (merge bindings initial-bindings llm-bindings)))
+                                     :bindings (merge bindings initial-bindings llm-bindings)
+                                     :interop interop))
         ;; Standalone completion appends context-access docs (agent mode gets
         ;; these via the context briefing, but standalone has no briefing)
         system-msg (cond

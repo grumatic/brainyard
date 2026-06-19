@@ -711,18 +711,25 @@ Pull these BEFORE you commit to a non-trivial pattern in that area:
                   (conj "### Agent-specific guidance"
                         overlay))))))
 
-(def ^:private execution-model-sandbox
-  "## Execution Model — SCI Sandbox
+(defn- execution-model-sandbox
+  "## Execution Model — SCI Sandbox. The interop bullet is conditional on the
+   resolved SCI interop level (`:restricted` default vs `:full` in a container)."
+  [interop]
+  (str "## Execution Model — SCI Sandbox
 Your clojure code runs in a **sandboxed Clojure interpreter** (SCI). Each ```clojure block is evaluated,
 and the results (return value, stdout, or error) are sent back for the next iteration.
 - **State persists**: `def` variables survive across iterations.
 - **Captured output**: `println`/`pprint` output is captured and returned to you.
 - **Errors are non-fatal**: Exceptions show the error message; sandbox state is preserved.
-- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied.
+"
+       (if (= interop :full)
+         "- **Full Java interop**: arbitrary Java interop is available (System, Runtime, ProcessBuilder, reflection, etc.) — running in a container sandbox."
+         "- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied.")
+       "
 - **Auto-background detach**: a block that hasn't finished by the agent's
   `:auto-background-timeout-ms` (default 120s) detaches into the background; the
   resolved result is harvested into a later iteration as an `[↺ async-completion]`
-  record. Wait for it; do NOT poll repeatedly.")
+  record. Wait for it; do NOT poll repeatedly."))
 
 (def ^:private execution-model-nrepl
   "## Execution Model — Live JVM via clj-nrepl
@@ -764,7 +771,7 @@ reflection, every loaded namespace, and arbitrary interop are all reachable.
   [agent]
   (case (when agent (config/get-config agent :clj-backend))
     :nrepl   execution-model-nrepl
-    execution-model-sandbox))
+    (execution-model-sandbox (config/resolve-sandbox-interop agent))))
 
 (def ^:private sandbox-context-accessor
   "## SCI Sandbox State Memory (TWO LAYERS)
@@ -1532,7 +1539,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                   (clj-sandbox/create-sandbox
                    :context        sandbox-context
                    :bindings       bindings
-                   :synthetic-keys synthetic-keys))
+                   :synthetic-keys synthetic-keys
+                   :interop        (config/resolve-sandbox-interop agent)))
 
         ;; Load brainyard instructions once per turn
         agent-dirs (sb-bind/get-dirs agent)

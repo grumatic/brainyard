@@ -100,6 +100,68 @@
   "Symbols denied in SCI sandbox."
   ['System 'Runtime 'ProcessBuilder 'ClassLoader])
 
+(def ^:private full-classes
+  "Broad JDK class palette for the `:full` interop level. SCI resolves classes
+   ONLY by the symbols enumerated in the `:classes` map — `:allow :all` lifts
+   per-class allow-gating but does NOT enable resolution of un-enumerated
+   classes or fully-qualified names. So `:full` is `sci-classes` (Math, numerics,
+   Thread, java.time) plus the previously-denied capability classes
+   (System/Runtime/ProcessBuilder/ClassLoader) and a curated set of common
+   java.io / java.nio.file / java.net / java.util / java.security classes the
+   agent is likely to reach for. `:allow :all` is added so instance interop on
+   values of any returned type is not method-gated.
+
+   Native-image caveat: SCI interop relies on reflection, so under the native
+   `by` binary only classes already in the reflection config resolve at runtime;
+   the `:full` palette is fully usable only under the JVM uberjar (`BY_JAR=1`)."
+  (merge sci-classes
+         {:allow :all
+          'System          java.lang.System
+          'Runtime         java.lang.Runtime
+          'Process         java.lang.Process
+          'ProcessBuilder  java.lang.ProcessBuilder
+          'ClassLoader     java.lang.ClassLoader
+          'String          java.lang.String
+          'StringBuilder   java.lang.StringBuilder
+          'Character       java.lang.Character
+          'Boolean         java.lang.Boolean
+          'Byte            java.lang.Byte
+          'Short           java.lang.Short
+          'Number          java.lang.Number
+          'Object          java.lang.Object
+          'Class           java.lang.Class
+          'Exception       java.lang.Exception
+          'Throwable       java.lang.Throwable
+          'RuntimeException java.lang.RuntimeException
+          'java.io.File                  java.io.File
+          'java.io.BufferedReader        java.io.BufferedReader
+          'java.io.InputStreamReader     java.io.InputStreamReader
+          'java.io.ByteArrayOutputStream java.io.ByteArrayOutputStream
+          'java.nio.file.Files java.nio.file.Files
+          'java.nio.file.Paths java.nio.file.Paths
+          'java.nio.file.Path  java.nio.file.Path
+          'java.net.URL         java.net.URL
+          'java.net.URI         java.net.URI
+          'java.net.InetAddress java.net.InetAddress
+          'java.util.UUID              java.util.UUID
+          'java.security.MessageDigest java.security.MessageDigest}))
+
+(defn- sci-init-opts
+  "Build the `:classes`/`:deny` portion of `sci/init` opts for an interop level.
+
+   - `:restricted` (default, also `nil`) — the whitelisted `sci-classes` plus
+     the `sci-deny` denylist. Raw Java interop is confined to pure helpers
+     (Math, numeric boxes, java.time); System/Runtime/ProcessBuilder/ClassLoader
+     are denied. This is the only safe posture on a host.
+   - `:full` — the broad `full-classes` palette with NO denylist, so the agent
+     can do process exec, filesystem, network and system introspection via Java
+     interop. Only appropriate inside a disposable container. See `full-classes`
+     for the native-image caveat."
+  [interop]
+  (case interop
+    :full {:classes full-classes}
+    {:classes sci-classes :deny sci-deny}))
+
 ;; ============================================================================
 ;; SCI Namespace Configuration
 ;; ============================================================================
@@ -254,6 +316,11 @@
                         with the built-in `:user-vars` thunk. Each thunk is
                         called lazily by context-accessors to expose live
                         derived data (e.g. notes, runtime stats).
+     :interop         - SCI interop level: `:restricted` (default) keeps the
+                        whitelist + denylist; `:full` permits arbitrary Java
+                        interop (only safe inside a container). See
+                        `sci-init-opts`. The resolved level is recorded in the
+                        returned map so `fork-sandbox` inherits it.
 
    Returns:
      {:sci-ctx <atom wrapping SCI context>
@@ -266,7 +333,7 @@
    branch. That registry was unified into the agent task manager (see
    ai.brainyard.agent.task.commands/await-task); eval-code is now
    hard-only and the sandbox no longer owns any pending-eval state."
-  [& {:keys [context bindings synthetic-keys]}]
+  [& {:keys [context bindings synthetic-keys interop] :or {interop :restricted}}]
   (when (and (some? context) (not (map? context)))
     (throw (ex-info "create-sandbox :context must be a map (or nil) — path-based context-accessors require a map shape"
                     {:context-type (str (type context))})))
@@ -295,9 +362,8 @@
                          ;; Merge accessor functions (context-index, context-get, etc.)
                          (some? context-accessors) (merge context-accessors))
         namespaces (build-sci-namespaces final-fn extra-bindings)
-        sci-ctx (sci/init {:namespaces namespaces
-                           :classes sci-classes
-                           :deny sci-deny})
+        sci-ctx (sci/init (merge {:namespaces namespaces}
+                                 (sci-init-opts interop)))
         ;; Capture initial user-namespace symbols for extract-user-vars filtering
         initial-vars (set (keys (sci/eval-string* sci-ctx "(ns-publics 'user)")))]
     (reset! sci-ctx-atom sci-ctx)
@@ -306,7 +372,8 @@
      :output output
      :history (atom [])
      :initial-vars initial-vars
-     :synthetic-keys synthetic-keys}))
+     :synthetic-keys synthetic-keys
+     :interop interop}))
 
 (defn- sci-internal-error?
   "Check if ex-data is from SCI internals (not user-thrown)."
@@ -803,17 +870,20 @@
   [sandbox]
   (let [parent-ctx @(:sci-ctx sandbox)
         parent-env-snapshot @(:env parent-ctx)
+        interop (:interop sandbox :restricted)
         ;; Create a fresh SCI context with same base config, then replace its
         ;; env with a snapshot of the parent. This preserves the full namespace
-        ;; structure including :aliases, :obj, and SCI internals.
-        forked-ctx (sci/init {:namespaces library-namespaces
-                              :classes sci-classes
-                              :deny sci-deny})]
+        ;; structure including :aliases, :obj, and SCI internals. The interop
+        ;; level must match the parent so forked blocks have the same Java
+        ;; interop surface.
+        forked-ctx (sci/init (merge {:namespaces library-namespaces}
+                                    (sci-init-opts interop)))]
     (reset! (:env forked-ctx) parent-env-snapshot)
     {:sci-ctx (atom forked-ctx)
      :output (StringWriter.)
      :history (atom [])
-     :initial-vars (:initial-vars sandbox)}))
+     :initial-vars (:initial-vars sandbox)
+     :interop interop}))
 
 (def ^:private max-parallel-blocks
   "Maximum number of parallel code blocks allowed."

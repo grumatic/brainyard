@@ -532,3 +532,33 @@
   (is (= #{:user :project} (cfg/subdir-allowed-scopes "memory")))
   (is (cfg/subdir-scope-allowed? "memory" :project))
   (is (cfg/subdir-scope-allowed? "memory" :user)))
+
+;; ============================================================================
+;; resolve-sandbox-interop
+;; ============================================================================
+
+(deftest resolve-sandbox-interop-default-is-restricted
+  ;; No persisted override and no BY_SANDBOX_INTEROP → schema :default-fn → :restricted.
+  (with-redefs [cfg/get-config (fn ([_] :restricted) ([_ _] :restricted))]
+    (is (= :restricted (cfg/resolve-sandbox-interop)))
+    (is (= :restricted (cfg/resolve-sandbox-interop (fake-agent {}))))))
+
+(deftest resolve-sandbox-interop-full-passes-through
+  (with-redefs [cfg/get-config (fn ([_] :full) ([_ _] :full))]
+    (is (= :full (cfg/resolve-sandbox-interop)))
+    (is (= :full (cfg/resolve-sandbox-interop (fake-agent {}))))))
+
+(deftest resolve-sandbox-interop-auto-consults-container-detection
+  (testing ":auto → :full when a container is detected"
+    (with-redefs [cfg/get-config (fn ([_] :auto) ([_ _] :auto))
+                  cfg/container-detected? (constantly true)]
+      (is (= :full (cfg/resolve-sandbox-interop)))))
+  (testing ":auto → :restricted when no container is detected"
+    (with-redefs [cfg/get-config (fn ([_] :auto) ([_ _] :auto))
+                  cfg/container-detected? (constantly false)]
+      (is (= :restricted (cfg/resolve-sandbox-interop))))))
+
+(deftest resolve-sandbox-interop-unknown-falls-back-to-restricted
+  (with-redefs [cfg/get-config (fn ([_] :bogus) ([_ _] nil))]
+    (is (= :restricted (cfg/resolve-sandbox-interop)))
+    (is (= :restricted (cfg/resolve-sandbox-interop (fake-agent {}))))))
