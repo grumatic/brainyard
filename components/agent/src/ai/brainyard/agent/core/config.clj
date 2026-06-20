@@ -318,7 +318,11 @@
    ;; `[:agent :config :nrepl-enabled?] true` in .brainyard/config.edn,
    ;; or transiently via BY_NREPL_ENABLED=true (the env-fallback
    ;; layer below). Same precedence applies to :nrepl-port (0 = ephemeral)
-   ;; and :nrepl-grant (e.g. "read-only:15m" or "mutate:5m").
+   ;; and :nrepl-grant. The server is OFF by default; :nrepl-grant defaults to
+   ;; "read-only:24h" so that WHEN the server is running (enabled at bootstrap
+   ;; or started on demand via clj-nrepl$start-server), read-only introspection
+   ;; eval works without a separate grant step. A real env var
+   ;; (BY_NREPL_GRANT, e.g. "mutate:5m") still overrides.
    :nrepl-enabled?             {:type "boolean"
                                 :default-fn #(= "true" (System/getenv "BY_NREPL_ENABLED"))}
    :nrepl-port                 {:type "integer"
@@ -326,7 +330,8 @@
                                                          parse-long)
                                                  0)}
    :nrepl-grant                {:type "string"
-                                :default-fn #(System/getenv "BY_NREPL_GRANT")}
+                                :default-fn #(or (System/getenv "BY_NREPL_GRANT")
+                                                 "read-only:24h")}
    ;; Clojure code-execution backend for ```clojure blocks in CoAct agents.
    ;; :sandbox — SCI sandbox (default, safe for arbitrary agents).
    ;; :nrepl   — live brainyard JVM via clj-nrepl (debug-agent; needs server).
