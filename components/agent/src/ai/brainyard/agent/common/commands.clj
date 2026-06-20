@@ -143,10 +143,11 @@
 
 (defcommand memory$remember
   "Store one memory entry. Pick :layer by lifetime — l3=durable cross-session, l2=session timeline, l1=session-only pin."
-  (fn [& {:keys [layer kind content tags role confidence]}]
+  (fn [& {:keys [layer kind content tags role confidence field section]}]
     (if-let [mm (current-mm)]
       (let [lyr      (or (layer-kw layer) :l3)
             kind-kw  (when-not (str/blank? kind) (keyword kind))
+            field-kw (when-not (str/blank? field) (keyword field))
             kind-err (invalid-kind-error lyr kind-kw kind)]
         (cond
           (str/blank? content)
@@ -178,6 +179,18 @@
                         (assoc :kind :observation)
                         (and (= lyr :l3) (nil? (:kind entry)))
                         (assoc :kind :fact))
+                ;; L1 canonical addressing: :field/:section land in :data
+                ;; (where read-entries matches and assemble-field groups on
+                ;; them), and when BOTH are present derive the stable
+                ;; {kind}/{field}/{section} id so a repeat write upserts the
+                ;; same overlay instead of piling up random-uuid entries.
+                entry (cond-> entry
+                        (and (= lyr :l1) field-kw)
+                        (assoc-in [:data :field] field-kw)
+                        (and (= lyr :l1) (not (str/blank? section)))
+                        (assoc-in [:data :section] section)
+                        (and (= lyr :l1) field-kw (not (str/blank? section)))
+                        (assoc :id (mem/l1-entry-id (:kind entry) field-kw section)))
                 result (agent-mem/remember mm lyr [entry])
                 persisted (-> result lyr first)]
             (if persisted
@@ -193,7 +206,9 @@
                   [:content [:string {:desc "entry content (required)"}]]
                   [:tags {:optional true} [:vector {:desc "tags for the entry"} :string]]
                   [:role {:optional true} [:string {:desc "L2 only: message role (user/assistant/system/tool)"}]]
-                  [:confidence {:optional true} [:double {:desc "L3 only: confidence 0.0..1.0 (default 1.0)"}]]]
+                  [:confidence {:optional true} [:double {:desc "L3 only: confidence 0.0..1.0 (default 1.0)"}]]
+                  [:field {:optional true} [:string {:desc "L1 only: overlay field grouping entries into one assembled prompt fragment. system-context fields: instruction | agent-context | tool-context. user-context: arbitrary grouping key (e.g. preferences, notes)."}]]
+                  [:section {:optional true} [:string {:desc "L1 only: section name within :field. Entries sort by it and render as '### <section>'. With :field, forms the stable id {kind}/{field}/{section} so a repeat write upserts rather than duplicates."}]]]
   :output-schema [:map
                   [:result {:optional true} [:string {:desc "Confirmation message with layer and entry id"}]]
                   [:entry-id {:optional true} [:string {:desc "Persisted entry id"}]]

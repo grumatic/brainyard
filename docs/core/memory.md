@@ -26,24 +26,26 @@ Primary files:
 | Layer | Lifetime | Backing store | Primary API | Example |
 |---|---|---|---|---|
 | **L0** | One iteration | LLM context window | (none — provided by signature) | Current thought, tool result |
-| **L1** | One session | In-memory L1 store | `mem/write-entry` at `:l1`; `assemble-field` reader | System-context fragment, agent-context overlay |
+| **L1** | One session | In-memory L1 store | `mem/write-entry` at `:l1`; `memory$remember` (LLM-facing); `assemble-field` reader | System-context fragment, agent-context overlay |
 | **L2** | Default 30 days, configurable | SQLite `episodic` table | capture pipeline, `episodes/*` | "User asked X at 14:32" |
 | **L3** | Indefinite | SQLite `semantic_facts` table | consolidation, `facts/*` | "User prefers Polylith layout" |
 
 L0 is implicit in the prompt. L1 is the agent's working memory, holding
 two entry kinds — `:system-context` (operator-managed configuration, e.g.
 loaded skill instructions and assembled knowledge sections) and
-`:user-context` (model-curated; no producer in the current revision). L2
-is the chronicle of what happened. L3 is what we believe to be true in
-general.
+`:user-context` (model-curated). Both kinds are writable from the
+LLM-facing `memory$remember` command (see below); operators may also
+write either kind directly via `mem/write-entry`. L2 is the chronicle of
+what happened. L3 is what we believe to be true in general.
 
 > **Note (L1 simplification refactor).** An earlier revision modelled a
 > separate `:system` layer plus a `:kind :note` family written by the
 > sandbox `remember-note` bindings. Those were removed: the formal layer
-> set is now exactly `#{:l1 :l2 :l3}`, system context is just an L1 entry
-> with `:kind :system-context`, and the note bindings are gone (a
-> model-facing `:user-context` API is slated to return once its shape
-> settles).
+> set is now exactly `#{:l1 :l2 :l3}`, and system context is just an L1
+> entry with `:kind :system-context`. The sandbox note bindings stay
+> gone; the model-facing path that replaced them is `memory$remember`
+> (with `:field`/`:section`), which writes addressable L1 entries of
+> either kind.
 
 ---
 
@@ -131,9 +133,9 @@ Three runtime-mutable fields back the agent's system context:
 | `:tool-context` | Operational guidance about the current toolset |
 
 These fragments are stored as L1 entries with `:kind :system-context`.
-There is **no agent-side wrapper for writing them** — operators set
-entries directly via `mem/write-entry` at layer `:l1`. The only consumer
-in `context.clj` is the reader:
+Operators set them directly via `mem/write-entry` at layer `:l1`; the
+LLM can also write them through `memory$remember` (see *Writing L1 from
+the model* below). The only consumer in `context.clj` is the reader:
 
 ```clojure
 (assemble-field st-memory-init field)   ;; field ∈ #{:instruction :agent-context :tool-context}
@@ -151,6 +153,28 @@ The CoAct signature declares `:system-context` / `:user-context` as
 `:stable-keys`, so the assembled fields ride the system message and
 benefit from LLM provider prompt-cache reuse.
 
+### Writing L1 from the model — `memory$remember`
+
+The LLM-facing `memory$remember` command (`agent/common/commands.clj`)
+writes a single L1 entry when called with `:layer "l1"`. It accepts two
+L1-only inputs that give the entry a canonical, addressable identity:
+
+| Input | Meaning |
+|---|---|
+| `:field` | Overlay field — groups entries assembled into one prompt fragment. For `:kind "system-context"`: `instruction` \| `agent-context` \| `tool-context`. For `:kind "user-context"` (the L1 default): an arbitrary grouping key (e.g. `preferences`, `notes`). |
+| `:section` | Section name within `:field`. Entries sort by it and render as `### <section>` inside the assembled fragment. |
+
+`:field` lands in the entry's `:data {:field …}` (coerced to a keyword,
+matching how `read-entries`/`assemble-field` filter), `:section` in
+`:data {:section …}` (kept as a string). When **both** are present the id
+is derived via `memory/l1-entry-id` as `{kind}/{field}/{section}`, so a
+repeat write **upserts** the same overlay instead of accumulating
+random-uuid rows. Omitting both yields a freeform pin with a generated
+uuid id (the legacy behaviour). **Both kinds are open to the model** —
+`memory$remember` does not restrict `:field`/`:section` writes to
+`:user-context`, so the LLM can author `:system-context` overlays with
+canonical ids as well.
+
 ---
 
 ## Sandbox notes — removed (L1 simplification refactor)
@@ -159,13 +183,14 @@ benefit from LLM provider prompt-cache reuse.
 > `list-notes` / `forget-note` / `clear-notes`) and their `notes-snapshot`
 > reader were the **only writer of `:kind :note` L1 entries**, and were
 > removed when L1 was simplified to the `:system-context` / `:user-context`
-> kinds. A new model-facing user-context API is planned for a later
-> revision once its shape settles. The stable-id helper is now
-> `memory/l1-entry-id` (the old `note-id` is gone).
+> kinds. The model-facing path that replaced them is `memory$remember`
+> with `:field`/`:section` (see *Writing L1 from the model* above), not a
+> sandbox binding. The stable-id helper is now `memory/l1-entry-id` (the
+> old `note-id` is gone).
 
-For now the model curates durable memory only indirectly — through the
-capture pipeline (L2/L3) and explicit `promote-entry` calls — not through
-a sandbox note binding.
+The model curates session-scoped context directly via `memory$remember`
+at L1, and durable memory (L2/L3) through the capture pipeline plus
+explicit `promote-entry` calls — no sandbox note binding is involved.
 
 `(def …)` snapshots remain, and are
 **deliberately ephemeral**: extracted from each iteration's code blocks
