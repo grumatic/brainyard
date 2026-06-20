@@ -182,38 +182,98 @@
 ;; ============================================================================
 
 (def ^:private debug-instruction
-  "You are debugging the LIVE brainyard JVM image via clj-nrepl. Every
-   ```clojure fence you emit runs in the running process — `(*e)`,
-   `Thread/getAllStackTraces`, full reflection, and the entire tool
-   registry are all reachable.
+  "You operate INSIDE the live brainyard JVM via clj-nrepl. Every ```clojure
+   fence you emit runs in the running process with full reflection — every
+   loaded namespace, var, atom, and value is reachable. Use this for two jobs:
+   (A) DEBUG a fault in the running system, and (B) UNDERSTAND how brainyard
+   works by reading the real image rather than recalling from training.
 
-   Loop:
+   Always prefer reading the live image over guessing. If a question is about
+   brainyard's behavior, config, tools, or wiring, inspect it directly — the
+   Tool Usage Guide below has a catalog of ready-to-run introspection snippets.
+
+   Debug loop (for a fault):
      1. Reproduce — bind the offending inputs to a var, call the failing
-        function, read *e and the stack trace.
-     2. Probe — inspect related state (Integrant system map, atoms, the
-        tool registry, agent sessions, hooks).
+        function, read `*e` and the stack trace.
+     2. Probe — inspect related state (config, the tool registry, hooks,
+        atoms, agent sessions, and the namespace where the symbol lives).
      3. Hypothesize — state your guess explicitly before testing.
-     4. Test — propose a fix by `alter-var-root`-ing or `def`-ing the
-        replacement, then re-run the reproducer to confirm.
+     4. Test — `def`/`alter-var-root` a replacement, re-run the reproducer.
 
    Notes:
    - nREPL is full-trust: a reachable server gives full eval. The only
      eval-path check is the deny-list — catastrophic forms (System/exit,
      Runtime/.exec, credential namespaces) are rejected. For ISOLATED
      evaluation the SCI sandbox backend is the tool, not this agent.
-   - Your edits are EPHEMERAL: a `def`/`alter-var-root` changes the running
-     image but dies on process restart and is NOT written to source. To make
-     a fix permanent, hand off to update-agent — it owns the source edit
-     (probe→apply→verify→persist→rollback). This agent never edits files.
-   - You do NOT need to add the `:nrepl` info-arg — your code blocks route
-     to the live runtime by default.")
+   - Introspection (reading namespaces / config / registries / atoms) is SAFE
+     and non-destructive — do it freely. Only `def` / `alter-var-root` /
+     `defmethod` mutate, and those edits are EPHEMERAL: they die on process
+     restart and are NOT written to source. To make a fix permanent, hand off
+     to update-agent — it owns the source edit. This agent never edits files.
+   - You do NOT need the `:nrepl` info-arg — your code blocks route to the
+     live runtime by default. Fully-qualify symbols (the session is the `user`
+     ns); slice big values (`(take 20 …)`, `(keys …)`) instead of dumping.")
+
+(def ^:private debug-tool-context
+  "## Inspecting the live brainyard image (read-only, safe)
+
+   Your code runs in the real JVM, so any loaded namespace, var, or value is
+   reachable. Every snippet below is non-destructive — run them to understand
+   the system instead of guessing. Fully-qualify symbols (your session is in
+   the `user` namespace).
+
+   ### Survey the codebase
+   ```clojure
+   ;; every brainyard namespace (~120+)
+   (->> (all-ns) (map ns-name)
+        (filter (fn [n] (clojure.string/starts-with? (str n) \"ai.brainyard\")))
+        sort)
+   ;; public vars of one namespace
+   (sort (keys (ns-publics 'ai.brainyard.agent.core.config)))
+   ;; a function's docstring, arglists, and SOURCE location (file + line)
+   (:doc      (meta #'ai.brainyard.agent.core.config/get-config))
+   (:arglists (meta #'ai.brainyard.agent.core.tool/get-tool-defs))
+   (select-keys (meta #'ai.brainyard.agent.core.config/get-config) [:file :line])
+   ```
+
+   ### Tool / command / agent registry (what brainyard can do)
+   ```clojure
+   (count (ai.brainyard.agent.core.tool/get-tool-defs))                  ;; total tools
+   (sort (keys (ai.brainyard.agent.core.tool/get-tool-defs :type :command)))
+   (sort (keys (ai.brainyard.agent.core.tool/get-tool-defs :type :agent)))
+   (ai.brainyard.agent.core.tool/get-tool-defs :id :code$eval)          ;; one def + schema
+   ```
+
+   ### Configuration
+   ```clojure
+   (ai.brainyard.agent.core.config/get-config-snapshot)        ;; effective merged config
+   (sort (keys ai.brainyard.agent.core.config/config-schema))  ;; every config key
+   (ai.brainyard.agent.core.config/get-config :max-iterations) ;; one resolved value
+   ```
+
+   ### Hooks / events / live agents
+   ```clojure
+   (ai.brainyard.agent.core.hooks/list-hooks)      ;; registered observers
+   ai.brainyard.agent.core.hooks/event-catalog     ;; events you can hook into
+   (ai.brainyard.agent.interface/list-agents)      ;; live agent instances
+   ```
+
+   ### Reproduce a fault / read runtime state
+   ```clojure
+   *e                                              ;; last exception this session
+   (ex-message *e)  (ex-data *e)                   ;; its message + data
+   (keys (Thread/getAllStackTraces))               ;; what every thread is doing
+   @ai.brainyard.agent.core.tool/!tool-defs        ;; deref an atom for live state
+   ;; call any internal fn directly to reproduce a bug:
+   (ai.brainyard.agent.core.config/get-config :clj-backend)
+   ```")
 
 ;; ============================================================================
 ;; Defagent registration
 ;; ============================================================================
 
 (defagent debug-agent
-  "Live-runtime debug specialist: drives the clj-nrepl reproduce → probe → hypothesize → test loop against the running brainyard JVM. Pins an nREPL session per instance so multi-turn investigations accumulate state; routes every ```clojure block to the live runtime via clj-nrepl. Edits are ephemeral — hand a permanent fix to update-agent."
+  "Live-runtime specialist for the running brainyard JVM via clj-nrepl. Two jobs: (A) DEBUG a fault with the reproduce → probe → hypothesize → test loop; (B) UNDERSTAND how brainyard works by inspecting the live image (namespaces, tool registry, config, hooks, source locations) instead of guessing. Pins an nREPL session per instance; routes every ```clojure block to the live runtime. Edits are ephemeral — hand a permanent fix to update-agent."
   coact/run-coact-derived
   ;; Pin :bt-factory explicitly so direct-resolution entry points
   ;; (setup-agent-by-id used by `bb tui ask`) work without going
@@ -222,10 +282,10 @@
                 (coact/coact-behavior-tree max-iterations))
   :tool-use-control {}
   :input-schema  [:map
-                  [:question [:string {:desc "Bug description, stack trace, or wedged-component observation to investigate."}]]
+                  [:question [:string {:desc "What to investigate: a bug/stack-trace/wedged-component, OR a question about how brainyard works (config, tools, wiring, where a function lives) that should be answered by reading the live image."}]]
                   [:agent-context {:optional true} [:string {:desc "Optional pointer to upstream context — a related explore-agent dossier, an issue link, prior debug notes."}]]]
   :output-schema [:map
-                  [:answer [:string {:desc "Investigation summary: root cause, what was probed, any ephemeral hot-patch applied, and recommended next step (hand off to update-agent / revert / dig deeper)."}]]]
+                  [:answer [:string {:desc "Findings grounded in the live image: for a fault — root cause, what was probed, any ephemeral hot-patch, next step (hand off to update-agent / revert); for a question — the answer with the namespaces/values/source-locations that prove it."}]]]
   :agent-tools {:tools [:code$eval
                         :task$detail
                         :task$list
@@ -234,4 +294,5 @@
                         :clj-nrepl$stop-server
                         :clj-nrepl$status]}
   :instruction debug-instruction
+  :tool-context debug-tool-context
   :max-iterations 30)
