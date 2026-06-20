@@ -39,7 +39,9 @@
     (clj-nrepl/maybe-grant-from-env!))
   (cond
     (not (clj-nrepl/running?))
-    {:error "clj-nrepl server is not running (set BY_NREPL_ENABLED=true on bootstrap)"
+    {:error (str "clj-nrepl server is not running — start it with the "
+                 "clj-nrepl$start-server command (debug-agent), or set "
+                 "BY_NREPL_ENABLED=true on bootstrap")
      :code code :output "" :backend :nrepl}
 
     :else

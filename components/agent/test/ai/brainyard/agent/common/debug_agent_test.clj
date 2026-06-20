@@ -257,3 +257,61 @@
         (is (= sid (-> (tp/get-task mgr (:id t)) :job-config :session))))
       (finally
         (.close ^java.io.Closeable agent)))))
+
+;; ============================================================================
+;; nREPL server lifecycle commands — start / stop / status
+;; (with-server fixture pre-starts a loopback server + :mutate grant)
+;; ============================================================================
+
+(deftest nrepl-lifecycle-commands-registered-and-bound
+  (let [td (tool/get-tool-defs :id :debug-agent)
+        tools (set (:tools (get-in td [:meta :agent-tools])))]
+    (is (contains? tools :clj-nrepl$start-server))
+    (is (contains? tools :clj-nrepl$stop-server))
+    (is (contains? tools :clj-nrepl$status)))
+  (doseq [id [:clj-nrepl$start-server :clj-nrepl$stop-server :clj-nrepl$status]]
+    (is (some? (tool/get-tool-defs :id id)) (str id " registered"))))
+
+(deftest nrepl-lifecycle-commands-gated-to-debug
+  (doseq [id [:clj-nrepl$start-server :clj-nrepl$stop-server :clj-nrepl$status]]
+    (let [td (tool/get-tool-defs :id id)]
+      (is (tool/tool-visible? td :debug-agent) (str id " visible to debug-agent"))
+      (is (not (tool/tool-visible? td :coact-agent))
+          (str id " hidden from coact-agent")))))
+
+(deftest nrepl-status-reflects-running-server-and-grant
+  ;; fixture has a running server + :mutate grant
+  (let [s (tool/invoke-tool :clj-nrepl$status)]
+    (is (true? (:running s)))
+    (is (integer? (:port s)))
+    (is (true? (:grant-active s)))
+    (is (= :mutate (:grant-scope s)))
+    (is (contains? s :drifted?))
+    (is (vector? (:port-files s)))))
+
+(deftest nrepl-start-server-is-idempotent
+  (let [r (tool/invoke-tool :clj-nrepl$start-server)]
+    (is (true? (:running r)))
+    (is (true? (:already-running r)) "fixture server already up → no-op start")
+    (is (= (clj-nrepl/server-port) (:port r)))
+    (is (string? (:port-file r)))))
+
+(deftest nrepl-stop-then-restart-cycle
+  ;; stop the fixture's server, confirm status, then bring a fresh one up
+  (let [stopped (tool/invoke-tool :clj-nrepl$stop-server)]
+    (is (true? (:stopped stopped)))
+    (is (integer? (:was-port stopped)))
+    (is (false? (:running (tool/invoke-tool :clj-nrepl$status))))
+    ;; restart — a genuinely new server (not a no-op)
+    (let [started (tool/invoke-tool :clj-nrepl$start-server)]
+      (try
+        (is (true? (:running started)))
+        (is (false? (:already-running started)))
+        (is (integer? (:port started)))
+        (is (true? (:running (tool/invoke-tool :clj-nrepl$status))))
+        (finally
+          ;; leave the world stopped; stop-server also deletes the port file
+          (tool/invoke-tool :clj-nrepl$stop-server)))))
+  ;; no-op stop when nothing is running
+  (let [noop (tool/invoke-tool :clj-nrepl$stop-server)]
+    (is (false? (:stopped noop)))))

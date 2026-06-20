@@ -273,6 +273,92 @@
                   [:drifted? [:boolean {:desc "True when at least one mutation has occurred."}]]])
 
 ;; ============================================================================
+;; nREPL server lifecycle — start / stop / status (debug-agent only)
+;;
+;; The embedded loopback nREPL server is normally started at bootstrap via
+;; BY_NREPL_ENABLED=true. These commands let the debug-agent manage it on
+;; demand without a process restart. Starting the server does NOT grant eval
+;; access — the grant (BY_NREPL_GRANT / clj-nrepl/grant!) plus the read-only
+;; classifier and deny-list remain the eval security boundary. Gated to
+;; debug-* via :tool-use-control AND bound on debug-agent's :agent-tools.
+;; ============================================================================
+
+(defcommand clj-nrepl$start-server
+  "Start the embedded loopback-only nREPL server (idempotent — a no-op when one
+   is already running). Writes a per-instance port file
+   (~/.brainyard/nrepl-ports/by-<pid>.port) so external CIDER tooling can attach
+   to the SAME live image. Does NOT grant eval access — set a grant
+   (BY_NREPL_GRANT) before the :nrepl backend can run code."
+  (fn [{:keys [port]}]
+    (if (clj-nrepl/running?)
+      {:running true
+       :port (clj-nrepl/server-port)
+       :port-file (str (clj-nrepl/instance-port-file "by"))
+       :already-running true
+       :grant-active (clj-nrepl/active?)}
+      (do
+        (clj-nrepl/cleanup-stale-ports!)
+        (let [pf  (clj-nrepl/instance-port-file "by")
+              srv (clj-nrepl/start-server! :port (or port 0) :port-file pf)]
+          {:running true
+           :port (:port srv)
+           :port-file (str pf)
+           :already-running false
+           :grant-active (clj-nrepl/active?)}))))
+  :input-schema  [:map
+                  [:port {:optional true}
+                   [:int {:desc "Fixed loopback port to bind. Default 0 = ephemeral."}]]]
+  :output-schema [:map
+                  [:running [:boolean {:desc "True once the server is up."}]]
+                  [:port [:int {:desc "Bound loopback port."}]]
+                  [:port-file [:string {:desc "Per-instance port file path for external attach."}]]
+                  [:already-running [:boolean {:desc "True when a server was already running (start was a no-op)."}]]
+                  [:grant-active [:boolean {:desc "Whether an eval grant is active. Starting the server does NOT grant eval."}]]]
+  :tool-use-control {:allow ["debug-*"]})
+
+(defcommand clj-nrepl$stop-server
+  "Stop the embedded nREPL server if running and remove its per-instance port
+   file. No-op (returns :stopped false) when no server is running."
+  (fn [_]
+    (if-not (clj-nrepl/running?)
+      {:running false :stopped false :message "no nREPL server running"}
+      (let [port (clj-nrepl/server-port)
+            pf   (clj-nrepl/instance-port-file "by")]
+        (clj-nrepl/stop-server!)
+        (try (when (.exists pf) (.delete pf)) (catch Throwable _ nil))
+        {:running false :stopped true :was-port port})))
+  :input-schema  [:map]
+  :output-schema [:map
+                  [:running [:boolean {:desc "Server running state after the call (false on success)."}]]
+                  [:stopped [:boolean {:desc "True when a running server was stopped."}]]
+                  [:was-port {:optional true} [:int {:desc "Port the stopped server had been bound to."}]]
+                  [:message {:optional true} [:string {:desc "Present when there was nothing to stop."}]]]
+  :tool-use-control {:allow ["debug-*"]})
+
+(defcommand clj-nrepl$status
+  "Status of the live-runtime channel: whether the loopback nREPL server is
+   running and its port, the eval grant scope, the runtime-drift summary, and
+   the inventory of known per-instance port files (multi-instance awareness)."
+  (fn [_]
+    {:running      (clj-nrepl/running?)
+     :port         (clj-nrepl/server-port)
+     :grant-active (clj-nrepl/active?)
+     :grant-scope  (clj-nrepl/scope)
+     :drifted?     (clj-nrepl/drifted?)
+     :drift-count  (clj-nrepl/drift-count)
+     :port-files   (vec (clj-nrepl/list-port-files))})
+  :input-schema  [:map]
+  :output-schema [:map
+                  [:running [:boolean {:desc "True when an nREPL server is up in this process."}]]
+                  [:port [:any {:desc "Loopback port (int) or nil when not running."}]]
+                  [:grant-active [:boolean {:desc "Whether an eval grant is active."}]]
+                  [:grant-scope [:any {:desc "Grant scope keyword (:read-only / :mutate) or nil."}]]
+                  [:drifted? [:boolean {:desc "True when the live image has at least one runtime mutation."}]]
+                  [:drift-count [:int {:desc "Total drift markers since process start."}]]
+                  [:port-files [:any {:desc "Known per-instance port files: {:pid :port :file :alive?}."}]]]
+  :tool-use-control {:allow ["debug-*"]})
+
+;; ============================================================================
 ;; Per-instance lifecycle — open / close nREPL session
 ;;
 ;; The execution-model prompt section is selected by coact-system-context
@@ -439,6 +525,9 @@
                         :task$list
                         :task$cancel
                         :clj-nrepl$drift-markers
+                        :clj-nrepl$start-server
+                        :clj-nrepl$stop-server
+                        :clj-nrepl$status
                         :debug$promote-hot-patch]}
   :instruction debug-instruction
   :max-iterations 30)
