@@ -29,28 +29,17 @@
             [ai.brainyard.mulog.interface :as mulog]))
 
 (defn- dispatch-nrepl-eval
-  "Synchronous :nrepl arm. Bootstraps the grant from the resolved
-   :nrepl-grant config (env BY_NREPL_GRANT → session/global → schema
-   default \"read-only:24h\") on first use, then defers to
-   clj-nrepl/eval-string (which runs the classifier + audit). The
-   enclosing ToolJobExecutor already wraps tool calls in a future with
-   timeout, so a sync call here is bounded per-call without us managing a
-   second task."
+  "Synchronous :nrepl arm. Defers to clj-nrepl/eval-string, whose only
+   eval-path check is the deny-list (nREPL is the full-trust backend; for
+   isolation use the :sandbox backend). The enclosing ToolJobExecutor
+   already wraps tool calls in a future with timeout, so a sync call here is
+   bounded per-call without us managing a second task."
   [code {:keys [session timeout-ms]}]
-  (when-not (clj-nrepl/active?)
-    ;; Resolve through the config chain (not the raw env) so the schema
-    ;; default and any per-agent/session override apply — matters when the
-    ;; server was started on demand via clj-nrepl$start-server rather than
-    ;; through the bootstrap path that already grants.
-    (clj-nrepl/maybe-grant-from-env! (config/get-config :nrepl-grant)))
-  (cond
-    (not (clj-nrepl/running?))
+  (if-not (clj-nrepl/running?)
     {:error (str "clj-nrepl server is not running — start it with the "
                  "clj-nrepl$start-server command (debug-agent), or set "
                  "BY_NREPL_ENABLED=true on bootstrap")
      :code code :output "" :backend :nrepl}
-
-    :else
     (-> (clj-nrepl/eval-string code
                                :session    session
                                :timeout-ms (or timeout-ms 30000))

@@ -744,17 +744,14 @@ reflection, every loaded namespace, and arbitrary interop are all reachable.
   returned to you in the next iteration.
 - **Errors are non-fatal**: a CompilerException or runtime throw shows up
   as `:error` on the eval entry; session state is preserved.
-- **Mutations are recorded**: every successful `def` / `alter-var-root` /
-  `require` marks runtime-drift. Inspect via `clj-nrepl$drift-markers`.
-  Drift survives only until the process restarts — promotion to source
-  is a separate workflow (update-agent, Phase 3).
-- **Mutating-eval gate**: under `:read-only` grant, mutating top-level
-  forms are rejected. Under `:mutate` grant, the FIRST mutating eval per
-  session triggers an operator confirmation prompt; subsequent mutations
-  in the same session pass silently.
-- **Deny-list**: `System/exit`, `Runtime/.exec`, credential namespaces
-  (`ai.brainyard.aws-client`, `ai.brainyard.keycloak`) are rejected
-  regardless of grant scope.
+- **Ephemeral edits**: `(def …)` / `(alter-var-root …)` change the running
+  image but die on process restart and are NOT written to source. To make a
+  fix permanent, hand off to update-agent (it owns the source edit).
+- **Full-trust backend**: reaching the loopback server gives full eval —
+  no grant, scope, or confirmation. The ONLY eval-path check is the
+  **deny-list**: `System/exit`, `Runtime/.exec`, credential namespaces
+  (`ai.brainyard.aws-client`, `ai.brainyard.keycloak`) are rejected. If you
+  need ISOLATED evaluation, the SCI sandbox backend is the tool, not this.
 - **NO SCI shortcuts**: `context-get`, `(usage :foo)`, and bare
   tool-name-as-fn (`(some-tool …)`) do not exist here. Use the
   tool-call channel for registered tools, and refer to library functions

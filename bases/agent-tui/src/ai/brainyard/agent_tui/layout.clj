@@ -1005,20 +1005,13 @@
   "Build status bar string from agent state as right-aligned columns.
    {:status :idle|:running, :calls N, :tokens N, :cost 0.0,
     :last-input-tokens N|nil, :input-tokens-delta M|nil,
-    :tasks-running N, :queue-count N,
-    :drifted? bool, :drift-count N}
+    :tasks-running N, :queue-count N}
 
    When `:last-input-tokens` is supplied, the calls segment expands to
    `N calls (last <K> in[, +/-M tok])`; the delta parenthetical is
-   omitted on the very first recorded call (no previous to compare).
-
-   `:drifted? true` renders a bold-yellow `drifted (N)` chip — set when
-   clj-nrepl has recorded at least one runtime mutation (debug-agent /
-   live-runtime work). Chip stays visible until the process restarts or
-   the operator clears via clj-nrepl/drift-clear!."
+   omitted on the very first recorded call (no previous to compare)."
   [{:keys [status calls tokens cost tasks-running queue-count
-           last-input-tokens input-tokens-delta
-           drifted? drift-count]}]
+           last-input-tokens input-tokens-delta]}]
   (let [status-str  (case status
                       :running (ansi/success "running")
                       :paused  (ansi/warning "paused")
@@ -1031,11 +1024,6 @@
                                          (when (> tasks-running 1) "s"))))
         queue-str   (when (and queue-count (pos? queue-count))
                       (ansi/style (str queue-count " queued")
-                                  ansi/bold ansi/bright-yellow))
-        drift-str   (when drifted?
-                      (ansi/style (str "drifted"
-                                       (when (and drift-count (pos? drift-count))
-                                         (str " (" drift-count ")")))
                                   ansi/bold ansi/bright-yellow))
         calls-n     (or calls 0)
         calls-base  (str calls-n " call" (when (not= 1 calls-n) "s"))
@@ -1051,7 +1039,6 @@
     (cond-> (str status-str)
       queue-str (str sep queue-str)
       tasks-str (str sep tasks-str)
-      drift-str (str sep drift-str)
       true      (str sep calls-str sep tokens-str sep cost-str))))
 
 ;; ============================================================================

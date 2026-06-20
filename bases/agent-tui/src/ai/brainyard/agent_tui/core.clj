@@ -80,8 +80,9 @@
 ;; (.brainyard/config.edn, [:agent :config :nrepl-enabled?] true) or
 ;; transiently via BY_NREPL_ENABLED=true (the env-fallback layer of
 ;; the :nrepl-enabled? schema key). The port (:nrepl-port, 0 = ephemeral)
-;; and grant (:nrepl-grant, e.g. "read-only:15m") follow the same chain.
-;; See docs/design/clj-nrepl-eval.md §5 / §8.
+;; follows the same chain. nREPL is full-trust: reaching the loopback
+;; server gives full eval (the only eval-path check is the deny-list).
+;; See docs/design/clj-nrepl-eval.md.
 (defonce !nrepl-server (atom nil))
 
 ;; Side ask channel (docs/design/ask-attach-channel.md). One AF_UNIX listener
@@ -95,31 +96,6 @@
 ;; one live process owns a session's on-disk state + ask.sock. Keyed by
 ;; session-id → the persist lock handle. See docs/design/session-channel-extensions.md §1.
 (defonce !session-locks (atom {}))
-
-(defn- tui-confirm-mutation
-  "v1 confirm-fn (visibility-only) — emits a scrollback notice and a mulog
-   audit on the first mutating eval per session, then auto-approves.
-   Replaces clj-nrepl's default `::no-confirm-fn-installed` silent allow.
-   See §9 #4 of docs/live-debugging.md: the literal gap was that no host
-   fn was installed, so `:mutate` grants effectively passed without
-   visibility. v1 surfaces mutations to the operator watching the TUI
-   without blocking them; a future v2 will plumb popup.clj's
-   questionnaire as a real interactive Y/n gate that blocks the nREPL
-   thread until the operator responds."
-  [{:keys [session code]}]
-  (let [flat       (str/replace (or code "<no-code>") #"\s+" " ")
-        preview    (if (> (count flat) 120) (str (subs flat 0 117) "...") flat)
-        sess-str   (if (nil? session) "<in-process>" (str session))
-        sess-short (if (> (count sess-str) 12) (subs sess-str 0 12) sess-str)]
-    (mulog/info ::mutation-allowed
-                :session session
-                :code-preview preview
-                :decision :auto-allow-v1)
-    (tui-session/emit!
-     (ansi/warning
-      (str "[clj-nrepl] mutating eval auto-allowed (v1 visibility, session="
-           sess-short ", code: " preview ")")))
-    true))
 
 (defn- emit-turn-complete!
   "Driver settle-detection signal — fires on every `:agent.ask/post`
@@ -184,11 +160,7 @@
                  :port (or port 0)
                  :port-file port-file)]
         (reset! !nrepl-server srv)
-        (clj-nrepl/maybe-grant-from-env! (agent/get-config :nrepl-grant))
-        (clj-nrepl/set-confirm-fn! tui-confirm-mutation)
-        (mulog/info ::nrepl-bootstrapped
-                    :port (:port srv)
-                    :grant (clj-nrepl/scope)))
+        (mulog/info ::nrepl-bootstrapped :port (:port srv)))
       (catch Exception e
         (mulog/warn ::nrepl-bootstrap-failed :error (.getMessage e))))))
 

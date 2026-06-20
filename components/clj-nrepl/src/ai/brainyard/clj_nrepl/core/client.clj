@@ -9,25 +9,22 @@
    {:result :output :error :ns}, and exposes `eval-nrepl-thunk` for the task
    executor (mirroring clj-sandbox/eval-sandbox-thunk).
 
+   nREPL is the FULL-TRUST live-runtime backend: like any CIDER-attachable
+   nREPL, a client that reaches the server gets full `eval`. The only check on
+   the eval path is the deny-list (catastrophic substrings). There is NO grant,
+   scope, confirmation, drift, or audit machinery — static analysis can't
+   soundly isolate a live nREPL, so isolation is delegated to the SCI sandbox
+   backend (:clj-backend :sandbox), the sound controlled-bindings interpreter.
+   The only structural safety is that the socket is loopback-only.
+
    Gate order (every eval passes through, in order):
-     1. server-up        — clj-nrepl/start-server! has run
-     2. grant-active     — non-expired grant exists
-     3. deny-list        — code does NOT contain forbidden substrings
-                            (applies regardless of scope, per §8.2 #4)
-     4. mutating-scope   — :read-only grants reject mutating top-level
-                            forms; :mutate grants allow them
-     5. confirmation     — first mutating eval per session requires
-                            operator approval (host-installed fn)
-   Eval runs only when all five pass. On a successful mutating eval,
-   the drift marker is recorded. Every outcome (allow / reject /
-   error) is audited via mulog."
+     1. server-up   — clj-nrepl/start-server! has run
+     2. deny-list   — code does NOT contain forbidden substrings
+                      (System/exit, Runtime/.exec, credential namespaces, …)
+   Eval runs when both pass."
   (:require [nrepl.core :as nrepl]
             [ai.brainyard.clj-nrepl.core.server :as server]
-            [ai.brainyard.clj-nrepl.core.classifier :as classifier]
-            [ai.brainyard.clj-nrepl.core.grant :as grant]
-            [ai.brainyard.clj-nrepl.core.confirm :as confirm]
-            [ai.brainyard.clj-nrepl.core.drift :as drift]
-            [ai.brainyard.clj-nrepl.core.audit :as audit]))
+            [ai.brainyard.clj-nrepl.core.classifier :as classifier]))
 
 (def ^:const default-timeout-ms 30000)
 
@@ -62,33 +59,19 @@
 
 (defn- gate
   "Return an error result map when the eval should be rejected; nil to allow.
-   See ns docstring for the full gate order."
-  [code session]
-  (let [mutating? (classifier/mutating? code)
-        scope     (grant/scope)]
-    (cond
-      (not (server/running?))
-      (err-result code "clj-nrepl server is not running")
+   nREPL is full-trust: the only checks are the server being up and the
+   deny-list (catastrophic substrings). Isolation is the SCI sandbox's job."
+  [code _session]
+  (cond
+    (not (server/running?))
+    (err-result code "clj-nrepl server is not running")
 
-      (not (grant/active?))
-      (err-result code
-                  "no clj-nrepl grant active — set BY_NREPL_GRANT=read-only:15m")
+    (classifier/denied? code)
+    (err-result code
+                (str "denied by clj-nrepl allow/deny policy: "
+                     (classifier/deny-reason code)))
 
-      (classifier/denied? code)
-      (err-result code
-                  (str "denied by clj-nrepl allow/deny policy: "
-                       (classifier/deny-reason code)))
-
-      (and mutating? (not= :mutate scope))
-      (err-result code
-                  (str "mutating form rejected under " (name scope)
-                       " grant: " (classifier/explain code)))
-
-      (and mutating? (not (confirm/confirm-mutation! session code)))
-      (err-result code
-                  "operator declined mutation confirmation")
-
-      :else nil)))
+    :else nil))
 
 (defn eval-string
   "Send `code` to the live nREPL server and return a result map.
@@ -97,45 +80,25 @@
      :session     — nREPL session id (uses fresh server-side session when omitted)
      :timeout-ms  — round-trip ceiling (default 30000)
 
-   Returns {:code :result :output :error :ns}. Records a runtime-drift
-   marker (see clj-nrepl.core.drift) when a mutating block REACHES the
-   server — even if a later form in the same block errored, because
-   Clojure's top-level forms evaluate sequentially and side effects
-   from earlier forms aren't unwound by later errors. The marker
-   means \"this session has touched live-runtime mutation paths\",
-   not \"all forms succeeded\"."
+   Returns {:code :result :output :error :ns}."
   [code & {:keys [session timeout-ms output-writer]
            :or {timeout-ms default-timeout-ms}}]
-  (let [start-ms (System/currentTimeMillis)
-        gate-err (gate code session)
-        [result reached-server?]
-        (cond
-          gate-err
-          [gate-err false]
-
-          :else
-          (try
-            (with-open [conn (nrepl/connect :port (server/server-port))]
-              (let [base    (nrepl/client conn timeout-ms)
-                    client* (if session
-                              (nrepl/client-session base :session session)
-                              (nrepl/client-session base))
-                    msg     (cond-> {:op "eval" :code code}
-                              session (assoc :session session))
-                    harvested (harvest-responses (nrepl/message client* msg)
-                                                 :output-writer output-writer)]
-                [(assoc harvested :code code) true]))
-            (catch Exception e
-              [(err-result code
-                           (str "nREPL transport error: " (.getMessage e)))
-               false])))]
-    (when (and reached-server? (classifier/mutating? code))
-      (drift/mark! session code))
-    (audit/audit-eval {:code code
-                       :session session
-                       :result result
-                       :duration-ms (- (System/currentTimeMillis) start-ms)})
-    result))
+  (if-let [gate-err (gate code session)]
+    gate-err
+    (try
+      (with-open [conn (nrepl/connect :port (server/server-port))]
+        (let [base    (nrepl/client conn timeout-ms)
+              client* (if session
+                        (nrepl/client-session base :session session)
+                        (nrepl/client-session base))
+              msg     (cond-> {:op "eval" :code code}
+                        session (assoc :session session))
+              harvested (harvest-responses (nrepl/message client* msg)
+                                           :output-writer output-writer)]
+          (assoc harvested :code code)))
+      (catch Exception e
+        (err-result code
+                    (str "nREPL transport error: " (.getMessage e)))))))
 
 (defn eval-nrepl-thunk
   "Build a zero-arg thunk that evaluates `code` on the live nREPL server.

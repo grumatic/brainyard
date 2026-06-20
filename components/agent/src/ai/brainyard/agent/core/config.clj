@@ -316,22 +316,18 @@
    ;; The in-process nREPL server backing `code$eval :backend :nrepl` is
    ;; off by default. Operators enable it durably by setting
    ;; `[:agent :config :nrepl-enabled?] true` in .brainyard/config.edn,
-   ;; or transiently via BY_NREPL_ENABLED=true (the env-fallback
-   ;; layer below). Same precedence applies to :nrepl-port (0 = ephemeral)
-   ;; and :nrepl-grant. The server is OFF by default; :nrepl-grant defaults to
-   ;; "read-only:24h" so that WHEN the server is running (enabled at bootstrap
-   ;; or started on demand via clj-nrepl$start-server), read-only introspection
-   ;; eval works without a separate grant step. A real env var
-   ;; (BY_NREPL_GRANT, e.g. "mutate:5m") still overrides.
+   ;; or transiently via BY_NREPL_ENABLED=true (the env-fallback layer
+   ;; below). Same precedence applies to :nrepl-port (0 = ephemeral). The
+   ;; server is OFF by default. nREPL is the full-trust backend — reaching the
+   ;; loopback server gives full eval (the only eval-path check is the
+   ;; deny-list); there is no grant/scope/confirmation. For isolated code
+   ;; execution use the SCI sandbox backend (:clj-backend :sandbox).
    :nrepl-enabled?             {:type "boolean"
                                 :default-fn #(= "true" (System/getenv "BY_NREPL_ENABLED"))}
    :nrepl-port                 {:type "integer"
                                 :default-fn #(or (some-> (System/getenv "BY_NREPL_PORT")
                                                          parse-long)
                                                  0)}
-   :nrepl-grant                {:type "string"
-                                :default-fn #(or (System/getenv "BY_NREPL_GRANT")
-                                                 "read-only:24h")}
    ;; Clojure code-execution backend for ```clojure blocks in CoAct agents.
    ;; :sandbox — SCI sandbox (default, safe for arbitrary agents).
    ;; :nrepl   — live brainyard JVM via clj-nrepl (debug-agent; needs server).

@@ -22,7 +22,6 @@
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.mulog.interface :as mulog]
             [ai.brainyard.clj-llm.interface :as clj-llm]
-            [ai.brainyard.clj-nrepl.interface :as clj-nrepl]
             [clojure.string :as str]))
 
 (declare update-status-bar!)
@@ -2097,13 +2096,7 @@
               :last-input-tokens last-input-tokens
               :input-tokens-delta input-tokens-delta
               :tasks-running tasks-running
-              :queue-count queue-count
-              ;; Runtime-drift chip: visible iff at least one mutating
-              ;; eval has reached the live runtime via clj-nrepl in
-              ;; this process (debug-agent / live-runtime work). Cleared
-              ;; only by clj-nrepl/drift-clear! or process restart.
-              :drifted?    (clj-nrepl/drifted?)
-              :drift-count (clj-nrepl/drift-count)}))))
+              :queue-count queue-count}))))
        ;; Refresh the tab strip alongside the status bar so the active-tab
        ;; running indicator (* vs ●) stays in sync with the agent state.
        (sessions/redraw-tab-strip!)))))

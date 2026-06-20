@@ -82,9 +82,9 @@ TODO only if inline streaming is wanted.
   in-stream). *(`popup.clj`)*
 - Mode-B popup user-feedback does not support `:free-input` options
   (falls back to in-stream). *(`permissions.clj`)*
-- `tui-confirm-mutation` (the nREPL mutating-eval gate) is a v1
-  visibility-only auto-allow — there is no blocking Y/n popup; an
-  explicit "future v2". *(`core.clj`)*
+- nREPL mutating-eval confirmation was **removed** (2026-06): nREPL is now
+  full-trust (deny-list only), so there is no `tui-confirm-mutation` hook.
+  For isolated evaluation use the SCI sandbox backend. *(`core.clj`)*
 
 Candidate TODOs: implement multi-tab popup nav, popup free-input, and the
 v2 blocking mutation gate.

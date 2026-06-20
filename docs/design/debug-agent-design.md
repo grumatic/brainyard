@@ -1,5 +1,13 @@
 # Debug-Agent — Live-Runtime Self-Debugging Specialist (CoAct-derived)
 
+> **⚠ Superseded in part (2026-06).** nREPL is now full-trust (deny-list only):
+> the grant / scope / first-mutation-confirmation / runtime-drift / audit layers
+> were removed, and with them the `debug$promote-hot-patch` and
+> `clj-nrepl$drift-markers` tools (drift's only producer was the eval path).
+> debug-agent's bag is now `code$eval` + `task$*` + `clj-nrepl$start/stop/status`.
+> Permanent fixes still hand off to update-agent — just without a drift-marker
+> audit anchor. Sections on grants/drift/promotion below are historical.
+
 > **Status:** Implemented (Phase 2b–3 of `docs/design/clj-nrepl-eval.md`).
 > **Scope:** `components/agent/src/ai/brainyard/agent/common/debug_agent.clj` — a CoAct-derived specialist agent that drives the live-runtime self-debugging loop introduced by `clj-nrepl-eval`.
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`, `ai.brainyard.clj-nrepl.interface` (loopback nREPL + grant + drift), `ai.brainyard.agent.common.code-eval` (the unified `code$eval` surface), and the per-instance config layer in `ai.brainyard.agent.core.config`.
@@ -166,9 +174,11 @@ reflection, every loaded namespace, and arbitrary interop are all reachable.
   as `:error` on the eval entry; session state is preserved.
 - **Mutations are recorded**: every successful `def` / `alter-var-root` /
   `require` marks runtime-drift. Inspect via `clj-nrepl$drift-markers`.
-- **Mutating-eval gate**: under `:read-only` grant, mutating top-level
-  forms are rejected. Under `:mutate` grant, the FIRST mutating eval per
-  session triggers an operator confirmation prompt …
+- **Full-trust backend**: a grant gives full live-image access — no
+  scope-based block on mutation (use the SCI sandbox backend for
+  isolation). The FIRST eval that looks mutating per session triggers an
+  operator confirmation prompt; once approved, later mutations pass. Grant
+  `:scope` is advisory.
 - **Deny-list**: `System/exit`, `Runtime/.exec`, credential namespaces
   are rejected regardless of grant scope.
 - **NO SCI shortcuts**: `context-get`, `(usage :foo)`, and bare

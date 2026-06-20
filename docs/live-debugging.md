@@ -1,5 +1,14 @@
 # Live Debugging — Driving the Live brainyard JVM from an External Coding Agent
 
+> **⚠ Updated 2026-06 — nREPL is now full-trust (deny-list only).** The grant,
+> scope, first-mutation confirmation, runtime-drift, and audit layers described
+> in several places below were **removed**. The only eval-path check is the
+> deny-list (catastrophic substrings like `System/exit`); reaching the loopback
+> server gives full `eval`, like a CIDER REPL. `debug$promote-hot-patch` and the
+> `drifted (N)` status chip are gone. For *isolated* evaluation use the SCI
+> sandbox backend (`:clj-backend :sandbox`). Sections below that mention
+> grants / scope / drift / confirmation / promotion are historical.
+
 > **Status:** Substrate shipped; external-driver loop in progress.
 > The pieces this workflow stands on are all implemented today — the
 > opt-in loopback nREPL server (`components/clj-nrepl`), the gated
@@ -97,46 +106,44 @@ The TUI bootstrap starts it *without a custom handler*
 like any CIDER-attachable nREPL: a client that connects to the port
 gets **unrestricted `eval`**.
 
-The grant / deny-list / read-only-classifier / first-mutation-confirm /
-drift-marker machinery does **not** live in the server. It lives in the
-**client** — `clj-nrepl.core.client/eval-string` runs the five-gate
-`gate` function *before* it forwards code to the server. A raw external
-nREPL client bypasses all of that.
+The grant / deny-list / first-mutation-confirm / drift-marker machinery
+does **not** live in the server. It lives in the **client** —
+`clj-nrepl.core.client/eval-string` runs the `gate` function *before* it
+forwards code to the server. A raw external nREPL client bypasses all of
+that.
 
 So Path A is: maximum power, maximum responsibility. The only structural
 safety is that the socket is **loopback-only** (non-loopback binds are
 rejected at start). Treat a raw attach exactly as you would a CIDER REPL
 into production — because that is what it is.
 
-### 2.2 Path B — the gated `code$eval :backend :nrepl` path
+### 2.2 Path B — the `code$eval :backend :nrepl` path
 
 When code goes through `clj-nrepl/eval-string` — which is what
 `code$eval :backend :nrepl` and therefore the internal **`debug-agent`**
 use — it passes through the gate order documented in `client.clj`:
 
 1. **server up** — `start-server!` has run;
-2. **grant active** — a non-expired grant exists (`read-only:15m` /
-   `mutate:5m`);
-3. **deny-list** — `System/exit`, `Runtime/.exec`, credential
-   namespaces, etc. are rejected regardless of scope;
-4. **mutating scope** — under a `:read-only` grant, top-level mutating
-   forms (`def`, `defn`, `alter-var-root`, `require`, …) are rejected;
-   under `:mutate` they pass;
-5. **first-mutation confirm** — under `:mutate`, the first mutating eval
-   per session asks the operator (host-installed confirm fn);
+2. **deny-list** — `System/exit`, `Runtime/.exec`, credential namespaces,
+   etc. are rejected.
 
-and on a successful mutating eval it records a **drift marker** and
-audits via mulog.
+That is the whole gate. **nREPL is the full-trust backend**: reaching the
+loopback server gives full `eval`, exactly like a CIDER REPL. There is no
+grant, scope, confirmation, drift, or audit machinery — static analysis
+can't soundly isolate a live nREPL, so isolation is delegated to the SCI
+sandbox backend (`:clj-backend :sandbox`). The only structural safety is
+that the socket is loopback-only.
 
-So Path B is: the same live image, but every eval is policy-checked and
-audited, and mutations leave an auditable trail.
+> **Removed (2026-06):** the earlier grant / scope / first-mutation
+> confirmation / runtime-drift / audit layers were stripped — the deny-list
+> is the only remaining eval-path check. Need isolation? Use the SCI sandbox.
 
 ### 2.3 Which to use
 
 | | Path A — raw nREPL | Path B — `debug-agent` / `code$eval` |
 |---|---|---|
 | Reach | Any nREPL client on the port | TUI command → internal agent |
-| Gating | **None** (plain server) | grant + deny-list + scope + confirm |
+| Gating | **None** (plain server) | deny-list only |
 | Audit / drift | None | mulog + drift markers |
 | Driver effort | Driver writes its own diagnosis logic | LLM specialist does the reasoning |
 | Intended for | **Dev & test only** | **Production (once `debug-agent` is ready)** |
@@ -166,7 +173,8 @@ durable form (`.brainyard/config.edn`) and an env-var fallback:
 |---|---|---|---|
 | Enable the server | `:nrepl-enabled?` | `BY_NREPL_ENABLED=true` | `false` |
 | Port | `:nrepl-port` | `BY_NREPL_PORT=7890` | `0` (ephemeral) |
-| Grant (gated path) | `:nrepl-grant` | `BY_NREPL_GRANT=read-only:15m` | none |
+
+(There is no grant key any more — reaching the server is full access.)
 
 **Runtime control (no restart).** The server can also be managed on demand by
 the **debug-agent** via three commands, so you don't have to set
@@ -174,13 +182,13 @@ the **debug-agent** via three commands, so you don't have to set
 
 | Command | Effect |
 |---|---|
-| `clj-nrepl$start-server` | Start the loopback server (idempotent). Optional `:port` (default ephemeral); writes the per-instance port file for external attach. Seeds the configured `:nrepl-grant` (default `read-only:24h`) when none is active, so read-only eval works at once; mutation still needs an explicit `:mutate` grant. |
+| `clj-nrepl$start-server` | Start the loopback server (idempotent). Optional `:port` (default ephemeral); writes the per-instance port file for external attach. Reaching the server is full-trust eval (deny-list only). |
 | `clj-nrepl$stop-server` | Stop the server and remove its port file. No-op when none is running. |
-| `clj-nrepl$status` | Report `:running` + `:port`, the eval `:grant-active`/`:grant-scope`, the runtime-drift summary (`:drifted?`/`:drift-count`), and the `:port-files` inventory. |
+| `clj-nrepl$status` | Report `:running` + `:port` and the `:port-files` inventory. |
 
 These are gated to the debug-agent (`:tool-use-control {:allow ["debug-*"]}`).
-Starting the server only opens the loopback channel; the grant + read-only
-classifier + deny-list remain the eval security boundary.
+Starting the server opens the loopback channel; the **deny-list** is the only
+eval-path check. For isolated evaluation use the SCI sandbox backend.
 
 A note on what the original framing assumed:
 

@@ -3,16 +3,16 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent.common.debug-agent-test
-  "Phase 2b — debug-agent registration, lifecycle hooks, and CoAct
-   plumbing (per-instance :clj-backend + :nrepl-session-id routes
-   clojure blocks to :clj-nrepl-eval and pins the session).
+  "debug-agent registration, lifecycle hooks, and CoAct plumbing
+   (per-instance :clj-backend + :nrepl-session-id routes clojure blocks
+   to :clj-nrepl-eval and pins the session), plus the nREPL server
+   lifecycle commands.
 
-   Phase 3 — debug$promote-hot-patch writes a promotion artifact that
-   hands off to update-agent without crossing the runtime/source
-   boundary."
+   nREPL is the full-trust backend: the only eval-path check is the
+   deny-list (no grant / scope / confirmation / drift). Isolation is the
+   SCI sandbox backend's job."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
-            [clojure.java.io :as io]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.core.agent :as ag]
             [ai.brainyard.agent.task.manager :as task-mgr]
@@ -30,19 +30,15 @@
 (defn- reset-globals! []
   (when-let [mgr (task-mgr/peek-default-manager)]
     (try (tp/shutdown mgr) (catch Exception _)))
-  (task-mgr/set-default-manager! nil)
-  (clj-nrepl/drift-clear!)
-  (clj-nrepl/revoke-confirmation!))
+  (task-mgr/set-default-manager! nil))
 
 (defn- with-server [t]
   (try
     (clj-nrepl/start-server! :bind "127.0.0.1" :port 0)
-    (clj-nrepl/grant! :scope :mutate :ttl-ms 60000)
     (reset-globals!)
     (t)
     (finally
       (reset-globals!)
-      (clj-nrepl/revoke!)
       (try (clj-nrepl/stop-server!) (catch Exception _)))))
 
 (use-fixtures :each with-server)
@@ -55,18 +51,18 @@
   (let [td (tool/get-tool-defs :id :debug-agent)]
     (is (some? td))
     (is (= :agent (:type td)))
-    (let [tools (:tools (get-in td [:meta :agent-tools]))]
-      (is (contains? (set tools) :code$eval))
-      (is (contains? (set tools) :task$detail))
-      (is (contains? (set tools) :clj-nrepl$drift-markers))
-      (is (not (contains? (set tools) :bash))
+    (let [tools (set (:tools (get-in td [:meta :agent-tools])))]
+      (is (contains? tools :code$eval))
+      (is (contains? tools :task$detail))
+      (is (contains? tools :clj-nrepl$start-server))
+      (is (not (contains? tools :bash))
           "debug-agent's bag is intentionally tight — no bash"))))
 
 ;; ============================================================================
 ;; Backend selection — agent-clj-backend reads :clj-backend via the unified
 ;; config chain (per-agent override → session → global → schema default
 ;; :sandbox). There is no per-fence override; ```clojure :nrepl is a fence
-;; error, not a routing hint. See `fence-error-on-trailing-fence-text` below.
+;; error, not a routing hint.
 ;; ============================================================================
 
 (deftest agent-clj-backend-falls-back-to-sandbox
@@ -95,11 +91,7 @@
       (is (= "clojure" (:lang blk)))
       (is (string? (:fence-error blk)))
       (is (str/includes? (:fence-error blk) ":nrepl"))
-      (is (str/includes? (:fence-error blk) "per-agent"))))
-  (testing "Trailing :sandbox on the fence → fence-error"
-    (let [[blk] (clj-sandbox/extract-all-code-blocks-multi
-                 "```clojure :sandbox\n(+ 1 2)\n```")]
-      (is (string? (:fence-error blk))))))
+      (is (str/includes? (:fence-error blk) "per-agent")))))
 
 ;; ============================================================================
 ;; Lifecycle — instance gets session id + default backend pinned
@@ -128,10 +120,6 @@
         (.close ^java.io.Closeable agent)))))
 
 (deftest instance-closed-closes-session
-  ;; Smoke test: closing the agent must not throw, and the (server-issued)
-  ;; session is closed via the lifecycle hook. We verify by re-opening
-  ;; a session right after — if the prior close leaked transport state
-  ;; this would fail.
   (let [agent (ag/setup-agent-by-id
                :debug-agent
                :agent-session {:user-id "test" :session-id "debug-2"})
@@ -145,101 +133,12 @@
 ;; CoAct plumbing — :nrepl-session-id flows into the task config
 ;; ============================================================================
 
-;; ============================================================================
-;; Phase 3 — debug$promote-hot-patch
-;; ============================================================================
-
-(deftest promote-tool-registered
-  (let [td (tool/get-tool-defs :id :debug$promote-hot-patch)]
-    (is (some? td))
-    (is (= :command (:type td)))
-    (is (re-find #"(?i)hot-patch.*committed source|promote"
-                 (or (get-in td [:meta :description]) ""))
-        "description should describe the promotion intent")))
-
-(defn- in-tmp-cwd
-  "Run `f` with `user.dir` set to a fresh tmp dir so .brainyard/ writes
-   don't pollute the repo. Restores `user.dir` after."
-  [f]
-  (let [orig  (System/getProperty "user.dir")
-        tmp   (str (System/getProperty "java.io.tmpdir")
-                   "/debug-promote-test-" (System/nanoTime))]
-    (.mkdirs (io/file tmp))
-    (try
-      (System/setProperty "user.dir" tmp)
-      (f tmp)
-      (finally
-        (System/setProperty "user.dir" orig)))))
-
-(deftest promote-refuses-with-no-markers
-  (clj-nrepl/drift-clear!)
-  (in-tmp-cwd
-   (fn [_tmp]
-     (let [r (tool/invoke-tool :debug$promote-hot-patch
-                               :target-file "x.clj"
-                               :target-symbol "x/y"
-                               :pattern "old"
-                               :replacement "new"
-                               :rationale "test"
-                               :validation-evidence "test")]
-       (is (re-find #"no drift markers" (:error r)))))))
-
-(deftest promote-refuses-out-of-range-index
-  (clj-nrepl/drift-clear!)
-  (clj-nrepl/drift-mark! "sess-x" "(def y 1)")
-  (in-tmp-cwd
-   (fn [_tmp]
-     (let [r (tool/invoke-tool :debug$promote-hot-patch
-                               :drift-index   99
-                               :target-file   "x.clj"
-                               :target-symbol "x/y"
-                               :pattern       "old"
-                               :replacement   "new"
-                               :rationale     "test"
-                               :validation-evidence "test")]
-       (is (re-find #"out of range" (:error r)))))))
-
-(deftest promote-writes-artifact-with-expected-shape
-  (clj-nrepl/drift-clear!)
-  (clj-nrepl/drift-mark! "sess-promo" "(alter-var-root #'foo (constantly bar))")
-  (in-tmp-cwd
-   (fn [tmp]
-     (let [r (tool/invoke-tool :debug$promote-hot-patch
-                               :target-file   "components/agent/src/ai/brainyard/agent/foo.clj"
-                               :target-symbol "ai.brainyard.agent.foo/baz"
-                               :pattern       "(defn baz [] :old)"
-                               :replacement   "(defn baz [] :new)"
-                               :rationale     "old impl never returned for arity-0 callers"
-                               :validation-evidence "(baz) => :new in live session sess-promo")]
-       (is (= :proposed (:status r)))
-       (is (str/starts-with? (:path r)
-                             ".brainyard/agents/debug-agent/promotions/"))
-       (is (str/ends-with? (:path r) ".md"))
-       (is (re-find #"bb tui ask .* -a update-agent" (:next-step r)))
-       (let [abs (io/file tmp (:path r))]
-         (is (.exists abs))
-         (let [body (slurp abs)]
-           (is (re-find #"(?m)^target-symbol: ai\.brainyard\.agent\.foo/baz" body))
-           (is (re-find #"(?m)^edit-mode: pattern" body))
-           (is (re-find #"(?m)^status: proposed" body))
-           (is (re-find #"Saved hot-patch: \.brainyard/agents/debug-agent/promotions/" body))
-           (is (re-find #"Promotion request: bb tui ask " body))
-           (is (re-find #"\(defn baz \[\] :new\)" body))
-           (is (re-find #"alter-var-root" body) "drift marker code preview is included")))))))
-
-;; ============================================================================
-;; Phase 2b — CoAct plumbing
-;; ============================================================================
-
 (deftest run-clj-nrepl-block-passes-session-into-task
   (let [agent (ag/setup-agent-by-id
                :debug-agent
                :agent-session {:user-id "test" :session-id "debug-3"})
         sid   (:nrepl-session-id (instance-config agent))]
     (try
-      ;; Run a single block through run-single-block — which is what
-      ;; coact-code-eval-action invokes. The agent is in dispatch-opts so
-      ;; the per-instance :nrepl-session-id flows through.
       (let [entry (run-single-block
                    nil ;; sandbox unused on :nrepl path
                    {:lang "clojure" :code "(+ 1 2)" :info-args []}
@@ -249,7 +148,6 @@
         (is (= "clojure" (:lang entry)))
         (is (nil? (some-> entry :error not-empty)))
         (is (= "3" (:result entry))))
-      ;; Verify a manually-issued task carries :session in job-config.
       (let [mgr (task-mgr/get-default-manager)
             t   (tp/create-task mgr "probe" :clj-nrepl-eval
                                 {:code "(+ 1 2)" :timeout-ms 500 :session sid}
@@ -260,7 +158,7 @@
 
 ;; ============================================================================
 ;; nREPL server lifecycle commands — start / stop / status
-;; (with-server fixture pre-starts a loopback server + :mutate grant)
+;; (full-trust: deny-list only, no grant/drift fields)
 ;; ============================================================================
 
 (deftest nrepl-lifecycle-commands-registered-and-bound
@@ -279,49 +177,28 @@
       (is (not (tool/tool-visible? td :coact-agent))
           (str id " hidden from coact-agent")))))
 
-(deftest nrepl-status-reflects-running-server-and-grant
-  ;; fixture has a running server + :mutate grant
+(deftest nrepl-status-reflects-running-server
+  ;; full-trust: status reports only running / port / port-files
   (let [s (tool/invoke-tool :clj-nrepl$status)]
     (is (true? (:running s)))
     (is (integer? (:port s)))
-    (is (true? (:grant-active s)))
-    (is (= :mutate (:grant-scope s)))
-    (is (contains? s :drifted?))
-    (is (vector? (:port-files s)))))
+    (is (vector? (:port-files s)))
+    (is (not (contains? s :grant-active)) "no grant machinery anymore")
+    (is (not (contains? s :drifted?)) "no drift machinery anymore")))
 
 (deftest nrepl-start-server-is-idempotent
   (let [r (tool/invoke-tool :clj-nrepl$start-server)]
     (is (true? (:running r)))
     (is (true? (:already-running r)) "fixture server already up → no-op start")
     (is (= (clj-nrepl/server-port) (:port r)))
-    (is (string? (:port-file r)))))
-
-(deftest nrepl-start-server-seeds-configured-grant
-  ;; The eval gate rejects everything without an active grant; start-server
-  ;; must seed the configured :nrepl-grant (schema default read-only:24h) so
-  ;; on-demand start makes read-only eval work. Revoke the fixture's grant
-  ;; first so the seeding path actually runs.
-  (clj-nrepl/revoke!)
-  (tool/invoke-tool :clj-nrepl$stop-server)
-  (let [r (tool/invoke-tool :clj-nrepl$start-server)]
-    (try
-      (is (true? (:running r)))
-      (is (true? (:grant-active r)) "start seeds a grant from config")
-      (is (= :read-only (:grant-scope r)) "default :nrepl-grant is read-only")
-      (let [s (tool/invoke-tool :clj-nrepl$status)]
-        (is (true? (:grant-active s)))
-        (is (= :read-only (:grant-scope s))))
-      (finally
-        (clj-nrepl/revoke!)
-        (tool/invoke-tool :clj-nrepl$stop-server)))))
+    (is (string? (:port-file r)))
+    (is (not (contains? r :grant-active)) "no grant seeding anymore")))
 
 (deftest nrepl-stop-then-restart-cycle
-  ;; stop the fixture's server, confirm status, then bring a fresh one up
   (let [stopped (tool/invoke-tool :clj-nrepl$stop-server)]
     (is (true? (:stopped stopped)))
     (is (integer? (:was-port stopped)))
     (is (false? (:running (tool/invoke-tool :clj-nrepl$status))))
-    ;; restart — a genuinely new server (not a no-op)
     (let [started (tool/invoke-tool :clj-nrepl$start-server)]
       (try
         (is (true? (:running started)))
@@ -329,8 +206,6 @@
         (is (integer? (:port started)))
         (is (true? (:running (tool/invoke-tool :clj-nrepl$status))))
         (finally
-          ;; leave the world stopped; stop-server also deletes the port file
           (tool/invoke-tool :clj-nrepl$stop-server)))))
-  ;; no-op stop when nothing is running
   (let [noop (tool/invoke-tool :clj-nrepl$stop-server)]
     (is (false? (:stopped noop)))))

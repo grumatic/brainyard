@@ -16,10 +16,8 @@
 (defn- with-running-server [t]
   (try
     (n/start-server! :bind "127.0.0.1" :port 0)
-    (n/grant! :scope :read-only :ttl-ms 60000)
     (t)
     (finally
-      (n/revoke!)
       (try (n/stop-server!) (catch Exception _)))))
 
 (use-fixtures :each with-running-server)

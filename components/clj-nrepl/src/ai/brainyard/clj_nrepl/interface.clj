@@ -9,17 +9,14 @@
    inside the running brainyard process; the client sends Clojure code to
    it over a loopback socket and harvests {:result :output :error :ns}.
 
-   The safety boundary lives here: code is classified (read-only vs
-   mutate) and gated by a grant (clj-nrepl.core.grant) before evaluation.
-   Every eval is audited via mulog. See docs/design/clj-nrepl-eval.md."
+   nREPL is the full-trust backend: the only check on the eval path is the
+   deny-list (clj-nrepl.core.classifier). Isolation is delegated to the SCI
+   sandbox backend. The only structural safety is the loopback-only socket.
+   See docs/design/clj-nrepl-eval.md."
   (:require [ai.brainyard.clj-nrepl.core.server :as server]
             [ai.brainyard.clj-nrepl.core.client :as client]
             [ai.brainyard.clj-nrepl.core.session :as session]
-            [ai.brainyard.clj-nrepl.core.grant :as grant]
-            [ai.brainyard.clj-nrepl.core.classifier :as classifier]
-            [ai.brainyard.clj-nrepl.core.confirm :as confirm]
-            [ai.brainyard.clj-nrepl.core.drift :as drift]
-            [ai.brainyard.clj-nrepl.core.audit :as audit]))
+            [ai.brainyard.clj-nrepl.core.classifier :as classifier]))
 
 ;; ============================================================================
 ;; Server lifecycle
@@ -65,7 +62,7 @@
 
 (def eval-string
   "Send code to the live nREPL server. Returns {:code :result :output :error :ns}.
-   Gated by the active grant + read-only classifier. See client/eval-string."
+   Only the deny-list gates the eval. See client/eval-string."
   client/eval-string)
 
 (def eval-nrepl-thunk
@@ -81,47 +78,8 @@
 (def interrupt!    session/interrupt!)
 
 ;; ============================================================================
-;; Grant
+;; Deny-list (the only eval-path check)
 ;; ============================================================================
 
-(def grant!  grant/grant!)
-(def revoke! grant/revoke!)
-(def active? grant/active?)
-(def scope   grant/scope)
-(def maybe-grant-from-env! grant/maybe-grant-from-env!)
-
-;; ============================================================================
-;; Classifier
-;; ============================================================================
-
-(def classify     classifier/classify)
-(def mutating?    classifier/mutating?)
-(def explain      classifier/explain)
 (def denied?      classifier/denied?)
 (def deny-reason  classifier/deny-reason)
-
-;; ============================================================================
-;; Confirmation (Phase 2 — first mutating eval per session)
-;; ============================================================================
-
-(def set-confirm-fn!     confirm/set-confirm-fn!)
-(def confirm-mutation!   confirm/confirm-mutation!)
-(def confirmed?          confirm/confirmed?)
-(def mark-confirmed!     confirm/mark-confirmed!)
-(def revoke-confirmation! confirm/revoke-confirmation!)
-
-;; ============================================================================
-;; Runtime drift (Phase 2 — marks divergence from source)
-;; ============================================================================
-
-(def drift-mark!     drift/mark!)
-(def drift-markers   drift/markers)
-(def drift-clear!    drift/clear!)
-(def drifted?        drift/drifted?)
-(def drift-count     drift/marker-count)
-
-;; ============================================================================
-;; Audit
-;; ============================================================================
-
-(def audit-eval audit/audit-eval)

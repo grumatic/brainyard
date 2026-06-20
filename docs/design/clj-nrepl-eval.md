@@ -1,5 +1,14 @@
 # clj-nrepl-eval — Live-Runtime Eval for a Self-Debugging, Self-Improving, Self-Extending Brainyard
 
+> **⚠ Superseded (2026-06) — nREPL simplified to full-trust, deny-list only.**
+> The grant (scope/TTL), read-only/`:mutate` classifier gate, first-mutation
+> confirmation, runtime-drift markers, audit shim, and the Phase-3
+> `debug$promote-hot-patch` promotion hand-off were all **removed**. A reachable
+> loopback server gives full `eval`; the only eval-path check is the deny-list.
+> Rationale: static syntactic analysis can't soundly isolate a live nREPL, so
+> isolation is delegated to the SCI sandbox backend (`:clj-backend :sandbox`).
+> Sections below describing those layers are historical design rationale.
+
 > **Status:** Phases 1–3 implemented (May 2026). Phase 4 (hardening) deferred.
 > **Scope:** new component `components/clj-nrepl` (in-process nREPL server + loopback client + grant + classifier + confirm + drift + audit), a unified `code$eval` command in `components/agent/.../common/code_eval.clj` (note: lives in `common/`, not `core/tool` as originally proposed), a `NreplEvalJobExecutor` in `components/agent/.../task/executor.clj`, a CoAct backend selector in `coact_agent.clj`, opt-in bootstrap hooks in `bases/agent-tui` and `bases/agent-web`, a CoAct-derived specialist `debug-agent` (see `docs/design/debug-agent-design.md`), and a TUI drift chip on the status bar.
 > **Built on:** `ai.brainyard.clj-sandbox.interface` (the existing SCI eval path), the unified tool registry (`ai.brainyard.agent.core.tool/!tool-defs`), the task manager job-type model (`ai.brainyard.agent.task.protocol/IJobExecutor`), and `nrepl/nrepl` (already on the classpath at `1.3.0` for dev REPLs; promoted to a runtime dep of the new component).
@@ -198,7 +207,7 @@ Because tools live in a plain atom, the agent can register new capability mid-se
 
 1. **Off by default; loopback only.** The server is absent unless config enables it (§5.2) and binds `127.0.0.1` only. Non-loopback binds require an explicit, separate config flag and are out of scope for the default design. The ephemeral port is written to a `0600` file under `.brainyard/`.
 2. **Runtime grant with TTL.** Even with the server up, `:backend :nrepl` is denied unless an active grant exists. A grant is a deliberate act (a `/grant-runtime` TUI command, an env flag, or a human confirmation prompt), is **time-boxed** (e.g. 15 min), names a scope (read-only vs mutate), and is revocable instantly. Grants do not persist across process restarts.
-3. **Policy: read-only vs mutate.** The default grant scope is **read-only** — the dispatch layer rejects code whose top-level forms are mutating (`def`, `alter-var-root`, `require`, `ns`, `import`, interop on denied classes) using a lightweight form classifier, allowing self-observation (§7.1) while forbidding self-modification. A `:mutate` scope lifts this and is a strictly higher bar to grant.
+3. **Policy: read-only vs mutate.** ⚠️ **SUPERSEDED (2026-06).** The original design rejected mutating top-level forms under a `:read-only` grant via a form classifier. This scope-based code gate was **removed**: static syntactic classification cannot soundly isolate a live nREPL (it is bypassable by nesting/qualifying, and harmless `user`-ns scratch defs don't touch application namespaces anyway). nREPL is now the **full-trust** backend — a grant means full live-image access — and **isolation is delegated to the SCI sandbox backend** (`:clj-backend :sandbox`), the sound controlled-bindings interpreter. The grant `:scope` is retained as **advisory metadata** only. Mutation is bounded procedurally by the deny-list (#4), first-mutation confirmation (#5), audit (#6), and drift markers — not by classification. The classifier survives solely as the confirmation trigger + drift heuristic.
 4. **Allow/deny on the eval path.** A configurable deny-list blocks the genuinely catastrophic regardless of scope (`System/exit`, `Runtime/.exec`, `shutdown-agents`, credential-bearing namespaces). The classifier is best-effort defense, not a sandbox — it raises the cost of an accident, and is paired with the controls below rather than relied on alone.
 5. **Confirmation for mutation.** With computer-use/permission prompts available, the first mutating eval in a session (and any touching a sensitive namespace) requires explicit human confirmation, reusing the agent permission machinery that already gates write-side MCP tools.
 6. **Full audit.** Every `:nrepl` eval emits a `mulog` event: code, session, caller agent, granted scope, result/exception, duration. These are first-class in observability and intended to be reviewable after the fact. Audit is not optional and cannot be disabled by the agent.
