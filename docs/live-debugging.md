@@ -174,7 +174,7 @@ the **debug-agent** via three commands, so you don't have to set
 
 | Command | Effect |
 |---|---|
-| `clj-nrepl$start-server` | Start the loopback server (idempotent). Optional `:port` (default ephemeral); writes the per-instance port file for external attach. **Does not grant eval** — set a grant separately. |
+| `clj-nrepl$start-server` | Start the loopback server (idempotent). Optional `:port` (default ephemeral); writes the per-instance port file for external attach. Seeds the configured `:nrepl-grant` (default `read-only:24h`) when none is active, so read-only eval works at once; mutation still needs an explicit `:mutate` grant. |
 | `clj-nrepl$stop-server` | Stop the server and remove its port file. No-op when none is running. |
 | `clj-nrepl$status` | Report `:running` + `:port`, the eval `:grant-active`/`:grant-scope`, the runtime-drift summary (`:drifted?`/`:drift-count`), and the `:port-files` inventory. |
 

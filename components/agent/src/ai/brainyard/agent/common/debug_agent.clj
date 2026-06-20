@@ -287,24 +287,30 @@
   "Start the embedded loopback-only nREPL server (idempotent — a no-op when one
    is already running). Writes a per-instance port file
    (~/.brainyard/nrepl-ports/by-<pid>.port) so external CIDER tooling can attach
-   to the SAME live image. Does NOT grant eval access — set a grant
-   (BY_NREPL_GRANT) before the :nrepl backend can run code."
+   to the SAME live image. Also activates the configured :nrepl-grant (default
+   read-only:24h) when no grant is active — mirroring the bootstrap path — so
+   read-only introspection eval works immediately. Mutation still requires an
+   explicit :mutate grant + operator confirmation."
   (fn [{:keys [port]}]
-    (if (clj-nrepl/running?)
+    (let [already? (clj-nrepl/running?)
+          srv-port (if already?
+                     (clj-nrepl/server-port)
+                     (do (clj-nrepl/cleanup-stale-ports!)
+                         (:port (clj-nrepl/start-server!
+                                 :port (or port 0)
+                                 :port-file (clj-nrepl/instance-port-file "by")))))]
+      ;; Establish the configured grant if none is active (symmetric with
+      ;; start-nrepl-server-if-enabled! at bootstrap). The gate rejects EVERY
+      ;; eval — read-only included — without an active grant, so on-demand start
+      ;; must seed one or the debug-agent's fence evals fail with "no grant".
+      (when-not (clj-nrepl/active?)
+        (clj-nrepl/maybe-grant-from-env! (cfg/get-config :nrepl-grant)))
       {:running true
-       :port (clj-nrepl/server-port)
+       :port srv-port
        :port-file (str (clj-nrepl/instance-port-file "by"))
-       :already-running true
-       :grant-active (clj-nrepl/active?)}
-      (do
-        (clj-nrepl/cleanup-stale-ports!)
-        (let [pf  (clj-nrepl/instance-port-file "by")
-              srv (clj-nrepl/start-server! :port (or port 0) :port-file pf)]
-          {:running true
-           :port (:port srv)
-           :port-file (str pf)
-           :already-running false
-           :grant-active (clj-nrepl/active?)}))))
+       :already-running already?
+       :grant-active (clj-nrepl/active?)
+       :grant-scope  (clj-nrepl/scope)}))
   :input-schema  [:map
                   [:port {:optional true}
                    [:int {:desc "Fixed loopback port to bind. Default 0 = ephemeral."}]]]
@@ -313,7 +319,8 @@
                   [:port [:int {:desc "Bound loopback port."}]]
                   [:port-file [:string {:desc "Per-instance port file path for external attach."}]]
                   [:already-running [:boolean {:desc "True when a server was already running (start was a no-op)."}]]
-                  [:grant-active [:boolean {:desc "Whether an eval grant is active. Starting the server does NOT grant eval."}]]]
+                  [:grant-active [:boolean {:desc "Whether an eval grant is active (seeded from :nrepl-grant on start)."}]]
+                  [:grant-scope [:any {:desc "Active grant scope (:read-only / :mutate) or nil."}]]]
   :tool-use-control {:allow ["debug-*"]})
 
 (defcommand clj-nrepl$stop-server

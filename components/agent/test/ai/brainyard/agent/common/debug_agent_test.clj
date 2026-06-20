@@ -296,6 +296,25 @@
     (is (= (clj-nrepl/server-port) (:port r)))
     (is (string? (:port-file r)))))
 
+(deftest nrepl-start-server-seeds-configured-grant
+  ;; The eval gate rejects everything without an active grant; start-server
+  ;; must seed the configured :nrepl-grant (schema default read-only:24h) so
+  ;; on-demand start makes read-only eval work. Revoke the fixture's grant
+  ;; first so the seeding path actually runs.
+  (clj-nrepl/revoke!)
+  (tool/invoke-tool :clj-nrepl$stop-server)
+  (let [r (tool/invoke-tool :clj-nrepl$start-server)]
+    (try
+      (is (true? (:running r)))
+      (is (true? (:grant-active r)) "start seeds a grant from config")
+      (is (= :read-only (:grant-scope r)) "default :nrepl-grant is read-only")
+      (let [s (tool/invoke-tool :clj-nrepl$status)]
+        (is (true? (:grant-active s)))
+        (is (= :read-only (:grant-scope s))))
+      (finally
+        (clj-nrepl/revoke!)
+        (tool/invoke-tool :clj-nrepl$stop-server)))))
+
 (deftest nrepl-stop-then-restart-cycle
   ;; stop the fixture's server, confirm status, then bring a fresh one up
   (let [stopped (tool/invoke-tool :clj-nrepl$stop-server)]
