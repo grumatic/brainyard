@@ -335,6 +335,13 @@
                                              api-key (assoc :api-key api-key)
                                              region  (assoc :region region)))]
       (clj-llm/configure-default-lm! new-lm)
+      ;; Persist the switched model+provider so --resume restores it.
+      ;; on-instance-created writes :model only once at agent creation, so
+      ;; without this every /model swap is lost on resume.
+      (when-let [ag (tui-session/get-active-agent)]
+        (when-let [sid (try (agent/session-id ag) (catch Throwable _ nil))]
+          (try (persist/save-meta! sid {:model model-name :provider new-provider})
+               (catch Throwable _))))
       (tui-session/emit!
        (ansi/success (str "Switched to " (name new-provider) " / " model-name)))
       (tui-session/update-status-bar!))

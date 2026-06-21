@@ -1171,6 +1171,16 @@
         ;; Persisted defagent-id wins over the CLI default on resume so the
         ;; agent type matches what the user had when they last quit.
         agent-id (or (when resuming? (:defagent-id resumed-meta)) agent-id)
+        ;; Restore the persisted model on resume unless the CLI passed an
+        ;; explicit --model override. switch-model! writes :model/:provider to
+        ;; meta.edn on every /model swap; rebuild + install the default LM here
+        ;; so the resumed session continues on the model the user last chose.
+        _ (when (and resuming? (:model resumed-meta) (not lm-model))
+            (try
+              (clj-llm/configure-default-lm!
+               (clj-llm/create-lm (cond-> {:model (:model resumed-meta)}
+                                    (:provider resumed-meta) (assoc :provider (:provider resumed-meta)))))
+              (catch Throwable _)))
         ;; 3c. Resume: rehydrate the agent-session map from disk and drop it
         ;;     into the session store BEFORE create-tui-agent! — so when the
         ;;     agent's `get-or-create-session` runs it finds the restored atom
