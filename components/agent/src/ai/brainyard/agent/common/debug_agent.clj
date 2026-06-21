@@ -266,6 +266,62 @@
    @ai.brainyard.agent.core.tool/!tool-defs        ;; deref an atom for live state
    ;; call any internal fn directly to reproduce a bug:
    (ai.brainyard.agent.core.config/get-config :clj-backend)
+   ```
+
+   ### Invoking registered tools from nREPL
+   Unlike the SCI sandbox, the nREPL backend does NOT auto-bind registered
+   tools as kebab-case sandbox fns — `(some-tool {…})` will hit
+   Unable-to-resolve. Use `ai.brainyard.agent.core.tool/call-tool` to
+   dispatch any registered tool by id. It normalizes args, checks
+   permissions, validates against the tool's schema, and runs the tool fn.
+
+   ```clojure
+   ;; Alias for terseness — register once per session
+   (require '[ai.brainyard.agent.core.tool :as t])
+
+   ;; Discover tools by pattern (the registered list-tools command)
+   (t/call-tool :list-tools {:pattern \"^memory\\$\"})
+   (t/call-tool :list-tools {:type \"agent\"})
+
+   ;; Inspect a specific tool's schema before invoking it
+   (t/call-tool :get-tool-info {:tool-id \"task$run\"})
+
+   ;; Search project files / config / memory / tools
+   (t/call-tool :search {:query \"clj-backend\"})
+
+   ;; Read / grep files (project-root anchored)
+   (t/call-tool :read-file {:path \"components/agent/src/ai/brainyard/agent/core/tool.clj\"
+                            :lines [450 510]})
+   (t/call-tool :grep {:pattern \"defn call-tool\"
+                       :path \"components/agent/src\"
+                       :include-exts [\".clj\"]})
+
+   ;; Run / inspect / cancel background tasks
+   (t/call-tool :task$run    {:job-type :bash :command \"ls -la .brainyard\"})
+   (t/call-tool :task$list   {})
+   (t/call-tool :task$detail {:task-id \"task-1\" :last-n \"50\"})
+   (t/call-tool :task$cancel {:task-id \"task-1\"})
+
+   ;; Memory recall / remember
+   (t/call-tool :memory$recall {:query \"recent commits\" :limit 5})
+   (t/call-tool :memory$status {})
+
+   ;; Sub-LLM (no tools, no iteration — cheap fan-out)
+   (t/call-tool :query$llm {:prompt \"Summarize this stack trace: …\"})
+   ```
+
+   Notes:
+   - tool-id is a keyword (`:task$run`); tool-args is a plain map. The
+     `[{:name … :value …}]` LLM form is also accepted but rarely needed here.
+   - Return shape matches the tool's :output-schema. Errors surface as
+     `{:error-message …}` (permission denied, schema mismatch) or as a
+     thrown exception from the tool fn — read `*e` / `(ex-data *e)` after.
+   - Permission gating still applies: tools with `:tool-use-control` that
+     exclude debug-* will reject. Use this to discover which tools the
+     debug-agent is allowed to call (`:agent-tools` lists the bound set;
+     `call-tool` reaches anything in `!tool-defs` subject to gating).
+   - For internal fns (not registered as tools), call them directly by
+     their fully-qualified var — no `call-tool` needed.
    ```")
 
 ;; ============================================================================
