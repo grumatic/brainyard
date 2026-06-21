@@ -36,6 +36,7 @@
             [ai.brainyard.agent.common.user-hooks :as uh]
             [ai.brainyard.agent.common.user-agents :as ua]
             [ai.brainyard.agent.common.auto-notify :as auto-notify]
+            [ai.brainyard.agent.common.usage-nudge :as usage-nudge]
             [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.common.trace :as trace]
             [ai.brainyard.agent.common.trajectory :as trajectory]
@@ -129,6 +130,9 @@
                            "tool" "code" "none" "evaluation"]]
                 [:tool-results [:vector {:desc "non-empty iff channel = tool"} ::tool-result-entry]]
                 [:code-results [:vector {:desc "non-empty iff channel = code"} ::eval-entry]]
+                ;; Just-in-time usage guide pushed on first use of a tool family
+                ;; this session (see usage-nudge). Read it before continuing.
+                [:notices {:optional true} [:string {:desc "Runtime notice for this iteration — e.g. a usage guide surfaced on first use of a tool family. Advisory; read and act on it."}]]
                 ;; ── Evaluation-record fields (channel = "evaluation" only) ──
                 [:rejected-answer {:optional true} [:string {:desc "the answer draft that was rejected"}]]
                 [:verdict {:optional true} [:string {:desc "rejection reason: \"SELF\" (you reported goal-achieved=false), \"INCOMPLETE\", or \"HALLUCINATED\""}]]
@@ -570,6 +574,7 @@ on-demand (see `### Sandbox Categories` and `### Discovery`).
 | MCP fallback             | `(call-tool \"<id>\" {…} :server-name \"<srv>\")` | Only for tools not in the local registry. |
 | Look up usage guide     | `(usage :topic)` | Topics: see `### Usage Guides` table below. |
 | Shell / files           | `(bash \"…\")`, `(read-file \"…\")`, `(write-file \"…\" \"…\")`, `(grep \"…\" \"path\")` | Standard primitives. |
+| Pin a seen file/skill   | `(artifact$add {:path \"/abs\"})` — re-reference w/o re-reading | Reloads fresh each turn; details `(usage :artifacts)`. |
 
 Per-agent overrides ride in `### Agent-specific guidance` at the bottom of this
 section — when present, prefer those over this generic list.")
@@ -610,6 +615,7 @@ Pull these BEFORE you commit to a non-trivial pattern in that area:
 | `:plans`        | Before any `plan$*` call — slugs, scope, dossier handoff.          |
 | `:skills`       | Before `skill$*` invocations or `skills$*` admin.                  |
 | `:files`        | Before bulk `read-file` / `write-file` / `update-file`.            |
+| `:artifacts`    | Before `artifact$add/remove/pin` — what to pin into Live Artifacts vs. re-read. |
 | `:mcp`          | Before invoking an MCP server tool you haven't called this turn.    |
 | `:tool-priority`| When choosing between competing tools (registry vs MCP vs sandbox). |
 | `:discovery`    | When unsure what's available — pairs with `list-tools`.            |
@@ -1450,6 +1456,14 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         tool-context  (if agent
                         (context/assemble-field agent :system-context :tool-context)
                         (:tool-context st))
+        ;; Permanently-inlined usage guides (config :inline-usage-guides):
+        ;; append their text to the tool-context overlay and pre-mark them shown
+        ;; so usage-nudge's first-use path never re-surfaces them.
+        inline-guide-topics (or (config/get-config agent :inline-usage-guides) [])
+        _ (when agent (usage-nudge/seed-inlined-topics! agent inline-guide-topics))
+        tool-context (if-let [extra (usage-nudge/inline-guides-overlay inline-guide-topics)]
+                       (if (str/blank? tool-context) extra (str tool-context "\n\n" extra))
+                       tool-context)
 
         ;; Recalled memory is primed by the top-level prepare-recalled-memory
         ;; action (see ai.brainyard.agent.common.context-actions) before this
@@ -1761,6 +1775,8 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
     ;; deflect/auto-park threshold is per-turn.
     (auto-notify/ensure-global-hooks!)
     (auto-notify/reset-poll-counts! st-memory)
+    ;; First-use usage-guide surfacing (idempotent, runtime-only).
+    (usage-nudge/ensure-global-hooks!)
 
     (when agent
       (hooks/fire! :agent.context/budgeted
@@ -3712,7 +3728,15 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
                         :tool-results []
                         :code-results (mapv sanitize-eval-entry (or last-code-results []))}
                  ;; :answer — no record; the loop is about to exit
-                 nil)]
+                 nil)
+        ;; Fold any first-use usage guide queued by usage-nudge during this
+        ;; iteration's tool calls into the record, so the model reads it next.
+        ;; Only drain when there's a record to carry it (the :answer path exits).
+        record (if record
+                 (if-let [notices (usage-nudge/drain-iteration-notices! st-memory)]
+                   (assoc record :notices notices)
+                   record)
+                 record)]
     (when record
       (swap! st-memory update :iterations (fnil conj []) record)
       ;; Uncapped mirror for trajectory recording (full turn, no budget cap).

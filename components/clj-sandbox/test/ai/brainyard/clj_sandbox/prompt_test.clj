@@ -191,3 +191,18 @@
                                               {:result 2 :output "" :error nil}])]
       (is (str/includes? (:content msg) "Block 1"))
       (is (str/includes? (:content msg) "Block 2")))))
+
+(deftest usage-guide-topics-test
+  (testing "every advertised topic resolves to a non-blank guide"
+    (doseq [topic prompt/usage-topics]
+      (is (not (str/blank? (prompt/get-usage-guide topic)))
+          (str "topic " topic " has no guide body"))))
+
+  (testing ":artifacts topic is wired and explains pin-vs-reread"
+    (is (some #{:artifacts} prompt/usage-topics))
+    (let [g (prompt/get-usage-guide :artifacts)]
+      (is (str/includes? g "Live Artifacts"))
+      (is (str/includes? g "artifact$add"))))
+
+  (testing "unknown topic returns nil"
+    (is (nil? (prompt/get-usage-guide :no-such-topic)))))

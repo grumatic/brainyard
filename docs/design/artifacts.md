@@ -205,6 +205,57 @@ All mutations target `st-memory-init` (the persistent registry) via
 `upsert!` / direct `swap!`, so they survive across turns — and, per the
 persistence model, take effect from the next turn.
 
+**Steering the model.** The tools alone don't tell the LLM *which* of the
+things it has read are worth a slot. That decision policy is surfaced three
+ways (`agent.common.coact_agent` + `agent.common.usage_nudge`):
+
+- An always-on hot-path row in `coact-tools-hotpath` —
+  *"Seen a file/skill you'll re-reference → `(artifact$add {:path …})`"* — the
+  cheap nudge that makes the model reach for the tool unprompted.
+- A deep guide, `(usage :artifacts)` (`get-usage-guide` / `usage-topics` in
+  `clj-sandbox/core/prompt.clj`). It spells out the policy: add a file you'll
+  re-reference (prefer `:path` — only a preview rides the prompt and it reloads
+  fresh); don't duplicate system artifacts or Project Memory, or pin one-off /
+  huge reads; `artifact$remove` once stale; `pin` sparingly since every
+  artifact is per-turn budget weight.
+- **Just-in-time + permanent inline** (`usage_nudge`, see below) — the
+  `:artifacts` guide is permanently inlined into the tool-context by default
+  (config `:inline-usage-guides`), so the model never has to *call* `(usage)`
+  for it. Every other guide-backed family is pushed on first use.
+
+This mirrors the two-tier pattern used for the other stewardship areas
+(`:memory`, `:skills`, `:todo`, `:plans`) — all of which `usage_nudge` surfaces
+just-in-time.
+
+### Just-in-time usage guides (`usage_nudge`)
+
+The `(usage :topic)` guides are pull-based and were chronically under-triggered
+— the model rarely *chose* to fetch one. `agent.common.usage_nudge` makes them
+push-based:
+
+- A single `:agent.tool-use/post` observer (`ensure-global-hooks!`, installed
+  once per process from `coact-init-action`) watches every tool call — including
+  SCI code-channel calls, which route through `tool/call-tool` → the same hook
+  chain. `tool-family->topic` maps the id's family segment (text before `$`) to
+  a topic.
+- On the **first** use of a guided family this session, it marks the topic in
+  `st-memory-init :usage-tips-shown` (once per session) and queues the guide
+  into the per-turn `bt-st-memory :pending-usage-guides`. A failing first call
+  is queued with `:reason :error`.
+- `coact-accumulate-iteration-action` drains the queue when it builds the
+  iteration record, attaching the rendered guide as the record's `:notices`
+  field — which the model reads next iteration via DSPy serialization of
+  `:iterations` (`:notices` is in the `::iteration` schema).
+- Topics in config `:inline-usage-guides` (default `[:artifacts]`) are rendered
+  into the tool-context every turn *and* pre-seeded into `:usage-inlined-topics`
+  via `seed-inlined-topics!`, so the first-use path never duplicates them.
+
+Net effect: the one universally-relevant guide (`:artifacts`) is always present;
+the long tail (`:memory`, `:plans`, `:todo`, `:skills`, `:llm-query`, `:mcp`)
+fires once, exactly when the model first reaches for that family. Tune coverage
+by editing `tool-family->topic`; the full pull catalog stays available via
+`(usage)`.
+
 **The union view.** Reads (`artifact$list`, and the presence check in
 `artifact$remove`) go through `effective-artifacts`, which returns the **union**
 (deduped by `:id`, per-turn store first) of:

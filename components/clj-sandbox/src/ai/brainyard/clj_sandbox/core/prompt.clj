@@ -654,6 +654,37 @@ Example — batch analysis with `query$llm` `:prompts`:
 - `(keys (ns-publics 'user))` — list all defined variable names
 - `(format \"%.2f\" 3.14)` — format strings (standard clojure.core)")
 
+(def ^:private usage-artifacts
+  "## Live Artifacts — pin what you'll re-reference
+Live artifacts are reference material the runtime re-injects into your `## Live Artifacts`
+context EVERY turn, so you don't have to re-read or re-quote it. You decide what earns a slot.
+
+### Decide what to add
+After you READ something, ask: *will I reference this again across iterations or turns?*
+- **YES, and it's a file** (skill SKILL.md, a spec, a schema, a module you keep citing) →
+  `(artifact$add {:path \"/abs/path\"})`. Prefer `:path` over pasting text: only a short preview
+  rides the prompt, the full bytes stay on disk, and it RELOADS FRESH each turn (on-disk edits
+  show up automatically — the data-connector pattern).
+- **YES, but it's a derived note** (a distilled finding, a decision, a checklist you synthesized) →
+  `(artifact$add {:content \"…\" :name \"…\"})`. Inline content rides the prompt verbatim, so keep
+  it tight.
+
+### Don't add
+- One-off reads you won't revisit — just use the result and move on.
+- Huge files — leave them on disk and `(read-file …)` the slice you need on demand.
+- Anything already covered by a **system** artifact (CLAUDE.md / AGENTS.md, badged `system`)
+  or by **Project Memory** — don't duplicate context that's already seeded.
+
+### Keep the set lean (it costs budget every turn)
+- `(artifact$list)` — see what's loaded: `:id :name :origin :source :pinned :size`.
+- `(artifact$remove {:id \"…\"})` — drop an artifact once it's stale or its sub-task is done
+  (effective next turn). You can only remove your own; `system` artifacts are fixed.
+- `(artifact$pin {:id \"…\" :pinned true})` — protect from context-budget eviction. Pin SPARINGLY:
+  only what must survive when the context is tight. Everything pinned is weight you always pay.
+
+Rule of thumb: add when re-reading would otherwise repeat across turns; remove the moment it
+stops earning its slot.")
+
 ;; ============================================================================
 ;; Unified System Prompt Builder
 ;; ============================================================================
@@ -979,7 +1010,7 @@ Topics: :truncation, :final, :discovery, :tool-priority, :agent-state, :mcp, :fe
   "All available usage-guide topics. Each topic `:foo` is exposed in the sandbox as a `(usage-foo)` thunk (see make-usage-bindings)."
   [:truncation :final :discovery :tool-priority :agent-state :mcp
    :feedback :memory :todo :plans :skills :files
-   :llm-query :rules])
+   :llm-query :artifacts :rules])
 
 (defn get-usage-guide
   "Return usage guide text for a topic keyword or string. Returns nil if unknown.
@@ -999,6 +1030,7 @@ Topics: :truncation, :final, :discovery, :tool-priority, :agent-state, :mcp, :fe
     :skills        usage-skills
     :files         usage-file-ops
     :llm-query     usage-llm-query
+    :artifacts     usage-artifacts
     :rules         usage-rules-and-tips
     nil))
 
