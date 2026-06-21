@@ -175,7 +175,13 @@
   providers/get-popular-models)
 
 (def get-models-by-provider
-  "Get all known models grouped by provider."
+  "Get all known models grouped by provider, optionally filtered by :provider.
+
+  (get-models-by-provider) => all models grouped by provider
+  (get-models-by-provider {:provider :openai}) => only :openai models
+
+  Throws ex-info with {:provider :available-providers} when :provider is
+  given but not a known provider key."
   providers/get-models-by-provider)
 
 (def detect-aws-region

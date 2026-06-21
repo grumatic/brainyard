@@ -584,18 +584,30 @@
    {:model "global.anthropic.claude-mythos-5" :provider :bedrock :description "Claude Mythos 5 on Bedrock (global)"}])
 
 (defn get-models-by-provider
-  "Get all known models grouped by provider."
-  []
-  {:openai    openai-models
-   :anthropic anthropic-models
-   :google    google-models
-   :groq      groq-models
-   :together  together-models
-   :mistral   mistral-models
-   :deepseek  deepseek-models
-   :ollama    ollama-models
-   :apple-fm  apple-fm-models
-   :bedrock   bedrock-models})
+  "Get all known models grouped by provider, optionally filtered by :provider.
+
+  (get-models-by-provider) => all models grouped by provider (provider is nil)
+  (get-models-by-provider {:provider :openai}) => only :openai models
+
+  Throws ex-info with {:provider :available-providers} when :provider is
+  given but not a known provider key."
+  [& {:keys [provider]}]
+  (let [all {:openai    openai-models
+             :anthropic anthropic-models
+             :google    google-models
+             :groq      groq-models
+             :together  together-models
+             :mistral   mistral-models
+             :deepseek  deepseek-models
+             :ollama    ollama-models
+             :apple-fm  apple-fm-models
+             :bedrock   bedrock-models}]
+    (cond
+      (nil? provider)          all
+      (contains? all provider) (select-keys all [provider])
+      :else                    (throw (ex-info (str "Unknown provider: " provider)
+                                                {:provider            provider
+                                                 :available-providers (vec (sort (keys all)))})))))
 
 ;; ============================================================================
 ;; Global Usage Tracker
