@@ -55,8 +55,14 @@
       (is (contains? tools :code$eval))
       (is (contains? tools :task$detail))
       (is (contains? tools :clj-nrepl$start-server))
-      (is (not (contains? tools :bash))
-          "debug-agent's bag is intentionally tight — no bash"))))
+      (testing "source-editing tools — debug-agent makes its own permanent
+                fixes (no update-agent handoff): validate live via code$eval,
+                then edit the file and reload"
+        (doseq [id [:read-file :update-file :write-file :grep :search :bash]]
+          (is (contains? tools id)
+              (str id " must be bound so debug-agent can edit + verify source"))))
+      (testing "background execution for running a brick's tests post-edit"
+        (is (contains? tools :task$run))))))
 
 ;; ============================================================================
 ;; Backend selection — agent-clj-backend reads :clj-backend via the unified
