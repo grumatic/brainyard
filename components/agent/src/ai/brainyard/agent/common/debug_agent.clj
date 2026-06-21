@@ -302,12 +302,39 @@
    (t/call-tool :task$detail {:task-id \"task-1\" :last-n \"50\"})
    (t/call-tool :task$cancel {:task-id \"task-1\"})
 
-   ;; Memory recall / remember
-   (t/call-tool :memory$recall {:query \"recent commits\" :limit 5})
-   (t/call-tool :memory$status {})
+   ;; Memory / session tools read *current-agent* — pass :agent (see below)
+   (t/call-tool :memory$recall {:query \"recent commits\" :limit 5} :agent dbg)
+   (t/call-tool :memory$status {} :agent dbg)
 
    ;; Sub-LLM (no tools, no iteration — cheap fan-out)
    (t/call-tool :query$llm {:prompt \"Summarize this stack trace: …\"})
+   ```
+
+   ### Tools that need *current-agent* — pass :agent
+   Agent-state tools (memory$*, session, anything reading the running agent)
+   resolve `ai.brainyard.agent.core.protocol/*current-agent*`, which is nil on
+   the nREPL thread — each eval runs unbound, and a `(binding […])` does NOT
+   survive to the next eval. Called bare they degrade to
+   `{:error \"current agent is not running\"}` / `\"…no memory manager\"`.
+   `call-tool` binds `*current-agent*` for you when you pass `:agent`, so pass
+   it per call. Default to the running debug-agent instance from the registry:
+
+   ```clojure
+   (require '[ai.brainyard.agent.core.agent :as ag]
+            '[ai.brainyard.agent.core.protocol :as proto])
+
+   ;; The debug-agent itself — the agent-id namespace IS the defagent type.
+   ;; (def persists across evals; *current-agent* bindings do not.)
+   (def dbg (first (filter #(= \"debug-agent\" (namespace (proto/agent-id %)))
+                           (ag/list-agents))))
+
+   (t/call-tool :memory$status {} :agent dbg)
+   (t/call-tool :memory$recall {:query \"recent commits\" :limit 5} :agent dbg)
+
+   ;; To inspect ANOTHER agent's context (memory/session), pass that instance:
+   (def coact (first (filter #(= \"coact-agent\" (namespace (proto/agent-id %)))
+                             (ag/list-agents))))
+   (t/call-tool :memory$status {} :agent coact)
    ```
 
    Notes:
@@ -316,10 +343,11 @@
    - Return shape matches the tool's :output-schema. Errors surface as
      `{:error-message …}` (permission denied, schema mismatch) or as a
      thrown exception from the tool fn — read `*e` / `(ex-data *e)` after.
-   - Permission gating still applies: tools with `:tool-use-control` that
-     exclude debug-* will reject. Use this to discover which tools the
-     debug-agent is allowed to call (`:agent-tools` lists the bound set;
-     `call-tool` reaches anything in `!tool-defs` subject to gating).
+   - Permission gating: the global allow/deny/approval permission (name-based)
+     always applies. Per-agent visibility (`:tool-use-control`) applies ONLY
+     when you pass `:agent` — with no agent, a nil agent-id is treated as
+     visible, so `call-tool` reaches anything in `!tool-defs`. Pass `:agent dbg`
+     to exercise the debug-agent's own gating; `:agent-tools` lists its bound set.
    - For internal fns (not registered as tools), call them directly by
      their fully-qualified var — no `call-tool` needed.
    ```")
