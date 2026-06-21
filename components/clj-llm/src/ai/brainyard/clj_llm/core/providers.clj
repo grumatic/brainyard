@@ -115,21 +115,31 @@
 (def openai-models
   #{;; GPT-5 family
     "gpt-5" "gpt-5-mini" "gpt-5-nano"
+    ;; GPT-5.5 family
+    "gpt-5.5" "gpt-5.5-mini"
+    ;; GPT-5.4 family
+    "gpt-5.4-mini" "gpt-5.4-nano"
+    ;; GPT-5 Pro
+    "gpt-5-pro"
     ;; GPT-4.1 family
     "gpt-4.1" "gpt-4.1-mini" "gpt-4.1-nano"
     ;; GPT-4o family
     "gpt-4o" "gpt-4o-mini"
     ;; o-series (reasoning)
-    "o3" "o3-mini" "o4-mini"
+    "o3" "o3-mini" "o4-mini" "o3-pro"
     ;; Legacy (still API-available)
     "o1" "o1-mini" "gpt-4-turbo" "gpt-4" "gpt-3.5-turbo"})
 
 (def anthropic-models
   #{;; Latest (current generation)
+    "claude-opus-4-8"                                         ;; Opus 4.8
     "claude-opus-4-7"                                         ;; Opus 4.7
     "claude-opus-4-6"                                         ;; Opus 4.6
     "claude-sonnet-4-6"                                       ;; Sonnet 4.6
     "claude-haiku-4-5-20251001"  "claude-haiku-4-5"           ;; Haiku 4.5
+    ;; Mythos-class
+    "claude-mythos-5"            "claude-mythos-latest"        ;; Mythos 5
+    "claude-fable-5"             "claude-fable-latest"         ;; Fable 5
     ;; Legacy Claude 4.x
     "claude-sonnet-4-5-20250929" "claude-sonnet-4-5"          ;; Sonnet 4.5
     "claude-opus-4-5-20251101"   "claude-opus-4-5"            ;; Opus 4.5
@@ -193,6 +203,9 @@
     "global.anthropic.claude-opus-4-5-20251101-v1:0"
     "global.anthropic.claude-sonnet-4-6"
     "global.anthropic.claude-opus-4-6-v1"
+    "global.anthropic.claude-opus-4-8"
+    "global.anthropic.claude-fable-5"
+    "global.anthropic.claude-mythos-5"
     "global.anthropic.claude-opus-4-7"
     ;; Anthropic on Bedrock — 3.x (still widely deployed)
     "anthropic.claude-3-5-sonnet-20241022-v2:0"
@@ -240,17 +253,24 @@
 (def ^:private drop-temperature-exact
   "Exact model names that reject the `temperature` parameter."
   #{"gpt-5" "gpt-5-mini" "gpt-5-nano"
+    "gpt-5.5" "gpt-5.5-mini"
+    "gpt-5.4-mini" "gpt-5.4-nano"
+    "gpt-5-pro" "o3-pro"
     "o1" "o1-mini" "o3" "o3-mini" "o4-mini"})
 
 (defn- drops-temperature?
   "True if the model rejects (or ignores) the `temperature` parameter.
    When detected, `create-lm` sets `:drop-params #{:temperature}` automatically.
-   Matches by exact name (OpenAI GPT-5 + o-series) and by substring for
-   Claude Opus 4.7, which rejects temperature on Anthropic API and on Bedrock
-   under every prefix (anthropic., us.anthropic., global.anthropic., …)."
+   Matches by exact name (OpenAI GPT-5/o-series reasoning models) and by
+   substring for the Claude families that reject sampling params (Opus 4.7+,
+   Fable, Mythos) on the Anthropic API and on Bedrock under every prefix
+   (anthropic., us.anthropic., global.anthropic., …)."
   [^String model]
   (or (contains? drop-temperature-exact model)
-      (.contains model "claude-opus-4-7")))
+      (.contains model "claude-opus-4-8")
+      (.contains model "claude-opus-4-7")
+      (.contains model "claude-fable")
+      (.contains model "claude-mythos")))
 
 (defn- bedrock-supports-prompt-cache?
   "True for Bedrock model ids that accept the Converse cachePoint block.
@@ -543,7 +563,25 @@
    {:model "us.deepseek.r1-v1:0"       :provider :bedrock :region "us-east-1" :description "DeepSeek-R1 on Bedrock (US cross-region)"}
    {:model "ai21.jamba-1-5-large-v1:0" :provider :bedrock :region "us-east-1" :description "AI21 Jamba 1.5 Large on Bedrock"}
    {:model "writer.palmyra-x5-v1:0"    :provider :bedrock :region "us-east-1" :description "Writer Palmyra X5 on Bedrock"}
-   {:model "us.writer.palmyra-x5-v1:0" :provider :bedrock :region "us-east-1" :description "Writer Palmyra X5 on Bedrock (US cross-region)"}])
+   {:model "us.writer.palmyra-x5-v1:0" :provider :bedrock :region "us-east-1" :description "Writer Palmyra X5 on Bedrock (US cross-region)"}
+   ;; OpenAI — GPT-5.5 family
+   {:model "gpt-5.5" :provider :openai :description "OpenAI GPT-5.5 (advanced reasoning)"}
+   {:model "gpt-5.5-mini" :provider :openai :description "OpenAI GPT-5.5 Mini"}
+   ;; OpenAI — GPT-5.4 family
+   {:model "gpt-5.4-mini" :provider :openai :description "OpenAI GPT-5.4 Mini"}
+   {:model "gpt-5.4-nano" :provider :openai :description "OpenAI GPT-5.4 Nano (cheapest)"}
+   ;; OpenAI — GPT-5 Pro
+   {:model "gpt-5-pro" :provider :openai :description "OpenAI GPT-5 Pro (extended reasoning)"}
+   ;; OpenAI — o-series
+   {:model "o3-pro" :provider :openai :description "OpenAI o3 Pro (advanced reasoning)"}
+   ;; Anthropic — Latest
+   {:model "claude-opus-4-8" :provider :anthropic :description "Anthropic Claude Opus 4.8 (most capable)"}
+   {:model "claude-mythos-5" :provider :anthropic :description "Anthropic Claude Mythos 5 (flagship)"}
+   {:model "claude-fable-5" :provider :anthropic :description "Anthropic Claude Fable 5 (creative)"}
+   ;; Bedrock — Latest Anthropic
+   {:model "global.anthropic.claude-opus-4-8" :provider :bedrock :description "Claude Opus 4.8 on Bedrock (global)"}
+   {:model "global.anthropic.claude-fable-5" :provider :bedrock :description "Claude Fable 5 on Bedrock (global)"}
+   {:model "global.anthropic.claude-mythos-5" :provider :bedrock :description "Claude Mythos 5 on Bedrock (global)"}])
 
 (defn get-models-by-provider
   "Get all known models grouped by provider."

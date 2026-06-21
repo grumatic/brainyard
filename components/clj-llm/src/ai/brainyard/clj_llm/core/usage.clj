@@ -15,6 +15,14 @@
    Rates: :input, :output, :cache-read, :cache-write (per 1M tokens)."
   {;; OpenAI — GPT-5 family
    [:openai "gpt-5"]            {:input 1.25  :output 10.00 :cache-read 0.625 :cache-write 1.25}
+   ;; OpenAI — GPT-5.5 family
+   [:openai "gpt-5.5"]          {:input 5.00  :output 25.00 :cache-read 2.50  :cache-write 5.00}
+   [:openai "gpt-5.5-mini"]     {:input 1.00  :output 5.00  :cache-read 0.50  :cache-write 1.00}
+   ;; OpenAI — GPT-5.4 family
+   [:openai "gpt-5.4-mini"]     {:input 0.40  :output 2.00  :cache-read 0.20  :cache-write 0.40}
+   [:openai "gpt-5.4-nano"]     {:input 0.10  :output 0.50  :cache-read 0.05  :cache-write 0.10}
+   ;; OpenAI — GPT-5 Pro
+   [:openai "gpt-5-pro"]        {:input 15.00 :output 75.00 :cache-read 7.50  :cache-write 15.00}
    [:openai "gpt-5-mini"]       {:input 0.25  :output 2.00  :cache-read 0.125 :cache-write 0.25}
    [:openai "gpt-5-nano"]       {:input 0.05  :output 0.40  :cache-read 0.025 :cache-write 0.05}
    ;; OpenAI — GPT-4.1 family
@@ -28,12 +36,16 @@
    [:openai "o3"]               {:input 2.00  :output 8.00  :cache-read 1.00  :cache-write 2.00}
    [:openai "o3-mini"]          {:input 1.10  :output 4.40  :cache-read 0.55  :cache-write 1.10}
    [:openai "o4-mini"]          {:input 1.10  :output 4.40  :cache-read 0.55  :cache-write 1.10}
+   [:openai "o3-pro"]           {:input 10.00 :output 40.00 :cache-read 5.00  :cache-write 10.00}
    ;; OpenAI — Legacy
    [:openai "gpt-4-turbo"]      {:input 10.00 :output 30.00 :cache-read 5.00  :cache-write 10.00}
    [:openai "o1"]               {:input 15.00 :output 60.00 :cache-read 7.50  :cache-write 15.00}
    [:openai "o1-mini"]          {:input 3.00  :output 12.00 :cache-read 1.50  :cache-write 3.00}
    ;; Anthropic (pricing from https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#pricing)
+   [:anthropic "claude-opus-4-8"]           {:input 5.00  :output 25.00 :cache-read 0.50  :cache-write 6.25}
    [:anthropic "claude-opus-4-7"]           {:input 5.00  :output 25.00 :cache-read 0.50  :cache-write 6.25}
+   [:anthropic "claude-mythos-5"]           {:input 10.00 :output 50.00 :cache-read 1.00  :cache-write 12.50}
+   [:anthropic "claude-fable-5"]            {:input 10.00 :output 50.00 :cache-read 1.00  :cache-write 12.50}
    [:anthropic "claude-opus-4-6"]           {:input 5.00  :output 25.00 :cache-read 0.50  :cache-write 6.25}
    [:anthropic "claude-sonnet-4-6"]         {:input 3.00  :output 15.00 :cache-read 0.30  :cache-write 3.75}
    [:anthropic "claude-sonnet-4-5"]         {:input 3.00  :output 15.00 :cache-read 0.30  :cache-write 3.75}
@@ -69,6 +81,9 @@
    [:bedrock "anthropic.claude-sonnet-4-5"] {:input 3.00  :output 15.00 :cache-read 0.30 :cache-write 3.75}
    [:bedrock "anthropic.claude-sonnet-4-0"] {:input 3.00  :output 15.00 :cache-read 0.30 :cache-write 3.75}
    [:bedrock "anthropic.claude-haiku-4-5"]  {:input 1.00  :output 5.00  :cache-read 0.10 :cache-write 1.25}
+   [:bedrock "anthropic.claude-opus-4-8"]   {:input 5.00  :output 25.00 :cache-read 0.50 :cache-write 6.25}
+   [:bedrock "anthropic.claude-mythos-5"]   {:input 10.00 :output 50.00 :cache-read 1.00 :cache-write 12.50}
+   [:bedrock "anthropic.claude-fable-5"]    {:input 10.00 :output 50.00 :cache-read 1.00 :cache-write 12.50}
    [:bedrock "anthropic.claude-opus-4-7"]   {:input 5.00  :output 25.00 :cache-read 0.50 :cache-write 6.25}
    [:bedrock "anthropic.claude-opus-4-6"]   {:input 5.00  :output 25.00 :cache-read 0.50 :cache-write 6.25}
    [:bedrock "anthropic.claude-opus-4-5"]   {:input 5.00  :output 25.00 :cache-read 0.50 :cache-write 6.25}
