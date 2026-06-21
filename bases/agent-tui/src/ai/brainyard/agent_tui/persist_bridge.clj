@@ -88,16 +88,23 @@
           ;; CLI's -a flag) still get their type persisted for resume. Without
           ;; this, `--resume <sibling-sid>` would fall back to the CLI default.
           defid (when (keyword? aid)
-                  (if (namespace aid) (keyword (namespace aid)) aid))]
+                  (if (namespace aid) (keyword (namespace aid)) aid))
+          ;; Subagents (coact→explore, main→rlm, …) share the session-id but
+          ;; must NOT redefine the session's resume identity. Only TOP-LEVEL
+          ;; agents (no parent — including `/agent new` siblings) write
+          ;; :agent-id/:defagent-id. Otherwise the last subagent created wins
+          ;; and `--resume` restores the subagent type instead of the root.
+          subagent? (some? (agent/get-parent-agent (:!state agent)))]
       (swallow
        (persist/append-event! sid
                               {:kind :agent.instance/created
                                :payload {:agent-id aid}}))
-      (swallow (persist/save-meta! sid
-                                   (let [model (some-> (clj-llm/get-default-lm) :model)]
-                                     (cond-> {:agent-id aid}
-                                       defid (assoc :defagent-id defid)
-                                       model (assoc :model model))))))))
+      (when-not subagent?
+        (swallow (persist/save-meta! sid
+                                     (let [model (some-> (clj-llm/get-default-lm) :model)]
+                                       (cond-> {:agent-id aid}
+                                         defid (assoc :defagent-id defid)
+                                         model (assoc :model model)))))))))
 
 (defn- on-instance-closed [{:keys [agent]}]
   (when-let [sid (safe-session-id agent)]

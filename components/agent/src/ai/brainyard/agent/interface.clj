@@ -244,7 +244,8 @@
 
 (export-symbols ai.brainyard.agent.core.runtime
                 cancel-run cancelled?
-                pause-run resume-run paused?)
+                pause-run resume-run paused?
+                get-parent-agent)
 
 ;; ============================================================================
 ;; Directory & File Management
