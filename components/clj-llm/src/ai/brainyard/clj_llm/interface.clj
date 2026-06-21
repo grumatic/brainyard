@@ -174,6 +174,12 @@
   "Get a curated list of popular models across providers."
   providers/get-popular-models)
 
+(def list-models
+  "Flat view of the model catalog with metadata. Opts: :provider (keyword),
+   :curated? (boolean). Returns {:model :provider :curated? :curated-rank?
+   :description? :region?} maps. Pure data — no network calls."
+  providers/list-models)
+
 (def get-models-by-provider
   "Get all known models grouped by provider, optionally filtered by :provider.
 

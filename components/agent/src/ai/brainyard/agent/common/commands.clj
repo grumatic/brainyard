@@ -519,39 +519,44 @@
 ;; LLM Metadata
 ;; ============================================================================
 
-(defcommand llm$list-models
-  "List popular LLM models curated across providers (claude-code, openai,
-   anthropic, google, deepseek, mistral, groq, ollama, free-llm, apple-fm, bedrock).
-   Pure data — no network calls, no API keys required.
+(defcommand llm$models
+  "List known LLM models from the catalog (single source of truth across
+   claude-code, openai, anthropic, google, deepseek, mistral, groq, ollama,
+   free-llm, apple-fm, bedrock). Pure data — no network calls, no API keys.
 
-   Filter by `:provider` (keyword) to narrow the result. Pass `:limit` to
-   cap the result count. Useful for `/model` pickers, config-agent and
-   bootstrap dialogs that need to suggest a model the user can pick."
-  (fn [& {:keys [provider limit]}]
+   Defaults to the curated set, ordered by rank — ideal for `/model` pickers,
+   config-agent, and bootstrap dialogs. Options:
+     :provider <kw|str>  restrict to one provider (e.g. :anthropic, \"openai\")
+     :all      <bool>    return the full catalog, not just curated entries
+     :limit    <int>     cap the returned entries (applied after filtering)
+
+   Each entry: {:model :provider :curated? (:curated-rank :description :region
+   when present)}."
+  (fn [& {:keys [provider all limit]}]
     (let [provider* (cond
                       (keyword? provider) provider
-                      (string?  provider) (keyword (str/replace provider #"^:" ""))
-                      :else               nil)
-          all       (clj-llm/get-popular-models)
-          filtered  (cond->> all
-                      provider* (filter #(= provider* (:provider %)))
-                      true      vec)
+                      (and (string? provider) (not (str/blank? provider)))
+                      (keyword (str/replace provider #"^:" ""))
+                      :else nil)
+          entries   (clj-llm/list-models :provider provider* :curated? (not all))
           capped    (if (and (integer? limit) (pos? limit))
-                      (vec (take limit filtered))
-                      filtered)
-          providers (vec (distinct (map :provider all)))]
+                      (vec (take limit entries))
+                      (vec entries))]
       {:models    capped
        :count     (count capped)
-       :total     (count all)
-       :providers providers}))
+       :total     (count entries)
+       :curated   (not (boolean all))
+       :providers (vec (sort (keys (clj-llm/get-models-by-provider))))}))
   :input-schema  [:map
                   [:provider {:optional true} [:string {:desc "Optional provider filter (keyword or string), e.g. :anthropic, \"openai\""}]]
-                  [:limit {:optional true} [:int {:desc "Cap on returned entries (default: no cap)"}]]]
+                  [:all {:optional true} [:boolean {:desc "Include the full catalog, not just curated entries (default false)"}]]
+                  [:limit {:optional true} [:int {:desc "Cap on returned entries, applied after filtering (default: no cap)"}]]]
   :output-schema [:map
-                  [:models [:vector {:desc "Curated model entries — each {:model :provider :description (:region optional)}"} :map]]
-                  [:count [:int {:desc "Number of entries returned after filter / limit"}]]
-                  [:total [:int {:desc "Total curated entries before filter / limit"}]]
-                  [:providers [:vector {:desc "Distinct providers in the full curated set"} :keyword]]])
+                  [:models [:vector {:desc "Model entries — each {:model :provider :curated? (:curated-rank :description :region when present)}"} :map]]
+                  [:count [:int {:desc "Entries returned after filter / limit"}]]
+                  [:total [:int {:desc "Entries after filter, before limit"}]]
+                  [:curated [:boolean {:desc "True when only curated entries were returned (i.e. :all was not set)"}]]
+                  [:providers [:vector {:desc "All providers in the catalog"} :keyword]]])
 
 ;; ============================================================================
 ;; Command Categories
@@ -581,7 +586,7 @@
 
 (def llm-commands
   "Commands for inspecting LLM metadata (no network calls)."
-  [#'llm$list-models])
+  [#'llm$models])
 
 (def all-common-commands
   "All common commands available for tool use"

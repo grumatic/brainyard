@@ -543,6 +543,37 @@
                               :description (:description m)}
                        (:region m) (assoc :region (:region m)))))))
 
+(defn list-models
+  "Flat view of model-catalog — the full known model set with metadata.
+   Returns a vector of {:model :provider :curated? :curated-rank? :description?
+   :region?} maps (keys absent when the catalog entry has no value).
+
+   Opts:
+     :provider  keyword — restrict to one provider (nil = all)
+     :curated?  boolean — when true, only curated entries (those with a
+                :curated-rank), ordered by rank. When false/omitted, the whole
+                catalog grouped by provider (curated first within each), then
+                alphabetical by model id.
+
+   Pure data — no network calls, no API keys."
+  [& {:keys [provider curated?]}]
+  (let [entries (for [[prov models] model-catalog
+                      m models
+                      :when (or (nil? provider) (= provider prov))]
+                  (cond-> {:model    (:model m)
+                           :provider prov
+                           :curated? (some? (:curated-rank m))}
+                    (:curated-rank m) (assoc :curated-rank (:curated-rank m))
+                    (:description m)  (assoc :description (:description m))
+                    (:region m)       (assoc :region (:region m))))]
+    (if curated?
+      (->> entries (filter :curated?) (sort-by :curated-rank) vec)
+      (->> entries
+           (sort-by (juxt #(name (:provider %))
+                          #(or (:curated-rank %) Long/MAX_VALUE)
+                          :model))
+           vec))))
+
 (defn get-models-by-provider
   "Get all known models grouped by provider, optionally filtered by :provider.
 
