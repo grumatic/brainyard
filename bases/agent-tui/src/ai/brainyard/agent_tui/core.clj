@@ -1477,15 +1477,18 @@
             sess-id (when ag (try (agent/session-id ag) (catch Throwable _ nil)))
             sess    (when ag (try @(:!session ag) (catch Throwable _ nil)))
             lm (try (clj-llm/get-default-lm) (catch Exception _ nil))]
-        (when fullscreen-ok?
-          ;; Replay the persisted scrollback tail into the alt-screen
-          ;; before the banner so prior conversation appears above it.
-          (when resumed?
-            (when-let [tail (:resume-tail @tui-session/!tui-state)]
-              (when (not= "" tail)
-                (try (layout/write-output! tail)
-                     (catch Throwable _ nil))))
-            (swap! tui-session/!tui-state dissoc :resume-tail)))
+        ;; Replay the persisted scrollback tail before the banner so prior
+        ;; conversation appears above it. Mode-independent: fires once for
+        ;; ANY resume launch (fullscreen, primary-buffer fallback, etc.) —
+        ;; `layout/write-output!` targets the active surface in both cases.
+        ;; The inline-direct `start!` path (step 12) covers REPL/inline-only
+        ;; callers that never reach `run!`.
+        (when resumed?
+          (when-let [tail (:resume-tail @tui-session/!tui-state)]
+            (when (not= "" tail)
+              (try (layout/write-output! tail)
+                   (catch Throwable _ nil))))
+          (swap! tui-session/!tui-state dissoc :resume-tail))
         ;; Banner / resume notice via layout/write-output! (not
         ;; tui-session/emit!) so the bytes don't tee into the on-disk
         ;; scrollback file.
