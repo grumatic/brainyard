@@ -239,7 +239,22 @@
      ns); slice big values (`(take 20 …)`, `(keys …)`) instead of dumping.")
 
 (def ^:private debug-tool-context
-  "## Inspecting the live brainyard image (read-only, safe)
+  "## nREPL lifecycle tools (start / stop / status) — TOOL channel ONLY
+
+   `clj-nrepl$start-server`, `clj-nrepl$stop-server`, and `clj-nrepl$status`
+   MUST be invoked through the TOOL channel (a tool-call), NEVER from inside
+   a ```clojure code block. Your ```clojure blocks are evaluated BY the live
+   nREPL server — so when the server is NOT running, a code block fails
+   immediately with \"clj-nrepl server is not running\" and can never reach
+   the start-server call (a chicken-and-egg deadlock). Route these three
+   through the tool channel:
+     - clj-nrepl$status        — check whether the server is up
+     - clj-nrepl$start-server  — start it (idempotent)
+     - clj-nrepl$stop-server   — stop it
+   Only AFTER status confirms the server is running do ```clojure blocks
+   evaluate against the live image; use the code channel for everything else.
+
+   ## Inspecting the live brainyard image (read-only, safe)
 
    Your code runs in the real JVM, so any loaded namespace, var, or value is
    reachable. Every snippet below is non-destructive — run them to understand
