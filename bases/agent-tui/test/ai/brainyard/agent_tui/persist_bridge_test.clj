@@ -35,7 +35,11 @@
                          :total-turns 0
                          :config     {}
                          :created-at 100
-                         :updated-at 100})]
+                         :updated-at 100})
+         ;; Top-level agent (no :runtime/:parent-agent) — the bridge's
+         ;; on-instance-created reads :!state to decide subagent? via
+         ;; agent/get-parent-agent, which derefs this atom.
+         !state   (atom {})]
      (reify
        ai.brainyard.agent.core.protocol/IAgent
        (session-id [_] session-id)
@@ -43,11 +47,13 @@
        (valAt [_ k]
          (case k
            :!session !session
+           :!state   !state
            :agent-id agent-id
            nil))
        (valAt [_ k not-found]
          (case k
            :!session !session
+           :!state   !state
            :agent-id agent-id
            not-found))))))
 
