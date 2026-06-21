@@ -264,21 +264,13 @@
    [{:model "deepseek-chat" :curated-rank 16 :description "DeepSeek V3.2 (ultra cheap)"}
     {:model "deepseek-reasoner" :curated-rank 17 :description "DeepSeek V3.2 Reasoner"}]))
 
-;; Per-provider bare-string sets, DERIVED from model-catalog (back-compat for
-;; external references). Only the providers that historically had *-models sets.
-(defn- catalog-models-for [provider]
-  (set (map :model (get model-catalog provider))))
-
-(def openai-models (catalog-models-for :openai))
-(def anthropic-models (catalog-models-for :anthropic))
-(def google-models (catalog-models-for :google))
-(def groq-models (catalog-models-for :groq))
-(def together-models (catalog-models-for :together))
-(def mistral-models (catalog-models-for :mistral))
-(def deepseek-models (catalog-models-for :deepseek))
-(def ollama-models (catalog-models-for :ollama))
-(def apple-fm-models (catalog-models-for :apple-fm))
-(def bedrock-models (catalog-models-for :bedrock))
+;; Reverse index model-id -> provider, DERIVED from model-catalog. Used by
+;; get-provider-from-model for catalog lookup. Unambiguous: no model id appears
+;; under more than one provider in the catalog.
+(def ^:private model->provider
+  (into {} (for [[provider models] model-catalog
+                 {:keys [model]} models]
+             [model provider])))
 
 (def ^:private drop-temperature-exact
   "Exact model names that reject the `temperature` parameter."
@@ -366,18 +358,10 @@
          provider-prefixes)
    ;; Bedrock cross-region inference profile (us./eu./apac./global. prefix)
    (when (re-matches bedrock-region-profile-re model) :bedrock)
-   ;; Check model catalogs
+   ;; Catalog lookup (reverse index)
+   (model->provider model)
+   ;; Fallbacks for ids not in the catalog
    (cond
-     (bedrock-models model)   :bedrock
-     (openai-models model)    :openai
-     (anthropic-models model) :anthropic
-     (google-models model)    :google
-     (groq-models model)      :groq
-     (together-models model)  :together
-     (mistral-models model)   :mistral
-     (deepseek-models model)  :deepseek
-     (ollama-models model)    :ollama
-     (apple-fm-models model)  :apple-fm
      ;; Mistral on Bedrock IDs look like "mistral.mistral-..." (prefix-matched
      ;; above), but raw "mistral.X" without "/" still hints Bedrock.
      (.startsWith ^String model "mistral.") :bedrock
@@ -565,20 +549,12 @@
   (get-models-by-provider) => all models grouped by provider (provider is nil)
   (get-models-by-provider {:provider :openai}) => only :openai models
 
-  Derived view of model-catalog (bare-string sets), restricted to the providers
-  that historically backed this function. Throws ex-info with
-  {:provider :available-providers} when :provider is given but unknown."
+  Derived view of model-catalog as bare-string sets, grouped by provider —
+  every catalog provider, including :claude-code and :free-llm. Throws ex-info
+  with {:provider :available-providers} when :provider is given but unknown."
   [& {:keys [provider]}]
-  (let [all {:openai    openai-models
-             :anthropic anthropic-models
-             :google    google-models
-             :groq      groq-models
-             :together  together-models
-             :mistral   mistral-models
-             :deepseek  deepseek-models
-             :ollama    ollama-models
-             :apple-fm  apple-fm-models
-             :bedrock   bedrock-models}]
+  (let [all (into {} (map (fn [[prov ms]] [prov (set (map :model ms))]))
+                  model-catalog)]
     (cond
       (nil? provider)          all
       (contains? all provider) (select-keys all [provider])
