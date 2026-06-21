@@ -158,8 +158,9 @@ re-estimate.
   `estimate-context-tokens > :max-context-tokens`, fire `compact-context!` with
   `:trigger :auto`. Gated by `:enable-context-budget`.
 
-It fires `:agent.compaction/pre`, `:agent.compaction/phase` (`:start`/`:done`),
-and `:agent.compaction/post`, and returns
+It fires `:agent.compaction/pre`, `:agent.compaction/phase` (`:phase
+:previous-turns`, `:status :start`/`:done`), and `:agent.compaction/post`, and
+returns
 `{:before-tokens :after-tokens :compacted-keys :duration-ms :trigger}` (or
 `{:already-compact true …}` when already under target).
 

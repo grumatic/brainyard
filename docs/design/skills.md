@@ -185,9 +185,14 @@ skills and also handles skill *lifecycle* requests:
   :bt-factory   (fn [{:keys [max-iterations]}] (coact/coact-behavior-tree max-iterations))
   :input-schema  [:map [:question ...] [:agent-context {:optional true} ...]]
   :output-schema [:map [:answer ...]]
-  :agent-tools  {:tools skills/skills-commands}   ; skills$list/find/read/write/install/sync
+  :agent-tools  {:tools skills/skills-commands}   ; skills$list/find/read/write/install/sync/reload
   :instruction  instruction)
 ```
+
+The `skills$*` set is `list / find / read / write / install / sync / reload`
+(`skills/skills-commands`). Create / update / remove are not separate commands —
+they are the polymorphic `skills$write` mutation surface (`:op
+:create | :update | :remove`).
 
 It runs the CoAct behavior tree (a ReAct-style thought/action loop). It is
 invoked two ways:

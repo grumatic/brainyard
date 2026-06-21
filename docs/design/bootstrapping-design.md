@@ -268,7 +268,7 @@ The user can override the preselection in interactive mode. The order is central
 6. **Disk full during pull.** `ollama pull` errors; the wizard surfaces stderr verbatim and offers `glm-5:cloud` as a degrade path before falling to rung (g).
 7. **Non-TTY stdin (piped, CI without `--auto`).** The wizard refuses to start. Exit code 2 with "Use `--auto` for non-interactive runs."
 8. **Re-running `bb tui config` after success.** Rung (a) applies. Wizard prints the no-op message and exits 0. `--re-bootstrap` forces re-run.
-9. **`config-agent` not yet implemented.** Phase 3's `[1] enter config-agent` selection currently spawns a placeholder agent (`config-agent-stub`) that prints "Coming soon. Edit `~/.brainyard/config.edn` directly for now." The contract is locked; the implementation lands separately.
+9. **`config-agent`.** **As-built:** `config-agent` shipped (`components/agent/src/ai/brainyard/agent/common/config_agent.clj`; full design in `config-agent-design.md`), so Phase 3's `[1] enter config-agent` now launches the real agent in-process (`spawn-config-agent!` in `config_wizard.clj`) rather than the `config-agent-stub` placeholder this design originally proposed. There is no `config-agent-stub` in the tree.
 
 ---
 

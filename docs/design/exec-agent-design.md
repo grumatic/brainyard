@@ -1,6 +1,14 @@
 # Exec-Agent — Pre-flight & Post-flight Gated Execution with Per-Item Routing & Dossier Evidence (CoAct-derived)
 
 > **Status:** Shipped — `exec-agent` is registered in `components/agent` (`common/exec_agent.clj`). This document is the original design proposal (revision 2); the shipped implementation may diverge in details. See [core/agent.md](../core/agent.md) for the current roster.
+>
+> **As-built (verify against `common/exec_agent.clj`, `common/exec.clj`):**
+> - **No `runs/` directory and no separate run-record artifact.** The design's split of `runs/<…>.md` (verbose per-iteration log, §7.2) from `dossiers/<…>.md` was **not built**. Exec-agent emits a **single dossier** under `.brainyard/agents/exec-agent/dossiers/<ts>-<slug>.md`; per-item evidence rides in the dossier's `execute.evidence` map. There is **no `exec$run-write` helper** and no `run_record` frontmatter key. The eval-agent doc's `exec_run_record` reference is therefore usually nil in practice.
+> - **POST-FLIGHT verdict is PASS / HOLD only.** The design's REVISE auto-retry (§6.2, one `todo$reset-item` + re-execute round) is **deferred to v1.5**.
+> - **Cross-agent dispatch is direct kebab-case** — `(update-agent {…})`, `(explore-agent {…})`, `(todo-agent {…})` — though the registry also makes them reachable via `call-tool`. Hard Rule 4 reads "NO clone-self dispatch." Checkbox flips use `(doc$update {:kind :todo … :item-idx N :item-done true})`, not `todo$update-item`.
+> - **`write-file` / `update-file` are NOT bound** — every write delegates to update-agent (Hard Rule 1, as designed).
+> - **Shipped helper roster:** `exec$dossier-slug`, `exec$dossier-frontmatter`, `exec$dossier-write`, `exec$dossier-index-append`, `exec$read-dossier`, `exec$find`, `exec$next-handoff`. No `exec$run-write` / `exec$preflight` / `exec$postflight` / `exec$item-route` helpers shipped (§12's helper list is aspirational).
+> - **An `:agent.ask/post` auto-persist hook** (not in this design) writes a minimal dossier from the answer text if the helpers were skipped, and catches hallucinated `Saved dossier:` paths.
 > **Scope:** redesign of `components/agent/src/ai/brainyard/agent/common/exec_agent.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
 > **Sibling of:** `plan-agent`, `todo-agent`, `eval-agent`, `update-agent`, `explore-agent`
@@ -479,10 +487,11 @@ Frontmatter contract (eval-agent depends on these):
 
 ### 7.4 ANSWER Format
 
-Three or four stable lines at the end:
+> **As-built:** the shipped answer emits **only `Saved dossier:`** — there is no `Saved run:` line (no run-record artifact ships). `Next:` uses direct kebab-case dispatch, e.g. `(eval-agent {…})`, not `(call-tool "eval-agent" {…})`.
+
+Stable lines at the end (as shipped):
 
 ```
-Saved run: <run record path>
 Saved dossier: <dossier path>
 Manual: <one line per :manual item surfaced this turn>     (when applicable)
 Next: <handoff.next_call>
@@ -493,10 +502,9 @@ GATHER / REFUSE / HOLD variants follow the same family pattern.
 When all items are done AND POST-FLIGHT PASS:
 
 ```
-Saved run: <run record path>
 Saved dossier: <dossier path>
-Done: <slug> — all <N> items advanced; recommend todo$complete + eval-agent.
-Next: (call-tool "eval-agent" {:question "Score this todo against its plan." :agent-context "<dossier path>"})
+Done: <slug> — all <N> items advanced; recommend doc$update :status :completed + eval-agent.
+Next: (eval-agent {:question "Score this todo against its plan." :agent-context "<dossier path>"})
 ```
 
 ---

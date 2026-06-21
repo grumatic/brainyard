@@ -1,6 +1,14 @@
 # Eval-Agent — Pre-flight & Post-flight Gated Verdict Production with Dossier Handoff (CoAct-derived)
 
 > **Status:** Shipped — `eval-agent` is registered in `components/agent` (`common/eval_agent.clj`). This document is the original design proposal (revision 2); the shipped implementation may diverge in details. See [core/agent.md](../core/agent.md) for the current roster.
+>
+> **As-built (verify against `common/eval_agent.clj`, `common/eval.clj`):**
+> - **POST-FLIGHT verdict is PASS / HOLD only.** The design's REVISE auto-round (§6.2) is **deferred to v1.5**.
+> - **`:checkbox-only-ok?` is not yet supported.** C3 (no evidence) → REFUSE unconditionally in v1; the design's opt-in fallback is not wired.
+> - **Cross-agent dispatch is direct kebab-case** — `(plan-agent {…})`, `(exec-agent {…})` — not `call-tool`. Hard Rule 4 reads "NO clone-self dispatch." Recommendations name `doc$update :kind :todo …` (e.g. `:add-item`, `:item-done false`, `:status :completed`), not the retired `todo$*` shims.
+> - **Verdict body + dossier both ship**, as designed (`eval$verdict-write` writes `verdicts/`; `eval$dossier-write` writes `dossiers/`). `update$read-record` is cherry-picked read-only for criterion→item→diff drill-down (as designed).
+> - **Shipped helper roster:** `eval$dossier-slug`, `eval$verdict-write`, `eval$dossier-frontmatter`, `eval$dossier-write`, `eval$dossier-index-append`, `eval$read-dossier`, `eval$find`, `eval$next-handoff`. No `eval$preflight` / `eval$postflight` / `eval$score-criterion` helpers shipped (§12's list is aspirational).
+> - **An `:agent.ask/post` auto-persist hook** (not in this design) writes a minimal dossier from the answer text if `eval$dossier-write` was skipped; the verdict body is NOT auto-persisted (call `eval$verdict-write` explicitly).
 > **Scope:** redesign of `components/agent/src/ai/brainyard/agent/common/eval_agent.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
 > **Sibling of:** `plan-agent`, `todo-agent`, `exec-agent`, `update-agent`, `explore-agent`

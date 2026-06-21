@@ -156,6 +156,12 @@ required).
 the file exists, **and** `(alive? (:pid meta))`. PID-checked, not existence-checked —
 correct across crashes.
 
+> **As-built:** `start-ask-listener!` stamps `:ask-socket-path` and `:ops` (a
+> **vector** `[:ask :status :inject :cancel :subscribe]`, not the set shown above);
+> `:pid` is stamped separately by `acquire-session-lock!`. The `:protocol` version
+> field was **not** implemented — capability is advertised via `:ops` alone (so the
+> §6 "bump `:protocol`" note is unrealized).
+
 ### 2.2 Surfaces
 
 - **CLI / JSON (preferred, zero socket code for consumers):** extend

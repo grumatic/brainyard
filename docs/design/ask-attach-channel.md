@@ -58,6 +58,19 @@ convention. The socket file is **unlinked on stop** (session close / `stop!` /
 JVM shutdown hook) and a stale file left by a crashed process is unlinked
 before re-bind.
 
+> **As-built:** two refinements landed (see
+> [`session-channel-extensions.md`](session-channel-extensions.md) §1). (1)
+> **Path-limit fallback** — AF_UNIX `sun_path` is capped (~104 bytes, macOS), so
+> when the natural `<session-dir>/ask.sock` would overflow, `persist/file-of`
+> relocates the socket to a short, deterministic `<tmpdir>/by-<sha256-16>.sock`.
+> Both the listener and the attach client derive through this one function, and
+> the resolved path is what lands in `:ask-socket-path` — clients must use it,
+> not reconstruct the natural path. (2) **Single-owner guards** — `start-listener!`
+> refuses to clobber a live owner (a connect probe → `ex-info {:reason
+> :live-owner}`; only a stale file is unlinked before rebind), and
+> `stop-listener!` unlinks by `fileKey` identity so a closing orphan can't sever
+> a successor's rebound socket.
+
 > **Project scope.** Sessions are project-scoped (see `CLAUDE.md`). `--attach`
 > resolves only sessions under the *current project's* `.brainyard`, the same
 > constraint as `by sessions list`.
@@ -80,6 +93,11 @@ answered — see §11.
 
 `:op` is reserved for forward-compatibility (future `:cancel`, `:status`, a
 streaming variant). Unknown ops return `{:status :error :error "unknown op"}`.
+
+> **As-built:** those reserved ops have since shipped. `ask-handle-fn` now
+> dispatches `:ask`, `:status`, `:inject`, `:cancel`, and `:subscribe`
+> (streaming) — see [`session-channel-extensions.md`](session-channel-extensions.md)
+> §0. The unknown-op error reads `"unknown op: <op>"`.
 
 ## 5. Concurrency & serialization
 
@@ -136,6 +154,11 @@ Two keys in `core.config/config-schema`:
 
 Client `--timeout` overrides per call (still bounded by the server cap).
 
+> **As-built:** both keys resolve via a `:default-fn` that reads an env var first:
+> `:ask-channel-enabled?` defaults to `true` unless `BY_ASK_CHANNEL=0`, and
+> `:ask-timeout-ms` honors `BY_ASK_TIMEOUT_MS` (else `120000`). `config.edn`
+> overrides either.
+
 ## 8. Component layout
 
 New Polylith component `ask-channel` keeps socket/protocol code out of the TUI
@@ -175,6 +198,11 @@ one real native risk: it is validated on the **native binary** (not just
 - **Cross-project** attach (sessions are project-scoped).
 - **Auth beyond filesystem perms** — the 0600 socket inside the project's
   `.brainyard` inherits the directory's trust boundary, same as `nrepl-port`.
+
+> **As-built:** streaming is **no longer out of scope** — Mode B `:op :subscribe`
+> shipped via a `stream-response` transport path (one frame in, N event frames out
+> until disconnect). See [`session-channel-extensions.md`](session-channel-extensions.md)
+> §5. Cross-project attach and remote auth remain out of scope.
 
 ## 11. JSON output (`by ask --json`)
 

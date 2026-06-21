@@ -232,24 +232,26 @@ Code-block evaluation is fronted by a single `code$eval` command
 | Backend | Engine | Interop / reflection | `def` state | Mutation policy |
 |---|---|---|---|---|
 | `:sandbox` *(default)* | SCI sandbox (`components/clj-sandbox`) | none | persists across iterations | n/a — interpreted, can't escape host |
-| `:nrepl` | live brainyard JVM (`components/clj-nrepl`) | full | persists in the live runtime | gated by a `:read-only` / `:mutate` grant + audit & drift markers |
+| `:nrepl` | live brainyard JVM (`components/clj-nrepl`) | full | persists in the live runtime | full-trust — a deny-list of catastrophic substrings is the only eval-path check; isolation is the SCI sandbox's job |
 
 The backend is **fixed per-agent** via the `:clj-backend` config key
 (schema default `:sandbox`; `debug-agent`'s lifecycle hook overrides it
 to `:nrepl`). There is **no per-fence override** — ` ```clojure :nrepl `
 and ` ```clojure :sandbox ` are *fence errors* that surface to the LLM as
 `:error` entries, not routing hints; the fence accepts only the language
-token. The `:nrepl` backend is gated by `:nrepl-enabled?` /
-`:nrepl-grant` (env `BY_NREPL_ENABLED` / `BY_NREPL_GRANT`);
-mutating evals require the `:mutate` grant and are recorded with audit and
-drift markers so live hot-patches are traceable.
+token. The `:nrepl` backend is gated only by `:nrepl-enabled?` (env
+`BY_NREPL_ENABLED`); once the loopback nREPL server is up it is
+**full-trust** — the only eval-path check is a deny-list of catastrophic
+substrings (`clj-nrepl.core.classifier`). There is no read-only/mutate
+grant, no audit, and no drift machinery; isolation is delegated to the SCI
+sandbox backend instead.
 
 When an agent runs in **parallel mode**, the nREPL backend is demoted to
 the SCI sandbox for the forked blocks (a single shared nREPL session can't
 safely fan out), and the LLM is warned that the demotion happened.
 
 The rest of this section describes the default `:sandbox` backend; the
-`:nrepl` backend and its reproduce → probe → hypothesize → test workflow
+`:nrepl` backend and its reproduce → probe → hypothesize → validate-live workflow
 are covered by [debug-agent-design.md](../design/debug-agent-design.md)
 and [clj-nrepl-eval.md](../design/clj-nrepl-eval.md).
 
@@ -339,8 +341,8 @@ The sandbox is **permission-gated**, not sealed:
   Runtime-config `:action-permissions` caches "always yes" / "always no"
   answers so the user is not spammed.
 - **Truncation**: results are truncated to a configurable char budget
-  (default 16 000 chars, structure-aware) before being fed back to the
-  LLM. Over-sized tool results spill to a project-scoped cache at
+  (`:max-output-chars`, default 32 000 chars, structure-aware) before being
+  fed back to the LLM. Over-sized tool results spill to a project-scoped cache at
   `<project>/.brainyard/temp/clj-sandbox/truncation/<class>/<id>.txt` (with a
   `/tmp/<working-dir>/...` fallback when the agent component isn't on
   the classpath) and the returned string carries a head + recovery-notice
@@ -404,8 +406,6 @@ Use **ReAct** when:
 - The tool payload is opaque to the LLM (binary blobs, long scripts,
   user-supplied text) and you specifically want a structured arg slot
   to avoid any code path.
-- You want the deterministic 2N+1 (`:multi`) trajectory shape for
-  evaluation or fine-tuning data.
 
 Both styles share the same outer harness, sandbox, registry, memory, and
 session — switching is a config change, not a rewrite.
@@ -420,7 +420,7 @@ session — switching is a config change, not a rewrite.
 | `common/coact_agent.clj` | CoAct signature + section strings + BT actions + BT factory + defagent |
 | `common/code_eval.clj` | `code$eval` command — dispatches code blocks to the `:sandbox` or `:nrepl` backend |
 | `common/sandbox_bindings.clj` | `make-tool-bindings`, `build-context-briefing`, `build-agent-state-snapshot`, helper categorisation |
-| `components/clj-nrepl/*` | live-runtime (`:nrepl`) eval backend — grants, audit, drift markers |
+| `components/clj-nrepl/*` | live-runtime (`:nrepl`) eval backend — full-trust, deny-list classifier as the only eval gate |
 | `common/evaluation.clj` | `EvaluateAnswer`, `FinalizeAnswer` signatures shared by both loops |
 | `core/context_budget.clj` | Token-budget reducer (`enforce`) — the single live compaction mechanism, run at turn-init + per-iteration |
 | `common/context_compaction.clj` | Deterministic cross-turn `/compact` + after-turn auto-compaction (progressive `:previous-turns` shrink, no LLM) |

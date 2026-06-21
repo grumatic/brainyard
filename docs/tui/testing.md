@@ -19,8 +19,8 @@ From fastest / most isolated to slowest / most realistic:
    namespaces under `bases/agent-tui/test/.../agent_tui/`:
    `render_test`, `iteration_block_test` (formatters + the iteration /
    think / eval hook handlers, driven through a recording `IterationSink`
-   and a stubbed `agent/get-bt-st-memory`), `status_bar_test` (incl. the
-   drift chip), `sticky_live_block_test`, `tab_strip_test`,
+   and a stubbed `agent/get-bt-st-memory`), `status_bar_test`,
+   `sticky_live_block_test`, `tab_strip_test`,
    `output_sink_test`, `permissions_test`, `popup_test`, `mode_test`,
    `persist_bridge_test`, `tree_commands_test`, `side_pane_commands_test`,
    `tmux_side_test`.
@@ -81,7 +81,7 @@ live-binary harness. Reach for this guide when stubs are not enough.
 # 1. Clean state — remove any persisted session data + stale tmux
 #    sessions that would confuse mode probing or session resumption.
 tmux kill-session -t by-test 2>/dev/null
-rm -rf .brainyard/sessions/{agt-d-*,smoke-*,real-test}
+rm -rf .brainyard/sessions/agt-*
 
 # 2. Create a tmux session whose window 0 is a bash shell. The
 #    renderer launches from this shell; its stderr/stdout go to
@@ -92,15 +92,21 @@ tmux new-session -d -s by-test -x 220 -y 60 \
 # 3. Launch `by` from window 0 with --with-tmux so Mode B is
 #    required. BY_TMUX_DEBUG=1 enables the per-`split-pane!`
 #    diagnostic line in components/agent-tui-tmux/.../core/real.clj.
+#    Sessions are auto-named `agt-<ts>-<rand>` — there is no flag to
+#    pin the id, so capture it from the banner / `sessions list` after
+#    boot (see below).
 tmux send-keys -t by-test:0 \
   'BY_TMUX_DEBUG=1 clojure -M -m ai.brainyard.agent-tui-app.main \
-   run --with-tmux --session-id real-test 2>&1 | tee /tmp/by.log' \
+   run --with-tmux 2>&1 | tee /tmp/by.log' \
   Enter
 
 # 4. Wait for the JVM cold start. ~22s is reliable on a cold JVM;
 #    tune down on faster machines. Skip the wait if you've built
 #    the native binary and are running `target/by` instead.
 sleep 22
+
+# 5. Capture the auto-generated session-id (used in the paths below).
+SID=$(ls -t .brainyard/sessions/ | grep '^agt-' | head -1)
 ```
 
 The renderer detects `$TMUX` (set by the outer `tmux send-keys`) and
@@ -152,7 +158,7 @@ Useful flags:
 
 ```bash
 # Did the renderer create the per-pane FIFOs?
-ls -la .brainyard/sessions/real-test/panes/real-test/
+ls -la .brainyard/sessions/$SID/panes/$SID/
 
 # What FIFOs has the renderer's multi-sink actually opened? Sinks
 # open the FIFO lazily on first write; the activity FIFO won't
@@ -178,7 +184,7 @@ compare:
 ```bash
 # Reproduce what BY_TMUX_DEBUG logged:
 tmux split-window -d -h -t %213 -P -F '#{pane_id}' -p 30 \
-  'cat .brainyard/sessions/real-test/panes/real-test/activity.fifo'
+  "cat .brainyard/sessions/$SID/panes/$SID/activity.fifo"
 sleep 1
 tmux list-panes -aF '#{pane_id} #{pane_current_command}' | tail
 ```
@@ -222,7 +228,7 @@ A worked example of the technique:
 # Tear down the test setup so the next run starts clean.
 tmux kill-session -t by-test 2>/dev/null
 pkill -9 -f 'agent-tui-app.main' 2>/dev/null
-rm -rf .brainyard/sessions/real-test /tmp/by.log
+rm -rf .brainyard/sessions/agt-* /tmp/by.log
 ```
 
 ---
@@ -233,9 +239,11 @@ rm -rf .brainyard/sessions/real-test /tmp/by.log
   starts take ~22 s; don't make assertions before the renderer is
   fully booted. Switch to the native binary
   (`./projects/agent-tui-app/target/by`) for ~0.5 s cold start.
-- **Use distinctive session-ids per run** (`real-test`,
-  `smoke-batchN`) so leftover directories from a prior run don't
-  confuse mode probing or session resumption.
+- **Clear stale session directories between runs.** Session-ids are
+  auto-generated (`agt-<ts>-<rand>`) — there is no flag to pin them — so
+  `rm -rf .brainyard/sessions/agt-*` before each run, and re-capture
+  `SID` from the freshest directory, to keep leftover directories from a
+  prior run from confusing mode probing or session resumption.
 - **The renderer's stderr is gold.** Always `tee` it to a file you
   can `tail` — silent catches in the run-loop only ever print there.
 - **`BY_TMUX_DEBUG=1` is cheap.** Leave it on for any session where

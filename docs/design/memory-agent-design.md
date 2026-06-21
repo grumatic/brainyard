@@ -24,7 +24,7 @@ What is **missing** is an LLM-driven owner of that substrate. Today:
 3. **Stats are invisible to the agent.** Operators can poke at `~/.brainyard/memory/<user-id>.db` with sqlite3 — but the running agent has no way to ask "how big is my chronicle, how many L3 facts back today's recall, which sessions are dead weight in L2?". There is no `memory$stats` tool.
 4. **Sweep is blunt.** `sweep-l2!` tombstones non-kept entries older than `:retention-days` (default 30). It cannot drop episodes scoped to a session-id that no longer exists in the agent registry; it cannot identify L3 facts whose `:sources` were all tombstoned (orphan facts) or whose `confidence` has decayed without re-evidence.
 5. **No verification loop on L3.** When the heuristic reducer fires, the resulting fact is taken at face value. There is no later "is this still true?" challenge against fresh evidence. Wrong summaries persist indefinitely with `confidence` unchanged.
-6. **Lesson-and-learn is informal.** The brainyard pitch in `CLAUDE.md` is "self-improving agent" — incremental intelligence accumulated across turns and across sessions. The substrate supports it (L3 is indefinite, `:system` is cross-session per user), but no agent is responsible for *deciding what to lift out of a turn as a lesson*. The user has to do it manually with `remember-note` or live with whatever the capture parser tagged.
+6. **Lesson-and-learn is informal.** The brainyard pitch in `CLAUDE.md` is "self-improving agent" — incremental intelligence accumulated across turns and across sessions. The substrate supports it (L3 is indefinite, `:system` is cross-session per user), but no agent is responsible for *deciding what to lift out of a turn as a lesson*. The user has to do it manually with `memory$remember` or live with whatever the capture parser tagged.
 
 **Thesis.** Promote memory ownership to a first-class CoAct agent. Borrow the research-agent pattern — small curated tool roster, durable working area, LLM owns sequencing — and apply it to memory stewardship. Other agents (coact, research, todo, exec, eval, …) reach for the memory-agent via `call-tool` at well-defined moments: end-of-turn essence capture, mid-session "what do we know so far", scheduled consolidation, ad-hoc "forget this fact, it was wrong".
 
@@ -402,6 +402,17 @@ Memory-agent is a thin CoAct configuration:
 ```
 
 The agent's input signature accepts a discriminated union over `:op`. Internally the dispatch is a `case` in the agent's preflight that picks the matching prompt fragment and the matching DSPy signature.
+
+> **As-built:** The pseudo-`defagent` above is illustrative. The shipped `defagent memory-agent`
+> (in `common/memory_agent.clj`) differs in three ways verified against code:
+> 1. **Roster is 20 tools, not 16.** The shipped `memory-agent-tools` adds the three signature
+>    wrappers (`memory$essence-extract`, `memory$llm-consolidate`, `memory$verify-fact`) and the
+>    deterministic `memory$purge-plan` planner. See the §18.1 table for the authoritative roster.
+> 2. **No `:forbidden` key.** `call-tool`/`query$clone` are excluded by **omission** from the roster,
+>    not via a `:forbidden` set; the write-guard hook enforces gating from the other direction.
+> 3. **Custom `run-memory-agent` ask-fn**, not `run-coact-derived` — it inherits coact's
+>    `:instruction`/`:tool-context`/`:bt-factory` but deliberately does NOT merge coact's tool roster
+>    (§18.2 decision 1). Default `:max-iterations` is 10; `:sub-lm-config` defaults to `claude-code:sonnet`.
 
 ---
 

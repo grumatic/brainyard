@@ -1,8 +1,12 @@
 # Brainyard Playground — multi-user web-based sandboxed `by`
 
-> Status: **design draft** · Scope: a web service where users log in and drive
-> `by` from a browser terminal, each in their own dedicated, pre-provisioned,
-> sandboxed environment (git, MCP servers, skills, LLM keys).
+> Status: **Phases 0–1 implemented** (was a design draft) · Scope: a web service
+> where users log in and drive `by` from a browser terminal, each in their own
+> dedicated, pre-provisioned, sandboxed environment (git, MCP servers, skills,
+> LLM keys). Sections 1–8 are the original design; **§9 "As-built (Phases 0–1)"
+> records what actually shipped** and where it diverged (single
+> `bases/playground-server` base, iframe terminal, real OIDC + Vault + SQLite/
+> Postgres). Phase 2 remains future work.
 
 This document designs the **playground base in the repo** — the new Polylith
 project/base/components that turn the single-user `--web` / `--sandbox`
@@ -123,6 +127,15 @@ in front of a **data plane** of per-session isolated **workspaces**.
 ---
 
 ## 4. Polylith layout — "the playground base in the repo"
+
+> **As-built:** this proposed layout diverged — see §9 "As-built (Phases 0–1)".
+> The control plane shipped as a **single base `bases/playground-server`** (the
+> `playground-auth` / `session-broker` / `workspace-runtime` / `playground-proxy`
+> / `playground-secrets` / `playground-store` "components" are namespaces *inside*
+> that base: `auth.clj` / `sessions.clj` / `workspace.clj` / `proxy.clj` /
+> `secrets.clj` / `store.clj`), not a project of separate components. The base
+> entry points are `server.clj` + `routes.clj` (no `core.clj`). The graduation to
+> a separate Polylith project was judged unnecessary.
 
 New **project** `playground-server` (alias `pgs`), composed of one base and new
 components, reusing existing bricks. Mirrors how `agent-tui-app` composes
@@ -305,6 +318,16 @@ Next's SSR/RSC/API-route value is wasted behind a login). See the trade-off tabl
 - **Settings** — provider keys (BYO, later phase), display/theme, sign-out.
 
 ### 6.3 The terminal client (the one non-trivial part)
+
+> **As-built:** the custom-xterm client was **dropped** after vdom/rendering
+> problems. The shipped UI embeds **ttyd's own client same-origin in an
+> `<iframe>`** (`/api/sessions/:id/term/`), with `clipboard-write` granted and a
+> proxy-injected script for copy-on-select + context-menu suppression. There is
+> no `terminal.cljs`; the SPA namespaces are
+> `core/state/dispatch/views/auth/api.cljs`. The reconnect/tmux-reattach benefit
+> still holds (the agent runs under `--web-tmux`). The rest of this subsection
+> describes the rejected approach.
+
 `terminal.cljs` speaks **ttyd's WebSocket protocol** directly — not an iframe of
 ttyd's own page — so we own the auth handshake, theming, and reconnect:
 1. `POST /api/sessions` → `{id, status}`; poll `GET` until `ready`.

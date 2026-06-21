@@ -258,9 +258,18 @@ the prompt-token tax every turn. The contract is documented in the
 `sandbox-context-accessor` section of `:system-context`.
 
 
-## 3. ReAct Agent — Current Implementation
+## 3. ReAct Agent
 
-### 3.1 Behavior tree
+> **As-built note.** §3.1–§3.2 below describe the *original* two-mode ReAct
+> (multi + single) with its own signature input set. The shipped ReAct is
+> **single-mode only** and has been re-shaped to mirror CoAct: stable
+> context rides the system message via
+> `:stable-keys #{:system-context :user-context}` and the budget is enforced
+> deterministically (see §3.3 as-built). The multi-mode
+> `ThinkAndSelectTools` / `ObserveAndEvaluate` / `FinalizeAnswer` signatures
+> were removed. Treat the rest of §3.1–§3.2 as background on the prior design.
+
+### 3.1 Behavior tree (original two-mode design)
 
 `agent.common.react-agent/react-behavior-tree` builds two modes off the same shape:
 
@@ -317,26 +326,30 @@ The BT dspy-actions use `:stable-keys #{:instruction :agent-context :tool-contex
 (including the growing `:thoughts` / `:observations` / `:iterations` / `:conversation`)
 lands in the **user message every iteration**.
 
-### 3.3 No token-budget enforcement
+### 3.3 Token-budget enforcement (as-built)
 
-ReAct does not invoke `context-budget/enforce`. The only protection against
-context overflow is `agent.common.compaction-action/compaction-action`, which
-fires when:
-
-- compaction is enabled (`runtime-config :enable-context-compaction`), and
-- accumulated chars across `:tool-results :observations :thoughts :iterations`
-  exceed `:compaction-threshold` (default ~32K chars), and
-- iteration count >= `:compaction-iteration-trigger` (default 3).
-
-When it fires, it calls `compaction/compact-context`, which spends another LLM
-call (via `clj-sandbox/completion`) to summarize `:tool-results`, `:observations`,
-and `:thoughts` into one compact string apiece. A separate
-`compact-iterations-action` fires before `FinalizeAnswer` to compress
-`:iterations` similarly.
-
-There is no per-section token budget, no priority ordering, no deterministic
-trim strategies — every reduction goes through another LLM call, which is the
-same model that produced the bloat in the first place.
+> **As-built (the §3.3 gap below is closed).** ReAct now uses the **same
+> deterministic `context-budget/enforce` machinery as CoAct** — the
+> migration sketched in P1.2–P1.4 / M2–M3 shipped. `react-agent.clj`:
+> - moves its stable context (role / critical-rules / tool-call-format /
+>   tools / tool-context / agent-context / instruction / turn-info /
+>   conversation-history) into the **system message** via
+>   `:stable-keys #{:system-context :user-context}`;
+> - runs `cb/enforce` at init and re-runs it per-iteration via
+>   `react-rebudget-action` (gated by `:enable-context-budget`), firing
+>   `:agent.context/budgeted` like CoAct;
+> - trims `:thoughts` / `:observations` / `:iterations` with **deterministic**
+>   `keep-last-n` strategies (floors `:react-keep-thoughts-n` /
+>   `:react-keep-observations-n` / `:react-keep-iterations-n`, default 3
+>   each) — no extra LLM call.
+>
+> The LLM-driven `common/compaction.clj` and `common/compaction_action.clj`
+> are **deleted**; the `:enable-context-compaction` /
+> `:compaction-threshold` / `:compaction-iteration-trigger` config keys are
+> gone. Multi-mode (and its `FinalizeAnswer` + `ObserveAndEvaluate` second
+> LLM call) was retired; single mode is the only ReAct loop. The
+> description that followed (LLM-driven char-threshold compaction, no
+> per-section budget) is **historical**.
 
 
 ## 4. Shared Plumbing

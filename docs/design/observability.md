@@ -59,40 +59,64 @@ through the same API — there is no separate event bus.
 
 ### 2. Turn — trajectory + turn log
 
-`common/trajectory.clj` produces a **structured per-iteration record**
-suitable for replay and training-corpus export:
+`common/trajectory.clj` produces a **structured per-turn record**
+(covering all iterations + the final answer) suitable for replay and
+training-corpus export. One newline-delimited EDN record per turn
+(schema `:v 2`):
 
 ```clojure
-{:iteration  3
- :code       "(map inc [1 2 3])"
- :output     "(2 3 4)"
- :reasoning  "need to increment each element"
- :cost       {:input-tokens 412 :output-tokens 87 :usd 0.0023}
- :model      "claude-sonnet-4-6"
- :timing     {:started-at … :ended-at … :duration-ms 1420}}
+{:v 2 :ts <epoch-ms>
+ :session "agt-…" :agent "…" :turn 3
+ :question "…" :answer "…"
+ :success true :terminated-by :answer
+ :total-iterations 4
+ :iterations [{:n 1 :channel "code" :thought "…"
+               :code [..] :result [..] :output [..] :error [..]}
+              {:n 2 :channel "tool" :thought "…"
+               :tools [{:name "read-file" :args {…} :result "…"}]}]
+ :model "…" :cost 0.0042
+ :usage {:in 412 :out 87 :cache-read N :cache-write N}
+ :duration-ms 1420}
 ```
 
-`build-trajectory` assembles per-iteration entries into a turn-level
-record; `store-trajectory!` keeps an in-memory buffer plus optional
-disk persistence under `.brainyard/<agent>-agent/trajectory/`. CoAct
-calls `store-trajectory!` at the end of every turn (the
-`coact-store-results-action` BT leaf).
+`build-turn-trajectory` assembles the (uncapped) raw iteration vector
+into a turn-level record; `append-trajectory!` appends it to
+`<project>/.brainyard/sessions/<session-id>/trajectory.edn`
+(`read-trajectories` / `latest-trajectory` read it back, skipping any
+corrupt tail line). CoAct calls this at the end of every turn (the
+`coact-store-results-action` BT leaf), gated by
+`:enable-trajectory-recording` (default `true`).
+
+**As-built (2026):** the record is **per-turn**, not per-iteration; the
+session-scoped `trajectory.edn` (under `.brainyard/sessions/<id>/`)
+replaced the earlier per-agent `.brainyard/<agent>-agent/trajectory/`
+buffer. There is no `store-trajectory!`/`build-trajectory` pair — the
+shipped fns are `build-turn-trajectory` + `append-trajectory!`. This file
+is now the data source for on-demand session analytics (see below).
 
 `common/log.clj` provides queries against the mulog event store
-on disk. Events are filtered by `:user-id`, `:session-id`, `:agent-id`,
-and `:turn-id` (injected via mulog global / local context at turn
-start). The current event allowlist focuses on the high-signal
-turn-boundary events:
+on disk (the app log file, via `set-app-log-path!`). Events are
+filtered by `:user-id`, `:session-id`, `:agent-id`, and `:turn-id`
+(injected via mulog global / local context at turn start). It reads
+**all** events from the log and classifies them by event-name suffix
+into human-readable categories:
 
 ```clojure
-#{:ai.brainyard.agent.common.coact-agent/coact-init
-  :ai.brainyard.agent.common.coact-agent/store-results
-  :ai.brainyard.agent.task.manager/task-execution
-  :ai.brainyard.agent.common.trace/agent-conversation}
+{"coact-init"          :turn-start
+ "store-results"       :turn-complete
+ "task-execution"      :task
+ "agent-conversation"  :conversation}
 ```
 
-The TUI's history and usage commands are thin wrappers over these
-queries.
+Uncategorized events fall through to a generic summary. The
+`log$turns` / `log$events` / `log$search` commands (scoped to the
+current session, including sub-agent events) are thin wrappers over
+`query-events` / `list-turns`.
+
+**As-built:** there is no fixed event *allowlist* set — `log.clj`
+parses every event in the log and categorizes the four turn-boundary
+suffixes above; everything else is still queryable, just under its raw
+event name.
 
 ### 3. Session — mulog stream + analytics
 
@@ -120,16 +144,20 @@ without changing the emit sites: `:console`, `:elasticsearch`,
 `:kafka`, `:cloudwatch`, `:slack`, `:zipkin`, plus a `:multi`
 aggregator.
 
-`common/evaluation.clj` provides DSPy signatures for the CoAct
-quality-loop and react-agent finalize step:
+`common/evaluation.clj` provides the DSPy signature for the CoAct
+quality-loop:
 
-- **`EvaluateAnswer`** — heuristic evaluation of an answer against
-  a rubric.
-- **`FinalizeAnswer`** — derive the user-facing answer from the
-  iteration history.
+- **`EvaluateAnswer`** — independent hallucination/completeness check
+  of an answer against the sandbox-output evidence (verdict
+  `COMPLETE` / `HALLUCINATED` / `INCOMPLETE`).
 
-These feed the CoAct refinement loop and the ReAct finalize node, and
-emit `:agent.evaluation/*` hook events along the way.
+This feeds the CoAct refinement loop and emits `:agent.evaluation/*`
+hook events along the way.
+
+**As-built:** `FinalizeAnswer` was removed — the standalone finalize
+pass was folded into ThinkActCode's answer channel
+(goal-achieved / next-user-prompt), and the ReAct multi-mode that used
+it was retired. Only `EvaluateAnswer` ships in `evaluation.clj`.
 
 ---
 
@@ -144,19 +172,31 @@ API is:
 (calculate-session-cost   usage-summary usage-history & {:keys [...]})
 (analyze-session          {:session-id :user-id :messages :usage-tracker} &
                           {:keys [memory-manager persist lm-config skip-llm-analysis]})
+(analyze-trajectory       turn-records & {:keys [lm-config skip-llm-analysis shs-weights]})
 (persist-analytics!       memory-manager analytics)
 (get-session-analytics    memory-manager session-id)
 (get-analytics-trends     memory-manager user-id)
 (format-analytics         analytics)
+(format-session-analytics result level)
 ```
 
-The agent runtime invokes `analyze-session` from `core/bt.clj` as an
-**async, generation-guarded** post-turn step when
-`:enable-analytics` is set (on the config or runtime-config). Stale
-writes from earlier turns are blocked by checking the BT generation
-counter before publishing. Results are stamped onto
-`st-memory :analytics` and fired through the
-`:agent.analytics/post` hook for subscribers.
+**As-built (2026, see [analytics.md](analytics.md)):** analytics was
+reworked from a **per-turn push** pipeline into an **on-demand,
+trajectory-sourced pull** pipeline. The async post-turn
+`run-analytics-async!` invocation in `core/bt.clj` and the
+`:enable-analytics` config gate are **both removed** — `bt.clj` no
+longer touches analytics at all. Analysis is now triggered by the
+LLM-callable **`session$analytics`** command
+(`agent.common.analytics-commands`), which reads the whole session's
+`trajectory.edn`, projects it into analyzer inputs, and calls the pure
+`analyze-trajectory` (in `analytics.core.trajectory` /
+`interface/analyze-trajectory`). The original `analyze-session` API is
+retained but no longer driven from the BT. Persistence stays opt-in via
+`:persist` / `:trends` flags on the command;
+`:enable-trajectory-recording` (default `true`) is the master data
+switch. Extra config: `:analytics-lm-config` (LM for the `:deep`
+LLM-refined pass; falls back to `:lm-config`) and
+`:analytics-shs-weights` (composite Session Health Score weights).
 
 ### PQS — Prompt Quality Score
 
@@ -257,8 +297,10 @@ Replay use-cases:
 
 - `:thinking` renders a BT trace tree for the last turn.
 - `bb tui ask -v` prints trajectory + timing inline.
-- The research-agent and workflow-agent read trajectories + analytics
-  out of `.brainyard/<agent>-agent/` to inform their next step.
+- Session trajectories live under
+  `.brainyard/sessions/<session-id>/trajectory.edn` and are read back
+  by `session$analytics` (and any agent that wants to inspect prior
+  turns) to inform their next step.
 - The web bridge (`agent-web-app`) can subscribe to mulog over
   WebSocket and render a live session explorer.
 
@@ -319,13 +361,15 @@ do not change.
 | File | Purpose |
 |---|---|
 | `agent/common/trace.clj` | Depth-indented BT traces into session thinking |
-| `agent/common/trajectory.clj` | Per-iteration structured record + in-memory store + disk persistence |
-| `agent/common/log.clj` | Queries over mulog events filtered by user / session / agent / turn |
-| `agent/common/evaluation.clj` | `EvaluateAnswer`, `FinalizeAnswer` DSPy signatures |
+| `agent/common/trajectory.clj` | Per-turn structured record (`:v 2`) appended to `sessions/<id>/trajectory.edn` + read-back |
+| `agent/common/log.clj` | Queries over mulog events filtered by user / session / agent / turn; `log$turns` / `log$events` / `log$search` |
+| `agent/common/evaluation.clj` | `EvaluateAnswer` DSPy signature (FinalizeAnswer removed) |
+| `agent/common/analytics_commands.clj` | `session$analytics` command — trajectory-sourced, on-demand analytics |
 | `agent/core/hooks.clj` | Typed event catalog + registry (subscription point) |
 | `agent-tui/log.clj` | Global and per-session mulog file publishers |
 | `mulog/interface.clj` | Pluggable publishers (console, file, elasticsearch, kafka, cloudwatch, slack, zipkin) |
-| `analytics/interface.clj` | `analyze-session`, `score-pqs`, `detect-waste`, `calculate-session-cost`, persistence + formatting |
+| `analytics/interface.clj` | `analyze-session`, `analyze-trajectory`, `score-pqs`, `detect-waste`, `calculate-session-cost`, persistence + formatting |
+| `analytics/core/trajectory.clj` | Pure trajectory-record analyzers (PQS/TCE/ICE/TUR/LT/cache/OGA/SHS) |
 | `analytics/core/pqs.clj` | PQS heuristic + LLM-enhanced scoring |
 | `analytics/core/waste.clj` | Seven waste-pattern detectors |
 | `analytics/core/cost.clj` | Exact + effective cost attribution |

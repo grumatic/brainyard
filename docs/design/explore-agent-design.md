@@ -1,6 +1,13 @@
 # Explore-Agent — Unified Multi-Source Exploration Agent (CoAct-derived)
 
 > **Status:** Shipped. search-agent retired (2026-05-16).
+>
+> **As-built (verify against `common/explore_agent.clj`, `common/explore.clj`):**
+> - **Tool invocation is direct, not via `call-tool`.** The shipped instruction probes with `(grep {…})` / `(search {…})` / `(web-search {…})` / `(skills$find …)` and dispatches other agents with direct kebab-case `(plan-agent {…})`. The `(call-tool "grep" {…})` / `(call-tool "<agent>" {…})` forms throughout §4.6/§9/§11 are equivalent but not how the shipped prompt phrases it.
+> - **Hard Rule 1 reads "STAY FLAT — no clone-self dispatch."** `query$clone` is simply omitted from the roster (gated to rlm-agent), so the §6 wording differs slightly from the long "NO `query$clone`" rule in this doc; intent is identical.
+> - **An `:agent.ask/post` auto-persist hook** (not in this design) persists `results/` + prepends `INDEX.md` even when the LLM skips the checklist — but it CANNOT add the `Saved exploration:` line (observe-only). A missing line therefore does NOT mean nothing was saved; consumers fall back to `(explore$find …)` or the newest `INDEX.md` entry.
+> - **Shipped helper roster matches §10:** `explore$slug`, `explore$frontmatter`, `explore$write`, `explore$index-append`, `explore$read-frontmatter`, `explore$find` (6 helpers, all `defcommand`s in `explore.clj`).
+> - Migration plan §12 (retiring search-agent) is **complete** — `search_agent.clj` is gone from the roster.
 > **Scope:** `components/agent/src/ai/brainyard/agent/common/explore_agent.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
 > **Supersedes:** `search_agent.clj` (deleted)

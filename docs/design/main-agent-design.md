@@ -1,6 +1,13 @@
 # Main-Agent — The Front-Door Orchestrator (CoAct-derived)
 
 > **Status:** Shipped (opt-in) — `main-agent` is registered in `components/agent` (`common/main_agent.clj`) and runs via `-a main-agent` (not yet the default). This document is the original design proposal (revision 1); the shipped implementation may diverge in details. See [core/agent.md](../core/agent.md) for the current roster.
+>
+> **As-built (verify against `common/main_agent.clj`, `common/main.clj`, `common/main_agent_hooks.clj`):**
+> - **Roster grew to 21 specialists.** The shipped instruction adds **`tool-agent`** (user-defined `(fn [args] …)` tools under `.brainyard/tools` — the `tool-agent$*` family) and **`meta-agent`** (user-defined CoAct-derived agents/personas under `.brainyard/agents/user$agent` — the `meta-agent$*` family). The decision table therefore has **22 shapes** (adds `U. TOOL-LIFECYCLE` → tool-agent and `V. AGENT-LIFECYCLE` → meta-agent); `main$append-log :shape` validates against the 22-keyword enum. Wherever this doc says "nineteen defagents" / "20 question shapes," read 21 / 22.
+> - **Cross-agent dispatch is direct kebab-case**, not `call-tool`. The shipped instruction invokes `(plan-agent {…})` / `(research-agent {…})` directly (or via the tool-channel JSON), not `(call-tool "plan-agent" {…})`. The `call-tool` forms throughout this doc are equivalent but not how the shipped prompt phrases it.
+> - **Hard Rule 1 is "STAY FLAT — no clone-self dispatch,"** not literally "NO `query$clone`." `query$clone` is excluded by simply not being in the roster (it is gated to rlm-agent). The intent is identical.
+> - **`task$run` for specialists is explicitly forbidden** (Hard Rule 9, not in this design): specialists return promptly and polling them trips the loop guard. `task$run :job-type :bash` is for arbitrary subprocesses only.
+> - Hooks shipped in `common/main_agent_hooks.clj` (§10 names them in `main_agent.clj`; the actual file is `main_agent_hooks.clj`).
 > **Scope:** new `components/agent/src/ai/brainyard/agent/common/main_agent.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
 > **Related reading:** `docs/core/agent.md`, `docs/core/reasoning.md`, `docs/core/tool.md`, `docs/design/research-agent-design.md`, `docs/design/workflow-agent-design.md`, `docs/design/explore-agent-design.md`
@@ -11,7 +18,7 @@
 
 Today the user lands on `coact-agent` by default (`bb tui run` with no `-a`). `coact-agent` is the right *substrate* — three channels, a persistent SCI sandbox, a curated set of generic tools, no domain prejudice. It is intentionally minimal: a clean reasoning loop with no awareness of the specialist agents stacked on top of it.
 
-That neutrality is a problem the moment the agent population grows beyond a handful. The current stack already ships nineteen `defagent`s (coact / react / explore / plan / todo / exec / eval / update / memory / init / config / skill / mcp / rlm / research / workflow / acp / debug / main), each with non-trivial when-to-use / when-to-avoid rules baked into their own design docs. A first-time user asking *"can you draft a plan to migrate our auth middleware and execute it?"* has to either:
+That neutrality is a problem the moment the agent population grows beyond a handful. The current stack already ships a large `defagent` population (coact / react / explore / plan / todo / exec / eval / update / memory / init / config / skill / mcp / tool / meta / rlm / research / workflow / acp / debug / main), each with non-trivial when-to-use / when-to-avoid rules baked into their own design docs. (**As-built:** the proposal said "nineteen"; the shipped roster includes `tool-agent` and `meta-agent` on top of the agents listed in this doc.) A first-time user asking *"can you draft a plan to migrate our auth middleware and execute it?"* has to either:
 
 1. Know in advance to type `bb tui run -a research-agent`, or
 2. Land on `coact-agent` and watch it solve a three-specialist problem with `bash`, `read-file`, and `query$llm` — bypassing the pre/post-flight gating, dossier handoff, and acceptance criteria that the dedicated specialists were designed for.
@@ -81,6 +88,8 @@ coact-agent  (substrate — full BT, sandbox, router, accumulator)
   ├─ init-agent        (BRAINYARD.md / project bootstrap)
   ├─ config-agent      (.brainyard/config tuning)
   ├─ acp-agent         (Agentic Context Protocol — external backends)
+  ├─ tool-agent        (user-defined tool lifecycle — tool-agent$* family)   ; As-built: present in shipped roster
+  ├─ meta-agent        (user-defined agent/persona lifecycle — meta-agent$*) ; As-built: present in shipped roster
   ├─ research-agent    (end-to-end multi-specialist research thread)
   ├─ workflow-agent    (domain workflow templates; multi-stage automation)
   └─ main-agent        (NEW — front-door router; default TUI entry)
@@ -1029,7 +1038,7 @@ main-agent is a thin specialization of coact-agent. The diffs:
 | **Default `:max-iterations`** | 20. | 20 (most turns finish in 1–3). |
 | **Hooks** | Inherits the global registry. | Adds three handlers (`:agent.session/created`, `:agent.tool-use/post`, `:agent.session/closed`) under `:source ::main-agent`. |
 | **TUI default** | Current default. | **New default** (`bb tui run` resolves to `main-agent`). coact-agent retained as power-user fallback. |
-| **clone-self** | `query$clone` available (clones coact-agent). | `query$clone` excluded — Hard Rule 1. |
+| **clone-self** | `query$clone` available (clones coact-agent). | `query$clone` excluded (gated to rlm-agent; not in roster) — Hard Rule 1 phrased as "STAY FLAT — no clone-self dispatch." |
 
 The minimal diff is intentional. Anything coact-agent already does well (channel discipline, sandbox state, parallel blocks, finalize) main-agent inherits unchanged. The only new thing is the *routing knowledge*.
 

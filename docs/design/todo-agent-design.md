@@ -1,6 +1,15 @@
 # Todo-Agent — Pre-flight & Post-flight Gated Todo Authoring with Dossier Handoff (CoAct-derived)
 
 > **Status:** Shipped — `todo-agent` is registered in `components/agent` (`common/todo_agent.clj`). This document is the original design proposal (revision 2); the shipped implementation may diverge in details. See [core/agent.md](../core/agent.md) for the current roster.
+>
+> **As-built (verify against `common/todo_agent.clj`, `common/todo.clj`):**
+> - **POST-FLIGHT verdict is PASS / HOLD only.** The design's REVISE auto-round (§6.3) is **deferred to v1.5** — shipped: "1+ fail → HOLD," no automatic split/retag round.
+> - **C7 (NO VETO) is INFORMATIONAL, not a GATHER gate.** The shipped pre-flight records `:no-auto-spawn?` but does not block; the design's "GATHER for explicit confirm" is a future tightening.
+> - **Todo CRUD is `doc$*` with `:kind :todo`** (see the API-rename block below). SPAWN uses `doc$create :kind :todo`; ADVANCE uses `doc$update :kind :todo` (`:item-idx`/`:item-done`, `:add-item`, `:goal`, `:status`). Item `:tags {:via :covers}` ship as designed.
+> - **Cross-agent dispatch is direct kebab-case** — `(plan-agent {…})`, `(exec-agent {…})` — not `call-tool`. Hard Rule 4 reads "NO clone-self dispatch."
+> - **`write-file` / `update-file` / `fetch-url` are NOT bound** — todos and dossiers go through `doc$*` + `todo$dossier-*` (Hard Rule 5).
+> - **Shipped helper roster:** `todo$dossier-slug`, `todo$dossier-frontmatter`, `todo$dossier-write`, `todo$dossier-index-append`, `todo$read-dossier`, `todo$next-handoff`. No `todo$preflight` / `todo$postflight` helpers shipped (despite §12 listing them).
+> - **An `:agent.ask/post` auto-persist hook** (not in this design) reconstructs a minimal dossier from the answer text if the helpers were skipped, and flags hallucinated `Saved dossier:` paths. It is a safety net, not the primary path.
 > **Scope:** redesign of `components/agent/src/ai/brainyard/agent/common/todo_agent.clj` + `todo.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
 > **Sibling of:** `plan-agent`, `exec-agent`, `eval-agent`, `update-agent`, `explore-agent`

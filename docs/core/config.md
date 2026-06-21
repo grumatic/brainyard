@@ -91,7 +91,6 @@ is routed into the per-agent override slot at startup.
 {:max-iterations    {:type "integer" :default 100}
  :show-llm-streaming {:type "boolean" :default false}
  :eval-lm-config    {:type "string"  :default nil}
- :working-dir       {:type "string"  :default-fn #(System/getProperty "user.dir")}
  :lm-config         {:type "object"  :default-fn #(clj-llm/get-default-lm)}
  :dirs              {:type "object"  :default-fn #(resolve-dirs)}
  :allowed-dirs      {:type "array"   :default-fn #(default-allowed-dirs)}
@@ -100,7 +99,7 @@ is routed into the per-agent override slot at startup.
  :acp-backend       {:type "keyword" :default :stub}
  :nrepl-enabled?    {:type "boolean" :default-fn #(env BY_NREPL_ENABLED)}
  :nrepl-port        {:type "integer" :default-fn #(env BY_NREPL_PORT)}    ;; 0 = ephemeral
- :nrepl-grant       {:type "string"  :default-fn #(env BY_NREPL_GRANT)}   ;; e.g. "read-only:15m" / "mutate:5m"
+ :sandbox-interop   {:type "keyword" :default-fn #(env BY_SANDBOX_INTEROP)} ;; :restricted (default) | :full | :auto
  ...}
 ```
 
@@ -109,7 +108,8 @@ The `:clj-backend` key selects the per-agent code-execution backend (see
 name. The `:nrepl-*` keys were promoted from raw `BY_NREPL_*` env
 vars into the schema so they can be read through `get-config` and persisted
 under `[:agent :config]`, while still honouring the env var as the lazy
-default.
+default. (nREPL is the full-trust backend — the deny-list is the only
+eval gate, so there is no `:nrepl-grant` schema key.)
 
 Adding a new key is a one-liner: declare the entry, then read it via
 `get-config`. Use `:default-fn` whenever the default depends on the
@@ -225,16 +225,17 @@ plus the `.brainyard/` config directories per scope:
 
 | Concept | Resolver | Notes |
 |---|---|---|
-| Working dir | `resolve-working-dir` / `:working-dir` schema | Always `user.dir` (the JVM's actual cwd). Not user-overridable — by design, the three scopes (user/project/working) are orthogonal and each report truth. |
-| Project dir | `resolve-project-dir` / `project-dir` | `BY_PROJECT_DIR` env → git root walking up from working-dir → working-dir itself. Anchors `.brainyard/` artifacts. |
+| Working dir | `resolve-working-dir` | Resolved at runtime (high→low): `--working-dir`/`-C` override → `BY_WORKING_DIR` env → `user.dir` (the JVM's actual cwd). Intentionally **not** a config key — there is one source of truth and config.edn cannot set it. |
+| Project dir | `resolve-project-dir` | `BY_PROJECT_DIR` env → git root walking up from working-dir → working-dir itself. Anchors `.brainyard/` artifacts. |
 | User dir | (inline in `resolve-dirs`) | `(System/getProperty "user.home")`. No env override. |
 | Allowed dirs | `allowed-dirs` / `:allowed-dirs` schema | Allow-list for filesystem-touching tools. Defaults to `/tmp` + project-dir + `~/.brainyard`. |
-| Project `.brainyard/` | `(:project-config-dir (resolve-dirs))` | Per-repo artifacts (plans, BRAINYARD.md, project config.edn). |
-| User `.brainyard/` | `(:user-config-dir (resolve-dirs))` | Cross-project user state (~/.brainyard). |
+| Project `.brainyard/` | `(project-config-dir (resolve-dirs))` | Per-repo artifacts (plans, BRAINYARD.md, project config.edn). |
+| User `.brainyard/` | `(user-config-dir (resolve-dirs))` | Cross-project user state (~/.brainyard). |
 
 `resolve-dirs` is the canonical entry point — it returns the `{:user-dir
-:project-dir :working-dir :user-config-dir :project-config-dir}` bundle and
-is wired as the lazy default for the `:dirs` schema key.
+:project-dir :working-dir}` bundle and is wired as the lazy default for the
+`:dirs` schema key. The `.brainyard/` config-dir paths are derived from it
+via `project-config-dir` / `user-config-dir`.
 
 For path-validating tools (`bash`, `task$run`, `read-file`, `write-file`,
 `grep`), `resolve-agent-dirs` composes the canonical triple:
@@ -307,4 +308,4 @@ set-config! agent k v
   merge that `deftool` uses.
 - `components/agent/src/ai/brainyard/agent/common/config_agent.clj` — the
   LLM-facing config tools (`config$read`, `config$apply`, `config$diff`,
-  `config$revert`, `config$preview`).
+  `config$snapshot`, `config$list-snapshots`, `config$revert`).

@@ -1,10 +1,23 @@
 # Workflow-Agent — Domain-Specific Multi-Agent Workflow Automation (CoAct-derived)
 
-> **Status:** Shipped — `workflow-agent` is registered in `components/agent` (`common/workflow_agent.clj`). This document is the original design proposal (revision 1); the shipped implementation may diverge in details. See [core/agent.md](../core/agent.md) for the current roster.
-> **Scope:** new `components/agent/src/ai/brainyard/agent/common/workflow_agent.clj`
+> **Status:** Shipped — `workflow-agent` is registered in `components/agent` (`common/workflow_agent.clj`). This document is the original design proposal (revision 1); the shipped implementation diverges in the details flagged with **As-built** notes below. See [core/agent.md](../core/agent.md) for the current roster.
+> **Scope:** `components/agent/src/ai/brainyard/agent/common/workflow_agent.clj` + `workflow.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
-> **Replaces (eventually):** `pipeline` (`components/agent/src/ai/brainyard/agent/pipeline/`)
-> **Related reading:** `docs/CoAct.md`, `docs/agent-tui-app/pipeline.md`, `docs/research-agent-design.md`, `docs/explore-agent-design.md`, `docs/rlm-agent-design.md`
+> **Replaces:** `pipeline` (now fully retired — the `pipeline/` directory has been removed; see §14)
+> **Related reading:** `docs/CoAct.md`, `docs/research-agent-design.md`, `docs/explore-agent-design.md`, `docs/rlm-agent-design.md`
+>
+> **As-built (2026-06):** Recurring divergences that run through this whole doc:
+> 1. **Stages are dispatched by DIRECT kebab-case agent calls, not `call-tool`.** The shipped
+>    instruction/tool-context invoke `(plan-agent {…})`, `(research-agent {…})`, etc. directly in a
+>    clojure fence (the defagents self-register as callable sandbox fns). Wherever this doc says
+>    "via `call-tool`", read "via the direct kebab-case call". `call-tool` is still bound for
+>    generic registry access, but is not the stage-dispatch path.
+> 2. **`pipeline` is gone, not coexisting.** The migration in §14 completed: there is no
+>    `components/agent/src/ai/brainyard/agent/pipeline/` and the `/pipeline` slash commands were removed.
+> 3. **`workflow$summarize-log` was never implemented**; **`workflow$install-starters` and
+>    `workflow$load-template` were** — see the corrected helper roster in §9.
+> 4. **Only two starter templates ship** (`feature-launch.edn`, `doc-update.edn`), not the six listed
+>    in §4.2. They live under `components/agent/resources/workflows/`.
 
 ---
 
@@ -90,8 +103,8 @@ workflow-agent  (a feature-launch workflow)
   ├─ stage: gate (user confirms feasible)
   ├─ stage: implement                →  exec-agent
   ├─ stage: test                     →  exec-agent
-  ├─ stage: write release notes      →  call-tool plan-agent or coact-agent
-  └─ stage: announce                 →  call-tool mcp-agent (Slack, etc.)
+  ├─ stage: write release notes      →  plan-agent or coact-agent (direct call)
+  └─ stage: announce                 →  mcp-agent (Slack, etc.) (direct call)
 ```
 
 Each level is flat — no agent recurses on itself. Workflow → Research → Specialists is three flat layers, not depth-3 recursion.
@@ -179,9 +192,15 @@ Workflow templates are the data side of the design. They are read by the LLM and
 
 Templates are versioned in the project repo (or in `~/.brainyard/workflows/` for personal templates). They are how *domain knowledge* flows from senior engineers into agent runs without anyone having to write executor logic.
 
+> **As-built:** Of the six templates sketched above, only **two ship** today — `feature-launch.edn`
+> and `doc-update.edn`, under `components/agent/resources/workflows/` (the classpath `workflows/`
+> resource dir). The other four (`incident-response`, `refactor-and-verify`, `data-migration`,
+> `library-upgrade`) were never authored. Users can still author their own under
+> `.brainyard/workflows/` or `~/.brainyard/workflows/`.
+
 ### 4.3 Template Bootstrapping
 
-A small set of starter templates ships with brainyard under `resources/workflows/`. On first invocation that doesn't find any project-local templates, the helpers (§8) copy starters into `.brainyard/workflows/` for the user to edit. This mirrors how `.brainyard/skills/` is bootstrapped.
+A small set of starter templates ships with brainyard on the classpath under `resources/workflows/`. On first invocation that doesn't find any project-local templates, `workflow$install-starters` copies the starters into `.brainyard/workflows/` for the user to edit. This mirrors how `.brainyard/skills/` is bootstrapped. **As-built:** the shipped helper is `workflow$install-starters` (idempotent; `:overwrite?` opt-in), and only the two starters above are copied.
 
 ---
 
@@ -372,7 +391,7 @@ Same shape as research-agent's: a `handoff.md` pre-call (what the next stage rec
            task-cmds/task-commands))))
 ```
 
-The functional agents (`research-agent`, `explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `mcp-agent`, `skill-agent`, `rlm-agent`, `coact-agent`) are reached via `(call-tool "<agent-name>" {...})`. They are NOT bound directly — they live in the registry, the agent calls them as needed.
+The functional agents (`research-agent`, `explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `mcp-agent`, `skill-agent`, `update-agent`, `rlm-agent`, `coact-agent`) are reached via direct kebab-case dispatch — `(plan-agent {...})`, `(research-agent {...})`, etc. They are not bound as named tools in the roster; they live in the registry as auto-bound sandbox fns, and the agent calls them as needed. **As-built:** the proposal routed these through `(call-tool "<agent-name>" {...})`; the shipped instruction calls the defagent fns directly. The roster also binds the `workflow$*` helpers, `runtime-commands`, and (per the shipped code) explicitly *removes* `fetch-url` even though `file-tools` carries it.
 
 What is *deliberately omitted*:
 
@@ -728,20 +747,23 @@ Every agent below is invocable as `(call-tool "<name>" {:question "<q>"
                                   expected to take >5s (rare; agents
                                   return promptly).
 
-## Optional workflow$* helpers (when bound; see §9)
+## workflow$* helpers (auto-bound; see §9)
 - workflow$id            -- Deterministic id from template + question.
+- workflow$resume?       -- Cheap probe to decide bootstrap vs. resume.
+- workflow$list-templates -- Enumerate project + user + built-in templates.
+- workflow$load-template -- Load and validate one template.
+- workflow$install-starters -- Copy built-in starters to .brainyard/workflows/.
 - workflow$bootstrap     -- Create dossier directory + initial files
                             from a template (or :ad-hoc).
 - workflow$append-log    -- Append one NDJSON line to findings.log.
 - workflow$update-stage  -- Flip a stage's :status (with audit fields).
 - workflow$update-acceptance -- Flip a workflow acceptance criterion's
                                 :status.
-- workflow$summarize-log -- query$llm-backed roll-up of findings.log
-                            into a refreshed body.
 - workflow$write-verdict -- Compose verdict.md from final state.
 - workflow$index-append  -- Append one line to .brainyard/agents/workflow-agent/INDEX.md.
-- workflow$resume?       -- Cheap probe to decide bootstrap vs. resume.
-- workflow$list-templates -- Enumerate .brainyard/workflows/*.
+
+(As-built: `workflow$summarize-log` was never shipped — the agent calls
+ `query$llm` directly to roll up findings.log.)
 
 If these helpers aren't bound, build the equivalent inline with
 write-file + clojure fence.
@@ -768,15 +790,17 @@ Mirrors the helpers introduced for `rlm-agent`, `explore-agent`, and `research-a
 |---|---|---|
 | `workflow$id` | `(workflow$id :template … :question …)` → `"<id>"` | Deterministic id: `<template-id>--<question-slug>` (or just `<question-slug>` for `:ad-hoc`). |
 | `workflow$bootstrap` | `(workflow$bootstrap :id … :template-path … :purpose … :acceptance […])` → `{:dir … :dossier-path …}` | Create directory; copy template.edn; write purpose/acceptance/dossier/stages/findings. Idempotent: existing dir returns its current state. |
-| `workflow$list-templates` | `(workflow$list-templates)` → `[{:id … :name … :path … :description …}]` | Enumerate `.brainyard/workflows/*.edn` (project + user). |
-| `workflow$load-template` | `(workflow$load-template :id …)` → `{:template …}` | Load and validate one template. |
-| `workflow$append-log` | `(workflow$append-log :id … :iter … :stage … :agent … :summary … :pointers {…})` → `{:appended true}` | Append to findings.log. |
+| `workflow$list-templates` | `(workflow$list-templates :base-dir … :include-built-in? …)` → `{:templates [{:id :name :description :source :path|:resource} …]}` | Enumerate project + user + built-in templates. |
+| `workflow$load-template` | `(workflow$load-template :id … | :path …)` → `{:template … :source … :path …}` or `{:error …}` | Load and validate one template (resolves project > user > built-in). |
+| `workflow$install-starters` | `(workflow$install-starters :overwrite? …)` → `{:installed […] :skipped […] :dir …}` | Copy built-in starters (`feature-launch`, `doc-update`) from classpath to `.brainyard/workflows/`. Idempotent. |
+| `workflow$append-log` | `(workflow$append-log :id … :iter … :stage … :agent … :action … :summary … :pointers {…})` → `{:appended true}` | Append to findings.log. |
 | `workflow$update-stage` | `(workflow$update-stage :id … :stage-id … :status :satisfied :artifact …)` → `{:updated true}` | Targeted edit of stages.edn. |
 | `workflow$update-acceptance` | `(workflow$update-acceptance :id … :criterion-id … :status :satisfied)` → `{:updated true}` | Targeted edit of dossier.md frontmatter. |
-| `workflow$summarize-log` | `(workflow$summarize-log :id … :focus :stages|:findings)` → `{:summary "<markdown>"}` | query$llm-backed roll-up. |
 | `workflow$write-verdict` | `(workflow$write-verdict :id … :status :achieved|:partial|:abandoned :narrative …)` → `{:path …}` | Compose verdict.md. |
 | `workflow$index-append` | `(workflow$index-append :id … :status … :one-line …)` → `{:appended true}` | Prepend to `.brainyard/agents/workflow-agent/INDEX.md`. |
 | `workflow$resume?` | `(workflow$resume? :id …)` → `{:exists? true :status :in-progress :pending-stages [...] :hitl-mode … :acceptance-state {…}}` | Cheap probe for bootstrap vs. resume. |
+
+**As-built:** The shipped `workflow-helpers` roster binds exactly **eleven** helpers — `workflow$id`, `workflow$resume?`, `workflow$list-templates`, `workflow$load-template`, `workflow$install-starters`, `workflow$bootstrap`, `workflow$append-log`, `workflow$update-stage`, `workflow$update-acceptance`, `workflow$write-verdict`, `workflow$index-append`. `workflow$summarize-log` was **never implemented** (the helper layer is kept mechanical/side-effect-only; the agent calls `query$llm` directly with findings.log content as `:sub-context` — same decision as research-agent). `workflow.clj` also ships an `:agent.ask/post` **auto-finalize hook** that writes `verdict.md` + appends `INDEX.md` when the LLM emits a non-blank answer but skipped the finalize fence, *provided* the dossier exists and all acceptance criteria have moved off `:open`.
 
 The agent works without these — the prompt becomes 30–40% shorter when they are bound.
 
@@ -980,7 +1004,7 @@ Saved workflow dossier: .brainyard/agents/workflow-agent/feature-launch--mcp-ser
 | Hard-rule enforcement | Try `query$clone` from inside the agent. | Refusal; the curated roster excludes it. |
 | Direct plan-write attempt | Try `write-file` to `.brainyard/plans/<slug>.md`. | Soft refusal via instruction; future hard enforcement via `:agent.tool-use/pre` hook. |
 | Workflow + research compose | Stage uses research-agent; research-agent in turn uses explore/plan/exec/eval. | Three flat layers; workflow dossier records research dossier path; research dossier records its own findings; specialists' artifacts are linked from both. |
-| Pipeline-EDN compatibility (read-only) | Load a `.pipeline.edn` file via `workflow$load-template`. | Helper translates pipeline EDN's `:steps` → workflow `:stages` shape; workflow proceeds normally. (Migration aid — see §14.) |
+| ~~Pipeline-EDN compatibility (read-only)~~ | ~~Load a `.pipeline.edn` file via `workflow$load-template`.~~ | **As-built: not implemented.** The pipeline-EDN → workflow-EDN translator was never written; `workflow$load-template` only reads workflow templates. Port legacy `.pipeline.edn` by hand (see §14). |
 
 Per-iteration mulog signals to add (mirroring `::research.*`):
 
@@ -1012,8 +1036,8 @@ If a future user surfaces a real need to run legacy `.pipeline.edn` files, the c
 | File | What changes |
 |---|---|
 | `components/agent/src/ai/brainyard/agent/common/workflow_agent.clj` | NEW — `instruction`, `tool-context`, `defagent workflow-agent` mirroring `research-agent` shape; uses `coact/run-coact-derived` with `:max-iterations 50` default. |
-| `components/agent/src/ai/brainyard/agent/common/workflow.clj` (optional) | NEW — `workflow$id`, `workflow$bootstrap`, `workflow$list-templates`, `workflow$load-template`, `workflow$append-log`, `workflow$update-stage`, `workflow$update-acceptance`, `workflow$summarize-log`, `workflow$write-verdict`, `workflow$index-append`, `workflow$resume?` as `defcommand`s. Plus the pipeline-EDN ↔ workflow-EDN translator. |
-| `resources/workflows/*.edn` | NEW (starter templates) — `feature-launch`, `incident-response`, `doc-update`, `refactor-and-verify`, `data-migration`, `library-upgrade`. |
+| `components/agent/src/ai/brainyard/agent/common/workflow.clj` | NEW (shipped) — `workflow$id`, `workflow$resume?`, `workflow$list-templates`, `workflow$load-template`, `workflow$install-starters`, `workflow$bootstrap`, `workflow$append-log`, `workflow$update-stage`, `workflow$update-acceptance`, `workflow$write-verdict`, `workflow$index-append` as `defcommand`s, plus an `:agent.ask/post` auto-finalize hook. **As-built:** `workflow$summarize-log` was dropped (agent uses `query$llm`); the pipeline-EDN ↔ workflow-EDN translator was never written (deferred — see §14). |
+| `components/agent/resources/workflows/*.edn` | NEW (starter templates) — **As-built:** only `feature-launch` and `doc-update` shipped; `incident-response`, `refactor-and-verify`, `data-migration`, `library-upgrade` were never authored. |
 | `components/agent/test/ai/brainyard/agent/workflow_agent_test.clj` | NEW — registration smoke, bootstrap, resume, INSERT/SKIP/RE-RUN, HITL, pipeline-EDN compat. |
 | `.brainyard/agents/workflow-agent/README.md` | NEW (templated by helpers on first write) — directory layout cheat-sheet. |
 | `bases/agent-tui/.../pipeline_commands.clj` | TOUCHED at Phase 1 — alias `/pipeline` → workflow-agent; add `/workflow` slash commands. |

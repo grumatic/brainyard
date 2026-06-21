@@ -34,7 +34,7 @@ built on top of them) is just a different subtree.
 ## The Agent record
 
 `core/agent.clj` defines a small `defrecord` (`[agent-id !state !session]`)
-implementing six protocols from `core/protocol.clj`:
+implementing five protocols from `core/protocol.clj` plus `java.io.Closeable`:
 
 - **IAgent** — `agent-id`, `agent-name`, `agent-description`, `user-id`,
   `session-id`, `defagent-type`, `process`, `get-tools`, `get-state`.
@@ -109,7 +109,7 @@ unified tool registry (see [tool.md](tool.md)):
 | `eval-agent` | `common/eval_agent.clj` | Score / verdict on results |
 | `update-agent` | `common/update_agent.clj` | Update dossier / plan / source edits |
 | `explore-agent` | `common/explore_agent.clj` | Reconnaissance & discovery (supersedes the retired search-agent) |
-| `debug-agent` | `common/debug_agent.clj` | Live-runtime debug specialist — drives the reproduce → probe → hypothesize → test loop against the running JVM over the `:nrepl` backend (pins an nREPL session per instance) |
+| `debug-agent` | `common/debug_agent.clj` | Live-runtime specialist — drives the reproduce → probe → hypothesize → validate-live loop against the running JVM over the `:nrepl` backend (pins an nREPL session per instance), and owns the **permanent fix** itself: validate live, then edit the source (`read-file`/`update-file`/`write-file`) and reload the namespace via nREPL — no update-agent handoff |
 | `research-agent` | `common/research_agent.clj` | Multi-specialist research thread |
 | `workflow-agent` | `common/workflow_agent.clj` | Multi-stage workflow runner |
 | `skill-agent` | `common/skill_agent.clj` | Run a registered skill |
@@ -119,7 +119,7 @@ unified tool registry (see [tool.md](tool.md)):
 | `memory-agent` | `common/memory_agent.clj` | LLM-driven steward of the layered memory stack — `:op ∈ stats / remember / essence / consolidate / purge / verify-fact / correct` (default `:max-iterations` 10) |
 | `config-agent` | `common/config_agent.clj` | Conversational hub for `~/.brainyard/config.edn` — read→diff→confirm→snapshot→apply, reversible via `config$revert` |
 | `init-agent` | `common/init_agent.clj` | `BRAINYARD.md` authoring/maintenance (project + user scope); seeds from `CLAUDE.md`/`AGENTS.md`, reversible via `init$revert` |
-| `tool-agent` | `common/tool_agent.clj` | Author user-defined tools — `tool-agent$create`/`list`/`read`/`delete`, persisted to `.brainyard/tools/` |
+| `tool-agent` | `common/tool_agent.clj` | Author user-defined tools — `tool-agent$create`/`validate`/`list`/`read`/`delete`, persisted to `.brainyard/tools/` |
 | `hook-agent` | `common/hook_agent.clj` | Author persistent runtime hooks — `hook-agent$events`/`create`/`validate`/`list`/`read`/`delete`, persisted to `.brainyard/hooks/` |
 | `meta-agent` | `common/meta_agent.clj` | Author persistent user-defined agents (CoAct personas) — `meta-agent$create`/`validate`/`list`/`read`/`delete`, persisted to `.brainyard/agents/user$agent/` |
 
@@ -166,7 +166,7 @@ complete list):
 Most events are fire-and-forget. Two — `:agent.tool-use/pre` and
 `:agent.ask/finalize` — are **gated**: handlers return a decision map and
 the caller acts on the first non-`:allow` decision. (`:agent.ask/finalize`
-is how debug-agent and rlm inject their `Saved …:` handoff line into the
+is how rlm-agent's safety-net injects its `Saved …:` handoff line into the
 finalized result before observers on `:agent.ask/post` see it.)
 
 ```

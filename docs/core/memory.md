@@ -360,7 +360,7 @@ explain  explain-session
 
 Higher-level helpers in `components/agent/src/ai/brainyard/agent/core/memory.clj`
 wrap the store for the agent runtime: `recall`, `remember`, and
-`build-recall-query`. (On-demand L2→L3 consolidation is the store-level
+`create-memory-manager`. (On-demand L2→L3 consolidation is the store-level
 `memory/consolidate-l2!`, not an `agent.core.memory` helper.)
 
 ---

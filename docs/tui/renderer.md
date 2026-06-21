@@ -52,12 +52,9 @@ Two layout modes selected at startup:
   carves out a scroll region, and reserves the bottom rows for the
   status bar and input. Live blocks (sticky widgets) anchor to the
   tail of the scroll region above the input prompt. Status-bar
-  fields (`layout/format-status`): model, provider, iteration count,
-  queued items, task count, verbosity, busy/idle indicator, and a
-  **drift chip** — shown when `clj-nrepl/drifted?` is true, carrying
-  `clj-nrepl/drift-count` so a live nREPL hot-patch is visible at a
-  glance (see [core/reasoning.md](../core/reasoning.md) on the `:nrepl`
-  backend).
+  fields (`layout/format-status`): status (`idle` / `running` /
+  `paused`), queued items, task count, call count (with the last
+  input-token count + delta), token total, and accumulated cost.
 - **Inline** (`-i` / `--inline`) — no alt-screen. Output appends to
   the user's terminal scrollback. This is the codepath `CliClient`
   and snapshot tests exercise. Combining `--inline` with
@@ -257,15 +254,15 @@ The built-in roster (non-exhaustive):
 | `/config` | Edit runtime-config (mutates `:runtime-config` live). |
 | `/compact [args]` | Force a context compaction. |
 | `/todo` | Show the current TODO list. |
-| `/usage`, `/perf` | Token cost + latency breakdown. |
+| `/usage` | Token cost + latency breakdown. |
 | `/continue [args]` | Continue from the last iteration. |
-| `/task` | Task-manager front-end (delegates to `task$list` / `task$detail` / `task$cancel` / `task$run`). |
+| `/task [list\|detail\|cancel\|del\|log\|run\|bg\|fg]` | Task-manager front-end (bare `/task` or `list` shows the task list; a bare task id is treated as `detail`). |
 | `/allow-path <path>` | Add a path to the action-permission allowlist. |
 | `/capture` | Save current scrollback to a file. |
 | `/sandbox` | Inspect / manipulate the SCI sandbox. |
-| `/mcp list|add|remove|tools` | MCP server management. |
-| `/agent new|close|rename` | Sub-agent control. |
-| `/session [N\|subcmd]` | Multi-session switching, plus subcommands: `list`, `new`, `close`, `rename`, `tree`, `fork`, `resume`. |
+| `/mcp [<server> start\|stop\|status]` | MCP server management (bare `/mcp` lists configured servers + connection state). |
+| `/agent status\|new\|switch\|close\|trace` | Sub-agent control. |
+| `/session [N\|subcmd]` | Multi-session switching, plus subcommands: live tabs — `tabs` (default), `switch <N>`, `new`, `close`, `rename` (alias `label`); persisted on-disk — `list`, `show <id>`, `tree`, `fork`. |
 | `/pause`, `/resume` | Pause / resume the active BT. |
 | `/queue [cancel …]` | Input queue management. |
 | `/activity show|hide|toggle` *(Mode B)* | Split / kill a tmux side pane for the activity stream. |
@@ -364,9 +361,10 @@ per root):
   origin session — see [Origin session & cross-session settling](#origin-session--cross-session-settling).
 
 The TUI session's `:id` is process-local; the persisted directory is keyed on
-the **agent session id** — see [architecture.md §5](architecture.md). `/fork`
-creates a new agent-session-id with a `:parent-id` link; `/tree` navigates the
-fork tree; `/session rename` relabels a tab.
+the **agent session id** — see [architecture.md §5](architecture.md).
+`/session fork` creates a new agent-session-id with a `:parent-id` link;
+`/session tree` navigates the fork tree; `/session rename` (alias `label`)
+relabels a tab.
 
 Side-by-side comparisons across reasoning styles (e.g. ReAct vs CoAct) can run
 as **concurrent tabs in one process** (`Ctrl-T` a second agent, submit in both).
@@ -421,9 +419,10 @@ Mulog publishers wired in `log.clj`:
   tmux-based `/log show` pane tails this file so users see only
   their own session's events.
 
-The TUI's `/usage`, `/perf`, and history-style commands query the
-same mulog stream via `agent.common.turn-log` — see
-[design/observability.md](../design/observability.md).
+The TUI's `/usage` command reads the per-agent usage trackers
+(`clj-llm/get-usage-summary` / `get-usage-history`); `/history` formats
+the conversation message history. For the mulog-backed trajectory /
+observability story see [design/observability.md](../design/observability.md).
 
 ---
 

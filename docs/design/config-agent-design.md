@@ -27,6 +27,8 @@ A second problem is **trust**. Right now any change to persisted config is a fir
 2. **Treats every persisted write as a transaction.** Read → propose → preview diff → confirm → snapshot the old file → write → smoke-test → record in a dossier. Any step can fail and roll back. The user can revert N steps backward at any time.
 3. **Owns a narrow, explicit writable surface.** The keys this agent may set are listed in `writable-keys` (§7); anything else is read-only. `:llm.default-provider` and `:llm.default-model` in particular belong to bootstrap; this agent can *propose* a change there but the actual write goes through the bootstrap ladder (`bootstrap/re-run-rung`), not direct EDN.
 4. **Bridges runtime and persisted configs cleanly.** When the user says "set max-iterations to 200" the agent asks "for this session only, or persist?" Runtime-only goes through `agent/set-config-value!` (existing path); persistent goes through `config-agent`'s transactional write. Both flows share validation.
+
+   > **As-built:** the "session-only vs persist" choice was *removed*. `agent-runtime$config {:key K :value V}` now writes BOTH the per-agent override (immediate effect on the running agent) AND the persisted global value at `[:agent :config K]` in `config.edn`. There is no session-only path to opt into — every runtime-config write is persisted automatically. See the shipped instruction guidance (4) in `common/config_agent.clj` ("PERSISTED CONFIG IS A SINGLE STORE").
 5. **Inherits the CoAct loop, sandbox, and accumulator** from `coact-agent`. No new BT, no new DSPy signature.
 
 Same minimal-diff pattern as the other specialist agents: one new agent file, one new command namespace, a `config-agent/` artifact directory under `.brainyard/`. `agent/core/config.clj` is untouched.
@@ -45,6 +47,8 @@ Same minimal-diff pattern as the other specialist agents: one new agent file, on
 8. **Dossier per conversation.** Every config-agent session produces a markdown dossier at `.brainyard/agents/config-agent/dossiers/<yyyyMMdd-HHmmss>-<slug>.md` summarising what was read, what was changed, which snapshot was taken, and what (if anything) needs follow-up. Mirrors the explore/plan/update agent pattern.
 9. **No clone-self recursion.** Like the other CoAct-derived specialists, `config-agent` excludes `query$clone` from its tool roster. Cross-agent dispatch via flat `(call-tool "<other>" {…})` is fine — calling `mcp-agent` for a deep MCP debug session, `explore-agent` for "find which file references this server name," `update-agent` for editing a `.env`.
 10. **Be honest about durability.** Runtime config changes evaporate at TUI exit; persisted changes do not. The agent says this every time the user makes a runtime-only change ("Set for this session. Want me to persist it?") so the disconnect can never silently bite.
+
+> **As-built:** principle 10 no longer applies as written. There is no session-only path — `agent-runtime$config` persists every set to `[:agent :config]` in `config.edn` *and* applies it to the running agent. The shipped instruction tells the agent to say "Active now and persisted" rather than offering a session-only/persist choice.
 
 ---
 
@@ -137,7 +141,7 @@ What the agent must NOT do:
 | `read-file` / `grep` | Reading config files, scanning for references | Through the standard sandbox tool surface. |
 | `bash` (allowlisted) | `ollama list`, `claude --version`, `env`, `gpg --list-keys` (diagnostic) | Allowlist enforced at the tool layer; no writes. |
 | `query$llm` | Sub-LLM calls for summarisation, value-coercion suggestions | Single-step; no recursion. |
-| `agent-runtime$config` | Read or set runtime config (per-session, in-process) | Existing polymorphic command in `agent/common/commands.clj`. No args → returns whole `:runtime-config`. `:key K :value V` → validates against `config/config-keys`, coerces, applies, returns updated map. Reused as-is — do not introduce parallel `runtime$get`/`runtime$set` shims. |
+| `agent-runtime$config` | Read or set config (per-agent override + persisted) | Existing polymorphic command in `agent/common/commands.clj`. No args → returns the merged config snapshot (per-agent override → global config → schema default). `:key K :value V` → validates against `config/config-keys`, coerces, applies. **As-built:** the set path writes BOTH the per-agent override AND the persisted global value at `[:agent :config K]` in `config.edn` — there is no session-only mode. Reused as-is — do not introduce parallel `runtime$get`/`runtime$set` shims. |
 | `mcp$server` / `mcp$tools` / `mcp$lifecycle` | Inspect / add / remove / restart MCP servers | Existing trio in `mcp-agent`'s command set; reused as-is. |
 | `update-agent` (call-tool) | Edit `.env`, `BRAINYARD.md`, `~/.brainyard/permissions.edn`-style sidecar files | Same safe-edit pipeline as elsewhere. |
 | `explore-agent` (call-tool) | "Find all places that reference X env var / server name" | Read-only discovery. |
@@ -187,14 +191,16 @@ The instruction explicitly forbids:
 | `:llm` | `:available-providers` (cache only, refreshed by `env-detect$rescan`) | config-agent (cache) / bootstrap (defaults) |
 | `:llm.default-provider`, `:llm.default-model` | — **NOT writable** via `config$apply` — | bootstrap (`bootstrap$re-run-rung`) |
 | `:permissions` | `:mode`, `:allowed-dirs` | config-agent |
-| `:agent` | `:default-agent`, `:max-iterations`, `:enable-context-budget` | config-agent |
+| `:agent` | `:default-agent`; `[:agent :config :*]` (any `config-schema` key — `:max-iterations`, `:enable-context-budget`, …) | config-agent |
 | `:environment.sandbox-mode` | `:permissive | :standard | :restricted` | config-agent |
 | `:environment.executables`, `:environment.sandbox-type`, `:environment.os` | — **NOT writable** — these are detection outputs | env-detect |
 | `:mcp.servers` | full sub-map | config-agent (via `mcp$server` lifecycle) |
 | `:bootstrap` | — **NOT writable** — | bootstrap |
 | `:created-at`, `:updated-at`, `:version` | `:updated-at` only (auto-stamped on every write) | config-agent |
 
-Runtime-config keys (the ~30 in `agent.core.config/config-schema`) are all writable through `agent-runtime$config {:key K :value V}`, but only the session sees them; persistence requires the user to opt in to mirroring them into `:agent` (where the schema overlaps) or to a new `:runtime-overrides` block (out of scope — track in §13).
+Runtime-config keys (the ~30 in `agent.core.config/config-schema`) are all writable through `agent-runtime$config {:key K :value V}`.
+
+> **As-built:** the open question of "runtime-config persistence" (originally §13 Q1, the `:runtime-overrides` block) was resolved by collapsing the two layers. Every `config-schema` knob persists under a single `[:agent :config]` subtree in `config.edn`; an `agent-runtime$config` set writes the per-agent override *and* that persisted global in one call. `config$apply`'s allowlist allows the whole `[:agent :config]` prefix, type-checking each leaf against `config-schema` (the legacy flat `[:agent :max-iterations]` position is auto-migrated on write — see `migrate-legacy-edn-shape` in `agent.core.config` and `writable-prefixes` in `common/config.clj`).
 
 The allowlist is checked twice. The instruction lists it for the LLM. The `config$apply` command rejects any proposed map that touches a non-allowed path, returning a structured error the LLM is told to surface (not to "work around"). Belt-and-suspenders is the rule for an LLM writing persistent state.
 
@@ -282,14 +288,11 @@ The dossier is the durable record of the conversation. Like the other CoAct doss
 
 > **User:** raise max-iterations to 200
 
-1. `agent-runtime$config {}` → `:max-iterations 100`.
-2. Disambiguate: "Persist this for future sessions or just for now? (`:agent.max-iterations` in `config.edn` vs `runtime-config` in-process.)"
-3. User: "both."
-4. `agent-runtime$config {:key "max-iterations" :value "200"}` → immediate, no snapshot. Effective from next question.
-5. `config$diff :proposed {:agent {:max-iterations 200}}` → render diff.
-6. User: "yes."
-7. `config$apply` → snapshot → write → no smoke test needed (purely numeric).
-8. Answer: "Done. Active now (this session) and persisted (future sessions). Snapshot: `20260514-180102-set-max-iter-200.edn`."
+1. `agent-runtime$config {}` → merged snapshot shows `:max-iterations 100`.
+2. `agent-runtime$config {:key "max-iterations" :value "200"}` → writes the per-agent override (immediate) AND persists `[:agent :config :max-iterations] 200` to `config.edn`.
+3. Answer: "Done. Active now and persisted (future agents). `:max-iterations` 100 → 200."
+
+> **As-built:** the original "session-only or persist?" disambiguation (and a separate `config$apply :proposed {:agent {:max-iterations 200}}` write) is gone — `agent-runtime$config` does both in one call, so a single-knob tune needs no diff/confirm flow. `config$apply` remains for bulk/structural writes under `[:agent :config :*]` or other sections.
 
 ### 9.3 Re-detect and switch provider (capability kind 4)
 
@@ -365,7 +368,7 @@ No on-disk data migration needed for phase 1.
 
 ## 13. Open Questions
 
-1. **Should `:runtime-overrides` exist in `config.edn`?** Users routinely want "always run with `max-iterations 200`." Today they'd have to type `/config set max-iterations 200` every session. A `:runtime-overrides` block loaded at agent start would fix this — but it duplicates `:agent.max-iterations` semantics. Resolve by either (a) merging `:agent` and `:runtime-overrides` into one section with explicit key namespacing, or (b) keeping them separate and documenting which takes precedence. Lean (a); defer to phase 2.
+1. **Should `:runtime-overrides` exist in `config.edn`?** ~~Lean (a); defer to phase 2.~~ **Resolved (as-built):** went with (a) — every `config-schema` knob persists under a single `[:agent :config]` subtree, and `agent-runtime$config` writes the per-agent override and that persisted global in one call. No separate `:runtime-overrides` block exists. See the §7 as-built note.
 2. **Should config-agent be able to install MCP servers** (npm, uv tool install, etc.) **on its own?** Today `mcp-agent` enumerates and connects but does not install. If config-agent can shell out to install, it shortens the "add server" path; if not, it has to tell the user "now run `npm i -g @linear/mcp-server` and come back." Lean: install with explicit per-package confirmation (mirrors bootstrap's Ollama-install policy).
 3. **Snapshot retention policy** — 20 is arbitrary. Make it `:bootstrap.snapshot-retention` configurable?
 4. **Does config-agent run inside `bb tui` or as its own entry point?** Currently the design assumes `bb tui run -a config-agent`. A dedicated `bb tui config --interactive` (different from the wizard) could be more discoverable. Bikeshed.

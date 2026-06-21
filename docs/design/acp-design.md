@@ -1,6 +1,30 @@
 # Applying the Agent Client Protocol (ACP) to brainyard
 
-> Status: Shipped — `acp-agent` is registered in `components/agent` (`common/acp_agent.clj`), backed by the `acp` and `acp-client` components; `bb tui:acp` runs it against an in-tree stub backend. This document is the original design proposal (2026-05-10, author: assistant + Jake Na); the shipped implementation may diverge in details.
+> Status: Shipped — `acp-agent` is registered in `components/agent` (`common/acp_agent.clj`), backed by the `acp` and `acp-client` components; `bb tui:acp` runs it against an in-tree stub backend. This document is the original design proposal (2026-05-10, author: assistant + Jake Na).
+>
+> **As-built (verified against code):** all six implementation phases shipped,
+> including the "future" Phase 6 real backends.
+>
+> - `components/acp` — `interface.clj` + `core/{schema,jsonrpc,methods,transport}.clj`
+>   and `core/transport/stdio.clj`. (Tests are `jsonrpc_test.clj` and
+>   `transport_stdio_test.clj`.)
+> - `components/acp-client` — `interface.clj` + `core/{client,session,callbacks,events,registry}.clj`.
+>   (Tests are `events_translation_test.clj`, `registry_test.clj`,
+>   `e2e_against_stub_test.clj` — the proposed `client_handshake_test.clj`
+>   was not created as a separate file.)
+> - `bases/acp-stub-agent` — `src/.../core.clj` plus a deployable
+>   `projects/acp-stub-agent` project (alias `:asa` in `workspace.edn`), run via
+>   `bb acp-stub:run` and spawned by the `:stub` backend through
+>   `clj -M -m ai.brainyard.acp-stub-agent.core --echo`.
+> - `components/clj-llm/.../core/acp.clj` — the `:acp` provider, wired into
+>   `providers.clj` and the `llm.clj` dispatch (`:acp` arm).
+> - `acp-agent` is registered in `agent.interface` (the one-line require flagged
+>   in §9.2 was added) and its config keys (`:acp-backend`, `:acp-backend-opts`,
+>   `:acp-timeout-ms` 600000, `:acp-permission-timeout-ms` 120000) live in
+>   `agent.core.config`.
+> - **All four registry backends shipped** (`:stub`, `:claude-agent-acp`,
+>   `:gemini`, `:codex`) — see §9.5. The phase language below that calls Phase 6
+>   "future"/"optional" is therefore stale; treat it as historical sequencing.
 >
 > Confirmed with the user before this doc was written:
 >
@@ -330,6 +354,13 @@ This base is **not** shipped in `agent-tui-app`; it lives behind a
 separate project alias (`:asa`) so the integration test can spawn it as
 a subprocess. Run via `bb acp-stub:run` (a new task).
 
+> **As-built:** shipped as proposed. `bases/acp-stub-agent` is composed into a
+> deployable `projects/acp-stub-agent` project (alias `:asa` in `workspace.edn`),
+> which is what the `:stub` registry factory spawns (`clj -M -m
+> ai.brainyard.acp-stub-agent.core --echo`). `bb acp-stub:run` exists. Note the
+> §9.1 audit recommended *skipping* the `:projects` entry; the project was kept
+> after all so the stub can run with its full brick deps resolved.
+
 ### 4.6 Workspace plumbing
 
 - `workspace.edn` — add `acp`, `acp-client`, and `acp-stub-agent` (the
@@ -442,6 +473,11 @@ a subprocess. Run via `bb acp-stub:run` (a new task).
    `@agentclientprotocol/claude-agent-acp`), `:gemini` (Google's
    reference agent), `:codex`. Each is a launch spec only — no
    protocol code changes.
+
+   > **As-built:** Phase 6 shipped (not deferred). All three real backends are
+   > registered alongside `:stub` in `acp-client/core/registry.clj`. The
+   > claude-agent-acp package landed as `@zed-industries/claude-code-acp` (not
+   > `@agentclientprotocol/claude-agent-acp`). See §9.5 for the exact specs.
 
 ## 8. Verification
 

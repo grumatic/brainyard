@@ -1,7 +1,12 @@
 # Tool-Agent — LLM-Mediated Authoring of Persistent User-Defined Tools (CoAct-derived)
 
-> Status: design proposal. Companion to the already-shipped `tool-agent$*` command
-> family in `components/agent/src/ai/brainyard/agent/common/user_tools.clj`.
+> Status: **shipped.** The `tool-agent` specialist (`common/tool_agent.clj`) and the
+> `tool-agent$*` command family (`common/user_tools.clj`) are both live, including
+> `tool-agent$validate`. This document is the original design proposal; **as-built**
+> notes mark where the implementation diverged. Key divergences: the command family
+> was renamed `tools$*` → `tool-agent$*` (commit `d96797b`) and user-tool ids
+> `user$*` → `user$tool$*` (commit `d771de3`); tools persist as a `.edn` metadata +
+> `.clj` body sidecar pair (commit `14b5264`), not a single `.edn`.
 > Sibling docs: `skill-agent` (skill lifecycle), `mcp-agent` (MCP lifecycle),
 > `config-agent` (config lifecycle), `main-agent-design.md` (router).
 
@@ -9,8 +14,10 @@
 
 `by` already lets the LLM mint first-class tools at runtime. `tool-agent$create`
 takes a name, a one-line description, a Malli `[:map …]` input schema, and a
-`(fn [args] …)` body string; it eval-smoke-tests the body, persists the source
-to `.brainyard/tools/<name>.edn`, and registers it into the shared
+`(fn [args] …)` body string; it eval-smoke-tests the body, persists the
+metadata to `.brainyard/tools/<name>.edn` plus the verbatim body source to a
+`.brainyard/tools/<name>.clj` sidecar (as-built — commit `14b5264`; the design
+below still says "single `.edn`" in places), and registers it into the shared
 `agent.core.tool/!tool-defs` registry as `user$tool$<name>` — discoverable, coerced,
 and callable on the very next turn. `tool-agent$list`, `tool-agent$read`, and
 `tool-agent$delete` round out the lifecycle.
@@ -200,8 +207,9 @@ Return shape (a report, never a throw):
  :errors        ["…" ...]}        ;; one line per failed check; empty when :valid
 ```
 
-Proposed `defcommand` sketch (sibling of `tool-agent$create` in `user_tools.clj`),
-reusing the existing helpers:
+`defcommand` sketch (sibling of `tool-agent$create` in `user_tools.clj`),
+reusing the existing helpers — **as-built: this command shipped** (see
+`tool-agent$validate` in `common/user_tools.clj`):
 
 ```clojure
 (defcommand tool-agent$validate
@@ -527,6 +535,11 @@ projects/agent-tui-app/target/by ask -p bedrock -m amazon.nova-lite-v1:0 \
 ```
 
 ## 12. Migration / Phasing
+
+> **As-built:** Phases 1 and 2 shipped — the agent, `tool-agent$validate`, the
+> `tools-commands` roster var, `interface.clj` registration, and `main-agent`
+> routing are all live. Phase 3 items (`tool-agent$update`, `:scope :user`,
+> versioning/provenance) remain open (§13).
 
 Phase 1 — ship the agent + dry-run. Add the `tool-agent$validate` command (§5A) and
 the `tools-commands` var to `user_tools.clj`, create `tool_agent.clj`, register

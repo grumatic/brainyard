@@ -1,10 +1,16 @@
 # Session Analytics — Trajectory-Sourced, On-Demand
 
-**Status:** Proposed
-**Author:** —
+**Status:** Shipped. The on-demand, trajectory-sourced pipeline described
+below is implemented: the `session$analytics` command
+(`components/agent/.../common/analytics_commands.clj`), the pure
+`analytics.core.trajectory` module + `interface/analyze-trajectory` /
+`format-session-analytics`, the `:analytics-lm-config` /
+`:analytics-shs-weights` config keys, and the removal of the per-turn
+`run-analytics-async!` path + `:enable-analytics` gate from `core/bt.clj`.
+The §3 "Current state" / §9 "Removal plan" descriptions are historical —
+that migration is complete.
 **Supersedes:** the *Analytics — PQS, waste, cost* section of
-[`observability.md`](observability.md) (that section documents the current
-per-turn design described below as "Current state").
+[`observability.md`](observability.md).
 
 ---
 

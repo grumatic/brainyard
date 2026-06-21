@@ -501,8 +501,6 @@ components/agent/src/ai/brainyard/agent/common/
   meta_agent.clj          NEW — the manager defagent (instruction + meta-agent$* roster)
   user_agents.clj         NEW — meta-agent$* commands + persistence + runtime registration
                                 (register-agent! / load-user-agents! / ensure-loaded!)
-  def_store.clj           REUSE — for agent.edn; instruction.md / tool-context.md
-                                are plain prose files (not the .clj sidecar path)
 ```
 
 The manager file mirrors `tool_agent.clj` / `skill_agent.clj` almost exactly:
@@ -540,6 +538,11 @@ The manager file mirrors `tool_agent.clj` / `skill_agent.clj` almost exactly:
 The new machinery is confined to `user_agents.clj` (the `meta-agent$*` commands and
 the §5A registration layer). The manager itself adds no persistence or runtime
 logic — it is a curated front end over those commands.
+
+> **As-built:** `user_agents.clj` does **not** reuse `def_store.clj`. It writes the
+> three companion files (`agent.edn` pretty-printed metadata, `instruction.md` and
+> `tool-context.md` verbatim prose) directly with `spit`, and reads them back with a
+> small `read-agent-dir` helper. The §2B per-directory layout is exactly as shipped.
 
 ## 9. Conversation Patterns (worked examples)
 

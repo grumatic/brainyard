@@ -217,7 +217,7 @@ function or registry call that would need to change.
   them ahead of cold matches inside their bucket.
 - **TODO — argument completion from runtime data.** Commands like
   `/task detail <id>`, `/task cancel <id>`, `/queue cancel <uuid>`,
-  `/agent close <id>`, `/resume-session <id>` could surface live
+  `/agent close <id>`, `/session show <id>` could surface live
   IDs from the task manager / queue / session registry. Today these
   are unstructured free text.
 - **TODO — value enums for `/config`.** `config-schema` knows the type

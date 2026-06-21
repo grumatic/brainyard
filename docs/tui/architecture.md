@@ -120,7 +120,7 @@ and `--with-tmux` was not passed.
   iteration / think / todo blocks until answered, intercepted by the
   input reader (`input.clj` → `try-intercept-byte`).
 - Persistence is best-effort: scrollback, snapshots, and the input
-  draft are written to `<project>/.brainyard/sessions/<agent-session-id>/`
+  history are written to `<project>/.brainyard/sessions/<agent-session-id>/`
   on normal exit so the next launch can offer a resume.
 
 ### Mode B — in tmux
@@ -230,8 +230,10 @@ future redesign needs to re-introduce a host/UI split.
 Per-session directory at `<project>/.brainyard/sessions/<agent-session-id>/`:
 
 ```
-meta.edn               agent-id, defagent-id, model, started-at, working-dir,
-                       side-pane layout hint, draft input
+meta.edn               agent-id, defagent-id, model, started-at, working-dir
+                       (the **root** agent only — subagents share the session-id
+                       but never overwrite this identity)
+session.edn            restorable session snapshot (messages, model, working-dir)
 messages.log           append-only EDN events (input lines, hooks)
 scrollback.stream.txt  rotated ANSI byte log for the stream
 scrollback.activity.txt  optional activity scrollback
@@ -241,7 +243,10 @@ permissions.edn        :action-permissions cache
 queue.edn              input queue snapshot
 todo.edn               TODO snapshot
 status.edn             latest status-bar fields
-lock                   PID lockfile (single-writer guarantee)
+input-history.edn      prompt history ring
+usage-tracker.edn      token / cost accounting
+ask.sock               unix-domain socket for the `by ask --attach` side channel
+by-host.lock           PID lockfile (single-owner guarantee)
 panes/<window-id>/
   stream.fifo          per-window FIFOs (created lazily — Mode B only)
   activity.fifo
@@ -305,12 +310,12 @@ events land in the same `messages.log`.
    if the pipe fills — bounded buffer).
 9. User re-attaches an hour later. Tmux restores the pane buffer;
    `by` is still painting where it left off. Renderer notices any
-   `SIGWINCH`, re-flushes the live blocks, and re-reads the latest
-   `snapshot.edn` to repaint anything that scrolled out.
+   `SIGWINCH`, re-flushes the live blocks, and replays the
+   `scrollback.stream.txt` tail to repaint anything that scrolled out.
 10. User exits with `Ctrl-D` on empty buffer. Renderer freezes any
     open live blocks, closes side panes (`/activity hide` implicit),
-    persists `meta.edn` + final `snapshot.edn`, releases the lock,
-    exits alt-screen, returns 0.
+    persists `meta.edn` + the EDN snapshots (`session.edn`, `status.edn`,
+    `queue.edn`, …), releases the lock, exits alt-screen, returns 0.
 
 Mode A is identical from step 5 onward, minus steps 4, 6 (popup vs
 in-stream prompt), and 7 (the `/activity show` is a friendly no-op).
@@ -329,8 +334,11 @@ in-stream prompt), and 7 (the `/activity show` is a friendly no-op).
   the multi-sink. A bounded mailbox drops oldest bytes when full,
   prepending a `[truncated]` marker on next write.
 - **Two `by` invocations on the same agent-session-id.** Prevented
-  by `.lock`. The second process sees the lock held, prompts for
-  force-take or read-only, and never silently double-writes.
+  by `by-host.lock` (a PID lockfile). On `--resume`, a read-only
+  pre-flight (`held-by-other-live-process?`) sees the lock held by a
+  live PID, prints an error, and exits 1 — there is no force-take or
+  read-only fallback. A stale lock from a crashed process (dead PID) is
+  ignored and overwritten.
 - **Resize while a side pane is open.** Tmux handles the layout;
   the renderer recomputes its scroll region on `SIGWINCH`. The
   `cat`-side rendering is `cat`'s problem.
@@ -355,7 +363,7 @@ exposes six subcommands (`known-subcommands`,
 | `agents` | List registered agents. |
 | `models` | List available providers / models. |
 | `config` | Interactive environment bootstrap wizard. |
-| `sessions list` / `prune` | Inspect / clean up persisted agent sessions under `<project>/.brainyard/sessions/`. |
+| `sessions list` / `show` / `label` / `prune` | Inspect / relabel / clean up persisted agent sessions under `<project>/.brainyard/sessions/`. All four accept `-C` / `--working-dir` to target a specific project. |
 
 `run` adds session-management flags:
 
@@ -363,6 +371,7 @@ exposes six subcommands (`known-subcommands`,
 - `--with-tmux` — require Mode B; fail (Mode C) if conditions not met.
 - `-r` / `--resume` — bare: pick a persisted session to resume from an interactive menu (fresh if none).
 - `-r <id>` / `--resume <id>` — resume that specific session (error + exit 1 if absent).
+- `--resume-latest` — resume the most-recent persisted session non-interactively (fresh if none); env `BY_RESUME_LATEST`.
 - No resume flag → fresh session. (`--new` is a deprecated no-op, still accepted.)
 
 On resume the trailing bytes of `scrollback.stream.txt` are replayed into the

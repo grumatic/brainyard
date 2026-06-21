@@ -1,6 +1,13 @@
 # Plan-Agent — Pre-flight & Post-flight Gated Plan Authoring with Dossier Handoff (CoAct-derived)
 
 > **Status:** Shipped — `plan-agent` is registered in `components/agent` (`common/plan_agent.clj`). This document is the original design proposal (revision 2); the shipped implementation may diverge in details. See [core/agent.md](../core/agent.md) for the current roster.
+>
+> **As-built (verify against `common/plan_agent.clj`, `common/plan.clj`):**
+> - **POST-FLIGHT verdict is PASS / HOLD only.** The design's REVISE auto-revise round (§6.2) is **deferred to v1.5** — the shipped instruction says "1+ fail → HOLD" with no automatic `doc$update` revision. `post` carries `:verdict :pass|:hold` (no `:revision-applied?` / `:revision-summary`).
+> - **Cross-agent dispatch is direct kebab-case** — `(explore-agent {…})`, `(todo-agent {…})` — not `(call-tool "explore-agent" {…})`. Hard Rule 4 reads "NO clone-self dispatch" (not "NO query$clone").
+> - **Plan CRUD is the polymorphic `doc$*` family with `:kind :plan`** (see the API-rename block below). Authoring uses `doc$create` / `doc$update`; duplicate check uses `(doc$list {:kind :plan})`.
+> - **`write-file` / `update-file` / `fetch-url` are deliberately NOT bound** — all writes flow through `doc$create` + the `plan$dossier-*` helpers (Hard Rule 5).
+> - **Shipped helper roster:** `plan$dossier-slug`, `plan$dossier-frontmatter`, `plan$dossier-write`, `plan$dossier-index-append`, `plan$read-dossier`, `plan$next-handoff`. No `plan$preflight` / `plan$postflight` / `plan$render-references` / `plan$render-approach` helpers shipped.
 > **Scope:** redesign of `components/agent/src/ai/brainyard/agent/common/plan_agent.clj` + `plan.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
 > **Sibling of:** `todo-agent`, `exec-agent`, `eval-agent`, `update-agent`, `explore-agent`

@@ -3,8 +3,19 @@
 > **Status:** Shipped + revised (revision 2 — refreshed for the four-agent pipeline redesign)
 > **Scope:** `components/agent/src/ai/brainyard/agent/common/research_agent.clj` + `research.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
-> **Replaces (eventually):** `autoresearch` (`components/agent/src/ai/brainyard/agent/autoresearch/`)
-> **Related reading:** `docs/CoAct.md`, `docs/AUTORESEARCH.md`, `docs/explore-agent-design.md`, `docs/rlm-agent-design.md`, `docs/plan-agent-design.md`, `docs/todo-agent-design.md`, `docs/exec-agent-design.md`, `docs/eval-agent-design.md`, `docs/update-agent-design.md`
+> **Replaces:** `autoresearch` (now fully retired — the `autoresearch/` directory has been removed; see §14)
+> **Related reading:** `docs/CoAct.md`, `docs/explore-agent-design.md`, `docs/rlm-agent-design.md`, `docs/plan-agent-design.md`, `docs/todo-agent-design.md`, `docs/exec-agent-design.md`, `docs/eval-agent-design.md`, `docs/update-agent-design.md`
+>
+> **As-built (2026-06):** Two design-vs-shipped divergences run through this whole doc:
+> 1. **Specialists are reached by DIRECT kebab-case dispatch, not `call-tool`.** The shipped
+>    instruction/tool-context invoke `(plan-agent {…})`, `(exec-agent {…})`, etc. directly in a
+>    clojure fence (the defagents self-register as callable sandbox fns). Wherever this doc says
+>    "via `call-tool`", read "via the direct kebab-case call". `call-tool` is still bound (for
+>    generic registry access) but is not the specialist dispatch path.
+> 2. **`autoresearch` is gone, not coexisting.** The migration in §14 completed: there is no
+>    `components/agent/src/ai/brainyard/agent/autoresearch/` and no `docs/AUTORESEARCH.md`.
+>    Benchmark mode (§10) was **never implemented** — the shipped Hard Rule 7 says hill-climbing
+>    is "planned for a later milestone".
 
 ## Revision history
 
@@ -36,7 +47,7 @@
 
 1. **Owns one durable artifact** — a research dossier under `.brainyard/agents/research-agent/<research-id>/` capturing *purpose*, *direction*, *acceptance criteria*, *findings log*, and *handoff state* across turns and across calls to specialist agents. This is the cross-agent context carrier.
 2. **Uses CoAct's loop** — no new BT. The LLM picks the next move per iteration: explore, plan, decompose, execute, evaluate, refine, or finish.
-3. **Reaches the six specialists via `call-tool`** — `(call-tool "explore-agent" {...})`, `(call-tool "plan-agent" {...})`, `(call-tool "todo-agent" {...})`, `(call-tool "exec-agent" {...})`, `(call-tool "eval-agent" {...})`, `(call-tool "update-agent" {...})`. Every defagent registers in the same tool registry, so dispatch is flat.
+3. **Reaches the six specialists by direct kebab-case dispatch** — `(explore-agent {...})`, `(plan-agent {...})`, `(todo-agent {...})`, `(exec-agent {...})`, `(eval-agent {...})`, `(update-agent {...})`. Every defagent registers in the same tool registry and is auto-bound as a callable sandbox fn, so dispatch is flat. **As-built:** the proposal called this through `call-tool`; the shipped code invokes the defagents directly.
 4. **Threads the dossier path through `:agent-context`** so each specialist receives the same purpose/direction/acceptance — solving defect 1 without changing the specialists' contracts.
 5. **Stops when the LLM judges the goal achieved or definitively unreachable**, bounded by an iteration cap. Hill-climbing scoring (the autoresearch hallmark) becomes optional — kept for benchmark-style evaluation, removed from the default user-facing loop.
 6. **Inherits CoAct's full BT, sandbox, router, accumulator** — no substrate changes. Whole feature is one new agent file plus an optional helpers namespace, mirroring `rlm-agent` / `explore-agent`.
@@ -80,7 +91,7 @@ coact-agent  (parent — full BT, sandbox, router, accumulator)
   ├─ update-agent      (safe single-file edits; probe→apply→verify→
   │                     rollback-on-fail; emits edit record)
   └─ research-agent    (orchestrates explore/plan/todo/exec/eval/update
-                        via call-tool; threads dossier paths between them)
+                        via direct kebab-case dispatch; threads dossier paths between them)
 ```
 
 | Question shape | Use | Why |
@@ -351,12 +362,12 @@ Append-only, newest first, one line per research run:
            research/research-helpers))))
 
 ;; The SIX specialist agents (explore / plan / todo / exec / eval /
-;; update) are reached via call-tool — they self-register in !tool-defs
-;; through their own defagent forms. They do NOT need to be listed in
-;; :agent-tools to be reachable; they ARE in the registry.
+;; update) are reached by direct kebab-case dispatch — they self-register
+;; in !tool-defs through their own defagent forms. They do NOT need to be
+;; listed in :agent-tools to be reachable; they ARE in the registry.
 ```
 
-The six specialist agents (`explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `update-agent`) are not bound as direct sandbox functions — they are reached via `(call-tool "<agent-name>" {...})` from a clojure fence or via the `tool-calls` channel. The instruction's job is to *teach the LLM when to reach for each*.
+The six specialist agents (`explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `update-agent`) are reached via direct kebab-case dispatch — `(explore-agent {...})`, `(plan-agent {...})`, etc. — from a clojure fence, or via the `tool-calls` channel. The instruction's job is to *teach the LLM when to reach for each*. **As-built:** the proposal routed these through `(call-tool "<agent-name>" {...})`; the shipped instruction calls the auto-bound defagent fns directly.
 
 What is *deliberately bound* (and was not in revision 1):
 
@@ -777,8 +788,6 @@ specialists when new sibling content is needed.
 - research$bootstrap     -- Create dossier directory + initial files.
 - research$append-log    -- Append one NDJSON line to findings.log.
 - research$update-status -- Flip an acceptance criterion's :status.
-- research$summarize-log -- query$llm-backed: roll findings.log into a
-                            dossier ## Findings rewrite.
 - research$write-verdict -- Compose verdict.md from final state.
 - research$index-append  -- Append one line to .brainyard/agents/research-agent/INDEX.md.
 
@@ -808,10 +817,11 @@ Mirrors the helpers introduced in `rlm-agent` and `explore-agent`. They live in 
 | `research$bootstrap` | `(research$bootstrap :id … :purpose … :acceptance […] :direction […])` → `{:dir … :dossier-path …}` | Creates directory, writes purpose.md / acceptance.md / direction.md / dossier.md / findings.log (empty). Idempotent: if directory exists, returns its current state instead of overwriting. |
 | `research$append-log` | `(research$append-log :id … :iter … :agent … :summary … :pointers {…})` → `{:appended true}` | Appends one NDJSON line to findings.log. |
 | `research$update-status` | `(research$update-status :id … :criterion-id … :status :satisfied)` → `{:updated true}` | Targeted edit of acceptance frontmatter status. |
-| `research$summarize-log` | `(research$summarize-log :id … :focus :acceptance|:direction|:findings)` → `{:summary "<markdown>"}` | query$llm-backed roll-up of findings.log into a dossier ## Findings rewrite. |
 | `research$write-verdict` | `(research$write-verdict :id … :status :achieved|:partial|:abandoned :narrative …)` → `{:path …}` | Compose verdict.md from frontmatter + acceptance state + narrative. |
 | `research$index-append` | `(research$index-append :id … :status … :one-line …)` → `{:appended true}` | Append entry to `.brainyard/agents/research-agent/INDEX.md`. |
 | `research$resume?` | `(research$resume? :id …)` → `{:exists? true :status :in-progress :last-iteration 7 :acceptance-state {…}}` | Cheap probe to decide bootstrap vs. resume. |
+
+**As-built:** the shipped `research-helpers` roster binds exactly seven of these — `research$id`, `research$resume?`, `research$bootstrap`, `research$append-log`, `research$update-status`, `research$write-verdict`, `research$index-append`. `research$summarize-log` was **never implemented** as a `defcommand`: the helper layer is kept mechanical/side-effect-only, and the agent calls `query$llm` directly with the findings.log content as `:sub-context` to roll up the ## Findings section. (This is rather than the proposed dedicated helper.)
 
 The agent works without these — but the prompt becomes 30-40% shorter because the dossier mechanics no longer have to be inlined every iteration.
 
@@ -842,6 +852,12 @@ No new BT actions, no new schemas, no SCI binding additions are required for the
 ---
 
 ## 10. Optional `:research-mode :benchmark` (Hill-Climbing Preserved)
+
+> **As-built:** **Not implemented.** Benchmark mode never shipped. The shipped Hard Rule 7 reads
+> "NO benchmarking/scoring in the default loop. Hill-climbing strategies are an opt-in mode
+> (planned for a later milestone)." There is no `research-benchmark-mode-action`, no `mode=benchmark`
+> branch, and — since `autoresearch/` was removed — no `scoring.clj` / `format.clj` to borrow from.
+> The rest of this section is retained as the original proposal.
 
 The autoresearch hill-climbing loop is genuinely useful for *evaluating* agents on a fixed test suite — that's its real value, distinct from its (questionable) value as an end-user research orchestrator. Preserve it as an opt-in mode:
 
@@ -1049,6 +1065,12 @@ These are `mulog/log` calls in the helpers (§8) — no agent-loop changes requi
 
 ## 14. Migration Plan: Retiring `autoresearch`
 
+> **As-built:** This migration is **complete through Phase 3.** `research-agent` and `research.clj`
+> shipped; `components/agent/src/ai/brainyard/agent/autoresearch/` has been removed entirely (no BT,
+> orchestrator, defagent, or library bits remain in-tree), and there is no `docs/AUTORESEARCH.md`.
+> The phased plan below is retained for historical context — the benchmark-mode parity gates (1→2)
+> were moot since benchmark mode (§10) was never built.
+
 ### Phase 0 — Land `research-agent`
 
 - New `research_agent.clj` registered.
@@ -1095,7 +1117,7 @@ The phases sequence; there is no fixed schedule. Treat each gate as a hard prere
 | File | What changes |
 |---|---|
 | `components/agent/src/ai/brainyard/agent/common/research_agent.clj` | NEW — `instruction`, `tool-context`, `defagent research-agent` mirroring `explore-agent` shape; uses `coact/run-coact-derived` with `:max-iterations 30` default. |
-| `components/agent/src/ai/brainyard/agent/common/research.clj` (optional) | NEW — `research$id`, `research$bootstrap`, `research$append-log`, `research$update-status`, `research$summarize-log`, `research$write-verdict`, `research$index-append`, `research$resume?` as `defcommand`s. |
+| `components/agent/src/ai/brainyard/agent/common/research.clj` | NEW (shipped) — `research$id`, `research$resume?`, `research$bootstrap`, `research$append-log`, `research$update-status`, `research$write-verdict`, `research$index-append` as `defcommand`s. **As-built:** `research$summarize-log` was dropped; the agent calls `query$llm` directly instead. |
 | `components/agent/test/ai/brainyard/agent/research_agent_test.clj` | NEW — registration smoke, bootstrap, resume detection, acceptance-flip integrity, INDEX.md append-only. |
 | `.brainyard/agents/research-agent/README.md` | NEW (templated by helpers on first write) — directory layout cheat-sheet. |
 | `bases/agent-tui` / `bases/agent-web` | NO CHANGES at Phase 0/1. Update at Phase 3 to drop autoresearch references. |

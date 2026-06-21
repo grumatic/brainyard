@@ -21,8 +21,8 @@ Primary files:
  :type :tool | :command | :skill | :agent
  :fn   #'my.ns/my-fn
  :meta {:description "…"
-        :inputs   {…}    ;; Malli-style schema
-        :outputs  {…}
+        :input-schema  {…}    ;; Malli [:map …] schema
+        :output-schema {…}
         :aliases  [...]                     ; optional
         :tool-use-control {…}               ; visibility/permission
         :bt-factory   …                     ; agent only
@@ -58,7 +58,7 @@ command receive its context block without the caller constructing them.
 `deftool` renames the canonical metadata keys to `:_deftool$<key>` in
 the per-call merge so the auto-injected meta does not collide with
 caller args that happen to use the same names (`:id`, `:type`,
-`:description`, `:inputs`, `:outputs`).
+`:description`, `:input-schema`, `:output-schema`).
 
 ### Example
 
@@ -67,9 +67,11 @@ caller args that happen to use the same names (`:id`, `:type`,
   "Full-text search across indexed docs."
   (fn [{:keys [q limit parent-agent agent-session]}]
     (my-impl q limit))
-  :inputs  {:q [:string {:desc "query"}]
-            :limit [:int {:desc "max results"}]}
-  :outputs {:hits [:any {:desc "matches"}]})
+  :input-schema  [:map
+                  [:q [:string {:desc "query"}]]
+                  [:limit [:int {:desc "max results"}]]]
+  :output-schema [:map
+                  [:hits [:any {:desc "matches"}]]])
 ```
 
 `:parent-agent` and `:agent-session` are auto-injected at the bind step
@@ -99,7 +101,7 @@ the BT leaf that turns LLM-selected calls into real invocations:
                                                       bubbles through as a
                                                       synthesized answer)
 2. Permission check                                  (:allow / :deny / :approval globs)
-3. Normalise & coerce inputs                         (Malli schemas from :inputs,
+3. Normalise & coerce inputs                         (Malli schemas from :input-schema,
                                                       see §JSON ↔ Malli below)
 4. Bind *current-agent*, *call-depth*, *call-chain*
 5. Invoke bound fn
@@ -263,17 +265,18 @@ that surround a whole iteration's tool dispatch.
 
 ## Background tasks as tools
 
-The task manager registers four commands that any LLM can use to
+The task manager registers a set of commands that any LLM can use to
 schedule long work (see [task.md](task.md)):
 
 - `task$run :job-type :tool` — run any registered tool asynchronously.
 - `task$run :job-type :bash` — same pattern for shell commands.
-- `task$run` — generic launcher.
 - `task$list` / `task$detail` / `task$cancel` — inspection and control.
   `task$detail` accepts `:last-n N` for the captured output tail.
+- `task$wait` / `task$wakeup` / `task$sweep` — block-wait, park-and-resume,
+  and on-disk artifact GC (see [task.md](task.md)).
 
-A LLM that hits the 30-second inline limit is nudged to switch to
-`task$run-…` and poll via `task$detail` (add `:last-n N` for the tail).
+A LLM that hits the inline fast-eval deadline is nudged to switch to
+`task$run` and poll via `task$detail` (add `:last-n N` for the tail).
 
 ---
 
@@ -301,7 +304,7 @@ The TUI surfaces tools in three ways:
   queries `agent/get-tool-defs` and suggests completions for slash
   commands and tool names.
 - **Slash commands** — tools with `:type :command` are exposed via
-  slash invocation (e.g. `/mcp-tools`, `/tasks`, `/queue`).
+  slash invocation (e.g. `/mcp`, `/task`, `/queue`).
 - **Permissions prompts** — when `tool-calls-action` requests approval,
   `bases/agent-tui/src/ai/brainyard/agent_tui/permissions.clj` renders
   the prompt inline and delivers the action-promise result.

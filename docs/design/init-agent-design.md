@@ -280,6 +280,8 @@ After a seed write, init-agent calls `init$smoke-test :scope :<scope>` to verify
 └── sources.edn                                    ;; the source priority list (§8.1)
 ```
 
+> **As-built:** `sources.edn` does **not** live under `.brainyard/agents/init-agent/`. It ships as a classpath resource at `components/agent/resources/init-agent/sources.edn`, loaded by `load-sources` in `common/init.clj` (with an inline `default-sources` fallback when the resource is absent). The `snapshots/` and `dossiers/` dirs are created per-scope under `.brainyard/agents/init-agent/` as designed.
+
 **Snapshot.** Every `init$apply` and `init$revert` writes a full file snapshot first. Filename: `<yyyyMMdd-HHmmss>-<scope>-<reason>.md`. Snapshots are full copies — BRAINYARD.md is small (< 8 KB) so the simpler invariant ("snapshot is a drop-in replacement") wins over disk savings, same call as config-agent.
 
 **Revert.** `init$revert :snapshot-path P` snapshots the current file with `reason: revert-to-<source-slug>`, then copies `P` back. The pre-revert snapshot means revert is itself reversible.
@@ -463,6 +465,8 @@ The result map is the same one `init$apply` returns (`{:ok? :snapshot-path :diff
 
 A small helper namespace `agent/common/init/calling.clj` provides a one-liner for the common case ("persist this fact") that picks the section and sets sane defaults — used by `coact-agent` (and any future agent that wants the "remember this for next time" idiom) so the call site stays short.
 
+> **As-built:** the `agent/common/init/calling.clj` helper namespace was **not** shipped. init-agent is still callable as a direct sandbox function (`(init-agent {…})`) via its `defagent` registration, but there is no dedicated "persist this fact" convenience wrapper — callers pass the full `:question`/`:scope`/`:confirm?` opts. The mechanical surface lives entirely in `agent/common/init.clj` (the `init$*` command family); the `defagent` is in `agent/common/init_agent.clj`.
+
 ---
 
 ## 12. Edge Cases
@@ -497,7 +501,7 @@ A fourth test surface validates **callable-from-other-agents**: a unit test spaw
 
 Phase 1 (this design): commands + agent file + slash command + dossier scaffold.
 
-- New: `agent/common/init.clj`, `agent/common/init_agent.clj`, `.brainyard/agents/init-agent/sources.edn`.
+- New: `agent/common/init.clj`, `agent/common/init_agent.clj`, `components/agent/resources/init-agent/sources.edn` (classpath resource, **not** under `.brainyard/`).
 - Modified: `bases/agent-tui/.../commands.clj` (one slash entry, one handler, one help-text update).
 - `agent/core/config.clj`'s `load-brainyard-instructions` is unchanged — init-agent only changes what's *in* the file, not who reads it. Every existing agent picks up the new content on its next turn for free.
 

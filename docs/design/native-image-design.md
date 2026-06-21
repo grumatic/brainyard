@@ -1,6 +1,6 @@
 # Native-Image — Making `agent-tui-app` Build as the `by` Binary
 
-> **Status:** Partially shipped. The GraalVM native build ships — `bb build:ata` / `compile:ata` / `uberjar:ata` / `native:ata` / `install:ata` / `check:ata` / `size:ata` / `docker:ata` / `version:ata` all exist, and `reachability-metadata.json` has replaced the deprecated `proxy-config.json` on GraalVM 25 (see `CLAUDE.md` §"GraalVM Native Build" and [build-and-deploy.md](../build-and-deploy.md)). The remaining proposal here — an automated tracing-agent harness that *regenerates* the reflect/resource config and a CI test that the binary lists every agent — is **not yet committed**; config stays hand-curated behind the static `bb check:ata` drift gate.
+> **Status:** Mostly shipped. The GraalVM native build ships — `bb build:ata` / `compile:ata` / `uberjar:ata` / `native:ata` / `install:ata` / `check:ata` / `size:ata` / `docker:ata` / `version:ata` all exist, and `reachability-metadata.json` has replaced the deprecated `proxy-config.json` on GraalVM 25 (see `CLAUDE.md` §"GraalVM Native Build" and [build-and-deploy.md](../build-and-deploy.md)). **As-built:** the modern class-init policy (§7) is live — `native-image.properties` now uses `--features=clj_easy.graal_build_time.InitClojureClasses` + an explicit allow-list (graal-build-time 1.0.5 is on the project classpath), and the HTTP-client migration (§6, Phase 2) shipped — both `components/clj-llm` and `components/agent` depend on a shared `ai.brainyard/clj-http-native` component instead of `clj-http`. The one proposal here that is **not yet committed** is the automated tracing-agent harness (§10) that *regenerates* the reflect/resource config plus a CI test that the binary lists every agent; reflection/resource config stays hand-curated behind the static `bb check:ata` drift gate.
 > **Scope:** the GraalVM native-image build of `projects/agent-tui-app` → `target/by`. Touches `bb.edn` (the `compile:ata` / `uberjar:ata` / `native:ata` / `build:ata` tasks), the `projects/agent-tui-app/resources/META-INF/native-image/ai.brainyard/agent-tui-app/` config directory, several component `deps.edn` files (notably `components/clj-llm`, `components/agent`, `components/util`), and a small amount of source rewriting in `clj-llm` and `agent`'s MCP client.
 > **Related reading:** `CLAUDE.md` §"GraalVM Native Build", `docs/build-and-deploy.md` §"The native-image pipeline", `bb.edn` tasks `compile:ata` / `native:ata`, `projects/agent-tui-app/src/ai/brainyard/agent_tui_app/main.clj`, `components/clj-llm/src/ai/brainyard/clj_llm/core/llm.clj`, `components/agent/src/ai/brainyard/agent/mcp/client.clj`, GraalVM reachability metadata docs at <https://www.graalvm.org/latest/reference-manual/native-image/metadata/>, `clj-easy/graal-build-time` at <https://github.com/clj-easy/graal-build-time>, the GraalVM reachability metadata repository at <https://github.com/oracle/graalvm-reachability-metadata>.
 
@@ -91,7 +91,7 @@ The thesis of this doc is that we can replace the curated artefacts with a deter
                       │   -H:ConfigurationFileDirectories=…/generated          │
                       │   -H:BuildOutputJSONFile=target/build-output.json      │
                       │   -jar target/agent-tui-app.jar                        │
-                      │   -H:Name=target/by                                    │
+                      │   -o target/by                                         │
                       │                                                        │
                       │   →  target/by   (~85 MB target)                       │
                       └────────────────────────────────────────────────────────┘
@@ -381,35 +381,33 @@ The new `compile:ata` adds an `ai.brainyard.agent-tui-app.tracing-loader` to its
 
 The new `uberjar:ata` adds a post-build verification: walk the produced jar, assert `META-INF/native-image/ai.brainyard/agent-tui-app/native-image.properties` exists and is non-empty, fail otherwise. This catches uberdeps regressions before native-image is even invoked.
 
-The new `native:ata`:
+The shipped `native:ata` (**as-built**) is even leaner than this design proposed: it passes *only* the jar and output path on the command line — **all** build flags (including `--features=…InitClojureClasses`, the init-time allow/deny lists, and `-H:BuildOutputJSONFile`) live in `native-image.properties`, so the uberjar is the single source of truth for the build spec. The bb task adds a native-image binary discovery chain (PATH → `$JAVA_HOME` → `.sdkmanrc` SDKMAN pin → macOS GraalVM scan) and derives `JAVA_HOME` from the resolved path:
 
 ```clojure
 native:ata
 {:doc "Build native binary 'by' with GraalVM native-image"
  :task (do
          (println "Building native binary 'by' ...")
-         (let [ni-path (find-native-image-binary)
+         (let [ni-path (find-native-image-binary)   ; PATH/JAVA_HOME/.sdkmanrc/scan
                dir    "projects/agent-tui-app"
                start  (System/currentTimeMillis)
-               result (shell {:continue true :dir dir}
+               result (shell {:continue true :dir dir
+                              :extra-env {"JAVA_HOME" java-home}}
                              ni-path
-                             "--features=clj_easy.graal_build_time.InitClojureClasses"
-                             "--no-fallback"
-                             "--enable-native-access=ALL-UNNAMED"
-                             "--enable-url-protocols=https"
-                             "-H:Name=target/by"
-                             "-H:BuildOutputJSONFile=target/native-build.json"
-                             "-jar" "target/agent-tui-app.jar")]
+                             "-jar" "target/agent-tui-app.jar"
+                             "-o" "target/by")]
            …))}
 ```
 
-What's gone: the global `--initialize-at-build-time` (now in `native-image.properties` with explicit packages), `--enable-url-protocols=http` (TLS-only by default), command-line / META-INF flag duplication.
+(Note `-o target/by`, not `-H:Name`.) What's gone versus the original: the global `--initialize-at-build-time` (now in `native-image.properties` with explicit packages), `--enable-url-protocols=http` was **kept** (some local MCP servers use plaintext HTTP), and the command-line / META-INF flag duplication.
 
-What's added: `--features=clj_easy.graal_build_time.InitClojureClasses`, `-H:BuildOutputJSONFile` for per-build size tracking (CI parses this and gates merge on a budget).
+What's added (all in `native-image.properties`): `--features=clj_easy.graal_build_time.InitClojureClasses`, `-H:BuildOutputJSONFile` for per-build size tracking (`bb size:ata` parses this).
 
 `bb build:ata` chains the three unchanged. `bb install:ata` is unchanged.
 
 A new `bb tracing:ata` runs the tracing harness and writes the four `generated/*.json` files. A new `bb check:ata` does a `git diff --exit-code` on those files plus a `wc -l` ceiling check (so a runaway trace doesn't silently triple the config size).
+
+**As-built:** `bb check:ata` shipped as a *static* drift gate only — it checks that the committed `native-image.properties`, `reflect-config.json`, `resource-config.json`, and `reachability-metadata.json` exist, are non-empty, and stay under a line-count ceiling (5000 for the two big JSON files); pairing it with `git diff --exit-code` in CI catches unexpected edits. The `bb tracing:ata` harness (§10) and the `generated/` regeneration flow are **not committed** — the configs are hand-curated and authoritative, and `check:ata` only guards against drift, it does not regenerate.
 
 ---
 

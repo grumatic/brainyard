@@ -169,10 +169,13 @@ loopback nREPL server (`components/clj-nrepl`). Symmetric to
   by specialist defagents like `debug-agent` that pin one session per
   instance so multi-iteration investigations accumulate namespace state.
 - Runs `clj-nrepl/eval-string` inside a daemon future and returns
-  `:detached` immediately. The full gate chain (server-up →
-  grant-active → deny-list → mutating-scope → confirmation) fires
-  inside `eval-string`; drift markers are recorded on attempt for
-  mutating forms.
+  `:detached` immediately. nREPL is the **full-trust** live-runtime
+  backend: the only checks `eval-string` applies are server-up and the
+  deny-list (catastrophic substrings). There is no grant, scope,
+  confirmation, drift, or audit machinery — static analysis can't
+  soundly isolate a live nREPL, so isolation is delegated to the
+  `:sandbox` backend; the only structural safety is the loopback-only
+  socket.
 - `:on-poll` harvests the future when `.isDone`, projecting to
   `{:code :output :result :error :ns}` — same shape as the sandbox
   executor (no FINAL/FINAL-VAR semantics; nREPL terminates by
@@ -183,10 +186,10 @@ loopback nREPL server (`components/clj-nrepl`). Symmetric to
   both `:clj-sandbox-eval` and `:clj-nrepl-eval` as "clojure" job-types
   and projects nREPL's already-string-printed `:value` verbatim (vs.
   the sandbox path which `pr-str`s the raw Clojure value).
-- Only active when the host has opted in via `BY_NREPL_ENABLED=true`
-  on the bb tui / web base — the server is OFF by default. Eval requires
-  an active grant from `BY_NREPL_GRANT=<scope>[:<ttl>]`. See
-  `docs/design/clj-nrepl-eval.md` and `docs/design/debug-agent-design.md`.
+- Only active when the host has opted in via the `:nrepl-enabled?`
+  config key (`.brainyard/config.edn` `[:agent :config :nrepl-enabled?]`,
+  or transiently `BY_NREPL_ENABLED=true`) — the server is OFF by default.
+  See `docs/design/clj-nrepl-eval.md` and `docs/design/debug-agent-design.md`.
 
 ---
 

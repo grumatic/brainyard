@@ -5,7 +5,9 @@
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
 > **Related reading:** `docs/CoAct.md`, `docs/RLM-RESEARCH.md`, `docs/RLM-BENCHMARK.md`, `components/agent/.../explore_agent.clj`, `components/agent/.../skill_agent.clj`
 >
-> **⚠️ REVISION 2 (depth-2 reversal):** The original "Depth = 1, `query$agent` forbidden" principle below has been **reversed**. `query$agent` was renamed to **`query$clone`** and is now **allow-listed to `rlm-*` ONLY** (via `:tool-use-control {:allow ["rlm-*"]}`) and bound by rlm-agent's roster — every *other* agent excludes it. rlm-agent is now the **sole home** for clone-self / depth-2 recursion. Hard Rule A was softened from "DO NOT call" to "PREFER FLAT MapReduce; `query$clone` is a gated LAST RESORT." The Paper-2 risk is real, so flat `query$llm` MapReduce remains the default shape — but the tool is no longer forbidden for rlm. The Depth=1 / "excluded" / "forbidden" statements that follow describe the original design and are retained for context only.
+> **⚠️ REVISION 2 (depth-2 reversal):** The original "Depth = 1, `query$agent` forbidden" principle below has been **reversed**. `query$agent` was renamed to **`query$clone`** and is now **allow-listed to `rlm-*` ONLY** and bound by rlm-agent's roster — every *other* agent excludes it. rlm-agent is now the **sole home** for clone-self / depth-2 recursion. Hard Rule A was softened from "DO NOT call" to "PREFER FLAT MapReduce; `query$clone` is a gated LAST RESORT." The Paper-2 risk is real, so flat `query$llm` MapReduce remains the default shape — but the tool is no longer forbidden for rlm. The Depth=1 / "excluded" / "forbidden" statements that follow describe the original design and are retained for context only.
+>
+> **As-built (2026-06):** The `:tool-use-control {:allow ["rlm-*"]}` gate lives on the **`query$clone` `defcommand`** (`common/commands.clj`), not on the `rlm-agent` defagent — the agent's own `:tool-use-control` is `{}`. The gate matches the agent's `rlm-*` name, so only rlm-agent (and any future `rlm-*` agent) can bind it. rlm-agent additionally registers an **`:agent.ask/finalize` safety-net hook** (`common/rlm.clj`): when it emits a non-trivial answer without a `Saved RLM report: <path>` line, the hook persists the report under `.brainyard/agents/rlm-agent/results/` and injects the handoff line.
 
 ---
 
@@ -313,7 +315,9 @@ then inline a short summary + the path in `answer`.
 
 ## 6. Tool Bindings (Curated Roster)
 
-The `:agent-tools` map for `defagent rlm-agent` is the curated set. Inherits commonly-needed CoAct primitives via `run-coact-derived`, then adds RLM specifics. Excludes anything that would tempt the model into depth>1 (`query$clone`) or unrelated sub-domains (todo$*, plan$*, skills$*, etc).
+The `:agent-tools` map for `defagent rlm-agent` is the curated set. Inherits commonly-needed CoAct primitives via `run-coact-derived`, then adds RLM specifics, and excludes unrelated sub-domains (todo$*, plan$*, skills$*, etc).
+
+> **As-built (per revision 2):** the shipped roster **binds `#'common-cmds/query$clone`** (between the `query$llm` MAP primitive and the bookkeeping tools) and also adds `rlm/rlm-helpers`. The "intentionally excludes `query$clone`" comment in the `rlm-tools` sketch below and the `query$clone` row in the "deliberately omitted" table reflect the original design only — see the banner at the top of this doc.
 
 ```clojure
 (:require

@@ -1,18 +1,43 @@
 # Debug-Agent — Live-Runtime Self-Debugging Specialist (CoAct-derived)
 
-> **⚠ Superseded in part (2026-06).** nREPL is now full-trust (deny-list only):
-> the grant / scope / first-mutation-confirmation / runtime-drift / audit layers
-> were removed, and with them the `debug$promote-hot-patch` and
-> `clj-nrepl$drift-markers` tools (drift's only producer was the eval path).
-> debug-agent's bag is now `code$eval` + `task$*` + `clj-nrepl$start/stop/status`.
-> Permanent fixes still hand off to update-agent — just without a drift-marker
-> audit anchor. Sections on grants/drift/promotion below are historical.
+> **⚠ AS-BUILT (2026-06) — this design has substantially diverged from the
+> shipped agent. Read this banner first; the sections below are largely
+> historical.** Two structural changes landed after this doc was written:
+>
+> 1. **nREPL is now full-trust (deny-list only).** The grant / scope /
+>    first-mutation-confirmation / runtime-drift / audit layers were all
+>    removed (commits `dc2348a`, `82404ff`, `d7633e3`, `4a44ce2`). With them
+>    went the `debug$promote-hot-patch` and `clj-nrepl$drift-markers` tools
+>    (drift's only producer was the eval path) and the TUI drift chip. The
+>    ONLY eval-path check that remains is the deny-list (`System/exit`,
+>    `Runtime/.exec`, credential namespaces). There is no grant, scope,
+>    confirmation, drift, or audit machinery in `clj-nrepl` anymore.
+>    Config keys are now just **`:nrepl-enabled?`** and **`:nrepl-port`**
+>    (no `:nrepl-grant`).
+> 2. **debug-agent now OWNS permanent fixes; the update-agent handoff is
+>    GONE** (commits `33a4870`, `3891760`, `66357a1`, `370e1f7`). The agent
+>    is END-TO-END: it validates a fix live (ephemeral `def`/`alter-var-root`),
+>    then edits the SOURCE itself via the bound file tools
+>    (`read-file`/`update-file`/`write-file`/`grep`) and reloads the namespace
+>    over nREPL (`(require 'ns :reload)`) to confirm the on-disk fix applies.
+>    It also teaches live-image **introspection** (a third job: understand how
+>    brainyard works by reading the real image). Tools that don't exist in
+>    the SCI sandbox are reached over nREPL via
+>    `ai.brainyard.agent.core.tool/call-tool` (passing `:agent` for
+>    agent-state tools like `memory$*`).
+>
+> So sections §7 (promotion hand-off), §8.1 (drift chip), §9 (grant/drift/
+> confirmation safety) below describe machinery that NO LONGER EXISTS. §5
+> (tool bag), §6 (execution-model), §12 (instruction) are rewritten as
+> as-built notes inline. The shipping tool bag is `code$eval` +
+> `read-file`/`update-file`/`write-file`/`grep`/`search`/`bash` + `task$*` +
+> `clj-nrepl$start-server`/`stop-server`/`status`.
 
-> **Status:** Implemented (Phase 2b–3 of `docs/design/clj-nrepl-eval.md`).
+> **Status:** Shipped, then evolved past this design — see banner above.
 > **Scope:** `components/agent/src/ai/brainyard/agent/common/debug_agent.clj` — a CoAct-derived specialist agent that drives the live-runtime self-debugging loop introduced by `clj-nrepl-eval`.
-> **Built on:** `coact_agent.clj` via `coact/run-coact-derived`, `ai.brainyard.clj-nrepl.interface` (loopback nREPL + grant + drift), `ai.brainyard.agent.common.code-eval` (the unified `code$eval` surface), and the per-instance config layer in `ai.brainyard.agent.core.config`.
-> **Sibling of:** `explore-agent`, `exec-agent`, `eval-agent`, `update-agent`, `plan-agent`, `todo-agent`. Strictly NOT a replacement for `eval-agent` — that agent produces pass/fail verdicts over the plan→todo→exec dossier flow; debug-agent investigates the running JVM image.
-> **Related reading:** `docs/design/clj-nrepl-eval.md` (the foundational substrate — server, grant, classifier, drift), `docs/design/update-agent-design.md` (the source-promotion hand-off target), `docs/design/exec-agent-design.md` (sibling CoAct-derived specialist for structural reference), `docs/CoAct.md` (the inherited loop discipline).
+> **Built on:** `coact_agent.clj` via `coact/run-coact-derived`, `ai.brainyard.clj-nrepl.interface` (loopback nREPL — full-trust, deny-list only), `ai.brainyard.agent.common.code-eval` (the unified `code$eval` surface), and the per-instance config layer in `ai.brainyard.agent.core.config`.
+> **Sibling of:** `explore-agent`, `exec-agent`, `eval-agent`, `update-agent`, `plan-agent`, `todo-agent`. Strictly NOT a replacement for `eval-agent` — that agent produces pass/fail verdicts over the plan→todo→exec dossier flow; debug-agent investigates the running JVM image. **As-built:** also overlaps update-agent's territory now (it makes its own source edits), but scoped to fixes validated live against the running image.
+> **Related reading:** `docs/design/clj-nrepl-eval.md` (the foundational substrate — server, classifier; grant/drift sections there are also historical), `docs/design/exec-agent-design.md` (sibling CoAct-derived specialist for structural reference), `docs/CoAct.md` (the inherited loop discipline).
 
 ---
 
@@ -32,9 +57,9 @@ Debug-agent is the specialist that closes the gap. It pins one nREPL session per
 
 1. **Per-instance nREPL session** opened in the `:agent.instance/created` hook and pinned on the instance's config. Lets `(def reproducer …)` then `(probe reproducer)` work across iterations.
 2. **`:clj-backend :nrepl`** on the instance config. CoAct's `agent-clj-backend` reads this through the unified config chain, so every ```clojure fence goes to the live runtime by default. The fence itself takes only the language token — there is no per-block modifier.
-3. **Custom `:execution-model` system-prompt section** that replaces the SCI-sandbox boilerplate with text describing live-JVM routing, drift marking, the read-only/mutate gate, and which SCI helpers (`context-get`, bare tool-name-as-fn, autoloaded `clojure.pprint/pprint`) don't exist here.
+3. **Custom `:execution-model` system-prompt section** that replaces the SCI-sandbox boilerplate with text describing live-JVM routing and which SCI helpers (`context-get`, bare tool-name-as-fn, autoloaded `clojure.pprint/pprint`) don't exist here. **As-built:** the prompt section is selected by `coact-system-context` from the agent's `:clj-backend` config — setting `:clj-backend :nrepl` is sufficient, no separate `:execution-model` write is performed. It no longer describes drift marking or a read-only/mutate gate (those layers were removed).
 
-Plus one new tool, `debug$promote-hot-patch`, that bridges live-runtime mutation → committed source via an artifact hand-off to `update-agent` — never reaching across the boundary itself.
+**As-built:** there is no `debug$promote-hot-patch` tool and no update-agent hand-off. The agent makes permanent fixes itself — validate live, then edit the source with the bound file tools and reload over nREPL. See the banner.
 
 ---
 
@@ -52,6 +77,13 @@ Plus one new tool, `debug$promote-hot-patch`, that bridges live-runtime mutation
 ---
 
 ## 3. Position in the Agent Stack
+
+> **As-built:** the lower half of the diagram (the `debug$promote-hot-patch` →
+> promotion artifact → `bb tui ask … -a update-agent` → update-agent chain) is
+> gone. debug-agent's flow now ends at: validate live → edit source via file
+> tools → `(require 'ns :reload)` → re-verify → report. The `code$eval :backend
+> :nrepl` → loopback client → live JVM path is still accurate, minus the
+> `grant/classifier/confirm/drift` layer (now just the deny-list classifier).
 
 ```
                        operator (or main-agent)
@@ -132,29 +164,56 @@ None of these reads requires debug-agent-specific code in CoAct — they're gene
 
 ## 5. Tool Bag
 
+**As-built — the shipped roster is different from this section's original
+proposal.** The agent now owns its permanent fixes, so the file tools ARE
+bound (they were "conspicuously absent" in the original design). The drift /
+promotion tools are gone. From `debug_agent.clj`:
+
 ```clojure
 :agent-tools {:tools [:code$eval
+                      ;; Source editing — debug-agent makes its own permanent
+                      ;; fixes (no update-agent handoff): validate live via
+                      ;; code$eval, then edit the file and reload.
+                      :read-file
+                      :update-file
+                      :write-file
+                      :grep
+                      :search
+                      :bash
+                      :task$run
                       :task$detail
                       :task$list
                       :task$cancel
-                      :clj-nrepl$drift-markers
-                      :debug$promote-hot-patch]}
+                      :clj-nrepl$start-server
+                      :clj-nrepl$stop-server
+                      :clj-nrepl$status]}
 ```
 
 The rationale per tool:
 
 | Tool | Role |
 |---|---|
-| `code$eval` | The only way to reach the live runtime. Default backend is `:nrepl` (per instance config). |
+| `code$eval` | The way to reach the live runtime. Default backend is `:nrepl` (per instance config). |
+| `read-file` / `update-file` / `write-file` / `grep` / `search` | **As-built:** source editing — the agent makes the validated live patch permanent by editing the file directly, no hand-off. |
+| `bash` / `task$run` | Run a brick's tests / probes after a source edit. |
 | `task$detail` / `task$list` / `task$cancel` | Long-running probes detach via the task manager; the LLM polls/cancels through these. |
-| `clj-nrepl$drift-markers` | A read-only defcommand wrapper exposing `clj-nrepl/drift-markers` so the LLM can ask "what mutations have I applied so far?" without hand-rolling the namespace reach. |
-| `debug$promote-hot-patch` | The Phase-3 promotion hand-off — see §7. |
+| `clj-nrepl$start-server` / `clj-nrepl$stop-server` / `clj-nrepl$status` | **As-built:** manage the embedded nREPL server lifecycle on demand without a process restart. These are gated to `debug-*` via `:tool-use-control {:allow ["debug-*"]}` and MUST be called through the TOOL channel (a code block can't start the server it needs to evaluate it — chicken-and-egg). |
 
-Conspicuously absent: `bash`, `read-file`, `write-file`, `update-file`, MCP tools. Debug-agent does not browse the filesystem or run shell commands — it operates ENTIRELY inside the JVM image via nREPL. Operators wanting to do both ("read this file, then probe its loaded form") switch to `coact-agent` for the multi-surface phase.
+**Removed:** `clj-nrepl$drift-markers` and `debug$promote-hot-patch` no longer
+exist (drift and the update-agent promotion path were both removed).
 
 ---
 
 ## 6. System-Prompt Override (`:execution-model`)
+
+> **As-built:** the execution-model prompt section is now selected by
+> `coact-system-context` from the agent's `:clj-backend` config — debug-agent
+> only sets `:clj-backend :nrepl` on the instance and the live-JVM text follows
+> automatically; there is no separate `:execution-model` config write. The
+> bullets below describing drift marking, the "full-trust backend … first eval
+> … operator confirmation," and `clj-nrepl$drift-markers` are HISTORICAL — those
+> layers were removed. The live text is now in `debug_agent.clj`'s
+> `debug-instruction` / `debug-tool-context`; see §12.
 
 CoAct's default `## Execution Model` section starts with "Your clojure code runs in a **sandboxed Clojure interpreter** (SCI)" and lists SCI restrictions ("No interop: System, Runtime, ProcessBuilder, ClassLoader access denied"). For debug-agent that's *flat wrong* — its blocks go to the live JVM where all of those are reachable.
 
@@ -193,6 +252,14 @@ A real-Bedrock validation (see §11) confirmed that with this override in place,
 ---
 
 ## 7. The Promotion Hand-off — `debug$promote-hot-patch`
+
+> **⚠ ENTIRELY HISTORICAL — none of §7 ships.** The `debug$promote-hot-patch`
+> tool, the `.brainyard/agents/debug-agent/promotions/` artifact, and the
+> `bb tui ask "@…" -a update-agent` hand-off were all removed when debug-agent
+> took over permanent fixes itself (commit `33a4870`). The shipped agent edits
+> source directly via `read-file`/`update-file`/`write-file` and reloads the
+> namespace over nREPL — there is no artifact and no boundary to update-agent.
+> The whole section is retained only for design history.
 
 ### 7.1 The boundary
 
@@ -290,6 +357,11 @@ Zero update-agent code changes. Its existing `:agent-context` reader accepts an 
 
 ### 8.1 Drift chip on the status bar
 
+> **⚠ HISTORICAL — the drift chip was removed with the drift layer.** There is
+> no `drifted (N)` chip in the shipped status bar (no `:drifted?`/`:drift-count`
+> wiring, no `clj-nrepl/drifted?`). debug-agent has no special TUI surface at
+> all (see §8.2).
+
 `bases/agent-tui/src/.../layout.clj`'s `format-status` accepts `:drifted?` and `:drift-count` keys. When set, a bold-yellow `drifted (N)` chip renders between the tasks/queue cluster and the calls counter:
 
 ```
@@ -305,6 +377,15 @@ Debug-agent uses the same TUI sessions, the same iteration widgets, the same hoo
 ---
 
 ## 9. Safety Inherited from `clj-nrepl-eval`
+
+> **⚠ MOSTLY HISTORICAL.** Of the six items below, only #2 (the deny-list)
+> still ships. nREPL is now full-trust: **the deny-list is the ONLY eval-path
+> check** (`clj-nrepl.core.classifier`). Grant (#1, #3), first-mutation
+> confirmation (#4), drift marking (#5), and the grant/drift/mutation-confirm
+> mulog events (#6) were all removed (commit `dc2348a`). Isolation is now the
+> SCI-sandbox backend's job, not a gate on the nREPL path. The only structural
+> safety is the loopback-only socket. Read #2 as current; the rest as design
+> history.
 
 Debug-agent does NOT re-implement any of the safety machinery. Every gate fires inside `clj-nrepl/eval-string` regardless of which caller invoked it:
 
@@ -323,9 +404,10 @@ The agent's instruction body explicitly tells the LLM these gates exist, so it d
 
 ### 10.1 `.brainyard/agents/debug-agent/promotions/`
 
-The only persistent artifact debug-agent writes. One file per promotion request, named `<ISO-ish-ts>-<slug>.md` where `<slug>` is derived from `:target-symbol` (sanitized, lowercased, ≤60 chars). Directory is auto-created on first promotion.
-
-Path is resolved from `(config/working-dir *current-agent*)` — falls back to `(System/getProperty "user.dir")` when there's no current-agent context (tests).
+> **As-built:** this directory is not written — the promotion artifact was
+> removed with the update-agent hand-off (see §7). The shipped agent writes
+> **no persistent artifact of its own**: its "output" is the source edit it
+> makes directly to the repo files (tracked by git) plus the `:answer` report.
 
 ### 10.2 No dossier
 
@@ -350,7 +432,29 @@ Unit-test surface: 6 deftests / 19 assertions covering registration, hook firing
 
 ## 12. Instruction (System Prompt Body)
 
-The instruction text below replaces what would otherwise be a default CoAct instruction. Combined with the `:execution-model` override (§6), it gives the LLM a coherent picture of the live-runtime workflow.
+> **⚠ As-built — the shipped instruction is substantially rewritten.** The
+> authoritative text is `debug-instruction` / `debug-tool-context` in
+> `debug_agent.clj`. Headline differences from the historical block below:
+>
+> - **Three jobs, END-TO-END:** (A) DEBUG a fault, (B) UNDERSTAND how brainyard
+>   works by reading the live image (a whole introspection catalog —
+>   namespaces, tool/command/agent registry, config, hooks, live agents,
+>   source locations via `(meta #'var)`), (C) FIX permanently itself.
+> - **Loop is now 7 steps:** Reproduce → Probe → Hypothesize → **Validate live
+>   (ephemeral)** → **Make it permanent (edit source via file tools)** →
+>   **Reload + verify** (`(require 'ns :reload)`, never `:reload-all` an
+>   interface ns) → Report.
+> - **No guardrails section about grants / drift / confirmation.** Only the
+>   deny-list is mentioned. `def`/`alter-var-root`/`defmethod` are framed as the
+>   safe *ephemeral* way to validate before committing to disk.
+> - **Invoking tools from nREPL:** the nREPL backend does NOT auto-bind tools as
+>   kebab-case fns (unlike SCI) — call `ai.brainyard.agent.core.tool/call-tool`
+>   by id, and pass `:agent` for agent-state tools (`memory$*`, session) since
+>   `*current-agent*` is nil on the nREPL thread.
+> - **No "Promoting a fix to source / update-agent" section** — that hand-off
+>   was removed.
+>
+> The historical proposed instruction follows for reference only:
 
 ```
 You are debugging the LIVE brainyard JVM image via clj-nrepl. Every
@@ -415,21 +519,28 @@ Same shape as `explore-agent` / `exec-agent`. The BT is pinned explicitly so dir
 
 ## 14. Files Summary
 
+**As-built** — the drift-chip and promotion-artifact rows below no longer
+apply (both removed). The live files are:
+
 ```
-components/agent/src/ai/brainyard/agent/common/debug_agent.clj
+components/agent/src/ai/brainyard/agent/common/debug_agent.clj      (defagent + nREPL
+                                                                     lifecycle commands
+                                                                     + instruction/tool-context)
 components/agent/test/ai/brainyard/agent/common/debug_agent_test.clj
 
 components/agent/src/ai/brainyard/agent/interface.clj               (require list)
 components/agent/src/ai/brainyard/agent/common/coact_agent.clj      (agent-clj-backend
-                                                                     reader + agent
-                                                                     plumbing + :execution-model)
+                                                                     reader + :clj-backend-driven
+                                                                     execution-model selection)
 components/agent/src/ai/brainyard/agent/core/hooks.clj              (:backend in
                                                                      :agent.code-eval payload)
-bases/agent-tui/src/ai/brainyard/agent_tui/layout.clj               (drift chip)
-bases/agent-tui/src/ai/brainyard/agent_tui/session.clj              (drift chip wiring)
-bases/agent-tui/test/ai/brainyard/agent_tui/status_bar_test.clj     (drift chip test)
+```
 
-.brainyard/agents/debug-agent/promotions/<ts>-<slug>.md                    (per-promotion artifact)
+Removed since this design (no longer relevant):
+
+```
+bases/agent-tui/.../layout.clj / session.clj / status_bar_test.clj  (drift chip — REMOVED)
+.brainyard/agents/debug-agent/promotions/<ts>-<slug>.md             (promotion artifact — REMOVED)
 ```
 
 Substrate (touched but not introduced by this design):
