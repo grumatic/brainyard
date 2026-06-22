@@ -747,7 +747,11 @@
         (layout/dispose-live-block! block-id)
         (if ok?
           (when-let [line (done-fn payload)] (tui-session/emit! line))
-          (tui-session/emit! (fail-fn payload)))))))
+          (tui-session/emit! (fail-fn payload)))
+        ;; We emitted from a background thread into the scroll region while the
+        ;; user sits idle at the prompt — return the hardware cursor to the
+        ;; input bar (no-op under a popover, which owns the cursor).
+        (try (layout/restore-input-cursor!) (catch Throwable _ nil))))))
 
 (defn- handle-mcp-command
   "Handle /mcp meta-command.
