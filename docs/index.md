@@ -65,6 +65,8 @@ Core reference — start at `core/agent.md` and follow the cross-links:
    output, scheduling.
 9. [Configuration](core/config.md) — schema, precedence chain,
    persisted-EDN shape, directory resolution.
+10. [Usage guides](core/usage.md) — JIT topic-context registry,
+    `:system`/`:user` scope, the pull / nudge / inline delivery paths.
 
 [Garbage collection](gc.md) explains how on-disk transient artifacts
 (task logs, CoAct scratch, sandbox caches) are reclaimed — the two-tier
