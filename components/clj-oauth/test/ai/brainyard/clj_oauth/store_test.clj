@@ -25,7 +25,8 @@
       (System/setProperty "user.home" home)
       (System/setProperty "user.name" "tester")
       (try
-        (binding [*home* home] (t))
+        ;; Force the file backend so :auto never probes a real keychain.
+        (binding [*home* home, store/*backend* :file] (t))
         (finally
           (System/setProperty "user.home" prev-home)
           (System/setProperty "user.name" prev-name))))))

@@ -17,7 +17,7 @@
           pn (System/getProperty "user.name")]
       (System/setProperty "user.home" home)
       (System/setProperty "user.name" "tester")
-      (try (t)
+      (try (binding [store/*backend* :file] (t))   ; never probe a real keychain
            (finally (System/setProperty "user.home" ph)
                     (System/setProperty "user.name" pn))))))
 
