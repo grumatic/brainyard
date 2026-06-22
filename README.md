@@ -1,6 +1,6 @@
 # Brainyard
 
-> **v0.3.2 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.3.2) · [changelog](CHANGELOG.md)) — **a friendlier input bar**: the agent's suggested follow-up now sits on the empty prompt as a right-arrow-acceptable ghost (`↳ … (→ to use)`) and time-shares the line with rotating help tips, persisting until your next turn. `by run --resume-latest` (and `BY_RESUME_LATEST`) reattaches to the newest session for automated relaunches; the never-implemented `/session resume` subcommand is removed; plus fixes for provider-switch API keys, orphaned subprocesses on quit, the tab-indented answer box, and resuming an agent whose type is no longer registered. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
+> **v0.3.3 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.3.3) · [changelog](CHANGELOG.md)) — **OAuth for MCP servers**: Brainyard now signs in to OAuth-protected MCP servers (e.g. Notion's hosted endpoint) end to end — device flow, a native `127.0.0.1` loopback redirect, dynamic client registration, and automatic issuer discovery from a `401` challenge — with tokens kept in a hardened on-disk store; authenticate one with `/mcp <server> auth`. The long-running `/mcp <server> start | stop | auth | status` commands now run off the command thread behind a live braille spinner so the input bar stays responsive, and two latent `clj-http-native` bugs that broke the OAuth handshake are fixed. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
 
 Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 22 available agents across 6 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
 
@@ -23,7 +23,7 @@ On **macOS arm64** this installs the native binary under `~/.local/bin`:
 
 On other platforms (Linux, Intel macOS) — where a native binary isn't published yet — the installer automatically falls back to the **JVM uberjar**, installing a `by` launcher that runs `java -jar` (requires a JDK 21+ on `PATH`).
 
-Pin a specific version with `BY_VERSION=v0.3.2` before piping to bash. See [`docs/install.md`](docs/install.md) for manual install, checksum verification, and troubleshooting.
+Pin a specific version with `BY_VERSION=v0.3.3` before piping to bash. See [`docs/install.md`](docs/install.md) for manual install, checksum verification, and troubleshooting.
 
 ### Java users — uberjar
 
