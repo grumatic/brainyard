@@ -1,0 +1,6 @@
+{:paths ["src" "resources"]
+ :deps {org.clojure/data.json {:mvn/version "2.5.1"}
+        ai.brainyard/clj-http-native {:local/root "../clj-http-native"}
+        ai.brainyard/mulog {:local/root "../mulog"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {}}}}

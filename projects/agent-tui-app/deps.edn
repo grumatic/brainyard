@@ -23,6 +23,7 @@
         ai.brainyard/analytics {:local/root "../../components/analytics"}
         ai.brainyard/behavior-tree {:local/root "../../components/behavior-tree"}
         ai.brainyard/clj-llm {:local/root "../../components/clj-llm"}
+        ai.brainyard/clj-oauth {:local/root "../../components/clj-oauth"}
         ai.brainyard/clj-http-native {:local/root "../../components/clj-http-native"}
         ai.brainyard/mulog {:local/root "../../components/mulog"}
         ai.brainyard/clj-sandbox {:local/root "../../components/clj-sandbox"}

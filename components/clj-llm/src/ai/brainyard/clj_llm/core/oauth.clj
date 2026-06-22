@@ -3,34 +3,37 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.clj-llm.core.oauth
-  "OAuth 2.0 with PKCE authentication for Anthropic Max/Pro plan subscription.
+  "Anthropic Max/Pro OAuth adapter over the shared `clj-oauth` component.
 
-   Implements the authorization code flow with PKCE (Proof Key for Code Exchange)
-   used by Anthropic's consumer subscription plans (Free/Pro/Max).
-   This allows API access using a plan subscription instead of an API key.
+   Anthropic's consumer subscription plans (Free/Pro/Max) use the OAuth 2.0
+   authorization-code + PKCE flow; their console does not advertise a device
+   endpoint, so this stays an authorization-code flow. What moved out is the
+   undifferentiated machinery — PKCE, the token store, validation, and refresh
+   now live in `ai.brainyard.clj-oauth` and are shared with the MCP HTTP
+   transport. This namespace keeps only the Anthropic-specific pieces:
+   endpoints/client-id, the authorize-URL builder, the console callback parser,
+   and the browser-open + paste flow.
 
-   Flow:
-   1. Generate PKCE code verifier + challenge
-   2. Open browser to Anthropic's OAuth authorize endpoint
-   3. User authorizes and gets redirected to console callback
-   4. User pastes the callback URL (contains code#state)
-   5. Exchange code + verifier for access token + refresh token
-   6. Store tokens locally for reuse
-   7. Auto-refresh expired tokens using refresh token
+   Storage relocated from the old world-readable
+   `~/.config/clj-llm/anthropic-oauth-tokens.json` to the hardened
+   `~/.brainyard/oauth/<user-id>/anthropic.json` (0600) — see clj-oauth/store.
+   Existing logins must re-authenticate once.
 
    IMPORTANT: As of January 2026, Anthropic restricts OAuth tokens from
    consumer plans (Free/Pro/Max) to Claude Code CLI and claude.ai only.
    Third-party API requests using these tokens will be rejected with:
    'This credential is only authorized for use with Claude Code.'
-   This module is provided for reference and potential future use."
+   This module is provided for reference and potential future use.
+
+   The public surface (`authenticate!`, `get-oauth-headers`,
+   `get-valid-access-token`, `oauth-authenticated?`, `logout!`) is unchanged
+   for source compatibility (clj-llm/interface, core/llm.clj)."
   (:require [ai.brainyard.clj-http-native.interface :as http]
+            [ai.brainyard.clj-oauth.interface :as oauth]
             [clojure.data.json :as json]
-            [clojure.java.io :as io]
             [clojure.string :as str]
             [ai.brainyard.mulog.interface :as mulog])
-  (:import [java.security MessageDigest SecureRandom]
-           [java.util Base64]
-           [java.net URI]))
+  (:import [java.net URI]))
 
 ;; ============================================================================
 ;; Constants
@@ -42,129 +45,52 @@
 (def ^:private default-scopes "org:create_api_key user:profile user:inference")
 (def ^:private default-redirect-uri "https://console.anthropic.com/oauth/code/callback")
 
-;; ============================================================================
-;; PKCE Utilities
-;; ============================================================================
+;; account-id under which the shared store partitions Anthropic credentials.
+(def ^:private account-id :anthropic)
 
-(defn generate-code-verifier
-  "Generate a cryptographically random code verifier (43-128 chars, URL-safe base64)."
-  []
-  (let [random (SecureRandom.)
-        bytes (byte-array 32)]
-    (.nextBytes random bytes)
-    (-> (Base64/getUrlEncoder)
-        (.withoutPadding)
-        (.encodeToString bytes))))
-
-(defn generate-code-challenge
-  "Generate S256 code challenge from a code verifier."
-  [code-verifier]
-  (let [digest (MessageDigest/getInstance "SHA-256")
-        hash (.digest digest (.getBytes ^String code-verifier "US-ASCII"))]
-    (-> (Base64/getUrlEncoder)
-        (.withoutPadding)
-        (.encodeToString hash))))
-
-(defn generate-state
-  "Generate a random state parameter for CSRF protection."
-  []
-  (let [random (SecureRandom.)
-        bytes (byte-array 16)]
-    (.nextBytes random bytes)
-    (-> (Base64/getUrlEncoder)
-        (.withoutPadding)
-        (.encodeToString bytes))))
+;; Endpoint/client config threaded into clj-oauth's provider-agnostic refresh.
+;; Anthropic's token endpoint takes a JSON body (not form-encoded).
+(def ^:private refresh-opts
+  {:token-endpoint oauth-token-url
+   :client-id      default-client-id
+   :body-encoding  :json})
 
 ;; ============================================================================
-;; Token Storage
+;; Token storage / validation / refresh — delegated to clj-oauth
 ;; ============================================================================
-
-(def ^:private token-file-path
-  "Default path for storing OAuth tokens."
-  (str (System/getProperty "user.home") "/.config/clj-llm/anthropic-oauth-tokens.json"))
-
-(defn- ensure-parent-dirs [path]
-  (let [parent (.getParentFile (io/file path))]
-    (when-not (.exists parent)
-      (.mkdirs parent))))
 
 (defn save-tokens!
-  "Save OAuth tokens to local storage."
-  ([tokens] (save-tokens! tokens token-file-path))
-  ([tokens path]
-   (ensure-parent-dirs path)
-   (spit path (json/write-str tokens))
-   (mulog/debug ::tokens-saved :path path)
-   tokens))
+  "Persist Anthropic tokens to the shared store (0600)."
+  [tokens]
+  (oauth/save-tokens! account-id tokens))
 
 (defn load-tokens
-  "Load OAuth tokens from local storage. Returns nil if not found."
-  ([] (load-tokens token-file-path))
-  ([path]
-   (when (.exists (io/file path))
-     (try
-       (json/read-str (slurp path) :key-fn keyword)
-       (catch Exception e
-         (mulog/warn ::tokens-read-failed :path path :message (.getMessage e))
-         nil)))))
+  "Load Anthropic tokens from the shared store, or nil."
+  []
+  (oauth/load-tokens account-id))
 
 (defn clear-tokens!
-  "Remove stored OAuth tokens."
-  ([] (clear-tokens! token-file-path))
-  ([path]
-   (let [f (io/file path)]
-     (when (.exists f)
-       (.delete f)
-       (mulog/info ::tokens-cleared :path path)))))
-
-;; ============================================================================
-;; Token Validation & Refresh
-;; ============================================================================
+  "Remove stored Anthropic tokens."
+  []
+  (oauth/clear-tokens! account-id))
 
 (defn token-expired?
-  "Check if a token is expired or will expire within the next 60 seconds."
+  "Check if a token is expired or will expire within 60s."
   [tokens]
-  (if-let [expires-at (:expires_at tokens)]
-    (< expires-at (+ (System/currentTimeMillis) 60000))
-    true))
+  (oauth/token-expired? tokens))
 
 (defn refresh-access-token
-  "Refresh an access token using a refresh token.
-   Returns updated token map or throws on failure."
-  [{:keys [refresh_token]} & {:keys [client-id]
-                              :or {client-id default-client-id}}]
-  (when-not refresh_token
-    (throw (ex-info "No refresh token available. Re-authenticate with OAuth." {})))
-  (mulog/info ::refreshing-access-token)
-  (let [response (http/post oauth-token-url
-                            {:body (json/write-str {:grant_type    "refresh_token"
-                                                    :refresh_token refresh_token
-                                                    :client_id     client-id})
-                             :content-type :json
-                             :as :string
-                             :throw-exceptions true})
-        body (json/read-str (:body response) :key-fn keyword)
-        now (System/currentTimeMillis)
-        tokens (assoc body
-                      :expires_at (+ now (* (:expires_in body 3600) 1000))
-                      :refresh_token (or (:refresh_token body) refresh_token)
-                      :refreshed_at now)]
-    (save-tokens! tokens)
-    (mulog/info ::access-token-refreshed)
-    tokens))
+  "Refresh an Anthropic access token using its refresh token."
+  [tokens & {:keys [client-id]}]
+  (oauth/refresh-access-token account-id tokens
+                              (cond-> refresh-opts
+                                client-id (assoc :client-id client-id))))
 
 (defn get-valid-access-token
-  "Get a valid access token, refreshing if necessary.
-   Returns the access_token string or throws."
+  "Get a valid Anthropic access token, refreshing if necessary.
+   0-arity matches the dynamic call site in core/llm.clj."
   ([] (get-valid-access-token {}))
-  ([opts]
-   (let [tokens (or (:tokens opts) (load-tokens))]
-     (when-not tokens
-       (throw (ex-info "No OAuth tokens found. Run (authenticate!) to log in." {})))
-     (let [tokens (if (token-expired? tokens)
-                    (refresh-access-token tokens opts)
-                    tokens)]
-       (:access_token tokens)))))
+  ([opts] (oauth/get-valid-access-token account-id (merge refresh-opts opts))))
 
 ;; ============================================================================
 ;; Callback Response Parsing
@@ -199,7 +125,7 @@
       {:error "Could not parse authorization code from response"})))
 
 ;; ============================================================================
-;; OAuth Flow
+;; OAuth Flow (Anthropic authorization-code + PKCE)
 ;; ============================================================================
 
 (defn build-authorize-url
@@ -258,9 +184,9 @@
   [& {:keys [client-id open-browser?]
       :or {client-id     default-client-id
            open-browser? true}}]
-  (let [code-verifier  (generate-code-verifier)
-        code-challenge (generate-code-challenge code-verifier)
-        state          (generate-state)
+  (let [code-verifier  (oauth/generate-code-verifier)
+        code-challenge (oauth/generate-code-challenge code-verifier)
+        state          (oauth/generate-state)
         auth-url       (build-authorize-url {:client-id      client-id
                                              :code-challenge code-challenge
                                              :state          state})]
@@ -306,7 +232,7 @@
 (defn oauth-authenticated?
   "Check if we have valid (or refreshable) OAuth tokens stored."
   []
-  (boolean (load-tokens)))
+  (oauth/authenticated? account-id))
 
 (defn get-oauth-headers
   "Build HTTP headers for an Anthropic API call using OAuth bearer token.
