@@ -183,6 +183,16 @@
 ;; MCP Server Connection Management
 ;; =============================================================================
 
+(defn inject-oauth-account-id
+  "For an OAuth-authenticated server, key the credential store by the server
+   name unless the config pins an explicit `:account-id`. clj-oauth (device /
+   auth-code flow) reads it from `[:auth :account-id]`; client.clj resolves the
+   bearer per request and refreshes on 401. No-op for non-OAuth configs."
+  [config server-name]
+  (cond-> config
+    (= :oauth (get-in config [:auth :type]))
+    (update :auth #(assoc % :account-id (or (:account-id %) server-name)))))
+
 (defn connect-mcp-server!
   "Connect to an MCP server using its configuration. Once connected, the
    server's tools are auto-registered in `tool/!tool-defs` so they show up
@@ -192,6 +202,7 @@
   (ensure! map? server-config "server-config must be a map")
 
   (let [{:keys [transport config tool-arg-overrides]} server-config
+        config (inject-oauth-account-id config server-name)
         client (mcp-client/create-client transport config)
         connected-client (mcp-client/connect! client config)]
 
@@ -650,10 +661,29 @@
     :enabled false,
     :auto-register-tools true}
 
-   ;; notion / linear are remote OAuth servers. brainyard's :http transport
-   ;; does a plain initialize POST (no OAuth handshake), which their endpoints
-   ;; reject. Bridge through `mcp-remote` (stdio) — it runs the browser OAuth
-   ;; flow on first start and proxies to the hosted server.
+   ;; notion / linear are remote OAuth servers. brainyard's :http transport now
+   ;; speaks OAuth natively (components/clj-oauth): declare an `:auth` block and
+   ;; connect! resolves a bearer with no browser-loopback and no port binding —
+   ;; works headless in the playground container / over SSH. Preferred when the
+   ;; provider advertises a `device_authorization_endpoint`; otherwise the flow
+   ;; degrades to the headless authorization-code paste path. Tokens land in
+   ;; ~/.brainyard/oauth/<user-id>/<server>.json (0600). Example:
+   ;;
+   ;;   "notion"
+   ;;   {:transport :http
+   ;;    :config {:url  "https://mcp.notion.com/mcp"
+   ;;             :auth {:type :oauth
+   ;;                    :issuer "https://mcp.notion.com" ; → OIDC/OAuth discovery
+   ;;                    :client-id "<registered-client-id>"
+   ;;                    :scopes ["read" "write"]
+   ;;                    :flow :auto}                     ; :auto|:device|:paste
+   ;;             :connect-timeout-ms 180000}             ; covers the human round-trip
+   ;;    :enabled false
+   ;;    :auto-register-tools true}
+   ;;
+   ;; FALLBACK (below): `mcp-remote` (stdio) runs the browser-loopback OAuth flow
+   ;; on first start — kept for servers that only speak browser-loopback and lack
+   ;; both a device endpoint and an OOB paste path. See docs/design/oauth.md §7.1.
    "notion"
    {:transport :stdio
     :config {:command "npx"

@@ -14,7 +14,8 @@
             [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [ai.brainyard.clj-http-native.interface :as http])
+            [ai.brainyard.clj-http-native.interface :as http]
+            [ai.brainyard.clj-oauth.interface :as oauth])
   (:import [java.io BufferedReader InputStreamReader OutputStreamWriter]
            [java.util.concurrent.atomic AtomicLong]))
 
@@ -557,6 +558,73 @@
     session-id (assoc "Mcp-Session-Id" session-id)))
 
 ;; =============================================================================
+;; OAuth (RFC 8628 device flow / auth-code) — components/clj-oauth
+;;
+;; A server config may declare `:auth {:type :oauth :issuer … :client-id …
+;; :scopes [...] :flow :auto :account-id "<server>"}`. We resolve a bearer
+;; lazily per request via clj-oauth (auto-refreshing within 60s of expiry) and
+;; force one refresh + retry on a server-side 401. The bearer is never logged —
+;; only the verification URI / user code (which are meant to be shown) are.
+;; See docs/design/oauth.md §7.1.
+;; =============================================================================
+
+(defn- oauth-server?
+  "True when an auth config map declares the OAuth type."
+  [auth]
+  (and (map? auth) (= :oauth (:type auth))))
+
+(defn- oauth-on-prompt
+  "Approach (b): surface the device/auth verification details via mulog + stderr
+   (never tokens). The rich TUI code box lands in Phase 4 via on-settle."
+  [account-id]
+  (fn [{:keys [verification_uri verification_uri_complete user_code expires_in
+               authorize_uri scopes]}]
+    (mulog/info ::mcp-oauth-prompt
+                :account account-id
+                :verification_uri verification_uri
+                :verification_uri_complete verification_uri_complete
+                :user_code user_code
+                :authorize_uri authorize_uri
+                :scopes scopes
+                :expires_in expires_in)
+    (binding [*out* *err*]
+      (cond
+        (and verification_uri user_code)
+        (println (format "[MCP %s] To authorize, open %s and enter code: %s"
+                         account-id verification_uri user_code))
+        authorize_uri
+        (println (format "[MCP %s] To authorize, open %s and paste the code back."
+                         account-id authorize_uri)))
+      (flush))))
+
+(defn- ensure-oauth-login!
+  "Ensure a token bundle exists for an OAuth server's account, running the
+   device/auth-code flow once if not. Blocks for the human round-trip — safe
+   because connects run on background futures (connect-server-async!)."
+  [auth]
+  (let [account-id (:account-id auth)]
+    (when-not (oauth/authenticated? account-id)
+      (mulog/info ::mcp-oauth-login :account account-id :flow (:flow auth :auto))
+      (oauth/login! (assoc auth :on-user-prompt (oauth-on-prompt account-id))))))
+
+(defn- effective-auth-headers
+  "Per-request auth headers: the static config `:headers` plus, for an OAuth
+   server, a fresh (auto-refreshed) bearer keyed by account-id."
+  [static-headers auth]
+  (cond-> static-headers
+    (oauth-server? auth) (merge (oauth/bearer-headers (:account-id auth)))))
+
+(defn- request-auth-headers
+  "Resolve the effective auth headers for a live client record."
+  [client]
+  (effective-auth-headers (:auth-headers client) (:oauth-auth client)))
+
+(defn- unauthorized?
+  "True for a 401 HTTP response map."
+  [resp]
+  (= 401 (:status resp)))
+
+;; =============================================================================
 ;; HTTP Streamable Transport Implementation
 ;; =============================================================================
 
@@ -564,7 +632,13 @@
   MCPClient
 
   (connect! [client config]
-    (let [{:keys [url headers]} config
+    (let [{:keys [url headers auth]} config
+          ;; OAuth servers: log in once (device/auth-code) before initialize, and
+          ;; carry the auth config on the record so every later request derives a
+          ;; fresh bearer. account-id is injected by integration/connect-mcp-server!.
+          oauth?  (oauth-server? auth)
+          client  (cond-> client oauth? (assoc :oauth-auth auth))
+          _       (when oauth? (ensure-oauth-login! auth))
           timeout (or (:timeout (:options client)) (:timeout config) 30000)
           init-request (make-request (:initialize mcp-methods)
                                      {:protocolVersion MCP_VERSION
@@ -573,13 +647,21 @@
                                       :clientInfo {:name "Brainyard Agent"
                                                    :version "1.0.0"}})
           req-id  (:id init-request)
-          resp    (http/post url
-                             {:headers (build-request-headers headers nil)
-                              :body (json/write-str init-request)
-                              :as :stream
-                              :socket-timeout timeout
-                              :connection-timeout timeout
-                              :throw-exceptions false})]
+          post-init (fn []
+                      (http/post url
+                                 {:headers (build-request-headers (request-auth-headers client) nil)
+                                  :body (json/write-str init-request)
+                                  :as :stream
+                                  :socket-timeout timeout
+                                  :connection-timeout timeout
+                                  :throw-exceptions false}))
+          resp0   (post-init)
+          ;; On a 401 from an OAuth server, force one refresh and retry the init.
+          resp    (if (and oauth? (unauthorized? resp0))
+                    (do (mulog/info ::mcp-oauth-401-refresh :account (:account-id auth) :phase :initialize)
+                        (oauth/refresh! (:account-id auth))
+                        (post-init))
+                    resp0)]
 
       (when-not (<= 200 (:status resp) 299)
         (throw (ex-info "HTTP MCP initialization failed"
@@ -593,17 +675,18 @@
         (mulog/info ::http-server-initialized :server-info result :session-id sess-id)
 
         ;; Send notifications/initialized
-        (let [notif-headers (build-request-headers headers sess-id)]
+        (let [notif-headers (build-request-headers (request-auth-headers client) sess-id)]
           (http/post url
                      {:headers notif-headers
                       :body (json/write-str (make-notification (:initialized mcp-methods) {}))
                       :throw-exceptions false}))
 
-        (-> client
-            (assoc :base-url url)
-            (assoc :auth-headers headers)
-            (assoc :session-id sess-id)
-            (assoc :server-info result)))))
+        (cond-> client
+          true    (assoc :base-url url)
+          true    (assoc :auth-headers headers)
+          true    (assoc :session-id sess-id)
+          true    (assoc :server-info result)
+          oauth?  (assoc :oauth-auth auth)))))
 
   (disconnect! [client]
     (mulog/info ::disconnecting-http-client :session-id (:session-id client))
@@ -611,7 +694,7 @@
     (when (and (:base-url client) (:session-id client))
       (try
         (http/delete (:base-url client)
-                     {:headers (build-request-headers (:auth-headers client) (:session-id client))
+                     {:headers (build-request-headers (request-auth-headers client) (:session-id client))
                       :throw-exceptions false})
         (catch Exception e
           (mulog/debug ::delete-session-error :error (ex-message e)))))
@@ -627,15 +710,25 @@
     (let [request (make-request method params)
           req-id  (:id request)
           timeout (or (:timeout (:options client)) 30000)
-          resp    (http/post (:base-url client)
-                             {:headers (build-request-headers (:auth-headers client)
-                                                              (:session-id client))
-                              :body (json/write-str request)
-                              :as :stream
-                              :socket-timeout timeout
-                              :connection-timeout timeout
-                              :throw-exceptions false})]
-      (read-response client resp req-id)))
+          oauth?  (oauth-server? (:oauth-auth client))
+          do-post (fn []
+                    (http/post (:base-url client)
+                               {:headers (build-request-headers (request-auth-headers client)
+                                                                (:session-id client))
+                                :body (json/write-str request)
+                                :as :stream
+                                :socket-timeout timeout
+                                :connection-timeout timeout
+                                :throw-exceptions false}))
+          resp    (do-post)]
+      ;; A mid-session 401 on an OAuth server means the bearer was revoked or
+      ;; expired server-side: force one refresh and retry before surfacing.
+      (if (and oauth? (unauthorized? resp))
+        (do (mulog/info ::mcp-oauth-401-refresh
+                        :account (:account-id (:oauth-auth client)) :method method)
+            (oauth/refresh! (:account-id (:oauth-auth client)))
+            (read-response client (do-post) req-id))
+        (read-response client resp req-id))))
 
   (send-notification! [client method params]
     (ensure! string? method "method must be a string")
@@ -643,7 +736,7 @@
     (let [notification (make-notification method params)]
       (try
         (http/post (:base-url client)
-                   {:headers (build-request-headers (:auth-headers client)
+                   {:headers (build-request-headers (request-auth-headers client)
                                                     (:session-id client))
                     :body (json/write-str notification)
                     :throw-exceptions false})

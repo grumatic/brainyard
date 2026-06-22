@@ -6,6 +6,7 @@
         ai.brainyard/memory {:local/root "../memory"}
         ai.brainyard/behavior-tree {:local/root "../behavior-tree"}
         ai.brainyard/clj-llm {:local/root "../clj-llm"}
+        ai.brainyard/clj-oauth {:local/root "../clj-oauth"}
         ai.brainyard/mulog {:local/root "../mulog"}
         ai.brainyard/util {:local/root "../util"}
         ai.brainyard/display-block {:local/root "../display-block"}

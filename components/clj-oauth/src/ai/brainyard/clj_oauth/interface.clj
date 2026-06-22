@@ -118,6 +118,11 @@
   "{\"Authorization\" \"Bearer <token>\"} for account-id. See flow/bearer-headers."
   flow/bearer-headers)
 
+(def refresh!
+  "Force a token refresh for account-id regardless of expiry (e.g. after a 401).
+   See flow/refresh!."
+  flow/refresh!)
+
 (def logout!
   "Clear stored tokens for account-id (alias of clear-tokens!)."
   store/clear-tokens!)

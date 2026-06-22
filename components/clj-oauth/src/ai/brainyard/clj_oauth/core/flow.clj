@@ -143,3 +143,13 @@
   "`{\"Authorization\" \"Bearer <token>\"}` for `account-id`, refreshing as needed."
   [account-id]
   {"Authorization" (str "Bearer " (access-token account-id))})
+
+(defn refresh!
+  "Force a token refresh for `account-id` regardless of expiry — e.g. after a
+   server-side 401 on a not-yet-expired token. Returns the new access token;
+   throws when not authenticated or no refresh token is stored."
+  [account-id]
+  (let [bundle (store/load-tokens account-id)]
+    (when-not bundle
+      (throw (ex-info "Not authenticated" {:account-id account-id})))
+    (:access_token (store/refresh-access-token account-id bundle (refresh-opts bundle)))))
