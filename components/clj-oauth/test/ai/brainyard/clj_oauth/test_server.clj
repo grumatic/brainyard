@@ -72,9 +72,10 @@
   {:issuer                         base
    :device_authorization_endpoint  (str base "/device")
    :token_endpoint                 (str base "/token")
-   :authorization_endpoint         (str base "/")
+   :authorization_endpoint         (str base "/authorize")
    :registration_endpoint          (str base "/register")
-   :grant_types_supported          ["urn:ietf:params:oauth:grant-type:device_code" "refresh_token"]})
+   :grant_types_supported          ["urn:ietf:params:oauth:grant-type:device_code"
+                                    "authorization_code" "refresh_token"]})
 
 (defn- handle-register [ex]
   ;; RFC 7591 — accept any public-client request, mint a client_id.
@@ -101,6 +102,24 @@
                       (assoc-in [:refresh rt] true)))
     {:access_token at :refresh_token rt :token_type "Bearer" :expires_in 3600}))
 
+(defn- handle-authorize
+  "Authorization-code endpoint. Issues a code; for the out-of-band redirect
+   (our headless paste flow) it shows the code; for a real redirect_uri it 302s
+   back with ?code=&state=."
+  [state ex]
+  (let [q        (query-params ex)
+        code     (rand-hex 24)
+        redirect (q "redirect_uri")]
+    (swap! state assoc-in [:auth-codes code] true)
+    (if (and redirect (str/starts-with? redirect "http"))
+      (do (.set (.getResponseHeaders ex) "Location"
+                (str redirect "?code=" code "&state=" (q "state")))
+          (respond! ex 302 "text/plain" ""))
+      (html! ex 200 (str "<html><body style='font-family:sans-serif'>"
+                         "<h2>Authorization code</h2>"
+                         "<p>Copy this code back into your terminal:</p>"
+                         "<pre style='font-size:1.4em'>" code "</pre></body></html>")))))
+
 (defn- handle-token [state ex]
   (let [form (form-params ex)]
     (case (form "grant_type")
@@ -110,6 +129,12 @@
           (nil? dev)             (json! ex 400 {:error "invalid_grant"})
           (not (:approved? dev)) (json! ex 400 {:error "authorization_pending"})
           :else                  (json! ex 200 (issue-tokens! state))))
+
+      "authorization_code"
+      (if (get-in @state [:auth-codes (form "code")])
+        (do (swap! state update :auth-codes dissoc (form "code"))
+            (json! ex 200 (issue-tokens! state)))
+        (json! ex 400 {:error "invalid_grant"}))
 
       "refresh_token"
       (let [rt (form "refresh_token")]
@@ -176,8 +201,9 @@
           path (.getPath (.getRequestURI ex))]
       (case path
         "/.well-known/openid-configuration" (json! ex 200 (discovery base))
-        "/device"   (handle-device state base ex)
-        "/register" (handle-register ex)
+        "/device"    (handle-device state base ex)
+        "/register"  (handle-register ex)
+        "/authorize" (handle-authorize state ex)
         "/token"   (handle-token state ex)
         "/approve" (handle-approve state ex ((form-params ex) "code"))
         "/mcp"     (handle-mcp state ex)

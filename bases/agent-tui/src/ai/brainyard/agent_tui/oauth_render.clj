@@ -164,7 +164,51 @@
     ;; :pending fires every poll; the box already says "waiting" — stay quiet.
     nil))
 
-(defn register!
-  "Install this renderer as the agent MCP client's OAuth prompt sink."
+;; ---------------------------------------------------------------------------
+;; Paste-flow code input
+;;
+;; The headless authorization-code flow shows an authorize URL (paste-box, via
+;; the :prompt event) then blocks waiting for the user to paste the code. The
+;; connect runs on a background future, so it parks on a promise; the next line
+;; the user submits is delivered here (handle-input-line consults consume-code!)
+;; instead of going to the agent as a chat turn.
+;; ---------------------------------------------------------------------------
+
+(defonce ^:private !pending-code (atom nil))   ; nil | {:account-id :promise}
+(def ^:private read-code-timeout-ms (* 5 60 1000))
+
+(defn read-code-provider
+  "Registered with the MCP client as the paste-flow read-code source. Prompts
+   the user to paste, blocks up to 5 min for the next submitted line, returns it."
+  [account-id]
+  (let [p (promise)]
+    (reset! !pending-code {:account-id account-id :promise p})
+    (emit! (ansi/muted (str "  Paste the authorization code for \"" account-id
+                            "\" here and press Enter:")))
+    (let [code (deref p read-code-timeout-ms ::timeout)]
+      (reset! !pending-code nil)
+      (if (= ::timeout code)
+        (throw (ex-info "Timed out waiting for the pasted authorization code"
+                        {:account-id account-id}))
+        code))))
+
+(defn pending-code?
+  "True when a paste flow is waiting for the user to submit a code."
   []
-  (agent/set-oauth-prompt-renderer! render))
+  (some? @!pending-code))
+
+(defn consume-code!
+  "If a paste flow is waiting, deliver `input` to it and return true (so the
+   caller treats the line as the code, not a chat turn). Blank input is ignored."
+  [input]
+  (when-let [{:keys [promise]} @!pending-code]
+    (when-not (str/blank? input)
+      (deliver promise (str/trim input))
+      (emit! (ansi/muted "  Code received — completing authorization…"))
+      true)))
+
+(defn register!
+  "Install this renderer + paste-code provider as the MCP client's OAuth sinks."
+  []
+  (agent/set-oauth-prompt-renderer! render)
+  (agent/set-oauth-read-code! read-code-provider))

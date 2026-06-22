@@ -79,6 +79,23 @@
   (with-redefs [ai.brainyard.agent.interface/get-config (fn [_] false)]
     (is (nil? (r/qr-block "https://example/complete")))))
 
+(deftest paste-read-code-provider-blocks-then-receives
+  (with-redefs [tui-session/emit! (fn [_] nil)
+                layout/restore-input-cursor! (fn [] nil)]
+    (let [result (atom nil)
+          worker (future (reset! result (r/read-code-provider "notion")))]
+      (Thread/sleep 80)
+      (testing "the provider parks, marking a pending paste"
+        (is (true? (r/pending-code?))))
+      (testing "consume-code! delivers the next line and clears pending"
+        (is (true? (r/consume-code! "  ABC-123  ")))
+        (is (false? (r/pending-code?))))
+      @worker
+      (is (= "ABC-123" @result) "trimmed code returned to the blocked login"))))
+
+(deftest consume-code-no-op-when-nothing-pending
+  (is (nil? (r/consume-code! "hello"))))
+
 (deftest boot-emit-gate-buffers-then-replays
   (let [emitted (atom [])]
     (with-redefs [tui-session/emit! (fn [s] (swap! emitted conj (strip-ansi s)))

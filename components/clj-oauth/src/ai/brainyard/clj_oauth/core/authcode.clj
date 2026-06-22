@@ -92,7 +92,7 @@
    clear error rather than a hang."
   [{:keys [authorization-endpoint token-endpoint client-id scopes
            on-user-prompt read-code redirect-uri post-fn]
-    :or   {redirect-uri oob-redirect}}]
+    :or   {redirect-uri oob-redirect post-fn http/post}}]
   (when-not (fn? read-code)
     (throw (ex-info "paste-login! requires a :read-code fn (no input source)"
                     {:flow :paste})))

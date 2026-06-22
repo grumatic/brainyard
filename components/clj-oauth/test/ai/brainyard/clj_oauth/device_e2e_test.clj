@@ -81,6 +81,24 @@
             (is (str/starts-with? (:client_id cached) "dyn-"))))
         (finally (stop!))))))
 
+(deftest paste-flow-end-to-end
+  (testing "authorization-code paste flow: authorize URL → user copies code → tokens"
+    (let [{:keys [base-url stop!]} (ts/start! 0)
+          authorize-uri (atom nil)]
+      (try
+        (let [bundle (oauth/login!
+                      {:account-id "brainyard-paste" :issuer base-url :client-id "x"
+                       :scopes ["read"] :flow :paste
+                       :on-user-prompt (fn [{:keys [authorize_uri]}] (reset! authorize-uri authorize_uri))
+                       ;; simulate the user: open the authorize URL, copy the shown code
+                       :read-code (fn []
+                                    (let [html (:body (http/get @authorize-uri {:as :string :throw-exceptions false}))]
+                                      (second (re-find #"<pre[^>]*>([^<]+)</pre>" html))))})]
+          (is (string? (:access_token bundle)))
+          (is (str/starts-with? @authorize-uri (str base-url "/authorize")))
+          (is (= 200 (:status (mcp-init base-url (oauth/bearer-headers "brainyard-paste"))))))
+        (finally (stop!))))))
+
 (deftest device-flow-poll-waits-for-approval
   (testing "token endpoint returns authorization_pending until approved"
     (let [{:keys [base-url approve! stop!]} (ts/start! 0)]

@@ -6,6 +6,7 @@
   "Slash-command handlers extracted from core.
    Covers inspection, config, tasks, sandbox, MCP, and the input dispatcher."
   (:require [ai.brainyard.agent-tui.session :as tui-session]
+            [ai.brainyard.agent-tui.oauth-render :as oauth-render]
             [ai.brainyard.agent-tui.sessions :as sessions]
             [ai.brainyard.agent-tui.session-summary :as ssum]
             [ai.brainyard.agent-tui.layout :as layout]
@@ -1975,7 +1976,12 @@
    Returns :quit to exit, :continue to keep looping."
   [enqueue-fn input reader]
   (let [[kind cmd args] (parse-command input)]
-    (if (= :colon kind)
+    (cond
+      ;; An OAuth paste flow waiting for the code? This line IS the code —
+      ;; deliver it to the blocked login instead of dispatching it.
+      (oauth-render/consume-code! input) :continue
+
+      (= :colon kind)
       ;; Colon-command: direct invoke-tool, bypasses the active agent.
       (let [cmd-name (subs cmd 1)]
         (if-let [{:keys [tool-id tool-def]} (resolve-tool-command cmd-name)]
@@ -1984,6 +1990,7 @@
               :continue)
           (do (tui-session/emit! (ansi/warning (str "Unknown tool: " cmd)))
               :continue)))
+      :else
       ;; :slash or :input — existing dispatch (cmd is slash-string or nil).
       (case cmd
         "/quit"         (do ((requiring-resolve 'ai.brainyard.agent-tui.core/stop!)) :quit)

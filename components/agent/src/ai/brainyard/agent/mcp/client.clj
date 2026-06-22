@@ -588,6 +588,20 @@
   [f]
   (reset! !oauth-prompt-renderer f))
 
+(defonce ^:private !oauth-read-code
+  ;; A front-end (the TUI) registers a provider here so the headless
+  ;; authorization-code PASTE flow can obtain the code the user pastes back.
+  ;; (fn [account-id] -> code-string), blocking until the user submits. When
+  ;; unset, paste-flow logins fail fast with a clear "no input source" error
+  ;; (headless / non-interactive callers).
+  (atom nil))
+
+(defn set-oauth-read-code!
+  "Register (or clear with nil) the front-end provider that reads the pasted
+   authorization code for the paste flow. See `!oauth-read-code`."
+  [f]
+  (reset! !oauth-read-code f))
+
 (defn- oauth-prompt-stderr-fallback
   "Headless fallback when no renderer is registered: stderr + mulog (never tokens)."
   [{:keys [account-id verification_uri user_code authorize_uri]}]
@@ -646,7 +660,14 @@
       (mulog/info ::mcp-oauth-login :account account-id :flow (:flow auth :auto))
       (oauth/login! (assoc auth
                            :on-user-prompt (oauth-on-prompt account-id)
-                           :on-status      (oauth-on-status account-id))))))
+                           :on-status      (oauth-on-status account-id)
+                           ;; paste flow only: blocks on the front-end provider
+                           ;; for the code the user pastes back.
+                           :read-code      (fn []
+                                             (if-let [f @!oauth-read-code]
+                                               (f account-id)
+                                               (throw (ex-info "No input source for the paste flow (set a read-code provider)"
+                                                               {:account account-id})))))))))
 
 (defn- effective-auth-headers
   "Per-request auth headers: the static config `:headers` plus, for an OAuth

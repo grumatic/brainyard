@@ -318,7 +318,7 @@
                 builtin-default-servers persist-server-enabled!)
 
 (export-symbols ai.brainyard.agent.mcp.client
-                list-active-clients set-oauth-prompt-renderer!)
+                list-active-clients set-oauth-prompt-renderer! set-oauth-read-code!)
 
 ;; ============================================================================
 ;; ============================================================================
