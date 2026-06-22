@@ -665,6 +665,49 @@
   [resp]
   (= 401 (:status resp)))
 
+;; --- 401 WWW-Authenticate discovery (MCP auth spec / RFC 9728) --------------
+;; When a server isn't pre-declared `:auth :oauth` but answers the unauthenticated
+;; initialize with `401 WWW-Authenticate: Bearer`, derive the issuer and proceed
+;; with OAuth automatically (client-id via DCR when the provider offers it).
+
+(defn- www-authenticate [resp]
+  (or (get-in resp [:headers "www-authenticate"])
+      (get-in resp [:headers "WWW-Authenticate"])))
+
+(defn- bearer-challenge? [h]
+  (boolean (and h (str/starts-with? (str/lower-case h) "bearer"))))
+
+(defn- origin-of
+  "scheme://host[:port] of a URL — the issuer fallback when a server publishes no
+   protected-resource-metadata pointer."
+  [url]
+  (let [u (java.net.URI. url)
+        p (.getPort u)]
+    (str (.getScheme u) "://" (.getHost u) (when (pos? p) (str ":" p)))))
+
+(defn- challenge-issuer
+  "Resolve the authorization issuer for a Bearer challenge: follow the RFC 9728
+   `resource_metadata` pointer to its `authorization_servers` when present, else
+   fall back to the resource origin."
+  [url www-auth]
+  (or (when-let [rm (second (re-find #"resource_metadata=\"([^\"]+)\"" (or www-auth "")))]
+        (try
+          (let [r (http/get rm {:as :string :timeout-ms 15000 :throw-exceptions false})]
+            (when (<= 200 (:status r) 299)
+              (first (:authorization_servers (json/read-str (:body r) :key-fn keyword)))))
+          (catch Exception _ nil)))
+      (origin-of url)))
+
+(defn- discover-oauth-from-challenge
+  "Build an `:auth` config from a 401 Bearer challenge, or nil when the response
+   isn't an OAuth challenge. account-id defaults to the server name."
+  [url resp server-name]
+  (let [h (www-authenticate resp)]
+    (when (and (unauthorized? resp) (bearer-challenge? h))
+      (let [issuer (challenge-issuer url h)]
+        (mulog/info ::mcp-oauth-discovered-challenge :server server-name :issuer issuer)
+        {:type :oauth :account-id (or server-name (origin-of url)) :issuer issuer :flow :auto}))))
+
 ;; =============================================================================
 ;; HTTP Streamable Transport Implementation
 ;; =============================================================================
@@ -673,13 +716,11 @@
   MCPClient
 
   (connect! [client config]
-    (let [{:keys [url headers auth]} config
+    (let [{:keys [url headers auth server-name]} config
           ;; OAuth servers: log in once (device/auth-code) before initialize, and
           ;; carry the auth config on the record so every later request derives a
           ;; fresh bearer. account-id is injected by integration/connect-mcp-server!.
-          oauth?  (oauth-server? auth)
-          client  (cond-> client oauth? (assoc :oauth-auth auth))
-          _       (when oauth? (ensure-oauth-login! auth))
+          declared? (oauth-server? auth)
           timeout (or (:timeout (:options client)) (:timeout config) 30000)
           init-request (make-request (:initialize mcp-methods)
                                      {:protocolVersion MCP_VERSION
@@ -688,21 +729,36 @@
                                       :clientInfo {:name "Brainyard Agent"
                                                    :version "1.0.0"}})
           req-id  (:id init-request)
-          post-init (fn []
+          post-init (fn [c]
                       (http/post url
-                                 {:headers (build-request-headers (request-auth-headers client) nil)
+                                 {:headers (build-request-headers (request-auth-headers c) nil)
                                   :body (json/write-str init-request)
                                   :as :stream
                                   :socket-timeout timeout
                                   :connection-timeout timeout
                                   :throw-exceptions false}))
-          resp0   (post-init)
-          ;; On a 401 from an OAuth server, force one refresh and retry the init.
-          resp    (if (and oauth? (unauthorized? resp0))
-                    (do (mulog/info ::mcp-oauth-401-refresh :account (:account-id auth) :phase :initialize)
-                        (oauth/refresh! (:account-id auth))
-                        (post-init))
-                    resp0)]
+          ;; Declared OAuth: log in before the first initialize.
+          client0 (cond-> client declared? (assoc :oauth-auth auth))
+          _       (when declared? (ensure-oauth-login! auth))
+          resp0   (post-init client0)
+          ;; Undeclared OAuth: a 401 Bearer challenge → discover the issuer, log
+          ;; in (client-id via DCR when offered), and retry as an OAuth client.
+          [client1 resp1]
+          (if-let [disc (and (not declared?)
+                             (discover-oauth-from-challenge url resp0 server-name))]
+            (let [c (assoc client0 :oauth-auth disc)]
+              (ensure-oauth-login! disc)
+              [c (post-init c)])
+            [client0 resp0])
+          ;; OAuth 401 (declared or discovered) on a now-authenticated client:
+          ;; force one refresh and retry.
+          oauth-auth (:oauth-auth client1)
+          resp    (if (and oauth-auth (unauthorized? resp1))
+                    (do (mulog/info ::mcp-oauth-401-refresh :account (:account-id oauth-auth) :phase :initialize)
+                        (oauth/refresh! (:account-id oauth-auth))
+                        (post-init client1))
+                    resp1)
+          client  client1]
 
       (when-not (<= 200 (:status resp) 299)
         (throw (ex-info "HTTP MCP initialization failed"
@@ -722,12 +778,11 @@
                       :body (json/write-str (make-notification (:initialized mcp-methods) {}))
                       :throw-exceptions false}))
 
-        (cond-> client
-          true    (assoc :base-url url)
-          true    (assoc :auth-headers headers)
-          true    (assoc :session-id sess-id)
-          true    (assoc :server-info result)
-          oauth?  (assoc :oauth-auth auth)))))
+        (-> client
+            (assoc :base-url url)
+            (assoc :auth-headers headers)
+            (assoc :session-id sess-id)
+            (assoc :server-info result)))))
 
   (disconnect! [client]
     (mulog/info ::disconnecting-http-client :session-id (:session-id client))

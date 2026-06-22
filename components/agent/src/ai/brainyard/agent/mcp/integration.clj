@@ -203,7 +203,9 @@
   (ensure! map? server-config "server-config must be a map")
 
   (let [{:keys [transport config tool-arg-overrides]} server-config
-        config (inject-oauth-account-id config server-name)
+        config (-> config
+                   (inject-oauth-account-id server-name)
+                   (assoc :server-name server-name))   ; for 401-challenge discovery
         client (mcp-client/create-client transport config)
         connected-client (mcp-client/connect! client config)]
 

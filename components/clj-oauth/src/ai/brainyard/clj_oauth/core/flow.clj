@@ -16,6 +16,7 @@
    (device + paste both refresh form-encoded) so `access-token`/`bearer-headers`
    are one-arg by account-id."
   (:require [ai.brainyard.clj-oauth.core.authcode :as authcode]
+            [ai.brainyard.clj-oauth.core.dcr :as dcr]
             [ai.brainyard.clj-oauth.core.device :as device]
             [ai.brainyard.clj-oauth.core.discovery :as discovery]
             [ai.brainyard.clj-oauth.core.store :as store]
@@ -85,6 +86,28 @@
                    :expires-in     (:expires_in da)
                    :on-status      on-status})))
 
+(defn ^:private client-account
+  "Token-store key under which a dynamically-registered client_id is cached,
+   keyed by issuer so it is reused across logins/restarts."
+  [issuer]
+  (str "client@" issuer))
+
+(defn resolve-client-id!
+  "Return a client_id: the explicit one, else a cached DCR registration for the
+   issuer, else register dynamically (RFC 7591) when the provider advertises a
+   `registration_endpoint` and cache it. Throws when none is available."
+  [{:keys [client-id issuer scopes]} metadata]
+  (or client-id
+      (when issuer
+        (or (:client_id (store/load-tokens (client-account issuer)))
+            (when-let [reg-ep (:registration_endpoint metadata)]
+              (let [reg (dcr/register-client! reg-ep {:scopes scopes})]
+                (store/save-tokens! (client-account issuer)
+                                    (select-keys reg [:client_id :client_secret]))
+                (:client_id reg)))))
+      (throw (ex-info "No :client-id supplied and the provider offers no registration_endpoint (RFC 7591)"
+                      {:issuer issuer}))))
+
 (defn login!
   "One-call login. Resolves endpoints (explicit `:endpoints` or `:issuer`
    discovery), picks a flow, runs it, persists the bundle under `:account-id`,
@@ -94,12 +117,13 @@
     :or   {flow :auto scopes []}}]
   (when-not account-id
     (throw (ex-info "login! requires :account-id" {})))
-  (let [metadata (cond endpoints endpoints
-                       issuer    (discovery/discover issuer)
-                       :else     (throw (ex-info "login! requires :issuer or :endpoints"
-                                                 {:account-id account-id})))
-        chosen   (select-flow flow metadata)
-        _        (mulog/info ::login :account account-id :flow chosen)
+  (let [metadata  (cond endpoints endpoints
+                        issuer    (discovery/discover issuer)
+                        :else     (throw (ex-info "login! requires :issuer or :endpoints"
+                                                  {:account-id account-id})))
+        client-id (resolve-client-id! {:client-id client-id :issuer issuer :scopes scopes} metadata)
+        chosen    (select-flow flow metadata)
+        _         (mulog/info ::login :account account-id :flow chosen)
         bundle   (case chosen
                    :device   (run-device metadata client-id scopes on-user-prompt on-status)
                    :paste    (authcode/paste-login!

@@ -73,7 +73,14 @@
    :device_authorization_endpoint  (str base "/device")
    :token_endpoint                 (str base "/token")
    :authorization_endpoint         (str base "/")
+   :registration_endpoint          (str base "/register")
    :grant_types_supported          ["urn:ietf:params:oauth:grant-type:device_code" "refresh_token"]})
+
+(defn- handle-register [ex]
+  ;; RFC 7591 — accept any public-client request, mint a client_id.
+  (json! ex 201 {:client_id                  (str "dyn-" (rand-hex 12))
+                 :token_endpoint_auth_method "none"
+                 :grant_types                ["urn:ietf:params:oauth:grant-type:device_code" "refresh_token"]}))
 
 (defn- handle-device [state base ex]
   (let [form (form-params ex)
@@ -169,7 +176,8 @@
           path (.getPath (.getRequestURI ex))]
       (case path
         "/.well-known/openid-configuration" (json! ex 200 (discovery base))
-        "/device"  (handle-device state base ex)
+        "/device"   (handle-device state base ex)
+        "/register" (handle-register ex)
         "/token"   (handle-token state ex)
         "/approve" (handle-approve state ex ((form-params ex) "code"))
         "/mcp"     (handle-mcp state ex)

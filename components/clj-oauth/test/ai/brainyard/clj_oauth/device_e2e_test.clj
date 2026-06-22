@@ -9,6 +9,7 @@
    tests (injected post-fn) couldn't: a real-HTTP device-poll round-trip."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.data.json :as json]
+            [clojure.string :as str]
             [ai.brainyard.clj-http-native.interface :as http]
             [ai.brainyard.clj-oauth.interface :as oauth]
             [ai.brainyard.clj-oauth.core.store :as store]
@@ -65,6 +66,20 @@
           (is (= 200 (:status (mcp-init base-url {"Authorization" (str "Bearer " new)}))))
           (is (= 401 (:status (mcp-init base-url {"Authorization" "Bearer stale-token"}))))))
       (finally (stop!)))))
+
+(deftest dcr-registers-when-no-client-id
+  (testing "no :client-id → dynamic registration (RFC 7591), cached by issuer"
+    (let [{:keys [base-url approve! stop!]} (ts/start! 0)]
+      (try
+        (let [bundle (oauth/login!
+                      {:account-id "brainyard-dcr" :issuer base-url :scopes ["read"] :flow :device
+                       :on-user-prompt (fn [{:keys [user_code]}] (approve! user_code))})]
+          (is (string? (:access_token bundle)))
+          (is (str/starts-with? (:client_id bundle) "dyn-") "client_id came from DCR"))
+        (testing "the registered client_id is cached under client@<issuer>"
+          (let [cached (oauth/load-tokens (str "client@" base-url))]
+            (is (str/starts-with? (:client_id cached) "dyn-"))))
+        (finally (stop!))))))
 
 (deftest device-flow-poll-waits-for-approval
   (testing "token endpoint returns authorization_pending until approved"

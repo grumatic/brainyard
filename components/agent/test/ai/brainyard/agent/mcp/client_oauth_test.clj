@@ -156,3 +156,56 @@
                              :verification_uri "u" :user_code "c"})))
         (is (nil? (dispatch {:event :authorized :account-id "n"})))
         (finally (mcp-client/set-oauth-prompt-renderer! nil))))))
+
+;; ---------------------------------------------------------------------------
+;; 401 WWW-Authenticate discovery (undeclared :auth) — MCP auth spec / RFC 9728
+;; ---------------------------------------------------------------------------
+
+(def ^:private discover-challenge @#'mcp-client/discover-oauth-from-challenge)
+
+(deftest challenge-discovery-origin-fallback
+  (testing "no resource_metadata pointer → issuer is the resource origin"
+    (let [auth (discover-challenge "http://localhost:7777/mcp"
+                                   {:status 401 :headers {"www-authenticate" "Bearer realm=\"x\""}}
+                                   "brainyard")]
+      (is (= :oauth (:type auth)))
+      (is (= "brainyard" (:account-id auth)))
+      (is (= "http://localhost:7777" (:issuer auth)))
+      (is (= :auto (:flow auth))))))
+
+(deftest challenge-discovery-resource-metadata
+  (testing "resource_metadata pointer is followed to authorization_servers"
+    (with-redefs [http/get (fn [url _]
+                             (is (= "https://rs/.well-known/oauth-protected-resource" url))
+                             {:status 200 :body (json/write-str {:authorization_servers ["https://as.example"]})})]
+      (let [auth (discover-challenge
+                  "https://rs/mcp"
+                  {:status 401 :headers {"www-authenticate"
+                                         "Bearer resource_metadata=\"https://rs/.well-known/oauth-protected-resource\""}}
+                  "notion")]
+        (is (= "https://as.example" (:issuer auth)))))))
+
+(deftest challenge-discovery-not-an-oauth-challenge
+  (is (nil? (discover-challenge "http://x/mcp" {:status 200} "s")))
+  (is (nil? (discover-challenge "http://x/mcp" {:status 401 :headers {"www-authenticate" "Basic realm=x"}} "s"))))
+
+(deftest connect!-discovers-oauth-from-401
+  (testing "an undeclared server that 401s with a Bearer challenge auto-authenticates"
+    (let [logins (atom 0)]
+      (with-redefs [oauth/authenticated? (fn [_] false)
+                    oauth/login!        (fn [opts]
+                                          (swap! logins inc)
+                                          (is (= "brainyard" (:account-id opts)))
+                                          (is (= "http://localhost:7779" (:issuer opts)))
+                                          {:access_token "AT"})
+                    oauth/bearer-headers (fn [_] {"Authorization" "Bearer AT"})
+                    http/post (fn [_ opts]
+                                (if (get-in opts [:headers "Authorization"])
+                                  (init-ok "S9")
+                                  {:status 401 :headers {"www-authenticate" "Bearer realm=\"brainyard\""} :body ""}))]
+        (let [connected (mcp-client/connect! (mcp-client/create-client :http {})
+                                             {:url "http://localhost:7779/mcp" :server-name "brainyard"})]
+          (is (= 1 @logins) "discovered the issuer and logged in once")
+          (is (= "S9" (:session-id connected)))
+          (is (= :oauth (get-in connected [:oauth-auth :type])))
+          (is (= "brainyard" (get-in connected [:oauth-auth :account-id]))))))))
