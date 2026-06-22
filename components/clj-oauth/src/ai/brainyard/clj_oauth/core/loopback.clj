@@ -23,8 +23,16 @@
 (defn ^:private query-params [^HttpExchange ex]
   (into {} (for [pair (str/split (or (.getQuery (.getRequestURI ex)) "") #"&")
                  :when (seq pair)]
-             (let [[k v] (str/split pair #"=" 2)]
-               [(URLDecoder/decode k "UTF-8") (URLDecoder/decode (or v "") "UTF-8")]))))
+             (let [[k v] (str/split pair #"=" 2)
+                   ;; Hinted locals pin the decode(String,String) overload —
+                   ;; without ^String the call is reflective (k/v are untyped),
+                   ;; which fails under native-image's strict reflection on the
+                   ;; callback path. The hint only attaches to a symbol, not to
+                   ;; the (or v "") form, so bind it first.
+                   ^String k k
+                   ^String v (or v "")]
+               [(URLDecoder/decode k "UTF-8")
+                (URLDecoder/decode v "UTF-8")]))))
 
 (defn ^:private respond-html! [^HttpExchange ex ^String body]
   (let [bs (.getBytes body "UTF-8")]
