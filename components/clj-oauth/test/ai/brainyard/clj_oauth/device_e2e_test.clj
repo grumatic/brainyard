@@ -99,6 +99,23 @@
           (is (= 200 (:status (mcp-init base-url (oauth/bearer-headers "brainyard-paste"))))))
         (finally (stop!))))))
 
+(deftest loopback-flow-end-to-end
+  (testing "loopback auth-code: browser redirect to 127.0.0.1 callback → tokens"
+    (let [{:keys [base-url stop!]} (ts/start! 0)]
+      (try
+        (let [bundle (oauth/login!
+                      {:account-id "brainyard-lb" :issuer base-url :client-id "x"
+                       :scopes ["read"] :flow :loopback
+                       ;; simulate the browser: open the authorize URL, follow the
+                       ;; provider's 302 to the loopback callback (delivers the code).
+                       :open-browser-fn (fn [authorize-url]
+                                          (let [r   (http/get authorize-url {:as :string :throw-exceptions false})
+                                                loc (get-in r [:headers "location"])]
+                                            (http/get loc {:as :string :throw-exceptions false})))})]
+          (is (string? (:access_token bundle)))
+          (is (= 200 (:status (mcp-init base-url (oauth/bearer-headers "brainyard-lb"))))))
+        (finally (stop!))))))
+
 (deftest device-flow-poll-waits-for-approval
   (testing "token endpoint returns authorization_pending until approved"
     (let [{:keys [base-url approve! stop!]} (ts/start! 0)]

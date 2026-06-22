@@ -49,6 +49,27 @@
     (is (str/includes? plain "https://linear.app/oauth?x=1"))
     (is (str/includes? plain "Paste the code back"))))
 
+(deftest loopback-box-content
+  (let [boxed (r/loopback-box {:account-id "notion2" :authorize_uri "https://mcp.notion.com/authorize?x=1"
+                               :scopes ["read"]})
+        plain (strip-ansi boxed)]
+    (is (str/includes? plain "Authorize \"notion2\""))
+    (is (str/includes? plain "https://mcp.notion.com/authorize?x=1"))
+    (is (str/includes? plain "browser"))
+    (is (not (str/includes? plain "Paste")) "loopback never asks for a paste")))
+
+(deftest render-loopback-prompt-uses-loopback-box
+  (let [emitted (atom [])]
+    (with-redefs [tui-session/emit! (fn [s] (swap! emitted conj (strip-ansi s)))
+                  layout/restore-input-cursor! (fn [] nil)
+                  r/qr-block (fn [_] nil)]
+      (r/flush-deferred!)
+      (r/render {:event :prompt :account-id "notion2" :mode :loopback
+                 :authorize_uri "https://mcp.notion.com/authorize?x=1"})
+      (is (= 1 (count @emitted)))
+      (is (str/includes? (first @emitted) "browser"))
+      (is (not (str/includes? (first @emitted) "Paste"))))))
+
 (deftest render-dispatch
   (let [emitted (atom [])]
     (with-redefs [tui-session/emit! (fn [s] (swap! emitted conj (strip-ansi s)))

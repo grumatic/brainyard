@@ -629,7 +629,7 @@
    (never tokens) and dispatches a :prompt event to the renderer/fallback."
   [account-id]
   (fn [{:keys [verification_uri verification_uri_complete user_code expires_in
-               authorize_uri scopes]}]
+               authorize_uri scopes mode]}]
     (mulog/info ::mcp-oauth-prompt
                 :account account-id
                 :verification_uri verification_uri
@@ -637,8 +637,9 @@
                 :user_code user_code
                 :authorize_uri authorize_uri
                 :scopes scopes
+                :mode mode
                 :expires_in expires_in)
-    (dispatch-oauth-prompt! {:account-id account-id :event :prompt
+    (dispatch-oauth-prompt! {:account-id account-id :event :prompt :mode mode
                              :verification_uri verification_uri
                              :verification_uri_complete verification_uri_complete
                              :user_code user_code :expires_in expires_in

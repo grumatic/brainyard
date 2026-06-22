@@ -19,6 +19,7 @@
             [ai.brainyard.clj-oauth.core.dcr :as dcr]
             [ai.brainyard.clj-oauth.core.device :as device]
             [ai.brainyard.clj-oauth.core.discovery :as discovery]
+            [ai.brainyard.clj-oauth.core.loopback :as loopback]
             [ai.brainyard.clj-oauth.core.store :as store]
             [ai.brainyard.env-detect.interface :as env-detect]
             [ai.brainyard.mulog.interface :as mulog]
@@ -110,17 +111,25 @@
 (defn resolve-client-id!
   "Return a client_id: the explicit one, else a cached DCR registration for the
    issuer, else register dynamically (RFC 7591) when the provider advertises a
-   `registration_endpoint` and cache it. Throws when none is available."
-  [{:keys [client-id issuer scopes]} metadata]
+   `registration_endpoint` and cache it. `:redirect-uris` (loopback callback) is
+   passed to DCR when present. Throws when none is available.
+
+   NOTE: a cached registration is reused only when no redirect-uris are needed
+   (device/paste); loopback always re-registers so the dynamic callback port is
+   on the client — it can't be cached across runs."
+  [{:keys [client-id issuer scopes redirect-uris]} metadata]
   (or client-id
       (when issuer
-        (or (:client_id (store/load-tokens (client-account issuer)))
+        (or (when-not (seq redirect-uris)
+              (:client_id (store/load-tokens (client-account issuer))))
             (when-let [reg-ep (:registration_endpoint metadata)]
               (let [reg (dcr/register-client! reg-ep
                                               {:scopes scopes
-                                               :grant-types (:grant_types_supported metadata)})]
-                (store/save-tokens! (client-account issuer)
-                                    (select-keys reg [:client_id :client_secret]))
+                                               :grant-types (:grant_types_supported metadata)
+                                               :redirect-uris redirect-uris})]
+                (when-not (seq redirect-uris)
+                  (store/save-tokens! (client-account issuer)
+                                      (select-keys reg [:client_id :client_secret])))
                 (:client_id reg)))))
       (throw (ex-info "No :client-id supplied and the provider offers no registration_endpoint (RFC 7591)"
                       {:issuer issuer}))))
@@ -130,7 +139,7 @@
    discovery), picks a flow, runs it, persists the bundle under `:account-id`,
    and returns it. See clj-oauth.interface/login! for the opts map."
   [{:keys [account-id issuer endpoints client-id scopes flow
-           on-user-prompt on-status read-code]
+           on-user-prompt on-status read-code open-browser-fn]
     :or   {flow :auto scopes []}}]
   (when-not account-id
     (throw (ex-info "login! requires :account-id" {})))
@@ -138,28 +147,42 @@
                         issuer    (discovery/discover issuer)
                         :else     (throw (ex-info "login! requires :issuer or :endpoints"
                                                   {:account-id account-id})))
-        client-id (resolve-client-id! {:client-id client-id :issuer issuer :scopes scopes} metadata)
         chosen    (select-flow flow metadata)
         _         (mulog/info ::login :account account-id :flow chosen)
-        bundle   (case chosen
-                   :device   (run-device metadata client-id scopes on-user-prompt on-status)
-                   :paste    (authcode/paste-login!
-                              {:authorization-endpoint (:authorization_endpoint metadata)
-                               :token-endpoint         (:token_endpoint metadata)
-                               :client-id              client-id
-                               :scopes                 scopes
-                               :on-user-prompt         on-user-prompt
-                               :read-code              read-code})
-                   :loopback (throw (ex-info "Loopback flow is not implemented in v1 — use :device or :paste"
-                                             {:flow :loopback})))
-        ;; Bake refresh metadata so access-token is one-arg later.
-        enriched (assoc bundle
-                        :token_endpoint (:token_endpoint metadata)
-                        :client_id      client-id
-                        :body_encoding  "form"
-                        :scope          (str/join " " scopes))]
-    (store/save-tokens! account-id enriched)
-    enriched))
+        ;; Loopback needs its callback port BEFORE DCR (the redirect_uri is
+        ;; registered on the client), so allocate it first and stop it after.
+        cb        (when (= chosen :loopback) (loopback/start-callback-server!))]
+    (try
+      (let [client-id (resolve-client-id! {:client-id client-id :issuer issuer :scopes scopes
+                                           :redirect-uris (when cb [(:redirect-uri cb)])}
+                                          metadata)
+            bundle    (case chosen
+                        :device   (run-device metadata client-id scopes on-user-prompt on-status)
+                        :paste    (authcode/paste-login!
+                                   {:authorization-endpoint (:authorization_endpoint metadata)
+                                    :token-endpoint         (:token_endpoint metadata)
+                                    :client-id              client-id
+                                    :scopes                 scopes
+                                    :on-user-prompt         on-user-prompt
+                                    :read-code              read-code})
+                        :loopback (loopback/loopback-login!
+                                   (cond-> {:authorization-endpoint (:authorization_endpoint metadata)
+                                            :token-endpoint         (:token_endpoint metadata)
+                                            :client-id              client-id
+                                            :scopes                 scopes
+                                            :redirect-uri           (:redirect-uri cb)
+                                            :on-user-prompt         on-user-prompt
+                                            :await-fn               (:await cb)}
+                                     open-browser-fn (assoc :open-browser-fn open-browser-fn))))
+            ;; Bake refresh metadata so access-token is one-arg later.
+            enriched  (assoc bundle
+                             :token_endpoint (:token_endpoint metadata)
+                             :client_id      client-id
+                             :body_encoding  "form"
+                             :scope          (str/join " " scopes))]
+        (store/save-tokens! account-id enriched)
+        enriched)
+      (finally (when cb ((:stop! cb)))))))
 
 ;; ============================================================================
 ;; Token access (refresh metadata comes from the stored bundle)

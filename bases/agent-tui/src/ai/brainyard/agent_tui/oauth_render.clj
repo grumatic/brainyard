@@ -82,6 +82,24 @@
         (str/replace-first title (emph ansi/bold title))
         (str/replace-first authorize_uri (emph ansi/underline authorize_uri)))))
 
+(defn loopback-box
+  "Plain + colorized box for the loopback flow — the browser opens and the code
+   is captured automatically; nothing to paste."
+  [{:keys [account-id authorize_uri scopes]}]
+  (let [scope-str (when (seq scopes) (str/join " " scopes))
+        title     (str "Authorize \"" account-id "\"")
+        lines     (cond-> [title
+                           ""
+                           "Your browser is opening to authorize."
+                           "If it doesn't, open this URL:"
+                           (str "     " authorize_uri)
+                           ""
+                           "Approve there — this connects automatically."]
+                    scope-str (conj "" (str "Scopes:  " scope-str)))]
+    (-> (frame lines)
+        (str/replace-first title (emph ansi/bold title))
+        (str/replace-first authorize_uri (emph ansi/underline authorize_uri)))))
+
 ;; ---------------------------------------------------------------------------
 ;; QR (best-effort via `qrencode`, gated by :oauth-qr?)
 ;; ---------------------------------------------------------------------------
@@ -144,14 +162,15 @@
 
 (defn render
   "Renderer registered with the agent MCP client. Dispatches on `:event`."
-  [{:keys [event account-id verification_uri user_code verification_uri_complete authorize_uri]
+  [{:keys [event account-id verification_uri user_code verification_uri_complete authorize_uri mode]
     :as ev}]
   (case event
     :prompt
     (do
       (cond
-        (and verification_uri user_code) (emit! (device-box ev))
-        authorize_uri                    (emit! (paste-box ev)))
+        (and verification_uri user_code)       (emit! (device-box ev))
+        (and authorize_uri (= :loopback mode)) (emit! (loopback-box ev))
+        authorize_uri                          (emit! (paste-box ev)))
       (when-let [qr (qr-block verification_uri_complete)]
         (emit! qr)))
 
