@@ -298,6 +298,15 @@
     (reconnect-mcp-server! server-name)
     {:server server-name :account-id acct}))
 
+(defn apply-oauth-config!
+  "Push the OAuth config keys into clj-oauth: the token-store backend
+   (`:oauth-token-store`) and the default `:auto` flow (`:oauth-flow`). Idempotent
+   — call once at startup. A real `BY_OAUTH_TOKEN_STORE`/`BY_OAUTH_FLOW` env still
+   wins when the config value is the default \"auto\"."
+  []
+  (oauth/set-token-store! (core-config/get-config :oauth-token-store))
+  (oauth/set-default-flow! (core-config/get-config :oauth-flow)))
+
 ;; =============================================================================
 ;; Direct MCP Tool Access (no registry)
 ;; =============================================================================

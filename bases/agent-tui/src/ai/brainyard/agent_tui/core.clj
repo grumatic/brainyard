@@ -1127,11 +1127,13 @@
       (catch Throwable e
         (mulog/warn ::skills-register-async-failed :error (ex-message e)))))
 
-  ;; Route OAuth device/auth verification prompts to the rich TUI renderer
-  ;; (code box + optional QR) before any OAuth-gated MCP server connects.
-  (try (oauth-render/register!)
+  ;; Apply OAuth config (token-store backend + default flow) and route device/
+  ;; auth verification prompts to the rich TUI renderer (code box + optional QR)
+  ;; before any OAuth-gated MCP server connects.
+  (try (agent/apply-oauth-config!)
+       (oauth-render/register!)
        (catch Throwable e
-         (mulog/warn ::oauth-render-register-failed :error (ex-message e))))
+         (mulog/warn ::oauth-setup-failed :error (ex-message e))))
 
   ;; Load MCP servers: built-in defaults deep-merged with config.edn
   ;; [:mcp :servers] (config.edn wins per leaf). Enabled servers connect in the

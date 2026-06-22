@@ -83,3 +83,13 @@
     (is (false? (probe :keychain-macos (fn [& _] (throw (RuntimeException. "no keychain daemon"))))))
     (is (false? (probe :keychain-macos (fn [& _] {:exit 1 :out "" :err "denied"})))
         "non-zero exit on save → not usable")))
+
+(deftest set-backend-pins-from-config
+  (testing "set-backend! pins the backend (config :oauth-token-store path)"
+    (binding [store/*backend* nil]      ; don't let a fixture binding mask it
+      (try
+        (store/set-backend! :file)
+        (is (= :file (store/current-backend)))
+        (store/set-backend! "keychain-macos")     ; string from config, already-resolved
+        (is (= :keychain-macos (store/current-backend)))
+        (finally (store/reset-backend-cache!))))))   ; leave auto-resolve for later tests

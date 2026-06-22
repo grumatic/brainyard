@@ -77,10 +77,15 @@
    :project-memory-max-chars   {:type "integer" :default 4000}
    ;; OAuth (clj-oauth) device/auth-code verification prompt: when true and a
    ;; `verification_uri_complete` is offered, the TUI renders a terminal QR for
-   ;; it next to the code box (best-effort — needs the `qrencode` CLI on PATH;
-   ;; silently skipped otherwise). The code + plain URL always show regardless.
-   ;; (Token store + flow are env-configured: BY_OAUTH_TOKEN_STORE / BY_OAUTH_FLOW.)
+   ;; it next to the code box. The code + plain URL always show regardless.
    :oauth-qr?                  {:type "boolean" :default true}
+   ;; OAuth token-store backend: "auto" (keychain when available, else file),
+   ;; "keychain", or "file". config.edn equivalent of the BY_OAUTH_TOKEN_STORE
+   ;; env var (an explicit non-auto value here pins the backend).
+   :oauth-token-store          {:type "string"  :default "auto"}
+   ;; Default OAuth flow for an :auto login (per-server :auth :flow still wins):
+   ;; "auto" (device when advertised, else paste), "device", or "paste".
+   :oauth-flow                 {:type "string"  :default "auto"}
    ;; CoAct system-context: include the full sandbox function directory
    ;; (categories + signatures for ALL bound callables). When false, the
    ;; system prompt shows only a compact category index instead.

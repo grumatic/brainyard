@@ -54,6 +54,17 @@
           (is (nil? (integration/mcp-oauth-logout! "plain")))
           (is (nil? @logged-out)))))))
 
+(deftest apply-oauth-config-pushes-to-clj-oauth
+  (testing "config keys are forwarded to clj-oauth's setters"
+    (let [store-set (atom nil) flow-set (atom nil)]
+      (with-redefs [ai.brainyard.agent.core.config/get-config
+                    (fn [k] (case k :oauth-token-store "file" :oauth-flow "device"))
+                    oauth/set-token-store!  (fn [v] (reset! store-set v))
+                    oauth/set-default-flow! (fn [v] (reset! flow-set v))]
+        (integration/apply-oauth-config!)
+        (is (= "file" @store-set))
+        (is (= "device" @flow-set))))))
+
 (deftest reauth
   (with-servers
     (testing "non-OAuth server throws"

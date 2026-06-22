@@ -314,7 +314,7 @@
                 list-configured-servers get-server-info get-mcp-server-config
                 init-mcp-from-config! start-mcp-server! stop-mcp-server!
                 reconnect-mcp-server! reauth-mcp-server! mcp-oauth-server?
-                mcp-oauth-status mcp-oauth-logout!
+                mcp-oauth-status mcp-oauth-logout! apply-oauth-config!
                 builtin-default-servers persist-server-enabled!)
 
 (export-symbols ai.brainyard.agent.mcp.client

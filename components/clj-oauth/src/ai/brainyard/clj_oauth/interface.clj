@@ -123,6 +123,19 @@
    See flow/refresh!."
   flow/refresh!)
 
+;; ============================================================================
+;; Configuration (driven from .brainyard/config.edn by the host)
+;; ============================================================================
+
+(def set-token-store!
+  "Pin the token-store backend: :auto | :keychain | :file. See store/set-backend!."
+  store/set-backend!)
+
+(def set-default-flow!
+  "Set the default flow for :auto logins: :auto | :device | :paste.
+   See flow/set-default-flow!."
+  flow/set-default-flow!)
+
 (def logout!
   "Clear stored tokens for account-id (alias of clear-tokens!)."
   store/clear-tokens!)

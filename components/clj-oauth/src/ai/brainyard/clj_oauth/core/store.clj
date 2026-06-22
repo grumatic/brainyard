@@ -249,6 +249,21 @@
   []
   (reset! !resolved nil))
 
+(defn set-backend!
+  "Pin the store backend from config: `:auto`/\"auto\" (re-resolve from env +
+   auto-detect), `:file`, `:keychain` (detect the platform keychain, else file),
+   or an already-resolved keyword. Lets `.brainyard/config.edn :oauth-token-store`
+   drive the backend without an env var. Takes precedence over a later env read
+   only when not `:auto` (`:auto` defers to the env/auto-detect ladder)."
+  [choice]
+  (let [c (some-> choice (#(if (keyword? %) % (keyword (str %)))))]
+    (reset! !resolved
+            (case c
+              (nil :auto) nil
+              :file       :file
+              :keychain   (or (detect-keychain *run*) :file)
+              (if (contains? backends c) c :file)))))
+
 ;; ============================================================================
 ;; Public store API (backend dispatch)
 ;; ============================================================================

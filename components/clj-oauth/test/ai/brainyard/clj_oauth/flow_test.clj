@@ -46,6 +46,16 @@
 (deftest headless?-returns-boolean
   (is (boolean? (flow/headless?))))
 
+(deftest default-flow-override
+  (testing "set-default-flow! steers :auto; an explicit flow still wins"
+    (try
+      (flow/set-default-flow! :paste)
+      (is (= :paste  (flow/select-flow :auto device-meta)) ":auto honors the default")
+      (is (= :device (flow/select-flow :device authcode-meta)) "explicit wins over default")
+      (flow/set-default-flow! :auto)
+      (is (= :device (flow/select-flow :auto device-meta)) ":auto cleared → auto-detect")
+      (finally (flow/set-default-flow! :auto)))))
+
 ;; ---------------------------------------------------------------------------
 ;; login! — device path, end to end with stubbed device fns
 ;; ---------------------------------------------------------------------------

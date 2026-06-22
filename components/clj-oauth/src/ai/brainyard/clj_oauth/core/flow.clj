@@ -56,17 +56,32 @@
 ;; Flow selection
 ;; ============================================================================
 
+(defonce ^:private !default-flow
+  ;; Config-supplied default (`:oauth-flow`) applied when the caller requests
+  ;; `:auto`. nil → no override (pure auto-detect).
+  (atom nil))
+
+(defn set-default-flow!
+  "Set the default flow used when a login requests `:auto` (from
+   `.brainyard/config.edn :oauth-flow`). `:auto`/nil clears the override."
+  [f]
+  (let [k (some-> f (#(if (keyword? %) % (keyword (str %)))))]
+    (reset! !default-flow (when (and k (not= :auto k)) k))))
+
 (defn select-flow
   "Resolve the concrete flow keyword from the requested `flow` + discovery
-   `metadata`. `:auto` → `:device` when a device endpoint is advertised, else
-   `:paste` (never silently `:loopback`)."
+   `metadata`. An explicit flow wins; `:auto` honors the config default
+   (`set-default-flow!`) and otherwise picks `:device` when a device endpoint is
+   advertised, else `:paste` (never silently `:loopback`)."
   [flow metadata]
-  (case (or flow :auto)
-    :device :device
-    :paste  :paste
-    :loopback :loopback
-    ;; :auto
-    (if (discovery/supports-device-flow? metadata) :device :paste)))
+  (let [flow (or flow :auto)
+        flow (if (= :auto flow) (or @!default-flow :auto) flow)]
+    (case flow
+      :device   :device
+      :paste    :paste
+      :loopback :loopback
+      ;; :auto
+      (if (discovery/supports-device-flow? metadata) :device :paste))))
 
 ;; ============================================================================
 ;; Login
