@@ -103,12 +103,44 @@
       (catch Throwable _ nil))))
 
 ;; ---------------------------------------------------------------------------
+;; Boot-time emit gate
+;;
+;; A server that connects during boot (background future) can fire its device
+;; prompt before `run!` enters the alt-screen live loop — those emits would land
+;; in the hidden primary buffer. `run!` arms the gate before start! and flushes
+;; it once the live loop is up, so a prompt fired in that window is buffered and
+;; replayed; prompts after the loop is live emit straight through. REPL/inline
+;; callers never arm it, so emits pass through unbuffered.
+;; ---------------------------------------------------------------------------
+
+(defonce ^:private !gate (atom {:ready? true :buffer []}))
+
+(defn arm-deferral!
+  "Buffer subsequent OAuth emits until `flush-deferred!` (called by run! before
+   start! so boot-time prompts survive the alt-screen transition)."
+  []
+  (swap! !gate assoc :ready? false))
+
+(defn ^:private raw-emit! [s]
+  (tui-session/emit! s)
+  (layout/restore-input-cursor!))
+
+(defn flush-deferred!
+  "Open the gate and replay anything buffered while it was armed (called by run!
+   once the live loop is up). Idempotent."
+  []
+  (let [[old _] (swap-vals! !gate assoc :ready? true :buffer [])]
+    (doseq [s (:buffer old)] (raw-emit! s))))
+
+;; ---------------------------------------------------------------------------
 ;; Render dispatch
 ;; ---------------------------------------------------------------------------
 
 (defn ^:private emit! [s]
-  (tui-session/emit! s)
-  (layout/restore-input-cursor!))
+  ;; swap-vals! makes the ready-check and the buffer-append atomic against a
+  ;; concurrent flush-deferred!, so a prompt racing the flush is never lost.
+  (let [[old _] (swap-vals! !gate (fn [st] (if (:ready? st) st (update st :buffer conj s))))]
+    (when (:ready? old) (raw-emit! s))))
 
 (defn render
   "Renderer registered with the agent MCP client. Dispatches on `:event`."

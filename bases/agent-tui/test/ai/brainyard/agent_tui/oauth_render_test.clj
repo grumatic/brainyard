@@ -78,3 +78,23 @@
 (deftest qr-skipped-when-config-disabled
   (with-redefs [ai.brainyard.agent.interface/get-config (fn [_] false)]
     (is (nil? (r/qr-block "https://example/complete")))))
+
+(deftest boot-emit-gate-buffers-then-replays
+  (let [emitted (atom [])]
+    (with-redefs [tui-session/emit! (fn [s] (swap! emitted conj (strip-ansi s)))
+                  layout/restore-input-cursor! (fn [] nil)
+                  r/qr-block (fn [_] nil)]
+      (try
+        (testing "armed → a boot-time prompt is buffered, not emitted"
+          (r/arm-deferral!)
+          (r/render {:event :prompt :account-id "notion" :verification_uri "u" :user_code "ABCD-1234"})
+          (is (empty? @emitted)))
+        (testing "flush-deferred! replays the buffered box once the loop is up"
+          (r/flush-deferred!)
+          (is (= 1 (count @emitted)))
+          (is (str/includes? (first @emitted) "ABCD-1234")))
+        (testing "after flush, prompts emit straight through"
+          (reset! emitted [])
+          (r/render {:event :authorized :account-id "notion"})
+          (is (= 1 (count @emitted))))
+        (finally (r/flush-deferred!))))))   ; leave the gate open for other tests

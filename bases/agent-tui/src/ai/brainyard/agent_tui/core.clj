@@ -1484,6 +1484,10 @@
   [& opts]
   (let [opts-map (apply hash-map opts)
         force-inline? (:inline opts-map)]
+    ;; Buffer OAuth device prompts fired by boot-time MCP connects until the
+    ;; alt-screen live loop is up (flushed below), so they aren't lost to the
+    ;; primary buffer. Must arm before start! runs init-mcp-from-config!.
+    (oauth-render/arm-deferral!)
     (apply start! (concat opts [:skip-banner true]))
     ;; Initialize fullscreen layout
     (let [fullscreen-ok? (and (not force-inline?) (layout/init-fullscreen!))]
@@ -1542,7 +1546,10 @@
         (when fullscreen-ok?
           (layout/draw-separator!)
           (layout/draw-bottom-separator!)
-          (tui-session/update-status-bar! :idle))))
+          (tui-session/update-status-bar! :idle))
+        ;; Live loop is up: replay any OAuth device prompt buffered during boot,
+        ;; and let later prompts emit straight through.
+        (oauth-render/flush-deferred!)))
     (let [use-raw? (and (not force-inline?) (layout/fullscreen?) (terminal/stdin-terminal?))
           reader   (when-not use-raw?
                      (BufferedReader. (InputStreamReader. System/in)))]
