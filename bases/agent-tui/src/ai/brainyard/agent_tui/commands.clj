@@ -699,6 +699,56 @@
 ;; Defined below (OAuth Commands section); used by /mcp <s> auth here.
 (declare reauth-mcp-async!)
 
+;; ---------------------------------------------------------------------------
+;; Async spinner — OAuth/MCP ops (start/stop/auth/status) block on the network
+;; (the initialize handshake, token exchange, the user authorizing in a
+;; browser), so they run off the command thread behind a one-line braille
+;; spinner. The live block is disposed the instant the op settles, so
+;; scrollback shows only the outcome line — no leftover "…working" noise.
+;; ---------------------------------------------------------------------------
+
+(def ^:private async-spinner-frames
+  ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"])
+
+(defn- run-async-with-spinner!
+  "Run blocking `thunk` on a background thread, animating a one-line spinner
+   labelled `label` until it settles. `done-fn` receives the result and returns
+   the success line to emit (nil = stay silent); `fail-fn` receives the
+   exception and returns the failure line. Returns immediately so the command
+   loop stays responsive."
+  [label thunk done-fn fail-fn]
+  (let [block-id (keyword "async-spin" (str (System/nanoTime)))
+        running  (atom true)
+        ticker   (Thread.
+                  ^Runnable
+                  (fn []
+                    (loop [i 0]
+                      (when @running
+                        (try
+                          (layout/update-live-block!
+                           block-id
+                           [(str "  "
+                                 (ansi/spinner-active
+                                  (nth async-spinner-frames
+                                       (mod i (count async-spinner-frames))))
+                                 " " label (ansi/muted "…"))])
+                          (catch Throwable _ nil))
+                        (Thread/sleep (long 120))
+                        (recur (inc i))))))]
+    (.setDaemon ticker true)
+    (.start ticker)
+    (future
+      (let [[ok? payload] (try [true (thunk)]
+                               (catch Throwable e [false e]))]
+        ;; Stop + join the ticker BEFORE disposing so it can't recreate the
+        ;; block after we've torn it down (one-frame orphan otherwise).
+        (reset! running false)
+        (try (.join ticker 300) (catch Throwable _ nil))
+        (layout/dispose-live-block! block-id)
+        (if ok?
+          (when-let [line (done-fn payload)] (tui-session/emit! line))
+          (tui-session/emit! (fail-fn payload)))))))
+
 (defn- handle-mcp-command
   "Handle /mcp meta-command.
    No args:             list all servers with status.
@@ -733,20 +783,20 @@
               "start"
               (if connected?
                 (tui-session/emit! (ansi/muted (str server-name " is already connected.")))
-                (try
-                  (agent/start-mcp-server! server-name config)
-                  (tui-session/emit! (ansi/success (str "Started " server-name)))
-                  (catch Exception e
-                    (tui-session/emit! (ansi/failure (str "Failed to start " server-name ": " (.getMessage e)))))))
+                (run-async-with-spinner!
+                 (str "Connecting " server-name)
+                 #(agent/start-mcp-server! server-name config)
+                 (fn [_] (ansi/success (str "Started " server-name)))
+                 (fn [e] (ansi/failure (str "Failed to start " server-name ": " (.getMessage e))))))
 
               "stop"
               (if-not connected?
                 (tui-session/emit! (ansi/muted (str server-name " is not connected.")))
-                (try
-                  (agent/stop-mcp-server! server-name)
-                  (tui-session/emit! (ansi/success (str "Stopped " server-name)))
-                  (catch Exception e
-                    (tui-session/emit! (ansi/failure (str "Failed to stop " server-name ": " (.getMessage e)))))))
+                (run-async-with-spinner!
+                 (str "Disconnecting " server-name)
+                 #(agent/stop-mcp-server! server-name)
+                 (fn [_] (ansi/success (str "Stopped " server-name)))
+                 (fn [e] (ansi/failure (str "Failed to stop " server-name ": " (.getMessage e))))))
 
               "auth"
               (if-not (agent/mcp-oauth-server? server-name)
@@ -757,18 +807,28 @@
               "status"
               (let [transport (name (or (:transport config) :unknown))
                     enabled?  (get config :enabled true)
-                    tools     (when connected? (try (agent/list-server-tools server-name) (catch Exception _ [])))
-                    info      (when connected? (try (agent/get-server-info server-name) (catch Exception _ nil)))]
-                (tui-session/emit!
-                 (str (ansi/header (str "MCP: " server-name)) "\n"
-                      "  Status:    " (if connected? (ansi/success "connected") (ansi/muted "disconnected")) "\n"
-                      "  Transport: " transport "\n"
-                      "  Enabled:   " (if enabled? "yes" "no") "\n"
-                      (when info
-                        (let [si (:serverInfo info)]
-                          (str "  Server:    " (or (:name si) (:name info) "?") " v" (or (:version si) (:version info) "?") "\n")))
-                      (when tools
-                        (str "  Tools:     " (count tools) "\n")))))
+                    ;; Building the detail for a connected server round-trips to
+                    ;; it (tools list + serverInfo), so do it behind the spinner.
+                    build-detail
+                    (fn []
+                      (let [tools (when connected? (try (agent/list-server-tools server-name) (catch Exception _ [])))
+                            info  (when connected? (try (agent/get-server-info server-name) (catch Exception _ nil)))]
+                        (str (ansi/header (str "MCP: " server-name)) "\n"
+                             "  Status:    " (if connected? (ansi/success "connected") (ansi/muted "disconnected")) "\n"
+                             "  Transport: " transport "\n"
+                             "  Enabled:   " (if enabled? "yes" "no") "\n"
+                             (when info
+                               (let [si (:serverInfo info)]
+                                 (str "  Server:    " (or (:name si) (:name info) "?") " v" (or (:version si) (:version info) "?") "\n")))
+                             (when tools
+                               (str "  Tools:     " (count tools) "\n")))))]
+                (if connected?
+                  (run-async-with-spinner!
+                   (str "Querying " server-name)
+                   build-detail
+                   identity
+                   (fn [e] (ansi/failure (str "Status query failed for " server-name ": " (.getMessage e)))))
+                  (tui-session/emit! (build-detail))))
 
               ;; No action or unknown — show status (same as "status")
               (let [transport (name (or (:transport config) :unknown))
@@ -787,16 +847,15 @@
 (defn- reauth-mcp-async!
   "Kick off a device/auth-code re-auth for an OAuth MCP server off the command
    thread (it blocks until the user authorizes elsewhere). Used by
-   `/mcp <server> auth`. (MCP server auth lives under /mcp, not /login.)"
+   `/mcp <server> auth`. The verification box (device code / browser URL) is
+   printed by the OAuth renderer below the spinner while it animates.
+   (MCP server auth lives under /mcp, not /login.)"
   [server-name]
-  (tui-session/emit! (ansi/muted (str "Re-authenticating " server-name
-                                      " — follow the verification prompt printed below…")))
-  (future
-    (try
-      (agent/reauth-mcp-server! server-name)
-      (tui-session/emit! (ansi/success (str "Re-authenticated " server-name)))
-      (catch Exception e
-        (tui-session/emit! (ansi/failure (str "Auth failed for " server-name ": " (.getMessage e))))))))
+  (run-async-with-spinner!
+   (str "Authenticating " server-name)
+   #(agent/reauth-mcp-server! server-name)
+   (fn [_] (ansi/success (str "Re-authenticated " server-name)))
+   (fn [e] (ansi/failure (str "Auth failed for " server-name ": " (.getMessage e))))))
 
 ;; /login and /logout manage SPECIAL AUTH PROVIDERS (e.g. Anthropic
 ;; subscription OAuth) — distinct from MCP servers, whose auth is handled by
