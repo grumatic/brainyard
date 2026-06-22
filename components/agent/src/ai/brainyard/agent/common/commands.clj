@@ -26,7 +26,9 @@
             [ai.brainyard.agent.common.artifacts :as artifacts]
             [ai.brainyard.agent.common.log :as log]
             [ai.brainyard.clj-llm.interface :as clj-llm]
-            [ai.brainyard.clj-sandbox.interface :as clj-sandbox]
+            [ai.brainyard.agent.core.usage :as usage]
+            ;; bare — registers the built-in usage guides into agent.core.usage
+            [ai.brainyard.agent.common.usage-guides]
             [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.memory.interface.protocol :as mproto]
             [clojure.string :as str]))
@@ -571,8 +573,8 @@
               (and (string? topic) (not (str/blank? topic)))
               (keyword (str/replace topic #"^:" ""))
               :else            nil)
-          topics (vec clj-sandbox/usage-topics)
-          guide  (when k (clj-sandbox/get-usage-guide k))]
+          topics (usage/list-usage-topics)
+          guide  (when k (usage/get-usage-guide k))]
       (cond
         (nil? k)     {:topics topics}
         (nil? guide) {:error  (str "unknown topic " (pr-str k)) :topics topics}

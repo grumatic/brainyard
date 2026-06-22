@@ -31,6 +31,7 @@
             [ai.brainyard.agent.common.context-actions :as ctx-actions]
             [ai.brainyard.agent.common.evaluation :as evaluation]
             [ai.brainyard.agent.common.previous-turns :as prev-turns]
+            [ai.brainyard.agent.core.usage :as usage]
             [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
             [ai.brainyard.agent.common.user-tools :as ut]
             [ai.brainyard.agent.common.user-hooks :as uh]
@@ -602,29 +603,15 @@ anything outside the per-turn `### Agent Tools` block:
 - `get-tool-info` — fetch full schema (id/type/inputs/outputs/description) by
   `tool-id`. Always call this BEFORE invoking an unfamiliar tool.")
 
-(def ^:private coact-usage-guide-table
-  "On-demand depth on a specific topic — call `(usage :topic)` to fetch.
-Pull these BEFORE you commit to a non-trivial pattern in that area:
-
-| Topic           | When to consult                                                    |
-|-----------------|--------------------------------------------------------------------|
-| `:llm-query`    | Before dispatching a sub-LLM (`query$llm` with `:prompt` or `:prompts`) — picks model, depth, context. |
-| `:agent-state`  | Before reading/writing `[:agent-state …]` via `context-get`.       |
-| `:memory`       | Before `memory$recall` / `memory$remember` — kinds, layers, scoring. |
-| `:todo`         | Before any todo-* call — lifecycle, statuses, dependencies.        |
-| `:plans`        | Before any `plan$*` call — slugs, scope, dossier handoff.          |
-| `:skills`       | Before `skill$*` invocations or `skills$*` admin.                  |
-| `:files`        | Before bulk `read-file` / `write-file` / `update-file`.            |
-| `:artifacts`    | Before `artifact$add/remove/pin` — what to pin into Live Artifacts vs. re-read. |
-| `:mcp`          | Before invoking an MCP server tool you haven't called this turn.    |
-| `:tool-priority`| When choosing between competing tools (registry vs MCP vs sandbox). |
-| `:discovery`    | When unsure what's available — pairs with `list-tools`.            |
-| `:truncation`   | When a tool result is going to be huge.                            |
-| `:final`        | Before emitting the FINAL answer — termination contract.           |
-| `:feedback`     | Before asking the user a clarifying question.                      |
-| `:rules`        | Catch-all rules and tips for sandbox/agent etiquette.              |
-
-`(usage)` (no args) returns the full topic catalog if you forget the names.")
+(defn- coact-usage-guide-table
+  "On-demand usage-guide section for the `## Tools` system context. The
+   'when to consult' table is generated from the open usage registry
+   (`agent.core.usage`), so newly-registered topics appear automatically."
+  []
+  (str "On-demand depth on a specific topic — call `(usage :topic)` to fetch.\n"
+       "Pull these BEFORE you commit to a non-trivial pattern in that area:\n\n"
+       (usage/consult-table)
+       "\n\n`(usage)` (no args) returns the full topic catalog if you forget the names."))
 
 (defn- build-tools-section
   "Render the unified `## Tools` system-context section.
@@ -711,7 +698,7 @@ Pull these BEFORE you commit to a non-trivial pattern in that area:
 
                   (not (disabled :usage-guides))
                   (conj "### Usage Guides (on-demand `(usage :topic)` lookup)"
-                        coact-usage-guide-table)
+                        (coact-usage-guide-table))
 
                   overlay
                   (conj "### Agent-specific guidance"

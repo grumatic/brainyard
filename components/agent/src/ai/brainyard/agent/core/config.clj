@@ -64,7 +64,7 @@
    ;; Usage-guide topics permanently inlined into the agent's tool-context every
    ;; turn (and pre-marked so usage-nudge's first-use path skips them). Every
    ;; OTHER guide-backed family is surfaced just-in-time on first use instead.
-   ;; Topics: see clj-sandbox usage-topics (e.g. :artifacts :memory :todo).
+   ;; Topics: see agent.core.usage/list-usage-topics (e.g. :artifacts :memory :todo).
    :inline-usage-guides        {:type "vector"  :default [:artifacts]}
    ;; Project-scoped, file-based memory: a `## Project Memory` system-context
    ;; section seeded each turn from `<project-dir>/.brainyard/memory/index.md`.

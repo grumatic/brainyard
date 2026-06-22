@@ -22,7 +22,7 @@
             [ai.brainyard.agent.task.persist :as task-persist]
             [ai.brainyard.agent.task.protocol :as task-proto]
             [ai.brainyard.clj-llm.interface :as clj-llm]
-            [ai.brainyard.clj-sandbox.interface :as clj-sandbox]
+            [ai.brainyard.agent.core.usage :as usage]
             [clojure.string :as str]))
 
 (defn get-dirs
@@ -228,9 +228,9 @@
 
 (defn make-usage-bindings
   "Single dispatch binding `(usage topic)` that returns the guide string for the
-   given topic keyword/string. Topics: see `clj-sandbox/usage-topics`. Returns
-   the catalog (vector of topic kws) when called with no args, or a helpful
-   error map for an unknown topic.
+   given topic keyword/string. Topics: see `agent.core.usage/list-usage-topics`.
+   Returns the catalog (vector of topic kws) when called with no args, or a
+   helpful error map for an unknown topic.
 
    Replaces the previous fan-out of 14 zero-arg `(usage-<topic>)` thunks: those
    bloated the sandbox category index and the LLM rarely noticed them. With a
@@ -258,14 +258,14 @@
             (if (nil? k)
               {:error (str "usage: topic must be a keyword/string/symbol, got "
                            (pr-str topic))
-               :topics (vec clj-sandbox/usage-topics)}
+               :topics (usage/list-usage-topics)}
               (let [{:keys [guide topics error]} (call-usage {:topic (name k)})]
                 (cond
                   guide guide
-                  error {:error error :topics (or topics (vec clj-sandbox/usage-topics))}
+                  error {:error error :topics (or topics (usage/list-usage-topics))}
                   :else {:error (str "usage: unknown topic " (pr-str k))
-                         :topics (or topics (vec clj-sandbox/usage-topics))}))))))
-       {:doc      "Return the on-demand usage guide for a topic. (usage) lists all topics; (usage :memory) returns that guide. Topics: see clj-sandbox/usage-topics."
+                         :topics (or topics (usage/list-usage-topics))}))))))
+       {:doc      "Return the on-demand usage guide for a topic. (usage) lists all topics; (usage :memory) returns that guide. Topics: see agent.core.usage/list-usage-topics."
         :arglists '([] [topic])
         :category :usage})}))
 

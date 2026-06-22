@@ -11,7 +11,7 @@
             [ai.brainyard.agent.common.commands :as cmds]
             [ai.brainyard.agent.common.sandbox-bindings :as sb]
             [ai.brainyard.agent.core.tool :as tool]
-            [ai.brainyard.clj-sandbox.interface :as clj-sandbox]
+            [ai.brainyard.agent.core.usage :as usage]
             [ai.brainyard.memory.interface :as mem]))
 
 (def ^:dynamic *mm* nil)
@@ -123,7 +123,7 @@
 (deftest usage-tool-no-topic-lists-catalog
   (let [r (tool/invoke-tool :usage)]
     (is (nil? (:guide r)))
-    (is (= (vec clj-sandbox/usage-topics) (:topics r))
+    (is (= (usage/list-usage-topics) (:topics r))
         "no topic → full topic catalog")))
 
 (deftest usage-tool-known-topic-returns-guide
@@ -131,25 +131,32 @@
     (is (= "memory" (:topic r)))
     (is (string? (:guide r)))
     (is (pos? (count (:guide r))))
-    (is (= (clj-sandbox/get-usage-guide :memory) (:guide r))
-        "tool guide must match the clj-sandbox source of truth")))
+    (is (= (usage/get-usage-guide :memory) (:guide r))
+        "tool guide must match the registry source of truth")))
 
 (deftest usage-tool-unknown-topic-errors-with-catalog
   (let [r (tool/invoke-tool :usage {:topic "nope"})]
     (is (nil? (:guide r)))
     (is (str/includes? (:error r) "unknown topic"))
-    (is (= (vec clj-sandbox/usage-topics) (:topics r))
+    (is (= (usage/list-usage-topics) (:topics r))
         "unknown topic → error + catalog so the caller can retry")))
+
+(deftest usage-tool-new-topics-present
+  (testing "the generalized registry includes the new agent-domain topics"
+    (let [topics (set (usage/list-usage-topics))]
+      (doseq [t [:tool :code :sandbox :nrepl :agents]]
+        (is (contains? topics t) (str t " should be registered"))
+        (is (string? (usage/get-usage-guide t)) (str t " should have a guide"))))))
 
 (deftest usage-binding-delegates-and-preserves-legacy-shape
   ;; The sandbox `(usage …)` binding routes through the :usage tool but must
   ;; keep returning the legacy shape: a vector for no-arg, a raw guide STRING
   ;; for a known topic, an error map otherwise.
-  (let [usage (get (sb/make-usage-bindings nil) 'usage)]
-    (is (= (vec clj-sandbox/usage-topics) (usage))
+  (let [usage-fn (get (sb/make-usage-bindings nil) 'usage)]
+    (is (= (usage/list-usage-topics) (usage-fn))
         "no-arg binding returns the topic vector, not a wrapper map")
-    (is (= (clj-sandbox/get-usage-guide :memory) (usage :memory))
+    (is (= (usage/get-usage-guide :memory) (usage-fn :memory))
         "known topic returns the raw guide string")
-    (is (str/includes? (:error (usage :nope)) "unknown topic"))
-    (is (str/includes? (:error (usage 123)) "must be a keyword/string/symbol")
+    (is (str/includes? (:error (usage-fn :nope)) "unknown topic"))
+    (is (str/includes? (:error (usage-fn 123)) "must be a keyword/string/symbol")
         "bad arg type is rejected locally with the legacy message")))

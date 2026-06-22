@@ -278,13 +278,10 @@
    for on-demand drill-in."
   prompt/build-function-index)
 
-(def get-usage-guide
-  "Return usage guide text for a topic keyword/string. Backs the sandbox `(usage :topic)` dispatcher."
-  prompt/get-usage-guide)
-
-(def usage-topics
-  "All available usage-guide topics. Reachable from the sandbox via `(usage :foo)`; `(usage)` returns this list."
-  prompt/usage-topics)
+;; NOTE: usage-guide content moved to the agent component
+;; (ai.brainyard.agent.core.usage + agent.common.usage-guides). The sandbox
+;; `(usage :topic)` binding is built in agent.common.sandbox-bindings and reads
+;; that open registry — clj-sandbox no longer owns guide content.
 
 (def extract-all-code-blocks
   "Extract ALL ```clojure/```clj fenced blocks (not just first like extract-code-blocks)."

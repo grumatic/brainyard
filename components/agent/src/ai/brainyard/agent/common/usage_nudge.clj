@@ -33,7 +33,9 @@
    so SCI-sandbox invocations (CoAct's preferred channel) trigger this too."
   (:require [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
-            [ai.brainyard.clj-sandbox.interface :as clj-sandbox]
+            [ai.brainyard.agent.core.usage :as usage]
+            ;; bare — ensures the built-in guides are registered before lookup
+            [ai.brainyard.agent.common.usage-guides]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.string :as str]))
 
@@ -41,13 +43,15 @@
   "Tool-id family segment (text before the first `$`) → the usage topic whose
    guide explains it. Deliberately conservative — only families that are easy to
    misuse AND have a dedicated guide. Edit here to tune coverage."
-  {"artifact" :artifacts
-   "memory"   :memory
-   "plan"     :plans
-   "query"    :llm-query
-   "skills"   :skills
-   "todo"     :todo
-   "mcp"      :mcp})
+  {"artifact"  :artifacts
+   "memory"    :memory
+   "plan"      :plans
+   "query"     :llm-query
+   "skills"    :skills
+   "todo"      :todo
+   "mcp"       :mcp
+   "code"      :code
+   "clj-nrepl" :nrepl})
 
 (defn topic-for-tool
   "Resolve the usage topic for `tool-name` (string/keyword/symbol), or nil when
@@ -126,7 +130,7 @@
   nil)
 
 (defn- guide-text [topic]
-  (clj-sandbox/get-usage-guide (keyword topic)))
+  (usage/get-usage-guide (keyword topic)))
 
 (defn- render-pending [{:keys [topic reason tool]}]
   (when-let [g (guide-text topic)]
