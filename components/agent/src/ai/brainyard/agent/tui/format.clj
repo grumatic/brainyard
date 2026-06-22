@@ -619,8 +619,8 @@
     {:completions [["show"   "Open log side pane"]
                    ["hide"   "Close log side pane"]]}]
    ["/mcp"              " [server [action]]"      "Manage MCP servers"]
-   ["/login"            " [mcp-server]"           "OAuth status, or run device auth for a server"]
-   ["/logout"           " <anthropic|server>"     "Clear stored OAuth credentials"]
+   ["/login"            " [provider]"             "Auth-provider status / sign in (e.g. anthropic; not MCP servers)"]
+   ["/logout"           " <provider>"             "Sign out of an auth provider (e.g. anthropic)"]
    ["/memory"           " [subcmd] [args]"        "Manage agent long-term memory"
     {:completions [["stats"       "Layer counts + schema version"]
                    ["remember"    "Store a fact (remember <content>)"]

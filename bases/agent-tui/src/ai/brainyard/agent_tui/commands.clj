@@ -786,8 +786,8 @@
 
 (defn- reauth-mcp-async!
   "Kick off a device/auth-code re-auth for an OAuth MCP server off the command
-   thread (it blocks until the user authorizes elsewhere). Shared by
-   `/mcp <s> auth` and `/login <s>`."
+   thread (it blocks until the user authorizes elsewhere). Used by
+   `/mcp <server> auth`. (MCP server auth lives under /mcp, not /login.)"
   [server-name]
   (tui-session/emit! (ansi/muted (str "Re-authenticating " server-name
                                       " — follow the verification prompt printed below…")))
@@ -798,61 +798,57 @@
       (catch Exception e
         (tui-session/emit! (ansi/failure (str "Auth failed for " server-name ": " (.getMessage e))))))))
 
-(defn- oauth-status-overview []
-  (let [anthropic? (try (clj-llm/oauth-authenticated?) (catch Exception _ false))
-        mcp        (try (agent/mcp-oauth-status) (catch Exception _ []))
-        line       (fn [label authed?]
-                     (str "  " label "  " (if authed? (ansi/success "authenticated")
-                                              (ansi/muted "not logged in"))))]
-    (str (ansi/header "OAuth status") "\n"
-         (line "anthropic" anthropic?) "\n"
-         (if (seq mcp)
-           (str/join "\n" (for [{:keys [server authenticated?]} mcp]
-                            (line server authenticated?)))
-           (ansi/muted "  (no OAuth-configured MCP servers)"))
+;; /login and /logout manage SPECIAL AUTH PROVIDERS (e.g. Anthropic
+;; subscription OAuth) — distinct from MCP servers, whose auth is handled by
+;; /mcp <server> start|stop|auth|status.
+
+(defn- provider-status-overview []
+  (let [anthropic? (try (clj-llm/oauth-authenticated?) (catch Exception _ false))]
+    (str (ansi/header "Auth providers") "\n"
+         "  anthropic  " (if anthropic? (ansi/success "signed in") (ansi/muted "not signed in")) "\n"
+         (ansi/muted "\n  /login <provider>   sign in    •    /logout <provider>   sign out")
          "\n"
-         (ansi/muted "\n  /login <mcp-server>   run device auth    •    /logout <anthropic|server>   clear credentials"))))
+         (ansi/muted "  (MCP server auth is separate — use /mcp <server> auth | status)"))))
 
 (defn- handle-login-command
-  "/login                 → show OAuth status across providers + MCP servers.
-   /login <mcp-server>    → (re)run native OAuth (device/auth-code) for it."
+  "/login            → list auth providers and their sign-in status.
+   /login <provider> → sign in to a provider (e.g. anthropic).
+   MCP servers are NOT providers — authenticate them with /mcp <server> auth."
   [args]
-  (let [target (some-> args str/trim not-empty)]
+  (let [target (some-> args str/trim str/lower-case not-empty)]
     (cond
       (nil? target)
-      (tui-session/emit! (oauth-status-overview))
+      (tui-session/emit! (provider-status-overview))
 
-      (some #{target} (agent/list-configured-servers))
-      (if (agent/mcp-oauth-server? target)
-        (reauth-mcp-async! target)
-        (tui-session/emit! (ansi/warning (str target " is not OAuth-configured"
-                                              " (set :config :auth {:type :oauth …})."))))
+      (= "anthropic" target)
+      (if (try (clj-llm/oauth-authenticated?) (catch Exception _ false))
+        (tui-session/emit! (ansi/muted "Already signed in to anthropic."))
+        (tui-session/emit! (ansi/warning
+                            (str "Anthropic subscription OAuth is restricted to Claude Code and "
+                                 "claude.ai, so it can't be completed here.\n"
+                                 "Other providers authenticate via API keys in your .env."))))
 
       :else
-      (tui-session/emit! (ansi/warning (str "Unknown OAuth target: " target
-                                            "\nRun /login with no args to see status."))))))
+      (tui-session/emit! (ansi/warning (str "Unknown auth provider: " target
+                                            "\nRun /login with no args to list providers."
+                                            "\n(For an MCP server, use /mcp " target " auth.)"))))))
 
 (defn- handle-logout-command
-  "/logout anthropic      → clear stored Anthropic OAuth tokens.
-   /logout <mcp-server>   → clear stored OAuth credentials for that server."
+  "/logout <provider> → sign out of an auth provider (e.g. anthropic).
+   MCP servers are managed via /mcp <server> stop — not here."
   [args]
-  (let [target (some-> args str/trim not-empty)]
+  (let [target (some-> args str/trim str/lower-case not-empty)]
     (cond
       (nil? target)
-      (tui-session/emit! (ansi/warning "Usage: /logout <anthropic | mcp-server>"))
+      (tui-session/emit! (ansi/warning "Usage: /logout <provider>   (e.g. anthropic)"))
 
       (= "anthropic" target)
       (do (try (clj-llm/oauth-logout!) (catch Exception _ nil))
-          (tui-session/emit! (ansi/success "Logged out of Anthropic OAuth.")))
-
-      (some #{target} (agent/list-configured-servers))
-      (if (agent/mcp-oauth-server? target)
-        (do (agent/mcp-oauth-logout! target)
-            (tui-session/emit! (ansi/success (str "Cleared OAuth credentials for " target "."))))
-        (tui-session/emit! (ansi/warning (str target " is not OAuth-configured."))))
+          (tui-session/emit! (ansi/success "Signed out of anthropic.")))
 
       :else
-      (tui-session/emit! (ansi/warning (str "Unknown OAuth target: " target))))))
+      (tui-session/emit! (ansi/warning (str "Unknown auth provider: " target
+                                            "\n(For an MCP server, use /mcp " target " stop.)"))))))
 
 ;; ============================================================================
 ;; Continue Command (private)
