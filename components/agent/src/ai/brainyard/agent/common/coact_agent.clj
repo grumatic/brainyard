@@ -1522,7 +1522,7 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
         ;; L1 simplification refactor.
         bindings (merge (sb-bind/make-tool-bindings agent)
                         (or restore-bindings {})
-                        (sb-bind/make-usage-bindings)
+                        (sb-bind/make-usage-bindings agent)
                         {'now (with-meta
                                 (fn [] (sys-info/now-snapshot))
                                 {:doc "Current wall-clock as {:wall-time-iso :tz-iana :tz-offset-minutes}. Use this when you need the current time mid-turn without forcing the system prompt to re-render."

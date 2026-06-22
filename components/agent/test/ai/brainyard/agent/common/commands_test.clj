@@ -9,6 +9,9 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
             [ai.brainyard.agent.common.commands :as cmds]
+            [ai.brainyard.agent.common.sandbox-bindings :as sb]
+            [ai.brainyard.agent.core.tool :as tool]
+            [ai.brainyard.clj-sandbox.interface :as clj-sandbox]
             [ai.brainyard.memory.interface :as mem]))
 
 (def ^:dynamic *mm* nil)
@@ -106,3 +109,47 @@
     (let [r (recall {:query "dark"})]
       (is (nil? (:error r)))
       (is (= "combined" (:layer r))))))
+
+;; ============================================================================
+;; usage — on-demand guide tool (callable via the tool-calls channel), with the
+;; sandbox `(usage …)` binding delegating to it as the single source of truth.
+;; ============================================================================
+
+(deftest usage-tool-registered
+  (let [td (tool/get-tool-defs :id :usage)]
+    (is (some? td) "usage must be registered in the tool registry")
+    (is (= :command (:type td)))))
+
+(deftest usage-tool-no-topic-lists-catalog
+  (let [r (tool/invoke-tool :usage)]
+    (is (nil? (:guide r)))
+    (is (= (vec clj-sandbox/usage-topics) (:topics r))
+        "no topic → full topic catalog")))
+
+(deftest usage-tool-known-topic-returns-guide
+  (let [r (tool/invoke-tool :usage {:topic "memory"})]
+    (is (= "memory" (:topic r)))
+    (is (string? (:guide r)))
+    (is (pos? (count (:guide r))))
+    (is (= (clj-sandbox/get-usage-guide :memory) (:guide r))
+        "tool guide must match the clj-sandbox source of truth")))
+
+(deftest usage-tool-unknown-topic-errors-with-catalog
+  (let [r (tool/invoke-tool :usage {:topic "nope"})]
+    (is (nil? (:guide r)))
+    (is (str/includes? (:error r) "unknown topic"))
+    (is (= (vec clj-sandbox/usage-topics) (:topics r))
+        "unknown topic → error + catalog so the caller can retry")))
+
+(deftest usage-binding-delegates-and-preserves-legacy-shape
+  ;; The sandbox `(usage …)` binding routes through the :usage tool but must
+  ;; keep returning the legacy shape: a vector for no-arg, a raw guide STRING
+  ;; for a known topic, an error map otherwise.
+  (let [usage (get (sb/make-usage-bindings nil) 'usage)]
+    (is (= (vec clj-sandbox/usage-topics) (usage))
+        "no-arg binding returns the topic vector, not a wrapper map")
+    (is (= (clj-sandbox/get-usage-guide :memory) (usage :memory))
+        "known topic returns the raw guide string")
+    (is (str/includes? (:error (usage :nope)) "unknown topic"))
+    (is (str/includes? (:error (usage 123)) "must be a keyword/string/symbol")
+        "bad arg type is rejected locally with the legacy message")))

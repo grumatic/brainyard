@@ -26,6 +26,7 @@
             [ai.brainyard.agent.common.artifacts :as artifacts]
             [ai.brainyard.agent.common.log :as log]
             [ai.brainyard.clj-llm.interface :as clj-llm]
+            [ai.brainyard.clj-sandbox.interface :as clj-sandbox]
             [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.memory.interface.protocol :as mproto]
             [clojure.string :as str]))
@@ -557,6 +558,33 @@
                   [:total [:int {:desc "Entries after filter, before limit"}]]
                   [:curated [:boolean {:desc "True when only curated entries were returned (i.e. :all was not set)"}]]
                   [:providers [:vector {:desc "All providers in the catalog"} :keyword]]])
+
+(defcommand usage
+  "Return an on-demand usage guide for a topic. Call with no topic to list all
+   available topics; call with one (e.g. :memory) to get that guide's text.
+   Same guides the sandbox `(usage :topic)` binding serves — exposed here so the
+   tool-calls channel (and non-sandbox backends like :nrepl) can reach them too."
+  (fn [& {:keys [topic]}]
+    (let [k (cond
+              (keyword? topic) topic
+              (symbol? topic)  (keyword (name topic))
+              (and (string? topic) (not (str/blank? topic)))
+              (keyword (str/replace topic #"^:" ""))
+              :else            nil)
+          topics (vec clj-sandbox/usage-topics)
+          guide  (when k (clj-sandbox/get-usage-guide k))]
+      (cond
+        (nil? k)     {:topics topics}
+        (nil? guide) {:error  (str "unknown topic " (pr-str k)) :topics topics}
+        :else        {:topic (str (name k)) :guide guide})))
+  :input-schema  [:map
+                  [:topic {:optional true}
+                   [:string {:desc "Topic to fetch (e.g. \"memory\", \"todo\", \"files\"). Omit to list all topics."}]]]
+  :output-schema [:map
+                  [:topic  {:optional true} [:string {:desc "Echoed topic when a guide was returned."}]]
+                  [:guide  {:optional true} [:string {:desc "The guide text for the requested topic."}]]
+                  [:topics {:optional true} [:vector {:desc "All available topics (returned when no topic given, or on an unknown topic)."} :keyword]]
+                  [:error  {:optional true} [:string {:desc "Present when the topic is unknown."}]]])
 
 ;; ============================================================================
 ;; Command Categories

@@ -234,28 +234,40 @@
 
    Replaces the previous fan-out of 14 zero-arg `(usage-<topic>)` thunks: those
    bloated the sandbox category index and the LLM rarely noticed them. With a
-   single binding the system prompt can point at it explicitly."
-  []
-  {'usage
-   (with-meta
-     (fn
-       ([] (vec clj-sandbox/usage-topics))
-       ([topic]
-        (let [k (cond (keyword? topic) topic
-                      (string? topic)  (keyword topic)
-                      (symbol? topic)  (keyword (name topic))
-                      :else            nil)
-              guide (when k (clj-sandbox/get-usage-guide k))]
-          (cond
-            (nil? k)   {:error (str "usage: topic must be a keyword/string/symbol, got "
-                                    (pr-str topic))
-                        :topics (vec clj-sandbox/usage-topics)}
-            (nil? guide) {:error (str "usage: unknown topic " (pr-str k))
-                          :topics (vec clj-sandbox/usage-topics)}
-            :else      guide))))
-     {:doc      "Return the on-demand usage guide for a topic. (usage) lists all topics; (usage :memory) returns that guide. Topics: see clj-sandbox/usage-topics."
-      :arglists '([] [topic])
-      :category :usage})})
+   single binding the system prompt can point at it explicitly.
+
+   Delegates to the registered `:usage` tool (single source of truth, shared
+   with the tool-calls channel) and unwraps the tool's result map back to the
+   legacy sandbox shape: a guide string for a known topic, the topic-keyword
+   vector for no-arg, an error map otherwise."
+  [agent]
+  (letfn [(call-usage [args]
+            (let [r (try (tool/call-tool :usage args :agent agent)
+                         (catch Exception e {:error (str "usage failed: " (.getMessage e))}))]
+              (if-let [em (:error-message r)] (assoc r :error em) r)))]
+    {'usage
+     (with-meta
+       (fn
+         ([] (let [{:keys [topics error]} (call-usage {})]
+               (or topics {:error error})))
+         ([topic]
+          (let [k (cond (keyword? topic) topic
+                        (string? topic)  (keyword topic)
+                        (symbol? topic)  (keyword (name topic))
+                        :else            nil)]
+            (if (nil? k)
+              {:error (str "usage: topic must be a keyword/string/symbol, got "
+                           (pr-str topic))
+               :topics (vec clj-sandbox/usage-topics)}
+              (let [{:keys [guide topics error]} (call-usage {:topic (name k)})]
+                (cond
+                  guide guide
+                  error {:error error :topics (or topics (vec clj-sandbox/usage-topics))}
+                  :else {:error (str "usage: unknown topic " (pr-str k))
+                         :topics (or topics (vec clj-sandbox/usage-topics))}))))))
+       {:doc      "Return the on-demand usage guide for a topic. (usage) lists all topics; (usage :memory) returns that guide. Topics: see clj-sandbox/usage-topics."
+        :arglists '([] [topic])
+        :category :usage})}))
 
 ;; ============================================================================
 ;; Note: the legacy `remember-note` / `get-note` / `list-notes` /
