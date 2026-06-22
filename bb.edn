@@ -938,6 +938,20 @@
   {:doc "Run all Polylith tests"
    :task (shell "clj" "-M:poly" "test")}
 
+  oauth:test-server
+  {:doc "Run the Brainyard test OAuth + MCP device-flow provider (test/demo only).
+
+   A real RFC 8628 device-flow authorization server + an OAuth-gated MCP
+   endpoint, so you can exercise the clj-oauth + MCP stack end to end (Anthropic
+   consumer OAuth is Claude-Code-only and can't serve as a target). Prints a
+   ready-to-paste `:mcp :servers` config; then `/mcp brainyard auth` in the TUI
+   shows a device code box you approve in a browser. Test-only — never shipped.
+
+   Usage: bb oauth:test-server [port]   (default 7900)"
+   :task (let [port (or (first *command-line-args*) "7900")]
+           (shell {:dir "components/clj-oauth"}
+                  "clj" "-M:test" "-m" "ai.brainyard.clj-oauth.test-server" port))}
+
   test:component
   {:doc "Test a specific component: bb test:component <name>
 
