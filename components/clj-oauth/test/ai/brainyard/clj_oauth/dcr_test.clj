@@ -24,6 +24,18 @@
         (is (= "read write" (:scope body)))
         (is (some #{"urn:ietf:params:oauth:grant-type:device_code"} (:grant_types body)))))))
 
+(deftest register-client-grants-from-metadata
+  (testing "requests only the provider's advertised grants; auth_code adds OOB redirect"
+    (let [seen (atom nil)
+          post (fn [_ opts] (reset! seen (json/read-str (:body opts) :key-fn keyword))
+                 {:status 201 :body (json/write-str {:client_id "dyn-x"})})]
+      (dcr/register-client! "https://notion/register"
+                            {:grant-types ["authorization_code" "refresh_token"] :post-fn post})
+      (is (= ["authorization_code" "refresh_token"] (:grant_types @seen))
+          "no device_code grant when the provider doesn't support it")
+      (is (= ["urn:ietf:wg:oauth:2.0:oob"] (:redirect_uris @seen))
+          "authorization_code requires redirect_uris (RFC 7591)"))))
+
 (deftest register-client-failures
   (testing "non-2xx throws"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"registration failed"

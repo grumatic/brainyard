@@ -188,3 +188,23 @@
                           :socket-timeout 30000
                           :insecure? false
                           :random-unknown-key 42})))))))
+
+(deftest headers-past-eight-survive
+  ;; Regression: headers-from-response built a transient with `assoc!` but
+  ;; discarded its return, relying on in-place mutation. Past 8 entries the
+  ;; transient promotes to a hash-map and `assoc!` returns a NEW object, so the
+  ;; 9th+ key was silently lost. With the JDK's case-insensitive header order
+  ;; that dropped the alphabetically-last header — e.g. `www-authenticate` on a
+  ;; 401 from a server with many headers (broke OAuth 401-challenge discovery).
+  (with-server
+    (fn [exch]
+      (write-response exch 401 "no"
+                      {"A-One" "1" "B-Two" "2" "C-Three" "3" "D-Four" "4"
+                       "E-Five" "5" "F-Six" "6" "G-Seven" "7" "H-Eight" "8"
+                       "WWW-Authenticate" "Bearer realm=\"x\"" "Z-Last" "zz"}))
+    (fn []
+      (let [h (:headers (http/get *base-url* {:as :string :throw-exceptions false}))]
+        (testing "every header survives, including the alphabetically-last ones"
+          (doseq [[k v] {"a-one" "1" "h-eight" "8"
+                         "www-authenticate" "Bearer realm=\"x\"" "z-last" "zz"}]
+            (is (= v (get h k)) (str k " present and correct"))))))))

@@ -116,7 +116,9 @@
       (when issuer
         (or (:client_id (store/load-tokens (client-account issuer)))
             (when-let [reg-ep (:registration_endpoint metadata)]
-              (let [reg (dcr/register-client! reg-ep {:scopes scopes})]
+              (let [reg (dcr/register-client! reg-ep
+                                              {:scopes scopes
+                                               :grant-types (:grant_types_supported metadata)})]
                 (store/save-tokens! (client-account issuer)
                                     (select-keys reg [:client_id :client_secret]))
                 (:client_id reg)))))

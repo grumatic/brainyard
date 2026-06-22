@@ -94,12 +94,18 @@
    pseudo-headers (`:status`, `:authority`, …) which the JDK surfaces in
    the response headers map but clj-http never exposed."
   [^java.net.http.HttpHeaders hs]
-  (let [m (.map hs)
-        out (transient {})]
-    (doseq [[k vs] m]
-      (when-not (str/starts-with? k ":")
-        (assoc! out (str/lower-case k) (str/join ", " vs))))
-    (persistent! out)))
+  ;; Thread the transient through reduce — `assoc!` may RETURN a new transient
+  ;; (when an array-backed transient promotes to a hash-map past 8 entries), so
+  ;; a `doseq` that discards the return silently loses the 9th+ key. With JDK
+  ;; header maps sorted case-insensitively, that dropped the alphabetically-last
+  ;; header (e.g. `www-authenticate`) on any response with >8 headers.
+  (persistent!
+   (reduce (fn [out [k vs]]
+             (if (str/starts-with? k ":")
+               out
+               (assoc! out (str/lower-case k) (str/join ", " vs))))
+           (transient {})
+           (.map hs))))
 
 ;; ============================================================================
 ;; Body publishers / handlers
