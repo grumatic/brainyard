@@ -14,6 +14,7 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
             [ai.brainyard.agent.core.tool :as tool]
+            [ai.brainyard.agent.core.usage :as usage]
             [ai.brainyard.agent.core.agent :as ag]
             [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.protocol :as tp]
@@ -63,6 +64,26 @@
               (str id " must be bound so debug-agent can edit + verify source"))))
       (testing "background execution for running a brick's tests post-edit"
         (is (contains? tools :task$run))))))
+
+(deftest nrepl-guide-colocated-and-inlined
+  ;; The :nrepl usage guide is the SINGLE SOURCE for live-runtime methodology:
+  ;; defined + registered in debug-agent (loaded by this ns), and inlined into
+  ;; debug-agent's tool-context. No second hand-written copy.
+  (testing "loading debug-agent registers the :nrepl guide"
+    (is (some #{:nrepl} (usage/list-usage-topics)))
+    (let [g (usage/get-usage-guide :nrepl)]
+      (is (string? g))
+      (is (str/includes? g "live brainyard"))
+      (is (str/includes? g "Inspecting the live brainyard image"))))
+  (testing "debug-agent's tool-context inlines that exact guide (single source)"
+    (let [td  (tool/get-tool-defs :id :debug-agent)
+          ctx (get-in td [:meta :tool-context])]
+      (is (string? ctx))
+      ;; the debug-only lifecycle preamble is present...
+      (is (str/includes? ctx "TOOL channel ONLY"))
+      ;; ...followed verbatim by the registry's :nrepl guide.
+      (is (str/includes? ctx (usage/get-usage-guide :nrepl))
+          "tool-context must inline the registered guide, not a separate copy"))))
 
 ;; ============================================================================
 ;; Backend selection — agent-clj-backend reads :clj-backend via the unified

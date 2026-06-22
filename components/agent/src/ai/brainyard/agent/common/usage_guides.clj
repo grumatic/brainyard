@@ -11,9 +11,10 @@
    (bare) by `agent.common.commands` so the guides are present whenever the
    agent component loads.
 
-   New topics (`:tool`, `:code`, `:sandbox`, `:nrepl`, `:agents`) can be added
-   here, or registered next to the feature they document via
-   `agent.core.usage/defusage`."
+   New topics (`:tool`, `:code`, `:sandbox`, `:agents`) can be added here, or
+   registered next to the feature they document via
+   `agent.core.usage/register-usage!`. The `:nrepl` guide is colocated this way
+   in `agent.common.debug-agent` (it is also that agent's tool-context)."
   (:require [ai.brainyard.agent.core.usage :as usage]))
 
 ;; ============================================================================
@@ -490,36 +491,10 @@ to `/tmp/foo.sh` via `write-file` and run it with `(bash \"bash /tmp/foo.sh\")`.
 This SCI sandbox is the ISOLATED eval path. For inspecting/patching the running
 brainyard JVM, that's the `:nrepl` backend (debug-agent) — see `(usage :nrepl)`.")
 
-(def ^:private usage-nrepl
-  "## Live runtime (clj-nrepl) — debug-agent
-On the `:nrepl` backend, every ```clojure fence runs INSIDE the live brainyard
-JVM with full reflection: every loaded namespace, var, atom, and value is
-reachable. nREPL is full-trust — the only eval-path check is the deny-list
-(System/exit, Runtime/.exec, credential namespaces). For ISOLATED eval, use the
-SCI sandbox instead — see `(usage :sandbox)`.
-
-### Inspect the live image (safe, non-destructive)
-```clojure
-(->> (all-ns) (map ns-name) (filter #(clojure.string/starts-with? (str %) \"ai.brainyard\")) sort)
-(sort (keys (ns-publics 'ai.brainyard.agent.core.config)))
-(select-keys (meta #'ai.brainyard.agent.core.config/get-config) [:file :line])  ;; source location
-(ai.brainyard.agent.core.config/get-config-snapshot)                            ;; effective config
-@ai.brainyard.agent.core.tool/!tool-defs                                        ;; deref live atoms
-*e (ex-message *e) (ex-data *e)                                                 ;; last exception
-```
-
-### Invoking registered tools
-Unlike the SCI sandbox, nREPL does NOT auto-bind kebab-case tool fns. Dispatch via
-`(ai.brainyard.agent.core.tool/call-tool :task$run {…})`. Agent-state tools
-(`memory$*`, session) read `*current-agent*` (nil on the nREPL thread) — pass
-`:agent <instance>` so call-tool binds it.
-
-### Debug → fix loop
-Reproduce → probe → hypothesize → VALIDATE LIVE (ephemeral `def`/`alter-var-root`)
-→ EDIT SOURCE (read-file/update-file) → RELOAD (`(require 'ns :reload)`) and
-re-verify from source. Never `:reload-all` an interface ns — it rebuilds protocols
-and orphans live records (running agents). `:reload` is a flag:
-`(require '[ns :as a] :reload)`, not inside the libspec vector.")
+;; NOTE: the `:nrepl` guide is COLOCATED with its feature — it is defined and
+;; registered in ai.brainyard.agent.common.debug-agent (the live-runtime agent),
+;; which also inlines it as its tool-context. This is the registry's intended
+;; colocation pattern; see agent.core.usage/defusage.
 
 (def ^:private usage-agents
   "## Specialized sub-agents — delegate the right work
@@ -584,8 +559,7 @@ and inspect inputs with `(get-tool-info \"<agent>\")`.
     :consult "Before multi-block / long-running code — the loop, deferred tasking, languages."}
    {:topic :sandbox      :title "SCI Sandbox Model"    :category :sandbox     :guide usage-sandbox
     :consult "When SCI escaping/interop bites — string rules, aliases, interop policy."}
-   {:topic :nrepl        :title "Live Runtime (nREPL)" :category :debug       :guide usage-nrepl
-    :consult "On the `:nrepl` backend (debug-agent) — inspect/patch the running JVM, debug→fix loop."}
+   ;; :nrepl is colocated in agent.common.debug-agent (registered there).
    {:topic :truncation   :title "Output Truncation"   :category :sandbox     :guide usage-output-truncation
     :consult "When a tool result is going to be huge."}
    {:topic :final        :title "FINAL Rules"          :category :sandbox     :guide usage-final-rules

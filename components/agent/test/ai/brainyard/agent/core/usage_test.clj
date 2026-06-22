@@ -17,9 +17,10 @@
       (doseq [t topics]
         (is (not (str/blank? (usage/get-usage-guide t)))
             (str "topic " t " has no guide body")))))
-  (testing "the new generalized topics are present"
+  (testing "the new generalized topics are present (:nrepl is colocated in
+            debug-agent, so it's covered by debug-agent-test, not here)"
     (let [topics (set (usage/list-usage-topics))]
-      (doseq [t [:tool :code :sandbox :nrepl :agents]]
+      (doseq [t [:tool :code :sandbox :agents]]
         (is (contains? topics t) (str t " should be registered")))))
   (testing "migrated topics survive the move from clj-sandbox"
     (let [topics (set (usage/list-usage-topics))]
@@ -53,7 +54,7 @@
     (is (string? t))
     (is (str/includes? t "When to consult"))
     (testing "includes a new topic — proves it's generated, not hardcoded"
-      (is (str/includes? t "`:nrepl`"))
+      (is (str/includes? t "`:sandbox`"))
       (is (str/includes? t "`:agents`")))))
 
 (deftest register-usage-roundtrip-and-validation

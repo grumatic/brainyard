@@ -36,6 +36,7 @@
   (:require [ai.brainyard.agent.core.tool :refer [defagent defcommand]]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.hooks :as hooks]
+            [ai.brainyard.agent.core.usage :as usage]
             [ai.brainyard.agent.common.coact-agent :as coact]
             ;; Loading code-eval ensures `code$eval` is in the registry
             ;; whenever debug-agent is on the classpath — the defagent's
@@ -238,7 +239,10 @@
      live runtime by default. Fully-qualify symbols (the session is the `user`
      ns); slice big values (`(take 20 …)`, `(keys …)`) instead of dumping.")
 
-(def ^:private debug-tool-context
+;; debug-only preamble — prepended to the :nrepl guide in this agent's
+;; tool-context. The lifecycle tools below are gated to debug-* and are not
+;; general nREPL knowledge, so they live here, not in the shared guide.
+(def ^:private debug-lifecycle-preamble
   "## nREPL lifecycle tools (start / stop / status) — TOOL channel ONLY
 
    `clj-nrepl$start-server`, `clj-nrepl$stop-server`, and `clj-nrepl$status`
@@ -252,7 +256,20 @@
      - clj-nrepl$start-server  — start it (idempotent)
      - clj-nrepl$stop-server   — stop it
    Only AFTER status confirms the server is running do ```clojure blocks
-   evaluate against the live image; use the code channel for everything else.
+   evaluate against the live image; use the code channel for everything else.")
+
+;; The `:nrepl` usage guide — the SINGLE SOURCE for live-runtime methodology,
+;; colocated with debug-agent (the registry's intended colocation pattern). It
+;; is registered into agent.core.usage below, AND inlined into debug-agent's
+;; tool-context — one string, two consumers (debug-agent inline + on-demand
+;; `(usage :nrepl)` for any other agent).
+(def ^:private nrepl-guide
+  "## Live runtime (clj-nrepl)
+On the `:nrepl` backend, every ```clojure fence runs INSIDE the live brainyard
+JVM with full reflection: every loaded namespace, var, atom, and value is
+reachable. nREPL is full-trust — the only eval-path check is the deny-list
+(System/exit, Runtime/.exec, credential namespaces). For ISOLATED eval, use the
+SCI sandbox instead — see `(usage :sandbox)`.
 
    ## Inspecting the live brainyard image (read-only, safe)
 
@@ -432,8 +449,22 @@
      visible, so `call-tool` reaches anything in `!tool-defs`. Pass `:agent dbg`
      to exercise the debug-agent's own gating; `:agent-tools` lists its bound set.
    - For internal fns (not registered as tools), call them directly by
-     their fully-qualified var — no `call-tool` needed.
-   ```")
+     their fully-qualified var — no `call-tool` needed.")
+
+;; Register the guide so any agent can pull it with `(usage :nrepl)` and the
+;; JIT nudge can surface it on first `clj-nrepl$*` use. :order 15 keeps it next
+;; to :sandbox in the catalog (see agent.common.usage-guides for the rest).
+(usage/register-usage! :nrepl
+                       {:guide    nrepl-guide
+                        :title    "Live Runtime (nREPL)"
+                        :category :debug
+                        :order    15
+                        :consult  "On the `:nrepl` backend (debug-agent) — inspect/patch the running JVM, debug→fix loop."})
+
+;; debug-agent's tool-context = debug-only preamble + the :nrepl guide, inlined
+;; from the registry (single source — never hand-written twice).
+(def ^:private debug-tool-context
+  (str debug-lifecycle-preamble "\n\n" (usage/get-usage-guide :nrepl)))
 
 ;; ============================================================================
 ;; Defagent registration

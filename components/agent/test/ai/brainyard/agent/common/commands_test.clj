@@ -142,9 +142,10 @@
         "unknown topic → error + catalog so the caller can retry")))
 
 (deftest usage-tool-new-topics-present
-  (testing "the generalized registry includes the new agent-domain topics"
+  (testing "the generalized registry includes the new agent-domain topics
+            (:nrepl is colocated in debug-agent — see debug-agent-test)"
     (let [topics (set (usage/list-usage-topics))]
-      (doseq [t [:tool :code :sandbox :nrepl :agents]]
+      (doseq [t [:tool :code :sandbox :agents]]
         (is (contains? topics t) (str t " should be registered"))
         (is (string? (usage/get-usage-guide t)) (str t " should have a guide"))))))
 
