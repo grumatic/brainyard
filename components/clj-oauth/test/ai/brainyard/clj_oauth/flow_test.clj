@@ -87,9 +87,8 @@
           (is (= "AT" (oauth/access-token "notion")))
           (is (= {"Authorization" "Bearer AT"} (oauth/bearer-headers "notion"))))))))
 
-(deftest login!-loopback-rejected
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"[Ll]oopback"
-                        (oauth/login! {:account-id "x" :endpoints device-meta :client-id "c" :flow :loopback}))))
+;; (loopback is now implemented — its end-to-end behavior is covered by
+;;  device-e2e-test/loopback-flow-end-to-end against the test provider.)
 
 (deftest login!-requires-issuer-or-endpoints
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #":issuer or :endpoints"

@@ -75,8 +75,13 @@
                        :as :string
                        :throw-exceptions false})]
     (when-not (<= 200 (:status resp) 299)
-      (throw (ex-info "Authorization-code exchange failed"
-                      {:status (:status resp) :body (:body resp)})))
+      (let [err (try (json/read-str (:body resp) :key-fn keyword) (catch Exception _ nil))
+            detail (or (some->> [(:error err) (:error_description err)]
+                                (filter some?) seq (str/join ": "))
+                       (some-> (:body resp) (subs 0 (min 200 (count (:body resp))))))]
+        (throw (ex-info (str "Authorization-code exchange failed (HTTP " (:status resp) ")"
+                             (when detail (str ": " detail)))
+                        {:status (:status resp) :body (:body resp) :error err}))))
     (let [body (json/read-str (:body resp) :key-fn keyword)
           now  (System/currentTimeMillis)]
       (assoc body

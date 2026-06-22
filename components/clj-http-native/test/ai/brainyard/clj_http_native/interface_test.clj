@@ -208,3 +208,23 @@
           (doseq [[k v] {"a-one" "1" "h-eight" "8"
                          "www-authenticate" "Bearer realm=\"x\"" "z-last" "zz"}]
             (is (= v (get h k)) (str k " present and correct"))))))))
+
+(deftest content-type-sugar-sets-the-header
+  ;; Regression: only :content-type :json was honored; :form and string content
+  ;; types were silently dropped — so strict servers (OAuth /token) rejected the
+  ;; request ("Content-Type must be application/x-www-form-urlencoded").
+  (let [seen (atom nil)]
+    (with-server
+      (fn [exch]
+        (reset! seen (.getFirst (.getRequestHeaders exch) "Content-Type"))
+        (write-response exch 200 "ok"))
+      (fn []
+        (testing ":form keyword → application/x-www-form-urlencoded"
+          (http/post *base-url* {:body "a=b" :content-type :form :as :string})
+          (is (= "application/x-www-form-urlencoded" @seen)))
+        (testing ":json keyword → application/json"
+          (http/post *base-url* {:body "{}" :content-type :json :as :string})
+          (is (= "application/json" @seen)))
+        (testing "a string content type is used verbatim"
+          (http/post *base-url* {:body "x" :content-type "text/plain; charset=utf-8" :as :string})
+          (is (= "text/plain; charset=utf-8" @seen)))))))

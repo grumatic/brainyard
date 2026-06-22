@@ -178,9 +178,17 @@
            as               :string}
     :as   opts}]
   (let [client  (build-client opts)
-        ;; :content-type :json is clj-http sugar; mirror it.
+        ;; :content-type sugar (clj-http-compatible): the keywords :json / :form
+        ;; expand to their media types; any other value is used verbatim as the
+        ;; Content-Type. Previously only :json was honored, so a string content
+        ;; type (e.g. "application/x-www-form-urlencoded") was silently dropped —
+        ;; breaking strict servers that require the header (OAuth token endpoints).
         headers (cond-> (or headers {})
-                  (= :json content-type) (assoc "Content-Type" "application/json"))
+                  content-type (assoc "Content-Type"
+                                      (case content-type
+                                        :json "application/json"
+                                        :form "application/x-www-form-urlencoded"
+                                        content-type)))
         req     ^HttpRequest (-> ^HttpRequest$Builder (HttpRequest/newBuilder (URI. url))
                                  (.timeout (Duration/ofMillis (long timeout-ms)))
                                  (apply-method method body)
