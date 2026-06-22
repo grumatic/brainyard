@@ -457,30 +457,20 @@ Detailed escaping recipes: `(usage :rules)`.")
 
 (def ^:private coact-large-results-playbook
   "## Large Tool Results Playbook
-Big tool/code-block results spill to `/tmp/…` and inline a marker:
-```
---- <label> TRUNCATED (original: N chars, M lines) ---
---- Full content saved to: /tmp/.../abc.txt ---
---- Truncation limit: L chars (~SAFE_LINES lines). Keep read-file chunks within this limit. ---
---- Recovery: (def data (:content (read-file \"/tmp/...\" :lines [1 SAFE_LINES]))) then process with code ---
-```
-Read `N`, `M`, `SAFE_LINES` off the marker and obey them.
+Big tool/code-block results spill to `/tmp/…` with a marker giving the original
+size, a `SAFE_LINES` chunk limit, and a recovery snippet — read it and obey it.
 
 ### Rules
-1. **Never bare-read a spilled path** — pass `:lines [a b]` OR `:offset/:limit`. A bare read
-   re-truncates → another marker → loop.
-2. **Reach for `grep` first** when you need a pattern/region — its `{:matches :count}` result
-   inlines without re-truncation. Skip the chunked walk entirely when grep is enough.
-3. **Chunk via `read-file` tool-call** (one-shot RPC; not a clojure fence — fences add the
-   tighter eval-output budget on top). Multi-line file → `:lines [1, SAFE_LINES]` then advance.
-   Single-line / structured file → `:offset/:limit` in chars (the marker says which mode).
-4. **Code fences are for composition only** — filter/regex/aggregate across chunks. NEVER
-   `println`/`pprint` a reconstructed-from-chunks value; the printed string re-truncates.
-5. **\"Show me X\" → populate `answer`**, don't re-print: read the chunk, then in the next
-   iteration put the content verbatim into the signature's `answer` field. `(FINAL …)` is
-   disabled for CoAct — populating `answer` is the only termination path.
+1. **Never bare-read a spilled path** — pass `:lines [a b]` or `:offset/:limit`;
+   a bare read re-truncates → another marker → loop.
+2. **Reach for `grep` first** for a pattern/region — its `{:matches :count}`
+   inlines without re-truncation; skip the chunked walk when grep suffices.
+3. **Use `read-file` for reads/chunks; code fences only compose**
+   (filter/regex/aggregate) — NEVER `println`/`pprint` a reconstructed value,
+   it re-truncates.
+4. **\"Show me X\" → populate `answer`** verbatim next iteration, don't re-print.
 
-Detailed recipes + worked examples: `(usage :truncation)`.")
+Marker format, chunk modes, and worked recipes: `(usage :truncation)`.")
 
 (def ^:private coact-footer
   "## Answer Format
