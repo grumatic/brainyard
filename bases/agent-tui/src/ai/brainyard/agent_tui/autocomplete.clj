@@ -310,6 +310,7 @@
       ;; Second level: show actions for selected server
       (let [actions  [["start" "Connect server"]
                       ["stop"  "Disconnect server"]
+                      ["auth"  "(Re)run OAuth for a native :http OAuth server"]
                       ["status" "Show server status"]]
             all     (mapv (fn [[act desc]]
                             [(str "/mcp " srv-part " " act) desc])

@@ -19,6 +19,7 @@
             [ai.brainyard.agent.mcp.client :as mcp-client]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.core.config :as core-config]
+            [ai.brainyard.clj-oauth.interface :as oauth]
             [ai.brainyard.clj-llm.interface :refer [defschemas]]))
 
 ;; =============================================================================
@@ -238,6 +239,62 @@
   (when-let [config (get-mcp-server-config server-name)]
     (disconnect-mcp-server! server-name)
     (connect-mcp-server! server-name config)))
+
+;; =============================================================================
+;; OAuth helpers — native :http transport auth (components/clj-oauth)
+;; =============================================================================
+
+(defn mcp-oauth-server?
+  "True when `server-name` is configured for native OAuth
+   (`:config :auth {:type :oauth …}`)."
+  [server-name]
+  (= :oauth (get-in (get-mcp-server-config server-name) [:config :auth :type])))
+
+(defn mcp-oauth-account-id
+  "clj-oauth credential-store account-id for an OAuth-configured server:
+   the configured `:account-id` or, by default, the server name."
+  [server-name]
+  (or (get-in (get-mcp-server-config server-name) [:config :auth :account-id])
+      server-name))
+
+(defn mcp-oauth-status
+  "Auth state for every natively-OAuth-configured server:
+   seq of `{:server :account-id :authenticated?}`."
+  []
+  (->> (list-configured-servers)
+       (filter mcp-oauth-server?)
+       (mapv (fn [sn]
+               (let [acct (mcp-oauth-account-id sn)]
+                 {:server sn :account-id acct
+                  :authenticated? (oauth/authenticated? acct)})))))
+
+(defn mcp-oauth-logout!
+  "Clear stored OAuth credentials for an MCP server. Returns
+   `{:server :account-id}` or nil when the server isn't OAuth-configured.
+   Does not disconnect a live session — pair with `/mcp <name> stop` if needed."
+  [server-name]
+  (when (mcp-oauth-server? server-name)
+    (let [acct (mcp-oauth-account-id server-name)]
+      (oauth/logout! acct)
+      {:server server-name :account-id acct})))
+
+(defn reauth-mcp-server!
+  "Force re-authentication for an OAuth-configured MCP server: clear the stored
+   token, then reconnect so `connect!` re-runs the device/auth-code login (the
+   verification URL + user code are printed to stderr / logged — approach (b)).
+   Throws for a non-OAuth server. Returns `{:server :account-id}`.
+
+   NOTE: device flow blocks until the user authorizes on another device, so
+   callers that must stay responsive (the TUI) should run this on a future."
+  [server-name]
+  (when-not (mcp-oauth-server? server-name)
+    (throw (ex-info (format "MCP server '%s' is not OAuth-configured (set :config :auth {:type :oauth …})"
+                            server-name)
+                    {:server server-name})))
+  (let [acct (mcp-oauth-account-id server-name)]
+    (oauth/logout! acct)
+    (reconnect-mcp-server! server-name)
+    {:server server-name :account-id acct}))
 
 ;; =============================================================================
 ;; Direct MCP Tool Access (no registry)

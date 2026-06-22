@@ -695,12 +695,16 @@
     (str "  " status-icon " " server-name " " status-text
          (ansi/muted (str " (" transport ")")))))
 
+;; Defined below (OAuth Commands section); used by /mcp <s> auth here.
+(declare reauth-mcp-async!)
+
 (defn- handle-mcp-command
   "Handle /mcp meta-command.
    No args:             list all servers with status.
    <server>:            show server status detail.
    <server> start:      connect server.
    <server> stop:       disconnect server.
+   <server> auth:       (re)run OAuth for a native :http OAuth server.
    <server> status:     show server status detail."
   [args]
   (let [configured (agent/list-configured-servers) active (set (agent/list-active-clients))]
@@ -714,7 +718,7 @@
           (tui-session/emit! (str (ansi/header "MCP Servers") "\n"
                                   (str/join "\n" lines) "\n"
                                   (ansi/muted (str "\n  " (count active) "/" (count configured) " connected"
-                                                   "  •  /mcp <server> start|stop|status"))))))
+                                                   "  •  /mcp <server> start|stop|auth|status"))))))
       ;; Has args: parse server-name and optional action
       (let [parts       (str/split (str/trim args) #"\s+" 2)
             server-name (first parts)
@@ -743,6 +747,12 @@
                   (catch Exception e
                     (tui-session/emit! (ansi/failure (str "Failed to stop " server-name ": " (.getMessage e)))))))
 
+              "auth"
+              (if-not (agent/mcp-oauth-server? server-name)
+                (tui-session/emit! (ansi/warning (str server-name " is not OAuth-configured"
+                                                      " (set :config :auth {:type :oauth …}).")))
+                (reauth-mcp-async! server-name))
+
               "status"
               (let [transport (name (or (:transport config) :unknown))
                     enabled?  (get config :enabled true)
@@ -767,7 +777,81 @@
                       "  Status:    " (if connected? (ansi/success "connected") (ansi/muted "disconnected")) "\n"
                       "  Transport: " transport "\n"
                       "  Enabled:   " (if enabled? "yes" "no") "\n"
-                      (ansi/muted "  Actions: /mcp ") server-name (ansi/muted " start|stop|status")))))))))))
+                      (ansi/muted "  Actions: /mcp ") server-name (ansi/muted " start|stop|auth|status")))))))))))
+
+;; ============================================================================
+;; OAuth Commands — /login /logout (private)
+;; ============================================================================
+
+(defn- reauth-mcp-async!
+  "Kick off a device/auth-code re-auth for an OAuth MCP server off the command
+   thread (it blocks until the user authorizes elsewhere). Shared by
+   `/mcp <s> auth` and `/login <s>`."
+  [server-name]
+  (tui-session/emit! (ansi/muted (str "Re-authenticating " server-name
+                                      " — follow the verification prompt printed below…")))
+  (future
+    (try
+      (agent/reauth-mcp-server! server-name)
+      (tui-session/emit! (ansi/success (str "Re-authenticated " server-name)))
+      (catch Exception e
+        (tui-session/emit! (ansi/failure (str "Auth failed for " server-name ": " (.getMessage e))))))))
+
+(defn- oauth-status-overview []
+  (let [anthropic? (try (clj-llm/oauth-authenticated?) (catch Exception _ false))
+        mcp        (try (agent/mcp-oauth-status) (catch Exception _ []))
+        line       (fn [label authed?]
+                     (str "  " label "  " (if authed? (ansi/success "authenticated")
+                                              (ansi/muted "not logged in"))))]
+    (str (ansi/header "OAuth status") "\n"
+         (line "anthropic" anthropic?) "\n"
+         (if (seq mcp)
+           (str/join "\n" (for [{:keys [server authenticated?]} mcp]
+                            (line server authenticated?)))
+           (ansi/muted "  (no OAuth-configured MCP servers)"))
+         "\n"
+         (ansi/muted "\n  /login <mcp-server>   run device auth    •    /logout <anthropic|server>   clear credentials"))))
+
+(defn- handle-login-command
+  "/login                 → show OAuth status across providers + MCP servers.
+   /login <mcp-server>    → (re)run native OAuth (device/auth-code) for it."
+  [args]
+  (let [target (some-> args str/trim not-empty)]
+    (cond
+      (nil? target)
+      (tui-session/emit! (oauth-status-overview))
+
+      (some #{target} (agent/list-configured-servers))
+      (if (agent/mcp-oauth-server? target)
+        (reauth-mcp-async! target)
+        (tui-session/emit! (ansi/warning (str target " is not OAuth-configured"
+                                              " (set :config :auth {:type :oauth …})."))))
+
+      :else
+      (tui-session/emit! (ansi/warning (str "Unknown OAuth target: " target
+                                            "\nRun /login with no args to see status."))))))
+
+(defn- handle-logout-command
+  "/logout anthropic      → clear stored Anthropic OAuth tokens.
+   /logout <mcp-server>   → clear stored OAuth credentials for that server."
+  [args]
+  (let [target (some-> args str/trim not-empty)]
+    (cond
+      (nil? target)
+      (tui-session/emit! (ansi/warning "Usage: /logout <anthropic | mcp-server>"))
+
+      (= "anthropic" target)
+      (do (try (clj-llm/oauth-logout!) (catch Exception _ nil))
+          (tui-session/emit! (ansi/success "Logged out of Anthropic OAuth.")))
+
+      (some #{target} (agent/list-configured-servers))
+      (if (agent/mcp-oauth-server? target)
+        (do (agent/mcp-oauth-logout! target)
+            (tui-session/emit! (ansi/success (str "Cleared OAuth credentials for " target "."))))
+        (tui-session/emit! (ansi/warning (str target " is not OAuth-configured."))))
+
+      :else
+      (tui-session/emit! (ansi/warning (str "Unknown OAuth target: " target))))))
 
 ;; ============================================================================
 ;; Continue Command (private)
@@ -1921,6 +2005,8 @@
         "/capture"      (do (emit-command-header! input) (capture-cmd args) :continue)
         "/sandbox"      (do (emit-command-header! input) (handle-sandbox-command args) :continue)
         "/mcp"          (do (emit-command-header! input) (try (handle-mcp-command args) (catch Exception e (tui-session/emit! (ansi/failure (str "MCP error: " (.getMessage e)))))) :continue)
+        "/login"        (do (emit-command-header! input) (handle-login-command args) :continue)
+        "/logout"       (do (emit-command-header! input) (handle-logout-command args) :continue)
         "/agent"        (do (emit-command-header! input) (handle-agent-command args) :continue)
         "/session"      (do (emit-command-header! input) (handle-session-command args) :continue)
         "/memory"       (do (emit-command-header! input) (handle-memory-command args) :continue)
