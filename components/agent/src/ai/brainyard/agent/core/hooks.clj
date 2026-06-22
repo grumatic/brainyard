@@ -48,6 +48,7 @@
      :agent.tool-calls/post    {:agent :iteration :calls :results}
      :agent.tool-use/pre       {:agent :tool-name :args :call-id :depth}     ;; gated
      :agent.tool-use/post      {:agent :tool-name :args :call-id :result}
+     :agent.tool-use/rejected  {:agent :tool-name :args :result :reason}     ;; arg-validation reject (no dispatch)
      :agent.code-eval/pre      {:agent :code :backend}
      :agent.code-eval/post     {:agent :code :result :output :error :duration-ms :backend}
      :agent.compaction/post    {:agent :before-size :after-size :compaction-count}
@@ -134,6 +135,12 @@
    :agent.tool-calls/post       {:keys #{:agent :iteration :calls :results}}
    :agent.tool-use/pre          {:keys #{:agent :tool-name :args :call-id :depth} :gates? true}
    :agent.tool-use/post         {:keys #{:agent :tool-name :args :call-id :result}}
+   ;; Observer-only. Fired when a tool call is REJECTED at arg-validation,
+   ;; before any dispatch — so it never reaches :agent.tool-use/post. `:reason`
+   ;; is :invalid-args; `:result` carries the `{:error-message …}` returned to
+   ;; the caller. Lets observers react to a malformed call to a real tool (e.g.
+   ;; usage-nudge surfacing that family's guide on a botched first call).
+   :agent.tool-use/rejected     {:keys #{:agent :tool-name :args :result :reason}}
    ;; `:backend` is :sandbox or :nrepl — added in clj-nrepl-eval Phase 1
    ;; (docs/design/clj-nrepl-eval.md §4.2). Observers should branch on it
    ;; if they care which backend ran the code (e.g. audit shims).

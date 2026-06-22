@@ -233,15 +233,22 @@ The `(usage :topic)` guides are pull-based and were chronically under-triggered
 — the model rarely *chose* to fetch one. `agent.common.usage_nudge` makes them
 push-based:
 
-- A single `:agent.tool-use/post` observer (`ensure-global-hooks!`, installed
-  once per process from `coact-init-action`) watches every tool call — including
-  SCI code-channel calls, which route through `tool/call-tool` → the same hook
+- A `:agent.tool-use/post` observer (`ensure-global-hooks!`, installed once per
+  process from `coact-init-action`) watches every tool call — including SCI
+  code-channel calls, which route through `tool/call-tool` → the same hook
   chain. `tool-family->topic` maps the id's family segment (text before `$`) to
   a topic.
+- The same handler also listens on **`:agent.tool-use/rejected`**, a dedicated
+  event `call-tool` fires when a call fails *arg-validation* and short-circuits
+  before dispatch (so it never reaches `:agent.tool-use/post`). This is what
+  surfaces the guide on a malformed *first* call to a real family — arguably the
+  moment the model needs it most. (Permission-`:denied` and unknown-tool early
+  returns deliberately do **not** fire it.)
 - On the **first** use of a guided family this session, it marks the topic in
   `st-memory-init :usage-tips-shown` (once per session) and queues the guide
-  into the per-turn `bt-st-memory :pending-usage-guides`. A failing first call
-  is queued with `:reason :error`.
+  into the per-turn `bt-st-memory :pending-usage-guides`. A failing first call —
+  whether a runtime `:error` or an arg-validation rejection — is queued with
+  `:reason :error`.
 - `coact-accumulate-iteration-action` drains the queue when it builds the
   iteration record, attaching the rendered guide as the record's `:notices`
   field — which the model reads next iteration via DSPy serialization of

@@ -13,12 +13,16 @@
      tool family this session, the family's full guide is folded into the NEXT
      iteration's context (once per topic).
    - **Error-triggered** — if that first call errored, the same guide rides the
-     feedback under an `(that call errored)` header.
+     feedback under an `(that call errored)` header. This covers both runtime
+     failures (the tool ran and returned `:error`) and arg-validation rejections
+     (a malformed call that never dispatched — see the `:agent.tool-use/rejected`
+     hook below), which is exactly when the guide helps most.
    - **Permanent inline** — topics named in config `:inline-usage-guides` are
      rendered into the agent's tool-context every turn and pre-marked as shown,
      so the JIT path never re-surfaces them (no duplication).
 
-   Mechanism: a single observer on `:agent.tool-use/post` records first use into
+   Mechanism: an observer on `:agent.tool-use/post` (and `:agent.tool-use/rejected`
+   for malformed calls that short-circuit before dispatch) records first use into
    the agent's cross-turn `st-memory-init` (`:usage-tips-shown`, once per session)
    and queues a pending guide into the per-turn `bt-st-memory`
    (`:pending-usage-guides`). `coact-accumulate-iteration-action` drains that
@@ -102,6 +106,11 @@
   []
   (when (compare-and-set! !installed false true)
     (hooks/register-hook! :agent.tool-use/post ::usage-nudge on-tool-post
+                          :source :usage-nudge)
+    ;; Arg-validation rejections never reach :agent.tool-use/post (they
+    ;; short-circuit before dispatch), so also listen for the rejected event —
+    ;; a malformed FIRST call to a family is exactly when the guide helps most.
+    (hooks/register-hook! :agent.tool-use/rejected ::usage-nudge-rejected on-tool-post
                           :source :usage-nudge)
     (mulog/info ::global-hooks-installed))
   nil)

@@ -6,6 +6,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ai.brainyard.agent.common.usage-nudge :as un]
             [ai.brainyard.agent.core.protocol :as proto]
+            [ai.brainyard.agent.core.hooks :as hooks]
             [clojure.string :as str]))
 
 (defn- mock-agent
@@ -106,6 +107,31 @@
   (testing "drain on an empty queue returns nil and is harmless"
     (is (nil? (un/drain-iteration-notices! (atom {}))))
     (is (nil? (un/drain-iteration-notices! nil)))))
+
+(deftest rejected-hook-wiring-test
+  (testing "ensure-global-hooks! registers usage-nudge on post AND rejected events"
+    (un/ensure-global-hooks!)               ; idempotent; may already be installed
+    (is (some #(= :usage-nudge (:source %)) (hooks/list-hooks :agent.tool-use/post)))
+    (is (some #(= :usage-nudge (:source %)) (hooks/list-hooks :agent.tool-use/rejected))))
+  (testing "firing :agent.tool-use/rejected queues the family guide with :reason :error"
+    ;; A malformed first call to a real family (arg-validation reject) never
+    ;; reaches :agent.tool-use/post, so the rejected event is what surfaces it.
+    (let [init (atom {}) bt (atom {})
+          ag   (mock-agent init bt)
+          src  ::test-rejected]
+      (try
+        (hooks/register-hook! :agent.tool-use/rejected ::test-handler
+                              (fn [{:keys [agent tool-name result]}]
+                                (un/note-tool-use! agent tool-name result))
+                              :source src)
+        (hooks/fire! :agent.tool-use/rejected
+                     {:agent ag :tool-name "plan$read-dossier"
+                      :result {:error-message "Invalid tool args for plan$read-dossier"}
+                      :reason :invalid-args})
+        (is (= #{:plans} (:usage-tips-shown @init)))
+        (is (= [{:topic :plans :reason :error :tool "plan$read-dossier"}]
+               (:pending-usage-guides @bt)))
+        (finally (hooks/unregister-source! src))))))
 
 (deftest inline-guides-overlay-test
   (testing "overlay renders the full guide text for given topics"

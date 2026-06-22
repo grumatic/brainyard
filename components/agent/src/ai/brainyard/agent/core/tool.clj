@@ -548,8 +548,16 @@
                                       kw-args0)
                       malli-error   (when inputs-schema (m/explain inputs-schema kw-args))]
                   (if malli-error
-                    {:error-message (format "Invalid tool args for %s: %s"
-                                            tool-name (pr-str (me/humanize malli-error)))}
+                    (let [result {:error-message (format "Invalid tool args for %s: %s"
+                                                         tool-name (pr-str (me/humanize malli-error)))}]
+                      ;; Rejected before any dispatch, so :agent.tool-use/post
+                      ;; never fires. Emit a dedicated observer event so things
+                      ;; like usage-nudge can still react to a malformed call to
+                      ;; a real tool.
+                      (hooks/fire! :agent.tool-use/rejected
+                                   {:agent agent :tool-name tool-name :args kw-args
+                                    :result result :reason :invalid-args})
+                      result)
                     (do-call-tool--registered-fn agent registry-id tool-name tool-def kw-args)))))]
     (mulog/debug ::call-tool
                  :tool-id tool-id :tool-name tool-name
