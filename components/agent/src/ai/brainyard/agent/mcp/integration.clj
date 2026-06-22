@@ -759,6 +759,25 @@
     :enabled false
     :auto-register-tools true}
 
+   ;; notion2 — native :http OAuth (no mcp-remote bridge). `:flow :auto` lets
+   ;; clj-oauth pick from discovery: mcp.notion.com advertises authorization_code
+   ;; (no device endpoint), so it selects the headless PASTE flow — connect 401s,
+   ;; the issuer is discovered from the WWW-Authenticate challenge, a client is
+   ;; registered dynamically (DCR), and the TUI shows the authorize URL + a
+   ;; "paste the code" prompt. Open the URL, authorize in Notion, paste the code
+   ;; back. (`:flow :device` would need a provider that advertises a device
+   ;; endpoint — e.g. the `bb oauth:test-server` brainyard test provider.)
+   "notion2"
+   {:transport :http
+    :config {:url  "https://mcp.notion.com/mcp"
+             :auth {:type   :oauth
+                    :issuer "https://mcp.notion.com"
+                    :scopes []
+                    :flow   :auto}
+             :connect-timeout-ms 180000}
+    :enabled false
+    :auto-register-tools true}
+
    "linear"
    {:transport :stdio
     :config {:command "npx"
