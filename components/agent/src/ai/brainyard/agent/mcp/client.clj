@@ -573,9 +573,46 @@
   [auth]
   (and (map? auth) (= :oauth (:type auth))))
 
+(defonce ^:private !oauth-prompt-renderer
+  ;; A front-end (the TUI) registers a renderer here at startup; when set, the
+  ;; device/auth verification prompt and poll-status updates route to it (rich
+  ;; code box / QR) instead of the stderr/log fallback below. The renderer is
+  ;; called with a map: {:account-id :event :verification_uri
+  ;; :verification_uri_complete :user_code :expires_in :authorize_uri :scopes},
+  ;; where :event is :prompt | :pending | :slow-down | :authorized. Never a token.
+  (atom nil))
+
+(defn set-oauth-prompt-renderer!
+  "Register (or clear with nil) the front-end renderer for OAuth device/auth
+   prompts. See `!oauth-prompt-renderer`."
+  [f]
+  (reset! !oauth-prompt-renderer f))
+
+(defn- oauth-prompt-stderr-fallback
+  "Headless fallback when no renderer is registered: stderr + mulog (never tokens)."
+  [{:keys [account-id verification_uri user_code authorize_uri]}]
+  (binding [*out* *err*]
+    (cond
+      (and verification_uri user_code)
+      (println (format "[MCP %s] To authorize, open %s and enter code: %s"
+                       account-id verification_uri user_code))
+      authorize_uri
+      (println (format "[MCP %s] To authorize, open %s and paste the code back."
+                       account-id authorize_uri)))
+    (flush)))
+
+(defn- dispatch-oauth-prompt!
+  "Route an OAuth prompt/status event to the registered renderer, falling back
+   to stderr for the initial :prompt when none is registered. Renderer failures
+   never break the login."
+  [{:keys [event] :as ev}]
+  (if-let [r @!oauth-prompt-renderer]
+    (try (r ev) (catch Throwable _ (when (= :prompt event) (oauth-prompt-stderr-fallback ev))))
+    (when (= :prompt event) (oauth-prompt-stderr-fallback ev))))
+
 (defn- oauth-on-prompt
-  "Approach (b): surface the device/auth verification details via mulog + stderr
-   (never tokens). The rich TUI code box lands in Phase 4 via on-settle."
+  "Initial verification prompt (device code or paste URL). Logs the safe fields
+   (never tokens) and dispatches a :prompt event to the renderer/fallback."
   [account-id]
   (fn [{:keys [verification_uri verification_uri_complete user_code expires_in
                authorize_uri scopes]}]
@@ -587,15 +624,17 @@
                 :authorize_uri authorize_uri
                 :scopes scopes
                 :expires_in expires_in)
-    (binding [*out* *err*]
-      (cond
-        (and verification_uri user_code)
-        (println (format "[MCP %s] To authorize, open %s and enter code: %s"
-                         account-id verification_uri user_code))
-        authorize_uri
-        (println (format "[MCP %s] To authorize, open %s and paste the code back."
-                         account-id authorize_uri)))
-      (flush))))
+    (dispatch-oauth-prompt! {:account-id account-id :event :prompt
+                             :verification_uri verification_uri
+                             :verification_uri_complete verification_uri_complete
+                             :user_code user_code :expires_in expires_in
+                             :authorize_uri authorize_uri :scopes scopes})))
+
+(defn- oauth-on-status
+  "Poll-status updates (:pending/:slow-down/:authorized) → renderer, best-effort."
+  [account-id]
+  (fn [event]
+    (dispatch-oauth-prompt! {:account-id account-id :event event})))
 
 (defn- ensure-oauth-login!
   "Ensure a token bundle exists for an OAuth server's account, running the
@@ -605,7 +644,9 @@
   (let [account-id (:account-id auth)]
     (when-not (oauth/authenticated? account-id)
       (mulog/info ::mcp-oauth-login :account account-id :flow (:flow auth :auto))
-      (oauth/login! (assoc auth :on-user-prompt (oauth-on-prompt account-id))))))
+      (oauth/login! (assoc auth
+                           :on-user-prompt (oauth-on-prompt account-id)
+                           :on-status      (oauth-on-status account-id))))))
 
 (defn- effective-auth-headers
   "Per-request auth headers: the static config `:headers` plus, for an OAuth

@@ -130,3 +130,29 @@
                           :base-url "u" :session-id "S1")]
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"HTTP request failed"
                               (mcp-client/send-request! client "tools/list" {})))))))
+
+;; ---------------------------------------------------------------------------
+;; OAuth prompt renderer sink (Phase 4 rich code box)
+;; ---------------------------------------------------------------------------
+
+(deftest prompt-renderer-routing
+  (let [dispatch @#'mcp-client/dispatch-oauth-prompt!
+        seen     (atom [])]
+    (try
+      (mcp-client/set-oauth-prompt-renderer! (fn [ev] (swap! seen conj (:event ev))))
+      (dispatch {:event :prompt :account-id "notion" :user_code "X"})
+      (dispatch {:event :slow-down :account-id "notion"})
+      (dispatch {:event :authorized :account-id "notion"})
+      (is (= [:prompt :slow-down :authorized] @seen)
+          "all events route to the registered renderer")
+      (finally (mcp-client/set-oauth-prompt-renderer! nil)))))
+
+(deftest prompt-renderer-failure-never-breaks-login
+  (testing "a throwing renderer is swallowed (falls back for :prompt)"
+    (let [dispatch @#'mcp-client/dispatch-oauth-prompt!]
+      (try
+        (mcp-client/set-oauth-prompt-renderer! (fn [_] (throw (RuntimeException. "boom"))))
+        (is (nil? (dispatch {:event :prompt :account-id "n"
+                             :verification_uri "u" :user_code "c"})))
+        (is (nil? (dispatch {:event :authorized :account-id "n"})))
+        (finally (mcp-client/set-oauth-prompt-renderer! nil))))))

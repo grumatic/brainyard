@@ -20,6 +20,7 @@
             [ai.brainyard.agent-tui.log :as tui-log]
             [ai.brainyard.agent-tui.help-tips :as help-tips]
             [ai.brainyard.agent-tui.layout :as layout]
+            [ai.brainyard.agent-tui.oauth-render :as oauth-render]
             [ai.brainyard.agent-tui.dirs :as dirs]
             [ai.brainyard.agent-tui.helpers :as helpers]
             [ai.brainyard.agent-tui.input :as input]
@@ -1125,6 +1126,12 @@
       (register-skills-once!)
       (catch Throwable e
         (mulog/warn ::skills-register-async-failed :error (ex-message e)))))
+
+  ;; Route OAuth device/auth verification prompts to the rich TUI renderer
+  ;; (code box + optional QR) before any OAuth-gated MCP server connects.
+  (try (oauth-render/register!)
+       (catch Throwable e
+         (mulog/warn ::oauth-render-register-failed :error (ex-message e))))
 
   ;; Load MCP servers: built-in defaults deep-merged with config.edn
   ;; [:mcp :servers] (config.edn wins per leaf). Enabled servers connect in the

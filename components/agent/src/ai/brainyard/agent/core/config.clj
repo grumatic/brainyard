@@ -75,6 +75,12 @@
    :enable-project-memory      {:type "boolean" :default true}
    ;; Truncation cap (chars) for the injected index.md contents.
    :project-memory-max-chars   {:type "integer" :default 4000}
+   ;; OAuth (clj-oauth) device/auth-code verification prompt: when true and a
+   ;; `verification_uri_complete` is offered, the TUI renders a terminal QR for
+   ;; it next to the code box (best-effort — needs the `qrencode` CLI on PATH;
+   ;; silently skipped otherwise). The code + plain URL always show regardless.
+   ;; (Token store + flow are env-configured: BY_OAUTH_TOKEN_STORE / BY_OAUTH_FLOW.)
+   :oauth-qr?                  {:type "boolean" :default true}
    ;; CoAct system-context: include the full sandbox function directory
    ;; (categories + signatures for ALL bound callables). When false, the
    ;; system prompt shows only a compact category index instead.
