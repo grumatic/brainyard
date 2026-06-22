@@ -75,6 +75,10 @@
       (is (string? g))
       (is (str/includes? g "live brainyard"))
       (is (str/includes? g "Inspecting the live brainyard image"))))
+  (testing ":nrepl is :user-scoped — kept out of the always-on consult-table
+            (debug-agent inlines it directly; others pull it on demand)"
+    (is (= :user (:scope (usage/usage-def :nrepl))))
+    (is (not (str/includes? (or (usage/consult-table) "") "`:nrepl`"))))
   (testing "debug-agent's tool-context inlines that exact guide (single source)"
     (let [td  (tool/get-tool-defs :id :debug-agent)
           ctx (get-in td [:meta :tool-context])]

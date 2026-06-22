@@ -56,17 +56,20 @@
    opts:
      :guide     (required) non-blank markdown string — the guide text.
      :title     (optional) human label; defaults to a humanized topic.
-     :category  (optional) grouping keyword for catalog listings; default :general.
-     :consult   (optional) one-line \"when to consult this\" hint, surfaced in the
-                catalog's consult-table (system prompt). Topics without one still
-                list, just without a hint.
-     :relevance (optional) free-form tag/seq scoping the topic to contexts
-                (e.g. :nrepl → debug-agent). Advisory; not enforced here.
+     :category  (optional) topical grouping keyword for catalog listings (e.g.
+                :memory, :sandbox); default :general.
+     :scope     (optional) promotion tier — :system (always-on: listed in the
+                system-prompt consult-table) or :user (default: on-demand only,
+                reachable via `(usage)` + the JIT nudge). Built-in foundational
+                guides are :system; runtime-created and specialized guides are
+                :user. Distinct from :category (which is topical grouping).
+     :consult   (optional) one-line \"when to consult this\" hint, shown in the
+                consult-table. Only :system guides with a hint appear there.
      :order     (optional) int for deterministic listing order; default 100.
 
    Returns the registered topic keyword. Throws on a missing topic or blank guide
    so authoring mistakes fail loudly at load."
-  [topic {:keys [guide title category consult relevance order]}]
+  [topic {:keys [guide title category scope consult order]}]
   (let [k (->topic-kw topic)]
     (when (nil? k)
       (throw (ex-info (str "register-usage!: invalid topic " (pr-str topic))
@@ -75,13 +78,13 @@
       (throw (ex-info (str "register-usage!: guide for " k " must be a non-blank string")
                       {:topic k})))
     (swap! !usage-defs assoc k
-           {:topic     k
-            :title     (or title (humanize k))
-            :guide     guide
-            :category  (or category :general)
-            :consult   consult
-            :relevance relevance
-            :order     (or order 100)})
+           {:topic    k
+            :title    (or title (humanize k))
+            :guide    guide
+            :category (or category :general)
+            :scope    (or scope :user)
+            :consult  consult
+            :order    (or order 100)})
     k))
 
 (defmacro defusage
@@ -125,11 +128,16 @@
        (mapv #(select-keys % [:topic :title :category]))))
 
 (defn consult-table
-  "Render a markdown 'when to consult' table from the registry — one row per
-   guide that declares a `:consult` hint, in listing order. Registry-driven so
-   it never goes stale as topics are added. Returns nil when none declare a hint."
+  "Render a markdown 'when to consult' table for the system prompt — one row per
+   `:scope :system` guide that declares a `:consult` hint, in listing order.
+   `:user`-scoped guides (runtime-created + specialized) are deliberately
+   omitted to keep the always-on prompt lean; they stay reachable via `(usage)`
+   and the JIT nudge. Registry-driven, so it never goes stale. Returns nil when
+   no system guide declares a hint."
   []
-  (let [rows (->> (vals @!usage-defs) (sort-by by-order) (filter :consult))]
+  (let [rows (->> (vals @!usage-defs)
+                  (sort-by by-order)
+                  (filter #(and (= :system (:scope %)) (:consult %))))]
     (when (seq rows)
       (str "| Topic | When to consult |\n"
            "|-------|-----------------|\n"

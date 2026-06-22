@@ -53,9 +53,32 @@
   (let [t (usage/consult-table)]
     (is (string? t))
     (is (str/includes? t "When to consult"))
-    (testing "includes a new topic — proves it's generated, not hardcoded"
-      (is (str/includes? t "`:sandbox`"))
-      (is (str/includes? t "`:agents`")))))
+    (testing "includes :system topics — proves it's generated, not hardcoded"
+      (is (str/includes? t "`:memory`"))
+      (is (str/includes? t "`:plans`")))
+    (testing ":user-scoped topics are omitted from the always-on table"
+      (is (not (str/includes? t "`:sandbox`")))
+      (is (not (str/includes? t "`:agents`")))
+      (is (not (str/includes? t "`:tool`")))
+      (is (not (str/includes? t "`:code`"))))))
+
+(deftest scope-gates-consult-table-not-catalog
+  ;; :user guides stay discoverable via the catalog / (usage) but are kept out
+  ;; of the always-on system-prompt table to save tokens.
+  (let [sys-topic  (keyword (str "scope-sys-" (System/nanoTime)))
+        usr-topic  (keyword (str "scope-usr-" (System/nanoTime)))]
+    (usage/register-usage! sys-topic {:guide "g" :scope :system :consult "sys hint"})
+    (usage/register-usage! usr-topic {:guide "g" :consult "usr hint"})  ;; default :user
+    (try
+      (is (= :system (:scope (usage/usage-def sys-topic))))
+      (is (= :user (:scope (usage/usage-def usr-topic))) "default scope is :user")
+      (let [t (usage/consult-table)]
+        (is (str/includes? t (str "`" sys-topic "`")) ":system guide appears in table")
+        (is (not (str/includes? t (str "`" usr-topic "`"))) ":user guide is omitted"))
+      (let [topics (set (usage/list-usage-topics))]
+        (is (contains? topics usr-topic) ":user guide still listed in the catalog"))
+      (finally
+        (swap! usage/!usage-defs dissoc sys-topic usr-topic)))))
 
 (deftest register-usage-roundtrip-and-validation
   (testing "register + read back, idempotent overwrite"

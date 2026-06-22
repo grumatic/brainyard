@@ -531,7 +531,7 @@ and inspect inputs with `(get-tool-info \"<agent>\")`.
    the one-line 'when to consult' hint surfaced in the system-prompt table."
   [{:topic :llm-query    :title "LLM Sub-Queries"      :category :llm         :guide usage-llm-query
     :consult "Before dispatching a sub-LLM (`query$llm` with `:prompt`/`:prompts`) — picks model, depth, context."}
-   {:topic :agents       :title "Specialized Agents"   :category :agents      :guide usage-agents
+   {:topic :agents       :title "Specialized Agents"   :category :agents      :scope :user :guide usage-agents
     :consult "Before delegating to a sub-agent (explore/debug/exec/…) — who to pick and how to hand off."}
    {:topic :agent-state  :title "Agent State"          :category :agent       :guide usage-agent-state
     :consult "Before reading/writing `[:agent-state …]` via `context-get`."}
@@ -549,15 +549,15 @@ and inspect inputs with `(get-tool-info \"<agent>\")`.
     :consult "Before `artifact$add/remove/pin` — what to pin into Live Artifacts vs. re-read."}
    {:topic :mcp          :title "MCP Tools"            :category :mcp         :guide usage-mcp
     :consult "Before invoking an MCP server tool you haven't called this turn."}
-   {:topic :tool         :title "Tools (tool-calls)"   :category :tools       :guide usage-tool
+   {:topic :tool         :title "Tools (tool-calls)"   :category :tools       :scope :user :guide usage-tool
     :consult "Before calling an unfamiliar tool — discover the id + schema first."}
    {:topic :tool-priority :title "Tool Priority"       :category :tools       :guide usage-tool-priority
     :consult "When choosing between competing tools (registry vs MCP vs sandbox)."}
    {:topic :discovery    :title "Discovery: search"    :category :discovery   :guide usage-discovery
     :consult "When unsure what's available — pairs with `list-tools`."}
-   {:topic :code         :title "Code Execution"       :category :sandbox     :guide usage-code
+   {:topic :code         :title "Code Execution"       :category :sandbox     :scope :user :guide usage-code
     :consult "Before multi-block / long-running code — the loop, deferred tasking, languages."}
-   {:topic :sandbox      :title "SCI Sandbox Model"    :category :sandbox     :guide usage-sandbox
+   {:topic :sandbox      :title "SCI Sandbox Model"    :category :sandbox     :scope :user :guide usage-sandbox
     :consult "When SCI escaping/interop bites — string rules, aliases, interop policy."}
    ;; :nrepl is colocated in agent.common.debug-agent (registered there).
    {:topic :truncation   :title "Output Truncation"   :category :sandbox     :guide usage-output-truncation
@@ -569,5 +569,9 @@ and inspect inputs with `(get-tool-info \"<agent>\")`.
    {:topic :rules        :title "Rules & Tips"         :category :sandbox     :guide usage-rules-and-tips
     :consult "Catch-all rules and tips for sandbox/agent etiquette."}])
 
+;; This centralized batch is the built-in :system set by default — its guides
+;; are always-on in the system-prompt consult-table. Extended topics that opt
+;; out (carrying :scope :user below) are reachable on-demand via `(usage)` + the
+;; JIT nudge, but kept out of the always-on prompt to save tokens.
 (doseq [[i g] (map-indexed vector guides)]
-  (usage/register-usage! (:topic g) (assoc g :order i)))
+  (usage/register-usage! (:topic g) (assoc g :order i :scope (or (:scope g) :system))))

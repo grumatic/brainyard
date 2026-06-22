@@ -452,12 +452,15 @@ SCI sandbox instead — see `(usage :sandbox)`.
      their fully-qualified var — no `call-tool` needed.")
 
 ;; Register the guide so any agent can pull it with `(usage :nrepl)` and the
-;; JIT nudge can surface it on first `clj-nrepl$*` use. :order 15 keeps it next
-;; to :sandbox in the catalog (see agent.common.usage-guides for the rest).
+;; JIT nudge can surface it on first `clj-nrepl$*` use. :scope :user keeps it
+;; OUT of the always-on system-prompt table (debug-agent inlines it directly,
+;; below; others pull it on demand). :order 15 keeps it next to :sandbox in the
+;; `(usage)` catalog (see agent.common.usage-guides for the rest).
 (usage/register-usage! :nrepl
                        {:guide    nrepl-guide
                         :title    "Live Runtime (nREPL)"
                         :category :debug
+                        :scope    :user
                         :order    15
                         :consult  "On the `:nrepl` backend (debug-agent) — inspect/patch the running JVM, debug→fix loop."})
 
