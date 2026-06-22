@@ -24,6 +24,7 @@
    both clj-llm (Anthropic adapter) and the agent MCP transport depend on it
    without pulling either of them in."
   (:require [ai.brainyard.clj-http-native.interface :as http]
+            [ai.brainyard.clj-oauth.core.encode :as encode]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
@@ -156,12 +157,9 @@
    device-flow providers (Phase 2)."
   [encoding {:keys [refresh_token client-id]}]
   (case encoding
-    :form (->> {"grant_type"    "refresh_token"
-                "refresh_token" refresh_token
-                "client_id"     client-id}
-               (map (fn [[k v]] (str (java.net.URLEncoder/encode ^String k "UTF-8")
-                                     "=" (java.net.URLEncoder/encode ^String v "UTF-8"))))
-               (str/join "&"))
+    :form (encode/form-encode {"grant_type"    "refresh_token"
+                               "refresh_token" refresh_token
+                               "client_id"     client-id})
     (json/write-str {:grant_type    "refresh_token"
                      :refresh_token refresh_token
                      :client_id     client-id})))
@@ -193,10 +191,13 @@
                              :throw-exceptions true})
         body   (json/read-str (:body response) :key-fn keyword)
         now    (System/currentTimeMillis)
-        merged (assoc body
-                      :expires_at    (+ now (* (:expires_in body 3600) 1000))
-                      :refresh_token (or (:refresh_token body) refresh_token)
-                      :refreshed_at  now)]
+        ;; Merge over the existing bundle so caller-baked refresh metadata
+        ;; (:token_endpoint/:client_id/:body_encoding) survives rotation; the
+        ;; fresh response wins for the token fields it carries.
+        merged (merge tokens body
+                      {:expires_at    (+ now (* (:expires_in body 3600) 1000))
+                       :refresh_token (or (:refresh_token body) refresh_token)
+                       :refreshed_at  now})]
     (save-tokens! account-id merged)
     (mulog/info ::access-token-refreshed :account account-id)
     merged))
