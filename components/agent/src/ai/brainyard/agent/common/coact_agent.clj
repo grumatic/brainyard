@@ -195,9 +195,10 @@ a temp file and executed), `python` (temp file + python3), `javascript`
     to a file and you get the path back — never hand-escape large content into a
     string literal. See the code-blocks format help for details.
 
-  Sequential example:
+  Sequential example (`:grouped false` → flat seq to filter over; no-arg
+  `(list-tools)` returns a grouped-by-family index instead):
     ```clojure
-    (def tools (list-tools))
+    (def tools (list-tools :grouped false))
     ```
     ```clojure
     (pprint (filter #(re-find #\"(?i)aws\" (str (:id %))) tools))
@@ -330,7 +331,7 @@ as a conflict and prefers code > tool > answer.")
   use for fire-and-forget background work via `task$run :sync false` (async mode) when
   you want explicit polling control (`task$detail` — add `:last-n N` for the output tail).
 - **code-blocks (clojure)** for: composing over previous results (filter/map/reduce), iterating
-  on a `def`'d value, discovery (`(filter ... (list-tools))`), chaining multiple tool results
+  on a `def`'d value, discovery (`(list-tools :pattern \"…\")`), chaining multiple tool results
   inside a single iteration with local `let`/`def`.
 - **code-blocks (bash / python / javascript)** for: raw scripts with verbatim content
   (no SCI escaping), long commands, or environment-sensitive logic that wants a fresh process.

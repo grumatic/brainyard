@@ -416,8 +416,11 @@ Tools are the registered capabilities beyond sandbox builtins (`task$*`, `aws$*`
 tool id or its args.
 
 ### Discover
-- `(list-tools)` — every visible tool. Filter: `(list-tools :pattern \"^memory\\\\$\")`,
-  `(list-tools :type \"command\")`, `(list-tools :type \"agent\")`.
+- `(list-tools)` — grouped index `{:total N :families {family [{:id :description} …]}}`
+  (one line per tool, schemas omitted) so the full roster stays scannable; scan a
+  family, then drill in with `get-tool-info`. Narrow to a flat DETAILED list (with
+  schemas) via `(list-tools :pattern \"^memory\\\\$\")`, `(list-tools :type \"command\")`,
+  or `(list-tools :type \"agent\")`.
 - `(get-tool-info \"task$run\")` — one tool's full input/output schema before you invoke it.
 - `(search \"<keyword>\")` — also returns matching tools alongside files/config/memory.
 

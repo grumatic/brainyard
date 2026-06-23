@@ -59,33 +59,77 @@
       (if err {:error err} result))
     (catch Exception e {:error (str "call-tool failed: " (.getMessage e))})))
 
+(defn- non-blank? [s] (and (string? s) (not (str/blank? s))))
+
+(defn- first-line
+  "First non-blank-trimmed line of a (possibly multi-line) string — keeps the
+   grouped tool index scannable when a description spans lines."
+  [s]
+  (some-> s str str/split-lines first str/trim))
+
+(defn- tool-family
+  "Grouping key for a tool id: the segment before the first `$`
+   (e.g. \"memory$recall\" → \"memory\"), or \"_ungrouped\" for ids without a
+   `$` (e.g. bash, read-file)."
+  [id-str]
+  (if-let [i (str/index-of id-str "$")]
+    (subs id-str 0 i)
+    "_ungrouped"))
+
+(defn- collapsed-visible-tools
+  "Flat vector of collapsed tool maps {:id :type :description :input-schema
+   :output-schema} for tools visible to the current agent, optionally filtered
+   by `type` and a case-insensitive `pattern` (matched against id/name/
+   description). Shared by `list-tools` and the `search` dispatcher."
+  [{:keys [pattern type]}]
+  (let [type-kw (when (non-blank? type) (keyword type))
+        current-agent-id (when proto/*current-agent*
+                           (proto/agent-id proto/*current-agent*))
+        all-tools (->> (list-tool-defs :type type-kw)
+                       vals
+                       (filter #(tool/tool-visible? {:meta %} current-agent-id))
+                       (mapv #(assoc % :id (util/kw->str (:id %)))))]
+    (if (non-blank? pattern)
+      (let [re (re-pattern (str "(?i)" pattern))]
+        (filterv #(or (re-find re (str (:id %)))
+                      (re-find re (str (:name %)))
+                      (re-find re (str (:description %))))
+                 all-tools))
+      all-tools)))
+
 ;; ============================================================================
 ;; Tool Definitions
 ;; ============================================================================
 
 (deftool list-tools
-  "List registered tools. Returns a vector of maps, each with :id :type :description."
-  (fn [{:keys [pattern type]}]
-    (let [type-kw (when (and (string? type) (not (str/blank? type)))
-                    (keyword type))
-          current-agent-id (when proto/*current-agent*
-                             (proto/agent-id proto/*current-agent*))
-          all-tools (->> (list-tool-defs :type type-kw)
-                         vals
-                         (filter #(tool/tool-visible? {:meta %} current-agent-id))
-                         (mapv #(assoc % :id (util/kw->str (:id %)))))]
-      (if pattern
-        (let [re (re-pattern (str "(?i)" pattern))]
-          (filterv #(or (re-find re (str (:id %)))
-                        (re-find re (str (:name %)))
-                        (re-find re (str (:description %))))
-                   all-tools))
-        all-tools)))
+  "List registered tools. With NO args returns a grouped index
+   `{:total N :families {family [{:id :description} ...]}}` — one entry per
+   visible tool, descriptions reduced to a single line and schemas omitted so the
+   ~200-tool roster stays scannable; drill into a tool with `get-tool-info`.
+   Pass `:pattern` (regex over id/name/description) and/or `:type` to get a flat,
+   DETAILED vector `[{:id :type :description :input-schema :output-schema} ...]`.
+   `:grouped false` forces the flat detailed list even with no filter."
+  (fn [{:keys [pattern type grouped]}]
+    (let [tools (collapsed-visible-tools {:pattern pattern :type type})]
+      (if (or (non-blank? pattern) (non-blank? type) (false? grouped))
+        tools
+        {:total    (count tools)
+         :families (into (sorted-map)
+                         (map (fn [[fam ts]]
+                                [fam (mapv (fn [t] {:id          (:id t)
+                                                    :description (first-line (:description t))})
+                                           ts)]))
+                         (group-by #(tool-family (:id %)) tools))})))
   :input-schema  [:map
-                  [:pattern {:optional true} [:string {:desc "Regex pattern to filter tools by id/name/description"}]]
-                  [:type    {:optional true} [:enum {:desc "Filter by tool type"}
-                                              "tool" "command" "skill" "agent"]]]
-  :output-schema [:vector {:desc "Vector of tool maps, each with :id :type :description :input-schema :output-schema"} :map])
+                  [:pattern {:optional true} [:string {:desc "Regex (case-insensitive) over id/name/description; returns a flat detailed list"}]]
+                  [:type    {:optional true} [:enum {:desc "Filter by tool type; returns a flat detailed list"}
+                                              "tool" "command" "skill" "agent"]]
+                  [:grouped {:optional true} [:boolean {:desc "Default true for the no-arg grouped index; pass false to force a flat detailed list"}]]]
+  :output-schema [:or
+                  [:map {:desc "Grouped index, returned when no :pattern/:type is given"}
+                   [:total    [:int {:desc "Total visible tools"}]]
+                   [:families [:map {:desc "Family (segment before `$`, or \"_ungrouped\") → vector of {:id :description}; drill in via get-tool-info"}]]]
+                  [:vector {:desc "Flat detailed list, returned when :pattern/:type is given or :grouped false"} :map]])
 
 (deftool get-tool-info
   "Get a registered tool's details (schema, type, description) by tool-id."
@@ -602,7 +646,7 @@
       (when matches?
         (when-let [tools (safe-exec :tools
                                     #(->> (binding [proto/*current-agent* agent]
-                                            (list-tools))
+                                            (collapsed-visible-tools {}))
                                           (filter (fn [t] (or (matches? (:id t))
                                                               (matches? (:description t)))))
                                           seq))]

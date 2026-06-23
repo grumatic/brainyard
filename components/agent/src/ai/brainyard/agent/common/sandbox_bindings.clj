@@ -286,7 +286,10 @@
 
     ;; === Active state (tools, plans) ===
     (let [tools (binding [proto/*current-agent* agent]
-                  (tool/invoke-tool :list-tools {}))
+                  ;; :grouped false → flat detailed list so the type breakdown
+                  ;; below can group-by :type (the no-arg default is now a
+                  ;; grouped-by-family index, not a flat seq).
+                  (tool/invoke-tool :list-tools {:grouped false}))
           by-type (group-by :type tools)]
       (conj! lines (str "\n### Active State"))
       (conj! lines (str (count tools) " tools"
