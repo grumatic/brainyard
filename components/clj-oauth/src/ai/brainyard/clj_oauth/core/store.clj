@@ -325,14 +325,16 @@
    Anthropic console (its working behavior, preserved on extraction); `:form`
    is the standard `application/x-www-form-urlencoded` grant used by RFC 8628
    device-flow providers (Phase 2)."
-  [encoding {:keys [refresh_token client-id]}]
+  [encoding {:keys [refresh_token client-id client-secret]}]
   (case encoding
-    :form (encode/form-encode {"grant_type"    "refresh_token"
-                               "refresh_token" refresh_token
-                               "client_id"     client-id})
-    (json/write-str {:grant_type    "refresh_token"
-                     :refresh_token refresh_token
-                     :client_id     client-id})))
+    :form (encode/form-encode (cond-> {"grant_type"    "refresh_token"
+                                       "refresh_token" refresh_token
+                                       "client_id"     client-id}
+                                client-secret (assoc "client_secret" client-secret)))
+    (json/write-str (cond-> {:grant_type    "refresh_token"
+                             :refresh_token refresh_token
+                             :client_id     client-id}
+                      client-secret (assoc :client_secret client-secret)))))
 
 (defn refresh-access-token
   "Refresh `tokens` for `account-id` against `:token-endpoint` using `:client-id`.
@@ -342,7 +344,7 @@
    rotated refresh token if the provider sent one) and returns it; throws on
    missing refresh token or non-2xx."
   [account-id {:keys [refresh_token] :as tokens}
-   {:keys [token-endpoint client-id body-encoding]
+   {:keys [token-endpoint client-id client-secret body-encoding]
     :or   {body-encoding :json}}]
   (when-not refresh_token
     (throw (ex-info "No refresh token available. Re-authenticate with OAuth."
@@ -353,10 +355,14 @@
   (let [response (http/post token-endpoint
                             {:body         (refresh-body body-encoding
                                                          {:refresh_token refresh_token
-                                                          :client-id     client-id})
+                                                          :client-id     client-id
+                                                          :client-secret client-secret})
                              :content-type (if (= body-encoding :form)
                                              "application/x-www-form-urlencoded"
                                              :json)
+                             ;; Request a JSON token response (RFC 6749 §5.1);
+                             ;; GitHub form-encodes otherwise — see exchange-code!.
+                             :headers      {"Accept" "application/json"}
                              :as :string
                              :throw-exceptions true})
         body   (json/read-str (:body response) :key-fn keyword)

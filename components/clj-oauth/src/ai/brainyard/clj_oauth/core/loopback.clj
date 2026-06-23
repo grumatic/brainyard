@@ -84,7 +84,7 @@
    (also surfaced via `on-user-prompt`), wait for the `?code=` redirect on the
    callback server, validate `state`, and exchange. Returns the token bundle.
    `open-browser-fn`/`post-fn` are injectable for tests."
-  [{:keys [authorization-endpoint token-endpoint client-id scopes redirect-uri
+  [{:keys [authorization-endpoint token-endpoint client-id client-secret scopes redirect-uri
            on-user-prompt await-fn open-browser-fn post-fn timeout-ms]
     :or   {open-browser-fn open-browser! post-fn http/post timeout-ms 300000}}]
   (let [verifier  (pkce/generate-code-verifier)
@@ -113,5 +113,6 @@
         :else
         (do (mulog/info ::loopback-code-received)
             (authcode/exchange-code! {:token-endpoint token-endpoint :client-id client-id
+                                      :client-secret client-secret
                                       :code (:code cb) :code-verifier verifier
                                       :redirect-uri redirect-uri :post-fn post-fn}))))))

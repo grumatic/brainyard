@@ -684,6 +684,48 @@
      :env {"GITHUB_PERSONAL_ACCESS_TOKEN" "your-token-here"}},
     :enabled false,
     :auto-register-tools true},
+
+   ;; github2 — GitHub's hosted remote MCP server over native :http + OAuth (no
+   ;; PAT, unlike the stdio "github" seed above). brainyard's :http transport
+   ;; speaks OAuth natively (components/clj-oauth): on connect it logs in via
+   ;; clj-oauth and resolves a bearer per request, refreshing on 401. Tokens land
+   ;; in ~/.brainyard/oauth/<user-id>/github2.json (0600).
+   ;;
+   ;; Issuer / endpoints (verified against the live server, 2026-06-23):
+   ;;   - the MCP endpoint's 401 points to
+   ;;     api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/, whose
+   ;;     `authorization_servers` is "https://github.com/login/oauth" — THAT is the
+   ;;     issuer (its metadata lives at .well-known/openid-configuration; the
+   ;;     oauth-authorization-server path 404s).
+   ;;   - that metadata advertises authorize + token endpoints but NO
+   ;;     device_authorization_endpoint and NO registration_endpoint. So:
+   ;;       * `:client-id` is REQUIRED (no Dynamic Client Registration / RFC 7591)
+   ;;         — create a GitHub OAuth App / GitHub App and set its client id (do it
+   ;;         in .brainyard/config.edn, not here, to keep ids out of the source).
+   ;;       * `:flow :loopback`: no device grant and GitHub Apps reject the OOB
+   ;;         redirect, so use the loopback flow — clj-oauth starts a server on
+   ;;         http://127.0.0.1:<random>/callback, opens the browser to GitHub's
+   ;;         consent, and captures the redirected ?code= (no paste). REQUIRES
+   ;;         registering `http://127.0.0.1/callback` as a Callback URL on the
+   ;;         GitHub App (GitHub matches loopback 127.0.0.1 on any port). LOCAL
+   ;;         only (needs a browser on this machine).
+   "github2"
+   {:transport :http
+    :config {:url  "https://api.githubcopilot.com/mcp/"
+             :auth {:type      :oauth
+                    :issuer    "https://github.com/login/oauth"
+                    :client-id "<your-github-oauth-app-client-id>"
+                    ;; GitHub MCP advertises: repo read:org read:user user:email
+                    ;; read:packages write:packages read:project project gist
+                    ;; notifications workflow codespace. repo+read:org+read:user
+                    ;; cover the common read/write surface; widen as needed.
+                    ;; (Note: a GitHub *App* derives access from its configured
+                    ;; permissions and largely ignores these OAuth scopes.)
+                    :scopes    ["repo" "read:org" "read:user"]
+                    :flow      :loopback}
+             :connect-timeout-ms 180000}
+    :enabled false
+    :auto-register-tools true},
    "postgres"
    {:transport :stdio,
     :config

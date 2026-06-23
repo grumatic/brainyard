@@ -138,7 +138,7 @@
   "One-call login. Resolves endpoints (explicit `:endpoints` or `:issuer`
    discovery), picks a flow, runs it, persists the bundle under `:account-id`,
    and returns it. See clj-oauth.interface/login! for the opts map."
-  [{:keys [account-id issuer endpoints client-id scopes flow
+  [{:keys [account-id issuer endpoints client-id client-secret scopes flow
            on-user-prompt on-status read-code open-browser-fn]
     :or   {flow :auto scopes []}}]
   (when-not account-id
@@ -162,6 +162,7 @@
                                    {:authorization-endpoint (:authorization_endpoint metadata)
                                     :token-endpoint         (:token_endpoint metadata)
                                     :client-id              client-id
+                                    :client-secret          client-secret
                                     :scopes                 scopes
                                     :on-user-prompt         on-user-prompt
                                     :read-code              read-code})
@@ -169,17 +170,21 @@
                                    (cond-> {:authorization-endpoint (:authorization_endpoint metadata)
                                             :token-endpoint         (:token_endpoint metadata)
                                             :client-id              client-id
+                                            :client-secret          client-secret
                                             :scopes                 scopes
                                             :redirect-uri           (:redirect-uri cb)
                                             :on-user-prompt         on-user-prompt
                                             :await-fn               (:await cb)}
                                      open-browser-fn (assoc :open-browser-fn open-browser-fn))))
-            ;; Bake refresh metadata so access-token is one-arg later.
-            enriched  (assoc bundle
-                             :token_endpoint (:token_endpoint metadata)
-                             :client_id      client-id
-                             :body_encoding  "form"
-                             :scope          (str/join " " scopes))]
+            ;; Bake refresh metadata so access-token is one-arg later. A
+            ;; confidential client's secret is persisted too (0600 token file)
+            ;; so refresh can re-authenticate; omitted for public/PKCE clients.
+            enriched  (cond-> (assoc bundle
+                                     :token_endpoint (:token_endpoint metadata)
+                                     :client_id      client-id
+                                     :body_encoding  "form"
+                                     :scope          (str/join " " scopes))
+                        client-secret (assoc :client_secret client-secret))]
         (store/save-tokens! account-id enriched)
         enriched)
       (finally (when cb ((:stop! cb)))))))
@@ -191,6 +196,7 @@
 (defn ^:private refresh-opts [bundle]
   {:token-endpoint (:token_endpoint bundle)
    :client-id      (:client_id bundle)
+   :client-secret  (:client_secret bundle)
    :body-encoding  (if (= "form" (:body_encoding bundle)) :form :json)})
 
 (defn access-token

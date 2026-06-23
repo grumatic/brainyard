@@ -100,8 +100,10 @@
       :issuer         issuer base URL (→ discovery)   ; OR
       :endpoints      explicit discovery-shaped metadata map
       :client-id      OAuth client id
+      :client-secret  confidential-client secret (optional; PKCE clients omit it,
+                      but providers without PKCE — e.g. GitHub — require it)
       :scopes         vector of scope strings
-      :flow           :auto | :device | :paste        ; default :auto
+      :flow           :auto | :device | :paste | :loopback   ; default :auto
       :on-user-prompt (fn [{:keys [verification_uri user_code
                                    verification_uri_complete expires_in]}] ...)
       :on-status      (fn [:pending|:slow-down|:authorized]) ; optional

@@ -61,17 +61,30 @@
 (defn exchange-code!
   "Exchange an authorization `code` for tokens at `token-endpoint` (form-encoded
    per RFC 6749). Returns the token bundle with `:expires_at`. `post-fn`
-   injectable for tests."
-  [{:keys [token-endpoint client-id code code-verifier redirect-uri post-fn]
+   injectable for tests.
+
+   `client-secret` is optional: public clients (PKCE) omit it; confidential
+   clients that don't support PKCE (notably GitHub's github.com/login/oauth,
+   which advertises no code_challenge_methods) REQUIRE it — without it GitHub
+   returns `error=incorrect_client_credentials`."
+  [{:keys [token-endpoint client-id client-secret code code-verifier redirect-uri post-fn]
     :or   {redirect-uri oob-redirect post-fn http/post}}]
   (let [resp (post-fn token-endpoint
                       {:body         (encode/form-encode
-                                      {"grant_type"    "authorization_code"
-                                       "client_id"     client-id
-                                       "code"          code
-                                       "code_verifier" code-verifier
-                                       "redirect_uri"  redirect-uri})
+                                      (cond-> {"grant_type"    "authorization_code"
+                                               "client_id"     client-id
+                                               "code"          code
+                                               "code_verifier" code-verifier
+                                               "redirect_uri"  redirect-uri}
+                                        client-secret (assoc "client_secret" client-secret)))
                        :content-type form-ct
+                       ;; RFC 6749 §5.1 mandates a JSON token response, but some
+                       ;; providers (notably GitHub's github.com/login/oauth) only
+                       ;; honor that when asked — without this they return
+                       ;; application/x-www-form-urlencoded, which then fails the
+                       ;; json/read-str below with "unexpected character" and masks
+                       ;; the real error/token. Always request JSON.
+                       :headers      {"Accept" "application/json"}
                        :as :string
                        :throw-exceptions false})]
     (when-not (<= 200 (:status resp) 299)
@@ -95,7 +108,7 @@
 
    Requires `:read-code`; a non-interactive caller that can't read input gets a
    clear error rather than a hang."
-  [{:keys [authorization-endpoint token-endpoint client-id scopes
+  [{:keys [authorization-endpoint token-endpoint client-id client-secret scopes
            on-user-prompt read-code redirect-uri post-fn]
     :or   {redirect-uri oob-redirect post-fn http/post}}]
   (when-not (fn? read-code)
@@ -121,6 +134,7 @@
       (mulog/info ::authcode-exchange :endpoint token-endpoint)
       (exchange-code! {:token-endpoint token-endpoint
                        :client-id      client-id
+                       :client-secret  client-secret
                        :code           (:code parsed)
                        :code-verifier  verifier
                        :redirect-uri   redirect-uri
