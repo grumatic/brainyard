@@ -205,7 +205,7 @@ ALL actions must be Clojure code in ```clojure fences. For shell commands, use: 
    (if (= mode :structured)
      (str "Query: " query
           "\n\n" briefing
-          "\nUse the function directory and data directory above. Call `(usage :topic)` (e.g. `(usage :plans)`, `(usage :llm-query)`) for detailed guides; `(usage)` lists topics."
+          "\nUse the function directory and data directory above. Call `(usage$guide :topic <name>)` (e.g. `(usage$guide :topic :plans)`, `(usage$guide :topic :llm-query)`) for detailed guides; `(usage$guide)` lists topics."
           "\n\nWrite Clojure code to answer this query.")
      ;; :raw (default — also used by standalone completion)
      (str "Query: " query
@@ -311,7 +311,7 @@ NEVER put the result directly into a FINAL string literal. Assign to a variable 
 - **One ```clojure block per response**, then STOP. Think REPL: one expression, read result, next expression.
 - **No XML tool-calling**: Never use `<function_calls>`, `<invoke>`, `<parameter>` — only ```clojure fences.
 - **No `str/` alias**: Use `clojure.string/join`, not `str/join`.
-- Call `(usage :topic)` for detailed guides on any capability — e.g. `(usage :plans)`, `(usage :skills)`, `(usage :llm-query)`, `(usage :files)`. `(usage)` lists topics.")
+- Call `(usage$guide :topic <name>)` for detailed guides on any capability — e.g. `(usage$guide :topic :plans)`, `(usage$guide :topic :skills)`, `(usage$guide :topic :llm-query)`, `(usage$guide :topic :files)`. `(usage$guide)` lists topics.")
 
 (def ^:private critical-rules-raw
   "## Critical Rules
@@ -320,7 +320,7 @@ NEVER put the result directly into a FINAL string literal. Assign to a variable 
 - **Final answer**: Rich markdown text ONLY, no code blocks. Or call `(FINAL \"answer\")` in Clojure.
 - **No XML tool-calling**: Never use `<function_calls>`, `<invoke>`, `<parameter>` — only fenced code blocks.
 - **No `str/` alias**: Use `clojure.string/join`, not `str/join`.
-- Call `(usage :topic)` for detailed guides on any capability — e.g. `(usage :plans)`, `(usage :skills)`, `(usage :llm-query)`, `(usage :files)`. `(usage)` lists topics.")
+- Call `(usage$guide :topic <name>)` for detailed guides on any capability — e.g. `(usage$guide :topic :plans)`, `(usage$guide :topic :skills)`, `(usage$guide :topic :llm-query)`, `(usage$guide :topic :files)`. `(usage$guide)` lists topics.")
 
 (def ^:private context-discovery
   "## Context & Functions
@@ -330,7 +330,7 @@ Your first user message contains a **Context Briefing** with:
 - **Active State** — tool/skill/MCP counts, in-progress plans, pending todos
 - **Instructions** — project and user instructions
 
-Start working from the function directory and briefing. Call `(usage :topic)` for detailed usage guides; `(usage)` (no args) lists all available topics.")
+Start working from the function directory and briefing. Call `(usage$guide :topic <name>)` for detailed usage guides; `(usage$guide)` (no args) lists all available topics.")
 
 (defn- condensed-footer
   "Condensed footer for slim system prompt."
@@ -398,7 +398,7 @@ Start working from the function directory and briefing. Call `(usage :topic)` fo
    6) Condensed footer (workflow, answer format, efficiency)
    7) Optional: instruction, agent-context, tool-context
 
-   Detailed guides are available on-demand via `(usage :topic)` in the sandbox.
+   Detailed guides are available on-demand via `(usage$guide :topic <name>)` in the sandbox.
 
    Options:
      :mode                   - :structured or :raw (default)
@@ -618,8 +618,9 @@ Start working from the function directory and briefing. Call `(usage :topic)` fo
 ;;
 ;; Guide CONTENT + the topic registry now live in the agent component
 ;; (ai.brainyard.agent.core.usage + agent.common.usage-guides). The sandbox
-;; `(usage :topic)` binding is built in agent.common.sandbox-bindings and reads
-;; that open registry. clj-sandbox no longer hosts guide strings.
+;; `(usage$guide :topic <name>)` binding is the registered `:usage$guide` tool
+;; auto-bound into the sandbox, reading that open registry. clj-sandbox no
+;; longer hosts guide strings.
 ;; ============================================================================
 
 (defn extract-all-code-blocks

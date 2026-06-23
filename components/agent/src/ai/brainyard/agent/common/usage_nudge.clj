@@ -3,7 +3,7 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent.common.usage-nudge
-  "Just-in-time surfacing of `(usage :topic)` guides.
+  "Just-in-time surfacing of `(usage$guide :topic <name>)` guides.
 
    The on-demand guides are PULL-based: the system prompt lists them once and the
    model must remember to fetch one. In practice it rarely does. This namespace
@@ -138,7 +138,7 @@
          (if (= reason :error) "this turn (that call errored)" "this session")
          ". Read it before continuing:\n\n"
          g
-         "\n\n(Re-read anytime with `(usage " topic ")`.)")))
+         "\n\n(Re-read anytime with `(usage$guide :topic " topic ")`.)")))
 
 (defn drain-iteration-notices!
   "Drain + clear this turn's queued guides from the per-turn `st-memory`, returning
@@ -162,6 +162,6 @@
                          g))
                      (distinct (map keyword topics)))]
     (when (seq blocks)
-      (str "These guides are always in context for this agent — no `(usage)` "
+      (str "These guides are always in context for this agent — no `(usage$guide)` "
            "call needed:\n\n"
            (str/join "\n\n" blocks)))))

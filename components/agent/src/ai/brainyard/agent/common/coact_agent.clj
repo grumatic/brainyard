@@ -432,7 +432,7 @@ For mixed pipelines (\"A then B+C parallel then D\"), span multiple iterations.
 - JSON parsing in a clojure fence: `(parse-json s)` is built-in (no require).
 - Use `clojure.string/join`, not `str/join` (no `str/` alias).
 
-Detailed escaping recipes: `(usage :rules)`.")
+Detailed escaping recipes: `(usage$guide :topic :rules)`.")
 
 (def ^:private coact-critical-rules
   "## Critical Rules
@@ -450,9 +450,9 @@ Detailed escaping recipes: `(usage :rules)`.")
   (git-root)**, never the JVM cwd (which under `bb tui` is a `projects/…` subdir) — so
   `.brainyard/agents/…` is correct from any of them; do not prepend cwd guesses. If you genuinely
   must sweep with bash, search BOTH roots: `root=$(git rev-parse --show-toplevel); find \"$root/.brainyard\" \"$HOME/.brainyard\" …`.
-- **Call `(usage :topic)` in a clojure fence** for detailed guides
-  (e.g. `(usage :truncation)`, `(usage :discovery)`, `(usage :plans)`, `(usage :skills)`,
-  `(usage :files)`, `(usage :llm-query)`, `(usage :rules)`). `(usage)` lists topics.
+- **Call `(usage$guide :topic <name>)` in a clojure fence** for detailed guides
+  (e.g. `(usage$guide :topic :truncation)`, `(usage$guide :topic :discovery)`, `(usage$guide :topic :plans)`, `(usage$guide :topic :skills)`,
+  `(usage$guide :topic :files)`, `(usage$guide :topic :llm-query)`, `(usage$guide :topic :rules)`). `(usage$guide)` lists topics.
   See the `### Usage Guides` table in `## Tools` for when to consult each.")
 
 (def ^:private coact-large-results-playbook
@@ -470,7 +470,7 @@ size, a `SAFE_LINES` chunk limit, and a recovery snippet — read it and obey it
    it re-truncates.
 4. **\"Show me X\" → populate `answer`** verbatim next iteration, don't re-print.
 
-Marker format, chunk modes, and worked recipes: `(usage :truncation)`.")
+Marker format, chunk modes, and worked recipes: `(usage$guide :topic :truncation)`.")
 
 (def ^:private coact-footer
   "## Answer Format
@@ -563,9 +563,9 @@ on-demand (see `### Sandbox Categories` and `### Discovery`).
 | Cheap sub-LLM           | `(query$llm :prompt \"prompt\")` / `(query$llm :prompts [\"a\" \"b\"])` | One-shot, no agent state. |
 | Run a registered agent  | `(explore-agent {:question \"…\"})` / `(plan-agent {…})` | Flat dispatch to a sibling agent by name. |
 | MCP fallback             | `(call-tool \"<id>\" {…} :server-name \"<srv>\")` | Only for tools not in the local registry. |
-| Look up usage guide     | `(usage :topic)` | Topics: see `### Usage Guides` table below. |
+| Look up usage guide     | `(usage$guide :topic <name>)` | Topics: see `### Usage Guides` table below. |
 | Shell / files           | `(bash \"…\")`, `(read-file \"…\")`, `(write-file \"…\" \"…\")`, `(grep \"…\" \"path\")` | Standard primitives. |
-| Pin a seen file/skill   | `(artifact$add {:path \"/abs\"})` — re-reference w/o re-reading | Reloads fresh each turn; details `(usage :artifacts)`. |
+| Pin a seen file/skill   | `(artifact$add {:path \"/abs\"})` — re-reference w/o re-reading | Reloads fresh each turn; details `(usage$guide :topic :artifacts)`. |
 
 Per-agent overrides ride in `### Agent-specific guidance` at the bottom of this
 section — when present, prefer those over this generic list.")
@@ -598,10 +598,10 @@ anything outside the per-turn `### Agent Tools` block:
    'when to consult' table is generated from the open usage registry
    (`agent.core.usage`), so newly-registered topics appear automatically."
   []
-  (str "On-demand depth on a specific topic — call `(usage :topic)` to fetch.\n"
+  (str "On-demand depth on a specific topic — call `(usage$guide :topic <name>)` to fetch.\n"
        "Pull these BEFORE you commit to a non-trivial pattern in that area:\n\n"
        (usage/consult-table)
-       "\n\n`(usage)` (no args) returns the full topic catalog if you forget the names."))
+       "\n\n`(usage$guide)` (no args) returns the full topic catalog if you forget the names."))
 
 (defn- build-tools-section
   "Render the unified `## Tools` system-context section.
@@ -687,7 +687,7 @@ anything outside the per-turn `### Agent Tools` block:
                         coact-tools-discovery)
 
                   (not (disabled :usage-guides))
-                  (conj "### Usage Guides (on-demand `(usage :topic)` lookup)"
+                  (conj "### Usage Guides (on-demand `(usage$guide :topic <name>)` lookup)"
                         (coact-usage-guide-table))
 
                   overlay
@@ -735,7 +735,7 @@ reflection, every loaded namespace, and arbitrary interop are all reachable.
   **deny-list**: `System/exit`, `Runtime/.exec`, credential namespaces
   (`ai.brainyard.aws-client`, `ai.brainyard.keycloak`) are rejected. If you
   need ISOLATED evaluation, the SCI sandbox backend is the tool, not this.
-- **NO SCI shortcuts**: `context-get`, `(usage :foo)`, and bare
+- **NO SCI shortcuts**: `context-get`, `(usage$guide :topic :foo)`, and bare
   tool-name-as-fn (`(some-tool …)`) do not exist here. Use the
   tool-call channel for registered tools, and refer to library functions
   by their full namespace (`clojure.pprint/pprint`, not bare `pprint`).
@@ -780,7 +780,7 @@ inside another string literal (causes EOF parse errors). `def` it first, then re
 (println (str \"Q: \" (:question (first prev))))
 ```
 
-Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`.")
+Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :agent-state)`.")
 
 ;; ============================================================================
 ;; Context Assemblers
@@ -1490,16 +1490,15 @@ Live-state introspection (runtime keys, iteration count): `(usage :agent-state)`
               (catch Exception e
                 (mulog/warn ::load-user-agents-failed :error (ex-message e)))))
 
-        ;; Build sandbox bindings (tool + usage + optional restore). Sub-LLM
-        ;; dispatch (query$llm — single :prompt or batched :prompts) is a
-        ;; defcommand in agent.common.commands and surfaces in the sandbox via
-        ;; the auto-tool-binding path inside make-tool-bindings. Clone-self
-        ;; dispatch (query$clone) is gated to rlm-agent via :tool-use-control,
-        ;; so it only binds for rlm. The legacy notes API was removed in the
-        ;; L1 simplification refactor.
+        ;; Build sandbox bindings (tool + optional restore). Sub-LLM dispatch
+        ;; (query$llm — single :prompt or batched :prompts) is a defcommand in
+        ;; agent.common.commands and surfaces in the sandbox via the
+        ;; auto-tool-binding path inside make-tool-bindings — as does usage$guide
+        ;; (no longer special-cased). Clone-self dispatch (query$clone) is gated
+        ;; to rlm-agent via :tool-use-control, so it only binds for rlm. The
+        ;; legacy notes API was removed in the L1 simplification refactor.
         bindings (merge (sb-bind/make-tool-bindings agent)
                         (or restore-bindings {})
-                        (sb-bind/make-usage-bindings agent)
                         {'now (with-meta
                                 (fn [] (sys-info/now-snapshot))
                                 {:doc "Current wall-clock as {:wall-time-iso :tz-iana :tz-offset-minutes}. Use this when you need the current time mid-turn without forcing the system prompt to re-render."

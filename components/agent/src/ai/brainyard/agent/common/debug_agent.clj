@@ -262,14 +262,14 @@
 ;; colocated with debug-agent (the registry's intended colocation pattern). It
 ;; is registered into agent.core.usage below, AND inlined into debug-agent's
 ;; tool-context — one string, two consumers (debug-agent inline + on-demand
-;; `(usage :nrepl)` for any other agent).
+;; `(usage$guide :topic :nrepl)` for any other agent).
 (def ^:private nrepl-guide
   "## Live runtime (clj-nrepl)
 On the `:nrepl` backend, every ```clojure fence runs INSIDE the live brainyard
 JVM with full reflection: every loaded namespace, var, atom, and value is
 reachable. nREPL is full-trust — the only eval-path check is the deny-list
 (System/exit, Runtime/.exec, credential namespaces). For ISOLATED eval, use the
-SCI sandbox instead — see `(usage :sandbox)`.
+SCI sandbox instead — see `(usage$guide :topic :sandbox)`.
 
    ## Inspecting the live brainyard image (read-only, safe)
 
@@ -451,11 +451,11 @@ SCI sandbox instead — see `(usage :sandbox)`.
    - For internal fns (not registered as tools), call them directly by
      their fully-qualified var — no `call-tool` needed.")
 
-;; Register the guide so any agent can pull it with `(usage :nrepl)` and the
+;; Register the guide so any agent can pull it with `(usage$guide :topic :nrepl)` and the
 ;; JIT nudge can surface it on first `clj-nrepl$*` use. :scope :user keeps it
 ;; OUT of the always-on system-prompt table (debug-agent inlines it directly,
 ;; below; others pull it on demand). :order 15 keeps it next to :sandbox in the
-;; `(usage)` catalog (see agent.common.usage-guides for the rest).
+;; `(usage$guide)` catalog (see agent.common.usage-guides for the rest).
 (usage/register-usage! :nrepl
                        {:guide    nrepl-guide
                         :title    "Live Runtime (nREPL)"

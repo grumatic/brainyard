@@ -561,11 +561,15 @@
                   [:curated [:boolean {:desc "True when only curated entries were returned (i.e. :all was not set)"}]]
                   [:providers [:vector {:desc "All providers in the catalog"} :keyword]]])
 
-(defcommand usage
+(defcommand usage$guide
   "Return an on-demand usage guide for a topic. Call with no topic to list all
-   available topics; call with one (e.g. :memory) to get that guide's text.
-   Same guides the sandbox `(usage :topic)` binding serves — exposed here so the
-   tool-calls channel (and non-sandbox backends like :nrepl) can reach them too."
+   available topics; call with one (e.g. `(usage$guide :topic :memory)`) to get
+   that guide's text. A known topic returns the guide as a plain STRING (so it
+   renders verbatim — real newlines preserved — in the iteration record rather
+   than a pr-str'd map with escaped newlines); no topic returns `{:topics [...]}`
+   and an unknown topic returns `{:error ... :topics [...]}`. The same registered
+   tool backs both the tool-calls channel and the auto-generated sandbox binding
+   `(usage$guide :topic <name>)`."
   (fn [& {:keys [topic]}]
     (let [k (cond
               (keyword? topic) topic
@@ -578,15 +582,15 @@
       (cond
         (nil? k)     {:topics topics}
         (nil? guide) {:error  (str "unknown topic " (pr-str k)) :topics topics}
-        :else        {:topic (str (name k)) :guide guide})))
+        :else        guide)))
   :input-schema  [:map
                   [:topic {:optional true}
-                   [:string {:desc "Topic to fetch (e.g. \"memory\", \"todo\", \"files\"). Omit to list all topics."}]]]
-  :output-schema [:map
-                  [:topic  {:optional true} [:string {:desc "Echoed topic when a guide was returned."}]]
-                  [:guide  {:optional true} [:string {:desc "The guide text for the requested topic."}]]
-                  [:topics {:optional true} [:vector {:desc "All available topics (returned when no topic given, or on an unknown topic)."} :keyword]]
-                  [:error  {:optional true} [:string {:desc "Present when the topic is unknown."}]]])
+                   [:keyword {:desc "Topic to fetch (e.g. :memory, :todo, :files). Omit to list all topics."}]]]
+  :output-schema [:or
+                  [:string {:desc "The guide text, when a known topic was requested (returned verbatim, not wrapped)."}]
+                  [:map
+                   [:topics {:optional true} [:vector {:desc "All available topics (returned when no topic given, or on an unknown topic)."} :keyword]]
+                   [:error  {:optional true} [:string {:desc "Present when the topic is unknown."}]]]])
 
 ;; ============================================================================
 ;; Command Categories

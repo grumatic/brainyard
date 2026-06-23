@@ -140,7 +140,7 @@ Always discover exact tool ids via `(list-tools :pattern \"^mcp\\\\$\")` first �
   "## Memory
 - `(memory$remember :content \"...\" :layer \"l3\" :kind \"preference\" :tags [\"t1\"])` — store an entry. Layers: `l1` (session context), `l2` (episode), `l3` (fact, default). Kinds vary per layer
 - `(memory$recall :query \"...\" :limit 10)` — cross-layer RRF recall (no `:layer`), or read one layer with `:layer \"l2\"` (text + filters). Default limit 10
-- `(search :memory \"query\" :limit 10)` — alternate cross-layer recall via the search dispatcher
+- `(search \"query\" :memory-limit 10)` — cross-layer recall via the search dispatcher (raises memory cap from default 5)
 - `(search \"keyword\")` also includes memory results (limit 5) alongside tools, skills, plans, etc.")
 
 (def ^:private usage-todo
@@ -433,7 +433,7 @@ tool id or its args.
   parse with `clojure.edn/read-string`, never `parse-json`.
 - Errors surface as `{:error …}` / `{:error-message …}` (permission denied,
   schema mismatch) — read the message and fix the args, don't retry verbatim.
-- Prefer the simplest option that works — see `(usage :tool-priority)`.")
+- Prefer the simplest option that works — see `(usage$guide :topic :tool-priority)`.")
 
 (def ^:private usage-code
   "## Code execution — fences, eval, and background tasks
@@ -453,7 +453,7 @@ REPL: one expression, read the result, then the next.
 - A block that exceeds `:auto-background-timeout-ms` (default 30s) is auto-detached
   and returns a `[pending — task-id=…]` marker. The eval keeps running as a task.
 - Check it with `(task$list)` / `(task$detail {:task-id \"…\"})`, or the live
-  `((:pending-tasks-fn rt))` from `(usage :agent-state)`. Do NOT re-emit the block —
+  `((:pending-tasks-fn rt))` from `(usage$guide :topic :agent-state)`. Do NOT re-emit the block —
   the marker means STILL RUNNING.
 - Run things explicitly in the background with `(task$run {:job-type :bash …})`.
 
@@ -462,7 +462,7 @@ REPL: one expression, read the result, then the next.
   manager. Use `bash` for short shell; write multi-step scripts to `/tmp/x.sh` and
   `(bash \"bash /tmp/x.sh\")`.
 
-See `(usage :sandbox)` for the SCI execution model and `(usage :truncation)` for
+See `(usage$guide :topic :sandbox)` for the SCI execution model and `(usage$guide :topic :truncation)` for
 handling large output.")
 
 (def ^:private usage-sandbox
@@ -489,7 +489,7 @@ to `/tmp/foo.sh` via `write-file` and run it with `(bash \"bash /tmp/foo.sh\")`.
 
 ### Isolation vs. the live runtime
 This SCI sandbox is the ISOLATED eval path. For inspecting/patching the running
-brainyard JVM, that's the `:nrepl` backend (debug-agent) — see `(usage :nrepl)`.")
+brainyard JVM, that's the `:nrepl` backend (debug-agent) — see `(usage$guide :topic :nrepl)`.")
 
 ;; NOTE: the `:nrepl` guide is COLOCATED with its feature — it is defined and
 ;; registered in ai.brainyard.agent.common.debug-agent (the live-runtime agent),
@@ -507,7 +507,7 @@ and inspect inputs with `(get-tool-info \"<agent>\")`.
   sweeps, finding all call sites. Returns a dossier, doesn't edit.
 - **debug-agent** — a fault in (or a question about) the RUNNING brainyard JVM:
   reproduce/probe/patch live via clj-nrepl, then fix the source itself. See
-  `(usage :nrepl)`.
+  `(usage$guide :topic :nrepl)`.
 - **exec-agent / update-agent** — make source edits to fulfil a concrete change
   request (often handed a plan or an explore dossier).
 - Others surface via `(list-tools :type \"agent\")` — read the description before
@@ -571,7 +571,7 @@ and inspect inputs with `(get-tool-info \"<agent>\")`.
 
 ;; This centralized batch is the built-in :system set by default — its guides
 ;; are always-on in the system-prompt consult-table. Extended topics that opt
-;; out (carrying :scope :user below) are reachable on-demand via `(usage)` + the
+;; out (carrying :scope :user below) are reachable on-demand via `(usage$guide)` + the
 ;; JIT nudge, but kept out of the always-on prompt to save tokens.
 (doseq [[i g] (map-indexed vector guides)]
   (usage/register-usage! (:topic g) (assoc g :order i :scope (or (:scope g) :system))))

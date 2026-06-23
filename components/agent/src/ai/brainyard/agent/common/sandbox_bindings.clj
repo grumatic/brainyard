@@ -22,7 +22,6 @@
             [ai.brainyard.agent.task.persist :as task-persist]
             [ai.brainyard.agent.task.protocol :as task-proto]
             [ai.brainyard.clj-llm.interface :as clj-llm]
-            [ai.brainyard.agent.core.usage :as usage]
             [clojure.string :as str]))
 
 (defn get-dirs
@@ -226,48 +225,13 @@
               :arglists '([tool-name tool-args & {:keys [source server-name]}])
               :category :tools}))))
 
-(defn make-usage-bindings
-  "Single dispatch binding `(usage topic)` that returns the guide string for the
-   given topic keyword/string. Topics: see `agent.core.usage/list-usage-topics`.
-   Returns the catalog (vector of topic kws) when called with no args, or a
-   helpful error map for an unknown topic.
-
-   Replaces the previous fan-out of 14 zero-arg `(usage-<topic>)` thunks: those
-   bloated the sandbox category index and the LLM rarely noticed them. With a
-   single binding the system prompt can point at it explicitly.
-
-   Delegates to the registered `:usage` tool (single source of truth, shared
-   with the tool-calls channel) and unwraps the tool's result map back to the
-   legacy sandbox shape: a guide string for a known topic, the topic-keyword
-   vector for no-arg, an error map otherwise."
-  [agent]
-  (letfn [(call-usage [args]
-            (let [r (try (tool/call-tool :usage args :agent agent)
-                         (catch Exception e {:error (str "usage failed: " (.getMessage e))}))]
-              (if-let [em (:error-message r)] (assoc r :error em) r)))]
-    {'usage
-     (with-meta
-       (fn
-         ([] (let [{:keys [topics error]} (call-usage {})]
-               (or topics {:error error})))
-         ([topic]
-          (let [k (cond (keyword? topic) topic
-                        (string? topic)  (keyword topic)
-                        (symbol? topic)  (keyword (name topic))
-                        :else            nil)]
-            (if (nil? k)
-              {:error (str "usage: topic must be a keyword/string/symbol, got "
-                           (pr-str topic))
-               :topics (usage/list-usage-topics)}
-              (let [{:keys [guide topics error]} (call-usage {:topic (name k)})]
-                (cond
-                  guide guide
-                  error {:error error :topics (or topics (usage/list-usage-topics))}
-                  :else {:error (str "usage: unknown topic " (pr-str k))
-                         :topics (or topics (usage/list-usage-topics))}))))))
-       {:doc      "Return the on-demand usage guide for a topic. (usage) lists all topics; (usage :memory) returns that guide. Topics: see agent.core.usage/list-usage-topics."
-        :arglists '([] [topic])
-        :category :usage})}))
+;; `usage$guide` is no longer special-cased here: it is a plain registered tool
+;; (see agent.common.commands/usage$guide) and reaches the sandbox through the
+;; generic `auto-tool-bindings` path like any other tool. Canonical call shapes:
+;;   (usage$guide)                 — list all topics
+;;   (usage$guide :topic :memory)  — fetch one guide
+;; The `:topic` input is a keyword, so the auto-binder's kwargs mode validates it
+;; directly and the tool-calls channel decodes the JSON string the same way.
 
 ;; ============================================================================
 ;; Note: the legacy `remember-note` / `get-note` / `list-notes` /

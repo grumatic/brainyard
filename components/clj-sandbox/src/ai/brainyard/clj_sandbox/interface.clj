@@ -280,8 +280,9 @@
 
 ;; NOTE: usage-guide content moved to the agent component
 ;; (ai.brainyard.agent.core.usage + agent.common.usage-guides). The sandbox
-;; `(usage :topic)` binding is built in agent.common.sandbox-bindings and reads
-;; that open registry — clj-sandbox no longer owns guide content.
+;; `(usage$guide :topic <name>)` binding is the registered `:usage$guide` tool
+;; auto-bound into the sandbox, reading that open registry — clj-sandbox no
+;; longer owns guide content.
 
 (def extract-all-code-blocks
   "Extract ALL ```clojure/```clj fenced blocks (not just first like extract-code-blocks)."

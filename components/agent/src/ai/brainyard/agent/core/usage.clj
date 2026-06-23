@@ -10,7 +10,7 @@
    `:memory`, `:nrepl`, `:agents`). Guides are delivered three ways, all built on
    this registry:
 
-   - **Pull** — the `(usage :topic)` sandbox binding and the `:usage` tool.
+   - **Pull** — the `(usage$guide :topic <name>)` sandbox binding and the `:usage$guide` tool.
    - **JIT push** — `agent.common.usage-nudge` auto-inlines the relevant guide on
      first use (or error) of a guide-backed tool family.
    - **Permanent inline** — config `:inline-usage-guides` renders chosen guides
@@ -60,7 +60,7 @@
                 :memory, :sandbox); default :general.
      :scope     (optional) promotion tier — :system (always-on: listed in the
                 system-prompt consult-table) or :user (default: on-demand only,
-                reachable via `(usage)` + the JIT nudge). Built-in foundational
+                reachable via `(usage$guide)` + the JIT nudge). Built-in foundational
                 guides are :system; runtime-created and specialized guides are
                 :user. Distinct from :category (which is topical grouping).
      :consult   (optional) one-line \"when to consult this\" hint, shown in the
@@ -121,7 +121,7 @@
 
 (defn usage-catalog
   "Vector of {:topic :title :category} for every registered guide, in listing
-   order. Used for the `(usage)` no-arg listing and system-prompt pointers."
+   order. Used for the `(usage$guide)` no-arg listing and system-prompt pointers."
   []
   (->> (vals @!usage-defs)
        (sort-by by-order)
@@ -131,7 +131,7 @@
   "Render a markdown 'when to consult' table for the system prompt — one row per
    `:scope :system` guide that declares a `:consult` hint, in listing order.
    `:user`-scoped guides (runtime-created + specialized) are deliberately
-   omitted to keep the always-on prompt lean; they stay reachable via `(usage)`
+   omitted to keep the always-on prompt lean; they stay reachable via `(usage$guide)`
    and the JIT nudge. Registry-driven, so it never goes stale. Returns nil when
    no system guide declares a hint."
   []

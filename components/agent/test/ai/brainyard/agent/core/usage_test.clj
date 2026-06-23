@@ -63,7 +63,7 @@
       (is (not (str/includes? t "`:code`"))))))
 
 (deftest scope-gates-consult-table-not-catalog
-  ;; :user guides stay discoverable via the catalog / (usage) but are kept out
+  ;; :user guides stay discoverable via the catalog / (usage$guide) but are kept out
   ;; of the always-on system-prompt table to save tokens.
   (let [sys-topic  (keyword (str "scope-sys-" (System/nanoTime)))
         usr-topic  (keyword (str "scope-usr-" (System/nanoTime)))]

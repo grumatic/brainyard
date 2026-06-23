@@ -102,7 +102,7 @@
       (is (string? out))
       (is (str/includes? out "artifact$add"))
       (is (str/includes? out "Live Artifacts"))      ; from the :artifacts guide body
-      (is (str/includes? out "(usage :artifacts)"))
+      (is (str/includes? out "(usage$guide :topic :artifacts)"))
       (is (nil? (:pending-usage-guides @bt)))))
   (testing "drain on an empty queue returns nil and is harmless"
     (is (nil? (un/drain-iteration-notices! (atom {}))))

@@ -4,6 +4,10 @@ All notable changes to Brainyard's public distribution are documented here. Vers
 
 ## [Unreleased]
 
+### Changed
+
+- **The on-demand usage-guide tool and sandbox binding are renamed `usage` → `usage$guide`.** Both the tool exposed on the tool-calls channel and the matching SCI sandbox binding now follow the `$`-suffixed tool-naming convention (like `task$detail`, `log$turns`, `artifact$add`) and no longer collide by name with the `/usage` meta-command (token/cost summary). The sandbox binding is no longer a hand-written special case — `usage$guide` is now bound through the generic auto-tool-binding path like any other tool: its `:topic` input is a keyword, so agents call `(usage$guide :topic :memory)` in a Clojure fence (`(usage$guide)` lists topics). A known topic returns the guide as a plain string so it renders verbatim (real newlines) in the iteration record rather than a pr-str'd map with escaped newlines; listing/unknown-topic calls return a small map. The registered tool id is `:usage$guide`. All system-prompt pointers, usage guides, and the just-in-time nudge were updated to the new name and call shape.
+
 ## [v0.3.3] — 2026-06-22
 
 ### Added

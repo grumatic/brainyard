@@ -214,15 +214,15 @@
     ;; teaching moved into coact-role and the signature docstring. What stays
     ;; pinned here is the three discipline rules that the LLM needs to obey
     ;; turn-by-turn: iteration-1 history-honesty, FINAL is disabled, and the
-    ;; (usage :topic) pointer for deep-dive guides.
+    ;; (usage$guide :topic) pointer for deep-dive guides.
     (let [rules @(resolve 'ai.brainyard.agent.common.coact-agent/coact-critical-rules)]
       (is (str/includes? rules "Iteration 1 has no history"))
       (is (str/includes? rules "FINAL")
           "must teach that (FINAL ...) is disabled in CoAct")
       (is (str/includes? rules "populating the signature's `answer`")
           "must teach that termination is via the :answer output, not (FINAL …)")
-      (is (str/includes? rules "(usage :")
-          "must point at the (usage :topic) dispatcher")))
+      (is (str/includes? rules "(usage$guide :")
+          "must point at the (usage$guide :topic) dispatcher")))
 
   (testing "channel-routing section mentions iteration-1 answer"
     (let [routing @(resolve 'ai.brainyard.agent.common.coact-agent/coact-channel-routing)]

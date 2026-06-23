@@ -111,31 +111,32 @@
       (is (= "combined" (:layer r))))))
 
 ;; ============================================================================
-;; usage — on-demand guide tool (callable via the tool-calls channel), with the
-;; sandbox `(usage …)` binding delegating to it as the single source of truth.
+;; usage$guide — on-demand guide tool (callable via the tool-calls channel), also
+;; auto-bound into the sandbox as `(usage$guide :topic <name>)` like any other tool.
 ;; ============================================================================
 
 (deftest usage-tool-registered
-  (let [td (tool/get-tool-defs :id :usage)]
-    (is (some? td) "usage must be registered in the tool registry")
+  (let [td (tool/get-tool-defs :id :usage$guide)]
+    (is (some? td) "usage$guide must be registered in the tool registry")
     (is (= :command (:type td)))))
 
 (deftest usage-tool-no-topic-lists-catalog
-  (let [r (tool/invoke-tool :usage)]
+  (let [r (tool/invoke-tool :usage$guide)]
     (is (nil? (:guide r)))
     (is (= (usage/list-usage-topics) (:topics r))
         "no topic → full topic catalog")))
 
 (deftest usage-tool-known-topic-returns-guide
-  (let [r (tool/invoke-tool :usage {:topic "memory"})]
-    (is (= "memory" (:topic r)))
-    (is (string? (:guide r)))
-    (is (pos? (count (:guide r))))
-    (is (= (usage/get-usage-guide :memory) (:guide r))
+  ;; A known topic returns the guide as a bare STRING (not a wrapper map) so it
+  ;; renders verbatim — real newlines preserved — in the iteration record.
+  (let [r (tool/invoke-tool :usage$guide {:topic "memory"})]
+    (is (string? r))
+    (is (pos? (count r)))
+    (is (= (usage/get-usage-guide :memory) r)
         "tool guide must match the registry source of truth")))
 
 (deftest usage-tool-unknown-topic-errors-with-catalog
-  (let [r (tool/invoke-tool :usage {:topic "nope"})]
+  (let [r (tool/invoke-tool :usage$guide {:topic "nope"})]
     (is (nil? (:guide r)))
     (is (str/includes? (:error r) "unknown topic"))
     (is (= (usage/list-usage-topics) (:topics r))
@@ -149,15 +150,16 @@
         (is (contains? topics t) (str t " should be registered"))
         (is (string? (usage/get-usage-guide t)) (str t " should have a guide"))))))
 
-(deftest usage-binding-delegates-and-preserves-legacy-shape
-  ;; The sandbox `(usage …)` binding routes through the :usage tool but must
-  ;; keep returning the legacy shape: a vector for no-arg, a raw guide STRING
-  ;; for a known topic, an error map otherwise.
-  (let [usage-fn (get (sb/make-usage-bindings nil) 'usage)]
-    (is (= (usage/list-usage-topics) (usage-fn))
-        "no-arg binding returns the topic vector, not a wrapper map")
-    (is (= (usage/get-usage-guide :memory) (usage-fn :memory))
-        "known topic returns the raw guide string")
-    (is (str/includes? (:error (usage-fn :nope)) "unknown topic"))
-    (is (str/includes? (:error (usage-fn 123)) "must be a keyword/string/symbol")
-        "bad arg type is rejected locally with the legacy message")))
+(deftest usage-binding-auto-bound-returns-tool-result
+  ;; usage$guide is no longer special-cased — it reaches the sandbox via the
+  ;; generic auto-tool-binding path like any other tool, so the binding returns
+  ;; the RAW tool result map (no legacy unwrapping to a bare string). Canonical
+  ;; call shapes: `(usage$guide)` (list) and `(usage$guide :topic :memory)`.
+  (let [usage-fn (get (sb/make-tool-bindings nil) 'usage$guide)]
+    (is (some? usage-fn) "usage$guide must be auto-bound into the sandbox")
+    (is (= (usage/list-usage-topics) (:topics (usage-fn)))
+        "no-arg returns the topic catalog in :topics")
+    (is (= (usage/get-usage-guide :memory) (usage-fn :topic :memory))
+        "known topic returns the guide as a bare string (renders verbatim)")
+    (is (str/includes? (:error (usage-fn :topic :nope)) "unknown topic")
+        "unknown topic returns an error + catalog")))
