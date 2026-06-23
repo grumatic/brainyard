@@ -3209,49 +3209,57 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; (`:auto-bg-ms`) is enforced as a hard kill — at the deadline the
         ;; fork is cancelled and the entry surfaces :status :timeout.
         ;;
-        ;; nREPL backend demotion: when the agent's :clj-backend is :nrepl
-        ;; (e.g. debug-agent), parallel mode still routes clojure blocks
-        ;; through the SCI sandbox because clj-sandbox's fork+merge runner
-        ;; can't share an nREPL session safely across concurrent evals. We
-        ;; surface a marker on each entry's :output so the LLM knows the
-        ;; live-runtime semantics were silently dropped.
-        nrepl-demoted? (= :nrepl (agent-clj-backend (:agent dispatch-opts)))
-        demotion-marker
-        (when nrepl-demoted?
-          (str "[parallel mode demoted nREPL → SCI sandbox: the fork+merge"
-               " runner cannot share an nREPL session safely. This block"
-               " ran in the SCI sandbox, NOT against the live brainyard JVM."
-               " Use sequential mode (drop the <!-- ParallelBlock --> markers)"
-               " to keep live-runtime semantics.]"))
+        ;; nREPL backend: the fork+merge SCI runner can't share an nREPL
+        ;; session safely across concurrent evals, and demoting to the SCI
+        ;; sandbox would run the blocks in the WRONG runtime (not the live
+        ;; brainyard JVM the agent exists to inspect). So when the agent's
+        ;; :clj-backend is :nrepl (e.g. debug-agent), we serialize the clojure
+        ;; blocks through the live nREPL via `run-single-block` instead —
+        ;; live-runtime semantics are preserved and session state accumulates
+        ;; naturally across the sequential evals. A short per-entry notice
+        ;; tells the LLM ordering was serialized, so it does NOT need to
+        ;; re-emit in sequential mode (which the old demotion marker prompted,
+        ;; costing an extra iteration).
+        nrepl-backend? (= :nrepl (agent-clj-backend (:agent dispatch-opts)))
+        nrepl-notice
+        (str "[note: the nREPL backend does not support parallel evaluation;"
+             " these Clojure blocks ran sequentially against the live brainyard"
+             " JVM. No re-emission needed.]")
         clj-results
         (when (seq clj-indexed)
-          (let [codes (mapv (comp :code second) clj-indexed)
-                ;; clj-sandbox's eval API returns {:eval-results [...]} — bind it
-                ;; to the local `code-results` (the agent-side name for the
-                ;; code channel; the sandbox component keeps its own key).
-                {code-results :eval-results}
-                (clj-sandbox/eval-code-blocks-parallel
-                 sandbox codes
-                 :timeout-ms (:auto-bg-ms dispatch-opts))]
-            (mapv (fn [[idx _block] r]
-                    (let [raw-output (or (:output r) "")
-                          stamped-output (if demotion-marker
-                                           (str demotion-marker
-                                                (when-not (str/blank? raw-output) "\n")
-                                                raw-output)
-                                           raw-output)]
+          (if nrepl-backend?
+            ;; Sequential nREPL path — reuse the same per-block dispatch the
+            ;; sequential mode uses, so detach/fast-eval/session semantics match.
+            (mapv (fn [[idx block]]
+                    (let [r (run-single-block sandbox block dispatch-opts)
+                          raw-output (or (:output r) "")
+                          stamped-output (str nrepl-notice
+                                              (when-not (str/blank? raw-output) "\n")
+                                              raw-output)]
+                      [idx (assoc r :output stamped-output :parallel? true)]))
+                  clj-indexed)
+            ;; SCI sandbox path — fork+merge parallel runner.
+            (let [codes (mapv (comp :code second) clj-indexed)
+                  ;; clj-sandbox's eval API returns {:eval-results [...]} — bind it
+                  ;; to the local `code-results` (the agent-side name for the
+                  ;; code channel; the sandbox component keeps its own key).
+                  {code-results :eval-results}
+                  (clj-sandbox/eval-code-blocks-parallel
+                   sandbox codes
+                   :timeout-ms (:auto-bg-ms dispatch-opts))]
+              (mapv (fn [[idx _block] r]
                       [idx
                        (cond-> {:lang "clojure"
                                 :code (or (:code r) "")
                                 :result (when-let [v (:result r)] (pr-str v))
-                                :output stamped-output
+                                :output (or (:output r) "")
                                 :error (or (:error r) "")
                                 :parallel? true}
                          ;; Preserve :status :timeout (hard-cancel branch).
                          (= :timeout (:status r))
-                         (assoc :status :timeout))]))
-                  clj-indexed
-                  code-results)))
+                         (assoc :status :timeout))])
+                    clj-indexed
+                    code-results))))
 
         ;; Non-clojure partition: each block runs as a future
         script-futures
@@ -3300,19 +3308,22 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
             :parallel? false}]
 
           parallel?
-          (let [batch-total (count blocks)]
+          (let [batch-total (count blocks)
+                ;; Clojure blocks run on the agent's configured backend; with
+                ;; :nrepl, `run-blocks-concurrently` serializes them through the
+                ;; live nREPL (parallel SCI fork+merge can't share a session).
+                ;; All non-clojure blocks always run in the SCI sandbox.
+                clj-backend (agent-clj-backend agent)
+                block-backend (fn [lang]
+                                (if (= "clojure" lang) clj-backend :sandbox))]
             ;; Parallel mode: fire :pre for all blocks upfront, then run
             ;; them concurrently, then fire :post per entry below.
-            ;; Parallel mode routes ALL clj blocks through the SCI sandbox
-            ;; (Phase 1 of clj-nrepl-eval): the fork+merge runner doesn't
-            ;; support :nrepl session sharing yet, so :backend stays
-            ;; :sandbox even when an info-arg requested otherwise.
             ;; The :parallel? + :parallel-batch-index markers let observers
             ;; (e.g. TUI render) accumulate all blocks of one partition
             ;; into a single eval-display instead of overwriting.
             (doseq [[idx {:keys [code lang]}] (map-indexed vector blocks)]
               (hooks/fire! :agent.code-eval/pre
-                           {:agent agent :code code :backend :sandbox :lang lang
+                           {:agent agent :code code :backend (block-backend lang) :lang lang
                             :parallel? true
                             :parallel-batch-index idx
                             :parallel-batch-total batch-total}))
@@ -3358,16 +3369,18 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                :blocks (count blocks)
                :parallel parallel?)
     ;; Parallel mode :post fires (sequential mode fired inline above).
-    ;; :backend is :sandbox in this branch — see the parallel :pre block.
+    ;; Clojure blocks report the agent's backend (:nrepl serialized through the
+    ;; live JVM, else :sandbox); non-clojure blocks always run in the sandbox.
     (when parallel?
-      (let [batch-total (count entries)]
+      (let [batch-total (count entries)
+            clj-backend (agent-clj-backend agent)]
         (doseq [[idx {:keys [code result output error duration-ms lang]}]
                 (map-indexed vector entries)]
           (hooks/fire! :agent.code-eval/post
                        {:agent agent :code code
                         :result result :output output :error error
                         :duration-ms duration-ms
-                        :backend :sandbox
+                        :backend (if (= "clojure" lang) clj-backend :sandbox)
                         :lang lang
                         :parallel? true
                         :parallel-batch-index idx

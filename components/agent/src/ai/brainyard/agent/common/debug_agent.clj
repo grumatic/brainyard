@@ -237,7 +237,11 @@
      not a key: `(require '[ns :as a] :reload)`, never inside the libspec vector.
    - You do NOT need the `:nrepl` info-arg — your code blocks route to the
      live runtime by default. Fully-qualify symbols (the session is the `user`
-     ns); slice big values (`(take 20 …)`, `(keys …)`) instead of dumping.")
+     ns); slice big values (`(take 20 …)`, `(keys …)`) instead of dumping.
+   - No parallel mode: do NOT emit `<!-- ParallelBlock -->` markers. The live
+     session can't be forked, so multiple ```clojure fences in one turn run
+     SEQUENTIALLY in the SAME session (each sees the prior blocks' defs/state).
+     Lean into that — probe, bind a var, reuse it in the next block.")
 
 ;; debug-only preamble — prepended to the :nrepl guide in this agent's
 ;; tool-context. The lifecycle tools below are gated to debug-* and are not
@@ -270,6 +274,16 @@ JVM with full reflection: every loaded namespace, var, atom, and value is
 reachable. nREPL is full-trust — the only eval-path check is the deny-list
 (System/exit, Runtime/.exec, credential namespaces). For ISOLATED eval, use the
 SCI sandbox instead — see `(usage$guide :topic :sandbox)`.
+
+### Parallel blocks are not supported here — just emit blocks normally
+The `:nrepl` backend has NO parallel mode: a single live session is stateful and
+cannot be forked across concurrent evals. Do NOT emit `<!-- ParallelBlock -->`
+markers — if you do, the blocks are simply run SEQUENTIALLY against the live JVM
+(with a short notice in the output) rather than rejected, so it costs you
+nothing but buys you nothing either. Multiple ```clojure fences in one turn
+already evaluate in order in the SAME session, so each block sees the `def`s,
+requires, and state the previous blocks established. Sequence is the only mode;
+lean into it (probe → bind a var → reuse it in the next block).
 
    ## Inspecting the live brainyard image (read-only, safe)
 
