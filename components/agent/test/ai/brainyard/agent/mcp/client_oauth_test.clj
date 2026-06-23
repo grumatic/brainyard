@@ -93,15 +93,54 @@
           (is (= "S1" (:session-id connected)))
           (is (= :oauth (get-in connected [:oauth-auth :type]))))))))
 
-(deftest connect!-skips-login-when-already-authenticated
+(deftest connect!-skips-login-when-token-usable
+  ;; The skip-login gate is `token-usable?` (present AND not-expired-or-refreshable),
+  ;; not bare `authenticated?` — a stale refresh-less bundle is authenticated but
+  ;; unusable and must re-login. A usable token skips login.
   (let [login-calls (atom 0)]
-    (with-redefs [oauth/authenticated? (fn [_] true)
-                  oauth/login!        (fn [_] (swap! login-calls inc) {})
+    (with-redefs [oauth/token-usable?  (fn [_] true)
+                  oauth/login!         (fn [_] (swap! login-calls inc) {})
                   oauth/bearer-headers (fn [_] {"Authorization" "Bearer AT"})
                   http/post (fn [_ _] (init-ok "S2"))]
       (mcp-client/connect! (mcp-client/create-client :http {})
                            {:url "u" :auth {:type :oauth :account-id "notion"}})
-      (is (zero? @login-calls) "stored token → no re-login"))))
+      (is (zero? @login-calls) "usable token → no re-login"))))
+
+(deftest connect!-relogins-when-token-unusable
+  ;; A stale, refresh-less bundle (authenticated? true but token-usable? false)
+  ;; must trigger a fresh login rather than dead-ending downstream.
+  (let [login-calls (atom 0)]
+    (with-redefs [oauth/authenticated? (fn [_] true)
+                  oauth/token-usable?  (fn [_] false)
+                  oauth/login!         (fn [_] (swap! login-calls inc) {})
+                  oauth/bearer-headers (fn [_] {"Authorization" "Bearer AT"})
+                  http/post (fn [_ _] (init-ok "S3"))]
+      (mcp-client/connect! (mcp-client/create-client :http {})
+                           {:url "u" :auth {:type :oauth :account-id "notion"}})
+      (is (= 1 @login-calls) "unusable stored token → re-login"))))
+
+(deftest connect!-401-relogins-when-refresh-unavailable
+  ;; initialize 401s on a usable-looking token; refresh! can't service it (e.g.
+  ;; GitHub issues no refresh token) → clear + re-login + retry, rather than
+  ;; failing the connect with "No refresh token available".
+  (let [usable      (atom true)
+        login-calls (atom 0)
+        logout-calls (atom 0)
+        post-calls  (atom 0)]
+    (with-redefs [oauth/token-usable?  (fn [_] @usable)
+                  oauth/refresh!       (fn [_] (throw (ex-info "No refresh token available." {})))
+                  oauth/logout!        (fn [_] (swap! logout-calls inc) (reset! usable false) nil)
+                  oauth/login!         (fn [_] (swap! login-calls inc) {:access_token "AT2"})
+                  oauth/bearer-headers (fn [_] {"Authorization" "Bearer AT"})
+                  http/post (fn [_ _]
+                              (if (= 1 (swap! post-calls inc))
+                                {:status 401 :headers {} :body ""}   ; initialize rejected
+                                (init-ok "S4")))]                      ; retry after re-login
+      (let [connected (mcp-client/connect! (mcp-client/create-client :http {})
+                                           {:url "u" :auth {:type :oauth :account-id "github2"}})]
+        (is (= 1 @logout-calls) "stale creds cleared")
+        (is (= 1 @login-calls)  "re-login ran once after the failed refresh")
+        (is (= "S4" (:session-id connected)) "initialize retried successfully after re-login")))))
 
 ;; ---------------------------------------------------------------------------
 ;; send-request! — mid-session 401 forces one refresh + retry

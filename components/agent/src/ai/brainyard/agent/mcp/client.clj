@@ -652,12 +652,16 @@
     (dispatch-oauth-prompt! {:account-id account-id :event event})))
 
 (defn- ensure-oauth-login!
-  "Ensure a token bundle exists for an OAuth server's account, running the
-   device/auth-code flow once if not. Blocks for the human round-trip — safe
-   because connects run on background futures (connect-server-async!)."
+  "Ensure a USABLE token bundle exists for an OAuth server's account, running the
+   device/auth-code flow once if not. Gated on `token-usable?` (not merely
+   `authenticated?`): a stale, refresh-less bundle is authenticated but can't
+   yield a bearer, and skipping login on it would dead-end the next refresh with
+   \"No refresh token available\" — so we re-login instead. Blocks for the human
+   round-trip — safe because connects run on background futures
+   (connect-server-async!)."
   [auth]
   (let [account-id (:account-id auth)]
-    (when-not (oauth/authenticated? account-id)
+    (when-not (oauth/token-usable? account-id)
       (mulog/info ::mcp-oauth-login :account account-id :flow (:flow auth :auto))
       (oauth/login! (assoc auth
                            :on-user-prompt (oauth-on-prompt account-id)
@@ -773,12 +777,22 @@
               [c (post-init c)])
             [client0 resp0])
           ;; OAuth 401 (declared or discovered) on a now-authenticated client:
-          ;; force one refresh and retry.
+          ;; force one refresh and retry. When the token can't be refreshed
+          ;; (e.g. a revoked or provider-non-refreshable token — GitHub issues
+          ;; none), clear it and re-run the full login once instead of failing
+          ;; the connect with "No refresh token available".
           oauth-auth (:oauth-auth client1)
           resp    (if (and oauth-auth (unauthorized? resp1))
-                    (do (mulog/info ::mcp-oauth-401-refresh :account (:account-id oauth-auth) :phase :initialize)
-                        (oauth/refresh! (:account-id oauth-auth))
-                        (post-init client1))
+                    (let [account-id (:account-id oauth-auth)]
+                      (mulog/info ::mcp-oauth-401-refresh :account account-id :phase :initialize)
+                      (try
+                        (oauth/refresh! account-id)
+                        (catch Exception e
+                          (mulog/info ::mcp-oauth-401-relogin :account account-id
+                                      :reason (ex-message e))
+                          (oauth/logout! account-id)
+                          (ensure-oauth-login! oauth-auth)))
+                      (post-init client1))
                     resp1)
           client  client1]
 

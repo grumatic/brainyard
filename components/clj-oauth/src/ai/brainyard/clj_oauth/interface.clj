@@ -61,6 +61,13 @@
   "True when a bundle is stored for account-id. See store/authenticated?."
   store/authenticated?)
 
+(def token-usable?
+  "True when account-id has a bundle that can yield a bearer WITHOUT re-login
+   (present, and not-expired or refreshable). Prefer over `authenticated?` for
+   skip-login decisions: a stale refresh-less bundle is authenticated but
+   unusable. See store/token-usable?."
+  store/token-usable?)
+
 ;; ============================================================================
 ;; Validation & refresh (provider-agnostic; endpoint supplied by caller)
 ;; ============================================================================

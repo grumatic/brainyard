@@ -314,11 +314,25 @@
 ;; ============================================================================
 
 (defn token-expired?
-  "True if the bundle is missing `:expires_at` or expires within 60s."
+  "True when the bundle has an `:expires_at` in the past (or within 60s). A
+   bundle with NO `:expires_at` is treated as NON-expiring — e.g. a GitHub
+   user-to-server token issued without expiry — so it is not expired. (Flows
+   that always carry an expiry set `:expires_at`; only genuinely non-expiring
+   tokens omit it, and forcing those through a refresh they can't do would
+   dead-end with \"No refresh token available\".)"
   [tokens]
   (if-let [expires-at (:expires_at tokens)]
     (< expires-at (+ (System/currentTimeMillis) 60000))
-    true))
+    false))
+
+(defn token-usable?
+  "True when a stored bundle for `account-id` can yield a valid bearer WITHOUT an
+   interactive re-login: present, and either not expired or holding a refresh
+   token. A stale, refresh-less bundle is NOT usable — callers should re-run
+   `login!` rather than dead-end on a refresh the provider can't service."
+  [account-id]
+  (when-let [t (load-tokens account-id)]
+    (boolean (or (not (token-expired? t)) (:refresh_token t)))))
 
 (defn ^:private refresh-body
   "Build the token-endpoint request body for a refresh. `:json` matches the

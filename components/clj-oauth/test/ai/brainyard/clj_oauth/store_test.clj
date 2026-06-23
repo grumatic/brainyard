@@ -80,12 +80,27 @@
       (is (empty? tmps) "no leftover .tmp files after atomic move"))))
 
 (deftest token-expired-logic
-  (testing "60s skew, missing expiry treated as expired"
+  (testing "60s skew; missing expiry treated as non-expiring"
     (is (true?  (oauth/token-expired? {:expires_at 1})))
-    (is (true?  (oauth/token-expired? {})) "missing :expires_at → expired")
+    (is (false? (oauth/token-expired? {}))
+        "missing :expires_at → non-expiring (e.g. GitHub token without expiry)")
     (is (false? (oauth/token-expired? {:expires_at (+ (System/currentTimeMillis) 999999)})))
     (is (true?  (oauth/token-expired? {:expires_at (+ (System/currentTimeMillis) 30000)}))
         "within 60s skew → expired")))
+
+(deftest token-usable-logic
+  (testing "usable = present AND (not-expired OR refreshable)"
+    (oauth/clear-tokens! "notion")
+    (is (false? (boolean (oauth/token-usable? "notion"))) "no bundle → not usable")
+    (oauth/save-tokens! "notion" {:access_token "t" :expires_at (+ (System/currentTimeMillis) 999999)})
+    (is (true?  (oauth/token-usable? "notion")) "unexpired → usable")
+    (oauth/save-tokens! "notion" {:access_token "t" :expires_at 1 :refresh_token "r"})
+    (is (true?  (oauth/token-usable? "notion")) "expired but refreshable → usable")
+    (oauth/save-tokens! "notion" {:access_token "t" :expires_at 1})
+    (is (false? (oauth/token-usable? "notion")) "expired and refresh-less → NOT usable")
+    (oauth/save-tokens! "notion" {:access_token "t"})
+    (is (true?  (oauth/token-usable? "notion")) "non-expiring (no expiry) → usable")
+    (oauth/clear-tokens! "notion")))
 
 (deftest refresh-body-encodings
   (testing "form encoding URL-encodes; json encoding emits a JSON object"

@@ -97,9 +97,12 @@
                         {:status (:status resp) :body (:body resp) :error err}))))
     (let [body (json/read-str (:body resp) :key-fn keyword)
           now  (System/currentTimeMillis)]
-      (assoc body
-             :expires_at  (+ now (* (:expires_in body 3600) 1000))
-             :obtained_at now))))
+      ;; Only stamp :expires_at when the provider returns :expires_in. A token
+      ;; with no expiry (e.g. a GitHub user token without expiry enabled) stays
+      ;; non-expiring — fabricating a fake 1h expiry would later force a refresh
+      ;; the provider can't service (no refresh_token) and dead-end the bearer.
+      (cond-> (assoc body :obtained_at now)
+        (:expires_in body) (assoc :expires_at (+ now (* (:expires_in body) 1000)))))))
 
 (defn paste-login!
   "Run the headless auth-code + PKCE paste flow. Shows the authorize URL via
