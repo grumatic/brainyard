@@ -1498,13 +1498,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; (no longer special-cased). Clone-self dispatch (query$clone) is gated
         ;; to rlm-agent via :tool-use-control, so it only binds for rlm. The
         ;; legacy notes API was removed in the L1 simplification refactor.
+        ;; Wall-clock access is the `time$now` tool (core.timeutil), auto-bound
+        ;; into the sandbox like any other tool — no special-cased `(now)`.
         bindings (merge (sb-bind/make-tool-bindings agent)
-                        (or restore-bindings {})
-                        {'now (with-meta
-                                (fn [] (sys-info/now-snapshot))
-                                {:doc "Current wall-clock as {:wall-time-iso :tz-iana :tz-offset-minutes}. Use this when you need the current time mid-turn without forcing the system prompt to re-render."
-                                 :arglists '([])
-                                 :category :system})})
+                        (or restore-bindings {}))
 
         ;; Sandbox-side context map for context-accessors (context-get, etc.).
         ;; `:recalled-memory` is wired as a direct DSPy signature input;

@@ -87,11 +87,5 @@
       ;; ISO timestamp should be present and parseable.
       (is (re-find #"- Now: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[\.\d]*[+-]\d{2}:\d{2}" s)))))
 
-(deftest now-snapshot-shape
-  (testing "now-snapshot returns the three documented keys"
-    (let [m (sys-info/now-snapshot)]
-      (is (string? (:wall-time-iso m)))
-      (is (string? (:tz-iana m)))
-      (is (integer? (:tz-offset-minutes m)))
-      ;; ISO timestamp matches the expected shape.
-      (is (re-find #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}" (:wall-time-iso m))))))
+;; `now-snapshot` was removed — wall-clock access is now the `time$now` tool
+;; (see ai.brainyard.agent.core.timeutil-test for the canonical-shape coverage).

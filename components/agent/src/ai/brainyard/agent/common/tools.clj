@@ -11,6 +11,7 @@
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.session :as session]
+            [ai.brainyard.agent.core.timeutil :as timeutil]
             [ai.brainyard.agent.core.tool :as tool :refer [deftool]]
             [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.mulog.interface :as mulog]
@@ -684,6 +685,72 @@
 ;; `bash` (e.g. `tree -L 4`, or `find . -maxdepth 4 -type d`).
 
 ;; ============================================================================
+;; Time Tools
+;; ============================================================================
+
+;; Shared "instant" shape — one source of truth so every instant-returning
+;; time tool (time$now, time$add) advertises identical field names. See
+;; `core.timeutil` for the canonical map.
+(def ^:private time-instant-schema
+  [:map
+   [:iso               [:string  {:desc "ISO-8601 offset date-time"}]]
+   [:epoch-ms          [:int     {:desc "Milliseconds since the Unix epoch"}]]
+   [:epoch-sec         [:int     {:desc "Seconds since the Unix epoch"}]]
+   [:tz-iana           [:string  {:desc "IANA timezone the instant is rendered in"}]]
+   [:tz-offset-minutes [:int     {:desc "UTC offset in minutes"}]]
+   [:day-of-week       [:string  {:desc "English day-of-week name"}]]
+   [:error             {:optional true} [:string {:desc "Error message on failure"}]]])
+
+(deftool time$now
+  "Current wall-clock time. Optional :tz (IANA zone) renders it in another zone."
+  (fn [{:keys [tz]}]
+    (try (timeutil/now-map tz)
+         (catch Exception e {:error (.getMessage e)})))
+  :input-schema  [:map
+                  [:tz {:optional true} [:string {:desc "IANA timezone (e.g. \"UTC\", \"Asia/Seoul\"); default system zone"}]]]
+  :output-schema time-instant-schema)
+
+(deftool time$add
+  "Calendar-correct date math (DST/month/leap aware). Shift :base (ISO string or epoch-ms; default now) by any of :years/:months/:weeks/:days/:hours/:minutes/:seconds (negative allowed)."
+  (fn [{:keys [base tz] :as args}]
+    (try (timeutil/add-map base tz (select-keys args [:years :months :weeks :days
+                                                      :hours :minutes :seconds]))
+         (catch Exception e {:error (.getMessage e)})))
+  :input-schema  [:map
+                  [:base    {:optional true} [:string {:desc "Start time: ISO-8601 string or epoch-ms; default now"}]]
+                  [:tz      {:optional true} [:string {:desc "IANA timezone for the shift and rendering; default system zone"}]]
+                  [:years   {:optional true} [:int {:desc "Years to add (may be negative)"}]]
+                  [:months  {:optional true} [:int {:desc "Months to add (may be negative)"}]]
+                  [:weeks   {:optional true} [:int {:desc "Weeks to add (may be negative)"}]]
+                  [:days    {:optional true} [:int {:desc "Days to add (may be negative)"}]]
+                  [:hours   {:optional true} [:int {:desc "Hours to add (may be negative)"}]]
+                  [:minutes {:optional true} [:int {:desc "Minutes to add (may be negative)"}]]
+                  [:seconds {:optional true} [:int {:desc "Seconds to add (may be negative)"}]]]
+  :output-schema time-instant-schema)
+
+(deftool time$diff
+  "Elapsed time between :from and :to (each ISO string or epoch-ms; :to defaults to now). Returns signed totals, a humanized magnitude, and a calendar breakdown."
+  (fn [{:keys [from to tz]}]
+    (try (timeutil/diff-map from to tz)
+         (catch Exception e {:error (.getMessage e)})))
+  :input-schema  [:map
+                  [:from [:string {:desc "Start time: ISO-8601 string or epoch-ms"}]]
+                  [:to   {:optional true} [:string {:desc "End time: ISO-8601 string or epoch-ms; default now"}]]
+                  [:tz   {:optional true} [:string {:desc "IANA timezone for the calendar breakdown; default system zone"}]]]
+  :output-schema [:map
+                  [:from      [:map    {:desc "Canonical instant map for :from"}]]
+                  [:to        [:map    {:desc "Canonical instant map for :to"}]]
+                  [:direction [:string {:desc "\"future\" (to after from), \"past\", or \"same\""}]]
+                  [:ms        [:int    {:desc "Signed total milliseconds (to − from)"}]]
+                  [:seconds   [:int    {:desc "Signed total seconds"}]]
+                  [:minutes   [:int    {:desc "Signed total minutes (truncated)"}]]
+                  [:hours     [:int    {:desc "Signed total hours (truncated)"}]]
+                  [:days      [:int    {:desc "Signed total days (truncated)"}]]
+                  [:humanized [:string {:desc "Compact magnitude, e.g. \"2d 4h 15m\""}]]
+                  [:calendar  [:map    {:desc "Calendar magnitude {:years :months :days :hours :minutes :seconds}"}]]
+                  [:error     {:optional true} [:string {:desc "Error message on failure"}]]])
+
+;; ============================================================================
 ;; Tool Categories
 ;; ============================================================================
 
@@ -720,6 +787,12 @@
   [#'web-search
    #'fetch-url])
 
+(def time-tools
+  "Wall-clock tools: current time, calendar-correct date math, elapsed time."
+  [#'time$now
+   #'time$add
+   #'time$diff])
+
 (def all-common-tools
   "All common deftool tools available for sandbox/agent use"
   (vec (distinct (concat bootstrap-tools
@@ -727,4 +800,5 @@
                          shell-tools
                          interaction-tools
                          file-tools
-                         web-tools))))
+                         web-tools
+                         time-tools))))

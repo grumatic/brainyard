@@ -23,9 +23,9 @@
   (:require [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.protocol :as proto]
+            [ai.brainyard.agent.core.timeutil :as timeutil]
             [clojure.string :as str])
-  (:import (java.time Instant ZoneId ZonedDateTime)
-           (java.time.format DateTimeFormatter)))
+  (:import (java.time Instant ZoneId ZonedDateTime)))
 
 ;; ============================================================================
 ;; env-detect — soft dependency (loaded only when on the classpath)
@@ -186,16 +186,6 @@
 ;; Public — :turn-info
 ;; ============================================================================
 
-(def ^:private iso-date-time-fmt
-  DateTimeFormatter/ISO_OFFSET_DATE_TIME)
-
-(def ^:private day-of-week-fmt
-  (DateTimeFormatter/ofPattern "EEEE"))
-
-(defn- ^ZonedDateTime now-zoned
-  [^Instant instant ^ZoneId zone]
-  (ZonedDateTime/ofInstant instant zone))
-
 (defn build-turn-info-section
   "Render the per-turn `:turn-info` section.
 
@@ -205,14 +195,17 @@
      :now         - java.time.Instant (default: current wall clock)
      :tz          - java.time.ZoneId (default: system zone)
 
-   Output is small (~3 lines) and byte-identical across all iterations
-   within the same turn — the within-turn prompt cache stays valid."
+   The clock is sourced from `timeutil/instant->map`, so the rendered `- Now:`
+   line is byte-for-byte consistent with the `time$now` tool (same ISO format,
+   truncated to whole seconds). Output is small (~3 lines) and byte-identical
+   across all iterations within the same turn — the within-turn prompt cache
+   stays valid."
   [& {:keys [turn-id total-turns now tz]}]
   (let [now (or now (Instant/now))
         tz (or tz (ZoneId/systemDefault))
-        zoned (now-zoned now tz)
-        iso (.format zoned iso-date-time-fmt)
-        dow (.format zoned day-of-week-fmt)
+        m (timeutil/instant->map now tz)
+        iso (:iso m)
+        dow (:day-of-week m)
         turn (or turn-id 1)
         total (or total-turns turn)]
     (str/join "\n"
@@ -221,25 +214,6 @@
                (str "- Now: " iso " (" dow ")")
                (str "- Turn: " turn " (session total: " total ")")])))
 
-;; ============================================================================
-;; Sandbox accessor — (now)
-;; ============================================================================
-
-(defn now-snapshot
-  "Return a small map describing the current wall-clock.
-
-   Output:
-     {:wall-time-iso \"2026-05-16T14:32:17+09:00\"
-      :tz-iana       \"Asia/Seoul\"
-      :tz-offset-minutes 540}
-
-   Bound into the CoAct sandbox as `(now)` so the LLM can re-check the
-   clock from a `clojure` fence without forcing a section re-render."
-  []
-  (let [tz (ZoneId/systemDefault)
-        instant (Instant/now)
-        zoned (now-zoned instant tz)
-        offset (.getOffset zoned)]
-    {:wall-time-iso (.format zoned iso-date-time-fmt)
-     :tz-iana (str tz)
-     :tz-offset-minutes (long (/ (.getTotalSeconds offset) 60))}))
+;; Wall-clock access from sandbox code / the LLM is the `time$now` tool
+;; (see `core.timeutil` + `common.tools`), which replaced the bespoke `(now)`
+;; sandbox binding that used to live here as `now-snapshot`.
