@@ -63,11 +63,13 @@
 ;; ============================================================================
 
 (deftest default-config-derived-from-schema
-  (testing "every schema key declares either :default or :default-fn"
+  (testing "every schema key declares at least one resolution source (:default, :default-fn, or :env-fn)"
     (doseq [k cfg/config-keys
             :let [entry (get cfg/config-schema k)]]
-      (is (or (contains? entry :default) (contains? entry :default-fn))
-          (str "schema entry " k " has neither :default nor :default-fn"))))
+      (is (or (contains? entry :default)
+              (contains? entry :default-fn)
+              (contains? entry :env-fn))
+          (str "schema entry " k " has no :default / :default-fn / :env-fn"))))
   (testing ":default-fn-only entries are excluded from default-config"
     (doseq [k cfg/config-keys
             :let [entry (get cfg/config-schema k)]]
@@ -168,6 +170,41 @@
          (cfg/get-config nil :max-iterations))))
 
 ;; ============================================================================
+;; get-config — ENV layer (highest precedence)
+;; ============================================================================
+;; A set env var is simulated by redefining `schema-env-value` (the real env
+;; reads go through it), so these tests don't depend on the JVM's actual
+;; environment.
+
+(deftest env-overrides-global-and-agent
+  (seed-project-config! {:agent {:config {:nrepl-enabled? false}}})
+  (cfg/invalidate-global-config!)
+  (with-redefs [cfg/schema-env-value (fn [k] (if (= k :nrepl-enabled?) true cfg/env-unset))]
+    (is (true? (cfg/get-config :nrepl-enabled?))
+        "env beats config.edn (1-arity)")
+    (let [ag (fake-agent {:nrepl-enabled? false})]
+      (is (true? (cfg/get-config ag :nrepl-enabled?))
+          "env beats the per-agent override"))))
+
+(deftest env-false-beats-persisted-true
+  ;; The sentinel distinguishes a real env value of `false` from 'unset', so a
+  ;; falsey env value still overrides a persisted `true`.
+  (seed-project-config! {:agent {:config {:ask-channel-enabled? true}}})
+  (cfg/invalidate-global-config!)
+  (with-redefs [cfg/schema-env-value (fn [k] (if (= k :ask-channel-enabled?) false cfg/env-unset))]
+    (is (false? (cfg/get-config :ask-channel-enabled?)))))
+
+(deftest env-unset-falls-through-to-lower-layers
+  (seed-project-config! {:agent {:config {:nrepl-enabled? true}}})
+  (cfg/invalidate-global-config!)
+  (with-redefs [cfg/schema-env-value (constantly cfg/env-unset)]
+    (is (true? (cfg/get-config :nrepl-enabled?))
+        "unset env → config.edn wins")
+    (let [ag (fake-agent {:nrepl-enabled? false})]
+      (is (false? (cfg/get-config ag :nrepl-enabled?))
+          "unset env → per-agent override wins"))))
+
+;; ============================================================================
 ;; get-config-snapshot
 ;; ============================================================================
 
@@ -185,6 +222,18 @@
         snap (cfg/get-config-snapshot ag)]
     (is (= 99 (:max-iterations snap)))
     (is (false? (:enable-subagent-calls snap)))))
+
+(deftest snapshot-overlays-env-on-top
+  ;; A set env var overrides global AND the per-agent layer in the snapshot,
+  ;; matching `get-config`'s precedence.
+  (seed-project-config! {:agent {:config {:nrepl-enabled? false}}})
+  (cfg/invalidate-global-config!)
+  (with-redefs [cfg/schema-env-value (fn [k] (if (= k :nrepl-enabled?) true cfg/env-unset))]
+    (is (true? (:nrepl-enabled? (cfg/get-config-snapshot)))
+        "no-agent snapshot reflects the env override")
+    (let [ag (fake-agent {:nrepl-enabled? false})]
+      (is (true? (:nrepl-enabled? (cfg/get-config-snapshot ag)))
+          "agent snapshot still has env on top"))))
 
 ;; ============================================================================
 ;; Session-config layer + :default-fn fallback (D1 + D2)
@@ -538,7 +587,7 @@
 ;; ============================================================================
 
 (deftest resolve-sandbox-interop-default-is-restricted
-  ;; No persisted override and no BY_SANDBOX_INTEROP → schema :default-fn → :restricted.
+  ;; No persisted override and no BY_SANDBOX_INTEROP → schema :default → :restricted.
   (with-redefs [cfg/get-config (fn ([_] :restricted) ([_ _] :restricted))]
     (is (= :restricted (cfg/resolve-sandbox-interop)))
     (is (= :restricted (cfg/resolve-sandbox-interop (fake-agent {}))))))

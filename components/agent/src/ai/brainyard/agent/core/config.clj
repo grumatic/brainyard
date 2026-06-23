@@ -11,9 +11,13 @@
    2. Unified config API — `get-config` / `set-config!` resolve every read
       and write through one precedence chain (lowest → highest):
         schema default (`:default` or lazy `:default-fn`)
-          < !global-config (.brainyard/config.edn)
+          < !global-config (.brainyard/config.edn merged over static defaults)
           < session-config (`(:config @!session)`)
           < per-agent override (`(:config @st-memory-init)`)
+          < environment variable (a key's `:env-fn`; HIGHEST — a set env var
+            wins over every persisted/in-memory layer)
+      Each resolution is mulog-tracked once per (key, source) via
+      `::config-resolved` so the winning layer is observable.
       Per-agent overrides are seeded from defagent `:config-extra` +
       caller options; schema-shape keys (in `config-keys`) flow into this
       slot automatically at `setup-agent` time. `set-config!` always
@@ -25,6 +29,7 @@
   (:require [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.clj-llm.interface :as clj-llm]
+            [ai.brainyard.mulog.interface :as mulog]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.pprint :as pprint]
@@ -38,6 +43,12 @@
 ;; ============================================================================
 
 (declare resolve-dirs user-config-dir default-allowed-dirs)
+
+(def env-unset
+  "Sentinel an `:env-fn` returns when its environment variable is absent — so a
+   real env value of `false` / `0` / \"\" is distinguishable from \"not set\"
+   and resolution falls through to the next layer. Compared in `get-config`."
+  ::env-unset)
 
 (def config-schema
   "Config key → {:type <coerce-value type-str> :default <value>}
@@ -315,9 +326,10 @@
    ;; `resolve-dirs` when nothing in the chain provides it.
    :dirs                       {:type "object"
                                 :default-fn #(resolve-dirs)}
-   ;; Tavily web-search API key. Lazy default reads `TAVILY_API_KEY` env.
+   ;; Tavily web-search API key. `TAVILY_API_KEY` env wins (highest precedence).
    :tavily-api-key             {:type "string"
-                                :default-fn #(System/getenv "TAVILY_API_KEY")}
+                                ;; env override (highest precedence); no persisted default (nil when unset).
+                                :env-fn #(or (System/getenv "TAVILY_API_KEY") ::env-unset)}
    ;; Allow-list of directories for filesystem-touching tools (bash, read,
    ;; write, grep, task$run). Lazy default falls through to
    ;; `default-allowed-dirs` (/tmp + project-dir + user-config-dir).
@@ -332,18 +344,21 @@
    ;; The in-process nREPL server backing `code$eval :backend :nrepl` is
    ;; off by default. Operators enable it durably by setting
    ;; `[:agent :config :nrepl-enabled?] true` in .brainyard/config.edn,
-   ;; or transiently via BY_NREPL_ENABLED=true (the env-fallback layer
-   ;; below). Same precedence applies to :nrepl-port (0 = ephemeral). The
+   ;; or transiently via BY_NREPL_ENABLED=true — the env var is the HIGHEST
+   ;; layer, so it overrides even a persisted `false`. Same precedence applies
+   ;; to :nrepl-port (BY_NREPL_PORT; 0 = ephemeral). The
    ;; server is OFF by default. nREPL is the full-trust backend — reaching the
    ;; loopback server gives full eval (the only eval-path check is the
    ;; deny-list); there is no grant/scope/confirmation. For isolated code
    ;; execution use the SCI sandbox backend (:clj-backend :sandbox).
    :nrepl-enabled?             {:type "boolean"
-                                :default-fn #(= "true" (System/getenv "BY_NREPL_ENABLED"))}
+                                :env-fn #(if-some [v (System/getenv "BY_NREPL_ENABLED")]
+                                           (= "true" v) ::env-unset)
+                                :default false}
    :nrepl-port                 {:type "integer"
-                                :default-fn #(or (some-> (System/getenv "BY_NREPL_PORT")
-                                                         parse-long)
-                                                 0)}
+                                :env-fn #(if-some [v (System/getenv "BY_NREPL_PORT")]
+                                           (or (parse-long v) ::env-unset) ::env-unset)
+                                :default 0}
    ;; Clojure code-execution backend for ```clojure blocks in CoAct agents.
    ;; :sandbox — SCI sandbox (default, safe for arbitrary agents).
    ;; :nrepl   — live brainyard JVM via clj-nrepl (debug-agent; needs server).
@@ -354,14 +369,16 @@
    ;; opens a per-session AF_UNIX socket (<session-dir>/ask.sock) so
    ;; `by ask --attach <session-id>` can inject a question into the live turn
    ;; queue. On by default; disable durably via `[:agent :config
-   ;; :ask-channel-enabled?] false` or transiently via BY_ASK_CHANNEL=0.
+   ;; :ask-channel-enabled?] false` or via BY_ASK_CHANNEL=0 (env wins).
    ;; :ask-timeout-ms caps a single side-ask turn server-side.
    :ask-channel-enabled?       {:type "boolean"
-                                :default-fn #(not= "0" (System/getenv "BY_ASK_CHANNEL"))}
+                                :env-fn #(if-some [v (System/getenv "BY_ASK_CHANNEL")]
+                                           (not= "0" v) ::env-unset)
+                                :default true}
    :ask-timeout-ms             {:type "integer"
-                                :default-fn #(or (some-> (System/getenv "BY_ASK_TIMEOUT_MS")
-                                                         parse-long)
-                                                 120000)}
+                                :env-fn #(if-some [v (System/getenv "BY_ASK_TIMEOUT_MS")]
+                                           (or (parse-long v) ::env-unset) ::env-unset)
+                                :default 120000}
    ;; SCI sandbox interop level for the CoAct/RLM code sandbox.
    ;;   :restricted (default) — whitelisted pure classes + denylist
    ;;                (System/Runtime/ProcessBuilder/ClassLoader denied). Only
@@ -376,9 +393,9 @@
    ;; Default reads BY_SANDBOX_INTEROP (restricted|full|auto); explicit opt-in,
    ;; never auto-relaxes unless set to :full or :auto.
    :sandbox-interop            {:type "keyword"
-                                :default-fn #(keyword
-                                              (or (not-empty (System/getenv "BY_SANDBOX_INTEROP"))
-                                                  "restricted"))}})
+                                :env-fn #(if-let [v (not-empty (System/getenv "BY_SANDBOX_INTEROP"))]
+                                           (keyword v) ::env-unset)
+                                :default :restricted}})
 
 (def config-keys (set (keys config-schema)))
 
@@ -1093,54 +1110,115 @@
     :else                       proto/*current-agent*))
 
 (defn- schema-default-fn-value
-  "Invoke the `:default-fn` for schema key `k`, or return nil when the
-   entry has no `:default-fn`. Used by `get-config` as the final fallback
-   for runtime-resolved keys (`:lm-config`, `:dirs`, etc.)."
+  "Invoke the `:default-fn` for schema key `k`, or return nil when the entry
+   has no `:default-fn`. The lowest-precedence fallback in `get-config`, used
+   for runtime-resolved keys (`:lm-config`, `:dirs`, `:allowed-dirs`)."
   [k]
   (when-let [f (get-in config-schema [k :default-fn])]
     (f)))
 
+(defn schema-env-value
+  "Invoke schema key `k`'s `:env-fn`, returning its env-derived value, or
+   `env-unset` when the key has no env binding or its variable is absent.
+   The ENV layer sits ABOVE every persisted/in-memory layer in `get-config`."
+  [k]
+  (if-let [f (get-in config-schema [k :env-fn])]
+    (f)
+    env-unset))
+
+(defonce ^:private !config-logged
+  ;; (key, source) pairs already mulog'd — keeps `::config-resolved` to one
+  ;; line per key per winning layer instead of one per get-config call.
+  (atom #{}))
+
+(defn- track-config!
+  "Emit `::config-resolved {:key :source :value}` once per (key, source).
+   Collection-valued keys log `:value :elided` to keep events small."
+  [k source v]
+  (let [sig [k source]]
+    (when-not (contains? @!config-logged sig)
+      (swap! !config-logged conj sig)
+      (mulog/log ::config-resolved
+                 :key k :source source
+                 :value (if (or (nil? v) (string? v) (number? v)
+                                (boolean? v) (keyword? v))
+                          v :elided)))))
+
+(defn- resolve-config
+  "Resolve config key `k` through the precedence chain, returning
+   `[value source]`. `source` ∈ #{:env :agent :session :global :default}:
+   `:global` = `!global-config` (.brainyard/config.edn merged over static
+   defaults); `:default` = a lazy `:default-fn` (or nil). `agent` may be nil
+   (1-arity callers), which skips the :agent and :session layers."
+  [agent k]
+  (ensure-global-loaded!)
+  (let [ev (schema-env-value k)]
+    (if (not= env-unset ev)
+      [ev :env]
+      (let [ac (when agent (agent-config agent))
+            sc (when agent (session-config agent))]
+        (cond
+          (and ac (contains? ac k))     [(get ac k) :agent]
+          (and sc (contains? sc k))     [(get sc k) :session]
+          (contains? @!global-config k) [(get @!global-config k) :global]
+          :else                         [(schema-default-fn-value k) :default])))))
+
 (defn get-config
-  "Resolve a single config item. Precedence (lowest → highest):
-     schema default (`:default` or `:default-fn`)
-       → `!global-config` (.brainyard/config.edn)
-       → session-config (`(:config @!session)`)
+  "Resolve a single config item. Precedence (highest → lowest):
+     environment variable (a key's `:env-fn`; a set env var wins)
        → per-agent override (`(:config @st-memory-init)`)
-   Boolean `false` overrides are honored — uses `contains?` not `or`.
+       → session-config (`(:config @!session)`)
+       → `!global-config` (.brainyard/config.edn merged over static defaults)
+       → schema default (`:default-fn`, or nil)
+   Boolean `false` overrides are honored — env uses a sentinel, the lower
+   layers use `contains?` (not `or`). Each resolution is mulog-tracked once
+   per (key, source) via `::config-resolved`.
 
    The 2-arity accepts an Agent record, an st-memory map (with optional
-   `:agent` key), or nil; it falls back to `proto/*current-agent*` when
-   no agent reference is in the argument. The 1-arity skips the per-agent
-   and session layers."
+   `:agent` key), or nil; it falls back to `proto/*current-agent*` when no
+   agent reference is in the argument. The 1-arity skips the per-agent and
+   session layers (but still honors the env layer)."
   ([k]
-   (ensure-global-loaded!)
-   (if (contains? @!global-config k)
-     (get @!global-config k)
-     (schema-default-fn-value k)))
+   (let [[v source] (resolve-config nil k)]
+     (track-config! k source v)
+     v))
   ([agent-or-st k]
-   (let [agent (resolve-agent agent-or-st)
-         ac    (agent-config agent)
-         sc    (session-config agent)]
-     (cond
-       (and ac (contains? ac k)) (get ac k)
-       (and sc (contains? sc k)) (get sc k)
-       :else                     (get-config k)))))
+   (let [[v source] (resolve-config (resolve-agent agent-or-st) k)]
+     (track-config! k source v)
+     v)))
+
+(defn- env-overlay
+  "Map of `{k env-value}` for every schema key whose `:env-fn` resolves (its
+   variable is set). The highest-precedence layer — merged last in snapshots
+   so it overrides global/session/agent, mirroring `get-config`."
+  []
+  (reduce-kv (fn [m k entry]
+               (if (:env-fn entry)
+                 (let [ev (schema-env-value k)]
+                   (cond-> m (not= env-unset ev) (assoc k ev)))
+                 m))
+             {}
+             config-schema))
 
 (defn get-config-snapshot
-  "Return the merged config view (per-agent over session over global) as a
-   plain map. Use this when a caller needs the whole map at once (e.g.
+  "Return the merged config view (env over per-agent over session over global)
+   as a plain map. Use this when a caller needs the whole map at once (e.g.
    sandbox bindings) — single-key lookups should use `get-config`.
    Accepts the same agent-or-st forms as `get-config`.
 
-   Schema keys with only `:default-fn` (no static `:default`) are NOT in
-   the snapshot — they exist solely as a per-key lazy fallback in
-   `get-config`. Snapshot callers needing those should use `get-config`."
-  ([] (ensure-global-loaded!) @!global-config)
+   Schema keys with only `:default-fn` (no static `:default`) are NOT in the
+   snapshot — they exist solely as a per-key lazy fallback in `get-config`.
+   Env-bound keys whose variable is set ARE overlaid (highest precedence),
+   matching `get-config`. Snapshot callers needing lazy-default keys should
+   use `get-config`."
+  ([] (ensure-global-loaded!) (merge @!global-config (env-overlay)))
   ([agent-or-st]
+   (ensure-global-loaded!)
    (let [agent (resolve-agent agent-or-st)]
-     (merge (get-config-snapshot)
+     (merge @!global-config
             (or (session-config agent) {})
-            (or (agent-config agent) {})))))
+            (or (agent-config agent) {})
+            (env-overlay)))))
 
 (defn- container-detected?
   "Soft-dep probe for a container environment (Docker/devcontainer) via

@@ -62,9 +62,18 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   `restricted` (default) denies System/Runtime/ProcessBuilder/ClassLoader;
   `full` permits arbitrary interop (container-only); `auto` relaxes to `full`
   only when a container is detected via `env-detect`. Explicit opt-in — never
-  auto-relaxes unless set. `.brainyard/config.edn` overrides it. Mechanism in
-  `components/clj-sandbox` (`sci-init-opts`/`full-classes`); policy in
+  auto-relaxes unless set. Per the config precedence (below), a set
+  `BY_SANDBOX_INTEROP` **wins over** `.brainyard/config.edn`; the file only
+  applies when the env var is unset. Mechanism in `components/clj-sandbox`
+  (`sci-init-opts`/`full-classes`); policy in
   `agent.core.config/resolve-sandbox-interop`. See `docs/sandboxing.md`.
+
+  **Config precedence (all schema keys, highest → lowest):** environment
+  variable (a key's `:env-fn`) > per-agent override > session config >
+  `.brainyard/config.edn` (merged over static defaults) > schema default. A set
+  env var wins over every persisted layer; each resolution is mulog-tracked
+  once per (key, source) via `::config-resolved`. Resolved in
+  `agent.core.config/get-config`.
 
 ## Build & release pipeline
 
