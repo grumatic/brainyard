@@ -78,6 +78,22 @@ substrate.
 
 ### R2 — A first-class scheduler with channel delivery (medium effort)
 
+> **Status: implemented (2026-06-24).** Core shipped; firing is **in-process**
+> (the trigger choice). New ns `agent.common.schedule`: cron-or-`fire-at` job
+> specs persisted atomically under `.brainyard/schedule/<id>/spec.edn` (mirrors
+> the `task` subsystem); a 5-field cron engine (`next-fire-after`); a daemon
+> ticker thread (`ensure-scheduler!` from coact-init, gated by
+> `:enable-scheduler`, default **false** — opt-in, since it runs LLM jobs
+> unattended); `run-due!` selects+claims due specs (advances `:next-fire` before
+> running, to limit double-fire across sessions) and routes each job's output to
+> a delivery **sink** (file artifact / stdout — pluggable so R3's channels slot
+> in). Commands: `schedule$add/list/remove/enable/disable/run-now/run-due`. The
+> executor is a pluggable seam (`*execute-job*`, default in-process
+> `invoke-tool`). **Deferred:** OS-timer (launchd/cron) trigger for true
+> off-laptop unattended runs; channel sinks (R3); per-spec model/provider
+> wiring; the standard cron dom-OR-dow quirk (AND used). 10 tests / 50
+> assertions.
+
 **What Hermes does:** built-in cron — "daily reports, nightly backups, weekly
 audits, all in natural language, running unattended" — with delivery to whatever
 platform the user is on.
@@ -180,8 +196,9 @@ else on the list — it's productizing data it already records.
 ## 5. Suggested sequencing
 
 > **Progress (2026-06-24):** ✅ **R1** (self-improvement loop — see
-> `docs/design/self-improve-design.md`) and ✅ **R5** (skill interop +
-> trajectory export) are implemented. Remaining: **R2** → **R3** → **R4**.
+> `docs/design/self-improve-design.md`), ✅ **R5** (skill interop + trajectory
+> export), and ✅ **R2** (scheduler — in-process firing) are implemented.
+> Remaining: **R3** (messaging gateway) → **R4** (remote backends).
 
 1. **R1** — closes the loop with bricks already in the tree; proves the
    "self-improving" claim in `CLAUDE.md`.

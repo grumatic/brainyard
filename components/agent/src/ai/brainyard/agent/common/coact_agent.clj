@@ -37,6 +37,7 @@
             [ai.brainyard.agent.common.user-hooks :as uh]
             [ai.brainyard.agent.common.user-agents :as ua]
             [ai.brainyard.agent.common.auto-notify :as auto-notify]
+            [ai.brainyard.agent.common.schedule :as schedule]
             [ai.brainyard.agent.common.self-improve-nudge :as self-improve-nudge]
             [ai.brainyard.agent.common.skill-distill :as skill-distill]
             [ai.brainyard.agent.common.skill-refine :as skill-refine]
@@ -1763,6 +1764,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
     ;; Self-improvement loop: queue a one-line nudge when skill proposals are
     ;; staged (no-op unless :enable-self-improve-nudges is set + root agent).
     (self-improve-nudge/maybe-queue! agent st-memory)
+    ;; Scheduler: start the in-process ticker once (no-op unless
+    ;; :enable-scheduler is set); fires due jobs while a session is open.
+    (schedule/ensure-scheduler! agent)
 
     (when agent
       (hooks/fire! :agent.context/budgeted

@@ -291,6 +291,20 @@
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_SKILL_REFINEMENT")]
                                            (= "true" v) ::env-unset)
                                 :default false}
+   ;; First-class scheduler (R2 — docs/design/hermes-comparison.md). When true,
+   ;; a daemon ticker thread starts with each session and fires due jobs from
+   ;; <project>/.brainyard/schedule/ in-process. Off by default — the ticker
+   ;; runs scheduled prompts (LLM calls) unattended, so it is deliberately
+   ;; opt-in; `schedule$run-now` / `schedule$run-due` work manually regardless.
+   :enable-scheduler           {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SCHEDULER")]
+                                           (= "true" v) ::env-unset)
+                                :default false}
+   ;; Scheduler ticker interval (ms). Lower = finer cron resolution, more wakeups.
+   :scheduler-tick-ms          {:type "integer"
+                                :env-fn #(if-some [v (System/getenv "BY_SCHEDULER_TICK_MS")]
+                                           (or (parse-long v) ::env-unset) ::env-unset)
+                                :default 60000}
    ;; Subagent call management
    :max-agent-call-depth       {:type "integer" :default 3}
    :enable-subagent-calls      {:type "boolean" :default true}
