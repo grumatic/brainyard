@@ -126,6 +126,25 @@
       (runtime/cancel-run !s)
       (is (= :cancelled (runtime/wait-if-paused !s))))))
 
+(deftest cancel-clears-pause-state-test
+  (testing "cancelling a paused run clears paused? (so a follow-up user line
+            starts a fresh turn instead of resuming the dead one)"
+    (let [!s (fresh-state :running)]
+      (runtime/pause-run !s)
+      (is (true? (runtime/paused? !s)))
+      (runtime/cancel-run !s)
+      (is (false? (runtime/paused? !s)) "paused? is false after cancel")
+      (is (true? (runtime/cancelled? !s)) "cancelled? is set")))
+
+  (testing "cancel also drops a pending resume-note and the saved pre-pause status"
+    (let [!s (fresh-state :running)]
+      (runtime/pause-run !s)
+      (runtime/resume-run !s "stale steering note")  ;; stashes :resume-note, clears paused
+      (runtime/pause-run !s)                          ;; re-pause for the cancel
+      (runtime/cancel-run !s)
+      (is (nil? (get-in @!s [:runtime :resume-note])) ":resume-note is cleared")
+      (is (nil? (get-in @!s [:runtime :pre-pause-status])) ":pre-pause-status is cleared"))))
+
 ;; ============================================================================
 ;; Pause condition reuse
 ;; ============================================================================

@@ -123,7 +123,17 @@
    either via future-cancel (run-async path) or direct Thread.interrupt
    (send-ask/clj-agent path)."
   [!state]
-  (swap! !state assoc-in [:runtime :cancelled?] true)
+  ;; A cancelled run is no longer paused. Clear the pause flags (and any pending
+  ;; resume note) in the same swap that sets :cancelled? — otherwise a paused
+  ;; turn that gets cancelled leaves `[:runtime :paused?]` stale, so the next
+  ;; user line is misrouted into the resume-with-note path instead of starting a
+  ;; fresh turn. The parked thread still wakes as :cancelled (wait-if-paused
+  ;; checks cancelled? first), so this is race-free.
+  (swap! !state (fn [s]
+                  (-> s
+                      (assoc-in [:runtime :cancelled?] true)
+                      (assoc-in [:runtime :paused?] false)
+                      (update :runtime dissoc :pre-pause-status :resume-note))))
   (signal-pause-condition! !state)
   (when-let [^java.io.Closeable http (get-in @!state [:runtime :active-http])]
     (try (.close http) (catch Throwable _)))
@@ -205,12 +215,16 @@
 (defn wait-if-paused
   "If paused, park the calling thread on the pause condition until
    resume-run or cancel-run wakes it. Returns:
+     :cancelled - the run is cancelled (checked first, so a cancelled run never
+                  parks — and since `cancel-run` now clears `paused?`, this is
+                  the fast path a cancelled-while-paused run takes)
      :running   - was not paused; no wait
-     :resumed   - was paused, now resumed
-     :cancelled - was paused, now cancelled"
+     :resumed   - was paused, now resumed"
   [!state]
-  (if-not (paused? !state)
-    :running
+  (cond
+    (cancelled? !state) :cancelled
+    (not (paused? !state)) :running
+    :else
     (let [pair (ensure-pause-condition !state)
           ^ReentrantLock lock (:lock pair)
           ^Condition cnd      (:cond pair)]
