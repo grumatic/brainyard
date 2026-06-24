@@ -1,10 +1,14 @@
 # Self-Improvement Loop — Implementation Plan (R1)
 
-> Status: **plan** (2026-06-24). Implements **R1** from
-> `docs/design/hermes-comparison.md` — "Close the self-improvement loop." A
-> repo-grounded plan to add experience-triggered skill distillation, skill
-> refinement, and TUI nudges *on top of existing bricks* — wiring triggers and a
-> review gate, not new substrate.
+> Status: **implemented + live-verified** (plan 2026-06-24; shipped + verified
+> 2026-06-25). Implements **R1** from `docs/design/hermes-comparison.md` —
+> "Close the self-improvement loop": experience-triggered skill distillation,
+> skill refinement, and TUI nudges *on top of existing bricks* — wiring triggers
+> and a review gate, not new substrate. All three phases are committed behind
+> default-off flags and **verified live in `bb tui`** (a real turn distilled a
+> `git-pre-commit-audit` skill at sub-LM score 0.8 → staged → nudge surfaced next
+> turn → accept promoted it to a live skill); the code also builds into the
+> GraalVM native binary. Per-phase "Status: implemented" notes are inline below.
 >
 > Related: `docs/design/hermes-comparison.md` (R1), `docs/design/skills.md`,
 > `docs/design/meta-agent-design.md`, `docs/design/memory-agent-design.md`,

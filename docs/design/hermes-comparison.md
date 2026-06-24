@@ -1,11 +1,15 @@
 # Hermes Agent vs. Brainyard — Feature Comparison & Adoption Recommendations
 
-> Status: **analysis** (2026-06-24). A repo-grounded read of
+> Status: **implementation log** (analysis 2026-06-24; updated 2026-06-25).
+> Started as a repo-grounded read of
 > [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)
-> ("the agent that grows with you") against Brainyard's current bricks, agents,
-> and memory stack, isolating capabilities Brainyard should consider adopting
-> for advanced agentic engineering. Nothing here is committed work — it's an
-> opinionated backlog for discussion.
+> ("the agent that grows with you") against Brainyard's bricks, agents, and
+> memory stack, isolating capabilities to adopt. **All five recommendations
+> (R1–R5) are now implemented and committed** on the `self-improving` branch;
+> **four are live-verified end-to-end** against a real model/service (R1, R2, R3,
+> R4), and **the whole set builds to the GraalVM native binary** (`bb build:ata`
+> → `by`, 154 MB arm64). Per-recommendation status + verification notes are
+> inline below; the progress summary is in §5.
 >
 > Related: `docs/core/memory.md`, `docs/design/skills.md`,
 > `docs/design/meta-agent-design.md`, `docs/design/memory-agent-design.md`,
@@ -37,18 +41,35 @@ by leverage-to-effort.
 | Layered memory | Agent-curated memory, user profiles, FTS5 session search + LLM summarization | L1/L2/L3 `IMemoryStore`, FTS5+BM25+RRF recall, capture pipeline, `memory-agent` steward | **Brainyard ahead** (substrate) |
 | Tools-from-scripts (RPC) | Python scripts call tools via RPC, "zero-context-cost" pipelines | SCI sandbox auto-binds every visible tool as a callable fn (`sandbox_bindings.clj`); nREPL eval | **Parity** (different lang) |
 | MCP integration | Connect any MCP server | MCP client **with full OAuth** (device flow, loopback redirect, DCR) | **Brainyard ahead** |
-| Skills | Static + `SKILL.md`; **autonomous creation after tasks**, **self-improve during use**; agentskills.io standard; Skills Hub | Static `defskill` + dynamic `SKILL.md` via skill-agent; `skills$write`; manual authoring | **Hermes ahead** (the *loop*, the *ecosystem*) |
-| Messaging presence | Telegram, Discord, Slack, WhatsApp, Signal, Email — one gateway; voice transcription; cross-platform continuity | Terminal + browser share only (`web-share`) | **Hermes ahead** — Brainyard gap |
-| Execution backends | local, Docker, SSH, Daytona, Singularity, Modal; **serverless hibernation** | Local process; OS seatbelt sandbox; in-process SCI sandbox | **Hermes ahead** — Brainyard gap |
-| Scheduled automations | Built-in cron with delivery to any platform | No first-class scheduler | **Hermes ahead** — Brainyard gap |
+| Skills | Static + `SKILL.md`; **autonomous creation after tasks**, **self-improve during use**; agentskills.io standard; Skills Hub | Static `defskill` + dynamic `SKILL.md`; **autonomous distill/refine/nudge loop (R1)** + review gate; `name` front-matter + `skills$import` (R5a) | **Now parity** — R1 closed the loop |
+| Messaging presence | Telegram, Discord, Slack, WhatsApp, Signal, Email — one gateway; voice transcription; cross-platform continuity | Terminal + browser share + **Telegram gateway (R3)** — pairing-code core + adapter, live-verified | **Now: Telegram** — more platforms pending |
+| Execution backends | local, Docker, SSH, Daytona, Singularity, Modal; **serverless hibernation** | Local + OS seatbelt + SCI sandbox; **`ExecutionBackend` seam + remote-capable nREPL endpoint (R4 P1)** | **Now: seam shipped** — Docker/SSH pending |
+| Scheduled automations | Built-in cron with delivery to any platform | **In-process cron scheduler (R2)** — specs, ticker, pluggable sinks | **Now shipped** — channel delivery pending |
 | Persona / personality | `/personality`, SOUL.md persona file, model switching | Per-agent instructions; `meta-agent` user agents; no user-facing persona switch | **Hermes ahead** (minor) |
-| RL / research pipeline | Batch trajectory generation, Atropos RL envs, trajectory compression for training | RLM research + `analytics`/`mulog` trajectory capture; `eval-agent` | **Mixed** — Brainyard captures, Hermes exports |
+| RL / research pipeline | Batch trajectory generation, Atropos RL envs, trajectory compression for training | RLM research + `analytics`/`mulog` capture; **`trajectory$export` → OpenAI tool-calling JSONL (R5b)** | **Now parity** — capture + export |
 
 ## 3. Recommendations (ranked)
 
 ### R1 — Close the self-improvement loop (highest leverage, low-to-medium effort)
 
 > **Implementation plan:** `docs/design/self-improve-design.md`.
+>
+> **Status: implemented + live-verified (2026-06-25).** Three phases, all behind
+> default-off config flags: (1) **distillation** — an `:agent.ask/post` hook
+> scores a finished turn (cheap pre-filter → `SkillDistillation` sub-LM) and,
+> past `:skill-distill-threshold`, drafts + stages a `SKILL.md` *proposal*;
+> (2) **refinement** — an `:agent.tool-use/post` hook stages a `:refinement`
+> proposal when a `skill$<name>` run fails and the doc is at fault;
+> (3) **nudges** — pending proposals surface in the TUI iteration block and to
+> the LLM. A `skill-proposal$list/read/accept/reject` review gate promotes a
+> proposal to a live skill (`skills$write`). New nss
+> `agent.common.skill-distill[.signatures/.proposals]`, `skill-refine`,
+> `self-improve-nudge`. **Verified live in `bb tui`:** a real turn distilled a
+> `git-pre-commit-audit` skill (sub-LM score 0.8 → staged), the nudge surfaced on
+> the next turn (iteration block + the agent relayed it), and accept promoted it
+> to a live skill. Phase 1 also smoke-tested with `claude-code:opus`, Phase 2
+> with `free-llm:auto`. ~40 unit assertions across the three phases. See the
+> design doc for the full record.
 
 **What Hermes does:** after a complex task it *autonomously distills a skill*,
 and skills *self-improve during use*; it *nudges itself to persist knowledge*.
@@ -235,13 +256,24 @@ else on the list — it's productizing data it already records.
 
 ## 5. Suggested sequencing
 
-> **Progress (2026-06-24):** ✅ **R1** (self-improvement loop — see
-> `docs/design/self-improve-design.md`), ✅ **R5** (skill interop + trajectory
-> export), ✅ **R2** (scheduler — in-process firing), ✅ **R3** (messaging
-> gateway — core + pairing + Telegram adapter; live-verified end-to-end with a real bot), and ◐ **R4
-> Phase 1** (execution-backend protocol + LocalBackend + host-configurable nREPL
-> endpoint) are implemented. All five recommendations now have a landed first
-> cut. Remaining: R4 next phases (remote NreplBackend, Docker/SSH).
+> **Progress (updated 2026-06-25).** All five recommendations implemented and
+> committed on `self-improving`:
+>
+> | Rec | Status | Live-verified (real model/service) |
+> |---|---|---|
+> | **R1** self-improvement loop | ✅ done | ✅ distill→nudge→accept→live skill in `bb tui` |
+> | **R5** skill interop + trajectory export | ✅ done | unit-tested (deterministic) |
+> | **R2** scheduler (in-process) | ✅ done | ✅ ticker → real agent job → file sink |
+> | **R3** gateway + Telegram adapter | ✅ done | ✅ real bot `@by1988_bot`: phone pairing → message → reply |
+> | **R4 Phase 1** execution-backend seam | ◐ phase 1 | ✅ LocalBackend + host-configurable nREPL, in native binary |
+>
+> **Native build:** the full set compiles via `bb build:ata` to the `by` GraalVM
+> binary (154 MB arm64) and runs — `by ask` with a `clojure` fence evaluates
+> through the new `ExecutionBackend` path. One native-image fix was needed: the
+> gateway's pairing-code `SecureRandom` had to move from namespace-load to
+> runtime construction (load-time `Random` instances are disallowed in the image
+> heap). **Remaining:** R4 next phases (remote `NreplBackend`, Docker/SSH); R3
+> more platforms + voice + user-scoped session continuity.
 
 1. **R1** — closes the loop with bricks already in the tree; proves the
    "self-improving" claim in `CLAUDE.md`.
