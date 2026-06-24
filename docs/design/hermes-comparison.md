@@ -123,7 +123,11 @@ Reuse the GC/retention discipline already designed for tasks.
 > (`getUpdates` long-poll + `sendMessage`), `telegram-transport` from
 > `BY_TELEGRAM_TOKEN`, an in-process daemon loop (`start-gateway!`/`stop-gateway!`)
 > driven by `gateway$start` / `gateway$stop`. 10 tests / 45 assertions (core +
-> adapter, HTTP stubbed). **Not run end-to-end** (needs a real bot token).
+> adapter, HTTP stubbed). **Verified live end-to-end (2026-06-25):** a real bot
+> (`@by1988_bot`), real `getMe`/`getUpdates`/`sendMessage`; a phone-sent pairing
+> code paired the user, and a subsequent "what is 2 + 2" routed through the
+> gateway to a real coact-agent turn whose reply ("2 + 2 = 4") was delivered
+> back to the Telegram chat (0 send failures).
 > **Deferred:** voice transcription, per-call project-root→dirs threading,
 > reconciling user-scoped vs project-scoped sessions for cross-platform
 > continuity, and additional platforms (Discord/Slack/…) behind the same protocol.
@@ -234,7 +238,7 @@ else on the list — it's productizing data it already records.
 > **Progress (2026-06-24):** ✅ **R1** (self-improvement loop — see
 > `docs/design/self-improve-design.md`), ✅ **R5** (skill interop + trajectory
 > export), ✅ **R2** (scheduler — in-process firing), ✅ **R3** (messaging
-> gateway — core + pairing + Telegram adapter; not run end-to-end), and ◐ **R4
+> gateway — core + pairing + Telegram adapter; live-verified end-to-end with a real bot), and ◐ **R4
 > Phase 1** (execution-backend protocol + LocalBackend + host-configurable nREPL
 > endpoint) are implemented. All five recommendations now have a landed first
 > cut. Remaining: R4 next phases (remote NreplBackend, Docker/SSH).
