@@ -24,6 +24,7 @@
             [ai.brainyard.agent.task.commands :as task-cmds]
             [ai.brainyard.agent.common.analytics-commands :as analytics-cmds]
             [ai.brainyard.agent.common.artifacts :as artifacts]
+            [ai.brainyard.agent.common.gateway :as gateway]
             [ai.brainyard.agent.common.log :as log]
             [ai.brainyard.agent.common.schedule :as schedule]
             [ai.brainyard.agent.common.trajectory-export :as traj-export]
@@ -636,4 +637,5 @@
                analytics-cmds/analytics-commands
                log/log-commands
                traj-export/export-commands
-               schedule/schedule-commands)))
+               schedule/schedule-commands
+               gateway/gateway-commands)))

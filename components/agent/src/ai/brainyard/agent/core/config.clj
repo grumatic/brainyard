@@ -305,6 +305,12 @@
                                 :env-fn #(if-some [v (System/getenv "BY_SCHEDULER_TICK_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :default 60000}
+   ;; Messaging gateway (R3 — docs/design/hermes-comparison.md). Lifetime of a
+   ;; one-time pairing code minted by `gateway$pair-code` (default 10 min).
+   :gateway-pair-code-ttl-ms   {:type "integer"
+                                :env-fn #(if-some [v (System/getenv "BY_GATEWAY_PAIR_CODE_TTL_MS")]
+                                           (or (parse-long v) ::env-unset) ::env-unset)
+                                :default 600000}
    ;; Subagent call management
    :max-agent-call-depth       {:type "integer" :default 3}
    :enable-subagent-calls      {:type "boolean" :default true}

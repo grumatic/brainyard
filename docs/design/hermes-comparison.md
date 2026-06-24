@@ -110,6 +110,21 @@ Reuse the GC/retention discipline already designed for tasks.
 
 ### R3 — Messaging gateway / ambient presence (highest reach, higher effort)
 
+> **Status: core implemented (2026-06-24); no real-platform adapter yet.** New
+> ns `agent.common.gateway` ships the **transport-agnostic core**: a `Transport`
+> protocol (`poll` / `send-reply!`), a **pairing-code** access gate, and a
+> router (`handle-message` → paired user gets an agent turn + reply via the
+> pluggable `*run-turn*` seam; unpaired text is treated as a pairing code).
+> Pairings persist under `.brainyard/gateway/`, carrying the minting session's
+> `:user-id` + `:project-root` (resolving the "remote user has no cwd" problem)
+> and a stable per-user `:session-id` for continuity. Commands:
+> `gateway$pair-code/pairings/unpair`. A stub transport in the tests proves the
+> contract (6 tests / 27 assertions). **Deferred:** the Telegram adapter (a thin
+> `Transport` over `clj-http` getUpdates/sendMessage — buildable, needs a bot
+> token to run), the long-poll loop wiring + a `by gateway` start path, voice
+> transcription, per-call project-root→dirs threading, and reconciling
+> user-scoped vs project-scoped sessions for true cross-platform continuity.
+
 **What Hermes does:** one gateway process exposes the agent on Telegram,
 Discord, Slack, WhatsApp, Signal, and Email, with voice-memo transcription and
 cross-platform conversation continuity. "Lives where you do," not tied to a
@@ -197,8 +212,9 @@ else on the list — it's productizing data it already records.
 
 > **Progress (2026-06-24):** ✅ **R1** (self-improvement loop — see
 > `docs/design/self-improve-design.md`), ✅ **R5** (skill interop + trajectory
-> export), and ✅ **R2** (scheduler — in-process firing) are implemented.
-> Remaining: **R3** (messaging gateway) → **R4** (remote backends).
+> export), ✅ **R2** (scheduler — in-process firing), and ◐ **R3** (messaging
+> gateway — transport-agnostic core + pairing; no real-platform adapter yet) are
+> implemented. Remaining: **R3** adapter (Telegram) → **R4** (remote backends).
 
 1. **R1** — closes the loop with bricks already in the tree; proves the
    "self-improving" claim in `CLAUDE.md`.
