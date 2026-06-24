@@ -10,6 +10,7 @@
    tools when a skill workflow requires it."
   (:require [ai.brainyard.agent.core.tool :refer [defagent]]
             [ai.brainyard.agent.common.coact-agent :as coact]
+            [ai.brainyard.agent.common.skill-distill.proposals :as proposals]
             [ai.brainyard.agent.common.skills :as skills]))
 
 (def ^:private instruction
@@ -42,6 +43,11 @@ DECISION FLOW
    - install        → skills$install with a package id ('owner/repo' or
                       'owner/repo@skill'). Default :type is :agents.
    - sync / update  → skills$sync for CLI backends (:claude / :agents / both).
+   - review drafts  → skill-proposal$list / read / accept / reject. The
+                      self-improvement loop auto-distills SKILL.md *proposals*
+                      from notable turns into .brainyard/skills/proposals/.
+                      They are inert until skill-proposal$accept promotes one to
+                      a live skill (skills$write :create); reject discards it.
 2. Before creating a skill, always skills$find / skills$list first to avoid
    duplicating an existing skill. If a near-match exists, prefer
    (skills$write :op :update).
@@ -118,6 +124,7 @@ TYPICAL FLOWS
                   [:agent-context {:optional true} [:string {:desc "Extra context"}]]]
   :output-schema [:map
                   [:answer [:string {:desc "Answer summarizing skill operation result, or reference to a skill path"}]]]
-  :agent-tools {:tools skills/skills-commands}
+  :agent-tools {:tools (into skills/skills-commands
+                             proposals/skill-proposal-commands)}
   :instruction instruction
   :tool-context tool-context)

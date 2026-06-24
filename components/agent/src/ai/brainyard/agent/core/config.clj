@@ -252,6 +252,45 @@
    ;; via :config-extra on the defagent (root coact-agent /
    ;; research-agent enable it; specialists stay off).
    :enable-memory-essence      {:type "boolean" :default false}
+   ;; Self-improvement loop (R1 — docs/design/self-improve-design.md). When
+   ;; true on a root agent, a :agent.ask/post hook scores the just-finished
+   ;; turn's trajectory for a novel reusable procedure and, past
+   ;; :skill-distill-threshold, stages a SKILL.md *proposal* under
+   ;; .brainyard/skills/proposals/ for the user to accept/reject (it never
+   ;; writes a live skill on its own). A cheap deterministic pre-filter gates
+   ;; the LLM scorer so trivial turns cost nothing. Off by default; opt-in per
+   ;; agent type via :config-extra on the defagent (root coact-agent), like
+   ;; :enable-memory-essence.
+   :enable-skill-distillation  {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SKILL_DISTILLATION")]
+                                           (= "true" v) ::env-unset)
+                                :default false}
+   ;; Minimum SkillDistillation score (0.0..1.0) for a turn to stage a skill
+   ;; proposal. Higher = fewer, higher-confidence proposals.
+   :skill-distill-threshold    {:type "number"
+                                :env-fn #(if-some [v (System/getenv "BY_SKILL_DISTILL_THRESHOLD")]
+                                           (or (parse-double v) ::env-unset) ::env-unset)
+                                :default 0.7}
+   ;; Surface a one-line per-turn notice (via the iteration :notices field the
+   ;; LLM reads) when skill proposals are staged under
+   ;; .brainyard/skills/proposals/ awaiting review — so the user doesn't have
+   ;; to discover them with skill-proposal$list. Suppressed once a given
+   ;; proposal has been surfaced (re-fires when a new one is staged). Root
+   ;; agents only. Off by default; opt-in like the keys above.
+   :enable-self-improve-nudges {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SELF_IMPROVE_NUDGES")]
+                                           (= "true" v) ::env-unset)
+                                :default false}
+   ;; Self-improvement loop — skill refinement (R1 Phase 2). When true, a
+   ;; :agent.tool-use/post hook watches dynamic `skill$<name>` invocations; on a
+   ;; failed invocation it asks whether the SKILL.md itself is at fault and, if
+   ;; so, stages a `:refinement` proposal (an updated SKILL.md) under
+   ;; .brainyard/skills/proposals/ for review. accept → skills$write :op :update.
+   ;; Off by default; opt-in like the keys above.
+   :enable-skill-refinement    {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SKILL_REFINEMENT")]
+                                           (= "true" v) ::env-unset)
+                                :default false}
    ;; Subagent call management
    :max-agent-call-depth       {:type "integer" :default 3}
    :enable-subagent-calls      {:type "boolean" :default true}

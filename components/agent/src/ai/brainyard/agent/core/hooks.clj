@@ -122,8 +122,11 @@
    ;; :agent.ask/post then see the finalized result.
    :agent.ask/finalize          {:keys #{:agent :input :result} :gates? true}
    :agent.iteration/pre         {:keys #{:agent :iteration :max-iterations :repeat-id}}
+   ;; `:notices` carries the just-built iteration record's advisory notice
+   ;; (usage-guide / self-improvement nudge) so apps can surface it in the
+   ;; iteration display block, not only the LLM. nil when none.
    :agent.iteration/post        {:keys #{:agent :iteration :max-iterations :repeat-id :result
-                                         :observation :goal-achieved}}
+                                         :observation :last-reasoning :notices :goal-achieved}}
    :agent.iteration/exhausted   {:keys #{:agent :iteration-count :max-iterations}}
    :agent.dspy-action/pre       {:keys #{:agent :node-id :signature :operation :stable-keys :inputs}}
    :agent.dspy-action/chunk     {:keys #{:agent :node-id :signature :chunk :accumulated}}

@@ -37,6 +37,9 @@
             [ai.brainyard.agent.common.user-hooks :as uh]
             [ai.brainyard.agent.common.user-agents :as ua]
             [ai.brainyard.agent.common.auto-notify :as auto-notify]
+            [ai.brainyard.agent.common.self-improve-nudge :as self-improve-nudge]
+            [ai.brainyard.agent.common.skill-distill :as skill-distill]
+            [ai.brainyard.agent.common.skill-refine :as skill-refine]
             [ai.brainyard.agent.common.usage-nudge :as usage-nudge]
             [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.common.trace :as trace]
@@ -1751,6 +1754,15 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
     (auto-notify/reset-poll-counts! st-memory)
     ;; First-use usage-guide surfacing (idempotent, runtime-only).
     (usage-nudge/ensure-global-hooks!)
+    ;; Self-improvement loop: skill-distillation observer (idempotent,
+    ;; runtime-only; no-op unless :enable-skill-distillation is set).
+    (skill-distill/ensure-global-hooks!)
+    ;; Self-improvement loop: skill-refinement observer (idempotent,
+    ;; runtime-only; no-op unless :enable-skill-refinement is set).
+    (skill-refine/ensure-global-hooks!)
+    ;; Self-improvement loop: queue a one-line nudge when skill proposals are
+    ;; staged (no-op unless :enable-self-improve-nudges is set + root agent).
+    (self-improve-nudge/maybe-queue! agent st-memory)
 
     (when agent
       (hooks/fire! :agent.context/budgeted
@@ -3788,13 +3800,17 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                         :code-results (mapv sanitize-eval-entry (or last-code-results []))}
                  ;; :answer — no record; the loop is about to exit
                  nil)
-        ;; Fold any first-use usage guide queued by usage-nudge during this
-        ;; iteration's tool calls into the record, so the model reads it next.
-        ;; Only drain when there's a record to carry it (the :answer path exits).
+        ;; Fold runtime notices queued during this turn into the record so the
+        ;; model reads them next: first-use usage guides (usage-nudge) and
+        ;; pending skill-proposal nudges (self-improve-nudge). Only drain when
+        ;; there's a record to carry them (the :answer path exits).
         record (if record
-                 (if-let [notices (usage-nudge/drain-iteration-notices! st-memory)]
-                   (assoc record :notices notices)
-                   record)
+                 (let [parts (->> [(usage-nudge/drain-iteration-notices! st-memory)
+                                   (self-improve-nudge/drain-iteration-notice! st-memory)]
+                                  (remove str/blank?))]
+                   (if (seq parts)
+                     (assoc record :notices (str/join "\n\n" parts))
+                     record))
                  record)]
     (when record
       (swap! st-memory update :iterations (fnil conj []) record)

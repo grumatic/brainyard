@@ -304,6 +304,11 @@
                                                           :result child-result
                                                           :observation (:observation post-st)
                                                           :last-reasoning (:last-reasoning post-st)
+                                                          ;; Advisory notice the just-built iteration record
+                                                          ;; carries (usage-guide / self-improvement nudge),
+                                                          ;; so the TUI can surface it in the iteration block —
+                                                          ;; not only the LLM via the record's :notices.
+                                                          :notices (some-> (:iterations post-st) last :notices)
                                                           :goal-achieved (:goal-achieved post-st)}))]
                          (condp = child-result
                            p/success (if (check-condition-fn id depth (condition-fn context) agent)

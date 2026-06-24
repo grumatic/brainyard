@@ -48,6 +48,8 @@ by leverage-to-effort.
 
 ### R1 — Close the self-improvement loop (highest leverage, low-to-medium effort)
 
+> **Implementation plan:** `docs/design/self-improve-design.md`.
+
 **What Hermes does:** after a complex task it *autonomously distills a skill*,
 and skills *self-improve during use*; it *nudges itself to persist knowledge*.
 The loop is automatic, not operator-invoked.

@@ -189,6 +189,35 @@
           text (joined (#'s/render-iteration-block-lines state "⠋"))]
       (is (not (str/includes? text "Think:"))))))
 
+(deftest notice-section-renders
+  (testing "a short notice (self-improvement nudge) appears in full"
+    (let [state {:iteration 1 :max-iterations 5 :stage :done :result :success
+                 :notices (str "💡 Self-improvement: 1 skill proposal awaiting review — "
+                               "`deploy-flow`. Review with skill-proposal$accept.")}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      (is (str/includes? text "Self-improvement"))
+      (is (str/includes? text "deploy-flow"))
+      (is (str/includes? text "skill-proposal$accept"))))
+
+  (testing "no notice → no notice section"
+    (let [state {:iteration 1 :max-iterations 5 :stage :done :result :success}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      (is (not (str/includes? text "Self-improvement")))))
+
+  (testing "blank notice is skipped"
+    (let [state {:iteration 1 :max-iterations 5 :stage :done :result :success
+                 :notices "   "}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      (is (= 1 (count (#'s/render-iteration-block-lines state "⠋"))))
+      (is (str/includes? text "Iteration 1"))))
+
+  (testing "a very long notice (e.g. a full usage guide) truncates with [-N lines]"
+    (let [huge (clojure.string/join " " (repeat 400 "guide-word"))
+          state {:iteration 1 :max-iterations 5 :stage :done :result :success
+                 :notices huge}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      (is (re-find #"\[-\d+ lines\]" text)))))
+
 (deftest think-live-block-is-one-line-braille
   (testing "render-think-block-lines returns a single line: [<braille>] <body>"
     (let [lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" (System/currentTimeMillis) nil nil)

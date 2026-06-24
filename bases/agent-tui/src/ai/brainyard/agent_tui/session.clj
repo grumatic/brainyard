@@ -302,6 +302,11 @@
 ;; live-block itself is one-line and no longer references this.
 (def ^:private think-max-lines 10)
 
+;; Cap for the advisory-notice section in an iteration block (usage guide /
+;; self-improvement nudge). A short nudge shows in full; a long usage guide
+;; truncates with a `[-N lines]` marker instead of dominating the block.
+(def ^:private notice-max-lines 6)
+
 (defn- wrap-snippet-to-width
   "Word-wrap a single-line snippet to fit `width` display columns per line.
    Returns a vector of plain (unstyled) line strings. Newlines/whitespace runs
@@ -1213,7 +1218,7 @@
 (defn- render-iteration-block-lines
   "Build ANSI lines for an iteration block."
   [{:keys [iteration max-iterations stage reasoning streaming
-           tool-batch eval-section-lines usage result start-ms end-ms]}
+           tool-batch eval-section-lines usage result start-ms end-ms notices]}
    spinner-char]
   (let [cols (or (:cols @layout/!layout) 80)
         ;; Bracketed indicator matches the legacy `[+] Iteration` style — `+`
@@ -1273,7 +1278,23 @@
                                      (rest kept))]
                 (vec (concat [head-line first-extra] rest-extras))))))
         tool-lines (when (seq tool-batch)
-                     (mapv render-iter-tool-line tool-batch))]
+                     (mapv render-iter-tool-line tool-batch))
+        ;; Advisory notice (usage guide / self-improvement nudge) the LLM also
+        ;; reads via the record's :notices. Wrapped + capped so a long usage
+        ;; guide can't dominate the iteration block; a short nudge shows in full.
+        notice-lines
+        (when (and (string? notices) (not (str/blank? notices)))
+          (let [normalized (-> notices (str/replace #"\s+" " ") str/trim)
+                prefix "  "
+                w (max 10 (- cols (count prefix)))
+                wrapped (wrap-snippet-to-width normalized w)
+                cap notice-max-lines]
+            (if (<= (count wrapped) cap)
+              (mapv #(str prefix (ansi/muted %)) wrapped)
+              (let [kept (subvec (vec wrapped) 0 cap)
+                    hidden (- (count wrapped) cap)]
+                (conj (mapv #(str prefix (ansi/muted %)) kept)
+                      (str prefix (ansi/style (str "[-" hidden " lines]") ansi/dim)))))))]
     ;; Eval sections (Code / Result / Output / Error) are pre-rendered
     ;; into :eval-section-lines by the code-eval hook handlers. Each
     ;; section is a display-block-backed boxed segment, so long content
@@ -1283,7 +1304,8 @@
     (vec (concat [header]
                  (or think-block-lines [])
                  (or tool-lines [])
-                 (or eval-section-lines [])))))
+                 (or eval-section-lines [])
+                 (or notice-lines [])))))
 
 (defn- update-iteration-block!
   "Re-render an iteration block.
@@ -2708,7 +2730,7 @@
    total iterations, total tokens, and the last iteration's outcome —
    so the one-line summary in the subagents block reflects the latest
    completed iteration."
-  [{:keys [agent iteration repeat-id result observation]}]
+  [{:keys [agent iteration repeat-id result observation notices]}]
   (let [aid (:agent-id agent)
         rid (str (or repeat-id "_"))
         k [aid rid iteration]
@@ -2720,8 +2742,9 @@
         iter-tokens (or (get-in outgoing [:usage :total]) 0)]
     (when outgoing
       (swap! !iteration-blocks update k merge
-             {:stage :done :streaming nil :result result-kw
-              :end-ms (System/currentTimeMillis)})
+             (cond-> {:stage :done :streaming nil :result result-kw
+                      :end-ms (System/currentTimeMillis)}
+               (not (str/blank? notices)) (assoc :notices notices)))
       (update-iteration-block! aid rid iteration)
       (let [dispose? (boolean (agent/get-config agent :dispose-iteration-block))
             block-id (iteration-block-id aid rid iteration)
@@ -2746,7 +2769,8 @@
           ;; then switched away mid-iter). In that case the prior `[+]`/`[…]`
           ;; snapshot is already at a known position in origin's saved
           ;; scrollback; appending the final state would duplicate.
-          (let [final-state (assoc outgoing :stage :done :streaming nil :result result-kw)
+          (let [final-state (cond-> (assoc outgoing :stage :done :streaming nil :result result-kw)
+                              (not (str/blank? notices)) (assoc :notices notices))
                 already-buffered? (some-> (sessions/get-session origin-idx)
                                           :live-blocks
                                           (get block-id))]
