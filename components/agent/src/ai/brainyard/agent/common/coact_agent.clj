@@ -50,6 +50,7 @@
             [ai.brainyard.agent.mcp.commands :as mcp-cmds]
             [ai.brainyard.agent.core.agent :as agent]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.exec-backend :as exec-backend]
             [ai.brainyard.agent.core.context :as context]
             [ai.brainyard.agent.core.context-budget :as cb]
             [ai.brainyard.agent.core.context.formatters :as fmt]
@@ -2805,7 +2806,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
   "Write code to a temp file and execute via shell. When `fast-eval-ms` is set,
    tries inline process execution first — only promotes to a tracked task on
    timeout. Returns an eval-entry map."
-  [lang code auto-bg-ms & {:keys [from-iteration fast-eval-ms subagent? owner-agent-id]}]
+  [lang code auto-bg-ms & {:keys [agent from-iteration fast-eval-ms subagent? owner-agent-id]}]
   (let [ext (case lang "bash" ".sh" "python" ".py" "javascript" ".js" ".txt")
         cmd-prefix (case lang
                      "bash" "bash "
@@ -2822,53 +2823,22 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; the wrong tree (the main-agent path-divergence pattern).
         proj-dir (config/project-dir)]
     (if (or (proto/in-task-context?) subagent?)
-      (try
-        (let [pb (ProcessBuilder. ^"[Ljava.lang.String;"
-                  (into-array String ["/bin/sh" "-c" command]))
-              _ (.redirectErrorStream pb true)
-              _ (.directory pb (java.io.File. ^String proj-dir))
-              ^Process proc (.start pb)
-              _ (.close (.getOutputStream proc))
-              eval-output (java.io.StringWriter.)
-              reader-future
-              (future
-                (let [^java.io.InputStreamReader reader
-                      (java.io.InputStreamReader. (.getInputStream proc))
-                      buf (char-array 1024)]
-                  (try (loop []
-                         (let [n (.read reader buf)]
-                           (when (pos? n)
-                             (.write eval-output buf 0 ^int n)
-                             (recur))))
-                       (catch java.io.IOException _)
-                       (catch Throwable _))))
-              timeout-ms (or fast-eval-ms auto-bg-ms 30000)
-              completed? (.waitFor proc (long timeout-ms)
-                                   java.util.concurrent.TimeUnit/MILLISECONDS)]
-          (if completed?
-            (do (deref reader-future 2000 nil)
-                (delete-coact-tmp-file! tmp-file)
-                (let [exit-code (.exitValue proc)
-                      output    (.toString eval-output)]
-                  {:lang lang :code code
-                   :result (str exit-code)
-                   :output output
-                   :error (if (zero? exit-code) "" (str "Exit code: " exit-code))}))
-            ;; Hung subprocess in a sub-agent / in-task context (no task system
-            ;; here to detach) — kill it so the iteration can't block forever;
-            ;; surface a timeout the LLM can act on. (The fast-eval branch below
-            ;; already had this guard; the subagent branch did not.)
-            (do (.destroyForcibly proc)
-                (future-cancel reader-future)
-                (delete-coact-tmp-file! tmp-file)
-                {:lang lang :code code
-                 :result nil
-                 :output (.toString eval-output)
-                 :error (str "Subprocess timed out after " timeout-ms "ms")})))
-        (catch Exception e
-          (delete-coact-tmp-file! tmp-file)
-          {:lang lang :code code :result nil :output ""
-           :error (ex-message e)}))
+      ;; Synchronous spawn (sub-agent / in-task: no task system to detach into)
+      ;; now routes through the execution backend (R4). LocalBackend reproduces
+      ;; the ProcessBuilder behavior verbatim; a future remote backend runs the
+      ;; command elsewhere. The fast-eval/adopt branch below keeps its inline
+      ;; ProcessBuilder for now (it adopts the live process into a background
+      ;; task — not yet expressible through the backend).
+      (let [r (try (exec-backend/exec-shell
+                    (exec-backend/resolve-backend agent) command
+                    {:cwd proj-dir :timeout-ms (or fast-eval-ms auto-bg-ms 30000)})
+                   (catch Exception e
+                     {:exit -1 :output "" :error (str (.getMessage e))}))]
+        (delete-coact-tmp-file! tmp-file)
+        {:lang lang :code code
+         :result (when-not (neg? (:exit r)) (str (:exit r)))
+         :output (:output r)
+         :error  (:error r)})
       (if-not fast-eval-ms
         (run-task-block
          {:lang lang :code code :auto-bg-ms auto-bg-ms :tmp-file tmp-file
@@ -3028,13 +2998,16 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
    task context or invoked by a sub-agent, runs inline (no detach). When
    `fast-eval-ms` is set, tries inline eval first — only promotes to a tracked
    task on timeout."
-  [code auto-bg-ms & {:keys [from-iteration nrepl-session-id fast-eval-ms subagent? owner-agent-id]}]
+  [code auto-bg-ms & {:keys [from-iteration nrepl-session-id fast-eval-ms subagent? owner-agent-id
+                             nrepl-host nrepl-port]}]
   (cond
     (or (proto/in-task-context?) subagent?)
     (let [[thunk _] (clj-nrepl/eval-nrepl-thunk
                      code
                      :session    nrepl-session-id
-                     :timeout-ms (* 1000 60 60))]
+                     :timeout-ms (* 1000 60 60)
+                     :host       nrepl-host
+                     :port       nrepl-port)]
       (run-inline-clj-eval code :nrepl thunk))
 
     (not fast-eval-ms)
@@ -3062,7 +3035,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
           [thunk eval-output] (clj-nrepl/eval-nrepl-thunk
                                code
                                :session    nrepl-session-id
-                               :timeout-ms (* 1000 60 60))
+                               :timeout-ms (* 1000 60 60)
+                               :host       nrepl-host
+                               :port       nrepl-port)
           !task-ref (atom :inline-code-eval)
           fut (future (binding [proto/*current-task* !task-ref] (thunk)))
           r   (deref fut fast-eval-ms ::timeout)]
@@ -3167,24 +3142,20 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
       (run-verbatim-block lang code filename)
 
       (= "clojure" lang)
-      (let [backend    (agent-clj-backend agent)
-            session-id (when (= :nrepl backend)
-                         (agent-nrepl-session-id agent))]
-        (case backend
-          :nrepl   (run-clj-nrepl-block code auto-bg-ms
-                                        :from-iteration   from-iteration
-                                        :nrepl-session-id session-id
-                                        :fast-eval-ms     fast-eval-ms
-                                        :subagent?        subagent?
-                                        :owner-agent-id   owner-agent-id)
-          :sandbox (run-clj-sandbox-block sandbox code auto-bg-ms
-                                          :from-iteration from-iteration
-                                          :fast-eval-ms   fast-eval-ms
-                                          :subagent?      subagent?
-                                          :owner-agent-id owner-agent-id)))
+      ;; Route Clojure eval through the execution backend (R4). LocalBackend's
+      ;; exec-clj-code (wired below via set-local-clj-eval!) performs the same
+      ;; :clj-backend :sandbox|:nrepl dispatch; a remote backend would eval over
+      ;; nREPL instead. Zero behavior change for :local.
+      (exec-backend/exec-clj-code
+       (exec-backend/resolve-backend agent)
+       code
+       {:agent agent :sandbox sandbox :auto-bg-ms auto-bg-ms
+        :fast-eval-ms fast-eval-ms :from-iteration from-iteration
+        :subagent? subagent? :owner-agent-id owner-agent-id})
 
       (#{"bash" "python" "javascript"} lang)
       (run-script-block lang code auto-bg-ms
+                        :agent          agent
                         :from-iteration from-iteration
                         :fast-eval-ms   fast-eval-ms
                         :subagent?      subagent?
@@ -3193,6 +3164,33 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
       :else
       {:lang "other" :code code :result nil :output ""
        :error (str "Unsupported language: " lang)})))
+
+;; Wire LocalBackend's exec-clj-code (R4) — the same :clj-backend dispatch the
+;; coact clojure arm used to perform inline. Kept here (not in core/exec-backend)
+;; so it can reach the coact-private run-clj-*-block fns without a core→coact
+;; cycle. For :local + loopback nREPL this is byte-identical to the prior path;
+;; a non-loopback :nrepl-host routes Clojure to a remote nREPL server.
+(exec-backend/set-local-clj-eval!
+ (fn [code {:keys [agent sandbox auto-bg-ms fast-eval-ms from-iteration
+                   subagent? owner-agent-id]}]
+   (let [backend    (agent-clj-backend agent)
+         session-id (when (= :nrepl backend) (agent-nrepl-session-id agent))
+         host       (when (= :nrepl backend) (config/get-config agent :nrepl-host))
+         remote?    (and host (not (#{"127.0.0.1" "localhost" "::1"} host)))]
+     (case backend
+       :nrepl   (run-clj-nrepl-block code auto-bg-ms
+                                     :from-iteration   from-iteration
+                                     :nrepl-session-id session-id
+                                     :nrepl-host       (when remote? host)
+                                     :nrepl-port       (when remote? (config/get-config agent :nrepl-port))
+                                     :fast-eval-ms     fast-eval-ms
+                                     :subagent?        subagent?
+                                     :owner-agent-id   owner-agent-id)
+       :sandbox (run-clj-sandbox-block sandbox code auto-bg-ms
+                                       :from-iteration from-iteration
+                                       :fast-eval-ms   fast-eval-ms
+                                       :subagent?      subagent?
+                                       :owner-agent-id owner-agent-id)))))
 
 (defn- run-blocks-concurrently
   "All-or-nothing parallel runner. Splits blocks three ways: fence-errored

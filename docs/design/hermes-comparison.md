@@ -152,6 +152,24 @@ platform message to a session turn and streams the reply back.
 
 ### R4 — Remote & serverless execution backends (high effort, strategic)
 
+> **Status: Phase 1 implemented (2026-06-24).** New ns
+> `agent.core.exec-backend`: an `ExecutionBackend` protocol with `exec-shell`
+> (shell command) + `exec-clj-code` (Clojure block), and a `LocalBackend` that
+> reproduces today's behavior verbatim — `exec-shell` = ProcessBuilder;
+> `exec-clj-code` = the existing `:clj-backend :sandbox|:nrepl` dispatch (wired
+> via a `set-local-clj-eval!` injection seam to avoid a core→coact cycle).
+> `:exec-backend` config selects the backend (default `:local`). Wired:
+> `run-single-block`'s Clojure arm (full) + `run-script-block`'s synchronous
+> shell branch. Critically, the **nREPL endpoint is now host:port-configurable**
+> (`clj-nrepl/eval-string :host :port`, `:nrepl-host` config, gate relaxed for
+> remote) — so `:clj-backend :nrepl` + `:nrepl-host <remote>` already runs the
+> agent's Clojure on a remote nREPL server, the basis for off-laptop execution.
+> Tests: 7/22 (exec-backend) + 108/597 code-eval regression, 0 failures.
+> **Deferred (next phases):** a remote `NreplBackend` (Clojure + shell via remote
+> nREPL eval; no SCI), `DockerBackend`/`SshBackend`, routing the fast-eval-adopt
+> shell branch + `BashJobExecutor` (they adopt a live process — not yet
+> expressible through the protocol), and a file-op abstraction.
+
 **What Hermes does:** six backends (local, Docker, SSH, Daytona, Singularity,
 Modal); Daytona/Modal give *serverless persistence* — the environment hibernates
 when idle and wakes on demand, "costing nearly nothing between sessions." Decouples
@@ -215,9 +233,11 @@ else on the list — it's productizing data it already records.
 
 > **Progress (2026-06-24):** ✅ **R1** (self-improvement loop — see
 > `docs/design/self-improve-design.md`), ✅ **R5** (skill interop + trajectory
-> export), ✅ **R2** (scheduler — in-process firing), and ✅ **R3** (messaging
-> gateway — core + pairing + Telegram adapter; not run end-to-end) are
-> implemented. Remaining: **R4** (remote/serverless backends).
+> export), ✅ **R2** (scheduler — in-process firing), ✅ **R3** (messaging
+> gateway — core + pairing + Telegram adapter; not run end-to-end), and ◐ **R4
+> Phase 1** (execution-backend protocol + LocalBackend + host-configurable nREPL
+> endpoint) are implemented. All five recommendations now have a landed first
+> cut. Remaining: R4 next phases (remote NreplBackend, Docker/SSH).
 
 1. **R1** — closes the loop with bricks already in the tree; proves the
    "self-improving" claim in `CLAUDE.md`.

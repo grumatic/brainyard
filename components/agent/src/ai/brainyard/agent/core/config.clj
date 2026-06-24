@@ -429,12 +429,30 @@
                                 :env-fn #(if-some [v (System/getenv "BY_NREPL_PORT")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :default 0}
+   ;; nREPL endpoint HOST for the `:nrepl` Clojure backend. Default loopback
+   ;; (the in-process server). Set to a remote host (BY_NREPL_HOST) to run the
+   ;; agent's Clojure on a remote nREPL server — the basis for off-laptop
+   ;; execution (R4). nREPL is full-trust: a remote endpoint must be your own
+   ;; trusted server. See docs/design/hermes-comparison.md R4.
+   :nrepl-host                 {:type "string"
+                                :env-fn #(if-let [v (not-empty (System/getenv "BY_NREPL_HOST"))]
+                                           v ::env-unset)
+                                :default "127.0.0.1"}
    ;; Clojure code-execution backend for ```clojure blocks in CoAct agents.
    ;; :sandbox — SCI sandbox (default, safe for arbitrary agents).
    ;; :nrepl   — live brainyard JVM via clj-nrepl (debug-agent; needs server).
    ;; Per-agent override layer (lifecycle hook → `:!state :st-memory-init
    ;; :config`); not persisted to .brainyard/config.edn.
    :clj-backend                {:type "keyword" :default :sandbox}
+   ;; Execution backend (R4 — docs/design/hermes-comparison.md): WHERE shell +
+   ;; Clojure execution happens. :local — this machine (today's behavior:
+   ;; ProcessBuilder + the :clj-backend sandbox|nrepl dispatch). Future: a
+   ;; remote nREPL / docker / ssh backend. `:clj-backend` is LocalBackend's
+   ;; internal Clojure strategy.
+   :exec-backend               {:type "keyword"
+                                :env-fn #(if-let [v (not-empty (System/getenv "BY_EXEC_BACKEND"))]
+                                           (keyword v) ::env-unset)
+                                :default :local}
    ;; Side ask channel (docs/design/ask-attach-channel.md). Each TUI session
    ;; opens a per-session AF_UNIX socket (<session-dir>/ask.sock) so
    ;; `by ask --attach <session-id>` can inject a question into the live turn
