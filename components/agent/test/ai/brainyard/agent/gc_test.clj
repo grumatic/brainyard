@@ -62,22 +62,30 @@
 ;; sweep-tasks!
 ;; ============================================================================
 
-(deftest sweep-tasks-keeps-newest-by-count
-  (testing "newest N task dirs are kept regardless of age"
-    (dotimes [i 5] (mk-task-dir! i 30))  ; all 30 days old
-    (let [r (gc/sweep-tasks! *dirs* :retention-count 3 :retention-days 0)]
+(deftest sweep-tasks-age-expires-regardless-of-count
+  (testing "expired tasks are deleted even when well within the count cap
+            (intersection: days is a hard expiry, not just a floor)"
+    (dotimes [i 5] (mk-task-dir! i 30))  ; all 30 days old (terminal)
+    ;; count 10 (> 5, so every task is within the count slot) but days 7 →
+    ;; all are expired, so all are deleted. Under the old union policy the
+    ;; count slot would have protected all 5.
+    (let [r (gc/sweep-tasks! *dirs* :retention-count 10 :retention-days 7)]
       (is (= 5 (:scanned r)))
-      (is (= 3 (:kept r))    "count cap protects newest 3 even if expired")
-      (is (= 2 (:deleted r)))
-      (is (= 3 (count-task-dirs))))))
+      (is (= 0 (:kept r))    "expiry deletes all aged tasks despite the count cap")
+      (is (= 5 (:deleted r)))
+      (is (= 0 (count-task-dirs))))))
 
-(deftest sweep-tasks-keeps-fresh-by-age
-  (testing "tasks within age window are kept regardless of count"
-    (dotimes [i 5] (mk-task-dir! i 1))   ; all 1 day old, count = 5
+(deftest sweep-tasks-count-caps-even-when-fresh
+  (testing "count caps the number kept even when every task is within the age
+            window (intersection: count is a hard cap, not just a floor)"
+    (dotimes [i 5] (mk-task-dir! i 1))   ; all 1 day old (fresh, terminal)
+    ;; All 5 are fresh, but count 2 caps survivors to the newest 2. Under the
+    ;; old union policy freshness would have protected all 5.
     (let [r (gc/sweep-tasks! *dirs* :retention-count 2 :retention-days 7)]
       (is (= 5 (:scanned r)))
-      (is (= 5 (:kept r))    "age cap protects everything in 7-day window")
-      (is (= 0 (:deleted r))))))
+      (is (= 2 (:kept r))    "only the newest 2 survive despite all being fresh")
+      (is (= 3 (:deleted r)))
+      (is (= 2 (count-task-dirs))))))
 
 (deftest sweep-tasks-drops-when-both-bounds-fail
   (testing "old AND beyond count → deleted"

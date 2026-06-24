@@ -74,10 +74,12 @@
     (catch Exception _ false)))
 
 (defn sweep-tasks!
-  "Delete task-N directories beyond the retention window. Keeps the newest
-   `:task-retention-count` (default 100) AND anything younger than
-   `:task-retention-days` (default 7); union, not intersection — a task
-   wins if EITHER bound keeps it. Non-terminal tasks are always kept.
+  "Delete task-N directories outside the retention window. A terminal task is
+   kept only if it is among the newest `:task-retention-count` (default 100)
+   AND younger than `:task-retention-days` (default 7) — intersection, not
+   union: count is a hard cap on how many are kept, days is a hard expiry
+   regardless of count. A terminal task is deleted when it is beyond the newest
+   N OR older than D days. Non-terminal (live) tasks are always kept.
 
    Opts:
      :dry-run?         true to report without deleting
@@ -98,7 +100,10 @@
       (let [live?    (not (terminal-meta? dir))
             in-newest? (< idx keep-n)
             fresh?   (>= mtime cutoff)
-            keep?    (or live? in-newest? fresh?)]
+            ;; Intersection: a terminal task survives only if it is BOTH among
+            ;; the newest N AND younger than D days. Count caps the number kept;
+            ;; age expires old tasks regardless of count. Live tasks always win.
+            keep?    (or live? (and in-newest? fresh?))]
         (if keep?
           (vswap! kept inc)
           (do (vswap! del inc)

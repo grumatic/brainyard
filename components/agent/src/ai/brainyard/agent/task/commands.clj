@@ -444,7 +444,7 @@
   "Garbage-collect on-disk task and task-adjacent artifacts.
 
    Sweeps three classes under `<project>/.brainyard/`:
-     :tasks          tasks/task-N/             — keep newest N OR younger than D days
+     :tasks          tasks/task-N/             — keep only if newest N AND younger than D days
      :coact-scratch  coact-agent/scratch/      — drop files older than H hours
      :sandbox-cache  clj-sandbox/truncation/   — cap by count, bytes, age
                      clj-sandbox/file-backed/

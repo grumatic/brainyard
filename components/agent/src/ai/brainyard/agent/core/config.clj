@@ -214,7 +214,8 @@
    :max-retries-on-llm-no-action       {:type "integer" :default 3}
    ;; On-disk artifact GC (ai.brainyard.agent.gc). Sweeps run async on
    ;; :agent.session/created (1h in-process throttle) and via task$sweep.
-   ;; :tasks  — keep newest N task-N dirs OR ones younger than D days; union.
+   ;; :tasks  — keep terminal task-N dirs only if among newest N AND younger
+   ;;           than D days; intersection (count caps, age expires). Live kept.
    ;; :coact-scratch — drop coact-agent/scratch/ entries older than H hours.
    ;; :sandbox-cache — cap clj-sandbox/{truncation,file-backed}/ by count,
    ;;                  bytes, and age (oldest dropped first).
