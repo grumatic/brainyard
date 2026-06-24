@@ -19,6 +19,7 @@
             [ai.brainyard.agent-tui.layout :as layout]
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
+            [ai.brainyard.agent.interface.tui.format :as fmt]
             [clojure.java.shell :as shell]
             [clojure.string :as str]))
 
@@ -27,21 +28,62 @@
 ;; by substituting exact substrings (ANSI codes don't change visible width).
 ;; ---------------------------------------------------------------------------
 
-(defn ^:private pad [s w] (str s (apply str (repeat (max 0 (- w (count s))) " "))))
+(defn ^:private pad [s w]
+  (str s (apply str (repeat (max 0 (- w (fmt/display-width s))) " "))))
 
 ;; ansi/bold, /cyan, /underline are raw escape-code strings (not fns); wrap with
 ;; reset. ANSI codes have zero visible width, so this never disturbs box layout.
 (defn ^:private emph [codes s] (str codes s ansi/reset))
 
+(def ^:private box-chrome
+  "Columns the frame adds around the inner content: \"│ \" + \" │\"."
+  4)
+
+(defn ^:private target-inner-width
+  "Inner content width so the framed box is ~80% of the terminal width. Clamped
+   to a sane floor for narrow terminals; falls back to 80 cols when the terminal
+   size isn't known yet."
+  []
+  (let [cols (let [c (or (fmt/terminal-columns) 0)] (if (pos? c) c 80))]
+    (max 24 (- (long (Math/floor (* 0.8 cols))) box-chrome))))
+
+(defn ^:private truncate-to-width
+  "Truncate `s` to at most `w` display columns, appending … when shortened.
+   URLs/labels here are ASCII, so a char cut matches the display width."
+  [s w]
+  (if (<= (fmt/display-width s) w)
+    s
+    (str (subs s 0 (max 0 (min (count s) (dec w)))) "…")))
+
+(defn ^:private osc8
+  "OSC-8 hyperlink: `label` is clickable and opens `url` in terminals that
+   support it (iTerm2, kitty, WezTerm, recent gnome-terminal); others just show
+   the label. Zero display width added, so box layout is unaffected."
+  [url label]
+  (str "]8;;" url "\\" label "]8;;\\"))
+
+(defn ^:private url-row
+  "Build the indented URL line for a box of inner width `iw`. Returns
+   `{:line plain-line, :label shown-label, :rich clickable-underlined-label}`.
+   The shown label is truncated to fit; the FULL url is the click target."
+  [full-url iw]
+  (let [indent "     "
+        label  (truncate-to-width full-url (max 8 (- iw (count indent))))]
+    {:line  (str indent label)
+     :label label
+     :rich  (osc8 full-url (emph ansi/underline label))}))
+
 (defn frame
-  "Box-draw `lines` (plain strings). Returns the framed plain string."
-  [lines]
-  (let [iw     (reduce max 0 (map count lines))
-        bar    (apply str (repeat (+ iw 2) "─"))
-        top    (str "┌" bar "┐")
-        bottom (str "└" bar "┘")
-        rows   (map (fn [l] (str "│ " (pad l iw) " │")) lines)]
-    (str/join "\n" (concat [top] rows [bottom]))))
+  "Box-draw `lines` (plain strings). `min-iw` forces a minimum inner width so the
+   box can be padded to a consistent (e.g. ~80%-of-terminal) size."
+  ([lines] (frame lines 0))
+  ([lines min-iw]
+   (let [iw     (max min-iw (reduce max 0 (map fmt/display-width lines)))
+         bar    (apply str (repeat (+ iw 2) "─"))
+         top    (str "┌" bar "┐")
+         bottom (str "└" bar "┘")
+         rows   (map (fn [l] (str "│ " (pad l iw) " │")) lines)]
+     (str/join "\n" (concat [top] rows [bottom])))))
 
 (defn ^:private mins [secs]
   (when (and secs (pos? secs)) (str (long (Math/ceil (/ secs 60.0))) "m")))
@@ -49,56 +91,61 @@
 (defn device-box
   "Plain + colorized code box for a device-flow prompt."
   [{:keys [account-id verification_uri user_code expires_in scopes]}]
-  (let [scope-str (when (seq scopes) (str/join " " scopes))
+  (let [iw        (target-inner-width)
+        u         (url-row verification_uri iw)
+        scope-str (when (seq scopes) (str/join " " scopes))
         title     (str "Authorize \"" account-id "\"")
         lines     (cond-> [title
                            ""
                            "1. Open this URL in any browser:"
-                           (str "     " verification_uri)
+                           (:line u)
                            ""
                            "2. Enter this code:"
                            (str "     " user_code)]
                     scope-str        (conj "" (str "Scopes:  " scope-str))
-                    (mins expires_in) (conj (str "Expires: in " (mins expires_in))))
-        boxed     (frame lines)]
-    (-> boxed
+                    (mins expires_in) (conj (str "Expires: in " (mins expires_in))))]
+    (-> (frame lines iw)
         (str/replace-first title (emph ansi/bold title))
         (str/replace-first user_code (emph (str ansi/bold ansi/cyan) user_code))
-        (str/replace-first verification_uri (emph ansi/underline verification_uri)))))
+        (str/replace-first (:label u) (:rich u)))))
 
 (defn paste-box
   "Plain + colorized box for the headless authorization-code paste fallback."
   [{:keys [account-id authorize_uri scopes]}]
-  (let [scope-str (when (seq scopes) (str/join " " scopes))
+  (let [iw        (target-inner-width)
+        u         (url-row authorize_uri iw)
+        scope-str (when (seq scopes) (str/join " " scopes))
         title     (str "Authorize \"" account-id "\"")
         lines     (cond-> [title
                            ""
                            "1. Open this URL in any browser:"
-                           (str "     " authorize_uri)
+                           (:line u)
                            ""
                            "2. Paste the code back here when prompted."]
                     scope-str (conj "" (str "Scopes:  " scope-str)))]
-    (-> (frame lines)
+    (-> (frame lines iw)
         (str/replace-first title (emph ansi/bold title))
-        (str/replace-first authorize_uri (emph ansi/underline authorize_uri)))))
+        (str/replace-first (:label u) (:rich u)))))
 
 (defn loopback-box
   "Plain + colorized box for the loopback flow — the browser opens and the code
    is captured automatically; nothing to paste."
   [{:keys [account-id authorize_uri scopes]}]
-  (let [scope-str (when (seq scopes) (str/join " " scopes))
+  (let [iw        (target-inner-width)
+        u         (url-row authorize_uri iw)
+        scope-str (when (seq scopes) (str/join " " scopes))
         title     (str "Authorize \"" account-id "\"")
         lines     (cond-> [title
                            ""
                            "Your browser is opening to authorize."
                            "If it doesn't, open this URL:"
-                           (str "     " authorize_uri)
+                           (:line u)
                            ""
                            "Approve there — this connects automatically."]
                     scope-str (conj "" (str "Scopes:  " scope-str)))]
-    (-> (frame lines)
+    (-> (frame lines iw)
         (str/replace-first title (emph ansi/bold title))
-        (str/replace-first authorize_uri (emph ansi/underline authorize_uri)))))
+        (str/replace-first (:label u) (:rich u)))))
 
 ;; ---------------------------------------------------------------------------
 ;; QR (best-effort via `qrencode`, gated by :oauth-qr?)
