@@ -11,8 +11,8 @@
             [ai.brainyard.agent-tui.oauth-render :as r]))
 
 (defn- strip-ansi [s] (str/replace s #"\x1b\[[0-9;]*m" ""))
-;; OSC-8 hyperlink open (ESC]8;;<url>ESC\) and close (ESC]8;;ESC\).
-(defn- strip-osc8 [s] (str/replace s #"\x1b\]8;;[^\x1b]*\x1b\\" ""))
+;; OSC-8 hyperlink open (ESC]8;;<url>BEL) and close (ESC]8;;BEL).
+(defn- strip-osc8 [s] (str/replace s #"\u001b\]8;;[^\u0007]*\u0007" ""))
 (defn- visible [boxed] (-> boxed strip-osc8 strip-ansi))
 (defn- visible-lines [boxed] (str/split-lines (visible boxed)))
 
@@ -82,8 +82,8 @@
         (is (str/includes? (visible boxed) "…"))
         (is (not (str/includes? (visible boxed) "state=abcdef")) "tail elided from the label"))
       (testing "the FULL url is the OSC-8 click target"
-        (is (str/includes? boxed (str "]8;;" long-url "\\"))
-            "ESC]8;;<full-url>ESC\\ wraps the shown label")))))
+        (is (str/includes? boxed (str "\u001b]8;;" long-url "\u0007"))
+            "ESC]8;;<full-url>BEL wraps the shown label")))))
 
 (deftest short-url-not-truncated-but-still-clickable
   (with-redefs [fmt/terminal-columns (fn [] 100)]
@@ -91,7 +91,7 @@
           boxed (r/loopback-box {:account-id "linear" :authorize_uri u :scopes ["read"]})]
       (is (str/includes? (visible boxed) u) "short URL shown in full")
       (is (not (str/includes? (visible boxed) "…")))
-      (is (str/includes? boxed (str "]8;;" u "\\")) "still a clickable link"))))
+      (is (str/includes? boxed (str "\u001b]8;;" u "\u0007")) "still a clickable link"))))
 
 (deftest render-loopback-prompt-uses-loopback-box
   (let [emitted (atom [])]

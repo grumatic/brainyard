@@ -57,10 +57,13 @@
 
 (defn ^:private osc8
   "OSC-8 hyperlink: `label` is clickable and opens `url` in terminals that
-   support it (iTerm2, kitty, WezTerm, recent gnome-terminal); others just show
-   the label. Zero display width added, so box layout is unaffected."
+   support it (iTerm2, kitty, WezTerm, recent gnome-terminal, tmux >= 3.4);
+   others just show the label. BEL-terminated (the most widely accepted form).
+   Zero display width: format/display-width skips OSC sequences, so neither the
+   box layout here nor the TUI render pipeline counts the URL as visible."
   [url label]
-  (str "]8;;" url "\\" label "]8;;\\"))
+  ;; ESC ] 8 ; ; <url> BEL  <label>  ESC ] 8 ; ; BEL
+  (str "\u001b]8;;" url "\u0007" label "\u001b]8;;\u0007"))
 
 (defn ^:private url-row
   "Build the indented URL line for a box of inner width `iw`. Returns

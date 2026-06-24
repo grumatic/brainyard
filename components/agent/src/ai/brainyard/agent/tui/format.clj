@@ -128,16 +128,32 @@
       (<= 0xE0020 cp 0xE007F)))  ;; tag characters (flag sequences)
 
 (defn- skip-ansi-seq
-  "From index i (pointing at ESC), skip the entire CSI sequence and return
-   the index just past the terminating letter."
+  "From index i (pointing at ESC), skip an escape sequence and return the index
+   just past its terminator. Handles two shapes:
+     - CSI `ESC[ ... <letter>` (e.g. SGR colour codes) -- skip to the final letter.
+     - OSC `ESC] ... (BEL | ST)` where ST is `ESC \\` (e.g. OSC-8 hyperlinks). The
+       payload (a URL) must NOT be counted as visible width, so skip to the
+       BEL/ST terminator rather than stopping at the first letter in the URL."
   [^String s ^long i]
-  (let [len (.length s)]
-    (loop [j (inc i)]
-      (if (>= j len)
-        j
-        (if (Character/isLetter (.charAt s j))
-          (inc j)
-          (recur (inc j)))))))
+  (let [len (.length s)
+        nxt (when (< (inc i) len) (.charAt s (inc i)))]
+    (if (= nxt \])
+      ;; OSC: ESC ] ... terminated by BEL (\u0007) or ST (ESC \\)
+      (loop [j (+ i 2)]
+        (cond
+          (>= j len)                       j
+          (= (.charAt s j) \u0007)          (inc j)
+          (and (= (.charAt s j) \u001b)
+               (< (inc j) len)
+               (= (.charAt s (inc j)) \\)) (+ j 2)
+          :else                            (recur (inc j))))
+      ;; CSI / other: skip to the terminating letter
+      (loop [j (inc i)]
+        (if (>= j len)
+          j
+          (if (Character/isLetter (.charAt s j))
+            (inc j)
+            (recur (inc j))))))))
 
 (defn- emoji-vs16-next?
   "True when char index `ni` (the position just after a base codepoint) holds

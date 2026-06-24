@@ -337,6 +337,17 @@
     (is (= 0 (fmt/display-width "‍"))       "ZWJ is 0 cols")
     (is (= 16 (fmt/display-width "⚠️ Top two risks")) "prefix width counted correctly")))
 
+(deftest display-width-skips-osc8-hyperlinks-test
+  (testing "OSC-8 hyperlink payload (the URL) is zero-width -- only the label counts"
+    (let [url "https://github.com/login/oauth/authorize?a=1&b=2&c=verylongvalue"
+          ;; BEL-terminated form (what oauth-render emits)
+          bel (str "\u001b]8;;" url "\u0007" "label" "\u001b]8;;\u0007")
+          ;; ST-terminated form (ESC \) must also be skipped
+          st  (str "\u001b]8;;" url "\u001b\\" "label" "\u001b]8;;\u001b\\")]
+      (is (= 5 (fmt/display-width bel)) "BEL-terminated OSC-8 -> only 'label' counts")
+      (is (= 5 (fmt/display-width st))  "ST-terminated OSC-8 -> only 'label' counts")
+      (is (= 10 (fmt/display-width (str "open " bel))) "surrounding text still counts (5 + 5)"))))
+
 (deftest format-answer-box-right-border-aligned-test
   (testing "every box content row has identical display width, incl. emoji-presentation lines"
     (let [box   (fmt/format-answer
