@@ -117,6 +117,6 @@
             (get @!think-blocks root-aid)
             line (first (#'session/render-think-block-lines
                          shuffled-words @spinner-idx "⠋" start-time
-                         (#'session/fresh-activity-text activity)))]
+                         (#'session/fresh-activity-text activity) nil))]
         (is (re-find #"5\.\ds" line)
             "elapsed shows ~5s (wall-clock from the preserved start-time), not 0")))))

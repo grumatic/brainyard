@@ -362,23 +362,31 @@
      `Reasoning…`, `→ tool-name`, …) when within `think-activity-ttl-ms`;
      dropped otherwise. Shown muted, separated from elapsed by ` · `.
 
+   When `paused-at` is non-nil the agent is parked at a checkpoint: the braille
+   frame is replaced by a static `⏸`, elapsed is frozen at `paused-at` (so the
+   timer stops climbing), the live activity is dropped, and a muted ` · paused`
+   marker is appended. The ticker stops advancing the frame, so the line is
+   completely still while paused.
+
    The line is truncated with `…` when it exceeds terminal width."
-  [shuffled-words spinner-idx frame start-time activity]
+  [shuffled-words spinner-idx frame start-time activity paused-at]
   (let [cols (or (:cols @layout/!layout) 80)
+        paused? (some? paused-at)
         bracketed-spinner (str (ansi/muted "[")
-                               (ansi/spinner-active frame)
+                               (if paused? (ansi/warning "⏸") (ansi/spinner-active frame))
                                (ansi/muted "]"))
         n (count shuffled-words)
         idx (mod (quot spinner-idx think-word-rotate-ticks) n)
         word (nth shuffled-words idx)
         head-plain (str word "...")
-        elapsed-ms (- (System/currentTimeMillis)
-                      (or start-time (System/currentTimeMillis)))
+        elapsed-ms (- (long (or paused-at (System/currentTimeMillis)))
+                      (long (or start-time (System/currentTimeMillis))))
         elapsed-str (format-iter-elapsed elapsed-ms)
         suffix-plain (str " ("
                           elapsed-str
-                          (when (and activity (not (str/blank? activity)))
-                            (str " · " activity))
+                          (cond
+                            paused? " · paused"
+                            (and activity (not (str/blank? activity))) (str " · " activity))
                           ")")
         full-plain (str head-plain suffix-plain)
         ;; Budget: cols - bracketed-spinner(3) - " "(1) - safety(1) = cols - 5
@@ -405,22 +413,37 @@
   (when-let [state (get @!think-blocks root-aid)]
     (let [origin-idx (:session-idx state)]
       (when (or (nil? origin-idx) (= origin-idx (sessions/active-idx)))
-        (let [{:keys [shuffled-words spinner-idx start-time activity]} state
+        (let [{:keys [shuffled-words spinner-idx start-time activity paused-at]} state
               tick   @spinner-idx
               frame  (nth think-ticker-frames
                           (mod tick (count think-ticker-frames)))
               lines  (render-think-block-lines shuffled-words tick frame
                                                start-time
-                                               (fresh-activity-text activity))]
+                                               (fresh-activity-text activity)
+                                               paused-at)]
           (layout/update-live-block! (think-block-id root-aid) lines
                                      {:sticky-bottom? true}))))))
+
+(defn- think-root-paused?
+  "True when `root-aid`'s agent is parked on a cooperative pause. Resolved via
+   the agent registry; defaults to false when the agent can't be found."
+  [root-aid]
+  (try
+    (when-let [ag (agent/get-agent root-aid)]
+      (boolean (agent/paused? (:!state ag))))
+    (catch Throwable _ false)))
 
 (defn- start-think-block-ticker!
   "Start the single shared 150ms ticker that animates EVERY root's thinking
    live block. Idempotent — does nothing if the ticker is already running.
    Self-stops when no think blocks remain. Each block's spinner advances
    independently (per-block `:spinner-idx`); only blocks whose session is
-   active actually re-render (see `update-think-block!`)."
+   active actually re-render (see `update-think-block!`).
+
+   Pause-aware: while a root is parked, its block is frozen — the frame stops
+   advancing, the elapsed timer is pinned (`:paused-at`), and a static `⏸ …
+   paused` line is rendered exactly once. On resume the paused duration is
+   added back to `:start-time` so the elapsed clock excludes the pause."
   []
   (when-not @!think-ticker-thread
     (let [thread (Thread.
@@ -430,9 +453,25 @@
                         (let [blocks @!think-blocks]
                           (when (seq blocks)
                             (doseq [[root-aid state] blocks]
-                              (try (vswap! (:spinner-idx state) inc)
-                                   (update-think-block! root-aid)
-                                   (catch Throwable _)))
+                              (try
+                                (if (think-root-paused? root-aid)
+                                  ;; Parked: stamp :paused-at + render the static
+                                  ;; paused line once, then sit still.
+                                  (when-not (:paused-at state)
+                                    (swap! !think-blocks assoc-in [root-aid :paused-at]
+                                           (System/currentTimeMillis))
+                                    (update-think-block! root-aid))
+                                  ;; Running: clear any paused marker (rolling the
+                                  ;; pause out of elapsed), then advance + render.
+                                  (do
+                                    (when-let [pa (:paused-at state)]
+                                      (swap! !think-blocks update root-aid
+                                             (fn [s] (-> s
+                                                         (dissoc :paused-at)
+                                                         (update :start-time + (- (System/currentTimeMillis) pa))))))
+                                    (vswap! (:spinner-idx state) inc)
+                                    (update-think-block! root-aid)))
+                                (catch Throwable _)))
                             (Thread/sleep (long 150))
                             (recur))))
                       (catch InterruptedException _))

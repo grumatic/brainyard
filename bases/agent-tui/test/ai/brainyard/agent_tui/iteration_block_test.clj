@@ -191,14 +191,14 @@
 
 (deftest think-live-block-is-one-line-braille
   (testing "render-think-block-lines returns a single line: [<braille>] <body>"
-    (let [lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" (System/currentTimeMillis) nil)
+    (let [lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" (System/currentTimeMillis) nil nil)
           text  (joined lines)]
       (is (= 1 (count lines)) "single line — no leading/trailing blank padding")
       (is (str/starts-with? text "[⠋]") "starts with the bracketed braille frame")
       (is (str/includes? text "Pondering...") "rotating word + ellipsis is present")))
 
   (testing "frame argument is rendered as-is (any of the braille frames)"
-    (let [lines (#'s/render-think-block-lines ["Cogitating"] 0 "⠙" (System/currentTimeMillis) nil)
+    (let [lines (#'s/render-think-block-lines ["Cogitating"] 0 "⠙" (System/currentTimeMillis) nil nil)
           text  (joined lines)]
       (is (str/includes? text "[⠙]") "the requested braille frame is shown")
       (is (str/includes? text "Cogitating...") "word is rendered with ellipsis")))
@@ -206,9 +206,9 @@
   (testing "word rotates as spinner-idx advances (one word per 10 ticks)"
     (let [words ["alpha" "beta" "gamma"]
           now   (System/currentTimeMillis)
-          at-0  (joined (#'s/render-think-block-lines words 0 "⠋" now nil))
-          at-10 (joined (#'s/render-think-block-lines words 10 "⠋" now nil))
-          at-30 (joined (#'s/render-think-block-lines words 30 "⠋" now nil))]
+          at-0  (joined (#'s/render-think-block-lines words 0 "⠋" now nil nil))
+          at-10 (joined (#'s/render-think-block-lines words 10 "⠋" now nil nil))
+          at-30 (joined (#'s/render-think-block-lines words 30 "⠋" now nil nil))]
       (is (str/includes? at-0 "alpha..."))
       (is (str/includes? at-10 "beta..."))
       ;; 30 / 10 = 3 → wraps back to index 0 (alpha)
@@ -216,7 +216,7 @@
 
   (testing "activity text (passed in) is appended in the suffix alongside the word"
     (let [now   (System/currentTimeMillis)
-          lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" now "→ bash")
+          lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" now "→ bash" nil)
           text  (joined lines)]
       (is (str/includes? text "→ bash") "activity text is shown in the suffix")
       (is (str/includes? text "Pondering...")
@@ -224,10 +224,21 @@
 
   (testing "nil activity → just the rotating word, no activity suffix"
     (let [now   (System/currentTimeMillis)
-          lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" now nil)
+          lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" now nil nil)
           text  (joined lines)]
       (is (str/includes? text "Pondering...") "word is shown")
-      (is (not (str/includes? text "→")) "no activity arrow when activity is nil"))))
+      (is (not (str/includes? text "→")) "no activity arrow when activity is nil")))
+
+  (testing "paused-at → static ⏸ frame, frozen elapsed, no live activity"
+    (let [start (System/currentTimeMillis)
+          ;; paused 5s after the block started
+          lines (#'s/render-think-block-lines ["Pondering"] 0 "⠋" start "→ bash" (+ start 5000))
+          text  (joined lines)]
+      (is (str/includes? text "⏸") "paused glyph replaces the braille frame")
+      (is (not (str/includes? text "⠋")) "the braille frame is not shown while paused")
+      (is (str/includes? text "paused") "the suffix is marked paused")
+      (is (not (str/includes? text "→ bash")) "live activity is dropped while paused")
+      (is (str/includes? text "5.0s") "elapsed is frozen at the paused-at instant"))))
 
 (deftest fresh-activity-text-ttl
   (testing "fresh-activity-text returns the text within TTL, nil once stale / absent"
