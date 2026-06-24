@@ -136,6 +136,8 @@ is the scenario that makes remote compute matter.
 
 ### R5 — Skill portability + trajectory export (low effort, ecosystem leverage)
 
+> **Status: implemented (2026-06-24).** Both wins shipped.
+
 Two smaller, independent wins:
 
 **5a — Skill interop.** Hermes skills follow the
@@ -143,6 +145,12 @@ Two smaller, independent wins:
 Hub. Brainyard's dynamic skills are already `SKILL.md` documents — align the
 front-matter/schema with the open standard so skills are portable in/out, then
 consider an import command. Low cost, real ecosystem upside.
+> **Shipped:** `parse-skill-md` now accepts the open-standard `name` front-matter
+> (alongside legacy `title`) and surfaces it as `:fm-name`; new `skills$import`
+> command reads an external `SKILL.md` (file or dir) and creates it in the
+> brainyard backend, deriving the name from front-matter `name` and requiring
+> `name + description`. Also fixed a latent NPE in `parse-skill-md` on
+> heading-only bodies. (`components/agent/.../skills.clj`.)
 
 **5b — Trajectory export for training.** Hermes ships batch trajectory
 generation, Atropos RL environments, and trajectory compression "for training
@@ -152,6 +160,13 @@ pipeline, and has the `RLM-RESEARCH` line of work. The missing piece is an
 **export** path: a command that serializes captured sessions into a
 training-ready trajectory format. Brainyard is closer to this than to anything
 else on the list — it's productizing data it already records.
+> **Shipped:** new ns `agent.common.trajectory-export` + `trajectory$export`
+> command. Reads `sessions/<id>/trajectory.edn` and writes **OpenAI
+> tool-calling JSONL** (tool/code iterations → `tool_calls` + `tool` messages;
+> question/answer bracket each turn) or lossless **edn**. A secret-redaction
+> pass (default ON) scrubs api-key/bearer-style tokens from content before
+> writing. Args: `:session-id`/`:all`, `:format`, `:out`, `:redact`. Bound into
+> `all-common-commands`. ShareGPT and a CLI-subcommand wrapper deferred.
 
 ## 4. What Brainyard should *not* copy
 
@@ -163,6 +178,10 @@ else on the list — it's productizing data it already records.
 - **OpenClaw migration tooling** — Hermes-specific lineage, irrelevant here.
 
 ## 5. Suggested sequencing
+
+> **Progress (2026-06-24):** ✅ **R1** (self-improvement loop — see
+> `docs/design/self-improve-design.md`) and ✅ **R5** (skill interop +
+> trajectory export) are implemented. Remaining: **R2** → **R3** → **R4**.
 
 1. **R1** — closes the loop with bricks already in the tree; proves the
    "self-improving" claim in `CLAUDE.md`.

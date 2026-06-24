@@ -150,21 +150,30 @@
           [{} lines])
         body (str/join "\n" body-lines)
         title (or (:title frontmatter)
+                  ;; agentskills.io open standard keys on `name`; accept it as
+                  ;; a title source alongside Brainyard's legacy `title`.
+                  (:name frontmatter)
                   (second (re-find #"(?m)^#\s+(.+)$" body))
                   skill-name)
         description (or (:description frontmatter)
-                        (->> body-lines
-                             (remove str/blank?)
-                             (remove #(str/starts-with? (str/trim %) "#"))
-                             first
-                             str/trim))]
+                        ;; First non-heading body line, if any. `some->` guards
+                        ;; the nil case (heading-only body) — str/trim on nil NPEs.
+                        (some-> (->> body-lines
+                                     (remove str/blank?)
+                                     (remove #(str/starts-with? (str/trim %) "#"))
+                                     first)
+                                str/trim))]
     (cond-> {:name skill-name
              :title title
              :description (or description "")}
       (:tags frontmatter)
       (assoc :tags (mapv str/trim (str/split (:tags frontmatter) #",")))
       (:version frontmatter)
-      (assoc :version (:version frontmatter)))))
+      (assoc :version (:version frontmatter))
+      ;; Surface the raw front-matter `name` (open-standard) so import can
+      ;; derive the canonical skill name from it.
+      (:name frontmatter)
+      (assoc :fm-name (str/trim (:name frontmatter))))))
 
 (defn- brainyard-list
   "List brainyard skills. `scope` nil = :project + :user."
@@ -723,6 +732,45 @@
                   [:type   [:string {:desc "Install target"}]]
                   [:error  [:string {:desc "Error message if failed"}]]])
 
+(defcommand skills$import
+  "Import an external SKILL.md (agentskills.io open standard) from a local path into the brainyard backend."
+  (fn [& {:keys [path name scope]}]
+    (if (str/blank? path)
+      {:error "path is required (a SKILL.md file or a directory containing one)"}
+      (let [f (io/file path)
+            md-file (cond
+                      (and (.isDirectory f) (.exists (io/file f "SKILL.md"))) (io/file f "SKILL.md")
+                      (.isFile f) f
+                      :else nil)]
+        (if (or (nil? md-file) (not (.exists ^File md-file)))
+          {:error (str "No SKILL.md found at " path)}
+          (let [content    (slurp md-file)
+                parsed     (parse-skill-md content "imported")
+                skill-name (sanitize-skill-name
+                            (or (not-empty (some-> name str/trim))
+                                (:fm-name parsed)
+                                (when (.isDirectory f) (.getName f))))]
+            (cond
+              (str/blank? skill-name)
+              {:error "Could not determine skill name — pass :name or add a `name:` front-matter field"}
+              (str/blank? (:description parsed))
+              {:error "SKILL.md has no description — the open standard requires name + description"}
+              :else
+              (create-skill (current-dirs)
+                            (if (str/blank? scope) :project (keyword scope))
+                            skill-name content {})))))))
+  :input-schema  [:map
+                  [:path  [:string {:desc "Path to a SKILL.md file or a directory containing one"}]]
+                  [:name  {:optional true} [:string {:desc "Override the imported skill name (else front-matter `name` / dir name)"}]]
+                  [:scope {:optional true} [:string {:desc "brainyard scope: project (default) | user"}]]]
+  :output-schema [:map
+                  [:name        {:optional true} [:string {:desc "Imported skill name"}]]
+                  [:title       {:optional true} [:string {:desc "Skill title"}]]
+                  [:description {:optional true} [:string {:desc "Skill description"}]]
+                  [:path        {:optional true} [:string {:desc "Path to the new skill dir"}]]
+                  [:created     {:optional true} [:string {:desc "Creation timestamp"}]]
+                  [:error       {:optional true} [:string {:desc "Error message if failed"}]]])
+
 (defcommand skills$sync
   "Update all installed CLI skills to latest versions. Optional :type."
   (fn [& {:as args}]
@@ -940,4 +988,4 @@
   "All skill management commands. `skills$write` is the polymorphic mutation
    surface (`:op :create|:update|:remove`)."
   [#'skills$list #'skills$find #'skills$read #'skills$write
-   #'skills$install #'skills$sync #'skills$reload])
+   #'skills$install #'skills$import #'skills$sync #'skills$reload])
