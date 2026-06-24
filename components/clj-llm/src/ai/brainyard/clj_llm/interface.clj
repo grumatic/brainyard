@@ -233,6 +233,12 @@
                        The full response is still reconstructed and returned."
   llm/chat-completion)
 
+(def classify-error
+  "Classify an LLM-call exception into `{:class :malformed|:transient|:fatal
+   :reason <str>}` so callers can pick re-prompt vs retry vs abort and show an
+   accurate message. See `ai.brainyard.clj-llm.core.llm/classify-error`."
+  llm/classify-error)
+
 (def ^{:doc "Re-export of `ai.brainyard.clj-llm.core.llm/*active-stream-register*`.
             See that var's docstring."}
   active-stream-register-var

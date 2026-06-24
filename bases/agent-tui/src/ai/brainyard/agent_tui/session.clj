@@ -3083,11 +3083,11 @@
   "Handler for :agent.recovery/retrying. Emits a muted progress line while the
    CoAct loop works through a transient stall (empty model response, no-channel
    nudge, or malformed output) so the backoff/retry isn't a silent pause."
-  [{:keys [agent kind attempt max]}]
+  [{:keys [agent kind attempt max reason]}]
   (with-agent-render-session agent
     (let [active? (render-active?)]
       (when active? (stop-thinking-indicator! agent))
-      (emit! (fmt/format-recovery-status kind attempt max))
+      (emit! (fmt/format-recovery-status kind attempt max reason))
       (when active? (start-thinking-indicator! agent)))))
 
 (defn auto-parked-handler

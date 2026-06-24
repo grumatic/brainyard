@@ -304,9 +304,14 @@
       (catch Exception e
         (let [raw-text (get (ex-data e) :raw-text)
               msg (cond-> (str (.getMessage e))
-                    raw-text (str "\nLLM raw text: " (subs raw-text 0 (min (count raw-text) 300))))]
-          (mulog/error ::dspy-error :node-id id :message msg :exception e)
-          (swap! st-memory assoc :dspy-error msg)
+                    raw-text (str "\nLLM raw text: " (subs raw-text 0 (min (count raw-text) 300))))
+              ;; Classify the failure (parse vs network/server vs fatal) so the
+              ;; agent repair path can re-prompt / retry-with-backoff / abort and
+              ;; surface an accurate message instead of a blanket "malformed".
+              {:keys [class reason]} (clj-llm/classify-error e)]
+          (mulog/error ::dspy-error :node-id id :message msg
+                       :error-class class :error-reason reason :exception e)
+          (swap! st-memory assoc :dspy-error msg :dspy-error-class class :dspy-error-reason reason)
           (when fire!
             (fire! :agent.dspy-action/post
                    (assoc base-event :result p/failure :error msg)))

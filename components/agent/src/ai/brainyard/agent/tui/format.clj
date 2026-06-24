@@ -735,20 +735,27 @@
 (defn format-recovery-status
   "Muted one-line progress notice for the CoAct loop working through a
    transient stall (`:agent.recovery/retrying`). `kind` ∈
-   #{:empty-result :malformed-output :validation-failure :no-action};
-   `attempt`/`max` describe progress (`max` may be nil)."
-  [kind attempt max]
-  (let [progress (cond
-                   max                        (str " (" attempt "/" max ")")
-                   (and attempt (> attempt 1)) (str " (x" attempt ")")
-                   :else                      "")
-        msg (case kind
-              :empty-result       (str "Model returned an empty response — retrying" progress "…")
-              :malformed-output   (str "Malformed model output — re-prompting" progress "…")
-              :validation-failure (str "Model output didn't match the schema — re-prompting" progress "…")
-              :no-action          (str "No action this turn (no tool, code, or answer) — nudging the model" progress "…")
-              (str "Recovering" progress "…"))]
-    (ansi/muted (str "  " ansi/v-line " ⟳ " msg))))
+   #{:empty-result :malformed-output :validation-failure :provider-error
+     :no-action}; `attempt`/`max` describe progress (`max` may be nil). For
+   `:provider-error`, `reason` is the classifier's cause (e.g. \"provider error
+   (HTTP 503)\") and replaces the generic label so the line is accurate rather
+   than a blanket \"malformed output\"."
+  ([kind attempt max] (format-recovery-status kind attempt max nil))
+  ([kind attempt max reason]
+   (let [progress (cond
+                    max                        (str " (" attempt "/" max ")")
+                    (and attempt (> attempt 1)) (str " (x" attempt ")")
+                    :else                      "")
+         reason*  (when (and reason (not (str/blank? reason)))
+                    (let [r (str/trim reason)] (subs r 0 (min (count r) 80))))
+         msg (case kind
+               :empty-result       (str "Model returned an empty response — retrying" progress "…")
+               :malformed-output   (str "Malformed model output — re-prompting" progress "…")
+               :validation-failure (str "Model output didn't match the schema — re-prompting" progress "…")
+               :provider-error     (str (or reason* "Provider/network error") " — retrying" progress "…")
+               :no-action          (str "No action this turn (no tool, code, or answer) — nudging the model" progress "…")
+               (str "Recovering" progress "…"))]
+     (ansi/muted (str "  " ansi/v-line " ⟳ " msg)))))
 
 ;; ============================================================================
 ;; Thought / Reasoning

@@ -197,6 +197,68 @@
                           (recur (inc attempt)))))))
 
 ;; ============================================================================
+;; Error classification (for the agent repair path)
+;; ============================================================================
+;;
+;; `retry-with-backoff` above already retries transient errors at the *call*
+;; layer (429/5xx + generic network throws). What still surfaces to a caller is
+;; one of: a malformed-output parse error, a non-retryable client/config error,
+;; or a transient failure that exhausted call-layer retries (or came from a
+;; provider path without them). `classify-error` lets the agent tell these apart
+;; so it can re-prompt vs retry vs abort — and show an accurate message instead
+;; of a blanket "malformed output".
+
+(def ^:private fatal-error-re
+  ;; Non-retryable, non-HTTP-status phrases: auth / quota / billing / config.
+  #"(?i)authenticat|unauthorized|forbidden|invalid[ _-]?api[ _-]?key|api[ _-]?key (?:is )?(?:invalid|missing)|invalid[ _-]?credential|permission denied|\bquota\b|\bbilling\b|payment required|is ?n['’]?t supported|not supported|undefined scheme|model not found|does not exist|invalid[ _-]?request")
+
+(def ^:private transient-error-re
+  ;; Retryable network/server phrases that carry no HTTP :status.
+  #"(?i)timed? ?out|timeout|connection reset|connection refused|connection closed|reset by peer|broken pipe|unexpected end of stream|stream closed|goaway|unknown ?host|no route to host|temporarily unavailable|service unavailable|overloaded|unable to process|bad gateway|gateway timeout|internal server error|please try again")
+
+(defn- error-text [e]
+  (str (or (ex-message e) (str e))
+       (when-let [c (some-> (ex-cause e) ex-message)] (str " | " c))))
+
+(defn- first-line [s]
+  (let [l (-> (str s) (str/split #"\n") first str/trim)]
+    (subs l 0 (min (count l) 160))))
+
+(defn classify-error
+  "Classify an exception thrown by an LLM call into a remedy class:
+     :malformed — the model produced unparseable/invalid output; the fix is to
+                  re-prompt (re-running the same call won't help).
+     :transient — a network/server failure that may succeed on retry: HTTP 5xx,
+                  connection/timeout errors, provider overloaded / unable-to-process.
+     :fatal     — non-retryable: auth / quota / billing, malformed request, a 4xx
+                  (incl. 429 rate-limit), or a model/endpoint misconfiguration.
+   Returns `{:class <kw> :reason <short human string>}`. HTTP errors carry
+   `:status` in ex-data; parse errors carry `:raw-text` (see parse-json-response)."
+  [e]
+  (let [data   (when (instance? clojure.lang.ExceptionInfo e) (ex-data e))
+        status (:status data)
+        text   (error-text e)]
+    (cond
+      ;; Parse failure → the model's output, not the transport.
+      (or (contains? data :raw-text)
+          (re-find #"(?i)JSON parse failed|JSON error" text))
+      {:class :malformed :reason "model returned unparseable output"}
+
+      ;; HTTP status present: 5xx transient; 429 + other 4xx fatal.
+      (some? status)
+      (cond
+        (>= status 500) {:class :transient :reason (str "provider error (HTTP " status ")")}
+        (= status 429)  {:class :fatal     :reason "rate limited (HTTP 429)"}
+        (>= status 400) {:class :fatal     :reason (str "request rejected (HTTP " status ")")}
+        :else           {:class :transient :reason (str "HTTP " status)})
+
+      (re-find fatal-error-re text)     {:class :fatal     :reason (first-line text)}
+      (re-find transient-error-re text) {:class :transient :reason (first-line text)}
+      ;; Unknown — treat as malformed (bounded re-prompt then abort), preserving
+      ;; the prior default rather than retrying a possibly-deterministic failure.
+      :else                              {:class :malformed :reason (first-line text)})))
+
+;; ============================================================================
 ;; OpenAI-Compatible API
 ;; ============================================================================
 

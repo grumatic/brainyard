@@ -168,9 +168,10 @@
    :agent.evaluation/verdict    {:keys #{:agent :score :verdict :reason}}
    ;; Recovery progress (observer-only). Fired when the CoAct loop is working
    ;; through a transient stall so the TUI can surface a status line. `:kind`
-   ;; ∈ #{:empty-result :malformed-output :no-action}; `:attempt`/`:max`
-   ;; describe progress (`:max` may be nil).
-   :agent.recovery/retrying     {:keys #{:agent :kind :attempt :max :detail}}
+   ;; ∈ #{:empty-result :malformed-output :validation-failure :provider-error
+   ;; :no-action}; `:attempt`/`:max` describe progress (`:max` may be nil).
+   ;; `:reason` carries the classifier cause for `:provider-error`.
+   :agent.recovery/retrying     {:keys #{:agent :kind :attempt :max :detail :reason}}
    ;; Observer-only. Fires when an answer carries a non-blank self-reported
    ;; next-user-prompt (a concise follow-up the user could send next). Apps
    ;; (TUI input-bar tip, web bridge) subscribe to surface it. Sub-agents

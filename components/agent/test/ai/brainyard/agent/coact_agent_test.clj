@@ -1062,7 +1062,7 @@
 
 (deftest repair-malformed-non-fatal-test
   (testing "non-fatal LLM error increments counter and pushes a FORMAT ERROR note"
-    (let [st (fresh-st-memory :dspy-error "malformed JSON"
+    (let [st (fresh-st-memory :dspy-error "malformed JSON" :dspy-error-class :malformed
                               :consecutive-llm-failures 0)]
       (rca/coact-repair-action {:st-memory st})
       (is (= 1 (:consecutive-llm-failures @st)))
@@ -1073,12 +1073,25 @@
 
 (deftest repair-malformed-fatal-test
   (testing "fatal LLM error (auth) terminates with apology answer regardless of count"
-    (let [st (fresh-st-memory :dspy-error "401 unauthorized"
+    ;; dspy-action stamps :dspy-error-class :fatal for auth/4xx/quota errors.
+    (let [st (fresh-st-memory :dspy-error "HTTP 401 unauthorized" :dspy-error-class :fatal
+                              :dspy-error-reason "request rejected (HTTP 401)"
                               :consecutive-llm-failures 0)]
       (rca/coact-repair-action {:st-memory st})
       (is (true? (boolean (:terminated @st))))
       (is (str/includes? (:answer @st) "Agent stopped"))
       (is (= :llm-error (:terminated-by @st))))))
+
+(deftest repair-transient-aborts-when-retries-disabled-test
+  (testing "a transient provider error with retries disabled aborts with the cause"
+    ;; agent nil ⇒ retries disabled in repair-transient-failure! ⇒ abort path.
+    (let [st (fresh-st-memory :dspy-error "HTTP 503" :dspy-error-class :transient
+                              :dspy-error-reason "provider error (HTTP 503)")]
+      (rca/coact-repair-action {:st-memory st})
+      (is (true? (boolean (:terminated @st))))
+      (is (= :llm-error (:terminated-by @st)))
+      (is (str/includes? (:answer @st) "provider error (HTTP 503)")
+          "aborts with the provider cause, not a malformed-output message"))))
 
 ;; ============================================================================
 ;; 6. Prompt token breakdown (system + user contexts)

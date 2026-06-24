@@ -383,7 +383,16 @@
       (is (str/includes? s2 "(x2)") "repeat shows an occurrence count")))
   (testing "unknown kind degrades to a generic notice rather than throwing"
     (is (str/includes? (strip-ansi (fmt/format-recovery-status :weird 1 nil))
-                       "Recovering"))))
+                       "Recovering")))
+  (testing "provider-error uses the classifier reason in place of a generic label"
+    (let [s (strip-ansi (fmt/format-recovery-status :provider-error 1 3 "provider error (HTTP 503)"))]
+      (is (str/includes? s "provider error (HTTP 503)"))
+      (is (str/includes? s "retrying"))
+      (is (str/includes? s "(1/3)"))))
+  (testing "provider-error without a reason falls back to a generic label"
+    (let [s (strip-ansi (fmt/format-recovery-status :provider-error 2 3))]
+      (is (str/includes? s "Provider/network error"))
+      (is (str/includes? s "(2/3)")))))
 
 (deftest format-answer-expands-tabs-keeps-box-rectangular
   ;; Regression: long-form `git status` indents untracked files with a literal

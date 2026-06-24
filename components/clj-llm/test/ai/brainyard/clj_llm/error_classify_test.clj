@@ -1,0 +1,52 @@
+;; Copyright (c) 2024-2026 Grumatic, Inc.
+;; SPDX-License-Identifier: MIT
+;; Licensed under the MIT License. See LICENSE at the repository root.
+
+(ns ai.brainyard.clj-llm.error-classify-test
+  "classify-error maps an LLM-call exception to a remedy class so the agent can
+   re-prompt (malformed) vs retry-with-backoff (transient) vs abort (fatal).
+   Cases are drawn from real dspy-error causes seen in agent-tui-app.log."
+  (:require [clojure.test :refer [deftest is testing]]
+            [ai.brainyard.clj-llm.interface :as llm]))
+
+(defn- cls [e] (:class (llm/classify-error e)))
+
+(deftest malformed-output-cases
+  (testing "parse failures = the model's output, not the transport"
+    ;; parse-json-response attaches :raw-text
+    (is (= :malformed (cls (ex-info "JSON parse failed: JSON error (unexpected character): I"
+                                    {:raw-text "I'll discover the tools first."}))))
+    (is (= :malformed (cls (ex-info "JSON parse failed: JSON error (end-of-file)" {:raw-text ""}))))
+    ;; message-only (no ex-data) still recognized
+    (is (= :malformed (cls (java.lang.Exception. "JSON error (missing entry in object)"))))))
+
+(deftest transient-cases
+  (testing "HTTP 5xx → transient"
+    (is (= :transient (cls (ex-info "HTTP 503 https://api.openai.com/v1/chat/completions" {:status 503}))))
+    (is (= :transient (cls (ex-info "HTTP 500 https://x" {:status 500})))))
+  (testing "network throws (no :status) → transient"
+    (is (= :transient (cls (java.net.SocketTimeoutException. "Read timed out"))))
+    (is (= :transient (cls (java.io.IOException. "Connection reset by peer"))))
+    (is (= :transient (cls (java.net.ConnectException. "Connection refused")))))
+  (testing "provider phrasing → transient"
+    (is (= :transient (cls (ex-info "Bedrock invoke failed: Bedrock is unable to process your request." {}))))
+    (is (= :transient (cls (ex-info "model is overloaded, please try again" {}))))))
+
+(deftest fatal-cases
+  (testing "client 4xx (incl. 429 per policy) → fatal"
+    (is (= :fatal (cls (ex-info "HTTP 404 https://api.openai.com/v1/chat/completions" {:status 404}))))
+    (is (= :fatal (cls (ex-info "HTTP 401 https://x" {:status 401}))))
+    (is (= :fatal (cls (ex-info "HTTP 429 https://x" {:status 429})))))
+  (testing "auth / quota / billing / config → fatal"
+    (is (= :fatal (cls (ex-info "authentication failed: invalid api key" {}))))
+    (is (= :fatal (cls (ex-info "You have exceeded your quota" {}))))
+    (is (= :fatal (cls (IllegalArgumentException. "URI with undefined scheme"))))
+    (is (= :fatal (cls (ex-info "Bedrock invoke failed: model amazon.nova-lite-v1:0 with on-demand throughput isn't supported." {}))))))
+
+(deftest unknown-defaults-to-malformed
+  (testing "an unclassifiable error keeps the prior re-prompt-then-abort path"
+    (is (= :malformed (cls (RuntimeException. "something weird happened")))))
+  (testing "reason is a trimmed single line"
+    (let [{:keys [reason]} (llm/classify-error (ex-info "HTTP 503 https://x" {:status 503}))]
+      (is (string? reason))
+      (is (not (re-find #"\n" reason))))))

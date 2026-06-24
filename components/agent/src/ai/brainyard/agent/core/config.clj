@@ -192,11 +192,21 @@
    ;; Delay for attempt N is base * 2^(N-1): attempt 1 waits base, attempt 2
    ;; waits 2*base, etc. Gives a rate-limited backend time to recover.
    :empty-result-retry-base-ms {:type "integer" :default 1000}
-   ;; (2) Malformed output — the ThinkActCode call FAILS (DSPy/JSON parse error).
-   ;; The repair path re-prompts across iterations up to this many consecutive
-   ;; failures before aborting the turn. Fatal errors (auth / rate-limit /
-   ;; quota / billing) abort immediately regardless of this budget.
+   ;; (2) Malformed output — the ThinkActCode call FAILS with a parse/validation
+   ;; error (the model emitted unparseable JSON / wrong schema). The repair path
+   ;; re-prompts across iterations up to this many consecutive failures before
+   ;; aborting. Fatal errors (auth / rate-limit / quota / billing / bad request /
+   ;; model misconfig) abort immediately regardless of this budget.
    :max-retries-on-llm-malformed-output {:type "integer" :default 3}
+   ;; (2b) Transient provider/network failure — the call FAILS with a server/
+   ;; network error (HTTP 5xx, connection/timeout, provider overloaded/unable-to-
+   ;; process) that clj-llm's own call-layer retries couldn't ride out. The repair
+   ;; path RE-RUNS the same call inline (exponential backoff, base reuses
+   ;; :empty-result-retry-base-ms) up to this many times, dispatching the recovered
+   ;; channel in the same iteration; on exhaustion it aborts with the provider
+   ;; error. Set to 0 to disable the agent-level transient retry (clj-llm still
+   ;; retries at the call layer).
+   :max-retries-on-llm-transient        {:type "integer" :default 3}
    ;; (3) No action — the call succeeds and the model reasons, but populates no
    ;; channel (no tool-calls / code-blocks / answer). The repair path nudges up
    ;; to this many consecutive no-action iterations before the loop-guard stops

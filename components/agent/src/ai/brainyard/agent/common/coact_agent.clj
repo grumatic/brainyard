@@ -2119,7 +2119,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                       :answer-decision   nil
                       ;; Clear any stale DSPy error from a prior iteration so
                       ;; coact-repair-action only reads THIS iteration's error.
-                      :dspy-error        nil))))
+                      :dspy-error        nil
+                      :dspy-error-class  nil
+                      :dspy-error-reason nil))))
   ;; Harvest folds resolved background tasks into :iterations and returns the
   ;; surfaced ids; reporting them to auto-notify drops them from the idle-resume
   ;; inbox so the turn-settle flush won't re-announce an already-seen result.
@@ -3481,46 +3483,61 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ((coact-stamp-channel :tool) context)))
   bt/success)
 
+(defn- abort-turn-with-llm-error!
+  "Terminate the turn on an unrecoverable LLM error: stamp a clear answer and a
+   FATAL eval-result, clearing the dspy-error keys. `reason` is the
+   classifier-supplied human cause (e.g. \"provider error (HTTP 503)\")."
+  [st-memory reason]
+  (swap! st-memory assoc
+         :terminated true
+         :answer (str "Agent stopped: " reason)
+         :terminated-by :llm-error
+         :tool-calls [] :code-blocks ""
+         :dspy-error nil :dspy-error-class nil :dspy-error-reason nil :dspy-validation-errors nil
+         :last-code-results [{:lang "other" :code "" :result ""
+                              :output "" :error (str "FATAL: " reason ". Aborting.")
+                              :parallel? false}]
+         :last-channel :none))
+
 (defn- repair-malformed-output!
   "Recover from a malformed ThinkActCode result. Two triggers, same remedy:
-     1. `bt/dspy` threw a DSPy/JSON parse error and stashed `:dspy-error`.
+     1. `bt/dspy` threw a parse error (`:dspy-error` with `:dspy-error-class
+        :malformed`).
      2. `bt/dspy` succeeded but the parsed response failed output-schema
         validation (`:dspy-validation-errors`, set by dspy-action) — e.g. the
         model wrapped its output in placeholder/wrong keys (`$PARAMETER_NAME`)
         and populated no usable channel.
-   Aborts the turn on a fatal error (auth / rate-limit / quota / billing) or
-   once `:consecutive-llm-failures` reaches `:max-retries-on-llm-malformed-output`;
+   Aborts the turn on a FATAL error (`:dspy-error-class :fatal` — auth / 4xx /
+   429 / quota / billing / model-config) using the classifier's `:dspy-error-reason`,
+   or once `:consecutive-llm-failures` reaches `:max-retries-on-llm-malformed-output`;
    otherwise re-prompts: pushes a FORMAT ERROR eval-result naming the schema and
-   clears the channels so the next iteration's ThinkActCode retries. Clears both
+   clears the channels so the next iteration's ThinkActCode retries. Clears the
    error keys so the router-slot re-entry of `coact-repair-action` doesn't
-   re-classify the same failure."
+   re-classify the same failure. (Transient network/server failures are handled
+   separately by `repair-transient-failure!`, not here.)"
   [{:keys [st-memory agent]}]
-  (let [dspy-err (:dspy-error @st-memory)
-        verrs    (:dspy-validation-errors @st-memory)
-        err      (or dspy-err
-                     (when (seq verrs)
-                       (str "your previous output did not match the required schema "
-                            (pr-str verrs)))
-                     "LLM call failed")
+  (let [dspy-err  (:dspy-error @st-memory)
+        err-class (:dspy-error-class @st-memory)
+        reason    (:dspy-error-reason @st-memory)
+        verrs     (:dspy-validation-errors @st-memory)
+        err       (or dspy-err
+                      (when (seq verrs)
+                        (str "your previous output did not match the required schema "
+                             (pr-str verrs)))
+                      "LLM call failed")
         ;; Distinguish a schema-validation failure from a hard parse/throw so
         ;; the TUI can show the right progress line.
-        kind     (if (and (nil? dspy-err) (seq verrs)) :validation-failure :malformed-output)
-        max-r    (or (config/get-config agent :max-retries-on-llm-malformed-output) 3)
-        fatal?   (boolean
-                  (re-find #"(?i)authentication|401|403|api.key|invalid.credentials|rate.limit|429|quota|billing"
-                           (str err)))
-        consec   (get @st-memory :consecutive-llm-failures 0)
-        abort?   (or fatal? (>= consec max-r))]
+        kind      (if (and (nil? dspy-err) (seq verrs)) :validation-failure :malformed-output)
+        max-r     (or (config/get-config agent :max-retries-on-llm-malformed-output) 3)
+        ;; dspy-action classifies every thrown error, so a fatal one always
+        ;; carries :dspy-error-class :fatal. Validation-only failures (no
+        ;; :dspy-error, hence no class) are never fatal → re-prompt.
+        fatal?    (= :fatal err-class)
+        consec    (get @st-memory :consecutive-llm-failures 0)
+        abort?    (or fatal? (>= consec max-r))]
     (if abort?
-      (swap! st-memory assoc
-             :terminated true
-             :answer (str "Agent stopped: " err)
-             :terminated-by :llm-error
-             :tool-calls [] :code-blocks "" :dspy-error nil :dspy-validation-errors nil
-             :last-code-results [{:lang "other" :code "" :result ""
-                                  :output "" :error (str "FATAL: " err ". Aborting.")
-                                  :parallel? false}]
-             :last-channel :none)
+      ;; Fatal → show the precise cause; budget-exhausted → the raw error.
+      (abort-turn-with-llm-error! st-memory (if fatal? (or reason err) err))
       (do
         ;; Progress surface: we're re-prompting the model rather than failing
         ;; silently. (Skip on abort — the terminal answer already explains it.)
@@ -3529,7 +3546,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                        {:agent agent :kind kind
                         :attempt (inc consec) :max max-r}))
         (swap! st-memory assoc
-               :tool-calls [] :code-blocks "" :dspy-error nil :dspy-validation-errors nil
+               :tool-calls [] :code-blocks ""
+               :dspy-error nil :dspy-error-class nil :dspy-error-reason nil :dspy-validation-errors nil
                :consecutive-llm-failures (inc consec)
                :last-code-results [{:lang "other" :code "" :result "" :output ""
                                     :error (str "FORMAT ERROR: " err
@@ -3539,6 +3557,51 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                                                 "placeholder keys like $PARAMETER_NAME.")
                                     :parallel? false}]
                :last-channel :none)))))
+
+(defn- repair-transient-failure!
+  "Recover from a TRANSIENT provider/network failure (`:dspy-error-class
+   :transient` — HTTP 5xx, connection/timeout, provider overloaded/unable-to-
+   process). clj-llm already retried at the call layer; this is the agent-level
+   net for exhausted retries (or provider paths without them). Re-runs the SAME
+   ThinkActCode call inline with exponential backoff up to
+   `:max-retries-on-llm-transient`; on recovery dispatches the channel this same
+   iteration, on exhaustion aborts the turn with the provider error (NOT a
+   malformed-output re-prompt — the model's output was never the problem)."
+  [{:keys [st-memory agent] :as context}]
+  (let [reason  (:dspy-error-reason @st-memory)
+        err     (:dspy-error @st-memory)
+        max-r   (or (config/get-config agent :max-retries-on-llm-transient) 3)
+        base-ms (or (config/get-config agent :empty-result-retry-base-ms) 1000)]
+    (if (or (nil? agent) (not (pos? max-r)))
+      (abort-turn-with-llm-error! st-memory (or reason err "provider error"))
+      (loop [attempt 1]
+        (mulog/log ::repair-transient-retry
+                   :iteration (:iteration-count @st-memory)
+                   :attempt attempt :max max-r :reason reason)
+        (hooks/fire! :agent.recovery/retrying
+                     {:agent agent :kind :provider-error
+                      :attempt attempt :max max-r :reason reason})
+        (retry-sleep! (backoff-delay-ms attempt base-ms))
+        ;; Clear the error before the re-run so a fresh failure is detectable.
+        (swap! st-memory assoc :dspy-error nil :dspy-error-class nil :dspy-error-reason nil)
+        (bt/dspy (assoc context :opts
+                        {:id          :coact.action/repair-retry-transient
+                         :signature   #'ThinkActCode
+                         :operation   :chain-of-thought
+                         :stable-keys #{:system-context :user-context}}))
+        (cond
+          ;; A retry recovered a usable channel — dispatch it now, same iteration.
+          (any-channel-populated? context)
+          (coact-dispatch-channel! context)
+          ;; Still failing — retry while budget remains, else abort with the cause.
+          (:dspy-error @st-memory)
+          (if (< attempt max-r)
+            (recur (inc attempt))
+            (abort-turn-with-llm-error!
+             st-memory (or (:dspy-error-reason @st-memory) reason err "provider error")))
+          ;; Recovered to an empty (no-channel) result — let the iteration no-op
+          ;; through; the router/loop-guard handles a genuine empty result.
+          :else nil)))))
 
 (defn- repair-no-action!
   "Handle an iteration that succeeded but populated no channel (deliberate
@@ -3623,12 +3686,21 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
       (= (:last-repair-iter @st-memory) iter)
       bt/success
 
-      ;; (1) Malformed output — bt/dspy threw (:dspy-error), OR the parsed
-      ;; response failed output-schema validation (:dspy-validation-errors,
-      ;; e.g. placeholder/wrong keys) and populated no channel. Both get a
-      ;; schema-reminder re-prompt rather than a blind re-run of the same call
-      ;; (which usually repeats the mistake) — this is the split from the
-      ;; genuinely-empty-stream backoff retry below.
+      ;; (1a) Transient provider/network failure (:dspy-error-class :transient) —
+      ;; re-run the SAME call with backoff rather than re-prompting (the model's
+      ;; output was never the problem). Recovers in-iteration or aborts on
+      ;; exhaustion. See `repair-transient-failure!`.
+      (= :transient (:dspy-error-class @st-memory))
+      (do (repair-transient-failure! context)
+          (swap! st-memory assoc :last-repair-iter iter)
+          bt/success)
+
+      ;; (1b) Malformed output — bt/dspy threw a parse error (:dspy-error,
+      ;; class :malformed/:fatal), OR the parsed response failed output-schema
+      ;; validation (:dspy-validation-errors, e.g. placeholder/wrong keys) and
+      ;; populated no channel. Both get a schema-reminder re-prompt (or a fatal
+      ;; abort) rather than a blind re-run of the same call — distinct from the
+      ;; transient re-run above and the empty-stream backoff retry below.
       (or (some? (:dspy-error @st-memory))
           (seq (:dspy-validation-errors @st-memory)))
       (do (repair-malformed-output! context)
