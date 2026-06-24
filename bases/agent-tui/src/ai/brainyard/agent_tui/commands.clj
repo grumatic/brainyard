@@ -1779,6 +1779,7 @@
   (if-let [ag (tui-session/get-active-agent)]
     (try
       (agent/resume-run (:!state ag))
+      (input/hide-pause-tips!)
       (tui-session/emit! (ansi/muted "[resumed]"))
       (try (tui-session/update-status-bar!) (catch Throwable _))
       (catch Throwable t

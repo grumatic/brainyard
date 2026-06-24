@@ -5,7 +5,8 @@
 (ns ai.brainyard.agent-tui.input
   "Input handling for the TUI: raw byte reading, Ctrl-C handling, UTF-8 decoding,
    and permission/feedback interception."
-  (:require [ai.brainyard.agent-tui.session :as tui-session]
+  (:require [clojure.string :as str]
+            [ai.brainyard.agent-tui.session :as tui-session]
             [ai.brainyard.agent-tui.layout :as layout]
             [ai.brainyard.agent-tui.permissions :as permissions]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
@@ -35,6 +36,44 @@
 
 (defonce !tty-stream (atom nil))
 
+;; ============================================================================
+;; Pause tips (sticky live-block shown while the active turn is paused)
+;; ============================================================================
+
+(def pause-tips-block-id
+  "Stable id for the sticky-bottom live-block that lists the available actions
+   while a turn is paused. Public so the resume/cancel paths in core.clj and
+   commands.clj can dispose it without re-deriving the id."
+  :pause-tips)
+
+(defn- pause-tips-lines
+  "Rows for the paused 'what next' tips block."
+  []
+  [""
+   (str "  " (ansi/warning "⏸ Paused")
+        (ansi/muted " — agent stops at the next safe checkpoint"))
+   (str "    ESC                      " (ansi/muted "continue"))
+   (str "    type a message + Enter   " (ansi/muted "continue, steering the agent"))
+   (str "    Ctrl-C                   " (ansi/muted "cancel this turn"))])
+
+(defn show-pause-tips!
+  "Render the paused-state tips as a sticky-bottom live-block (anchored below
+   the think/iteration/task blocks). Falls back to a plain emit when not in
+   fullscreen TUI mode."
+  []
+  (if (layout/fullscreen?)
+    (layout/update-live-block! pause-tips-block-id (pause-tips-lines)
+                               {:sticky-bottom? true})
+    (tui-session/emit! (str/join "\n" (pause-tips-lines)))))
+
+(defn hide-pause-tips!
+  "Dispose the paused-state tips live-block. No-op when none is showing or when
+   not in fullscreen mode. Idempotent — safe to call from every resume/cancel
+   path."
+  []
+  (when (layout/fullscreen?)
+    (layout/dispose-live-block! pause-tips-block-id)))
+
 (defn cancel-ask-for-agent!
   "Cancel the currently-running ask for `ag`'s session (cooperative cancel +
    thread interrupt), regardless of which tab is on screen. Targets the ask
@@ -47,6 +86,9 @@
     (if t
       (do (when ag (try (agent/cancel-run (:!state ag)) (catch Throwable _)))
           (.interrupt ^Thread t)
+          ;; If the turn was paused, the tips block is still on screen — a
+          ;; cancel ends the turn, so clear it.
+          (hide-pause-tips!)
           true)
       false)))
 
@@ -76,9 +118,20 @@
         ;; can show the hint.
         (.put ^LinkedBlockingQueue !raw-input-queue :sigint)))))
 
-(defn handle-ctrl-backslash!
-  "Handle Ctrl-\\ (ASCII 28, FS) press. Toggles cooperative pause on the
-   active agent. No-op when no agent is running."
+(defn turn-in-flight?
+  "True when a turn is running (or paused) on `ag`'s tab — i.e. an ask thread is
+   registered for its session-idx. Mirrors the `running?` gate in core.clj and
+   is the signal used to decide whether a lone ESC means 'pause' (turn in
+   flight) or should pass through to the readline editor (idle)."
+  [ag]
+  (boolean (when-let [aidx (some-> ag tui-session/session-idx-for-agent)]
+             (get @!ask-threads aidx))))
+
+(defn toggle-pause!
+  "Toggle cooperative pause on the active agent. Shared by ESC and Ctrl-\\.
+   On pause: request the cooperative pause and show the sticky tips block.
+   On resume: clear the pause and dispose the tips block. No-op when no agent
+   exists on the active tab."
   []
   (when-let [ag (tui-session/get-active-agent)]
     (let [!state (:!state ag)
@@ -86,12 +139,38 @@
       (try
         (if paused?
           (do (agent/resume-run !state)
+              (hide-pause-tips!)
               (tui-session/emit! (ansi/muted "[resumed]")))
           (do (agent/pause-run !state)
-              (tui-session/emit! (ansi/muted "[paused] Ctrl-\\ resume · Ctrl-C cancel · or type a message + Enter to resume with it"))))
+              (show-pause-tips!)))
         (try (tui-session/update-status-bar!) (catch Throwable _))
         (catch Throwable t
           (tui-session/emit! (ansi/failure (str "pause-toggle failed: " (.getMessage t)))))))))
+
+(defn handle-ctrl-backslash!
+  "Handle Ctrl-\\ (ASCII 28, FS) press. Toggles cooperative pause on the
+   active agent. No-op when no agent is running."
+  []
+  (toggle-pause!))
+
+(defn handle-esc!
+  "Handle a raw ESC byte (27) from the input reader thread.
+
+   ESC is the lead byte of escape sequences (arrow keys, bracketed paste
+   ESC[200~). Disambiguate by peeking the tty the same way `terminal/read-key!`
+   does: sleep briefly, then check for more bytes.
+     - More bytes waiting → it's a sequence: enqueue the ESC and return so the
+       following bytes flow to the readline editor unchanged.
+     - ESC stands alone → if a turn is in flight on the active tab, toggle
+       pause/resume. Otherwise (idle, editing the input line) enqueue the ESC so
+       the editor keeps its normal :escape behavior."
+  [^java.io.FileInputStream tty]
+  (Thread/sleep (long 2))
+  (if (pos? (long (.available tty)))
+    (.put ^LinkedBlockingQueue !raw-input-queue (int 27))
+    (if (turn-in-flight? (tui-session/get-active-agent))
+      (toggle-pause!)
+      (.put ^LinkedBlockingQueue !raw-input-queue (int 27)))))
 
 (defn cjk-wide-char?
   "Return true if character is a CJK full-width character (displays as 2 columns)."
@@ -273,6 +352,7 @@
                                  (= b 3)                (handle-ctrl-c!)
                                  (= b 28)               (handle-ctrl-backslash!)
                                  (try-intercept-byte b) nil  ;; consumed by permission/feedback
+                                 (= b 27)               (handle-esc! tty)  ;; lone ESC → pause toggle; sequence → pass through
                                  :else                  (.put ^LinkedBlockingQueue !raw-input-queue (int b)))
                                (recur))))
                        ;; No data — sleep briefly then poll again

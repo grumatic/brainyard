@@ -7,9 +7,11 @@
    (input/try-intercept-byte) across the three kinds — :confirm, :text,
    :select — plus a CJK round-trip through the shared text editor."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [clojure.string]
             [ai.brainyard.agent-tui.input :as input]
             [ai.brainyard.agent-tui.layout :as layout]
             [ai.brainyard.agent-tui.session :as tui-session]
+            [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.agent-tui.permissions :as p]))
 
 ;; Silence terminal echo + block ops so the interceptor runs hermetically.
@@ -134,3 +136,50 @@
   (testing "no pending prompt ⇒ byte not intercepted"
     (reset! tui-session/!pending-feedback nil)
     (is (nil? (input/try-intercept-byte (int \y))))))
+
+;; ---------------------------------------------------------------------------
+;; ESC-to-pause: tips block, turn-in-flight gate, and the shared toggle.
+;; ---------------------------------------------------------------------------
+
+(deftest pause-tips-lines-shape
+  (testing "the tips block lists ESC / type+Enter / Ctrl-C actions"
+    (let [lines (#'input/pause-tips-lines)
+          text  (clojure.string/join "\n" lines)]
+      (is (seq lines))
+      (is (re-find #"Paused" text))
+      (is (re-find #"ESC" text))
+      (is (re-find #"Enter" text))
+      (is (re-find #"Ctrl-C" text)))))
+
+(deftest turn-in-flight?-tracks-ask-threads
+  (testing "true only while an ask thread is registered for the agent's tab"
+    (with-redefs [tui-session/session-idx-for-agent (fn [_] 0)]
+      (let [ag {:!state (atom {})}]
+        (reset! input/!ask-threads {})
+        (is (false? (input/turn-in-flight? ag)))
+        (reset! input/!ask-threads {0 (Thread. (fn []))})
+        (is (true? (input/turn-in-flight? ag)))
+        (reset! input/!ask-threads {})))))
+
+(deftest toggle-pause!-shows-and-hides-tips
+  (let [paused?   (atom false)
+        ag        {:!state (atom {})}
+        shown     (atom [])
+        disposed  (atom [])]
+    (with-redefs [tui-session/get-active-agent (fn [] ag)
+                  tui-session/update-status-bar! (fn [] nil)
+                  agent/paused?     (fn [_] @paused?)
+                  agent/pause-run   (fn [_] (reset! paused? true))
+                  agent/resume-run  (fn [_] (reset! paused? false))
+                  layout/fullscreen? (fn [] true)
+                  layout/update-live-block! (fn [id lines & _] (swap! shown conj id))
+                  layout/dispose-live-block! (fn [id] (swap! disposed conj id))]
+      (testing "first toggle pauses and shows the sticky tips block"
+        (input/toggle-pause!)
+        (is (true? @paused?))
+        (is (= [input/pause-tips-block-id] @shown))
+        (is (empty? @disposed)))
+      (testing "second toggle resumes and disposes the tips block"
+        (input/toggle-pause!)
+        (is (false? @paused?))
+        (is (= [input/pause-tips-block-id] @disposed))))))

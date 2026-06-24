@@ -1630,6 +1630,8 @@
                       ;; rather than queueing a separate next turn.
                       (if paused-ag
                         (do (agent/resume-run (:!state paused-ag) input)
+                            (input/hide-pause-tips!)
+                            (try (tui-session/update-status-bar!) (catch Throwable _))
                             (tui-session/emit! (ansi/muted "[resumed — steering the loop with your note]"))
                             (recur))
                         (let [result (commands/handle-input-line enqueue-input! input reader)]
