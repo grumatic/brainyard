@@ -118,12 +118,15 @@ Reuse the GC/retention discipline already designed for tasks.
 > Pairings persist under `.brainyard/gateway/`, carrying the minting session's
 > `:user-id` + `:project-root` (resolving the "remote user has no cwd" problem)
 > and a stable per-user `:session-id` for continuity. Commands:
-> `gateway$pair-code/pairings/unpair`. A stub transport in the tests proves the
-> contract (6 tests / 27 assertions). **Deferred:** the Telegram adapter (a thin
-> `Transport` over `clj-http` getUpdates/sendMessage — buildable, needs a bot
-> token to run), the long-poll loop wiring + a `by gateway` start path, voice
-> transcription, per-call project-root→dirs threading, and reconciling
-> user-scoped vs project-scoped sessions for true cross-platform continuity.
+> `gateway$pair-code/pairings/unpair`. **Telegram adapter shipped**
+> (`gateway.telegram`): a `Transport` over the native HTTP client
+> (`getUpdates` long-poll + `sendMessage`), `telegram-transport` from
+> `BY_TELEGRAM_TOKEN`, an in-process daemon loop (`start-gateway!`/`stop-gateway!`)
+> driven by `gateway$start` / `gateway$stop`. 10 tests / 45 assertions (core +
+> adapter, HTTP stubbed). **Not run end-to-end** (needs a real bot token).
+> **Deferred:** voice transcription, per-call project-root→dirs threading,
+> reconciling user-scoped vs project-scoped sessions for cross-platform
+> continuity, and additional platforms (Discord/Slack/…) behind the same protocol.
 
 **What Hermes does:** one gateway process exposes the agent on Telegram,
 Discord, Slack, WhatsApp, Signal, and Email, with voice-memo transcription and
@@ -212,9 +215,9 @@ else on the list — it's productizing data it already records.
 
 > **Progress (2026-06-24):** ✅ **R1** (self-improvement loop — see
 > `docs/design/self-improve-design.md`), ✅ **R5** (skill interop + trajectory
-> export), ✅ **R2** (scheduler — in-process firing), and ◐ **R3** (messaging
-> gateway — transport-agnostic core + pairing; no real-platform adapter yet) are
-> implemented. Remaining: **R3** adapter (Telegram) → **R4** (remote backends).
+> export), ✅ **R2** (scheduler — in-process firing), and ✅ **R3** (messaging
+> gateway — core + pairing + Telegram adapter; not run end-to-end) are
+> implemented. Remaining: **R4** (remote/serverless backends).
 
 1. **R1** — closes the loop with bricks already in the tree; proves the
    "self-improving" claim in `CLAUDE.md`.

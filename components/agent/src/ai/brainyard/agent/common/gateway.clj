@@ -193,6 +193,44 @@
     (count msgs)))
 
 ;; ============================================================================
+;; Loop (in-process, daemon)
+;; ============================================================================
+
+(defonce ^:private !running (atom false))
+
+(defn gateway-running? [] @!running)
+
+(defn start-gateway!
+  "Start a daemon loop that polls `transport` and routes messages until
+   `stop-gateway!`. Returns true if started, false if one is already running.
+   `transport`'s `poll` is expected to block/pace (e.g. Telegram long-poll); a
+   2s backoff guards error spins."
+  [project-dir transport]
+  (if (compare-and-set! !running false true)
+    (let [t (Thread.
+             ^Runnable
+             (fn []
+               (loop []
+                 (when @!running
+                   (try (run-once! project-dir transport)
+                        (catch Throwable e
+                          (mulog/warn ::gateway-loop-error :exception e)
+                          (try (Thread/sleep (long 2000)) (catch InterruptedException _ nil))))
+                   (recur))))
+             "by-gateway")]
+      (.setDaemon t true)
+      (.start t)
+      (mulog/info ::gateway-started)
+      true)
+    false))
+
+(defn stop-gateway!
+  "Signal the gateway loop to stop. Returns true."
+  []
+  (reset! !running false)
+  true)
+
+;; ============================================================================
 ;; Commands — pairing management (the TUI side of the handshake)
 ;; ============================================================================
 
