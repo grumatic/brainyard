@@ -74,7 +74,8 @@ eager-cleanup + bounded-sweep model behind `task$sweep`.
 
 Design notes (proposals, deep-dives) live in `docs/design/`. The
 `tui/` subdirectory covers the agent TUI ([architecture](tui/architecture.md),
-[renderer internals](tui/renderer.md), [live-binary testing](tui/testing.md)).
+[renderer internals](tui/renderer.md), [pause & resume](tui/pause-resume.md),
+[live-binary testing](tui/testing.md)).
 [Live debugging](live-debugging.md) describes driving the live `by` JVM
 from an external coding agent over tmux + nREPL. The `reference/`
 subdirectory contains historical / migration notes.
