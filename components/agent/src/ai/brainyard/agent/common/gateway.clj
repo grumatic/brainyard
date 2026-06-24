@@ -75,10 +75,14 @@
 ;; ============================================================================
 
 (def ^:private code-alphabet "ABCDEFGHJKLMNPQRSTUVWXYZ23456789") ;; no ambiguous chars
-(def ^:private ^SecureRandom secure-rng (SecureRandom.))
 
 (defn- gen-code-str []
-  (apply str (repeatedly 6 #(nth code-alphabet (.nextInt secure-rng (count code-alphabet))))))
+  ;; Construct the SecureRandom at call time (runtime), NOT at namespace load:
+  ;; a Random instance created during native-image build lands in the image heap
+  ;; with a cached seed, which GraalVM disallows. Codes are minted rarely, so a
+  ;; fresh RNG per mint is fine.
+  (let [^SecureRandom rng (SecureRandom.)]
+    (apply str (repeatedly 6 #(nth code-alphabet (.nextInt rng (count code-alphabet)))))))
 
 (defn generate-code!
   "Mint a one-time pairing code carrying the minting session's identity. Opts:
