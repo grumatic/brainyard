@@ -135,14 +135,56 @@
                   :allow "clipboard-read; clipboard-write"
                   :src (str "/api/sessions/" id "/term/")}]])
 
+;; ~time the 0→95% ramp targets; real readiness snaps it to ready/dismiss.
+(def ^:private provision-expected-ms 15000)
+
+(defn- provision-phase
+  "Best-effort phase label off elapsed time (the backend blocks rather than
+   streaming events, so this is informative, not authoritative)."
+  [elapsed]
+  (cond
+    (< elapsed 2000)  "Allocating container…"
+    (< elapsed 6000)  "Starting the workspace image…"
+    (< elapsed 12000) "Booting by (ttyd + tmux)…"
+    :else             "Almost ready…"))
+
+(defn provision-modal
+  "Progress-bar overlay shown while a workspace container starts. The bar fills
+   from elapsed time (capped at 95% until the server reports ready); on failure
+   it turns red and offers Retry/Dismiss."
+  [id {:keys [status elapsed]}]
+  (let [failed? (= status "failed")
+        pct     (if failed? 100
+                    (min 95 (js/Math.round (* 100 (/ (or elapsed 0) provision-expected-ms)))))]
+    [:div.modal-backdrop {:replicant/key :provision-modal}
+     [:div.modal
+      [:h2 (if failed? "Workspace failed to start" "Preparing your workspace")]
+      [:p.id id]
+      [:div.progress {:class (when failed? "err")}
+       [:div.bar {:style {:width (str pct "%")}}]]
+      (if failed?
+        [:div
+         [:p.hint.err "The container didn't become ready in time — Docker may be "
+          "slow, still pulling the image, or low on resources."]
+         [:div.toolbar
+          [:button {:on {:click [[:provision/dismiss id]]}} "Dismiss"]
+          [:button.btn.primary {:on {:click [[:provision/dismiss id] [:session/resume id]]}}
+           "Retry"]]]
+        [:p.hint (provision-phase elapsed)])]]))
+
 (defn root
-  "Top-level view chosen by auth state, then route."
-  [{:keys [user route] :as state}]
+  "Top-level view chosen by auth state, then route. A provisioning workspace
+   overlays a progress-bar modal on top of the current view."
+  [{:keys [user route provision] :as state}]
   (cond
     (nil? user)   [:div.center {:replicant/key :view/loading} [:p "Loading…"]]
     (false? user) (login-view)
     :else
-    (case (:name route)
-      :route/workspace (workspace-view state (-> route :params :id))
-      :route/settings  (settings-view state)
-      (dashboard-view state))))
+    [:div {:replicant/key :app-root}
+     (case (:name route)
+       :route/workspace (workspace-view state (-> route :params :id))
+       :route/settings  (settings-view state)
+       (dashboard-view state))
+     (when (seq provision)
+       (let [[id p] (first provision)]
+         (provision-modal id p)))]))

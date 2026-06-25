@@ -15,4 +15,8 @@
          :sessions {}
          ;; :ports — session-id -> [{:container n :host n} ...] for the
          ;; workspace header's dev-port dropdown (loaded on workspace nav)
-         :ports {}}))
+         :ports {}
+         ;; :provision — id -> {:status "provisioning"|"failed" :elapsed ms :nav? bool}
+         ;; in-flight workspace startup, driving the progress-bar modal. Entries
+         ;; are added on create/resume and removed once the workspace is ready.
+         :provision {}}))

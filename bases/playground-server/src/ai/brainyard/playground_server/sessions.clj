@@ -240,25 +240,49 @@
           (do (workspace/stop! id)
               (assoc rec :status "failed")))))))
 
+(defn- provision-async!
+  "Run `provision!` for `rec` on a background thread, persisting the final
+   status (ready|failed). Lets the HTTP handler return immediately with a
+   `provisioning` record the client polls — Docker startup can take tens of
+   seconds and must not block an http-kit worker. Skips the final save if the
+   session was destroyed mid-provision, so a destroy can't be resurrected."
+  [rec]
+  (future
+    (let [result (try (provision! rec)
+                      (catch Throwable _ (assoc rec :status "failed")))]
+      (when (store/fetch @db (:id rec))            ; still exists (not destroyed)
+        (store/save! @db result)))))
+
 (defn create!
-  "Allocate a workspace for `user-id`. Returns the public projection."
+  "Allocate a workspace for `user-id`. Real mode returns a `provisioning`
+   record immediately and starts the container in the background; the client
+   polls GET /api/sessions/:id until it reaches `ready`/`failed`. Returns the
+   public projection."
   [user-id]
-  (let [base {:id (gen-id) :user-id user-id :created-at (System/currentTimeMillis)}
-        rec  (if (fake-mode?)
-               (assoc base :status "ready" :fake true)
-               (provision! (assoc base :status "provisioning" :fake false)))]
-    (store/save! (store!) rec)
-    (public rec)))
+  (let [base {:id (gen-id) :user-id user-id :created-at (System/currentTimeMillis)}]
+    (if (fake-mode?)
+      (let [rec (assoc base :status "ready" :fake true)]
+        (store/save! (store!) rec)
+        (public rec))
+      (let [rec (assoc base :status "provisioning" :fake false)]
+        (store/save! (store!) rec)                 ; persist provisioning first → pollable
+        (provision-async! rec)
+        (public rec)))))
 
 (defn resume!
-  "Restart a stopped workspace owned by `user-id` (fake: just flip status)."
+  "Restart a stopped workspace owned by `user-id` (fake: just flip status).
+   Real mode flips to `provisioning` and reprovisions in the background, same
+   poll-to-ready contract as `create!`."
   [user-id id]
   (when-let [rec (owned user-id id)]
-    (let [rec' (if (:fake rec)
-                 (assoc rec :status "ready")
-                 (provision! rec))]
-      (store/save! @db rec')
-      (public rec'))))
+    (if (:fake rec)
+      (let [rec' (assoc rec :status "ready")]
+        (store/save! @db rec')
+        (public rec'))
+      (let [rec' (assoc rec :status "provisioning")]
+        (store/save! @db rec')
+        (provision-async! rec)
+        (public rec')))))
 
 (defn destroy!
   "Reap a workspace owned by `user-id` (idempotent; no-op if not owned). Destroy

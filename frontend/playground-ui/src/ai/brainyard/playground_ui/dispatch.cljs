@@ -85,10 +85,51 @@
     (-> (api/create-session!)
         (.then (fn [s]
                  (swap! state/app-state assoc-in [:sessions (:id s)] s)
-                 (rfe/push-state :route/workspace {:id (:id s)})))
+                 (if (= "ready" (:status s))
+                   (rfe/push-state :route/workspace {:id (:id s)})  ; fake mode: instant
+                   (run-action nil [:provision/start (:id s) true])))) ; real: poll → nav
         (.catch (fn [_] (js/console.error "create-session failed"))))
-    :session/resume  (-> (api/resume!  (first args)) (.then reload-sessions!))
+    :session/resume
+    (let [id (first args)]
+      (-> (api/resume! id)
+          (.then (fn [s]
+                   (swap! state/app-state assoc-in [:sessions id] s)
+                   (if (= "ready" (:status s))
+                     (reload-sessions!)
+                     (run-action nil [:provision/start id false]))))))  ; poll, stay on dash
     :session/destroy (-> (api/destroy! (first args)) (.then reload-sessions!))
+
+    ;; --- workspace provisioning progress (poll until ready/failed) --------
+    ;; Backend create!/resume! return a `provisioning` record immediately and
+    ;; start the container in the background; we poll the session status and
+    ;; drive the progress-bar modal off elapsed time until it goes ready/failed.
+    :provision/start
+    (let [[id nav?] args]
+      (swap! state/app-state assoc-in [:provision id]
+             {:status "provisioning" :elapsed 0 :nav? (boolean nav?)})
+      (run-action nil [:provision/poll id (js/Date.now)]))
+    :provision/poll
+    (let [[id started-at] args]
+      ;; Stop if the entry was dismissed/removed (e.g. failed → Dismiss).
+      (when-let [p (get-in @state/app-state [:provision id])]
+        (swap! state/app-state assoc-in [:provision id :elapsed] (- (js/Date.now) started-at))
+        (-> (api/get-session id)
+            (.then (fn [s]
+                     (let [st (:status s)]
+                       (swap! state/app-state assoc-in [:sessions id] s)
+                       (swap! state/app-state assoc-in [:provision id :status] st)
+                       (case st
+                         "ready"  (do (swap! state/app-state update :provision dissoc id)
+                                      (if (:nav? p)
+                                        (rfe/push-state :route/workspace {:id id})
+                                        (reload-sessions!)))
+                         "failed" nil  ; keep entry so the modal shows error + Retry
+                         (js/setTimeout #(run-action nil [:provision/poll id started-at]) 800)))))
+            (.catch (fn [_]
+                      ;; transient (e.g. brief 404 before persist) — keep polling
+                      (js/setTimeout #(run-action nil [:provision/poll id started-at]) 1000))))))
+    :provision/dismiss
+    (swap! state/app-state update :provision dissoc (first args))
 
     ;; --- workspace dev-port dropdown --------------------------------------
     :ports/load
