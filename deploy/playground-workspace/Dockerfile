@@ -36,17 +36,33 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
  && rm -rf /var/lib/apt/lists/* \
  && npm config set update-notifier false
 
-# Next.js + Playwright, installed globally so `next` / `playwright` are on PATH
-# for every tenant. PLAYWRIGHT_BROWSERS_PATH points the browser download at a
-# world-readable system dir (the default is per-user ~/.cache, which the non-root
-# `by` user wouldn't share); `--with-deps chromium` also pulls the apt libs the
-# browser needs to launch headless. Chromium only — the full browser set would
-# bloat the image; add firefox/webkit here if a tenant needs them.
+# Claude Code (Anthropic's agentic CLI), installed globally so `claude` is on
+# PATH for every tenant. Credentials (ANTHROPIC_API_KEY / Bedrock via AWS creds)
+# are injected per-session at `docker run` time, never baked into the image.
+RUN npm install -g @anthropic-ai/claude-code \
+ && claude --version
+
+# Browser automation: agent-browser (a CDP-based driver, the tool `by`'s browser
+# skill uses) + a headless Chromium. We install ONLY Playwright's
+# chromium-headless-shell (~334MB), NOT the full headed chromium (which adds
+# ~624MB) — playground tenants run headless, so the headed browser is dead weight.
+# Playwright is just the fetcher here: it's the only source of a Linux ARM64
+# Chromium build (Chrome for Testing ships no arm64 binary, and Ubuntu's chromium
+# is snap-only). `--with-deps` pulls the apt libs Chromium needs to launch.
+# PLAYWRIGHT_BROWSERS_PATH puts the browser in a world-readable system dir.
+# agent-browser is pointed at the shell via AGENT_BROWSER_EXECUTABLE_PATH; we
+# symlink it to a stable path because the versioned dir name (…-1228) changes
+# across Playwright releases. `next` is intentionally NOT global — tenants bring
+# it via their project's node_modules / `npx next`.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npm install -g next playwright \
- && playwright install --with-deps chromium \
+RUN npm install -g agent-browser playwright \
+ && playwright install --with-deps chromium-headless-shell \
+ && ln -sf "$(find /ms-playwright/chromium_headless_shell-* -name headless_shell -type f | head -1)" \
+      /usr/local/bin/chromium-headless-shell \
  && chmod -R a+rX /ms-playwright \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && agent-browser --version
+ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/chromium-headless-shell
 
 # uv / uvx (Astral) — fast Python package+runtime manager, installed system-wide.
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
