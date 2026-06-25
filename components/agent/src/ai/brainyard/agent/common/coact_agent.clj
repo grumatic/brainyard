@@ -827,8 +827,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                               (let [cap (or max-chars default-artifact-max-chars)]
                                 (if (> (count s) cap) (str (subs s 0 cap) "…") s)))
                       badge (str/join " " (cond-> []
-                                            (= origin :system) (conj "system")
-                                            pinned?            (conj "📌")))]
+                                            (= origin :system)  (conj "system")
+                                            (= origin :console) (conj "🔎 you inspected")
+                                            pinned?             (conj "📌")))]
                   (str "### " (or name "artifact")
                        (when (seq badge) (str " (" badge ")")) "\n"
                        body))))

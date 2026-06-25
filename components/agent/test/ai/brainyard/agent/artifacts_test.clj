@@ -163,6 +163,89 @@
         (is (some? (:error (art/add-artifact! ag {}))))
         (is (some? (:error (art/add-artifact! nil {:content "x"}))))))))
 
+(deftest console-activity-records-inline-artifact-test
+  (testing "record-console-activity! stores an inline :origin :console artifact"
+    (let [init (atom {})
+          ag   (mock-agent init (atom {}))
+          d    (art/record-console-activity!
+                ag {:cmd ":list-tools" :args "pattern=memory"
+                    :result {:total 7} :ok? true})]
+      (is (= "console:1" (:id d)))
+      (is (= :console (:origin d)))
+      (is (= :inline (:source d)))
+      (is (false? (:pinned? d)))
+      (is (= ":list-tools pattern=memory" (:name d)))
+      ;; body carries the command line and the result digest
+      (is (re-find #":list-tools pattern=memory" (:content d)))
+      (is (re-find #"→ \{:total 7\}" (:content d)))
+      (is (= [d] (:live-artifacts @init))))))
+
+(deftest console-activity-error-path-test
+  (testing "ok? false renders a ✗ digest from the error string"
+    (let [init (atom {})
+          ag   (mock-agent init (atom {}))
+          d    (art/record-console-activity!
+                ag {:cmd ":bash" :args "" :result "boom" :ok? false})]
+      (is (= ":bash" (:name d)))
+      (is (re-find #"✗ boom" (:content d))))))
+
+(deftest console-activity-dedupes-consecutive-test
+  (testing "an identical consecutive invocation is skipped (:duplicate)"
+    (let [init (atom {})
+          ag   (mock-agent init (atom {}))]
+      (art/record-console-activity! ag {:cmd ":task$list" :result {:count 0}})
+      (is (= :duplicate
+             (art/record-console-activity! ag {:cmd ":task$list" :result {:count 0}})))
+      (is (= 1 (count (:live-artifacts @init))))
+      ;; a different result is recorded as a new entry
+      (let [d (art/record-console-activity! ag {:cmd ":task$list" :result {:count 1}})]
+        (is (= "console:2" (:id d)))
+        (is (= 2 (count (:live-artifacts @init))))))))
+
+(deftest console-activity-trims-to-cap-test
+  (testing "only the newest :max-entries console artifacts are retained"
+    (let [init (atom {})
+          ag   (mock-agent init (atom {}))]
+      (dotimes [n 5]
+        (art/record-console-activity!
+         ag {:cmd ":list-tools" :result {:n n} :max-entries 3}))
+      (let [arts (:live-artifacts @init)]
+        (is (= 3 (count arts)))
+        ;; oldest dropped first → newest three ids survive, in order
+        (is (= ["console:3" "console:4" "console:5"] (mapv :id arts)))))))
+
+(deftest console-activity-preserves-other-origins-test
+  (testing "trimming console entries leaves system/llm artifacts untouched"
+    (let [init (atom {:live-artifacts
+                      [{:id "ref:/x/CLAUDE.md" :name "CLAUDE.md"
+                        :origin :system :pinned? true :source :file}]})
+          ag   (mock-agent init (atom {}))]
+      (dotimes [n 4]
+        (art/record-console-activity!
+         ag {:cmd ":list-tools" :result {:n n} :max-entries 2}))
+      (let [arts (:live-artifacts @init)]
+        (is (= "ref:/x/CLAUDE.md" (:id (first arts))))
+        (is (= 2 (count (filter #(= :console (:origin %)) arts))))))))
+
+(deftest console-activity-listable-and-removable-test
+  (testing "console artifacts surface in artifact$list and are LLM-removable"
+    (let [init (atom {})
+          ag   (mock-agent init (atom {}))]
+      (binding [proto/*current-agent* ag]
+        (art/record-console-activity! ag {:cmd ":llm$models" :result {:count 3}})
+        (let [e (first (:artifacts (art/artifact$list)))]
+          (is (= "console" (:origin e)))
+          (is (= "console:1" (:id e))))
+        ;; not a system artifact → removable without :force
+        (is (nil? (:error (art/artifact$remove :id "console:1"))))
+        (is (= [] (:live-artifacts @init)))))))
+
+(deftest console-activity-nil-agent-test
+  (testing "no agent / no store → nil, never throws"
+    (is (nil? (art/record-console-activity! nil {:cmd ":x" :result 1})))
+    (is (nil? (art/record-console-activity!
+               (mock-agent nil (atom {})) {:cmd ":x" :result 1})))))
+
 (deftest artifact-tools-require-running-agent-test
   (testing "tools error cleanly when no agent is bound"
     (binding [proto/*current-agent* nil]

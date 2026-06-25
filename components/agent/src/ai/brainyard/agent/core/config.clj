@@ -72,6 +72,14 @@
    ;; Per-artifact truncation cap (chars) for the Live Artifacts renderer when a
    ;; descriptor does not declare its own :max-chars.
    :live-artifact-max-chars    {:type "integer" :default 4000}
+   ;; Console activity: record each colon-command (TUI `:tool …`) interaction as
+   ;; an inline live-artifact (origin :console) so the next turn's ## Live
+   ;; Artifacts shows what the user just inspected — a signal of intent. Capped
+   ;; to the newest N console entries; budget eviction drops them oldest-first
+   ;; (unpinned). See agent.common.artifacts/record-console-activity!.
+   :enable-console-activity       {:type "boolean" :default true}
+   :console-activity-max-entries  {:type "integer" :default 10}
+   :console-activity-result-chars {:type "integer" :default 200}
    ;; Usage-guide topics permanently inlined into the agent's tool-context every
    ;; turn (and pre-marked so usage-nudge's first-use path skips them). Every
    ;; OTHER guide-backed family is surfaced just-in-time on first use instead.

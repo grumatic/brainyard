@@ -1942,6 +1942,24 @@
                    (assoc m k (agent/coerce-value v (get-in props [k :type]))))
                  {} kw-args))))
 
+(defn- record-console-activity!
+  "Record a finished colon-command interaction as a live artifact on the active
+   agent, so the next turn's ## Live Artifacts reflects what the user inspected.
+   No-op when there is no active agent or :enable-console-activity is off; never
+   throws into the dispatch path."
+  [active-agent tool-id args result ok?]
+  (when (and active-agent (agent/get-config active-agent :enable-console-activity))
+    (try
+      (agent/record-console-activity!
+       active-agent
+       {:cmd          (str ":" (name tool-id))
+        :args         args
+        :result       result
+        :ok?          ok?
+        :max-entries  (agent/get-config active-agent :console-activity-max-entries)
+        :result-chars (agent/get-config active-agent :console-activity-result-chars)})
+      (catch Exception _ nil))))
+
 (defn- handle-tool-invoke
   "Colon-command dispatch: parse args as Clojure kwargs
    (`:key value :key value ...`) against the tool's :input-schema, bind the
@@ -1983,9 +2001,11 @@
               result  (if active-agent
                         (agent/with-agent active-agent (invoke!))
                         (invoke!))]
-          (tui-session/emit! (with-out-str (clojure.pprint/pprint result))))
+          (tui-session/emit! (with-out-str (clojure.pprint/pprint result)))
+          (record-console-activity! active-agent tool-id args result true))
         (catch Exception e
-          (tui-session/emit! (ansi/failure (str "Error: " (.getMessage e)))))))))
+          (tui-session/emit! (ansi/failure (str "Error: " (.getMessage e))))
+          (record-console-activity! active-agent tool-id args (.getMessage e) false))))))
 
 (defn- handle-tool-dispatch
   "Generic dispatch for slash commands that match a registered tool.

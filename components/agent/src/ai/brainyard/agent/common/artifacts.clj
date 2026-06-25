@@ -126,6 +126,72 @@
           (do (upsert-into! a d)
               {:id (:id d) :name (:name d)}))))))
 
+;; ── console-command activity (recorded as live artifacts) ─────────────────
+
+(def ^:private default-console-max-entries
+  "Fallback cap on retained :origin :console artifacts when the caller passes no
+   :max-entries."
+  10)
+
+(def ^:private default-console-result-chars
+  "Fallback truncation cap (chars) for a console entry's result digest."
+  200)
+
+(defn- collapse-ws [s]
+  (-> (str s) (str/replace #"\s+" " ") str/trim))
+
+(defn- console-digest
+  "One inline body: the invoked command line, then a single-line result digest
+   (`→` on success, `✗` on error), whitespace-collapsed and capped at `cap`."
+  [label result ok? cap]
+  (let [tail (collapse-ws (if ok? (pr-str result) (str result)))
+        tail (if (> (count tail) cap) (str (subs tail 0 cap) "…") tail)]
+    (str label "\n" (if ok? "→ " "✗ ") tail)))
+
+(defn record-console-activity!
+  "Record a colon-command interaction (TUI `:tool …`) as an inline live-artifact
+   (`:origin :console`) in `agent`'s cross-turn st-memory-init, so the next
+   turn's `## Live Artifacts` shows what the user just inspected — a signal of
+   intent. Append-only with a per-id monotonic seq, trimmed to the newest
+   `:max-entries` console artifacts (non-console artifacts are left untouched);
+   budget eviction later drops them oldest-first since they are unpinned.
+   Skips a write identical to the most-recent console entry (re-run dedupe).
+   Returns the descriptor, the keyword `:duplicate`, or nil when there is no
+   agent / store. Never relies on `*current-agent*`.
+
+   opts: {:cmd \":list-tools\" :args \"pattern=memory\" :result <any> :ok? bool
+          :max-entries int :result-chars int}"
+  [agent {:keys [cmd args result ok? max-entries result-chars]
+          :or {ok? true}}]
+  (when-let [a (some-> agent proto/get-st-memory-init)]
+    (let [max-entries  (or max-entries default-console-max-entries)
+          result-chars (or result-chars default-console-result-chars)
+          label   (collapse-ws (str cmd (when-not (str/blank? (str args))
+                                          (str " " args))))
+          content (console-digest label result ok? result-chars)
+          last-c  (->> (:live-artifacts @a) (filter #(= :console (:origin %))) last)]
+      (if (= (:content last-c) content)
+        :duplicate
+        (let [seq-n (:console-activity-seq
+                     (swap! a update :console-activity-seq (fnil inc 0)))
+              descriptor {:id      (str "console:" seq-n)
+                          :name    (if (> (count label) 80)
+                                     (str (subs label 0 80) "…") label)
+                          :source  :inline
+                          :content content
+                          :origin  :console
+                          :pinned? false}]
+          (upsert-into! a descriptor)
+          ;; Trim to the newest max-entries console artifacts; leave other
+          ;; origins (system/llm) in place and in order.
+          (swap! a update :live-artifacts
+                 (fn [arts]
+                   (let [arts     (vec (or arts []))
+                         consoles (filterv #(= :console (:origin %)) arts)
+                         drop-ids (set (map :id (drop-last max-entries consoles)))]
+                     (filterv #(not (contains? drop-ids (:id %))) arts))))
+          descriptor)))))
+
 ;; ── tools ─────────────────────────────────────────────────────────────────
 
 (defcommand artifact$add

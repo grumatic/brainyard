@@ -266,7 +266,8 @@
 ;; ============================================================================
 
 (export-symbols ai.brainyard.agent.common.artifacts
-                add-artifact!)
+                add-artifact!
+                record-console-activity!)
 
 ;; ============================================================================
 ;; Log
