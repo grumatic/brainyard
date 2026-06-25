@@ -152,8 +152,13 @@
                                 :question (str text)
                                 :agent-session {:user-id user-id :session-id session-id}
                                 :auto-close? true)
-          out (tool/resolve-agent-ref raw)]
-      (cond (map? out)    (or (:answer out) (pr-str out))
+          ;; Block for the real answer — a remote user can't poll a background
+          ;; task, so the 30s `running-in-background` fallback must not surface.
+          out (tool/resolve-agent-ref-blocking raw)]
+      (cond (map? out)    (or (:answer out)
+                              (some->> (or (:error-message out) (:error out))
+                                       (str "⚠ "))
+                              (pr-str out))
             (string? out) out
             :else         (pr-str out)))
     (catch Exception e

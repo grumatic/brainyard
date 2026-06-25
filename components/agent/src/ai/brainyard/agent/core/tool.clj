@@ -963,6 +963,30 @@
         (or output {:error-message "Agent returned nil output"})))
     result))
 
+(def ^:const agent-ref-blocking-timeout-ms
+  "Timeout for blocking agent-ref resolution by callers that cannot poll a
+   background task (e.g. the messaging gateway). Generous so real answers are
+   delivered rather than the `running-in-background` marker."
+  300000)
+
+(defn resolve-agent-ref-blocking
+  "Like `resolve-agent-ref`, but for callers that cannot poll a background task
+   (e.g. the messaging gateway): block until the agent ref produces its real
+   output, up to `timeout-ms` (default `agent-ref-blocking-timeout-ms`), instead
+   of returning the LLM-oriented `running-in-background` fallback marker after
+   30s. Non-agent results pass through unchanged."
+  ([result] (resolve-agent-ref-blocking result agent-ref-blocking-timeout-ms))
+  ([result timeout-ms]
+   (if (instance? clojure.lang.Agent result)
+     (let [sentinel (Object.)
+           output (deref (future (await result) (:output @result))
+                         timeout-ms
+                         sentinel)]
+       (if (identical? output sentinel)
+         {:error-message (str "Agent timed out (" (quot timeout-ms 1000) "s)")}
+         (or output {:error-message "Agent returned nil output"})))
+     result)))
+
 ;; ============================================================================
 ;; Deferred-Tasking Tool Dispatch
 ;; ============================================================================
