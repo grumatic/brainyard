@@ -1547,6 +1547,10 @@
         ;; ✓/✗ per-server emits land in the live loop below as connects settle.
         (when-let [s (format-mcp-summary (:mcp-summary @tui-session/!tui-state))]
           (layout/write-output! (str s "\n")))
+        ;; CR-MEM-21: embed-model-change notice (semantic recall paused until
+        ;; `memory$reembed`) — under the banner, both inline and fullscreen.
+        (when-let [notice (agent/graph-vec-stale-notice ag)]
+          (layout/write-output! (str notice "\n")))
         (when fullscreen-ok?
           (layout/draw-separator!)
           (layout/draw-bottom-separator!)
