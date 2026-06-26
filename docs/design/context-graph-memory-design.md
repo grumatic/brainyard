@@ -365,6 +365,66 @@ one.
 
 ---
 
+## 5b. As-built: embedding providers & the model-change lifecycle
+
+Two operational concerns surfaced once Phase 1 shipped — neither was in the
+original proposal but both are now load-bearing.
+
+### Choosing an embedding model
+
+The store is embedding-provider-agnostic: it takes an injected `embed-fn` (the
+agent builds it from `:graph-embed-model`). Three ways to supply one:
+
+1. **`static` — self-contained, in-binary (the default-worth-shipping).** A
+   pure-JVM **Model2Vec** static embedder (`embed_static.clj`): a `token→vector`
+   lookup table + mean-pool, *no transformer inference*, so no server, no JNI, no
+   native-image risk — the opposite of bundling ONNX/llama.cpp. Bundled model is
+   `potion-base-8M` (256-dim) via `bb model2vec:fetch`. Reproduces the reference
+   `model2vec` vectors exactly; related technical phrases score ~0.5–0.7, unrelated
+   ~0. Best fit for brainyard's single-binary, local-first, per-user `.db` model:
+   private (memory never leaves the machine), zero-config, ~13ms/embed.
+2. **An OpenAI-compatible `/embeddings` endpoint** — any `provider/model` LM
+   string routed through `clj-llm/create-embeddings` (a literal `POST
+   {base-url}/embeddings`). Verified: `ollama/nomic-embed-text` (768-dim, local
+   server) and `openai/text-embedding-3-small` (1536-dim). Higher quality than
+   static, at the cost of a server / network and (for hosted) sending memory
+   content off-box. **Capability caveat:** Anthropic has no embeddings API and
+   Bedrock's is a different shape — chat models there work for *extraction* but
+   **not** embeddings; use `static`, Ollama, or OpenAI for `:graph-embed-model`.
+3. **None** — leave it unset. Graph storage + relational recall (Phases 0/2/3/4)
+   still work; only the `:vec` semantic-similarity signal is absent.
+
+Resolution detail: graph models are resolved with explicit `create-lm` (split on
+the first `/`), **not** `parse-lm-str` — the latter rejects models absent from
+the curated catalog, which embedding models almost always are.
+
+### Changing the model: detect → pause → guide → rebuild
+
+`graph_vec` vectors are only comparable when produced by one embedder. A
+*different dimension* breaks inserts; worse, a *same-dim different model* (e.g.
+nomic-768 → bge-768) silently produces incompatible vectors that poison kNN
+rankings with no error. So the store fingerprints the embedder that built the
+index (`<model-id>|<dims>` in `memory_metadata`) and reconciles it on open:
+
+- **Detect** by model *identity*, not dimension (to catch the silent same-dim
+  case). On a mismatch over a populated index → **stale**.
+- **Safe-disable** (the critical safety property): `vec-search` returns `[]` and
+  L3 writes skip embedding, so recall transparently falls back to FTS and no
+  new-model vectors pollute the old-model space. Never a silently-wrong ranking.
+- **Guide**: a one-line startup banner (both inline and fullscreen) and a
+  `memory$status :vec-index {:stale? :model :built-with :indexed :notice}` flag.
+- **Rebuild**: `memory$reembed` recreates `graph_vec` at the new dim, re-embeds
+  all L3 facts + node summaries, re-stamps the fingerprint, and resumes recall.
+
+The policy is **guided/manual** by design — a model swap *pauses* semantic recall
+with an actionable one-liner and a one-command fix, rather than auto-spending a
+batch of embedding calls behind the user's back. Mechanism: `graph/reconcile-vec-model!`
++ `reembed!`, `unified_store` `!vec-stale` guard, `interface/graph-vec-status` /
+`graph-vec-stale-notice` / `reembed-graph-vec!`, surfaced via `memory$status` /
+`memory$reembed` and the TUI banner.
+
+---
+
 ## 6. Risks & tradeoffs
 
 - **Extraction quality/cost.** Bad triplets poison recall. Mitigate with

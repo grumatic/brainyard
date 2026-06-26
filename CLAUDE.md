@@ -56,6 +56,31 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   the cwd subtree, `$TMPDIR`/`/tmp`. The `--sandbox` launcher sets
   **`BY_SANDBOX_CHILD=1`** on the re-exec'd child as the re-entrancy guard.
   Mutually exclusive with `--web` in v1; macOS-only. See `docs/sandboxing.md`.
+- **`BY_ENABLE_GRAPH_MEMORY`** — opt into the **context-graph memory** overlay
+  (`:enable-graph-memory`, default **false**): a typed entity/relationship graph
+  + vector index layered over the L1/L2/L3 FTS store as extra recall signals.
+  Off by default and non-regressing (empty graph ⇒ recall == pure FTS). Design:
+  `docs/design/context-graph-memory-design.md`; impl in `components/memory`
+  (CR-MEM-20..24). The remaining graph knobs only take effect when this is on:
+  - **`BY_GRAPH_EMBED_MODEL`** — the semantic-similarity embedder
+    (`:graph-embed-model`). Two forms: **`static`** = the self-contained,
+    in-binary **Model2Vec** embedder (`potion-base-8M`, 256-dim, pure-JVM, no
+    server) bundled by `bb model2vec:fetch`; or a **`provider/model`** LM string
+    routed through clj-llm's OpenAI-compatible `/embeddings` (e.g.
+    `ollama/nomic-embed-text` (768-dim, local), `openai/text-embedding-3-small`).
+    **Unset ⇒ no vector signal** (graph + relational recall still work). Note:
+    Bedrock/Anthropic chat models can't embed — use `static`, Ollama, or OpenAI.
+  - **`BY_GRAPH_EXTRACT_MODEL`** — chat LM (`provider/model`, e.g.
+    `bedrock/amazon.nova-lite-v1:0`) that extracts entities/relationships from
+    episodes and writes community summaries. **Unset ⇒ graph stays storage-only**
+    (manual edge API; no self-population).
+  - **`BY_GRAPH_EMBED_DIMS`** — `graph_vec` vector dimension (default 768). Must
+    match the embed model's output; `static` auto-drives it to 256. Changing the
+    embed model fingerprint-mismatches the index, which **pauses** vector recall
+    (a startup banner + `memory$status` flag it) until `memory$reembed` rebuilds.
+  - **`BY_SQLITE_VEC_PATH`** / **`BY_MODEL2VEC_PATH`** — override the locations of
+    the bundled `sqlite-vec` extension / Model2Vec model (else the native-image
+    resources fetched by `bb sqlite-vec:fetch` / `bb model2vec:fetch` are used).
 - **`BY_SANDBOX_INTEROP`** — seeds the `:sandbox-interop` config default
   (`restricted` | `full` | `auto`) controlling Java interop in the **in-process
   SCI code-eval sandbox** (distinct from `--sandbox`, which is the OS seatbelt).
@@ -158,6 +183,29 @@ BY_JAR=1 projects/agent-tui-app/target/by ask …
 
 ## Design decisions
 
+### Context-graph memory is an overlay, not a replacement (CR-MEM-20..24)
+
+The graph (`components/memory`: `graph_nodes`/`graph_edges`/`graph_vec` +
+`graph_communities`) is layered **over** the existing L1/L2/L3 FTS store as extra
+RRF recall signals — semantic-similarity (`:vec`) and relational/multi-hop
+(`:graph`) — never a replacement. Off by default (`BY_ENABLE_GRAPH_MEMORY`), it
+**degrades gracefully**: no embedder ⇒ no `:vec`; empty graph ⇒ recall is
+byte-identical to pure FTS; no extract model ⇒ storage-only. Self-population
+runs off the capture sidecar (LLM extraction). Community summaries replace the
+heuristic L2→L3 reducer (**closes CR-MEM-07**). Two decisions worth knowing:
+
+- **Embeddings can be fully self-contained.** The default `BY_GRAPH_EMBED_MODEL
+  "static"` is a pure-JVM **Model2Vec** embedder bundled into the binary (no
+  server, no JNI, no native-image risk — unlike a real transformer runtime).
+  Power users point it at Ollama/OpenAI instead. See the embedding-model
+  discussion in `docs/design/context-graph-memory-design.md`.
+- **Changing the embed model pauses, never corrupts.** `graph_vec` vectors are
+  only comparable within one model (a same-dim model swap silently poisons kNN).
+  The store fingerprints the embedder; on a mismatch it **safe-disables** vector
+  recall (FTS fallback, no mixed-space writes), surfaces a startup banner +
+  `memory$status` flag, and waits for the user to run `memory$reembed`. Guided,
+  not automatic — no surprise embedding cost, no silent wrong rankings.
+
 ### Task output files are GC-reclaimed, not deleted on task removal
 
 Each task gets a project-scoped dir `<project>/.brainyard/tasks/<task-id>/`
@@ -184,3 +232,5 @@ note in `components/agent/src/ai/brainyard/agent/task/persist.clj`.
 ## bb task naming convention
 
 Tasks for the shipping project end in `:ata` (agent-tui-app): `compile:ata`, `uberjar:ata`, `native:ata`, `build:ata`, `install:ata`, `version:ata`, `check:ata` (native-image config drift gate), `size:ata`, `repl:ata`, `tracing:ata`, `docker:ata`. Workspace-wide tasks (`test`, `poly`) have no suffix.
+
+Resource-fetch tasks (CR-MEM-21, context-graph memory) download sha-pinned, gitignored binaries into `components/memory/resources/` and are run by `build:ata` before `uberjar:ata` so they get bundled into the native image: `sqlite-vec:fetch` (the `vec0` extension, per-platform) and `model2vec:fetch` (the bundled `potion-base-8M` static embedding model). They are noun-scoped (not `:ata`) because they populate a component's resources, not the project's build outputs.

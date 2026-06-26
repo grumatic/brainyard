@@ -132,6 +132,22 @@ behavior. Numbering starts at CR-MEM-20 because 11–14 are taken by §3.
 | CR-MEM-24 | Community detection (deterministic label propagation) + summaries MUST cluster the entity graph and consolidate each cluster into a `graph_communities` row + an L3 `:summary` fact — superseding the heuristic L2→L3 reducer (closes CR-MEM-07). Routed via `consolidate-layer :reducer :community`; LLM `summarize-fn` optional (templated fallback). | Implemented (Phase 4) | `memory/core/community.clj`, `sqlite.clj` (`graph_communities` + `community_id`), `unified_store.clj` (reducer route), `interface.clj` (`consolidate-graph!`) |
 | CR-MEM-25 | A pluggable neo4j `GraphStore` backend MAY be selectable via config for hosted/team mode. | Proposed (optional) | — |
 
+**CR-MEM-21 (as-built) — embedders & model-change safety.** The `embed-fn` has
+two providers: a self-contained in-binary **Model2Vec** static embedder
+(`:graph-embed-model "static"`, pure-JVM, bundled by `bb model2vec:fetch`) and
+any OpenAI-compatible `/embeddings` endpoint (`ollama/…`, `openai/…`). Because
+`graph_vec` vectors are only comparable within one embedder, the store
+fingerprints the model (`<id>|<dims>` in `memory_metadata`) and, on a change over
+a populated index, MUST **safe-disable** vector recall (FTS fallback, no
+mixed-space writes) rather than serve corrupted rankings — surfaced via a startup
+banner + `memory$status :vec-index`, rebuilt on demand by `memory$reembed`. See
+[docs/design/context-graph-memory-design.md §5b](../design/context-graph-memory-design.md).
+
+**Design doc:** the canonical reference for §4 (motivation, backend choice,
+schema, extraction, retrieval, embedding providers, model-change lifecycle, and
+the phased plan) is
+[docs/design/context-graph-memory-design.md](../design/context-graph-memory-design.md).
+
 ---
 
 ## Gaps & candidate TODOs (this spec)
