@@ -112,11 +112,33 @@ knob (default true) — there is no separate auto-compaction flag.
 
 ---
 
+## 4. Context graph (overlay)
+
+A relational overlay on the long-term store (§2): typed entities and
+bi-temporal, typed relationships connecting concepts mentioned across L2/L3
+rows. The graph is **not** a fourth storage layer — it is additional
+retrieval signals fused into the existing RRF. Design:
+[docs/design/context-graph-memory-design.md](../design/context-graph-memory-design.md).
+Phases ship independently and are non-regressing: an empty graph (the default,
+`:enable-graph-memory false`) leaves recall identical to today's pure-FTS
+behavior. Numbering starts at CR-MEM-20 because 11–14 are taken by §3.
+
+| ID | Contract | Status | Source |
+|---|---|---|---|
+| CR-MEM-20 | The store MAY expose a `GraphStore` protocol — `upsert-node`/`find-node` (entity resolution by name+alias), `upsert-edge`/`invalidate-edge` (bi-temporal `t_valid`/`t_invalid` supersession), `neighbors`/`expand` (bounded ≤3-hop traversal over valid edges), `as-of` (historical) — backed by `graph_nodes`/`graph_edges` SQLite tables (schema 2.1.0), gated by `:enable-graph-memory` (default **false**). | Implemented (Phase 0) | `memory/interface/protocol.clj` (`GraphStore`), `memory/core/graph.clj`, `sqlite.clj` (`graph-schema`), `unified_store.clj` |
+| CR-MEM-21 | A `sqlite-vec` `graph_vec` index + a `read-vec` recall producer (embeddings via `clj-llm/create-embeddings`, no-op when no provider) MUST add semantic-similarity candidates to the RRF. | Proposed | — |
+| CR-MEM-22 | An async, batched, budget-bounded LLM extraction sidecar off the capture pipeline MUST populate nodes/edges (entity + relationship extraction, resolution, bi-temporal invalidation). | Proposed | — |
+| CR-MEM-23 | A `read-graph` producer MUST expand 1–2 hops from top FTS/vec seeds into the RRF, and `render-briefing` MUST gain a "## Related" section. | Proposed | — |
+| CR-MEM-24 | Community detection + summaries MUST replace the heuristic L2→L3 reducer (closing CR-MEM-07). | Proposed | — |
+| CR-MEM-25 | A pluggable neo4j `GraphStore` backend MAY be selectable via config for hosted/team mode. | Proposed (optional) | — |
+
+---
+
 ## Gaps & candidate TODOs (this spec)
 
 - **CR-MEM-07 — LLM L2→L3 reducer unimplemented.** Only the heuristic
   reducer runs; `:reducer :llm` returns a not-implemented marker.
-  *(Medium.)*
+  Planned closure via CR-MEM-24 (community summaries). *(Medium.)*
 - **`get-stats` drift — `:working-memory-keys` promised, not returned.**
   *(Doc-only or trivial.)*
 

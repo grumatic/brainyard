@@ -19,6 +19,7 @@
             [ai.brainyard.memory.core.episodic :as episodic]
             [ai.brainyard.memory.core.semantic :as semantic]
             [ai.brainyard.memory.core.capture.reducer :as capture-reducer]
+            [ai.brainyard.memory.core.graph :as graph]
             [ai.brainyard.mulog.interface :as mulog]
             [next.jdbc :as jdbc]))
 
@@ -263,7 +264,18 @@
          :produced 0 :consumed 0 :auto-kept 0 :batches []}
 
         (throw (ex-info "UnifiedStore/consolidate-layer: unknown from-layer"
-                        {:from-layer from-layer' :policy policy}))))))
+                        {:from-layer from-layer' :policy policy})))))
+
+  proto/GraphStore
+  ;; The context-graph overlay (CR-MEM-20) shares the store's :ds + :user-id.
+  ;; All logic lives in core.graph; these methods are thin delegations.
+  (upsert-node     [_ node]              (graph/upsert-node ds user-id node))
+  (find-node       [_ node-type name]    (graph/find-node ds user-id node-type name))
+  (upsert-edge     [_ edge]              (graph/upsert-edge ds user-id edge))
+  (invalidate-edge [_ edge-id t-invalid] (graph/invalidate-edge ds user-id edge-id t-invalid))
+  (neighbors       [_ node-id opts]      (graph/neighbors ds user-id node-id opts))
+  (expand          [_ seed-ids opts]     (graph/expand ds user-id seed-ids opts))
+  (as-of           [_ node-id ts opts]   (graph/as-of ds user-id node-id ts opts)))
 
 ;; =====================================================
 ;; Factory

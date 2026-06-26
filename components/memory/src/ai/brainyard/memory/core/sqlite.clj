@@ -210,6 +210,55 @@
    "CREATE INDEX IF NOT EXISTS idx_semantic_keep ON semantic_facts(user_id, keep_flag, archived_flag)"
    "CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_entry_id ON semantic_facts(user_id, entry_id) WHERE entry_id IS NOT NULL"])
 
+(def ^:private graph-schema
+  "Schema for the context-graph overlay (CR-MEM-20).
+
+  Typed entities (`graph_nodes`) and bi-temporal, typed relationships
+  (`graph_edges`) connecting concepts mentioned across L2/L3 rows. Not a
+  storage layer — two extra retrieval signals fused into RRF (recall_v2).
+
+  Bi-temporal columns (Graphiti model):
+    t_valid    — when the fact became true (event time)
+    t_invalid  — when superseded/false (NULL = still valid)
+    ingested_at — when observed
+  Supersession sets `t_invalid` on the old edge; it never deletes.
+
+  `source_entry_ids` reuses the cross-layer `entry_id`, so the graph and
+  the FTS store reference the same rows — provenance stays bidirectional
+  with no data duplication. The `graph_vec` vector index (sqlite-vec) is
+  deferred to CR-MEM-21 and added separately."
+  ["CREATE TABLE IF NOT EXISTS graph_nodes (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     user_id TEXT NOT NULL,
+     node_type TEXT NOT NULL,
+     name TEXT NOT NULL,
+     summary TEXT,
+     aliases TEXT,
+     metadata TEXT,
+     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+     UNIQUE(user_id, node_type, name)
+   )"
+
+   "CREATE TABLE IF NOT EXISTS graph_edges (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     user_id TEXT NOT NULL,
+     src_id INTEGER NOT NULL REFERENCES graph_nodes(id),
+     dst_id INTEGER NOT NULL REFERENCES graph_nodes(id),
+     relation TEXT NOT NULL,
+     fact TEXT,
+     confidence REAL DEFAULT 0.85,
+     t_valid DATETIME DEFAULT CURRENT_TIMESTAMP,
+     t_invalid DATETIME,
+     ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+     source_entry_ids TEXT,
+     UNIQUE(user_id, src_id, dst_id, relation, t_valid)
+   )"
+
+   "CREATE INDEX IF NOT EXISTS idx_graph_nodes_user ON graph_nodes(user_id, node_type, name)"
+   "CREATE INDEX IF NOT EXISTS idx_edges_src ON graph_edges(user_id, src_id) WHERE t_invalid IS NULL"
+   "CREATE INDEX IF NOT EXISTS idx_edges_dst ON graph_edges(user_id, dst_id) WHERE t_invalid IS NULL"])
+
 (def ^:private metadata-schema
   "Schema for memory system metadata"
   ["CREATE TABLE IF NOT EXISTS memory_metadata (
@@ -275,17 +324,21 @@
   (let [all-schemas (concat metadata-schema
                             episodic-schema
                             semantic-schema
-                            audit-schema)]
+                            audit-schema
+                            graph-schema)]
     (doseq [stmt all-schemas]
       (execute-ddl! ds stmt))
 
-    ;; Store schema version. 2.0.0 introduces unified-memory columns
+    ;; Store schema version. 2.0.0 introduced unified-memory columns
     ;; (tags, sources, entry_id, keep_flag, archived_flag, tombstoned_flag)
-    ;; on episodes and semantic_facts. Unpublished prior to this — no migration.
+    ;; on episodes and semantic_facts. 2.1.0 adds the context-graph overlay
+    ;; (graph_nodes, graph_edges — CR-MEM-20). All DDL is IF NOT EXISTS, so
+    ;; existing 2.0.0 databases gain the graph tables transparently on open;
+    ;; no data migration is required.
     (try
       (jdbc/execute! ds
                      ["INSERT OR REPLACE INTO memory_metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)"
-                      "schema_version" "2.0.0"])
+                      "schema_version" "2.1.0"])
       (catch Exception e
         (mulog/warn ::schema-version-store-failed :error (ex-message e)))))
 

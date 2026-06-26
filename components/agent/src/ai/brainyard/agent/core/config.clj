@@ -252,6 +252,17 @@
    ;; :agent.ask/post, :agent.tool-use/post, :agent.code-eval/post, :agent/exception hooks
    ;; and feeds events through the S1 parser into L2.
    :enable-memory-capture      {:type "boolean" :default true}
+   ;; Context-graph memory overlay (CR-MEM-20, docs/design/context-graph-memory-design.md).
+   ;; When true, the per-user memory DB maintains a typed entity/relationship
+   ;; graph (graph_nodes/graph_edges) as a fourth retrieval signal fused into
+   ;; recall's RRF. Phase 0 ships storage + the manual edge API only; LLM
+   ;; extraction (CR-MEM-22) and vector kNN (CR-MEM-21) land behind this same
+   ;; flag in later phases. Off by default — opt-in and non-regressing: an
+   ;; empty graph leaves recall identical to today's pure-FTS behavior.
+   :enable-graph-memory        {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_GRAPH_MEMORY")]
+                                           (= "true" v) ::env-unset)
+                                :default false}
    ;; Memory-agent end-of-turn essence capture — when true, registers
    ;; a :agent.ask/post hook that fire-and-forget calls memory-agent
    ;; with :op :essence after each turn finishes. The LLM extracts

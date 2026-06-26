@@ -171,8 +171,107 @@
      retention sweep (so the L3 fact's `:sources` chain stays valid)."))
 
 ;; =====================================================
+;; Context Graph Store Protocol (CR-MEM-20)
+;; =====================================================
+;;
+;; A relational *overlay* on the per-user memory database: typed entities
+;; (`graph_nodes`) and bi-temporal, typed relationships (`graph_edges`)
+;; connecting concepts mentioned across L2 episodes and L3 facts. The graph
+;; is NOT a fourth storage layer — it is two extra retrieval signals fused
+;; into the existing RRF (see recall_v2). Edges link back to the L2/L3 rows
+;; they were extracted from via `:source-entry-ids`, so provenance becomes
+;; bidirectional with no data duplication.
+;;
+;; Bi-temporal model (Graphiti): every edge carries `:t-valid` (when the
+;; fact became true) and `:t-invalid` (when superseded; nil = still valid).
+;; Supersession invalidates, never deletes — historical state stays queryable.
+;;
+;; Phase 0 (CR-MEM-20) ships the storage + manual edge API only: no LLM
+;; extraction (CR-MEM-22) and no vector index (CR-MEM-21) yet. The graph is
+;; opt-in (`:enable-graph-memory`, default false); when empty, recall falls
+;; back to today's pure-FTS behavior with identical results.
+
+(def node-types
+  "Curated entity kinds. Open to growth, but start small (the agent/dev
+  domain) to keep extraction predictable."
+  #{:entity :concept :component :person :file :config-key})
+
+(def relations
+  "Curated relation vocabulary. Small and predictable; grow deliberately."
+  #{:depends_on :configures :supersedes :part_of :prefers :mentions})
+
+(defprotocol GraphStore
+  "Context-graph overlay over the per-user memory database (CR-MEM-20).
+
+  Implementations operate on the same `:ds` + `:user-id` as the
+  IMemoryStore. All reads default to *valid* edges (`t_invalid IS NULL`);
+  pass an as-of timestamp to query historical state. Every method is safe
+  to call on an empty graph (returns nil/empty)."
+
+  (upsert-node [this node]
+    "Insert or merge a node, resolved by (user-id, node-type, name).
+     `node` keys:
+       :node-type  — one of `node-types` (keyword or string)
+       :name       — canonical name, e.g. \"BY_SANDBOX_INTEROP\"  (required)
+       :summary    — optional rolling description (merged on conflict)
+       :aliases    — optional collection of surface forms (union on conflict)
+       :metadata   — optional map (stored as JSON)
+     Returns the persisted node map with :id.")
+
+  (find-node [this node-type name]
+    "Resolve a node by exact (node-type, name) or by alias match. A nil
+     `node-type` searches across all types. Returns the node map or nil.")
+
+  (upsert-edge [this edge]
+    "Insert a typed, temporally-scoped edge `(src)-[relation]->(dst)`.
+     `edge` keys:
+       :src-id :dst-id    — graph_nodes ids (required)
+       :relation          — one of `relations` (required)
+       :fact              — natural-language statement of the edge
+       :confidence        — 0.0..1.0 (default 0.85)
+       :t-valid           — when the fact became true (default: now)
+       :source-entry-ids  — collection of L2/L3 entry_ids (provenance)
+     Idempotent on (user-id, src, dst, relation, t-valid). Returns the
+     persisted edge with :id.")
+
+  (invalidate-edge [this edge-id t-invalid]
+    "Set `t_invalid` on an edge (bi-temporal supersession). `t-invalid`
+     nil defaults to now. Returns true when a row was affected.")
+
+  (neighbors [this node-id opts]
+    "1-hop neighbors of `node-id` over valid edges. opts:
+       :direction — :out | :in | :both (default :both)
+       :relation  — restrict to one relation (optional)
+       :limit     — cap (default 50)
+     Returns a vector of {:edge <edge-map> :node <neighbor-node-map>}.")
+
+  (expand [this seed-ids opts]
+    "Bounded multi-hop expansion from `seed-ids` over valid edges. opts:
+       :max-hops  — traversal depth (default 2, clamped to <= 3)
+       :direction — :out | :in | :both (default :both)
+       :limit     — cap on reached nodes (default 50)
+     Returns a vector of {:node <node-map> :depth <int>} for nodes
+     reachable within `:max-hops` (excludes the seeds themselves),
+     each at its minimum depth.")
+
+  (as-of [this node-id timestamp opts]
+    "Like `neighbors`, but returns edges that were valid at `timestamp`
+     (`t_valid <= ts AND (t_invalid IS NULL OR t_invalid > ts)`). Used by
+     audit/`explain` to reconstruct \"what did we believe then.\""))
+
+;; =====================================================
 ;; Helper Functions
 ;; =====================================================
+
+(defn valid-node-type?
+  "Check if a value is a valid graph node type."
+  [t]
+  (contains? node-types (keyword t)))
+
+(defn valid-relation?
+  "Check if a value is a valid graph relation."
+  [r]
+  (contains? relations (keyword r)))
 
 (defn valid-episode-type?
   "Check if a type is a valid episode type."
