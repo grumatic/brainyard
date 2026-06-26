@@ -29,7 +29,11 @@ trap on_term TERM INT
 # Supervise: restart the launcher whenever it exits, with a 1s backoff so a
 # fast-failing launch can't busy-loop.
 while :; do
-  by --web-tmux "$@" &
+  # --resume-latest is a FLAG (not BY_RESUME_LATEST env): web-child-argv forwards
+  # it to the child `by run` so the TUI reattaches to the newest persisted session
+  # (restored from the /workspace volume; fresh on first boot). Scoping it to this
+  # launch keeps it out of every other `by` invocation in the container.
+  by --web-tmux --resume-latest "$@" &
   child=$!
   wait "$child"
   status=$?

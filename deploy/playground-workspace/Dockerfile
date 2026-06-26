@@ -169,10 +169,12 @@ RUN cd /tmp && clj-nrepl-eval --discover-ports >/dev/null 2>&1 || true
 # `--web-tmux` FLAG in the ENTRYPOINT instead (flags aren't forwarded to the
 # child by web-child-argv), so the child sees neither flag nor env and runs the
 # TUI. BY_WEB_BIND/PORT/SELF are safe as env — alone they don't trigger sharing.
-# BY_RESUME_LATEST: UNLIKE BY_WEB_TMUX above, we WANT this inherited by the child
-# `by run` — it makes the TUI reattach to the newest persisted session (restored
-# from the /workspace volume on resume), falling back to a fresh session on first
-# boot. The web-tmux re-entrancy concern doesn't apply (it's not a --web* flag).
+# Resume-latest is NOT an env var here: BY_RESUME_LATEST would be inherited by
+# EVERY `by` in the container (the `by config --auto` bootstrap, plus any `by`
+# the tenant/agent runs by hand), silently making them all reattach to the newest
+# session. Instead the ENTRYPOINT passes the `--resume-latest` FLAG to the
+# supervised `by --web-tmux`; web-child-argv forwards it to the child `by run`
+# (unlike `--web-tmux` itself), so only the launcher resumes — nothing else does.
 #
 # BY_USER_ID is a fallback only: the control plane's `start!` always passes
 # `-e BY_USER_ID=<session-id>` (per-session memory partitioning under
@@ -182,8 +184,7 @@ RUN cd /tmp && clj-nrepl-eval --discover-ports >/dev/null 2>&1 || true
 ENV BY_WEB_BIND=0.0.0.0 \
     BY_WEB_PORT=7681 \
     BY_WEB_SELF=by \
-    BY_USER_ID=playground \
-    BY_RESUME_LATEST=1
+    BY_USER_ID=playground
 
 EXPOSE 7681
 
