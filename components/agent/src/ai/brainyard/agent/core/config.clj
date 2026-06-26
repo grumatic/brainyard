@@ -263,6 +263,22 @@
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_GRAPH_MEMORY")]
                                            (= "true" v) ::env-unset)
                                 :default false}
+   ;; Models that power the context graph when :enable-graph-memory is on.
+   ;; Both default nil = graph stays STORAGE-ONLY (nodes/edges via the manual
+   ;; API only) — extraction (CR-MEM-22) and the vector index (CR-MEM-21)
+   ;; activate only when a model is set, since embeddings/extraction need a
+   ;; provider with the right capability (e.g. an embedding-capable endpoint —
+   ;; Anthropic has none; Bedrock needs a Titan embed model). Format is the
+   ;; usual "provider/model" LM string, e.g. "openai/text-embedding-3-small"
+   ;; or "bedrock/amazon.nova-lite-v1:0". Unresolvable models degrade to off.
+   :graph-embed-model          {:type "string"
+                                :env-fn #(if-some [v (System/getenv "BY_GRAPH_EMBED_MODEL")]
+                                           v ::env-unset)
+                                :default nil}
+   :graph-extract-model        {:type "string"
+                                :env-fn #(if-some [v (System/getenv "BY_GRAPH_EXTRACT_MODEL")]
+                                           v ::env-unset)
+                                :default nil}
    ;; Memory-agent end-of-turn essence capture — when true, registers
    ;; a :agent.ask/post hook that fire-and-forget calls memory-agent
    ;; with :op :essence after each turn finishes. The LLM extracts

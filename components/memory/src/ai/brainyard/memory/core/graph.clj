@@ -265,20 +265,30 @@
               ds ["SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_vec'"]))
     (catch Exception _ false)))
 
-(defn upsert-fact-embedding!
-  "Store (replace) the embedding for an L3 fact row in `graph_vec`. vec0 has
-  no UPDATE on auxiliary columns, so we delete-then-insert by ref. No-op
-  when the table is absent."
-  [ds row-id embedding]
+(defn upsert-embedding!
+  "Store (replace) the embedding for a `ref-kind` ('fact' | 'node') row in
+  `graph_vec`. vec0 has no UPDATE on auxiliary columns, so we delete-then-
+  insert by (kind, ref). No-op when the table is absent."
+  [ds ref-kind row-id embedding]
   (when (and row-id (seq embedding) (vec-available? ds))
     (try
-      (jdbc/execute! ds ["DELETE FROM graph_vec WHERE ref_kind = 'fact' AND ref_id = ?" row-id])
-      (jdbc/execute! ds ["INSERT INTO graph_vec(embedding, ref_kind, ref_id) VALUES (?, 'fact', ?)"
-                         (embed/->vec0-json embedding) row-id])
+      (jdbc/execute! ds ["DELETE FROM graph_vec WHERE ref_kind = ? AND ref_id = ?" ref-kind row-id])
+      (jdbc/execute! ds ["INSERT INTO graph_vec(embedding, ref_kind, ref_id) VALUES (?, ?, ?)"
+                         (embed/->vec0-json embedding) ref-kind row-id])
       true
       (catch Exception e
-        (mulog/warn ::vec-embedding-upsert-failed :row-id row-id :error (ex-message e))
+        (mulog/warn ::vec-embedding-upsert-failed :ref-kind ref-kind :row-id row-id :error (ex-message e))
         false))))
+
+(defn upsert-fact-embedding!
+  "Index an L3 fact row's embedding (ref_kind='fact')."
+  [ds row-id embedding]
+  (upsert-embedding! ds "fact" row-id embedding))
+
+(defn upsert-node-embedding!
+  "Index a graph node's summary embedding (ref_kind='node')."
+  [ds row-id embedding]
+  (upsert-embedding! ds "node" row-id embedding))
 
 (defn- vec-knn
   "kNN over graph_vec for a query embedding. Returns

@@ -27,10 +27,13 @@
   docs/architecture/memory.md."
   (:require [ai.brainyard.memory.core.manager :as manager]
             [ai.brainyard.memory.core.fts :as fts]
+            [ai.brainyard.memory.core.embed :as embed]
+            [ai.brainyard.memory.core.extract :as extract]
             [ai.brainyard.memory.core.unified-store :as us]
             [ai.brainyard.memory.core.l1-store :as l1]
             [ai.brainyard.memory.core.capture.dispatcher :as capture-dispatcher]
             [ai.brainyard.memory.core.capture.sidecar :as capture-sidecar]
+            [ai.brainyard.memory.core.capture.extractor :as capture-extractor]
             [ai.brainyard.memory.core.policy :as policy]
             [ai.brainyard.memory.core.audit :as audit]
             [ai.brainyard.mulog.interface :as mulog]
@@ -55,6 +58,24 @@
            MemoryManagerLifecycle."
   [user-id & {:as opts}]
   (apply manager/create-memory-manager user-id (mapcat identity opts)))
+
+;; =====================================================
+;; Context-graph providers (CR-MEM-21 / CR-MEM-22)
+;; =====================================================
+
+(defn make-embed-fn
+  "Build an `embed-fn` for the vector index (CR-MEM-21) over a clj-llm
+  lm-config. Returns nil when lm-config is nil. Pass the result as
+  `:embed-fn` to `create-memory-manager`."
+  [lm-config & {:as opts}]
+  (apply embed/make-embed-fn lm-config (mapcat identity opts)))
+
+(defn make-extract-fn
+  "Build an `extract-fn` for graph extraction (CR-MEM-22) over a clj-llm
+  lm-config. Returns nil when lm-config is nil. Pass the result as
+  `:extract-fn` to `create-memory-manager`."
+  [lm-config & {:as opts}]
+  (apply extract/make-extract-fn lm-config (mapcat identity opts)))
 
 ;; =====================================================
 ;; Recall (cross-layer)
@@ -245,20 +266,32 @@
     (throw (ex-info "start-capture! requires a memory manager" {})))
   (let [!cap (:!capture manager)]
     (or @!cap
-        (let [d  (apply capture-dispatcher/start! (mapcat identity opts))
-              s  (capture-sidecar/start! (:store manager) d)
-              h  {:dispatcher d :sidecar s :started-at (System/currentTimeMillis)}]
+        (let [d   (apply capture-dispatcher/start! (mapcat identity opts))
+              ;; CR-MEM-22: when the manager carries an extract-fn, run the
+              ;; graph-extraction sidecar and feed it persisted L2 entries
+              ;; via the sidecar's :on-write seam.
+              ex  (when-let [ef (:extract-fn manager)]
+                    (capture-extractor/start! (:store manager) ef))
+              s   (apply capture-sidecar/start! (:store manager) d
+                         (when ex [:on-write #(capture-extractor/enqueue! ex %)]))
+              h   {:dispatcher d :sidecar s :extractor ex
+                   :started-at (System/currentTimeMillis)}]
           (reset! !cap h)
-          (mulog/info ::capture-started :user-id (:user-id manager))
+          (mulog/info ::capture-started :user-id (:user-id manager)
+                      :graph-extraction (boolean ex))
           h))))
 
 (defn stop-capture!
-  "Stop the capture pipeline for `manager`. Idempotent."
+  "Stop the capture pipeline (and graph extractor, if running) for
+  `manager`. Idempotent."
   [manager]
-  (when-let [{:keys [dispatcher sidecar]} (some-> manager :!capture deref)]
+  (when-let [{:keys [dispatcher sidecar extractor]} (some-> manager :!capture deref)]
     (capture-sidecar/stop! sidecar)
     (capture-dispatcher/stop! dispatcher)
     (capture-sidecar/await-drain! sidecar 1000)
+    (when extractor
+      (capture-extractor/stop! extractor)
+      (capture-extractor/await-drain! extractor 1000))
     (reset! (:!capture manager) nil)
     (mulog/info ::capture-stopped :user-id (:user-id manager))
     nil))

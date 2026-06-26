@@ -27,13 +27,14 @@
             [ai.brainyard.memory.core.audit :as audit]
             [ai.brainyard.memory.core.unified-store :as us]
             [ai.brainyard.memory.core.capture.dispatcher :as capture-dispatcher]
-            [ai.brainyard.memory.core.capture.sidecar :as capture-sidecar]))
+            [ai.brainyard.memory.core.capture.sidecar :as capture-sidecar]
+            [ai.brainyard.memory.core.capture.extractor :as capture-extractor]))
 
 ;; =====================================================
 ;; MemoryManager record
 ;; =====================================================
 
-(defrecord MemoryManager [user-id ds store !capture db-path]
+(defrecord MemoryManager [user-id ds store !capture db-path extract-fn]
   proto/UnifiedMemory
 
   ;; Cross-layer recall.
@@ -85,11 +86,14 @@
     ;; capture when the last referencing agent closes; this catches
     ;; the case where the manager is shut down directly (test
     ;; fixtures, explicit teardown).
-    (when-let [{:keys [dispatcher sidecar]} (some-> !capture deref)]
+    (when-let [{:keys [dispatcher sidecar extractor]} (some-> !capture deref)]
       (try
         (capture-sidecar/stop! sidecar)
         (capture-dispatcher/stop! dispatcher)
         (capture-sidecar/await-drain! sidecar 1000)
+        (when extractor
+          (capture-extractor/stop! extractor)
+          (capture-extractor/await-drain! extractor 1000))
         (reset! !capture nil)
         (catch Exception e
           (mulog/warn ::capture-stop-on-shutdown-failed
@@ -112,12 +116,17 @@
     user-id - User identifier
 
   Options:
-    :base-path - Base directory for database files (default: \"~/.brainyard/memory\")
-    :db-path   - Custom database path (overrides base-path)
-    :in-memory - Use in-memory database (for testing)
+    :base-path  - Base directory for database files (default: \"~/.brainyard/memory\")
+    :db-path    - Custom database path (overrides base-path)
+    :in-memory  - Use in-memory database (for testing)
+    :embed-fn   - (fn [texts] -> [[float…]…]) for the CR-MEM-21 vector index
+                  (nil ⇒ FTS-only recall)
+    :extract-fn - (fn [text] -> {:entities [...] :relations [...]}) for the
+                  CR-MEM-22 graph-extraction sidecar (nil ⇒ no extraction).
+                  Started by `start-capture!` when present.
 
   Returns: MemoryManager instance"
-  [user-id & {:keys [base-path db-path in-memory]
+  [user-id & {:keys [base-path db-path in-memory embed-fn extract-fn]
               :or {base-path "~/.brainyard/memory" in-memory false}}]
   (let [path (cond
                in-memory ":memory:?cache=shared"
@@ -125,9 +134,10 @@
                :else     (sqlite/db-path base-path user-id))
         ds       (sqlite/create-datasource path)
         !capture (atom nil)
-        store    (us/create-unified-store :user-id user-id :ds ds)]
+        store    (us/create-unified-store :user-id user-id :ds ds :embed-fn embed-fn)]
 
     (sqlite/init-schema! ds)
-    (mulog/info ::memory-manager-created :user-id user-id :path path)
+    (mulog/info ::memory-manager-created :user-id user-id :path path
+                :graph-extraction (boolean extract-fn))
 
-    (->MemoryManager user-id ds store !capture path)))
+    (->MemoryManager user-id ds store !capture path extract-fn)))

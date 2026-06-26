@@ -15,6 +15,7 @@
    Depends on the memory component (ai.brainyard.memory.interface)."
   (:require [ai.brainyard.mulog.interface :as mulog]
             [ai.brainyard.memory.interface :as mem]
+            [ai.brainyard.clj-llm.interface :as llm]
             [ai.brainyard.agent.core.config :as config]))
 
 ;; ============================================================================
@@ -176,6 +177,24 @@
     (or (config/brainyard-subdir dirs "memory" :user)
         "~/.brainyard/memory")))
 
+(defn- graph-provider-opts
+  "Build the context-graph provider fns (CR-MEM-21/22) from config, or `{}`.
+
+   Off unless `:enable-graph-memory` is true AND the relevant model is
+   configured (`:graph-embed-model` / `:graph-extract-model`). Each is an
+   LM string resolved via `parse-lm-str`; an unresolvable / capability-
+   lacking model simply yields no fn, leaving the graph storage-only. The
+   fns are lazy — they cost nothing until the extractor/recall invokes them.
+   Resolution never throws (parse-lm-str returns nil on failure)."
+  []
+  (if-not (config/get-config :enable-graph-memory)
+    {}
+    (let [embed-lm   (some-> (config/get-config :graph-embed-model) llm/parse-lm-str)
+          extract-lm (some-> (config/get-config :graph-extract-model) llm/parse-lm-str)]
+      (cond-> {}
+        embed-lm   (assoc :embed-fn   (mem/make-embed-fn embed-lm :model (:model embed-lm)))
+        extract-lm (assoc :extract-fn (mem/make-extract-fn extract-lm))))))
+
 (defn create-memory-manager
   "Create a memory manager for an agent, if the memory component is available.
 
@@ -196,7 +215,8 @@
 
    Returns: MemoryManager instance or nil if memory component unavailable"
   [user-id & {:keys [in-memory base-path db-path]}]
-  (mem/create-memory-manager user-id
-                             :in-memory (boolean in-memory)
-                             :base-path (or base-path (default-memory-base-path))
-                             :db-path db-path))
+  (apply mem/create-memory-manager user-id
+         :in-memory (boolean in-memory)
+         :base-path (or base-path (default-memory-base-path))
+         :db-path db-path
+         (mapcat identity (graph-provider-opts))))

@@ -27,20 +27,26 @@
 ;; =====================================================
 
 (defn- handle-event!
-  [store event]
+  [store event on-write]
   (try
-    (let [entry (parser/parse event)]
-      (proto/write-entry store :l2 entry)
+    (let [entry   (parser/parse event)
+          written (proto/write-entry store :l2 entry)]
       (mulog/debug ::capture-write
                    :event-key (:event-key event)
-                   :session-id (:session-id event)))
+                   :session-id (:session-id event))
+      ;; Forward the persisted L2 entry (with its stable :id) to the graph
+      ;; extractor, when one is wired. Best-effort; never blocks capture.
+      (when on-write
+        (try (on-write (or written entry))
+             (catch Exception e
+               (mulog/warn ::capture-on-write-failed :exception e)))))
     (catch Exception e
       (mulog/warn ::capture-handle-failed
                   :event-key (:event-key event)
                   :exception e))))
 
 (defn- run-loop!
-  [store critical-ch events-ch !running]
+  [store critical-ch events-ch !running on-write]
   (try
     (loop []
       ;; Critical events take priority. We poll critical first; if empty
@@ -58,7 +64,7 @@
                 (mulog/debug ::events-ch-closed))
               (recur))
             :else
-            (do (handle-event! store ev)
+            (do (handle-event! store ev on-write)
                 (recur))))))
     (catch Throwable t
       (mulog/error ::capture-sidecar-crashed :exception t))))
@@ -71,13 +77,17 @@
 
 (defn start!
   "Spawn the sidecar thread bound to `dispatcher`'s channels and writing
-  to `store`. Returns a `Sidecar` record."
-  [store dispatcher]
+  to `store`. Returns a `Sidecar` record.
+
+  Options:
+    :on-write — optional `(fn [persisted-l2-entry])` invoked after each L2
+                write (the CR-MEM-22 graph-extractor seam). Best-effort."
+  [store dispatcher & {:keys [on-write]}]
   (let [[crit ev] ((requiring-resolve
                     'ai.brainyard.memory.core.capture.dispatcher/channels)
                    dispatcher)
         !running  (atom true)
-        t         (async/thread (run-loop! store crit ev !running))]
+        t         (async/thread (run-loop! store crit ev !running on-write))]
     (mulog/info ::capture-sidecar-started)
     (->Sidecar store dispatcher t !running)))
 
