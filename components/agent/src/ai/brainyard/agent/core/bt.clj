@@ -308,7 +308,14 @@
                                                           ;; carries (usage-guide / self-improvement nudge),
                                                           ;; so the TUI can surface it in the iteration block —
                                                           ;; not only the LLM via the record's :notices.
-                                                          :notices (some-> (:iterations post-st) last :notices)
+                                                          ;; Guard on the record's :iteration matching this
+                                                          ;; iter-num: a record-less iteration (e.g. the
+                                                          ;; :answer step appends nothing) leaves `last`
+                                                          ;; pointing at an earlier record, which would
+                                                          ;; otherwise re-surface the same guide here.
+                                                          :notices (let [r (some-> (:iterations post-st) last)]
+                                                                     (when (= (:iteration r) iter-num)
+                                                                       (:notices r)))
                                                           :goal-achieved (:goal-achieved post-st)}))]
                          (condp = child-result
                            p/success (if (check-condition-fn id depth (condition-fn context) agent)
