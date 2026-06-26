@@ -1381,7 +1381,11 @@
                :agents      agents}))))
         ;; One-line MCP connecting/lazy summary, under the banner.
         (when-let [s (format-mcp-summary (:mcp-summary @tui-session/!tui-state))]
-          (layout/write-output! (str s "\n")))))
+          (layout/write-output! (str s "\n")))
+        ;; CR-MEM-21: if the embedding model changed, semantic recall is paused
+        ;; until the vector index is rebuilt — surface the one-line guidance.
+        (when-let [notice (agent/graph-vec-stale-notice ag)]
+          (layout/write-output! (str notice "\n")))))
     :ok))
 
 (defn stop!

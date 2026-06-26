@@ -35,6 +35,7 @@
             [ai.brainyard.agent.common.usage-guides]
             [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.memory.interface.protocol :as mproto]
+            [ai.brainyard.mulog.interface :as mulog]
             [clojure.string :as str]))
 
 ;; ============================================================================
@@ -314,7 +315,8 @@
                                                     {:limit 10000}))
                            (catch Exception _ 0))
               audit   (safe-explain-session mm sid)
-              turns   (or (:turns audit) [])]
+              turns   (or (:turns audit) [])
+              vstat   (try (mem/graph-vec-status mm) (catch Exception _ nil))]
           {:user-id          (str (:user-id mm))
            :session-id       (str sid)
            :schema-version   (str (:schema-version stats))
@@ -324,7 +326,15 @@
                               :session l2-sess}
            :l3               {:total (or (:semantic-facts stats) 0)}
            :audit            {:turns              (count turns)
-                              :total-prompt-bytes (reduce + 0 (keep :prompt-bytes turns))}})
+                              :total-prompt-bytes (reduce + 0 (keep :prompt-bytes turns))}
+           ;; CR-MEM-21: vector index health. :stale? true ⇒ embed model
+           ;; changed, semantic recall paused until `memory$reembed`.
+           :vec-index        (when vstat
+                               (cond-> {:model      (:now vstat)
+                                        :built-with (:was vstat)
+                                        :indexed    (:count vstat)
+                                        :stale?     (boolean (:stale? vstat))}
+                                 (:stale? vstat) (assoc :notice (mem/graph-vec-stale-notice mm))))})
         {:error "current agent has no memory manager"})
       {:error "current agent is not running"}))
   :input-schema  [:map]
@@ -337,7 +347,40 @@
                   [:l2 {:optional true} [:string {:desc "{:total N :session N} — episodic counts (user-wide and this session)"}]]
                   [:l3 {:optional true} [:string {:desc "{:total N} — L3 semantic facts count"}]]
                   [:audit {:optional true} [:string {:desc "{:turns N :total-prompt-bytes N} — memory_audit summary for this session"}]]
+                  [:vec-index {:optional true} [:string {:desc "{:model :built-with :indexed :stale? :notice} — semantic vector index health (CR-MEM-21); :stale? true means the embed model changed and recall is paused until memory$reembed"}]]
                   [:error {:optional true} [:string {:desc "Error if no agent or no memory manager"}]]])
+
+(defcommand memory$reembed
+  "Rebuild the semantic vector index for the current embedding model (CR-MEM-21).
+   Run this after changing :graph-embed-model — re-embeds all L3 facts and node
+   summaries and resumes semantic recall. Re-embeds N rows, so it may take a
+   while on large stores."
+  (fn [& _]
+    (if-let [mm (current-mm)]
+      (try
+        (let [before (mem/graph-vec-status mm)
+              r      (mem/reembed-graph-vec! mm)]
+          (if r
+            {:rebuilt true
+             :facts (:facts r) :nodes (:nodes r)
+             :model (:now before)
+             :message (str "Rebuilt vector index for " (:now before)
+                           " — re-embedded " (:facts r) " facts, " (:nodes r)
+                           " node summaries. Semantic recall resumed.")}
+            {:rebuilt false
+             :message "No embedding model configured — nothing to rebuild (recall uses keyword search)."}))
+        (catch Exception e
+          (mulog/warn ::memory$reembed-failed :exception e)
+          {:error (ex-message e)}))
+      {:error "current agent has no memory manager"}))
+  :input-schema  [:map]
+  :output-schema [:map
+                  [:rebuilt {:optional true} [:boolean {:desc "True when the index was rebuilt"}]]
+                  [:facts   {:optional true} [:int     {:desc "L3 facts re-embedded"}]]
+                  [:nodes   {:optional true} [:int     {:desc "Graph node summaries re-embedded"}]]
+                  [:model   {:optional true} [:string  {:desc "Embedding model the index was rebuilt for"}]]
+                  [:message {:optional true} [:string  {:desc "Human-readable result"}]]
+                  [:error   {:optional true} [:string  {:desc "Error message"}]]])
 
 (defn- summarize-audit-entry
   "Project an {:audit :entry} pair into a compact map for tool output."

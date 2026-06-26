@@ -16,6 +16,7 @@
   (:require [ai.brainyard.util.interface.macros :refer [export-symbols]]
             [ai.brainyard.agent.core.protocol :as protocol]
             [ai.brainyard.agent.core.session :as session]
+            [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.protocol :as task-proto]
             ;; Side-effecting load: registers the default loop-guard hook
@@ -405,4 +406,18 @@
   (when-let [mgr (task-mgr/peek-default-manager)]
     (task-proto/shutdown mgr)
     (task-mgr/set-default-manager! nil)))
+
+;; ============================================================================
+;; Memory — context-graph vector index (CR-MEM-21)
+;; ============================================================================
+
+(defn graph-vec-stale-notice
+  "A one-line, user-facing notice when `agent`'s vector memory index is stale
+   (the embedding model changed since it was built), or nil. Surfaced at TUI
+   startup; the user rebuilds with the `memory$reembed` command. Resolves the
+   agent's memory manager via `get-memory-manager`."
+  [agent]
+  (try
+    (some-> agent protocol/get-memory-manager mem/graph-vec-stale-notice)
+    (catch Exception _ nil)))
 
