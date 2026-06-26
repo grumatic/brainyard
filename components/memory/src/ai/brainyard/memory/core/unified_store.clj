@@ -22,6 +22,7 @@
             [ai.brainyard.memory.core.graph :as graph]
             [ai.brainyard.memory.core.embed :as embed]
             [ai.brainyard.memory.core.community :as community]
+            [ai.brainyard.memory.core.sqlite :as sqlite]
             [ai.brainyard.mulog.interface :as mulog]
             [next.jdbc :as jdbc]))
 
@@ -186,7 +187,8 @@
 ;; UnifiedStore record
 ;; =====================================================
 
-(defrecord UnifiedStore [user-id ds l1-store embed-fn summarize-fn]
+(defrecord UnifiedStore [user-id ds l1-store embed-fn summarize-fn
+                         embed-dims embed-model-id !vec-stale]
   proto/IMemoryStore
 
   (write-entry [_ layer in]
@@ -213,8 +215,10 @@
           (when result
             (mulog/debug ::l3-write :entry-id (:id in') :db-id (:id result))
             ;; CR-MEM-21: index the fact's content for semantic recall. Best
-            ;; effort — embedding/vec failures never block the write.
-            (when embed-fn
+            ;; effort — embedding/vec failures never block the write. Skipped
+            ;; while the index is stale (embed model changed) so we never write
+            ;; new-model vectors into an old-model space.
+            (when (and embed-fn (not @!vec-stale))
               (when-let [e (embed/embed-one embed-fn (:content in'))]
                 (graph/upsert-fact-embedding! ds (:id result) e)))
             (entry/fact-row->entry (merge row (select-keys result [:id])))))
@@ -289,7 +293,9 @@
   (neighbors       [_ node-id opts]      (graph/neighbors ds user-id node-id opts))
   (expand          [_ seed-ids opts]     (graph/expand ds user-id seed-ids opts))
   (as-of           [_ node-id ts opts]   (graph/as-of ds user-id node-id ts opts))
-  (vec-search      [_ query opts]        (graph/vec-search ds user-id embed-fn query opts))
+  ;; vec recall is paused while the index is stale (embed model changed) —
+  ;; FTS still serves, never a mixed-space ranking.
+  (vec-search      [_ query opts]        (if @!vec-stale [] (graph/vec-search ds user-id embed-fn query opts)))
   (related         [_ keywords opts]     (graph/related ds user-id keywords opts)))
 
 ;; =====================================================
@@ -307,10 +313,35 @@
     :l1-store     pre-built L1Store (default: fresh)
     :embed-fn     (fn [texts] -> [[float…] …]) for the CR-MEM-21 vector index;
                   nil (default) disables semantic recall (FTS-only)
-    :summarize-fn (fn [text] -> string) for CR-MEM-24 community summaries;
-                  nil (default) uses the deterministic templated summary."
-  [& {:keys [user-id ds l1-store embed-fn summarize-fn]
+    :summarize-fn   (fn [text] -> string) for CR-MEM-24 community summaries;
+                    nil (default) uses the deterministic templated summary
+    :embed-dims     vector dim of `embed-fn`'s output (CR-MEM-21); fingerprinted
+    :embed-model-id stable id of the embedding model (e.g. \"ollama/nomic-embed-text\")
+                    — fingerprinted against `graph_vec` so a model change pauses
+                    vector recall until `reembed!`."
+  [& {:keys [user-id ds l1-store embed-fn summarize-fn embed-dims embed-model-id]
       :as opts}]
   (when-not user-id (throw (ex-info "UnifiedStore requires :user-id" opts)))
   (when-not ds      (throw (ex-info "UnifiedStore requires :ds" opts)))
-  (->UnifiedStore user-id ds (or l1-store (l1/create-l1-store)) embed-fn summarize-fn))
+  (let [dims   (or embed-dims (sqlite/graph-embed-dims))
+        status (graph/reconcile-vec-model! ds embed-model-id dims)]
+    (when (:stale? status)
+      (mulog/warn ::vec-index-stale-on-open :was (:was status) :now (:now status) :count (:count status)))
+    (->UnifiedStore user-id ds (or l1-store (l1/create-l1-store)) embed-fn summarize-fn
+                    dims embed-model-id (atom (boolean (:stale? status))))))
+
+(defn vec-status
+  "Embed-model staleness status for a UnifiedStore:
+  `{:stale? bool :was fp :now fp :count n}` (read-only, live)."
+  [store]
+  (let [{:keys [ds embed-model-id embed-dims !vec-stale]} store]
+    (assoc (graph/vec-status ds embed-model-id embed-dims)
+           :stale? (boolean (and !vec-stale @!vec-stale)))))
+
+(defn reembed!
+  "Rebuild `graph_vec` for `store`'s current embedder and clear the stale
+  flag. Returns `{:facts n :nodes n}` (nil when no embedder)."
+  [store]
+  (let [r (graph/reembed! store)]
+    (when (:!vec-stale store) (reset! (:!vec-stale store) false))
+    r))

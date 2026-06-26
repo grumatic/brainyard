@@ -217,9 +217,13 @@
           static-ef  (when static? (mem/static-embed-fn))
           extract-lm (resolve-graph-lm (config/get-config :graph-extract-model))]
       (cond-> {}
-        static-ef  (assoc :embed-fn   static-ef
-                          :embed-dims (mem/static-embed-dims))
-        embed-lm   (assoc :embed-fn   (mem/make-embed-fn embed-lm :model (:model embed-lm)))
+        static-ef  (assoc :embed-fn       static-ef
+                          :embed-dims     (mem/static-embed-dims)
+                          :embed-model-id "static")
+        embed-lm   (assoc :embed-fn       (mem/make-embed-fn embed-lm :model (:model embed-lm))
+                          ;; fingerprint by the configured model string so a
+                          ;; model swap (CR-MEM-21) pauses vec recall until rebuild
+                          :embed-model-id (some-> embed-model str/trim))
         extract-lm (assoc :extract-fn   (mem/make-extract-fn extract-lm)
                           ;; reuse the extraction chat model for community
                           ;; summaries (CR-MEM-24) — same capability class

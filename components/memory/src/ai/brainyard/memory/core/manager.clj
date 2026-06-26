@@ -128,7 +128,8 @@
                   (nil ⇒ deterministic templated summary).
 
   Returns: MemoryManager instance"
-  [user-id & {:keys [base-path db-path in-memory embed-fn extract-fn summarize-fn embed-dims]
+  [user-id & {:keys [base-path db-path in-memory embed-fn extract-fn summarize-fn
+                     embed-dims embed-model-id]
               :or {base-path "~/.brainyard/memory" in-memory false}}]
   (let [path (cond
                in-memory ":memory:?cache=shared"
@@ -136,10 +137,12 @@
                :else     (sqlite/db-path base-path user-id))
         ds       (sqlite/create-datasource path)
         !capture (atom nil)
+        ;; init-schema BEFORE the store so graph_vec exists for the fingerprint
+        ;; reconcile inside create-unified-store.
+        _        (sqlite/init-schema! ds :embed-dims embed-dims)
         store    (us/create-unified-store :user-id user-id :ds ds
-                                          :embed-fn embed-fn :summarize-fn summarize-fn)]
-
-    (sqlite/init-schema! ds :embed-dims embed-dims)
+                                          :embed-fn embed-fn :summarize-fn summarize-fn
+                                          :embed-dims embed-dims :embed-model-id embed-model-id)]
     (mulog/info ::memory-manager-created :user-id user-id :path path
                 :graph-extraction (boolean extract-fn))
 

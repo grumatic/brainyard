@@ -19,11 +19,17 @@
             [clojure.string :as str]
             [ai.brainyard.memory.core.embed :as embed]
             [ai.brainyard.memory.core.entry :as entry]
+            [ai.brainyard.memory.core.sqlite :as sqlite]
             [ai.brainyard.mulog.interface :as mulog]))
 
 ;; =====================================================
 ;; Row <-> entity coercion
 ;; =====================================================
+
+(defn- val1
+  "First non-nil value among result keys (handles next.jdbc namespacing)."
+  [row & ks]
+  (some #(get row %) ks))
 
 (defn- denamespace
   "Flatten next.jdbc's namespaced result keys (:graph_nodes/id) to plain
@@ -289,6 +295,83 @@
   "Index a graph node's summary embedding (ref_kind='node')."
   [ds row-id embedding]
   (upsert-embedding! ds "node" row-id embedding))
+
+;; =====================================================
+;; Embed-model fingerprint + rebuild (CR-MEM-21)
+;; =====================================================
+;;
+;; The vectors in graph_vec are only comparable when produced by ONE embedder.
+;; Switching models — even at the same dimension — silently corrupts kNN
+;; rankings, and a different dimension breaks inserts outright. We fingerprint
+;; the embedder that built the index (`<model-id>|<dims>` in memory_metadata)
+;; and, on a mismatch, pause the vector signal until the user rebuilds.
+
+(def ^:private vec-model-key "graph_vec_model")
+
+(defn- fingerprint [model-id dims] (when model-id (str model-id "|" dims)))
+
+(defn vec-row-count [ds]
+  (if (vec-available? ds)
+    (try (long (or (val1 (jdbc/execute-one! ds ["SELECT COUNT(*) AS c FROM graph_vec"]) :c :graph_vec/c) 0))
+         (catch Exception _ 0))
+    0))
+
+(defn reconcile-vec-model!
+  "Compare the configured embedder against the one that built the current
+  `graph_vec`. Returns `{:stale? bool :was fp :now fp :count n}`. Stamps the
+  fingerprint when the index is fresh or already consistent; does NOT stamp
+  when stale — the rebuild does, so the staleness persists until resolved."
+  [ds model-id dims]
+  (let [now (fingerprint model-id dims)
+        was (sqlite/get-metadata ds vec-model-key)
+        cnt (vec-row-count ds)]
+    (cond
+      (nil? now)  {:stale? false}                       ; no embedder configured
+      (= was now) {:stale? false :now now :count cnt}
+      (or (nil? was) (zero? cnt))                        ; fresh / nothing embedded yet
+      (do (sqlite/set-metadata! ds vec-model-key now) {:stale? false :now now :count cnt})
+      :else
+      (do (mulog/warn ::graph-vec-stale :was was :now now :count cnt)
+          {:stale? true :was was :now now :count cnt}))))
+
+(defn vec-status
+  "Read-only fingerprint status (no side effects):
+  `{:was <stored-fp> :now <configured-fp> :count n}`."
+  [ds model-id dims]
+  {:was   (sqlite/get-metadata ds vec-model-key)
+   :now   (fingerprint model-id dims)
+   :count (vec-row-count ds)})
+
+(defn reembed!
+  "Rebuild `graph_vec` for the store's current embedder: recreate at its dim,
+  re-embed every L3 fact and node summary, and re-stamp the fingerprint. The
+  CR-MEM-21 fix for a changed embedding model. Returns `{:facts n :nodes n}`;
+  no-op (nil) when no embed-fn is configured."
+  [{:keys [ds user-id embed-fn embed-dims embed-model-id] :as _store}]
+  (when embed-fn
+    (let [dims (or embed-dims (sqlite/graph-embed-dims))]
+      (sqlite/recreate-graph-vec! ds dims)
+      (let [facts (jdbc/execute! ds ["SELECT id, content FROM semantic_facts
+                                      WHERE user_id = ? AND tombstoned_flag = 0" user-id])
+            fc (reduce (fn [n r]
+                         (let [id (val1 r :id :semantic_facts/id)
+                               c  (val1 r :content :semantic_facts/content)]
+                           (if-let [v (embed/embed-one embed-fn c)]
+                             (do (upsert-fact-embedding! ds id v) (inc n)) n)))
+                       0 facts)
+            nodes (jdbc/execute! ds ["SELECT id, name, summary FROM graph_nodes
+                                      WHERE user_id = ? AND summary IS NOT NULL" user-id])
+            nc (reduce (fn [n r]
+                         (let [id (val1 r :id :graph_nodes/id)
+                               nm (val1 r :name :graph_nodes/name)
+                               sm (val1 r :summary :graph_nodes/summary)]
+                           (if-let [v (embed/embed-one embed-fn (str nm ": " sm))]
+                             (do (upsert-node-embedding! ds id v) (inc n)) n)))
+                       0 nodes)]
+        (when-let [fp (fingerprint embed-model-id dims)]
+          (sqlite/set-metadata! ds vec-model-key fp))
+        (mulog/info ::graph-vec-reembedded :facts fc :nodes nc)
+        {:facts fc :nodes nc}))))
 
 (defn- vec-knn
   "kNN over graph_vec for a query embedding. Returns

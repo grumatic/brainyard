@@ -126,6 +126,34 @@
   ([store-or-manager keywords opts]
    (proto/related (->store store-or-manager) keywords opts)))
 
+(defn graph-vec-status
+  "Embedding-model staleness of the vector index (CR-MEM-21).
+  Returns `{:stale? bool :was <fp> :now <fp> :count n}`. When `:stale?` is
+  true the embedding model changed since `graph_vec` was built, so semantic
+  recall is paused (FTS-only) until `reembed-graph-vec!` rebuilds it."
+  [store-or-manager]
+  (us/vec-status (->store store-or-manager)))
+
+(defn graph-vec-stale-notice
+  "A one-line, actionable user notice when the vector index is stale (embed
+  model changed), or nil. For TUI banners / `/status` / startup surfaces."
+  [store-or-manager]
+  (let [{:keys [stale? was now count]} (graph-vec-status store-or-manager)]
+    (when stale?
+      (str "⚠ Embedding model changed (" (or was "?") " → " (or now "?")
+           "). Semantic memory recall is paused (keyword search only) until the "
+           "vector index is rebuilt — ~" (or count 0) " facts. Rebuild with "
+           "`reembed-graph-vec!`, or restore the previous :graph-embed-model."))))
+
+(defn reembed-graph-vec!
+  "Rebuild `graph_vec` for the current embedder and resume semantic recall:
+  recreate at the embedder's dim, re-embed all L3 facts + node summaries,
+  re-stamp the model fingerprint, clear the stale flag. Returns
+  `{:facts n :nodes n}` (nil when no embedder). Re-embeds N rows — run it as
+  a background task for large stores."
+  [store-or-manager]
+  (us/reembed! (->store store-or-manager)))
+
 (defn graph-as-of
   "Historical neighborhood (CR-MEM-23): edges incident to `node-id` that were
   valid at `timestamp` (`t_valid <= ts AND (t_invalid IS NULL OR t_invalid >

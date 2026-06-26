@@ -525,6 +525,31 @@
     (catch Exception _
       nil)))
 
+(defn get-metadata
+  "Read a `memory_metadata` value by key, or nil."
+  [ds k]
+  (try
+    (let [r (jdbc/execute-one! ds ["SELECT value FROM memory_metadata WHERE key = ?" k])]
+      (or (:value r) (:memory_metadata/value r)))
+    (catch Exception _ nil)))
+
+(defn set-metadata!
+  "Upsert a `memory_metadata` key/value."
+  [ds k v]
+  (try
+    (jdbc/execute! ds ["INSERT OR REPLACE INTO memory_metadata (key, value, updated_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP)" k v])
+    (catch Exception e
+      (mulog/warn ::metadata-set-failed :key k :error (ex-message e)))))
+
+(defn recreate-graph-vec!
+  "Drop and recreate `graph_vec` at `dims` (CR-MEM-21 rebuild). No-op when
+  sqlite-vec is unavailable. Used by the embed-model-change rebuild."
+  [ds dims]
+  (when (resolve-vec-extension)
+    (execute-ddl! ds "DROP TABLE IF EXISTS graph_vec")
+    (doseq [stmt (vec-schema dims)] (execute-ddl! ds stmt))))
+
 ;; =====================================================
 ;; Utility Functions
 ;; =====================================================
