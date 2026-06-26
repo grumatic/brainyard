@@ -21,6 +21,7 @@
             [ai.brainyard.memory.core.capture.reducer :as capture-reducer]
             [ai.brainyard.memory.core.graph :as graph]
             [ai.brainyard.memory.core.embed :as embed]
+            [ai.brainyard.memory.core.community :as community]
             [ai.brainyard.mulog.interface :as mulog]
             [next.jdbc :as jdbc]))
 
@@ -185,7 +186,7 @@
 ;; UnifiedStore record
 ;; =====================================================
 
-(defrecord UnifiedStore [user-id ds l1-store embed-fn]
+(defrecord UnifiedStore [user-id ds l1-store embed-fn summarize-fn]
   proto/IMemoryStore
 
   (write-entry [_ layer in]
@@ -260,10 +261,16 @@
     (let [from-layer' (keyword from-layer)]
       (case from-layer'
         :l2
-        (apply capture-reducer/reduce-l2! this
-               :user-id user-id
-               :ds      ds
-               (mapcat identity (or policy {})))
+        ;; CR-MEM-24: `:reducer :community` consolidates by graph community
+        ;; (the GraphRAG tier, replacing the heuristic time-bucket reducer);
+        ;; any other reducer keeps the heuristic path.
+        (if (= :community (:reducer policy))
+          (apply community/consolidate! this summarize-fn
+                 (mapcat identity (dissoc policy :reducer)))
+          (apply capture-reducer/reduce-l2! this
+                 :user-id user-id
+                 :ds      ds
+                 (mapcat identity (or policy {}))))
 
         :l1
         {:from-layer :l1 :to-layer nil
@@ -297,11 +304,13 @@
     :ds         next.jdbc datasource (or in-memory connection)
 
   Optional:
-    :l1-store   pre-built L1Store (default: fresh)
-    :embed-fn   (fn [texts] -> [[float…] …]) for the CR-MEM-21 vector index;
-                nil (default) disables semantic recall (FTS-only)."
-  [& {:keys [user-id ds l1-store embed-fn]
+    :l1-store     pre-built L1Store (default: fresh)
+    :embed-fn     (fn [texts] -> [[float…] …]) for the CR-MEM-21 vector index;
+                  nil (default) disables semantic recall (FTS-only)
+    :summarize-fn (fn [text] -> string) for CR-MEM-24 community summaries;
+                  nil (default) uses the deterministic templated summary."
+  [& {:keys [user-id ds l1-store embed-fn summarize-fn]
       :as opts}]
   (when-not user-id (throw (ex-info "UnifiedStore requires :user-id" opts)))
   (when-not ds      (throw (ex-info "UnifiedStore requires :ds" opts)))
-  (->UnifiedStore user-id ds (or l1-store (l1/create-l1-store)) embed-fn))
+  (->UnifiedStore user-id ds (or l1-store (l1/create-l1-store)) embed-fn summarize-fn))

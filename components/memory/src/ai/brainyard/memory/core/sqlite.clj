@@ -346,9 +346,27 @@
      summary TEXT,
      aliases TEXT,
      metadata TEXT,
+     community_id INTEGER,
      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
      UNIQUE(user_id, node_type, name)
+   )"
+
+   ;; Communities (CR-MEM-24): label-propagation clusters of the entity
+   ;; graph, each with an LLM-maintained rolling summary — the GraphRAG tier
+   ;; that supersedes the heuristic L2→L3 time-bucket reducer (closes
+   ;; CR-MEM-07). `entry_id` links to the L3 fact a community summary is
+   ;; mirrored into, so recall surfaces it like any other fact.
+   "CREATE TABLE IF NOT EXISTS graph_communities (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     user_id TEXT NOT NULL,
+     label TEXT,
+     summary TEXT,
+     node_count INTEGER DEFAULT 0,
+     entry_id TEXT,
+     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+     UNIQUE(user_id, label)
    )"
 
    "CREATE TABLE IF NOT EXISTS graph_edges (
@@ -367,6 +385,7 @@
    )"
 
    "CREATE INDEX IF NOT EXISTS idx_graph_nodes_user ON graph_nodes(user_id, node_type, name)"
+   "CREATE INDEX IF NOT EXISTS idx_graph_nodes_comm ON graph_nodes(user_id, community_id)"
    "CREATE INDEX IF NOT EXISTS idx_edges_src ON graph_edges(user_id, src_id) WHERE t_invalid IS NULL"
    "CREATE INDEX IF NOT EXISTS idx_edges_dst ON graph_edges(user_id, dst_id) WHERE t_invalid IS NULL"])
 
@@ -435,9 +454,20 @@
     (jdbc/execute! ds [stmt])
     true
     (catch Exception e
-      (when-not (str/includes? (ex-message e) "already exists")
-        (mulog/error ::ddl-execution-failed :statement stmt :error (ex-message e)))
+      (let [msg (ex-message e)]
+        (when-not (or (str/includes? msg "already exists")
+                      (str/includes? msg "duplicate column"))
+          (mulog/error ::ddl-execution-failed :statement stmt :error msg)))
       false)))
+
+(defn- column-exists?
+  "True when `table` has a column named `col`."
+  [ds table col]
+  (try
+    (some #(= col (or (:name %) (get % (keyword "table_info" "name"))
+                      (get % :PRAGMA_TABLE_INFO/name)))
+          (jdbc/execute! ds [(str "PRAGMA table_info(" table ")")]))
+    (catch Exception _ false)))
 
 (defn init-schema!
   "Initialize all memory tables and FTS5 virtual tables.
@@ -456,16 +486,24 @@
     (doseq [stmt all-schemas]
       (execute-ddl! ds stmt))
 
+    ;; Migration for pre-existing graph_nodes (schema 2.1.0) that predate the
+    ;; community_id column — CREATE TABLE IF NOT EXISTS won't add it, so ALTER
+    ;; in only when missing (fresh dbs already have it from the CREATE above,
+    ;; so column-exists? is true and this is skipped).
+    (when-not (column-exists? ds "graph_nodes" "community_id")
+      (execute-ddl! ds "ALTER TABLE graph_nodes ADD COLUMN community_id INTEGER"))
+
     ;; Store schema version. 2.0.0 introduced unified-memory columns
     ;; (tags, sources, entry_id, keep_flag, archived_flag, tombstoned_flag)
-    ;; on episodes and semantic_facts. 2.1.0 adds the context-graph overlay
-    ;; (graph_nodes, graph_edges — CR-MEM-20). All DDL is IF NOT EXISTS, so
-    ;; existing 2.0.0 databases gain the graph tables transparently on open;
-    ;; no data migration is required.
+    ;; on episodes and semantic_facts. 2.1.0 added the context-graph overlay
+    ;; (graph_nodes, graph_edges — CR-MEM-20). 2.2.0 adds communities
+    ;; (graph_communities + graph_nodes.community_id — CR-MEM-24). All DDL is
+    ;; IF NOT EXISTS (plus the guarded ALTER above), so existing databases
+    ;; migrate transparently on open; no data migration is required.
     (try
       (jdbc/execute! ds
                      ["INSERT OR REPLACE INTO memory_metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)"
-                      "schema_version" "2.1.0"])
+                      "schema_version" "2.2.0"])
       (catch Exception e
         (mulog/warn ::schema-version-store-failed :error (ex-message e)))))
 

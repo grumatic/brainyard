@@ -193,7 +193,10 @@
           extract-lm (some-> (config/get-config :graph-extract-model) llm/parse-lm-str)]
       (cond-> {}
         embed-lm   (assoc :embed-fn   (mem/make-embed-fn embed-lm :model (:model embed-lm)))
-        extract-lm (assoc :extract-fn (mem/make-extract-fn extract-lm))))))
+        extract-lm (assoc :extract-fn   (mem/make-extract-fn extract-lm)
+                          ;; reuse the extraction chat model for community
+                          ;; summaries (CR-MEM-24) — same capability class
+                          :summarize-fn (mem/make-summarize-fn extract-lm))))))
 
 (defn create-memory-manager
   "Create a memory manager for an agent, if the memory component is available.

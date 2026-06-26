@@ -100,6 +100,34 @@
             nil))))))
 
 ;; =====================================================
+;; Community summarizer (CR-MEM-24)
+;; =====================================================
+
+(def ^:private summarize-system
+  (str "You write a one-sentence summary of a cluster of related entities "
+       "from a developer/agent knowledge graph. Capture what ties the cluster "
+       "together and any durable facts. Be concise and factual — no preamble."))
+
+(defn make-summarize-fn
+  "Build a `summarize-fn` `(fn [text] -> string)` over clj-llm plain-text
+  completion, or nil when `lm-config` is absent. Used to summarize graph
+  communities (CR-MEM-24). Failures log and yield nil."
+  [lm-config & {:keys [model]}]
+  (when lm-config
+    (let [lm (if model (assoc lm-config :model model) lm-config)]
+      (fn [text]
+        (try
+          (-> (llm/chat-completion lm
+                                   [{:role "system" :content summarize-system}
+                                    {:role "user"   :content text}])
+              (llm/extract-content lm)
+              str
+              str/trim)
+          (catch Exception e
+            (mulog/warn ::summarize-call-failed :error (ex-message e))
+            nil))))))
+
+;; =====================================================
 ;; Apply extraction to the graph
 ;; =====================================================
 

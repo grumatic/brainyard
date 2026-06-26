@@ -52,7 +52,7 @@ that were removed (see `sandbox_bindings.clj` line ~257).
 | CR-MEM-04 | Episodic (L2) and semantic (L3) layers MUST be backed by SQLite FTS5 virtual tables with porter/unicode61 tokenization and insert/delete/update triggers. | Implemented | `memory/core/sqlite.clj` |
 | CR-MEM-05 | Ranking MUST use BM25 within a layer and Reciprocal Rank Fusion (RRF, default k=60) across layers, with default layer weights `{:l1 0.3 :l2 0.4 :l3 0.6}`. | Implemented | `memory/core/recall.clj` (`reciprocal-rank-fusion`), `recall_v2.clj` (`recall-layered`) |
 | CR-MEM-06 | A capture pipeline MUST subscribe to `:agent.ask/{pre,post}`, `:agent.tool-use/post`, `:agent.code-eval/post`, `:agent/exception`, parse them (S1), write to L2, and record an audit row. | Implemented | `memory/interface.clj` (`start-capture!`/`stop-capture!`), `sqlite.clj` (`memory_audit`) |
-| CR-MEM-07 | L2→L3 consolidation MUST reduce episodic entries into semantic facts. | **Partial** | `memory/core/capture/reducer.clj` (`reduce-l2!`) |
+| CR-MEM-07 | L2→L3 consolidation MUST reduce episodic entries into semantic facts. | Implemented | `memory/core/capture/reducer.clj` (heuristic `reduce-l2!`) + `memory/core/community.clj` (graph-community consolidation — **CR-MEM-24**, the GraphRAG replacement) |
 | CR-MEM-08 | A `:system` layer was an earlier design — **removed**. Operator-managed system context now lives as L1 entries with `:kind :system-context` (read via `read-entries :l1 {:kind :system-context}`); there is no `:system` storage layer. | Implemented (as `:kind`, not a layer) | `memory/core/l1_store.clj`, `recall_v2.clj` (renders `:system-context` L1 rows under a "[system]" header) |
 | CR-MEM-09 | L1 entries MUST be quota-free and keyed by `{kind}/{field}/{section}`, session-scoped via a `[session-id entry-id]` composite key, with `:kind` ∈ `{:system-context :user-context}`. | Implemented | `memory/core/l1_store.clj` |
 | CR-MEM-10 | Retention MUST support keep/unkeep/archive/unarchive and an L2 sweeper (default 30-day retention, 6h cadence). | Implemented | `memory/interface.clj` |
@@ -129,16 +129,19 @@ behavior. Numbering starts at CR-MEM-20 because 11–14 are taken by §3.
 | CR-MEM-21 | A `sqlite-vec` `graph_vec` index + a `read-vec` recall producer (embeddings via an injected `embed-fn` over `clj-llm/create-embeddings`, no-op when no provider) MUST add semantic-similarity candidates to the RRF. Extension fetched by `bb sqlite-vec:fetch` (sha-pinned) + bundled into the native image. | Implemented (Phase 1) | `memory/core/embed.clj`, `graph.clj` (`vec-search`), `sqlite.clj` (vec loader + `graph_vec`), `recall_v2.clj` (`read-vec`, `:vec` weight) |
 | CR-MEM-22 | An async, best-effort LLM extraction sidecar off the capture pipeline MUST populate nodes/edges (entity + relationship extraction, name/alias resolution, functional-relation bi-temporal supersession, provenance). Gated by an injected `extract-fn` (`:graph-extract-model`); off when unset. | Implemented (Phase 2) | `memory/core/extract.clj`, `capture/extractor.clj`, `capture/sidecar.clj` (`:on-write`), `manager.clj`/`interface.clj` (wiring), `agent/core/memory.clj` (`graph-provider-opts`) |
 | CR-MEM-23 | A `read-graph` producer MUST resolve seed nodes from the query, expand the bounded (≤3-hop) neighborhood over valid edges, and fuse relationship entries into the RRF (`:graph` weight 0.55); `render-briefing` MUST gain a "## Related" section; as-of history MUST be reachable. | Implemented (Phase 3) | `memory/core/graph.clj` (`search-nodes`/`expand-edges`/`related`), `recall_v2.clj` (`read-graph`, "## Related"), `interface.clj` (`graph-related`/`graph-as-of`) |
-| CR-MEM-24 | Community detection + summaries MUST replace the heuristic L2→L3 reducer (closing CR-MEM-07). | Proposed | — |
+| CR-MEM-24 | Community detection (deterministic label propagation) + summaries MUST cluster the entity graph and consolidate each cluster into a `graph_communities` row + an L3 `:summary` fact — superseding the heuristic L2→L3 reducer (closes CR-MEM-07). Routed via `consolidate-layer :reducer :community`; LLM `summarize-fn` optional (templated fallback). | Implemented (Phase 4) | `memory/core/community.clj`, `sqlite.clj` (`graph_communities` + `community_id`), `unified_store.clj` (reducer route), `interface.clj` (`consolidate-graph!`) |
 | CR-MEM-25 | A pluggable neo4j `GraphStore` backend MAY be selectable via config for hosted/team mode. | Proposed (optional) | — |
 
 ---
 
 ## Gaps & candidate TODOs (this spec)
 
-- **CR-MEM-07 — LLM L2→L3 reducer unimplemented.** Only the heuristic
-  reducer runs; `:reducer :llm` returns a not-implemented marker.
-  Planned closure via CR-MEM-24 (community summaries). *(Medium.)*
+- ~~**CR-MEM-07 — LLM L2→L3 reducer unimplemented.**~~ **Closed (Phase 4,
+  CR-MEM-24):** graph-community consolidation (`community.clj`,
+  `consolidate-layer :reducer :community`) reduces episodes-via-graph into
+  L3 community summaries, with a deterministic templated fallback when no
+  LLM is configured. The heuristic time-bucket `reduce-l2!` remains the
+  default reducer.
 - **`get-stats` drift — `:working-memory-keys` promised, not returned.**
   *(Doc-only or trivial.)*
 

@@ -77,6 +77,22 @@
   [lm-config & {:as opts}]
   (apply extract/make-extract-fn lm-config (mapcat identity opts)))
 
+(defn make-summarize-fn
+  "Build a `summarize-fn` for community summaries (CR-MEM-24) over a clj-llm
+  lm-config. Returns nil when lm-config is nil. Pass the result as
+  `:summarize-fn` to `create-memory-manager` (nil ⇒ templated summaries)."
+  [lm-config & {:as opts}]
+  (apply extract/make-summarize-fn lm-config (mapcat identity opts)))
+
+(defn consolidate-graph!
+  "Run CR-MEM-24 community consolidation: detect graph communities and
+  summarize each into a `graph_communities` row + an L3 `:summary` fact.
+  The GraphRAG replacement for the heuristic L2→L3 reducer. Returns a
+  summary map `{:communities :produced :consumed …}`."
+  [manager & opts]
+  (proto/consolidate-layer (:store manager) :l2
+                           (assoc (apply hash-map opts) :reducer :community)))
+
 (defn- ->store
   [store-or-manager]
   (if (instance? ai.brainyard.memory.core.unified_store.UnifiedStore store-or-manager)

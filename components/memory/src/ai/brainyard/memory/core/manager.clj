@@ -124,9 +124,11 @@
     :extract-fn - (fn [text] -> {:entities [...] :relations [...]}) for the
                   CR-MEM-22 graph-extraction sidecar (nil ⇒ no extraction).
                   Started by `start-capture!` when present.
+    :summarize-fn - (fn [text] -> string) for CR-MEM-24 community summaries
+                  (nil ⇒ deterministic templated summary).
 
   Returns: MemoryManager instance"
-  [user-id & {:keys [base-path db-path in-memory embed-fn extract-fn]
+  [user-id & {:keys [base-path db-path in-memory embed-fn extract-fn summarize-fn]
               :or {base-path "~/.brainyard/memory" in-memory false}}]
   (let [path (cond
                in-memory ":memory:?cache=shared"
@@ -134,7 +136,8 @@
                :else     (sqlite/db-path base-path user-id))
         ds       (sqlite/create-datasource path)
         !capture (atom nil)
-        store    (us/create-unified-store :user-id user-id :ds ds :embed-fn embed-fn)]
+        store    (us/create-unified-store :user-id user-id :ds ds
+                                          :embed-fn embed-fn :summarize-fn summarize-fn)]
 
     (sqlite/init-schema! ds)
     (mulog/info ::memory-manager-created :user-id user-id :path path
