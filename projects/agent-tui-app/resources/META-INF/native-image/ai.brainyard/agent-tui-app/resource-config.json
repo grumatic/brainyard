@@ -5,6 +5,8 @@
   }, {
     "pattern":"sqlite-vec/vec0-.*\\.(dylib|so)"
   }, {
+    "pattern":"model2vec/.*"
+  }, {
     "pattern":"\\QMETA-INF/maven/org.xerial/sqlite-jdbc/pom.properties\\E"
   }, {
     "pattern":"\\QMETA-INF/services/ch.qos.logback.classic.spi.Configurator\\E"

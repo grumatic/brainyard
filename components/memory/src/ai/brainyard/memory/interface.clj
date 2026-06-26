@@ -28,6 +28,7 @@
   (:require [ai.brainyard.memory.core.manager :as manager]
             [ai.brainyard.memory.core.fts :as fts]
             [ai.brainyard.memory.core.embed :as embed]
+            [ai.brainyard.memory.core.embed-static :as embed-static]
             [ai.brainyard.memory.core.extract :as extract]
             [ai.brainyard.memory.core.unified-store :as us]
             [ai.brainyard.memory.core.l1-store :as l1]
@@ -76,6 +77,25 @@
   `:extract-fn` to `create-memory-manager`."
   [lm-config & {:as opts}]
   (apply extract/make-extract-fn lm-config (mapcat identity opts)))
+
+(defn static-embed-fn
+  "Return the self-contained, in-process Model2Vec `embed-fn` (CR-MEM-21) —
+  `(fn [texts] -> [[float…] …])` — or nil when the bundled model is absent.
+  Pair with `static-embed-dims` as `:embed-dims` for `create-memory-manager`.
+  Needs no embedding server and no native libs."
+  []
+  (embed-static/static-embed-fn))
+
+(defn static-embed-dims
+  "Output dimensionality of the bundled Model2Vec model (e.g. 256), or nil."
+  []
+  (embed-static/dimensions))
+
+(defn static-embed-available?
+  "True when the bundled Model2Vec model is present on the classpath / via
+  BY_MODEL2VEC_PATH."
+  []
+  (embed-static/available?))
 
 (defn make-summarize-fn
   "Build a `summarize-fn` for community summaries (CR-MEM-24) over a clj-llm

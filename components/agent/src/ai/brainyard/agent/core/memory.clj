@@ -13,7 +13,8 @@
    thin per-layer facade for the agent runtime.
 
    Depends on the memory component (ai.brainyard.memory.interface)."
-  (:require [ai.brainyard.mulog.interface :as mulog]
+  (:require [clojure.string :as str]
+            [ai.brainyard.mulog.interface :as mulog]
             [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.clj-llm.interface :as llm]
             [ai.brainyard.agent.core.config :as config]))
@@ -189,9 +190,17 @@
   []
   (if-not (config/get-config :enable-graph-memory)
     {}
-    (let [embed-lm   (some-> (config/get-config :graph-embed-model) llm/parse-lm-str)
+    (let [embed-model (config/get-config :graph-embed-model)
+          ;; "static" selects the self-contained, in-binary Model2Vec
+          ;; embedder (no server, no native libs); any other value is an LM
+          ;; string resolved through clj-llm's /embeddings.
+          static?    (= "static" (some-> embed-model str/trim str/lower-case))
+          embed-lm   (when-not static? (some-> embed-model llm/parse-lm-str))
+          static-ef  (when static? (mem/static-embed-fn))
           extract-lm (some-> (config/get-config :graph-extract-model) llm/parse-lm-str)]
       (cond-> {}
+        static-ef  (assoc :embed-fn   static-ef
+                          :embed-dims (mem/static-embed-dims))
         embed-lm   (assoc :embed-fn   (mem/make-embed-fn embed-lm :model (:model embed-lm)))
         extract-lm (assoc :extract-fn   (mem/make-extract-fn extract-lm)
                           ;; reuse the extraction chat model for community

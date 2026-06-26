@@ -471,8 +471,14 @@
 
 (defn init-schema!
   "Initialize all memory tables and FTS5 virtual tables.
-  Safe to call multiple times — uses IF NOT EXISTS."
-  [ds]
+  Safe to call multiple times — uses IF NOT EXISTS.
+
+  Options:
+    :embed-dims — dimensionality of the `graph_vec` vector index (CR-MEM-21).
+                  Defaults to `graph-embed-dims` (BY_GRAPH_EMBED_DIMS or 768).
+                  Pass the configured embedder's native dim (e.g. 256 for the
+                  bundled Model2Vec model) so the table matches the vectors."
+  [ds & {:keys [embed-dims]}]
   (mulog/info ::schema-initializing)
   (let [all-schemas (concat metadata-schema
                             episodic-schema
@@ -482,7 +488,7 @@
                             ;; The vector index only exists when sqlite-vec
                             ;; loaded; otherwise recall falls back to FTS.
                             (when (resolve-vec-extension)
-                              (vec-schema (graph-embed-dims))))]
+                              (vec-schema (or embed-dims (graph-embed-dims)))))]
     (doseq [stmt all-schemas]
       (execute-ddl! ds stmt))
 

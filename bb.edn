@@ -678,6 +678,40 @@
        (println "Locator: set BY_SQLITE_VEC_PATH to override; otherwise the memory"
                 "component finds it under resources/sqlite-vec/ at runtime.")))}
 
+  model2vec:fetch
+  {:doc "Fetch the bundled Model2Vec static-embedding model (potion-base-8M,
+  256-dim) into components/memory/resources/model2vec/ (gitignored). The
+  native build bundles it as a resource so `by` has self-contained, in-process
+  embeddings (CR-MEM-21) with no embedding server. Pin: minishlab/potion-base-8M,
+  sha256-verified."
+   :requires ([babashka.fs :as fs]
+              [clojure.string :as str])
+   :task
+   (let [base "https://huggingface.co/minishlab/potion-base-8M/resolve/main"
+         files {"model.safetensors" "f65d0f325faadc1e121c319e2faa41170d3fa07d8c89abd48ca5358d9a223de2"
+                "tokenizer.json"    "e67e803f624fb4d67dea1c730d06e1067e1b14d830e2c2202569e3ef0f70bb50"}
+         out-dir "components/memory/resources/model2vec"]
+     (fs/create-dirs out-dir)
+     (doseq [[fname want] files]
+       (let [dest (str out-dir "/" fname)]
+         (if (fs/exists? dest)
+           (println "✓ already present:" dest)
+           (do
+             (println "Fetching" (str base "/" fname))
+             (let [r (shell {:continue true} "curl" "-sL" "--fail" "--max-time" "180"
+                            "-o" dest (str base "/" fname))]
+               (when-not (zero? (:exit r))
+                 (println "Download failed:" fname) (System/exit 1)))
+             (let [got (-> (shell {:out :string} "shasum" "-a" "256" dest)
+                           :out (str/split (re-pattern "\\s+")) first)]
+               (when-not (= got want)
+                 (println (str "Checksum mismatch for " fname "\n  got:  " got "\n  want: " want))
+                 (fs/delete-if-exists dest)
+                 (System/exit 1)))
+             (println "✓ installed:" dest)))))
+     (println "Model2Vec ready. Set :graph-embed-model \"static\" to use the"
+              "self-contained embedder (BY_MODEL2VEC_PATH overrides the location)."))}
+
   native:ata
   {:doc "Build native binary 'by' with GraalVM native-image"
    :task (do
@@ -762,6 +796,7 @@
   {:doc "Full build: fetch sqlite-vec → compile → uberjar → native binary 'by'"
    :task (do
            (run 'sqlite-vec:fetch)   ; CR-MEM-21: bundle vec0 into the image
+           (run 'model2vec:fetch)    ; CR-MEM-21: bundle the static embedder
            (run 'compile:ata)
            (run 'uberjar:ata)
            (run 'native:ata)

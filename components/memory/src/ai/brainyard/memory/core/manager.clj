@@ -128,7 +128,7 @@
                   (nil ⇒ deterministic templated summary).
 
   Returns: MemoryManager instance"
-  [user-id & {:keys [base-path db-path in-memory embed-fn extract-fn summarize-fn]
+  [user-id & {:keys [base-path db-path in-memory embed-fn extract-fn summarize-fn embed-dims]
               :or {base-path "~/.brainyard/memory" in-memory false}}]
   (let [path (cond
                in-memory ":memory:?cache=shared"
@@ -139,7 +139,7 @@
         store    (us/create-unified-store :user-id user-id :ds ds
                                           :embed-fn embed-fn :summarize-fn summarize-fn)]
 
-    (sqlite/init-schema! ds)
+    (sqlite/init-schema! ds :embed-dims embed-dims)
     (mulog/info ::memory-manager-created :user-id user-id :path path
                 :graph-extraction (boolean extract-fn))
 
