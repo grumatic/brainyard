@@ -3,6 +3,7 @@
         org.xerial/sqlite-jdbc {:mvn/version "3.46.1.0"}
         org.clojure/data.json {:mvn/version "2.5.1"}
         org.clojure/core.async {:mvn/version "1.7.701"}
-        ai.brainyard/mulog {:local/root "../mulog"}}
+        ai.brainyard/mulog {:local/root "../mulog"}
+        ai.brainyard/clj-llm {:local/root "../clj-llm"}}
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {}}}}

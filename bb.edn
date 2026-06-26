@@ -616,6 +616,68 @@
              (println "Uberjar built: projects/agent-tui-app/target/agent-tui-app.jar")
              (println "  META-INF/native-image config: present.")))}
 
+  sqlite-vec:fetch
+  {:doc "Fetch the sqlite-vec loadable extension (vec0) for the host platform
+  into components/memory/resources/sqlite-vec/ (gitignored). The native build
+  bundles it as a resource; at runtime the memory component extracts + loads it
+  for the `graph_vec` vector index (CR-MEM-21). Pin: v0.1.9, sha256-verified.
+  Pass `--all` to fetch every target platform (for cross-builds)."
+   :requires ([babashka.fs :as fs]
+              [clojure.string :as str])
+   :task
+   (let [version "0.1.9"
+         ;; sha256 of each loadable tarball (from the release checksums.txt).
+         sums {"macos-aarch64" "8282126333399ddfe98bbbcc7a1936e7252625aac49df056a98be602e46bfd29"
+               "macos-x86_64"  "53ad76e400786515e2edcaed2f01271dda846316390b761fadbd2dcf56aa4713"
+               "linux-aarch64" "ea03d39541e478fab5974253c461e1cb5d77742f69e40cf96e3fad5bc309a37c"
+               "linux-x86_64"  "b959baa1d8dc88861b1edb337b8587178cdcb12d60b4998f9d10b6a82052d5d7"}
+         os   (let [n (str/lower-case (System/getProperty "os.name"))]
+                (cond (str/includes? n "mac") "macos"
+                      (str/includes? n "linux") "linux"
+                      :else (do (println "Unsupported OS for sqlite-vec:" n)
+                                (System/exit 1))))
+         arch (let [a (str/lower-case (System/getProperty "os.arch"))]
+                (cond (or (= a "aarch64") (= a "arm64")) "aarch64"
+                      (or (= a "x86_64") (= a "amd64"))  "x86_64"
+                      :else (do (println "Unsupported arch for sqlite-vec:" a)
+                                (System/exit 1))))
+         ext  (if (= os "macos") "dylib" "so")
+         targets (if (some #{"--all"} *command-line-args*)
+                   (keys sums)
+                   [(str os "-" arch)])
+         out-dir "components/memory/resources/sqlite-vec"]
+     (fs/create-dirs out-dir)
+     (doseq [plat targets]
+       (let [tar  (str "sqlite-vec-" version "-loadable-" plat ".tar.gz")
+             url  (str "https://github.com/asg017/sqlite-vec/releases/download/v"
+                       version "/" tar)
+             tarp (str out-dir "/" tar)
+             pext (if (str/starts-with? plat "macos") "dylib" "so")
+             dest (str out-dir "/vec0-" plat "." pext)]
+         (if (fs/exists? dest)
+           (println "✓ already present:" dest)
+           (do
+             (println "Fetching" url)
+             (let [r (shell {:continue true} "curl" "-sL" "--fail" "--max-time" "120" "-o" tarp url)]
+               (when-not (zero? (:exit r))
+                 (println "Download failed:" url) (System/exit 1)))
+             ;; Verify sha256 before extracting.
+             (let [got (-> (shell {:out :string} "shasum" "-a" "256" tarp)
+                           :out (str/split (re-pattern "\\s+")) first)
+                   want (get sums plat)]
+               (when-not (= got want)
+                 (println (str "Checksum mismatch for " tar "\n  got:  " got "\n  want: " want))
+                 (fs/delete-if-exists tarp)
+                 (System/exit 1)))
+             (shell "tar" "xzf" tarp "-C" out-dir)
+             ;; The tarball extracts a bare `vec0.<ext>`; rename per-platform.
+             (let [bare (str out-dir "/vec0." pext)]
+               (when (fs/exists? bare) (fs/move bare dest {:replace-existing true})))
+             (fs/delete-if-exists tarp)
+             (println "✓ installed:" dest))))
+       (println "Locator: set BY_SQLITE_VEC_PATH to override; otherwise the memory"
+                "component finds it under resources/sqlite-vec/ at runtime.")))}
+
   native:ata
   {:doc "Build native binary 'by' with GraalVM native-image"
    :task (do
@@ -697,8 +759,9 @@
                      (System/exit 1))))))}
 
   build:ata
-  {:doc "Full build: compile → uberjar → native binary 'by'"
+  {:doc "Full build: fetch sqlite-vec → compile → uberjar → native binary 'by'"
    :task (do
+           (run 'sqlite-vec:fetch)   ; CR-MEM-21: bundle vec0 into the image
            (run 'compile:ata)
            (run 'uberjar:ata)
            (run 'native:ata)

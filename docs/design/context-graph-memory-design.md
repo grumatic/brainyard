@@ -350,8 +350,8 @@ today). Proposed new contracts continue the `CR-MEM` series:
 | Phase | Deliverable | New contract (proposed) |
 |---|---|---|
 | **0 ✅** | `GraphStore` protocol + SQLite impl behind the `:enable-graph-memory` flag; `graph_nodes`/`graph_edges` DDL (schema 2.1.0, IF-NOT-EXISTS migration); manual node/edge API + bounded multi-hop `expand` + bi-temporal `as-of`. Shipped & tested (`graph_test.clj`). | CR-MEM-20 |
-| **1** | `sqlite-vec` integration + `graph_vec`; embedding provider wired through `clj-llm/create-embeddings` (degrade to no-op if absent); `read-vec` added to recall + RRF weight. | CR-MEM-21 |
-| **2** | LLM extraction pipeline off the capture sidecar (entity + relationship + resolution + bi-temporal invalidation); async, batched, budget-bounded. Adds the `memory → clj-llm` dependency. | CR-MEM-22 |
+| **1 ✅** | `sqlite-vec` integration + `graph_vec` (vec0, dims via `BY_GRAPH_EMBED_DIMS`/768); per-connection extension auto-load; embedding via injected `embed-fn` over `clj-llm/create-embeddings` (no-op if absent); L3 facts indexed on write; `read-vec` + `:vec` RRF weight (0.5). `bb sqlite-vec:fetch` (sha-pinned v0.1.9) bundled into the native image (resource-config). JVM-tested (`vec_test.clj`). | CR-MEM-21 |
+| **2** | LLM extraction pipeline off the capture sidecar (entity + relationship + resolution + bi-temporal invalidation); async, batched, budget-bounded. (The `memory → clj-llm` dependency already landed in Phase 1.) | CR-MEM-22 |
 | **3** | `read-graph` multi-hop expansion in `recall_v2` (over the Phase-0 `expand`); "## Related" briefing section; as-of historical queries in `explain`. | CR-MEM-23 |
 | **4** | Community detection + community summaries; **replaces** the heuristic L2→L3 reducer (closes the long-standing CR-MEM-07 *Partial*). | CR-MEM-24 |
 | **5 (opt.)** | Pluggable **neo4j** backend behind `GraphStore` for hosted/team mode; Kuzu evaluated only if CTE traversal is measured as a bottleneck. | CR-MEM-25 |

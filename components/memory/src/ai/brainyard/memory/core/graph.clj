@@ -17,6 +17,8 @@
   (:require [next.jdbc :as jdbc]
             [clojure.data.json :as json]
             [clojure.string :as str]
+            [ai.brainyard.memory.core.embed :as embed]
+            [ai.brainyard.memory.core.entry :as entry]
             [ai.brainyard.mulog.interface :as mulog]))
 
 ;; =====================================================
@@ -250,6 +252,88 @@
                 (let [m (denamespace row)]
                   {:node (row->node (dissoc m :depth)) :depth (:depth m)}))
               rows)))))
+
+;; =====================================================
+;; Vector index (CR-MEM-21, sqlite-vec graph_vec)
+;; =====================================================
+
+(defn vec-available?
+  "True when the `graph_vec` virtual table exists (i.e. sqlite-vec loaded)."
+  [ds]
+  (try
+    (boolean (jdbc/execute-one!
+              ds ["SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_vec'"]))
+    (catch Exception _ false)))
+
+(defn upsert-fact-embedding!
+  "Store (replace) the embedding for an L3 fact row in `graph_vec`. vec0 has
+  no UPDATE on auxiliary columns, so we delete-then-insert by ref. No-op
+  when the table is absent."
+  [ds row-id embedding]
+  (when (and row-id (seq embedding) (vec-available? ds))
+    (try
+      (jdbc/execute! ds ["DELETE FROM graph_vec WHERE ref_kind = 'fact' AND ref_id = ?" row-id])
+      (jdbc/execute! ds ["INSERT INTO graph_vec(embedding, ref_kind, ref_id) VALUES (?, 'fact', ?)"
+                         (embed/->vec0-json embedding) row-id])
+      true
+      (catch Exception e
+        (mulog/warn ::vec-embedding-upsert-failed :row-id row-id :error (ex-message e))
+        false))))
+
+(defn- vec-knn
+  "kNN over graph_vec for a query embedding. Returns
+  [{:ref-kind :ref-id :distance} …] ordered by ascending distance."
+  [ds query-embedding {:keys [limit] :or {limit 8}}]
+  (try
+    (->> (jdbc/execute!
+          ds [(str "SELECT ref_kind, ref_id, distance FROM graph_vec "
+                   "WHERE embedding MATCH ? AND k = ? ORDER BY distance")
+              (embed/->vec0-json query-embedding) limit])
+         (mapv (fn [r]
+                 (let [m (denamespace r)]
+                   {:ref-kind (:ref_kind m) :ref-id (:ref_id m) :distance (:distance m)}))))
+    (catch Exception e
+      (mulog/warn ::vec-knn-failed :error (ex-message e))
+      [])))
+
+(defn- fetch-l3-by-rowids
+  "Hydrate L3 fact entries by their SQL row ids, excluding archived /
+  tombstoned. Returns entry maps (carrying :db-id)."
+  [ds user-id row-ids]
+  (when (seq row-ids)
+    (let [ph   (str/join "," (repeat (count row-ids) "?"))
+          rows (jdbc/execute!
+                ds (into [(str "SELECT * FROM semantic_facts "
+                               "WHERE user_id = ? AND archived_flag = 0 AND tombstoned_flag = 0 "
+                               "AND id IN (" ph ")")
+                          user-id]
+                         row-ids))]
+      (mapv (fn [row]
+              (entry/fact-row->entry
+               (into {} (map (fn [[k v]]
+                               [(if (and (keyword? k) (namespace k)) (keyword (name k)) k) v]))
+                     row)))
+            rows))))
+
+(defn vec-search
+  "Semantic recall over the vector index. Embeds `query` (via `embed-fn`),
+  runs kNN over `graph_vec`, hydrates the L3 fact hits, and returns entries
+  ordered by similarity with `:_vec_distance` attached. Returns [] when
+  vector search is unavailable (no embed-fn, blank query, or no table) —
+  the non-regressing fallback."
+  [ds user-id embed-fn query {:keys [limit] :as opts}]
+  (if (or (nil? embed-fn) (not (string? query)) (str/blank? query) (not (vec-available? ds)))
+    []
+    (if-let [qe (embed/embed-one embed-fn query)]
+      (let [hits     (vec-knn ds qe (or opts {:limit (or limit 8)}))
+            fact-ids (->> hits (filter #(= "fact" (:ref-kind %))) (map :ref-id) (remove nil?))
+            dist-by  (into {} (map (juxt :ref-id :distance) hits))
+            entries  (fetch-l3-by-rowids ds user-id fact-ids)]
+        (->> entries
+             (map (fn [e] (assoc e :_vec_distance (get dist-by (:db-id e)))))
+             (sort-by #(or (:_vec_distance %) Double/MAX_VALUE))
+             vec))
+      [])))
 
 (defn as-of
   "Like `neighbors`, but returns edges valid at `timestamp`:

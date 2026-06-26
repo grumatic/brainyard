@@ -45,6 +45,92 @@
         (.mkdirs parent)))))
 
 ;; =====================================================
+;; sqlite-vec extension (CR-MEM-21)
+;; =====================================================
+;;
+;; The `graph_vec` vector index needs the `sqlite-vec` C extension (`vec0`)
+;; loaded on every connection that touches it. The binary is fetched per
+;; platform by `bb sqlite-vec:fetch` into resources/sqlite-vec/ (gitignored,
+;; bundled into the native image). Resolution is best-effort and memoized:
+;; when no binary is found, vector search is simply unavailable and recall
+;; falls back to FTS — nothing throws.
+
+(defn- vec-platform
+  "host platform tag, e.g. \"macos-aarch64\", or nil if unsupported."
+  []
+  (let [os   (str/lower-case (System/getProperty "os.name"))
+        arch (str/lower-case (System/getProperty "os.arch"))
+        os'  (cond (str/includes? os "mac")   "macos"
+                   (str/includes? os "linux") "linux")
+        arc' (cond (#{"aarch64" "arm64"} arch)  "aarch64"
+                   (#{"x86_64" "amd64"} arch)    "x86_64")]
+    (when (and os' arc') (str os' "-" arc'))))
+
+(defn- vec-file-ext []
+  (if (str/includes? (str/lower-case (System/getProperty "os.name")) "mac") "dylib" "so"))
+
+(defn- strip-lib-ext
+  "Drop a trailing .dylib/.so/.dll — sqlite3_load_extension appends the
+  platform default, so the path must be passed without an extension."
+  [p]
+  (str/replace p (re-pattern "\\.(dylib|so|dll)$") ""))
+
+(defonce ^:private !vec-ext-path (atom ::unresolved))
+
+(defn- extract-bundled-vec
+  "Copy the bundled sqlite-vec resource (if present on the classpath) to a
+  temp file and return its base path (no extension); else nil."
+  []
+  (when-let [plat (vec-platform)]
+    (when-let [url (io/resource (str "sqlite-vec/vec0-" plat "." (vec-file-ext)))]
+      (let [tmp (java.io.File/createTempFile "vec0-" (str "." (vec-file-ext)))]
+        (.deleteOnExit tmp)
+        (with-open [in (io/input-stream url)]
+          (io/copy in tmp))
+        (strip-lib-ext (.getAbsolutePath tmp))))))
+
+(defn resolve-vec-extension
+  "Resolve the sqlite-vec extension base path (no file extension), or nil
+  when vector search is unavailable. Order: BY_SQLITE_VEC_PATH env >
+  bundled classpath resource > nil. Memoized; call `reset-vec-extension!`
+  in tests to re-resolve."
+  []
+  (let [v @!vec-ext-path]
+    (if (not= v ::unresolved)
+      v
+      (let [resolved (or (when-let [e (System/getenv "BY_SQLITE_VEC_PATH")]
+                           (when-not (str/blank? e) (strip-lib-ext e)))
+                         (extract-bundled-vec))]
+        (when resolved (mulog/info ::sqlite-vec-resolved :path resolved))
+        (reset! !vec-ext-path resolved)
+        resolved))))
+
+(defn reset-vec-extension!
+  "Clear the memoized sqlite-vec path (tests)."
+  []
+  (reset! !vec-ext-path ::unresolved))
+
+(defn graph-embed-dims
+  "Embedding dimensionality for the `graph_vec` table. Fixed at table
+  creation, so the configured embedding model must match. Env
+  BY_GRAPH_EMBED_DIMS overrides the 768 default."
+  []
+  (or (when-let [v (System/getenv "BY_GRAPH_EMBED_DIMS")]
+        (try (Integer/parseInt (str/trim v)) (catch Exception _ nil)))
+      768))
+
+(defn- load-vec!
+  "Load the sqlite-vec extension on a connection. Non-fatal: a failure
+  leaves the connection usable for everything except `graph_vec`. Uses
+  next.jdbc (not raw `.createStatement`) so it stays reflection-free under
+  GraalVM native-image — the path is our own trusted resource."
+  [conn vec-base]
+  (try
+    (jdbc/execute! conn [(str "SELECT load_extension('" vec-base "')")])
+    (catch Exception e
+      (mulog/warn ::sqlite-vec-load-failed :path vec-base :error (ex-message e)))))
+
+;; =====================================================
 ;; Connection Management
 ;; =====================================================
 
@@ -75,23 +161,48 @@
 
   Both Connection and DataSource work as next.jdbc connectables."
   [db-path]
-  (let [db-path (expand-path db-path)]
+  (let [db-path  (expand-path db-path)
+        vec-base (resolve-vec-extension)]
     (if (str/includes? db-path ":memory:")
       ;; In-memory: return a single connection as the connectable.
       ;; Each connection to :memory: gets its own private database.
       ;; We hold this connection so the DB persists across operations.
-      (let [ds (jdbc/get-datasource {:dbtype "sqlite" :dbname ":memory:"})
-            conn (jdbc/get-connection ds)]
+      (let [conn (if vec-base
+                   ;; enableLoadExtension is a connect-time property. Use a
+                   ;; PRIVATE :memory: db (drop any `?cache=shared` in db-path)
+                   ;; so each in-memory store stays isolated — matching the
+                   ;; non-vec branch, which hardcodes `:dbname ":memory:"`.
+                   (let [cfg (doto (org.sqlite.SQLiteConfig.) (.enableLoadExtension true))]
+                     (java.sql.DriverManager/getConnection "jdbc:sqlite::memory:"
+                                                           (.toProperties cfg)))
+                   (jdbc/get-connection (jdbc/get-datasource {:dbtype "sqlite" :dbname ":memory:"})))]
         (apply-pragmas! conn)
+        (when vec-base (load-vec! conn vec-base))
         conn)
-      ;; File-based: normal datasource
+      ;; File-based: a DataSource (new connection per op).
       (do
         (ensure-parent-dir! db-path)
-        (let [ds (jdbc/get-datasource {:dbtype "sqlite"
-                                       :dbname db-path})]
-          (with-open [conn (jdbc/get-connection ds)]
-            (apply-pragmas! conn))
-          ds)))))
+        (if vec-base
+          ;; Every connection must enable + load vec0, since the `graph_vec`
+          ;; virtual table's module is connection-scoped. Pragmas are applied
+          ;; per-connection here too (the non-vec path applies them once).
+          (let [url (str "jdbc:sqlite:" db-path)
+                cfg (doto (org.sqlite.SQLiteConfig.) (.enableLoadExtension true))
+                ds  (reify javax.sql.DataSource
+                      (getConnection [_]
+                        (let [c (java.sql.DriverManager/getConnection url (.toProperties cfg))]
+                          (apply-pragmas! c)
+                          (load-vec! c vec-base)
+                          c))
+                      (getConnection [this _user _pass] (.getConnection this)))]
+            ;; Eagerly open once so the DB file exists immediately (parity with
+            ;; the non-vec branch, which callers rely on).
+            (with-open [_ (.getConnection ^javax.sql.DataSource ds)])
+            ds)
+          (let [ds (jdbc/get-datasource {:dbtype "sqlite" :dbname db-path})]
+            (with-open [conn (jdbc/get-connection ds)]
+              (apply-pragmas! conn))
+            ds))))))
 
 ;; =====================================================
 ;; Schema Definitions
@@ -259,6 +370,18 @@
    "CREATE INDEX IF NOT EXISTS idx_edges_src ON graph_edges(user_id, src_id) WHERE t_invalid IS NULL"
    "CREATE INDEX IF NOT EXISTS idx_edges_dst ON graph_edges(user_id, dst_id) WHERE t_invalid IS NULL"])
 
+(defn- vec-schema
+  "DDL for the `graph_vec` vector index (CR-MEM-21), built when sqlite-vec
+  is available. `+ref_kind`/`+ref_id` are auxiliary (retrievable) columns
+  carrying the back-reference to a node summary or L3 fact row. Dimensions
+  are fixed at creation (see `graph-embed-dims`)."
+  [dims]
+  [(str "CREATE VIRTUAL TABLE IF NOT EXISTS graph_vec USING vec0(
+           embedding float[" dims "],
+           +ref_kind text,
+           +ref_id integer
+         )")])
+
 (def ^:private metadata-schema
   "Schema for memory system metadata"
   ["CREATE TABLE IF NOT EXISTS memory_metadata (
@@ -325,7 +448,11 @@
                             episodic-schema
                             semantic-schema
                             audit-schema
-                            graph-schema)]
+                            graph-schema
+                            ;; The vector index only exists when sqlite-vec
+                            ;; loaded; otherwise recall falls back to FTS.
+                            (when (resolve-vec-extension)
+                              (vec-schema (graph-embed-dims))))]
     (doseq [stmt all-schemas]
       (execute-ddl! ds stmt))
 

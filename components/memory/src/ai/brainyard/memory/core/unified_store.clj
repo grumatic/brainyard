@@ -20,6 +20,7 @@
             [ai.brainyard.memory.core.semantic :as semantic]
             [ai.brainyard.memory.core.capture.reducer :as capture-reducer]
             [ai.brainyard.memory.core.graph :as graph]
+            [ai.brainyard.memory.core.embed :as embed]
             [ai.brainyard.mulog.interface :as mulog]
             [next.jdbc :as jdbc]))
 
@@ -184,7 +185,7 @@
 ;; UnifiedStore record
 ;; =====================================================
 
-(defrecord UnifiedStore [user-id ds l1-store]
+(defrecord UnifiedStore [user-id ds l1-store embed-fn]
   proto/IMemoryStore
 
   (write-entry [_ layer in]
@@ -210,6 +211,11 @@
               result (semantic/store-fact! ds row)]
           (when result
             (mulog/debug ::l3-write :entry-id (:id in') :db-id (:id result))
+            ;; CR-MEM-21: index the fact's content for semantic recall. Best
+            ;; effort — embedding/vec failures never block the write.
+            (when embed-fn
+              (when-let [e (embed/embed-one embed-fn (:content in'))]
+                (graph/upsert-fact-embedding! ds (:id result) e)))
             (entry/fact-row->entry (merge row (select-keys result [:id])))))
 
         (throw (ex-info "UnifiedStore/write-entry: unknown layer"
@@ -275,7 +281,8 @@
   (invalidate-edge [_ edge-id t-invalid] (graph/invalidate-edge ds user-id edge-id t-invalid))
   (neighbors       [_ node-id opts]      (graph/neighbors ds user-id node-id opts))
   (expand          [_ seed-ids opts]     (graph/expand ds user-id seed-ids opts))
-  (as-of           [_ node-id ts opts]   (graph/as-of ds user-id node-id ts opts)))
+  (as-of           [_ node-id ts opts]   (graph/as-of ds user-id node-id ts opts))
+  (vec-search      [_ query opts]        (graph/vec-search ds user-id embed-fn query opts)))
 
 ;; =====================================================
 ;; Factory
@@ -289,9 +296,11 @@
     :ds         next.jdbc datasource (or in-memory connection)
 
   Optional:
-    :l1-store   pre-built L1Store (default: fresh)"
-  [& {:keys [user-id ds l1-store]
+    :l1-store   pre-built L1Store (default: fresh)
+    :embed-fn   (fn [texts] -> [[float…] …]) for the CR-MEM-21 vector index;
+                nil (default) disables semantic recall (FTS-only)."
+  [& {:keys [user-id ds l1-store embed-fn]
       :as opts}]
   (when-not user-id (throw (ex-info "UnifiedStore requires :user-id" opts)))
   (when-not ds      (throw (ex-info "UnifiedStore requires :ds" opts)))
-  (->UnifiedStore user-id ds (or l1-store (l1/create-l1-store))))
+  (->UnifiedStore user-id ds (or l1-store (l1/create-l1-store)) embed-fn))

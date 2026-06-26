@@ -3,6 +3,8 @@
   "includes":[{
     "pattern":"cognitect/aws/.*\\.edn"
   }, {
+    "pattern":"sqlite-vec/vec0-.*\\.(dylib|so)"
+  }, {
     "pattern":"\\QMETA-INF/maven/org.xerial/sqlite-jdbc/pom.properties\\E"
   }, {
     "pattern":"\\QMETA-INF/services/ch.qos.logback.classic.spi.Configurator\\E"

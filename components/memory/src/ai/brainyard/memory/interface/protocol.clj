@@ -257,7 +257,14 @@
   (as-of [this node-id timestamp opts]
     "Like `neighbors`, but returns edges that were valid at `timestamp`
      (`t_valid <= ts AND (t_invalid IS NULL OR t_invalid > ts)`). Used by
-     audit/`explain` to reconstruct \"what did we believe then.\""))
+     audit/`explain` to reconstruct \"what did we believe then.\"")
+
+  (vec-search [this query opts]
+    "Semantic recall (CR-MEM-21): embed `query`, kNN over the `graph_vec`
+     vector index, and return hydrated L3 fact entries ordered by
+     similarity (each with `:_vec_distance`). opts: {:limit n}. Returns []
+     when vector search is unavailable (no embedding provider, no sqlite-vec
+     extension, or blank query) — the non-regressing fallback to FTS."))
 
 ;; =====================================================
 ;; Helper Functions

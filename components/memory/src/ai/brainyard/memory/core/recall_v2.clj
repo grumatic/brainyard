@@ -29,15 +29,20 @@
 ;; Defaults
 ;; =====================================================
 
-(def default-layers [:l1 :l2 :l3])
+(def default-layers
+  "Recall candidate sources. `:vec` (CR-MEM-21 semantic similarity) is
+  included by default but is a no-op unless sqlite-vec + an embedding
+  provider are configured, so it never changes behavior on its own."
+  [:l1 :l2 :l3 :vec])
 
 (def default-weights
   "Per-layer RRF weights. L1 (system + user context) ranks lowest
   because it is already in the system prompt; L2/L3 surface more
-  aggressively."
+  aggressively. `:vec` fuses semantic hits alongside L3 FTS."
   {:l1 0.3
    :l2 0.4
-   :l3 0.6})
+   :l3 0.6
+   :vec 0.5})
 
 (def default-per-layer-limit 8)
 
@@ -71,13 +76,23 @@
                         match (assoc :match match))
                       {:limit (or limit default-per-layer-limit)}))
 
+(defn- read-vec
+  "CR-MEM-21 semantic-similarity candidates: embed the query and kNN over
+  the vector index via the store's GraphStore surface. Returns L3 fact
+  entries (with :_vec_distance); [] when vector search is unavailable."
+  [store query _keywords {:keys [limit]}]
+  (if (satisfies? proto/GraphStore store)
+    (proto/vec-search store query {:limit (or limit default-per-layer-limit)})
+    []))
+
 (defn- read-layer
   [layer store query keywords opts]
   (try
     (case (keyword layer)
-      :l1 (read-l1 store query keywords opts)
-      :l2 (read-l2 store query keywords opts)
-      :l3 (read-l3 store query keywords opts)
+      :l1  (read-l1 store query keywords opts)
+      :l2  (read-l2 store query keywords opts)
+      :l3  (read-l3 store query keywords opts)
+      :vec (read-vec store query keywords opts)
       [])
     (catch Exception e
       (mulog/warn ::recall-layer-failed :layer layer :error (ex-message e))
