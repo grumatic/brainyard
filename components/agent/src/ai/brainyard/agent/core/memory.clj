@@ -178,6 +178,24 @@
     (or (config/brainyard-subdir dirs "memory" :user)
         "~/.brainyard/memory")))
 
+(defn- resolve-graph-lm
+  "Resolve a `provider/model` graph-model string to a clj-llm lm-config via
+   explicit `create-lm`. We do NOT use `parse-lm-str` here because it rejects
+   models absent from the curated catalog — which embedding models almost
+   always are (e.g. `ollama/nomic-embed-text`, `openai/text-embedding-3-small`).
+   Splits on the first `/` so models containing `:` (e.g. bedrock ids) survive.
+   Returns nil on a blank string or any resolution failure (⇒ provider off)."
+  [s]
+  (when-let [s (some-> s str/trim not-empty)]
+    (let [i        (str/index-of s "/")
+          provider (when i (subs s 0 i))
+          model    (if i (subs s (inc i)) s)]
+      (try
+        (if provider
+          (llm/create-lm {:provider (keyword provider) :model model})
+          (llm/parse-lm-str s))
+        (catch Exception _ nil)))))
+
 (defn- graph-provider-opts
   "Build the context-graph provider fns (CR-MEM-21/22) from config, or `{}`.
 
@@ -195,9 +213,9 @@
           ;; embedder (no server, no native libs); any other value is an LM
           ;; string resolved through clj-llm's /embeddings.
           static?    (= "static" (some-> embed-model str/trim str/lower-case))
-          embed-lm   (when-not static? (some-> embed-model llm/parse-lm-str))
+          embed-lm   (when-not static? (resolve-graph-lm embed-model))
           static-ef  (when static? (mem/static-embed-fn))
-          extract-lm (some-> (config/get-config :graph-extract-model) llm/parse-lm-str)]
+          extract-lm (resolve-graph-lm (config/get-config :graph-extract-model))]
       (cond-> {}
         static-ef  (assoc :embed-fn   static-ef
                           :embed-dims (mem/static-embed-dims))
