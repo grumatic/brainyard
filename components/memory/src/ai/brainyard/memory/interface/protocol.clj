@@ -264,7 +264,16 @@
      vector index, and return hydrated L3 fact entries ordered by
      similarity (each with `:_vec_distance`). opts: {:limit n}. Returns []
      when vector search is unavailable (no embedding provider, no sqlite-vec
-     extension, or blank query) — the non-regressing fallback to FTS."))
+     extension, or blank query) — the non-regressing fallback to FTS.")
+
+  (related [this keywords opts]
+    "Relational recall (CR-MEM-23): resolve seed nodes from query
+     `keywords` (name/alias/summary match), expand the bounded neighborhood
+     (≤ max-hops) over valid edges, and return relationship entries — for
+     fusion into the RRF and the '## Related' briefing. Each entry has
+     `:layer :graph`, `:content` rendered as `src —relation→ dst[: fact]`,
+     and `:_graph {:src :relation :dst}`. opts: {:limit n :max-hops n}.
+     Returns [] when the graph is empty."))
 
 ;; =====================================================
 ;; Helper Functions

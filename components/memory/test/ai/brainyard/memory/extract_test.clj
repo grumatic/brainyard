@@ -100,12 +100,17 @@
       (try
         (extractor/enqueue! ex {:id "ep-9"
                                 :content "We tuned native-image.properties for the GraalVM build at length."})
-        (is (wait-for #(proto/find-node *store* :concept "GraalVM") 5000)
-            "node materialized from the async pipeline")
-        (let [g (proto/find-node *store* :concept "GraalVM")
-              [nb] (proto/neighbors *store* (:id g) {:direction :in})]
-          (is (= "native-image.properties" (-> nb :node :name)))
-          (is (= ["ep-9"] (-> nb :edge :source-entry-ids)) "provenance carried through"))
+        ;; Wait for the EDGE (written after the nodes) so we don't race the
+        ;; node-then-edge ordering inside process-extraction!.
+        (let [edge-present? (fn []
+                              (when-let [g (proto/find-node *store* :concept "GraalVM")]
+                                (seq (proto/neighbors *store* (:id g) {:direction :in}))))]
+          (is (wait-for edge-present? 5000)
+              "node + edge materialized from the async pipeline")
+          (let [g    (proto/find-node *store* :concept "GraalVM")
+                [nb] (proto/neighbors *store* (:id g) {:direction :in})]
+            (is (= "native-image.properties" (-> nb :node :name)))
+            (is (= ["ep-9"] (-> nb :edge :source-entry-ids)) "provenance carried through")))
         (finally (extractor/stop! ex))))))
 
 (deftest extractor-skips-trivial-content-test

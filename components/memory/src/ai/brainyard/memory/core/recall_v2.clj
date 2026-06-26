@@ -30,19 +30,22 @@
 ;; =====================================================
 
 (def default-layers
-  "Recall candidate sources. `:vec` (CR-MEM-21 semantic similarity) is
-  included by default but is a no-op unless sqlite-vec + an embedding
-  provider are configured, so it never changes behavior on its own."
-  [:l1 :l2 :l3 :vec])
+  "Recall candidate sources. `:vec` (CR-MEM-21 semantic similarity) and
+  `:graph` (CR-MEM-23 relational/multi-hop) are included by default but are
+  no-ops unless the graph is populated / an embedding provider is
+  configured, so they never change behavior on their own."
+  [:l1 :l2 :l3 :vec :graph])
 
 (def default-weights
   "Per-layer RRF weights. L1 (system + user context) ranks lowest
   because it is already in the system prompt; L2/L3 surface more
-  aggressively. `:vec` fuses semantic hits alongside L3 FTS."
+  aggressively. `:vec` fuses semantic hits alongside L3 FTS; `:graph`
+  contributes relational neighbors."
   {:l1 0.3
    :l2 0.4
    :l3 0.6
-   :vec 0.5})
+   :vec 0.5
+   :graph 0.55})
 
 (def default-per-layer-limit 8)
 
@@ -85,14 +88,24 @@
     (proto/vec-search store query {:limit (or limit default-per-layer-limit)})
     []))
 
+(defn- read-graph
+  "CR-MEM-23 relational candidates: resolve seed nodes from the query
+  keywords and expand the bounded neighborhood via the store's GraphStore
+  surface. Returns relationship entries; [] when the graph is empty."
+  [store _query keywords {:keys [limit]}]
+  (if (satisfies? proto/GraphStore store)
+    (proto/related store keywords {:limit (or limit default-per-layer-limit)})
+    []))
+
 (defn- read-layer
   [layer store query keywords opts]
   (try
     (case (keyword layer)
-      :l1  (read-l1 store query keywords opts)
-      :l2  (read-l2 store query keywords opts)
-      :l3  (read-l3 store query keywords opts)
-      :vec (read-vec store query keywords opts)
+      :l1    (read-l1 store query keywords opts)
+      :l2    (read-l2 store query keywords opts)
+      :l3    (read-l3 store query keywords opts)
+      :vec   (read-vec store query keywords opts)
+      :graph (read-graph store query keywords opts)
       [])
     (catch Exception e
       (mulog/warn ::recall-layer-failed :layer layer :error (ex-message e))
@@ -120,6 +133,7 @@
                     "[l1]")
               :l2 (str "[" (when kind (name kind)) "]")
               :l3 (str "[fact:" (when kind (name kind)) "]")
+              :graph "[rel]"
               "[?]")]
     (str "- " tag " " (truncate content 200) "  (#" id ")")))
 
@@ -131,6 +145,7 @@
     User Context    (L1, kind :user-context)
     Recent Events   (L2)
     What We Know    (L3)
+    Related         (graph — relational neighborhood, CR-MEM-23)
 
   Each line carries an entry-id so the agent can request expansion."
   [layers->entries & {:keys [budget] :or {budget 4000}}]
@@ -140,7 +155,8 @@
         sections [["System Context" sys]
                   ["User Context"   usr]
                   ["Recent Events"  (get layers->entries :l2)]
-                  ["What We Know"   (get layers->entries :l3)]]
+                  ["What We Know"   (get layers->entries :l3)]
+                  ["Related"        (get layers->entries :graph)]]
         chunks (for [[label entries] sections
                      :when (seq entries)]
                  (str "## " label "\n"

@@ -282,7 +282,8 @@
   (neighbors       [_ node-id opts]      (graph/neighbors ds user-id node-id opts))
   (expand          [_ seed-ids opts]     (graph/expand ds user-id seed-ids opts))
   (as-of           [_ node-id ts opts]   (graph/as-of ds user-id node-id ts opts))
-  (vec-search      [_ query opts]        (graph/vec-search ds user-id embed-fn query opts)))
+  (vec-search      [_ query opts]        (graph/vec-search ds user-id embed-fn query opts))
+  (related         [_ keywords opts]     (graph/related ds user-id keywords opts)))
 
 ;; =====================================================
 ;; Factory

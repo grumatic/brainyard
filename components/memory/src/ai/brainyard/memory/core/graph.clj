@@ -345,6 +345,85 @@
              vec))
       [])))
 
+;; =====================================================
+;; Relational recall (CR-MEM-23)
+;; =====================================================
+
+(defn search-nodes
+  "Resolve candidate seed nodes by matching query `keywords` against node
+  name / summary / aliases (case-insensitive substring). Returns node maps.
+  This is the entry point for relational recall — cheap, deterministic, and
+  independent of the embedding provider."
+  [ds user-id keywords {:keys [limit] :or {limit 8}}]
+  (let [kws (->> keywords (map str) (remove str/blank?) distinct (take 8) vec)]
+    (when (seq kws)
+      (let [clause (str/join " OR "
+                             (mapcat (constantly
+                                      ["lower(name) LIKE ?"
+                                       "lower(IFNULL(summary,'')) LIKE ?"
+                                       "lower(IFNULL(aliases,'')) LIKE ?"])
+                                     kws))
+            params (mapcat (fn [kw] (let [p (str "%" (str/lower-case kw) "%")]
+                                      [p p p]))
+                           kws)
+            sql    (str "SELECT * FROM graph_nodes WHERE user_id = ? AND ("
+                        clause ") LIMIT ?")]
+        (mapv row->node (jdbc/execute! ds (into [sql user-id] (concat params [limit]))))))))
+
+(defn expand-edges
+  "Valid edges in the 1..max-hops neighborhood of `seed-ids`, with src/dst
+  names attached. Returns maps {:id :relation :fact :confidence :src_id
+  :dst_id :src_name :dst_name}. Bounded recursive CTE (max-hops clamped ≤3)."
+  [ds user-id seed-ids {:keys [max-hops limit] :or {max-hops 2 limit 12}}]
+  (let [hops  (min (max 1 max-hops) 3)
+        seeds (vec (distinct seed-ids))]
+    (if (empty? seeds)
+      []
+      (let [seeds-json (json/write-str seeds)
+            sql (str "WITH RECURSIVE walk(node_id, depth) AS ("
+                     "  SELECT CAST(value AS INTEGER), 0 FROM json_each(?) "
+                     "  UNION "
+                     "  SELECT CASE WHEN e.src_id = w.node_id THEN e.dst_id ELSE e.src_id END, w.depth + 1 "
+                     "  FROM walk w "
+                     "  JOIN graph_edges e ON (e.src_id = w.node_id OR e.dst_id = w.node_id) "
+                     "  WHERE e.user_id = ? AND e.t_invalid IS NULL AND w.depth < ? ) "
+                     "SELECT DISTINCT e.id AS id, e.relation AS relation, e.fact AS fact, "
+                     "       e.confidence AS confidence, e.src_id AS src_id, e.dst_id AS dst_id, "
+                     "       ns.name AS src_name, nd.name AS dst_name "
+                     "FROM graph_edges e "
+                     "JOIN walk w ON (e.src_id = w.node_id OR e.dst_id = w.node_id) "
+                     "JOIN graph_nodes ns ON ns.id = e.src_id "
+                     "JOIN graph_nodes nd ON nd.id = e.dst_id "
+                     "WHERE e.user_id = ? AND e.t_invalid IS NULL "
+                     "LIMIT ?")
+            rows (jdbc/execute! ds [sql seeds-json user-id hops user-id limit])]
+        (mapv denamespace rows)))))
+
+(defn- edge->entry
+  "Render a neighborhood edge as a recall entry (RRF-compatible + briefing)."
+  [e]
+  (let [rel (name (keyword (:relation e)))]
+    {:id         (str "graph-edge-" (:id e))
+     :layer      :graph
+     :kind       :relationship
+     :content    (str (:src_name e) " —" rel "→ " (:dst_name e)
+                      (when (and (:fact e) (not (str/blank? (:fact e))))
+                        (str ": " (:fact e))))
+     :confidence (or (:confidence e) 0.85)
+     :_graph     {:src (:src_name e) :relation (keyword (:relation e)) :dst (:dst_name e)}}))
+
+(defn related
+  "Relational recall: resolve seed nodes from query `keywords`, expand the
+  bounded neighborhood over valid edges, and return relationship entries —
+  for fusion into the RRF and the '## Related' briefing section. Returns []
+  when nothing matches (the non-regressing fallback)."
+  [ds user-id keywords {:keys [limit max-hops] :or {limit 8 max-hops 2}}]
+  (let [seeds (search-nodes ds user-id keywords {:limit 8})
+        edges (when (seq seeds)
+                (expand-edges ds user-id (map :id seeds)
+                              {:max-hops max-hops :limit (* 2 limit)}))]
+    (->> edges (map edge->entry) (take limit) vec)))
+
 (defn as-of
   "Like `neighbors`, but returns edges valid at `timestamp`:
   t_valid <= ts AND (t_invalid IS NULL OR t_invalid > ts)."

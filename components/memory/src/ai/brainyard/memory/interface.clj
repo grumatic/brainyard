@@ -77,6 +77,28 @@
   [lm-config & {:as opts}]
   (apply extract/make-extract-fn lm-config (mapcat identity opts)))
 
+(defn- ->store
+  [store-or-manager]
+  (if (instance? ai.brainyard.memory.core.unified_store.UnifiedStore store-or-manager)
+    store-or-manager
+    (:store store-or-manager)))
+
+(defn graph-related
+  "Relational recall (CR-MEM-23): seed nodes from `keywords`, expand the
+  bounded neighborhood, return relationship entries. opts: {:limit :max-hops}."
+  ([store-or-manager keywords] (graph-related store-or-manager keywords {}))
+  ([store-or-manager keywords opts]
+   (proto/related (->store store-or-manager) keywords opts)))
+
+(defn graph-as-of
+  "Historical neighborhood (CR-MEM-23): edges incident to `node-id` that were
+  valid at `timestamp` (`t_valid <= ts AND (t_invalid IS NULL OR t_invalid >
+  ts)`) — \"what did we believe then.\" opts: {:direction :relation :limit}."
+  ([store-or-manager node-id timestamp]
+   (graph-as-of store-or-manager node-id timestamp {}))
+  ([store-or-manager node-id timestamp opts]
+   (proto/as-of (->store store-or-manager) node-id timestamp opts)))
+
 ;; =====================================================
 ;; Recall (cross-layer)
 ;; =====================================================
