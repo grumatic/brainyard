@@ -223,12 +223,7 @@ Populate `tool-calls` as a JSON array to invoke one or more tools in a single it
    registered as `mcp$<server>$<tool>`, so filter by server with
    `:pattern \"^mcp\\\\$<server>\\\\$\"`.
 2. **get-tool-info** — fetch full schema for a specific `tool-id`. Call this
-   before invoking an unfamiliar tool so the `tool-args` shape is correct.
-
-### Background Tasks (for long-running operations)
-- **task$run** — start a background task. Required: `job-type` (`\"tool\"` |
-  `\"bash\"`). Returns `{task-id, status}`. Poll with `task$detail` (add
-  `:last-n N` for the captured output tail); cancel with `task$cancel`.")
+   before invoking an unfamiliar tool so the `tool-args` shape is correct.")
 
 (def ^:private react-footer
   "---
@@ -246,7 +241,7 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
      :role                — react-role
      :system-info         — host / workspace / LLM / session (stable per turn)
      :critical-rules      — ReAct contract
-     :tool-call-format    — JSON shape + bootstrap tools + background tasks
+     :tool-call-format    — JSON shape + bootstrap tools (list-tools/get-tool-info)
      :tools               — agent-tools detail (format-agent-tools)
      :tool-context        — per-agent :tool-context overlay
      :instruction         — per-agent :instruction
@@ -1162,15 +1157,13 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
   "
 Use the ReAct framework: each step, reason about the current state, then either
 call tools to make progress or give the final answer — observing prior results
-and judging whether the goal is met. The tool-call JSON format, the bootstrap
-discovery tools (list-tools / get-tool-info), and the background-task tools are
-documented in the system context above; this section adds only what's specific:
+and judging whether the goal is met. The tool-call JSON format and the bootstrap
+discovery tools (list-tools / get-tool-info) are documented in the system context
+above; this section adds only what's specific:
 
 - Prefer the bound tools listed below when they cover the goal; list-tools /
   get-tool-info are discovery aids for reaching anything else registered — not
   every-iteration calls.
-- For a tool or shell command that may take more than ~5s (API calls, data
-  processing, agents), run it in the background via task$run and poll task$detail.
 - Runtime config: invoke agent-runtime$config (no args to view settings; :key and
   :value to change one, effective from the next question round).
 ")
