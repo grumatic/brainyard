@@ -51,14 +51,25 @@
 ;; Layer-grouped recall rendering (M6)
 ;; ============================================================================
 
-(def ^:private content-snip-chars 240)
+(def ^:dynamic *snip-chars*
+  "Per-hit char cap when rendering a recalled-memory hit into the prompt. This
+   is the prompt-facing truncation (decoupled from the larger L2 storage caps in
+   the capture parser). Bound from `:memory-recall-snippet-chars` by
+   `prepare-recalled-memory-action`; the default applies to direct callers."
+  600)
 
 (defn- snip
-  "Truncate content to `content-snip-chars` with an ellipsis."
+  "Truncate content to `*snip-chars*` with an ellipsis. Surrogate-safe: never
+   cuts between the halves of a UTF-16 surrogate pair (which would leave a
+   dangling surrogate that renders/encodes as a replacement char)."
   [s]
-  (let [s (str s)]
-    (if (> (count s) content-snip-chars)
-      (str (subs s 0 content-snip-chars) "…")
+  (let [s (str s)
+        n *snip-chars*]
+    (if (> (count s) n)
+      (let [end (if (and (pos? n) (Character/isHighSurrogate (.charAt ^String s (dec n))))
+                  (dec n)
+                  n)]
+        (str (subs s 0 end) "…"))
       s)))
 
 (def ^:private date-only-fmt
@@ -216,7 +227,9 @@
                                       :message (ex-message e))
                           nil)))
         projected (mapv project-hit (or hits []))
-        rendered  (format-recalled-memory projected)]
+        rendered  (binding [*snip-chars* (or (config/get-config agent :memory-recall-snippet-chars)
+                                             *snip-chars*)]
+                    (format-recalled-memory projected))]
     (swap! st-memory assoc
            :recalled-memory      rendered
            :recalled-memory-hits projected)
@@ -315,7 +328,10 @@
                 (when new?
                   (swap! st-atom assoc
                          :recalled-memory-hits merged
-                         :recalled-memory (format-recalled-memory merged)
+                         :recalled-memory
+                         (binding [*snip-chars* (or (config/get-config agent :memory-recall-snippet-chars)
+                                                    *snip-chars*)]
+                           (format-recalled-memory merged))
                          :mid-turn-recall-fired
                          (inc (or (:mid-turn-recall-fired st) 0)))
                   (mulog/log ::mid-turn-recall-fired

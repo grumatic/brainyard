@@ -344,22 +344,28 @@
     :debounce-window — recent-digest window for dedup (default 30)
     :match           — (fn [event-map]) -> boolean to scope which agents
                        are captured (e.g. only one user, only root agents).
+    :limits          — storage-truncation override map for the parser, merged
+                       over `parser/default-limits` (e.g. the agent's configured
+                       `:question`/`:answer` caps).
 
   Idempotent: calling twice on the same manager returns the existing
   capture handle."
-  [manager & {:as opts}]
+  [manager & {:keys [limits] :as opts}]
   (when-not manager
     (throw (ex-info "start-capture! requires a memory manager" {})))
-  (let [!cap (:!capture manager)]
+  (let [!cap (:!capture manager)
+        ;; :limits is consumed by the sidecar, not the dispatcher.
+        disp-opts (dissoc opts :limits)]
     (or @!cap
-        (let [d   (apply capture-dispatcher/start! (mapcat identity opts))
+        (let [d   (apply capture-dispatcher/start! (mapcat identity disp-opts))
               ;; CR-MEM-22: when the manager carries an extract-fn, run the
               ;; graph-extraction sidecar and feed it persisted L2 entries
               ;; via the sidecar's :on-write seam.
               ex  (when-let [ef (:extract-fn manager)]
                     (capture-extractor/start! (:store manager) ef))
               s   (apply capture-sidecar/start! (:store manager) d
-                         (when ex [:on-write #(capture-extractor/enqueue! ex %)]))
+                         (concat (when ex [:on-write #(capture-extractor/enqueue! ex %)])
+                                 (when limits [:limits limits])))
               h   {:dispatcher d :sidecar s :extractor ex
                    :started-at (System/currentTimeMillis)}]
           (reset! !cap h)

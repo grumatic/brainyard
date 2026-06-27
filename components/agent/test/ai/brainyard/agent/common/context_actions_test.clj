@@ -111,12 +111,25 @@
       (is (str/includes? out "mystery content")))))
 
 (deftest format-recalled-memory-content-snipping-test
-  (testing "long content gets snipped with an ellipsis"
-    (let [long-content (apply str (repeat 500 "X"))
+  (testing "long content gets snipped at the default *snip-chars* (600)"
+    (let [long-content (apply str (repeat 1000 "X"))
           out (ctx-actions/format-recalled-memory
                [(assoc sample-l3-fact :content long-content)])]
       (is (str/includes? out "…"))
-      (is (not (str/includes? out (apply str (repeat 300 "X"))))))))
+      (is (not (str/includes? out (apply str (repeat 800 "X")))) "cut below 800"))))
+
+(deftest format-recalled-memory-snip-chars-configurable-test
+  (testing "*snip-chars* controls the per-hit cut"
+    (let [content (apply str (repeat 1000 "X"))
+          tight   (binding [ctx-actions/*snip-chars* 100]
+                    (ctx-actions/format-recalled-memory
+                     [(assoc sample-l3-fact :content content)]))
+          wide    (binding [ctx-actions/*snip-chars* 900]
+                    (ctx-actions/format-recalled-memory
+                     [(assoc sample-l3-fact :content content)]))]
+      (is (< (count tight) (count wide)) "a smaller snip yields a shorter render")
+      (is (str/includes? tight "…"))
+      (is (str/includes? wide "…")))))
 
 ;; ============================================================================
 ;; M8a — Mid-turn re-recall

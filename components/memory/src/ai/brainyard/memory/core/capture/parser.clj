@@ -31,10 +31,35 @@
     :else        (try (pr-str v) (catch Exception _ ""))))
 
 (defn- truncate
+  "Cut `s` to at most `n` chars and append an ellipsis. Surrogate-safe: if the
+  cut would fall between the two halves of a UTF-16 surrogate pair (e.g. an
+  emoji or astral-plane char straddling the boundary), back off by one char so
+  the kept string never ends in a dangling high surrogate — a lone surrogate is
+  not a valid scalar and gets mangled to `?`/U+FFFD when JDBC encodes it to
+  UTF-8 for SQLite (and can confuse FTS tokenization)."
   [s n]
   (if (and (string? s) (> (count s) n))
-    (str (subs s 0 n) "…")
+    (let [end (if (and (pos? n)
+                       (Character/isHighSurrogate (.charAt ^String s (dec n))))
+                (dec n)
+                n)]
+      (str (subs s 0 end) "…"))
     s))
+
+(def default-limits
+  "Per-event-kind truncation caps (chars) for L2 episode content. These are the
+  STORAGE caps — what a captured episode persists, hence what FTS can match.
+  They are deliberately generous: the recall path re-snips each hit to a small
+  prompt-facing window (see agent context_actions/`*snip-chars*`), so relaxing
+  these costs only DB/FTS bytes, not prompt tokens. The conversation Q&A caps
+  (`:question`/`:answer`) are overridden from config by the agent at
+  `start-capture!` (`:memory-question-max-chars` / `:memory-answer-max-chars`);
+  the rest are fixed. A query term in a long answer's tail now actually
+  matches instead of being silently dropped."
+  {:question 8000 :answer 16000 :event 8000
+   :tool-args 1000 :tool-error 2000
+   :eval-code 4000 :eval-error 2000
+   :exception 4000})
 
 (defn- keyword-tags
   "Pull a few topic tags from text via fts/extract-keywords. Bounded to
@@ -84,10 +109,10 @@
   :event-key)
 
 (defmethod event->partial-entry :default
-  [{:keys [event-key] :as event}]
+  [{:keys [event-key] :as event} limits]
   ;; Unknown events are still recorded but tagged so we can audit.
   {:kind    :episode
-   :content (truncate (safe-content event) 4000)
+   :content (truncate (safe-content event) (:event limits))
    :tags    #{(->tag :event (or event-key :unknown))
               "kind:unknown"}})
 
@@ -96,8 +121,8 @@
 ;; it is folded into the Q&A episode below at turn end (see dispatcher).
 
 (defmethod event->partial-entry :agent.ask/post
-  [{:keys [input result session-id]}]
-  (let [q   (truncate (safe-content input) 1000)
+  [{:keys [input result session-id]} limits]
+  (let [q   (truncate (safe-content input) (:question limits))
         out (safe-content
              (cond
                (string? result) result
@@ -106,7 +131,7 @@
                                     (:output result)
                                     result)
                :else            result))
-        a   (truncate out 3000)]
+        a   (truncate out (:answer limits))]
     ;; One coherent conversational episode per turn: question + answer. The
     ;; content-addressable :id upserts a repeated question (see
     ;; episodic/append-episode!). Because this fires at turn END — after the
@@ -118,7 +143,7 @@
                     (concat (keyword-tags q) (keyword-tags a)))}))
 
 (defmethod event->partial-entry :agent.tool-use/post
-  [{:keys [tool-name args result]}]
+  [{:keys [tool-name args result]} limits]
   ;; Errors only. A successful tool call is operational noise for *recall* —
   ;; the full trace already lives in the trajectory log + memory_audit.
   ;; Failures are worth remembering ("last time this errored with …"), so we
@@ -129,9 +154,9 @@
                      :else                (str tool-name))
           body     (truncate
                     (str "tool=" tool-str " FAILED"
-                         (when (seq args) (str " args=" (truncate (safe-content args) 400)))
-                         (str " => " (truncate (safe-content (:error result)) 1000)))
-                    3000)]
+                         (when (seq args) (str " args=" (truncate (safe-content args) (:tool-args limits))))
+                         (str " => " (truncate (safe-content (:error result)) (:tool-error limits))))
+                    (:event limits))]
       {:kind    :episode
        :content body
        :data    {:tool-name tool-str :args args :result result}
@@ -139,18 +164,18 @@
                   (->tag :tool tool-str)}})))
 
 (defmethod event->partial-entry :agent.code-eval/post
-  [{:keys [code result output error duration-ms]}]
+  [{:keys [code result output error duration-ms]} limits]
   ;; Errors only (see :agent.tool-use/post). A successful eval is in the
   ;; trajectory; only failures are recall-worthy. nil ⇒ sidecar skips.
   (when (and (string? error) (not (str/blank? error)))
     (let [body (truncate
                 (str "(eval ...) FAILED "
                      (when duration-ms (str "[" duration-ms "ms] "))
-                     "=> " (truncate error 1500))
-                3000)]
+                     "=> " (truncate error (:eval-error limits)))
+                (:event limits))]
       {:kind    :episode
        :content body
-       :data    {:code        (truncate (safe-content code) 4000)
+       :data    {:code        (truncate (safe-content code) (:eval-code limits))
                  :result      result
                  :output      output
                  :error       error
@@ -158,7 +183,7 @@
        :tags    #{"event:code-eval" "kind:code-eval-error" "outcome:error"}})))
 
 (defmethod event->partial-entry :agent/exception
-  [{:keys [phase exception]}]
+  [{:keys [phase exception]} limits]
   (let [msg       (cond
                     (instance? Throwable exception) (.getMessage ^Throwable exception)
                     :else                            (safe-content exception))
@@ -167,7 +192,7 @@
                     (keyword? phase) (name phase)
                     :else            (str phase))]
     {:kind    :episode
-     :content (truncate (str "exception in " phase-str ": " msg) 2000)
+     :content (truncate (str "exception in " phase-str ": " msg) (:exception limits))
      :data    {:phase phase
                :class (when (instance? Throwable exception)
                         (.getName (class exception)))}
@@ -192,15 +217,21 @@
     :captured-at — millis epoch (defaults to now)
 
   Plus the per-event keys (:input, :result, :tool-name, etc.) from the
-  hook catalog. Returns a complete entry map."
-  [{:keys [event-key session-id user-id event-id captured-at]
-    :or   {captured-at (System/currentTimeMillis)}
-    :as   event}]
-  ;; A translator returns nil to skip the event (e.g. a successful tool/eval —
-  ;; errors only). The sidecar must treat a nil parse as "no episode".
-  (when-let [partial (event->partial-entry event)]
-    (assoc partial
-           :session-id session-id
-           :user-id    user-id
-           :created-at captured-at
-           :sources    [{:type event-key :id event-id}])))
+  hook catalog. Returns a complete entry map.
+
+  The 2-arity takes a `limits` map (merged over `default-limits`) to override
+  the storage truncation caps — the sidecar threads the agent's configured
+  `:question`/`:answer` caps here. The 1-arity uses `default-limits`."
+  ([event] (parse event nil))
+  ([{:keys [event-key session-id user-id event-id captured-at]
+     :or   {captured-at (System/currentTimeMillis)}
+     :as   event}
+    limits]
+   ;; A translator returns nil to skip the event (e.g. a successful tool/eval —
+   ;; errors only). The sidecar must treat a nil parse as "no episode".
+   (when-let [partial (event->partial-entry event (merge default-limits limits))]
+     (assoc partial
+            :session-id session-id
+            :user-id    user-id
+            :created-at captured-at
+            :sources    [{:type event-key :id event-id}]))))

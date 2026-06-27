@@ -27,11 +27,11 @@
 ;; =====================================================
 
 (defn- handle-event!
-  [store event on-write]
+  [store event on-write limits]
   (try
     ;; `parse` returns nil for events that should not become episodes
     ;; (successful tool/code-eval — errors only). Skip the write entirely.
-    (when-let [entry (parser/parse event)]
+    (when-let [entry (parser/parse event limits)]
       (let [written (proto/write-entry store :l2 entry)]
         (mulog/debug ::capture-write
                      :event-key (:event-key event)
@@ -48,7 +48,7 @@
                   :exception e))))
 
 (defn- run-loop!
-  [store critical-ch events-ch !running on-write]
+  [store critical-ch events-ch !running on-write limits]
   (try
     (loop []
       ;; Critical events take priority. We poll critical first; if empty
@@ -66,7 +66,7 @@
                 (mulog/debug ::events-ch-closed))
               (recur))
             :else
-            (do (handle-event! store ev on-write)
+            (do (handle-event! store ev on-write limits)
                 (recur))))))
     (catch Throwable t
       (mulog/error ::capture-sidecar-crashed :exception t))))
@@ -83,13 +83,16 @@
 
   Options:
     :on-write — optional `(fn [persisted-l2-entry])` invoked after each L2
-                write (the CR-MEM-22 graph-extractor seam). Best-effort."
-  [store dispatcher & {:keys [on-write]}]
+                write (the CR-MEM-22 graph-extractor seam). Best-effort.
+    :limits   — optional storage-truncation override map merged over
+                `parser/default-limits` (the agent threads its configured
+                `:question`/`:answer` caps here)."
+  [store dispatcher & {:keys [on-write limits]}]
   (let [[crit ev] ((requiring-resolve
                     'ai.brainyard.memory.core.capture.dispatcher/channels)
                    dispatcher)
         !running  (atom true)
-        t         (async/thread (run-loop! store crit ev !running on-write))]
+        t         (async/thread (run-loop! store crit ev !running on-write limits))]
     (mulog/info ::capture-sidecar-started)
     (->Sidecar store dispatcher t !running)))
 

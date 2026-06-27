@@ -527,11 +527,18 @@
         ;; idempotent per-manager, so calling it for every agent that shares
         ;; the same manager is safe.
         _ (when (and mm (config/get-config agent :enable-memory-capture))
-            (try (mem/start-capture! mm)
-                 (catch Exception e
-                   (mulog/warn ::capture-start-failed
-                               :agent-id agent-id
-                               :error (ex-message e)))))]
+            (try
+              ;; Thread the configured L2 storage-truncation caps into the
+              ;; capture parser (start-capture! is idempotent, so the FIRST
+              ;; agent on a shared manager fixes the caps for the session).
+              (mem/start-capture!
+               mm
+               :limits {:question (config/get-config agent :memory-question-max-chars)
+                        :answer   (config/get-config agent :memory-answer-max-chars)})
+              (catch Exception e
+                (mulog/warn ::capture-start-failed
+                            :agent-id agent-id
+                            :error (ex-message e)))))]
 
     (mulog/info ::agent-created :agent-id agent-id :user-id user-id :session-id session-id)
     (hooks/fire! :agent.instance/created {:agent agent})

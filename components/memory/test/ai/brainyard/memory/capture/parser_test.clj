@@ -107,3 +107,52 @@
     (is (= :episode (:kind out)))
     (is (contains? (:tags out) "kind:unknown"))
     (is (contains? (:tags out) "event:wat"))))
+
+;; =====================================================
+;; Long-text truncation
+;; =====================================================
+
+(defn- last-codepoint-ok?
+  "True when `s` does not end in a lone (dangling) UTF-16 surrogate — i.e. it
+   is a well-formed string that will round-trip through UTF-8."
+  [^String s]
+  (or (zero? (count s))
+      (not (Character/isHighSurrogate (.charAt s (dec (count s)))))))
+
+(deftest qa-truncation-bounds-test
+  (testing "long question/answer are bounded at the default caps (q 8000, a 16000)"
+    (let [q   (apply str (repeat 10000 "Q"))
+          a   (apply str (repeat 20000 "A"))
+          out (parser/parse (base-event {:event-key :agent.ask/post :input q :result a}))
+          c   (:content out)]
+      ;; "Q: " + 8000 + "…" + "\nA: " + 16000 + "…" ≈ 24010 chars (raw was 30000).
+      (is (< (count c) 24100) (str "content should be bounded, got " (count c)))
+      (is (str/includes? c "Q…") "question half truncated with ellipsis")
+      (is (str/includes? c "A…") "answer half truncated with ellipsis"))))
+
+(deftest qa-truncation-honors-override-test
+  (testing "the 2-arity limits override the default caps"
+    (let [q   (apply str (repeat 500 "Q"))
+          a   (apply str (repeat 500 "A"))
+          out (parser/parse (base-event {:event-key :agent.ask/post :input q :result a})
+                            {:question 100 :answer 200})]
+      ;; "Q: " + 100 + "…" + "\nA: " + 200 + "…" ≈ 311 chars.
+      (is (< (count (:content out)) 320))
+      (is (str/includes? (:content out) "Q…"))
+      (is (str/includes? (:content out) "A…")))))
+
+(deftest truncation-is-surrogate-safe-test
+  (testing "cutting mid-emoji never leaves a dangling high surrogate"
+    ;; 😀 is one codepoint = a UTF-16 surrogate pair. Place one straddling each
+    ;; default cut boundary (q@8000, a@16000) so a naive char-index cut splits it.
+    (let [q   (str (apply str (repeat 7999 "a")) "😀" (apply str (repeat 200 "b")))
+          a   (str (apply str (repeat 15999 "c")) "😀" (apply str (repeat 200 "d")))
+          out (parser/parse (base-event {:event-key :agent.ask/post :input q :result a}))]
+      (is (last-codepoint-ok? (subs (:content out) 0 (.indexOf ^String (:content out) "\nA:")))
+          "no dangling surrogate at the question cut")
+      ;; The whole stored content must be well-formed (round-trips to UTF-8).
+      (is (= (:content out)
+             (-> (:content out)
+                 (.getBytes "UTF-8")
+                 (String. "UTF-8")))
+          "content round-trips through UTF-8 without replacement chars"))))

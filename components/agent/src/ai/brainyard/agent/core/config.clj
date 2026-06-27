@@ -411,6 +411,14 @@
    :rebudget-every-n-iter      {:type "integer" :default 10}
    :conversation-limit         {:type "integer" :default 20}
    :recall-limit               {:type "integer" :default 10}
+   ;; L2 memory truncation. Storage caps (what a captured Q&A episode persists,
+   ;; hence what FTS can match) are decoupled from the recall-render snippet
+   ;; (what each recalled hit shows in the prompt) — relaxing storage costs
+   ;; only DB/FTS bytes, not prompt tokens. See components/memory capture/parser.
+   :memory-question-max-chars  {:type "integer" :default 8000}
+   :memory-answer-max-chars    {:type "integer" :default 16000}
+   ;; Per-hit char cap when rendering recalled memory into the prompt.
+   :memory-recall-snippet-chars {:type "integer" :default 600}
    ;; ACP agent backend
    :acp-backend                {:type "keyword" :default :stub}
    :acp-backend-opts           {:type "object"  :default {}}
