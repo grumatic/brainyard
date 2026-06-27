@@ -46,7 +46,7 @@
             [ai.brainyard.agent.common.trace :as trace]
             [ai.brainyard.agent.common.trajectory :as trajectory]
             [ai.brainyard.agent.common.commands :as common-cmds]
-            [ai.brainyard.agent.common.tools :as common-tools]
+            [ai.brainyard.agent.common.agent-roster :as agent-roster]
             [ai.brainyard.agent.mcp.commands :as mcp-cmds]
             [ai.brainyard.agent.core.agent :as agent]
             [ai.brainyard.agent.core.config :as config]
@@ -1597,8 +1597,17 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
 
         ;; M5: stash the tools-section config so the :tools-tier compact
         ;; strategy can re-render the section as it disables successive
-        ;; tiers under budget pressure. Reset :tools-disabled-tiers so a
-        ;; new turn starts with the full tools section.
+        ;; tiers under budget pressure. The initial disabled set is the
+        ;; per-agent default (not unconditionally empty): with
+        ;; :compact-agent-tools true (default), coact starts with the
+        ;; verbose `### Agent Tools` block already swapped for the compact
+        ;; one-liner rendering — the roster still scopes the category index,
+        ;; it just doesn't carry full schemas the sandbox + discovery already
+        ;; cover. Budget pressure then disables further tiers from here.
+        initial-disabled-tiers
+        (if (get cfg-snap :compact-agent-tools true)
+          #{:agent-tools-details}
+          #{})
         tools-section-config
         {:sandbox-bindings     bindings
          :agent-tools          (:tools st)
@@ -1607,7 +1616,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
          (boolean (get cfg-snap :include-function-directory false))}
         _ (swap! st-memory assoc
                  :tools-section-config tools-section-config
-                 :tools-disabled-tiers #{})
+                 :tools-disabled-tiers initial-disabled-tiers)
 
         ;; Build the section map via the CoAct SectionAssembler. The
         ;; assembler returns the merged {section-kw text} map for both
@@ -1627,7 +1636,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                          :include-function-directory?
                          (boolean (get cfg-snap :include-function-directory false))
                          :system-info     system-info-text
-                         :tools-disabled-tiers #{}
+                         :tools-disabled-tiers initial-disabled-tiers
                          :brainyard-instructions brainyard-instructions
                          :project-memory  project-memory-input
                          ;; Execution-model prompt section is keyed off
@@ -4586,8 +4595,9 @@ playbook are in the system context above.")
                  [:agent-context {:optional true} [:string {:desc "Additional contextual information"}]]]
   :output-schema [:map
                   [:answer [:string {:desc "Final answer to the user's question"}]]]
-  :agent-tools {:tools (vec (distinct (concat common-tools/all-common-tools
-                                              common-cmds/all-common-commands)))}
+  ;; Shared coact/react roster — defined once in agent-roster so it can't
+  ;; drift. coact renders it compactly (:compact-agent-tools); react verbose.
+  :agent-tools agent-roster/default-agent-roster
   ;; :config-extra resorts to the config-schema defaults — both keys below
   ;; already equal their schema default, so they're left commented as a
   ;; per-agent opt-in/opt-out reference rather than set explicitly.

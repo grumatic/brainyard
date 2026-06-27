@@ -13,6 +13,8 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.string :as str]
             [ai.brainyard.agent.common.coact-agent :as rca]
+            [ai.brainyard.agent.common.react-agent]
+            [ai.brainyard.agent.common.agent-roster :as agent-roster]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
             [ai.brainyard.agent.core.hooks :as hooks]
@@ -202,6 +204,62 @@
         (is (= :coact-agent (:id agent-def)))
         (is (some? (:fn agent-def)))
         (is (= :agent (:type agent-def)))))))
+
+;; ============================================================================
+;; 3a. Shared roster (agent-roster/default-agent-roster)
+;; ============================================================================
+
+(deftest shared-agent-roster-test
+  (testing "coact and react both register the single shared roster, byte-identical"
+    (let [agent-defs (tool/get-tool-defs :type :agent)
+          coact-roster (get-in agent-defs [:coact-agent :meta :agent-tools])
+          react-roster (get-in agent-defs [:react-agent :meta :agent-tools])]
+      ;; Both resolve to the same shared def — no drift possible.
+      (is (= agent-roster/default-agent-roster coact-roster))
+      (is (= agent-roster/default-agent-roster react-roster))
+      (is (= coact-roster react-roster)
+          "coact and react must advertise the identical roster")
+      ;; Sanity: the roster is the {:tools [...]} shape defagent expects and
+      ;; is non-empty (all-common-tools ++ all-common-commands, de-duped).
+      ;; Entries are raw tool refs (vars/fns) here — they become {:name …}
+      ;; descriptors only later via tool/bind-tools — so uniqueness is checked
+      ;; at the entry level, which is what the production `(distinct …)` ensures.
+      (is (vector? (:tools coact-roster)))
+      (is (pos? (count (:tools coact-roster))))
+      (is (apply distinct? (:tools coact-roster))
+          "shared roster must be de-duped"))))
+
+;; ============================================================================
+;; 3b. Tools-section compaction (:compact-agent-tools / :agent-tools-details)
+;; ============================================================================
+
+(deftest compact-agent-tools-tier-test
+  (testing "build-tools-section renders the roster compactly when the
+            :agent-tools-details tier is disabled, verbose otherwise — while
+            keeping the roster present either way (so curated-syms still scopes
+            the category index)."
+    (let [build (resolve 'ai.brainyard.agent.common.coact-agent/build-tools-section)
+          tools [{:name "test-coact-echo"
+                  :description "Echo back the input string."
+                  :tool-fn-type :command
+                  :parameters {:properties {"text" {:type "string" :desc "Text to echo"}}
+                               :required ["text"]}}]
+          verbose (build {:agent-tools tools :disabled-tiers #{}})
+          compact (build {:agent-tools tools :disabled-tiers #{:agent-tools-details}})]
+      ;; Both render the roster (the tool id appears in each).
+      (is (str/includes? verbose "test-coact-echo"))
+      (is (str/includes? compact "test-coact-echo"))
+      ;; Verbose carries full specs (an Inputs block); compact does not.
+      (is (str/includes? verbose "Inputs:")
+          "verbose block must carry per-tool input specs")
+      (is (not (str/includes? compact "Inputs:"))
+          "compact block must drop per-tool input specs")
+      ;; Compact uses the `(type)` one-liner shape.
+      (is (str/includes? compact "(command)")
+          "compact block must render the one-line `id (type)` shape")))
+
+  (testing ":compact-agent-tools config default is true (compact-by-default)"
+    (is (true? (get config/default-config :compact-agent-tools)))))
 
 ;; ============================================================================
 ;; 4. Critical Rules & Prompt Content

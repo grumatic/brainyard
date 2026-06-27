@@ -109,6 +109,14 @@
    ;; (categories + signatures for ALL bound callables). When false, the
    ;; system prompt shows only a compact category index instead.
    :include-function-directory {:type "boolean" :default false}
+   ;; CoAct system-context: render the `### Agent Tools` roster compactly
+   ;; (one line per tool) instead of full per-tool specs. Default true —
+   ;; coact reaches every tool through the SCI sandbox + hot-path primitives
+   ;; + category index, so the curated roster only needs to scope the index
+   ;; and name the tools, not carry full schemas. Set false to restore the
+   ;; verbose per-tool spec block. ReAct ignores this (it has no code channel;
+   ;; its roster IS its advertised menu and stays verbose).
+   :compact-agent-tools        {:type "boolean" :default true}
    ;; RLM context management
    :max-context-tokens         {:type "integer" :default 128000}
    ;; Inline cap (chars) for a single LLM-facing result/output before it is

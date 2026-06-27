@@ -35,7 +35,7 @@
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.tool :as tool :refer [bind-tools defskill defagent]]
             [ai.brainyard.agent.common.commands :as common-cmds]
-            [ai.brainyard.agent.common.tools :as common-tools]
+            [ai.brainyard.agent.common.agent-roster :as agent-roster]
             [ai.brainyard.agent.mcp.commands]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.bt :as agent-bt]
@@ -1186,8 +1186,10 @@ above; this section adds only what's specific:
                  [:agent-context {:optional true} [:string {:desc "Additional contextual information"}]]]
   :output-schema [:map
                   [:answer [:string {:desc "Final answer to the user's question"}]]]
-  :agent-tools {:tools (vec (distinct (concat common-tools/all-common-tools
-                                              common-cmds/all-common-commands)))}
+  ;; Shared coact/react roster — defined once in agent-roster so it can't
+  ;; drift. react has no code channel, so this roster IS its advertised tool
+  ;; surface and renders verbose (coact renders the same roster compactly).
+  :agent-tools agent-roster/default-agent-roster
   :instruction react-instruction
   ;; Tool discovery/invocation/background-task guidance already lives in the
   ;; always-present `## tool-calls Format` system-context section
