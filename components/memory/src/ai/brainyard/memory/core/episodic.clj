@@ -50,9 +50,39 @@
 ;; Core Operations
 ;; =====================================================
 
+(defn- upsert-episode-by-entry-id!
+  "INSERT the episode, or UPDATE it in place on a `(user_id, entry_id)`
+  conflict — so a re-captured episode sharing a content-addressable
+  `entry_id` (e.g. a re-asked question) refreshes instead of duplicating or
+  failing the unique index. Preserves keep/archived/tombstoned flags on
+  update (a re-ask shouldn't un-pin or resurrect a forgotten episode)."
+  [ds {:keys [session_id user_id episode_type role content tags sources
+              entry_id keep_flag archived_flag tombstoned_flag metadata]
+       :as record}]
+  (let [r (jdbc/execute-one!
+           ds ["INSERT INTO episodes
+                  (session_id, user_id, episode_type, role, content, tags, sources,
+                   entry_id, keep_flag, archived_flag, tombstoned_flag, metadata)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(user_id, entry_id) WHERE entry_id IS NOT NULL
+                DO UPDATE SET session_id   = excluded.session_id,
+                              episode_type = excluded.episode_type,
+                              role         = excluded.role,
+                              content      = excluded.content,
+                              tags         = excluded.tags,
+                              sources      = excluded.sources,
+                              metadata     = excluded.metadata,
+                              timestamp    = CURRENT_TIMESTAMP
+                RETURNING id"
+               session_id user_id episode_type role content tags sources
+               entry_id (or keep_flag 0) (or archived_flag 0) (or tombstoned_flag 0) metadata])]
+    (assoc record :id (or (:id r) (:episodes/id r)))))
+
 (defn append-episode!
-  "Append a new episode to the database.
-  Returns: The created episode with id and timestamp"
+  "Append a new episode to the database. When the record carries an
+  `entry_id`, the write is an upsert on `(user_id, entry_id)` (dedup of
+  re-captured episodes); otherwise a plain insert.
+  Returns: The created/updated episode with id and timestamp"
   [ds episode]
   (let [record (if (contains? episode :session_id)
                  episode
@@ -64,9 +94,11 @@
                   :content (:content episode)
                   :metadata (:metadata episode)))]
     (try
-      (let [result (sql/insert! ds :episodes record)
-            id (or (:episodes/id result) (:id result) (get result (keyword "last_insert_rowid()")))]
-        (assoc record :id id))
+      (if (:entry_id record)
+        (upsert-episode-by-entry-id! ds record)
+        (let [result (sql/insert! ds :episodes record)
+              id (or (:episodes/id result) (:id result) (get result (keyword "last_insert_rowid()")))]
+          (assoc record :id id)))
       (catch Exception e
         (mulog/error ::episode-append-failed :error (ex-message e))
         nil))))

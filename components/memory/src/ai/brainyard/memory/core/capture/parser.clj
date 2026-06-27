@@ -57,6 +57,17 @@
          (keyword? v) (name v)
          :else        (str v))))
 
+(defn- qa-entry-id
+  "Content-addressable id for a conversation Q&A episode, keyed on the
+  (session, normalized-question) so re-asking the same thing in a session
+  upserts the episode instead of duplicating it."
+  [session-id question]
+  (let [norm (-> (safe-content question)
+                 str/lower-case
+                 str/trim
+                 (str/replace #"\s+" " "))]
+    (str "qa/" (or session-id "?") "/" (format "%08x" (hash norm)))))
+
 ;; =====================================================
 ;; Per-event-kind translators
 ;;
@@ -80,17 +91,14 @@
    :tags    #{(->tag :event (or event-key :unknown))
               "kind:unknown"}})
 
-(defmethod event->partial-entry :agent.ask/pre
-  [{:keys [input]}]
-  (let [text (safe-content input)]
-    {:kind    :episode
-     :content text
-     :tags    (into #{"role:user" "event:ask-pre" "kind:user-message"}
-                    (keyword-tags text))}))
+;; `:agent.ask/pre` is intentionally not handled — the user's question is no
+;; longer captured on its own (it self-recalled and doubled episode count);
+;; it is folded into the Q&A episode below at turn end (see dispatcher).
 
 (defmethod event->partial-entry :agent.ask/post
-  [{:keys [input result]}]
-  (let [out (safe-content
+  [{:keys [input result session-id]}]
+  (let [q   (truncate (safe-content input) 1000)
+        out (safe-content
              (cond
                (string? result) result
                (map? result)    (or (:answer result)
@@ -98,54 +106,56 @@
                                     (:output result)
                                     result)
                :else            result))
-        text (truncate out 4000)]
+        a   (truncate out 3000)]
+    ;; One coherent conversational episode per turn: question + answer. The
+    ;; content-addressable :id upserts a repeated question (see
+    ;; episodic/append-episode!). Because this fires at turn END — after the
+    ;; turn's own recall — the current question can never self-recall.
     {:kind    :episode
-     :content text
-     :tags    (into #{"role:assistant" "event:ask-post" "kind:assistant-answer"}
-                    (concat (keyword-tags text)
-                            (keyword-tags (safe-content input))))}))
+     :id      (qa-entry-id session-id input)
+     :content (str "Q: " q "\nA: " a)
+     :tags    (into #{"role:conversation" "event:qa" "kind:qa"}
+                    (concat (keyword-tags q) (keyword-tags a)))}))
 
 (defmethod event->partial-entry :agent.tool-use/post
   [{:keys [tool-name args result]}]
-  (let [tool-str (cond
-                   (keyword? tool-name) (name tool-name)
-                   :else                (str tool-name))
-        body     (truncate
-                  (str "tool=" tool-str
-                       (when (seq args) (str " args=" (truncate (safe-content args) 400)))
-                       (when result    (str " => "    (truncate (safe-content result) 1000))))
-                  3000)]
-    {:kind    :episode
-     :content body
-     :data    {:tool-name tool-str
-               :args      args
-               :result    result}
-     :tags    (cond-> #{"event:tool-post" "kind:tool-result"
-                        (->tag :tool tool-str)}
-                (and (map? result) (:error result))
-                (conj "outcome:error"))}))
+  ;; Errors only. A successful tool call is operational noise for *recall* —
+  ;; the full trace already lives in the trajectory log + memory_audit.
+  ;; Failures are worth remembering ("last time this errored with …"), so we
+  ;; capture only those; nil ⇒ the sidecar skips the write.
+  (when (and (map? result) (:error result))
+    (let [tool-str (cond
+                     (keyword? tool-name) (name tool-name)
+                     :else                (str tool-name))
+          body     (truncate
+                    (str "tool=" tool-str " FAILED"
+                         (when (seq args) (str " args=" (truncate (safe-content args) 400)))
+                         (str " => " (truncate (safe-content (:error result)) 1000)))
+                    3000)]
+      {:kind    :episode
+       :content body
+       :data    {:tool-name tool-str :args args :result result}
+       :tags    #{"event:tool-post" "kind:tool-error" "outcome:error"
+                  (->tag :tool tool-str)}})))
 
 (defmethod event->partial-entry :agent.code-eval/post
   [{:keys [code result output error duration-ms]}]
-  (let [summary (or (when (and (string? error) (not (clojure.string/blank? error))) error)
-                    result
-                    output)
-        body (truncate
-              (str "(eval ...) "
-                   (when duration-ms (str "[" duration-ms "ms] "))
-                   "=> "
-                   (truncate (safe-content summary) 1500))
-              3000)]
-    {:kind    :episode
-     :content body
-     :data    {:code        (truncate (safe-content code) 4000)
-               :result      result
-               :output      output
-               :error       error
-               :duration-ms duration-ms}
-     :tags    (cond-> #{"event:code-eval" "kind:code-eval"}
-                (and (string? error) (not (clojure.string/blank? error)))
-                (conj "outcome:error"))}))
+  ;; Errors only (see :agent.tool-use/post). A successful eval is in the
+  ;; trajectory; only failures are recall-worthy. nil ⇒ sidecar skips.
+  (when (and (string? error) (not (str/blank? error)))
+    (let [body (truncate
+                (str "(eval ...) FAILED "
+                     (when duration-ms (str "[" duration-ms "ms] "))
+                     "=> " (truncate error 1500))
+                3000)]
+      {:kind    :episode
+       :content body
+       :data    {:code        (truncate (safe-content code) 4000)
+                 :result      result
+                 :output      output
+                 :error       error
+                 :duration-ms duration-ms}
+       :tags    #{"event:code-eval" "kind:code-eval-error" "outcome:error"}})))
 
 (defmethod event->partial-entry :agent/exception
   [{:keys [phase exception]}]
@@ -186,7 +196,9 @@
   [{:keys [event-key session-id user-id event-id captured-at]
     :or   {captured-at (System/currentTimeMillis)}
     :as   event}]
-  (let [partial (event->partial-entry event)]
+  ;; A translator returns nil to skip the event (e.g. a successful tool/eval —
+  ;; errors only). The sidecar must treat a nil parse as "no episode".
+  (when-let [partial (event->partial-entry event)]
     (assoc partial
            :session-id session-id
            :user-id    user-id

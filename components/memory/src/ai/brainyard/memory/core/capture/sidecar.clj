@@ -29,17 +29,19 @@
 (defn- handle-event!
   [store event on-write]
   (try
-    (let [entry   (parser/parse event)
-          written (proto/write-entry store :l2 entry)]
-      (mulog/debug ::capture-write
-                   :event-key (:event-key event)
-                   :session-id (:session-id event))
-      ;; Forward the persisted L2 entry (with its stable :id) to the graph
-      ;; extractor, when one is wired. Best-effort; never blocks capture.
-      (when on-write
-        (try (on-write (or written entry))
-             (catch Exception e
-               (mulog/warn ::capture-on-write-failed :exception e)))))
+    ;; `parse` returns nil for events that should not become episodes
+    ;; (successful tool/code-eval — errors only). Skip the write entirely.
+    (when-let [entry (parser/parse event)]
+      (let [written (proto/write-entry store :l2 entry)]
+        (mulog/debug ::capture-write
+                     :event-key (:event-key event)
+                     :session-id (:session-id event))
+        ;; Forward the persisted L2 entry (with its stable :id) to the graph
+        ;; extractor, when one is wired. Best-effort; never blocks capture.
+        (when on-write
+          (try (on-write (or written entry))
+               (catch Exception e
+                 (mulog/warn ::capture-on-write-failed :exception e))))))
     (catch Exception e
       (mulog/warn ::capture-handle-failed
                   :event-key (:event-key event)

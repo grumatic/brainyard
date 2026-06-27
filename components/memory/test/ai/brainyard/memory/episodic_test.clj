@@ -20,6 +20,20 @@
 
 (use-fixtures :each with-test-db)
 
+(deftest upsert-by-entry-id-dedup-test
+  (testing "an entry_id-bearing episode upserts on (user_id, entry_id)"
+    (let [rec (fn [eid content]
+                {:session_id "s1" :user_id "u1" :episode_type "episode" :role nil
+                 :content content :tags nil :sources nil :entry_id eid
+                 :keep_flag 0 :archived_flag 0 :tombstoned_flag 0 :metadata nil})]
+      (episodic/append-episode! *ds* (rec "qa/s1/abc" "Q: x\nA: one"))
+      (episodic/append-episode! *ds* (rec "qa/s1/abc" "Q: x\nA: two"))   ; same id ⇒ update
+      (episodic/append-episode! *ds* (rec "qa/s1/xyz" "Q: y\nA: z"))     ; new id ⇒ insert
+      (is (= 2 (episodic/count-episodes *ds*)) "duplicate entry_id did not add a row")
+      (let [recent (episodic/get-recent-episodes *ds* "s1" 10)]
+        (is (some     #(= "Q: x\nA: two" (:content %)) recent) "latest answer kept")
+        (is (not-any? #(= "Q: x\nA: one" (:content %)) recent) "stale answer replaced")))))
+
 (deftest append-and-retrieve-episode-test
   (testing "append and retrieve episode"
     (let [episode (episodic/append-episode! *ds*

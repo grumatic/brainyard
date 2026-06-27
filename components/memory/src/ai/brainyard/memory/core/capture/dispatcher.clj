@@ -9,9 +9,9 @@
   (`ai.brainyard.agent.core.hooks`) and forwards normalized capture
   events onto two channels:
 
-    :critical-ch — unbounded, undroppable. Carries `:agent.ask/pre`,
-                   `:agent.ask/post`, and `:agent/exception` so a noisy run
-                   can never lose the conversation skeleton.
+    :critical-ch — unbounded, undroppable. Carries `:agent.ask/post`
+                   (the Q&A conversation record) and `:agent/exception` so a
+                   noisy run can never lose the conversation or its errors.
     :events-ch   — bounded, sliding-buffer. Carries debounced
                    high-volume events (`:agent.tool-use/post`,
                    `:agent.code-eval/post`). Under back-pressure the oldest
@@ -59,13 +59,16 @@
 (def ^:private default-channel-size 1024)
 
 (def ^:private critical-events
-  "Events that must never be dropped: the conversation skeleton + audit
-  trail."
-  #{:agent.ask/pre :agent.ask/post :agent/exception})
+  "Events that must never be dropped: the conversation record + errors."
+  #{:agent.ask/post :agent/exception})
 
 (def ^:private subscribed-events
-  "Hooks the dispatcher subscribes to."
-  [:agent.ask/pre :agent.ask/post :agent.tool-use/post :agent.code-eval/post :agent/exception])
+  "Hooks the dispatcher subscribes to. NOTE: `:agent.ask/pre` is deliberately
+  NOT subscribed — the user's bare question is captured together with its
+  answer as a single Q&A episode at `:agent.ask/post` (turn end). Capturing
+  the pre-question separately made it the top BM25 hit when recall ran over
+  that same question, and doubled the conversational episode count."
+  [:agent.ask/post :agent.tool-use/post :agent.code-eval/post :agent/exception])
 
 (def ^:private debounce-events
   "Events whose dedup keys collapse identical entries within a window."

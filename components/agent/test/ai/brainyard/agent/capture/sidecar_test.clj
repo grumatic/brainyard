@@ -4,8 +4,13 @@
 
 (ns ai.brainyard.agent.capture.sidecar-test
   "End-to-end tests for the capture pipeline: dispatcher + sidecar +
-  parser writing to L2 via the unified store."
+  parser writing to L2 via the unified store.
+
+  Capture policy (see memory/core/capture/parser.clj): the conversation is
+  one Q&A episode at `:agent.ask/post` (the bare `:agent.ask/pre` question is
+  NOT captured); tool-use / code-eval are captured only on error."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [clojure.string :as str]
             [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.memory.interface.protocol :as proto]
             [ai.brainyard.agent.core.hooks :as hooks]))
@@ -47,43 +52,67 @@
 ;; End-to-end capture
 ;; =====================================================
 
-(deftest captures-ask-pre-as-l2-entry-test
-  (mem/start-capture! *mm*)
-  (hooks/fire! :agent.ask/pre {:session-id "s1" :user-id "u" :input "Deploy how?"})
-  (is (= 1 (await-count "s1" 1 1000)))
-  (let [[e] (l2-entries "s1")]
-    (is (= "Deploy how?" (:content e)))
-    (is (contains? (:tags e) "kind:user-message"))
-    ;; Sources come back through JSON roundtrip; :type is the keyword name
-    (is (= 1 (count (:sources e))))))
+(deftest captures-qa-at-ask-post-test
+  (testing "the turn's question+answer are captured as ONE Q&A episode at post"
+    (mem/start-capture! *mm*)
+    (hooks/fire! :agent.ask/post {:session-id "s1" :user-id "u"
+                                  :input "Deploy how?" :result "Run bb build:ata"})
+    (is (= 1 (await-count "s1" 1 1000)))
+    (let [[e] (l2-entries "s1")]
+      (is (str/includes? (:content e) "Q: Deploy how?"))
+      (is (str/includes? (:content e) "A: Run bb build:ata"))
+      (is (contains? (:tags e) "kind:qa"))
+      (is (= 1 (count (:sources e)))))))
 
-(deftest captures-multiple-event-kinds-test
-  (mem/start-capture! *mm*)
-  (hooks/fire! :agent.ask/pre {:session-id "s2" :user-id "u" :input "Q"})
-  (hooks/fire! :agent.tool-use/post {:session-id "s2" :user-id "u"
-                                     :tool-name "bash" :args {} :result "ok"})
-  (hooks/fire! :agent.ask/post {:session-id "s2" :user-id "u" :input "Q" :result "A"})
-  (is (= 3 (await-count "s2" 3 1000)))
-  (let [tags (set (mapcat :tags (l2-entries "s2")))]
-    (is (contains? tags "kind:user-message"))
-    (is (contains? tags "kind:assistant-answer"))
-    (is (contains? tags "kind:tool-result"))))
+(deftest ask-pre-not-captured-test
+  (testing "the bare question (ask/pre) is NOT written — only ask/post is"
+    (mem/start-capture! *mm*)
+    (hooks/fire! :agent.ask/pre {:session-id "sp" :user-id "u" :input "just the question"})
+    (Thread/sleep 150)
+    (is (zero? (count (l2-entries "sp"))))))
 
-(deftest dedup-applies-end-to-end-test
-  (mem/start-capture! *mm*)
-  (dotimes [_ 5]
-    (hooks/fire! :agent.tool-use/post {:session-id "s3" :user-id "u"
-                                       :tool-name "bash" :args {:cmd "x"} :result "y"}))
-  ;; Wait briefly, then check
-  (Thread/sleep 200)
-  (is (= 1 (count (l2-entries "s3")))
-      "5 identical agent.tool-use/post events should dedup to 1 L2 entry"))
+(deftest errors-only-for-tools-and-evals-test
+  (testing "successful tool/eval are dropped; errors + the Q&A are kept"
+    (mem/start-capture! *mm*)
+    (hooks/fire! :agent.tool-use/post {:session-id "s2" :user-id "u"
+                                       :tool-name "bash" :args {:cmd "ls"} :result "ok"})        ; dropped
+    (hooks/fire! :agent.code-eval/post {:session-id "s2" :user-id "u"
+                                        :code "(+ 1 2)" :result 3 :error ""})                     ; dropped
+    (hooks/fire! :agent.tool-use/post {:session-id "s2" :user-id "u"
+                                       :tool-name "bash" :args {:cmd "boom"} :result {:error "exit 1"}}) ; kept
+    (hooks/fire! :agent.ask/post {:session-id "s2" :user-id "u" :input "Q" :result "A"})          ; kept
+    (is (= 2 (await-count "s2" 2 1000)))
+    (let [tags (set (mapcat :tags (l2-entries "s2")))]
+      (is (contains? tags "kind:qa"))
+      (is (contains? tags "kind:tool-error"))
+      (is (not (contains? tags "kind:tool-result")) "successful tool not captured")
+      (is (not (contains? tags "kind:user-message")) "bare question not captured"))))
+
+(deftest qa-upsert-dedup-test
+  (testing "re-asking the same question upserts the Q&A episode (no dup)"
+    (mem/start-capture! *mm*)
+    (hooks/fire! :agent.ask/post {:session-id "s3" :user-id "u" :input "same q" :result "first"})
+    (is (= 1 (await-count "s3" 1 1000)))
+    (hooks/fire! :agent.ask/post {:session-id "s3" :user-id "u" :input "SAME  Q" :result "second"})
+    (Thread/sleep 200)
+    (is (= 1 (count (l2-entries "s3"))) "same normalized question deduped to one episode")
+    (is (str/includes? (:content (first (l2-entries "s3"))) "A: second") "latest answer kept")))
+
+(deftest tool-error-dedup-applies-end-to-end-test
+  (testing "identical tool errors dedup via the debounce window"
+    (mem/start-capture! *mm*)
+    (dotimes [_ 5]
+      (hooks/fire! :agent.tool-use/post {:session-id "s4" :user-id "u"
+                                         :tool-name "bash" :args {:cmd "x"} :result {:error "boom"}}))
+    (Thread/sleep 200)
+    (is (= 1 (count (l2-entries "s4")))
+        "5 identical tool errors should dedup to 1 L2 entry")))
 
 (deftest capture-disabled-by-default-test
   ;; No start-capture! call — verify no entries are written.
-  (hooks/fire! :agent.ask/pre {:session-id "s4" :user-id "u" :input "Quiet"})
+  (hooks/fire! :agent.ask/post {:session-id "s5" :user-id "u" :input "Quiet" :result "x"})
   (Thread/sleep 100)
-  (is (zero? (count (l2-entries "s4")))))
+  (is (zero? (count (l2-entries "s5")))))
 
 (deftest start-capture-idempotent-test
   (let [h1 (mem/start-capture! *mm*)
@@ -95,7 +124,7 @@
   (mem/start-capture! *mm*)
   (mem/stop-capture! *mm*)
   (is (not (mem/capture-running? *mm*)))
-  ;; After stop, firing an event must not produce an entry
-  (hooks/fire! :agent.ask/pre {:session-id "s5" :user-id "u" :input "post-stop"})
+  ;; After stop, firing the captured event must not produce an entry
+  (hooks/fire! :agent.ask/post {:session-id "s6" :user-id "u" :input "post-stop" :result "x"})
   (Thread/sleep 100)
-  (is (zero? (count (l2-entries "s5")))))
+  (is (zero? (count (l2-entries "s6")))))
