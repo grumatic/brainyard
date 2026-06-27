@@ -20,6 +20,7 @@
    [ai.brainyard.agent-tui.config-wizard :as config-wizard]
    [ai.brainyard.agent-tui-app.dotenv :as dotenv]
    [ai.brainyard.agent.interface :as agent]
+   [ai.brainyard.memory.interface :as mem]
    [ai.brainyard.agent-tui-persist.interface :as persist]
    [ai.brainyard.ask-channel.interface :as ask-channel]
    [ai.brainyard.web-share.interface :as web-share]
@@ -140,6 +141,16 @@
   {:option "timeout" :short "t"
    :as "Seconds to wait for an --attach answer (default 120)"
    :type :int})
+
+(def session-opt
+  {:option "session" :short "s"
+   :as "Pin the session-id (default: a fresh ephemeral ask-<millis>). Reuse the same id across one-shot asks to share session-scoped (L1/L2) memory recall between them."
+   :type :string})
+
+(def reducer-opt
+  {:option "reducer" :short "r"
+   :as "L2→L3 reducer: heuristic (default; per-(role,window) digest) | community (graph-community summaries; needs BY_ENABLE_GRAPH_MEMORY + an extract model)"
+   :type :string :default "heuristic"})
 
 ;; ============================================================================
 ;; Legacy provider:model parsing
@@ -768,7 +779,8 @@
                 (helpers/setup-lm! provider :model model)
                 (mulog/setup-slf4j-bridge!)
                 (setup-app-log!)
-                (let [sess-id (str "ask-" (System/currentTimeMillis))
+                (let [sess-id (or (some-> (:session opts) str/trim not-empty)
+                                  (str "ask-" (System/currentTimeMillis)))
                       max-iterations (or max-iter
                                          (:max-iterations (:meta (agent/get-tool-defs :id agent-id)))
                                          (get agent/default-config :max-iterations 20))
@@ -820,6 +832,107 @@
           (println (str "Error: " err))
           (println (or answer ""))))
       (System/exit (if err 1 0)))))
+
+;; ============================================================================
+;; Subcommand: memory — maintenance on the user-scoped L1/L2/L3 store
+;; ============================================================================
+;;
+;; Deterministic, non-LLM operations on `~/.brainyard/memory/<user-id>.db`,
+;; outside any agent session. `consolidate` is the deterministic trigger for
+;; L2→L3 promotion (the agent-driven essence/consolidation paths are async /
+;; LLM-mediated and unsuitable for scripting); `stats` reports layer counts.
+;; Used by the memory test harnesses (scripts/test-memory-l3-*.sh).
+
+(defn- with-memory-manager
+  "Create a user-scoped memory manager (graph opts wired from config when
+   `:enable-graph-memory` is on), initialize it, run `f` on it, and always
+   shut it down. Returns f's value."
+  [user-id f]
+  (let [mm (agent/create-memory-manager user-id)]
+    (try
+      (mem/initialize mm)
+      (f mm)
+      (finally (mem/shutdown mm)))))
+
+(defn cmd-memory-consolidate
+  "Run L2→L3 consolidation for a user (optionally one session). Deterministic
+   with the default heuristic reducer; `--reducer community` uses the
+   graph-community summarizer (requires the graph tier configured)."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json?   (:json opts)
+        uid     (helpers/resolve-user-id (:user-id opts))
+        sid     (some-> (:session opts) str/trim not-empty)
+        reducer (keyword (or (:reducer opts) "heuristic"))]
+    (try
+      (let [report (with-memory-manager
+                     uid
+                     (fn [mm]
+                       (apply mem/consolidate-l2! mm
+                              (cond-> [:reducer reducer]
+                                sid (into [:session-id sid])))))]
+        (if json?
+          (print-json! {:success true :user-id uid :session sid
+                        :reducer (name reducer) :report report})
+          (println (format "Consolidated [%s%s] reducer=%s → produced=%s consumed=%s"
+                           uid (if sid (str " / " sid) "")
+                           (name reducer)
+                           (:produced report) (:consumed report)))))
+      (catch Exception e
+        (if json?
+          (print-json! {:success false :error (.getMessage e) :user-id uid})
+          (println "Error:" (.getMessage e)))
+        (System/exit 1)))))
+
+(defn cmd-memory-stats
+  "Report L1/L2/L3 counts for a user's memory store."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))]
+    (try
+      (let [stats (with-memory-manager uid (fn [mm] (mem/get-stats mm)))]
+        (if json?
+          (print-json! (assoc stats :success true :user-id uid))
+          (println (format "Memory[%s]: episodes=%s semantic-facts=%s schema=%s"
+                           uid (:episodes stats) (:semantic-facts stats)
+                           (:schema-version stats)))))
+      (catch Exception e
+        (if json?
+          (print-json! {:success false :error (.getMessage e) :user-id uid})
+          (println "Error:" (.getMessage e)))
+        (System/exit 1)))))
+
+(defn cmd-memory-graph-build
+  "Synchronously extract a user's L2 episodes into the context-graph
+   (graph_nodes/graph_edges). Requires the graph tier configured
+   (BY_ENABLE_GRAPH_MEMORY + BY_GRAPH_EXTRACT_MODEL). This is the deterministic
+   precursor to `consolidate --reducer community`; the async capture-time
+   extractor would otherwise be dropped by the 1s shutdown drain on one-shot
+   `ask`."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        sid   (some-> (:session opts) str/trim not-empty)]
+    (try
+      (let [report (with-memory-manager
+                     uid
+                     (fn [mm]
+                       (apply mem/extract-l2-graph! mm
+                              (cond-> [] sid (into [:session-id sid])))))]
+        (if json?
+          (print-json! {:success true :user-id uid :session sid :report report})
+          (println (format "Graph-build [%s%s] → attempted=%s/%s%s"
+                           uid (if sid (str " / " sid) "")
+                           (:attempted report) (:total report)
+                           (if (:no-extract-fn report)
+                             " (no extract model configured — graph tier off)" "")))))
+      (catch Exception e
+        (if json?
+          (print-json! {:success false :error (.getMessage e) :user-id uid})
+          (println "Error:" (.getMessage e)))
+        (System/exit 1)))))
 
 ;; ============================================================================
 ;; Subcommand: agents — list available agents
@@ -1203,6 +1316,7 @@
                                 max-iter-opt
                                 attach-opt
                                 ask-timeout-opt
+                                session-opt
                                 json-opt]
                   :args        [{:arg "question" :as "Question to ask" :type :string}]
                   :runs        cmd-ask}
@@ -1274,13 +1388,27 @@
                                                 :as "Skip the confirmation prompt for --all"
                                                 :type :with-flag :default false}
                                                working-dir-opt]
-                                 :runs        cmd-sessions-prune}]}]})
+                                 :runs        cmd-sessions-prune}]}
+                 {:command     "memory"
+                  :description "Maintenance on the user-scoped L1/L2/L3 memory store"
+                  :subcommands [{:command     "consolidate"
+                                 :description "Run L2→L3 consolidation (deterministic heuristic; --reducer community for graph summaries)"
+                                 :opts        [user-id-opt session-opt reducer-opt json-opt]
+                                 :runs        cmd-memory-consolidate}
+                                {:command     "graph-build"
+                                 :description "Synchronously extract L2 episodes into the context-graph (graph tier; precedes --reducer community)"
+                                 :opts        [user-id-opt session-opt json-opt]
+                                 :runs        cmd-memory-graph-build}
+                                {:command     "stats"
+                                 :description "Report L1/L2/L3 counts for a user"
+                                 :opts        [user-id-opt json-opt]
+                                 :runs        cmd-memory-stats}]}]})
 
 ;; ============================================================================
 ;; Entry point
 ;; ============================================================================
 
-(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions"})
+(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "memory"})
 (def ^:private help-flags #{"--help" "-?" "-h"})
 ;; `-v` is taken by `run --verbose`, so the short version flag is capital `-V`.
 (def ^:private version-flags #{"--version" "-V"})

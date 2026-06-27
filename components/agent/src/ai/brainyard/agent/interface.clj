@@ -16,6 +16,7 @@
   (:require [ai.brainyard.util.interface.macros :refer [export-symbols]]
             [ai.brainyard.agent.core.protocol :as protocol]
             [ai.brainyard.agent.core.session :as session]
+            [ai.brainyard.agent.core.memory :as agent-mem]
             [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.protocol :as task-proto]
@@ -125,6 +126,14 @@
                 generate-instance-id
                 create-agent
                 setup-agent setup-agent-by-id run-agent)
+
+;; Memory-manager factory — wires the context-graph provider opts (embed /
+;; extract / summarize fns) from config on top of the bare memory-component
+;; manager, so callers get the graph tier when `:enable-graph-memory` is on.
+;; Exposed for CLI maintenance surfaces (`by memory …`) that operate on the
+;; user-scoped store outside an agent session.
+(export-symbols ai.brainyard.agent.core.memory
+                create-memory-manager)
 
 ;; ============================================================================
 ;; BT Integration

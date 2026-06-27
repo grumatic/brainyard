@@ -394,6 +394,28 @@
   [manager & opts]
   (proto/consolidate-layer (:store manager) :l2 (apply hash-map opts)))
 
+(defn extract-l2-graph!
+  "Synchronously extract graph nodes/edges from a user's L2 episodes
+  (optionally restricted to one `:session-id`), populating
+  `graph_nodes`/`graph_edges`. BLOCKS until done — the deterministic
+  counterpart to the async capture-time extractor, intended for scripted or
+  backfill graph builds where the 1s shutdown drain of the async path would
+  drop in-flight extractions.
+
+  Requires the manager's `:extract-fn` (the context-graph tier — i.e.
+  `:enable-graph-memory` + a configured extract model). When absent this is a
+  no-op returning `{:attempted 0 :total 0 :no-extract-fn true}`.
+
+  Returns `{:attempted <n eligible> :total <n episodes>}`."
+  [manager & {:keys [session-id]}]
+  (if-let [extract-fn (:extract-fn manager)]
+    (let [s       (:store manager)
+          entries (proto/read-entries s :l2
+                                      (cond-> {} session-id (assoc :session-id session-id))
+                                      {:limit 1000})]
+      (capture-extractor/extract-batch! s extract-fn entries))
+    {:attempted 0 :total 0 :no-extract-fn true}))
+
 ;; =====================================================
 ;; Retention & Archive (P4)
 ;; =====================================================

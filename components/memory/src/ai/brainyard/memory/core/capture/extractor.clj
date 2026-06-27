@@ -41,6 +41,22 @@
     (catch Exception e
       (mulog/warn ::graph-extract-failed :entry-id (:id entry) :error (ex-message e)))))
 
+(defn extract-batch!
+  "Synchronously run graph extraction over `entries` (a seq of L2 entry maps),
+   populating graph_nodes/graph_edges via `extract-fn`. BLOCKS until every
+   eligible entry is processed — the deterministic counterpart to the async
+   sidecar, for scripted/backfill graph builds. Entries whose content is below
+   `:min-content` chars are skipped (same threshold as the async path).
+   Returns {:attempted <n eligible> :total <n entries>}."
+  [store extract-fn entries & {:keys [min-content] :or {min-content default-min-content}}]
+  (let [attempted (reduce (fn [n entry]
+                            (let [content (:content entry)]
+                              (if (and (string? content) (>= (count content) min-content))
+                                (do (process! store extract-fn entry) (inc n))
+                                n)))
+                          0 entries)]
+    {:attempted attempted :total (count entries)}))
+
 (defn- run-loop!
   [store extract-fn ch !running]
   (try
