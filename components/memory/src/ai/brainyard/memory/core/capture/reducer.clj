@@ -25,12 +25,26 @@
 (def ^:private default-min-batch-size 3)
 
 (defn- tag-bucket
-  "Project an entry to the subset of tags we group by — exclude noisy
-  per-event tags so episodes with the same topic + role merge."
+  "Project an entry to the subset of tags we group by. Excludes the noisy
+  per-event/per-message tag families so that an ordinary run of conversation
+  in one time window batches together:
+
+    - `event:` / `kind:`  — capture-pipeline bookkeeping.
+    - `topic:`            — auto-extracted per-message keywords. These are
+                            unique per turn (`topic:teal`, `topic:photon`, …),
+                            so keeping them would put every turn in its own
+                            bucket and the batch threshold would never be met.
+                            Topic/entity-cohesive consolidation is the job of
+                            the graph-community tier (CR-MEM-24), not this
+                            heuristic digest.
+
+  What remains is the stable structural tag set (primarily `role:`), so the
+  heuristic produces a per-(role, time-window) digest within a session."
   [entry]
   (->> (:tags entry)
        (remove #(or (str/starts-with? % "event:")
-                    (str/starts-with? % "kind:")))
+                    (str/starts-with? % "kind:")
+                    (str/starts-with? % "topic:")))
        sort
        vec))
 

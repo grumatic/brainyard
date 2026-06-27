@@ -34,19 +34,44 @@
 ;; Heuristic reducer
 ;; =====================================================
 
-(deftest reducer-batches-by-tag-and-window-test
+(defn- seed-varied!
+  "Write episodes that share `base-tags` but each carry a UNIQUE `topic:` tag
+   (mirrors real Q&A capture, which auto-extracts distinct per-turn topics).
+   Returns nothing."
+  [n base-tags base-time session-id]
+  (dotimes [i n]
+    (proto/write-entry (mem/store *mm*) :l2
+                       {:kind :conversation
+                        :role "user"
+                        :content (str "msg-" i)
+                        :session-id session-id
+                        :tags (conj base-tags (str "topic:unique-" i))
+                        :created-at (+ base-time (* i 1000))})))
+
+(deftest reducer-merges-varied-topics-in-window-test
+  ;; Regression: real Q&A episodes each get DISTINCT `topic:` tags
+  ;; (topic:teal, topic:photon, …). The bucket key must ignore topic: so a
+  ;; normal run of conversation in one window still batches; otherwise the
+  ;; heuristic reducer never fires (produced 0) for real usage.
   (let [now (System/currentTimeMillis)]
-    ;; Batch A: 5 events with topic:deploy in the same minute
-    (seed-l2! 5 #{"topic:deploy" "role:user"} now "s-r1")
-    ;; Batch B: 4 events with topic:auth in the same minute
-    (seed-l2! 4 #{"topic:auth" "role:user"} (+ now 100) "s-r1")
-    ;; Below threshold: 2 events alone
-    (seed-l2! 2 #{"topic:loose"} (+ now 200) "s-r1")
+    (seed-varied! 3 #{"role:conversation"} now "s-r1")
     (let [out (mem/consolidate-l2! *mm* :session-id "s-r1")]
-      (is (= 2 (:produced out))
-          "Two batches qualify (≥3 events each); the 2-event group is skipped")
+      (is (= 1 (:produced out))
+          "Three varied-topic turns in one (role, window) batch into ONE summary")
+      (is (= 3 (:consumed out))))))
+
+(deftest reducer-batches-by-role-and-window-test
+  (let [now (System/currentTimeMillis)]
+    ;; Same role, same 10-min window — varied topics merge into one batch.
+    (seed-l2! 5 #{"topic:deploy" "role:user"} now "s-r1b")
+    (seed-l2! 4 #{"topic:auth" "role:user"} (+ now 100) "s-r1b")
+    ;; No role tag → a different (empty-tag) bucket; only 2 events → skipped.
+    (seed-l2! 2 #{"topic:loose"} (+ now 200) "s-r1b")
+    (let [out (mem/consolidate-l2! *mm* :session-id "s-r1b")]
+      (is (= 1 (:produced out))
+          "All 9 role:user events share one (role, window) bucket; the 2-event no-role group is skipped")
       (is (= 9 (:consumed out))
-          "All consumed entries are 5+4=9"))))
+          "Consumed entries are the 5+4=9 role:user events"))))
 
 (deftest reducer-writes-l3-with-provenance-test
   (let [now (System/currentTimeMillis)]
