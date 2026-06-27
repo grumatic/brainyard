@@ -27,6 +27,7 @@
             [ai.brainyard.agent.common.gateway :as gateway]
             [ai.brainyard.agent.common.gateway.telegram :as gateway-telegram]
             [ai.brainyard.agent.common.log :as log]
+            [ai.brainyard.agent.common.trajectory :as traj]
             [ai.brainyard.agent.common.schedule :as schedule]
             [ai.brainyard.agent.common.trajectory-export :as traj-export]
             [ai.brainyard.clj-llm.interface :as clj-llm]
@@ -224,7 +225,10 @@
                   [:error {:optional true} [:string {:desc "Error if write failed or no memory manager"}]]])
 
 (defcommand memory$recall
-  "Search agent memory. Omit :layer for cross-layer RRF; set :layer to query just l1/l2/l3."
+  "Search agent memory for durable KNOWLEDGE (conversation + facts). Omit :layer
+   for cross-layer RRF; set :layer to query just l1/l2/l3. For your past
+   OPERATIONS and their output (a prior tool/bash result, an eval value) use
+   `trajectory$search` — those are kept in the trajectory, not in recall."
   (fn [& {:keys [query layer limit match kind min-confidence]}]
     (if-let [mm (current-mm)]
       (let [lyr (layer-kw layer)
@@ -478,6 +482,90 @@
                   [:entries {:optional true} [:vector {:desc "Audit entries: {:layer :kind :content :role :tags :entry-id :bytes}"} :any]]
                   [:turns {:optional true} [:vector {:desc "Per-(agent,turn) summaries (when :all-turns)"} :any]]
                   [:error {:optional true} [:string {:desc "Error if no agent / no memory manager / no audit rows"}]]])
+
+;; ============================================================================
+;; Operational trace (trajectory$search)
+;; ============================================================================
+;;
+;; Successful tool calls and code evals are deliberately NOT in semantic memory
+;; recall (they're operational noise that drowned out durable knowledge). They
+;; ARE recorded in full, per turn, in the session trajectory. This command lets
+;; an agent pull them back on demand — "what did I run / what did it output" —
+;; without polluting recall.
+
+(defn- trunc* [s n]
+  (let [s (if (string? s) s (some-> s pr-str))]
+    (if (and (string? s) (> (count s) n)) (str (subs s 0 n) "…") s)))
+
+(defn- iteration-ops
+  "Flatten one projected iteration into operational records (tool calls +
+   code-eval blocks) tagged with the turn."
+  [turn-id it]
+  (let [n (:iteration it)
+        tools (for [t (:tools it)]
+                {:turn-id turn-id :iter n :kind :tool
+                 :name (some-> (:name t) (#(if (keyword? %) (name %) (str %))))
+                 :args (:args t) :result (:result t)})
+        codes (:code it) results (:result it) outputs (:output it) errors (:error it)
+        cnt   (apply max 0 (map count [codes results outputs errors]))
+        evals (for [i (range cnt)]
+                {:turn-id turn-id :iter n :kind :code
+                 :code (nth codes i nil) :result (nth results i nil)
+                 :output (nth outputs i nil) :error (nth errors i nil)})]
+    (concat tools evals)))
+
+(defn- op-haystack [op]
+  (str/lower-case
+   (str (:name op) " " (pr-str (:args op)) " " (:result op) " "
+        (:code op) " " (:output op) " " (:error op))))
+
+(defn- compact-op [op]
+  (if (= :tool (:kind op))
+    (cond-> {:turn-id (:turn-id op) :kind "tool" :name (:name op)}
+      (some? (:args op))   (assoc :args   (trunc* (:args op) 300))
+      (some? (:result op)) (assoc :result (trunc* (:result op) 800)))
+    (cond-> {:turn-id (:turn-id op) :kind "code"}
+      (some? (:code op))   (assoc :code   (trunc* (:code op) 400))
+      (some? (:result op)) (assoc :result (trunc* (:result op) 800))
+      (some? (:output op)) (assoc :output (trunc* (:output op) 800))
+      (some? (:error op))  (assoc :error  (trunc* (:error op) 800)))))
+
+(defcommand trajectory$search
+  "Search this session's OPERATIONAL TRACE — past tool calls (name/args/result)
+   and code evaluations (code/result/output/error), recorded per turn. Use it to
+   recall WHAT YOU DID and its output (e.g. a previous bash/file result or eval
+   value); these are intentionally absent from semantic `memory$recall`, which
+   holds durable knowledge (conversation + facts), not step-by-step operations."
+  (fn [& {:keys [query tool kind turn-id limit]}]
+    (let [sid   (current-session-id)
+          turns (or (traj/read-trajectories sid) [])
+          ops   (->> turns
+                     ;; the trajectory record stores the turn counter under :turn
+                     (mapcat (fn [t] (mapcat #(iteration-ops (:turn t) %) (:iterations t))))
+                     reverse) ; most-recent first
+          q     (some-> query str/lower-case str/trim not-empty)
+          kw    (some-> kind keyword)
+          hits  (->> ops
+                     (filter (fn [op]
+                               (and (or (nil? turn-id) (= turn-id (:turn-id op)))
+                                    (or (nil? kw)      (= kw (:kind op)))
+                                    (or (nil? tool)    (= (str tool) (:name op)))
+                                    (or (nil? q)       (str/includes? (op-haystack op) q)))))
+                     (take (or limit 20))
+                     (mapv compact-op))]
+      {:matches hits
+       :count   (count hits)
+       :session (str sid)}))
+  :input-schema  [:map
+                  [:query   {:optional true} [:string {:desc "Substring to match across tool name/args/result + code/output/error"}]]
+                  [:tool    {:optional true} [:string {:desc "Restrict to a tool name (e.g. \"bash\")"}]]
+                  [:kind    {:optional true} [:string {:desc "Restrict to \"tool\" or \"code\""}]]
+                  [:turn-id {:optional true} [:int    {:desc "Restrict to one turn"}]]
+                  [:limit   {:optional true} [:int    {:desc "Max results (default 20, most-recent first)"}]]]
+  :output-schema [:map
+                  [:matches [:any    {:desc "Operational records [{:turn-id :kind tool|code :name/:code :args :result :output :error}]"}]]
+                  [:count   [:int    {:desc "Number of matches returned"}]]
+                  [:session [:string {:desc "Session id searched"}]]])
 
 ;; ============================================================================
 ;; Query Commands
