@@ -1036,6 +1036,41 @@
   {:doc "Run all Polylith tests"
    :task (shell "clj" "-M:poly" "test")}
 
+  test:memory
+  {:doc "End-to-end memory-recall harness (real LLM) — session-scoped L1/L2.
+
+   Drives `by ask` over multiple one-shot turns sharing a pinned --session/-u,
+   then verifies (a) facts were captured to the SQLite episodes store and
+   (b) a fresh process recalls them via session-scoped L2 recall. Uses a
+   throwaway user-id + db (cleaned up on exit); needs jq + sqlite3 and a
+   working provider (default claude-code:haiku).
+
+   Usage: bb test:memory          (or: BY_BIN=…/target/by bb test:memory)"
+   :task (apply shell "bash" "scripts/test-memory-recall.sh" *command-line-args*)}
+
+  test:memory:l3
+  {:doc "Cross-session L3 memory harness (real LLM) — heuristic consolidation.
+
+   States facts in session A, runs `by memory consolidate` (deterministic
+   heuristic L2→L3 reducer), then verifies a DIFFERENT session recalls them —
+   which is only possible via cross-session L3 semantic facts. Needs jq +
+   sqlite3 and a working provider.
+
+   Usage: bb test:memory:l3"
+   :task (apply shell "bash" "scripts/test-memory-l3-recall.sh" *command-line-args*)}
+
+  test:memory:l3-graph
+  {:doc "Cross-session L3 memory harness (real LLM) — graph-community tier.
+
+   Full context-graph pipeline: state facts → `by memory graph-build`
+   (sync entity/relation extraction) → `consolidate --reducer community`
+   (community summaries → L3) → cross-session recall. Requires the graph tier
+   (BY_ENABLE_GRAPH_MEMORY + an extract model; default claude-code:haiku) and
+   is slower/LLM-dependent. Needs jq + sqlite3.
+
+   Usage: bb test:memory:l3-graph   (or: EXTRACT_MODEL=… bb test:memory:l3-graph)"
+   :task (apply shell "bash" "scripts/test-memory-l3-graph.sh" *command-line-args*)}
+
   oauth:test-server
   {:doc "Run the Brainyard test OAuth + MCP device-flow provider (test/demo only).
 
