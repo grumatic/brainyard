@@ -567,6 +567,22 @@
                   [:count   [:int    {:desc "Number of matches returned"}]]
                   [:session [:string {:desc "Session id searched"}]]])
 
+(def operational-recall-guidance
+  "Tool-context overlay teaching agents to split knowledge recall from
+   operational-trace lookup. Spliced into the coact/react tool-context so the
+   root agent reaches for `trajectory$search` on operational questions."
+  "## Recalling past work — knowledge vs. operations
+
+- `memory$recall` → durable KNOWLEDGE (conversation + facts from prior turns/sessions).
+- `trajectory$search` → your OPERATIONAL history: past tool calls (name/args/result)
+  and code evals (code/result/output/error), recorded per turn. Filters: `:query`
+  (substring across all of those), `:tool`, `:kind` (\"tool\"|\"code\"), `:turn-id`, `:limit`.
+
+When the user asks an **operational** question — \"what did that command print\",
+\"what was the result of the last eval\", \"which tools did I run\", \"show the output
+from earlier\" — use `trajectory$search`, NOT `memory$recall`. Successful tool/eval
+results are intentionally kept out of semantic recall so it stays focused on knowledge.")
+
 ;; ============================================================================
 ;; Query Commands
 ;; ============================================================================

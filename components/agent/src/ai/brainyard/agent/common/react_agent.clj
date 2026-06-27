@@ -1153,81 +1153,26 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
 ;; ============================================================================
 
 (def ^:private react-instruction
-  "Instruction string for the react agent. Single-mode only."
+  "Instruction string for the react agent. Single-mode only.
+   Deliberately minimal: the tool-call JSON format, bootstrap discovery tools,
+   background-task tools, and loop/goal-achieved rules already live in the
+   always-present system-context sections (react-tool-call-format,
+   react-critical-rules, react-role) and the ThinkActAndEvaluate signature.
+   This carries ONLY the non-redundant nuances."
   "
-Use the ReAct thinking framework to answer the user's question by orchestrating tools.
-You combine reasoning, tool selection, observation, evaluation, and answer synthesis in a single step.
+Use the ReAct framework: each step, reason about the current state, then either
+call tools to make progress or give the final answer — observing prior results
+and judging whether the goal is met. The tool-call JSON format, the bootstrap
+discovery tools (list-tools / get-tool-info), and the background-task tools are
+documented in the system context above; this section adds only what's specific:
 
-**WORKFLOW:**
-1. **DISCOVER** (when needed) -- Call list-tools to enumerate registered tools (commands, skills, agents). Use the `type` arg to filter (e.g. \"command\"), or `pattern` to regex-search by id/description. Skip this step when the bound tools listed below are clearly sufficient.
-2. **INSPECT** (when needed) -- Call get-tool-info with tool-id to fetch the full input/output schema before invoking an unfamiliar tool.
-3. **EXECUTE** -- Populate the tool-calls output with a JSON array: [{\"tool-name\": \"...\", \"tool-args\": [{\"name\": \"...\", \"value\": \"...\"}]}]. The runtime dispatches each entry.
-4. **EVALUATE & ANSWER** -- In the same step, assess results and either select more tools or provide the final answer.
-
-**SINGLE-STEP LOOP:**
-Each iteration you will:
-- Observe results from previous tool calls (if any)
-- Evaluate whether the goal is achieved
-- Think about what to do next
-- Either select tools to call (if more work needed) OR provide the final answer (if goal achieved)
-
-When you set goal-achieved=true, provide a comprehensive answer in the same response.
-When you set goal-achieved=false, select appropriate tools and leave answer empty.
-
-**RUNTIME CONFIGURATION:**
-- Invoke agent-runtime$config with no args to view current runtime settings
-- Invoke agent-runtime$config with :key and :value to change a setting (effective from next question round)
-
-**BACKGROUND TASKS (for long-running tools):**
-- Use task$run to run any registered tool or bash command asynchronously as a background task
-- Required arg: job-type (\"tool\" | \"bash\")
-  - job-type \"tool\" — also pass tool-id (required), tool-args (optional JSON object), name (optional)
-  - job-type \"bash\" — also pass command (required), timeout (optional, ms; default 120000), name (optional)
-- Example (tool): {\"tool-name\": \"task$run\", \"tool-args\": [{\"name\": \"job-type\", \"value\": \"tool\"}, {\"name\": \"tool-id\", \"value\": \"aws$describe-instances\"}, {\"name\": \"tool-args\", \"value\": \"{\\\"region\\\":\\\"us-east-1\\\"}\"}, {\"name\": \"name\", \"value\": \"fetch instances\"}]}
-- Returns {\"task-id\": \"task-N\", \"status\": \"running\"} immediately — the job runs in the background
-- Check progress: call task$detail with task-id (status + line counts + result)
-- Get output tail: call task$detail with task-id and last-n (e.g. last-n=\"50\")
-- Cancel: call task$cancel with task-id
-- Use task$run when a tool or shell command may take >5 seconds (API calls, data processing, agents)
-- You can launch multiple background tasks and poll them in subsequent iterations
-
-**IMPORTANT RULES:**
-- All tools (commands, skills, agents) are invoked by populating the tool-calls output. The bound tools listed below are your immediate toolbox; use list-tools/get-tool-info to reach anything else registered in the system.
-- Prefer the bound tools when they cover the goal; only use list-tools/get-tool-info when the bound set looks insufficient — they are discovery aids, not every-iteration calls.
-- tool-calls is a JSON array: [{\"tool-name\": \"...\", \"tool-args\": [{\"name\": \"...\", \"value\": \"...\"}]}]
-")
-
-(def ^:private react-tool-context
-  "Tool-context string for the react agent. Single-mode only."
-  "
-## Bootstrap Tools (always bound)
-
-You have two discovery tools for reaching beyond your bound toolbox:
-
-1. **list-tools** -- Enumerate registered tools (commands, skills, agents, MCP tools all live in the same registry).
-   Args: type (\"tool\" | \"command\" | \"skill\" | \"agent\"), pattern (regex on id/name/description).
-   MCP tools are registered as `mcp$<server>$<tool>`; filter by server with pattern \"^mcp\\\\$<server>\\\\$\".
-   Example: {\"tool-name\": \"list-tools\", \"tool-args\": [{\"name\": \"type\", \"value\": \"command\"}, {\"name\": \"pattern\", \"value\": \"task\"}]}
-   Returns: {:tools [...] :description \"...\"}.
-
-2. **get-tool-info** -- Fetch full schema (description, inputs, outputs, aliases) for a specific tool by tool-id.
-   Args: tool-id (required, e.g. \"task$run\").
-   Example: {\"tool-name\": \"get-tool-info\", \"tool-args\": [{\"name\": \"tool-id\", \"value\": \"task$run\"}]}
-   Use this before invoking an unfamiliar tool so you populate tool-args correctly.
-
-## Invoking Tools
-
-Populate the tool-calls output field with a JSON array to invoke one or more tools:
-   [{\"tool-name\": \"...\", \"tool-args\": [{\"name\": \"...\", \"value\": \"...\"}]}]
-For agents: tool-args with name='question' and value='your question'.
-The runtime dispatches each entry and returns results in tool-results.
-
-## Typical Flow
-1. Try the bound tools first; if none fit the goal, call list-tools (optionally with type/pattern) to find candidates.
-2. If the candidate's signature is unclear, call get-tool-info with its tool-id to read the full schema.
-3. Populate tool-calls to invoke the chosen tools.
-4. For long-running tools, use task$run (with :job-type :tool or :bash) to run them in the background, then poll with task$detail (add :last-n for the output tail).
-5. In the same step, assess results and either continue or provide the final answer
+- Prefer the bound tools listed below when they cover the goal; list-tools /
+  get-tool-info are discovery aids for reaching anything else registered — not
+  every-iteration calls.
+- For a tool or shell command that may take more than ~5s (API calls, data
+  processing, agents), run it in the background via task$run and poll task$detail.
+- Runtime config: invoke agent-runtime$config (no args to view settings; :key and
+  :value to change one, effective from the next question round).
 ")
 
 ;; ============================================================================
@@ -1251,4 +1196,8 @@ The runtime dispatches each entry and returns results in tool-results.
   :agent-tools {:tools (vec (distinct (concat common-tools/all-common-tools
                                               common-cmds/all-common-commands)))}
   :instruction react-instruction
-  :tool-context react-tool-context)
+  ;; Tool discovery/invocation/background-task guidance already lives in the
+  ;; always-present `## tool-calls Format` system-context section
+  ;; (react-tool-call-format); the per-agent :tool-context carries only the
+  ;; NET-NEW knowledge-recall vs. operational-trace guidance.
+  :tool-context common-cmds/operational-recall-guidance)

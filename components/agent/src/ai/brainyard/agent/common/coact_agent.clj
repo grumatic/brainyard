@@ -4601,4 +4601,8 @@ playbook are in the system context above.")
                  ;; Per-agent OPT-IN: uncomment as true.
                  ;; :enable-memory-essence true
                  }
-  :instruction coact-instruction)
+  :instruction coact-instruction
+  ;; Knowledge-recall vs. operational-trace guidance (memory$recall vs.
+  ;; trajectory$search). Flows to every coact-derived agent — and to
+  ;; memory-agent, which merges coact's :tool-context.
+  :tool-context common-cmds/operational-recall-guidance)
