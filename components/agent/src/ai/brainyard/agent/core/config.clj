@@ -297,10 +297,15 @@
    ;; essence-capture loop (which spun a full memory-agent BT loop — 6-8
    ;; LLM iterations — on EVERY turn, even a bare "hello"). Off by
    ;; default; opt-in per agent type via :config-extra on the defagent
-   ;; (root coact-agent / research-agent), like the old essence flag.
+   ;; (root coact-agent / research-agent), like the old essence flag, or
+   ;; via the BY_ENABLE_MEMORY_CONSOLIDATION env var (which wins per the
+   ;; precedence rules; used by the `bb test:memory:auto` harness).
    ;; The `:op :essence` memory-agent playbook survives as a manual /
    ;; REPL surface; it is simply no longer hook-driven.
-   :enable-memory-consolidation {:type "boolean" :default false}
+   :enable-memory-consolidation {:type "boolean"
+                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY_CONSOLIDATION")]
+                                            (= "true" v) ::env-unset)
+                                 :default false}
    ;; Cadence for the consolidation hook above: run the batch reducer
    ;; once every N completed turns. Higher = cheaper / coarser. Ignored
    ;; when :enable-memory-consolidation is false.

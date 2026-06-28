@@ -1071,6 +1071,20 @@
    Usage: bb test:memory:l3-graph   (or: EXTRACT_MODEL=… bb test:memory:l3-graph)"
    :task (apply shell "bash" "scripts/test-memory-l3-graph.sh" *command-line-args*)}
 
+  test:memory:auto
+  {:doc "Automatic cross-session L3 consolidation harness (real LLM).
+
+   Proves L2→L3 promotion happens AUTOMATICALLY — with no `by memory
+   consolidate` call — via the rev-3 session-end flush hook
+   (:agent.instance/closed, gated on :enable-memory-consolidation). States
+   facts over one-shot `ask` turns (each closes → flush), verifies semantic
+   facts auto-appeared and a fresh session recalls them, then runs a negative
+   control with the gate OFF to prove the L3 came from the hook. Heuristic
+   tier (graph overlay off). Needs jq + sqlite3 and a working provider.
+
+   Usage: bb test:memory:auto"
+   :task (apply shell "bash" "scripts/test-memory-auto-consolidate.sh" *command-line-args*)}
+
   oauth:test-server
   {:doc "Run the Brainyard test OAuth + MCP device-flow provider (test/demo only).
 
