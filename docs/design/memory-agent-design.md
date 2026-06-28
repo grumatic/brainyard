@@ -1,6 +1,7 @@
 # Memory-Agent — LLM-Driven Steward of the Layered Memory Stack (CoAct-derived)
 
 > **Status:** Shipped (rev 2 — 2026-05-13). All five implementation phases landed. See §18 for the post-implementation status, decisions made during build, and the deferred follow-ups.
+> **rev 3 (2026-06-28) — per-turn essence capture RETIRED.** The `:agent.ask/post` essence-capture hook (which spun a full memory-agent BT loop — 6–8 LLM iterations — on *every* root turn, even a bare "hello") is removed. L2→L3 promotion now runs as cheap **batch consolidation**: an every-N-turns cadence plus a session-end flush, both deterministic and LLM-free on the default heuristic path. The `:op :essence` playbook and `memory$essence-extract` tool survive as a manual/REPL surface. See §10 and §18.5 for the authoritative current behavior; the rev-1/rev-2 essence text below is kept as historical record.
 > **Scope:** new agent `components/agent/src/ai/brainyard/agent/common/memory_agent.clj` + helpers namespace; consumes the existing `components/memory` interface; introduces a small `memory$*` tool family registered via `defcommand`.
 > **Built on:** `coact_agent.clj` via a custom `run-memory-agent` ask-fn (inherits coact's instruction/BT but not its tool roster — see §18 for why we did not use `coact/run-coact-derived` directly).
 > **Replaces / supersedes:** nothing. Augments today's implicit memory ownership (capture sidecar + L2 sweeper + manual `consolidate-l2!` calls) with a single delegate every other agent can reach.
@@ -10,6 +11,7 @@
 
 - **rev 1 (2026-05-13)** — initial proposal. Establishes the memory-agent as the single LLM-driven steward of `.brainyard/memory/<user-id>.db`. Adds the `memory$*` primitive tool family. Defines per-turn essence capture, cross-session consolidation, purge of orphaned L2 episodes, L3 fact verification, and a stats/health surface that other agents (and the TUI status bar) can call into.
 - **rev 2 (2026-05-13)** — implementation complete (Phases 1–5). Twenty `memory$*` primitives, three DSPy signatures (EssenceExtraction, LlmReducer, FactVerification), seven `:op`s end-to-end, write-guard + essence-capture hooks, `/memory` TUI slash-command. Default sub-LM is `claude-code:sonnet` (see §16 Q2). See §18 for full status and deferred items.
+- **rev 3 (2026-06-28)** — **retired per-turn essence capture; replaced with batch consolidation.** Removed the `:agent.ask/post` essence-capture hook (per-turn memory-agent BT loop). Added two deterministic hooks in `memory_agent/hooks.clj`: a **consolidation cadence** (`:agent.ask/post`, runs the L2→L3 reducer every `:memory-consolidate-every-n-turns` turns) and a **session-end flush** (`:agent.instance/closed`, a final reduce when a root agent closes). Both gated on `:enable-memory-consolidation` (default false). Replaced config key `:enable-memory-essence` with `:enable-memory-consolidation` + `:memory-consolidate-every-n-turns`. The `memory$essence-extract` tool and `:op :essence` playbook are unchanged (manual/REPL only). See §18.5.
 
 ---
 
@@ -418,9 +420,20 @@ The agent's input signature accepts a discriminated union over `:op`. Internally
 
 ## 10. Hooks Integration
 
-Memory-agent does not register *new* hook keys. It is a *consumer* of existing ones, registered at instance creation time when its `:memory.essence/enabled?` config is true.
+Memory-agent does not register *new* hook keys. It is a *consumer* of existing ones, self-installed at namespace load in `memory_agent/hooks.clj`.
 
-### 10.1 Turn-boundary essence capture
+> **rev 3 (2026-06-28):** the per-turn essence-capture hook described in §10.1 below is **retired**. The current shipped hooks are the **write-guard** (§9) plus the two **batch-consolidation** hooks described in §10.0. The §10.1/§10.2 text is kept as the rev-1/rev-2 historical record of the original (now-removed) design.
+
+### 10.0 Batch consolidation (rev 3 — current)
+
+Two deterministic hooks, both gated on `:enable-memory-consolidation` (default false; opt-in per agent-type, root-only, never memory-agent itself):
+
+- **Consolidation cadence** — `:agent.ask/post`, id `::consolidation-cadence`. Increments a per-session turn counter (a plain atom — *no LLM*) and, every `:memory-consolidate-every-n-turns` turns (default 12), fire-and-forget runs the memory pipeline's L2→L3 reducer over the session: `mem/consolidate-graph!` (community / CR-MEM-24) when `:enable-graph-memory` is on, else the LLM-free heuristic `mem/consolidate-l2!`.
+- **Session-end flush** — `:agent.instance/closed`, id `::session-end-flush`. When a root agent instance closes (`/quit`, EOF, `/agent close`), runs one final reduce so a session ending between cadence boundaries still promotes its tail of episodes. Fires *synchronously* (the event fires before `mem/stop-capture!`, so the manager is still live) but is bounded by a 10s timeout so a slow community/LLM reduce can't wedge shutdown. Clears the session's turn counter.
+
+Why this shape: per-turn essence extraction (§10.1) wrapped a *single* sub-LM call (`memory$essence-extract`) inside a full memory-agent BT loop, costing 6–8 main-LM iterations **every** turn — even a "hello" — and overlapping the L2→L3 reducer the pipeline already had. Batching the reduce and triggering it deterministically removes both the per-turn cost and the redundancy. The `memory$essence-extract` signature and the `:op :essence` playbook remain available for manual/REPL use.
+
+### 10.1 Turn-boundary essence capture *(retired rev 3 — historical)*
 
 Registered handler on `:agent.ask/post` with `:source :memory-agent.essence`:
 
@@ -441,15 +454,13 @@ Registered handler on `:agent.ask/post` with `:source :memory-agent.essence`:
   :source :memory-agent)
 ```
 
-The handler fires-and-forgets — essence extraction running ~2s should never block the user's next turn. Failures log but do not propagate.
+The handler fired-and-forgot — essence extraction running ~2s should never block the user's next turn. **Removed in rev 3** (see §10.0): the BT-loop-per-turn cost outweighed the benefit and duplicated the batch reducer.
 
-### 10.2 Other hook consumers
+### 10.2 Other hook consumers *(historical / aspirational)*
 
-- `:agent.session/closed` → schedule one `:op :consolidate :session-id …` pass before the session leaves the registry, so its episodes get a chance at L3 promotion before they become "orphan".
-- `:agent.compaction/post` → after a CoAct context compaction, queue a `:op :essence` for the compacted window so distilled lessons survive even though the raw messages were truncated.
-- `:agent/exception` → write the exception + tool-call snapshot as an L2 episode with `keep_flag=1` and `:tags #{"event:exception"}` so postmortems can recall failure modes.
-
-All three handlers can be disabled via config. (Originally default-on for the root coact-agent and research-agent, off for short-lived specialists. **As shipped today** `:enable-memory-essence` defaults to `false` schema-wide — see §18.1 — so these handlers are off everywhere until a config flips the key on.)
+- `:agent.instance/closed` → **shipped in rev 3** as the session-end consolidation flush (§10.0). (The original sketch named `:agent.session/closed`, but that event fires only on session *deletion*, not a normal quit — sessions persist for resume — so the flush hangs off the agent-instance close instead.)
+- `:agent.compaction/post` → after a CoAct context compaction, queue a consolidation for the compacted window so distilled lessons survive even though the raw messages were truncated. *(Not built.)*
+- `:agent/exception` → write the exception + tool-call snapshot as an L2 episode with `keep_flag=1` and `:tags #{"event:exception"}` so postmortems can recall failure modes. *(Not built; the always-on capture pipeline already records tool/eval errors.)*
 
 ---
 
@@ -659,13 +670,13 @@ All five phases shipped end-to-end. Test coverage: 135 tests / 900 assertions ac
 - `src/ai/brainyard/agent/common/memory_agent/signatures.clj` — `EssenceExtraction`, `LlmReducer`, `FactVerification`.
 - `src/ai/brainyard/agent/common/memory_agent/instruction.clj` — master instruction + tool-context.
 - `src/ai/brainyard/agent/common/memory_agent/working_area.clj` — paths, EDN slot I/O, NDJSON essence-log append.
-- `src/ai/brainyard/agent/common/memory_agent/hooks.clj` — write-guard + essence-capture, both self-installing on namespace load.
+- `src/ai/brainyard/agent/common/memory_agent/hooks.clj` — write-guard + (rev 3) the two batch-consolidation hooks (`::consolidation-cadence` on `:agent.ask/post`, `::session-end-flush` on `:agent.instance/closed`), all self-installing on namespace load. *(rev 2 shipped `::essence-capture` here instead; retired in rev 3 — see §10.0/§18.5.)*
 - `test/ai/brainyard/agent/common/memory_agent/*_test.clj` — six test namespaces (`commands_test`, `working_area_test`, `memory_agent_test`, `essence_test`, `consolidate_test`, `verify_test`).
 
 **Cross-cutting modifications:**
 
-- `components/agent/src/ai/brainyard/agent/core/config.clj` — added `:enable-memory-essence` config-schema key (default `false`).
-- `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` — originally set `:enable-memory-essence true` in `:config-extra` (research-agent inherits). **Update (post-ship, commit `b98c59a`):** the `:config-extra` memory keys were commented out and coact now resorts to the schema default — and `:enable-memory-essence` defaults to **`false`** in `agent.core.config`. So per-turn essence capture currently ships **off** (only the always-on capture pipeline, `:enable-memory-capture`, runs by default — and that key now defaults `true`). Re-enabling essence is a one-line `:config-extra` flip pending dogfood evaluation of its per-turn LLM cost.
+- `components/agent/src/ai/brainyard/agent/core/config.clj` — rev 2 added `:enable-memory-essence` (default `false`). **rev 3 replaced it** with `:enable-memory-consolidation` (default `false`) + `:memory-consolidate-every-n-turns` (default `12`).
+- `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` — rev 2 originally set `:enable-memory-essence true` in `:config-extra` (research-agent inherits), then commented it out so coact resorts to the schema default (essence shipped **off**). **rev 3** updated that `:config-extra` reference comment to `:enable-memory-consolidation` (still commented = off by default; one-line opt-in). The always-on capture pipeline (`:enable-memory-capture`, default `true`) is unaffected.
 - `bases/agent-tui/src/ai/brainyard/agent_tui/commands.clj` — `/memory <subcmd>` slash-command.
 
 **Tool surface (20 primitives):**
@@ -703,6 +714,16 @@ Five items are documented but not built. None are blocking the core "memory-agen
 
 ### 18.4 What to watch in dogfood
 
-- DB growth rate vs. essence write rate. With sonnet on every coact turn, the per-turn cost is ~one extra chat-completion. If turn counts climb fast, revisit Open Q2 and consider falling back to haiku for `EssenceExtraction` while keeping sonnet for the consolidate/verify paths.
+- DB growth rate vs. consolidation throughput. **rev 3:** the per-turn essence LLM call is gone; the only recurring cost is the batch reducer every N turns (LLM-free on the heuristic path; one summary call per cluster on the community path). Watch L3 growth vs. the cadence N — too small an N over-consolidates, too large drops episodes that age out before a flush.
 - L3 fact churn. `:op :verify-fact` should produce mostly `:still-true` verdicts; a high `:wrong` rate means earlier consolidation passes are too aggressive.
-- Hint accuracy on essence capture. The `:hint` argument passed to `:op :essence` is the parent agent's `:answer` truncated to 400 chars. If essences read like generic post-hoc summaries rather than crisp turn-distillations, the truncation may be too aggressive or the hint format too thin — extend `essence-capture-handler` to include the user's `:input` alongside the answer.
+- Consolidation tail coverage. The session-end flush (§10.0) is the safety net for the last `<N` turns. Confirm it fires on the real exit paths (`/quit`, EOF, `/agent close`) and that its 10s timeout is generous enough for the community/LLM path on large graphs.
+
+### 18.5 rev 3 — essence retirement / batch consolidation (2026-06-28)
+
+**Problem.** Per-turn essence capture (§10.1) dispatched a full memory-agent BT loop on *every* root turn. Observed cost: a bare "hello" turn ran 6 iterations / ~5 min before concluding "no essence"; an "AWS tools" listing ran 8. The actual judgement — `memory$essence-extract` — is a *single* sub-LM `chain-of-thought` call; the rest was the agentic envelope (stats → read L2 → extract → write/promote → append → answer), plus arg-shape fights and stale-sandbox `def` leakage across turns. It also duplicated the L2→L3 reducer (`capture/reducer.clj`) and community consolidation (CR-MEM-24) the pipeline already had — the same promotion, done eagerly and expensively per turn instead of cheaply in batch.
+
+**Change.** Retired the `:agent.ask/post` essence-capture hook. L2→L3 promotion now runs as deterministic batch consolidation via two hooks in `memory_agent/hooks.clj` (see §10.0): the **cadence** (every N turns) and the **session-end flush** (root agent close). Both are root-only, gated on `:enable-memory-consolidation` (default false), and LLM-free on the default heuristic path. Modeled on the sibling `skill_distill` handler (deterministic pre-filter → single call, no agent loop). Config `:enable-memory-essence` → `:enable-memory-consolidation` + `:memory-consolidate-every-n-turns`.
+
+**Kept.** `memory$essence-extract`, the `EssenceExtraction` signature, and the `:op :essence` playbook (now manual/REPL only). The always-on capture pipeline (`:enable-memory-capture`) is untouched.
+
+**Tests.** `memory_agent/essence_test.clj`'s `essence-extract-*` tests are unchanged; the `essence-capture-*` tests were replaced with `consolidation-cadence-*` and `session-end-flush-*` coverage (14 tests / 38 assertions in that ns; the four sibling memory-agent namespaces + capture-lifecycle stay green).

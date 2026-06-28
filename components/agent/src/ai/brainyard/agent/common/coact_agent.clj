@@ -4605,11 +4605,15 @@ playbook are in the system context above.")
                  ;; so capture is ON for coact and every derived agent.
                  ;; Per-agent OPT-OUT: uncomment as false.
                  ;; :enable-memory-capture false
-                 ;; End-of-turn essence distillation (L3, LLM call) — schema
-                 ;; default false, so it's OFF; it fires only on root-agent
-                 ;; turns (the hook predicate elides sub-agents/specialists).
+                 ;; Batch L2→L3 consolidation cadence — schema default false,
+                 ;; so it's OFF; when on it fires only on root-agent turns
+                 ;; (the hook predicate elides sub-agents/specialists) and
+                 ;; runs the LLM-free heuristic reducer (or community
+                 ;; consolidation when :enable-graph-memory) every
+                 ;; :memory-consolidate-every-n-turns turns. Replaces the
+                 ;; retired per-turn essence-capture loop.
                  ;; Per-agent OPT-IN: uncomment as true.
-                 ;; :enable-memory-essence true
+                 ;; :enable-memory-consolidation true
                  }
   :instruction coact-instruction
   ;; Knowledge-recall vs. operational-trace guidance (memory$recall vs.

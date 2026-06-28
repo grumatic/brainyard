@@ -287,14 +287,24 @@
                                 :env-fn #(if-some [v (System/getenv "BY_GRAPH_EXTRACT_MODEL")]
                                            v ::env-unset)
                                 :default nil}
-   ;; Memory-agent end-of-turn essence capture — when true, registers
-   ;; a :agent.ask/post hook that fire-and-forget calls memory-agent
-   ;; with :op :essence after each turn finishes. The LLM extracts
-   ;; 0..3 essences worth carrying beyond the turn; high-confidence
-   ;; facts auto-promote to L3. Off by default; opt-in per agent type
-   ;; via :config-extra on the defagent (root coact-agent /
-   ;; research-agent enable it; specialists stay off).
-   :enable-memory-essence      {:type "boolean" :default false}
+   ;; Memory-agent batch L2→L3 consolidation cadence — when true,
+   ;; registers a :agent.ask/post hook that increments a per-session
+   ;; turn counter (deterministic, no LLM) and, every
+   ;; :memory-consolidate-every-n-turns turns, fire-and-forget runs the
+   ;; memory pipeline's L2→L3 reducer over the session: community
+   ;; consolidation (CR-MEM-24) when :enable-graph-memory is on, else the
+   ;; LLM-free heuristic reducer. This REPLACES the retired per-turn
+   ;; essence-capture loop (which spun a full memory-agent BT loop — 6-8
+   ;; LLM iterations — on EVERY turn, even a bare "hello"). Off by
+   ;; default; opt-in per agent type via :config-extra on the defagent
+   ;; (root coact-agent / research-agent), like the old essence flag.
+   ;; The `:op :essence` memory-agent playbook survives as a manual /
+   ;; REPL surface; it is simply no longer hook-driven.
+   :enable-memory-consolidation {:type "boolean" :default false}
+   ;; Cadence for the consolidation hook above: run the batch reducer
+   ;; once every N completed turns. Higher = cheaper / coarser. Ignored
+   ;; when :enable-memory-consolidation is false.
+   :memory-consolidate-every-n-turns {:type "integer" :default 12}
    ;; Self-improvement loop (R1 — docs/design/self-improve-design.md). When
    ;; true on a root agent, a :agent.ask/post hook scores the just-finished
    ;; turn's trajectory for a novel reusable procedure and, past
@@ -303,7 +313,7 @@
    ;; writes a live skill on its own). A cheap deterministic pre-filter gates
    ;; the LLM scorer so trivial turns cost nothing. Off by default; opt-in per
    ;; agent type via :config-extra on the defagent (root coact-agent), like
-   ;; :enable-memory-essence.
+   ;; :enable-memory-consolidation.
    :enable-skill-distillation  {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_SKILL_DISTILLATION")]
                                            (= "true" v) ::env-unset)

@@ -9,16 +9,25 @@
      blocks non-memory-agent callers from invoking the gated `memory$*`
      mutation primitives. Other agents reach the same effects via
      `(call-tool \"memory-agent\" {...})`.
-   - essence-capture (Phase 3) — `:agent.ask/post` observer that
-     fire-and-forget calls memory-agent with `:op :essence` after a
-     turn finishes, gated on `:enable-memory-essence` config. Opt-in
-     per agent-type (root coact-agent and research-agent enable it;
-     specialists stay off)."
+   - consolidation-cadence — `:agent.ask/post` observer that counts
+     turns per session (deterministic, no LLM) and every
+     `:memory-consolidate-every-n-turns` fire-and-forget runs the
+     memory pipeline's batch L2→L3 reducer (community when
+     `:enable-graph-memory`, else the LLM-free heuristic). Gated on
+     `:enable-memory-consolidation`; opt-in per agent-type (root
+     coact-agent / research-agent), specialists stay off. This
+     REPLACES the retired per-turn essence-capture loop, which spun a
+     full memory-agent BT loop on every turn.
+   - session-end-flush — `:agent.instance/closed` observer that runs a
+     final consolidation when a root agent closes, so a session ending
+     between cadence boundaries still reduces its tail of episodes into
+     L3. Same gate as the cadence; bounded by a timeout so it can't
+     wedge shutdown."
   (:require [ai.brainyard.agent.common.memory-agent.commands :as cmds]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
-            [ai.brainyard.agent.core.tool :as tool]
+            [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.mulog.interface :as mulog]))
 
 (def ^:const memory-agent-type
@@ -74,23 +83,41 @@
    :priority 200))
 
 ;; ============================================================================
-;; Essence-capture hook — :agent.ask/post
+;; Batch consolidation cadence — :agent.ask/post
 ;; ============================================================================
+;; Replaces the retired per-turn essence-capture loop. Rather than spinning a
+;; full memory-agent BT loop (6-8 LLM iterations) on EVERY turn — even a bare
+;; "hello" — we run the memory pipeline's L2→L3 reducer in batch, every Nth
+;; turn, off the same :agent.ask/post seam. The turn count is deterministic
+;; (a plain counter, no LLM); the reducer itself is LLM-free (heuristic) or
+;; one summary call per cluster (community / CR-MEM-24). Fire-and-forget in a
+;; future so the user's next turn never waits and a reducer fault never tanks
+;; the parent ask.
 
 (defn- root-agent?
-  "True when `agent` has no parent — only root agents drive essence
-   capture; sub-agents would double-fire on the same session turn."
+  "True when `agent` has no parent — only root agents drive consolidation;
+   sub-agents share the session and would double-count the same turn."
   [agent]
   (try
     (nil? (get-in @(:!state agent) [:runtime :parent-agent]))
     (catch Exception _ false)))
 
-(defn- essence-eligible?
-  "True when the just-finished agent should trigger essence capture:
-     1. Not memory-agent itself (would loop on its own turns).
+;; session-id → completed-turn tally. Per-session so the cadence boundary
+;; is deterministic and independent of which agent instance handled a turn.
+;; A `defonce` empty map is native-image-safe (only mutated at runtime).
+(defonce ^:private !turn-counters (atom {}))
+
+(defn- agent-memory-manager
+  "The per-agent memory manager (same slot `memory$*` commands read via
+   `current-mm`). nil when none is bound (tests / REPL without memory)."
+  [agent]
+  (try (some-> agent :!state deref :memory-manager) (catch Exception _ nil)))
+
+(defn consolidation-eligible?
+  "True when the just-finished agent should drive batch consolidation:
+     1. Not memory-agent itself (would consolidate its own bookkeeping).
      2. Is a root agent (sub-agents share a session — root handles it).
-     3. `:enable-memory-essence` resolves true via `config/get-config`
-        (per-agent override → global config → schema default)."
+     3. `:enable-memory-consolidation` resolves true via `config/get-config`."
   [agent]
   (when agent
     (try
@@ -100,97 +127,105 @@
           (= "memory-agent" ag-type) false
           (not (root-agent? agent))  false
           :else
-          (boolean (config/get-config agent :enable-memory-essence))))
+          (boolean (config/get-config agent :enable-memory-consolidation))))
       (catch Exception _ false))))
 
-(defn- agent-turn-id
-  "Best-effort lookup of the per-agent turn-id from the agent's
-   st-memory-init. Returns 0 when absent."
+(defn- run-consolidation!
+  "Run one batch L2→L3 reduction over the agent's current session. Community
+   consolidation when `:enable-graph-memory` is on (the GraphRAG reducer that
+   supersedes the heuristic), else the LLM-free heuristic reducer. No-op when
+   no memory manager is bound."
   [agent]
-  (or (try
-        (some-> agent :!state deref :st-memory-init deref :turn-id)
-        (catch Exception _ nil))
-      0))
+  (when-let [mm (agent-memory-manager agent)]
+    (let [sid (some-> agent proto/session-id)]
+      (if (config/get-config agent :enable-graph-memory)
+        (mem/consolidate-graph! mm :session-id sid)
+        (mem/consolidate-l2!    mm :session-id sid)))))
 
-(defn- agent-total-turns
-  "Best-effort lookup of session total-turns. Returns 0 when absent."
-  [agent]
-  (or (try
-        (some-> agent :!session deref :total-turns)
-        (catch Exception _ nil))
-      0))
-
-(defn essence-capture-handler
-  "`:agent.ask/post` handler that fire-and-forget delegates essence
-   capture to memory-agent. Never blocks the caller and never propagates
-   exceptions — essence is a best-effort lift, not a critical path.
-
-   The actual `call-tool` is wrapped in `future` so:
-     - the user's next turn starts immediately (we don't wait for the
-       LLM call inside memory-agent)
-     - a failed essence call doesn't tank the parent ask"
-  [{:keys [agent input result]}]
-  (when (essence-eligible? agent)
-    (let [aid       (some-> agent proto/agent-id)
-          uid       (some-> agent proto/user-id)
-          sid       (some-> agent proto/session-id)
-          turn-id   (agent-turn-id agent)
-          total     (agent-total-turns agent)
-          hint      (or (when (map? result) (:answer result))
-                        (when (string? result) result)
-                        "")
-          ;; Truncate the hint — memory-agent will load real messages
-          ;; from L2; we don't need the full answer here.
-          hint'     (if (> (count hint) 400) (subs hint 0 400) hint)]
-      (future
-        (try
-          ;; Use `invoke-tool` (bare dispatch, no hooks/permissions/schema
-          ;; coercion) since this is an internal call from the hook, not an
-          ;; LLM-facing tool call. Pass `:parent-agent` AND `:agent-session`
-          ;; explicitly — invoke-tool skips the do-call-tool--agent step
-          ;; that would normally derive agent-session from the parent. The
-          ;; hook fires inside a `future`, so `*current-agent*` is unbound
-          ;; and we cannot rely on dynamic-var fallback either.
-          ;;
-          ;; `:ask-async? true` forces run-agent into the ask-async branch
-          ;; even though we set :parent-agent. Otherwise sub-agent calls
-          ;; default to sync ask, which would tie up the future thread for
-          ;; the entire memory-agent BT loop (10–30s). With ask-async the
-          ;; sub-agent dispatches on its own clojure-agent thread and the
-          ;; future returns immediately. `:auto-close?` keeps the existing
-          ;; sub-agent cleanup contract (attach-auto-close-watch! closes
-          ;; the instance when its clj-ref :output transitions).
-          (tool/invoke-tool :memory-agent
-                            :op            "essence"
-                            :session-id    (str sid)
-                            :turn-id       turn-id
-                            :total-turns   total
-                            :hint          hint'
-                            :parent-agent  agent
-                            :agent-session {:user-id uid :session-id sid}
-                            :ask-async?    true
-                            :auto-close?   true)
-          (catch Exception e
-            (mulog/warn ::essence-capture-failed
-                        :agent-id aid
-                        :user-id uid
-                        :session-id sid
-                        :exception e)
-            nil)))))
+(defn consolidation-cadence-handler
+  "`:agent.ask/post` handler. Increments the session turn counter and, on
+   every Nth turn, fire-and-forget runs `run-consolidation!`. Returns nil and
+   never throws — consolidation is a best-effort lift, not a critical path."
+  [{:keys [agent]}]
+  (when (consolidation-eligible? agent)
+    (let [sid (str (some-> agent proto/session-id))
+          n   (long (or (config/get-config agent :memory-consolidate-every-n-turns) 12))
+          tally (get (swap! !turn-counters update sid (fnil inc 0)) sid)]
+      (when (and (pos? n) (zero? (mod tally n)))
+        (future
+          (try
+            (let [r (run-consolidation! agent)]
+              (mulog/info ::consolidation-ran :session-id sid :turn tally :report r))
+            (catch Exception e
+              (mulog/warn ::consolidation-failed :session-id sid :exception e)
+              nil))))))
   nil)
 
-(defn install-essence-capture!
-  "Register the essence-capture hook globally. Idempotent."
+(defn install-consolidation-cadence!
+  "Register the consolidation-cadence hook globally. Idempotent."
   []
   (hooks/register-hook!
    :agent.ask/post
-   ::essence-capture
-   essence-capture-handler
+   ::consolidation-cadence
+   consolidation-cadence-handler
    :source   :memory-agent
    :priority 50))
 
-;; Self-install at namespace load. Both hooks register by stable id and
-;; replace themselves on subsequent loads, so requiring this ns
-;; multiple times is safe.
+;; ============================================================================
+;; Session-end consolidation flush — :agent.instance/closed
+;; ============================================================================
+;; The real end-of-session signal. When a ROOT agent instance closes (/quit,
+;; EOF, /agent close, programmatic .close), run a FINAL consolidation over its
+;; session so a session that ended between cadence boundaries still gets the
+;; tail of its episodes reduced into L3 — the every-Nth-turn cadence alone
+;; would drop the last <N turns. `:agent.instance/closed` fires synchronously
+;; in `agent.core/close` BEFORE the manager's capture is torn down, so the
+;; memory manager is still live here. We block close on the reduce (we want it
+;; to finish before exit) but bound it with a timeout so a slow community/LLM
+;; reduce can't wedge shutdown; the default heuristic reducer is LLM-free and
+;; returns in milliseconds.
+
+(def ^:private ^:const session-end-flush-timeout-ms 10000)
+
+(defn session-end-flush-handler
+  "`:agent.instance/closed` handler. For an eligible root agent whose session
+   saw at least one counted turn, run a final consolidation (bounded by
+   `session-end-flush-timeout-ms`) and drop the session's turn counter. Returns
+   nil and never throws."
+  [{:keys [agent]}]
+  (when (consolidation-eligible? agent)
+    (let [sid   (str (some-> agent proto/session-id))
+          tally (get @!turn-counters sid 0)]
+      ;; Clear the per-session tally regardless so it never leaks across a
+      ;; resume; only do real work when the session actually had turns.
+      (swap! !turn-counters dissoc sid)
+      (when (pos? (long tally))
+        (try
+          (let [r (deref (future (run-consolidation! agent))
+                         session-end-flush-timeout-ms ::timeout)]
+            (if (= r ::timeout)
+              (mulog/warn ::session-end-flush-timeout
+                          :session-id sid :after-ms session-end-flush-timeout-ms)
+              (mulog/info ::session-end-flush-ran
+                          :session-id sid :turns tally :report r)))
+          (catch Exception e
+            (mulog/warn ::session-end-flush-failed :session-id sid :exception e)
+            nil)))))
+  nil)
+
+(defn install-session-end-flush!
+  "Register the session-end-flush hook globally. Idempotent."
+  []
+  (hooks/register-hook!
+   :agent.instance/closed
+   ::session-end-flush
+   session-end-flush-handler
+   :source   :memory-agent
+   :priority 50))
+
+;; Self-install at namespace load. Each hook registers by stable id and
+;; replaces itself on subsequent loads, so requiring this ns multiple
+;; times is safe.
 (install-write-guard!)
-(install-essence-capture!)
+(install-consolidation-cadence!)
+(install-session-end-flush!)

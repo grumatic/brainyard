@@ -27,17 +27,19 @@ gate**.
 | Machinery | Location | Role here |
 |---|---|---|
 | Hook pub/sub (`fire!`, `fire-decision!`) | `components/agent/src/.../core/hooks.clj` | `:agent.ask/post`, `:agent.tool-use/post`, `:agent.session/closed`; self-install-at-load idiom |
-| **Post-turn trigger template** | `.../common/memory_agent/hooks.clj` `essence-capture-handler` | `:agent.ask/post` observer, root-only, config-gated (`:enable-memory-essence`, default false), fires `future` → `invoke-tool`. Phase 1 clones this exactly. |
+| **Post-turn trigger template** | `.../common/memory_agent/hooks.clj` `consolidation-cadence-handler` (and `skill_distill.clj` `distill-handler`) | `:agent.ask/post` observer, root-only, config-gated, fires `future`. Phase 1 cloned this pattern. *(Originally cloned from `essence-capture-handler`, retired 2026-06-28; the cadence handler is the current live example of the same shape.)* |
 | Review-gated authoring | `.../common/meta_agent.clj` | `meta-agent$validate` (dry-run) → `meta-agent$create` (persist). Our proposal→accept split mirrors it. |
 | Skill drafting / write | `.../common/skill_agent.clj`, `skills.clj` `skills$write :op :create/:update` | Drafts and persists `SKILL.md`. |
 | Memory revision ops | `.../common/memory_agent.clj` `:op :essence/:consolidate/:verify-fact/:correct` | Reused by Phase 2 conceptually. |
 | **TUI nudge surface template** | `.../common/usage_nudge.clj` | `:agent.tool-use/post` → `:pending-usage-guides` in `bt-st-memory` → iteration `:notices`; plus `:agent.suggestion/next-user-prompt` → input-bar tip. |
 | Trajectory source | `sessions/<id>/trajectory.edn` (1 record/turn, all iterations+answer) | Scorer input. |
-| Config schema + precedence | `.../core/config.clj` (`:enable-memory-essence` at config-schema) | Where gate keys go; env > per-agent > session > file > default. |
+| Config schema + precedence | `.../core/config.clj` (`:enable-memory-consolidation`, `:enable-skill-distillation` at config-schema) | Where gate keys go; env > per-agent > session > file > default. |
 
-**Gap:** all loops are operator/LLM-invoked; `:enable-memory-essence` defaults
-false; scheduled consolidation is unwired; skills are authored manually; nudges
-aren't surfaced.
+**Gap (at the time of writing):** all loops are operator/LLM-invoked; the
+memory/distillation gate keys default false; scheduled consolidation is unwired;
+skills are authored manually; nudges aren't surfaced. *(Update 2026-06-28: memory
+L2→L3 consolidation now auto-runs via the `:enable-memory-consolidation` cadence +
+session-end flush — see memory-agent-design.md §10.0.)*
 
 ## 3. Locked design decisions (2026-06-24)
 
@@ -49,7 +51,7 @@ aren't surfaced.
    multi-iteration, no existing skill matches the gist) precedes any LLM scoring
    call — no LLM call on trivial turns. Mirrors the capture pipeline's debounce.
 3. **Off by default, opt-in.** Every trigger key defaults `false` (exactly like
-   `:enable-memory-essence`), enabled per-config for the root coact-agent only.
+   `:enable-memory-consolidation`), enabled per-config for the root coact-agent only.
 
 ## 4. Phase 1 — Skill-distillation trigger
 
@@ -70,8 +72,10 @@ New ns: `ai.brainyard.agent.common.skill-distill`.
    Sub-LM default `claude-code:sonnet`.
 2. **Deterministic pre-filter** — skip trivial turns (single tool call, pure Q&A,
    errored) before any LLM call.
-3. **`:agent.ask/post` observer** cloned from `essence-capture-handler`:
-   `root-agent?` + not-a-specialist + gated on `:enable-skill-distillation`;
+3. **`:agent.ask/post` observer** (cloned from the then-current
+   `essence-capture-handler`; that handler was retired 2026-06-28 — the
+   structurally identical `consolidation-cadence-handler` is now the live
+   reference): `root-agent?` + not-a-specialist + gated on `:enable-skill-distillation`;
    fire-and-forget `future`; read latest `trajectory.edn`; pre-filter → scorer;
    if `score ≥ :skill-distill-threshold` (default 0.7), call skill-agent to draft
    `SKILL.md`, then **stage** (do not persist as live). Self-install via

@@ -10,9 +10,10 @@
      output schema.
    - `memory$essence-extract` tool dispatches through chain-of-thought
      and validates output (uses with-redefs to stub clj-llm).
-   - `essence-capture-handler` fires (or elides) on `:agent.ask/post`
-     based on the eligibility predicate (memory-agent self-skip,
-     non-root skip, flag off skip)."
+   - `consolidation-cadence-handler` counts turns and fires (or elides)
+     the batch reducer on `:agent.ask/post` based on the eligibility
+     predicate (memory-agent self-skip, non-root skip, flag off skip)
+     and the every-Nth-turn cadence."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
             [ai.brainyard.agent.common.memory-agent.commands :as ma-cmds]
@@ -149,73 +150,135 @@
             (is (str/includes? (:error r) "llm down"))))))))
 
 ;; ============================================================================
-;; essence-capture-handler — :agent.ask/post
+;; consolidation-cadence-handler — :agent.ask/post
 ;; ============================================================================
 
-(deftest essence-capture-eligible-cases-test
-  (testing "memory-agent never triggers essence on its own turn"
-    (let [ag (make-stub :memory-agent/abc
-                        :config {:enable-memory-essence true})]
-      ;; The handler returns nil and dispatches no future.
-      (is (nil? (ma-hooks/essence-capture-handler {:agent ag})))))
+(defn- reset-counters! []
+  (reset! @#'ma-hooks/!turn-counters {}))
 
-  (testing "sub-agents (with :parent-agent) do not fire — the root does"
+(deftest consolidation-eligible-cases-test
+  (testing "memory-agent never consolidates on its own turn"
+    (let [ag (make-stub :memory-agent/abc
+                        :config {:enable-memory-consolidation true})]
+      (is (false? (boolean (ma-hooks/consolidation-eligible? ag))))))
+
+  (testing "sub-agents (with :parent-agent) are not eligible — the root is"
     (let [parent (make-stub :coact-agent/root)
           child  (make-stub :coact-agent/child
-                            :config {:enable-memory-essence true}
+                            :config {:enable-memory-consolidation true}
                             :parent-agent parent)]
-      (is (nil? (ma-hooks/essence-capture-handler {:agent child})))))
+      (is (false? (boolean (ma-hooks/consolidation-eligible? child))))))
 
-  (testing "flag off → no fire even on a root coact-agent"
+  (testing "flag off → not eligible even on a root coact-agent"
     (let [ag (make-stub :coact-agent/root
-                        :config {:enable-memory-essence false})]
-      (is (nil? (ma-hooks/essence-capture-handler {:agent ag}))))))
+                        :config {:enable-memory-consolidation false})]
+      (is (false? (boolean (ma-hooks/consolidation-eligible? ag))))))
 
-(deftest essence-capture-fires-on-eligible-root-test
-  (testing "eligible root coact-agent → handler dispatches the memory-agent tool inside a future"
-    (let [called  (atom nil)
-          root    (make-stub :coact-agent/root
-                             :config {:enable-memory-essence true}
-                             :user-id "alice" :session-id "s-42"
-                             :total-turns 7)]
-      ;; The handler dispatches through `tool/invoke-tool`. Stub matches
-      ;; the (defn invoke-tool [id & {:as options}]) signature.
-      (with-redefs [ai.brainyard.agent.core.tool/invoke-tool
-                    (fn [id & {:as args}]
-                      (reset! called {:id id :args args})
-                      {:answer "ok"})]
-        (ma-hooks/essence-capture-handler
-         {:agent  root
-          :input  "hello"
-          :result {:answer "world"}})
-        ;; Give the future a tick to run.
+  (testing "flag on + root coact-agent → eligible"
+    (let [ag (make-stub :coact-agent/root
+                        :config {:enable-memory-consolidation true})]
+      (is (true? (boolean (ma-hooks/consolidation-eligible? ag)))))))
+
+(deftest consolidation-cadence-fires-every-n-test
+  (testing "handler fires the reducer only on every Nth eligible turn"
+    (reset-counters!)
+    (let [fires (atom 0)
+          root  (make-stub :coact-agent/root
+                           :session-id "s-cadence"
+                           :config {:enable-memory-consolidation true
+                                    :memory-consolidate-every-n-turns 3})]
+      (with-redefs [ma-hooks/run-consolidation! (fn [_] (swap! fires inc) {:produced 0})]
+        ;; 6 completed turns at N=3 → fire on turn 3 and turn 6.
+        (dotimes [_ 6]
+          (ma-hooks/consolidation-cadence-handler {:agent root}))
+        (Thread/sleep 150))
+      (is (= 2 @fires) "reducer ran exactly twice across 6 turns at N=3"))))
+
+(deftest consolidation-cadence-elides-when-off-test
+  (testing "flag off → counter untouched, reducer never runs"
+    (reset-counters!)
+    (let [fires (atom 0)
+          root  (make-stub :coact-agent/root
+                           :session-id "s-off"
+                           :config {:enable-memory-consolidation false
+                                    :memory-consolidate-every-n-turns 1})]
+      (with-redefs [ma-hooks/run-consolidation! (fn [_] (swap! fires inc) nil)]
+        (dotimes [_ 5]
+          (ma-hooks/consolidation-cadence-handler {:agent root}))
         (Thread/sleep 100))
-      (is (some? @called) "invoke-tool was dispatched")
-      (is (= :memory-agent (:id @called)))
-      (is (= "essence"  (-> @called :args :op)))
-      (is (= "s-42"     (-> @called :args :session-id)))
-      (is (= 7          (-> @called :args :total-turns)))
-      (is (string?      (-> @called :args :hint))))))
+      (is (= 0 @fires))
+      (is (nil? (get @@#'ma-hooks/!turn-counters "s-off"))))))
 
-(deftest essence-capture-truncates-hint-test
-  (testing "hint longer than 400 chars is truncated"
-    (let [called (atom nil)
-          root   (make-stub :coact-agent/root
-                            :config {:enable-memory-essence true})
-          huge   (apply str (repeat 1000 "x"))]
-      (with-redefs [ai.brainyard.agent.core.tool/invoke-tool
-                    (fn [_ & {:as args}] (reset! called args) {:answer "ok"})]
-        (ma-hooks/essence-capture-handler
-         {:agent  root
-          :input  "q"
-          :result {:answer huge}})
-        (Thread/sleep 100))
-      (is (= 400 (count (:hint @called)))))))
-
-(deftest essence-capture-handler-registered-test
-  (testing "essence-capture hook is registered on :agent.ask/post at namespace load"
+(deftest consolidation-cadence-handler-registered-test
+  (testing "consolidation-cadence hook is registered on :agent.ask/post at namespace load"
     ;; Re-install in case other tests reset the registry.
-    (ma-hooks/install-essence-capture!)
+    (ma-hooks/install-consolidation-cadence!)
     (let [entries (hooks/list-hooks :agent.ask/post)
           ids     (set (map :id entries))]
-      (is (contains? ids :ai.brainyard.agent.common.memory-agent.hooks/essence-capture)))))
+      (is (contains? ids :ai.brainyard.agent.common.memory-agent.hooks/consolidation-cadence)))))
+
+;; ============================================================================
+;; session-end-flush-handler — :agent.instance/closed
+;; ============================================================================
+
+(deftest session-end-flush-fires-on-eligible-root-test
+  (testing "root close with counted turns → final consolidation runs, counter cleared"
+    (reset-counters!)
+    (let [fires (atom 0)
+          root  (make-stub :coact-agent/root
+                           :session-id "s-end"
+                           :config {:enable-memory-consolidation true})]
+      ;; Simulate two cadence ticks having counted turns for this session.
+      (swap! @#'ma-hooks/!turn-counters assoc "s-end" 5)
+      (with-redefs [ma-hooks/run-consolidation! (fn [_] (swap! fires inc) {:produced 1})]
+        (ma-hooks/session-end-flush-handler {:agent root})
+        (Thread/sleep 100))
+      (is (= 1 @fires) "final consolidation ran once on root close")
+      (is (nil? (get @@#'ma-hooks/!turn-counters "s-end")) "session counter cleared"))))
+
+(deftest session-end-flush-skips-when-no-turns-test
+  (testing "root close with zero counted turns → no consolidation, counter still cleared"
+    (reset-counters!)
+    (let [fires (atom 0)
+          root  (make-stub :coact-agent/root
+                           :session-id "s-empty"
+                           :config {:enable-memory-consolidation true})]
+      (with-redefs [ma-hooks/run-consolidation! (fn [_] (swap! fires inc) nil)]
+        (ma-hooks/session-end-flush-handler {:agent root})
+        (Thread/sleep 50))
+      (is (= 0 @fires)))))
+
+(deftest session-end-flush-skips-when-off-test
+  (testing "flag off → no flush even on a root close"
+    (reset-counters!)
+    (let [fires (atom 0)
+          root  (make-stub :coact-agent/root
+                           :session-id "s-off2"
+                           :config {:enable-memory-consolidation false})]
+      (swap! @#'ma-hooks/!turn-counters assoc "s-off2" 9)
+      (with-redefs [ma-hooks/run-consolidation! (fn [_] (swap! fires inc) nil)]
+        (ma-hooks/session-end-flush-handler {:agent root})
+        (Thread/sleep 50))
+      (is (= 0 @fires)))))
+
+(deftest session-end-flush-skips-sub-agent-test
+  (testing "sub-agent (with :parent-agent) close → no flush; the root handles it"
+    (reset-counters!)
+    (let [fires  (atom 0)
+          parent (make-stub :coact-agent/root)
+          child  (make-stub :coact-agent/child
+                            :session-id "s-sub"
+                            :config {:enable-memory-consolidation true}
+                            :parent-agent parent)]
+      (swap! @#'ma-hooks/!turn-counters assoc "s-sub" 4)
+      (with-redefs [ma-hooks/run-consolidation! (fn [_] (swap! fires inc) nil)]
+        (ma-hooks/session-end-flush-handler {:agent child})
+        (Thread/sleep 50))
+      (is (= 0 @fires)))))
+
+(deftest session-end-flush-handler-registered-test
+  (testing "session-end-flush hook is registered on :agent.instance/closed at namespace load"
+    (ma-hooks/install-session-end-flush!)
+    (let [entries (hooks/list-hooks :agent.instance/closed)
+          ids     (set (map :id entries))]
+      (is (contains? ids :ai.brainyard.agent.common.memory-agent.hooks/session-end-flush)))))
