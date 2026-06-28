@@ -1253,6 +1253,30 @@
          vec)
     []))
 
+(defn config-overview
+  "Curated, concise read for `agent-runtime$config` (no args) — the `list-tools`
+   analog for config. Rather than dumping all ~100 effective values, it returns
+   only the settings that DIFFER from their schema default (the signal that a
+   caller actually changed something), the total key count, and a hint on how to
+   drill in. Secrets are redacted via `redact-config-value`. The full snapshot is
+   still available on demand (`:all true`), and any single key — with its
+   description, type and default — via the `:query` search."
+  [agent-or-st]
+  (let [snap      (get-config-snapshot agent-or-st)
+        overrides (reduce-kv (fn [m k v]
+                               (if (and (contains? default-config k)
+                                        (= v (get default-config k)))
+                                 m
+                                 (assoc m k (redact-config-value k v))))
+                             {}
+                             snap)]
+    {:total     (count config-keys)
+     :overrides (into (sorted-map) overrides)
+     :hint      (format (str "%d of %d config keys differ from their default (shown in :overrides). "
+                             "Search any key with :query \"<term>\" (returns its type, default and value); "
+                             "set one with :key + :value; pass :all true for the full effective snapshot.")
+                        (count overrides) (count config-keys))}))
+
 (defn- container-detected?
   "Soft-dep probe for a container environment (Docker/devcontainer) via
    env-detect. Returns false when the env-detect component is not on the

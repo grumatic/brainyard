@@ -159,6 +159,44 @@
     (is (= "***redacted***" (:tavily-api-key m)))
     (is (= 7 (:max-iterations m)))))
 
+;; ============================================================================
+;; config-overview (agent-runtime$config no-arg curated read)
+;; ============================================================================
+
+(deftest config-overview-shows-only-non-default-overrides
+  (seed-project-config! {:agent {:config {:show-llm-streaming true
+                                          :max-context-tokens 8192}}})
+  (cfg/invalidate-global-config!)
+  (let [ov (cfg/config-overview nil)]
+    (is (= (count cfg/config-keys) (:total ov)))
+    (testing "overridden keys appear with their effective value"
+      (is (= true (get-in ov [:overrides :show-llm-streaming])))
+      (is (= 8192 (get-in ov [:overrides :max-context-tokens]))))
+    (testing "untouched defaults are omitted"
+      (is (not (contains? (:overrides ov) :max-iterations)))
+      (is (not (contains? (:overrides ov) :permission-mode))))
+    (testing "hint explains how to drill in"
+      (is (string? (:hint ov)))
+      (is (str/includes? (:hint ov) ":query"))
+      (is (str/includes? (:hint ov) ":all true")))))
+
+(deftest config-overview-redacts-secret-overrides
+  (seed-project-config! {:agent {:config {:tavily-api-key "sk-leak"}}})
+  (cfg/invalidate-global-config!)
+  (let [ov (cfg/config-overview nil)]
+    (is (= "***redacted***" (get-in ov [:overrides :tavily-api-key])))))
+
+(deftest config-overview-omits-untouched-defaults
+  (seed-project-config! {:agent {:config {}}})
+  (cfg/invalidate-global-config!)
+  (let [ov (cfg/config-overview nil)]
+    (is (= (count cfg/config-keys) (:total ov)))
+    (testing "purely default-sourced keys (no env-fn, not seeded) never appear as overrides"
+      ;; robust to ambient BY_* env vars, which can still overlay via env-overlay
+      (is (not (contains? (:overrides ov) :max-iterations)))
+      (is (not (contains? (:overrides ov) :conversation-limit)))
+      (is (not (contains? (:overrides ov) :recall-limit))))))
+
 (deftest analytics-lm-config-is-string-typed
   (is (= "string" (:type (get cfg/config-schema :analytics-lm-config))))
   (testing "settable via the string coercion path (no JSON needed)"

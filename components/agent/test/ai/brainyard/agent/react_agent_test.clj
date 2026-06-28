@@ -1082,17 +1082,24 @@
                 ai.brainyard.agent.core.config/write-edn-config!
                 (fn [& _] "/tmp/by-test-stub.edn")]
     (reset! ai.brainyard.agent.core.config/!global-config nil)
-    (testing "agent-runtime$config (read mode) returns defaults when no agent-specific config set"
+    (testing "agent-runtime$config (read mode) :all true returns the full snapshot with defaults"
       (let [ag (@#'agent/create-agent "u-cfg" "s-cfg" "cfg-agent"
                                       :config {:name "Config Agent"}
                                       :st-memory-init {}
                                       :memory-opts {:in-memory true})]
         (proto/start-agent ag)
         (binding [proto/*current-agent* ag]
-          (let [result (tool/invoke-tool :agent-runtime$config)]
+          (let [result (tool/invoke-tool :agent-runtime$config :all true)]
             (is (map? (:config result)))
             (is (= false (get-in result [:config :show-llm-streaming])))
             (is (= 128000 (get-in result [:config :max-context-tokens])))))
+        (testing "no-arg read is a curated overview (overrides + total + hint), not the full dump"
+          (binding [proto/*current-agent* ag]
+            (let [result (tool/invoke-tool :agent-runtime$config)]
+              (is (nil? (:config result)))
+              (is (integer? (:total result)))
+              (is (map? (:overrides result)))
+              (is (string? (:hint result))))))
         (proto/stop-agent ag)))
 
     (testing "agent-runtime$config (set mode) changes values and returns updated config"
@@ -1106,14 +1113,19 @@
           (let [result (tool/invoke-tool :agent-runtime$config
                                          :key "show-llm-streaming" :value "true")]
             (is (some? (:result result)))
-            (is (= true (get-in result [:config :show-llm-streaming]))))
+            ;; set response is concise: the changed value shows as a non-default override
+            (is (= true (get-in result [:overrides :show-llm-streaming]))))
           (let [result (tool/invoke-tool :agent-runtime$config
                                          :key "max-context-tokens" :value "8192")]
             (is (some? (:result result)))
-            (is (= 8192 (get-in result [:config :max-context-tokens]))))
-          (let [result (tool/invoke-tool :agent-runtime$config)]
+            (is (= 8192 (get-in result [:overrides :max-context-tokens]))))
+          (let [result (tool/invoke-tool :agent-runtime$config :all true)]
             (is (= true (get-in result [:config :show-llm-streaming])))
-            (is (= 8192 (get-in result [:config :max-context-tokens])))))
+            (is (= 8192 (get-in result [:config :max-context-tokens]))))
+          (testing "both changed values surface as overrides in the no-arg overview"
+            (let [result (tool/invoke-tool :agent-runtime$config)]
+              (is (= true (get-in result [:overrides :show-llm-streaming])))
+              (is (= 8192 (get-in result [:overrides :max-context-tokens]))))))
         (proto/stop-agent ag)))
 
     (testing "agent-runtime$config rejects invalid key"

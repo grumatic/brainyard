@@ -79,13 +79,14 @@
 ;; ============================================================================
 
 (defcommand agent-runtime$config
-  "Search keys by substring (:query), read merged config (no args), or set one entry (pair :key + :value). Valid keys: see agent.core.config/config-schema.
+  "Read a curated config overview (no args: keys that differ from defaults + how to drill in), search keys by substring (:query), or set one entry (pair :key + :value). Pass :all true to dump the full effective snapshot. Valid keys: see agent.core.config/config-schema.
    Setting writes both the per-agent override (effective immediately) and the persisted global config in .brainyard/config.edn."
   (fn [& {:as args}]
     (if-let [agent proto/*current-agent*]
       (let [k-raw    (:key args)
             v-str    (:value args)
             q-raw    (:query args)
+            all?     (contains? #{true "true"} (:all args))
             has-key? (not (str/blank? (str k-raw)))
             has-val? (not (str/blank? (str v-str)))
             has-q?   (not (str/blank? (str q-raw)))]
@@ -96,8 +97,12 @@
           (let [matches (config/search-config-keys agent q-raw)]
             {:matches matches :count (count matches)})
 
+          ;; Read mode: curated overview by default (non-default settings + hint),
+          ;; or the full effective snapshot when :all true is requested.
           (and (not has-key?) (not has-val?))
-          {:config (config/redact-config-snapshot (config/get-config-snapshot agent))}
+          (if all?
+            {:config (config/redact-config-snapshot (config/get-config-snapshot agent))}
+            (config/config-overview agent))
 
           (not= has-key? has-val?)
           {:error-message "Both 'key' and 'value' are required to set config; omit both to read"}
@@ -116,19 +121,23 @@
               :else
               (let [coerced (config/coerce-config-value k v-str)]
                 (config/set-config! agent k coerced)
-                {:result (format "Config '%s' set to %s. Effective immediately; persisted to .brainyard/config.edn."
-                                 (name k) coerced)
-                 :config (config/redact-config-snapshot (config/get-config-snapshot agent))})))))
+                (merge {:result (format "Config '%s' set to %s. Effective immediately; persisted to .brainyard/config.edn."
+                                        (name k) coerced)}
+                       (config/config-overview agent)))))))
       {:error-message "current agent is not running"}))
   :input-schema  [:map
                   [:query {:optional true} [:string {:desc "Substring to find matching config keys (searches key name + description); read-only discovery. Omit :key/:value when searching."}]]
-                  [:key {:optional true} [:string {:desc "Config key to set (omit both :key and :value to read; see agent.core.config/config-schema)"}]]
-                  [:value {:optional true} [:string {:desc "Config value to set, e.g. 'true', 'false', '3' (required with :key)"}]]]
+                  [:key {:optional true} [:string {:desc "Config key to set (omit :key/:value/:query to read the overview; see agent.core.config/config-schema)"}]]
+                  [:value {:optional true} [:string {:desc "Config value to set, e.g. 'true', 'false', '3' (required with :key)"}]]
+                  [:all {:optional true} [:boolean {:desc "Read mode only: return the full effective config snapshot instead of the curated overview"}]]]
   :output-schema [:map
+                  [:total {:optional true} [:int {:desc "Total number of config keys (overview/set responses)"}]]
+                  [:overrides {:optional true} [:string {:desc "Overview: map of keys whose effective value differs from the schema default (secrets redacted)"}]]
+                  [:hint {:optional true} [:string {:desc "Overview: how to search (:query), set (:key/:value), or get the full snapshot (:all true)"}]]
                   [:matches {:optional true} [:string {:desc "Search results (from :query): vector of {:key :type :value :default :doc} for keys whose name/description match"}]]
                   [:count {:optional true} [:int {:desc "Number of search matches (with :query)"}]]
                   [:result {:optional true} [:string {:desc "Confirmation when a value was set"}]]
-                  [:config {:optional true} [:string {:desc "Merged config snapshot (per-agent overrides over global) — used for both read and set responses"}]]
+                  [:config {:optional true} [:string {:desc "Full effective config snapshot (only when :all true), secrets redacted"}]]
                   [:error-message {:optional true} [:string {:desc "Error if invalid key, partial args, or agent not running"}]]])
 
 ;; ============================================================================
