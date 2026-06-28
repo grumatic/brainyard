@@ -115,6 +115,30 @@
           " · Max output: " max-output " tokens")]))
 
 ;; ============================================================================
+;; Runtime — behavior-governing knobs the LLM acts under this turn
+;; ============================================================================
+
+(defn- runtime-rows
+  "Render the `### Runtime` subsection: the handful of config knobs that change
+   how the agent behaves this turn (iteration budget, permission policy, the
+   code-eval backend + effective interop level, execution backend). These rarely
+   change within a session, so the section stays byte-stable for the cross-turn
+   cache. The full config is NOT dumped here — the long tail is discoverable on
+   demand via the `agent-runtime$config` :query search. No secrets are read."
+  [agent]
+  (let [max-iter   (config/get-config agent :max-iterations)
+        perm-mode  (config/get-config agent :permission-mode)
+        clj-be     (config/get-config agent :clj-backend)
+        ;; resolve :auto → :restricted|:full so the line reflects reality
+        interop    (config/resolve-sandbox-interop agent)
+        exec-be    (config/get-config agent :exec-backend)]
+    [(str "- Iteration budget: " max-iter " max per turn")
+     (str "- Permissions: " (some-> perm-mode name))
+     (str "- Code eval: " (some-> clj-be name) " backend, "
+          (some-> interop name) " interop")
+     (str "- Exec backend: " (some-> exec-be name))]))
+
+;; ============================================================================
 ;; Session
 ;; ============================================================================
 
@@ -166,6 +190,7 @@
         host (host-rows)
         ws (workspace-rows agent)
         llm (llm-rows agent)
+        runtime (runtime-rows agent)
         sess (session-rows agent depth parent-agent-id)]
     (str/join "\n"
               (concat [hdr
@@ -178,6 +203,9 @@
                       [""
                        "### LLM"]
                       llm
+                      [""
+                       "### Runtime"]
+                      runtime
                       [""
                        "### Session"]
                       sess))))

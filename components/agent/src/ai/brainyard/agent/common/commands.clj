@@ -79,36 +79,54 @@
 ;; ============================================================================
 
 (defcommand agent-runtime$config
-  "Read merged config (no args) or set one entry (pair :key + :value). Valid keys: see agent.core.config/config-schema.
+  "Search keys by substring (:query), read merged config (no args), or set one entry (pair :key + :value). Valid keys: see agent.core.config/config-schema.
    Setting writes both the per-agent override (effective immediately) and the persisted global config in .brainyard/config.edn."
   (fn [& {:as args}]
     (if-let [agent proto/*current-agent*]
       (let [k-raw    (:key args)
             v-str    (:value args)
+            q-raw    (:query args)
             has-key? (not (str/blank? (str k-raw)))
-            has-val? (not (str/blank? (str v-str)))]
+            has-val? (not (str/blank? (str v-str)))
+            has-q?   (not (str/blank? (str q-raw)))]
         (cond
+          ;; Discovery mode: read-only substring search over key name + :doc.
+          ;; Takes precedence so the LLM can find a key before reading/setting it.
+          has-q?
+          (let [matches (config/search-config-keys agent q-raw)]
+            {:matches matches :count (count matches)})
+
           (and (not has-key?) (not has-val?))
-          {:config (config/get-config-snapshot agent)}
+          {:config (config/redact-config-snapshot (config/get-config-snapshot agent))}
 
           (not= has-key? has-val?)
           {:error-message "Both 'key' and 'value' are required to set config; omit both to read"}
 
           :else
           (let [k (keyword k-raw)]
-            (if-not (contains? config/config-keys k)
+            (cond
+              (not (contains? config/config-keys k))
               {:error-message (format "Invalid config key '%s'. Valid: %s"
                                       (name k) (str/join ", " (map name config/config-keys)))}
+
+              (config/read-only-key? k)
+              {:error-message (format "Config '%s' is read-only and cannot be set here (runtime-derived; e.g. switch models with the /model command)."
+                                      (name k))}
+
+              :else
               (let [coerced (config/coerce-config-value k v-str)]
                 (config/set-config! agent k coerced)
                 {:result (format "Config '%s' set to %s. Effective immediately; persisted to .brainyard/config.edn."
                                  (name k) coerced)
-                 :config (config/get-config-snapshot agent)})))))
+                 :config (config/redact-config-snapshot (config/get-config-snapshot agent))})))))
       {:error-message "current agent is not running"}))
   :input-schema  [:map
+                  [:query {:optional true} [:string {:desc "Substring to find matching config keys (searches key name + description); read-only discovery. Omit :key/:value when searching."}]]
                   [:key {:optional true} [:string {:desc "Config key to set (omit both :key and :value to read; see agent.core.config/config-schema)"}]]
                   [:value {:optional true} [:string {:desc "Config value to set, e.g. 'true', 'false', '3' (required with :key)"}]]]
   :output-schema [:map
+                  [:matches {:optional true} [:string {:desc "Search results (from :query): vector of {:key :type :value :default :doc} for keys whose name/description match"}]]
+                  [:count {:optional true} [:int {:desc "Number of search matches (with :query)"}]]
                   [:result {:optional true} [:string {:desc "Confirmation when a value was set"}]]
                   [:config {:optional true} [:string {:desc "Merged config snapshot (per-agent overrides over global) — used for both read and set responses"}]]
                   [:error-message {:optional true} [:string {:desc "Error if invalid key, partial args, or agent not running"}]]])

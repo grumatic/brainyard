@@ -58,481 +58,290 @@
    Use `:default-fn` for runtime-resolved values that depend on env vars,
    system properties, or other components — `(clj-llm/get-default-lm)`,
    `(System/getenv ...)`, etc."
-  {:max-output-tokens       {:type "integer" :default 0}
-   :show-llm-streaming      {:type "boolean" :default false}
-   ;; Token-budget enforcement on assembled prompt context (coact)
-   :enable-context-budget      {:type "boolean" :default true}
-   :context-budget-safety-ratio {:type "number" :default 0.10}
-   ;; Live-artifacts: reference files auto-seeded into the per-turn
-   ;; `## Live Artifacts` user-context section. Each entry is a path resolved
-   ;; against project-dir (then working-dir); absolute and ~-prefixed paths are
-   ;; used as-is. Missing files are silently skipped. Seeded artifacts are
-   ;; pinned (never dropped by the budget reducer, never removable by the LLM).
-   :reference-artifact-paths   {:type "vector"  :default ["CLAUDE.md" "AGENTS.md"]}
-   ;; Per-artifact truncation cap (chars) for the Live Artifacts renderer when a
-   ;; descriptor does not declare its own :max-chars.
-   :live-artifact-max-chars    {:type "integer" :default 4000}
-   ;; Console activity: record each colon-command (TUI `:tool …`) interaction as
-   ;; an inline live-artifact (origin :console) so the next turn's ## Live
-   ;; Artifacts shows what the user just inspected — a signal of intent. Capped
-   ;; to the newest N console entries; budget eviction drops them oldest-first
-   ;; (unpinned). See agent.common.artifacts/record-console-activity!.
-   :enable-console-activity       {:type "boolean" :default true}
-   :console-activity-max-entries  {:type "integer" :default 10}
-   :console-activity-result-chars {:type "integer" :default 200}
-   ;; Usage-guide topics permanently inlined into the agent's tool-context every
-   ;; turn (and pre-marked so usage-nudge's first-use path skips them). Every
-   ;; OTHER guide-backed family is surfaced just-in-time on first use instead.
-   ;; Topics: see agent.core.usage/list-usage-topics (e.g. :artifacts :memory :todo).
-   :inline-usage-guides        {:type "vector"  :default [:artifacts]}
-   ;; Project-scoped, file-based memory: a `## Project Memory` system-context
-   ;; section seeded each turn from `<project-dir>/.brainyard/memory/index.md`.
-   ;; The LLM reads/writes the index + colocated `<slug>.md` topic files with
-   ;; the ordinary read-file/write-file/update-file tools (no special agent
-   ;; tools). Distinct from the L1/L2/L3 SQLite memory (user-scoped, auto-
-   ;; captured); this is explicit, durable, project-local, human-editable.
-   :enable-project-memory      {:type "boolean" :default true}
-   ;; Truncation cap (chars) for the injected index.md contents.
-   :project-memory-max-chars   {:type "integer" :default 4000}
-   ;; OAuth (clj-oauth) device/auth-code verification prompt: when true and a
-   ;; `verification_uri_complete` is offered, the TUI renders a terminal QR for
-   ;; it next to the code box. The code + plain URL always show regardless.
-   :oauth-qr?                  {:type "boolean" :default true}
-   ;; OAuth token-store backend: "auto" (keychain when available, else file),
-   ;; "keychain", or "file". config.edn equivalent of the BY_OAUTH_TOKEN_STORE
-   ;; env var (an explicit non-auto value here pins the backend).
-   :oauth-token-store          {:type "string"  :default "auto"}
-   ;; Default OAuth flow for an :auto login (per-server :auth :flow still wins):
-   ;; "auto" (device when advertised, else paste), "device", or "paste".
-   :oauth-flow                 {:type "string"  :default "auto"}
-   ;; CoAct system-context: include the full sandbox function directory
-   ;; (categories + signatures for ALL bound callables). When false, the
-   ;; system prompt shows only a compact category index instead.
-   :include-function-directory {:type "boolean" :default false}
-   ;; CoAct system-context: render the `### Agent Tools` roster compactly
-   ;; (one line per tool) instead of full per-tool specs. Default true —
-   ;; coact reaches every tool through the SCI sandbox + hot-path primitives
-   ;; + category index, so the curated roster only needs to scope the index
-   ;; and name the tools, not carry full schemas. Set false to restore the
-   ;; verbose per-tool spec block. ReAct ignores this (it has no code channel;
-   ;; its roster IS its advertised menu and stays verbose).
-   :compact-agent-tools        {:type "boolean" :default true}
-   ;; RLM context management
-   :max-context-tokens         {:type "integer" :default 128000}
-   ;; Inline cap (chars) for a single LLM-facing result/output before it is
-   ;; truncated to a recoverable temp file (head 70% + tail 20%). ~8k tokens.
-   ;; Unified knob for coact/react iteration-field truncation.
-   :max-output-chars           {:type "integer" :default 32000}
-   ;; TUI display-block collapsing (display-only; never reaches the LLM).
-   ;; Collapsed view shows :max-collapsed-lines; expanding (Enter) splices in
-   ;; up to :max-expanded-lines more (Ctrl-O opens the full content).
-   :max-collapsed-lines        {:type "integer" :default 20}
-   :max-expanded-lines         {:type "integer" :default 200}
-   :enable-sandbox-persistence {:type "boolean" :default true}
-   ;; Append one EDN record per turn to <project>/.brainyard/sessions/<id>/trajectory.edn
-   ;; (all iterations + final answer). Disable to skip trajectory recording.
-   :enable-trajectory-recording {:type "boolean" :default true}
-   :enable-budget-monitoring   {:type "boolean" :default false}
-   ;; Cross-turn context compaction. Gated (along with the per-iteration /
-   ;; turn-init budget reducer) by the single `:enable-context-budget` knob;
-   ;; the after-turn auto-compaction safety valve fires only when the
-   ;; estimated context overflows `:max-context-tokens`, shrinking carryover
-   ;; to `:compaction-target-ratio` × max-context-tokens.
-   :compaction-target-ratio    {:type "number"  :default 0.2}
-   ;; RLM iteration / evaluation / refinement
-   :max-iterations             {:type "integer" :default 100}
-   :max-refinements            {:type "integer" :default 0}
-   ;; Model used for the answer-evaluation (hallucination/completeness) check
-   ;; that gates refinement. nil/blank → evaluate with the agent's main
-   ;; :lm-config. A non-blank "provider:model" label (e.g. "claude-code:opus")
-   ;; routes the check to a dedicated model. Parallels :sub-lm-config. See
-   ;; `resolve-eval-lm`.
-   :eval-lm-config             {:type "string"  :default nil}
-   ;; Sub-LLM query configuration (llm-query, rlm-query in sandbox)
-   :sub-lm-config              {:type "string"  :default nil}
-   :llm-query-max-depth        {:type "integer" :default 1}
-   ;; Auto-background deadline (ms) for LLM-emitted code blocks (coact).
-   ;; Each code block runs as a synchronous foreground task; if it has not
-   ;; finished after this many ms, await-task detaches into background
-   ;; display mode and returns a :status :pending snapshot. The work keeps
-   ;; running; a later iteration harvests the resolved result. The LLM can
-   ;; poll via `task$detail` or stop via `task$cancel` at any time.
-   :auto-background-timeout-ms {:type "integer" :default 120000}
-   ;; Fast-eval threshold (ms). Clojure code blocks are evaluated inline
-   ;; first; only promoted to a tracked task if they exceed this timeout.
-   ;; Set to 0 to disable (always create a task). Does not apply to bash.
-   :fast-eval-timeout-ms       {:type "integer" :default 10000}
-   ;; Whether the BT iteration loop blocks waiting for in-flight tasks.
-   ;; When false (default), pending tasks flow to the next iteration and
-   ;; the LLM polls via task$wait. When true, coact-await-pending-action
-   ;; blocks up to :hold-max-wait-ms before falling through.
-   :enable-iteration-hold       {:type "boolean" :default false}
-   ;; Max time (ms) the iteration hold waits for pending tasks before
-   ;; falling through. Only applies when :enable-iteration-hold is true.
-   :hold-max-wait-ms            {:type "integer" :default 300000}
-   ;; Runtime-driven async notification for detached/background tasks
-   ;; (ai.brainyard.agent.common.auto-notify). When true (default) AND the host
-   ;; is interactive (a turn-submitter is registered — TUI/web, not headless
-   ;; `by ask`): a backgrounded task that terminates while no turn is running
-   ;; AUTO-RESUMES the agent (same effect as task$wakeup, without the LLM having
-   ;; to call it); and a still-running task that the LLM polls repeatedly is
-   ;; deflected and, after :auto-park-after-polls redundant polls, the turn is
-   ;; force-parked instead of spinning to :max-iterations.
-   :enable-auto-task-notify     {:type "boolean" :default true}
-   ;; Redundant polls (task$detail/task$wait) of a still-running armed task
-   ;; tolerated before the turn is force-parked. The first poll is always
-   ;; allowed; polls 2..N-1 are deflected with a nudge; poll N parks.
-   :auto-park-after-polls       {:type "integer" :default 2}
-   ;; Default timeout (ms) for tasks launched via task$run when the caller
-   ;; doesn't pass an explicit :timeout. Applies to both :bash and :tool
-   ;; jobs, and to the foreground waiter's own deadline.
-   :task-timeout-ms            {:type "integer" :default 120000}
-   ;; Cadence (ms) of the liveness "running… elapsed Ns" heartbeat appended to a
-   ;; detached :tool/subagent task's output (which has no stdout of its own).
-   ;; 0 disables it (default): runtime auto-task-notify now resumes/parks the
-   ;; agent on completion, so the LLM no longer needs a polling liveness signal,
-   ;; and the TUI task block already shows elapsed time in its header. Set > 0
-   ;; (e.g. 10000) to restore the per-N-seconds heartbeat lines.
-   :task-heartbeat-interval-ms {:type "integer" :default 0}
+  {:max-output-tokens       {:type "integer" :default 0
+                             :doc "Cap on LLM response tokens per call (0 = provider default)."}
+   :show-llm-streaming      {:type "boolean" :default false
+                             :doc "Stream the LLM's tokens live in the TUI as they arrive."}
+   :enable-context-budget      {:type "boolean" :default true
+                                :doc "Enforce the token budget on assembled prompt context (coact); master switch for the per-iteration/turn-init budget reducer and cross-turn compaction."}
+   :context-budget-safety-ratio {:type "number" :default 0.10
+                                 :doc "Fraction of the context window held back as headroom when budgeting prompt context."}
+   :reference-artifact-paths   {:type "vector"  :default ["CLAUDE.md" "AGENTS.md"]
+                                :doc "Reference files auto-seeded each turn into the `## Live Artifacts` section (resolved against project-dir then working-dir; missing files skipped; seeded entries are pinned)."}
+   :live-artifact-max-chars    {:type "integer" :default 4000
+                                :doc "Per-artifact truncation cap (chars) for the Live Artifacts renderer when a descriptor declares no :max-chars."}
+   :enable-console-activity       {:type "boolean" :default true
+                                   :doc "Record each TUI colon-command (`:tool …`) as an inline console live-artifact so the next turn sees what the user just inspected."}
+   :console-activity-max-entries  {:type "integer" :default 10
+                                   :doc "Max recent console-activity entries kept (oldest evicted first)."}
+   :console-activity-result-chars {:type "integer" :default 200
+                                   :doc "Per-entry char cap for a recorded console-activity result."}
+   :inline-usage-guides        {:type "vector"  :default [:artifacts]
+                                :doc "Usage-guide topics permanently inlined into tool-context every turn; all other guide families surface just-in-time on first use (topics: see agent.core.usage/list-usage-topics)."}
+   :enable-project-memory      {:type "boolean" :default true
+                                :doc "Seed the `## Project Memory` section each turn from <project>/.brainyard/memory/index.md (file-based, project-local, human-editable; distinct from the L1/L2/L3 SQLite memory)."}
+   :project-memory-max-chars   {:type "integer" :default 4000
+                                :doc "Truncation cap (chars) for the injected project-memory index.md contents."}
+   :oauth-qr?                  {:type "boolean" :default true
+                                :doc "Render a terminal QR for the OAuth verification_uri_complete next to the code box (code + plain URL always show regardless)."}
+   :oauth-token-store          {:type "string"  :default "auto"
+                                :doc "OAuth token-store backend: \"auto\" (keychain if available, else file), \"keychain\", or \"file\". config.edn equivalent of BY_OAUTH_TOKEN_STORE."}
+   :oauth-flow                 {:type "string"  :default "auto"
+                                :doc "Default OAuth flow for an :auto login: \"auto\" (device when advertised, else paste), \"device\", or \"paste\" (per-server :auth :flow still wins)."}
+   :include-function-directory {:type "boolean" :default false
+                                :doc "CoAct system-context: include the full sandbox function directory (categories + signatures for all bound callables) instead of a compact category index."}
+   :compact-agent-tools        {:type "boolean" :default true
+                                :doc "CoAct system-context: render the `### Agent Tools` roster compactly (one line per tool) instead of full per-tool specs. ReAct ignores this (its roster is its menu)."}
+   :max-context-tokens         {:type "integer" :default 128000
+                                :doc "RLM context-window size (tokens); the after-turn auto-compaction valve fires when estimated context exceeds this."}
+   :max-output-chars           {:type "integer" :default 32000
+                                :doc "Inline cap (chars, ~8k tokens) for a single LLM-facing result before truncation to a recoverable temp file (head 70% + tail 20%); unified coact/react iteration-field truncation knob."}
+   :max-collapsed-lines        {:type "integer" :default 20
+                                :doc "TUI display-only: lines shown in a collapsed display block (Enter expands)."}
+   :max-expanded-lines         {:type "integer" :default 200
+                                :doc "TUI display-only: max lines spliced in when expanding a display block (Ctrl-O opens full content)."}
+   :enable-sandbox-persistence {:type "boolean" :default true
+                                :doc "Persist the SCI sandbox state (defs/bindings) across turns so --resume can restore it."}
+   :enable-trajectory-recording {:type "boolean" :default true
+                                 :doc "Append one EDN record per turn (all iterations + final answer) to <project>/.brainyard/sessions/<id>/trajectory.edn; master data switch for session analytics."}
+   :enable-budget-monitoring   {:type "boolean" :default false
+                                :doc "Emit token-budget monitoring diagnostics."}
+   :compaction-target-ratio    {:type "number"  :default 0.2
+                                :doc "Cross-turn auto-compaction target: shrink carryover to this fraction × :max-context-tokens (gated by :enable-context-budget)."}
+   :max-iterations             {:type "integer" :default 100
+                                :doc "RLM/BT loop: max iterations per turn before the loop-guard stops with a best-effort answer."}
+   :max-refinements            {:type "integer" :default 0
+                                :doc "Max answer-refinement passes after the evaluation check (0 = no refinement)."}
+   :eval-lm-config             {:type "string"  :default nil
+                                :doc "Model for the answer-evaluation (hallucination/completeness) check that gates refinement. nil/blank → use the agent's :lm-config; a \"provider:model\" label routes to a dedicated model. See resolve-eval-lm."}
+   :sub-lm-config              {:type "string"  :default nil
+                                :doc "Model for sub-LLM queries (llm-query / rlm-query in the sandbox). nil → use the agent's :lm-config."}
+   :llm-query-max-depth        {:type "integer" :default 1
+                                :doc "Max recursion depth for nested llm-query / sub-LLM calls."}
+   :auto-background-timeout-ms {:type "integer" :default 120000
+                                :doc "Auto-background deadline (ms) for an LLM-emitted code block: if a foreground task exceeds it, await-task detaches into background mode and returns a :pending snapshot; a later iteration harvests the result."}
+   :fast-eval-timeout-ms       {:type "integer" :default 10000
+                                :doc "Fast-eval threshold (ms): Clojure code runs inline first and is promoted to a tracked task only if it exceeds this (0 = always create a task; not applied to bash)."}
+   :enable-iteration-hold       {:type "boolean" :default false
+                                 :doc "When true the BT loop blocks up to :hold-max-wait-ms waiting for in-flight tasks; when false (default) pending tasks flow to the next iteration and the LLM polls via task$wait."}
+   :hold-max-wait-ms            {:type "integer" :default 300000
+                                 :doc "Max time (ms) the iteration hold waits for pending tasks before falling through (only when :enable-iteration-hold is true)."}
+   :enable-auto-task-notify     {:type "boolean" :default true
+                                 :doc "Runtime async task notification: on an interactive host a finished background task auto-resumes the agent (like task$wakeup), and repeated polls of a still-running task force-park the turn after :auto-park-after-polls."}
+   :auto-park-after-polls       {:type "integer" :default 2
+                                 :doc "Redundant polls (task$detail/task$wait) of a still-running armed task tolerated before the turn is force-parked (first poll always allowed)."}
+   :task-timeout-ms            {:type "integer" :default 120000
+                                :doc "Default timeout (ms) for tasks launched via task$run without an explicit :timeout (bash and tool jobs, plus the foreground waiter's deadline)."}
+   :task-heartbeat-interval-ms {:type "integer" :default 0
+                                :doc "Cadence (ms) of the liveness heartbeat appended to a detached tool/subagent task's output. 0 disables (default); set >0 to restore per-N-seconds heartbeat lines."}
    ;; --- coact-repair-action recovery budgets (one per failure kind) ---
-   ;; Each attempt fires :agent.recovery/retrying so the TUI can surface a
-   ;; progress line.
-   ;;
-   ;; (1) Empty result — a ThinkActCode call SUCCEEDS but returns nothing usable
-   ;; (blank reasoning + no channel): the signature of a transient CLI hiccup
-   ;; (rate limit / nonzero exit / empty stream). The repair path re-runs the
-   ;; LLM call inline up to this many times (with exponential backoff) before
-   ;; falling through to the no-action nudge. Set to 0 to disable inline retries.
-   :max-retries-on-llm-empty-result    {:type "integer" :default 5}
-   ;; Base delay (ms) for exponential backoff between empty-result retries.
-   ;; Delay for attempt N is base * 2^(N-1): attempt 1 waits base, attempt 2
-   ;; waits 2*base, etc. Gives a rate-limited backend time to recover.
-   :empty-result-retry-base-ms {:type "integer" :default 1000}
-   ;; (2) Malformed output — the ThinkActCode call FAILS with a parse/validation
-   ;; error (the model emitted unparseable JSON / wrong schema). The repair path
-   ;; re-prompts across iterations up to this many consecutive failures before
-   ;; aborting. Fatal errors (auth / rate-limit / quota / billing / bad request /
-   ;; model misconfig) abort immediately regardless of this budget.
-   :max-retries-on-llm-malformed-output {:type "integer" :default 3}
-   ;; (2b) Transient provider/network failure — the call FAILS with a server/
-   ;; network error (HTTP 5xx, connection/timeout, provider overloaded/unable-to-
-   ;; process) that clj-llm's own call-layer retries couldn't ride out. The repair
-   ;; path RE-RUNS the same call inline (exponential backoff, base reuses
-   ;; :empty-result-retry-base-ms) up to this many times, dispatching the recovered
-   ;; channel in the same iteration; on exhaustion it aborts with the provider
-   ;; error. Set to 0 to disable the agent-level transient retry (clj-llm still
-   ;; retries at the call layer).
-   :max-retries-on-llm-transient        {:type "integer" :default 3}
-   ;; (3) No action — the call succeeds and the model reasons, but populates no
-   ;; channel (no tool-calls / code-blocks / answer). The repair path nudges up
-   ;; to this many consecutive no-action iterations before the loop-guard stops
-   ;; the turn with a best-effort progress answer.
-   :max-retries-on-llm-no-action       {:type "integer" :default 3}
+   ;; Each attempt fires :agent.recovery/retrying so the TUI can surface a progress line.
+   :max-retries-on-llm-empty-result    {:type "integer" :default 5
+                                        :doc "Recovery budget: inline re-runs (exponential backoff) when an LLM call succeeds but returns nothing usable (blank reasoning + no channel — a transient CLI hiccup). 0 disables inline retries."}
+   :empty-result-retry-base-ms {:type "integer" :default 1000
+                                :doc "Base delay (ms) for exponential backoff between empty-result retries (attempt N waits base × 2^(N-1)); also reused by the transient-failure retry."}
+   :max-retries-on-llm-malformed-output {:type "integer" :default 3
+                                         :doc "Recovery budget: consecutive re-prompts when an LLM call fails parse/schema validation. Fatal errors (auth/rate-limit/quota/billing/bad-request/misconfig) abort immediately regardless."}
+   :max-retries-on-llm-transient        {:type "integer" :default 3
+                                         :doc "Recovery budget: inline re-runs (backoff via :empty-result-retry-base-ms) when an LLM call hits a transient server/network error clj-llm couldn't ride out. 0 disables agent-level transient retry."}
+   :max-retries-on-llm-no-action       {:type "integer" :default 3
+                                        :doc "Recovery budget: consecutive nudges when the model reasons but populates no channel (no tool-calls/code/answer) before the loop-guard stops the turn."}
    ;; On-disk artifact GC (ai.brainyard.agent.gc). Sweeps run async on
    ;; :agent.session/created (1h in-process throttle) and via task$sweep.
-   ;; :tasks  — keep terminal task-N dirs only if among newest N AND younger
-   ;;           than D days; intersection (count caps, age expires). Live kept.
-   ;; :coact-scratch — drop coact-agent/scratch/ entries older than H hours.
-   ;; :sandbox-cache — cap clj-sandbox/{truncation,file-backed}/ by count,
-   ;;                  bytes, and age (oldest dropped first).
-   :task-retention-count        {:type "integer" :default 100}
-   :task-retention-days         {:type "integer" :default 7}
-   :coact-scratch-max-age-hours {:type "integer" :default 24}
-   :sandbox-cache-max-files     {:type "integer" :default 200}
-   :sandbox-cache-max-bytes     {:type "integer" :default 52428800}
-   :sandbox-cache-max-age-days  {:type "integer" :default 7}
-   ;; Session analytics — now on-demand via the `session$analytics` command
-   ;; (trajectory-sourced), not a per-turn gate. `:enable-trajectory-recording`
-   ;; above is the master data switch.
-   ;; LM config for the optional LLM-enhanced analytics pass
-   ;; (`session$analytics :deep true`). nil → fall back to `:lm-config` when
-   ;; :deep is requested; set explicitly to point analytics at a cheaper model.
-   :analytics-lm-config        {:type "object" :default nil}
-   ;; Optional override for the composite Session Health Score weights, e.g.
-   ;; {:pqs 0.2 :tce 0.2 :oga 0.2 :ice 0.15 :tur 0.15 :lt 0.10}. Must sum to 1.0
-   ;; (falls back to defaults on mismatch). nil → built-in defaults.
-   :analytics-shs-weights      {:type "object" :default nil}
-   ;; Memory capture pipeline — when true (default), an agent auto-starts the
-   ;; capture pipeline on creation and auto-stops it when the last agent
-   ;; sharing the memory manager closes. Resolved via `get-config` at agent
-   ;; creation, so this default makes capture ON unless a per-agent / session /
-   ;; global override sets it false. Subscribes to :agent.ask/pre,
-   ;; :agent.ask/post, :agent.tool-use/post, :agent.code-eval/post, :agent/exception hooks
-   ;; and feeds events through the S1 parser into L2.
-   :enable-memory-capture      {:type "boolean" :default true}
+   :task-retention-count        {:type "integer" :default 100
+                                 :doc "Artifact GC: keep terminal task-N dirs only if among the newest N (intersected with :task-retention-days)."}
+   :task-retention-days         {:type "integer" :default 7
+                                 :doc "Artifact GC: expire terminal task-N dirs older than this many days (intersected with :task-retention-count)."}
+   :coact-scratch-max-age-hours {:type "integer" :default 24
+                                 :doc "Artifact GC: drop coact-agent/scratch/ entries older than this many hours."}
+   :sandbox-cache-max-files     {:type "integer" :default 200
+                                 :doc "Artifact GC: cap on clj-sandbox/{truncation,file-backed}/ entry count (oldest dropped first)."}
+   :sandbox-cache-max-bytes     {:type "integer" :default 52428800
+                                 :doc "Artifact GC: byte cap on the clj-sandbox cache (oldest dropped first)."}
+   :sandbox-cache-max-age-days  {:type "integer" :default 7
+                                 :doc "Artifact GC: age cap (days) on the clj-sandbox cache (oldest dropped first)."}
+   :analytics-lm-config        {:type "string" :default nil
+                                :doc "LM for the optional LLM-enhanced analytics pass (session$analytics :deep true), as a settable \"provider:model\" label (e.g. \"bedrock:amazon.nova-lite-v1:0\") resolved via resolve-analytics-lm. nil/blank → fall back to the agent's :lm-config."}
+   :analytics-shs-weights      {:type "object" :default nil
+                                :doc "Override map for the composite Session Health Score weights (e.g. {:pqs 0.2 :tce 0.2 …}; must sum to 1.0 or it falls back). nil → built-in defaults."}
+   :enable-memory-capture      {:type "boolean" :default true
+                                :doc "Auto-start the L2 memory-capture pipeline on agent creation (subscribes to ask/tool-use/code-eval/exception hooks, feeds the S1 parser into L2); auto-stops when the last sharing agent closes."}
    ;; Context-graph memory overlay (CR-MEM-20, docs/design/context-graph-memory-design.md).
-   ;; When true, the per-user memory DB maintains a typed entity/relationship
-   ;; graph (graph_nodes/graph_edges) as a fourth retrieval signal fused into
-   ;; recall's RRF. Phase 0 ships storage + the manual edge API only; LLM
-   ;; extraction (CR-MEM-22) and vector kNN (CR-MEM-21) land behind this same
-   ;; flag in later phases. Off by default — opt-in and non-regressing: an
-   ;; empty graph leaves recall identical to today's pure-FTS behavior.
    :enable-graph-memory        {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_GRAPH_MEMORY")]
                                            (= "true" v) ::env-unset)
-                                :default false}
-   ;; Models that power the context graph when :enable-graph-memory is on.
-   ;; Both default nil = graph stays STORAGE-ONLY (nodes/edges via the manual
-   ;; API only) — extraction (CR-MEM-22) and the vector index (CR-MEM-21)
-   ;; activate only when a model is set, since embeddings/extraction need a
-   ;; provider with the right capability (e.g. an embedding-capable endpoint —
-   ;; Anthropic has none; Bedrock needs a Titan embed model). Format is the
-   ;; usual "provider/model" LM string, e.g. "openai/text-embedding-3-small"
-   ;; or "bedrock/amazon.nova-lite-v1:0". Unresolvable models degrade to off.
+                                :default false
+                                :doc "Context-graph memory overlay: maintain a typed entity/relationship graph (graph_nodes/graph_edges) as an extra RRF recall signal over the L1/L2/L3 FTS store. Off by default; non-regressing (empty graph ⇒ recall == pure FTS). Env: BY_ENABLE_GRAPH_MEMORY."}
    :graph-embed-model          {:type "string"
                                 :env-fn #(if-some [v (System/getenv "BY_GRAPH_EMBED_MODEL")]
                                            v ::env-unset)
-                                :default nil}
+                                :default nil
+                                :doc "Semantic-similarity embedder for the context graph (only when :enable-graph-memory). \"static\" = in-binary Model2Vec, or a \"provider/model\" string (e.g. ollama/nomic-embed-text). nil → no vector signal. Env: BY_GRAPH_EMBED_MODEL."}
    :graph-extract-model        {:type "string"
                                 :env-fn #(if-some [v (System/getenv "BY_GRAPH_EXTRACT_MODEL")]
                                            v ::env-unset)
-                                :default nil}
-   ;; Memory-agent batch L2→L3 consolidation cadence — when true,
-   ;; registers a :agent.ask/post hook that increments a per-session
-   ;; turn counter (deterministic, no LLM) and, every
-   ;; :memory-consolidate-every-n-turns turns, fire-and-forget runs the
-   ;; memory pipeline's L2→L3 reducer over the session: community
-   ;; consolidation (CR-MEM-24) when :enable-graph-memory is on, else the
-   ;; LLM-free heuristic reducer. This REPLACES the retired per-turn
-   ;; essence-capture loop (which spun a full memory-agent BT loop — 6-8
-   ;; LLM iterations — on EVERY turn, even a bare "hello"). Off by
-   ;; default; opt-in per agent type via :config-extra on the defagent
-   ;; (root coact-agent / research-agent), like the old essence flag, or
-   ;; via the BY_ENABLE_MEMORY_CONSOLIDATION env var (which wins per the
-   ;; precedence rules; used by the `bb test:memory:auto` harness).
-   ;; The `:op :essence` memory-agent playbook survives as a manual /
-   ;; REPL surface; it is simply no longer hook-driven.
+                                :default nil
+                                :doc "Chat LM that extracts entities/relationships from episodes and writes community summaries for the context graph. nil → graph stays storage-only (manual edge API). Env: BY_GRAPH_EXTRACT_MODEL."}
    :enable-memory-consolidation {:type "boolean"
                                  :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY_CONSOLIDATION")]
                                             (= "true" v) ::env-unset)
-                                 :default false}
-   ;; Cadence for the consolidation hook above: run the batch reducer
-   ;; once every N completed turns. Higher = cheaper / coarser. Ignored
-   ;; when :enable-memory-consolidation is false.
-   :memory-consolidate-every-n-turns {:type "integer" :default 12}
-   ;; Self-improvement loop (R1 — docs/design/self-improve-design.md). When
-   ;; true on a root agent, a :agent.ask/post hook scores the just-finished
-   ;; turn's trajectory for a novel reusable procedure and, past
-   ;; :skill-distill-threshold, stages a SKILL.md *proposal* under
-   ;; .brainyard/skills/proposals/ for the user to accept/reject (it never
-   ;; writes a live skill on its own). A cheap deterministic pre-filter gates
-   ;; the LLM scorer so trivial turns cost nothing. Off by default; opt-in per
-   ;; agent type via :config-extra on the defagent (root coact-agent), like
-   ;; :enable-memory-consolidation.
+                                 :default false
+                                 :doc "Batch L2→L3 memory consolidation: an ask/post hook runs the pipeline's reducer every :memory-consolidate-every-n-turns turns (community consolidation when :enable-graph-memory is on, else heuristic). Replaces the retired per-turn essence loop. Env: BY_ENABLE_MEMORY_CONSOLIDATION."}
+   :memory-consolidate-every-n-turns {:type "integer" :default 12
+                                      :doc "Cadence for the batch consolidation hook: run the reducer once every N completed turns (higher = cheaper/coarser). Ignored when :enable-memory-consolidation is false."}
+   ;; Self-improvement loop (R1 — docs/design/self-improve-design.md).
    :enable-skill-distillation  {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_SKILL_DISTILLATION")]
                                            (= "true" v) ::env-unset)
-                                :default false}
-   ;; Minimum SkillDistillation score (0.0..1.0) for a turn to stage a skill
-   ;; proposal. Higher = fewer, higher-confidence proposals.
+                                :default false
+                                :doc "Self-improvement: an ask/post hook scores each finished turn for a novel reusable procedure and, past :skill-distill-threshold, stages a SKILL.md proposal under .brainyard/skills/proposals/ (never writes a live skill). Root agents; off by default. Env: BY_ENABLE_SKILL_DISTILLATION."}
    :skill-distill-threshold    {:type "number"
                                 :env-fn #(if-some [v (System/getenv "BY_SKILL_DISTILL_THRESHOLD")]
                                            (or (parse-double v) ::env-unset) ::env-unset)
-                                :default 0.7}
-   ;; Surface a one-line per-turn notice (via the iteration :notices field the
-   ;; LLM reads) when skill proposals are staged under
-   ;; .brainyard/skills/proposals/ awaiting review — so the user doesn't have
-   ;; to discover them with skill-proposal$list. Suppressed once a given
-   ;; proposal has been surfaced (re-fires when a new one is staged). Root
-   ;; agents only. Off by default; opt-in like the keys above.
+                                :default 0.7
+                                :doc "Minimum skill-distillation score (0.0..1.0) for a turn to stage a skill proposal (higher = fewer, higher-confidence proposals). Env: BY_SKILL_DISTILL_THRESHOLD."}
    :enable-self-improve-nudges {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_SELF_IMPROVE_NUDGES")]
                                            (= "true" v) ::env-unset)
-                                :default false}
-   ;; Self-improvement loop — skill refinement (R1 Phase 2). When true, a
-   ;; :agent.tool-use/post hook watches dynamic `skill$<name>` invocations; on a
-   ;; failed invocation it asks whether the SKILL.md itself is at fault and, if
-   ;; so, stages a `:refinement` proposal (an updated SKILL.md) under
-   ;; .brainyard/skills/proposals/ for review. accept → skills$write :op :update.
-   ;; Off by default; opt-in like the keys above.
+                                :default false
+                                :doc "Surface a one-line per-turn notice (iteration :notices) when skill proposals await review under .brainyard/skills/proposals/, so the user need not run skill-proposal$list. Root agents; off by default. Env: BY_ENABLE_SELF_IMPROVE_NUDGES."}
    :enable-skill-refinement    {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_SKILL_REFINEMENT")]
                                            (= "true" v) ::env-unset)
-                                :default false}
-   ;; First-class scheduler (R2 — docs/design/hermes-comparison.md). When true,
-   ;; a daemon ticker thread starts with each session and fires due jobs from
-   ;; <project>/.brainyard/schedule/ in-process. Off by default — the ticker
-   ;; runs scheduled prompts (LLM calls) unattended, so it is deliberately
-   ;; opt-in; `schedule$run-now` / `schedule$run-due` work manually regardless.
+                                :default false
+                                :doc "Self-improvement (R1 Phase 2): a tool-use/post hook watches skill$<name> failures and, when the SKILL.md is at fault, stages a :refinement proposal (updated SKILL.md) for review. Off by default. Env: BY_ENABLE_SKILL_REFINEMENT."}
    :enable-scheduler           {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_SCHEDULER")]
                                            (= "true" v) ::env-unset)
-                                :default false}
-   ;; Scheduler ticker interval (ms). Lower = finer cron resolution, more wakeups.
+                                :default false
+                                :doc "First-class scheduler (R2): a daemon ticker fires due jobs from <project>/.brainyard/schedule/ in-process each session. Off by default (runs LLM prompts unattended); schedule$run-now/run-due work manually regardless. Env: BY_ENABLE_SCHEDULER."}
    :scheduler-tick-ms          {:type "integer"
                                 :env-fn #(if-some [v (System/getenv "BY_SCHEDULER_TICK_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
-                                :default 60000}
-   ;; Messaging gateway (R3 — docs/design/hermes-comparison.md). Lifetime of a
-   ;; one-time pairing code minted by `gateway$pair-code` (default 10 min).
+                                :default 60000
+                                :doc "Scheduler ticker interval (ms): lower = finer cron resolution, more wakeups. Env: BY_SCHEDULER_TICK_MS."}
    :gateway-pair-code-ttl-ms   {:type "integer"
                                 :env-fn #(if-some [v (System/getenv "BY_GATEWAY_PAIR_CODE_TTL_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
-                                :default 600000}
-   ;; Subagent call management
-   :max-agent-call-depth       {:type "integer" :default 3}
-   :enable-subagent-calls      {:type "boolean" :default true}
-   ;; Global kill-switch for LLM-authored user hooks (.brainyard/hooks/*.edn,
-   ;; registered via hook-agent). When false, persisted user hooks stay on disk
-   ;; but do not fire. Read by ai.brainyard.agent.common.user-hooks.
-   :enable-user-hooks          {:type "boolean" :default true}
-   ;; TUI thinking live block: when true, removes the block from scrollback when
-   ;; thinking stops; when false, freezes it so it remains as scrollback history.
-   :dispose-think-block        {:type "boolean" :default true}
-   ;; TUI iteration live block: when true, removes the block from scrollback when
-   ;; the iteration ends; when false, freezes it so it remains as scrollback history.
-   :dispose-iteration-block    {:type "boolean" :default false}
-   ;; TUI task live block: when true, removes the block from scrollback when
-   ;; the task ends; when false, freezes it so it remains as scrollback history.
-   :dispose-task-block         {:type "boolean" :default true}
-   ;; TUI sub-agent live block: when true, removes the block from scrollback when
-   ;; the sub-agent call ends; when false, freezes it so it remains as scrollback history.
-   :dispose-agent-block        {:type "boolean" :default true}
-   ;; TUI permission/feedback prompts: when true (and in Mode B with a
-   ;; popup-capable tmux client), prompts render as a tmux popup; when false,
-   ;; they always fall back to the in-stream live-block. Read by
-   ;; ai.brainyard.agent-tui.permissions/mode-b-popup-feasible?.
-   :enable-tmux-popup          {:type "boolean" :default true}
-   ;; TUI input-bar agent suggestions: when true, the agent's self-reported
-   ;; next-user-prompt is captured (via the :agent.suggestion/next-user-prompt
-   ;; hook) and offered as a right-arrow-acceptable help tip on the idle input
-   ;; line. When false, only the rotating static help tips show. Read by
-   ;; ai.brainyard.agent-tui.session/agent-suggestion-handler.
-   :enable-input-suggestions   {:type "boolean" :default true}
-   ;; TUI resume: how many trailing bytes of the persisted `:stream` scrollback
-   ;; to replay into the pane on `--resume` (NOT characters — raw ANSI bytes,
-   ;; decoded UTF-8). Bounded by the on-disk cap (5 MiB/stream × rotations).
-   ;; Default 10 MiB (10 * 1024 * 1024).
-   :resume-scrollback-bytes    {:type "integer" :default 10485760}
-   ;; Mid-turn re-recall (M8a). When true, the :agent.tool-use/post hook
-   ;; in context-actions extracts novel entity terms from each tool
-   ;; result, fires a refined recall query, and merges new hits into
-   ;; :recalled-memory. Off by default — flip per turn via
-   ;; agent-runtime$config :key "enable-mid-turn-recall" :value "true".
-   :enable-mid-turn-recall     {:type "boolean" :default false}
-   ;; Cross-turn tool-result cache (M8b). Default 0 disables cache
-   ;; lookup; set to a positive number of seconds to enable. Look-ups
-   ;; only fire for tools tagged as read-style via the
-   ;; :tool-cache-readers config key (vector of tool-id strings).
-   :tool-cache-ttl             {:type "integer" :default 0}
-   :tool-cache-readers         {:type "vector"  :default []}
-   ;; Explore-agent auto-persist (per-turn tunable)
-   :explore-persist-threshold  {:type "integer" :default 1000}
-   :explore-auto-persist       {:type "boolean" :default true}
-   ;; Specialist-agent auto-finalize gates
-   :workflow-auto-finalize     {:type "boolean" :default true}
-   :research-auto-finalize     {:type "boolean" :default true}
-   ;; BT loop / context cadence
-   :rebudget-every-n-iter      {:type "integer" :default 10}
-   :conversation-limit         {:type "integer" :default 20}
-   :recall-limit               {:type "integer" :default 10}
-   ;; L2 memory truncation. Storage caps (what a captured Q&A episode persists,
-   ;; hence what FTS can match) are decoupled from the recall-render snippet
-   ;; (what each recalled hit shows in the prompt) — relaxing storage costs
-   ;; only DB/FTS bytes, not prompt tokens. See components/memory capture/parser.
-   :memory-question-max-chars  {:type "integer" :default 8000}
-   :memory-answer-max-chars    {:type "integer" :default 16000}
-   ;; Per-hit char cap when rendering recalled memory into the prompt.
-   :memory-recall-snippet-chars {:type "integer" :default 600}
-   ;; ACP agent backend
-   :acp-backend                {:type "keyword" :default :stub}
-   :acp-backend-opts           {:type "object"  :default {}}
-   :acp-timeout-ms             {:type "integer" :default 600000}
-   :acp-permission-timeout-ms  {:type "integer" :default 120000}
-   ;; Parent-handoff trail depth
-   :parent-trail-k             {:type "integer" :default 3}
-   ;; ReAct loop mode ("single" | "multi")
-   :react-loop-mode            {:type "string"  :default "single"}
-   ;; ReAct section-budget compaction floors
-   :react-keep-thoughts-n      {:type "integer" :default 3}
-   :react-keep-observations-n  {:type "integer" :default 3}
-   :react-keep-iterations-n    {:type "integer" :default 3}
+                                :default 600000
+                                :doc "Messaging gateway (R3): lifetime (ms) of a one-time pairing code minted by gateway$pair-code (default 10 min). Env: BY_GATEWAY_PAIR_CODE_TTL_MS."}
+   :max-agent-call-depth       {:type "integer" :default 3
+                                :doc "Max nesting depth for subagent (agent-call) recursion."}
+   :enable-subagent-calls      {:type "boolean" :default true
+                                :doc "Allow the agent to dispatch subagents (agent-call); when false, subagent dispatch is disabled."}
+   :enable-user-hooks          {:type "boolean" :default true
+                                :doc "Global kill-switch for LLM-authored user hooks (.brainyard/hooks/*.edn). When false, persisted hooks stay on disk but do not fire."}
+   :dispose-think-block        {:type "boolean" :default true
+                                :doc "TUI thinking live block: true removes it from scrollback when thinking stops; false freezes it as history."}
+   :dispose-iteration-block    {:type "boolean" :default false
+                                :doc "TUI iteration live block: true removes it from scrollback when the iteration ends; false freezes it as history."}
+   :dispose-task-block         {:type "boolean" :default true
+                                :doc "TUI task live block: true removes it from scrollback when the task ends; false freezes it as history."}
+   :dispose-agent-block        {:type "boolean" :default true
+                                :doc "TUI sub-agent live block: true removes it from scrollback when the sub-agent call ends; false freezes it as history."}
+   :enable-tmux-popup          {:type "boolean" :default true
+                                :doc "TUI permission/feedback prompts render as a tmux popup when true (Mode B + popup-capable client); false always falls back to the in-stream live-block."}
+   :enable-input-suggestions   {:type "boolean" :default true
+                                :doc "TUI: offer the agent's self-reported next-user-prompt as a right-arrow-acceptable help tip on the idle input line; false shows only rotating static tips."}
+   :resume-scrollback-bytes    {:type "integer" :default 10485760
+                                :doc "TUI --resume: trailing bytes of persisted :stream scrollback (raw ANSI, UTF-8 decoded) replayed into the pane (default 10 MiB; bounded by the on-disk cap)."}
+   :enable-mid-turn-recall     {:type "boolean" :default false
+                                :doc "Mid-turn re-recall (M8a): a tool-use/post hook extracts novel entity terms from each tool result, fires a refined recall, and merges hits into :recalled-memory. Off by default."}
+   :tool-cache-ttl             {:type "integer" :default 0
+                                :doc "Cross-turn tool-result cache TTL (seconds); 0 disables lookup. Only fires for tools listed in :tool-cache-readers."}
+   :tool-cache-readers         {:type "vector"  :default []
+                                :doc "Tool-id strings eligible for the cross-turn tool-result cache (read-style tools whose output is safe to reuse within :tool-cache-ttl)."}
+   :explore-persist-threshold  {:type "integer" :default 1000
+                                :doc "Explore-agent: result size (chars) above which findings are auto-persisted (per-turn tunable)."}
+   :explore-auto-persist       {:type "boolean" :default true
+                                :doc "Explore-agent: auto-persist findings exceeding :explore-persist-threshold."}
+   :workflow-auto-finalize     {:type "boolean" :default true
+                                :doc "Workflow-agent: auto-finalize the turn when the specialist completes (vs. requiring an explicit finalize)."}
+   :research-auto-finalize     {:type "boolean" :default true
+                                :doc "Research-agent: auto-finalize the turn when the specialist completes."}
+   :rebudget-every-n-iter      {:type "integer" :default 10
+                                :doc "BT loop: re-run the context budget reducer every N iterations."}
+   :conversation-limit         {:type "integer" :default 20
+                                :doc "Max prior conversation turns retained in assembled context."}
+   :recall-limit               {:type "integer" :default 10
+                                :doc "Max recalled memory hits injected into a turn's context."}
+   :memory-question-max-chars  {:type "integer" :default 8000
+                                :doc "L2 storage cap (chars) for a captured Q&A episode's question — what FTS can match (decoupled from the recall-render snippet; storage cost is DB/FTS bytes, not prompt tokens)."}
+   :memory-answer-max-chars    {:type "integer" :default 16000
+                                :doc "L2 storage cap (chars) for a captured Q&A episode's answer (decoupled from the recall-render snippet)."}
+   :memory-recall-snippet-chars {:type "integer" :default 600
+                                 :doc "Per-hit char cap when rendering a recalled memory into the prompt."}
+   :acp-backend                {:type "keyword" :default :stub
+                                :doc "ACP (agent-client-protocol) backend implementation; :stub by default."}
+   :acp-backend-opts           {:type "object"  :default {}
+                                :doc "Options map passed to the ACP backend."}
+   :acp-timeout-ms             {:type "integer" :default 600000
+                                :doc "ACP request timeout (ms)."}
+   :acp-permission-timeout-ms  {:type "integer" :default 120000
+                                :doc "ACP permission-prompt timeout (ms)."}
+   :parent-trail-k             {:type "integer" :default 3
+                                :doc "Depth of the parent-handoff trail surfaced to a subagent (how many ancestor turns of context)."}
+   :react-loop-mode            {:type "string"  :default "single"
+                                :doc "ReAct loop mode: \"single\" (one action per iteration) or \"multi\"."}
+   :react-keep-thoughts-n      {:type "integer" :default 3
+                                :doc "ReAct section-budget compaction floor: thoughts retained."}
+   :react-keep-observations-n  {:type "integer" :default 3
+                                :doc "ReAct section-budget compaction floor: observations retained."}
+   :react-keep-iterations-n    {:type "integer" :default 3
+                                :doc "ReAct section-budget compaction floor: full iterations retained."}
    ;; NOTE: working-dir is intentionally NOT a config key. It is resolved
    ;; purely at runtime by `resolve-working-dir` (flag / `BY_WORKING_DIR` env /
    ;; `user.dir`) and surfaced via the `:dirs` map below + `(config/working-dir)`.
    ;; Keeping it out of the schema means config.edn cannot set it, so there is
    ;; one source of truth and no divergence between two notions.
-   ;; Agent's main LM config map ({:provider :model :max-tokens ...}).
-   ;; Default falls through to `(clj-llm/get-default-lm)` which honors
-   ;; the LLM_PROVIDER env var.
    :lm-config                  {:type "object"
-                                :default-fn #(clj-llm/get-default-lm)}
-   ;; Agent's resolved dirs map ({:user-dir :project-dir :working-dir}).
-   ;; Typically seeded into session-config at startup; falls back to
-   ;; `resolve-dirs` when nothing in the chain provides it.
+                                :read-only true
+                                :default-fn #(clj-llm/get-default-lm)
+                                :doc "Agent's main LM config map ({:provider :model :max-tokens …}). Read-only via agent-runtime$config (it's a structured map, not a simple value) — switch models with the TUI /model command. Default resolves via clj-llm/get-default-lm (honors LLM_PROVIDER)."}
    :dirs                       {:type "object"
-                                :default-fn #(resolve-dirs)}
-   ;; Tavily web-search API key. `TAVILY_API_KEY` env wins (highest precedence).
+                                :read-only true
+                                :default-fn #(resolve-dirs)
+                                :doc "Resolved dirs map ({:user-dir :project-dir :working-dir}). Read-only — derived fresh at runtime (flag/env/git-root), never set via config; seeded into session-config at startup, else resolve-dirs."}
    :tavily-api-key             {:type "string"
-                                ;; env override (highest precedence); no persisted default (nil when unset).
-                                :env-fn #(or (System/getenv "TAVILY_API_KEY") ::env-unset)}
-   ;; Allow-list of directories for filesystem-touching tools (bash, read,
-   ;; write, grep, task$run). Lazy default falls through to
-   ;; `default-allowed-dirs` (/tmp + project-dir + user-config-dir).
+                                :env-fn #(or (System/getenv "TAVILY_API_KEY") ::env-unset)
+                                :doc "Tavily web-search API key. Env TAVILY_API_KEY wins (highest precedence); no persisted default (nil when unset)."}
    :allowed-dirs               {:type "array"
-                                :default-fn #(default-allowed-dirs)}
-   ;; Permission-prompt policy for sensitive tool ops. One of
-   ;; :auto-approve | :ask-each-time | :deny-by-default. Surfaced as
-   ;; `[:permissions :mode]` in the persisted EDN; bridged into
-   ;; `!global-config` by `load-global-config!`.
-   :permission-mode            {:type "keyword" :default :ask-each-time}
-   ;; clj-nrepl-eval bootstrap (docs/design/clj-nrepl-eval.md §5).
-   ;; The in-process nREPL server backing `code$eval :backend :nrepl` is
-   ;; off by default. Operators enable it durably by setting
-   ;; `[:agent :config :nrepl-enabled?] true` in .brainyard/config.edn,
-   ;; or transiently via BY_NREPL_ENABLED=true — the env var is the HIGHEST
-   ;; layer, so it overrides even a persisted `false`. Same precedence applies
-   ;; to :nrepl-port (BY_NREPL_PORT; 0 = ephemeral). The
-   ;; server is OFF by default. nREPL is the full-trust backend — reaching the
-   ;; loopback server gives full eval (the only eval-path check is the
-   ;; deny-list); there is no grant/scope/confirmation. For isolated code
-   ;; execution use the SCI sandbox backend (:clj-backend :sandbox).
+                                :default-fn #(default-allowed-dirs)
+                                :doc "Allow-list of directories for filesystem-touching tools (bash/read/write/grep/task$run). Lazy default: /tmp + project-dir + user-config-dir."}
+   :permission-mode            {:type "keyword" :default :ask-each-time
+                                :doc "Permission-prompt policy for sensitive tool ops: :auto-approve | :ask-each-time | :deny-by-default. Persisted as [:permissions :mode]."}
    :nrepl-enabled?             {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_NREPL_ENABLED")]
                                            (= "true" v) ::env-unset)
-                                :default false}
+                                :default false
+                                :doc "Enable the in-process nREPL server backing code$eval :backend :nrepl. Off by default; nREPL is the full-trust backend (no scope/confirmation) — use the SCI sandbox for isolated eval. Env BY_NREPL_ENABLED wins over a persisted false."}
    :nrepl-port                 {:type "integer"
                                 :env-fn #(if-some [v (System/getenv "BY_NREPL_PORT")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
-                                :default 0}
-   ;; nREPL endpoint HOST for the `:nrepl` Clojure backend. Default loopback
-   ;; (the in-process server). Set to a remote host (BY_NREPL_HOST) to run the
-   ;; agent's Clojure on a remote nREPL server — the basis for off-laptop
-   ;; execution (R4). nREPL is full-trust: a remote endpoint must be your own
-   ;; trusted server. See docs/design/hermes-comparison.md R4.
+                                :default 0
+                                :doc "Port for the in-process nREPL server (0 = ephemeral). Env: BY_NREPL_PORT."}
    :nrepl-host                 {:type "string"
                                 :env-fn #(if-let [v (not-empty (System/getenv "BY_NREPL_HOST"))]
                                            v ::env-unset)
-                                :default "127.0.0.1"}
-   ;; Clojure code-execution backend for ```clojure blocks in CoAct agents.
-   ;; :sandbox — SCI sandbox (default, safe for arbitrary agents).
-   ;; :nrepl   — live brainyard JVM via clj-nrepl (debug-agent; needs server).
-   ;; Per-agent override layer (lifecycle hook → `:!state :st-memory-init
-   ;; :config`); not persisted to .brainyard/config.edn.
-   :clj-backend                {:type "keyword" :default :sandbox}
-   ;; Execution backend (R4 — docs/design/hermes-comparison.md): WHERE shell +
-   ;; Clojure execution happens. :local — this machine (today's behavior:
-   ;; ProcessBuilder + the :clj-backend sandbox|nrepl dispatch). Future: a
-   ;; remote nREPL / docker / ssh backend. `:clj-backend` is LocalBackend's
-   ;; internal Clojure strategy.
+                                :default "127.0.0.1"
+                                :doc "nREPL endpoint HOST for the :nrepl Clojure backend (default loopback). Set to a trusted remote host for off-laptop execution (R4). Env: BY_NREPL_HOST."}
+   :clj-backend                {:type "keyword" :default :sandbox
+                                :doc "Clojure code-execution backend for ```clojure blocks in CoAct: :sandbox (SCI, safe default) or :nrepl (live JVM via clj-nrepl; debug-agent, needs server). Per-agent override; not persisted."}
    :exec-backend               {:type "keyword"
                                 :env-fn #(if-let [v (not-empty (System/getenv "BY_EXEC_BACKEND"))]
                                            (keyword v) ::env-unset)
-                                :default :local}
-   ;; Side ask channel (docs/design/ask-attach-channel.md). Each TUI session
-   ;; opens a per-session AF_UNIX socket (<session-dir>/ask.sock) so
-   ;; `by ask --attach <session-id>` can inject a question into the live turn
-   ;; queue. On by default; disable durably via `[:agent :config
-   ;; :ask-channel-enabled?] false` or via BY_ASK_CHANNEL=0 (env wins).
-   ;; :ask-timeout-ms caps a single side-ask turn server-side.
+                                :default :local
+                                :doc "Execution backend (R4) — WHERE shell + Clojure run: :local (this machine; ProcessBuilder + the :clj-backend strategy). Env: BY_EXEC_BACKEND."}
    :ask-channel-enabled?       {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ASK_CHANNEL")]
                                            (not= "0" v) ::env-unset)
-                                :default true}
+                                :default true
+                                :doc "Side ask channel: each TUI session opens a per-session AF_UNIX socket (ask.sock) so `by ask --attach <id>` can inject a question into the live turn queue. On by default. Env BY_ASK_CHANNEL=0 disables."}
    :ask-timeout-ms             {:type "integer"
                                 :env-fn #(if-some [v (System/getenv "BY_ASK_TIMEOUT_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
-                                :default 120000}
+                                :default 120000
+                                :doc "Server-side cap (ms) on a single side-ask turn. Env: BY_ASK_TIMEOUT_MS."}
    ;; SCI sandbox interop level for the CoAct/RLM code sandbox.
    ;;   :restricted (default) — whitelisted pure classes + denylist
    ;;                (System/Runtime/ProcessBuilder/ClassLoader denied). Only
@@ -549,9 +358,46 @@
    :sandbox-interop            {:type "keyword"
                                 :env-fn #(if-let [v (not-empty (System/getenv "BY_SANDBOX_INTEROP"))]
                                            (keyword v) ::env-unset)
-                                :default :restricted}})
+                                :default :restricted
+                                :doc "SCI code-sandbox Java-interop level: :restricted (default, whitelisted pure classes + System/Runtime/ProcessBuilder/ClassLoader denied), :full (arbitrary interop, container-only), or :auto (:full when a container is detected). Env: BY_SANDBOX_INTEROP."}})
 
 (def config-keys (set (keys config-schema)))
+
+(def read-only-keys
+  "Schema keys flagged `:read-only` — runtime-derived or structured values that
+   must NOT be set through the `agent-runtime$config` command (`:dirs` is
+   resolved fresh each run; `:lm-config` is a map switched via the TUI /model
+   command). Reads/search still surface them. Single source of truth: the
+   `:read-only` flag on each schema entry."
+  (set (keep (fn [[k entry]] (when (:read-only entry) k)) config-schema)))
+
+(defn read-only-key?
+  "True if `k` is a read-only config key (see `read-only-keys`)."
+  [k]
+  (contains? read-only-keys k))
+
+(def sensitive-config-keys
+  "Config keys whose value is a secret and must be masked before it reaches the
+   LLM (e.g. surfaced via `agent-runtime$config` search / read). The real value
+   still flows to the tools that need it; only the config-command presentation
+   is redacted. See `redact-config-value`."
+  #{:tavily-api-key})
+
+(defn redact-config-value
+  "Mask a config value for LLM-facing display: a sensitive key (`tavily-api-key`)
+   collapses to a placeholder when set; any map carrying an `:api-key` (e.g. a
+   resolved `:lm-config`) has that leaf masked. Other values pass through."
+  [k v]
+  (cond
+    (contains? sensitive-config-keys k) (when (some? v) "***redacted***")
+    (and (map? v) (contains? v :api-key)) (assoc v :api-key "***redacted***")
+    :else v))
+
+(defn redact-config-snapshot
+  "Apply `redact-config-value` across a whole config map (e.g. the snapshot
+   returned by `agent-runtime$config` read/set) so no secret reaches the LLM."
+  [m]
+  (reduce-kv (fn [acc k v] (assoc acc k (redact-config-value k v))) {} m))
 
 ;; ============================================================================
 ;; Internal Constants (not user-configurable, but centralized to avoid magic numbers)
@@ -1374,6 +1220,39 @@
             (or (agent-config agent) {})
             (env-overlay)))))
 
+(defn config-search-haystack
+  "Lowercased searchable text for one `config-schema` entry — its key name,
+   declared `:type`, and (when present) its `:doc` text. Backs
+   `search-config-keys`; adding a `:doc` to a schema entry makes that key
+   discoverable by concept, not just by the literal key name."
+  [k spec]
+  (->> [(name k) (:type spec) (:doc spec)]
+       (remove nil?)
+       (str/join " ")
+       str/lower-case))
+
+(defn search-config-keys
+  "Find config keys whose name / type / `:doc` contain `query` (case-insensitive
+   substring). Each hit is annotated with its currently resolved `:value` via
+   `get-config`, so values reflect the live precedence chain for `agent-or-st`.
+   Results are sorted by key; a blank query returns []. Backs the
+   `agent-runtime$config` :query mode so the LLM can discover the handful of
+   relevant keys without dumping the whole snapshot."
+  [agent-or-st query]
+  (if-let [q (some-> query str/lower-case str/trim not-empty)]
+    (->> config-schema
+         (keep (fn [[k spec]]
+                 (when (str/includes? (config-search-haystack k spec) q)
+                   (cond-> {:key     (name k)
+                            :type    (:type spec)
+                            :value   (redact-config-value k (get-config agent-or-st k))
+                            :default (:default spec)}
+                     (:doc spec)        (assoc :doc (:doc spec))
+                     (:read-only spec)  (assoc :read-only true)))))
+         (sort-by :key)
+         vec)
+    []))
+
 (defn- container-detected?
   "Soft-dep probe for a container environment (Docker/devcontainer) via
    env-detect. Returns false when the env-detect component is not on the
@@ -1546,6 +1425,21 @@
          sub-str (get-config agent :sub-lm-config)]
      (if (and sub-str (not (str/blank? sub-str)))
        (or (clj-llm/parse-lm-str sub-str) main-lm)
+       main-lm))))
+
+(defn resolve-analytics-lm
+  "Resolve the LM for the LLM-enhanced analytics pass (session$analytics :deep).
+   Mirrors `resolve-sub-lm`:
+     :analytics-lm-config (string) → parsed via `clj-llm/parse-lm-str` if non-blank
+     otherwise → the agent's main `:lm-config`
+   An unparseable label falls back to the main LM rather than nil. Arity-0 uses
+   `proto/*current-agent*`."
+  ([] (resolve-analytics-lm proto/*current-agent*))
+  ([agent]
+   (let [main-lm (get-config agent :lm-config)
+         a-str   (get-config agent :analytics-lm-config)]
+     (if (and a-str (not (str/blank? a-str)))
+       (or (clj-llm/parse-lm-str a-str) main-lm)
        main-lm))))
 
 (defn resolve-eval-lm

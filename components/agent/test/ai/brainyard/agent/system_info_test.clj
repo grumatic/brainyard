@@ -4,21 +4,75 @@
 
 (ns ai.brainyard.agent.system-info-test
   (:require [ai.brainyard.agent.core.system-info :as sys-info]
+            [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.protocol :as proto]
+            [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]])
   (:import (java.time Instant ZoneId)))
 
+(defn- render-with-config
+  "Render build-system-info-section with a truthy agent stub whose config /
+   dirs / identity are fully controlled, so a test can assert the Runtime and
+   LLM rows render exact values. `cfg-map` backs config/get-config; `interop`
+   backs the resolved sandbox-interop level."
+  [cfg-map interop]
+  (with-redefs [config/get-config            (fn [_agent k] (get cfg-map k))
+                config/resolve-sandbox-interop (fn [& _] interop)
+                sb-bind/get-dirs             (fn [_] {:working-dir "/w" :project-dir "/p"})
+                proto/agent-id               (fn [_] :test-agent/a1)
+                proto/session-id             (fn [_] "sess-1")]
+    (sys-info/build-system-info-section :agent ::stub :depth 0)))
+
 (deftest build-system-info-section-renders-all-subsections
-  (testing "System info has Host / Workspace / LLM / Session subsections"
+  (testing "System info has Host / Workspace / LLM / Runtime / Session subsections"
     (let [s (sys-info/build-system-info-section)]
       (is (str/starts-with? s "## System Information"))
       (is (str/includes? s "### Host"))
       (is (str/includes? s "### Workspace"))
       (is (str/includes? s "### LLM"))
+      (is (str/includes? s "### Runtime"))
       (is (str/includes? s "### Session"))
       (is (str/includes? s "- OS: "))
       (is (str/includes? s "- Working directory: "))
+      (is (str/includes? s "- Iteration budget: "))
       (is (str/includes? s "- Timezone: ")))))
+
+(deftest runtime-subsection-renders-behavior-knobs
+  (testing "### Runtime surfaces iteration budget, permissions, code-eval backend+interop, exec backend"
+    (let [s (render-with-config {:max-iterations 42
+                                 :permission-mode :auto-approve
+                                 :clj-backend :nrepl
+                                 :exec-backend :local}
+                                :restricted)]
+      (is (str/includes? s "### Runtime"))
+      (is (str/includes? s "- Iteration budget: 42 max per turn"))
+      (is (str/includes? s "- Permissions: auto-approve"))
+      (testing "code-eval line shows backend + the RESOLVED interop level (:auto already collapsed)"
+        (is (str/includes? s "- Code eval: nrepl backend, restricted interop")))
+      (is (str/includes? s "- Exec backend: local"))
+      (testing "Runtime sits between LLM and Session"
+        (is (< (str/index-of s "### LLM")
+               (str/index-of s "### Runtime")
+               (str/index-of s "### Session")))))))
+
+(deftest runtime-interop-reflects-resolved-value
+  (testing ":sandbox-interop :auto resolving to :full is what gets rendered"
+    (let [s (render-with-config {:clj-backend :sandbox} :full)]
+      (is (str/includes? s "sandbox backend, full interop")))))
+
+(deftest system-info-never-leaks-lm-api-key
+  (testing "an :lm-config carrying an :api-key never reaches the prompt (llm-rows reads only provider/model/max-tokens)"
+    (let [s (render-with-config {:lm-config {:provider :openai
+                                             :model "gpt-4o"
+                                             :max-tokens 8192
+                                             :api-key "sk-MUST-NOT-APPEAR"}
+                                 :max-context-tokens 200000}
+                                :restricted)]
+      (is (str/includes? s "Provider: openai · Model: gpt-4o"))
+      (is (str/includes? s "Max output: 8192 tokens"))
+      (is (not (str/includes? s "sk-MUST-NOT-APPEAR")))
+      (is (not (str/includes? s "api-key"))))))
 
 (deftest build-system-info-section-stable-across-calls
   (testing "Two consecutive calls with no args produce byte-identical output

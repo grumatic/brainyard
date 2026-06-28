@@ -8,6 +8,7 @@
   (:require [ai.brainyard.agent.core.config :as cfg]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]))
 
 (def ^:dynamic *tmp-home* nil)
@@ -78,6 +79,98 @@
             (str "missing default-config entry for " k))
         (is (not (contains? cfg/default-config k))
             (str ":default-fn-only entry leaked into default-config: " k))))))
+
+(deftest every-schema-key-has-doc
+  (testing "every config-schema entry declares a non-blank :doc (backs agent-runtime$config :query search + result descriptions)"
+    (doseq [k cfg/config-keys
+            :let [doc (:doc (get cfg/config-schema k))]]
+      (is (and (string? doc) (not (str/blank? doc)))
+          (str "schema entry " k " has no :doc")))))
+
+;; ============================================================================
+;; search-config-keys (agent-runtime$config :query mode)
+;; ============================================================================
+
+(deftest search-config-keys-matches-key-name
+  (let [hits (cfg/search-config-keys nil "oauth")
+        keys (set (map :key hits))]
+    (is (contains? keys "oauth-flow"))
+    (is (contains? keys "oauth-token-store"))
+    (testing "every hit carries the resolved value + metadata"
+      (doseq [h hits]
+        (is (string? (:key h)))
+        (is (contains? h :value))
+        (is (string? (:doc h)))))))
+
+(deftest search-config-keys-matches-doc-text
+  (testing "concept search hits keys whose :doc (not name) contains the term"
+    (let [keys (set (map :key (cfg/search-config-keys nil "truncation")))]
+      ;; max-output-chars has no 'truncation' in its name — only its :doc
+      (is (contains? keys "max-output-chars")))))
+
+(deftest search-config-keys-is-case-insensitive
+  (is (= (cfg/search-config-keys nil "OAuth")
+         (cfg/search-config-keys nil "oauth"))))
+
+(deftest search-config-keys-blank-query-returns-empty
+  (is (= [] (cfg/search-config-keys nil "")))
+  (is (= [] (cfg/search-config-keys nil "   ")))
+  (is (= [] (cfg/search-config-keys nil nil))))
+
+(deftest search-config-keys-sorted-by-key
+  (let [hits (cfg/search-config-keys nil "memory")]
+    (is (= (map :key hits) (sort (map :key hits))))))
+
+(deftest search-config-keys-marks-read-only
+  (let [by-key (into {} (map (juxt :key identity)) (cfg/search-config-keys nil "dirs"))]
+    (is (true? (:read-only (get by-key "dirs"))))
+    (testing "non-read-only keys omit the flag"
+      (let [oauth (first (cfg/search-config-keys nil "oauth-flow"))]
+        (is (not (contains? oauth :read-only)))))))
+
+(deftest search-config-keys-redacts-secret-value
+  (testing "a sensitive key's value is masked in search results"
+    (with-redefs [cfg/get-config (fn [_ _] "sk-supersecret")]
+      (let [hit (first (cfg/search-config-keys nil "tavily"))]
+        (is (= "***redacted***" (:value hit)))))))
+
+;; ============================================================================
+;; read-only keys + redaction
+;; ============================================================================
+
+(deftest read-only-keys-derived-from-schema
+  (is (= #{:dirs :lm-config} cfg/read-only-keys))
+  (is (cfg/read-only-key? :dirs))
+  (is (cfg/read-only-key? :lm-config))
+  (is (not (cfg/read-only-key? :max-iterations))))
+
+(deftest redact-config-value-masks-secrets
+  (is (= "***redacted***" (cfg/redact-config-value :tavily-api-key "sk-abc")))
+  (testing "unset sensitive key stays nil"
+    (is (nil? (cfg/redact-config-value :tavily-api-key nil))))
+  (testing "api-key leaf inside a map is masked"
+    (is (= {:provider :bedrock :api-key "***redacted***"}
+           (cfg/redact-config-value :lm-config {:provider :bedrock :api-key "z"}))))
+  (testing "ordinary values pass through"
+    (is (= 7 (cfg/redact-config-value :max-iterations 7)))))
+
+(deftest redact-config-snapshot-masks-across-map
+  (let [m (cfg/redact-config-snapshot {:tavily-api-key "sk-1" :max-iterations 7})]
+    (is (= "***redacted***" (:tavily-api-key m)))
+    (is (= 7 (:max-iterations m)))))
+
+(deftest analytics-lm-config-is-string-typed
+  (is (= "string" (:type (get cfg/config-schema :analytics-lm-config))))
+  (testing "settable via the string coercion path (no JSON needed)"
+    (is (= "bedrock:amazon.nova-lite-v1:0"
+           (cfg/coerce-config-value :analytics-lm-config "bedrock:amazon.nova-lite-v1:0")))))
+
+(deftest resolve-analytics-lm-falls-back-to-main-lm
+  (testing "blank/nil analytics label → main :lm-config"
+    (with-redefs [cfg/get-config (fn [_ k] (case k
+                                             :lm-config {:provider :bedrock :model "main"}
+                                             :analytics-lm-config nil))]
+      (is (= {:provider :bedrock :model "main"} (cfg/resolve-analytics-lm :stub))))))
 
 ;; ============================================================================
 ;; load-global-config! / cache invalidation

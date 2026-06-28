@@ -35,8 +35,7 @@
             {:error "No trajectory recorded for this session yet."
              :session-id (str session-id) :turns 0}
             (let [lm-config (when deep
-                              (or (config/get-config agent :analytics-lm-config)
-                                  (config/get-config agent :lm-config)))
+                              (config/resolve-analytics-lm agent))
                   weights   (config/get-config agent :analytics-shs-weights)
                   result    (analytics/analyze-trajectory
                              records
