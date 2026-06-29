@@ -159,7 +159,7 @@ $ by agents
   …
 ```
 
-The full set (v0.2.7 ships 21) spans routing (`main-agent`), reasoning (`coact-agent`, `react-agent`), research/exploration, planning/execution (`plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`), editing (`update-agent`), memory, MCP, skills, debugging, user-defined tools/hooks (`tool-agent`, `hook-agent`), and more. The set is determined at build time — adding a new one requires a new release.
+The full set (v0.2.7 ships 21) spans routing (`main-agent`), reasoning (`coact-agent`, `react-agent`), research/exploration, planning/execution (`plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`), editing (`edit-agent`), memory, MCP, skills, debugging, user-defined tools/hooks (`tool-agent`, `hook-agent`), and more. The set is determined at build time — adding a new one requires a new release.
 
 ---
 

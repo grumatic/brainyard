@@ -14,7 +14,7 @@
 >    confirmation, drift, or audit machinery in `clj-nrepl` anymore.
 >    Config keys are now just **`:nrepl-enabled?`** and **`:nrepl-port`**
 >    (no `:nrepl-grant`).
-> 2. **debug-agent now OWNS permanent fixes; the update-agent handoff is
+> 2. **debug-agent now OWNS permanent fixes; the edit-agent handoff is
 >    GONE** (commits `33a4870`, `3891760`, `66357a1`, `370e1f7`). The agent
 >    is END-TO-END: it validates a fix live (ephemeral `def`/`alter-var-root`),
 >    then edits the SOURCE itself via the bound file tools
@@ -36,7 +36,7 @@
 > **Status:** Shipped, then evolved past this design — see banner above.
 > **Scope:** `components/agent/src/ai/brainyard/agent/common/debug_agent.clj` — a CoAct-derived specialist agent that drives the live-runtime self-debugging loop introduced by `clj-nrepl-eval`.
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`, `ai.brainyard.clj-nrepl.interface` (loopback nREPL — full-trust, deny-list only), `ai.brainyard.agent.common.code-eval` (the unified `code$eval` surface), and the per-instance config layer in `ai.brainyard.agent.core.config`.
-> **Sibling of:** `explore-agent`, `exec-agent`, `eval-agent`, `update-agent`, `plan-agent`, `todo-agent`. Strictly NOT a replacement for `eval-agent` — that agent produces pass/fail verdicts over the plan→todo→exec dossier flow; debug-agent investigates the running JVM image. **As-built:** also overlaps update-agent's territory now (it makes its own source edits), but scoped to fixes validated live against the running image.
+> **Sibling of:** `explore-agent`, `exec-agent`, `eval-agent`, `edit-agent`, `plan-agent`, `todo-agent`. Strictly NOT a replacement for `eval-agent` — that agent produces pass/fail verdicts over the plan→todo→exec dossier flow; debug-agent investigates the running JVM image. **As-built:** also overlaps edit-agent's territory now (it makes its own source edits), but scoped to fixes validated live against the running image.
 > **Related reading:** `docs/design/clj-nrepl-eval.md` (the foundational substrate — server, classifier; grant/drift sections there are also historical), `docs/design/exec-agent-design.md` (sibling CoAct-derived specialist for structural reference), `docs/CoAct.md` (the inherited loop discipline).
 
 ---
@@ -59,18 +59,18 @@ Debug-agent is the specialist that closes the gap. It pins one nREPL session per
 2. **`:clj-backend :nrepl`** on the instance config. CoAct's `agent-clj-backend` reads this through the unified config chain, so every ```clojure fence goes to the live runtime by default. The fence itself takes only the language token — there is no per-block modifier.
 3. **Custom `:execution-model` system-prompt section** that replaces the SCI-sandbox boilerplate with text describing live-JVM routing and which SCI helpers (`context-get`, bare tool-name-as-fn, autoloaded `clojure.pprint/pprint`) don't exist here. **As-built:** the prompt section is selected by `coact-system-context` from the agent's `:clj-backend` config — setting `:clj-backend :nrepl` is sufficient, no separate `:execution-model` write is performed. It no longer describes drift marking or a read-only/mutate gate (those layers were removed).
 
-**As-built:** there is no `debug$promote-hot-patch` tool and no update-agent hand-off. The agent makes permanent fixes itself — validate live, then edit the source with the bound file tools and reload over nREPL. See the banner.
+**As-built:** there is no `debug$promote-hot-patch` tool and no edit-agent hand-off. The agent makes permanent fixes itself — validate live, then edit the source with the bound file tools and reload over nREPL. See the banner.
 
 ---
 
 ## 2. Design Principles
 
-1. **Never edit files.** `clj-nrepl-eval` §11 Non-Goal "Not automatic source-writing." Debug-agent honours this even when the LLM has a fully-validated fix — it writes a promotion-request artifact and lets the operator decide whether to invoke `update-agent`.
+1. **Never edit files.** `clj-nrepl-eval` §11 Non-Goal "Not automatic source-writing." Debug-agent honours this even when the LLM has a fully-validated fix — it writes a promotion-request artifact and lets the operator decide whether to invoke `edit-agent`.
 2. **One nREPL session per instance, opened at creation.** Multi-turn investigation lives or dies on shared namespace state. Opening lazily on first eval would force the LLM to manage session ids; pinning at instance-creation keeps `:session` plumbing invisible to the LLM.
 3. **Default to live, not sandbox.** The instance config writes `:clj-backend :nrepl` so `agent-clj-backend` (in `coact_agent.clj`) routes ```clojure fences to `:clj-nrepl-eval` without the LLM needing any per-block modifier. The fence accepts only the language token; trailing text like ```clojure :sandbox is rejected as a fence error. (To escape into SCI, the operator hands the work to a different agent.)
 4. **Tight tool bag.** `code$eval`, `task$detail`/`task$list`/`task$cancel`, `clj-nrepl$drift-markers`, `debug$promote-hot-patch`. No `bash`, no filesystem, no MCP. Operators wanting broader investigations switch to `coact-agent`. Tight bag → focused agent.
 5. **Prompt tells the truth.** CoAct's default Execution Model section says "sandboxed Clojure interpreter (SCI)" — flat wrong for this agent. Debug-agent overrides `:execution-model` with text that describes the live nREPL, what's available (`System`, `Runtime`, full reflection, every loaded namespace), and what isn't (SCI shortcuts, autoloaded helpers).
-6. **Promotion is an artifact, not a call.** `debug$promote-hot-patch` writes `.brainyard/agents/debug-agent/promotions/<ts>-<slug>.md` and returns the operator-ready `bb tui ask "@<path>" -a update-agent` shell command as `:next-step`. The hand-off respects the runtime/source split — the same operator decides whether to actually promote.
+6. **Promotion is an artifact, not a call.** `debug$promote-hot-patch` writes `.brainyard/agents/debug-agent/promotions/<ts>-<slug>.md` and returns the operator-ready `bb tui ask "@<path>" -a edit-agent` shell command as `:next-step`. The hand-off respects the runtime/source split — the same operator decides whether to actually promote.
 7. **Inherit the substrate's safety.** Grant (read-only / mutate / TTL), classifier (deny-list always-on, mutating-heads only under read-only), confirmation (first mutation per session), drift marker, audit — all live in `clj-nrepl`. Debug-agent does not re-implement them.
 8. **CoAct everything else.** The behavior tree, the three channels (tool-calls / code-blocks / answer), the hooks, the iteration discipline — all inherited from `coact/run-coact-derived` via the `:bt-factory` pin pattern used by `explore-agent` and `exec-agent`.
 
@@ -79,7 +79,7 @@ Debug-agent is the specialist that closes the gap. It pins one nREPL session per
 ## 3. Position in the Agent Stack
 
 > **As-built:** the lower half of the diagram (the `debug$promote-hot-patch` →
-> promotion artifact → `bb tui ask … -a update-agent` → update-agent chain) is
+> promotion artifact → `bb tui ask … -a edit-agent` → edit-agent chain) is
 > gone. debug-agent's flow now ends at: validate live → edit source via file
 > tools → `(require 'ns :reload)` → re-verify → report. The `code$eval :backend
 > :nrepl` → loopback client → live JVM path is still accurate, minus the
@@ -107,10 +107,10 @@ Debug-agent is the specialist that closes the gap. It pins one nREPL session per
                                                        promotions/<ts>-<slug>.md
                                                             │
                                                             ▼
-                                              `bb tui ask "@<artifact>" -a update-agent`
+                                              `bb tui ask "@<artifact>" -a edit-agent`
                                                             │
                                                             ▼
-                                                       update-agent
+                                                       edit-agent
                                   (probe → apply → verify → persist → rollback)
                                                             │
                                                             ▼
@@ -172,7 +172,7 @@ promotion tools are gone. From `debug_agent.clj`:
 ```clojure
 :agent-tools {:tools [:code$eval
                       ;; Source editing — debug-agent makes its own permanent
-                      ;; fixes (no update-agent handoff): validate live via
+                      ;; fixes (no edit-agent handoff): validate live via
                       ;; code$eval, then edit the file and reload.
                       :read-file
                       :update-file
@@ -200,7 +200,7 @@ The rationale per tool:
 | `clj-nrepl$start-server` / `clj-nrepl$stop-server` / `clj-nrepl$status` | **As-built:** manage the embedded nREPL server lifecycle on demand without a process restart. These are gated to `debug-*` via `:tool-use-control {:allow ["debug-*"]}` and MUST be called through the TOOL channel (a code block can't start the server it needs to evaluate it — chicken-and-egg). |
 
 **Removed:** `clj-nrepl$drift-markers` and `debug$promote-hot-patch` no longer
-exist (drift and the update-agent promotion path were both removed).
+exist (drift and the edit-agent promotion path were both removed).
 
 ---
 
@@ -255,15 +255,15 @@ A real-Bedrock validation (see §11) confirmed that with this override in place,
 
 > **⚠ ENTIRELY HISTORICAL — none of §7 ships.** The `debug$promote-hot-patch`
 > tool, the `.brainyard/agents/debug-agent/promotions/` artifact, and the
-> `bb tui ask "@…" -a update-agent` hand-off were all removed when debug-agent
+> `bb tui ask "@…" -a edit-agent` hand-off were all removed when debug-agent
 > took over permanent fixes itself (commit `33a4870`). The shipped agent edits
 > source directly via `read-file`/`update-file`/`write-file` and reloads the
-> namespace over nREPL — there is no artifact and no boundary to update-agent.
+> namespace over nREPL — there is no artifact and no boundary to edit-agent.
 > The whole section is retained only for design history.
 
 ### 7.1 The boundary
 
-`clj-nrepl-eval` §11 Non-Goal: "Not automatic source-writing. clj-nrepl-eval mutates the *runtime*; turning that into a *committed change* is update-agent's job, behind its own review." Debug-agent honours this — it never edits files. When the LLM has validated a hot-patch and believes the same change should land in source, it calls `debug$promote-hot-patch` which writes a markdown artifact under `.brainyard/agents/debug-agent/promotions/`. The operator (or an orchestrator) then runs the literal `bb tui ask "@<artifact>" -a update-agent` command printed in the tool's `:next-step` output.
+`clj-nrepl-eval` §11 Non-Goal: "Not automatic source-writing. clj-nrepl-eval mutates the *runtime*; turning that into a *committed change* is edit-agent's job, behind its own review." Debug-agent honours this — it never edits files. When the LLM has validated a hot-patch and believes the same change should land in source, it calls `debug$promote-hot-patch` which writes a markdown artifact under `.brainyard/agents/debug-agent/promotions/`. The operator (or an orchestrator) then runs the literal `bb tui ask "@<artifact>" -a edit-agent` command printed in the tool's `:next-step` output.
 
 ### 7.2 The tool
 
@@ -328,18 +328,18 @@ Apply via `update-file` with `:pattern` / `:replacement`.
 <replacement>
 ```
 
-## Notes for update-agent
+## Notes for edit-agent
 <LLM's rationale>
 
 Saved hot-patch: .brainyard/agents/debug-agent/promotions/<ts>-<slug>.md
-Promotion request: bb tui ask "@.brainyard/agents/debug-agent/promotions/<ts>-<slug>.md" -a update-agent
+Promotion request: bb tui ask "@.brainyard/agents/debug-agent/promotions/<ts>-<slug>.md" -a edit-agent
 ```
 
-The frontmatter and stable-prefix tail lines (`Saved hot-patch:` / `Promotion request:`) mirror update-agent's `Saved edit:` / `Rollback:` pattern — downstream agents can grep cheaply without parsing JSON.
+The frontmatter and stable-prefix tail lines (`Saved hot-patch:` / `Promotion request:`) mirror edit-agent's `Saved edit:` / `Rollback:` pattern — downstream agents can grep cheaply without parsing JSON.
 
-### 7.4 What update-agent does with it
+### 7.4 What edit-agent does with it
 
-Zero update-agent code changes. Its existing `:agent-context` reader accepts an artifact path and reads the file. The artifact's `## Proposed source change` section is a literal `:pattern` / `:replacement` pair that update-agent's pattern-mode pipeline applies directly via `update-file`. Pre-flight (count matches, context inspection) is update-agent's responsibility; debug-agent just authors the pattern. A wrong pattern surfaces as a clean update-agent refusal, not a silent miswrite.
+Zero edit-agent code changes. Its existing `:agent-context` reader accepts an artifact path and reads the file. The artifact's `## Proposed source change` section is a literal `:pattern` / `:replacement` pair that edit-agent's pattern-mode pipeline applies directly via `update-file`. Pre-flight (count matches, context inspection) is edit-agent's responsibility; debug-agent just authors the pattern. A wrong pattern surfaces as a clean edit-agent refusal, not a silent miswrite.
 
 ### 7.5 Phase-3 scope
 
@@ -347,7 +347,7 @@ Zero update-agent code changes. Its existing `:agent-context` reader accepts an 
 
 **Deferred:** syntax-aware mode (whole-form rewrites, paren-balanced rewrites). Needs more rewrite-clj-ish work and isn't critical for the common-case hot-patch promotion.
 
-**Deferred:** auto-invoking update-agent from debug-agent. Operator-driven on purpose (§11 Non-Goal) — the operator's `bb tui ask` is the explicit "yes, promote this" act.
+**Deferred:** auto-invoking edit-agent from debug-agent. Operator-driven on purpose (§11 Non-Goal) — the operator's `bb tui ask` is the explicit "yes, promote this" act.
 
 **Deferred:** drift-marker reconciliation. After promotion, the marker stays as the audit anchor; linking the marker metadata to the promotion record path is a nice-to-have.
 
@@ -405,7 +405,7 @@ The agent's instruction body explicitly tells the LLM these gates exist, so it d
 ### 10.1 `.brainyard/agents/debug-agent/promotions/`
 
 > **As-built:** this directory is not written — the promotion artifact was
-> removed with the update-agent hand-off (see §7). The shipped agent writes
+> removed with the edit-agent hand-off (see §7). The shipped agent writes
 > **no persistent artifact of its own**: its "output" is the source edit it
 > makes directly to the repo files (tracked by git) plus the `:answer` report.
 
@@ -424,7 +424,7 @@ Phase 2b–3 was validated end-to-end against real Bedrock haiku across four sce
 1. **Backend routing** (Phase 2b): asked the agent to evaluate `(System/getProperty "java.version")` — a call denied by SCI. Result: `"25.0.3"`, two `::nrepl-eval-detached` events in the audit log, confirming the routing actually went to the live JVM.
 2. **Per-instance session pinning** (Phase 2b): the agent reached `System/getProperty` in turn 2 without re-establishing context, proving the pinned session persisted across iterations.
 3. **Mutate scope + drift marker** (Phase 2a/2b fix): agent ran `(def my-probe 99) my-probe → 99`, drift-count became 1, marker recorded the agent's pinned session id. A regression test (`mutate-marks-drift-even-when-later-form-errors`) pins the fix where a later-form error must not suppress the marker.
-4. **Promotion artifact** (Phase 3): agent ran `(def demo-var 42)`, validated, then tool-called `debug$promote-hot-patch` with explicit args. Artifact appeared at `.brainyard/agents/debug-agent/promotions/2026-05-22T12-35-37-user-demo-var.md` with all 8 frontmatter fields populated, all 5 body sections, and stable-prefix tail lines. Agent rendered the `bb tui ask "@…" -a update-agent` command in its final answer panel.
+4. **Promotion artifact** (Phase 3): agent ran `(def demo-var 42)`, validated, then tool-called `debug$promote-hot-patch` with explicit args. Artifact appeared at `.brainyard/agents/debug-agent/promotions/2026-05-22T12-35-37-user-demo-var.md` with all 8 frontmatter fields populated, all 5 body sections, and stable-prefix tail lines. Agent rendered the `bb tui ask "@…" -a edit-agent` command in its final answer panel.
 
 Unit-test surface: 6 deftests / 19 assertions covering registration, hook firing, config plumbing, and (for `debug$promote-hot-patch`) registration + the three refusal/success paths + artifact shape.
 
@@ -451,7 +451,7 @@ Unit-test surface: 6 deftests / 19 assertions covering registration, hook firing
 >   kebab-case fns (unlike SCI) — call `ai.brainyard.agent.core.tool/call-tool`
 >   by id, and pass `:agent` for agent-state tools (`memory$*`, session) since
 >   `*current-agent*` is nil on the nREPL thread.
-> - **No "Promoting a fix to source / update-agent" section** — that hand-off
+> - **No "Promoting a fix to source / edit-agent" section** — that hand-off
 >   was removed.
 >
 > The historical proposed instruction follows for reference only:
@@ -496,11 +496,11 @@ with:
   :validation-evidence — the probe outputs proving the fix works
 The tool writes a markdown artifact under
 `.brainyard/agents/debug-agent/promotions/` and returns `:next-step` — a
-`bb tui ask "@<artifact>" -a update-agent` line the operator runs
+`bb tui ask "@<artifact>" -a edit-agent` line the operator runs
 to apply the source change. The runtime drift marker stays as the
 audit anchor between hot-patch and committed change.
 
-Out of scope for THIS agent: writing the file. update-agent owns
+Out of scope for THIS agent: writing the file. edit-agent owns
 the probe→apply→verify→persist→rollback pipeline.
 ```
 
@@ -564,8 +564,8 @@ bases/agent-web/src/ai/brainyard/agent_web/core.clj                 (ditto)
 
 1. **Per-session dossier.** Do operators want a cumulative session log under `.brainyard/agents/debug-agent/sessions/<sid>.md` summarising the investigation, OR is the CoAct turn record + drift markers + mulog audit log already enough? Wait for a concrete reader before implementing.
 2. **Syntax-aware promotion mode.** Pattern-mode covers the common-case hot-patch (single `defn` / `def` swap). Whole-form rewrites need rewrite-clj plumbing on the artifact side; the trigger is real demand.
-3. **Drift-marker reconciliation after promotion.** When update-agent finishes its `Saved edit:`, should the original drift marker flip to `:reason :promoted` (linking to the update-agent record path)? Cleaner audit trail; needs a cross-process update path since debug-agent's process may not be the one running update-agent.
-4. **Auto-promotion route.** A future "promote-agent" or a `--auto-promote` flag could read the artifact and pipe it into update-agent without the operator's `bb tui ask` step. Out of Phase 3 by design (operator-decides), but worth revisiting if friction surfaces.
+3. **Drift-marker reconciliation after promotion.** When edit-agent finishes its `Saved edit:`, should the original drift marker flip to `:reason :promoted` (linking to the edit-agent record path)? Cleaner audit trail; needs a cross-process update path since debug-agent's process may not be the one running edit-agent.
+4. **Auto-promotion route.** A future "promote-agent" or a `--auto-promote` flag could read the artifact and pipe it into edit-agent without the operator's `bb tui ask` step. Out of Phase 3 by design (operator-decides), but worth revisiting if friction surfaces.
 5. **Cross-instance drift state.** `clj-nrepl/drift-markers` is process-global. If multiple debug-agent instances run concurrently (e.g., nested), the marker count and chip aggregate everyone. Probably fine — drift is about the *runtime*, not any particular agent — but worth confirming with multi-agent scenarios.
 
 ---
@@ -573,7 +573,7 @@ bases/agent-web/src/ai/brainyard/agent_web/core.clj                 (ditto)
 ## 16. Related Reading
 
 - `docs/design/clj-nrepl-eval.md` — the substrate. Section §7.2 (self-debugging), §7.3 (self-improving / promotion), §8 (safety) are the most relevant.
-- `docs/design/update-agent-design.md` — the promotion target. §12 (Handoff Mechanics) describes the `Saved edit:` / `Rollback:` shape debug-agent's artifact intentionally mirrors.
+- `docs/design/edit-agent-design.md` — the promotion target. §12 (Handoff Mechanics) describes the `Saved edit:` / `Rollback:` shape debug-agent's artifact intentionally mirrors.
 - `docs/design/exec-agent-design.md` — sibling CoAct-derived specialist, structural template.
 - `docs/CoAct.md` — the inherited loop.
 - `docs/core/task.md` — the task manager + `NreplEvalJobExecutor` debug-agent dispatches through.

@@ -391,7 +391,7 @@ Same shape as research-agent's: a `handoff.md` pre-call (what the next stage rec
            task-cmds/task-commands))))
 ```
 
-The functional agents (`research-agent`, `explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `mcp-agent`, `skill-agent`, `update-agent`, `rlm-agent`, `coact-agent`) are reached via direct kebab-case dispatch — `(plan-agent {...})`, `(research-agent {...})`, etc. They are not bound as named tools in the roster; they live in the registry as auto-bound sandbox fns, and the agent calls them as needed. **As-built:** the proposal routed these through `(call-tool "<agent-name>" {...})`; the shipped instruction calls the defagent fns directly. The roster also binds the `workflow$*` helpers, `runtime-commands`, and (per the shipped code) explicitly *removes* `fetch-url` even though `file-tools` carries it.
+The functional agents (`research-agent`, `explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `mcp-agent`, `skill-agent`, `edit-agent`, `rlm-agent`, `coact-agent`) are reached via direct kebab-case dispatch — `(plan-agent {...})`, `(research-agent {...})`, etc. They are not bound as named tools in the roster; they live in the registry as auto-bound sandbox fns, and the agent calls them as needed. **As-built:** the proposal routed these through `(call-tool "<agent-name>" {...})`; the shipped instruction calls the defagent fns directly. The roster also binds the `workflow$*` helpers, `runtime-commands`, and (per the shipped code) explicitly *removes* `fetch-url` even though `file-tools` carries it.
 
 What is *deliberately omitted*:
 

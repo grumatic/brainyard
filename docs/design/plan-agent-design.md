@@ -10,8 +10,8 @@
 > - **Shipped helper roster:** `plan$dossier-slug`, `plan$dossier-frontmatter`, `plan$dossier-write`, `plan$dossier-index-append`, `plan$read-dossier`, `plan$next-handoff`. No `plan$preflight` / `plan$postflight` / `plan$render-references` / `plan$render-approach` helpers shipped.
 > **Scope:** redesign of `components/agent/src/ai/brainyard/agent/common/plan_agent.clj` + `plan.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
-> **Sibling of:** `todo-agent`, `exec-agent`, `eval-agent`, `update-agent`, `explore-agent`
-> **Related reading:** `docs/agent-design.md`, `docs/AUTORESEARCH.md`, `docs/explore-agent-design.md`, `docs/update-agent-design.md`, `docs/CoAct.md`
+> **Sibling of:** `todo-agent`, `exec-agent`, `eval-agent`, `edit-agent`, `explore-agent`
+> **Related reading:** `docs/agent-design.md`, `docs/AUTORESEARCH.md`, `docs/explore-agent-design.md`, `docs/edit-agent-design.md`, `docs/CoAct.md`
 
 > **API rename (2026-05):** the per-verb `plan$list/read/create/update-body/status/complete/abandon/reopen/delete/exists` shims have been removed in favour of the polymorphic `doc$*` family with `:kind :plan`:
 > - `plan$list` / `plan$read` / `plan$create` / `plan$delete` → `(doc$list|read|create|delete :kind :plan …)`
@@ -31,7 +31,7 @@ The current `plan-agent` (`components/agent/.../common/plan_agent.clj`) is a thi
 2. **Plans are shipped without a confirmation check.** Once written, the plan goes straight into `.brainyard/plans/`. There is no pass that asks: *is `## Approach` actually testable? Are the acceptance criteria observable? Is the scope small enough to be one todo, or is it secretly two?* Today the user (or `eval-agent`, after the fact) catches these. By then the executor has spent a turn budget on the wrong shape.
 3. **Downstream agents consume the raw plan body.** `todo-agent` / `exec-agent` / `eval-agent` all receive the plan via `:agent-context`, but the channel is unstructured — sometimes a slug, sometimes a path, sometimes a body, never a stable schema with the fields each downstream actually needs (acceptance criteria, suggested-next agent, prior-attempt links). Each agent re-parses the plan, sometimes inconsistently. There is no place to record "this plan was authored after pre-flight check X passed and post-flight check Y is on hold."
 
-The same redesign also folds in a layout migration. Today plans live at `.brainyard/plans/`; the rest of the agent ecosystem (`explore-agent`, `update-agent`, `autoresearch`) uses per-agent directories at `.brainyard/<agent>/`. Plan-agent is the odd one out. The redesign moves plans to `.brainyard/agents/plan-agent/plans/<slug>.md` to match the convention and to make room for sibling subdirectories (`dossiers/`, `drafts/`, `INDEX.md`).
+The same redesign also folds in a layout migration. Today plans live at `.brainyard/plans/`; the rest of the agent ecosystem (`explore-agent`, `edit-agent`, `autoresearch`) uses per-agent directories at `.brainyard/<agent>/`. Plan-agent is the odd one out. The redesign moves plans to `.brainyard/agents/plan-agent/plans/<slug>.md` to match the convention and to make room for sibling subdirectories (`dossiers/`, `drafts/`, `INDEX.md`).
 
 **Thesis.** Redesign `plan-agent` so every authoring run runs through a fixed three-phase pipeline:
 
@@ -41,7 +41,7 @@ The same redesign also folds in a layout migration. Today plans live at `.brainy
 
 Every run — GO/GATHER and PASS/REVISE/HOLD alike — produces a **dossier**, a small markdown file under `.brainyard/agents/plan-agent/dossiers/<slug>-<ts>.md` that downstream agents consume in their `:agent-context`. The dossier is the stable, schema'd handoff channel that replaces ad-hoc string passing.
 
-Same minimal-diff principle as `explore-agent` / `update-agent`: one redesigned agent file, one helper namespace tweak, one storage migration. The CoAct loop, sandbox, BT, and DSPy signatures are untouched.
+Same minimal-diff principle as `explore-agent` / `edit-agent`: one redesigned agent file, one helper namespace tweak, one storage migration. The CoAct loop, sandbox, BT, and DSPy signatures are untouched.
 
 ---
 
@@ -54,7 +54,7 @@ Same minimal-diff principle as `explore-agent` / `update-agent`: one redesigned 
 5. **Self-critique is mandatory and budgeted.** Post-flight runs `query$llm` against a fixed rubric (§6). One automatic revision round is allowed; further revisions require the user to weigh in. This caps the loop and keeps token cost predictable.
 6. **Layout matches the rest of the ecosystem.** Plans move to `.brainyard/agents/plan-agent/plans/<slug>.md`; the agent's runtime artifacts (dossiers, drafts, index) sit beside them under `.brainyard/agents/plan-agent/`.
 7. **Migration is reversible and dual-read.** During the transition the `plan$*` commands read from BOTH old (`.brainyard/plans/`) and new (`.brainyard/agents/plan-agent/plans/`) locations; writes go to the new location. A `bb migrate:plan-agent` task moves old files in one shot; rollback is a `git checkout` away.
-8. **No clone-self recursion.** Like `explore-agent` and `update-agent`, plan-agent excludes `query$clone`. Cross-agent dispatch via `(call-tool "<other-agent>" …)` is fine.
+8. **No clone-self recursion.** Like `explore-agent` and `edit-agent`, plan-agent excludes `query$clone`. Cross-agent dispatch via `(call-tool "<other-agent>" …)` is fine.
 9. **Never invent slugs, references, or acceptance criteria.** Pre-flight refuses on missing inputs; post-flight flags fabricated specifics; the dossier is honest about gaps.
 
 ---
@@ -68,7 +68,7 @@ coact-agent          (parent — full BT, sandbox, router, accumulator)
   ├─ todo-agent          (spawn / advance executable items)
   ├─ exec-agent          (drive todo to completion)
   ├─ eval-agent          (score execution vs plan acceptance)
-  ├─ update-agent        (safe single-file edits)
+  ├─ edit-agent        (safe single-file edits)
   └─ rlm-agent / mcp-agent / skill-agent / explore-agent
 ```
 
@@ -105,7 +105,7 @@ Runs before any `plan$create` / `plan$update-body` call. The agent walks a fixed
 
 - **GO** — every check passed, proceed to AUTHOR.
 - **GATHER** — at least one check failed in a way the agent can resolve by dispatching `explore-agent` or asking the user. STOP authoring; produce the dossier with `:pre.verdict :gather` and the specific question / dispatch recommendation.
-- **REFUSE** — the request is ill-posed (e.g., contradicts an existing plan, asks to plan something that needs `update-agent` not a plan, references a non-existent codebase area). STOP and report.
+- **REFUSE** — the request is ill-posed (e.g., contradicts an existing plan, asks to plan something that needs `edit-agent` not a plan, references a non-existent codebase area). STOP and report.
 
 ### 4.1 The Checklist
 
@@ -115,7 +115,7 @@ Runs before any `plan$create` / `plan$update-body` call. The agent walks a fixed
 | C2    | A near-duplicate plan does NOT already exist.                                                                    | `plan$list :status :draft|:in-progress`, fuzzy-match titles & questions.                                                                                       | If exact match → REFUSE with pointer to the existing plan. If near-match → GATHER with "extend existing plan via plan$update-body, or confirm this is a separate plan."                                                                                                                                  |
 | C3    | If the request implies a target codebase area, that area was actually explored.                                  | Look in `:agent-context` for a `Saved exploration: <path>` line. If absent and the request mentions specific files / components / directories that are not in the working set, run `explore$find` (when bound) or `plan$list` over recent dossiers to see if exploration exists. | GATHER — recommend `(call-tool "explore-agent" {…})` first, OR auto-dispatch when `:auto-explore? true`.                                                                                                                                                                                                  |
 | C4    | All references the agent will cite in `## References` actually exist on disk.                                   | For each plausible file path mentioned in the request or `:agent-context`, `bash "test -f <path>"`. For URLs, defer to authoring (don't fetch every URL).      | GATHER — list missing paths, ask the user to confirm or correct.                                                                                                                                                                                                                                          |
-| C5    | The request is plan-shaped, not edit-shaped or explore-shaped.                                                   | Heuristic on the request: if the entire request collapses to "rename foo→bar" or "find X", it does not need a plan.                                            | REFUSE with a redirect: "this is one `update-agent` call; no plan needed" / "this is one `explore-agent` call; no plan needed."                                                                                                                                                                          |
+| C5    | The request is plan-shaped, not edit-shaped or explore-shaped.                                                   | Heuristic on the request: if the entire request collapses to "rename foo→bar" or "find X", it does not need a plan.                                            | REFUSE with a redirect: "this is one `edit-agent` call; no plan needed" / "this is one `explore-agent` call; no plan needed."                                                                                                                                                                          |
 | C6    | The request scope fits in one plan.                                                                              | Heuristic on request length + the count of distinct subgoals the LLM extracts. Multi-quarter or cross-team work → suggest a parent plan + child plans.        | GATHER — propose a plan-of-plans structure, ask the user to confirm decomposition before authoring.                                                                                                                                                                                                      |
 | C7    | The user has named, or can be inferred, an owner / dispatcher for the eventual execution.                       | Inspect `:agent-context` for "owner: …" or check the user's session config.                                                                                    | INFORMATIONAL — record `pre.owner :unknown` in the dossier; do not block. The dossier flags it; downstream agents can ask later.                                                                                                                                                                          |
 
@@ -385,7 +385,7 @@ For pre-flight REFUSE:
 ```
 Saved dossier: <dossier path>
 Refused: <one-line reason>
-Suggested: <redirect — e.g., "use update-agent for this single-file edit">
+Suggested: <redirect — e.g., "use edit-agent for this single-file edit">
 ```
 
 ---
@@ -439,7 +439,7 @@ C4. REFS EXIST. For every plausible repo-relative path mentioned in the
 
 C5. PLAN SHAPED. The request must require a plan, not a single edit or
     a single discovery. Single-file rename → REFUSE, redirect to
-    update-agent. Single lookup → REFUSE, redirect to explore-agent.
+    edit-agent. Single lookup → REFUSE, redirect to explore-agent.
 
 C6. SCOPE FITS ONE PLAN. 3–30 actionable items in the eventual todo.
     Multi-quarter / cross-team → GATHER, propose plan-of-plans split.
@@ -690,7 +690,7 @@ docs/explore-agent-design.md §9).
 
 ## 10. Behavior Tree — Inherited As-Is
 
-`plan-agent` does **not** define its own BT. `run-coact-derived` falls back to `coact-agent`'s `:bt-factory`. The three-phase pipeline (§4–§6) is a *prompt* contract, not a BT-level contract — same rationale as `update-agent` (`docs/update-agent-design.md` §9).
+`plan-agent` does **not** define its own BT. `run-coact-derived` falls back to `coact-agent`'s `:bt-factory`. The three-phase pipeline (§4–§6) is a *prompt* contract, not a BT-level contract — same rationale as `edit-agent` (`docs/edit-agent-design.md` §9).
 
 Iteration shape for a typical authoring run:
 
@@ -1008,7 +1008,7 @@ The path change is mechanical but touches the `plan$*` commands and any callers 
   - registration smoke test
   - PRE-FLIGHT GO happy path
   - PRE-FLIGHT GATHER (missing exploration)
-  - PRE-FLIGHT REFUSE (single-edit redirect to update-agent)
+  - PRE-FLIGHT REFUSE (single-edit redirect to edit-agent)
   - POST-FLIGHT PASS
   - POST-FLIGHT REVISE (one auto-revision round)
   - POST-FLIGHT HOLD (R5 says split)
@@ -1060,7 +1060,7 @@ Add benchmark cases targeting plan-agent's specific contract.
 | Pre-flight GO happy path               | Clear request + `:agent-context` with valid `Saved exploration:` + all refs exist                   | All C1–C7 pass; AUTHOR runs; POST-FLIGHT passes; one dossier with `pre.verdict :go` + `post.verdict :pass`.                       |
 | Pre-flight GATHER (missing exploration) | Request mentions specific files; no `Saved exploration:` in context                                  | C3 fails; agent recommends `(call-tool "explore-agent" …)` in answer; dossier records `pre.verdict :gather`; NO plan body written. |
 | Pre-flight GATHER (goal unclear)       | One-sentence ambiguous request                                                                       | C1 fails; ONE multi-choice question surfaced; dossier records `gather-question`.                                                  |
-| Pre-flight REFUSE (single edit)        | "Rename foo→bar in src/x.clj"                                                                        | C5 fails; agent refuses with redirect to update-agent; dossier records refuse_reason.                                              |
+| Pre-flight REFUSE (single edit)        | "Rename foo→bar in src/x.clj"                                                                        | C5 fails; agent refuses with redirect to edit-agent; dossier records refuse_reason.                                              |
 | Pre-flight REFUSE (duplicate plan)     | Existing plan with same slug already in `.brainyard/agents/plan-agent/plans/`                              | C2 fails; agent points at the existing plan.                                                                                      |
 | Post-flight PASS                       | Pre-flight GO + LLM authors a clean plan                                                             | All R1–R7 pass first try; no revision; dossier `post.verdict :pass`.                                                              |
 | Post-flight REVISE (R3 fail)           | LLM cites `src/foo.clj` that does not exist                                                          | R3 fails; one auto-revision removes the bad reference; second pass passes; dossier records `revision-applied? true`.              |

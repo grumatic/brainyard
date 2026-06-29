@@ -12,8 +12,8 @@
 > - **An `:agent.ask/post` auto-persist hook** (not in this design) reconstructs a minimal dossier from the answer text if the helpers were skipped, and flags hallucinated `Saved dossier:` paths. It is a safety net, not the primary path.
 > **Scope:** redesign of `components/agent/src/ai/brainyard/agent/common/todo_agent.clj` + `todo.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
-> **Sibling of:** `plan-agent`, `exec-agent`, `eval-agent`, `update-agent`, `explore-agent`
-> **Related reading:** `docs/plan-agent-design.md` (dossier schema is the template), `docs/exec-agent-design.md`, `docs/explore-agent-design.md`, `docs/update-agent-design.md`
+> **Sibling of:** `plan-agent`, `exec-agent`, `eval-agent`, `edit-agent`, `explore-agent`
+> **Related reading:** `docs/plan-agent-design.md` (dossier schema is the template), `docs/exec-agent-design.md`, `docs/explore-agent-design.md`, `docs/edit-agent-design.md`
 
 > **API rename (2026-05):** the per-verb `todo$list / todo$read / todo$create / todo$update-item / todo$update-goal / todo$add-item / todo$status / todo$complete / todo$abandon / todo$reopen / todo$reset-item / todo$delete / todo$exists` shims have been removed. Use the polymorphic `doc$*` family with `:kind :todo`:
 > - `todo$list` / `todo$read` / `todo$create` / `todo$delete` → `(doc$list|read|create|delete :kind :todo …)`
@@ -34,7 +34,7 @@ The current `todo-agent` (`components/agent/.../common/todo_agent.clj`) is a thi
 
 1. **Items are spawned without confirming the plan is sound.** Today the agent reads the plan body via `plan$read` and immediately starts authoring items. If the plan was authored before pre/post-flight gating (`docs/plan-agent-design.md`), or if the user dispatches todo-agent against a half-baked plan, the resulting items inherit every weakness of the source. The executor then fails, and the failure looks like an exec-agent bug rather than a planning gap.
 2. **No post-flight check on the items themselves.** Items are written and the agent stops. There is no pass that asks: *Does each item map to a `## Approach` bullet? Are items truly atomic? Do the items collectively cover every `## Acceptance` criterion? Is the count sane?* These are exactly the things that make exec-agent's life easy or miserable.
-3. **The handoff to exec-agent is unstructured.** Today exec-agent receives a slug or a path in `:agent-context` and re-derives everything — the plan body, the acceptance criteria, the list of items. There is no schema'd channel where todo-agent can tell exec-agent "items 0–2 are read-only discovery, items 3–7 require update-agent, item 8 is a deploy gate."
+3. **The handoff to exec-agent is unstructured.** Today exec-agent receives a slug or a path in `:agent-context` and re-derives everything — the plan body, the acceptance criteria, the list of items. There is no schema'd channel where todo-agent can tell exec-agent "items 0–2 are read-only discovery, items 3–7 require edit-agent, item 8 is a deploy gate."
 
 The same redesign also folds in the layout migration begun by `plan-agent`. Today todos live at `.brainyard/todos/`; the redesign moves them to `.brainyard/agents/todo-agent/todos/<slug>.md` and adds sibling `dossiers/`, `drafts/`, `INDEX.md`.
 
@@ -54,7 +54,7 @@ Every run produces a dossier under `.brainyard/agents/todo-agent/dossiers/<slug>
 2. **Items are atomically markable, no exceptions.** An item that can't be flipped done in one stroke is a planning failure. Post-flight catches these and either splits them automatically (REVISE) or surfaces them as holds (HOLD).
 3. **Items collectively cover acceptance.** Every criterion in the plan dossier's `post.acceptance` list must map to at least one item (or be explicitly noted as "covered out-of-band — see X"). This is THE check that makes eval-agent useful: if the items don't cover acceptance, the verdict will always be PARTIAL.
 4. **Dossier is the contract with exec-agent.** Exec-agent reads the todo-agent dossier in `:agent-context`, NOT the raw todo body. The dossier carries the todo path, the source plan dossier reference, the per-item routing tags (read-only / writes-required / network-side-effect), and the acceptance-coverage map.
-5. **Per-item routing tags.** Each item carries a tag indicating *which downstream agent or tool* exec-agent should reach for. `:via :update-agent`, `:via :bash` (read-only shell), `:via :mcp <server>:<tool>`, `:via :manual` (user must do this). Reduces exec-agent's per-item routing decisions to a lookup.
+5. **Per-item routing tags.** Each item carries a tag indicating *which downstream agent or tool* exec-agent should reach for. `:via :edit-agent`, `:via :bash` (read-only shell), `:via :mcp <server>:<tool>`, `:via :manual` (user must do this). Reduces exec-agent's per-item routing decisions to a lookup.
 6. **Layout matches the rest of the ecosystem.** Todos move to `.brainyard/agents/todo-agent/todos/<slug>.md`; dossiers/drafts/index sit alongside.
 7. **One auto-revise round; then HOLD.** Same budget rule as plan-agent.
 8. **No clone-self recursion.** No `query$clone`. Cross-agent dispatch via `(call-tool …)` is fine.
@@ -136,10 +136,10 @@ When no todo exists for the plan slug. Standard call:
                         "Acceptance handed in via plan-agent dossier "
                         (:plan-dossier pre) ".")
             :items [{:description "Wire LD flag `checkout-v2` in src/checkout/flags.clj"
-                     :tags {:via :update-agent
+                     :tags {:via :edit-agent
                             :covers ["feature-flag checkout-v2 toggleable from staging admin"]}}
                     {:description "Update payment validator for legacy carts"
-                     :tags {:via :update-agent
+                     :tags {:via :edit-agent
                             :covers ["all checkout/* unit tests green"]}}
                     {:description "Run bb test:component checkout"
                      :tags {:via :bash
@@ -172,7 +172,7 @@ Runs immediately after AUTHOR. Re-reads the just-written todo and grades it agai
 | R2   | Is every item ATOMICALLY MARKABLE — small enough to flip done in one stroke?                                                                                                     | LLM check: would a careful reader say "yes, this is a single action"?                                        |
 | R3   | Do the items collectively cover every criterion in `pre.acceptance`?                                                                                                             | For each criterion, at least one item's `tags.covers` lists it (or LLM judges fuzzy coverage).              |
 | R4   | Item count is sane (3–30).                                                                                                                                                       | `(<= 3 (count items) 30)`. Fewer → likely under-decomposed; more → likely too granular.                     |
-| R5   | Per-item routing tags are present and plausible.                                                                                                                                 | Every item has a `:via` tag in `#{:update-agent :bash :mcp :manual :explore-agent :read-only}`.             |
+| R5   | Per-item routing tags are present and plausible.                                                                                                                                 | Every item has a `:via` tag in `#{:edit-agent :bash :mcp :manual :explore-agent :read-only}`.             |
 | R6   | No two items overlap so much that flipping one half-completes the other.                                                                                                         | LLM cross-check: pairs of items judged as "redundant" or "overlapping" are flagged.                          |
 | R7   | No dangling LLM artifacts in item descriptions (`TODO`, `???`, `<...>`, `[fill in]`).                                                                                            | Mechanical grep on each `:description`.                                                                     |
 
@@ -268,11 +268,11 @@ author:
   items:
     - idx: 0
       description: "Wire LD flag `checkout-v2` in src/checkout/flags.clj"
-      tags: {via: update-agent,
+      tags: {via: edit-agent,
              covers: ["feature-flag checkout-v2 toggleable from staging admin"]}
     - idx: 1
       description: "Update payment validator for legacy carts"
-      tags: {via: update-agent,
+      tags: {via: edit-agent,
              covers: ["all checkout/* unit tests green"]}
     - idx: 2
       description: "Run bb test:component checkout"
@@ -333,7 +333,7 @@ Frontmatter contract:
 | `source.plan_path`           | string                     | Path to the plan body.                                                                    |
 | `pre.*`                      | map                        | Verbatim copy of the `pre` map (§4.2).                                                    |
 | `author.action`              | enum                       | `spawned` \| `advanced` \| `unchanged`.                                                   |
-| `author.items[].tags.via`    | enum                       | `update-agent` \| `bash` \| `mcp` \| `manual` \| `explore-agent` \| `read-only`.          |
+| `author.items[].tags.via`    | enum                       | `edit-agent` \| `bash` \| `mcp` \| `manual` \| `explore-agent` \| `read-only`.          |
 | `author.items[].tags.covers` | vector of strings          | Acceptance criteria this item supports.                                                   |
 | `post.*`                     | map                        | Verbatim copy of the `post` map (§6.3).                                                   |
 | `post.acceptance_coverage`   | map criterion → vec idx    | Which items cover which criterion. Critical for eval-agent.                               |
@@ -417,7 +417,7 @@ SPAWN (no todo exists for this plan slug):
     :scope :project
 
   Each :description is an ATOMICALLY MARKABLE action — verb-led.
-  Each :tags.via picks the downstream tool: :update-agent | :bash |
+  Each :tags.via picks the downstream tool: :edit-agent | :bash |
   :mcp | :manual | :explore-agent | :read-only. (When unsure → :manual.)
   Each :tags.covers lists the acceptance criteria from pre.acceptance
   this item supports.
@@ -518,7 +518,7 @@ TODO TRACKING (todo$*)
                        goal + items (with new :tags) + :file-path.
 - todo$create       -- Spawn a todo. Args: title, goal, items (vector of
                        {:description :tags}), scope. Item :tags is
-                       NEW: {:via #{:update-agent :bash :mcp :manual
+                       NEW: {:via #{:edit-agent :bash :mcp :manual
                                     :explore-agent :read-only}
                              :covers [<criterion strings>]}.
                        Writes to .brainyard/agents/todo-agent/todos/<slug>.md.
@@ -642,10 +642,10 @@ Same as plan-agent (`docs/plan-agent-design.md` §10). No new BT. Iteration shap
 ```clojure
 (def authored
   (let [items [{:description "Wire LD flag `checkout-v2` in src/checkout/flags.clj"
-                :tags {:via :update-agent
+                :tags {:via :edit-agent
                        :covers ["feature-flag checkout-v2 toggleable from staging admin"]}}
                {:description "Update payment validator for legacy carts"
-                :tags {:via :update-agent
+                :tags {:via :edit-agent
                        :covers ["all checkout/* unit tests green"]}}
                {:description "Run bb test:component checkout"
                 :tags {:via :bash
@@ -704,7 +704,7 @@ Same as plan-agent (`docs/plan-agent-design.md` §10). No new BT. Iteration shap
 
 ;; R5
 (def r5
-  (if (every? #(contains? #{:update-agent :bash :mcp :manual :explore-agent :read-only}
+  (if (every? #(contains? #{:edit-agent :bash :mcp :manual :explore-agent :read-only}
                           (-> % :tags :via))
               items)
     :pass :fail))
@@ -797,7 +797,7 @@ Exec-agent reads the todo-agent dossier in `:agent-context`. Two read levels (ch
 - `todo_path` and `slug` for `todo$read`.
 - `source.plan_dossier` and `source.plan_path` for plan context.
 - `pre.acceptance` (carried forward from plan-agent) — exec-agent uses this to know what "done" means per item.
-- `author.items[].tags.via` — the routing tag exec-agent uses to decide whether to delegate to update-agent / bash / etc.
+- `author.items[].tags.via` — the routing tag exec-agent uses to decide whether to delegate to edit-agent / bash / etc.
 - `post.acceptance_coverage` — eval-agent uses this directly when scoring.
 
 For ADVANCE turns (todo-agent flipped a checkbox), the dossier records the *single* item that changed and the new `todo_status`; downstream tooling treats it as an incremental record.

@@ -5,14 +5,14 @@
 > **As-built (verify against `common/exec_agent.clj`, `common/exec.clj`):**
 > - **No `runs/` directory and no separate run-record artifact.** The design's split of `runs/<…>.md` (verbose per-iteration log, §7.2) from `dossiers/<…>.md` was **not built**. Exec-agent emits a **single dossier** under `.brainyard/agents/exec-agent/dossiers/<ts>-<slug>.md`; per-item evidence rides in the dossier's `execute.evidence` map. There is **no `exec$run-write` helper** and no `run_record` frontmatter key. The eval-agent doc's `exec_run_record` reference is therefore usually nil in practice.
 > - **POST-FLIGHT verdict is PASS / HOLD only.** The design's REVISE auto-retry (§6.2, one `todo$reset-item` + re-execute round) is **deferred to v1.5**.
-> - **Cross-agent dispatch is direct kebab-case** — `(update-agent {…})`, `(explore-agent {…})`, `(todo-agent {…})` — though the registry also makes them reachable via `call-tool`. Hard Rule 4 reads "NO clone-self dispatch." Checkbox flips use `(doc$update {:kind :todo … :item-idx N :item-done true})`, not `todo$update-item`.
-> - **`write-file` / `update-file` are NOT bound** — every write delegates to update-agent (Hard Rule 1, as designed).
+> - **Cross-agent dispatch is direct kebab-case** — `(edit-agent {…})`, `(explore-agent {…})`, `(todo-agent {…})` — though the registry also makes them reachable via `call-tool`. Hard Rule 4 reads "NO clone-self dispatch." Checkbox flips use `(doc$update {:kind :todo … :item-idx N :item-done true})`, not `todo$update-item`.
+> - **`write-file` / `update-file` are NOT bound** — every write delegates to edit-agent (Hard Rule 1, as designed).
 > - **Shipped helper roster:** `exec$dossier-slug`, `exec$dossier-frontmatter`, `exec$dossier-write`, `exec$dossier-index-append`, `exec$read-dossier`, `exec$find`, `exec$next-handoff`. No `exec$run-write` / `exec$preflight` / `exec$postflight` / `exec$item-route` helpers shipped (§12's helper list is aspirational).
 > - **An `:agent.ask/post` auto-persist hook** (not in this design) writes a minimal dossier from the answer text if the helpers were skipped, and catches hallucinated `Saved dossier:` paths.
 > **Scope:** redesign of `components/agent/src/ai/brainyard/agent/common/exec_agent.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
-> **Sibling of:** `plan-agent`, `todo-agent`, `eval-agent`, `update-agent`, `explore-agent`
-> **Related reading:** `docs/plan-agent-design.md` (dossier schema is the template), `docs/todo-agent-design.md` (per-item routing tags), `docs/update-agent-design.md` (the safe-edit pipeline exec delegates to), `docs/explore-agent-design.md`, `docs/eval-agent-design.md`
+> **Sibling of:** `plan-agent`, `todo-agent`, `eval-agent`, `edit-agent`, `explore-agent`
+> **Related reading:** `docs/plan-agent-design.md` (dossier schema is the template), `docs/todo-agent-design.md` (per-item routing tags), `docs/edit-agent-design.md` (the safe-edit pipeline exec delegates to), `docs/explore-agent-design.md`, `docs/eval-agent-design.md`
 
 > **API rename (2026-05):** the per-verb `todo$list/read/create/update-item/update-goal/add-item/status/complete/abandon/reopen/reset-item/delete/exists` shims have been removed. Use the polymorphic `doc$*` family with `:kind :todo`. See `docs/design/todo-agent-design.md` (frontmatter note) for the verb-by-verb mapping. The dossier helpers (`todo$read-dossier`, `todo$dossier-*`, `todo$next-handoff`, etc.) are NOT deprecated. The body below still uses the old names for historical clarity.
 
@@ -23,7 +23,7 @@
 The current `exec-agent` (`components/agent/.../common/exec_agent.clj`) drives a todo list to completion: pick the next pending item, do the work, flip the checkbox, capture per-item detail in `:answer`, advance. The instruction is good — it tells the LLM to write rich per-item records ("done what, surprises, follow-ups") because eval-agent reads `:answer` as evidence. Three problems surface in practice:
 
 1. **No pre-flight guard on what the executor was handed.** The agent jumps straight to `todo$read` and starts running. There is no pass that asks: *Does the source plan exist, did its post-flight pass, did todo-agent's post-flight pass, do the items have routing tags I can act on, are the required tools/permissions present, is the working tree clean for items that will write to disk?* When any of these is false, the executor blunders ahead and the failure mode is opaque ("eval-agent says it failed; not sure why").
-2. **Writes are inlined, not delegated.** Today exec-agent calls `update-file` / `write-file` directly inside its loop. With `update-agent` now landed as the specialist for safe single-file edits (`docs/update-agent-design.md`), exec-agent should `(call-tool "update-agent" …)` for every write — getting the safety pipeline (probe → apply → verify → rollback → record) for free. The current instruction has no such delegation rule.
+2. **Writes are inlined, not delegated.** Today exec-agent calls `update-file` / `write-file` directly inside its loop. With `edit-agent` now landed as the specialist for safe single-file edits (`docs/edit-agent-design.md`), exec-agent should `(call-tool "edit-agent" …)` for every write — getting the safety pipeline (probe → apply → verify → rollback → record) for free. The current instruction has no such delegation rule.
 3. **Per-item evidence is captured in `:answer` only.** Eval-agent reads it as a string, parses it heuristically, and hopes the executor wrote enough. There is no schema'd per-item record on disk that can be re-read independently of the chat trajectory. This makes exec runs that span multiple turns hard to evaluate (the evidence sits in turn-N's answer; eval-agent in turn-N+1 has to be hand-fed it).
 
 The same redesign also folds in the layout migration begun by `plan-agent` and `todo-agent`. Today exec-agent has no on-disk artifact at all — its evidence lives only in `:answer`. The redesign adds `.brainyard/agents/exec-agent/runs/<slug>-<ts>.md` (one record per execution turn) and `.brainyard/agents/exec-agent/dossiers/<slug>-<ts>.md` (the cumulative handoff to eval-agent).
@@ -31,12 +31,12 @@ The same redesign also folds in the layout migration begun by `plan-agent` and `
 **Thesis.** Redesign `exec-agent` so every execution turn runs through a fixed three-phase pipeline:
 
 1. **PRE-FLIGHT (sufficiency check)** — does the agent have everything it needs? Plan dossier + todo-agent dossier on hand, items routed, tools available, working tree clean (for items that will write). Output: GO / GATHER / REFUSE.
-2. **EXECUTE** — pick next pending item; route per `:tags.via`; perform the work, delegating writes to `update-agent`, reads to `bash` / `read-file` / `query$llm`, MCP calls to `mcp$tools`, manual items to surfacing-and-stopping. Flip the checkbox via `todo$update-item`. Repeat per turn budget.
-3. **POST-FLIGHT (confirmation check)** — for every item advanced this turn, did we have supporting evidence? Did delegated agents (e.g., update-agent) succeed? Did any verification fail? Output: PASS / REVISE (re-do a failing item) / HOLD.
+2. **EXECUTE** — pick next pending item; route per `:tags.via`; perform the work, delegating writes to `edit-agent`, reads to `bash` / `read-file` / `query$llm`, MCP calls to `mcp$tools`, manual items to surfacing-and-stopping. Flip the checkbox via `todo$update-item`. Repeat per turn budget.
+3. **POST-FLIGHT (confirmation check)** — for every item advanced this turn, did we have supporting evidence? Did delegated agents (e.g., edit-agent) succeed? Did any verification fail? Output: PASS / REVISE (re-do a failing item) / HOLD.
 
 Every run produces:
-- A **run record** under `.brainyard/agents/exec-agent/runs/<slug>-<ts>.md` — the per-turn execution log (which items advanced, what update-agent records were produced, surprises).
-- A **dossier** under `.brainyard/agents/exec-agent/dossiers/<slug>-<ts>.md` — the cumulative handoff to eval-agent, including links to all per-item update-agent records and a structured per-item evidence map.
+- A **run record** under `.brainyard/agents/exec-agent/runs/<slug>-<ts>.md` — the per-turn execution log (which items advanced, what edit-agent records were produced, surprises).
+- A **dossier** under `.brainyard/agents/exec-agent/dossiers/<slug>-<ts>.md` — the cumulative handoff to eval-agent, including links to all per-item edit-agent records and a structured per-item evidence map.
 
 Same minimal-diff principle. Sandbox, BT, DSPy untouched.
 
@@ -44,14 +44,14 @@ Same minimal-diff principle. Sandbox, BT, DSPy untouched.
 
 ## 2. Design Principles
 
-1. **Delegate writes to update-agent, always.** Exec-agent NEVER calls `update-file` or `write-file` directly. Items tagged `:via :update-agent` route through `(call-tool "update-agent" …)` and inherit its probe/verify/rollback pipeline. Items that need writes but lack the tag → STOP and ask todo-agent to retag.
-2. **Per-item routing is data, not LLM judgement.** Route via `author.items[].tags.via` from the todo-agent dossier. The allowed set: `:update-agent` (writes), `:bash` (read-only shell), `:mcp <server>:<tool>` (MCP), `:explore-agent` (mid-execution discovery), `:read-only` (just `read-file` / `grep` / `query$llm`), `:manual` (user must do this — STOP, surface).
+1. **Delegate writes to edit-agent, always.** Exec-agent NEVER calls `update-file` or `write-file` directly. Items tagged `:via :edit-agent` route through `(call-tool "edit-agent" …)` and inherit its probe/verify/rollback pipeline. Items that need writes but lack the tag → STOP and ask todo-agent to retag.
+2. **Per-item routing is data, not LLM judgement.** Route via `author.items[].tags.via` from the todo-agent dossier. The allowed set: `:edit-agent` (writes), `:bash` (read-only shell), `:mcp <server>:<tool>` (MCP), `:explore-agent` (mid-execution discovery), `:read-only` (just `read-file` / `grep` / `query$llm`), `:manual` (user must do this — STOP, surface).
 3. **Evidence on disk, not in chat.** Every per-item action is recorded in the run-record file (with the same shape eval-agent expected from `:answer`, but now schema'd). The dossier aggregates run records and is what eval-agent reads.
-4. **One auto-revise per turn.** If POST-FLIGHT fails on a single item (e.g., update-agent rolled back), the agent attempts ONE corrective pass: `todo$reset-item`, re-execute. After that → HOLD.
+4. **One auto-revise per turn.** If POST-FLIGHT fails on a single item (e.g., edit-agent rolled back), the agent attempts ONE corrective pass: `todo$reset-item`, re-execute. After that → HOLD.
 5. **Stop conditions are explicit.** Hard blockers (missing creds, ambiguous spec, item lacks routing tag, would touch shared/production state without confirmation) STOP the loop with a structured handoff back to plan-agent / todo-agent / user. Soft stops (turn budget exhausted, user pause request) are recorded so the next turn can resume.
 6. **Layout matches the rest of the ecosystem.** Runs and dossiers under `.brainyard/agents/exec-agent/`. Todo file path moves are todo-agent's responsibility (`docs/todo-agent-design.md` §14); exec-agent reads from wherever todo-agent points.
 7. **Plans and todos are read-only.** Exec-agent reads via `plan$read-dossier`, `plan$read`, `todo$read-dossier`, `todo$read`, `todo$status`. It writes only via `todo$update-item` / `todo$add-item` / `todo$reset-item` / `todo$abandon` / `todo$complete`. NEVER mutates plans.
-8. **No clone-self recursion.** No `query$clone`. Cross-agent dispatch via `(call-tool …)` is fine — to update-agent, explore-agent, mcp-agent.
+8. **No clone-self recursion.** No `query$clone`. Cross-agent dispatch via `(call-tool …)` is fine — to edit-agent, explore-agent, mcp-agent.
 9. **Resume cleanly across turns.** Every dossier carries enough state (last item attempted, blockers, partial results) that a fresh exec-agent invocation in turn N+1 can pre-flight, see the prior dossier, and pick up where it left off.
 
 ---
@@ -71,20 +71,20 @@ exec-agent → Saved run:     <exec-agent run record path>
 eval-agent → ...
 ```
 
-Within an exec turn, each item that needs a write fans out to update-agent:
+Within an exec turn, each item that needs a write fans out to edit-agent:
 
 ```
 exec-agent (loop iter N)
-  pick item K with :tags.via :update-agent
-  → (call-tool "update-agent" {:question "..."
+  pick item K with :tags.via :edit-agent
+  → (call-tool "edit-agent" {:question "..."
                                 :agent-context "<exec-agent dossier-so-far>"})
-       → returns Saved edit: <update-agent record>
+       → returns Saved edit: <edit-agent record>
                  Rollback:   <git checkout cmd>
   → record link in run record
   → todo$update-item :slug <todo> :item-idx K (only if :ok? true)
 ```
 
-The link from exec evidence to the underlying update-agent record means eval-agent can drill from "did acceptance criterion C pass?" → "yes, item 1 covers it" → "exec record 20260510-...md" → "update-agent record 20260510-...md" → the actual diff. Full audit trail.
+The link from exec evidence to the underlying edit-agent record means eval-agent can drill from "did acceptance criterion C pass?" → "yes, item 1 covers it" → "exec record 20260510-...md" → "edit-agent record 20260510-...md" → the actual diff. Full audit trail.
 
 ---
 
@@ -100,9 +100,9 @@ Runs before any `todo$update-item` or `(call-tool …)` call. Walks a fixed chec
 | C2    | The todo-agent dossier's post-flight passed.                                                                                | `todo$read-dossier :path <path>` → check `post.verdict = :pass`.                                                                                                                                     | If `:hold` → REFUSE with the holds; if `:revise` and not user-opted-in → GATHER.                                                             |
 | C3    | The plan-agent dossier referenced by todo-agent's dossier exists and post.verdict = :pass.                                  | Read `source.plan_dossier` from todo dossier; `plan$read-dossier`; assert `post.verdict = :pass`.                                                                                                    | If missing or :hold → REFUSE (plan-agent re-do first).                                                                                       |
 | C4    | The todo file is actually present and matches the dossier's slug.                                                           | `todo$exists` + `todo$status`; cross-check item count against dossier.                                                                                                                               | REFUSE — todo and dossier diverged; recommend a fresh todo-agent run.                                                                        |
-| C5    | Every pending item has a `:tags.via` routing tag in the allowed set.                                                        | Iterate the items. Allowed: `:update-agent` `:bash` `:mcp <server>:<tool>` `:explore-agent` `:read-only` `:manual`.                                                                                  | GATHER — recommend `(call-tool "todo-agent" {:question "Retag items K…M."})`.                                                                |
+| C5    | Every pending item has a `:tags.via` routing tag in the allowed set.                                                        | Iterate the items. Allowed: `:edit-agent` `:bash` `:mcp <server>:<tool>` `:explore-agent` `:read-only` `:manual`.                                                                                  | GATHER — recommend `(call-tool "todo-agent" {:question "Retag items K…M."})`.                                                                |
 | C6    | Required external tools are available for the routed items.                                                                 | For `:bash` items, `bash "command -v <inferred binary>"` for the binaries the item description names. For `:mcp`, `mcp$server :op :list` confirms the server is :connected.                          | If a missing binary or disconnected MCP server is the ONLY blocker → GATHER ("install <binary>" / "start MCP server <X>"). Otherwise REFUSE. |
-| C7    | If any pending item is `:via :update-agent`, the working tree is clean (or `:dirty-ok? true`).                              | `bash "git status --porcelain"` — empty → clean. (Same gate update-agent will check per-file; exec-agent surfaces it up-front so the user is not surprised mid-loop.)                                | GATHER — surface the dirty paths; user can stash or set `:dirty-ok? true`.                                                                   |
+| C7    | If any pending item is `:via :edit-agent`, the working tree is clean (or `:dirty-ok? true`).                              | `bash "git status --porcelain"` — empty → clean. (Same gate edit-agent will check per-file; exec-agent surfaces it up-front so the user is not surprised mid-loop.)                                | GATHER — surface the dirty paths; user can stash or set `:dirty-ok? true`.                                                                   |
 | C8    | If a prior exec dossier exists for this slug, parse its tail to know what's been attempted.                                 | `(exec$find :slug <slug>)` returns prior dossiers newest-first; load the latest's `post` to know which items were :ok? :hold :failed.                                                                | INFORMATIONAL — not a fail; populate `pre.resume-from` so EXECUTE knows to skip already-done items and re-attempt :hold items first.         |
 
 Same short-circuit rule as the other agents: stop on first fail.
@@ -144,11 +144,11 @@ Per turn, the agent runs an inner loop bounded by `:max-items-per-turn` (default
 
 Read `tags.via` for the picked item. Each route has a fixed call shape:
 
-#### 5.2.1 `:via :update-agent`
+#### 5.2.1 `:via :edit-agent`
 
 ```clojure
 (def edit-result
-  (call-tool "update-agent"
+  (call-tool "edit-agent"
              {:question      (:description item)
               :agent-context (str "Saved dossier: " (:plan-dossier pre)
                                   "\n\nFor item idx " idx ", target file inferred from "
@@ -158,7 +158,7 @@ Read `tags.via` for the picked item. Each route has a fixed call shape:
               :dirty-ok?     false}))
 ```
 
-`update-agent`'s answer carries `Saved edit: <path>` and `Rollback: <cmd>` (or `Rolled back: <reason>`). Exec-agent extracts both via grep and stashes:
+`edit-agent`'s answer carries `Saved edit: <path>` and `Rollback: <cmd>` (or `Rolled back: <reason>`). Exec-agent extracts both via grep and stashes:
 
 ```clojure
 (def edit-record
@@ -221,7 +221,7 @@ STOP the inner loop. Record the item as `:status :manual-pending` in the run rec
 
 For routes that produced a write or external side-effect, sanity check before flipping the checkbox:
 
-- `:update-agent` — already runs its own verify; trust the `:ok?` flag.
+- `:edit-agent` — already runs its own verify; trust the `:ok?` flag.
 - `:bash` — non-zero exit code = NOT ok.
 - `:mcp` — error in response = NOT ok.
 - `:explore-agent` — always succeeds (read-only); only fails on agent error.
@@ -240,8 +240,8 @@ Every per-item iteration appends a structured block to the run record (in memory
    :via        (-> item :tags :via)
    :covers     (-> item :tags :covers)
    :ok?        (:ok? whatever-record)
-   :evidence   {:type :update-agent
-                :path "<update-agent record path>"
+   :evidence   {:type :edit-agent
+                :path "<edit-agent record path>"
                 :rollback "<cmd>"}
    :surprises  []                  ; LLM observation
    :follow-ups []})                ; LLM observation
@@ -267,7 +267,7 @@ Runs after EXECUTE. Re-reads the run record and grades it against a fixed rubric
 | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | R1   | Every item that flipped done in `todo$update-item` has a non-trivial evidence record (not just "ok").                                                                                       | Each `evidence.path` resolves OR `evidence.type ∈ {:bash :mcp :read-only}` with non-empty `:stdout-tail` / response excerpt. |
 | R2   | No `todo$update-item` ran for items where the route returned `:ok? false`.                                                                                                                  | Cross-check `evidence.ok?` against the todo's checkbox state for items advanced this turn.                                   |
-| R3   | For every `:via :update-agent` item, the underlying update-agent record's `verify.diff_match = true`.                                                                                       | `update$read-record :path <evidence.path>` → check `verify.diff_match`.                                                     |
+| R3   | For every `:via :edit-agent` item, the underlying edit-agent record's `verify.diff_match = true`.                                                                                       | `edit$read-record :path <evidence.path>` → check `verify.diff_match`.                                                     |
 | R4   | Every advanced item's `:tags.covers` lists at least one criterion that this turn now has positive evidence for.                                                                              | Cross-reference with `pre.acceptance-cov`.                                                                                  |
 | R5   | No item produced more than one rollback this turn (loop guard against thrashing).                                                                                                            | Count rollbacks per `idx`.                                                                                                  |
 | R6   | If the loop hit a hard blocker, the dossier names the blocker AND a concrete handoff (plan-agent / todo-agent / user).                                                                        | Inspect the run record's tail.                                                                                              |
@@ -345,9 +345,9 @@ budget:
 # Exec run — Ship v2 checkout (turn 20260510-110131)
 
 ## Item 0 — "Wire LD flag `checkout-v2` in src/checkout/flags.clj"
-- via: :update-agent
+- via: :edit-agent
 - covers: ["feature-flag checkout-v2 toggleable from staging admin"]
-- update-agent record: .brainyard/agents/update-agent/edits/20260510-110205-wire-ld-flag-checkout-v2.md
+- edit-agent record: .brainyard/agents/edit-agent/edits/20260510-110205-wire-ld-flag-checkout-v2.md
 - verify.diff_match: true
 - rollback: `git checkout -- src/checkout/flags.clj`
 - ok: ✅
@@ -355,9 +355,9 @@ budget:
 - follow-ups: none
 
 ## Item 1 — "Update payment validator for legacy carts"
-- via: :update-agent
+- via: :edit-agent
 - covers: ["all checkout/* unit tests green"]
-- update-agent record: .brainyard/agents/update-agent/edits/20260510-110318-update-payment-validator.md
+- edit-agent record: .brainyard/agents/edit-agent/edits/20260510-110318-update-payment-validator.md
 - verify.diff_match: true
 - rollback: `git checkout -- src/checkout/payment_validator.clj`
 - ok: ✅
@@ -408,12 +408,12 @@ execute:
   items_advanced: [0, 1, 2]
   items_pending_after: [3]
   evidence:
-    0: {ok: true, via: update-agent,
-        update_record: .brainyard/agents/update-agent/edits/20260510-110205-...md,
+    0: {ok: true, via: edit-agent,
+        update_record: .brainyard/agents/edit-agent/edits/20260510-110205-...md,
         rollback: "git checkout -- src/checkout/flags.clj",
         covers: ["feature-flag checkout-v2 toggleable from staging admin"]}
-    1: {ok: true, via: update-agent,
-        update_record: .brainyard/agents/update-agent/edits/20260510-110318-...md,
+    1: {ok: true, via: edit-agent,
+        update_record: .brainyard/agents/edit-agent/edits/20260510-110318-...md,
         rollback: "git checkout -- src/checkout/payment_validator.clj",
         covers: ["all checkout/* unit tests green"],
         follow_ups: ["add payment_validator_test.clj case for :type :guest"]}
@@ -455,8 +455,8 @@ All 7 hard checks passed; no resume-from prior dossier.
 Advanced 3/4 items this turn. Item 3 (manual Grafana sample) is :via :manual and was surfaced for user action.
 
 ## Per-item evidence
-- 0 ✅ → update-agent edit applied + verified
-- 1 ✅ → update-agent edit applied + verified; one follow-up surfaced
+- 0 ✅ → edit-agent edit applied + verified
+- 1 ✅ → edit-agent edit applied + verified; one follow-up surfaced
 - 2 ✅ → 18 tests, 0 failures
 - 3 ⏸ → manual: sample p99 from Grafana dashboard <url>
 
@@ -516,7 +516,7 @@ Layered on top of `coact-agent`'s instruction.
 ```text
 You are an EXEC-agent. You drive a todo list to completion item-by-item.
 You ALWAYS pre-flight before executing, and post-flight after. You
-DELEGATE every write to update-agent. You ALWAYS produce a run record AND
+DELEGATE every write to edit-agent. You ALWAYS produce a run record AND
 a dossier.
 
 Runs at .brainyard/agents/exec-agent/runs/, dossiers at
@@ -552,7 +552,7 @@ C4. TODO PRESENT. todo$exists + todo$status; cross-check item count.
     Mismatch → REFUSE.
 
 C5. ROUTING TAGS. Every pending item has :tags.via in
-    {:update-agent :bash :mcp :explore-agent :read-only :manual}.
+    {:edit-agent :bash :mcp :explore-agent :read-only :manual}.
     Missing → GATHER ("retag items K…M via todo-agent").
 
 C6. TOOLS AVAILABLE.
@@ -560,7 +560,7 @@ C6. TOOLS AVAILABLE.
     For :mcp items: mcp$server :op :list — confirm :connected.
     Missing → GATHER (single fix), or REFUSE.
 
-C7. WORKING TREE. If any pending item is :via :update-agent, run
+C7. WORKING TREE. If any pending item is :via :edit-agent, run
     `bash "git status --porcelain"`. Empty → clean. Non-empty AND
     :dirty-ok? not set → GATHER ("commit/stash first or pass :dirty-ok?").
 
@@ -583,8 +583,8 @@ For each pending item (re-attempting held items from pre.resume-from first):
 
   2. ROUTE on item :tags.via:
 
-     :update-agent →
-        (call-tool "update-agent"
+     :edit-agent →
+        (call-tool "edit-agent"
                    {:question      <item description>
                     :agent-context (str "Saved dossier: " (:plan-dossier pre)
                                         " — item idx " idx ", covers "
@@ -592,7 +592,7 @@ For each pending item (re-attempting held items from pre.resume-from first):
                     :run-tests?    false
                     :dirty-ok?     <pre :dirty-ok?>})
         Extract `Saved edit: <path>` and `Rollback: <cmd>` from
-        update-agent's answer. :ok? = no `Rolled back:` line.
+        edit-agent's answer. :ok? = no `Rolled back:` line.
 
      :bash →
         (call-tool "bash" {:command <command from item :command or
@@ -648,7 +648,7 @@ POST-FLIGHT RUBRIC
 ────────────────────────────────────────────────────────────────────────────
 R1. EVIDENCE PRESENT — every flipped item has non-trivial evidence.
 R2. NO FALSE FLIPS — only :ok? true items got flipped.
-R3. DIFF MATCH — for :update-agent items, the underlying record's
+R3. DIFF MATCH — for :edit-agent items, the underlying record's
     verify.diff_match = true.
 R4. PROGRESS — every advanced item's :tags.covers names a criterion
     that this turn now has positive evidence for.
@@ -703,7 +703,7 @@ GATHER / REFUSE / HOLD follow plan-agent's pattern.
 ────────────────────────────────────────────────────────────────────────────
 HARD RULES
 ────────────────────────────────────────────────────────────────────────────
-1. NO direct writes. Every write delegated to update-agent.
+1. NO direct writes. Every write delegated to edit-agent.
 2. NO mutating plans. Plans read-only.
 3. NO mutating todos beyond {todo$update-item, todo$add-item,
    todo$reset-item, todo$abandon, todo$complete}. Authoring is
@@ -730,7 +730,7 @@ TODO TRACKING (limited write surface)
                         (optional new), after-idx. Use when an item is
                         revealed to be over-coarse.
 - todo$reset-item    -- reset single item. Args: slug, item-idx. Used by
-                        POST-FLIGHT REVISE when retrying an :update-agent
+                        POST-FLIGHT REVISE when retrying an :edit-agent
                         item that was rolled back.
 - todo$complete      -- only after :pending = 0 AND user confirms.
 - todo$abandon       -- confirm.
@@ -739,14 +739,14 @@ PLAN ACCESS (READ-ONLY)
 - plan$read-dossier, plan$read, plan$exists, plan$status
 
 CROSS-AGENT DISPATCH (the core of execution)
-- (call-tool "update-agent" {…})    — every write item.
+- (call-tool "edit-agent" {…})    — every write item.
 - (call-tool "explore-agent" {…})   — mid-loop discovery items.
 - (call-tool "mcp$tools" {…})       — MCP-routed items (write-side
                                        requires user confirm).
 - bash                              — :via :bash items only.
 
 NEVER bound here:
-- update-file / write-file          — deliberate; use update-agent.
+- update-file / write-file          — deliberate; use edit-agent.
 - todo$create / todo$delete / todo$reopen — todo-agent's domain.
 - plan$create / plan$update-body / plan$delete — plan-agent's domain.
 
@@ -829,11 +829,11 @@ Same as plan-agent / todo-agent. No new BT. Iteration shape:
 
 For each pending item idx in [0 1 2 3] (item 3 is `:via :manual` so loop stops at 3):
 
-**idx 0 — `:via :update-agent`**
+**idx 0 — `:via :edit-agent`**
 
 ```clojure
 (def edit-0
-  (call-tool "update-agent"
+  (call-tool "edit-agent"
              {:question "Wire LD flag `checkout-v2` in src/checkout/flags.clj"
               :agent-context (str "Saved dossier: " (:plan-dossier pre))
               :run-tests? false
@@ -841,10 +841,10 @@ For each pending item idx in [0 1 2 3] (item 3 is `:via :manual` so loop stops a
 
 (def evid-0
   {:idx 0
-   :via :update-agent
+   :via :edit-agent
    :covers ["feature-flag checkout-v2 toggleable from staging admin"]
    :ok? (not (re-find #"Rolled back:" (:answer edit-0)))
-   :evidence {:type :update-agent
+   :evidence {:type :edit-agent
               :path     (last (re-find #"Saved edit: (\S+)" (:answer edit-0)))
               :rollback (last (re-find #"Rollback: (.+)" (:answer edit-0)))}})
 
@@ -852,7 +852,7 @@ For each pending item idx in [0 1 2 3] (item 3 is `:via :manual` so loop stops a
   (call-tool "todo$update-item" {:slug (:todo-slug pre) :item-idx 0}))
 ```
 
-**idx 1 — `:via :update-agent`** (similar)
+**idx 1 — `:via :edit-agent`** (similar)
 
 **idx 2 — `:via :bash`**
 
@@ -990,7 +990,7 @@ Eval-agent reads the exec-agent dossier in `:agent-context`. Two read levels (ch
 - `plan_dossier` and `todo_dossier` for cross-references.
 - `execute.evidence` — the structured per-item map.
 - `post.acceptance_progress` — the criterion-status map. Eval-agent extends this with its verdict.
-- `post.advanced[].evidence.path` — links to update-agent records for diff-level audit.
+- `post.advanced[].evidence.path` — links to edit-agent records for diff-level audit.
 
 For multi-turn exec runs (item-3-manual case in §11), each turn produces its own dossier; eval-agent's pre-flight reads the latest. The `pre.resume-from` field threads turns together.
 
@@ -1012,22 +1012,22 @@ The legacy "evidence in `:answer` only" channel is preserved through Phase 2 —
 | Pre-flight GATHER (no todo dossier)    | :agent-context = ""                                                                          | C1 fails; agent recommends todo-agent; dossier records GATHER.                                                                    |
 | Pre-flight REFUSE (todo HOLD)          | Todo dossier post.verdict :hold                                                              | C2 fails; agent refuses with the holds.                                                                                           |
 | Pre-flight GATHER (missing routing)    | One pending item lacks :tags.via                                                              | C5 fails; agent suggests todo-agent retag.                                                                                        |
-| Pre-flight GATHER (dirty tree)         | git status non-empty; pending :update-agent items                                             | C7 fails; agent suggests stash or :dirty-ok?.                                                                                     |
-| Execute :update-agent route happy path | One :via :update-agent item                                                                  | (call-tool "update-agent" …) invoked; Saved edit / Rollback parsed; checkbox flipped.                                            |
-| Execute :update-agent rollback         | Update-agent rolls back due to verify failure                                                 | :ok? false; checkbox NOT flipped; POST-FLIGHT triggers REVISE; one auto-retry.                                                    |
+| Pre-flight GATHER (dirty tree)         | git status non-empty; pending :edit-agent items                                             | C7 fails; agent suggests stash or :dirty-ok?.                                                                                     |
+| Execute :edit-agent route happy path | One :via :edit-agent item                                                                  | (call-tool "edit-agent" …) invoked; Saved edit / Rollback parsed; checkbox flipped.                                            |
+| Execute :edit-agent rollback         | Update-agent rolls back due to verify failure                                                 | :ok? false; checkbox NOT flipped; POST-FLIGHT triggers REVISE; one auto-retry.                                                    |
 | Execute :bash route                    | One :via :bash item                                                                           | bash invoked; exit-code 0 → flip; non-zero → no flip.                                                                             |
 | Execute :mcp read-only                 | One :via :mcp <s>:<read-tool>                                                                | Proceeds without confirmation.                                                                                                    |
 | Execute :mcp write-side                | One :via :mcp <s>:<write-tool>                                                              | STOPS; surfaces the proposed call; checkbox NOT flipped.                                                                          |
 | Execute :explore-agent route           | Mid-loop discovery item                                                                       | explore-agent invoked; Saved exploration: parsed; recorded as evidence; checkbox flipped.                                          |
 | Execute :manual route                  | One :via :manual item                                                                        | Inner loop stops; `Manual:` line in answer; checkbox NOT flipped.                                                                  |
 | Resume from prior dossier              | Prior dossier exists; some items :hold                                                       | C8 informational; held items prioritized; previously-done items skipped.                                                          |
-| Post-flight REVISE                     | One :update-agent item rolled back                                                            | One auto-retry; if successful → PASS; if not → HOLD.                                                                              |
+| Post-flight REVISE                     | One :edit-agent item rolled back                                                            | One auto-retry; if successful → PASS; if not → HOLD.                                                                              |
 | Post-flight HOLD                       | Multiple failed items                                                                         | No retry; dossier records holds; answer surfaces.                                                                                 |
 | Acceptance progress completeness       | All items advanced                                                                            | acceptance_progress map has every criterion either evidence-recorded or pending; eval-agent can score.                            |
 | Run + dossier pairing                  | Single turn                                                                                   | One run record + one dossier with shared timestamp; `dossier.run_record` resolves.                                                |
 | Index integrity                        | Append 100 dossiers                                                                           | INDEX.md has 100 lines, newest first.                                                                                             |
 
-mulog signals: `::exec.preflight`, `::exec.item-route`, `::exec.update-agent-call`, `::exec.flip`, `::exec.postflight`, `::exec.dossier-write`.
+mulog signals: `::exec.preflight`, `::exec.item-route`, `::exec.edit-agent-call`, `::exec.flip`, `::exec.postflight`, `::exec.dossier-write`.
 
 ---
 
@@ -1049,7 +1049,7 @@ mulog signals: `::exec.preflight`, `::exec.item-route`, `::exec.update-agent-cal
 ## 17. Open Questions
 
 1. **`:max-items-per-turn` default.** Today's design says 5. Too low → many turns; too high → token bloat per turn + harder to debug. The right default depends on average item complexity. Suggest 5 for v1; instrument and revisit.
-2. **Auto-retry budget.** POST-FLIGHT REVISE allows ONE retry of one failed item per turn. A natural extension: allow N retries when items are :via :bash (cheap) but only 1 for :update-agent (slow + risky). Defer to instrumentation.
+2. **Auto-retry budget.** POST-FLIGHT REVISE allows ONE retry of one failed item per turn. A natural extension: allow N retries when items are :via :bash (cheap) but only 1 for :edit-agent (slow + risky). Defer to instrumentation.
 3. **Should exec-agent be allowed to add items mid-loop?** Today todo-agent owns SPAWN; exec-agent has `todo$add-item` for on-the-fly splits. The redesign keeps this. A stricter alternative: STOP and dispatch todo-agent for mid-loop additions. Trade-off: deliberation vs. throughput. Stick with current model; if mid-loop additions correlate with HOLD turns in benchmarks, tighten.
 4. **Per-turn vs. per-batch dossier.** A long-running execution could span 5+ turns. Current design: one dossier per turn. Alternative: a single rolling dossier that exec-agent appends to. Per-turn is simpler and gives natural rollback granularity; rolling is leaner on disk. Stick with per-turn.
 5. **Should exec-agent gate on a CI run, not just bash test?** Some plans should not be considered "advanced" until a CI build passes. Could add a `:via :ci <pipeline-id>` route. Out of scope for v1; revisit when the first plan needs it.

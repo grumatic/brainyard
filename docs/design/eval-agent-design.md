@@ -6,13 +6,13 @@
 > - **POST-FLIGHT verdict is PASS / HOLD only.** The design's REVISE auto-round (§6.2) is **deferred to v1.5**.
 > - **`:checkbox-only-ok?` is not yet supported.** C3 (no evidence) → REFUSE unconditionally in v1; the design's opt-in fallback is not wired.
 > - **Cross-agent dispatch is direct kebab-case** — `(plan-agent {…})`, `(exec-agent {…})` — not `call-tool`. Hard Rule 4 reads "NO clone-self dispatch." Recommendations name `doc$update :kind :todo …` (e.g. `:add-item`, `:item-done false`, `:status :completed`), not the retired `todo$*` shims.
-> - **Verdict body + dossier both ship**, as designed (`eval$verdict-write` writes `verdicts/`; `eval$dossier-write` writes `dossiers/`). `update$read-record` is cherry-picked read-only for criterion→item→diff drill-down (as designed).
+> - **Verdict body + dossier both ship**, as designed (`eval$verdict-write` writes `verdicts/`; `eval$dossier-write` writes `dossiers/`). `edit$read-record` is cherry-picked read-only for criterion→item→diff drill-down (as designed).
 > - **Shipped helper roster:** `eval$dossier-slug`, `eval$verdict-write`, `eval$dossier-frontmatter`, `eval$dossier-write`, `eval$dossier-index-append`, `eval$read-dossier`, `eval$find`, `eval$next-handoff`. No `eval$preflight` / `eval$postflight` / `eval$score-criterion` helpers shipped (§12's list is aspirational).
 > - **An `:agent.ask/post` auto-persist hook** (not in this design) writes a minimal dossier from the answer text if `eval$dossier-write` was skipped; the verdict body is NOT auto-persisted (call `eval$verdict-write` explicitly).
 > **Scope:** redesign of `components/agent/src/ai/brainyard/agent/common/eval_agent.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
-> **Sibling of:** `plan-agent`, `todo-agent`, `exec-agent`, `update-agent`, `explore-agent`
-> **Related reading:** `docs/plan-agent-design.md` (acceptance comes from the plan dossier), `docs/todo-agent-design.md` (acceptance coverage map), `docs/exec-agent-design.md` (per-item evidence comes from the exec dossier), `docs/update-agent-design.md` (drill-down from evidence to diffs)
+> **Sibling of:** `plan-agent`, `todo-agent`, `exec-agent`, `edit-agent`, `explore-agent`
+> **Related reading:** `docs/plan-agent-design.md` (acceptance comes from the plan dossier), `docs/todo-agent-design.md` (acceptance coverage map), `docs/exec-agent-design.md` (per-item evidence comes from the exec dossier), `docs/edit-agent-design.md` (drill-down from evidence to diffs)
 
 > **API rename (2026-05):** the per-verb `todo$*` and `plan$*` CRUD shims have been removed in favour of the polymorphic `doc$*` family with `:kind :todo` / `:kind :plan`. See `docs/design/todo-agent-design.md` (frontmatter note) for the verb-by-verb mapping. The dossier helpers (`todo$read-dossier`, `plan$read-dossier`, etc.) are NOT deprecated. The body below still uses the old names for historical clarity.
 
@@ -30,7 +30,7 @@ The same redesign also folds in the layout move begun by plan-agent / todo-agent
 
 **Thesis.** Redesign `eval-agent` so every scoring run runs through a fixed three-phase pipeline:
 
-1. **PRE-FLIGHT (sufficiency check)** — does the agent have everything it needs to score? Plan dossier with `post.acceptance` populated, exec dossier with `execute.evidence` populated, optional update-agent records for diff-level drill-down. Output: GO / GATHER / REFUSE.
+1. **PRE-FLIGHT (sufficiency check)** — does the agent have everything it needs to score? Plan dossier with `post.acceptance` populated, exec dossier with `execute.evidence` populated, optional edit-agent records for diff-level drill-down. Output: GO / GATHER / REFUSE.
 2. **SCORE** — for each acceptance criterion, classify SATISFIED / PARTIAL / MISSING / CONTRADICTED based on the evidence map; render the overall verdict ACHIEVED / PARTIALLY_ACHIEVED / NOT_ACHIEVED; assemble per-criterion follow-up recommendations.
 3. **POST-FLIGHT (confirmation check)** — every criterion classified? evidence cited? recommendations name a concrete tool call? confidence noted when fuzzy LLM judgement was used? Output: PASS / REVISE (re-score with stronger evidence) / HOLD (require user adjudication).
 
@@ -44,7 +44,7 @@ Same minimal-diff principle. CoAct loop, sandbox, BT, DSPy untouched.
 
 1. **No verdict on insufficient evidence.** Pre-flight refuses when the exec dossier is missing or its `execute.evidence` map is empty. Eval-agent never invents satisfaction from a checked box alone — degrading to checkbox-only is a deliberate fallback the user must opt into (`:checkbox-only-ok? true`), not a silent default.
 2. **Structured fields first; markdown re-parse only as fallback.** Read `post.acceptance` from the plan dossier, `post.acceptance_coverage` from the todo dossier, `post.acceptance_progress` and `execute.evidence` from the exec dossier. Re-parse markdown only when those fields are absent (legacy data).
-3. **Drill from criterion → item → evidence → diff.** The classification table is a navigation tree. SATISFIED entries cite the item idx, the evidence excerpt, AND when applicable the underlying update-agent record path so a future reader can audit the actual change.
+3. **Drill from criterion → item → evidence → diff.** The classification table is a navigation tree. SATISFIED entries cite the item idx, the evidence excerpt, AND when applicable the underlying edit-agent record path so a future reader can audit the actual change.
 4. **Verdict is a recommendation, not an action.** Eval-agent NEVER auto-dispatches plan-agent / todo-agent / exec-agent. The dossier names the next agent + the exact `(call-tool …)` form; the user (or the orchestrator) decides whether to invoke it. Sub-dispatch is allowed ONLY when the user explicitly says "and apply the recommendation" in the same turn.
 5. **Confidence is a first-class field.** Every criterion classification carries a confidence enum (`:high :medium :low`) reflecting whether the evidence was concrete (file diff, test exit code) or fuzzy (LLM-judged narrative). Aggregate confidence appears on the verdict itself.
 6. **Layout matches the rest of the ecosystem.** Verdicts at `.brainyard/agents/eval-agent/verdicts/`, dossiers at `.brainyard/agents/eval-agent/dossiers/`.
@@ -95,7 +95,7 @@ Runs before any scoring work. Walks a fixed checklist; produces a `pre` map.
 | C3    | The exec dossier carries `execute.evidence` with at least one item.                                                       | Inspect the `execute.evidence` map.                                                                                                                                                              | REFUSE unless `:checkbox-only-ok? true` was passed.                                                                                                        |
 | C4    | The plan-agent dossier referenced by the exec dossier exists, post.verdict = :pass, AND `post.acceptance` is populated.   | Read `plan_dossier`; `plan$read-dossier`; assert `post.verdict :pass` and `(seq post.acceptance)`.                                                                                                | If acceptance empty → GATHER (recommend plan-agent re-author with explicit ## Acceptance). If post HOLD → score but mark verdict confidence :low.          |
 | C5    | The todo-agent dossier (when present) carries `post.acceptance_coverage`.                                                 | Read `todo_dossier`; `todo$read-dossier`; assert `(seq post.acceptance_coverage)`.                                                                                                                | INFORMATIONAL — coverage map is a convenience; eval can rebuild it from evidence + acceptance via `query$llm`. Note in dossier when this happens.            |
-| C6    | The cited update-agent records (when present) actually exist on disk.                                                     | For each `evidence.path` in the exec dossier, `bash "test -f <path>"`.                                                                                                                            | GATHER — list the missing record paths; the exec dossier may be stale.                                                                                     |
+| C6    | The cited edit-agent records (when present) actually exist on disk.                                                     | For each `evidence.path` in the exec dossier, `bash "test -f <path>"`.                                                                                                                            | GATHER — list the missing record paths; the exec dossier may be stale.                                                                                     |
 | C7    | No earlier eval-agent dossier for this slug+turn already exists (avoid double-scoring).                                   | `(eval$find :slug <slug> :run-record <run record>)` returns prior verdicts on the same exec turn.                                                                                                | INFORMATIONAL — surface "already scored on <ts>; re-running per user request"; record `pre.is_re_run :true`.                                               |
 
 Same short-circuit rule as the other agents. Critically, C2 / C4 produce *softer* verdict-level effects (reduced confidence) rather than hard refusals — eval-agent is the last line of defense and a degraded verdict is more useful than no verdict.
@@ -143,8 +143,8 @@ For each criterion C in `pre.acceptance`:
 1. **Find candidate items.** Read `pre.acceptance-coverage[C]` for the explicit list of item idxs. If empty (degradation), use `query$llm` to fuzzy-match items against C from `pre.acceptance`.
 2. **Pull evidence for each candidate.** From `pre.evidence[idx]`, extract:
    - `evidence.ok?` — boolean.
-   - `evidence.type` — `:update-agent` / `:bash` / `:mcp` / `:explore-agent` / `:read-only` / `:manual`.
-   - For `:update-agent`, drill: `update$read-record :path <evidence.path>`. Read `verify.diff_match`, `verify.lint`, `verify.tests` if present.
+   - `evidence.type` — `:edit-agent` / `:bash` / `:mcp` / `:explore-agent` / `:read-only` / `:manual`.
+   - For `:edit-agent`, drill: `edit$read-record :path <evidence.path>`. Read `verify.diff_match`, `verify.lint`, `verify.tests` if present.
    - For `:bash`, read `evidence.exit` and `evidence.stdout-tail`.
    - For `:manual`, read the user's supplied result (when available) or note `manual-pending`.
 3. **Classify.**
@@ -154,7 +154,7 @@ For each criterion C in `pre.acceptance`:
    - Any candidate item with `ok? false` AND no compensating successful coverage → CONTRADICTED. (Plus: a flipped checkbox in the todo that has no corresponding evidence record → CONTRADICTED with the note "checkbox flipped without evidence — exec-agent post-flight should have caught this.")
 4. **Cite.** Record:
    - the contributing item idxs;
-   - a short evidence excerpt (file:path:line, exit code, stdout snippet, mcp tool result, or update-agent record path);
+   - a short evidence excerpt (file:path:line, exit code, stdout snippet, mcp tool result, or edit-agent record path);
    - confidence (`:high :medium :low`).
 5. **Use `query$llm` for fuzzy criterion language.** Criteria like "users find checkout intuitive" are inherently fuzzy. Use `query$llm` to weigh the evidence narrative against the criterion text; record the prompt + a one-line summary in the dossier so the judgement is auditable.
 
@@ -205,8 +205,8 @@ The recommendations are a vector of maps:
                      :class :satisfied
                      :confidence :high
                      :items [0]
-                     :evidence [{:type :update-agent
-                                 :record ".brainyard/agents/update-agent/edits/...md"
+                     :evidence [{:type :edit-agent
+                                 :record ".brainyard/agents/edit-agent/edits/...md"
                                  :excerpt "wired in src/checkout/flags.clj line 42"}]}
                     …]
    :gaps           ["p99 sampling skipped"]    ; distilled actionable prose
@@ -299,8 +299,8 @@ confirmation to call `todo$complete` and `plan$complete`.
 
 | Criterion                                                  | Classification | Confidence | Items | Evidence                                                                                       |
 |------------------------------------------------------------|----------------|------------|-------|------------------------------------------------------------------------------------------------|
-| feature-flag `checkout-v2` toggleable from staging admin   | SATISFIED      | high       | [0]   | update-agent: src/checkout/flags.clj:42 (rec: .../20260510-110205-...md)                      |
-| all `checkout/*` unit tests green                          | SATISFIED      | high       | [1,2] | bash: "Ran 18 tests, 0 failures." (exit 0); update-agent: payment_validator.clj:88            |
+| feature-flag `checkout-v2` toggleable from staging admin   | SATISFIED      | high       | [0]   | edit-agent: src/checkout/flags.clj:42 (rec: .../20260510-110205-...md)                      |
+| all `checkout/*` unit tests green                          | SATISFIED      | high       | [1,2] | bash: "Ran 18 tests, 0 failures." (exit 0); edit-agent: payment_validator.clj:88            |
 | p99 checkout latency unchanged within ±5%                  | SATISFIED      | medium     | [3]   | manual: user reported p99 = 142ms (24h window), baseline 138ms — within ±5%                   |
 
 ## Gaps
@@ -349,8 +349,8 @@ score:
       confidence: high
       items: [0]
       evidence:
-        - {type: update-agent,
-           record: .brainyard/agents/update-agent/edits/20260510-110205-...md,
+        - {type: edit-agent,
+           record: .brainyard/agents/edit-agent/edits/20260510-110205-...md,
            excerpt: "wired in src/checkout/flags.clj line 42"}
     - criterion: "all checkout/* unit tests green"
       class: SATISFIED
@@ -358,8 +358,8 @@ score:
       items: [1, 2]
       evidence:
         - {type: bash, exit: 0, excerpt: "Ran 18 tests, 0 failures."}
-        - {type: update-agent,
-           record: .brainyard/agents/update-agent/edits/20260510-110318-...md,
+        - {type: edit-agent,
+           record: .brainyard/agents/edit-agent/edits/20260510-110318-...md,
            excerpt: "payment_validator.clj line 88"}
     - criterion: "p99 checkout latency unchanged within ±5%"
       class: SATISFIED
@@ -502,7 +502,7 @@ C5. COVERAGE MAP. Read todo_dossier; check post.acceptance_coverage.
     Empty → INFORMATIONAL; rebuild via query$llm; record degradation
     :no-coverage-map.
 
-C6. UPDATE RECORDS RESOLVE. For each :update-agent evidence.path,
+C6. UPDATE RECORDS RESOLVE. For each :edit-agent evidence.path,
     bash test -f. Missing → GATHER (the exec dossier may be stale).
 
 C7. NO DOUBLE SCORE. (eval$find :slug … :run-record …) for prior
@@ -520,7 +520,7 @@ For each criterion C in pre.acceptance:
      query$llm when degradation :no-coverage-map is set.
 
   2. EVIDENCE PER ITEM:
-     - :update-agent → drill via update$read-record; read verify.diff_match,
+     - :edit-agent → drill via edit$read-record; read verify.diff_match,
                        verify.lint, verify.tests.
      - :bash         → exit + stdout-tail.
      - :mcp          → response excerpt.
@@ -536,7 +536,7 @@ For each criterion C in pre.acceptance:
      - Flipped checkbox without evidence record → CONTRADICTED with the
        note "checkbox flipped without evidence."
 
-  4. CITE: items, short evidence excerpts, update-agent record paths
+  4. CITE: items, short evidence excerpts, edit-agent record paths
      when applicable, confidence enum.
 
   5. FUZZY: criteria containing words from {intuitive, acceptable,
@@ -651,8 +651,8 @@ UPSTREAM DOSSIER ACCESS (READ-ONLY)
                         :post.acceptance_coverage, :pre.acceptance.
 - plan$read-dossier  -- frontmatter parse of a plan-agent dossier. Gives
                         :post.acceptance, :post.verdict.
-- update$read-record -- drill from an exec evidence entry's :path to the
-                        underlying update-agent record. Gives :verify
+- edit$read-record -- drill from an exec evidence entry's :path to the
+                        underlying edit-agent record. Gives :verify
                         :apply :rollback for diff-level audit.
 
 PLAN / TODO ACCESS (READ-ONLY, fallback only)
@@ -770,14 +770,14 @@ Same as plan / todo / exec. No new BT. Iteration shape:
       (cond
         ;; SATISFIED — every contributing item ok? true with concrete evidence
         (and (every? :ok? evid)
-             (every? #(or (= :update-agent (-> % :evidence :type))
+             (every? #(or (= :edit-agent (-> % :evidence :type))
                           (and (= :bash (-> % :evidence :type))
                                (zero? (-> % :evidence :exit)))
                           (= :manual (-> % :evidence :type)))
                      evid))
         {:criterion c
          :class :satisfied
-         :confidence (if (some #(#{:update-agent :bash} (-> % :evidence :type)) evid)
+         :confidence (if (some #(#{:edit-agent :bash} (-> % :evidence :type)) evid)
                        :high :medium)
          :items items
          :evidence (mapv #(select-keys (:evidence %) [:type :record :exit :excerpt]) evid)}
@@ -910,7 +910,7 @@ Same phases as plan-agent (`docs/plan-agent-design.md` §14). Phase 0 land redes
 | NOT_ACHIEVED (test failure)                | Bash item exit=1                                                                                        | Verdict NOT_ACHIEVED with CONTRADICTED on the affected criterion; recommendation routes to exec-agent (resume).                   |
 | NOT_ACHIEVED (flipped without evidence)    | Todo file has item N flipped, but exec dossier has no evidence for N                                    | Criterion containing N → CONTRADICTED with the explicit "checkbox flipped without evidence" note.                                 |
 | Fuzzy criterion                            | Acceptance like "checkout feels intuitive"                                                              | query$llm invoked; prompt summary recorded in dossier; confidence :medium at best.                                                |
-| Drill from criterion to diff               | SATISFIED criterion with :update-agent evidence                                                         | dossier evidence cites the update-agent record path; the record is present (C6).                                                  |
+| Drill from criterion to diff               | SATISFIED criterion with :edit-agent evidence                                                         | dossier evidence cites the edit-agent record path; the record is present (C6).                                                  |
 | Post-flight REVISE                         | First-pass forgot recommendation for one CONTRADICTED criterion                                         | R5 fails; one auto-round adds it; final dossier has all recommendations.                                                          |
 | Post-flight HOLD (3+ unsupported flips)    | Suspicious exec turn                                                                                    | R3 fails > threshold; agent surfaces hold; recommends user review the exec turn.                                                  |
 | Reproducibility                            | Re-run eval-agent on the same dossier set                                                              | Verdict and per-criterion classifications match; R7 cross-check passes.                                                            |

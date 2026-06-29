@@ -3,8 +3,8 @@
 > **Status:** Shipped — `init-agent` is registered in `components/agent` (`common/init_agent.clj`). This document is the original design proposal (revision 1 — draft); the shipped implementation may diverge in details. See [core/agent.md](../core/agent.md) for the current roster.
 > **Scope:** new `components/agent/src/ai/brainyard/agent/common/init_agent.clj` and a thin command namespace `components/agent/src/ai/brainyard/agent/common/init.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
-> **Sibling of:** `config-agent` (config.edn), `update-agent` (safe file edits — used here for the actual write), `explore-agent` (read-mostly discovery — used for project sniffing)
-> **Related reading:** `docs/design/config-agent-design.md`, `docs/design/update-agent-design.md`, `components/agent/src/ai/brainyard/agent/core/config.clj` (`load-brainyard-instructions`, `user-config-dir`, `project-config-dir`), `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` (`coact-user-context`)
+> **Sibling of:** `config-agent` (config.edn), `edit-agent` (safe file edits — used here for the actual write), `explore-agent` (read-mostly discovery — used for project sniffing)
+> **Related reading:** `docs/design/config-agent-design.md`, `docs/design/edit-agent-design.md`, `components/agent/src/ai/brainyard/agent/core/config.clj` (`load-brainyard-instructions`, `user-config-dir`, `project-config-dir`), `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` (`coact-user-context`)
 
 ---
 
@@ -44,7 +44,7 @@ Minimal-diff, same pattern as the rest of the specialists.
 6. **Other agents can call but cannot bypass.** When `coact-agent` calls `init-agent` mid-session ("persist this insight"), the call goes through the same read → propose → diff → apply pipeline. Other agents do NOT get a privileged "skip confirmation" path. In `--auto`/non-interactive contexts the confirmation is an in-band rule (§7.4) rather than a TTY prompt.
 7. **BRAINYARD.md stays readable to humans.** No EDN, no fenced agent-only blobs. The file is a plain markdown document a teammate could open in any editor and understand. Init-agent enforces this by keeping the section model human-shaped and refusing to write structural markers (HTML comments excepted) that break casual reading.
 8. **Treat CLAUDE.md / AGENTS.md as drafts, not specs.** When seeding, init-agent *summarises and reorganises* — it does not copy. The seeded BRAINYARD.md is a brainyard-shaped reflection of the source, with sections in the order init-agent uses (§4.3), the same content normalised for the brainyard agent's prompt budget.
-9. **No clone-self recursion.** `query$clone` is excluded (matches the other specialists). Cross-agent dispatch happens via the direct callable form — every `defagent` is auto-bound into the sandbox as a kebab-case function, so `(plan-agent {…})` / `(explore-agent {…})` / `(update-agent {…})` are the call sites, not `query$clone` and not a `call-tool` wrapper.
+9. **No clone-self recursion.** `query$clone` is excluded (matches the other specialists). Cross-agent dispatch happens via the direct callable form — every `defagent` is auto-bound into the sandbox as a kebab-case function, so `(plan-agent {…})` / `(explore-agent {…})` / `(edit-agent {…})` are the call sites, not `query$clone` and not a `call-tool` wrapper.
 10. **Honest about silence, but still useful.** If BRAINYARD.md is missing AND no CLAUDE.md / AGENTS.md is found AND the user said nothing more than `/init`, init-agent says so plainly and asks the user whether to proceed by exploring the project directory itself. On confirmation, it dispatches `explore-agent` to sniff the repo (top-level files, `deps.edn` / `package.json` / `Cargo.toml` / `pyproject.toml`, top-level directories, `README.md` if present) and synthesises a first-draft BRAINYARD.md anchored on what it observed plus the §4.3 section template. It NEVER invents project facts not present in the explore output; gaps in the draft are left as TODO placeholders the user fills in. If the user declines, init-agent exits without writing.
 
 ---
@@ -88,7 +88,7 @@ BRAINYARD.md exists at **two scopes**, both consumed by every agent's user-conte
      │  every CoAct-derived agent reads BRAINYARD.md via coact-user-context
      │
      ├─ explore-agent       (read-mostly discovery; called by init-agent for repo sniffing)
-     ├─ update-agent        (safe file edits; THE WRITER underneath init$apply)
+     ├─ edit-agent        (safe file edits; THE WRITER underneath init$apply)
      ├─ config-agent        (config.edn; sibling — same snapshot/dossier idiom)
      ├─ plan-agent / todo-agent / exec-agent / eval-agent
      └─ init-agent          (THIS — BRAINYARD.md authoring + maintenance)
@@ -99,7 +99,7 @@ BRAINYARD.md exists at **two scopes**, both consumed by every agent's user-conte
                                  │    bb tui run -a init-agent                (direct entry — rare)
 ```
 
-Init-agent **uses** update-agent for the actual file write (so the safe-edit pipeline — diff, pattern-match safety, git status check — is exercised). It **uses** explore-agent for project sniffing during seed (read `deps.edn`, `package.json`, `Cargo.toml`, top-level dirs, `README.md`). It is **used by** every other agent that wants to persist a learning into the always-on user-context. The CoAct loop, sandbox, BT, and DSPy signatures are untouched.
+Init-agent **uses** edit-agent for the actual file write (so the safe-edit pipeline — diff, pattern-match safety, git status check — is exercised). It **uses** explore-agent for project sniffing during seed (read `deps.edn`, `package.json`, `Cargo.toml`, top-level dirs, `README.md`). It is **used by** every other agent that wants to persist a learning into the always-on user-context. The CoAct loop, sandbox, BT, and DSPy signatures are untouched.
 
 ---
 
@@ -177,7 +177,7 @@ Inherited from the shared registry:
 | `read-file` / `grep` | Reading BRAINYARD.md, CLAUDE.md, AGENTS.md, deps.edn, package.json, README.md | Standard sandbox surface. |
 | `bash` (allowlisted) | `ls .brainyard/`, `git rev-parse --show-toplevel`, `cat -A` for whitespace-inspection | Read-only allowlist. |
 | `query$llm` | Section-level summarisation, "is this an append or an overwrite?" classification | Single-step; no recursion. |
-| `(update-agent {…})` | The actual write to BRAINYARD.md (pattern-replace for appends, full rewrite for curate) | Direct sandbox callable; same safe-edit pipeline as elsewhere — diff, git status check, snapshot. |
+| `(edit-agent {…})` | The actual write to BRAINYARD.md (pattern-replace for appends, full rewrite for curate) | Direct sandbox callable; same safe-edit pipeline as elsewhere — diff, git status check, snapshot. |
 | `(explore-agent {…})` | "What are the top-level dirs / what build tool is in use?" sniffing during seed and during the no-sources fallback (§2.10, §5.1, §12.10) | Direct sandbox callable; read-only. |
 
 New commands (defined in `agent/common/init.clj`, registered via `defcommand`):
@@ -187,7 +187,7 @@ New commands (defined in `agent/common/init.clj`, registered via `defcommand`):
 | `init$read` | `{:scope :project|:user|:both}` | Returns the requested BRAINYARD.md contents (raw + parsed section map). Pure read. |
 | `init$detect-sources` | `{:scope :project|:user|:both}` | Looks for CLAUDE.md / AGENTS.md / README.md at the given scope(s). Returns `[{:source :claude-md :path … :size …} …]`. Pure read. |
 | `init$diff` | `{:scope :project|:user :proposed <markdown-string>}` | Returns a unified diff against the on-disk file + a section-level summary. No side effects. |
-| `init$apply` | `{:scope :project|:user :op :init|:append|:curate|:reseed|:replace-section :body <md> :reason <str> :confirm? <bool>}` | The transactional write. Validates size budget → snapshot → calls `update-agent` to write → markdown-parse smoke test → dossier-append. Returns `{:ok? :snapshot-path :diff :size :dossier-path}`. |
+| `init$apply` | `{:scope :project|:user :op :init|:append|:curate|:reseed|:replace-section :body <md> :reason <str> :confirm? <bool>}` | The transactional write. Validates size budget → snapshot → calls `edit-agent` to write → markdown-parse smoke test → dossier-append. Returns `{:ok? :snapshot-path :diff :size :dossier-path}`. |
 | `init$revert` | `{:snapshot-path <path>}` or `{:scope :project|:user :steps <int>}` | Restores a prior snapshot (itself snapshots the current file first). |
 | `init$list-snapshots` | `{:scope :project|:user :limit <int>?}` | Last 20 with timestamps, reasons, brief diffs. |
 | `init$smoke-test` | `{:scope :project|:user}` | Re-runs `load-brainyard-instructions` against the on-disk file and asserts (a) parses, (b) fits in the agent's user-context budget, (c) hasn't grown past the 8 KB hard cap. Useful after a manual edit. |
@@ -205,7 +205,7 @@ The CoAct preamble plus six guidances specific to init-agent:
 3. **Read → propose → diff → confirm → apply, every time.** Same discipline as config-agent. Skip the diff and you've shipped a defect.
 4. **In `--auto` mode (no TTY)**, the confirmation rule is: `:op :append` writes that add < 200 chars to a known section pass without confirmation; everything else (init, curate, reseed, replace-section, large appends) requires either `:confirm? true` in the call or refuses with `{:error :auto-confirmation-required}`. This is the in-band substitute for a TTY prompt. Callers (other agents) read this and either pass `:confirm? true` (explicit, auditable) or surface the refusal to the user.
 5. **Treat CLAUDE.md / AGENTS.md as drafts.** When seeding, summarise into brainyard's section model (§4.3). Do NOT copy verbatim — Claude Code's CLAUDE.md often has Claude-Code-specific guidance (slash commands, MCP setup advice, "Claude should…") that's noise in a brainyard context. Keep the project facts, drop the tool-specific framing.
-6. **Hand off when the right tool is a sibling.** `update-agent` for the write itself, `explore-agent` for project sniffing. Don't reimplement either inside init-agent.
+6. **Hand off when the right tool is a sibling.** `edit-agent` for the write itself, `explore-agent` for project sniffing. Don't reimplement either inside init-agent.
 
 The instruction explicitly forbids:
 
@@ -481,7 +481,7 @@ A small helper namespace `agent/common/init/calling.clj` provides a one-liner fo
 8. **`(init-agent …)` from inside an `--auto` (non-interactive) run with a write > 200 chars.** Refuse per §7.4 with `:error :auto-confirmation-required`. The calling agent must explicitly pass `:confirm? true` if its caller has authorised the write.
 9. **User scope file edited in a non-project context (no `.brainyard/` in cwd).** Default to user scope; `init$apply` writes to `~/.brainyard/BRAINYARD.md`.
 10. **`/init` with no BRAINYARD.md AND no sources detected AND no prompt.** Ask the user once: "No BRAINYARD.md, no CLAUDE.md/AGENTS.md to seed from — want me to explore the project directory and draft one?" On `yes`, dispatch `explore-agent` to sniff the repo (top-level layout, build files, README), synthesise a first draft mapped onto the §4.3 section template (gaps left as `TODO` placeholders the user fills in), then run the standard read → propose → diff → confirm → apply flow. On `no`, exit without writing. Init-agent never invents project facts; the draft only contains observations from explore-agent's actual output plus the §4.3 scaffold.
-11. **User puts secrets in BRAINYARD.md** ("here's my API key"). Init-agent's write path runs a simple secret-pattern scan (entropy + common-key-prefix regex) before snapshot; on match, refuses the write and tells the user to put the secret in `.env` instead. Same hooks `update-agent` uses for diff scanning.
+11. **User puts secrets in BRAINYARD.md** ("here's my API key"). Init-agent's write path runs a simple secret-pattern scan (entropy + common-key-prefix regex) before snapshot; on match, refuses the write and tells the user to put the secret in `.env` instead. Same hooks `edit-agent` uses for diff scanning.
 
 ---
 

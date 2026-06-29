@@ -223,7 +223,7 @@ Twenty-one `defagent`s ship in `components/agent`:
 | `coact-agent` *(default)* | Three-channel tool/code/answer loop |
 | `react-agent` | Classic ReAct |
 | `main-agent` *(opt-in `-a main-agent`; future default)* | Front-door router to the right specialist |
-| `plan-agent` / `todo-agent` / `exec-agent` / `eval-agent` / `update-agent` | Plan-act-evaluate specialists |
+| `plan-agent` / `todo-agent` / `exec-agent` / `eval-agent` / `edit-agent` | Plan-act-evaluate specialists |
 | `explore-agent` | Reconnaissance & discovery (supersedes the retired search-agent) |
 | `debug-agent` | Live-runtime debug specialist over the `:nrepl` backend |
 | `research-agent` / `workflow-agent` | CoAct-derived multi-specialist orchestration |

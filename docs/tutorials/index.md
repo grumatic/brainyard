@@ -335,15 +335,15 @@ _Recorded against `by` version: `unknown`._
 
 ---
 
-## Editing files safely with the update-agent
+## Editing files safely with the edit-agent
 
-The update-agent — brainyard's safe single-file edit specialist — renames a function within one seeded file inside an isolated /tmp git workspace, showing its probe → apply → verify → persist → rollback pipeline and the stable `Saved edit:` / `Rollback:` handoff lines. Recorded live against claude-code/opus.
+The edit-agent — brainyard's safe single-file edit specialist — renames a function within one seeded file inside an isolated /tmp git workspace, showing its probe → apply → verify → persist → rollback pipeline and the stable `Saved edit:` / `Rollback:` handoff lines. Recorded live against claude-code/opus.
 
-Most agents that change code delegate the actual write to the **update-agent**
+Most agents that change code delegate the actual write to the **edit-agent**
 — a single-file edit specialist that makes edits *safe*. Every edit runs
 through one pipeline: **probe** (is the file clean? does the target match?) →
 **apply** → **verify** → **persist** (save a diff under
-`.brainyard/agents/update-agent/edits/`) → **rollback** (if verify fails, the
+`.brainyard/agents/edit-agent/edits/`) → **rollback** (if verify fails, the
 workspace is restored automatically).
 
 **Setup.** `by` runs inside a fresh, git-inited /tmp workspace seeded with one

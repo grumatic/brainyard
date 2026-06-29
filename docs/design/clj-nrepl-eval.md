@@ -4,7 +4,7 @@
 > The grant (scope/TTL, incl. the `:nrepl-grant` config key), read-only/`:mutate`
 > classifier gate, first-mutation confirmation (`set-confirm-fn!`), runtime-drift
 > markers + TUI drift chip, audit shim, the `debug$promote-hot-patch` promotion
-> hand-off, *and the entire update-agent hand-off* were all **removed**. A
+> hand-off, *and the entire edit-agent hand-off* were all **removed**. A
 > reachable loopback server gives full `eval`; the only eval-path check is the
 > deny-list (`clj-nrepl.core.classifier`). Rationale: static syntactic analysis
 > can't soundly isolate a live nREPL, so isolation is delegated to the SCI
@@ -14,7 +14,7 @@
 > **As-built (2026-06):** debug-agent is now **end-to-end** — it validates a fix
 > live, then makes it permanent **itself** by editing source files (read-file /
 > update-file / write-file) and reloading the namespace over nREPL. There is no
-> hand-off to update-agent (commit `33a4870`). The live-runtime channel is
+> hand-off to edit-agent (commit `33a4870`). The live-runtime channel is
 > managed on demand by three debug-agent commands —
 > `clj-nrepl$start-server` / `clj-nrepl$stop-server` / `clj-nrepl$status`
 > (commit `4a44ce2`) — which write **per-instance** port files under
@@ -24,7 +24,7 @@
 > **Status (as-built):** Shipped, then simplified to full-trust (grant/classifier-gate/confirm/drift/audit/promotion all removed — see the superseded notes above).
 > **Scope:** new component `components/clj-nrepl` (in-process nREPL server + loopback client + session registry + deny-list classifier), a unified `code$eval` command in `components/agent/.../common/code_eval.clj` (note: lives in `common/`, not `core/tool` as originally proposed), a `NreplEvalJobExecutor` in `components/agent/.../task/executor.clj`, a CoAct backend selector in `coact_agent.clj`, opt-in bootstrap gated by `BY_NREPL_ENABLED` plus on-demand `clj-nrepl$start-server` commands, and a CoAct-derived specialist `debug-agent` (see `docs/design/debug-agent-design.md`). *(The originally-planned grant/confirm/drift/audit layers and TUI drift chip were removed.)*
 > **Built on:** `ai.brainyard.clj-sandbox.interface` (the existing SCI eval path), the unified tool registry (`ai.brainyard.agent.core.tool/!tool-defs`), the task manager job-type model (`ai.brainyard.agent.task.protocol/IJobExecutor`), and `nrepl/nrepl 1.3.0` (promoted to a runtime dep of the new component).
-> **Related reading:** `docs/CoAct.md`, `docs/rlm-agent-design.md`, `docs/design/debug-agent-design.md` (the specialist that drives the self-debug loop and now owns permanent fixes), `docs/design/observability.md`, `docs/build-and-deploy.md`, `docs/core/task.md` (the `NreplEvalJobExecutor` job type). *(The update-agent hand-off referenced in earlier revisions was removed.)*
+> **Related reading:** `docs/CoAct.md`, `docs/rlm-agent-design.md`, `docs/design/debug-agent-design.md` (the specialist that drives the self-debug loop and now owns permanent fixes), `docs/design/observability.md`, `docs/build-and-deploy.md`, `docs/core/task.md` (the `NreplEvalJobExecutor` job type). *(The edit-agent hand-off referenced in earlier revisions was removed.)*
 
 ---
 
@@ -50,7 +50,7 @@ Clojure makes the alternative cheap and idiomatic. A running Clojure process can
 4. **Server lifecycle is an Integrant key.** The nREPL server is a managed resource with `ig/init-key` / `ig/halt-key!`, following the established pattern in `ai.brainyard.config.core.aero` and `ai.brainyard.server.core.httpkit`. It binds loopback-only by default and is absent unless config enables it.
 5. **Privilege is explicit, scoped, and revocable.** Crossing from sandbox to live runtime is a privilege boundary, not a parameter tweak. It is gated by config, a runtime grant with TTL, an allow/deny policy, and a kill-switch. (§8 is a first-class section, not a footnote.)
 6. **Everything is audited.** Every `clj-nrepl-eval` — code, session, caller agent, result/exception, duration — is logged through `mulog` and surfaced to observability. The live runtime is the crown jewels; nothing touches it silently.
-7. **Improvements are durable only when promoted.** A redefinition in the live image is ephemeral and dies with the process. Turning a runtime fix into a real change means writing source and rebuilding — `clj-nrepl-eval` hands off to `update-agent` for that, it does not silently rewrite files.
+7. **Improvements are durable only when promoted.** A redefinition in the live image is ephemeral and dies with the process. Turning a runtime fix into a real change means writing source and rebuilding — `clj-nrepl-eval` hands off to `edit-agent` for that, it does not silently rewrite files.
 8. **Native-image aware.** The `by` GraalVM binary cannot host a stock nREPL/SCI-driven REPL the way the JVM can (no runtime classloading/compilation). `clj-nrepl-eval` is a **JVM-mode capability**; on the native binary it is unavailable and degrades to a clear "not supported in native image" error. The sandbox backend remains available everywhere.
 
 ---
@@ -197,13 +197,13 @@ When a tool throws or a component wedges, the agent reproduces the failure live:
 A validated fix from §7.2 is still ephemeral — it lives only in the running image. Two outcomes:
 
 1. **Hot-patch only** (default for incident recovery): keep the redefinition in the live process to unblock the current session; log it loudly as a divergence between source and runtime.
-2. **Promote to source**: hand the diff to `update-agent` (`docs/design/update-agent-design.md`) to write the change into the component source, so it survives a rebuild and lands in git.
+2. **Promote to source**: hand the diff to `edit-agent` (`docs/design/edit-agent-design.md`) to write the change into the component source, so it survives a rebuild and lands in git.
 
 `clj-nrepl-eval` never edits files itself — the runtime/source split (Principle 7) keeps the audit trail honest. A runtime that has hot-patches applied must report that fact (a "runtime drift" marker), so nobody mistakes a live patch for a committed fix.
 
 ### 7.4 Self-extending
 
-Because tools live in a plain atom, the agent can register new capability mid-session: `defcommand` a new tool, `require` a freshly written namespace, or wire a new MCP-backed tool — and it is immediately callable through the same registry the sandbox auto-binds from. This is the runtime-mutation complement to `update-agent`'s source-level extension: prototype a tool live, validate it, then promote it to a real component. Newly registered tools are themselves subject to the tool-use hooks and permission checks, so self-extension does not bypass the existing guardrails.
+Because tools live in a plain atom, the agent can register new capability mid-session: `defcommand` a new tool, `require` a freshly written namespace, or wire a new MCP-backed tool — and it is immediately callable through the same registry the sandbox auto-binds from. This is the runtime-mutation complement to `edit-agent`'s source-level extension: prototype a tool live, validate it, then promote it to a real component. Newly registered tools are themselves subject to the tool-use hooks and permission checks, so self-extension does not bypass the existing guardrails.
 
 ---
 
@@ -250,7 +250,7 @@ The throughline: **the sandbox backend is always available and always safe; the 
 - **Task manager.** New job-type `:clj-nrepl-eval` with a `NreplEvalJobExecutor` implementing `IJobExecutor`, symmetric to `ClojureSandboxJobExecutor` — detach-capable, `:on-poll` / `:on-cancel`, dual-deadline timeout, so long or hung live evals never block the agent loop.
 - **Hooks.** Reuse `:agent.code-eval/pre` / `:agent.code-eval/post`, adding `:backend` to the payload so the audit shim and observability can distinguish sandbox from live-runtime evals.
 - **CoAct.** `coact-code-eval-action` learns to read a backend hint from the fence (` ```clojure :nrepl `) or default to `:sandbox`. No new BT.
-- **eval-agent / update-agent.** eval-agent drives the debug loop (§7.2); update-agent promotes validated fixes to source (§7.3). clj-nrepl-eval is the shared primitive both lean on.
+- **eval-agent / edit-agent.** eval-agent drives the debug loop (§7.2); edit-agent promotes validated fixes to source (§7.3). clj-nrepl-eval is the shared primitive both lean on.
 
 ---
 
@@ -259,14 +259,14 @@ The throughline: **the sandbox backend is always available and always safe; the 
 > **As-built rollup (2026-06):** Phases 1–2 shipped, then the grant / classifier-gate /
 > confirmation / drift / audit machinery was **removed** (full-trust simplification,
 > commit `dc2348a`). Phase 3 (promotion hand-off) was built then **replaced**: debug-agent
-> now makes permanent fixes itself with the file tools, with no update-agent hand-off
+> now makes permanent fixes itself with the file tools, with no edit-agent hand-off
 > (commit `33a4870`). The descriptions below are kept as the historical phase record.
 
 1. **Phase 1 — Server + self-observe (read-only).** ✅ Shipped (later simplified). `components/clj-nrepl` (server + client + session + classifier), `code$eval` with `:sandbox` (default) and `:nrepl` backends, `NreplEvalJobExecutor` (`:clj-nrepl-eval` job type) for the detach-capable task path, opt-in bootstrap gated by `BY_NREPL_ENABLED`. *As-built:* grant/audit were removed; `code$eval`'s `:nrepl` arm now runs synchronously (the `NreplEvalJobExecutor` remains for the detached task path). Backend selection lives entirely on the per-agent `:clj-backend` config.
 2. **Phase 2 — Debug loop.** ✅ Shipped (the grant/confirm/drift parts since removed):
    - **2a** — *(removed)* `:mutate` grant scope, host-injectable confirmation fn, runtime-drift marker. Only the deny-list gate survives.
    - **2b** — `debug-agent` defagent (CoAct-derived specialist) with per-instance pinned nREPL session and `:clj-backend :nrepl`. The execution-model system-prompt section is selected by `coact-system-context` from the agent's `:clj-backend` — no separate `:execution-model` write. See `docs/design/debug-agent-design.md`. *(Note: not the eval-agent — that's a different agent for plan/todo/exec verdict production. A new specialist was created.)* Also adds the `clj-nrepl$start-server` / `stop-server` / `status` lifecycle commands.
-3. **Phase 3 — Permanent fixes.** ✅ Shipped, then **redesigned**. The original `debug$promote-hot-patch` artifact + update-agent hand-off was **dropped** (commit `33a4870`). debug-agent now owns permanent fixes end-to-end: validate live, edit the source file with read-file / update-file / write-file, reload the namespace over nREPL to confirm. No promotion artifact, no update-agent.
+3. **Phase 3 — Permanent fixes.** ✅ Shipped, then **redesigned**. The original `debug$promote-hot-patch` artifact + edit-agent hand-off was **dropped** (commit `33a4870`). debug-agent now owns permanent fixes end-to-end: validate live, edit the source file with read-file / update-file / write-file, reload the namespace over nREPL to confirm. No promotion artifact, no edit-agent.
 4. **Phase 4 — Hardening.** ⏳ N/A. The grant/posture/audit/confirmation hardening track was made moot by the full-trust simplification; the deny-list + loopback-only bind are the residual structural controls.
 
 ---
@@ -275,7 +275,7 @@ The throughline: **the sandbox backend is always available and always safe; the 
 
 - **Not a sandbox replacement.** SCI stays the default and the only backend for RLM/context work. `clj-nrepl-eval` is additive.
 - **Not remote/multi-tenant nREPL.** Loopback, single-image, single-operator. No off-host exposure, no auth protocol design here.
-- **Not automatic source-writing.** clj-nrepl-eval mutates the *runtime*; turning that into a *committed change* is update-agent's job, behind its own review.
+- **Not automatic source-writing.** clj-nrepl-eval mutates the *runtime*; turning that into a *committed change* is edit-agent's job, behind its own review.
 - **Not available in the native `by` binary.** JVM-mode capability only.
 - **Not a bypass of existing guardrails.** Tools registered live, and code evaluated live, remain subject to tool-use hooks, permissions, and audit.
 
@@ -288,7 +288,7 @@ The throughline: **the sandbox backend is always available and always safe; the 
 3. **Runtime-drift surfacing.** ✅ Resolved in Phase 2a': bold-yellow `drifted (N)` chip on the TUI status bar (between tasks/queue and the calls counter). Stays visible until `clj-nrepl/drift-clear!` or process restart. Banner-on-resume / refuse-to-persist variants remain open if drift becomes common enough to warrant louder warnings.
 4. **Shared image with human CIDER.** Still open. The Phase 2b per-instance pinning means a debug-agent always opens its OWN server-issued session, so a developer attached via CIDER and the agent never share namespace state. Whether to *expose* the CIDER user's session to the agent (or vice versa) for collaborative debugging is unexplored.
 5. **Phase 3 syntax-aware promotion.** Pattern-mode shipped covers the single-`defn`/`def` swap case. Cross-line whole-form rewrites need rewrite-clj plumbing on the artifact side; trigger is real demand.
-6. **Two-way drift-marker reconciliation after promotion.** When update-agent finishes its `Saved edit:`, should the original drift marker flip to `:reason :promoted` linking the update-agent record path? Needs a cross-process update path since debug-agent's process may not be the one running update-agent.
+6. **Two-way drift-marker reconciliation after promotion.** When edit-agent finishes its `Saved edit:`, should the original drift marker flip to `:reason :promoted` linking the edit-agent record path? Needs a cross-process update path since debug-agent's process may not be the one running edit-agent.
 7. **TUI confirm-fn install.** `clj-nrepl/set-confirm-fn!` is exposed but no base installs one yet — default-allow with audit warning. Wiring `bases/agent-tui` (and `agent-web`) to use the existing `permissions/make-permission-fn` is a small independent follow-on commit.
 
 ---
@@ -298,7 +298,7 @@ The throughline: **the sandbox backend is always available and always safe; the 
 - `docs/CoAct.md` — the loop that emits code blocks.
 - `docs/rlm-agent-design.md` — the sandbox/RLM eval path this design sits beside.
 - `docs/design/debug-agent-design.md` — **the CoAct-derived specialist that drives the §7.2 self-debug loop and §7.3 promotion hand-off.** *(Note: the original §7.2 referenced `eval-agent` as the natural driver. In practice eval-agent is a different agent for plan/todo/exec verdict production; debug-agent is the new specialist for this workflow.)*
-- `docs/design/update-agent-design.md` — *(historical)* the original promotion hand-off target. **As-built:** the hand-off was removed; debug-agent edits source directly (commit `33a4870`).
+- `docs/design/edit-agent-design.md` — *(historical)* the original promotion hand-off target. **As-built:** the hand-off was removed; debug-agent edits source directly (commit `33a4870`).
 - `docs/design/observability.md` — where `:nrepl` eval `mulog` events surface (the dedicated audit shim was dropped; `code$eval` still logs a `::code-eval` event).
 - `docs/core/task.md` — the task manager + `NreplEvalJobExecutor` job type (the detached `:clj-nrepl-eval` path; the synchronous `:nrepl` arm of `code$eval` does not go through it).
 - `docs/build-and-deploy.md` — native-image constraints behind Principle 8 / Non-Goal §11.

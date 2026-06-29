@@ -81,9 +81,9 @@ coact-agent  (substrate — full BT, sandbox, router, accumulator)
   ├─ mcp-agent         (MCP lifecycle + write ops)
   ├─ plan-agent        (plan authoring; pre/post-flight gated; emits dossier)
   ├─ todo-agent        (todo decomposition from plan; per-item :tags routing)
-  ├─ exec-agent        (advance a todo; delegates writes to update-agent)
+  ├─ exec-agent        (advance a todo; delegates writes to edit-agent)
   ├─ eval-agent        (verdict against plan acceptance)
-  ├─ update-agent      (safe single-file edit; probe→apply→verify→rollback)
+  ├─ edit-agent      (safe single-file edit; probe→apply→verify→rollback)
   ├─ memory-agent      (long-term memory: read/write/consolidate)
   ├─ init-agent        (BRAINYARD.md / project bootstrap)
   ├─ config-agent      (.brainyard/config tuning)
@@ -102,7 +102,7 @@ coact-agent  (substrate — full BT, sandbox, router, accumulator)
 | "Hi" / "What is 2+2?" / "Tell me about CoAct" | main-agent answers directly (answer channel) | Conversational / direct knowledge; no tool needed. |
 | "What's in this file?" / "List tools matching X" | main-agent uses tool channel (read-file / list-tools / get-tool-info) | One-shot RPC; no specialist warranted. |
 | "Find me where the loop guard lives" | main-agent → explore-agent | Discovery across files/web/MCP/skills. |
-| "Rename foo to bar in src/x.clj" | main-agent → update-agent | Safe single-file edit; no plan/todo arc. |
+| "Rename foo to bar in src/x.clj" | main-agent → edit-agent | Safe single-file edit; no plan/todo arc. |
 | "Compose three tool results into a table" | main-agent uses code channel (clojure fence) | Composition; no specialist. |
 | "Search Slack for messages about Q4 launches" | main-agent → mcp-agent (or tool channel if direct call sufficient) | MCP read/write; specialist owns lifecycle. |
 | "Draft a plan to migrate the auth middleware" | main-agent → plan-agent | Plan authoring; pre/post-flight gating. |
@@ -186,7 +186,7 @@ Both files are append-only. On session close (`agent.session/closed`), the `INDE
   [ai.brainyard.agent.common.todo      :as todo-helpers]
   [ai.brainyard.agent.common.exec      :as exec-helpers]
   [ai.brainyard.agent.common.eval      :as eval-helpers]
-  [ai.brainyard.agent.common.update    :as update-helpers]
+  [ai.brainyard.agent.common.update    :as edit-helpers]
   [ai.brainyard.agent.common.main      :as main]
   [ai.brainyard.agent.task.commands    :as task-cmds])
 
@@ -213,7 +213,7 @@ Both files are append-only. On session close (`agent.session/closed`), the `INDE
             #'todo-helpers/todo$read-dossier
             #'exec-helpers/exec$read-dossier
             #'eval-helpers/eval$read-dossier
-            #'update-helpers/update$read-record]
+            #'edit-helpers/edit$read-record]
 
            ;; Sub-LLM synthesis (flat only) — intentionally excludes #'query$clone
            [#'common-cmds/query$llm]
@@ -231,7 +231,7 @@ Both files are append-only. On session close (`agent.session/closed`), the `INDE
            main/main-helpers))))
 ```
 
-The specialist `defagent`s (`explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `update-agent`, `research-agent`, `workflow-agent`, `memory-agent`, `init-agent`, `config-agent`, `skill-agent`, `mcp-agent`, `rlm-agent`, `acp-agent`, `debug-agent`, plus `coact-agent` / `react-agent` themselves as advanced fallbacks) are not bound as direct sandbox functions — they self-register in `!tool-defs` through their own `defagent` forms and are reached by direct kebab-case dispatch from a clojure fence, OR via the tool channel:
+The specialist `defagent`s (`explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `edit-agent`, `research-agent`, `workflow-agent`, `memory-agent`, `init-agent`, `config-agent`, `skill-agent`, `mcp-agent`, `rlm-agent`, `acp-agent`, `debug-agent`, plus `coact-agent` / `react-agent` themselves as advanced fallbacks) are not bound as direct sandbox functions — they self-register in `!tool-defs` through their own `defagent` forms and are reached by direct kebab-case dispatch from a clojure fence, OR via the tool channel:
 
 ```clojure
 ;; From a clojure fence in code-blocks:
@@ -250,7 +250,7 @@ What is *deliberately omitted*:
 | Excluded | Reason |
 |---|---|
 | `query$clone` | Clones main-agent itself = clone-self recursion. Forbidden. Cross-agent dispatch is direct kebab-case + flat. |
-| Direct `plan$dossier-write`, `todo$dossier-write`, `exec$dossier-write`, `eval$dossier-write`, `eval$verdict-write`, `update$apply` | Sibling-specialist writes go through their specialists, never directly. The read-only cherry-pick (`*$read-dossier` + `update$read-record`) is the deliberate asymmetry. |
+| Direct `plan$dossier-write`, `todo$dossier-write`, `exec$dossier-write`, `eval$dossier-write`, `eval$verdict-write`, `edit$apply` | Sibling-specialist writes go through their specialists, never directly. The read-only cherry-pick (`*$read-dossier` + `edit$read-record`) is the deliberate asymmetry. |
 | `mcp$tools :call` (write-side), `skills$write` / `skills$install` | These belong to mcp-agent / skill-agent. main-agent routes; it does not bypass. |
 
 What is *bound directly* but should be reached for sparingly:
@@ -259,7 +259,7 @@ What is *bound directly* but should be reached for sparingly:
 |---|---|---|
 | `web-search`, `fetch-url` | Quick one-off lookup mid-routing where the result confirms a single fact (e.g. "is X still the current API endpoint?"). | Multi-source discovery, ambiguous question, or any lookup whose result will be cited in a downstream artifact — call `explore-agent`. |
 | `read-file`, `grep` | Reading a SPECIFIC sibling dossier paragraph the frontmatter cherry-picks don't carry. | Use the `*$read-dossier` cherry-picks first — parsed frontmatter for free. |
-| `bash` | `mkdir`, `ls`, basic git inspection. | Long-running subprocess, build step, test run — route to exec-agent (with update-agent for any file writes). |
+| `bash` | `mkdir`, `ls`, basic git inspection. | Long-running subprocess, build step, test run — route to exec-agent (with edit-agent for any file writes). |
 | `list-tools`, `get-tool-info`, `search` | Discovering which specialist owns a domain the user named obliquely ("can you do X?"). | Don't over-use — most decisions should be table-driven from §6, not registry-introspecting. |
 
 ---
@@ -314,7 +314,7 @@ PIPELINE (plan/todo/exec/eval — pre/post-flight gated + dossier handoff)
 
 - exec-agent     → drives a todo to completion. Pre-flight reads todo
                    + plan dossiers. Per-item routes via :tags.via —
-                   :update-agent items delegate to update-agent. Emits
+                   :edit-agent items delegate to edit-agent. Emits
                    `Saved dossier:` plus `Done:` / `Manual:` / `Hold:`.
                    Use when a todo exists and the user wants the work
                    DONE (not just listed).
@@ -326,7 +326,7 @@ PIPELINE (plan/todo/exec/eval — pre/post-flight gated + dossier handoff)
                    asks for a status check, score, or sign-off.
 
 WRITES & FIXES
-- update-agent   → safe single-file edit (probe → apply → verify →
+- edit-agent   → safe single-file edit (probe → apply → verify →
                    persist → rollback-on-fail). Emits `Saved edit:` AND
                    `Rollback: <cmd>`. Use directly for one-off edits the
                    user spelled out concretely ("rename foo to bar in
@@ -451,7 +451,7 @@ D. EXPLORE         → explore-agent
    Example: "Where is the loop guard implemented?", "What MCP servers
             are configured?".
 
-E. UPDATE          → update-agent
+E. UPDATE          → edit-agent
    Shapes: single concrete edit, "rename A to B in file F", "add line
             to file F", "fix typo in F line N".
    Example: "Rename `foo-bar` to `foo-baz` in src/x.clj".
@@ -607,7 +607,7 @@ HARD RULES
      .brainyard/agents/todo-agent/todos/        .brainyard/agents/todo-agent/dossiers/
      .brainyard/agents/exec-agent/dossiers/
      .brainyard/agents/eval-agent/verdicts/     .brainyard/agents/eval-agent/dossiers/
-     .brainyard/agents/update-agent/edits/
+     .brainyard/agents/edit-agent/edits/
      .brainyard/agents/explore-agent/results/
      .brainyard/agents/research-agent/<id>/     .brainyard/agents/workflow-agent/<id>/
    These are owned by their respective specialists. You read-file them
@@ -668,7 +668,7 @@ All nineteen `defagent`s are reachable. See §6 for the full per-agent
 decision table. Headline:
 
 - explore-agent    → discovery across files / web / MCP / skills.
-- update-agent     → safe single-file edit.
+- edit-agent     → safe single-file edit.
 - plan-agent       → plan authoring (pre/post-flight gated).
 - todo-agent       → decomposition (pre/post-flight gated).
 - exec-agent       → advance a todo (per-item routing).
@@ -700,7 +700,7 @@ Invocation pattern (all identical):
 - update-file    -- Rarely needed — both your files are append-only.
 - grep           -- Cheap content scan inside your own log files.
 - bash           -- mkdir -p, ls, find. NOT for builds or test runs —
-                    those go to exec-agent (with update-agent for writes).
+                    those go to exec-agent (with edit-agent for writes).
 - search         -- Cross-project keyword search (rare — usually use
                     explore-agent instead).
 
@@ -719,7 +719,7 @@ Invocation pattern (all identical):
                           Returns :score.criteria, :score.recommendations.
                           Use to detect "did acceptance pass; should
                           we route back to plan/todo/exec?"
-- update$read-record  -- Parse an update-agent record. Returns :apply
+- edit$read-record  -- Parse an edit-agent record. Returns :apply
                           :verify :rollback for diff-level audit.
 
 ### Synthesis

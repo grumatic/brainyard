@@ -107,9 +107,9 @@ unified tool registry (see [tool.md](tool.md)):
 | `todo-agent` | `common/todo_agent.clj` | Manage a todo list |
 | `exec-agent` | `common/exec_agent.clj` | Execute a single concrete task |
 | `eval-agent` | `common/eval_agent.clj` | Score / verdict on results |
-| `update-agent` | `common/update_agent.clj` | Update dossier / plan / source edits |
+| `edit-agent` | `common/edit_agent.clj` | Update dossier / plan / source edits |
 | `explore-agent` | `common/explore_agent.clj` | Reconnaissance & discovery (supersedes the retired search-agent) |
-| `debug-agent` | `common/debug_agent.clj` | Live-runtime specialist — drives the reproduce → probe → hypothesize → validate-live loop against the running JVM over the `:nrepl` backend (pins an nREPL session per instance), and owns the **permanent fix** itself: validate live, then edit the source (`read-file`/`update-file`/`write-file`) and reload the namespace via nREPL — no update-agent handoff |
+| `debug-agent` | `common/debug_agent.clj` | Live-runtime specialist — drives the reproduce → probe → hypothesize → validate-live loop against the running JVM over the `:nrepl` backend (pins an nREPL session per instance), and owns the **permanent fix** itself: validate live, then edit the source (`read-file`/`update-file`/`write-file`) and reload the namespace via nREPL — no edit-agent handoff |
 | `research-agent` | `common/research_agent.clj` | Multi-specialist research thread |
 | `workflow-agent` | `common/workflow_agent.clj` | Multi-stage workflow runner |
 | `skill-agent` | `common/skill_agent.clj` | Run a registered skill |

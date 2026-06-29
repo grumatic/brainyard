@@ -57,7 +57,7 @@ coact-agent  (parent — full BT, sandbox, router, accumulator)
   ├─ rlm-agent
   ├─ skill-agent
   ├─ mcp-agent
-  ├─ plan-agent / todo-agent / exec-agent / eval-agent / update-agent
+  ├─ plan-agent / todo-agent / exec-agent / eval-agent / edit-agent
   ├─ research-agent      (orchestrates the six specialists)
   └─ memory-agent        (steward of the memory.db — capture essences, consolidate,
                           purge, verify, report stats; reached via call-tool)
@@ -215,7 +215,7 @@ Each operation is an `:op` value the memory-agent dispatches on inside its CoAct
 
 ### 7.2 `:op :remember` — Explicit fact registration
 
-**When called:** Any other agent (or the user via slash-command) explicitly wants to save a fact. Common from `update-agent` after a successful safe edit ("we now route exceptions through X"), from `eval-agent` after a verdict ("approach Y did not work because Z").
+**When called:** Any other agent (or the user via slash-command) explicitly wants to save a fact. Common from `edit-agent` after a successful safe edit ("we now route exceptions through X"), from `eval-agent` after a verdict ("approach Y did not work because Z").
 
 **Inputs:** `:content`, optional `:kind`, `:tags`, `:confidence`, `:scope :session | :user`.
 

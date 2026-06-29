@@ -14,7 +14,7 @@
 ## 1. Motivation
 
 `by` ships a fixed roster of CoAct-derived specialists — `explore-agent`,
-`plan-agent`, `research-agent`, `update-agent`, and the rest — each a `defagent`
+`plan-agent`, `research-agent`, `edit-agent`, and the rest — each a `defagent`
 over `coact/run-coact-derived` whose entire personality is a curated
 `:instruction` plus a `:tool-context` block layered on top of the shared CoAct
 loop and tool palette. They are powerful precisely because they are *thin*: the

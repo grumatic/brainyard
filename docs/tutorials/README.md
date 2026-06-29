@@ -30,7 +30,7 @@ walkthrough.
 | 10 | Using CLI skills                           | coact-agent — discover / invoke (as a task) / use        |
 | 11 | Authoring BRAINYARD.md                      | init-agent — generate project docs from README + source  |
 | 12 | Configuring brainyard                      | config-agent — inspect defaults / change safely / persist|
-| 13 | Editing files safely                       | update-agent — find/replace with a diff, def + call site |
+| 13 | Editing files safely                       | edit-agent — find/replace with a diff, def + call site |
 | 14 | MapReduce over big inputs                  | rlm-agent — fan out across logs, then aggregate          |
 | 15 | A focused research turn                    | research-agent — explore + recommend (no plan, no code)  |
 | 16 | Running a multi-stage workflow             | workflow-agent — explore + plan stages, threaded dossier |

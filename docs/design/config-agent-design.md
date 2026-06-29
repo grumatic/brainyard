@@ -4,7 +4,7 @@
 > **Scope:** new `components/agent/src/ai/brainyard/agent/common/config_agent.clj` and a thin command namespace `components/agent/src/ai/brainyard/agent/common/config.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
 > **Upstream:** `docs/design/bootstrapping-design.md` (the `bb tui config` wizard owns first-LLM bootstrap; this agent owns everything after)
-> **Sibling of:** `update-agent` (safe file edits), `mcp-agent` (MCP lifecycle), `explore-agent` (read-mostly discovery)
+> **Sibling of:** `edit-agent` (safe file edits), `mcp-agent` (MCP lifecycle), `explore-agent` (read-mostly discovery)
 > **Related reading:** `components/agent/src/ai/brainyard/agent/core/config.clj`, `bases/agent-tui/src/ai/brainyard/agent_tui/config_wizard.clj`, `bases/agent-tui/src/ai/brainyard/agent_tui/commands.clj` (`/config`, `/effort`, `/model`)
 
 ---
@@ -45,7 +45,7 @@ Same minimal-diff pattern as the other specialist agents: one new agent file, on
 6. **Bootstrap concerns belong to bootstrap.** If the user asks "switch me to Claude," the agent doesn't edit `:llm.default-provider`. It calls `bootstrap/re-run-rung` (a thin facade over the wizard's ladder) which re-detects, smoke-tests, and writes. This keeps "is the configured LLM actually reachable?" in one place.
 7. **Preview, don't surprise.** Every proposed multi-key change shows a unified diff against the current `config.edn`. The user sees exactly what will land before approving. `--dry-run` is the default for non-interactive ops; explicit confirmation flips it on.
 8. **Dossier per conversation.** Every config-agent session produces a markdown dossier at `.brainyard/agents/config-agent/dossiers/<yyyyMMdd-HHmmss>-<slug>.md` summarising what was read, what was changed, which snapshot was taken, and what (if anything) needs follow-up. Mirrors the explore/plan/update agent pattern.
-9. **No clone-self recursion.** Like the other CoAct-derived specialists, `config-agent` excludes `query$clone` from its tool roster. Cross-agent dispatch via flat `(call-tool "<other>" {…})` is fine — calling `mcp-agent` for a deep MCP debug session, `explore-agent` for "find which file references this server name," `update-agent` for editing a `.env`.
+9. **No clone-self recursion.** Like the other CoAct-derived specialists, `config-agent` excludes `query$clone` from its tool roster. Cross-agent dispatch via flat `(call-tool "<other>" {…})` is fine — calling `mcp-agent` for a deep MCP debug session, `explore-agent` for "find which file references this server name," `edit-agent` for editing a `.env`.
 10. **Be honest about durability.** Runtime config changes evaporate at TUI exit; persisted changes do not. The agent says this every time the user makes a runtime-only change ("Set for this session. Want me to persist it?") so the disconnect can never silently bite.
 
 > **As-built:** principle 10 no longer applies as written. There is no session-only path — `agent-runtime$config` persists every set to `[:agent :config]` in `config.edn` *and* applies it to the running agent. The shipped instruction tells the agent to say "Active now and persisted" rather than offering a session-only/persist choice.
@@ -84,7 +84,7 @@ Default is `:auto`, which resolves to project-if-file-exists-else-user for reads
 
 **Per-scope snapshot and dossier history.** Snapshots and dossiers live under each scope's `<scope-dir>/config-agent/`. A project-scope apply snapshots under `<repo>/.brainyard/agents/config-agent/snapshots/`; a user-scope apply under `~/.brainyard/agents/config-agent/snapshots/`. Revert is per-scope — you cannot restore a user file from a project snapshot or vice versa.
 
-**`config-agent/` is one of two exceptions to the broader scope contract.** `agent.core.config/subdir-scope-policy` classifies every `.brainyard/<name>` entry: most `*-agent/` dirs (`explore-agent`, `plan-agent`, `todo-agent`, `workflow-agent`, `research-agent`, `update-agent`, `eval-agent`, `exec-agent`) are **project-only**. `config-agent/` and `init-agent/` are the exceptions — their artifact dirs mirror the scope of the file they edit (`config.edn` and `BRAINYARD.md` respectively), since those files themselves are dual-scope. See [architecture.md](../architecture.md) for the full subdir scope table.
+**`config-agent/` is one of two exceptions to the broader scope contract.** `agent.core.config/subdir-scope-policy` classifies every `.brainyard/<name>` entry: most `*-agent/` dirs (`explore-agent`, `plan-agent`, `todo-agent`, `workflow-agent`, `research-agent`, `edit-agent`, `eval-agent`, `exec-agent`) are **project-only**. `config-agent/` and `init-agent/` are the exceptions — their artifact dirs mirror the scope of the file they edit (`config.edn` and `BRAINYARD.md` respectively), since those files themselves are dual-scope. See [architecture.md](../architecture.md) for the full subdir scope table.
 
 **Scope errors.** `:scope :project` is essentially always resolvable now (working-dir fallback). The only remaining nil case is a caller constructing a `dirs` map with `:project-dir nil` explicitly (tests do this). In normal use, `{:ok? false :stage :scope}` is hard to hit — but the agent should still confirm with the user when working outside a real repo, since the implicit cwd-as-project semantics may surprise them.
 
@@ -105,7 +105,7 @@ Default is `:auto`, which resolves to project-if-file-exists-else-user for reads
      ├─ explore-agent       (read-mostly discovery)
      ├─ plan-agent          (planning + dossier)
      ├─ todo-agent / exec-agent / eval-agent
-     ├─ update-agent        (safe file edits — used by config-agent for .env / SKILL.md edits)
+     ├─ edit-agent        (safe file edits — used by config-agent for .env / SKILL.md edits)
      ├─ mcp-agent           (MCP lifecycle — called by config-agent for "add server" flows)
      └─ config-agent        (THIS — conversational config hub)
 ```
@@ -128,7 +128,7 @@ What the agent must NOT do:
 - Re-run the full wizard from chat (the wizard owns its own UX; agent calls into bootstrap helpers if needed).
 - Edit `:bootstrap` (read-only — bootstrap owns this).
 - Edit `<scope-dir>/.brainyard/agents/config-agent/snapshots/` directly (either scope; it's a sink).
-- Write outside `:permissions.allowed-dirs`-allowed paths when proposing `update-agent` edits (e.g. `.env` files outside the project — confirmation flow required).
+- Write outside `:permissions.allowed-dirs`-allowed paths when proposing `edit-agent` edits (e.g. `.env` files outside the project — confirmation flow required).
 
 ---
 
@@ -143,7 +143,7 @@ What the agent must NOT do:
 | `query$llm` | Sub-LLM calls for summarisation, value-coercion suggestions | Single-step; no recursion. |
 | `agent-runtime$config` | Read or set config (per-agent override + persisted) | Existing polymorphic command in `agent/common/commands.clj`. No args → returns the merged config snapshot (per-agent override → global config → schema default). `:key K :value V` → validates against `config/config-keys`, coerces, applies. **As-built:** the set path writes BOTH the per-agent override AND the persisted global value at `[:agent :config K]` in `config.edn` — there is no session-only mode. Reused as-is — do not introduce parallel `runtime$get`/`runtime$set` shims. |
 | `mcp$server` / `mcp$tools` / `mcp$lifecycle` | Inspect / add / remove / restart MCP servers | Existing trio in `mcp-agent`'s command set; reused as-is. |
-| `update-agent` (call-tool) | Edit `.env`, `BRAINYARD.md`, `~/.brainyard/permissions.edn`-style sidecar files | Same safe-edit pipeline as elsewhere. |
+| `edit-agent` (call-tool) | Edit `.env`, `BRAINYARD.md`, `~/.brainyard/permissions.edn`-style sidecar files | Same safe-edit pipeline as elsewhere. |
 | `explore-agent` (call-tool) | "Find all places that reference X env var / server name" | Read-only discovery. |
 
 New commands (defined in `agent/common/config.clj`, registered via `defcommand`):
@@ -173,7 +173,7 @@ The CoAct instruction has a fixed template across the specialist agents (`docs/C
 2. **Classify the user's intent into one of the five capability kinds (§4) before acting.** If ambiguous, ask one targeted question — not five. (Specifically: the agent should never re-prompt for things it could derive from the cached read.)
 3. **For any write, follow read → propose → diff → confirm → apply.** Skipping the diff is a defect. The user sees the diff inline (rendered from `config$diff`'s output) and types `yes` / `no` / `change X to Y` — last form short-circuits back into "propose."
 4. **Runtime vs persisted is the user's choice, not yours.** When the user names a runtime-config key, default to runtime-only with a follow-up offer to persist. When they name a persisted key, default to persisted. When ambiguous (`max-iterations` exists in both — runtime-config and `:agent.max-iterations`), ask once.
-5. **Hand off when the right tool is a sibling.** "Add the Linear MCP" → call `mcp-agent` for the lifecycle, then write the result. "Find every place that uses this server name" → call `explore-agent`. "Edit my `.env` to add an API key" → call `update-agent` (because `.env` is a normal file, not part of `config.edn`).
+5. **Hand off when the right tool is a sibling.** "Add the Linear MCP" → call `mcp-agent` for the lifecycle, then write the result. "Find every place that uses this server name" → call `explore-agent`. "Edit my `.env` to add an API key" → call `edit-agent` (because `.env` is a normal file, not part of `config.edn`).
 
 The instruction explicitly forbids:
 
@@ -337,7 +337,7 @@ No write, no snapshot. The fast path matters — the agent should not turn one-l
 6. **`agent-runtime$config` for a key with overlapping `:agent.*` semantics** (`max-iterations` is the canonical case — exists in both the runtime-config schema and as `:agent.max-iterations` in `config.edn`). The agent always asks once ("session-only or persist?") and remembers the user's choice for the rest of the session.
 7. **User pastes an EDN map directly** ("apply this: `{:permissions {:mode :restricted}}`"). Accept, validate, treat as a `:proposed` map; the diff/confirm flow still runs.
 8. **Allowlist violation** (LLM proposes a write to `:llm.default-provider`). `config$apply` rejects with `{:error :allowlist-violation :path [:llm :default-provider]}`. The instruction tells the LLM to apologise and propose the right path (`bootstrap$re-run-rung`) instead of re-trying with a workaround.
-9. **MCP credential lives in `.env`**, not `config.edn`. The agent reads `.env` (if present) but never writes secrets into `config.edn`. The `.env` write goes through `update-agent` with a redacted diff in the dossier.
+9. **MCP credential lives in `.env`**, not `config.edn`. The agent reads `.env` (if present) but never writes secrets into `config.edn`. The `.env` write goes through `edit-agent` with a redacted diff in the dossier.
 10. **`bootstrap$re-run-rung` requires interactivity but config-agent is in `--auto`.** Refuse; tell the user to drop `--auto` for provider switches.
 
 ---
@@ -372,4 +372,4 @@ No on-disk data migration needed for phase 1.
 2. **Should config-agent be able to install MCP servers** (npm, uv tool install, etc.) **on its own?** Today `mcp-agent` enumerates and connects but does not install. If config-agent can shell out to install, it shortens the "add server" path; if not, it has to tell the user "now run `npm i -g @linear/mcp-server` and come back." Lean: install with explicit per-package confirmation (mirrors bootstrap's Ollama-install policy).
 3. **Snapshot retention policy** — 20 is arbitrary. Make it `:bootstrap.snapshot-retention` configurable?
 4. **Does config-agent run inside `bb tui` or as its own entry point?** Currently the design assumes `bb tui run -a config-agent`. A dedicated `bb tui config --interactive` (different from the wizard) could be more discoverable. Bikeshed.
-5. **How does config-agent surface `BRAINYARD.md`?** Today `BRAINYARD.md` is a long-form rules file the agent reads; users routinely edit it by hand. Should config-agent's writable surface include "edit BRAINYARD.md sections" via `update-agent`? Probably yes — but the contract there is "edit the file" not "edit a structured config," so it's adjacent rather than core. Out of scope for revision 1.
+5. **How does config-agent surface `BRAINYARD.md`?** Today `BRAINYARD.md` is a long-form rules file the agent reads; users routinely edit it by hand. Should config-agent's writable surface include "edit BRAINYARD.md sections" via `edit-agent`? Probably yes — but the contract there is "edit the file" not "edit a structured config," so it's adjacent rather than core. Out of scope for revision 1.

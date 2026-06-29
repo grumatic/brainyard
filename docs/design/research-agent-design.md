@@ -4,7 +4,7 @@
 > **Scope:** `components/agent/src/ai/brainyard/agent/common/research_agent.clj` + `research.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
 > **Replaces:** `autoresearch` (now fully retired — the `autoresearch/` directory has been removed; see §14)
-> **Related reading:** `docs/CoAct.md`, `docs/explore-agent-design.md`, `docs/rlm-agent-design.md`, `docs/plan-agent-design.md`, `docs/todo-agent-design.md`, `docs/exec-agent-design.md`, `docs/eval-agent-design.md`, `docs/update-agent-design.md`
+> **Related reading:** `docs/CoAct.md`, `docs/explore-agent-design.md`, `docs/rlm-agent-design.md`, `docs/plan-agent-design.md`, `docs/todo-agent-design.md`, `docs/exec-agent-design.md`, `docs/eval-agent-design.md`, `docs/edit-agent-design.md`
 >
 > **As-built (2026-06):** Two design-vs-shipped divergences run through this whole doc:
 > 1. **Specialists are reached by DIRECT kebab-case dispatch, not `call-tool`.** The shipped
@@ -20,11 +20,11 @@
 ## Revision history
 
 - **rev 1 (2026-04)** — initial design proposal; five specialists (explore / plan / todo / exec / eval); plan + todo bodies at `.brainyard/plans/<slug>.md` / `.brainyard/todos/<slug>.md`; evidence threaded via `:answer` strings and slug-shaped `:agent-context`.
-- **rev 2 (2026-05)** — refreshed after the four-agent pipeline (plan/todo/exec/eval) was redesigned with pre/post-flight gating + dossier handoff (see §10), and after update-agent was added as a sixth reachable specialist for safe one-off edits. Headline changes:
-  - **Six specialists**, not five. update-agent joins the roster; reach it via move I (UPDATE) for single-edit work that doesn't warrant a plan/todo arc.
+- **rev 2 (2026-05)** — refreshed after the four-agent pipeline (plan/todo/exec/eval) was redesigned with pre/post-flight gating + dossier handoff (see §10), and after edit-agent was added as a sixth reachable specialist for safe one-off edits. Headline changes:
+  - **Six specialists**, not five. edit-agent joins the roster; reach it via move I (UPDATE) for single-edit work that doesn't warrant a plan/todo arc.
   - **Sibling-agent storage migrated** to per-agent directories: `.brainyard/agents/plan-agent/plans/`, `.brainyard/agents/todo-agent/todos/`, plus `dossiers/` and `verdicts/` siblings. Legacy paths are dual-read for one release.
   - **Dossier handoff is the cross-agent contract.** Each specialist emits `Saved dossier: <path>` (plus the body file's `Saved plan:` / `Saved todo:` / `Saved verdict:` / `Saved edit:`). Pre-flight gates on each downstream specialist consume the upstream dossier — research-agent threads paths between them instead of stringy slugs.
-  - **Read-only sibling dossier helpers** (`plan$read-dossier`, `todo$read-dossier`, `exec$read-dossier`, `eval$read-dossier`, `update$read-record`) are cherry-picked into research-agent's roster so it can parse upstream frontmatter cheaply for data-driven move decisions. Write-side dossier helpers are NOT bound — sibling writes go through `call-tool`.
+  - **Read-only sibling dossier helpers** (`plan$read-dossier`, `todo$read-dossier`, `exec$read-dossier`, `eval$read-dossier`, `edit$read-record`) are cherry-picked into research-agent's roster so it can parse upstream frontmatter cheaply for data-driven move decisions. Write-side dossier helpers are NOT bound — sibling writes go through `call-tool`.
   - **Decision heuristics are now data-driven.** When eval-agent returns NOT_ACHIEVED, its `score.recommendations` field names the next agent per criterion. research-agent reads that instead of inferring from the answer text.
 
 ---
@@ -47,7 +47,7 @@
 
 1. **Owns one durable artifact** — a research dossier under `.brainyard/agents/research-agent/<research-id>/` capturing *purpose*, *direction*, *acceptance criteria*, *findings log*, and *handoff state* across turns and across calls to specialist agents. This is the cross-agent context carrier.
 2. **Uses CoAct's loop** — no new BT. The LLM picks the next move per iteration: explore, plan, decompose, execute, evaluate, refine, or finish.
-3. **Reaches the six specialists by direct kebab-case dispatch** — `(explore-agent {...})`, `(plan-agent {...})`, `(todo-agent {...})`, `(exec-agent {...})`, `(eval-agent {...})`, `(update-agent {...})`. Every defagent registers in the same tool registry and is auto-bound as a callable sandbox fn, so dispatch is flat. **As-built:** the proposal called this through `call-tool`; the shipped code invokes the defagents directly.
+3. **Reaches the six specialists by direct kebab-case dispatch** — `(explore-agent {...})`, `(plan-agent {...})`, `(todo-agent {...})`, `(exec-agent {...})`, `(eval-agent {...})`, `(edit-agent {...})`. Every defagent registers in the same tool registry and is auto-bound as a callable sandbox fn, so dispatch is flat. **As-built:** the proposal called this through `call-tool`; the shipped code invokes the defagents directly.
 4. **Threads the dossier path through `:agent-context`** so each specialist receives the same purpose/direction/acceptance — solving defect 1 without changing the specialists' contracts.
 5. **Stops when the LLM judges the goal achieved or definitively unreachable**, bounded by an iteration cap. Hill-climbing scoring (the autoresearch hallmark) becomes optional — kept for benchmark-style evaluation, removed from the default user-facing loop.
 6. **Inherits CoAct's full BT, sandbox, router, accumulator** — no substrate changes. Whole feature is one new agent file plus an optional helpers namespace, mirroring `rlm-agent` / `explore-agent`.
@@ -60,7 +60,7 @@
 1. **One coherent loop, not a hard-wired pipeline.** The pipeline specialists (plan / todo / exec / eval / update) plus explore-agent become *callable subroutines*, not stages of a fixed sequence. The research-agent is the only thing that sees the whole research arc.
 2. **Durable research dossier.** Cross-agent state lives in a directory of markdown + EDN files, not in slugs or transient `:agent-context` strings. Every specialist call writes into the dossier; every subsequent specialist call reads from it.
 3. **The LLM owns sequencing.** Should we re-plan? Decompose more? Re-explore? Mark eval criteria as descoped? These are reasoning calls, not BT branches. The instruction names the decision points; the LLM picks the next move.
-4. **Small tool registry.** The agent reaches the world through (a) the six specialists via `call-tool` (explore / plan / todo / exec / eval / update), (b) basic CoAct file/shell/sandbox primitives for dossier maintenance, (c) read-only dossier-helper cherry-picks from each sibling (`plan$read-dossier`, `todo$read-dossier`, `exec$read-dossier`, `eval$read-dossier`, `update$read-record`), (d) `query$llm` for synthesis. That's it.
+4. **Small tool registry.** The agent reaches the world through (a) the six specialists via `call-tool` (explore / plan / todo / exec / eval / update), (b) basic CoAct file/shell/sandbox primitives for dossier maintenance, (c) read-only dossier-helper cherry-picks from each sibling (`plan$read-dossier`, `todo$read-dossier`, `exec$read-dossier`, `eval$read-dossier`, `edit$read-record`), (d) `query$llm` for synthesis. That's it.
 5. **Acceptance criteria are first-class.** They are written into the dossier on the first iteration, threaded through every specialist call, and re-evaluated explicitly before the agent considers terminating.
 6. **Bounded but generous iteration cap.** Default 30 iterations (vs. CoAct's 20). Research workflows have legitimate reason to take more steps than a single-question agent.
 7. **Honest termination.** The agent can finish in one of three states: `:achieved`, `:partial`, or `:abandoned` — and each has explicit conditions. No silent timeouts that look like answers.
@@ -84,11 +84,11 @@ coact-agent  (parent — full BT, sandbox, router, accumulator)
   │                     per-item :tags routing; pre/post-flight gated;
   │                     emits dossier)
   ├─ exec-agent        (advance a todo; per-item routing per :tags.via;
-  │                     delegates writes to update-agent; emits dossier)
+  │                     delegates writes to edit-agent; emits dossier)
   ├─ eval-agent        (verdict against plan acceptance; reads three
-  │                     upstream dossiers; drills via update$read-record;
+  │                     upstream dossiers; drills via edit$read-record;
   │                     emits verdict body + dossier)
-  ├─ update-agent      (safe single-file edits; probe→apply→verify→
+  ├─ edit-agent      (safe single-file edits; probe→apply→verify→
   │                     rollback-on-fail; emits edit record)
   └─ research-agent    (orchestrates explore/plan/todo/exec/eval/update
                         via direct kebab-case dispatch; threads dossier paths between them)
@@ -97,7 +97,7 @@ coact-agent  (parent — full BT, sandbox, router, accumulator)
 | Question shape | Use | Why |
 |---|---|---|
 | "Find me where X lives" | explore-agent | Single-surface discovery. |
-| "Rename foo to bar in `src/x.clj`" | update-agent | Safe single-file edit; no plan/todo warranted. |
+| "Rename foo to bar in `src/x.clj`" | edit-agent | Safe single-file edit; no plan/todo warranted. |
 | "Draft a plan for Y" | plan-agent | Plan authoring, no execution. |
 | "Spawn a todo from the existing plan Z" | todo-agent | Items decomposition from an existing plan dossier. |
 | "Drive the existing todo Z to completion" | exec-agent | Already plan + todo dossiers exist. |
@@ -135,7 +135,7 @@ The single biggest behavioral change vs. autoresearch.
             ├── exec_dossiers/<ts>-<slug>.md         → ../../../exec-agent/dossiers/<ts>-<slug>.md
             ├── verdicts/<ts>-<slug>.md              → ../../../eval-agent/verdicts/<ts>-<slug>.md
             ├── eval_dossiers/<ts>-<slug>.md         → ../../../eval-agent/dossiers/<ts>-<slug>.md
-            └── edits/<ts>-<slug>.md                 → ../../../update-agent/edits/<ts>-<slug>.md
+            └── edits/<ts>-<slug>.md                 → ../../../edit-agent/edits/<ts>-<slug>.md
 ```
 
 The `artifacts/` directory's symlink layout mirrors the per-agent storage that landed in the four-agent redesign. Legacy `.brainyard/plans/` and `.brainyard/todos/` are dual-read for one release; symlinks to legacy locations can co-exist with the new ones during the migration window.
@@ -180,7 +180,7 @@ artifacts:
   exec_dossiers:  [.brainyard/agents/exec-agent/dossiers/20260510-110131-tui-startup-latency.md]
   verdict_path:   .brainyard/agents/eval-agent/verdicts/20260510-115412-tui-startup-latency.md
   eval_dossiers:  [.brainyard/agents/eval-agent/dossiers/20260510-115412-tui-startup-latency.md]
-  edits:          [.brainyard/agents/update-agent/edits/20260510-110205-wire-lazy-init.md]
+  edits:          [.brainyard/agents/edit-agent/edits/20260510-110205-wire-lazy-init.md]
 calls_log: findings.log
 ---
 
@@ -201,10 +201,10 @@ calls_log: findings.log
   carried forward: [a1 cold-start <=1.0s, a2 native unchanged, a3 writeup].
   Source: `artifacts/plan_dossiers/20260510-104503-tui-startup-latency.md`.
 - Iteration 4 (todo): todo-agent dossier post.verdict=:pass. 6 items
-  spawned with per-item :tags routing (3 :update-agent, 2 :bash, 1
+  spawned with per-item :tags routing (3 :edit-agent, 2 :bash, 1
   :manual). Source: `artifacts/todo_dossiers/20260510-105612-tui-startup-latency.md`.
 - Iteration 5 (exec): exec-agent dossier post.verdict=:pass. Items 0-2
-  advanced. Item 1 (lazy init via update-agent record
+  advanced. Item 1 (lazy init via edit-agent record
   `artifacts/edits/20260510-110205-wire-lazy-init.md`) shaved 0.6s; item 2
   shaved 0.3s. Source: `artifacts/exec_dossiers/20260510-110131-tui-startup-latency.md`.
 - Iteration 6 (eval): eval-agent verdict PARTIALLY_ACHIEVED (confidence
@@ -240,8 +240,8 @@ One line per specialist invocation. Cheap for the agent to read selectively (jq,
 {"iter":2,"agent":"explore-agent","summary":"startup dominated by clojure.core init","pointers":{"exploration_path":".brainyard/agents/explore-agent/results/20260509-181244-tui-startup-latency.md"}}
 {"iter":3,"agent":"plan-agent","summary":"3 candidate fixes proposed; post-flight PASS","pointers":{"plan_path":".brainyard/agents/plan-agent/plans/tui-startup-latency.md","plan_dossier":".brainyard/agents/plan-agent/dossiers/20260510-104503-tui-startup-latency.md","pre_verdict":"go","post_verdict":"pass"}}
 {"iter":4,"agent":"todo-agent","summary":"6 items spawned with :tags routing","pointers":{"todo_path":".brainyard/agents/todo-agent/todos/tui-startup-latency.md","todo_dossier":".brainyard/agents/todo-agent/dossiers/20260510-105612-tui-startup-latency.md","pre_verdict":"go","post_verdict":"pass"}}
-{"iter":5,"agent":"exec-agent","summary":"items 0-2 advanced; 2.5s -> 1.2s; item 1 delegated to update-agent","pointers":{"exec_dossier":".brainyard/agents/exec-agent/dossiers/20260510-110131-tui-startup-latency.md","items_advanced":[0,1,2],"items_pending":[3,4,5],"post_verdict":"pass"}}
-{"iter":5.1,"agent":"update-agent","summary":"lazy init wired in src/agent_tui_app/main.clj — exec-agent delegated","pointers":{"update_record":".brainyard/agents/update-agent/edits/20260510-110205-wire-lazy-init.md","rollback":"git checkout -- src/agent_tui_app/main.clj"}}
+{"iter":5,"agent":"exec-agent","summary":"items 0-2 advanced; 2.5s -> 1.2s; item 1 delegated to edit-agent","pointers":{"exec_dossier":".brainyard/agents/exec-agent/dossiers/20260510-110131-tui-startup-latency.md","items_advanced":[0,1,2],"items_pending":[3,4,5],"post_verdict":"pass"}}
+{"iter":5.1,"agent":"edit-agent","summary":"lazy init wired in src/agent_tui_app/main.clj — exec-agent delegated","pointers":{"update_record":".brainyard/agents/edit-agent/edits/20260510-110205-wire-lazy-init.md","rollback":"git checkout -- src/agent_tui_app/main.clj"}}
 {"iter":6,"agent":"eval-agent","summary":"PARTIALLY_ACHIEVED; a1 partial (1.2s vs 1.0s target)","pointers":{"verdict_path":".brainyard/agents/eval-agent/verdicts/20260510-115412-tui-startup-latency.md","eval_dossier":".brainyard/agents/eval-agent/dossiers/20260510-115412-tui-startup-latency.md","score_verdict":"partially-achieved","confidence":"medium"}}
 ```
 
@@ -323,7 +323,7 @@ Append-only, newest first, one line per research run:
   [ai.brainyard.agent.common.todo      :as todo-helpers]
   [ai.brainyard.agent.common.exec      :as exec-helpers]
   [ai.brainyard.agent.common.eval      :as eval-helpers]
-  [ai.brainyard.agent.common.update    :as update-helpers]
+  [ai.brainyard.agent.common.update    :as edit-helpers]
   [ai.brainyard.agent.common.research  :as research]
   [ai.brainyard.agent.task.commands    :as task-cmds])
 
@@ -346,7 +346,7 @@ Append-only, newest first, one line per research run:
             #'todo-helpers/todo$read-dossier
             #'exec-helpers/exec$read-dossier
             #'eval-helpers/eval$read-dossier
-            #'update-helpers/update$read-record]
+            #'edit-helpers/edit$read-record]
 
            ;; Bookkeeping
            common-tools/bootstrap-tools     ; list-tools, get-tool-info, search
@@ -367,13 +367,13 @@ Append-only, newest first, one line per research run:
 ;; listed in :agent-tools to be reachable; they ARE in the registry.
 ```
 
-The six specialist agents (`explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `update-agent`) are reached via direct kebab-case dispatch — `(explore-agent {...})`, `(plan-agent {...})`, etc. — from a clojure fence, or via the `tool-calls` channel. The instruction's job is to *teach the LLM when to reach for each*. **As-built:** the proposal routed these through `(call-tool "<agent-name>" {...})`; the shipped instruction calls the auto-bound defagent fns directly.
+The six specialist agents (`explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `edit-agent`) are reached via direct kebab-case dispatch — `(explore-agent {...})`, `(plan-agent {...})`, etc. — from a clojure fence, or via the `tool-calls` channel. The instruction's job is to *teach the LLM when to reach for each*. **As-built:** the proposal routed these through `(call-tool "<agent-name>" {...})`; the shipped instruction calls the auto-bound defagent fns directly.
 
 What is *deliberately bound* (and was not in revision 1):
 
 | Bound | Why |
 |---|---|
-| `plan$read-dossier`, `todo$read-dossier`, `exec$read-dossier`, `eval$read-dossier`, `update$read-record` | Read-only cherry-picks. Let research-agent parse upstream sibling dossier frontmatter cheaply (~700 bytes/read) for data-driven move decisions — most importantly, `eval$read-dossier` returns `score.recommendations` which drives heuristics 6/7/8 (re-plan / re-decompose / resume). Write-side helpers from the same vectors are NOT bound. |
+| `plan$read-dossier`, `todo$read-dossier`, `exec$read-dossier`, `eval$read-dossier`, `edit$read-record` | Read-only cherry-picks. Let research-agent parse upstream sibling dossier frontmatter cheaply (~700 bytes/read) for data-driven move decisions — most importantly, `eval$read-dossier` returns `score.recommendations` which drives heuristics 6/7/8 (re-plan / re-decompose / resume). Write-side helpers from the same vectors are NOT bound. |
 
 What is *deliberately omitted*:
 
@@ -381,7 +381,7 @@ What is *deliberately omitted*:
 |---|---|
 | `query$clone` | Clones research-agent itself = clone-self recursion. Forbidden. |
 | Direct `plan$*` / `todo$*` / `skills$*` / `mcp$*` write commands | Routed through the specialist agents. Reaching for them directly bypasses pre/post-flight gating + the dossier handoff contract. |
-| `plan$dossier-write`, `todo$dossier-write`, `exec$dossier-write`, `eval$dossier-write`, `eval$verdict-write`, `update$apply`, `update$write` | Sibling dossier/verdict/edit writes go through their specialists. The read-only cherry-pick is a deliberate asymmetry — research-agent reads to decide; the specialist writes once it has been called. |
+| `plan$dossier-write`, `todo$dossier-write`, `exec$dossier-write`, `eval$dossier-write`, `eval$verdict-write`, `edit$apply`, `edit$write` | Sibling dossier/verdict/edit writes go through their specialists. The read-only cherry-pick is a deliberate asymmetry — research-agent reads to decide; the specialist writes once it has been called. |
 
 What is *bound directly* but should be reached for sparingly:
 
@@ -412,7 +412,7 @@ scaffolding.
 ────────────────────────────────────────────────────────────────────────────
 THE SIX SPECIALISTS (reachable via call-tool — flat, NOT recursive)
 ────────────────────────────────────────────────────────────────────────────
-Each specialist (except explore-agent and update-agent) ships a redesigned
+Each specialist (except explore-agent and edit-agent) ships a redesigned
 pre/post-flight gated pipeline. Pre-flight may emit GO / GATHER / REFUSE;
 post-flight may emit PASS / HOLD. The dossier they emit carries the
 verdicts + supporting evidence in machine-readable YAML frontmatter —
@@ -429,8 +429,8 @@ read it instead of re-parsing prose.
                    Emits `Saved todo:` AND `Saved dossier:`. Dossier
                    carries `post.acceptance_coverage`.
 - exec-agent     → advances todo. Reads upstream todo + plan dossiers.
-                   Per-item routing via :tags.via; :update-agent items
-                   delegate to update-agent. Emits `Saved dossier:` +
+                   Per-item routing via :tags.via; :edit-agent items
+                   delegate to edit-agent. Emits `Saved dossier:` +
                    `Done:`/`Manual:`. Dossier carries
                    `execute.evidence` + `post.acceptance_progress`.
 - eval-agent     → scores executed todo vs plan acceptance. Reads
@@ -439,10 +439,10 @@ read it instead of re-parsing prose.
                    `Verdict: <X> (confidence: <Y>)`. Dossier carries
                    `score.criteria` + `score.recommendations` — the
                    per-criterion next-agent table.
-- update-agent   → safe single-file edit. Emits `Saved edit:` AND
+- edit-agent   → safe single-file edit. Emits `Saved edit:` AND
                    `Rollback: <cmd>`. Use directly via move I (UPDATE)
                    for one-off edits; exec-agent delegates here for
-                   :via :update-agent items automatically.
+                   :via :edit-agent items automatically.
 
 Invoke each via:
     (call-tool "<name>" {:question "<sub-question>"
@@ -619,7 +619,7 @@ HARD RULES
      .brainyard/agents/exec-agent/dossiers/
      .brainyard/agents/eval-agent/verdicts/
      .brainyard/agents/eval-agent/dossiers/
-     .brainyard/agents/update-agent/edits/
+     .brainyard/agents/edit-agent/edits/
    These are owned by their respective specialists. You read-file them
    freely to inform research-agent's own dossier; you NEVER write them.
    Reach for the specialist via call-tool when you need new content
@@ -694,8 +694,8 @@ surface the broken state and ask whether to bootstrap fresh.
 - exec-agent     → advance a todo (pre/post-flight gated; per-item
                    routing). Pre-flight reads todo + plan dossiers.
                    :max-items-per-turn default 5. Per item routes via
-                   :tags.via — :update-agent items delegate to
-                   update-agent automatically. Returns:
+                   :tags.via — :edit-agent items delegate to
+                   edit-agent automatically. Returns:
                      `Saved dossier: .brainyard/agents/exec-agent/dossiers/<ts>-<slug>.md`
                      `Done:` (all items advanced) | `Manual:` (item N
                      surfaced for user) | `Hold:` (rubric failure)
@@ -705,7 +705,7 @@ surface the broken state and ask whether to bootstrap fresh.
 - eval-agent     → score executed todo vs plan acceptance (reads three
                    upstream dossiers — plan + todo + exec — first such
                    agent in the stack). Drills criterion → item →
-                   evidence → diff via update$read-record. Returns:
+                   evidence → diff via edit$read-record. Returns:
                      `Saved verdict: .brainyard/agents/eval-agent/verdicts/<ts>-<slug>.md`
                      `Saved dossier: .brainyard/agents/eval-agent/dossiers/<ts>-<slug>.md`
                      `Verdict: ACHIEVED|PARTIALLY_ACHIEVED|NOT_ACHIEVED
@@ -713,11 +713,11 @@ surface the broken state and ask whether to bootstrap fresh.
                    Dossier `score.recommendations` names the next agent
                    per criterion — read it to drive heuristics 6/7/8.
 
-- update-agent   → safe single-file edit (probe → apply → verify →
+- edit-agent   → safe single-file edit (probe → apply → verify →
                    persist → rollback-on-fail). Use directly via UPDATE
                    move (I) when the user's question reduces to one
                    well-bounded edit. Returns:
-                     `Saved edit: .brainyard/agents/update-agent/edits/<ts>-<slug>.md`
+                     `Saved edit: .brainyard/agents/edit-agent/edits/<ts>-<slug>.md`
                      `Rollback:   <git checkout|rm command>`
                    (or `Rolled back: <reason>` on verify failure).
 
@@ -751,7 +751,7 @@ pre-flight C1 finds it):
 - eval$read-dossier   -- Args: path. Returns eval-agent dossier
                           frontmatter — :score.criteria,
                           :score.recommendations, :score.confidence.
-- update$read-record  -- Args: path. Returns an update-agent record's
+- edit$read-record  -- Args: path. Returns an edit-agent record's
                           :verify :apply :rollback for diff-level audit.
 
 These let you make data-driven move decisions (e.g. read eval-agent's
@@ -998,7 +998,7 @@ Then iteration 6 calls todo-agent via tool channel, etc. The full 8-iteration ar
 - Todo body: `.brainyard/agents/todo-agent/todos/tui-startup-latency.md` (3/6 items done)
   - Todo dossier (post-flight PASS): `.brainyard/agents/todo-agent/dossiers/20260510-105612-tui-startup-latency.md`
 - Items 0–2 (lazy-init + deferred-ns) shaved ~1.3s of the targeted 1.5s.
-  - Item 1 update-agent record: `.brainyard/agents/update-agent/edits/20260510-110205-wire-lazy-init.md`
+  - Item 1 edit-agent record: `.brainyard/agents/edit-agent/edits/20260510-110205-wire-lazy-init.md`
   - Exec dossier: `.brainyard/agents/exec-agent/dossiers/20260510-110131-tui-startup-latency.md`
 - Eval verdict: `.brainyard/agents/eval-agent/verdicts/20260510-115412-tui-startup-latency.md`
   - Eval dossier: `.brainyard/agents/eval-agent/dossiers/20260510-115412-tui-startup-latency.md`
@@ -1030,8 +1030,8 @@ The user can resume with the same id to continue items 3–4 in a future turn �
 | 8 | Push past iteration cap with no candidate verdict | User gets an opaque timeout | Start preparing FINALIZE at 80% budget; honest :partial > silent timeout. |
 | 9 | Treat plan-agent / todo-agent as optional | "I'll just exec-agent it" — but exec-agent's PRE-FLIGHT C1/C2 require a todo dossier whose post-flight passed | If the question is research-shaped, the plan/todo authoring is part of the contract. |
 | 10 | Author plan/todo/dossier files via write-file directly | Bypasses specialists' pre/post-flight gating + dossier handoff contract | Always go through the specialist via call-tool. |
-| 11 | Chain `update-agent` calls during EXECUTE | Exec-agent already delegates writes to update-agent for every `:via :update-agent` item — chaining yourself duplicates the audit trail and skips exec-agent's per-item evidence map | Use move I (UPDATE) only for one-off edits that DON'T need a plan/todo arc; otherwise let exec-agent (move D) handle delegation. |
-| 12 | Read sibling dossier bodies with `read-file` when the helpers would do | Wastes tokens parsing markdown the frontmatter already encoded | Use `plan$read-dossier` / `todo$read-dossier` / `exec$read-dossier` / `eval$read-dossier` / `update$read-record` — they return the frontmatter as a parsed map. |
+| 11 | Chain `edit-agent` calls during EXECUTE | Exec-agent already delegates writes to edit-agent for every `:via :edit-agent` item — chaining yourself duplicates the audit trail and skips exec-agent's per-item evidence map | Use move I (UPDATE) only for one-off edits that DON'T need a plan/todo arc; otherwise let exec-agent (move D) handle delegation. |
+| 12 | Read sibling dossier bodies with `read-file` when the helpers would do | Wastes tokens parsing markdown the frontmatter already encoded | Use `plan$read-dossier` / `todo$read-dossier` / `exec$read-dossier` / `eval$read-dossier` / `edit$read-record` — they return the frontmatter as a parsed map. |
 
 ---
 

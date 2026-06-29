@@ -144,7 +144,7 @@ Every `.brainyard/<name>` entry is allowed at one or both scopes per
 | `config-agent/`, `init-agent/` (mirror the file they edit) | ✓ | ✓ |
 | `memory/` (SQLite DBs), `sessions/` (TUI state), `logs/` (mulog file publishers + crash dumps) | ✓ | — |
 | `charts/` (Plotly HTML exports), `temp/clj-sandbox/` (truncation + file-backed display caches), `temp/coact-agent/scratch/` (code-block + verbatim scratch) | — | ✓ |
-| Other `*-agent/` (`explore-agent`, `plan-agent`, `todo-agent`, `workflow-agent`, `research-agent`, `update-agent`, `eval-agent`, `exec-agent`, …) | — | ✓ |
+| Other `*-agent/` (`explore-agent`, `plan-agent`, `todo-agent`, `workflow-agent`, `research-agent`, `edit-agent`, `eval-agent`, `exec-agent`, …) | — | ✓ |
 
 Use `(brainyard-subdir dirs name scope)` to resolve a path that honors
 this policy; it returns nil for forbidden combos. Use `brainyard-subdir!`

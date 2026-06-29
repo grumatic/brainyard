@@ -3,7 +3,7 @@
 > **Status:** Shipped (originally design proposal rev 1; may diverge from the proposal below). The guaranteed-workable-LLM wizard landed in `config_wizard.clj` (the BOOTSTRAP fallback ladder + Ollama-install fallback) and `cmd-config` in `main.clj`. The collaborator marked below as "out of scope, contract only" — `config_agent.clj` — has since shipped as `config-agent` (see `config-agent-design.md`).
 > **Scope:** redesign of `bases/agent-tui/src/ai/brainyard/agent_tui/config_wizard.clj` and the `bb tui config` subcommand (`projects/agent-tui-app/.../main.clj` → `cmd-config`)
 > **New collaborators:** `components/env-detect` (extended), a new `components/agent/.../common/config_agent.clj` (out of scope here, contract only)
-> **Related reading:** `CLAUDE.md` §"Agent Architecture Highlights", `docs/design/explore-agent-design.md`, `docs/design/update-agent-design.md`, `components/agent/src/ai/brainyard/agent/core/config.clj`, `components/env-detect/src/ai/brainyard/env_detect/core/providers.clj`
+> **Related reading:** `CLAUDE.md` §"Agent Architecture Highlights", `docs/design/explore-agent-design.md`, `docs/design/edit-agent-design.md`, `components/agent/src/ai/brainyard/agent/core/config.clj`, `components/env-detect/src/ai/brainyard/env_detect/core/providers.clj`
 
 ---
 

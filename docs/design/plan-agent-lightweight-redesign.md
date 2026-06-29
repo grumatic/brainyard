@@ -355,7 +355,7 @@ wrapper, or are emitted by the agent loop — no loop changes required.
 2. **INDEX strategy** — append-only (§7 option 1) vs. derive-on-demand. Lean
    append-only for v1.
 3. **Should the same lightweight treatment roll out to explore-agent /
-   update-agent**, which share the identical helper-chain + auto-persist-crutch
+   edit-agent**, which share the identical helper-chain + auto-persist-crutch
    pattern? Out of scope here, but the win generalizes.
 4. **Strict vs. lenient dossier read** — do we want a hard schema validation on
    read (reject malformed dossiers) or stay lenient with a warning? Lenient +

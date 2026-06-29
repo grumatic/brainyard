@@ -28,7 +28,7 @@
 > server, grant, classifier, drift), `docs/design/debug-agent-design.md`
 > (the internal specialist this driver can delegate to),
 > `docs/tui/architecture.md` (the tmux-based TUI),
-> `docs/design/update-agent-design.md` (the source-promotion target).
+> `docs/design/edit-agent-design.md` (the source-promotion target).
 
 ---
 
@@ -603,26 +603,26 @@ marker, the validation evidence, and a `:pattern` / `:replacement` pair,
 and returns a ready-to-run hand-off command:
 
 ```
-bb tui ask "@.brainyard/agents/debug-agent/promotions/<ts>-<slug>.md" -a update-agent
+bb tui ask "@.brainyard/agents/debug-agent/promotions/<ts>-<slug>.md" -a edit-agent
 ```
 
-`update-agent` then runs its own probe → apply → verify → persist →
+`edit-agent` then runs its own probe → apply → verify → persist →
 rollback pipeline against the source file and emits `Saved edit:` /
 `Rollback:` lines. An external driver can run that command itself to
 close the loop — turning a validated live patch into a committed,
 revertable source change. (Full mechanics in
 `docs/design/debug-agent-design.md` §7 and
-`docs/design/update-agent-design.md`.)
+`docs/design/edit-agent-design.md`.)
 
 **Layered hot-patches.** Since the rollback overhaul (`afb2800` /
-`40bceda` / `5123f59` / `5287465`), update-agent's rollback is
+`40bceda` / `5123f59` / `5287465`), edit-agent's rollback is
 **transaction-scoped**: a failed verify restores the pre-APPLY bytes,
 not HEAD. So a debug session can promote multiple patches to the same
 file in sequence without committing between each — pass
 `:dirty-ok? true` and prior promotions in the working tree survive
 even if a later one fails. The operator-facing `:rollback` hint
 becomes `cp -- '<backup>' '<target>'` (pointing at
-`.brainyard/agents/update-agent/backups/<ts>-<slug>.bak`) for `:dirty-ok?`
+`.brainyard/agents/edit-agent/backups/<ts>-<slug>.bak`) for `:dirty-ok?`
 edits, so manual undo also stays transaction-scoped. Validated
 end-to-end by the four-patch per-instance nREPL port-file series
 (`f4f7c81` → `be302c5`).
@@ -770,10 +770,10 @@ against the same port.
 
 What this run did **not** exercise (status as of 2026-05-24):
 - ~~The promote-to-source hand-off (§7) — `debug$promote-hot-patch` →
-  `update-agent` end-to-end against the live image.~~ **Validated
+  `edit-agent` end-to-end against the live image.~~ **Validated
   2026-05-23/24.** debug-agent emitted four hot-patch promotions
   describing the per-instance nREPL port-file refactor; they were
-  applied in sequence via `bb tui ask -a update-agent` and committed
+  applied in sequence via `bb tui ask -a edit-agent` and committed
   as `f4f7c81` (foundation), `f651fc8` (interface re-export), `ee95490`
   (agent-tui callsite), `be302c5` (agent-web callsite). The transaction-
   scoped rollback overhaul (`afb2800` etc.) was forced by issues the
@@ -803,7 +803,7 @@ the tool registry, not via a sandbox-symbol invocation.
 - `docs/design/debug-agent-design.md` — the internal specialist this
   driver delegates to; per-instance nREPL session, `:clj-backend :nrepl`
   routing, the promotion hand-off.
-- `docs/design/update-agent-design.md` — the source-promotion target.
+- `docs/design/edit-agent-design.md` — the source-promotion target.
 - `docs/tui/architecture.md` — the tmux-based TUI and the
   `agent-tui-tmux` substrate (`send-keys!` / `capture-pane`).
 - Source of truth:
