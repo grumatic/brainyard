@@ -484,42 +484,12 @@ Marker format, chunk modes, and worked recipes: `(usage$guide :topic :truncation
 - If the last iteration's results already contain the answer, write it immediately —
   don't re-fetch.")
 
-(def ^:private coact-project-memory-protocol
-  "Durable, project-scoped notes for THIS repo, kept as plain files under
-`.brainyard/memory/` and persisting across sessions. The index below lists what
-is stored; each entry points to a colocated `<slug>.md` topic file. You manage
-these with the ordinary read-file / write-file / update-file tools — no special
-tools, and `.brainyard/` writes never prompt for permission.
+;; Project Memory protocol + renderer now live in agent-roster (shared with
+;; react-agent so both base agents carry the same `## Project Memory` section).
+;; Kept as ns-local aliases so coact's call site + tests resolve unchanged.
+(def ^:private coact-project-memory-protocol agent-roster/project-memory-protocol)
 
-- RECALL: when a listed topic is relevant to the request, read its file
-  (`read-file .brainyard/memory/<slug>.md`) BEFORE answering.
-- REMEMBER: when you learn a durable project fact, decision, or convention worth
-  keeping, write `.brainyard/memory/<slug>.md` (short YAML frontmatter —
-  `title`, `tags`, `updated` — then the fact; link related notes with
-  `[[other-slug]]`), and add or update its one-line pointer in
-  `.brainyard/memory/index.md` (`- [Title](<slug>.md) — one-line hook`).
-- One fact per file. Check the index first and UPDATE an existing file rather
-  than creating a duplicate; delete a note that turns out wrong.
-- Do NOT store transient task state, or anything already captured by the code,
-  git history, or BRAINYARD.md.")
-
-(defn- format-project-memory-section
-  "Render the `## Project Memory` system-context section: the static protocol
-   followed by the live index.md contents (truncated to `max-chars`), or an
-   empty-state stub when no index exists yet."
-  [{:keys [content max-chars]}]
-  (let [cap   (or max-chars 4000)
-        idx   (when (and content (not (str/blank? content)))
-                (if (> (count content) cap)
-                  (str (subs content 0 cap)
-                       "\n…(index truncated — read .brainyard/memory/index.md in full)")
-                  content))
-        body  (if idx
-                (str "### Index\n" idx)
-                "### Index\n(empty — no memories yet. Create `.brainyard/memory/index.md` with your first note.)")]
-    (str "## Project Memory (.brainyard/memory/)\n"
-         coact-project-memory-protocol
-         "\n\n" body)))
+(def format-project-memory-section agent-roster/format-project-memory-section)
 
 ;; ---- Tools section helpers (calling conventions + directory hints) -------
 ;; The unified `## Tools` section in the system context combines:

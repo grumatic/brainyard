@@ -251,7 +251,7 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
    Returns either `content` or `{:content :sections :order}` when
    `:return-breakdown?` is true (matches the CoAct pattern)."
   [{:keys [agent-tools tool-context instruction agent-context system-info
-           brainyard-instructions]}
+           brainyard-instructions project-memory]}
    & {:keys [return-breakdown?]}]
   (let [tools-block (fmt/format-agent-tools agent-tools)
         {:keys [user-instructions project-instructions]} brainyard-instructions
@@ -282,20 +282,24 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
                  (str "## Project Instructions (.brainyard/BRAINYARD.md)\n"
                       project-instructions))
 
+          ;; Project-scoped file memory index — same `## Project Memory` section
+          ;; coact carries (shared renderer in agent-roster). nil disables it.
+          (some? project-memory)
+          (assoc :project-memory (agent-roster/format-project-memory-section project-memory))
+
           (and user-instructions (not (str/blank? user-instructions)))
           (assoc :user-instructions
                  (str "## User Instructions (~/.brainyard/BRAINYARD.md)\n"
                       user-instructions))
 
-          ;; Base todo substrate — same checklist convention as coact (ReAct
-          ;; has no Project Memory section, so this is net-new here).
+          ;; Base todo substrate — same checklist convention as coact.
           true
           (assoc :todo-substrate agent-roster/todo-substrate-protocol))
         section-order [:role :system-info
                        :critical-rules :tool-call-format
                        :tools :tool-context
                        :instruction :agent-context
-                       :project-instructions :user-instructions
+                       :project-instructions :project-memory :user-instructions
                        :todo-substrate
                        :footer]
         content (str/join "\n\n" (keep #(get sections %) section-order))]
@@ -479,7 +483,7 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
     (let [sys (react-system-context
                (select-keys state [:agent-tools :tool-context :instruction
                                    :agent-context :system-info
-                                   :brainyard-instructions])
+                                   :brainyard-instructions :project-memory])
                :return-breakdown? true)
           usr (react-user-context
                (select-keys state [:conversation :turn-info])
@@ -536,6 +540,15 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
         total-turns (:total-turns st)
         cfg-snap (config/get-config-snapshot agent)
 
+        ;; Project-scoped file memory: re-seed the index.md contents each turn
+        ;; so on-disk edits show live. nil disables the `## Project Memory`
+        ;; section entirely. Mirrors coact-agent (shared renderer in agent-roster).
+        project-memory-input
+        (when (and agent-dirs (get cfg-snap :enable-project-memory true))
+          (try (-> (config/load-project-memory-index agent-dirs)
+                   (assoc :max-chars (get cfg-snap :project-memory-max-chars 4000)))
+               (catch Exception _ nil)))
+
         system-info-text (sys-info/build-system-info-section
                           :agent agent
                           :depth (or (:depth context) 0)
@@ -551,6 +564,7 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
                          :agent-context   agent-context
                          :system-info     system-info-text
                          :brainyard-instructions brainyard-instructions
+                         :project-memory  project-memory-input
                          :conversation           (:conversation st)
                          :turn-info       turn-info-text}
         merged-sections (sa/sections assembler assembler-state)
