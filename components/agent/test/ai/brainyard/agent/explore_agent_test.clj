@@ -5,10 +5,18 @@
 (ns ai.brainyard.agent.explore-agent-test
   "Tests for explore-agent: registration, inherited bt-factory (CoAct),
    curated agent-tools roster across the four exploration surfaces (positive
-   + negative assertions), instruction-content anchors that pin the routing
-   + persistence + handoff contract, and unit tests for the explore$* helper
-   commands (slug determinism, frontmatter round-trip, write-file collision
-   suffix, INDEX.md prepend ordering, find)."
+   + negative assertions), instruction-content anchors that pin the routing +
+   reuse + persistence + handoff contract, and unit tests for the surviving
+   explore$* READER commands (explore$find corpus search, explore$reuse?
+   freshness rule, explore$read-frontmatter lineage round-trip) plus the
+   template-fill auto-persist safety net.
+
+   The write-side helper chain (explore$slug / explore$frontmatter /
+   explore$write / explore$index-append) is RETIRED — explore-agent now
+   authors the dossier as markdown directly with write-file from the RESULT
+   TEMPLATE (see docs/design/explore-agent-lightweight-redesign.md), so there
+   are no helper-roundtrip tests; the readers are tested against hand-written
+   frontmatter (what the LLM actually produces)."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -19,7 +27,8 @@
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.clj-sandbox.interface :as clj-sandbox])
   (:import (java.nio.file Files)
-           (java.nio.file.attribute FileAttribute)))
+           (java.nio.file.attribute FileAttribute)
+           (java.time Instant)))
 
 ;; ============================================================================
 ;; Registration
@@ -36,11 +45,6 @@
 
 ;; ============================================================================
 ;; Inheritance via run-coact-derived
-;;
-;; explore-agent pins :bt-factory explicitly (mirroring rlm-agent) so direct
-;; entry-points (e.g. setup-agent-by-id used by `bb tui ask`) that resolve
-;; agent metadata without going through run-coact-derived still pick up the
-;; correct CoAct BT.
 ;; ============================================================================
 
 (deftest inheritance-test
@@ -78,7 +82,7 @@
 (deftest agent-tools-test
   (testing "explore-agent :agent-tools covers all four exploration surfaces"
     (let [ids (explore-tool-ids)]
-      ;; A. FILESYSTEM
+      ;; A. FILESYSTEM — write-file is the authoring path now
       (is (contains? ids :grep))
       (is (contains? ids :read-file))
       (is (contains? ids :write-file))
@@ -111,19 +115,22 @@
       ;; Background fan-out
       (is (contains? ids :task$run))
 
-      ;; Runtime config (per-turn threshold tuning)
+      ;; Runtime config (per-turn threshold / reuse-window tuning)
       (is (contains? ids :agent-runtime$config))
 
-      ;; explore$* helpers (Milestone B)
-      (is (contains? ids :explore$slug))
-      (is (contains? ids :explore$frontmatter))
-      (is (contains? ids :explore$write))
-      (is (contains? ids :explore$index-append))
+      ;; explore$* SURVIVING readers (write-side helpers retired)
+      (is (contains? ids :explore$find))
       (is (contains? ids :explore$read-frontmatter))
-      (is (contains? ids :explore$find))))
+      (is (contains? ids :explore$reuse?))))
 
-  (testing "explore-agent :agent-tools EXCLUDES forbidden + out-of-scope tools"
+  (testing "explore-agent :agent-tools EXCLUDES retired write-side helpers + forbidden tools"
     (let [ids (explore-tool-ids)]
+      ;; Retired authoring helpers — replaced by direct write-file
+      (is (not (contains? ids :explore$slug)))
+      (is (not (contains? ids :explore$frontmatter)))
+      (is (not (contains? ids :explore$write)))
+      (is (not (contains? ids :explore$index-append)))
+
       ;; Hard Rule 1 — no clone-self recursion
       (is (not (contains? ids :query$clone))
           "query$clone must not be in explore-agent's roster (clone-self forbidden)")
@@ -134,7 +141,7 @@
       (is (not (contains? ids :skills$sync))))))
 
 ;; ============================================================================
-;; Instruction content anchors — pin the routing + persistence + handoff contract
+;; Instruction content anchors — routing + reuse + persistence + handoff
 ;; ============================================================================
 
 (deftest instruction-content-test
@@ -155,10 +162,23 @@
       (is (str/includes? instruction "DECISION FLOW"))
       (is (str/includes? instruction "ParallelBlock"))
 
-      ;; Persistence contract
+      ;; STEP 0 reuse gate (the new pillar)
+      (is (str/includes? instruction "STEP 0"))
+      (is (str/includes? instruction "REUSE"))
+      (is (str/includes? instruction "explore$find"))
+      (is (str/includes? instruction "explore$reuse?"))
+
+      ;; Persistence contract — template-based, with lineage + freshness
       (is (str/includes? instruction ".brainyard/agents/explore-agent/"))
-      (is (str/includes? instruction "frontmatter"))
+      (is (str/includes? instruction "RESULT TEMPLATE"))
+      (is (str/includes? instruction "write-file"))
+      (is (str/includes? instruction "related:"))
+      (is (str/includes? instruction "freshness:"))
       (is (str/includes? instruction "Saved exploration:"))
+
+      ;; The retired helper chain must NOT be advertised any more
+      (is (not (str/includes? instruction "explore$write")))
+      (is (not (str/includes? instruction "explore$frontmatter")))
 
       ;; Hard Rule 1 — stay flat, no clone-self dispatch
       (is (str/includes? instruction "clone-self"))
@@ -191,14 +211,16 @@
       ;; Synthesis primitive
       (is (str/includes? tool-context "query$llm"))
 
-      ;; Helpers documented (Milestone B)
-      (is (str/includes? tool-context "explore$slug"))
-      (is (str/includes? tool-context "explore$frontmatter"))
-      (is (str/includes? tool-context "explore$write"))
-      (is (str/includes? tool-context "explore$index-append"))
-      (is (str/includes? tool-context "explore$read-frontmatter"))
+      ;; Surviving readers documented; authoring is write-file
       (is (str/includes? tool-context "explore$find"))
-      (is (str/includes? tool-context "INDEX.md")))))
+      (is (str/includes? tool-context "explore$reuse?"))
+      (is (str/includes? tool-context "explore$read-frontmatter"))
+      (is (str/includes? tool-context "write-file"))
+      (is (str/includes? tool-context "INDEX.md"))
+
+      ;; Retired helpers must not be documented
+      (is (not (str/includes? tool-context "explore$write")))
+      (is (not (str/includes? tool-context "explore$index-append"))))))
 
 ;; ============================================================================
 ;; Helper test fixtures
@@ -215,251 +237,37 @@
       (delete-recursive c)))
   (.delete f))
 
-;; ============================================================================
-;; Helper unit tests — explore$slug
-;; ============================================================================
-
-(deftest slug-determinism-test
-  (testing "same question → same slug"
-    (let [q "Where is the loop guard implemented and what does it block?"
-          s1 (:slug (explore/explore$slug :question q))
-          s2 (:slug (explore/explore$slug :question q))]
-      (is (= s1 s2))
-      (is (string? s1))))
-
-  (testing "stopwords are dropped"
-    (let [s (:slug (explore/explore$slug :question "Where is the loop guard"))]
-      ;; "where", "is", "the" are stopwords → only "loop guard" survives.
-      (is (= "loop-guard" s))))
-
-  (testing "kebab-case normalization"
-    (let [s (:slug (explore/explore$slug :question "MCP server health check!"))]
-      (is (= "mcp-server-health-check" s))))
-
-  (testing "60-char default cap"
-    (let [long-q (str/join " " (repeat 30 "supercalifragilistic"))
-          s      (:slug (explore/explore$slug :question long-q))]
-      (is (<= (count s) 60))))
-
-  (testing "max-chars override"
-    (let [s (:slug (explore/explore$slug :question "loop guard implementation deep dive"
-                                         :max-chars 10))]
-      (is (<= (count s) 10))))
-
-  (testing "blank/empty question → fallback slug"
-    (is (= "exploration" (:slug (explore/explore$slug :question ""))))
-    (is (= "exploration" (:slug (explore/explore$slug :question "   "))))
-    ;; All-stopwords question also collapses to fallback.
-    (is (= "exploration" (:slug (explore/explore$slug :question "what is the")))))
-
-  (testing "validation"
-    (is (contains? (explore/explore$slug :question 123) :error))
-    (is (contains? (explore/explore$slug :question "x" :max-chars 0) :error))))
+(defn- write-dossier!
+  "Spit a dossier file with hand-written frontmatter (what the LLM produces)
+   under <base-dir>/.brainyard/agents/explore-agent/results/<filename>. Returns
+   the repo-relative path. Body is minimal; the readers only parse frontmatter."
+  [base-dir filename {:keys [slug question surfaces files urls related freshness
+                             created summary]
+                      :or   {surfaces [] files [] urls [] related []
+                             freshness "static" question "Q?" summary "summary"}}]
+  (let [dir (io/file base-dir ".brainyard/agents/explore-agent/results")
+        f   (io/file dir filename)
+        fm  (str "---\n"
+                 "slug: " slug "\n"
+                 "question: \"" question "\"\n"
+                 "created: " (or created (str (Instant/now))) "\n"
+                 "agent: explore-agent\n"
+                 "surfaces: [" (str/join ", " surfaces) "]\n"
+                 "entities:\n"
+                 "  files: [" (str/join ", " files) "]\n"
+                 "  urls: [" (str/join ", " urls) "]\n"
+                 "  mcp_tools: []\n"
+                 "  skills: []\n"
+                 "related: [" (str/join ", " related) "]\n"
+                 "freshness: " freshness "\n"
+                 "summary: >\n  " summary "\n"
+                 "---\n# body\n")]
+    (.mkdirs dir)
+    (spit f fm)
+    (str ".brainyard/agents/explore-agent/results/" filename)))
 
 ;; ============================================================================
-;; Helper unit tests — explore$frontmatter (round-trip with read-frontmatter)
-;; ============================================================================
-
-(deftest frontmatter-build-test
-  (testing "all required keys present in output"
-    (let [{:keys [frontmatter]}
-          (explore/explore$frontmatter
-           :question "Where is the loop guard?"
-           :slug "loop-guard"
-           :surfaces ["filesystem"]
-           :entities {:files ["a.clj" "b.clj"]
-                      :urls []
-                      :mcp_tools []
-                      :skills []}
-           :summary "Loop guard is a pre-hook on tool-use that detects repetition.")]
-      (is (str/starts-with? frontmatter "---\n"))
-      (is (str/ends-with? frontmatter "---\n"))
-      (is (str/includes? frontmatter "slug: loop-guard"))
-      (is (str/includes? frontmatter "agent: explore-agent"))
-      (is (str/includes? frontmatter "surfaces: [filesystem]"))
-      ;; Bareword paths (alnum + `_./:-`) are emitted unquoted — matches design doc.
-      (is (str/includes? frontmatter "files: [a.clj, b.clj]"))))
-
-  (testing "values with whitespace / special chars are double-quoted"
-    (let [{:keys [frontmatter]}
-          (explore/explore$frontmatter
-           :question "Q with spaces and ?"
-           :slug "q-spaces"
-           :surfaces ["filesystem"]
-           :entities {:urls ["https://example.com/a b"]}
-           :summary "ok")]
-      ;; Question always quoted (it has spaces).
-      (is (str/includes? frontmatter "question: \"Q with spaces and ?\""))
-      ;; URL with embedded space → quoted; URL without → bareword.
-      (is (str/includes? frontmatter "\"https://example.com/a b\""))))
-
-  (testing "summary with internal newlines is collapsed to single line"
-    (let [{:keys [frontmatter]}
-          (explore/explore$frontmatter
-           :question "Q"
-           :slug "q"
-           :surfaces ["filesystem"]
-           :entities {}
-           :summary "first line\nsecond line\nthird")]
-      ;; Summary lives under `summary: >` and the content line should not contain \n.
-      (let [summary-section (subs frontmatter (str/index-of frontmatter "summary: "))]
-        (is (str/includes? summary-section "first line second line third"))
-        (is (not (str/includes? summary-section "first line\nsecond"))))))
-
-  (testing "validation"
-    (is (contains? (explore/explore$frontmatter
-                    :slug "x" :surfaces [] :summary "y") :error))
-    (is (contains? (explore/explore$frontmatter
-                    :question "x" :surfaces [] :summary "y") :error))
-    (is (contains? (explore/explore$frontmatter
-                    :question "x" :slug "x" :surfaces "not a vector" :summary "y") :error))))
-
-(deftest frontmatter-round-trip-test
-  (testing "frontmatter built by explore$frontmatter parses back via explore$read-frontmatter"
-    (let [tmp-dir (make-tmp-dir)]
-      (try
-        (let [question "Where do we configure MCP servers?"
-              slug     "mcp-servers-configured"
-              entities {:files ["mcp/integration.clj" "mcp/client.clj"]
-                        :urls ["https://example.com/mcp"]
-                        :mcp_tools ["linear:get-issue"]
-                        :skills []}
-              {:keys [frontmatter]}
-              (explore/explore$frontmatter
-               :question question
-               :slug     slug
-               :surfaces ["filesystem" "mcp"]
-               :entities entities
-               :summary  "MCP servers configured in integration.clj; 3/4 healthy.")
-              {:keys [path]}
-              (explore/explore$write :slug slug
-                                     :content (str frontmatter "\n# Body\n…\n")
-                                     :base-dir tmp-dir)
-              parsed (explore/explore$read-frontmatter :path path :base-dir tmp-dir)]
-
-          (testing "scalar keys round-trip"
-            (is (= slug (:slug parsed)))
-            (is (= question (:question parsed)))
-            (is (= "explore-agent" (:agent parsed))))
-
-          (testing "surfaces vector round-trips"
-            (is (= ["filesystem" "mcp"] (:surfaces parsed))))
-
-          (testing "entities sub-map round-trips"
-            (is (= ["mcp/integration.clj" "mcp/client.clj"]
-                   (get-in parsed [:entities :files])))
-            (is (= ["https://example.com/mcp"]
-                   (get-in parsed [:entities :urls])))
-            (is (= ["linear:get-issue"]
-                   (get-in parsed [:entities :mcp_tools])))
-            (is (= [] (get-in parsed [:entities :skills]))))
-
-          (testing "summary round-trips as folded single line"
-            (is (string? (:summary parsed)))
-            (is (str/includes? (:summary parsed) "MCP servers configured")))
-
-          (testing "no spurious :error key"
-            (is (not (contains? parsed :error)))))
-        (finally
-          (delete-recursive (io/file tmp-dir)))))))
-
-;; ============================================================================
-;; Helper unit tests — explore$write (collision suffix)
-;; ============================================================================
-
-(deftest write-collision-suffix-test
-  (testing "first write uses bare slug, second auto-suffixes -2"
-    (let [tmp-dir (make-tmp-dir)]
-      (try
-        (let [r1 (explore/explore$write :slug "loop-guard"
-                                        :content "---\nslug: loop-guard\n---\n# body 1\n"
-                                        :base-dir tmp-dir)
-              r2 (explore/explore$write :slug "loop-guard"
-                                        :content "---\nslug: loop-guard-2\n---\n# body 2\n"
-                                        :base-dir tmp-dir)
-              r3 (explore/explore$write :slug "loop-guard"
-                                        :content "---\nslug: loop-guard-3\n---\n# body 3\n"
-                                        :base-dir tmp-dir)]
-          (is (= "loop-guard"   (:slug r1)))
-          (is (= "loop-guard-2" (:slug r2)))
-          (is (= "loop-guard-3" (:slug r3)))
-
-          ;; All three files exist, none overwritten
-          (is (.isFile (io/file (:path r1))))
-          (is (.isFile (io/file (:path r2))))
-          (is (.isFile (io/file (:path r3))))
-
-          (is (= "---\nslug: loop-guard\n---\n# body 1\n"
-                 (slurp (io/file (:path r1)))))
-          (is (= "---\nslug: loop-guard-2\n---\n# body 2\n"
-                 (slurp (io/file (:path r2))))))
-        (finally
-          (delete-recursive (io/file tmp-dir))))))
-
-  (testing "different slugs do not collide"
-    (let [tmp-dir (make-tmp-dir)]
-      (try
-        (let [r1 (explore/explore$write :slug "alpha" :content "x" :base-dir tmp-dir)
-              r2 (explore/explore$write :slug "beta"  :content "y" :base-dir tmp-dir)]
-          (is (= "alpha" (:slug r1)))
-          (is (= "beta"  (:slug r2))))
-        (finally
-          (delete-recursive (io/file tmp-dir))))))
-
-  (testing "validation"
-    (is (contains? (explore/explore$write :content "x") :error))
-    (is (contains? (explore/explore$write :slug "x")    :error))))
-
-;; ============================================================================
-;; Helper unit tests — explore$index-append (PREPENDS newest-first)
-;; ============================================================================
-
-(deftest index-prepend-ordering-test
-  (testing "INDEX.md prepends newest-first; existing content preserved verbatim"
-    (let [tmp-dir (make-tmp-dir)]
-      (try
-        (explore/explore$index-append
-         :path ".brainyard/agents/explore-agent/results/20260101-120000-alpha.md"
-         :slug "alpha" :surfaces ["filesystem"] :summary "first entry"
-         :base-dir tmp-dir)
-        (explore/explore$index-append
-         :path ".brainyard/agents/explore-agent/results/20260102-120000-beta.md"
-         :slug "beta" :surfaces ["mcp"] :summary "second entry"
-         :base-dir tmp-dir)
-        (explore/explore$index-append
-         :path ".brainyard/agents/explore-agent/results/20260103-120000-gamma.md"
-         :slug "gamma" :surfaces ["filesystem" "mcp"] :summary "third entry"
-         :base-dir tmp-dir)
-
-        (let [content (slurp (io/file tmp-dir ".brainyard/agents/explore-agent/INDEX.md"))
-              lines   (str/split-lines content)]
-          ;; 3 entries; newest-first means gamma → beta → alpha
-          (is (= 3 (count lines)))
-          (is (str/includes? (nth lines 0) "gamma"))
-          (is (str/includes? (nth lines 1) "beta"))
-          (is (str/includes? (nth lines 2) "alpha"))
-
-          ;; Format anchors: timestamp prefix, markdown link, surfaces, summary
-          (is (re-find #"^- \d{4}-\d{2}-\d{2} \d{2}:\d{2} \[gamma\]\(results/.*\.md\) — filesystem, mcp · \*third entry\*"
-                       (nth lines 0))))
-        (finally
-          (delete-recursive (io/file tmp-dir))))))
-
-  (testing "long summary is truncated at 200 chars with ellipsis"
-    (let [tmp-dir (make-tmp-dir)]
-      (try
-        (let [long-summary (apply str (repeat 300 "x"))
-              {:keys [line]} (explore/explore$index-append
-                              :path "results/test.md"
-                              :slug "test" :surfaces [] :summary long-summary
-                              :base-dir tmp-dir)]
-          (is (str/includes? line "…"))
-          (is (< (count line) 350)))
-        (finally
-          (delete-recursive (io/file tmp-dir)))))))
-
-;; ============================================================================
-;; Helper unit tests — explore$find
+;; explore$find — corpus search (the reuse gate)
 ;; ============================================================================
 
 (deftest find-test
@@ -475,48 +283,38 @@
   (testing "matches by slug or summary substring, newest-first"
     (let [tmp-dir (make-tmp-dir)]
       (try
-        ;; Three results; explore$write timestamps each at call time so they
-        ;; sort newest-first by filename.
-        (let [w1 (explore/explore$write
-                  :slug "alpha-loop-guard"
-                  :content (str (:frontmatter
-                                 (explore/explore$frontmatter
-                                  :question "Q1" :slug "alpha-loop-guard"
-                                  :surfaces ["filesystem"] :entities {}
-                                  :summary "First exploration about loop guard."))
-                                "\n# body\n")
-                  :base-dir tmp-dir)]
-          (Thread/sleep 1100)            ; ensure timestamp differs
-          (let [w2 (explore/explore$write
-                    :slug "beta-mcp"
-                    :content (str (:frontmatter
-                                   (explore/explore$frontmatter
-                                    :question "Q2" :slug "beta-mcp"
-                                    :surfaces ["mcp"] :entities {}
-                                    :summary "Second exploration about Linear."))
-                                  "\n# body\n")
-                    :base-dir tmp-dir)]
+        ;; Timestamp prefixes sort newest-last lexically; explore$find reverses.
+        (write-dossier! tmp-dir "20260101-120000-alpha-loop-guard.md"
+                        {:slug "alpha-loop-guard" :question "Q1" :surfaces ["filesystem"]
+                         :summary "First exploration about loop guard."})
+        (write-dossier! tmp-dir "20260102-120000-beta-mcp.md"
+                        {:slug "beta-mcp" :question "Q2" :surfaces ["mcp"]
+                         :summary "Second exploration about Linear."})
 
-            (testing "match on slug"
-              (let [r (explore/explore$find :query "loop" :base-dir tmp-dir)]
-                (is (= 1 (:n-matches r)))
-                (is (= "alpha-loop-guard" (:slug (first (:matches r)))))))
+        (testing "match on slug"
+          (let [r (explore/explore$find :query "loop" :base-dir tmp-dir)]
+            (is (= 1 (:n-matches r)))
+            (is (= "alpha-loop-guard" (:slug (first (:matches r)))))))
 
-            (testing "match on summary substring (case-insensitive)"
-              (let [r (explore/explore$find :query "linear" :base-dir tmp-dir)]
-                (is (= 1 (:n-matches r)))
-                (is (= "beta-mcp" (:slug (first (:matches r)))))))
+        (testing "match on summary substring (case-insensitive)"
+          (let [r (explore/explore$find :query "linear" :base-dir tmp-dir)]
+            (is (= 1 (:n-matches r)))
+            (is (= "beta-mcp" (:slug (first (:matches r)))))))
 
-            (testing "match on multiple files, newest-first ordering"
-              (let [r (explore/explore$find :query "exploration" :base-dir tmp-dir)]
-                (is (= 2 (:n-matches r)))
-                ;; w2 is newer (later ts) → first
-                (is (= "beta-mcp" (:slug (first (:matches r)))))
-                (is (= "alpha-loop-guard" (:slug (second (:matches r)))))))
+        (testing "match on multiple files, newest-first ordering"
+          (let [r (explore/explore$find :query "exploration" :base-dir tmp-dir)]
+            (is (= 2 (:n-matches r)))
+            (is (= "beta-mcp" (:slug (first (:matches r)))))
+            (is (= "alpha-loop-guard" (:slug (second (:matches r)))))))
 
-            (testing "no match → empty"
-              (let [r (explore/explore$find :query "nonsense-xyzzy" :base-dir tmp-dir)]
-                (is (= 0 (:n-matches r)))))))
+        (testing "match on question (fallback scan only — INDEX absent)"
+          (let [r (explore/explore$find :query "Q2" :base-dir tmp-dir)]
+            (is (= 1 (:n-matches r)))
+            (is (= "beta-mcp" (:slug (first (:matches r)))))))
+
+        (testing "no match → empty"
+          (let [r (explore/explore$find :query "nonsense-xyzzy" :base-dir tmp-dir)]
+            (is (= 0 (:n-matches r)))))
         (finally
           (delete-recursive (io/file tmp-dir))))))
 
@@ -524,10 +322,34 @@
     (is (contains? (explore/explore$find) :error))))
 
 ;; ============================================================================
-;; Helper unit tests — explore$read-frontmatter (error paths)
+;; explore$read-frontmatter — lineage round-trip + error paths
 ;; ============================================================================
 
-(deftest read-frontmatter-error-test
+(deftest read-frontmatter-test
+  (testing "frontmatter (incl. related + freshness) parses back"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (let [path (write-dossier! tmp-dir "20260601-090000-mcp-servers.md"
+                                   {:slug "mcp-servers" :question "Where are MCP servers configured?"
+                                    :surfaces ["filesystem" "mcp"]
+                                    :files ["mcp/integration.clj" "mcp/client.clj"]
+                                    :related [".brainyard/agents/explore-agent/results/20260101-000000-prior.md"]
+                                    :freshness "volatile"
+                                    :summary "MCP servers configured in integration.clj."})
+              parsed (explore/explore$read-frontmatter :path path :base-dir tmp-dir)]
+          (is (= "mcp-servers" (:slug parsed)))
+          (is (= "explore-agent" (:agent parsed)))
+          (is (= ["filesystem" "mcp"] (:surfaces parsed)))
+          (is (= ["mcp/integration.clj" "mcp/client.clj"]
+                 (get-in parsed [:entities :files])))
+          (is (= [".brainyard/agents/explore-agent/results/20260101-000000-prior.md"]
+                 (:related parsed)))
+          (is (= "volatile" (:freshness parsed)))
+          (is (str/includes? (:summary parsed) "MCP servers configured"))
+          (is (not (contains? parsed :error))))
+        (finally
+          (delete-recursive (io/file tmp-dir))))))
+
   (testing "missing file → :error"
     (let [r (explore/explore$read-frontmatter :path "/no/such/file.md")]
       (is (contains? r :error))))
@@ -542,25 +364,167 @@
         (finally
           (delete-recursive (io/file tmp-dir)))))))
 
+(deftest read-frontmatter-block-list-test
+  (testing "list keys parse from YAML block-list style, not just flow vectors
+            (capable models emit `- item` lists even when the template shows [a, b])"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (let [dir     (io/file tmp-dir ".brainyard/agents/explore-agent/results")
+              _       (.mkdirs dir)
+              content (str "---\n"
+                           "slug: block-list\n"
+                           "question: \"q\"\n"
+                           "created: 2026-06-29T00:00:00Z\n"
+                           "agent: explore-agent\n"
+                           "surfaces:\n  - filesystem\n  - mcp\n"
+                           "entities:\n"
+                           "  files:\n    - components/a.clj\n    - components/b.clj\n"
+                           "  urls: []\n"
+                           "  mcp_tools:\n    - linear:get-issue\n"
+                           "  skills: []\n"
+                           "related:\n  - .brainyard/agents/explore-agent/results/x.md\n"
+                           "freshness: static\n"
+                           "summary: >\n  one line summary\n"
+                           "---\n# body\n")
+              _       (spit (io/file dir "20260629-000000-block-list.md") content)
+              r       (explore/explore$read-frontmatter
+                       :path ".brainyard/agents/explore-agent/results/20260629-000000-block-list.md"
+                       :base-dir tmp-dir)]
+          (is (= ["filesystem" "mcp"] (:surfaces r)))
+          (is (= ["components/a.clj" "components/b.clj"] (get-in r [:entities :files])))
+          (is (= ["linear:get-issue"] (get-in r [:entities :mcp_tools])))
+          (is (= [".brainyard/agents/explore-agent/results/x.md"] (:related r)))
+          (is (= "static" (:freshness r)))
+          (is (str/includes? (:summary r) "one line summary")))
+        (finally
+          (delete-recursive (io/file tmp-dir)))))))
+
+(deftest auto-persist-bolded-marker-idempotent-test
+  (testing "a markdown-bolded **Saved exploration:** marker still counts as saved (no re-persist)"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (with-redefs [config/project-dir (constantly tmp-dir)]
+          (let [answer (str "## Findings\n\nGuard is in `components/agent/src/ai/x.clj`.\n\n"
+                            "**Saved exploration:** `.brainyard/agents/explore-agent/results/20260101-120000-x.md`\n")
+                r      (explore/explore-auto-persist
+                        {:agent (fake-explore-agent) :input "Q" :result {:answer answer}})]
+            (is (nil? r) "bolded marker → already saved → no :replace decision")))
+        (is (not (.exists (io/file tmp-dir ".brainyard/agents/explore-agent")))
+            "must not re-persist when the LLM already emitted a (bolded) marker")
+        (finally
+          (delete-recursive (io/file tmp-dir)))))))
+
 ;; ============================================================================
-;; Hook unit tests — explore-auto-persist
-;;
-;; Bypass the actual :agent.ask/post hook firing path (which requires a real
-;; agent + agent.clj process). Test the handler fn directly: it should write
-;; the artifact, prepend INDEX.md, and skip when the answer already contains
-;; the `Saved exploration:` marker. We use a fake agent map with the
-;; defagent-type keyword the hook checks for via `proto/defagent-type`.
+;; explore$reuse? — freshness rule (§7.4)
 ;; ============================================================================
 
-(defn- fake-explore-agent
-  "Minimal map that satisfies the hook's `proto/defagent-type` check via a
-   protocol extension on `clojure.lang.IPersistentMap`. Implementing the
-   protocol on Map at the ns level would be invasive — instead we extend
-   only inside the test by reifying IAgent on a wrapping defrecord."
-  []
-  ;; Use the actual proto/agent-id keyword shape: :<defagent-type>/<suffix>.
-  ;; The hook calls `proto/defagent-type` which extracts the namespace from
-  ;; the agent-id keyword. We reify just enough of IAgent for that path.
+(deftest reuse?-test
+  (testing "static dossier with unchanged cited files → reuse"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        ;; Create the cited file first, then stamp the dossier `created` after.
+        (let [cited (io/file tmp-dir "src/foo.clj")]
+          (.mkdirs (.getParentFile cited))
+          (spit cited "(ns foo)")
+          (Thread/sleep 20)
+          (let [path (write-dossier! tmp-dir "20260601-100000-static-fresh.md"
+                                     {:slug "static-fresh" :surfaces ["filesystem"]
+                                      :files ["src/foo.clj"] :freshness "static"
+                                      :created (str (Instant/now))})
+                r    (explore/explore$reuse? :path path :base-dir tmp-dir)]
+            (is (true? (:reuse? r)))
+            (is (= "static" (:freshness r)))
+            (is (= [] (:changed r)))))
+        (finally
+          (delete-recursive (io/file tmp-dir))))))
+
+  (testing "static dossier with a changed cited file → stale"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (let [cited (io/file tmp-dir "src/foo.clj")]
+          (.mkdirs (.getParentFile cited))
+          (spit cited "(ns foo)")
+          (let [created (Instant/now)
+                path    (write-dossier! tmp-dir "20260601-100000-static-stale.md"
+                                        {:slug "static-stale" :surfaces ["filesystem"]
+                                         :files ["src/foo.clj"] :freshness "static"
+                                         :created (str created)})]
+            ;; Bump the cited file's mtime past `created`.
+            (.setLastModified cited (+ (.toEpochMilli created) 600000))
+            (let [r (explore/explore$reuse? :path path :base-dir tmp-dir)]
+              (is (false? (:reuse? r)))
+              (is (= ["src/foo.clj"] (:changed r))))))
+        (finally
+          (delete-recursive (io/file tmp-dir))))))
+
+  (testing "static dossier citing a now-missing file → stale"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (let [path (write-dossier! tmp-dir "20260601-100000-static-missing.md"
+                                   {:slug "static-missing" :surfaces ["filesystem"]
+                                    :files ["src/gone.clj"] :freshness "static"})
+              r    (explore/explore$reuse? :path path :base-dir tmp-dir)]
+          (is (false? (:reuse? r)))
+          (is (= ["src/gone.clj"] (:changed r))))
+        (finally
+          (delete-recursive (io/file tmp-dir))))))
+
+  (testing "volatile dossier within the window → reuse"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (let [path (write-dossier! tmp-dir "20260601-100000-vol-fresh.md"
+                                   {:slug "vol-fresh" :surfaces ["web"]
+                                    :urls ["https://example.com"] :freshness "volatile"
+                                    :created (str (Instant/now))})
+              r    (explore/explore$reuse? :path path :base-dir tmp-dir)]
+          (is (true? (:reuse? r)))
+          (is (= "volatile" (:freshness r))))
+        (finally
+          (delete-recursive (io/file tmp-dir))))))
+
+  (testing "volatile dossier older than the window → stale"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (let [old  (.minusSeconds (Instant/now) (* 48 3600))
+              path (write-dossier! tmp-dir "20260101-100000-vol-stale.md"
+                                   {:slug "vol-stale" :surfaces ["web"]
+                                    :urls ["https://example.com"] :freshness "volatile"
+                                    :created (str old)})
+              r    (explore/explore$reuse? :path path :base-dir tmp-dir)]
+          (is (false? (:reuse? r)))
+          (is (> (:age-hours r) 24.0)))
+        (finally
+          (delete-recursive (io/file tmp-dir))))))
+
+  (testing ":volatile-hours override widens the window"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (let [old  (.minusSeconds (Instant/now) (* 48 3600))
+              path (write-dossier! tmp-dir "20260101-100000-vol-override.md"
+                                   {:slug "vol-override" :surfaces ["web"]
+                                    :urls ["https://example.com"] :freshness "volatile"
+                                    :created (str old)})
+              r    (explore/explore$reuse? :path path :base-dir tmp-dir :volatile-hours 72)]
+          (is (true? (:reuse? r))))
+        (finally
+          (delete-recursive (io/file tmp-dir))))))
+
+  (testing "missing dossier → :error"
+    (is (contains? (explore/explore$reuse? :path "/no/such.md") :error)))
+
+  (testing "validation"
+    (is (contains? (explore/explore$reuse?) :error))))
+
+;; ============================================================================
+;; Auto-persist safety net (gated :agent.ask/finalize)
+;;
+;; Test the handler fn directly with a fake agent map satisfying the hook's
+;; proto/defagent-type check. The handler now fills the §5 RESULT TEMPLATE,
+;; spits ONE file + INDEX line, and returns a :replace decision injecting the
+;; absent `Saved exploration:` handoff line.
+;; ============================================================================
+
+(defn- fake-explore-agent []
   (reify ai.brainyard.agent.core.protocol/IAgent
     (agent-id [_] :explore-agent/test-instance)
     (agent-name [_] "test")
@@ -589,30 +553,32 @@
     (let [tmp-dir (make-tmp-dir)]
       (try
         (with-redefs [config/project-dir (constantly tmp-dir)]
-          (explore/explore-auto-persist
-           {:agent  (fake-explore-agent)
-            :input  "What's 2+2?"
-            :result {:answer "4"}}))
+          (let [r (explore/explore-auto-persist
+                   {:agent  (fake-explore-agent)
+                    :input  "What's 2+2?"
+                    :result {:answer "4"}})]
+            (is (nil? r) "trivial answer → no :replace decision")))
         (is (not (.exists (io/file tmp-dir ".brainyard/agents/explore-agent/results")))
             "results dir should not exist for trivial answers")
-        (is (not (.exists (io/file tmp-dir ".brainyard/agents/explore-agent/INDEX.md")))
-            "INDEX should not exist for trivial answers")
         (finally
           (delete-recursive (io/file tmp-dir)))))))
 
 (deftest auto-persist-non-trivial-test
-  (testing "non-trivial answer (>= 1000 chars OR entities cited) is persisted"
+  (testing "non-trivial answer fills the template, writes one file + INDEX, injects the handoff line"
     (let [tmp-dir (make-tmp-dir)]
       (try
         (with-redefs [config/project-dir (constantly tmp-dir)]
           (let [answer (str "## Findings\n\n"
                             "The loop guard lives in `components/agent/src/ai/brainyard/agent/common/loop_guard_hook.clj`.\n\n"
-                            "It blocks the 3rd consecutive identical tool call.\n")]
-            (explore/explore-auto-persist
-             {:agent  (fake-explore-agent)
-              :input  "Where is the loop guard implemented?"
-              :result {:answer answer}})))
-        ;; Verify a result file was written
+                            "It blocks the 3rd consecutive identical tool call.\n")
+                r      (explore/explore-auto-persist
+                        {:agent  (fake-explore-agent)
+                         :input  "Where is the loop guard implemented?"
+                         :result {:answer answer}})]
+            (testing "returns a :replace decision injecting Saved exploration:"
+              (is (= :replace (:result r)))
+              (is (str/includes? (:answer (:replacement r)) "Saved exploration: ")))))
+        ;; Exactly one dossier written, with the template's new fields
         (let [results-dir (io/file tmp-dir ".brainyard/agents/explore-agent/results")
               files       (when (.isDirectory results-dir) (vec (.listFiles results-dir)))]
           (is (.isDirectory results-dir))
@@ -620,18 +586,20 @@
           (let [content (slurp (first files))]
             (is (str/starts-with? content "---\n"))
             (is (str/includes? content "agent: explore-agent"))
-            ;; Detected file entity should be in entities.files
             (is (str/includes? content "loop_guard_hook.clj"))
-            ;; Surface inferred from file citation → "filesystem"
-            (is (str/includes? content "surfaces: [filesystem]"))))
-        ;; INDEX.md was prepended
+            (is (str/includes? content "surfaces: [filesystem]"))
+            (is (str/includes? content "related: []"))
+            (is (str/includes? content "freshness: static"))
+            (is (str/includes? content "## What was found"))
+            (is (str/includes? content "## Builds on"))))
+        ;; INDEX.md was written
         (let [idx (io/file tmp-dir ".brainyard/agents/explore-agent/INDEX.md")]
           (is (.isFile idx))
-          (is (str/includes? (slurp idx) "loop guard")))
+          (is (str/includes? (slurp idx) "loop")))
         (finally
           (delete-recursive (io/file tmp-dir))))))
 
-  (testing "long answer with no entity citations still persists by length"
+  (testing "long answer with no entity citations still persists by length, infers static"
     (let [tmp-dir (make-tmp-dir)]
       (try
         (with-redefs [config/project-dir (constantly tmp-dir)]
@@ -640,7 +608,24 @@
              {:agent  (fake-explore-agent)
               :input  "Tell me about X"
               :result {:answer answer}})))
-        (is (.isDirectory (io/file tmp-dir ".brainyard/agents/explore-agent/results")))
+        (let [results-dir (io/file tmp-dir ".brainyard/agents/explore-agent/results")]
+          (is (.isDirectory results-dir))
+          (is (str/includes? (slurp (first (.listFiles results-dir))) "freshness: static")))
+        (finally
+          (delete-recursive (io/file tmp-dir))))))
+
+  (testing "web-cited answer infers freshness volatile"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (with-redefs [config/project-dir (constantly tmp-dir)]
+          (let [answer (str "## Findings\n\nSee the docs at https://example.com/guide for details.\n"
+                            (apply str (repeat 600 "y ")))]
+            (explore/explore-auto-persist
+             {:agent  (fake-explore-agent)
+              :input  "What does the guide say?"
+              :result {:answer answer}})))
+        (let [results-dir (io/file tmp-dir ".brainyard/agents/explore-agent/results")]
+          (is (str/includes? (slurp (first (.listFiles results-dir))) "freshness: volatile")))
         (finally
           (delete-recursive (io/file tmp-dir)))))))
 
@@ -651,11 +636,12 @@
         (with-redefs [config/project-dir (constantly tmp-dir)]
           (let [answer (str "## Findings\n\n"
                             "The loop guard lives in `components/agent/src/ai/brainyard/agent/common/loop_guard_hook.clj`.\n\n"
-                            "Saved exploration: .brainyard/agents/explore-agent/results/20260101-120000-loop-guard.md\n")]
-            (explore/explore-auto-persist
-             {:agent  (fake-explore-agent)
-              :input  "Q"
-              :result {:answer answer}})))
+                            "Saved exploration: .brainyard/agents/explore-agent/results/20260101-120000-loop-guard.md\n")
+                r      (explore/explore-auto-persist
+                        {:agent  (fake-explore-agent)
+                         :input  "Q"
+                         :result {:answer answer}})]
+            (is (nil? r) "already-saved → no :replace decision")))
         (is (not (.exists (io/file tmp-dir ".brainyard/agents/explore-agent")))
             "should not create directory when LLM already persisted itself")
         (finally
@@ -666,11 +652,12 @@
     (let [tmp-dir (make-tmp-dir)]
       (try
         (with-redefs [config/project-dir (constantly tmp-dir)]
-          (let [answer (apply str (repeat 2000 "x "))]
-            (explore/explore-auto-persist
-             {:agent  (fake-other-agent)
-              :input  "Q"
-              :result {:answer answer}})))
+          (let [answer (apply str (repeat 2000 "x "))
+                r      (explore/explore-auto-persist
+                        {:agent  (fake-other-agent)
+                         :input  "Q"
+                         :result {:answer answer}})]
+            (is (nil? r))))
         (is (not (.exists (io/file tmp-dir ".brainyard/agents/explore-agent")))
             "other-agent answer must not be auto-persisted by explore-agent's hook")
         (finally
@@ -678,9 +665,6 @@
 
 (deftest auto-persist-defensive-test
   (testing "hook never throws — malformed inputs are swallowed"
-    ;; Each of these would cause a NullPointerException / type error inside
-    ;; the hook body if not guarded. The contract is: the hook MUST NOT
-    ;; affect the user-facing ask response.
     (is (nil? (explore/explore-auto-persist nil)))
     (is (nil? (explore/explore-auto-persist {})))
     (is (nil? (explore/explore-auto-persist {:agent nil})))
@@ -689,20 +673,36 @@
     (is (nil? (explore/explore-auto-persist {:agent (fake-explore-agent)
                                              :result {:answer 42}})))))
 
+(deftest materialize-auto-dossier-direct-test
+  (testing "materialize-auto-dossier! returns rel-path + slug and writes the file"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (let [answer (str "## Findings\n\nThe guard is in `components/agent/src/ai/x.clj`.\n")
+              r      (explore/materialize-auto-dossier!
+                      {:answer answer :question "Where is the guard?" :base-dir tmp-dir})]
+          (is (string? (:rel-path r)))
+          (is (string? (:slug r)))
+          (is (.isFile (io/file (:path r)))))
+        (finally
+          (delete-recursive (io/file tmp-dir))))))
+
+  (testing "disabled? short-circuits"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (is (nil? (explore/materialize-auto-dossier!
+                   {:answer (apply str (repeat 2000 "x "))
+                    :question "Q" :base-dir tmp-dir :enabled? false})))
+        (is (not (.exists (io/file tmp-dir ".brainyard/agents/explore-agent"))))
+        (finally
+          (delete-recursive (io/file tmp-dir)))))))
+
 (deftest auto-persist-registration-test
-  (testing "hook is registered for :agent.ask/post with :source :explore-agent"
+  (testing "hook is registered for :agent.ask/finalize with :source :explore-agent"
     (require 'ai.brainyard.agent.core.hooks)
-    ;; Re-install the auto-persist hook in case another test (e.g.
-    ;; hooks-test) reset !hooks. install-auto-persist! is idempotent —
-    ;; register-hook! replaces by id. Without this, alphabetical test
-    ;; order (hooks-test runs before explore-agent-test) wipes the
-    ;; namespace-load registration before this assertion runs.
     (explore/install-auto-persist!)
-    ;; `!hooks` is a private atom — `(resolve sym)` returns the var, then
-    ;; double-deref: var → atom value (the atom itself) → atom contents (map).
     (let [hooks-var   (resolve 'ai.brainyard.agent.core.hooks/!hooks)
           hooks-state @@hooks-var
-          entries     (get hooks-state :agent.ask/post [])
+          entries     (get hooks-state :agent.ask/finalize [])
           ours        (first (filter #(= ::explore/explore-auto-persist (:id %)) entries))]
       (is (some? ours))
       (is (= :explore-agent (:source ours)))
@@ -710,18 +710,13 @@
       (is (fn? (:match ours))))))
 
 ;; ============================================================================
-;; Integration — generate a dossier via a VERBATIM content block
+;; Integration — verbatim content block round-trips to a dossier via write-file
 ;;
-;; Exercises the realistic explore-agent path that the verbatim fence unlocks:
-;; the LLM emits the whole dossier (YAML frontmatter + markdown body, including
-;; a nested ``` code fence) as a four-backtick `markdown` block instead of
-;; hand-escaping it into a Clojure string, then promotes that content into a
-;; durable dossier via `explore$write`.
-;;
-;; This is the end-to-end proof of the `run-verbatim-block` change: the verbatim
-;; body now rides back on the eval-result's `:code` (previously ""), so the
-;; content is recoverable across the loop and can be fed to the dossier writer
-;; — not just a scratch path the model has lost sight of.
+;; Exercises the realistic authoring path: the LLM emits the whole dossier
+;; (YAML frontmatter + markdown body, including a nested ``` code fence) as a
+;; four-backtick `markdown` block instead of hand-escaping it, then promotes
+;; that content to a durable dossier with a direct file write. Proves the
+;; verbatim body rides back on the eval-result's `:code` so it's recoverable.
 ;; ============================================================================
 
 (defn- minimal-sandbox []
@@ -738,12 +733,9 @@
 
 (deftest verbatim-block-generates-dossier-test
   (let [tmp-dir (make-tmp-dir)
-        ;; The full dossier the LLM "wrote": frontmatter + body. The nested
-        ;; ```clojure fence inside is exactly what four-backtick verbatim
-        ;; fences exist for — it passes through with zero escaping.
         dossier (str "---\n"
                      "slug: verbatim-path\n"
-                     "question: How does the verbatim eval path carry content?\n"
+                     "question: \"How does the verbatim eval path carry content?\"\n"
                      "created: 2026-06-07T00:00:00Z\n"
                      "agent: explore-agent\n"
                      "surfaces: [filesystem]\n"
@@ -752,22 +744,21 @@
                      "  urls: []\n"
                      "  mcp_tools: []\n"
                      "  skills: []\n"
-                     "summary: run-verbatim-block now returns the body on :code.\n"
+                     "related: []\n"
+                     "freshness: static\n"
+                     "summary: >\n  run-verbatim-block now returns the body on :code.\n"
                      "---\n"
                      "# What was found\n\n"
                      "The verbatim body survives nested fences verbatim:\n\n"
                      "```clojure\n"
                      "(run-verbatim-block lang content filename)\n"
                      "```\n\n"
-                     "# Where\n\n"
+                     "## Where\n\n"
                      "components/agent/src/ai/brainyard/agent/common/coact_agent.clj")
-        ;; Four-backtick fence so the inner ``` survives. This is the raw
-        ;; LLM output the CoAct loop receives in `:code-blocks`.
         code-blocks (str "````markdown explore-dossier.md\n" dossier "\n````")
         sb (minimal-sandbox)
         st (st-with-code-blocks sb code-blocks)]
     (try
-      ;; --- Iteration N: the verbatim block runs through the real eval seam ---
       (rca/coact-code-eval-action {:st-memory st :agent nil})
       (let [entries (:last-code-results @st)
             e       (first entries)]
@@ -777,10 +768,8 @@
           (is (= "markdown" (:lang e)))
           (is (str/blank? (:error e))))
 
-        (testing "the full body rides back on :code (the run-verbatim-block change)"
-          (is (= dossier (:code e))
-              ":code must carry the verbatim body, not \"\" — this is what lets the
-               content reach the dossier writer in a later iteration"))
+        (testing "the full body rides back on :code (the run-verbatim-block contract)"
+          (is (= dossier (:code e))))
 
         (testing ":result is a scratch path holding the byte-for-byte body"
           (is (string? (:result e)))
@@ -788,33 +777,32 @@
           (is (= dossier (slurp (io/file (:result e)))))
           (is (str/includes? (:output e) "Wrote ")))
 
-        ;; --- Iteration N+1: promote the recovered content into a dossier ---
-        ;; The model takes the content it now still has sight of (`:code`) and
-        ;; writes a durable dossier with it. We use the eval-result's :code as
-        ;; the source to prove the round-trip, not the local `dossier` binding.
+        ;; --- Promote the recovered content into a dossier via a direct write ---
+        ;; This is the write-file authoring path the redesign mandates (no
+        ;; explore$write helper). We write the recovered :code to the results path.
         (let [recovered (:code e)
-              {:keys [path slug] :as res}
-              (explore/explore$write :slug "verbatim-path"
-                                     :content recovered
-                                     :base-dir tmp-dir)]
-          (testing "explore$write lands the dossier under the results dir"
-            (is (not (contains? res :error)))
-            (is (= "verbatim-path" slug))
-            (is (.isFile (io/file path)))
-            (is (str/includes? path
-                               ".brainyard/agents/explore-agent/results/")))
-
+              rel       ".brainyard/agents/explore-agent/results/20260607-000000-verbatim-path.md"
+              out       (io/file tmp-dir rel)]
+          (.mkdirs (.getParentFile out))
+          (spit out recovered)
           (testing "the persisted dossier is the verbatim content, intact"
-            (let [written (slurp (io/file path))]
+            (let [written (slurp out)]
               (is (= recovered written))
               (is (str/starts-with? written "---\n"))
               (is (str/includes? written "agent: explore-agent"))
-              ;; the nested code fence survived the whole journey verbatim
+              (is (str/includes? written "related: []"))
+              (is (str/includes? written "freshness: static"))
               (is (str/includes? written "```clojure"))
-              (is (str/includes? written
-                                 "(run-verbatim-block lang content filename)"))))))
+              (is (str/includes? written "(run-verbatim-block lang content filename)"))))
+
+          (testing "the new dossier is discoverable + parseable by the readers"
+            (let [found  (explore/explore$find :query "verbatim" :base-dir tmp-dir)
+                  parsed (explore/explore$read-frontmatter :path rel :base-dir tmp-dir)]
+              (is (= 1 (:n-matches found)))
+              (is (= "verbatim-path" (:slug parsed)))
+              (is (= [] (:related parsed)))
+              (is (= "static" (:freshness parsed)))))))
       (finally
-        ;; reclaim the scratch file the verbatim write left behind
         (when-let [p (some-> (:last-code-results @st) first :result)]
           (.delete (io/file p)))
         (delete-recursive (io/file tmp-dir))))))

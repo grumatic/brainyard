@@ -259,6 +259,8 @@
                                 :doc "Explore-agent: result size (chars) above which findings are auto-persisted (per-turn tunable)."}
    :explore-auto-persist       {:type "boolean" :default true
                                 :doc "Explore-agent: auto-persist findings exceeding :explore-persist-threshold."}
+   :explore-reuse-volatile-hours {:type "integer" :default 24
+                                  :doc "Explore-agent: a `volatile` (web/MCP) dossier older than this many hours is treated as stale by the iteration-0 reuse gate (explore$reuse?). `static` dossiers ignore this and are gated on cited files being unchanged."}
    :workflow-auto-finalize     {:type "boolean" :default true
                                 :doc "Workflow-agent: auto-finalize the turn when the specialist completes (vs. requiring an explicit finalize)."}
    :research-auto-finalize     {:type "boolean" :default true

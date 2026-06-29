@@ -3,22 +3,34 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent.common.explore
-  "Explore-agent quality-of-life helpers — the 6 small functions that compress
-   the persistence + handoff flow described in docs/explore-agent-design.md §5,
-   plus an `:agent.ask/post` hook that auto-persists when the LLM forgets to
-   call the helpers itself (smaller models like haiku regularly skip the
-   FINAL-STEP CHECKLIST in the agent instruction).
+  "Explore-agent persistence — READ & DISCOVERY seams plus an auto-persist
+   safety net. The write-side helper chain (explore$slug / explore$frontmatter /
+   explore$write / explore$index-append) is RETIRED: per
+   docs/design/explore-agent-lightweight-redesign.md the dossier is just a
+   markdown file, so explore-agent authors it directly with `write-file` from a
+   fixed template instead of constructing it through precisely-keyed helpers.
 
-   Each helper is a `defcommand` so it surfaces in the unified tool registry
-   and is auto-bound into the SCI sandbox (callable as `(explore$slug ...)` in
-   a clojure fence). They are not new primitives — explore-agent works without
-   them, falling back to the inline write-file skeleton in its tool-context —
-   but they shrink the prompt because the LLM no longer has to inline equivalent
-   helpers in every persisted run.
+   What survives are the two deterministic readers — exactly where a machine
+   beats the model:
+     - `explore$find`           — corpus search; the mandatory iteration-0
+                                  prior-art gate that turns the corpus into a
+                                  reuse cache (don't re-explore what's on disk).
+     - `explore$read-frontmatter` — cheap metadata read of one dossier; used to
+                                  judge freshness, resolve `related:` lineage
+                                  links, and route downstream agents.
+     - `explore$reuse?`         — applies the freshness rule (static: cited
+                                  files unchanged; volatile: age < window) so the
+                                  reuse decision lives in one tested place.
 
-   Frontmatter shape is hand-rolled (no clj-yaml dep) because the keys are
-   fully under our control: a flat key/value head plus a nested `entities`
-   sub-map. Round-trip stability matters more than supporting arbitrary YAML."
+   The `:agent.ask/finalize` auto-persist hook backstops a skipped dossier:
+   when a smaller model emits a non-trivial answer without persisting, the hook
+   fills the §5 template from regex-detected entities and `spit`s ONE file —
+   the same one-file path the happy path uses, so the two can't diverge — then
+   injects the absent `Saved exploration: <path>` handoff line into the answer.
+
+   Frontmatter is hand-rolled (no clj-yaml dep): a flat key/value head, a nested
+   `entities` sub-map, and the lineage/freshness scalars `related` / `freshness`.
+   The lenient `parse-flat-yaml` reads it back and tolerates a keyword typo."
   (:require [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
@@ -27,6 +39,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str])
   (:import (java.text SimpleDateFormat)
+           (java.time Instant)
            (java.util Date)))
 
 ;; ============================================================================
@@ -37,6 +50,11 @@
 (def ^:private results-base ".brainyard/agents/explore-agent")
 (def ^:private results-dir-rel (str results-base "/" results-subdir))
 (def ^:private index-rel (str results-base "/INDEX.md"))
+
+(def ^:private default-volatile-hours
+  "Fallback reuse window for `volatile` dossiers when the
+   :explore-reuse-volatile-hours config key resolves to nothing."
+  24)
 
 (def ^:private slug-stopwords
   #{"a" "an" "the" "is" "are" "and" "or" "of" "in" "on" "at" "to" "for"
@@ -55,7 +73,7 @@
 (defn- now-iso
   "Returns ISO-8601 instant string for frontmatter `created` field."
   []
-  (str (java.time.Instant/now)))
+  (str (Instant/now)))
 
 (defn- now-yyyy-mm-dd-hh-mm
   "Returns 'YYYY-MM-DD HH:MM' for INDEX.md line prefix (UTC).
@@ -65,11 +83,11 @@
   (-> (subs (now-iso) 0 16)
       (str/replace "T" " ")))
 
-;; ============================================================================
-;; explore$slug — deterministic kebab-case slug
-;; ============================================================================
-
 (defn- slugify
+  "Deterministic kebab-case slug: lower-case, drop stopwords + non-alnum,
+   cap at `max-chars`. Used by the auto-persist hook to derive a filename
+   when the LLM didn't author the dossier itself. (The LLM-facing
+   explore$slug command is retired — the model derives its own slug inline.)"
   [question max-chars]
   (let [tokens (-> (str question)
                    str/lower-case
@@ -81,33 +99,13 @@
         joined (if kept (str/join "-" kept) "exploration")]
     (subs joined 0 (min max-chars (count joined)))))
 
-(defcommand explore$slug
-  "Deterministic kebab-case slug from a question; drops stopwords, caps at 60 chars. Same question always yields the same slug."
-  (fn [& {:keys [question max-chars]
-          :or   {max-chars 60}}]
-    (cond
-      (not (string? question))
-      {:error ":question is required (string)"}
-
-      (or (not (integer? max-chars)) (<= max-chars 0))
-      {:error ":max-chars must be a positive integer"}
-
-      :else
-      {:slug (slugify question max-chars)}))
-  :input-schema  [:map
-                  [:question [:string {:desc "User question to slugify"}]]
-                  [:max-chars {:optional true} :int]]
-  :output-schema [:map
-                  [:slug {:optional true} [:string {:desc "Kebab-case slug, stopwords dropped"}]]
-                  [:error {:optional true} [:string {:desc "Error if validation failed"}]]])
-
 ;; ============================================================================
-;; explore$frontmatter — build YAML-flavored frontmatter block
+;; Frontmatter emission (private — backs the template-fill auto-persist hook;
+;; no LLM-facing command, the happy path authors markdown directly)
 ;; ============================================================================
 
 (defn- yaml-string
-  "Quote a string value for YAML emission. Conservatively double-quote and
-   escape backslashes + double-quotes — YAML 1.2 double-quoted scalar rules."
+  "Double-quote + escape a string value (YAML 1.2 double-quoted scalar rules)."
   [s]
   (str "\"" (-> (str s)
                 (str/replace "\\" "\\\\")
@@ -117,34 +115,30 @@
 (def ^:private bareword-re #"^[A-Za-z0-9_./:-]+$")
 
 (defn- yaml-flow-vector
-  "Format a coll as a YAML flow-style vector: `[a, b, c]`.
-   Strings matching the bareword charset (alnum + `_./:-`) are emitted
-   unquoted — matches the design-doc shape and keeps surfaces / file paths /
-   short tags readable. Anything else (whitespace, commas, special chars)
-   is double-quoted for correctness."
+  "Format a coll as a YAML flow-style vector `[a, b, c]`. Barewords
+   (alnum + `_./:-`) stay unquoted; anything else is double-quoted."
   [xs]
   (str "[" (str/join ", " (map (fn [x]
                                  (cond
                                    (keyword? x) (name x)
-                                   (string? x)
-                                   (if (re-matches bareword-re x)
-                                     x
-                                     (yaml-string x))
-                                   :else (str x)))
+                                   (string? x)  (if (re-matches bareword-re x)
+                                                  x
+                                                  (yaml-string x))
+                                   :else        (str x)))
                                xs))
        "]"))
 
-(defn- format-summary
-  "Frontmatter summary uses YAML folded-block scalar (`>`) so multi-line
-   summaries don't break parsing. We also collapse internal newlines because
-   single-line keeps the file `head`-friendly."
+(defn- collapse-1-line
+  "Collapse internal whitespace/newlines to a single line."
   [s]
-  (let [collapsed (-> (str s) (str/replace #"\s+" " ") str/trim)]
-    (str ">\n  " collapsed)))
+  (-> (str s) (str/replace #"\s+" " ") str/trim))
 
-(defn- build-frontmatter*
-  [{:keys [question slug surfaces entities summary
-           created turn-id session-id]}]
+(defn- render-dossier
+  "Fill the §5 RESULT TEMPLATE: frontmatter (incl. related + freshness) plus a
+   4-section body. Returns the full markdown string ready to `spit`. Used by
+   the auto-persist hook; the happy-path LLM writes the equivalent itself."
+  [{:keys [slug question created surfaces entities related freshness summary
+           title what-found where builds-on caveats]}]
   (let [{:keys [files urls mcp_tools skills]
          :or   {files [] urls [] mcp_tools [] skills []}} entities]
     (str "---\n"
@@ -158,162 +152,18 @@
          "  urls: " (yaml-flow-vector urls) "\n"
          "  mcp_tools: " (yaml-flow-vector mcp_tools) "\n"
          "  skills: " (yaml-flow-vector skills) "\n"
-         "summary: " (format-summary summary) "\n"
-         (when turn-id (str "turn_id: " (yaml-string turn-id) "\n"))
-         (when session-id (str "session_id: " (yaml-string session-id) "\n"))
-         "---\n")))
-
-(defcommand explore$frontmatter
-  "Build a YAML frontmatter block for an explore-agent result file."
-  (fn [& {:keys [question slug surfaces entities summary
-                 created turn-id session-id]
-          :as   m}]
-    (cond
-      (not (string? question)) {:error ":question is required (string)"}
-      (not (string? slug))     {:error ":slug is required (string)"}
-      (not (sequential? surfaces)) {:error ":surfaces must be a vector"}
-      (not (string? summary))  {:error ":summary is required (string)"}
-      :else
-      (let [fm (build-frontmatter*
-                {:question question
-                 :slug slug
-                 :surfaces surfaces
-                 :entities (or entities {})
-                 :summary summary
-                 :created created
-                 :turn-id turn-id
-                 :session-id session-id})]
-        (mulog/log ::explore.frontmatter
-                   :slug slug
-                   :surfaces (vec surfaces)
-                   :n-entities (reduce + 0 (map (comp count val) (or entities {}))))
-        {:frontmatter fm})))
-  :input-schema  [:map
-                  [:question [:string {:desc "Verbatim user question"}]]
-                  [:slug [:string {:desc "Kebab-case slug (use explore$slug to derive)"}]]
-                  [:surfaces [:vector {:desc "Surfaces touched: any of \"filesystem\" \"web\" \"mcp\" \"skills\""} :string]]
-                  [:entities {:optional true} [:map {:desc "Entity citations: :files :urls :mcp_tools :skills (vectors of strings)"}]]
-                  [:summary [:string {:desc "One-paragraph distilled answer (will be folded onto one line)"}]]
-                  [:created {:optional true} [:string {:desc "ISO-8601 created timestamp (default: now)"}]]
-                  [:turn-id {:optional true} [:string {:desc "Trajectory turn-id for cross-reference"}]]
-                  [:session-id {:optional true} [:string {:desc "Trajectory session-id for cross-reference"}]]]
-  :output-schema [:map
-                  [:frontmatter {:optional true} [:string {:desc "Full YAML frontmatter block, trailing newline included"}]]
-                  [:error {:optional true} [:string {:desc "Error if validation failed"}]]])
+         "related: " (yaml-flow-vector (or related [])) "\n"
+         "freshness: " (name (or freshness :static)) "\n"
+         "summary: >\n  " (collapse-1-line summary) "\n"
+         "---\n\n"
+         "# " (or title slug) "\n\n"
+         "## What was found\n" (or what-found "") "\n\n"
+         "## Where\n" (or where "") "\n\n"
+         "## Builds on\n" (or builds-on "None — first exploration of this area.") "\n\n"
+         "## Caveats / freshness\n" (or caveats "") "\n")))
 
 ;; ============================================================================
-;; explore$write — write the result file with collision-aware suffix
-;; ============================================================================
-
-(defn- existing-slugs-for
-  "Scan `<base-dir>/.brainyard/agents/explore-agent/results/` for files ending with
-   `-<slug>.md` (any prefix). Returns the count of files matching the slug
-   — used to compute the suffix.
-
-   Robust to the directory not existing yet (returns 0). Pure side-effect-free
-   filesystem scan."
-  [base-dir slug]
-  (let [^java.io.File dir (io/file base-dir results-dir-rel)]
-    (if (.isDirectory dir)
-      (let [;; Filename pattern: <ts>-<slug>.md   OR   <ts>-<slug>-<N>.md
-            ;; We only want collisions on the EXACT slug, so a strict suffix
-            ;; match works: filename ends with "-<slug>.md" or "-<slug>-N.md".
-            slug-re (re-pattern (str "(?i)-" (java.util.regex.Pattern/quote slug)
-                                     "(-\\d+)?\\.md$"))]
-        (->> (.listFiles dir)
-             (filter (fn [^java.io.File f] (.isFile f)))
-             (map (fn [^java.io.File f] (.getName f)))
-             (filter #(re-find slug-re %))
-             count))
-      0)))
-
-(defn- final-slug-with-suffix
-  [base-dir base-slug]
-  (let [n (existing-slugs-for base-dir base-slug)]
-    (if (zero? n)
-      base-slug
-      (str base-slug "-" (inc n)))))
-
-(defcommand explore$write
-  "Write a result file under .brainyard/agents/explore-agent/results/ as <ts>-<slug>.md; appends -N suffix on slug collision."
-  (fn [& {:keys [slug content base-dir]
-          :or   {base-dir (config/project-dir)}}]
-    (cond
-      (not (string? slug))    {:error ":slug is required (string)"}
-      (not (string? content)) {:error ":content is required (string)"}
-      :else
-      (let [final-slug (final-slug-with-suffix base-dir slug)
-            ts         (now-ts)
-            rel-path   (str results-dir-rel "/" ts "-" final-slug ".md")
-            file       (io/file base-dir rel-path)]
-        (.mkdirs (.getParentFile file))
-        (spit file content)
-        (mulog/log ::explore.persist
-                   :slug final-slug
-                   :path rel-path
-                   :bytes (count content)
-                   :collision? (not= slug final-slug))
-        {:path (.getAbsolutePath file) :slug final-slug :ts ts})))
-  :input-schema  [:map
-                  [:slug [:string {:desc "Slug from explore$slug (will get -N suffix on collision)"}]]
-                  [:content [:string {:desc "Full file content (frontmatter + body)"}]]
-                  [:base-dir {:optional true} [:string {:desc "Working directory (default: System/user.dir)"}]]]
-  :output-schema [:map
-                  [:path {:optional true} [:string {:desc "Absolute path of the written file"}]]
-                  [:slug {:optional true} [:string {:desc "Final slug actually used (may have -N suffix)"}]]
-                  [:ts {:optional true} [:string {:desc "Timestamp portion of filename (yyyyMMdd-HHmmss)"}]]
-                  [:error {:optional true} [:string {:desc "Error if validation failed"}]]])
-
-;; ============================================================================
-;; explore$index-append — prepend a line to INDEX.md (newest-first)
-;; ============================================================================
-
-(defn- index-line
-  [{:keys [path slug surfaces summary]}]
-  (let [filename (-> path (str/split #"/") last)
-        surfaces-str (str/join ", " (map name surfaces))
-        ;; Single-line summary, conservative truncation for readability.
-        summary-trim (-> (str summary) (str/replace #"\s+" " ") str/trim)
-        summary-cap  (if (> (count summary-trim) 200)
-                       (str (subs summary-trim 0 197) "…")
-                       summary-trim)]
-    (str "- " (now-yyyy-mm-dd-hh-mm)
-         " [" slug "](" results-subdir "/" filename ") — "
-         surfaces-str " · *" summary-cap "*\n")))
-
-(defcommand explore$index-append
-  "Prepend a one-line entry to .brainyard/agents/explore-agent/INDEX.md (newest-first ordering)."
-  (fn [& {:keys [path slug surfaces summary base-dir]
-          :or   {base-dir (config/project-dir)}}]
-    (cond
-      (not (string? path))    {:error ":path is required (string)"}
-      (not (string? slug))    {:error ":slug is required (string)"}
-      (not (sequential? surfaces)) {:error ":surfaces must be a vector"}
-      (not (string? summary)) {:error ":summary is required (string)"}
-      :else
-      (let [line     (index-line {:path path :slug slug :surfaces surfaces :summary summary})
-            file     (io/file base-dir index-rel)
-            existing (if (.isFile file) (slurp file) "")]
-        (.mkdirs (.getParentFile file))
-        (spit file (str line existing))
-        (mulog/log ::explore.index
-                   :slug slug
-                   :path path
-                   :existing-bytes (count existing))
-        {:appended true :line line})))
-  :input-schema  [:map
-                  [:path [:string {:desc "Repo-relative path of the result file (from explore$write)"}]]
-                  [:slug [:string {:desc "Slug used in the result file"}]]
-                  [:surfaces [:vector {:desc "Surfaces touched"} :string]]
-                  [:summary [:string {:desc "One-line summary (collapsed; truncated to 200 chars)"}]]
-                  [:base-dir {:optional true} [:string {:desc "Working directory (default: System/user.dir)"}]]]
-  :output-schema [:map
-                  [:appended {:optional true} [:boolean {:desc "true on success"}]]
-                  [:line {:optional true} [:string {:desc "The exact line that was prepended"}]]
-                  [:error {:optional true} [:string {:desc "Error if validation failed"}]]])
-
-;; ============================================================================
-;; explore$read-frontmatter — cheap read of just the leading --- block
+;; Frontmatter parsing (READ seam — kept; sidesteps the write-side brittleness)
 ;; ============================================================================
 
 (defn- read-frontmatter-lines
@@ -353,73 +203,91 @@
                vec)))
       [])))
 
-(defn- parse-flat-yaml
-  "Parse the frontmatter inner lines into a map. Recognizes:
-   - `key: value`                       → flat string entry
-   - `key: \"quoted value\"`            → unquoted string
-   - `key: [a, b, c]`                   → vector of strings
-   - `key: >` followed by indented line → folded scalar (single line)
-   - `entities:` (block) followed by `  subkey: ...` lines → nested map
+(defn- unquote-yaml-token
+  "Strip surrounding double quotes (and unescape) from a YAML scalar token."
+  [t]
+  (let [t (str/trim t)]
+    (if (and (>= (count t) 2) (str/starts-with? t "\"") (str/ends-with? t "\""))
+      (-> t (subs 1 (dec (count t))) (str/replace "\\\"" "\"") (str/replace "\\\\" "\\"))
+      t)))
 
-   Lenient and targeted at the shape that explore$frontmatter emits; not a
-   general YAML parser."
+(defn- parse-flat-yaml
+  "Parse the frontmatter inner lines into a map. Recognizes flat scalars,
+   quoted strings, folded scalars (`key: >` + indented line — covers `summary`),
+   the nested `entities:` block, and list-valued keys (`surfaces` / `related` /
+   `entities.*`) in EITHER flow style (`[a, b]`) OR YAML block-list style
+   (`key:` then indented `- item` lines) — capable models emit block lists even
+   when the template shows flow vectors. Lenient: an unknown line is skipped,
+   never fatal."
   [lines]
-  (loop [ls    lines
-         acc   {}
-         block nil]            ; nil | :entities | :folded-key
+  (loop [ls        lines
+         acc       {}
+         block     nil            ; nil | :entities | [:folded-key k]
+         list-path nil]           ; key path armed for `- item` continuation
     (if (empty? ls)
       acc
       (let [ln    (first ls)
             rest* (rest ls)]
         (cond
+          ;; Block-list item ("  - value") → append to the armed key path.
+          (and list-path (re-matches #"^\s+-\s+\S.*$" ln))
+          (let [[_ raw] (re-matches #"^\s+-\s+(.*)$" ln)]
+            (recur rest* (update-in acc list-path (fnil conj []) (unquote-yaml-token raw))
+                   block list-path))
+
           ;; Indented entities sub-key
-          (and (= block :entities) (re-matches #"^\s{2,}\S.*" ln))
-          (if-let [[_ k v] (re-matches #"^\s+([\w_-]+):\s*(.*)$" ln)]
-            (let [parsed (cond
-                           (re-matches #"^\[.*\]$" (str/trim v))
-                           (parse-flow-vector v)
-                           (str/blank? v) []
-                           :else (str/trim v))]
-              (recur rest*
-                     (assoc-in acc [:entities (keyword k)] parsed)
-                     :entities))
-            (recur rest* acc nil))
+          (and (= block :entities) (re-matches #"^\s{2,}[\w_-]+:.*$" ln))
+          (let [[_ k v] (re-matches #"^\s+([\w_-]+):\s*(.*)$" ln)
+                kp [:entities (keyword k)]
+                tv (str/trim v)]
+            (cond
+              (re-matches #"^\[.*\]$" tv) (recur rest* (assoc-in acc kp (parse-flow-vector tv)) :entities nil)
+              (str/blank? tv)            (recur rest* (assoc-in acc kp []) :entities kp)   ; arm block list
+              :else                      (recur rest* (assoc-in acc kp (unquote-yaml-token tv)) :entities nil)))
 
           ;; Folded-scalar continuation (single line indented under `>`)
           (and (vector? block) (= :folded-key (first block)))
-          (let [k (second block)
-                v (str/trim ln)]
-            (recur rest* (assoc acc k v) nil))
+          (recur rest* (assoc acc (second block) (str/trim ln)) nil nil)
 
           ;; entities: header → start nested-map mode
           (re-matches #"^entities:\s*$" ln)
-          (recur rest* (assoc acc :entities {}) :entities)
+          (recur rest* (assoc acc :entities {}) :entities nil)
 
           ;; key: > (folded scalar — next non-blank line is the value)
           (re-matches #"^([\w_-]+):\s*>\s*$" ln)
           (let [[_ k] (re-matches #"^([\w_-]+):\s*>\s*$" ln)]
-            (recur rest* acc [:folded-key (keyword k)]))
+            (recur rest* acc [:folded-key (keyword k)] nil))
 
           ;; Standard flat key: value
           (re-matches #"^([\w_-]+):\s*(.*)$" ln)
           (let [[_ k v] (re-matches #"^([\w_-]+):\s*(.*)$" ln)
-                v (str/trim v)
-                parsed (cond
-                         (re-matches #"^\[.*\]$" v)
-                         (parse-flow-vector v)
-
-                         (and (str/starts-with? v "\"") (str/ends-with? v "\""))
-                         (-> v
-                             (subs 1 (dec (count v)))
-                             (str/replace "\\\"" "\"")
-                             (str/replace "\\\\" "\\"))
-
-                         :else v)]
-            (recur rest* (assoc acc (keyword k) parsed) nil))
+                kw (keyword k)
+                tv (str/trim v)]
+            (cond
+              (re-matches #"^\[.*\]$" tv) (recur rest* (assoc acc kw (parse-flow-vector tv)) nil nil)
+              (str/blank? tv)            (recur rest* (assoc acc kw []) nil [kw])   ; arm block list
+              :else                      (recur rest* (assoc acc kw (unquote-yaml-token tv)) nil nil)))
 
           ;; Unrecognized line — skip, don't crash
           :else
-          (recur rest* acc block))))))
+          (recur rest* acc block list-path))))))
+
+(defn- read-dossier-frontmatter
+  "Internal: resolve `path` (absolute or base-dir-relative) and return the
+   parsed frontmatter map, or {:error …}. Shared by explore$read-frontmatter
+   and explore$reuse?."
+  [path base-dir]
+  (let [file (if (.isAbsolute (io/file path))
+               (io/file path)
+               (io/file base-dir path))]
+    (cond
+      (not (.isFile file))
+      {:error (str "File not found: " path)}
+
+      :else
+      (if-let [lines (read-frontmatter-lines file)]
+        (assoc (parse-flat-yaml lines) ::file file)
+        {:error (str "No frontmatter block at " path " (file did not start with ---)")}))))
 
 (defcommand explore$read-frontmatter
   "Read and parse just the leading YAML frontmatter from a result file (cheap; skips the body)."
@@ -430,38 +298,29 @@
       {:error ":path is required (string)"}
 
       :else
-      (let [;; Support absolute paths transparently — io/file blows up when
-            ;; given (base-dir, /absolute) on JDK 11+.
-            file (if (.isAbsolute (io/file path))
-                   (io/file path)
-                   (io/file base-dir path))]
-        (cond
-          (not (.isFile file))
-          {:error (str "File not found: " path)}
-
-          :else
-          (if-let [lines (read-frontmatter-lines file)]
-            (parse-flat-yaml lines)
-            {:error (str "No frontmatter block at " path " (file did not start with ---)")})))))
+      (let [m (read-dossier-frontmatter path base-dir)]
+        (if (:error m) m (dissoc m ::file)))))
   :input-schema  [:map
-                  [:path [:string {:desc "Repo-relative path to a result file"}]]
-                  [:base-dir {:optional true} [:string {:desc "Working directory (default: System/user.dir)"}]]]
+                  [:path [:string {:desc "Repo-relative or absolute path to a result file"}]]
+                  [:base-dir {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
   :output-schema [:map
                   [:slug {:optional true} [:string {:desc "Slug from frontmatter"}]]
                   [:question {:optional true} [:string {:desc "Question from frontmatter"}]]
                   [:surfaces {:optional true} [:vector {:desc "Surfaces touched"} :string]]
                   [:entities {:optional true} :map]
+                  [:related {:optional true} [:vector {:desc "Prior dossier paths this one builds on (lineage)"} :string]]
+                  [:freshness {:optional true} [:string {:desc "static (filesystem/code) | volatile (web/MCP/time-sensitive)"}]]
                   [:summary {:optional true} [:string {:desc "One-line summary"}]]
                   [:created {:optional true} [:string {:desc "ISO-8601 timestamp"}]]
                   [:error {:optional true} [:string {:desc "Error if file missing or no frontmatter"}]]])
 
 ;; ============================================================================
-;; explore$find — keyword search across the results corpus
+;; explore$find — keyword search across the results corpus (the reuse gate)
 ;; ============================================================================
 
 (defn- parse-index-line
   "Best-effort parse of one INDEX.md line into a match map, or nil. Line
-   format (see `index-line`):
+   format (see the auto-persist INDEX writer):
      - <YYYY-MM-DD HH:MM> [<slug>](results/<file>) — <surfaces> · *<summary>*
    Path comes from the markdown link (always well-formed); the rest is
    extracted leniently so a summary containing `·`/`*` doesn't break parsing."
@@ -536,53 +395,135 @@
                 {:matches matches :n-matches (count matches)})))))))
   :input-schema  [:map
                   [:query [:string {:desc "Substring to match against slug + summary + question (case-insensitive)"}]]
-                  [:base-dir {:optional true} [:string {:desc "Working directory (default: System/user.dir)"}]]]
+                  [:base-dir {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
   :output-schema [:map
                   [:matches [:vector {:desc "Matching result files, newest-first"} :map]]
                   [:n-matches [:int {:desc "Number of matches"}]]
                   [:error {:optional true} [:string {:desc "Error if validation failed"}]]])
 
 ;; ============================================================================
+;; explore$reuse? — freshness rule in one tested place (§7.4)
+;; ============================================================================
+
+(defn- parse-instant
+  "Parse an ISO-8601 string to a Java Instant, or nil on failure."
+  [s]
+  (when (string? s)
+    (try (Instant/parse s) (catch Exception _ nil))))
+
+(defn- changed-files
+  "Return cited repo-relative `files` whose on-disk mtime is newer than
+   `created-ms`, or that no longer exist. Either condition invalidates a
+   `static` dossier (the code it described has moved on)."
+  [base-dir files created-ms]
+  (->> files
+       (filter (fn [rel]
+                 (let [f (if (.isAbsolute (io/file rel))
+                           (io/file rel)
+                           (io/file base-dir rel))]
+                   (or (not (.isFile f))
+                       (and created-ms (> (.lastModified f) created-ms))))))
+       vec))
+
+(defcommand explore$reuse?
+  "Judge whether a prior dossier is fresh enough to reuse, applying the
+   freshness rule: a `static` (filesystem/code) dossier is reusable while its
+   cited files are unchanged; a `volatile` (web/MCP) dossier is reusable only
+   while younger than the reuse window (:explore-reuse-volatile-hours, default
+   24h). Read-only — call it at iteration 0 on an explore$find hit before
+   re-probing."
+  (fn [& {:keys [path base-dir volatile-hours]
+          :or   {base-dir (config/project-dir)}}]
+    (cond
+      (not (string? path))
+      {:error ":path is required (string)"}
+
+      :else
+      (let [fm (read-dossier-frontmatter path base-dir)]
+        (if (:error fm)
+          fm
+          (let [created     (:created fm)
+                created-inst (parse-instant created)
+                created-ms  (some-> created-inst .toEpochMilli)
+                now-ms      (.toEpochMilli (Instant/now))
+                age-hours   (when created-ms
+                              (double (/ (- now-ms created-ms) 3600000.0)))
+                freshness   (keyword (or (:freshness fm) "static"))
+                window      (or volatile-hours
+                                (config/get-config :explore-reuse-volatile-hours)
+                                default-volatile-hours)]
+            (case freshness
+              :volatile
+              (let [reuse? (boolean (and age-hours (< age-hours window)))]
+                {:reuse?    reuse?
+                 :freshness "volatile"
+                 :age-hours age-hours
+                 :reason    (cond
+                              (nil? age-hours)
+                              "volatile dossier has no parseable created timestamp — re-probe to be safe"
+                              reuse?
+                              (format "volatile dossier is %.1fh old (< %dh window) — reuse" age-hours window)
+                              :else
+                              (format "volatile dossier is %.1fh old (>= %dh window) — stale, re-probe" age-hours window))})
+
+              ;; :static (and anything unrecognized → treated as static)
+              (let [files   (vec (get-in fm [:entities :files] []))
+                    changed (changed-files base-dir files created-ms)
+                    reuse?  (empty? changed)]
+                {:reuse?    reuse?
+                 :freshness "static"
+                 :age-hours age-hours
+                 :changed   changed
+                 :reason    (if reuse?
+                              (format "static dossier: all %d cited file(s) unchanged since capture — reuse"
+                                      (count files))
+                              (format "static dossier: %d cited file(s) changed/missing since capture — stale, re-probe the gap"
+                                      (count changed)))})))))))
+  :input-schema  [:map
+                  [:path [:string {:desc "Repo-relative or absolute path to a prior dossier (from explore$find)"}]]
+                  [:base-dir {:optional true} [:string {:desc "Working directory (default: project root)"}]]
+                  [:volatile-hours {:optional true} [:int {:desc "Override the volatile reuse window in hours (default: :explore-reuse-volatile-hours / 24)"}]]]
+  :output-schema [:map
+                  [:reuse? {:optional true} [:boolean {:desc "true ⇒ safe to reuse without re-probing"}]]
+                  [:freshness {:optional true} [:string {:desc "static | volatile"}]]
+                  [:age-hours {:optional true} [:double {:desc "Dossier age in hours (nil if created unparseable)"}]]
+                  [:changed {:optional true} [:vector {:desc "Cited files changed/missing since capture (static only)"} :string]]
+                  [:reason {:optional true} [:string {:desc "Human-readable reuse decision"}]]
+                  [:error {:optional true} [:string {:desc "Error if file missing or no frontmatter"}]]])
+
+;; ============================================================================
 ;; Public roster (for explore-agent's :agent-tools)
 ;; ============================================================================
 
 (def explore-helpers
-  "Vector of all explore$* helper vars in registration order. explore-agent
-   appends these to its :agent-tools roster so the SCI sandbox auto-binds
-   them (callable as `(explore$slug ...)` in a clojure fence)."
-  [#'explore$slug
-   #'explore$frontmatter
-   #'explore$write
-   #'explore$index-append
+  "Vector of the surviving explore$* READER vars in registration order.
+   explore-agent appends these to its :agent-tools roster so the SCI sandbox
+   auto-binds them (callable as `(explore$find ...)` in a clojure fence). The
+   write-side helpers are retired — authoring is a direct `write-file`."
+  [#'explore$find
    #'explore$read-frontmatter
-   #'explore$find])
+   #'explore$reuse?])
 
 ;; ============================================================================
-;; Auto-persist hook
+;; Auto-persist hook (gated :agent.ask/finalize)
 ;;
-;; The agent instruction has a FINAL-STEP CHECKLIST telling the LLM to call
-;; explore$write + explore$index-append before answering. Sonnet+ follows it
-;; reliably; haiku and other smaller models often skip it. This `:agent.ask/post`
-;; hook is the safety net: when explore-agent emits a non-trivial answer that
-;; the LLM didn't persist itself, the hook persists it after-the-fact.
-;;
-;; Caveat: `:agent.ask/post` is observe-only (return values ignored, see
-;; hooks.clj:64). The hook can write the artifact and append INDEX.md, but it
-;; CANNOT inject a `Saved exploration: <path>` line into the answer the
-;; caller already received. Downstream agents that need to discover
-;; auto-persisted artifacts should use `(explore$find :query "<keyword>")`
-;; rather than greppning the prior answer text.
+;; The agent instruction tells the LLM to write the dossier + INDEX line before
+;; answering. Sonnet+ follows it; haiku and smaller models often skip it. This
+;; hook is the safety net: when explore-agent emits a non-trivial answer it
+;; didn't persist, the hook fills the §5 template from regex-detected entities,
+;; `spit`s ONE file (the same path the happy path writes), appends the INDEX
+;; line, and — because :agent.ask/finalize is gated — injects the absent
+;; `Saved exploration: <path>` handoff line into the answer.
 ;; ============================================================================
 
 (def ^:private trivial-char-threshold
-  "Non-trivial threshold (matches design doc §5.4). Inline answer >= this
-   many chars triggers persistence. Tunable per turn via
-   agent-runtime$config :key \"explore-persist-threshold\" :value \"N\"."
+  "Non-trivial threshold. Inline answer >= this many chars triggers
+   persistence. Tunable per turn via :explore-persist-threshold."
   1000)
 
-(def ^:private saved-exploration-prefix
-  "If the answer already contains this exact prefix, the LLM honored the
-   FINAL-STEP CHECKLIST itself and the hook is a no-op."
+(def saved-exploration-prefix
+  "Stable prefix the agent emits when a dossier was persisted. Public so tests
+   + downstream consumers can grep for it without re-defining the constant."
   "Saved exploration: ")
 
 (defn- explore-agent? [agent]
@@ -591,35 +532,29 @@
     (catch Throwable _ false)))
 
 (defn- already-saved? [^String answer]
+  ;; Match the trimmed marker core so markdown emphasis around it
+  ;; (`**Saved exploration:** …`) still counts as saved.
   (boolean (and (string? answer)
-                (str/includes? answer saved-exploration-prefix))))
+                (str/includes? answer (str/trimr saved-exploration-prefix)))))
 
 (defn- detect-entities
-  "Best-effort regex scan for entity markers in the answer text. Used only as
-   a fallback when the LLM didn't supply structured entities itself; misses
-   are acceptable (the worst case is a slightly thinner frontmatter).
-
+  "Best-effort regex scan for entity markers in the answer text. Fallback only
+   (used when the LLM didn't author the dossier); misses are acceptable.
    Matches the citation conventions named in the agent instruction:
-     - file:<repo-relative-path>:<line>  OR  bare repo-relative paths inside
-       backticks (e.g. `components/.../foo.clj`)
-     - http(s) URLs
-     - mcp:<server>:<tool>
-     - skill:<backend>:<skill-name>"
+   `path/to/file.ext` in backticks, file:<path>:<line>, http(s) URLs,
+   mcp:<server>:<tool>, skill:<backend>:<skill-name>."
   [^String answer]
   (let [files
         (->> (concat
-              ;; `path/to/file.ext` (with or without surrounding backticks)
               (re-seq #"`(?:components|bases|projects|docs|src|test|resources)/[^`\s]+`" answer)
-              ;; file:<path>:<line>
               (re-seq #"file:[^\s)\]\"`]+" answer))
              (map #(-> %
                        (str/replace #"`" "")
                        (str/replace #"^file:" "")
                        (str/replace #":\d+(?:-\d+)?$" "")))
              distinct vec)
-
-        urls (->> (re-seq #"https?://[^\s)\]\"`*]+" answer) distinct vec)
-        mcp  (->> (re-seq #"mcp:[\w.-]+:[\w$.-]+" answer) distinct vec)
+        urls   (->> (re-seq #"https?://[^\s)\]\"`*]+" answer) distinct vec)
+        mcp    (->> (re-seq #"mcp:[\w.-]+:[\w$.-]+" answer) distinct vec)
         skills (->> (re-seq #"skill:[\w.-]+:[\w.-]+" answer) distinct vec)]
     {:files files :urls urls :mcp_tools mcp :skills skills}))
 
@@ -630,16 +565,16 @@
     (seq mcp_tools) (conj "mcp")
     (seq skills)    (conj "skills")))
 
-(defn- non-trivial-answer? [^String answer entities]
-  (or (>= (count answer) trivial-char-threshold)
-      (some seq (vals entities))))
+(defn- infer-freshness
+  "volatile when the findings depend on web/MCP (time-sensitive); else static
+   (filesystem/code, valid while cited files are unchanged)."
+  [{:keys [urls mcp_tools]}]
+  (if (or (seq urls) (seq mcp_tools)) :volatile :static))
 
 (defn- one-line-summary
-  "Distill a one-line summary from the answer body. Heuristic: drop any
-   leading frontmatter the LLM may have inlined, then take the first
-   paragraph that has actual prose (not a markdown heading or table row),
-   collapse whitespace, cap at `max-chars`. Falls back to the first
-   non-blank paragraph if no prose is found."
+  "Distill a one-line summary from the answer body: drop any inlined
+   frontmatter, take the first prose paragraph (not a heading/table/fence/rule),
+   collapse whitespace, cap at `max-chars`."
   [^String answer max-chars]
   (let [stripped (-> answer
                      (str/replace #"^---\n[\s\S]*?\n---\n" "")
@@ -648,10 +583,11 @@
                         (map str/trim)
                         (remove str/blank?))
         prose? (fn [p]
-                 (and (not (str/starts-with? p "#"))      ; markdown heading
-                      (not (str/starts-with? p "|"))      ; markdown table row
-                      (not (str/starts-with? p "```"))    ; code-fence boundary
-                      (not (re-matches #"^[-*_]{3,}$" p)))) ; horizontal rule
+                 (and (not (str/starts-with? p "#"))
+                      (not (str/starts-with? p "|"))
+                      (not (str/starts-with? p "```"))
+                      (not (str/starts-with? p "Saved exploration:"))
+                      (not (re-matches #"^[-*_]{3,}$" p))))
         chosen (or (first (filter prose? paragraphs))
                    (first paragraphs)
                    "")
@@ -661,8 +597,21 @@
                    str/trim)]
     (subs flat 0 (min max-chars (count flat)))))
 
+(defn- index-line
+  "Build one newest-first INDEX.md line for a freshly written dossier."
+  [{:keys [rel-path slug surfaces summary]}]
+  (let [filename (-> rel-path (str/split #"/") last)
+        surfaces-str (str/join ", " (map name surfaces))
+        summary-trim (collapse-1-line summary)
+        summary-cap  (if (> (count summary-trim) 200)
+                       (str (subs summary-trim 0 197) "…")
+                       summary-trim)]
+    (str "- " (now-yyyy-mm-dd-hh-mm)
+         " [" slug "](" results-subdir "/" filename ") — "
+         surfaces-str " · *" summary-cap "*\n")))
+
 (defn- persist-config
-  "Per-turn override of the trivial threshold via config."
+  "Per-turn override of the trivial threshold + enable flag via config."
   [agent]
   (try
     {:threshold (config/get-config agent :explore-persist-threshold)
@@ -670,72 +619,109 @@
     (catch Throwable _
       {:threshold trivial-char-threshold :enabled? true})))
 
-(defn explore-auto-persist
-  "Persist the answer when explore-agent forgets to call explore$write itself.
-   Idempotent — skips when the LLM-emitted answer already contains a
-   `Saved exploration:` line (= LLM honored the FINAL-STEP CHECKLIST).
+(defn materialize-auto-dossier!
+  "Core of the auto-persist safety net (no agent-state required): given an
+   answer + question + base-dir, reconstruct a minimal §5-template dossier from
+   regex-detected entities, `spit` it under results/, and append the INDEX
+   line. Returns {:path :rel-path :slug} on success, or nil when skipped
+   (already saved, trivial, or disabled). Extracted as a public fn so tests can
+   drive it directly. `:threshold`/`:enabled?` default to the module constants."
+  [{:keys [answer question base-dir threshold enabled?]
+    :or   {threshold trivial-char-threshold enabled? true}}]
+  (when (and enabled?
+             (string? answer)
+             (not (already-saved? answer)))
+    (let [entities (detect-entities answer)]
+      (when (or (>= (count answer) threshold)
+                (some seq (vals entities)))
+        (let [q        (or (when (string? question) question) "(question not captured)")
+              surfaces (let [s (detect-surfaces entities)]
+                         (if (empty? s) ["filesystem"] s))
+              slug     (slugify q 60)
+              summary  (let [s (one-line-summary answer 200)]
+                         (if (str/blank? s) "(auto-persisted; no summary extracted)" s))
+              ts       (now-ts)
+              rel-path (str results-dir-rel "/" ts "-" slug ".md")
+              file     (io/file base-dir rel-path)
+              content  (render-dossier
+                        {:slug      slug
+                         :question  q
+                         :surfaces  surfaces
+                         :entities  entities
+                         :related   []
+                         :freshness (infer-freshness entities)
+                         :summary   summary
+                         :title     slug
+                         :what-found (str "*Reconstructed from the agent's answer text — the LLM did "
+                                          "not author the dossier itself this turn.*\n\n" answer)
+                         :where     (str/join "\n"
+                                              (concat (map #(str "- file:" %) (:files entities))
+                                                      (map #(str "- " %) (:urls entities))
+                                                      (map #(str "- mcp:" %) (:mcp_tools entities))
+                                                      (map #(str "- skill:" %) (:skills entities))))
+                         :builds-on "None — first exploration of this area."
+                         :caveats   (if (= :volatile (infer-freshness entities))
+                                      (str "captured " (now-iso) "; volatile (web/MCP) — re-check if stale.")
+                                      "static (filesystem) — valid while the cited files are unchanged.")})]
+          (.mkdirs (.getParentFile file))
+          (spit file content)
+          (let [idx (io/file base-dir index-rel)]
+            (.mkdirs (.getParentFile idx))
+            (spit idx (str (index-line {:rel-path rel-path :slug slug
+                                        :surfaces surfaces :summary summary})
+                           (if (.isFile idx) (slurp idx) ""))))
+          (mulog/log ::explore.auto-persist
+                     :slug slug :path rel-path :answer-chars (count answer)
+                     :surfaces surfaces
+                     :files-count (count (:files entities))
+                     :urls-count (count (:urls entities))
+                     :mcp-count (count (:mcp_tools entities))
+                     :skills-count (count (:skills entities)))
+          {:path (.getAbsolutePath file) :rel-path rel-path :slug slug})))))
 
-   Defensive: any failure inside the hook is logged but never re-thrown — the
-   user-facing answer must not be affected by hook errors."
+(defn explore-auto-persist
+  "Gated handler for `:agent.ask/finalize`. Persists the answer when
+   explore-agent skipped the dossier, then returns a `:replace` decision
+   injecting the absent `Saved exploration: <path>` handoff line into the
+   answer. Idempotent — no-op when the line is present or nothing was
+   persisted. Defensive — any failure is logged but never re-thrown (the
+   user-facing answer must not be affected by hook errors)."
   [{:keys [agent input result]}]
   (try
     (when (and (explore-agent? agent) (map? result))
-      (let [answer (:answer result)
-            {:keys [threshold enabled?]} (persist-config agent)]
-        (when (and enabled?
-                   (string? answer)
-                   (not (already-saved? answer)))
-          (let [entities (detect-entities answer)]
-            (when (or (>= (count answer) threshold)
-                      (some seq (vals entities)))
-              (let [question (or (when (string? input) input)
-                                 (some-> input :question str)
-                                 "(question not captured)")
-                    surfaces (let [s (detect-surfaces entities)]
-                               (if (empty? s) ["filesystem"] s))
-                    slug     (:slug (explore$slug :question question))
-                    summary  (one-line-summary answer 200)
-                    fm       (:frontmatter
-                              (explore$frontmatter
-                               :question question
-                               :slug     slug
-                               :surfaces surfaces
-                               :entities entities
-                               :summary  (if (str/blank? summary)
-                                           "(auto-persisted; no summary extracted)"
-                                           summary)))
-                    write-res (explore$write :slug slug
-                                             :content (str fm "\n" answer))]
-                (when-not (:error write-res)
-                  (explore$index-append :path     (:path write-res)
-                                        :slug     (:slug write-res)
-                                        :surfaces surfaces
-                                        :summary  summary)
-                  (mulog/log ::explore.auto-persist
-                             :slug          (:slug write-res)
-                             :path          (:path write-res)
-                             :answer-chars  (count answer)
-                             :surfaces      surfaces
-                             :files-count   (count (:files entities))
-                             :urls-count    (count (:urls entities))
-                             :mcp-count     (count (:mcp_tools entities))
-                             :skills-count  (count (:skills entities))))))))))
+      (let [answer (:answer result)]
+        (when (string? answer)
+          (let [question (or (when (string? input) input)
+                             (some-> input :question str)
+                             "(question not captured)")
+                {:keys [threshold enabled?]} (persist-config agent)
+                persisted (materialize-auto-dossier!
+                           {:answer answer :question question
+                            :base-dir (config/project-dir)
+                            :threshold threshold :enabled? enabled?})
+                rel-path  (:rel-path persisted)]
+            (when (and rel-path (not (already-saved? answer)))
+              {:result      :replace
+               :reason      "injected absent Saved-exploration handoff line"
+               :replacement (assoc result :answer
+                                   (str answer "\n\n" saved-exploration-prefix rel-path))})))))
     (catch Throwable t
       (mulog/error ::explore.auto-persist-failed
                    :exception t
                    :agent-id (try (proto/agent-id agent)
-                                  (catch Throwable _ "unknown"))))))
+                                  (catch Throwable _ "unknown")))
+      nil)))
 
 (defn install-auto-persist!
-  "Register the auto-persist hook globally. Idempotent — safe to call multiple
-   times. The `:match` predicate scopes the hook to explore-agent instances
-   only, so other agents (rlm, search, plan, etc.) are unaffected.
+  "Register the auto-persist hook on the gated `:agent.ask/finalize` event.
+   Idempotent — `register-hook!` replaces by id. The :match predicate scopes
+   the hook to explore-agent instances only, so other agents are unaffected.
 
    Tag `:source :explore-agent` lets apps opt out via
    `(hooks/unregister-source! :explore-agent)`."
   []
   (hooks/register-hook!
-   :agent.ask/post
+   :agent.ask/finalize
    ::explore-auto-persist
    explore-auto-persist
    :source   :explore-agent
