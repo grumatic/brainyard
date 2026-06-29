@@ -6,7 +6,7 @@
   "Tests for eval-agent (v2 — pre/post-flight gated verdict production with
    dossier handoff): registration, inherited bt-factory (CoAct), curated
    agent-tools roster (positive + negative assertions — read-only enforced;
-   `update$read-record` cherry-picked from update-helpers, write-side update
+   `edit$read-record` cherry-picked from update-helpers, write-side update
    helpers excluded), and instruction-content anchors that pin the
    three-phase pipeline contract.
 
@@ -72,10 +72,10 @@
       (is (contains? ids :todo$read-dossier))
       (is (contains? ids :exec$read-dossier))))
 
-  (testing "eval-agent :agent-tools includes update$read-record (cherry-picked drill-down)"
+  (testing "eval-agent :agent-tools includes edit$read-record (cherry-picked drill-down)"
     (let [ids (eval-tool-ids)]
-      (is (contains? ids :update$read-record)
-          "update$read-record is the only update-helper bound — eval drills from criterion → item → evidence → diff")))
+      (is (contains? ids :edit$read-record)
+          "edit$read-record is the only update-helper bound — eval drills from criterion → item → evidence → diff")))
 
   (testing "eval-agent :agent-tools includes the new eval dossier helpers"
     (let [ids (eval-tool-ids)]
@@ -115,17 +115,17 @@
       (is (not (contains? ids :update-file))
           "update-file is excluded — eval is read-only")))
 
-  (testing "eval-agent :agent-tools EXCLUDES update-agent's WRITE-SIDE helpers (only read-record cherry-picked)"
+  (testing "eval-agent :agent-tools EXCLUDES edit-agent's WRITE-SIDE helpers (only read-record cherry-picked)"
     (let [ids (eval-tool-ids)]
-      (is (not (contains? ids :update$apply))
-          "update$apply (write-side mega-helper) excluded")
-      (is (not (contains? ids :update$write))
-          "update$write (writes records) excluded")
-      (is (not (contains? ids :update$frontmatter)))
-      (is (not (contains? ids :update$slug)))
-      (is (not (contains? ids :update$find))
-          "even update$find is not bound — only read-record cherry-picked")
-      (is (not (contains? ids :update$index-append)))))
+      (is (not (contains? ids :edit$apply))
+          "edit$apply (write-side mega-helper) excluded")
+      (is (not (contains? ids :edit$write))
+          "edit$write (writes records) excluded")
+      (is (not (contains? ids :edit$frontmatter)))
+      (is (not (contains? ids :edit$slug)))
+      (is (not (contains? ids :edit$find))
+          "even edit$find is not bound — only read-record cherry-picked")
+      (is (not (contains? ids :edit$index-append)))))
 
   (testing "eval-agent :agent-tools EXCLUDES web/skills/MCP/clone-self"
     (let [ids (eval-tool-ids)]
@@ -222,8 +222,8 @@
       (is (str/includes? tool-context "exec$read-dossier"))
       (is (str/includes? tool-context "todo$read-dossier"))
       (is (str/includes? tool-context "plan$read-dossier"))
-      (is (str/includes? tool-context "update$read-record")
-          "drill-down from evidence to diff via update-agent record")
+      (is (str/includes? tool-context "edit$read-record")
+          "drill-down from evidence to diff via edit-agent record")
       (is (str/includes? tool-context "READ-ONLY"))
 
       ;; Eval dossier helpers (all eight)

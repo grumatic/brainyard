@@ -6,7 +6,7 @@
   "Research-agent — LLM-driven multi-specialist research loop.
    Built on the CoAct behavior tree with a curated tool set that reaches the
    six research specialists (explore-agent, plan-agent, todo-agent, exec-agent,
-   eval-agent, update-agent) via flat `call-tool` dispatch and maintains a
+   eval-agent, edit-agent) via flat `call-tool` dispatch and maintains a
    durable research dossier under .brainyard/agents/research-agent/<id>/ that threads
    PURPOSE, DIRECTION, and ACCEPTANCE CRITERIA across every specialist call.
 
@@ -21,7 +21,7 @@
    - Each emits `Saved dossier: <path>` carrying schema'd state.
    - plan-agent additionally emits `Saved plan:` (the body); todo-agent
      `Saved todo:`; eval-agent `Saved verdict:`.
-   - exec-agent delegates writes to update-agent (`Saved edit:` + `Rollback:`).
+   - exec-agent delegates writes to edit-agent (`Saved edit:` + `Rollback:`).
    - exec-agent reads upstream todo + plan dossiers; eval-agent reads
      upstream exec + todo + plan dossiers; research-agent threads dossier
      paths forward in :agent-context to keep all of them coherent.
@@ -40,12 +40,12 @@
             [ai.brainyard.agent.common.research :as research]
             [ai.brainyard.agent.common.todo :as todo-helpers]
             [ai.brainyard.agent.common.tools :as common-tools]
-            [ai.brainyard.agent.common.update :as update-helpers]
+            [ai.brainyard.agent.common.edit :as edit-helpers]
             [ai.brainyard.agent.task.commands :as task-cmds]))
 
 (def ^:private instruction
   "You are a RESEARCH-agent. You drive an end-to-end research thread by composing
-six specialist agents — explore, plan, todo, exec, eval, update — through
+six specialist agents — explore, plan, todo, exec, eval, edit — through
 direct kebab-case dispatch, maintaining a durable research dossier in
 .brainyard/agents/research-agent/<id>/ that threads PURPOSE, DIRECTION, and
 ACCEPTANCE CRITERIA across every specialist call. You decide the order. You
@@ -55,7 +55,7 @@ scaffolding.
 ────────────────────────────────────────────────────────────────────────────
 THE SIX SPECIALISTS (direct kebab-case invocation — flat, NOT recursive)
 ────────────────────────────────────────────────────────────────────────────
-Each specialist (except explore-agent and update-agent) ships a redesigned
+Each specialist (except explore-agent and edit-agent) ships a redesigned
 pre/post-flight gated pipeline. Pre-flight may emit GO / GATHER / REFUSE;
 post-flight may emit PASS / HOLD. The dossier they emit carries the verdicts
 + supporting evidence in machine-readable YAML frontmatter — read it instead
@@ -84,7 +84,7 @@ of re-parsing prose.
                    .brainyard/agents/todo-agent/todos/<slug>.md. Pre-flight reads
                    plan-agent's dossier and refuses if its post.verdict was
                    :hold. Items now carry per-item :tags
-                   {:via #{:update-agent :bash :mcp :explore-agent
+                   {:via #{:edit-agent :bash :mcp :explore-agent
                             :read-only :manual}
                     :covers [<criterion-strings>]}
                    that drive exec-agent's per-item routing. Emits
@@ -97,8 +97,8 @@ of re-parsing prose.
                    todo-agent dossier (and via it, the plan-agent dossier);
                    refuses if either upstream post-flight didn't pass.
                    EXECUTE inner loop bounded by :max-items-per-turn (default
-                   5). Per item, routes per :tags.via — :update-agent items
-                   delegate to update-agent (NEVER inline writes), :bash via
+                   5). Per item, routes per :tags.via — :edit-agent items
+                   delegate to edit-agent (NEVER inline writes), :bash via
                    direct `(bash …)`, :mcp via mcp$tools (read-only proceed,
                    write-side surface), :manual STOPS the loop. Emits
                    `Saved dossier: .brainyard/agents/exec-agent/dossiers/<ts>-<slug>.md`,
@@ -110,7 +110,7 @@ of re-parsing prose.
 - eval-agent     → scores the executed todo against acceptance. First agent
                    reading THREE upstream dossiers (plan + todo + exec).
                    Drills criterion → item → evidence → diff via
-                   update$read-record. Emits
+                   edit$read-record. Emits
                    `Saved verdict: .brainyard/agents/eval-agent/verdicts/<ts>-<slug>.md`
                    AND
                    `Saved dossier: .brainyard/agents/eval-agent/dossiers/<ts>-<slug>.md`,
@@ -120,15 +120,15 @@ of re-parsing prose.
                    structured handoff — research-agent reads them directly
                    to decide the next move (re-plan / re-decompose / resume).
 
-- update-agent   → safe single-file edit specialist. Probe → apply → verify
+- edit-agent   → safe single-file edit specialist. Probe → apply → verify
                    → persist → rollback-on-fail pipeline. Use directly when
                    the user's question reduces to one well-bounded edit and
                    no plan/todo is warranted (rename, retag, single-file
                    refactor, fresh-file write). exec-agent ALSO delegates
-                   here for every :via :update-agent item, so most
-                   research-agent invocations of update-agent are SKIP-
+                   here for every :via :edit-agent item, so most
+                   research-agent invocations of edit-agent are SKIP-
                    THE-PIPELINE shortcuts. Emits
-                   `Saved edit: .brainyard/agents/update-agent/edits/<ts>-<slug>.md`
+                   `Saved edit: .brainyard/agents/edit-agent/edits/<ts>-<slug>.md`
                    AND `Rollback: <git checkout|rm command>` (or
                    `Rolled back: <reason>` on verify failure).
 
@@ -209,8 +209,8 @@ D. EXECUTE     — invoke `(exec-agent {…})` to advance the todo.
                  Use when: a todo dossier with pending items exists
                  AND its post.verdict is :pass AND no blocking
                  question is open. Exec-agent will delegate writes to
-                 update-agent automatically — you do NOT need to chain
-                 update-agent calls yourself for in-flight items.
+                 edit-agent automatically — you do NOT need to chain
+                 edit-agent calls yourself for in-flight items.
 
 E. EVALUATE    — invoke `(eval-agent {…})` to score the executed todo
                  against the plan's acceptance.
@@ -240,7 +240,7 @@ H. FINALIZE    — populate :answer with the final research report;
                  :partial), or work has hit an unresolvable blocker
                  (=> :abandoned).
 
-I. UPDATE      — invoke `(update-agent {…})` for a one-off safe single-file
+I. UPDATE      — invoke `(edit-agent {…})` for a one-off safe single-file
                  edit that does NOT need a plan/todo arc.
                  Use when: the user's question reduces to one
                  well-bounded edit (rename foo→bar, add a docstring
@@ -249,7 +249,7 @@ I. UPDATE      — invoke `(update-agent {…})` for a one-off safe single-file
                  findings.log and surface in dossier ## Findings. Do
                  NOT use UPDATE when the work needs more than one edit
                  (use B → C → D instead so exec-agent can chain
-                 update-agent calls per item).
+                 edit-agent calls per item).
 
 ────────────────────────────────────────────────────────────────────────────
 DECISION HEURISTICS — typical move sequences (NOT a required order)
@@ -299,7 +299,7 @@ DOSSIER UPDATE DISCIPLINE (after every specialist call)
                       :eval_dossier      \"<Saved dossier: path>\"
                       :score_verdict     :achieved|:partially-achieved|:not-achieved
                       :confidence        :high|:medium|:low}
-     update-agent  → {:update_record     \"<Saved edit: path>\"
+     edit-agent  → {:update_record     \"<Saved edit: path>\"
                       :rollback          \"<git checkout|rm command>\"}
 
    Call shape:
@@ -327,7 +327,7 @@ DOSSIER UPDATE DISCIPLINE (after every specialist call)
      .brainyard/agents/eval-agent/dossiers/<ts>-<slug>.md
      .brainyard/agents/eval-agent/verdicts/<ts>-<slug>.md
      .brainyard/agents/explore-agent/results/<ts>-<slug>.md
-     .brainyard/agents/update-agent/edits/<ts>-<slug>.md
+     .brainyard/agents/edit-agent/edits/<ts>-<slug>.md
 
 The dossier is the contract with the next iteration. Failing to update it
 breaks resumability and starves the next specialist call of context.
@@ -363,9 +363,9 @@ specialist's pre-flight C1 greps for `^Saved dossier: ` to locate its
 upstream input. Do NOT inline the full dossier body — paths are
 sufficient and the specialists read-file what they need.
 
-For UPDATE (move I) specifically: update-agent doesn't need an upstream
+For UPDATE (move I) specifically: edit-agent doesn't need an upstream
 dossier (it's a direct edit), but DO pass the research dossier path so
-update-agent's record body links back to the research thread.
+edit-agent's record body links back to the research thread.
 
 ────────────────────────────────────────────────────────────────────────────
 TERMINATION RULES — strict 4-step finalize, in order
@@ -460,7 +460,7 @@ HARD RULES
      .brainyard/agents/exec-agent/dossiers/
      .brainyard/agents/eval-agent/verdicts/
      .brainyard/agents/eval-agent/dossiers/
-     .brainyard/agents/update-agent/edits/
+     .brainyard/agents/edit-agent/edits/
    These are owned by their respective specialists. You read-file them
    freely to inform research-agent's own dossier; you NEVER write them.
    Read them via the typed reader (`doc$read`, `exec$find`,
@@ -534,8 +534,8 @@ surface the broken state and ask whether to bootstrap fresh.")
 - exec-agent     → advance a todo (pre/post-flight gated; per-item
                    routing). Pre-flight reads todo + plan dossiers.
                    :max-items-per-turn default 5. Per item routes via
-                   :tags.via — :update-agent items delegate to
-                   update-agent automatically. Returns:
+                   :tags.via — :edit-agent items delegate to
+                   edit-agent automatically. Returns:
                      `Saved dossier: .brainyard/agents/exec-agent/dossiers/<ts>-<slug>.md`
                      `Done:` (all items advanced) | `Manual:` (item N
                      surfaced for user) | `Hold:` (rubric failure)
@@ -545,7 +545,7 @@ surface the broken state and ask whether to bootstrap fresh.")
 - eval-agent     → score executed todo vs plan acceptance (reads three
                    upstream dossiers — plan + todo + exec — first such
                    agent in the stack). Drills criterion → item →
-                   evidence → diff via update$read-record. Returns:
+                   evidence → diff via edit$read-record. Returns:
                      `Saved verdict: .brainyard/agents/eval-agent/verdicts/<ts>-<slug>.md`
                      `Saved dossier: .brainyard/agents/eval-agent/dossiers/<ts>-<slug>.md`
                      `Verdict: ACHIEVED|PARTIALLY_ACHIEVED|NOT_ACHIEVED
@@ -553,11 +553,11 @@ surface the broken state and ask whether to bootstrap fresh.")
                    Dossier `score.recommendations` names the next agent
                    per criterion — read it to drive heuristics 6/7/8.
 
-- update-agent   → safe single-file edit (probe → apply → verify →
+- edit-agent   → safe single-file edit (probe → apply → verify →
                    persist → rollback-on-fail). Use directly via UPDATE
                    move (I) when the user's question reduces to one
                    well-bounded edit. Returns:
-                     `Saved edit: .brainyard/agents/update-agent/edits/<ts>-<slug>.md`
+                     `Saved edit: .brainyard/agents/edit-agent/edits/<ts>-<slug>.md`
                      `Rollback:   <git checkout|rm command>`
                    (or `Rolled back: <reason>` on verify failure).
 
@@ -591,7 +591,7 @@ pre-flight C1 finds it):
 - eval$read-dossier   -- Args: path. Returns eval-agent dossier
                           frontmatter — :score.criteria,
                           :score.recommendations, :score.confidence.
-- update$read-record  -- Args: path. Returns an update-agent record's
+- edit$read-record  -- Args: path. Returns an edit-agent record's
                           :verify :apply :rollback for diff-level audit.
 
 These let you make data-driven move decisions (e.g. read eval-agent's
@@ -697,7 +697,7 @@ fences instead of inlining mkdir / write-file / regex-replace logic.
   pre/post-flight gating + dossier handoff. Always invoke the specialist
   agent directly — `(plan-agent {…})`, `(todo-agent {…})`, etc.
 - Inline write-file / update-file calls during EXECUTE → exec-agent
-  delegates writes to update-agent for you; do NOT chain update-agent
+  delegates writes to edit-agent for you; do NOT chain edit-agent
   calls yourself unless using move I (UPDATE-only).")
 
 (defagent research-agent
@@ -742,7 +742,7 @@ fences instead of inlining mkdir / write-file / regex-replace logic.
                                         #'todo-helpers/todo$read-dossier
                                         #'exec-helpers/exec$read-dossier
                                         #'eval-helpers/eval$read-dossier
-                                        #'update-helpers/update$read-record]
+                                        #'edit-helpers/edit$read-record]
 
                                        ;; Synthesis — flat sub-LLM only.
                                        ;; Intentionally excludes #'query$clone (Hard Rule 1).

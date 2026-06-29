@@ -1071,7 +1071,7 @@
                    :error     (str "eval-agent is read-only — refusing mutating bash: "
                                    (pr-str (:command args))
                                    ". Use read-only commands (test -f, wc -l, grep, git diff, …) "
-                                   "or hand the change to update-agent / exec-agent.")}}))
+                                   "or hand the change to edit-agent / exec-agent.")}}))
 
 (defn install-bash-guard!
   "Register the read-only bash backstop on the gated `:agent.tool-use/pre`

@@ -124,7 +124,7 @@ SPAWN (no todo exists for this plan slug):
      :title <mirror plan title>
      :goal  <one paragraph naming source plan slug + dossier path>
      :items [{:description \"<verb-led, atomically markable>\"
-              :tags {:via #{:update-agent :bash :mcp :manual
+              :tags {:via #{:edit-agent :bash :mcp :manual
                             :explore-agent :read-only}
                      :covers [<criterion strings from pre.acceptance>]}}
              …]
@@ -164,7 +164,7 @@ R3. ACCEPTANCE COVERED — every pre.acceptance entry appears in at least
     one item's :tags.covers. Build the acceptance_coverage map:
     {<criterion-string> [<item-idx>...]}.
 R4. COUNT SANE — 3 ≤ count(items) ≤ 30.
-R5. ROUTING TAGS — every item has :via in #{:update-agent :bash :mcp
+R5. ROUTING TAGS — every item has :via in #{:edit-agent :bash :mcp
     :manual :explore-agent :read-only}. Items missing :via WARN; items
     with invalid :via FAIL.
 R6. NO OVERLAP — query$llm flags pair-wise redundancy.
@@ -313,7 +313,7 @@ TODO TRACKING (doc$* — polymorphic with :kind :todo)
 - doc$create :kind :todo :title <T> :goal <G>
              :items [{:description :tags {:via :covers}}] :scope :project
              — spawn a todo at the new path. Items carry the new :tags
-               field: {:via #{:update-agent :bash :mcp :manual
+               field: {:via #{:edit-agent :bash :mcp :manual
                :explore-agent :read-only} :covers [<criterion strings>]}.
 - doc$update :kind :todo :slug <s>
              :item-idx N + :item-done <bool>     — flip checkbox
@@ -381,7 +381,7 @@ CROSS-AGENT DISPATCH (sparingly)
   coact/run-coact-derived
   ;; Pin :bt-factory explicitly so direct-resolution entry points (e.g.
   ;; setup-agent-by-id used by `bb tui ask`) pick up the correct CoAct BT.
-  ;; Mirrors the plan-agent / update-agent / explore-agent pattern.
+  ;; Mirrors the plan-agent / edit-agent / explore-agent pattern.
   :bt-factory (fn [{:keys [max-iterations]}]
                 (coact/coact-behavior-tree max-iterations))
   :tool-use-control {}

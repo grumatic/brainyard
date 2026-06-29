@@ -134,7 +134,7 @@
       (is (contains? ids :todo$read-dossier))
       (is (contains? ids :exec$read-dossier))
       (is (contains? ids :eval$read-dossier))
-      (is (contains? ids :update$read-record))))
+      (is (contains? ids :edit$read-record))))
 
   (testing "research-agent :agent-tools EXCLUDES forbidden + out-of-scope tools"
     (let [ids (research-tool-ids)]
@@ -162,8 +162,8 @@
       (is (not (contains? ids :exec$dossier-write)))
       (is (not (contains? ids :eval$dossier-write)))
       (is (not (contains? ids :eval$verdict-write)))
-      (is (not (contains? ids :update$apply)))
-      (is (not (contains? ids :update$write))))))
+      (is (not (contains? ids :edit$apply)))
+      (is (not (contains? ids :edit$write))))))
 
 ;; ============================================================================
 ;; Instruction content anchors — pin the dossier + state-machine + termination
@@ -179,7 +179,7 @@
 
       ;; Six-specialist routing is the headline contract (revised when the
       ;; four-agent pipeline (plan/todo/exec/eval) added pre/post-flight
-      ;; gating + dossier handoff and update-agent joined as a 6th
+      ;; gating + dossier handoff and edit-agent joined as a 6th
       ;; reachable specialist for one-off safe edits).
       (is (str/includes? instruction "SIX SPECIALISTS"))
       (is (str/includes? instruction "explore-agent"))
@@ -187,7 +187,7 @@
       (is (str/includes? instruction "todo-agent"))
       (is (str/includes? instruction "exec-agent"))
       (is (str/includes? instruction "eval-agent"))
-      (is (str/includes? instruction "update-agent"))
+      (is (str/includes? instruction "edit-agent"))
 
       ;; Sibling-dossier handoff contract — research-agent threads
       ;; `Saved dossier:` paths between specialists.
@@ -196,7 +196,7 @@
       (is (str/includes? instruction ".brainyard/agents/exec-agent/dossiers/"))
       (is (str/includes? instruction ".brainyard/agents/eval-agent/dossiers/"))
       (is (str/includes? instruction ".brainyard/agents/eval-agent/verdicts/"))
-      (is (str/includes? instruction ".brainyard/agents/update-agent/edits/"))
+      (is (str/includes? instruction ".brainyard/agents/edit-agent/edits/"))
       (is (str/includes? instruction "Saved dossier:"))
       (is (str/includes? instruction "Saved verdict:"))
       (is (str/includes? instruction "Saved edit:"))
@@ -253,13 +253,13 @@
       (is (string? tool-context))
       (is (not (str/blank? tool-context)))
 
-      ;; Specialists — the call-tool targets (six, incl. update-agent)
+      ;; Specialists — the call-tool targets (six, incl. edit-agent)
       (is (str/includes? tool-context "explore-agent"))
       (is (str/includes? tool-context "plan-agent"))
       (is (str/includes? tool-context "todo-agent"))
       (is (str/includes? tool-context "exec-agent"))
       (is (str/includes? tool-context "eval-agent"))
-      (is (str/includes? tool-context "update-agent"))
+      (is (str/includes? tool-context "edit-agent"))
 
       ;; Substrate tools named explicitly so the model can find them
       (is (str/includes? tool-context "read-file"))
@@ -288,7 +288,7 @@
       (is (str/includes? tool-context "todo$read-dossier"))
       (is (str/includes? tool-context "exec$read-dossier"))
       (is (str/includes? tool-context "eval$read-dossier"))
-      (is (str/includes? tool-context "update$read-record")))))
+      (is (str/includes? tool-context "edit$read-record")))))
 
 ;; ============================================================================
 ;; I/O contract — :inputs / :outputs shape

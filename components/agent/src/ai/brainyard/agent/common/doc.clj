@@ -321,7 +321,7 @@
                  [:item-done {:optional true} [:boolean {:desc "true = mark done, false = reset to pending"}]]
                  [:add-item {:optional true} [:string {:desc "New todo item description (todos only)"}]]
                  [:after-idx {:optional true} [:int {:desc "Insert after this 0-based item index (default = append)"}]]
-                 [:tags {:optional true} [:map {:desc "Per-item routing/coverage tags for :add-item (todos only): {:via #{:update-agent :bash :mcp :manual :explore-agent :read-only} :covers [<criterion strings>]}"}]]]
+                 [:tags {:optional true} [:map {:desc "Per-item routing/coverage tags for :add-item (todos only): {:via #{:edit-agent :bash :mcp :manual :explore-agent :read-only} :covers [<criterion strings>]}"}]]]
   :output-schema [:map
                   [:slug {:optional true} [:string {:desc "Doc slug"}]]
                   [:status {:optional true} [:string {:desc "Updated status"}]]

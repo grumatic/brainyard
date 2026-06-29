@@ -472,8 +472,8 @@
        :diff-source "fallback"})))
 
 (deftool update-file
-  "Find/replace a pattern in a file and return a diff. Literal + first-match by default; see :regex?/:all? inputs."
-  (fn [{:keys [path pattern replacement regex? all?]}]
+  "Find/replace a pattern in a file and return a diff. Literal + first-match by default; see :regex?/:all? inputs. Pass :expect-count N to refuse (no write) on a match-count mismatch — the cheap over/under-match guard."
+  (fn [{:keys [path pattern replacement regex? all? expect-count]}]
     (let [base-dir      (get-base-dir)
           allowed-dirs  (get-allowed-dirs)
           permission-fn (get-permission-fn)
@@ -490,44 +490,64 @@
               original      (try (slurp resolved-path)
                                  (catch Exception e
                                    (throw (ex-info (.getMessage e) {:path resolved-path}))))
-              {:keys [replaced new-content]}
-              (apply-replacement original pattern replacement
-                                 (boolean regex?) (boolean all?))]
+              ;; :expect-count guard — count matches BEFORE writing so an
+              ;; over/under-match is refused at the source rather than silently
+              ;; rewriting the wrong sites (edit-agent-design.md §4.2).
+              match-count   (when (integer? expect-count)
+                              (count (re-seq (if (boolean regex?)
+                                               (re-pattern pattern)
+                                               (re-pattern (java.util.regex.Pattern/quote pattern)))
+                                             original)))]
           (cond
-            (zero? replaced)
-            {:error (format "Pattern not found in %s" resolved-path)
-             :path  resolved-path}
-
-            (= original new-content)
-            {:error "Replacement produced identical content"
-             :path  resolved-path}
+            (and (integer? expect-count) (not= match-count expect-count))
+            {:error    (format "Match-count mismatch in %s: found %d, expected %d (refused; no write). Make the pattern more specific, or pass the correct :expect-count."
+                               resolved-path (or match-count 0) expect-count)
+             :path     resolved-path
+             :found    (or match-count 0)
+             :expected expect-count}
 
             :else
-            ;; Write back to the path the read actually resolved (which may be
-            ;; a fallback-dir under bb tui's cwd), NOT a re-resolution of the
-            ;; original relative `path` against base-dir — otherwise a
-            ;; fallback-resolved read would write a new file in the wrong tree.
-            (let [write-result (ref/write-project-file base-dir resolved-path new-content
-                                                       :permission-fn permission-fn)]
-              (if (:error write-result)
-                (assoc write-result :path resolved-path)
-                (let [final-path (:path write-result)
-                      {:keys [diff diff-source]} (compute-diff original final-path)]
-                  {:path        final-path
-                   :replaced    replaced
-                   :diff        diff
-                   :diff-source diff-source}))))))))
+            (let [{:keys [replaced new-content]}
+                  (apply-replacement original pattern replacement
+                                     (boolean regex?) (boolean all?))]
+              (cond
+                (zero? replaced)
+                {:error (format "Pattern not found in %s" resolved-path)
+                 :path  resolved-path}
+
+                (= original new-content)
+                {:error "Replacement produced identical content"
+                 :path  resolved-path}
+
+                :else
+                ;; Write back to the path the read actually resolved (which may be
+                ;; a fallback-dir under bb tui's cwd), NOT a re-resolution of the
+                ;; original relative `path` against base-dir — otherwise a
+                ;; fallback-resolved read would write a new file in the wrong tree.
+                (let [write-result (ref/write-project-file base-dir resolved-path new-content
+                                                           :permission-fn permission-fn)]
+                  (if (:error write-result)
+                    (assoc write-result :path resolved-path)
+                    (let [final-path (:path write-result)
+                          {:keys [diff diff-source]} (compute-diff original final-path)]
+                      {:path        final-path
+                       :replaced    replaced
+                       :diff        diff
+                       :diff-source diff-source}))))))))))
   :input-schema  [:map
                   [:path        [:string  {:desc "File path to update"}]]
                   [:pattern     [:string  {:desc "Pattern to find (literal by default; regex when :regex? true)"}]]
                   [:replacement [:string  {:desc "Replacement text"}]]
                   [:regex?      {:optional true} [:boolean {:desc "Treat :pattern as a Java regex (default false)" :default false}]]
-                  [:all?        {:optional true} [:boolean {:desc "Replace every match (default false — first match only)" :default false}]]]
+                  [:all?        {:optional true} [:boolean {:desc "Replace every match (default false — first match only)" :default false}]]
+                  [:expect-count {:optional true} [:int {:desc "If set, refuse the edit (no write) unless the literal/regex match count equals this — the over/under-match guard"}]]]
   :output-schema [:map
                   [:path        [:string {:desc "Absolute path of the updated file"}]]
                   [:replaced    [:int    {:desc "Number of replacements made"}]]
                   [:diff        [:string {:desc "Unified diff of the change"}]]
                   [:diff-source [:string {:desc "\"git\" when produced by git diff, \"fallback\" otherwise"}]]
+                  [:found       {:optional true} [:int {:desc "Actual match count (set on an :expect-count mismatch)"}]]
+                  [:expected    {:optional true} [:int {:desc "Expected match count (set on an :expect-count mismatch)"}]]
                   [:error       {:optional true} [:string {:desc "Error message on failure"}]]])
 
 (deftool grep

@@ -14,7 +14,7 @@
         items routed via :tags.via, tools available, working tree clean
         (for items that will write). Verdict: GO / GATHER / REFUSE.
      2. EXECUTE (only on GO) — inner loop bounded by :max-items-per-turn
-        (default 5). Per item: pick → route per :tags.via (:update-agent
+        (default 5). Per item: pick → route per :tags.via (:edit-agent
         :bash :mcp :explore-agent :read-only :manual) → verify → record
         → flip checkbox via doc$update :item-idx :item-done.
      3. POST-FLIGHT (confirmation check, R1–R7) — re-read evidence and
@@ -26,8 +26,8 @@
    schema'd handoff channel eval-agent will consume in its
    `:agent-context` (per its own redesign).
 
-   Hard rule: every WRITE delegates to update-agent.
-   `(call-tool \"update-agent\" {…})` per `:via :update-agent` item;
+   Hard rule: every WRITE delegates to edit-agent.
+   `(call-tool \"edit-agent\" {…})` per `:via :edit-agent` item;
    exec-agent NEVER calls `update-file` / `write-file` directly.
 
    Cross-agent dossier consumption: PRE-FLIGHT C1/C2 read the todo-agent
@@ -49,7 +49,7 @@
 (def ^:private instruction
   "You are an EXEC-agent. You drive a todo list to completion item-by-item.
 You ALWAYS pre-flight before executing, and post-flight after. You DELEGATE
-every write to update-agent. You ALWAYS produce a dossier — even when you
+every write to edit-agent. You ALWAYS produce a dossier — even when you
 refuse or stop early.
 
 Plans live at `.brainyard/agents/plan-agent/plans/`. Plan dossiers at
@@ -91,7 +91,7 @@ C4. TODO PRESENT. doc$read :kind :todo :slug <slug> + cross-check item
     diverged; recommend a fresh todo-agent run).
 
 C5. ROUTING TAGS. Every PENDING item has :tags.via in:
-    {:update-agent :bash :mcp :explore-agent :read-only :manual}.
+    {:edit-agent :bash :mcp :explore-agent :read-only :manual}.
     Missing → GATHER ('retag items K…M via todo-agent').
 
 C6. TOOLS AVAILABLE.
@@ -99,7 +99,7 @@ C6. TOOLS AVAILABLE.
     For :mcp items: mcp$server :op :list — confirm :connected.
     Missing → GATHER (single fix), or REFUSE.
 
-C7. WORKING TREE. If any pending item is :via :update-agent, run
+C7. WORKING TREE. If any pending item is :via :edit-agent, run
     `bash \"git status --porcelain\"`. Empty → clean. Non-empty AND
     :dirty-ok? not set → GATHER ('commit/stash first or pass :dirty-ok?').
 
@@ -144,8 +144,8 @@ Inner loop bounded by :max-items-per-turn (default 5).
 For each pending item (re-attempting held items from pre.resume-from
 first), pick → ROUTE on item :tags.via:
 
-  :update-agent →
-     (update-agent
+  :edit-agent →
+     (edit-agent
        {:question      <item description>
         :agent-context (str \"Saved dossier: \" (:plan-dossier pre)
                             \" — item idx \" idx \", covers \"
@@ -208,10 +208,10 @@ Stash:
 POST-FLIGHT RUBRIC (only when EXECUTE ran)
 ────────────────────────────────────────────────────────────────────────────
 R1. EVIDENCE PRESENT — every flipped item has non-trivial evidence
-    (update-agent record path, bash exit + stdout-tail, etc.).
+    (edit-agent record path, bash exit + stdout-tail, etc.).
 R2. NO FALSE FLIPS — only :ok? true items got flipped.
-R3. DIFF MATCH — for :via :update-agent items, the underlying record's
-    verify.diff_match = true. (Use update$read-record :path <evidence>
+R3. DIFF MATCH — for :via :edit-agent items, the underlying record's
+    verify.diff_match = true. (Use edit$read-record :path <evidence>
     when bound; otherwise read the record markdown.)
 R4. PROGRESS — every advanced item's :tags.covers names a criterion
     that this turn now has positive evidence for. Build the
@@ -340,14 +340,14 @@ On PRE-FLIGHT = REFUSE:
 ────────────────────────────────────────────────────────────────────────────
 HARD RULES
 ────────────────────────────────────────────────────────────────────────────
-1. NO direct writes. Every WRITE delegated to update-agent. update-file
+1. NO direct writes. Every WRITE delegated to edit-agent. update-file
    and write-file are NOT bound here.
 2. NO mutating plans. Plans read-only.
 3. NO mutating todos beyond {item flips, item resets, add-item,
    abandon, complete}. Authoring is todo-agent's domain — doc$create
    :kind :todo is NOT bound here.
 4. NO clone-self dispatch. Direct kebab-case dispatch to other registered agents is fine
-   (`(update-agent {…})`, `(explore-agent {…})`, `(mcp$tools …)`,
+   (`(edit-agent {…})`, `(explore-agent {…})`, `(mcp$tools …)`,
    `(todo-agent {…})`).
 5. NO writing outside .brainyard/agents/exec-agent/.
 6. NO flipping a checkbox without supporting evidence. R2 enforces.
@@ -377,7 +377,7 @@ NOT BOUND (deliberate):
 - doc$create :kind :todo / :kind :plan        → todo-agent / plan-agent.
 - doc$update :kind :plan / :body              → plans are read-only here.
 - doc$delete                                  → destructive; lifecycle owners.
-- write-file / update-file                    → DELEGATE to update-agent.
+- write-file / update-file                    → DELEGATE to edit-agent.
 
 PLAN ACCESS (READ-ONLY)
 - plan$read-dossier — Args: path. THE primary pre-flight tool for C3.
@@ -391,7 +391,7 @@ TODO DOSSIER ACCESS (READ-ONLY)
                        todo-agent for R4 progress tracking.
 
 CROSS-AGENT DISPATCH (the core of execution)
-- (update-agent {…})    — every write item.
+- (edit-agent {…})    — every write item.
                             Args: :question :agent-context
                             :run-tests? :dirty-ok?.
                             Parse `Saved edit: <path>` and
@@ -437,11 +437,11 @@ NOT rely on the hook — always call the helpers explicitly.
 7. ANSWER — `Saved dossier:` + (`Done:`|`Manual:`|`Hold:`) + `Next:`.")
 
 (defagent exec-agent
-  "Drive a todo list to completion item-by-item with tag-based routing (:update-agent / :bash / :mcp / :explore-agent / :read-only / :manual). All writes delegate to update-agent's safe pipeline. Reads upstream plan+todo dossiers in pre-flight."
+  "Drive a todo list to completion item-by-item with tag-based routing (:edit-agent / :bash / :mcp / :explore-agent / :read-only / :manual). All writes delegate to edit-agent's safe pipeline. Reads upstream plan+todo dossiers in pre-flight."
   coact/run-coact-derived
   ;; Pin :bt-factory explicitly so direct-resolution entry points (e.g.
   ;; setup-agent-by-id used by `bb tui ask`) pick up the correct CoAct BT.
-  ;; Mirrors the explore/plan/todo/update-agent pattern.
+  ;; Mirrors the explore/plan/todo/edit-agent pattern.
   :bt-factory (fn [{:keys [max-iterations]}]
                 (coact/coact-behavior-tree max-iterations))
   :tool-use-control {}
@@ -449,7 +449,7 @@ NOT rely on the hook — always call the helpers explicitly.
                   [:question [:string {:desc "Execution request — e.g., 'Drive ship-v2-checkout to completion'"}]]
                   [:agent-context {:optional true} [:string {:desc "Optional context — typically a todo-agent `Saved dossier:` path"}]]
                   [:max-items-per-turn {:optional true} :int]
-                  [:dirty-ok? {:optional true} [:string {:desc "Allow update-agent to edit dirty files: \"true\" | \"false\" | \"stash\""}]]]
+                  [:dirty-ok? {:optional true} [:string {:desc "Allow edit-agent to edit dirty files: \"true\" | \"false\" | \"stash\""}]]]
   :output-schema [:map
                   [:answer [:string {:desc "Markdown summary of the execution turn; ends with `Saved dossier:` (always), and `Done:`/`Manual:`/`Hold:` + `Next:` as applicable"}]]]
   :agent-tools {:tools (vec (distinct (concat
@@ -473,7 +473,7 @@ NOT rely on the hook — always call the helpers explicitly.
 
                                        ;; Reads + probes only. Drop write-side tools
                                        ;; (write-file, update-file — delegate to
-                                       ;; update-agent) and fetch-url (web is
+                                       ;; edit-agent) and fetch-url (web is
                                        ;; explore-agent's surface).
                                        (remove #(#{:write-file :update-file :fetch-url}
                                                  (:id (meta @%)))
@@ -492,7 +492,7 @@ NOT rely on the hook — always call the helpers explicitly.
                                        [#'common-cmds/query$llm]
 
                                        ;; Bookkeeping + cross-agent dispatch via
-                                       ;; call-tool (update-agent / explore-agent live
+                                       ;; call-tool (edit-agent / explore-agent live
                                        ;; in the registry; reachable through call-tool).
                                        common-tools/bootstrap-tools
                                        common-tools/invocation-tools

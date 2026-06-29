@@ -102,7 +102,7 @@
       (is (contains? ids :todo$read-dossier))
       (is (contains? ids :exec$read-dossier))
       (is (contains? ids :eval$read-dossier))
-      (is (contains? ids :update$read-record)))
+      (is (contains? ids :edit$read-record)))
 
     (testing "all seven main$* helpers are present"
       (is (contains? ids :main$session-id))
@@ -132,7 +132,7 @@
       (is (str/includes? ins "todo-agent"))
       (is (str/includes? ins "exec-agent"))
       (is (str/includes? ins "eval-agent"))
-      (is (str/includes? ins "update-agent"))
+      (is (str/includes? ins "edit-agent"))
       (is (str/includes? ins "research-agent"))
       (is (str/includes? ins "workflow-agent"))
       (is (str/includes? ins "memory-agent")))

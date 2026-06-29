@@ -51,7 +51,7 @@
             ;; (BY_NREPL_GRANT). Without those, the agent loads
             ;; fine but its first code-eval surfaces the gate error.
             [ai.brainyard.agent.common.debug-agent]
-            [ai.brainyard.agent.common.update-agent]
+            [ai.brainyard.agent.common.edit-agent]
             [ai.brainyard.agent.common.plan-agent]
             [ai.brainyard.agent.common.todo-agent]
             [ai.brainyard.agent.common.exec-agent]

@@ -118,12 +118,12 @@
 
       (is (contains? ids :agent-runtime$config))))
 
-  (testing "exec-agent :agent-tools EXCLUDES write-side tools (HARD RULE: delegate to update-agent)"
+  (testing "exec-agent :agent-tools EXCLUDES write-side tools (HARD RULE: delegate to edit-agent)"
     (let [ids (exec-tool-ids)]
       (is (not (contains? ids :write-file))
-          "write-file is excluded — exec-agent delegates writes to update-agent")
+          "write-file is excluded — exec-agent delegates writes to edit-agent")
       (is (not (contains? ids :update-file))
-          "update-file is excluded — exec-agent delegates writes to update-agent")))
+          "update-file is excluded — exec-agent delegates writes to edit-agent")))
 
   (testing "exec-agent :agent-tools EXCLUDES web/skills/clone-self"
     (let [ids (exec-tool-ids)]
@@ -164,7 +164,7 @@
       (is (str/includes? instruction "REFUSE"))
 
       ;; Per-item routing
-      (is (str/includes? instruction ":update-agent"))
+      (is (str/includes? instruction ":edit-agent"))
       (is (str/includes? instruction ":bash"))
       (is (str/includes? instruction ":mcp"))
       (is (str/includes? instruction ":explore-agent"))
@@ -187,8 +187,8 @@
 
       ;; Hard rules
       (is (str/includes? instruction "HARD RULES"))
-      (is (str/includes? instruction "delegated to update-agent")
-          "Hard Rule 1: writes go through update-agent, not direct write-file/update-file")
+      (is (str/includes? instruction "delegated to edit-agent")
+          "Hard Rule 1: writes go through edit-agent, not direct write-file/update-file")
       (is (str/includes? instruction "clone-self"))
 
       ;; v1 narrowing
@@ -222,7 +222,7 @@
       (is (str/includes? tool-context "exec$next-handoff"))
 
       ;; Cross-agent dispatch (the key delegation rule)
-      (is (str/includes? tool-context "update-agent"))
+      (is (str/includes? tool-context "edit-agent"))
       (is (str/includes? tool-context "explore-agent"))
       (is (str/includes? tool-context "mcp$tools"))
 

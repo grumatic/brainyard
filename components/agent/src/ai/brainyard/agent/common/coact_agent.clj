@@ -735,7 +735,7 @@ reflection, every loaded namespace, and arbitrary interop are all reachable.
   as `:error` on the eval entry; session state is preserved.
 - **Ephemeral edits**: `(def …)` / `(alter-var-root …)` change the running
   image but die on process restart and are NOT written to source. To make a
-  fix permanent, hand off to update-agent (it owns the source edit).
+  fix permanent, hand off to edit-agent (it owns the source edit).
 - **Full-trust backend**: reaching the loopback server gives full eval —
   no grant, scope, or confirmation. The ONLY eval-path check is the
   **deny-list**: `System/exit`, `Runtime/.exec`, credential namespaces

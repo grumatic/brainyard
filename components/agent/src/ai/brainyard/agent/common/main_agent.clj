@@ -10,7 +10,7 @@
    agent's own tool / code / answer channels) per question shape. It does NOT
    solve sub-problems itself — it routes.
 
-   The specialist defagents (explore / plan / todo / exec / eval / update /
+   The specialist defagents (explore / plan / todo / exec / eval / edit /
    research / workflow / memory / init / config / skill / mcp / rlm / acp /
    coact / react) self-register in the unified !tool-defs through their own
    defagent forms and are reached via direct kebab-case dispatch from a
@@ -19,9 +19,9 @@
    and read-only inspection of upstream specialist dossiers.
 
    Deliberately omits:
-     - Direct plan$ / todo$ / exec$ / eval$ / update$ write helpers
+     - Direct plan$ / todo$ / exec$ / eval$ / edit$ write helpers
        (sibling-write goes through specialists — Hard Rule 2). The read-only
-       cherry-pick (`*$read-dossier` + `update$read-record`) is the
+       cherry-pick (`*$read-dossier` + `edit$read-record`) is the
        deliberate asymmetry.
 
    See docs/design/main-agent-design.md for the design rationale."
@@ -33,7 +33,7 @@
             [ai.brainyard.agent.common.plan :as plan-helpers]
             [ai.brainyard.agent.common.todo :as todo-helpers]
             [ai.brainyard.agent.common.tools :as common-tools]
-            [ai.brainyard.agent.common.update :as update-helpers]
+            [ai.brainyard.agent.common.edit :as edit-helpers]
             [ai.brainyard.agent.core.tool :refer [defagent]]
             [ai.brainyard.agent.task.commands :as task-cmds]))
 
@@ -84,7 +84,7 @@ PIPELINE (plan/todo/exec/eval — pre/post-flight gated + dossier handoff)
 
 - exec-agent     → drives a todo to completion. Pre-flight reads todo +
                    plan dossiers. Per-item routes via :tags.via —
-                   :update-agent items delegate to update-agent. Emits
+                   :edit-agent items delegate to edit-agent. Emits
                    `Saved dossier:` plus `Done:` / `Manual:` / `Hold:`.
                    Use when a todo exists and the user wants the work
                    DONE (not just listed).
@@ -97,7 +97,7 @@ PIPELINE (plan/todo/exec/eval — pre/post-flight gated + dossier handoff)
                    sign-off.
 
 WRITES & FIXES
-- update-agent   → safe single-file edit (probe → apply → verify →
+- edit-agent   → safe single-file edit (probe → apply → verify →
                    persist → rollback-on-fail). Emits `Saved edit:` AND
                    `Rollback: <cmd>`. Use directly for one-off edits the
                    user spelled out concretely ('rename foo to bar in
@@ -108,7 +108,7 @@ WRITES & FIXES
 MULTI-SPECIALIST ORCHESTRATION
 - research-agent → end-to-end research thread; threads PURPOSE,
                    DIRECTION, ACCEPTANCE across explore/plan/todo/exec/
-                   eval/update via its own dossier under
+                   eval/edit via its own dossier under
                    .brainyard/agents/research-agent/<id>/. Use when the user's
                    question is research-shaped: investigate, decide,
                    plan, do, evaluate — and they want ONE agent to drive
@@ -245,7 +245,7 @@ D. EXPLORE         → explore-agent
            cross-surface inquiry, ambiguous lookup likely to produce
            an artifact worth citing.
 
-E. UPDATE          → update-agent
+E. UPDATE          → edit-agent
    Shapes: single concrete edit, 'rename A to B in file F', 'add line
            to file F', 'fix typo in F line N'.
 
@@ -417,7 +417,7 @@ HARD RULES
      .brainyard/agents/todo-agent/todos/        .brainyard/agents/todo-agent/dossiers/
      .brainyard/agents/exec-agent/dossiers/
      .brainyard/agents/eval-agent/verdicts/     .brainyard/agents/eval-agent/dossiers/
-     .brainyard/agents/update-agent/edits/
+     .brainyard/agents/edit-agent/edits/
      .brainyard/agents/explore-agent/results/
      .brainyard/agents/research-agent/<id>/     .brainyard/agents/workflow-agent/<id>/
    These are owned by their respective specialists. You read-file them
@@ -482,7 +482,7 @@ All registered specialist `defagent`s are reachable by name. See the
 instruction §6 (DECISION TABLE) for the full per-agent rule. Headline:
 
 - explore-agent    → discovery across files / web / MCP / skills.
-- update-agent     → safe single-file edit.
+- edit-agent     → safe single-file edit.
 - plan-agent       → plan authoring (pre/post-flight gated).
 - todo-agent       → decomposition (pre/post-flight gated).
 - exec-agent       → advance a todo (per-item routing).
@@ -516,7 +516,7 @@ Invocation pattern (all identical):
 - update-file    -- Rarely needed — both your files are append-only.
 - grep           -- Cheap content scan inside your own log files.
 - bash           -- mkdir -p, ls, find. NOT for builds or test runs —
-                    those go to exec-agent (with update-agent for writes).
+                    those go to exec-agent (with edit-agent for writes).
 
 ### Sibling dossier read-helpers (cherry-picked, READ-ONLY)
 - plan$read-dossier   -- Parse plan-agent dossier frontmatter.
@@ -534,7 +534,7 @@ Invocation pattern (all identical):
                           Returns :score.criteria, :score.recommendations.
                           Use to detect 'did acceptance pass; should we
                           route back to plan/todo/exec?'
-- update$read-record  -- Parse an update-agent record. Returns :apply
+- edit$read-record  -- Parse an edit-agent record. Returns :apply
                           :verify :rollback for diff-level audit.
 
 ### Synthesis
@@ -671,7 +671,7 @@ logic.
                                         #'todo-helpers/todo$read-dossier
                                         #'exec-helpers/exec$read-dossier
                                         #'eval-helpers/eval$read-dossier
-                                        #'update-helpers/update$read-record]
+                                        #'edit-helpers/edit$read-record]
 
                                        ;; Synthesis — flat sub-LLM only.
                                        ;; Intentionally excludes #'query$clone

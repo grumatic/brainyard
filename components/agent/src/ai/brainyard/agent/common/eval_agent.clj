@@ -13,7 +13,7 @@
         `execute.evidence` populated, plan-agent dossier with
         `post.acceptance` populated, todo-agent dossier with
         `post.acceptance_coverage` (informational; rebuild via query$llm
-        when missing). Cited update-agent records resolve on disk.
+        when missing). Cited edit-agent records resolve on disk.
         Verdict: GO / GATHER / REFUSE.
      2. SCORE (only on GO) — for each acceptance criterion, classify
         SATISFIED / PARTIAL / MISSING / CONTRADICTED based on the
@@ -32,7 +32,7 @@
 
    First agent reading THREE upstream dossiers — plan, todo, AND exec
    — all bound read-only. Drills from criterion → item → evidence →
-   diff via `update$read-record` (cherry-picked from update.clj's
+   diff via `edit$read-record` (cherry-picked from update.clj's
    helpers).
 
    See `docs/eval-agent-design.md` for the design rationale."
@@ -45,7 +45,7 @@
             [ai.brainyard.agent.common.plan :as plan]
             [ai.brainyard.agent.common.todo :as todo]
             [ai.brainyard.agent.common.tools :as common-tools]
-            [ai.brainyard.agent.common.update :as update]
+            [ai.brainyard.agent.common.edit :as edit]
             [ai.brainyard.agent.task.commands :as task-cmds]))
 
 (def ^:private instruction
@@ -93,7 +93,7 @@ C5. COVERAGE MAP. Read todo_dossier; check post.acceptance_coverage.
     Empty → INFORMATIONAL; rebuild via query$llm fuzzy-match in SCORE;
     record :no-coverage-map in degradation.
 
-C6. UPDATE RECORDS RESOLVE. For each :update-agent evidence.path in
+C6. UPDATE RECORDS RESOLVE. For each :edit-agent evidence.path in
     execute.evidence, bash test -f. Missing → GATHER (the exec dossier
     may be stale).
 
@@ -129,7 +129,7 @@ For each criterion C in pre.acceptance:
      query$llm when degradation contains :no-coverage-map.
 
   2. EVIDENCE PER ITEM:
-     - :update-agent → drill via (update$read-record
+     - :edit-agent → drill via (edit$read-record
                        {:path <evidence.path>}); read verify.diff_match,
                        verify.lint, verify.tests.
      - :bash         → exit + stdout-tail.
@@ -149,7 +149,7 @@ For each criterion C in pre.acceptance:
        with the explicit note \"checkbox flipped without evidence —
        exec-agent post-flight should have caught this.\"
 
-  4. CITE: items, short evidence excerpts, update-agent record paths
+  4. CITE: items, short evidence excerpts, edit-agent record paths
      when applicable, confidence enum.
 
   5. FUZZY: criteria containing words from {intuitive, acceptable,
@@ -182,7 +182,7 @@ Stash:
       :criteria [{:criterion <str> :class :satisfied|:partial|:missing|:contradicted
                   :confidence :high|:medium|:low
                   :items [<idxs>]
-                  :evidence [{:type … :record <path-when-update-agent> :excerpt <str>}]}
+                  :evidence [{:type … :record <path-when-edit-agent> :excerpt <str>}]}
                  …]
       :gaps [<distilled actionable strings>]
       :recommendations [{:criterion <C> :gap <str> :next-agent <s> :next-call <(<agent-name> {…})>}]
@@ -367,10 +367,10 @@ UPSTREAM DOSSIER ACCESS (READ-ONLY)
                         Returns :post.acceptance_coverage, :pre.acceptance.
 - plan$read-dossier  -- frontmatter parse of a plan-agent dossier.
                         Returns :post.acceptance, :post.verdict.
-- update$read-record -- DRILL from an exec evidence entry's :path
-                        to the underlying update-agent record. Returns
+- edit$read-record -- DRILL from an exec evidence entry's :path
+                        to the underlying edit-agent record. Returns
                         :verify :apply :rollback for diff-level audit.
-                        (Cherry-picked from update-agent's helpers —
+                        (Cherry-picked from edit-agent's helpers —
                         eval-agent only needs read-record.)
 
 PLAN / TODO BODY ACCESS (READ-ONLY, fallback only)
@@ -442,7 +442,7 @@ CROSS-AGENT DISPATCH (only on user opt-in — v1 does not auto-apply)
   coact/run-coact-derived
   ;; Pin :bt-factory explicitly so direct-resolution entry points (e.g.
   ;; setup-agent-by-id used by `bb tui ask`) pick up the correct CoAct BT.
-  ;; Mirrors the explore/plan/todo/exec/update-agent pattern.
+  ;; Mirrors the explore/plan/todo/exec/edit-agent pattern.
   :bt-factory (fn [{:keys [max-iterations]}]
                 (coact/coact-behavior-tree max-iterations))
   :tool-use-control {}
@@ -469,13 +469,13 @@ CROSS-AGENT DISPATCH (only on user opt-in — v1 does not auto-apply)
                                        ;; C1/C2/C3 — the primary upstream input).
                                        exec/exec-dossier-helpers
 
-                                       ;; Cherry-pick: ONLY update$read-record from
-                                       ;; update-agent's helpers (drill-down for
-                                       ;; :via :update-agent evidence). Write-side
-                                       ;; helpers (update$apply, update$write, etc.)
+                                       ;; Cherry-pick: ONLY edit$read-record from
+                                       ;; edit-agent's helpers (drill-down for
+                                       ;; :via :edit-agent evidence). Write-side
+                                       ;; helpers (edit$apply, edit$write, etc.)
                                        ;; are deliberately NOT bound — eval is
                                        ;; read-only.
-                                       [#'update/update$read-record]
+                                       [#'edit/edit$read-record]
 
                                        ;; Eval-agent dossier helpers (this redesign).
                                        ev/eval-dossier-helpers
@@ -487,7 +487,7 @@ CROSS-AGENT DISPATCH (only on user opt-in — v1 does not auto-apply)
                                                  (:id (meta @%)))
                                                common-tools/file-tools)
 
-                                       ;; bash for C6 (`test -f` on update-agent
+                                       ;; bash for C6 (`test -f` on edit-agent
                                        ;; record paths) and ad-hoc read-only probes.
                                        common-tools/shell-tools
 

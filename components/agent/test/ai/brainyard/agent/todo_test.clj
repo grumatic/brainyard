@@ -398,7 +398,7 @@
           t1 (todo/create-todo
               dirs :project "Tagged" "ship it"
               [{:description "Wire LD flag in src/checkout/flags.clj"
-                :tags {:via :update-agent
+                :tags {:via :edit-agent
                        :covers ["feature-flag toggleable"]}}
                {:description "Run bb test:component checkout"
                 :tags {:via :bash
@@ -408,7 +408,7 @@
                        :covers ["p99 unchanged"]}}])
           slug (:slug t1)
           t2 (todo/read-todo dirs slug)]
-      (is (= [:update-agent :bash :manual]
+      (is (= [:edit-agent :bash :manual]
              (mapv #(get-in % [:tags :via]) (:items t2))))
       (is (= ["feature-flag toggleable"]
              (get-in (nth (:items t2) 0) [:tags :covers])))
@@ -430,11 +430,11 @@
               dirs :project "Mixed" ""
               [{:description "no tags"}
                {:description "tagged"
-                :tags {:via :update-agent :covers ["x"]}}
+                :tags {:via :edit-agent :covers ["x"]}}
                {:description "also untagged"}])
           [a b c] (:items (todo/read-todo dirs (:slug t1)))]
       (is (nil? (:tags a)))
-      (is (= :update-agent (get-in b [:tags :via])))
+      (is (= :edit-agent (get-in b [:tags :via])))
       (is (= ["x"] (get-in b [:tags :covers])))
       (is (nil? (:tags c)))))
 

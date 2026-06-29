@@ -78,8 +78,8 @@
              :execute {:budget {:max_items_per_turn 5 :used 3 :reason_for_stop :hard-blocker}
                        :items_advanced [0 1 2]
                        :items_pending_after [3]
-                       :evidence {0 {:ok true :via :update-agent
-                                     :update_record ".brainyard/agents/update-agent/edits/foo.md"}
+                       :evidence {0 {:ok true :via :edit-agent
+                                     :update_record ".brainyard/agents/edit-agent/edits/foo.md"}
                                   2 {:ok true :via :bash :exit 0}}}
              :post {:verdict :pass
                     :rubric {:r1 :pass :r2 :pass :r3 :pass :r4 :pass
@@ -339,7 +339,7 @@
     (let [tmp (tmp-dir "exec-auto-hold")]
       (try
         (let [answer (str "Saved todo: x.md\n"
-                          "Hold: item 2 update-agent rolled back; verify failed\n"
+                          "Hold: item 2 edit-agent rolled back; verify failed\n"
                           "Suggested: amend the plan and re-run\n")
               r (exec/materialize-auto-dossier!
                  {:answer answer :question "Q" :base-dir tmp})]

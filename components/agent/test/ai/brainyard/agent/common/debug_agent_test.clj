@@ -57,7 +57,7 @@
       (is (contains? tools :task$detail))
       (is (contains? tools :clj-nrepl$start-server))
       (testing "source-editing tools — debug-agent makes its own permanent
-                fixes (no update-agent handoff): validate live via code$eval,
+                fixes (no edit-agent handoff): validate live via code$eval,
                 then edit the file and reload"
         (doseq [id [:read-file :update-file :write-file :grep :search :bash]]
           (is (contains? tools id)

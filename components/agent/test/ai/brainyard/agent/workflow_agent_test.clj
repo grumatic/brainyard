@@ -174,8 +174,8 @@
       (is (not (contains? ids :exec$dossier-write)))
       (is (not (contains? ids :eval$dossier-write)))
       (is (not (contains? ids :eval$verdict-write)))
-      (is (not (contains? ids :update$apply)))
-      (is (not (contains? ids :update$write)))
+      (is (not (contains? ids :edit$apply)))
+      (is (not (contains? ids :edit$write)))
 
       ;; Research-agent helpers — workflow-agent reaches research-agent
       ;; via call-tool when needed; it does NOT compose research$* helpers
@@ -282,7 +282,7 @@
       (is (str/includes? instruction ".brainyard/agents/todo-agent/"))
       (is (str/includes? instruction ".brainyard/agents/exec-agent/"))
       (is (str/includes? instruction ".brainyard/agents/eval-agent/"))
-      (is (str/includes? instruction ".brainyard/agents/update-agent/"))
+      (is (str/includes? instruction ".brainyard/agents/edit-agent/"))
       (is (str/includes? instruction ".brainyard/agents/research-agent/"))
 
       ;; Iteration budget = 50
@@ -301,7 +301,7 @@
       (is (str/includes? instruction "exec-agent"))
       (is (str/includes? instruction "eval-agent"))
       (is (str/includes? instruction "mcp-agent"))
-      (is (str/includes? instruction "update-agent"))
+      (is (str/includes? instruction "edit-agent"))
       (is (str/includes? instruction "rlm-agent")))))
 
 (deftest tool-context-content-test
@@ -320,7 +320,7 @@
       (is (str/includes? tool-context "eval-agent"))
       (is (str/includes? tool-context "mcp-agent"))
       (is (str/includes? tool-context "skill-agent"))
-      (is (str/includes? tool-context "update-agent"))
+      (is (str/includes? tool-context "edit-agent"))
       (is (str/includes? tool-context "rlm-agent"))
       (is (str/includes? tool-context "coact-agent"))
 

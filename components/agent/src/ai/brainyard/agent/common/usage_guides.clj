@@ -511,7 +511,7 @@ and inspect inputs with `(get-tool-info \"<agent>\")`.
 - **debug-agent** — a fault in (or a question about) the RUNNING brainyard JVM:
   reproduce/probe/patch live via clj-nrepl, then fix the source itself. See
   `(usage$guide :topic :nrepl)`.
-- **exec-agent / update-agent** — make source edits to fulfil a concrete change
+- **exec-agent / edit-agent** — make source edits to fulfil a concrete change
   request (often handed a plan or an explore dossier).
 - Others surface via `(list-tools :type \"agent\")` — read the description before
   delegating.

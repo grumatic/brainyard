@@ -31,7 +31,7 @@
 ;; ============================================================================
 ;; Inheritance via run-coact-derived
 ;;
-;; plan-agent pins :bt-factory explicitly (mirroring update-agent / explore-
+;; plan-agent pins :bt-factory explicitly (mirroring edit-agent / explore-
 ;; agent / rlm-agent) so direct entry points (e.g. setup-agent-by-id used by
 ;; `bb tui ask`) that resolve agent metadata without going through
 ;; run-coact-derived still pick up the correct CoAct BT.

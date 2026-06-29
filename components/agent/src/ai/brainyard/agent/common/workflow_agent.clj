@@ -328,7 +328,7 @@ DOSSIER UPDATE DISCIPLINE (after every state-machine move)
      eval-agent     → {:verdict_path      \"<Saved verdict: path>\"
                        :eval_dossier      \"<Saved dossier: path>\"
                        :score_verdict     :achieved|:partially-achieved|:not-achieved}
-     update-agent   → {:update_record     \"<Saved edit: path>\"
+     edit-agent   → {:update_record     \"<Saved edit: path>\"
                        :rollback          \"<git checkout|rm command>\"}
      mcp-agent      → {:mcp_server        \"<name>\"
                        :side_effect       \"<one-line description>\"}
@@ -505,7 +505,7 @@ HARD RULES
      .brainyard/agents/exec-agent/dossiers/
      .brainyard/agents/eval-agent/verdicts/
      .brainyard/agents/eval-agent/dossiers/
-     .brainyard/agents/update-agent/edits/
+     .brainyard/agents/edit-agent/edits/
      .brainyard/agents/research-agent/<id>/
      .brainyard/agents/explore-agent/results/
    These are owned by their specialists. You read-file them freely to
@@ -599,7 +599,7 @@ needed. Pick per stage purpose.
                     whose purpose is external-system mutation.
 - skill-agent     — skill authoring / installation. Use for stages
                     around skill management.
-- update-agent    — safe single-file edit (probe → apply → verify →
+- edit-agent    — safe single-file edit (probe → apply → verify →
                     rollback-on-fail). Use for one-off edit stages.
                     Returns: `Saved edit: <path>` AND `Rollback: <cmd>`.
 - rlm-agent       — MapReduce over too-big context. Use for stages whose

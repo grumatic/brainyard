@@ -26,7 +26,7 @@
    itself — editing the source file with the file tools (read-file,
    update-file, write-file, grep) and reloading the namespace via nREPL to
    confirm the on-disk version applies live. There is no handoff to
-   update-agent. For ISOLATED evaluation, the SCI sandbox backend is the
+   edit-agent. For ISOLATED evaluation, the SCI sandbox backend is the
    tool, not this agent.
 
    Operator pre-requisite — enable the server, in this precedence:
@@ -488,7 +488,7 @@ lean into it (probe → bind a var → reuse it in the next block).
 ;; ============================================================================
 
 (defagent debug-agent
-  "Live-runtime specialist for the running brainyard JVM via clj-nrepl. END-TO-END across three jobs: (A) DEBUG a fault with the reproduce → probe → hypothesize → validate-live loop; (B) UNDERSTAND how brainyard works by inspecting the live image (namespaces, tool registry, config, hooks, source locations) instead of guessing; (C) FIX it permanently itself — validate the patch live, then edit the source (read-file/update-file/write-file) and reload the namespace via nREPL to confirm the on-disk fix applies. Pins an nREPL session per instance; routes every ```clojure block to the live runtime. No update-agent handoff."
+  "Live-runtime specialist for the running brainyard JVM via clj-nrepl. END-TO-END across three jobs: (A) DEBUG a fault with the reproduce → probe → hypothesize → validate-live loop; (B) UNDERSTAND how brainyard works by inspecting the live image (namespaces, tool registry, config, hooks, source locations) instead of guessing; (C) FIX it permanently itself — validate the patch live, then edit the source (read-file/update-file/write-file) and reload the namespace via nREPL to confirm the on-disk fix applies. Pins an nREPL session per instance; routes every ```clojure block to the live runtime. No edit-agent handoff."
   coact/run-coact-derived
   ;; Pin :bt-factory explicitly so direct-resolution entry points
   ;; (setup-agent-by-id used by `bb tui ask`) work without going
@@ -503,7 +503,7 @@ lean into it (probe → bind a var → reuse it in the next block).
                   [:answer [:string {:desc "Findings grounded in the live image: for a fault — root cause, what was probed, the permanent fix (source path(s) edited + how it was verified after reload), or revert note if not fixed; for a question — the answer with the namespaces/values/source-locations that prove it."}]]]
   :agent-tools {:tools [:code$eval
                         ;; Source editing — debug-agent makes its own
-                        ;; permanent fixes (no update-agent handoff): validate
+                        ;; permanent fixes (no edit-agent handoff): validate
                         ;; live via code$eval, then edit the file and reload.
                         :read-file
                         :update-file

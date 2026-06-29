@@ -614,7 +614,7 @@
 (deftest subdir-allowed-scopes-agent-fallthrough
   (testing "*-agent names not explicitly listed default to project-only"
     (doseq [name ["explore-agent" "plan-agent" "todo-agent"
-                  "workflow-agent" "research-agent" "update-agent"
+                  "workflow-agent" "research-agent" "edit-agent"
                   "eval-agent" "exec-agent"
                   "future-unnamed-agent"]]
       (is (= #{:project} (ai.brainyard.agent.core.config/subdir-allowed-scopes name))

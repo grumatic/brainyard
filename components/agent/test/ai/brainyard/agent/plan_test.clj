@@ -544,7 +544,7 @@
 (deftest test-detect-pre-verdict
   (testing "Refused: prefix → :refuse"
     (is (= :refuse (#'plan/detect-pre-verdict
-                    "Saved dossier: foo.md\nRefused: this is a single-edit; use update-agent")))
+                    "Saved dossier: foo.md\nRefused: this is a single-edit; use edit-agent")))
     (is (= :refuse (#'plan/detect-pre-verdict "  Refused: nope"))))
 
   (testing "Need: prefix → :gather"
@@ -719,8 +719,8 @@
                               (str "plan-auto-refuse-" (System/currentTimeMillis)))
                  .mkdirs))]
       (try
-        (let [answer (str "Refused: this is a single-file edit; use update-agent.\n"
-                          "Suggested: (call-tool \"update-agent\" {...})\n")
+        (let [answer (str "Refused: this is a single-file edit; use edit-agent.\n"
+                          "Suggested: (call-tool \"edit-agent\" {...})\n")
               r (plan/materialize-auto-dossier!
                  {:answer answer :question "rename foo to bar" :base-dir tmp})]
           (is (= :refuse (:pre-verdict r)))

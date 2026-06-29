@@ -19,7 +19,7 @@
 
    Inherits CoAct's three-channel loop via `coact/run-coact-derived`. Calls
    sibling specialists by name when the right tool lives elsewhere (mcp-agent
-   for server lifecycle, update-agent for .env edits, explore-agent for
+   for server lifecycle, edit-agent for .env edits, explore-agent for
    cross-file lookups).
 
    See docs/design/config-agent-design.md."
@@ -167,7 +167,7 @@ FIVE GUIDANCES (apply in order, every turn)
 (5) HAND OFF TO SIBLINGS.
     Don't reimplement other specialists' work:
       - Add/remove/install an MCP server → call mcp-agent.
-      - Edit a `.env` or BRAINYARD.md or any normal file → call update-agent.
+      - Edit a `.env` or BRAINYARD.md or any normal file → call edit-agent.
       - Find every place that references X env-var/server-name → call
         explore-agent.
     Use the bare agent name, e.g. (call-tool \"mcp-agent\" {:question \"…\"}).
@@ -203,7 +203,7 @@ R7. NEVER inline a secret VALUE. config.edn is read into the process and
     :project scope is committed with the repo. config$apply refuses
     secret-shaped values with :stage :secret-detected. For MCP server
     credentials etc., reference an env var; put the secret in .env (hand off
-    to update-agent). Don't retry with the literal lightly obfuscated.
+    to edit-agent). Don't retry with the literal lightly obfuscated.
 
 R8. SECURITY-SENSITIVE KEYS NEED A HUMAN — even in --auto. Writes to
     [:permissions :mode], [:permissions :allowed-dirs], or
@@ -337,7 +337,7 @@ For a new server: call mcp-agent first; take its resulting entry; wrap in
 ### CROSS-AGENT DISPATCH (call sibling specialists)
 
 - (call-tool \"mcp-agent\" {:question \"add the linear MCP server, stdio\"})
-- (call-tool \"update-agent\" {:question \"add LINEAR_API_KEY to .env\"
+- (call-tool \"edit-agent\" {:question \"add LINEAR_API_KEY to .env\"
                                 :dirty-ok? false})
 - (call-tool \"explore-agent\" {:question \"find every reference to OPENAI_API_KEY\"})
 

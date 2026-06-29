@@ -39,7 +39,7 @@
     :tool-fetch       ;; B — tool channel; one-shot RPC
     :code-compose     ;; C — code channel; composition / scripts
     :explore          ;; D — explore-agent
-    :update           ;; E — update-agent
+    :update           ;; E — edit-agent
     :plan-author      ;; F — plan-agent
     :decompose        ;; G — todo-agent
     :execute          ;; H — exec-agent

@@ -103,8 +103,8 @@
                                  :class :satisfied
                                  :confidence :high
                                  :items [0]
-                                 :evidence [{:type :update-agent
-                                             :record ".brainyard/agents/update-agent/edits/foo.md"
+                                 :evidence [{:type :edit-agent
+                                             :record ".brainyard/agents/edit-agent/edits/foo.md"
                                              :excerpt "wired in flags.clj line 42"}]}
                                 {:criterion "all unit tests green"
                                  :class :satisfied
@@ -150,7 +150,7 @@
           (is (string? (get-in parsed [:score :criteria])))
           (is (str/includes? (get-in parsed [:score :criteria]) "feature-flag toggleable"))
           (is (str/includes? (get-in parsed [:score :criteria]) "satisfied"))
-          (is (str/includes? (get-in parsed [:score :criteria]) "update-agent")))
+          (is (str/includes? (get-in parsed [:score :criteria]) "edit-agent")))
 
         (testing "score.recommendations flow-vector-of-flow-maps"
           (is (string? (get-in parsed [:score :recommendations])))

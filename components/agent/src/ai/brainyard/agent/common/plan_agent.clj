@@ -76,7 +76,7 @@ C4. REFS EXIST. For every plausible repo-relative path mentioned in the
 
 C5. PLAN SHAPED. The request must require a plan, not a single edit or
     a single discovery. Single-file rename → REFUSE, redirect to
-    update-agent. Single lookup → REFUSE, redirect to explore-agent.
+    edit-agent. Single lookup → REFUSE, redirect to explore-agent.
 
 C6. SCOPE FITS ONE PLAN. 3–30 actionable items in the eventual todo.
     Multi-quarter / cross-team → GATHER, propose plan-of-plans split.
@@ -232,7 +232,7 @@ HANDOFF — fill the handoff: block and the Next: answer line from this table:
   pre=go,  post=pass  → next_agent: todo-agent ; next_call: (todo-agent {:question \"Spawn a todo for this plan.\" :agent-context \"<dossier path>\"})
   pre=go,  post=hold  → next_agent: user       ; next_call: resolve the holds, then re-run plan-agent
   pre=gather          → next_agent: user       ; next_call: supply the gather_question input, then re-run plan-agent
-  pre=refuse          → next_agent: none       ; next_call: see refuse_reason redirect (e.g. update-agent / explore-agent)
+  pre=refuse          → next_agent: none       ; next_call: see refuse_reason redirect (e.g. edit-agent / explore-agent)
 
 BODY WITH ``` CODE FENCES — if the dossier body contains ``` fences, do NOT
 hand-escape it into the :content string. Author the whole dossier as a
@@ -263,7 +263,7 @@ On PRE-FLIGHT = GATHER:
 On PRE-FLIGHT = REFUSE:
     Saved dossier: <dossier-path>
     Refused: <reason>
-    Suggested: <redirect — e.g., 'use update-agent for this single-file edit'>
+    Suggested: <redirect — e.g., 'use edit-agent for this single-file edit'>
 
 ────────────────────────────────────────────────────────────────────────────
 HARD RULES
@@ -356,7 +356,7 @@ PERSISTENCE — write markdown directly (NO dossier-construction tools)
   coact/run-coact-derived
   ;; Pin :bt-factory explicitly so direct-resolution entry points (e.g.
   ;; setup-agent-by-id used by `bb tui ask`) pick up the correct CoAct BT.
-  ;; Mirrors the explore-agent / update-agent pattern.
+  ;; Mirrors the explore-agent / edit-agent pattern.
   :bt-factory (fn [{:keys [max-iterations]}]
                 (coact/coact-behavior-tree max-iterations))
   :tool-use-control {}

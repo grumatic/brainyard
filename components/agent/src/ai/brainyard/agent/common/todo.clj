@@ -107,10 +107,10 @@
 ;;
 ;; Item lines support an optional trailing flow-style block:
 ;;
-;;     - [ ] description {via: update-agent, covers: [\"...\", \"...\"]}
+;;     - [ ] description {via: edit-agent, covers: [\"...\", \"...\"]}
 ;;
 ;; Backwards compatible: lines without the block parse as before (no :tags
-;; key). When :tags is present, `:via` is a keyword (e.g. :update-agent,
+;; key). When :tags is present, `:via` is a keyword (e.g. :edit-agent,
 ;; :bash, :mcp, :manual, :explore-agent, :read-only) and `:covers` is a
 ;; vector of acceptance-criterion strings the item supports.
 ;; ============================================================================
@@ -147,9 +147,11 @@
                                [(keyword (str/trim k)) (str/trim v)])))
                      (into {}))
             via (when-let [v (:via kvs)]
-                  (-> v
-                      (str/replace #"^['\"]+|['\"]+$" "")
-                      keyword))
+                  (let [k (-> v
+                              (str/replace #"^['\"]+|['\"]+$" "")
+                              keyword)]
+                    ;; legacy alias: persisted todos may carry :update-agent
+                    (get {:update-agent :edit-agent} k k)))
             covers (when-let [v (:covers kvs)]
                      (let [v (str/trim v)]
                        (when (and (str/starts-with? v "[") (str/ends-with? v "]"))
@@ -169,7 +171,7 @@
   "Canonical :via routing tags (R5). The writer is the backstop: an
    out-of-set value from the LLM is dropped with a warning rather than
    trusted, instead of relying on LLM self-critique."
-  #{:update-agent :bash :mcp :manual :explore-agent :read-only})
+  #{:edit-agent :bash :mcp :manual :explore-agent :read-only})
 
 (defn- normalize-tags
   "Coerce a tags map from LLM wire format (string keys, string :via) to
@@ -181,6 +183,7 @@
   (when (and tags (map? tags) (seq tags))
     (let [raw-via (or (:via tags) (get tags "via"))
           via     (when raw-via (if (keyword? raw-via) raw-via (keyword (str raw-via))))
+          via     (get {:update-agent :edit-agent} via via)   ; legacy alias (one-release)
           via     (cond
                     (nil? via)       nil
                     (valid-via via)  via
@@ -400,7 +403,7 @@
   "Create a new todo file with a random 3-word slug. Returns the todo
    map or {:error ...}. goal is a short free-form paragraph describing
    the objective. items is a vector of `{:description :tags}` maps —
-   `:tags` is optional and carries `{:via :update-agent|:bash|:mcp|
+   `:tags` is optional and carries `{:via :edit-agent|:bash|:mcp|
    :manual|:explore-agent|:read-only :covers [<criterion strings>]}`.
    Items without `:tags` round-trip through the legacy markdown shape
    unchanged.

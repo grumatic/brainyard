@@ -64,7 +64,7 @@
     "rlm-agent"
     "skill-agent"
     "todo-agent"
-    "update-agent"
+    "edit-agent"
     "workflow-agent"})
 
 ;; ============================================================================
@@ -190,7 +190,7 @@
 
 (def ^:private specialist->shape
   {"explore-agent"  :explore
-   "update-agent"   :update
+   "edit-agent"   :update
    "plan-agent"     :plan-author
    "todo-agent"     :decompose
    "exec-agent"     :execute

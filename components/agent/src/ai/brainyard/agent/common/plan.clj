@@ -457,7 +457,7 @@
 ;; verdict, author action, post-flight rubric, recommended next agent. Lives
 ;; under `.brainyard/agents/plan-agent/dossiers/<yyyyMMdd-HHmmss>-<slug>.md` with
 ;; YAML frontmatter per docs/plan-agent-design.md §7.2. Mirrors the
-;; explore-agent / update-agent helper patterns: deterministic slug, hand-
+;; explore-agent / edit-agent helper patterns: deterministic slug, hand-
 ;; rolled YAML emitter, lenient parser scoped to the shape we emit.
 ;; ============================================================================
 
@@ -856,7 +856,7 @@
 
         :refuse
         {:next-agent "none"
-         :next-call (str "See dossier.refuse_reason for the redirect (typically update-agent or "
+         :next-call (str "See dossier.refuse_reason for the redirect (typically edit-agent or "
                          "explore-agent).")}
 
         ;; Unknown — fall through.
