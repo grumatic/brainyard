@@ -101,7 +101,7 @@
       (is (contains? ids :plan$read-dossier))
       (is (contains? ids :todo$read-dossier))
       (is (contains? ids :exec$read-dossier))
-      (is (contains? ids :eval$read-dossier))
+      (is (contains? ids :eval$read-verdict))
       (is (contains? ids :edit$read-record)))
 
     (testing "all seven main$* helpers are present"

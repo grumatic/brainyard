@@ -530,10 +530,10 @@ Invocation pattern (all identical):
                           Returns :execute.evidence,
                           :post.acceptance_progress. Use to detect
                           'exec ran; route to eval?'
-- eval$read-dossier   -- Parse eval-agent dossier frontmatter.
-                          Returns :score.criteria, :score.recommendations.
-                          Use to detect 'did acceptance pass; should we
-                          route back to plan/todo/exec?'
+- eval$read-verdict   -- Parse eval-agent verdict frontmatter.
+                          Returns :verdict, :confidence, :criteria,
+                          :recommendations. Use to detect 'did acceptance
+                          pass; should we route back to plan/todo/exec?'
 - edit$read-record  -- Parse an edit-agent record. Returns :apply
                           :verify :rollback for diff-level audit.
 
@@ -670,7 +670,7 @@ logic.
                                        [#'plan-helpers/plan$read-dossier
                                         #'todo-helpers/todo$read-dossier
                                         #'exec-helpers/exec$read-dossier
-                                        #'eval-helpers/eval$read-dossier
+                                        #'eval-helpers/eval$read-verdict
                                         #'edit-helpers/edit$read-record]
 
                                        ;; Synthesis — flat sub-LLM only.

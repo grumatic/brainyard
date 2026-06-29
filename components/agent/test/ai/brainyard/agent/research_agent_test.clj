@@ -133,7 +133,7 @@
       (is (contains? ids :plan$read-dossier))
       (is (contains? ids :todo$read-dossier))
       (is (contains? ids :exec$read-dossier))
-      (is (contains? ids :eval$read-dossier))
+      (is (contains? ids :eval$read-verdict))
       (is (contains? ids :edit$read-record))))
 
   (testing "research-agent :agent-tools EXCLUDES forbidden + out-of-scope tools"
@@ -287,7 +287,7 @@
       (is (str/includes? tool-context "plan$read-dossier"))
       (is (str/includes? tool-context "todo$read-dossier"))
       (is (str/includes? tool-context "exec$read-dossier"))
-      (is (str/includes? tool-context "eval$read-dossier"))
+      (is (str/includes? tool-context "eval$read-verdict"))
       (is (str/includes? tool-context "edit$read-record")))))
 
 ;; ============================================================================

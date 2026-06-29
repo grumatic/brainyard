@@ -588,9 +588,9 @@ pre-flight C1 finds it):
 - exec$read-dossier   -- Args: path. Returns exec-agent dossier
                           frontmatter — :execute.evidence,
                           :post.acceptance_progress.
-- eval$read-dossier   -- Args: path. Returns eval-agent dossier
-                          frontmatter — :score.criteria,
-                          :score.recommendations, :score.confidence.
+- eval$read-verdict   -- Args: path. Returns eval-agent verdict
+                          frontmatter — :verdict, :confidence,
+                          :criteria, :recommendations.
 - edit$read-record  -- Args: path. Returns an edit-agent record's
                           :verify :apply :rollback for diff-level audit.
 
@@ -741,7 +741,7 @@ fences instead of inlining mkdir / write-file / regex-replace logic.
                                        [#'plan-helpers/plan$read-dossier
                                         #'todo-helpers/todo$read-dossier
                                         #'exec-helpers/exec$read-dossier
-                                        #'eval-helpers/eval$read-dossier
+                                        #'eval-helpers/eval$read-verdict
                                         #'edit-helpers/edit$read-record]
 
                                        ;; Synthesis — flat sub-LLM only.

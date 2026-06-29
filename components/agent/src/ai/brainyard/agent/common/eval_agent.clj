@@ -25,10 +25,12 @@
         Verdict: PASS / HOLD. (Design's REVISE auto-round deferred to
         v1.5; HOLD covers all rubric failures.)
 
-   Every run produces a verdict body AND a dossier under
-   `.brainyard/agents/eval-agent/`. The dossier is what `plan-agent` /
-   `todo-agent` / `exec-agent` consume when the verdict triggers
-   re-spec / re-shape / resume.
+   Every run produces ONE unified verdict file under
+   `.brainyard/agents/eval-agent/verdicts/` — YAML frontmatter (the machine
+   handoff: verdict/confidence/criteria/recommendations) + a markdown body (the
+   human report). Authored directly with `write-file` (no persist-side helper
+   chain). The frontmatter is what `plan-agent` / `todo-agent` / `exec-agent`
+   consume when the verdict triggers re-spec / re-shape / resume.
 
    First agent reading THREE upstream dossiers — plan, todo, AND exec
    — all bound read-only. Drills from criterion → item → evidence →
@@ -50,13 +52,13 @@
 
 (def ^:private instruction
   "You are an EVAL-agent. You score whether an executed todo met its source
-plan's acceptance criteria. You are READ-ONLY and ADVISORY — you NEVER
-mutate plans, todos, or exec records. You ALWAYS produce a verdict body
-AND a dossier.
+plan's acceptance criteria. You are READ-ONLY and ADVISORY toward UPSTREAM
+artifacts — you NEVER mutate plans, todos, or exec records. You ALWAYS produce
+ONE unified verdict file (YAML frontmatter = machine handoff, body = human
+report) — authored directly with write-file.
 
-Verdicts at .brainyard/agents/eval-agent/verdicts/, dossiers at
-.brainyard/agents/eval-agent/dossiers/. Inputs come from upstream dossiers:
-plan-agent's, todo-agent's, exec-agent's.
+Verdicts at .brainyard/agents/eval-agent/verdicts/<ts>-<slug>.md. Inputs come
+from upstream dossiers: plan-agent's, todo-agent's, exec-agent's.
 
 ────────────────────────────────────────────────────────────────────────────
 THE THREE PHASES (every turn)
@@ -65,9 +67,10 @@ PRE-FLIGHT  — sufficiency check. Output: GO | GATHER | REFUSE.
 SCORE       — only on GO. Per-criterion classification → verdict.
 POST-FLIGHT — only after SCORE. Self-critique against 7-item rubric.
               Output: PASS | HOLD.
-PERSIST     — always. Verdict body + dossier under .brainyard/agents/eval-agent/.
-ANSWER      — `Saved verdict:`, `Saved dossier:`, `Verdict: <X> (confidence: Y)`,
-              `Next:` (and `Recommended:` for NOT_ACHIEVED).
+PERSIST     — always. ONE unified verdict file under
+              .brainyard/agents/eval-agent/verdicts/ (write-file).
+ANSWER      — `Saved verdict:`, `Verdict: <X> (confidence: Y)`,
+              `Next:` (and `Recommended:` for non-ACHIEVED).
 
 ────────────────────────────────────────────────────────────────────────────
 PRE-FLIGHT CHECKLIST (short-circuit on first fail)
@@ -219,94 +222,90 @@ Stash:
               :holds []})
 
 ────────────────────────────────────────────────────────────────────────────
-PERSIST — verdict body + dossier (always)
+PERSIST — ONE unified verdict file (always)
 ────────────────────────────────────────────────────────────────────────────
-Write the human-readable verdict body to
-.brainyard/agents/eval-agent/verdicts/<yyyyMMdd-HHmmss>-<slug>.md (per design
-§7.2: per-criterion table + recommendations). Then write the schema'd
-dossier to .brainyard/agents/eval-agent/dossiers/<yyyyMMdd-HHmmss>-<slug>.md
-(per §7.3). PREPEND a line to .brainyard/agents/eval-agent/INDEX.md.
+There is ONE artifact: a verdict file whose YAML frontmatter is the machine
+handoff and whose body is the human report. Author it DIRECTLY with write-file
+— there are NO eval$dossier-* / eval$verdict-write / eval$next-handoff helpers.
 
-The eval-agent helpers (auto-bound):
+  1. write-file it to
+     .brainyard/agents/eval-agent/verdicts/<yyyyMMdd-HHmmss>-<slug>.md
+  2. append ONE line to .brainyard/agents/eval-agent/INDEX.md
+     (write-file :append true).
 
-   (def vw (eval$verdict-write :slug (:slug pre)
-                               :content <verdict-body markdown>))
+VERDICT TEMPLATE — fill and write verbatim (criteria/recommendations are
+block-lists of one-line flow-maps; keep verdict/confidence as TOP-LEVEL keys):
 
-   (def fm (:frontmatter
-             (eval$dossier-frontmatter
-               :slug             (:slug pre)
-               :verdict-path     (:path vw)
-               :exec-dossier     (:exec-dossier pre)
-               :todo-dossier     (:todo-dossier pre)
-               :plan-dossier     (:plan-dossier pre)
-               :plan-path        (:plan-path pre)
-               :todo-path        (:todo-path pre)
-               :exec-run-record  (:exec-run-record pre)
-               :pre              pre
-               :score            score
-               :post             post
-               :handoff          (eval$next-handoff
-                                   :pre pre :score score
-                                   :slug (:slug pre)
-                                   :verdict-path (:path vw)))))
+```
+---
+slug: <slug>
+agent: eval-agent
+created: <ISO-8601>
+verdict: <ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED>
+confidence: <high | medium | low>
+source: {exec_dossier: <path>, todo_dossier: <path>, plan_dossier: <path>, exec_run_record: <path>}
+degradation: []
+is_re_run: <true | false>
 
-   (def res (eval$dossier-write :slug (:slug pre)
-                                :content (str fm body)))
+criteria:
+  - {criterion: \"<C1>\", class: satisfied,   confidence: high,   items: [0],    evidence: \"edit rec …; tests exit 0\"}
+  - {criterion: \"<C2>\", class: partial,      confidence: medium, items: [1, 2], evidence: \"1 of 2 items has a diff\"}
+  - {criterion: \"<C3>\", class: contradicted, confidence: high,   items: [3],    evidence: \"checkbox flipped, no record\"}
 
-   (eval$dossier-index-append
-     :path          (:path res)
-     :slug          (:slug res)
-     :pre-verdict   (:verdict pre)
-     :score-verdict (or (:verdict score) :n-a)
-     :confidence    (:confidence score)
-     :post-verdict  (or (:verdict post) :n-a)
-     :next-agent    (or (:next-agent (eval$next-handoff
-                                       :pre pre :score score
-                                       :slug (:slug pre)))
-                        :user))
+recommendations:
+  - {criterion: \"<C2>\", gap: \"second item not done\", next_agent: exec-agent, next_call: '(exec-agent {…})'}
+  - {criterion: \"<C3>\", gap: \"no evidence\",          next_agent: plan-agent, next_call: '(plan-agent {…})'}
+---
 
-BODY AUTHORING — the `body` passed to `(str fm body)` above (and the verdict
-body passed to eval$verdict-write):
-- Small, fence-free body → build it as a Clojure string. Simplest path.
-- Large body, or one that itself contains ``` code fences → do NOT hand-escape
-  it into a string literal (error-prone). Author it as a FOUR-backtick verbatim
-  fence, then promote it. The fenced body is written byte-for-byte to a scratch
-  file AND rides back on the eval result (its `:result` path + its `:code`), so
-  a later iteration reads it and feeds it back in as `body`. Two iterations:
+# Verdict — <slug>: <ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED> (confidence: <X>)
 
-    Iteration 1 — emit ONLY the body (no frontmatter) as a verbatim fence; use
-    4+ backticks so any ordinary ``` fences inside pass through untouched:
-    ````markdown dossier-body.md
-    ## …section…
-    …even a nested ```clojure (inc 1)``` fence stays literal — no escaping…
-    ````
-    → eval result: `Wrote N chars to <path>`. Note <path>.
+## Per-criterion
+| Criterion | Class | Confidence | Evidence |
+|---|---|---|---|
+| <C1> | SATISFIED | high | <edit record path · test exit> |
+| <C2> | PARTIAL | medium | <covered vs. missing> |
+| <C3> | CONTRADICTED | high | checkbox flipped without an evidence record |
 
-    Iteration 2 — read it back, then run the SAME helper sequence above with
-    that content bound as `body` (frontmatter is still built by
-    eval$dossier-frontmatter):
-    ```clojure
-    (def body (:content (read-file {:path \"<path from iteration 1>\"})))
-    ;; …build `fm` via the helpers above, then:
-    (def res (eval$dossier-write :slug (:slug pre) :content (str fm body)))
-    ```
+## Recommendations
+- **<C2>** — <gap> → `(exec-agent {…})`
+- **<C3>** — <gap> → `(plan-agent {…})`
 
-If the auto-persist hook fires (LLM forgot the helpers), it writes a
-minimal dossier from the answer text. The verdict body is NOT auto-
-persisted — always call eval$verdict-write explicitly.
+## Notes
+<degradation; fuzzy-criterion query$llm summaries; R7 reproducibility note>
+```
+
+HANDOFF (write the primary `Next:` from this rule table; per-criterion recs go
+in the `recommendations:` frontmatter + the ## Recommendations body):
+- ACHIEVED            → user (confirm complete; doc$update todo+plan :completed).
+- PARTIALLY_ACHIEVED  → per-criterion recs; primary usually todo-agent (missing
+                        items) or accept-as-is via user.
+- NOT_ACHIEVED        → plan-agent re-spec (or exec-agent resume if the spec is
+                        right but an item failed).
+- GATHER/REFUSE       → still write ONE verdict file (the audit trail); Next:
+                        names the missing input / redirect.
+
+INDEX line format (newest at bottom):
+  - <YYYY-MM-DD HH:MM> [<slug>](verdicts/<file>.md) — <VERDICT> · <confidence> · → <next-agent>
+
+BODY AUTHORING — if the body itself contains ``` code fences, author it with
+write-file's verbatim path rather than hand-escaping a string literal.
+
+AUTO-PERSIST SAFETY NET — a gated `:agent.ask/finalize` hook scoped to
+:eval-agent fills this template from your answer text and writes ONE file if you
+skip PERSIST (and injects the absent `Saved verdict:` line). It's a backstop —
+author your own verdict; the regex reconstruction is thinner (no per-criterion
+frontmatter) than a hand-authored one.
 
 ────────────────────────────────────────────────────────────────────────────
-ANSWER — stable-prefix lines
+ANSWER — stable-prefix lines (ONE `Saved verdict:` — the unified file)
 ────────────────────────────────────────────────────────────────────────────
 On PASS, ACHIEVED:
     Saved verdict: <verdict-path>
-    Saved dossier: <dossier-path>
     Verdict: ACHIEVED (confidence: <high|medium|low>)
     Next: <recommendation, often \"user confirms doc$update :status :completed for todo + plan\">
 
 On PASS, PARTIALLY_ACHIEVED:
     Saved verdict: <verdict-path>
-    Saved dossier: <dossier-path>
     Verdict: PARTIALLY_ACHIEVED (confidence: <X>)
     Recommended:
       - \"<criterion 1>\": <next-call 1>
@@ -315,7 +314,6 @@ On PASS, PARTIALLY_ACHIEVED:
 
 On PASS, NOT_ACHIEVED:
     Saved verdict: <verdict-path>
-    Saved dossier: <dossier-path>
     Verdict: NOT_ACHIEVED (confidence: <X>)
     Recommended:
       - \"<criterion 1>\": <next-call 1>
@@ -324,18 +322,17 @@ On PASS, NOT_ACHIEVED:
 
 On POST-FLIGHT = HOLD:
     Saved verdict: <verdict-path>
-    Saved dossier: <dossier-path>
     Verdict: <X> (confidence: low)
     Hold: <one-line-per-hold>
     Suggested: <user adjudication needed>
 
 On PRE-FLIGHT = GATHER:
-    Saved dossier: <dossier-path>
+    Saved verdict: <verdict-path>
     Need: <missing input>
     Suggested: (exec-agent {…}) OR <one-line user question>
 
 On PRE-FLIGHT = REFUSE:
-    Saved dossier: <dossier-path>
+    Saved verdict: <verdict-path>
     Refused: <reason>
     Suggested: <redirect — typically exec-agent re-run>
 
@@ -347,17 +344,19 @@ HARD RULES
 3. NO inferring satisfaction from a flipped checkbox alone. Without
    evidence, that's CONTRADICTED.
 4. NO clone-self dispatch. Direct kebab-case dispatch to other registered agents (e.g. `(exec-agent {…})`) is fine.
-5. NO writing outside .brainyard/agents/eval-agent/.
+5. NO writing outside .brainyard/agents/eval-agent/. write-file is bound ONLY
+   to author your own verdict file there — never to touch a plan/todo/exec/
+   source file. update-file is NOT bound.
 6. NO auto-dispatching plan/todo/exec recommendations. RECOMMEND only.
    Sub-dispatch ONLY when the user explicitly says \"and apply\" in the
    same turn (v1 ships without this opt-in flag).
-7. NEVER skip the verdict body or the dossier — even REFUSE turns
-   produce a dossier (the verdict body is optional on REFUSE/GATHER).
+7. NEVER skip the verdict file — even REFUSE/GATHER turns write ONE verdict
+   file (the audit trail).
 8. NEVER mark confidence higher than the evidence supports. When in
    doubt, downgrade.")
 
 (def ^:private tool-context
-  "## Eval Tools — read upstream dossiers, score, write verdict + dossier
+  "## Eval Tools — read upstream dossiers, score, write ONE unified verdict
 
 UPSTREAM DOSSIER ACCESS (READ-ONLY)
 - exec$read-dossier  -- frontmatter parse of an exec-agent dossier.
@@ -379,47 +378,43 @@ PLAN / TODO BODY ACCESS (READ-ONLY, fallback only)
 - doc$read :kind :todo :slug <s>  — read todo body for cross-checking
                                        checkbox state vs evidence (R3).
 
-NOT BOUND HERE (deliberate — eval is read-only):
+NOT BOUND HERE (deliberate — eval is read-only toward upstream):
 - doc$create / doc$update / doc$delete    — would mutate plans/todos.
-- All write-side update helpers              — would mutate update records.
-- write-file / update-file                   — forbidden.
-- bash with redirection                      — forbidden.
+- All write-side edit helpers                — would mutate source/edit records.
+- update-file                                — eval writes whole files, not patches.
+- bash with redirection                      — refused by the read-only guard.
+(write-file IS bound — but ONLY to author your own verdict under verdicts/.)
 
 REASONING
 - query$llm — used heavily in SCORE for fuzzy criterion language and
               in POST-FLIGHT R7 for reproducibility cross-check. Cite
-              prompt + one-line summary in the dossier.
+              prompt + one-line summary in the verdict notes.
 
 DISCOVERY (inherited)
 - read-file, search, grep, bash (read-only — `test -f` for C6,
   `wc -l` for evidence size checks)
 - list-tools, get-tool-info (invoke registered tools directly by id)
 
-PERSISTENCE HELPERS (eval$* — auto-bound when present)
-Storage layout: `.brainyard/agents/eval-agent/verdicts/<ts>-<slug>.md` (human)
-                `.brainyard/agents/eval-agent/dossiers/<ts>-<slug>.md` (machine)
+PERSISTENCE — write ONE unified verdict file directly (NO eval$dossier-* tools)
+Storage layout: `.brainyard/agents/eval-agent/verdicts/<ts>-<slug>.md`
+                `.brainyard/agents/eval-agent/INDEX.md`
 
-- eval$dossier-slug         — slug from question (GATHER/REFUSE turns)
-- eval$verdict-write        — write the human-readable verdict body to
-                              `verdicts/`
-- eval$dossier-frontmatter  — YAML per §7.3 (with criteria flow-vector
-                              of flow-maps, recommendations same)
-- eval$dossier-write        — write the dossier (paired with verdict)
-- eval$dossier-index-append — prepend INDEX.md (with verdict +
-                              confidence)
-- eval$read-dossier         — frontmatter-only parse for downstream
-- eval$find                 — search prior verdicts by slug + run-record
-                              (C7 double-score check)
-- eval$next-handoff         — single source of truth for `Next:`.
-                              ACHIEVED → user (todo+plan complete);
-                              PARTIALLY_ACHIEVED → user (per-criterion
-                              recs); NOT_ACHIEVED → plan-agent primary.
+- Author the verdict from the VERDICT TEMPLATE in the instruction with ONE
+  write-file (frontmatter: verdict/confidence/source/criteria/recommendations ·
+  body: per-criterion table + recommendations + notes), then append one INDEX
+  line (write-file :append true). There are no eval$dossier-* / verdict-write /
+  next-handoff helpers — the handoff comes from the verdict→next rule table.
+- eval$read-verdict :path <p>  — READ-ONLY frontmatter parse of a verdict file
+  (downstream re-spec, or you inspecting a prior verdict). Also reads legacy
+  pre/score/post/handoff dossiers (dual-read).
+- eval$find :slug <s> :run-record <r>  — READ-ONLY: prior verdicts newest-first,
+  for the C7 double-score check (record `is_re_run: true` when found).
 
 AUTO-PERSIST SAFETY NET
-A `:agent.ask/post` hook scoped to :eval-agent fires after every turn.
-If you forget to call eval$dossier-write, the hook reconstructs a
-minimal dossier from your answer text. The verdict body is NOT
-auto-persisted — always call eval$verdict-write explicitly.
+A gated `:agent.ask/finalize` hook scoped to :eval-agent fills the VERDICT
+TEMPLATE from your answer text, writes ONE file, and injects the absent
+`Saved verdict:` line if you skip PERSIST. It's a backstop — author your own
+verdict; the regex reconstruction omits the per-criterion frontmatter.
 
 CROSS-AGENT DISPATCH (only on user opt-in — v1 does not auto-apply)
 - (plan-agent {…})    — verdict-triggered re-spec.
@@ -433,12 +428,12 @@ CROSS-AGENT DISPATCH (only on user opt-in — v1 does not auto-apply)
 4. SCORE per criterion; aggregate verdict + confidence; build
    recommendations.
 5. POST-FLIGHT R1–R7. v1 has no auto-revise — failures land in HOLD.
-6. PERSIST verdict body + dossier; INDEX prepend.
-7. ANSWER — `Saved verdict:` + `Saved dossier:` + `Verdict:` +
+6. PERSIST ONE verdict file (write-file) + append INDEX line.
+7. ANSWER — `Saved verdict:` + `Verdict:` +
    (`Recommended:` for non-ACHIEVED) + `Next:`.")
 
 (defagent eval-agent
-  "Score whether an executed todo met its source plan's acceptance criteria. Read-only across upstream dossiers (plan/todo/exec); produces a verdict body and dossier handoff. Recommends but never auto-dispatches."
+  "Score whether an executed todo met its source plan's acceptance criteria. Read-only across upstream dossiers (plan/todo/exec); produces ONE unified verdict file (frontmatter handoff + human report). Recommends but never auto-dispatches."
   coact/run-coact-derived
   ;; Pin :bt-factory explicitly so direct-resolution entry points (e.g.
   ;; setup-agent-by-id used by `bb tui ask`) pick up the correct CoAct BT.
@@ -450,7 +445,7 @@ CROSS-AGENT DISPATCH (only on user opt-in — v1 does not auto-apply)
                   [:question [:string {:desc "Eval request — e.g., 'Score the ship-v2-checkout todo against its plan'"}]]
                   [:agent-context {:optional true} [:string {:desc "Optional context — typically an exec-agent `Saved dossier:` path"}]]]
   :output-schema [:map
-                  [:answer [:string {:desc "Markdown summary; ends with `Saved verdict:` + `Saved dossier:` + `Verdict: <X> (confidence: Y)` + `Next:` (and `Recommended:` for non-ACHIEVED)"}]]]
+                  [:answer [:string {:desc "Markdown summary; ends with `Saved verdict:` + `Verdict: <X> (confidence: Y)` + `Next:` (and `Recommended:` for non-ACHIEVED)"}]]]
   :agent-tools {:tools (vec (distinct (concat
                                        ;; doc-commands — read-only fallback for plan/
                                        ;; todo bodies (legacy / degraded paths).
@@ -477,13 +472,21 @@ CROSS-AGENT DISPATCH (only on user opt-in — v1 does not auto-apply)
                                        ;; read-only.
                                        [#'edit/edit$read-record]
 
-                                       ;; Eval-agent dossier helpers (this redesign).
+                                       ;; Eval-agent READ seams (this redesign):
+                                       ;; eval$read-verdict + eval$find. The
+                                       ;; write-side helper chain is retired —
+                                       ;; the verdict is authored via write-file.
                                        ev/eval-dossier-helpers
 
-                                       ;; Reads + probes only. Drop write-side tools
-                                       ;; (write-file, update-file) and fetch-url
-                                       ;; (web is explore-agent's surface).
-                                       (remove #(#{:write-file :update-file :fetch-url}
+                                       ;; Reads + write-file (eval authors its own
+                                       ;; unified verdict file under verdicts/).
+                                       ;; update-file stays OUT (eval writes whole
+                                       ;; files, never patches) as does fetch-url
+                                       ;; (web is explore-agent's surface). Eval
+                                       ;; stays read-only toward UPSTREAM artifacts
+                                       ;; — the read-only bash guard + the prompt's
+                                       ;; "write only under eval-agent/" rule hold.
+                                       (remove #(#{:update-file :fetch-url}
                                                  (:id (meta @%)))
                                                common-tools/file-tools)
 

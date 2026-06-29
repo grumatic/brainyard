@@ -3,29 +3,33 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent.common.eval
-  "Eval-agent helpers — verdict + dossier emission + auto-persist hook.
+  "Eval-agent helpers — verdict read seams + auto-persist backstop.
 
-   A *verdict* is the human-readable judgement file (per criterion class
-   + confidence + evidence excerpts). A *dossier* is the schema'd handoff
-   record (machine consumable, links to the verdict, carries pre/score/
-   post/handoff blocks). Both share a slug + timestamp.
+   Lightweight redesign (docs/design/eval-agent-lightweight-redesign.md):
+   SCORE is pure LLM judgment (reasoning + query$llm) and the verdict is
+   authored as markdown directly — the persist-side helper chain
+   (eval$dossier-slug / -frontmatter / -write / -index-append, eval$verdict-write,
+   eval$next-handoff) is retired. The verdict and the machine-readable dossier
+   are UNIFIED into ONE file (frontmatter = machine, body = human report):
 
      .brainyard/agents/eval-agent/
-     ├── verdicts/<yyyyMMdd-HHmmss>-<slug>.md
-     ├── dossiers/<yyyyMMdd-HHmmss>-<slug>.md
+     ├── verdicts/<yyyyMMdd-HHmmss>-<slug>.md   (frontmatter + report)
      └── INDEX.md
 
-   Per docs/eval-agent-design.md §7.
+   What stays is pure mechanism a machine does better than the model — the
+   deterministic READ seams (the evidence inputs + prior-verdict search):
+   - eval$read-verdict — frontmatter-only parse of a unified verdict file
+     (also reads legacy pre/score/post/handoff dossiers — dual-read, §10).
+   - eval$find        — prior verdicts by slug (+ exec run-record) for the C7
+     double-score check.
+   The four UPSTREAM readers (exec/plan/todo$read-dossier, edit$read-record) are
+   bound in eval_agent.clj, not here.
 
    v1 narrowings (matching plan/todo/exec):
    - POST-FLIGHT PASS/HOLD only (no REVISE auto-round)
    - C7 double-score check INFORMATIONAL only
-   - No `eval$preflight`/`eval$postflight`/`eval$score-criterion` mega-helpers
-   - R7 reproducibility check is instruction-level only (no opt-in flag)
-   - Sibling rewires deferred — plan/todo/exec already accept any
-     `Saved dossier:` in :agent-context."
-  (:require [ai.brainyard.agent.common.guard :as guard]
-            [ai.brainyard.agent.core.config :as config]
+   - R7 reproducibility check is instruction-level only (no opt-in flag)"
+  (:require [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
@@ -37,10 +41,8 @@
            [java.util Date]))
 
 (def ^:private verdicts-subdir "verdicts")
-(def ^:private dossiers-subdir "dossiers")
 (def ^:private base-rel ".brainyard/agents/eval-agent")
 (def ^:private verdicts-dir-rel (str base-rel "/" verdicts-subdir))
-(def ^:private dossiers-dir-rel (str base-rel "/" dossiers-subdir))
 (def ^:private index-rel (str base-rel "/INDEX.md"))
 
 (def ^:private slug-stopwords
@@ -94,10 +96,21 @@
         joined (if kept (str/join "-" kept) "eval")]
     (subs joined 0 (min max-chars (count joined)))))
 
+(defn- verdict->yaml
+  "Render a score verdict keyword as the UPPER_CASE token used in the
+   frontmatter + body. nil → \"null\"."
+  [v]
+  (case v
+    :achieved           "ACHIEVED"
+    :partially-achieved "PARTIALLY_ACHIEVED"
+    :not-achieved       "NOT_ACHIEVED"
+    nil                 "null"
+    (-> (name v) str/upper-case)))
+
 ;; ---------------------------------------------------------------------------
-;; YAML emission — mirror of exec.clj's, with namespaced-keyword + numeric-
-;; flow-vector support, plus nested-flow-map (for criteria/recommendations
-;; vectors of maps).
+;; YAML emission — minimal flow-style emitter (source map, criteria/
+;; recommendations vectors). The happy-path LLM authors frontmatter directly;
+;; this backs only the auto-persist backstop, which emits empty criteria/recs.
 ;; ---------------------------------------------------------------------------
 
 (def ^:private bareword-re #"^[A-Za-z0-9_./:-]+$")
@@ -162,71 +175,37 @@
                       m))
        "}"))
 
-(defn- yaml-value
-  [v]
-  (cond
-    (sequential? v) (yaml-flow-vector v)
-    (map? v)        (yaml-flow-map v)
-    :else           (yaml-scalar v)))
-
-(defn- yaml-block
-  [block-key entries]
-  (apply str
-         (name block-key) ":\n"
-         (mapv (fn [[k v]]
-                 (str "  " (name k) ": " (yaml-value v) "\n"))
-               entries)))
-
-(defn- ordered-pairs
-  [m preferred]
-  (let [in-pref  (filter #(contains? m %) preferred)
-        leftover (remove (set preferred) (keys m))]
-    (mapv (fn [k] [k (get m k)]) (concat in-pref leftover))))
-
-(def ^:private pre-key-order
-  [:verdict :checks :degradation :is_re_run :gather_question :refuse_reason])
-
-(def ^:private score-key-order
-  [:verdict :confidence :criteria :gaps :recommendations :degradation])
-
-(def ^:private post-key-order
-  [:verdict :rubric :revision_applied :revision_summary :holds])
-
-(def ^:private handoff-key-order
-  [:next_agent :next_call])
-
-(defn- build-eval-dossier-frontmatter*
-  [{:keys [slug verdict_path
-           exec_dossier todo_dossier plan_dossier
-           plan_path todo_path exec_run_record
-           created turn-id session-id
-           pre score post handoff]}]
+(defn- build-eval-verdict-frontmatter*
+  "Render the §5 unified-verdict frontmatter: top-level verdict/confidence/
+   source + criteria/recommendations (flow-vectors of flow-maps). The
+   happy-path LLM writes this from the template; the backstop calls it with
+   empty criteria/recs."
+  [{:keys [slug created verdict confidence
+           exec_dossier todo_dossier plan_dossier exec_run_record
+           degradation is_re_run criteria recommendations]}]
   (str "---\n"
        "slug: " (yaml-scalar slug) "\n"
        "agent: eval-agent\n"
        "created: " (or created (now-iso)) "\n"
-       (when verdict_path    (str "verdict_path: "    (yaml-value verdict_path) "\n"))
-       (when exec_dossier    (str "exec_dossier: "    (yaml-value exec_dossier) "\n"))
-       (when todo_dossier    (str "todo_dossier: "    (yaml-value todo_dossier) "\n"))
-       (when plan_dossier    (str "plan_dossier: "    (yaml-value plan_dossier) "\n"))
-       (when plan_path       (str "plan_path: "       (yaml-value plan_path) "\n"))
-       (when todo_path       (str "todo_path: "       (yaml-value todo_path) "\n"))
-       (when exec_run_record (str "exec_run_record: " (yaml-value exec_run_record) "\n"))
-       (when turn-id         (str "turn_id: "         (yaml-string turn-id) "\n"))
-       (when session-id      (str "session_id: "      (yaml-string session-id) "\n"))
+       "verdict: " (verdict->yaml verdict) "\n"
+       "confidence: " (if confidence (name confidence) "null") "\n"
+       "source: " (yaml-flow-map (cond-> {}
+                                   exec_dossier    (assoc :exec_dossier exec_dossier)
+                                   todo_dossier    (assoc :todo_dossier todo_dossier)
+                                   plan_dossier    (assoc :plan_dossier plan_dossier)
+                                   exec_run_record (assoc :exec_run_record exec_run_record))) "\n"
+       "degradation: " (yaml-flow-vector (or degradation [])) "\n"
+       "is_re_run: " (if is_re_run "true" "false") "\n"
        "\n"
-       (yaml-block :pre     (ordered-pairs (or pre {})     pre-key-order))
-       "\n"
-       (yaml-block :score   (ordered-pairs (or score {})   score-key-order))
-       "\n"
-       (yaml-block :post    (ordered-pairs (or post {})    post-key-order))
-       "\n"
-       (yaml-block :handoff (ordered-pairs (or handoff {}) handoff-key-order))
+       "criteria: " (yaml-flow-vector (or criteria [])) "\n"
+       "recommendations: " (yaml-flow-vector (or recommendations [])) "\n"
        "---\n"))
 
 ;; ---------------------------------------------------------------------------
-;; YAML parsing — same shape as exec.clj's; flow-style maps preserved as
-;; raw strings (downstream callers can split as needed).
+;; YAML parsing — lenient; flow-maps preserved as raw strings (downstream can
+;; substring-search). Handles BOTH the new unified shape (top-level verdict/
+;; confidence/source + criteria/recommendations block-lists) AND legacy
+;; pre/score/post/handoff nested blocks (dual-read, §10).
 ;; ---------------------------------------------------------------------------
 
 (defn- read-frontmatter-lines
@@ -249,10 +228,7 @@
       (let [inner (subs trimmed 1 (dec (count trimmed)))]
         (if (str/blank? inner)
           []
-          ;; Naive split-on-top-comma; doesn't recurse into nested
-          ;; flow-maps. Acceptable for v1 — the common consumer pattern is
-          ;; "is criterion C in recommendations.criteria?" which can be
-          ;; answered by substring search on the raw value.
+          ;; Naive split-on-top-comma; doesn't recurse into nested flow-maps.
           (->> (str/split inner #",")
                (map str/trim)
                (map (fn [tok]
@@ -290,9 +266,8 @@
   [v]
   (let [v (str/trim v)]
     (cond
-      ;; Heuristic: if a flow-vector contains nested {…}, keep it as raw
-      ;; string for v1 (parser doesn't recurse into nested maps inside
-      ;; vectors). This catches `criteria: [{class: ...}, {...}]`.
+      ;; Flow-vector containing nested {…} → keep raw (parser doesn't recurse
+      ;; into maps inside vectors). Catches `criteria: [{class: ...}, {...}]`.
       (and (re-matches #"^\[.*\]$" v)
            (str/includes? v "{"))
       v
@@ -307,71 +282,62 @@
       :else (coerce-bare-value v))))
 
 (def ^:private block-keys
+  "Legacy nested-block keys (dual-read of pre-redesign dossiers)."
   #{"pre" "score" "post" "handoff"})
+
+(def ^:private list-keys
+  "Top-level keys whose value is a block-list of flow-maps (or an inline
+   flow-vector): the unified verdict's `criteria` / `recommendations`."
+  #{"criteria" "recommendations"})
 
 (defn- parse-eval-dossier-yaml
   [lines]
   (loop [ls    lines
          acc   {}
-         block nil]
+         mode  nil]
     (if (empty? ls)
       acc
       (let [ln    (first ls)
             rest* (rest ls)]
         (cond
-          (and (vector? block) (= :flat-block (first block))
+          ;; Block-list item under criteria/recommendations: "  - <flow-map>"
+          (and (vector? mode) (= :list-block (first mode))
+               (re-matches #"^\s+-\s+\S.*$" ln))
+          (let [[_ raw] (re-matches #"^\s+-\s+(.*)$" ln)]
+            (recur rest* (update acc (second mode) (fnil conj []) (parse-scalar raw)) mode))
+
+          ;; Legacy flat-block sub-key: "  k: v"
+          (and (vector? mode) (= :flat-block (first mode))
                (re-matches #"^\s{2,}\S.*" ln))
           (if-let [[_ k v] (re-matches #"^\s+([\w_-]+):\s*(.*)$" ln)]
             (recur rest*
-                   (assoc-in acc [(second block) (keyword k)] (parse-scalar v))
-                   block)
+                   (assoc-in acc [(second mode) (keyword k)] (parse-scalar v))
+                   mode)
             (recur rest* acc nil))
 
+          ;; Bare key (no value) → block header
           (re-matches #"^([\w_-]+):\s*$" ln)
           (let [[_ k] (re-matches #"^([\w_-]+):\s*$" ln)]
-            (if (block-keys k)
-              (recur rest* (assoc acc (keyword k) {}) [:flat-block (keyword k)])
-              (recur rest* acc nil)))
+            (cond
+              (list-keys k)  (recur rest* (assoc acc (keyword k) []) [:list-block (keyword k)])
+              (block-keys k) (recur rest* (assoc acc (keyword k) {}) [:flat-block (keyword k)])
+              :else          (recur rest* acc nil)))
 
+          ;; Flat key: value (parse-scalar handles inline []/[{…}]/{…})
           (re-matches #"^([\w_-]+):\s*(.*)$" ln)
           (let [[_ k v] (re-matches #"^([\w_-]+):\s*(.*)$" ln)]
             (recur rest* (assoc acc (keyword k) (parse-scalar v)) nil))
 
           :else
-          (recur rest* acc block))))))
+          (recur rest* acc mode))))))
 
 ;; ---------------------------------------------------------------------------
-;; eval$dossier-slug
-;; ---------------------------------------------------------------------------
-
-(defcommand eval$dossier-slug
-  "Deterministic kebab-case slug from a question (eval-agent stopwords, 60-char cap)."
-  (fn [& {:keys [question max-chars]
-          :or   {max-chars 60}}]
-    (cond
-      (not (string? question))
-      {:error ":question is required (string)"}
-
-      (or (not (integer? max-chars)) (<= max-chars 0))
-      {:error ":max-chars must be a positive integer"}
-
-      :else
-      {:slug (eval-slugify question max-chars)}))
-  :input-schema  [:map
-                  [:question [:string {:desc "User question to slugify"}]]
-                  [:max-chars {:optional true} :int]]
-  :output-schema [:map
-                  [:slug {:optional true} [:string {:desc "Kebab-case slug, stopwords dropped"}]]
-                  [:error {:optional true} [:string {:desc "Error if validation failed"}]]])
-
-;; ---------------------------------------------------------------------------
-;; eval$verdict-write — human-readable verdict body
+;; Slug collision suffix + INDEX append (append-only, newest at bottom).
 ;; ---------------------------------------------------------------------------
 
 (defn- existing-slug-count
-  "Count files in `<base>/<dir-rel>` matching the slug suffix."
-  [base-dir dir-rel slug]
-  (let [^java.io.File dir (io/file base-dir dir-rel)]
+  [base-dir slug]
+  (let [^java.io.File dir (io/file base-dir verdicts-dir-rel)]
     (if (.isDirectory dir)
       (let [slug-re (re-pattern (str "(?i)-" (java.util.regex.Pattern/quote slug)
                                      "(-\\d+)?\\.md$"))]
@@ -383,224 +349,55 @@
       0)))
 
 (defn- final-slug-with-suffix
-  "Compute final slug for the given dir-rel. Counts ONLY collisions in
-   that directory so a paired verdict + dossier write in the same turn
-   both come out with the same slug (e.g. both `twice`, then both
-   `twice-2` on the next turn). The dossier carries `verdict_path` as
-   the cross-reference; pairing across dirs is by-convention, not by
-   filename match across dirs."
-  [base-dir dir-rel base-slug]
-  (let [n (existing-slug-count base-dir dir-rel base-slug)]
+  [base-dir base-slug]
+  (let [n (existing-slug-count base-dir base-slug)]
     (if (zero? n)
       base-slug
       (str base-slug "-" (inc n)))))
 
-(defcommand eval$verdict-write
-  "Write the human-readable verdict body under .brainyard/agents/eval-agent/verdicts/."
-  (fn [& {:keys [slug content base-dir]
-          :or   {base-dir (dossier-default-base-dir)}}]
-    (cond
-      (not (string? slug))    {:error ":slug is required (string)"}
-      (not (string? content)) {:error ":content is required (string)"}
-      (guard/content-violation content) (guard/content-violation content)
-      :else
-      (let [final-slug (final-slug-with-suffix base-dir verdicts-dir-rel slug)
-            ts         (now-ts)
-            rel-path   (str verdicts-dir-rel "/" ts "-" final-slug ".md")
-            file       (io/file base-dir rel-path)]
-        (.mkdirs (.getParentFile file))
-        (spit file content)
-        (mulog/log ::eval.verdict-write
-                   :slug final-slug :path rel-path :bytes (count content))
-        {:path (.getAbsolutePath file) :slug final-slug :ts ts})))
-  :input-schema  [:map
-                  [:slug [:string {:desc "Verdict slug (typically the source plan/todo/exec slug)"}]]
-                  [:content [:string {:desc "Full verdict body (frontmatter + per-criterion table + recommendations)"}]]
-                  [:base-dir {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
-  :output-schema [:map
-                  [:path {:optional true} [:string {:desc "Absolute path of the written verdict body"}]]
-                  [:slug {:optional true} [:string {:desc "Final slug actually used (may have -N suffix)"}]]
-                  [:ts {:optional true} [:string {:desc "Timestamp portion of filename"}]]
-                  [:error {:optional true} [:string {:desc "Error if validation failed"}]]])
-
-;; ---------------------------------------------------------------------------
-;; eval$dossier-frontmatter
-;; ---------------------------------------------------------------------------
-
-(defcommand eval$dossier-frontmatter
-  "Build a YAML frontmatter block for an eval-agent dossier (see docs/eval-agent-design.md §7.3)."
-  (fn [& {:keys [slug verdict-path exec-dossier todo-dossier plan-dossier
-                 plan-path todo-path exec-run-record
-                 pre score post handoff
-                 created turn-id session-id]}]
-    (cond
-      (not (string? slug)) {:error ":slug is required (string)"}
-      :else
-      (let [fm (build-eval-dossier-frontmatter*
-                {:slug slug
-                 :verdict_path    verdict-path
-                 :exec_dossier    exec-dossier
-                 :todo_dossier    todo-dossier
-                 :plan_dossier    plan-dossier
-                 :plan_path       plan-path
-                 :todo_path       todo-path
-                 :exec_run_record exec-run-record
-                 :pre             pre
-                 :score           score
-                 :post            post
-                 :handoff         handoff
-                 :created         created
-                 :turn-id         turn-id
-                 :session-id      session-id})]
-        (mulog/log ::eval.dossier-frontmatter
-                   :slug slug
-                   :pre-verdict (or (:verdict pre) :n-a)
-                   :score-verdict (or (:verdict score) :n-a)
-                   :post-verdict (or (:verdict post) :n-a)
-                   :next-agent (:next_agent handoff)
-                   :n-criteria (count (:criteria score)))
-        {:frontmatter fm})))
-  :input-schema  [:map
-                  [:slug [:string {:desc "Verdict slug"}]]
-                  [:verdict-path {:optional true} [:string {:desc "Repo-relative path to the human-readable verdict body"}]]
-                  [:exec-dossier {:optional true} [:string {:desc "Path to the consumed exec-agent dossier"}]]
-                  [:todo-dossier {:optional true} [:string {:desc "Path to the consumed todo-agent dossier"}]]
-                  [:plan-dossier {:optional true} [:string {:desc "Path to the source plan-agent dossier"}]]
-                  [:plan-path {:optional true} [:string {:desc "Repo-relative path to the plan body"}]]
-                  [:todo-path {:optional true} [:string {:desc "Repo-relative path to the todo body"}]]
-                  [:exec-run-record {:optional true} [:string {:desc "Repo-relative path to the exec run record"}]]
-                  [:pre {:optional true} [:map {:desc "Pre-flight outcomes (verdict, checks, degradation, is_re_run, gather_question, refuse_reason)"}]]
-                  [:score {:optional true} [:map {:desc "Score outcomes (verdict :achieved/:partially-achieved/:not-achieved, confidence, criteria, gaps, recommendations, degradation)"}]]
-                  [:post {:optional true} [:map {:desc "Post-flight outcomes (verdict :pass/:hold, rubric, revision_applied, holds)"}]]
-                  [:handoff {:optional true} [:map {:desc "Handoff suggestion (next_agent, next_call)"}]]
-                  [:created {:optional true} [:string {:desc "ISO-8601 created timestamp (default: now)"}]]
-                  [:turn-id {:optional true} [:string {:desc "Trajectory turn-id"}]]
-                  [:session-id {:optional true} [:string {:desc "Trajectory session-id"}]]]
-  :output-schema [:map
-                  [:frontmatter {:optional true} [:string {:desc "Full YAML frontmatter block, trailing newline included"}]]
-                  [:error {:optional true} [:string {:desc "Error if validation failed"}]]])
-
-;; ---------------------------------------------------------------------------
-;; eval$dossier-write
-;; ---------------------------------------------------------------------------
-
-(defcommand eval$dossier-write
-  "Write an eval-agent dossier under .brainyard/agents/eval-agent/dossiers/ (auto-suffixes on collision)."
-  (fn [& {:keys [slug content base-dir]
-          :or   {base-dir (dossier-default-base-dir)}}]
-    (cond
-      (not (string? slug))    {:error ":slug is required (string)"}
-      (not (string? content)) {:error ":content is required (string)"}
-      (not (re-find #"(?s)\A---\n.+?\n---\n" content))
-      {:error (str ":content must begin with a YAML frontmatter block "
-                   "(---\\n...\\n---\\n). Build it via eval$dossier-frontmatter "
-                   "and prepend before writing: "
-                   "(eval$dossier-write :slug ... :content (str fm body))")}
-      (guard/content-violation content) (guard/content-violation content)
-      :else
-      (let [final-slug (final-slug-with-suffix base-dir dossiers-dir-rel slug)
-            ts         (now-ts)
-            rel-path   (str dossiers-dir-rel "/" ts "-" final-slug ".md")
-            file       (io/file base-dir rel-path)]
-        (.mkdirs (.getParentFile file))
-        (spit file content)
-        (mulog/log ::eval.dossier-write
-                   :slug final-slug :path rel-path
-                   :bytes (count content) :collision? (not= slug final-slug))
-        {:path (.getAbsolutePath file) :slug final-slug :ts ts})))
-  :input-schema  [:map
-                  [:slug [:string {:desc "Verdict slug"}]]
-                  [:content [:string {:desc "Full file content (frontmatter + body)"}]]
-                  [:base-dir {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
-  :output-schema [:map
-                  [:path {:optional true} [:string {:desc "Absolute path of the written dossier"}]]
-                  [:slug {:optional true} [:string {:desc "Final slug actually used (may have -N suffix)"}]]
-                  [:ts {:optional true} [:string {:desc "Timestamp portion of filename"}]]
-                  [:error {:optional true} [:string {:desc "Error if validation failed"}]]])
-
-;; ---------------------------------------------------------------------------
-;; eval$dossier-index-append
-;; ---------------------------------------------------------------------------
-
 (defn- index-line
-  [{:keys [path slug pre-verdict score-verdict confidence post-verdict next-agent]}]
+  [{:keys [path slug pre-verdict score-verdict confidence next-agent]}]
   (let [filename (-> path (str/split #"/") last)
-        pre-tok    (str "pre:" (name pre-verdict))
-        score-tok  (str "verdict:" (if (nil? score-verdict)
-                                     "n/a"
-                                     (-> score-verdict name str/upper-case)))
-        conf-tok   (when confidence (str "(conf:" (name confidence) ")"))
-        post-tok   (str "post:" (if (nil? post-verdict) "n/a" (name post-verdict)))
-        next-tok   (str "→ " (name (or next-agent :unspecified)))]
+        v-tok    (if score-verdict
+                   (verdict->yaml score-verdict)
+                   (-> (name (or pre-verdict :n-a)) str/upper-case))
+        c-tok    (if confidence (name confidence) "n/a")
+        next-tok (str "→ " (name (or next-agent :unspecified)))]
     (str "- " (now-yyyy-mm-dd-hh-mm)
-         " [" slug "](" dossiers-subdir "/" filename ") — "
-         pre-tok " · " score-tok (when conf-tok (str " " conf-tok))
-         " · " post-tok " · " next-tok "\n")))
+         " [" slug "](" verdicts-subdir "/" filename ") — "
+         v-tok " · " c-tok " · " next-tok "\n")))
 
-(defcommand eval$dossier-index-append
-  "Prepend a one-line entry to .brainyard/agents/eval-agent/INDEX.md (newest-first)."
-  (fn [& {:keys [path slug pre-verdict score-verdict confidence
-                 post-verdict next-agent base-dir]
-          :or   {base-dir (dossier-default-base-dir)}}]
-    (cond
-      (not (string? path)) {:error ":path is required (string)"}
-      (not (string? slug)) {:error ":slug is required (string)"}
-      (not (or (keyword? pre-verdict) (string? pre-verdict)))
-      {:error ":pre-verdict is required (keyword or string)"}
-      :else
-      (let [pre-kw   (if (keyword? pre-verdict) pre-verdict (keyword pre-verdict))
-            score-kw (cond
-                       (keyword? score-verdict) score-verdict
+(defn- append-index!
+  "Append one INDEX.md line for a freshly written verdict (append-only; the
+   auto-persist backstop uses this). Verdicts coerced to keywords."
+  [base-dir {:keys [path slug pre-verdict score-verdict confidence next-agent]}]
+  (let [pre-kw   (if (keyword? pre-verdict) pre-verdict (keyword (str pre-verdict)))
+        score-kw (cond (keyword? score-verdict) score-verdict
                        (string? score-verdict)  (keyword score-verdict)
-                       :else                    nil)
-            conf-kw  (cond
-                       (keyword? confidence) confidence
+                       :else                     nil)
+        conf-kw  (cond (keyword? confidence) confidence
                        (string? confidence)  (keyword confidence)
                        :else                 nil)
-            post-kw  (cond
-                       (keyword? post-verdict) post-verdict
-                       (string? post-verdict)  (keyword post-verdict)
-                       :else                   nil)
-            next-kw  (cond
-                       (keyword? next-agent) next-agent
+        next-kw  (cond (keyword? next-agent) next-agent
                        (string? next-agent)  (keyword next-agent)
                        :else                 :unspecified)
-            line     (index-line {:path path :slug slug
-                                  :pre-verdict pre-kw
-                                  :score-verdict score-kw
-                                  :confidence conf-kw
-                                  :post-verdict post-kw
-                                  :next-agent next-kw})
-            file     (io/file base-dir index-rel)
-            existing (if (.isFile file) (slurp file) "")]
-        (.mkdirs (.getParentFile file))
-        (spit file (str line existing))
-        (mulog/log ::eval.dossier-index
-                   :slug slug :path path
-                   :pre-verdict pre-kw :score-verdict score-kw
-                   :confidence conf-kw :post-verdict post-kw
-                   :next-agent next-kw)
-        {:appended true :line line})))
-  :input-schema  [:map
-                  [:path [:string {:desc "Repo-relative path of the dossier"}]]
-                  [:slug [:string {:desc "Verdict slug"}]]
-                  [:pre-verdict [:string {:desc "Pre-flight verdict: go | gather | refuse"}]]
-                  [:score-verdict {:optional true} [:string {:desc "Score verdict: achieved | partially-achieved | not-achieved (omit when no SCORE ran)"}]]
-                  [:confidence {:optional true} [:string {:desc "Aggregate confidence: high | medium | low"}]]
-                  [:post-verdict {:optional true} [:string {:desc "Post-flight verdict: pass | hold (omit when no POST-FLIGHT ran)"}]]
-                  [:next-agent {:optional true} [:string {:desc "Recommended next agent (e.g. plan-agent | todo-agent | exec-agent | user | none)"}]]
-                  [:base-dir {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
-  :output-schema [:map
-                  [:appended {:optional true} [:boolean {:desc "true on success"}]]
-                  [:line {:optional true} [:string {:desc "The exact line that was prepended"}]]
-                  [:error {:optional true} [:string {:desc "Error if validation failed"}]]])
+        line     (index-line {:path path :slug slug :pre-verdict pre-kw
+                              :score-verdict score-kw :confidence conf-kw
+                              :next-agent next-kw})
+        file     (io/file base-dir index-rel)]
+    (.mkdirs (.getParentFile file))
+    (spit file line :append true)
+    (mulog/log ::eval.verdict-index :slug slug :path path
+               :score-verdict score-kw :confidence conf-kw :next-agent next-kw)
+    line))
 
 ;; ---------------------------------------------------------------------------
-;; eval$read-dossier
+;; eval$read-verdict — frontmatter-only parse of a unified verdict file
+;; (also reads legacy pre/score/post/handoff dossiers — dual-read, §10).
 ;; ---------------------------------------------------------------------------
 
-(defcommand eval$read-dossier
-  "Read and parse the YAML frontmatter from an eval-agent dossier."
+(defcommand eval$read-verdict
+  "Read and parse the YAML frontmatter from an eval-agent verdict file (or a legacy dossier)."
   (fn [& {:keys [path base-dir]
           :or   {base-dir (dossier-default-base-dir)}}]
     (cond
@@ -620,18 +417,22 @@
             (parse-eval-dossier-yaml lines)
             {:error (str "No frontmatter block at " path " (file did not start with ---)")})))))
   :input-schema  [:map
-                  [:path [:string {:desc "Repo-relative or absolute path to an eval-agent dossier"}]]
+                  [:path [:string {:desc "Repo-relative or absolute path to an eval-agent verdict file"}]]
                   [:base-dir {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
   :output-schema [:map
                   [:slug {:optional true} [:string {:desc "Verdict slug"}]]
-                  [:verdict_path {:optional true} [:string {:desc "Path to the human-readable verdict body"}]]
-                  [:exec_dossier {:optional true} [:string {:desc "Path to the consumed exec-agent dossier"}]]
-                  [:todo_dossier {:optional true} [:string {:desc "Path to the consumed todo-agent dossier"}]]
-                  [:plan_dossier {:optional true} [:string {:desc "Path to the source plan-agent dossier"}]]
-                  [:pre {:optional true} [:map {:desc "Pre-flight sub-block"}]]
-                  [:score {:optional true} [:map {:desc "Score sub-block"}]]
-                  [:post {:optional true} [:map {:desc "Post-flight sub-block"}]]
-                  [:handoff {:optional true} [:map {:desc "Handoff sub-block"}]]
+                  [:verdict {:optional true} [:string {:desc "ACHIEVED | PARTIALLY_ACHIEVED | NOT_ACHIEVED"}]]
+                  [:confidence {:optional true} [:string {:desc "high | medium | low"}]]
+                  [:source {:optional true} [:string {:desc "Flow-map of upstream paths (exec_dossier/todo_dossier/plan_dossier/exec_run_record), raw"}]]
+                  [:criteria {:optional true} [:vector {:desc "Per-criterion flow-maps (raw strings)"} :any]]
+                  [:recommendations {:optional true} [:vector {:desc "Per-criterion recommendation flow-maps (raw strings)"} :any]]
+                  [:degradation {:optional true} [:vector {:desc "Soft-fail keywords"} :any]]
+                  [:is_re_run {:optional true} [:boolean {:desc "True when a prior verdict existed for this exec run"}]]
+                  ;; Legacy nested blocks (dual-read of pre-redesign dossiers)
+                  [:pre {:optional true} [:map {:desc "Legacy pre-flight sub-block"}]]
+                  [:score {:optional true} [:map {:desc "Legacy score sub-block"}]]
+                  [:post {:optional true} [:map {:desc "Legacy post-flight sub-block"}]]
+                  [:handoff {:optional true} [:map {:desc "Legacy handoff sub-block"}]]
                   [:error {:optional true} [:string {:desc "Error if file missing or no frontmatter"}]]])
 
 ;; ---------------------------------------------------------------------------
@@ -639,7 +440,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defcommand eval$find
-  "Search prior eval-agent dossiers by slug (optionally by exec run-record). Newest-first."
+  "Search prior eval-agent verdicts by slug (optionally by exec run-record). Newest-first."
   (fn [& {:keys [slug run-record base-dir]
           :or   {base-dir (dossier-default-base-dir)}}]
     (cond
@@ -647,7 +448,7 @@
       {:error ":slug is required (string)"}
 
       :else
-      (let [dir (io/file base-dir dossiers-dir-rel)]
+      (let [dir (io/file base-dir verdicts-dir-rel)]
         (if-not (.isDirectory dir)
           {:matches [] :n-matches 0}
           (let [slug-re (re-pattern (str "(?i)-" (java.util.regex.Pattern/quote slug)
@@ -662,34 +463,39 @@
                      reverse
                      (keep (fn [^java.io.File f]
                              (when-let [lines (read-frontmatter-lines f)]
-                               (let [fm (parse-eval-dossier-yaml lines)
+                               (let [fm     (parse-eval-dossier-yaml lines)
+                                     ;; source is a raw flow-map string; the
+                                     ;; run-record path is a substring of it.
+                                     src    (str (:source fm))
                                      match? (or (nil? run-rec-norm)
-                                                (= run-rec-norm (:exec_run_record fm)))]
+                                                (str/includes? src run-rec-norm))]
                                  (when match?
-                                   {:path           (str dossiers-dir-rel "/" (.getName f))
+                                   {:path           (str verdicts-dir-rel "/" (.getName f))
                                     :slug           (:slug fm)
                                     :created        (:created fm)
-                                    :score_verdict  (get-in fm [:score :verdict])
-                                    :confidence     (get-in fm [:score :confidence])
-                                    :exec_run_record (:exec_run_record fm)})))))
+                                    :verdict        (:verdict fm)
+                                    :confidence     (:confidence fm)
+                                    :source         (:source fm)})))))
                      vec)]
             (mulog/log ::eval.find :slug slug :run-record run-record :n-matches (count matches))
             {:matches matches :n-matches (count matches)})))))
   :input-schema  [:map
                   [:slug [:string {:desc "Slug to search for"}]]
-                  [:run-record {:optional true} [:string {:desc "Optional: only match dossiers whose :exec_run_record equals this path (used for C7 'same exec turn' detection)"}]]
+                  [:run-record {:optional true} [:string {:desc "Optional: only match verdicts whose source contains this exec run-record/dossier path (C7 'same exec turn' detection)"}]]
                   [:base-dir {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
   :output-schema [:map
-                  [:matches [:vector {:desc "Matching prior dossiers, newest-first"} :map]]
+                  [:matches [:vector {:desc "Matching prior verdicts, newest-first"} :map]]
                   [:n-matches [:int {:desc "Number of matches"}]]
                   [:error {:optional true} [:string {:desc "Error if validation failed"}]]])
 
 ;; ---------------------------------------------------------------------------
-;; eval$next-handoff
+;; Handoff rule (pure fn) — the eval$next-handoff command is retired; the LLM
+;; writes the `Next:` line from the verdict→next rule table in eval_agent.clj.
+;; This fn backs the auto-persist backstop's INDEX next-agent + injected Next.
 ;; ---------------------------------------------------------------------------
 
 (defn- handoff-from-state
-  [pre-verdict score-verdict slug verdict-path dossier-path]
+  [pre-verdict score-verdict slug dossier-path]
   (let [ctx (cond-> "" dossier-path (str " :agent-context \"" dossier-path "\""))]
     (case (or score-verdict :n-a)
       :achieved
@@ -702,7 +508,7 @@
 
       :partially-achieved
       {:next-agent "user"
-       :next-call (str "Per-criterion recommendations are in score.recommendations. "
+       :next-call (str "Per-criterion recommendations are in recommendations. "
                        "Most common: (todo-agent {…}) for missing items, "
                        "or accept partial result via (doc$update "
                        "{:kind :todo :slug \"" (or slug "<slug>") "\" :status :completed}).")}
@@ -711,79 +517,56 @@
       {:next-agent "plan-agent"
        :next-call (str "Recommended primary path: re-spec via plan-agent. "
                        "(plan-agent {:question \"Revise approach: <gap>\""
-                       ctx "}). "
-                       "Per-criterion recommendations also in score.recommendations.")}
+                       ctx "}). Per-criterion recommendations also in frontmatter.")}
 
       :n-a
       (case pre-verdict
         :gather
         {:next-agent "user"
-         :next-call (str "Provide the missing input named in dossier.gather_question; "
+         :next-call (str "Provide the missing input named in the verdict notes; "
                          "typically run exec-agent first to produce evidence.")}
 
         :refuse
         {:next-agent "none"
-         :next-call (str "See dossier.refuse_reason for the redirect (typically "
+         :next-call (str "See the verdict notes for the redirect (typically "
                          "exec-agent re-run when evidence was empty, or plan-agent "
                          "when acceptance was empty).")}
 
         {:next-agent "user"
-         :next-call (str "Inspect the dossier and decide next step.")}))))
-
-(defcommand eval$next-handoff
-  "Compute the recommended next agent and direct-invocation form from :pre/:score verdicts."
-  (fn [& {:keys [pre score slug verdict-path dossier-path]}]
-    (let [pre-v   (when pre   (:verdict pre))
-          score-v (when score (:verdict score))]
-      (handoff-from-state pre-v score-v slug verdict-path dossier-path)))
-  :input-schema  [:map
-                  [:pre {:optional true} [:map {:desc "Pre-flight outcome map (only :verdict required)"}]]
-                  [:score {:optional true} [:map {:desc "Score outcome map (only :verdict required); omit on GATHER/REFUSE"}]]
-                  [:slug {:optional true} [:string {:desc "Verdict slug"}]]
-                  [:verdict-path {:optional true} [:string {:desc "Repo-relative path to the verdict body"}]]
-                  [:dossier-path {:optional true} [:string {:desc "Repo-relative path to the dossier"}]]]
-  :output-schema [:map
-                  [:next-agent [:string {:desc "Recommended next agent: plan-agent | todo-agent | exec-agent | user | none"}]]
-                  [:next-call [:string {:desc "Exact direct-invocation form (<agent-name> {…}) or user-side instruction"}]]])
+         :next-call (str "Inspect the verdict and decide next step.")}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public roster
 ;; ---------------------------------------------------------------------------
 
 (def eval-dossier-helpers
-  "Vector of all eval$* helper vars (slug, verdict-write, dossier-
-   frontmatter, dossier-write, dossier-index-append, read-dossier, find,
-   next-handoff). eval-agent appends these to its :agent-tools roster."
-  [#'eval$dossier-slug
-   #'eval$verdict-write
-   #'eval$dossier-frontmatter
-   #'eval$dossier-write
-   #'eval$dossier-index-append
-   #'eval$read-dossier
-   #'eval$find
-   #'eval$next-handoff])
+  "The surviving eval READ seams — the unified-verdict frontmatter reader and
+   the prior-verdict search (eval$find). eval-agent appends these so the SCI
+   sandbox auto-binds them. The write-side helper chain is retired (verdicts
+   authored via write-file)."
+  [#'eval$read-verdict
+   #'eval$find])
 
 ;; ============================================================================
-;; Auto-persist hook
+;; Auto-persist backstop
 ;;
-;; Same proven pattern as plan/todo/exec-auto-persist. The hook reconstructs
-;; a minimal dossier from answer text when the LLM forgets the helpers or
-;; hallucinates the `Saved dossier:` path. Idempotency is on-disk-existence
-;; check (catches hallucinations).
-;;
-;; Note: the hook only writes the DOSSIER, not the verdict body — the
-;; verdict body is a richer artifact the LLM should produce deliberately
-;; (the dossier carries enough info to reconstruct the verdict body if
-;; needed).
+;; Same proven shape as exec-auto-persist: the LLM can forget to write or
+;; hallucinate the `Saved verdict:` path. The hook fills the §5 template from
+;; the answer text and `spit`s ONE unified file. Idempotency is an on-disk-
+;; existence check (catches hallucinated paths).
 ;; ============================================================================
 
 (def saved-verdict-prefix
-  "Stable prefix the agent emits when a verdict body was written this turn."
-  "Saved verdict: ")
+  "Stable prefix the agent emits when a verdict file was written this turn.
+   No trailing space: the LLM often emits the marker markdown-bolded
+   (`**Saved verdict:** …`), so we match up to the colon and let
+   `extract-line-after` strip any `*`/backtick decoration off the path."
+  "Saved verdict:")
 
 (def saved-dossier-prefix
-  "Stable prefix the agent emits when a dossier was persisted this turn."
-  "Saved dossier: ")
+  "Legacy marker (pre-unification). Still recognized so a turn that emits the
+   old `Saved dossier:` line is treated as already-persisted."
+  "Saved dossier:")
 
 (defn- eval-agent? [agent]
   (try
@@ -796,9 +579,11 @@
     (when-let [start (str/index-of answer prefix)]
       (let [after (subs answer (+ start (count prefix)))
             end   (or (str/index-of after "\n") (count after))]
+        ;; Tolerate markdown decoration: `**Saved verdict:** `path`` → strip
+        ;; leading/trailing `*`, backticks, quotes, and the colon.
         (-> (subs after 0 end)
-            (str/replace #"^[`'\"\s]+" "")
-            (str/replace #"[`'\"\.,\s]+$" "")
+            (str/replace #"^[`'\"*:\s]+" "")
+            (str/replace #"[`'\"*\.,\s]+$" "")
             str/trim)))))
 
 (defn- absolute->repo-relative
@@ -812,13 +597,21 @@
 
     :else path))
 
-(defn- dossier-already-saved?
-  [^String answer base-dir]
-  (when-let [claimed (extract-line-after answer saved-dossier-prefix)]
+(defn- claimed-file?
+  [base-dir claimed]
+  (when (and (string? claimed) (seq claimed))
     (let [file (if (.isAbsolute (io/file claimed))
                  (io/file claimed)
                  (io/file base-dir claimed))]
       (.isFile file))))
+
+(defn- verdict-already-saved?
+  "True when the answer names a `Saved verdict:` (or legacy `Saved dossier:`)
+   path that exists on disk."
+  [^String answer base-dir]
+  (boolean
+   (or (claimed-file? base-dir (extract-line-after answer saved-verdict-prefix))
+       (claimed-file? base-dir (extract-line-after answer saved-dossier-prefix)))))
 
 (defn- detect-pre-verdict [^String answer]
   (cond
@@ -827,30 +620,24 @@
     :else                                       :go))
 
 (defn- detect-score-verdict
-  "Infer score verdict from the `Verdict:` answer line. Recognizes:
-   ACHIEVED, PARTIALLY_ACHIEVED, NOT_ACHIEVED. Returns nil when no
-   `Verdict:` line found (typical for GATHER/REFUSE)."
+  "Infer score verdict from the `Verdict:` answer line. Recognizes
+   ACHIEVED, PARTIALLY_ACHIEVED, NOT_ACHIEVED. nil when no `Verdict:` line
+   (typical for GATHER/REFUSE)."
   [^String answer]
-  (when-let [line (extract-line-after answer "Verdict: ")]
-    (cond
-      (str/starts-with? line "ACHIEVED") :achieved
-      (str/starts-with? (str/upper-case line) "PARTIALLY_ACHIEVED") :partially-achieved
-      (str/starts-with? line "PARTIALLY_ACHIEVED") :partially-achieved
-      (str/starts-with? line "NOT_ACHIEVED") :not-achieved
-      :else nil)))
+  (when-let [line (extract-line-after answer "Verdict:")]
+    (let [up (str/upper-case line)]
+      (cond
+        (str/starts-with? up "PARTIALLY_ACHIEVED") :partially-achieved
+        (str/starts-with? up "NOT_ACHIEVED")       :not-achieved
+        (str/starts-with? up "ACHIEVED")           :achieved
+        :else nil))))
 
 (defn- detect-confidence
   "Pull confidence from `Verdict: <X> (confidence: <Y>)` answer line."
   [^String answer]
-  (when-let [line (extract-line-after answer "Verdict: ")]
+  (when-let [line (extract-line-after answer "Verdict:")]
     (when-let [[_ conf] (re-find #"(?i)\bconfidence:\s*(high|medium|low)" line)]
       (keyword (str/lower-case conf)))))
-
-(defn- detect-post-verdict [^String answer score-verdict]
-  (cond
-    (nil? score-verdict)                      nil
-    (re-find #"(?im)^\s*Hold:\s*\S" answer)   :hold
-    :else                                     :pass))
 
 (defn- one-line-summary
   [^String answer max-chars]
@@ -878,101 +665,80 @@
                    str/trim)]
     (subs flat 0 (min max-chars (count flat)))))
 
-(defn materialize-auto-dossier!
-  "Core of the eval auto-persist hook — agent-state-free. Given an answer
-   string + question + base-dir, reconstruct a minimal dossier from the
-   answer text and persist it. Returns `{:path :slug :pre-verdict
-   :score-verdict :post-verdict}` or nil when skipped.
+(defn- render-eval-verdict-md
+  "Fill the §5 unified-verdict template: frontmatter + body. Backs the
+   auto-persist backstop; the happy-path LLM writes the equivalent markdown."
+  [{:keys [slug verdict confidence summary answer title]}]
+  (str (build-eval-verdict-frontmatter*
+        {:slug slug :verdict verdict :confidence confidence})
+       "\n# Verdict — " (or title slug) ": " (verdict->yaml verdict)
+       " (confidence: " (if confidence (name confidence) "n/a") ")\n\n"
+       "*Reconstructed from the agent's answer text — the LLM did not author "
+       "the verdict itself this turn.*\n\n"
+       "## Summary\n" (or summary "") "\n\n"
+       "## Per-criterion\n(not machine-reconstructed — see Original answer)\n\n"
+       "## Original answer\n" answer "\n"))
 
-   The verdict body is NOT auto-persisted — the dossier carries enough
-   info to reconstruct it later if needed."
+(defn materialize-auto-dossier!
+  "Core of the eval auto-persist backstop — agent-state-free. Reconstruct a
+   §5-template verdict from the answer text, `spit` it under verdicts/
+   (timestamp-prefixed), append one INDEX line. Returns
+   `{:path :rel-path :slug :pre-verdict :score-verdict}` or nil when skipped.
+   Does the SAME thing the happy path does (write one unified file)."
   [{:keys [answer question base-dir]}]
   (cond
     (or (not (string? answer)) (str/blank? answer))
     nil
 
-    (dossier-already-saved? answer base-dir)
+    (verdict-already-saved? answer base-dir)
     nil
 
     :else
     (let [pre-verdict   (detect-pre-verdict answer)
           score-verdict (detect-score-verdict answer)
           confidence    (detect-confidence answer)
-          post-verdict  (detect-post-verdict answer score-verdict)
           verdict-raw   (extract-line-after answer saved-verdict-prefix)
-          verdict-path  (when verdict-raw
-                          (absolute->repo-relative base-dir verdict-raw))
-          slug          (or (when verdict-raw
+          slug          (or (when (seq verdict-raw)
                               (-> verdict-raw (str/split #"/") last
                                   (str/replace #"\.md$" "")))
-                            (:slug (eval$dossier-slug
-                                    :question (or question "auto-persisted")))
+                            (eval-slugify (or question "auto-persisted") 60)
                             "eval")
           summary       (one-line-summary answer 200)
-          handoff       (let [pre-map  {:verdict pre-verdict}
-                              score-map (when score-verdict
-                                          (cond-> {:verdict score-verdict}
-                                            confidence (assoc :confidence confidence)))
-                              kebab    (#'eval$next-handoff
-                                        :pre   pre-map
-                                        :score score-map
-                                        :slug  slug)]
-                          {:next_agent (:next-agent kebab)
-                           :next_call  (:next-call  kebab)})
-          fm            (:frontmatter
-                         (#'eval$dossier-frontmatter
-                          :slug         slug
-                          :verdict-path verdict-path
-                          :pre          {:verdict pre-verdict}
-                          :score        (when score-verdict
-                                          (cond-> {:verdict score-verdict}
-                                            confidence (assoc :confidence confidence)))
-                          :post         (when post-verdict {:verdict post-verdict})
-                          :handoff      handoff))
-          body          (str "# Eval dossier (auto-persisted)\n\n"
-                             "*Reconstructed from the agent's answer text — the LLM did "
-                             "not call eval$dossier-write itself this turn.*\n\n"
-                             "## Summary\n" summary "\n\n"
-                             "## Original answer\n" answer "\n")
-          write-result  (#'eval$dossier-write :slug slug
-                                              :content (str fm body)
-                                              :base-dir base-dir)]
-      (if (:error write-result)
-        (do (mulog/warn ::eval.auto-persist-write-failed
-                        :slug slug :error (:error write-result))
-            nil)
-        (do
-          (#'eval$dossier-index-append
-           :path          (:path write-result)
-           :slug          (:slug write-result)
-           :pre-verdict   pre-verdict
-           :score-verdict score-verdict
-           :confidence    confidence
-           :post-verdict  post-verdict
-           :next-agent    (or (:next_agent handoff) :unspecified)
-           :base-dir      base-dir)
-          (mulog/log ::eval.auto-persist
-                     :slug          (:slug write-result)
-                     :path          (:path write-result)
-                     :pre-verdict   pre-verdict
-                     :score-verdict score-verdict
-                     :confidence    confidence
-                     :post-verdict  post-verdict
-                     :answer-chars  (count answer)
-                     :had-verdict-path? (boolean verdict-raw))
-          {:path          (:path write-result)
-           :slug          (:slug write-result)
-           :pre-verdict   pre-verdict
-           :score-verdict score-verdict
-           :post-verdict  post-verdict})))))
+          handoff-kebab (handoff-from-state pre-verdict score-verdict slug nil)
+          ts            (now-ts)
+          final-slug    (final-slug-with-suffix base-dir slug)
+          rel-path      (str verdicts-dir-rel "/" ts "-" final-slug ".md")
+          file          (io/file base-dir rel-path)
+          content       (render-eval-verdict-md
+                         {:slug       final-slug
+                          :verdict    score-verdict
+                          :confidence confidence
+                          :title      (str final-slug " (auto-persisted)")
+                          :summary    summary
+                          :answer     answer})]
+      (.mkdirs (.getParentFile file))
+      (spit file content)
+      (append-index! base-dir
+                     {:path rel-path :slug final-slug
+                      :pre-verdict pre-verdict :score-verdict score-verdict
+                      :confidence confidence :next-agent (:next-agent handoff-kebab)})
+      (mulog/log ::eval.auto-persist
+                 :slug final-slug :path rel-path
+                 :pre-verdict pre-verdict :score-verdict score-verdict
+                 :confidence confidence :answer-chars (count answer))
+      {:path          (.getAbsolutePath file)
+       :rel-path      rel-path
+       :slug          final-slug
+       :pre-verdict   pre-verdict
+       :score-verdict score-verdict})))
 
 (defn eval-auto-persist
-  "Gated handler for `:agent.ask/finalize`. When the LLM skipped the
-   FINAL-STEP checklist, materializes the dossier AND returns a `:replace`
-   decision injecting the absent `Saved dossier: <path>` handoff line into the
-   answer — so answer-grepping consumers (main-agent routing) see it even when
-   the LLM forgot. Idempotent — no-op when the line is already present or
-   nothing was persisted. Defensive — failures logged, never re-thrown."
+  "Gated handler for `:agent.ask/finalize`. Materializes the verdict file when
+   the LLM skipped PERSIST AND returns a `:replace` decision injecting the
+   absent `Saved verdict: <path>` line into the answer — so answer-grepping
+   consumers see it even when the LLM forgot. Idempotent — no-op when a marker
+   is present or nothing was persisted. Defensive — failures logged, never
+   re-thrown."
   [{:keys [agent input result]}]
   (try
     (when (and (eval-agent? agent) (map? result))
@@ -984,11 +750,13 @@
                        {:answer   (:answer result)
                         :question question
                         :base-dir (dossier-default-base-dir)})
-            path      (:path persisted)]
-        (when (and path (not (str/includes? answer "Saved dossier:")))
+            path      (:rel-path persisted)]
+        (when (and path
+                   (not (str/includes? answer "Saved verdict:"))
+                   (not (str/includes? answer "Saved dossier:")))
           {:result      :replace
-           :reason      "injected absent Saved-dossier handoff line"
-           :replacement (assoc result :answer (str answer "\n\nSaved dossier: " path))})))
+           :reason      "injected absent Saved-verdict handoff line"
+           :replacement (assoc result :answer (str answer "\n\nSaved verdict: " path))})))
     (catch Throwable t
       (mulog/error ::eval.auto-persist-failed
                    :exception t
@@ -997,7 +765,7 @@
       nil)))
 
 (defn install-auto-persist!
-  "Register the auto-persist hook on the gated `:agent.ask/finalize` event.
+  "Register the auto-persist backstop on the gated `:agent.ask/finalize` event.
    Idempotent — `register-hook!` replaces by id. The :match predicate scopes
    to eval-agent only."
   []

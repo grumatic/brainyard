@@ -77,16 +77,17 @@
       (is (contains? ids :edit$read-record)
           "edit$read-record is the only update-helper bound — eval drills from criterion → item → evidence → diff")))
 
-  (testing "eval-agent :agent-tools includes the new eval dossier helpers"
+  (testing "eval-agent keeps the eval READ seams (write-side chain retired)"
     (let [ids (eval-tool-ids)]
-      (is (contains? ids :eval$dossier-slug))
-      (is (contains? ids :eval$verdict-write))
-      (is (contains? ids :eval$dossier-frontmatter))
-      (is (contains? ids :eval$dossier-write))
-      (is (contains? ids :eval$dossier-index-append))
-      (is (contains? ids :eval$read-dossier))
+      (is (contains? ids :eval$read-verdict))
       (is (contains? ids :eval$find))
-      (is (contains? ids :eval$next-handoff))))
+      (is (not (contains? ids :eval$dossier-slug)))
+      (is (not (contains? ids :eval$verdict-write)))
+      (is (not (contains? ids :eval$dossier-frontmatter)))
+      (is (not (contains? ids :eval$dossier-write)))
+      (is (not (contains? ids :eval$dossier-index-append)))
+      (is (not (contains? ids :eval$read-dossier)) "renamed → eval$read-verdict")
+      (is (not (contains? ids :eval$next-handoff)))))
 
   (testing "eval-agent :agent-tools includes doc$read/list (fallback) + reads + sub-LLM"
     (let [ids (eval-tool-ids)]
@@ -108,12 +109,12 @@
 
       (is (contains? ids :agent-runtime$config))))
 
-  (testing "eval-agent :agent-tools EXCLUDES write-side tools (HARD RULE: read-only)"
+  (testing "eval-agent binds write-file (its own verdict) but NOT update-file"
     (let [ids (eval-tool-ids)]
-      (is (not (contains? ids :write-file))
-          "write-file is excluded — eval is read-only")
+      (is (contains? ids :write-file)
+          "write-file is bound — eval authors its own unified verdict under verdicts/")
       (is (not (contains? ids :update-file))
-          "update-file is excluded — eval is read-only")))
+          "update-file stays OUT — eval writes whole files, never patches")))
 
   (testing "eval-agent :agent-tools EXCLUDES edit-agent's WRITE-SIDE helpers (only read-record cherry-picked)"
     (let [ids (eval-tool-ids)]
@@ -192,10 +193,14 @@
       (is (str/includes? instruction "PASS"))
       (is (str/includes? instruction "HOLD"))
 
-      ;; Storage + handoff
+      ;; Storage + handoff — ONE unified verdict file, authored via write-file
       (is (str/includes? instruction ".brainyard/agents/eval-agent/verdicts/"))
-      (is (str/includes? instruction ".brainyard/agents/eval-agent/dossiers/"))
+      (is (str/includes? instruction "VERDICT TEMPLATE"))
+      (is (str/includes? instruction "write-file"))
+      ;; No separate dossiers/ dir anymore (verdict+dossier unified, §5)
+      (is (not (str/includes? instruction ".brainyard/agents/eval-agent/dossiers/")))
       (is (str/includes? instruction "Saved verdict:"))
+      ;; `Saved dossier:` survives only as the EXEC INPUT marker (C1), not output
       (is (str/includes? instruction "Saved dossier:"))
       (is (str/includes? instruction "Verdict:"))
 
@@ -226,15 +231,18 @@
           "drill-down from evidence to diff via edit-agent record")
       (is (str/includes? tool-context "READ-ONLY"))
 
-      ;; Eval dossier helpers (all eight)
-      (is (str/includes? tool-context "eval$dossier-slug"))
-      (is (str/includes? tool-context "eval$verdict-write"))
-      (is (str/includes? tool-context "eval$dossier-frontmatter"))
-      (is (str/includes? tool-context "eval$dossier-write"))
-      (is (str/includes? tool-context "eval$dossier-index-append"))
-      (is (str/includes? tool-context "eval$read-dossier"))
+      ;; Eval READ seams survive; write-side chain is retired
+      (is (str/includes? tool-context "eval$read-verdict"))
       (is (str/includes? tool-context "eval$find"))
-      (is (str/includes? tool-context "eval$next-handoff"))
+      (is (not (str/includes? tool-context "eval$dossier-slug")))
+      (is (not (str/includes? tool-context "eval$verdict-write")))
+      (is (not (str/includes? tool-context "eval$dossier-frontmatter")))
+      (is (not (str/includes? tool-context "eval$dossier-write")))
+      (is (not (str/includes? tool-context "eval$dossier-index-append")))
+      (is (not (str/includes? tool-context "eval$next-handoff")))
+
+      ;; Verdict authored via write-file (one unified file)
+      (is (str/includes? tool-context "write-file"))
 
       ;; Sub-LLM
       (is (str/includes? tool-context "query$llm"))
