@@ -974,6 +974,13 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
           (some? project-memory)
           (assoc :project-memory (format-project-memory-section project-memory))
 
+          ;; Base skill substrate — find→read→follow a SKILL.md, inherited by
+          ;; every coact-derived agent. Cousin of Project Memory (consult the
+          ;; store before reinventing). The skills READ subset rides
+          ;; default-agent-roster; the WRITE subset stays on skill-agent.
+          true
+          (assoc :skill-substrate agent-roster/skill-substrate-protocol)
+
           (and user-instructions (not (str/blank? user-instructions)))
           (assoc :user-instructions
                  (str "## User Instructions (~/.brainyard/BRAINYARD.md)\n"
@@ -1001,8 +1008,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                        :sandbox-context-accessor :tools
                        :critical-rules :large-results-playbook
                        :instruction :agent-context
-                       :project-instructions :project-memory :user-instructions
-                       :todo-substrate :exec-substrate
+                       :project-instructions :project-memory :skill-substrate
+                       :user-instructions :todo-substrate :exec-substrate
                        :footer]
         content (str/join "\n\n" (keep #(get sections %) section-order))]
     (if return-breakdown?

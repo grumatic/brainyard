@@ -11,7 +11,8 @@
   (:require [ai.brainyard.agent.core.tool :refer [defagent]]
             [ai.brainyard.agent.common.coact-agent :as coact]
             [ai.brainyard.agent.common.skill-distill.proposals :as proposals]
-            [ai.brainyard.agent.common.skills :as skills]))
+            [ai.brainyard.agent.common.skills :as skills]
+            [ai.brainyard.agent.common.tools :as common-tools]))
 
 (def ^:private instruction
   "You are a skill-specialist agent. You help the user discover, inspect, create,
@@ -32,14 +33,20 @@ DECISION FLOW
                       skills$find with a query string.
    - inspect        → skills$read with :skill-name (auto-detects type unless
                       :type supplied).
-   - create         → (skills$write :op :create) — :brainyard only. Require
-                      :skill-name and :content (the SKILL.md body). Default
-                      :scope is :project.
-   - update         → (skills$write :op :update) — :brainyard only.
-                      :skill-name required; :content optional if only
-                      replacing scripts/resources.
-   - remove         → (skills$write :op :remove). Auto-detects type;
-                      pass :type to force.
+   - create         → A skill is a DIRECTORY — author its files directly
+                      (:brainyard only). After skills$find dup-check, write-file
+                      .brainyard/skills/<name>/SKILL.md (frontmatter:
+                      title/description/tags) and one write-file per helper under
+                      scripts/<…> / resources/<…>, then (skills$reload) to make
+                      it discoverable + invocable. (Use :project scope =
+                      <project>/.brainyard/skills/, :user = ~/.brainyard/skills/.)
+                      The legacy (skills$write :op :create :content … :scripts {…})
+                      map still works but prefer direct write-file.
+   - update         → update-file the SKILL.md to edit a step, or write-file a
+                      changed/added script/resource; then (skills$reload).
+   - remove         → bash `rm -r .brainyard/skills/<name>/` (confirm first) +
+                      (skills$reload). :brainyard scope only. (skills$write
+                      :op :remove still works and enforces the scope guard.)
    - install        → skills$install with a package id ('owner/repo' or
                       'owner/repo@skill'). Default :type is :agents.
    - sync / update  → skills$sync for CLI backends (:claude / :agents / both).
@@ -68,6 +75,8 @@ LARGE OUTPUTS
   description + type/scope) over full dumps.
 
 SAFETY
+- :brainyard scope ONLY for writes — write-file (and skills$write) only under
+  .brainyard/skills/. The :claude / :agents backends are read-only / CLI-managed.
 - Never call (skills$write :op :create|:update) with :type other than :brainyard.
 - Never call skills$install for unknown/untrusted packages; repeat the package
   id back to the user before installing.
@@ -83,30 +92,45 @@ MANAGEMENT (skills$*)
 - skills$find    -- Search skills by query. Args: query, type (optional).
 - skills$read    -- Read SKILL.md + metadata for one skill. Args: skill-name,
                     type (optional — auto-detects), scope (brainyard only, optional).
-- skills$write   -- Polymorphic mutation. Args: :op :create|:update|:remove,
-                    plus per-op args:
-                      :op :create  — skill-name, content, scope, scripts, resources (:brainyard only)
-                      :op :update  — skill-name, content (optional), scope, scripts, resources (:brainyard only)
-                      :op :remove  — skill-name, type (optional auto-detect), scope
+- skills$reload  -- Refresh dynamic :skill$<name> tool registrations after a
+                    file-level create/update/remove. Call after authoring.
 - skills$install -- Install a CLI skill package via `npx skills add -g`.
                     Args: package ('owner/repo' or 'owner/repo@skill'),
                     type (claude|agents, default agents).
 - skills$sync    -- Refresh installed CLI skills via `npx skills update`.
                     Args: type (claude|agents, omit for both).
+- skills$import  -- Import an external SKILL.md (path) into :brainyard.
+- skills$write   -- Legacy polymorphic mutation (:op :create|:update|:remove).
+                    Still works (the :remove op enforces the brainyard-scope
+                    guard) but prefer file-inherent CRUD below.
+
+FILE-INHERENT CRUD (a skill is a directory — author its files directly)
+- CREATE → write-file .brainyard/skills/<name>/SKILL.md (frontmatter:
+           title/description/tags) + write-file each scripts/<…> / resources/<…>;
+           then skills$reload. (skills$find dup-check first.)
+- UPDATE → update-file SKILL.md (edit a step) or write-file a changed script;
+           then skills$reload.
+- REMOVE → bash rm -r .brainyard/skills/<name>/ (confirm) + skills$reload.
+  :brainyard scope ONLY — the :claude / :agents backends are CLI-managed.
 
 DISCOVERY (fallbacks — use when skill tools aren't enough)
+- read-file, write-file, update-file, bash -- author skill files directly.
 - list-tools, get-tool-info -- discover anything else registered; invoke directly by id.
 - search, tree                          -- Explore project files, config, memory.
+
+PROPOSALS (self-improvement loop)
+- skill-proposal$list / read / accept / reject -- review auto-distilled SKILL.md
+  proposals; accept promotes one to a live skill.
 
 TYPICAL FLOWS
 - \"What skills are available?\"                → skills$list (optional :type)
 - \"Find a skill about <topic>\"                → skills$find :query <topic>
 - \"Show me the <name> skill\"                  → skills$read :skill-name <name>
-- \"Create a skill that does X\"                → skills$find first, then
-                                                  (skills$write :op :create …) with SKILL.md
+- \"Create a skill that does X\"                → skills$find dup-check, then
+                                                  write-file SKILL.md (+ scripts) + skills$reload
 - \"Install skill <owner/repo>\"                → skills$install :package <owner/repo>
 - \"Update my installed skills\"                → skills$sync
-- \"Remove the <name> skill\"                   → (skills$write :op :remove :skill-name <name>)")
+- \"Remove the <name> skill\"                   → rm -r the dir + skills$reload")
 
 (defagent skill-agent
   "Specialist for skill usage and lifecycle (list/find/read/create/update/remove/install/sync)."
@@ -124,7 +148,14 @@ TYPICAL FLOWS
                   [:agent-context {:optional true} [:string {:desc "Extra context"}]]]
   :output-schema [:map
                   [:answer [:string {:desc "Answer summarizing skill operation result, or reference to a skill path"}]]]
-  :agent-tools {:tools (into skills/skills-commands
-                             proposals/skill-proposal-commands)}
+  ;; skills lifecycle commands + the proposal loop, PLUS file/shell tools so the
+  ;; agent can author a skill's directory directly (write-file SKILL.md +
+  ;; scripts/, rm -r to remove) — the file-inherent CRUD path. Bound explicitly
+  ;; (not via the default-agent-roster merge) so it works on the direct
+  ;; `bb tui -a skill-agent` entry too, not only when dispatched.
+  :agent-tools {:tools (vec (distinct (concat skills/skills-commands
+                                              proposals/skill-proposal-commands
+                                              common-tools/file-tools
+                                              common-tools/shell-tools)))}
   :instruction instruction
   :tool-context tool-context)

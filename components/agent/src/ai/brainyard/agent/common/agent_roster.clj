@@ -25,14 +25,18 @@
    agent's `def` runs."
   (:require [ai.brainyard.agent.common.tools :as common-tools]
             [ai.brainyard.agent.common.commands :as common-cmds]
+            [ai.brainyard.agent.common.skills :as skills]
             [clojure.string :as str]))
 
 (def default-agent-roster
   "Shared coact/react `:agent-tools` value: all common deftool tools + all
-   common commands, de-duped. Shape matches the defagent `:agent-tools` slot
-   (`{:tools [...]}`)."
+   common commands + the skills READ subset (discover/read/list/reload — the
+   skill substrate's USE half), de-duped. Shape matches the defagent
+   `:agent-tools` slot (`{:tools [...]}`). The skills WRITE subset stays on
+   skill-agent only."
   {:tools (vec (distinct (concat common-tools/all-common-tools
-                                 common-cmds/all-common-commands)))})
+                                 common-cmds/all-common-commands
+                                 skills/skills-read-subset)))})
 
 (def todo-substrate-protocol
   "A `## Todo substrate` system-context section, installed in BOTH base agents
@@ -102,6 +106,35 @@ RULES:
 This is working execution — yours to run inline. Reserve exec-agent for CONTRACT
 execution: gated on passed plan+todo dossiers, bounded, and audited with an
 evidence dossier that eval-agent consumes.")
+
+(def skill-substrate-protocol
+  "A `## Using a skill` system-context section, installed in BOTH base agents
+   (coact + react) so the WHOLE fleet can USE skills — not just explore-agent
+   (read) and skill-agent (lifecycle). Paired with the skills READ subset on
+   `default-agent-roster` (skills$find/read/list/reload). USE is read-only;
+   lifecycle (create/update/install) stays skill-agent's. Cousin of the Project
+   Memory protocol — both are 'consult the store before reinventing' (skills =
+   procedures, memory = facts). Modeled on `project-memory-protocol`."
+  "## Using a skill (skill substrate)
+Skills are reusable, named procedures (a SKILL.md of imperative steps, sometimes
+with helper scripts). Before reinventing a multi-step procedure, check for one:
+
+1. DISCOVER — `(skills$find {:query \"<key nouns of the task>\"})`. Also
+   `(skills$list)` to browse. Skills span backends: :brainyard (local), :claude,
+   :agents.
+2. READ — `(skills$read {:skill-name \"<name>\"})` for the SKILL.md + its path.
+3. FOLLOW — do what the SKILL.md says, in your own iterations: run its
+   `scripts/<…>` via bash, read its `resources/<…>`, follow its imperative steps.
+   If the skill is registered as a callable tool (`:skill$<name>`), you may
+   instead invoke it by name and let it drive — its SKILL.md rides in as context.
+
+RULES:
+- Prefer an existing skill over hand-rolling the same steps — but only when a
+  genuine multi-step procedure is involved; don't `skills$find` on every turn.
+- USE is READ-ONLY: never create/update/install a skill inline — that's
+  skill-agent's job. If no skill fits and one clearly should exist, finish the
+  task, then suggest routing to skill-agent to capture it.
+- CITE the skill you used (`skill:<backend>:<name>`) so the trail is auditable.")
 
 (def project-memory-protocol
   "Shared `## Project Memory` protocol prose, installed in BOTH base agents

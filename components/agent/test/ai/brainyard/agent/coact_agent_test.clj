@@ -335,6 +335,28 @@
                (.indexOf ^java.util.List order :project-memory)
                (.indexOf ^java.util.List order :user-instructions)))))))
 
+(deftest skill-substrate-test
+  (testing "coact-system-context always carries the ## Using a skill section"
+    (let [sys      (deref #'rca/coact-system-context)
+          {:keys [sections order]} (sys {:instruction "I"} :return-breakdown? true)]
+      (is (contains? sections :skill-substrate))
+      (is (str/includes? (:skill-substrate sections) "Using a skill"))
+      (is (str/includes? (:skill-substrate sections) "skills$find"))
+      ;; consult-before-acting cousins sit together: project-memory then skill
+      (is (< (.indexOf ^java.util.List order :project-memory)
+             (.indexOf ^java.util.List order :skill-substrate)
+             (.indexOf ^java.util.List order :user-instructions)))))
+
+  (testing "the skills READ subset rides default-agent-roster; WRITE subset does not"
+    (let [ids (set (map (comp :id meta deref)
+                        (:tools ai.brainyard.agent.common.agent-roster/default-agent-roster)))]
+      (is (contains? ids :skills$find))
+      (is (contains? ids :skills$read))
+      (is (contains? ids :skills$list))
+      (is (contains? ids :skills$reload))
+      (is (not (contains? ids :skills$write)))
+      (is (not (contains? ids :skills$install))))))
+
 ;; ============================================================================
 ;; 5. Action-Level Unit Tests
 ;; ============================================================================
@@ -1223,8 +1245,8 @@
         (is (contains? sections :user-instructions))
       ;; Order places BRAINYARD.md (+ project-memory) between :agent-context and :footer
         (is (= (vec (drop-while #(not= % :project-instructions) order))
-               [:project-instructions :project-memory :user-instructions
-                :todo-substrate :exec-substrate :footer])))))
+               [:project-instructions :project-memory :skill-substrate
+                :user-instructions :todo-substrate :exec-substrate :footer])))))
 
   (testing "coact-user-context returns blank content + empty sections when nothing supplied"
     (let [user-fn (deref #'rca/coact-user-context)

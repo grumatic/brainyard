@@ -287,6 +287,10 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
           (some? project-memory)
           (assoc :project-memory (agent-roster/format-project-memory-section project-memory))
 
+          ;; Base skill substrate — find→read→follow a SKILL.md, as coact.
+          true
+          (assoc :skill-substrate agent-roster/skill-substrate-protocol)
+
           (and user-instructions (not (str/blank? user-instructions)))
           (assoc :user-instructions
                  (str "## User Instructions (~/.brainyard/BRAINYARD.md)\n"
@@ -303,8 +307,8 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
                        :critical-rules :tool-call-format
                        :tools :tool-context
                        :instruction :agent-context
-                       :project-instructions :project-memory :user-instructions
-                       :todo-substrate :exec-substrate
+                       :project-instructions :project-memory :skill-substrate
+                       :user-instructions :todo-substrate :exec-substrate
                        :footer]
         content (str/join "\n\n" (keep #(get sections %) section-order))]
     (if return-breakdown?
