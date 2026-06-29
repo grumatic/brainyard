@@ -165,23 +165,27 @@
    :analytics-shs-weights      {:type "object" :default nil
                                 :doc "Override map for the composite Session Health Score weights (e.g. {:pqs 0.2 :tce 0.2 …}; must sum to 1.0 or it falls back). nil → built-in defaults."}
    :enable-memory-capture      {:type "boolean" :default true
-                                :doc "Auto-start the L2 memory-capture pipeline on agent creation (subscribes to ask/tool-use/code-eval/exception hooks, feeds the S1 parser into L2); auto-stops when the last sharing agent closes."}
+                                :requires-restart true
+                                :doc "Auto-start the L2 memory-capture pipeline on agent creation (subscribes to ask/tool-use/code-eval/exception hooks, feeds the S1 parser into L2); auto-stops when the last sharing agent closes. Read once at agent start — changing it mid-session takes effect only after restarting `by`."}
    ;; Context-graph memory overlay (CR-MEM-20, docs/design/context-graph-memory-design.md).
    :enable-graph-memory        {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_GRAPH_MEMORY")]
                                            (= "true" v) ::env-unset)
                                 :default false
-                                :doc "Context-graph memory overlay: maintain a typed entity/relationship graph (graph_nodes/graph_edges) as an extra RRF recall signal over the L1/L2/L3 FTS store. Off by default; non-regressing (empty graph ⇒ recall == pure FTS). Env: BY_ENABLE_GRAPH_MEMORY."}
+                                :requires-restart true
+                                :doc "Context-graph memory overlay: maintain a typed entity/relationship graph (graph_nodes/graph_edges) as an extra RRF recall signal over the L1/L2/L3 FTS store. Off by default; non-regressing (empty graph ⇒ recall == pure FTS). Read once when the memory manager is built — changing it mid-session takes effect only after restarting `by`. Env: BY_ENABLE_GRAPH_MEMORY."}
    :graph-embed-model          {:type "string"
                                 :env-fn #(if-some [v (System/getenv "BY_GRAPH_EMBED_MODEL")]
                                            v ::env-unset)
                                 :default nil
-                                :doc "Semantic-similarity embedder for the context graph (only when :enable-graph-memory). \"static\" = in-binary Model2Vec, or a \"provider/model\" string (e.g. ollama/nomic-embed-text). nil → no vector signal. Env: BY_GRAPH_EMBED_MODEL."}
+                                :requires-restart true
+                                :doc "Semantic-similarity embedder for the context graph (only when :enable-graph-memory). \"static\" = in-binary Model2Vec, or a \"provider/model\" string (e.g. ollama/nomic-embed-text). nil → no vector signal. The embed-fn is built at memory-manager startup — changing it needs a `by` restart (then run memory$reembed). Env: BY_GRAPH_EMBED_MODEL."}
    :graph-extract-model        {:type "string"
                                 :env-fn #(if-some [v (System/getenv "BY_GRAPH_EXTRACT_MODEL")]
                                            v ::env-unset)
                                 :default nil
-                                :doc "Chat LM that extracts entities/relationships from episodes and writes community summaries for the context graph. nil → graph stays storage-only (manual edge API). Env: BY_GRAPH_EXTRACT_MODEL."}
+                                :requires-restart true
+                                :doc "Chat LM that extracts entities/relationships from episodes and writes community summaries for the context graph. nil → graph stays storage-only (manual edge API). The extract-fn is built at memory-manager startup — changing it needs a `by` restart. Env: BY_GRAPH_EXTRACT_MODEL."}
    :enable-memory-consolidation {:type "boolean"
                                  :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY_CONSOLIDATION")]
                                             (= "true" v) ::env-unset)
@@ -266,9 +270,11 @@
    :recall-limit               {:type "integer" :default 10
                                 :doc "Max recalled memory hits injected into a turn's context."}
    :memory-question-max-chars  {:type "integer" :default 8000
-                                :doc "L2 storage cap (chars) for a captured Q&A episode's question — what FTS can match (decoupled from the recall-render snippet; storage cost is DB/FTS bytes, not prompt tokens)."}
+                                :requires-restart true
+                                :doc "L2 storage cap (chars) for a captured Q&A episode's question — what FTS can match (decoupled from the recall-render snippet; storage cost is DB/FTS bytes, not prompt tokens). Baked into the capture parser at start-capture! — changing it needs a `by` restart."}
    :memory-answer-max-chars    {:type "integer" :default 16000
-                                :doc "L2 storage cap (chars) for a captured Q&A episode's answer (decoupled from the recall-render snippet)."}
+                                :requires-restart true
+                                :doc "L2 storage cap (chars) for a captured Q&A episode's answer (decoupled from the recall-render snippet). Baked into the capture parser at start-capture! — changing it needs a `by` restart."}
    :memory-recall-snippet-chars {:type "integer" :default 600
                                  :doc "Per-hit char cap when rendering a recalled memory into the prompt."}
    :acp-backend                {:type "keyword" :default :stub
@@ -375,6 +381,22 @@
   "True if `k` is a read-only config key (see `read-only-keys`)."
   [k]
   (contains? read-only-keys k))
+
+(def restart-required-keys
+  "Schema keys flagged `:requires-restart` — read ONCE at startup (the memory
+   manager's graph provider fns at `create-memory-manager`; the capture pipeline
+   at `start-capture!`), so changing them via `agent-runtime$config` persists to
+   config.edn but does NOT take effect until `by` is restarted. Surfaced in
+   search results and called out in the set-confirmation message so the LLM is
+   not misled by an 'effective immediately' reply. Single source of truth: the
+   `:requires-restart` flag on each schema entry."
+  (set (keep (fn [[k entry]] (when (:requires-restart entry) k)) config-schema)))
+
+(defn requires-restart-key?
+  "True if changing `k` only takes effect after restarting `by`
+   (see `restart-required-keys`)."
+  [k]
+  (contains? restart-required-keys k))
 
 (def sensitive-config-keys
   "Config keys whose value is a secret and must be masked before it reaches the
@@ -1247,8 +1269,9 @@
                             :type    (:type spec)
                             :value   (redact-config-value k (get-config agent-or-st k))
                             :default (:default spec)}
-                     (:doc spec)        (assoc :doc (:doc spec))
-                     (:read-only spec)  (assoc :read-only true)))))
+                     (:doc spec)              (assoc :doc (:doc spec))
+                     (:read-only spec)        (assoc :read-only true)
+                     (:requires-restart spec) (assoc :requires-restart true)))))
          (sort-by :key)
          vec)
     []))

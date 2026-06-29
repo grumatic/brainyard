@@ -121,8 +121,11 @@
               :else
               (let [coerced (config/coerce-config-value k v-str)]
                 (config/set-config! agent k coerced)
-                (merge {:result (format "Config '%s' set to %s. Effective immediately; persisted to .brainyard/config.edn."
-                                        (name k) coerced)}
+                (merge {:result (if (config/requires-restart-key? k)
+                                  (format "Config '%s' set to %s and persisted to .brainyard/config.edn, but it is read once at startup — RESTART `by` for the change to take effect (the memory manager / capture pipeline is built at boot)."
+                                          (name k) coerced)
+                                  (format "Config '%s' set to %s. Effective immediately; persisted to .brainyard/config.edn."
+                                          (name k) coerced))}
                        (config/config-overview agent)))))))
       {:error-message "current agent is not running"}))
   :input-schema  [:map
@@ -134,7 +137,7 @@
                   [:total {:optional true} [:int {:desc "Total number of config keys (overview/set responses)"}]]
                   [:overrides {:optional true} [:string {:desc "Overview: map of keys whose effective value differs from the schema default (secrets redacted)"}]]
                   [:hint {:optional true} [:string {:desc "Overview: how to search (:query), set (:key/:value), or get the full snapshot (:all true)"}]]
-                  [:matches {:optional true} [:string {:desc "Search results (from :query): vector of {:key :type :value :default :doc} for keys whose name/description match"}]]
+                  [:matches {:optional true} [:string {:desc "Search results (from :query): vector of {:key :type :value :default :doc} (plus :read-only / :requires-restart flags where applicable) for keys whose name/description match"}]]
                   [:count {:optional true} [:int {:desc "Number of search matches (with :query)"}]]
                   [:result {:optional true} [:string {:desc "Confirmation when a value was set"}]]
                   [:config {:optional true} [:string {:desc "Full effective config snapshot (only when :all true), secrets redacted"}]]

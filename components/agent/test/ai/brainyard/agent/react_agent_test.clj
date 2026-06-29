@@ -1125,7 +1125,16 @@
           (testing "both changed values surface as overrides in the no-arg overview"
             (let [result (tool/invoke-tool :agent-runtime$config)]
               (is (= true (get-in result [:overrides :show-llm-streaming])))
-              (is (= 8192 (get-in result [:overrides :max-context-tokens]))))))
+              (is (= 8192 (get-in result [:overrides :max-context-tokens])))))
+          (testing "setting a startup-baked memory key warns that a restart is needed"
+            (let [result (tool/invoke-tool :agent-runtime$config
+                                           :key "enable-graph-memory" :value "true")]
+              (is (some? (:result result)))
+              (is (.contains (:result result) "RESTART"))))
+          (testing "setting a live key still reports effective immediately"
+            (let [result (tool/invoke-tool :agent-runtime$config
+                                           :key "enable-mid-turn-recall" :value "true")]
+              (is (.contains (:result result) "Effective immediately")))))
         (proto/stop-agent ag)))
 
     (testing "agent-runtime$config rejects invalid key"

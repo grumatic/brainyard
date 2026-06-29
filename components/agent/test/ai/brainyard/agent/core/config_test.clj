@@ -144,6 +144,25 @@
   (is (cfg/read-only-key? :lm-config))
   (is (not (cfg/read-only-key? :max-iterations))))
 
+(deftest restart-required-keys-derived-from-schema
+  (testing "the startup-baked memory/graph keys are flagged :requires-restart"
+    (is (= #{:enable-graph-memory :graph-embed-model :graph-extract-model
+             :enable-memory-capture :memory-question-max-chars :memory-answer-max-chars}
+           cfg/restart-required-keys))
+    (is (cfg/requires-restart-key? :enable-graph-memory))
+    (is (cfg/requires-restart-key? :graph-embed-model))
+    (testing "live-read keys are NOT flagged"
+      (is (not (cfg/requires-restart-key? :enable-memory-consolidation)))
+      (is (not (cfg/requires-restart-key? :enable-mid-turn-recall)))
+      (is (not (cfg/requires-restart-key? :max-iterations))))))
+
+(deftest search-config-keys-marks-requires-restart
+  (let [by-key (into {} (map (juxt :key identity)) (cfg/search-config-keys nil "graph-extract"))]
+    (is (true? (:requires-restart (get by-key "graph-extract-model"))))
+    (testing "a live key omits the flag"
+      (let [hit (first (cfg/search-config-keys nil "enable-mid-turn-recall"))]
+        (is (not (contains? hit :requires-restart)))))))
+
 (deftest redact-config-value-masks-secrets
   (is (= "***redacted***" (cfg/redact-config-value :tavily-api-key "sk-abc")))
   (testing "unset sensitive key stays nil"
