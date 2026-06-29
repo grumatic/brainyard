@@ -1287,10 +1287,17 @@
   [agent-or-st]
   (let [snap      (get-config-snapshot agent-or-st)
         overrides (reduce-kv (fn [m k v]
+                               ;; Only surface SCHEMA keys with a STATIC default
+                               ;; that the effective value deviates from. This
+                               ;; excludes default-fn/runtime keys (:dirs,
+                               ;; :lm-config, :allowed-dirs) and non-schema
+                               ;; session-injected entries (:permission-fn,
+                               ;; :usage-tracker) that get-config-snapshot merges
+                               ;; in but which aren't user-tunable settings.
                                (if (and (contains? default-config k)
-                                        (= v (get default-config k)))
-                                 m
-                                 (assoc m k (redact-config-value k v))))
+                                        (not= v (get default-config k)))
+                                 (assoc m k (redact-config-value k v))
+                                 m))
                              {}
                              snap)]
     {:total     (count config-keys)

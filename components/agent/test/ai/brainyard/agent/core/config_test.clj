@@ -199,11 +199,34 @@
       (is (str/includes? (:hint ov) ":query"))
       (is (str/includes? (:hint ov) ":all true")))))
 
-(deftest config-overview-redacts-secret-overrides
-  (seed-project-config! {:agent {:config {:tavily-api-key "sk-leak"}}})
-  (cfg/invalidate-global-config!)
-  (let [ov (cfg/config-overview nil)]
-    (is (= "***redacted***" (get-in ov [:overrides :tavily-api-key])))))
+(deftest config-overview-excludes-non-schema-and-runtime-keys
+  (testing "session-injected runtime entries and default-fn keys never appear as overrides"
+    ;; mirrors the real TUI snapshot, which merges session-config wholesale:
+    ;; :permission-fn (a fn), :usage-tracker (an atom), :dirs (a runtime map) —
+    ;; none are user-tunable settings and must be filtered out.
+    (with-redefs [cfg/get-config-snapshot
+                  (fn [& _]
+                    {:permission-fn  (fn [] :nope)
+                     :usage-tracker  (atom {:total 0})
+                     :dirs           {:user-dir "/u" :project-dir "/p"}
+                     :enable-tmux-popup false        ;; real override (static default true)
+                     :max-iterations 100})]          ;; at default → omitted
+      (let [ov (cfg/config-overview nil)]
+        (is (= {:enable-tmux-popup false} (:overrides ov))
+            "only the genuine static-default deviation is surfaced")
+        (is (not (contains? (:overrides ov) :permission-fn)))
+        (is (not (contains? (:overrides ov) :usage-tracker)))
+        (is (not (contains? (:overrides ov) :dirs)))
+        (is (not (contains? (:overrides ov) :max-iterations)))))))
+
+(deftest config-overview-omits-secret-env-only-keys
+  (testing "an env-only secret key (no static default) never appears in the overview"
+    ;; :tavily-api-key has only an :env-fn, so it is not in default-config and is
+    ;; excluded by the static-default filter — secrets cannot reach the overview.
+    (seed-project-config! {:agent {:config {:tavily-api-key "sk-leak"}}})
+    (cfg/invalidate-global-config!)
+    (let [ov (cfg/config-overview nil)]
+      (is (not (contains? (:overrides ov) :tavily-api-key))))))
 
 (deftest config-overview-omits-untouched-defaults
   (seed-project-config! {:agent {:config {}}})
