@@ -559,8 +559,11 @@
   "Saved run: ")
 
 (def saved-dossier-prefix
-  "Stable prefix the agent emits when a dossier was persisted this turn."
-  "Saved dossier: ")
+  "Stable prefix the agent emits when a dossier was persisted this turn.
+   No trailing space: the LLM often emits the marker markdown-bolded
+   (`**Saved dossier:** …`), so we match up to the colon and let
+   `extract-line-after` strip any `*`/backtick decoration off the path."
+  "Saved dossier:")
 
 (defn- exec-agent? [agent]
   (try
@@ -573,9 +576,12 @@
     (when-let [start (str/index-of answer prefix)]
       (let [after (subs answer (+ start (count prefix)))
             end   (or (str/index-of after "\n") (count after))]
+        ;; Tolerate markdown decoration around the value: a bolded marker emits
+        ;; `**Saved dossier:** `path`` → strip leading/trailing `*`, backticks,
+        ;; quotes, and (now that prefixes carry no trailing space) the colon.
         (-> (subs after 0 end)
-            (str/replace #"^[`'\"\s]+" "")
-            (str/replace #"[`'\"\.,\s]+$" "")
+            (str/replace #"^[`'\"*:\s]+" "")
+            (str/replace #"[`'\"*\.,\s]+$" "")
             str/trim)))))
 
 (defn- absolute->repo-relative
@@ -616,7 +622,7 @@
   (boolean (re-find #"(?im)^\s*Done:\s*\S" answer)))
 
 (defn- detect-saved-todo-path [^String answer]
-  (extract-line-after answer "Saved todo: "))
+  (extract-line-after answer "Saved todo:"))
 
 (defn- one-line-summary
   [^String answer max-chars]

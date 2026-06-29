@@ -273,6 +273,21 @@
                               (filter #(.isFile %)))]
             (is (= 1 (count dossiers))
                 "exactly one dossier — the pre-existing real one")))
+        (finally (delete-rec (io/file tmp))))))
+
+  (testing "MARKDOWN-BOLDED marker (`**Saved dossier:** `path``) → still a no-op"
+    ;; Regression: capable models emit the marker bolded + backtick-wrapped.
+    ;; The gate must see through the decoration or it double-writes the dossier.
+    (let [tmp (tmp-dir "exec-skip-bold")]
+      (try
+        (let [rel (write-dossier! tmp "20260101-000000-real.md" "---\nslug: real\n---\nx")
+              answer (str "## Exec — real ✅\n\n**Saved dossier:** `" rel "`\n\nDone: ok\nNext: x")
+              r (exec/materialize-auto-dossier!
+                 {:answer answer :question "Q" :base-dir tmp})]
+          (is (nil? r) "bolded marker pointing at a real file must skip")
+          (is (= 1 (->> (io/file tmp ".brainyard/agents/exec-agent/dossiers/")
+                        .listFiles (filter #(.isFile %)) count))
+              "no redundant second dossier"))
         (finally (delete-rec (io/file tmp)))))))
 
 (deftest test-auto-persist-agent-scoping
