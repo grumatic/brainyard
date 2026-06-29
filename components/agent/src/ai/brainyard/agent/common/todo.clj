@@ -978,76 +978,15 @@
           (recur rest* acc block))))))
 
 ;; ---------------------------------------------------------------------------
-;; todo$dossier-slug
+;; Retired write-side dossier helpers (todo$dossier-slug / -frontmatter /
+;; -write / -index-append / todo$next-handoff) — the LLM now authors the
+;; dossier as markdown directly via write-file from the §7 template; the
+;; auto-persist hook fills the same template (render-todo-dossier-md) and spits
+;; it. The private emitters/parsers below back the hook and the read seam.
 ;; ---------------------------------------------------------------------------
 
-(defcommand todo$dossier-slug
-  "Deterministic kebab-case slug from a question for todo-agent dossiers (used on GATHER/REFUSE turns); caps at 60 chars."
-  (fn [& {:keys [question max-chars]
-          :or   {max-chars 60}}]
-    (cond
-      (not (string? question))
-      {:error ":question is required (string)"}
-
-      (or (not (integer? max-chars)) (<= max-chars 0))
-      {:error ":max-chars must be a positive integer"}
-
-      :else
-      {:slug (todo-slugify question max-chars)}))
-  :input-schema  [:map
-                  [:question  [:string {:desc "User question to slugify"}]]
-                  [:max-chars {:optional true} [:int {:desc "Cap on slug length in chars (default 60)"}]]]
-  :output-schema [:map
-                  [:slug  [:string {:desc "Kebab-case slug, stopwords dropped"}]]
-                  [:error [:string {:desc "Error if validation failed"}]]])
-
 ;; ---------------------------------------------------------------------------
-;; todo$dossier-frontmatter
-;; ---------------------------------------------------------------------------
-
-(defcommand todo$dossier-frontmatter
-  "Build a YAML frontmatter block for a todo-agent dossier with source/pre/author/post/handoff sub-blocks."
-  (fn [& {:keys [slug todo-path todo-status source pre author post handoff
-                 created turn-id session-id]}]
-    (cond
-      (not (string? slug)) {:error ":slug is required (string)"}
-      :else
-      (let [fm (build-todo-dossier-frontmatter*
-                {:slug slug
-                 :todo_path todo-path
-                 :todo_status todo-status
-                 :source source
-                 :pre pre
-                 :author author
-                 :post post
-                 :handoff handoff
-                 :created created
-                 :turn-id turn-id
-                 :session-id session-id})]
-        (mulog/log ::todo.dossier-frontmatter
-                   :slug slug
-                   :pre-verdict (or (:verdict pre) :n-a)
-                   :post-verdict (or (:verdict post) :n-a)
-                   :next-agent (:next_agent handoff))
-        {:frontmatter fm})))
-  :input-schema  [:map
-                  [:slug         [:string {:desc "Todo slug (or dossier slug for GATHER/REFUSE)"}]]
-                  [:todo-path    {:optional true} [:string {:desc "Repo-relative path to the todo body (or null)"}]]
-                  [:todo-status  {:optional true} [:string {:desc "Todo status: draft | in-progress | completed | abandoned"}]]
-                  [:source       {:optional true} [:map    {:desc "Source plan reference: {:plan_dossier :plan_path :plan_slug}"}]]
-                  [:pre          {:optional true} [:map    {:desc "Pre-flight outcomes (verdict, checks, acceptance, related_todos, gather_question, refuse_reason)"}]]
-                  [:author       {:optional true} [:map    {:desc "Author outcomes (action :spawned/:advanced/:unchanged, item_count)"}]]
-                  [:post         {:optional true} [:map    {:desc "Post-flight outcomes (verdict, rubric, revision_applied, revision_summary, holds, acceptance_coverage, item_count)"}]]
-                  [:handoff      {:optional true} [:map    {:desc "Handoff suggestion (next_agent, next_call)"}]]
-                  [:created      {:optional true} [:string {:desc "ISO-8601 created timestamp (default: now)"}]]
-                  [:turn-id      {:optional true} [:string {:desc "Trajectory turn-id"}]]
-                  [:session-id   {:optional true} [:string {:desc "Trajectory session-id"}]]]
-  :output-schema [:map
-                  [:frontmatter [:string {:desc "Full YAML frontmatter block, trailing newline included"}]]
-                  [:error       [:string {:desc "Error if validation failed"}]]])
-
-;; ---------------------------------------------------------------------------
-;; todo$dossier-write
+;; Dossier write internals (kept — used by the auto-persist hook)
 ;; ---------------------------------------------------------------------------
 
 (defn- td-existing-slug-count
@@ -1070,43 +1009,6 @@
       base-slug
       (str base-slug "-" (inc n)))))
 
-(defcommand todo$dossier-write
-  "Write a todo-agent dossier under .brainyard/agents/todo-agent/dossiers/ as <ts>-<slug>.md; appends -N suffix on slug collision."
-  (fn [& {:keys [slug content base-dir]
-          :or   {base-dir (todo-dossier-default-base-dir)}}]
-    (cond
-      (not (string? slug))    {:error ":slug is required (string)"}
-      (not (string? content)) {:error ":content is required (string)"}
-      (not (re-find #"(?s)\A---\n.+?\n---\n" content))
-      {:error (str ":content must begin with a YAML frontmatter block "
-                   "(---\\n...\\n---\\n). Build it via todo$dossier-frontmatter "
-                   "and prepend before writing: "
-                   "(todo$dossier-write :slug ... :content (str fm body))")}
-      :else
-      (let [final-slug (td-final-slug-with-suffix base-dir slug)
-            ts         (td-now-ts)
-            rel-path   (str todo-dossiers-dir-rel "/" ts "-" final-slug ".md")
-            file       (io/file base-dir rel-path)]
-        (.mkdirs (.getParentFile file))
-        (spit file content)
-        (mulog/log ::todo.dossier-write
-                   :slug final-slug :path rel-path
-                   :bytes (count content) :collision? (not= slug final-slug))
-        {:path (.getAbsolutePath file) :slug final-slug :ts ts})))
-  :input-schema  [:map
-                  [:slug     [:string {:desc "Todo slug (or dossier slug)"}]]
-                  [:content  [:string {:desc "Full file content (frontmatter + body)"}]]
-                  [:base-dir {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
-  :output-schema [:map
-                  [:path  [:string {:desc "Absolute path of the written dossier"}]]
-                  [:slug  [:string {:desc "Final slug actually used (may have -N suffix)"}]]
-                  [:ts    [:string {:desc "Timestamp portion of filename"}]]
-                  [:error [:string {:desc "Error if validation failed"}]]])
-
-;; ---------------------------------------------------------------------------
-;; todo$dossier-index-append
-;; ---------------------------------------------------------------------------
-
 (defn- td-index-line
   [{:keys [path slug pre-verdict post-verdict next-agent]}]
   (let [filename (-> path (str/split #"/") last)
@@ -1117,49 +1019,25 @@
          " [" slug "](" todo-dossiers-subdir "/" filename ") — "
          pre-tok " · " post-tok " · " next-tok "\n")))
 
-(defcommand todo$dossier-index-append
-  "Prepend a one-line entry to .brainyard/agents/todo-agent/INDEX.md (newest-first) with pre/post verdicts and next-agent."
-  (fn [& {:keys [path slug pre-verdict post-verdict next-agent base-dir]
-          :or   {base-dir (todo-dossier-default-base-dir)}}]
-    (cond
-      (not (string? path)) {:error ":path is required (string)"}
-      (not (string? slug)) {:error ":slug is required (string)"}
-      (not (or (keyword? pre-verdict) (string? pre-verdict)))
-      {:error ":pre-verdict is required (keyword or string)"}
-      :else
-      (let [pre-kw  (if (keyword? pre-verdict) pre-verdict (keyword pre-verdict))
-            post-kw (cond
-                      (keyword? post-verdict) post-verdict
+(defn- td-append-index!
+  "Append one INDEX.md line for a freshly written dossier (append-only; the
+   auto-persist hook uses this). Verdicts are coerced to keywords."
+  [base-dir {:keys [path slug pre-verdict post-verdict next-agent]}]
+  (let [pre-kw  (if (keyword? pre-verdict) pre-verdict (keyword (str pre-verdict)))
+        post-kw (cond (keyword? post-verdict) post-verdict
                       (string? post-verdict)  (keyword post-verdict)
                       :else                   nil)
-            next-kw (cond
-                      (keyword? next-agent) next-agent
+        next-kw (cond (keyword? next-agent) next-agent
                       (string? next-agent)  (keyword next-agent)
                       :else                 :unspecified)
-            line    (td-index-line {:path path :slug slug
-                                    :pre-verdict pre-kw
-                                    :post-verdict post-kw
-                                    :next-agent next-kw})
-            file    (io/file base-dir todo-dossiers-index-rel)
-            existing (if (.isFile file) (slurp file) "")]
-        (.mkdirs (.getParentFile file))
-        (spit file (str line existing))
-        (mulog/log ::todo.dossier-index
-                   :slug slug :path path
-                   :pre-verdict pre-kw :post-verdict post-kw
-                   :next-agent next-kw)
-        {:appended true :line line})))
-  :input-schema  [:map
-                  [:path         [:string {:desc "Repo-relative path of the dossier"}]]
-                  [:slug         [:string {:desc "Todo or dossier slug"}]]
-                  [:pre-verdict  [:string {:desc "Pre-flight verdict: go | gather | refuse"}]]
-                  [:post-verdict {:optional true} [:string {:desc "Post-flight verdict: pass | hold (omit when no AUTHOR ran)"}]]
-                  [:next-agent   {:optional true} [:string {:desc "Recommended next agent (e.g. exec-agent | user)"}]]
-                  [:base-dir     {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
-  :output-schema [:map
-                  [:appended [:boolean {:desc "true on success"}]]
-                  [:line     [:string  {:desc "The exact line that was prepended"}]]
-                  [:error    [:string  {:desc "Error if validation failed"}]]])
+        line    (td-index-line {:path path :slug slug :pre-verdict pre-kw
+                                :post-verdict post-kw :next-agent next-kw})
+        file    (io/file base-dir todo-dossiers-index-rel)]
+    (.mkdirs (.getParentFile file))
+    (spit file line :append true)
+    (mulog/log ::todo.dossier-index :slug slug :path path
+               :pre-verdict pre-kw :post-verdict post-kw :next-agent next-kw)
+    line))
 
 ;; ---------------------------------------------------------------------------
 ;; todo$read-dossier
@@ -1200,7 +1078,8 @@
                   [:error       {:optional true} [:string {:desc "Error if file missing or no frontmatter"}]]])
 
 ;; ---------------------------------------------------------------------------
-;; todo$next-handoff
+;; Handoff computation (kept as a private fn — used by the auto-persist hook;
+;; the LLM writes the handoff block from the §7 template directly)
 ;; ---------------------------------------------------------------------------
 
 (defn- td-handoff-from-verdicts
@@ -1233,44 +1112,86 @@
         {:next-agent "user"
          :next-call (str "Inspect the dossier and decide next step.")}))))
 
-(defcommand todo$next-handoff
-  "Compute recommended next agent and exact direct-invocation form from pre/post verdicts; single source of truth for dossier handoff block."
-  (fn [& {:keys [pre post slug dossier-path]}]
-    (let [pre-v  (when pre  (:verdict pre))
-          post-v (when post (:verdict post))]
-      (td-handoff-from-verdicts pre-v post-v slug dossier-path)))
+;; ---------------------------------------------------------------------------
+;; todo$sync — the read/reconcile seam (§6)
+;;
+;; Index-free checklist edits (update-file flip / write-file append) are
+;; LLM-inherent; the ONE deterministic step is reconciliation: re-parse the
+;; checklist, recompute progress, and mirror to st-memory so the TUI / web live
+;; block / recall stay current. Call once after any direct checklist edit.
+;; ---------------------------------------------------------------------------
+
+(defn- sync-result
+  "Mirror `todo` to st-memory and return the progress map. Shared by both
+   todo$sync entry points (:slug canonical-dir, :path arbitrary file)."
+  [todo]
+  (mirror-to-st-memory! todo)
+  (let [p (todo-progress todo)]
+    (mulog/log ::todo.sync :slug (:slug todo) :completed (:completed p) :total (:total p))
+    (assoc p
+           :slug (:slug todo)
+           :next-item (:description (:next-item p))
+           :items (mapv (fn [i] {:description (:description i)
+                                 :done? (boolean (:done i))
+                                 :tags (:tags i)})
+                        (:items todo)))))
+
+(defcommand todo$sync
+  "Re-read a todo checklist, recompute progress, and refresh the TUI/web live block (st-memory). READ-ONLY reconciliation — call once after any direct checklist edit (update-file flip / write-file append). Address it by :slug (canonical todo-agent/todos/ dir) OR by :path (any checklist file — e.g. a working checklist under your own agent dir). Returns {:completed :pending :total :percent :next-item :items}."
+  (fn [& {:keys [slug path base-dir]}]
+    (cond
+      ;; :path — reconcile an arbitrary checklist file (working checklists live
+      ;; outside todo-agent/todos/, so resolve by path, not canonical slug).
+      (string? path)
+      (let [base (or base-dir (config/project-dir))
+            f    (if (.isAbsolute (io/file path)) (io/file path) (io/file base path))]
+        (if-not (.isFile f)
+          {:error (str "File not found: " path)}
+          (let [todo (assoc (md->todo (slurp f))
+                            :slug (or slug (-> path (str/split #"/") last (str/replace #"\.md$" ""))))]
+            (sync-result todo))))
+
+      (string? slug)
+      (let [dirs (if (string? base-dir) {:project-dir base-dir} (current-dirs))
+            todo (read-todo dirs slug)]
+        (if (:error todo) todo (sync-result (assoc todo :slug slug))))
+
+      :else
+      {:error ":slug or :path is required (string)"}))
   :input-schema  [:map
-                  [:pre          {:optional true} [:map    {:desc "Pre-flight outcome map (only :verdict required)"}]]
-                  [:post         {:optional true} [:map    {:desc "Post-flight outcome map (only :verdict required); omit on GATHER/REFUSE"}]]
-                  [:slug         {:optional true} [:string {:desc "Todo slug"}]]
-                  [:dossier-path {:optional true} [:string {:desc "Repo-relative path to the dossier"}]]]
+                  [:slug     {:optional true} [:string {:desc "Todo slug to reconcile (canonical todo-agent/todos/ dir)"}]]
+                  [:path     {:optional true} [:string {:desc "Path to a checklist file to reconcile directly (working checklists under your own agent dir)"}]]
+                  [:base-dir {:optional true} [:string {:desc "Working directory (default: resolved from session)"}]]]
   :output-schema [:map
-                  [:next-agent [:string {:desc "Recommended next agent: exec-agent | user | none | todo-agent"}]]
-                  [:next-call  [:string {:desc "Exact direct-invocation form (<agent-name> {…}) for the dispatcher"}]]])
+                  [:completed {:optional true} [:int {:desc "Completed item count"}]]
+                  [:pending   {:optional true} [:int {:desc "Pending item count"}]]
+                  [:total     {:optional true} [:int {:desc "Total item count"}]]
+                  [:percent   {:optional true} [:double {:desc "Completion percent"}]]
+                  [:next-item {:optional true} [:string {:desc "Description of the next pending item"}]]
+                  [:items     {:optional true} [:vector {:desc "Parsed items {:description :done? :tags}"} :map]]
+                  [:slug      {:optional true} [:string {:desc "Todo slug"}]]
+                  [:error     {:optional true} [:string {:desc "Error if the todo is missing"}]]])
 
 ;; ---------------------------------------------------------------------------
 ;; Public roster
 ;; ---------------------------------------------------------------------------
 
 (def todo-dossier-helpers
-  "Vector of all todo$dossier-* / todo$read-dossier / todo$next-handoff
-   vars. todo-agent appends these to its :agent-tools roster so the SCI
-   sandbox auto-binds them (callable as `(todo$dossier-slug ...)` etc.
-   in a clojure fence)."
-  [#'todo$dossier-slug
-   #'todo$dossier-frontmatter
-   #'todo$dossier-write
-   #'todo$dossier-index-append
-   #'todo$read-dossier
-   #'todo$next-handoff])
+  "The surviving todo READ seams — the dossier frontmatter reader and the
+   checklist reconcile seam (todo$sync). todo-agent + downstream consumers
+   (exec/eval/main) append these so the SCI sandbox auto-binds them. The
+   write-side dossier helper chain is retired (dossiers authored via write-file,
+   items mutated via update-file)."
+  [#'todo$read-dossier
+   #'todo$sync])
 
 ;; ============================================================================
 ;; Auto-persist hook
 ;;
-;; Mirror of plan-auto-persist (see plan.clj) — the LLM can forget to call
-;; todo$dossier-write at PERSIST time, or hallucinate a Saved dossier:
-;; path that doesn't exist on disk. This `:agent.ask/post` hook
-;; reconstructs a minimal dossier from the answer text in either case.
+;; Mirror of plan-auto-persist (see plan.clj) — the LLM can forget to write the
+;; dossier at PERSIST time, or hallucinate a Saved dossier: path that doesn't
+;; exist on disk. This gated `:agent.ask/finalize` hook fills the §7 template
+;; (render-todo-dossier-md) and spits a minimal dossier in either case.
 ;; Idempotency is path-existence-checked, not just marker-string-checked.
 ;; ============================================================================
 
@@ -1361,11 +1282,29 @@
                    str/trim)]
     (subs flat 0 (min max-chars (count flat)))))
 
+(defn- render-todo-dossier-md
+  "Fill the §7 dossier template: frontmatter (via the kept private emitter,
+   byte-compatible with the old helper output) + 4 body sections. Backs the
+   auto-persist hook; the happy-path LLM writes the equivalent markdown itself."
+  [{:keys [slug todo-path source pre author post handoff title summary answer]}]
+  (str (build-todo-dossier-frontmatter*
+        {:slug slug :todo_path todo-path :todo_status "draft"
+         :source source :pre pre :author author :post post :handoff handoff})
+       "\n# Todo dossier — " (or title slug) "\n\n"
+       "## Pre-flight summary\n"
+       "*Reconstructed from the agent's answer text — the LLM did not author the "
+       "dossier itself this turn.*\n\n"
+       "## Item summary\n" (or summary "") "\n\n"
+       "## Post-flight notes\n" (if post (name (:verdict post)) "n/a") "\n\n"
+       "## Handoff\n" (:next_call handoff) "\n\n"
+       "## Original answer\n" answer "\n"))
+
 (defn materialize-todo-auto-dossier!
-  "Core of the todo auto-persist hook — agent-state-free. Given an answer
-   string + question + base-dir, reconstruct a dossier from the answer
-   and persist it via the standard helpers. Returns `{:path :slug
-   :pre-verdict :post-verdict}` or nil when skipped."
+  "Core of the todo auto-persist safety net — agent-state-free. Reconstruct a
+   §7-template dossier from the answer text, `spit` it under dossiers/
+   (timestamp-prefixed), and append one INDEX line. Returns
+   `{:path :rel-path :slug :pre-verdict :post-verdict}` or nil when skipped.
+   Does the SAME thing the happy path does (write one templated file)."
   [{:keys [answer question base-dir]}]
   (cond
     (or (not (string? answer)) (str/blank? answer))
@@ -1381,58 +1320,41 @@
           todo-path     (when todo-path-raw
                           (td-absolute->repo-relative base-dir todo-path-raw))
           slug          (or (td-slug-from-todo-path todo-path-raw)
-                            (:slug (todo$dossier-slug
-                                    :question (or question "auto-persisted")))
+                            (todo-slugify (or question "auto-persisted") 60)
                             "todo")
           summary       (td-one-line-summary answer 200)
-          handoff       (let [pre-map  {:verdict pre-verdict}
-                              post-map (when post-verdict {:verdict post-verdict})
-                              kebab    (if post-map
-                                         (#'todo$next-handoff :pre pre-map :post post-map :slug slug)
-                                         (#'todo$next-handoff :pre pre-map :slug slug))]
-                          {:next_agent (:next-agent kebab)
-                           :next_call  (:next-call  kebab)})
-          fm            (:frontmatter
-                         (#'todo$dossier-frontmatter
-                          :slug         slug
-                          :todo-path    todo-path
-                          :todo-status  "draft"
-                          :pre          {:verdict pre-verdict}
-                          :author       (cond-> {}
-                                          todo-path-raw (assoc :action :spawned))
-                          :post         (when post-verdict {:verdict post-verdict})
-                          :handoff      handoff))
-          body          (str "# Todo dossier (auto-persisted)\n\n"
-                             "*Reconstructed from the agent's answer text — the LLM did "
-                             "not call todo$dossier-write itself this turn.*\n\n"
-                             "## Summary\n" summary "\n\n"
-                             "## Original answer\n" answer "\n")
-          write-result  (#'todo$dossier-write :slug slug
-                                              :content (str fm body)
-                                              :base-dir base-dir)]
-      (if (:error write-result)
-        (do (mulog/warn ::todo.auto-persist-write-failed
-                        :slug slug :error (:error write-result))
-            nil)
-        (do
-          (#'todo$dossier-index-append
-           :path         (:path write-result)
-           :slug         (:slug write-result)
-           :pre-verdict  pre-verdict
-           :post-verdict post-verdict
-           :next-agent   (or (:next_agent handoff) :unspecified)
-           :base-dir     base-dir)
-          (mulog/log ::todo.auto-persist
-                     :slug          (:slug write-result)
-                     :path          (:path write-result)
-                     :pre-verdict   pre-verdict
-                     :post-verdict  post-verdict
-                     :answer-chars  (count answer)
-                     :had-todo-path? (boolean todo-path-raw))
-          {:path         (:path write-result)
-           :slug         (:slug write-result)
-           :pre-verdict  pre-verdict
-           :post-verdict post-verdict})))))
+          handoff-kebab (td-handoff-from-verdicts pre-verdict post-verdict slug nil)
+          handoff       {:next_agent (:next-agent handoff-kebab)
+                         :next_call  (:next-call  handoff-kebab)}
+          ts            (td-now-ts)
+          final-slug    (td-final-slug-with-suffix base-dir slug)
+          rel-path      (str todo-dossiers-dir-rel "/" ts "-" final-slug ".md")
+          file          (io/file base-dir rel-path)
+          content       (render-todo-dossier-md
+                         {:slug      final-slug
+                          :todo-path todo-path
+                          :pre       {:verdict pre-verdict}
+                          :author    (cond-> {} todo-path-raw (assoc :action :spawned))
+                          :post      (when post-verdict {:verdict post-verdict})
+                          :handoff   handoff
+                          :title     (str final-slug " (auto-persisted)")
+                          :summary   summary
+                          :answer    answer})]
+      (.mkdirs (.getParentFile file))
+      (spit file content)
+      (td-append-index! base-dir
+                        {:path rel-path :slug final-slug
+                         :pre-verdict pre-verdict :post-verdict post-verdict
+                         :next-agent (:next-agent handoff-kebab)})
+      (mulog/log ::todo.auto-persist
+                 :slug final-slug :path rel-path
+                 :pre-verdict pre-verdict :post-verdict post-verdict
+                 :answer-chars (count answer) :had-todo-path? (boolean todo-path-raw))
+      {:path         (.getAbsolutePath file)
+       :rel-path     rel-path
+       :slug         final-slug
+       :pre-verdict  pre-verdict
+       :post-verdict post-verdict})))
 
 (defn todo-auto-persist
   "Gated handler for `:agent.ask/finalize`. Materializes the dossier when the

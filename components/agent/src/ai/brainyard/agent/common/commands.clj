@@ -29,6 +29,7 @@
             [ai.brainyard.agent.common.log :as log]
             [ai.brainyard.agent.common.trajectory :as traj]
             [ai.brainyard.agent.common.schedule :as schedule]
+            [ai.brainyard.agent.common.todo :as todo]
             [ai.brainyard.agent.common.trajectory-export :as traj-export]
             [ai.brainyard.clj-llm.interface :as clj-llm]
             [ai.brainyard.agent.core.usage :as usage]
@@ -817,4 +818,10 @@ results are intentionally kept out of semantic recall so it stays focused on kno
                traj-export/export-commands
                schedule/schedule-commands
                gateway/gateway-commands
-               gateway-telegram/telegram-commands)))
+               gateway-telegram/telegram-commands
+               ;; Todo checklist reconcile seam — the read half of the base
+               ;; "todo substrate" (agent-roster/todo-substrate-protocol), so
+               ;; every coact/react-derived agent can refresh the live checklist
+               ;; after a file edit. The write half (write-file/update-file)
+               ;; already rides all-common-tools.
+               [#'todo/todo$sync])))

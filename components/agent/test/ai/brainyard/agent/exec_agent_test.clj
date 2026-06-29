@@ -78,10 +78,12 @@
       (is (contains? ids :plan$read-dossier))
       (is (not (contains? ids :plan$dossier-slug)))
       (is (not (contains? ids :plan$next-handoff)))
-      ;; Todo helpers (for C1/C2)
+      ;; Todo helpers (for C1/C2) — only the read seams survive the todo-agent
+      ;; lightweight redesign (write-side chain retired).
       (is (contains? ids :todo$read-dossier))
-      (is (contains? ids :todo$dossier-slug))
-      (is (contains? ids :todo$next-handoff))))
+      (is (contains? ids :todo$sync))
+      (is (not (contains? ids :todo$dossier-slug)))
+      (is (not (contains? ids :todo$next-handoff)))))
 
   (testing "exec-agent :agent-tools includes the new exec dossier helpers"
     (let [ids (exec-tool-ids)]

@@ -285,12 +285,18 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
           (and user-instructions (not (str/blank? user-instructions)))
           (assoc :user-instructions
                  (str "## User Instructions (~/.brainyard/BRAINYARD.md)\n"
-                      user-instructions)))
+                      user-instructions))
+
+          ;; Base todo substrate — same checklist convention as coact (ReAct
+          ;; has no Project Memory section, so this is net-new here).
+          true
+          (assoc :todo-substrate agent-roster/todo-substrate-protocol))
         section-order [:role :system-info
                        :critical-rules :tool-call-format
                        :tools :tool-context
                        :instruction :agent-context
                        :project-instructions :user-instructions
+                       :todo-substrate
                        :footer]
         content (str/join "\n\n" (keep #(get sections %) section-order))]
     (if return-breakdown?

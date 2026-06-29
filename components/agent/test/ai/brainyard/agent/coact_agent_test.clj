@@ -1223,7 +1223,8 @@
         (is (contains? sections :user-instructions))
       ;; Order places BRAINYARD.md (+ project-memory) between :agent-context and :footer
         (is (= (vec (drop-while #(not= % :project-instructions) order))
-               [:project-instructions :project-memory :user-instructions :footer])))))
+               [:project-instructions :project-memory :user-instructions
+                :todo-substrate :footer])))))
 
   (testing "coact-user-context returns blank content + empty sections when nothing supplied"
     (let [user-fn (deref #'rca/coact-user-context)

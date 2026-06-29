@@ -1009,6 +1009,12 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                  (str "## User Instructions (~/.brainyard/BRAINYARD.md)\n"
                       user-instructions))
 
+          ;; Base todo substrate — checklist-management convention inherited by
+          ;; every coact-derived agent (modeled on Project Memory). Static prose;
+          ;; the tools it references already ride default-agent-roster.
+          true
+          (assoc :todo-substrate agent-roster/todo-substrate-protocol)
+
           true
           (assoc :footer coact-footer))
         ;; Stable display order. :system-info (priority 98) and
@@ -1021,6 +1027,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                        :critical-rules :large-results-playbook
                        :instruction :agent-context
                        :project-instructions :project-memory :user-instructions
+                       :todo-substrate
                        :footer]
         content (str/join "\n\n" (keep #(get sections %) section-order))]
     (if return-breakdown?

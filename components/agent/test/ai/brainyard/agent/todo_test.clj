@@ -527,160 +527,175 @@
         "the legacy substring is mutually exclusive with the new substring")))
 
 ;; ============================================================================
-;; todo$dossier-* helper unit tests
+;; Dossier read seam + checklist reconcile (todo$sync) + handoff fn unit tests
+;;
+;; The write-side dossier helper chain (todo$dossier-slug / -frontmatter /
+;; -write / -index-append / todo$next-handoff) is RETIRED — the LLM authors the
+;; dossier + checklist as markdown directly. What survives: the deterministic
+;; readers (todo$read-dossier, todo$sync) and the pure handoff fn.
 ;; ============================================================================
 
-(deftest test-todo-dossier-slug-determinism
-  (testing "same question → same slug"
-    (let [q "Spawn a todo for ship checkout v2"
-          s1 (:slug (todo/todo$dossier-slug :question q))
-          s2 (:slug (todo/todo$dossier-slug :question q))]
-      (is (= s1 s2))
-      (is (= "ship-checkout-v2" s1)
-          "stopwords (incl. 'todo' and 'spawn') drop, leaving the verbs")))
+(defn- write-todo-dossier!
+  "Spit a §7 todo dossier under <base-dir>/.brainyard/agents/todo-agent/dossiers/.
+   Returns the repo-relative path."
+  [base-dir filename content]
+  (let [f (io/file base-dir ".brainyard/agents/todo-agent/dossiers" filename)]
+    (.mkdirs (.getParentFile f))
+    (spit f content)
+    (str ".brainyard/agents/todo-agent/dossiers/" filename)))
 
-  (testing "blank → fallback slug 'todo'"
-    (is (= "todo" (:slug (todo/todo$dossier-slug :question ""))))
-    (is (= "todo" (:slug (todo/todo$dossier-slug :question "todo todo")))))
+(def ^:private sample-todo-dossier
+  "A model-authored §7 todo dossier (blocks for source/pre/author/post/handoff;
+   flow maps for checks/rubric/acceptance_coverage; flow vec for acceptance)."
+  (str "---\n"
+       "slug: ship-v2\nagent: todo-agent\ncreated: 2026-06-29T00:00:00Z\n"
+       "todo_path: .brainyard/agents/todo-agent/todos/ship-v2.md\ntodo_status: in-progress\n\n"
+       "source:\n"
+       "  plan_dossier: .brainyard/agents/plan-agent/dossiers/x.md\n"
+       "  plan_path: .brainyard/agents/plan-agent/plans/ship-v2.md\n"
+       "  plan_slug: ship-v2\n\n"
+       "pre:\n"
+       "  verdict: go\n"
+       "  checks: {c1: pass, c2: pass}\n"
+       "  acceptance: [\"feature-flag toggleable\", \"all unit tests green\"]\n\n"
+       "author:\n  action: spawned\n  item_count: 4\n\n"
+       "post:\n"
+       "  verdict: pass\n"
+       "  rubric: {r1: pass, r2: pass}\n"
+       "  acceptance_coverage: {\"feature-flag toggleable\": [0, 1], \"all unit tests green\": [2, 3]}\n\n"
+       "handoff:\n  next_agent: exec-agent\n  next_call: \"(exec-agent {…})\"\n"
+       "---\n# Todo dossier — ship v2\n"))
 
-  (testing "validation"
-    (is (contains? (todo/todo$dossier-slug :question 123) :error))))
-
-(deftest test-todo-dossier-frontmatter-roundtrip
+(deftest test-todo-dossier-read-roundtrip
   (let [tmp (.getCanonicalPath
              (doto (io/file (System/getProperty "java.io.tmpdir")
                             (str "todo-doss-rt-" (System/currentTimeMillis)))
                .mkdirs))]
     (try
-      (let [{:keys [frontmatter]}
-            (todo/todo$dossier-frontmatter
-             :slug "ship-v2"
-             :todo-path ".brainyard/agents/todo-agent/todos/ship-v2.md"
-             :todo-status "in-progress"
-             :source {:plan_dossier ".brainyard/agents/plan-agent/dossiers/x.md"
-                      :plan_path ".brainyard/agents/plan-agent/plans/ship-v2.md"
-                      :plan_slug "ship-v2"}
-             :pre {:verdict :go
-                   :checks {:c1_plan_dossier :pass :c2_plan_postflight :pass}
-                   :acceptance ["feature-flag toggleable" "all unit tests green"]}
-             :author {:action :spawned :item_count 4}
-             :post {:verdict :pass
-                    :rubric {:r1 :pass :r2 :pass}
-                    :acceptance_coverage {"feature-flag toggleable" [0 1]
-                                          "all unit tests green" [2 3]}
-                    :item_count 4}
-             :handoff {:next_agent "exec-agent"
-                       :next_call "(call-tool ...)"})
-            {:keys [path]} (todo/todo$dossier-write
-                            :slug "ship-v2" :content (str frontmatter "\n# body\n")
-                            :base-dir tmp)
+      (let [path   (write-todo-dossier! tmp "20260629-000000-ship-v2.md" sample-todo-dossier)
             parsed (todo/todo$read-dossier :path path :base-dir tmp)]
-
-        (testing "scalar keys"
-          (is (= "ship-v2" (:slug parsed)))
-          (is (= "todo-agent" (:agent parsed)))
-          (is (= ".brainyard/agents/todo-agent/todos/ship-v2.md" (:todo_path parsed)))
-          (is (= "in-progress" (:todo_status parsed))))
-
+        (is (= "ship-v2" (:slug parsed)))
+        (is (= "todo-agent" (:agent parsed)))
+        (is (= ".brainyard/agents/todo-agent/todos/ship-v2.md" (:todo_path parsed)))
         (testing "source sub-block (plan reference)"
-          (is (= ".brainyard/agents/plan-agent/dossiers/x.md"
-                 (get-in parsed [:source :plan_dossier])))
+          (is (= ".brainyard/agents/plan-agent/dossiers/x.md" (get-in parsed [:source :plan_dossier])))
           (is (= "ship-v2" (get-in parsed [:source :plan_slug]))))
-
-        (testing "pre sub-block carries acceptance from plan"
+        (testing "pre carries acceptance from plan"
           (is (= "go" (get-in parsed [:pre :verdict])))
           (is (= ["feature-flag toggleable" "all unit tests green"]
                  (get-in parsed [:pre :acceptance]))))
-
-        (testing "author sub-block"
-          (is (= "spawned" (get-in parsed [:author :action])))
-          (is (= 4 (get-in parsed [:author :item_count]))))
-
-        (testing "post sub-block + acceptance_coverage round-trips as raw flow-map string"
+        (testing "post + acceptance_coverage (raw flow-map string)"
           (is (= "pass" (get-in parsed [:post :verdict])))
           (is (string? (get-in parsed [:post :acceptance_coverage])))
-          ;; Criterion strings have spaces → keys get YAML-quoted.
           (is (str/includes? (get-in parsed [:post :acceptance_coverage])
-                             "\"feature-flag toggleable\": [0, 1]"))
-          (is (str/includes? (get-in parsed [:post :acceptance_coverage])
-                             "\"all unit tests green\": [2, 3]")))
-
+                             "\"feature-flag toggleable\": [0, 1]")))
         (testing "handoff next_agent"
           (is (= "exec-agent" (get-in parsed [:handoff :next_agent])))))
       (finally
         (doseq [f (reverse (file-seq (io/file tmp)))]
           (.delete f))))))
 
-(deftest test-todo-dossier-write-collision
-  (let [tmp (.getCanonicalPath
-             (doto (io/file (System/getProperty "java.io.tmpdir")
-                            (str "todo-doss-coll-" (System/currentTimeMillis)))
-               .mkdirs))]
-    (try
-      ;; dossier writers require YAML frontmatter on :content
-      (let [fm "---\nslug: rerun\n---\n"
-            r1 (todo/todo$dossier-write :slug "rerun" :content (str fm "x1") :base-dir tmp)
-            r2 (todo/todo$dossier-write :slug "rerun" :content (str fm "x2") :base-dir tmp)
-            r3 (todo/todo$dossier-write :slug "rerun" :content (str fm "x3") :base-dir tmp)]
-        (is (= "rerun"   (:slug r1)))
-        (is (= "rerun-2" (:slug r2)))
-        (is (= "rerun-3" (:slug r3))))
-      (finally
-        (doseq [f (reverse (file-seq (io/file tmp)))]
-          (.delete f))))))
-
-(deftest test-todo-dossier-index-prepend-ordering
-  (let [tmp (.getCanonicalPath
-             (doto (io/file (System/getProperty "java.io.tmpdir")
-                            (str "todo-doss-idx-" (System/currentTimeMillis)))
-               .mkdirs))]
-    (try
-      (todo/todo$dossier-index-append :path "dossiers/a.md" :slug "alpha"
-                                      :pre-verdict :go :post-verdict :pass
-                                      :next-agent :exec-agent :base-dir tmp)
-      (todo/todo$dossier-index-append :path "dossiers/b.md" :slug "beta"
-                                      :pre-verdict :gather :next-agent :user
-                                      :base-dir tmp)
-      (todo/todo$dossier-index-append :path "dossiers/c.md" :slug "gamma"
-                                      :pre-verdict :refuse :next-agent :none
-                                      :base-dir tmp)
-      (let [content (slurp (io/file tmp ".brainyard/agents/todo-agent/INDEX.md"))
-            lines   (->> (str/split-lines content) (remove str/blank?))]
-        (is (= 3 (count lines)))
-        ;; Newest first
-        (is (str/includes? (nth lines 0) "gamma"))
-        (is (str/includes? (nth lines 0) "pre:refuse"))
-        (is (str/includes? (nth lines 0) "→ none"))
-        (is (str/includes? (nth lines 1) "beta"))
-        (is (str/includes? (nth lines 1) "post:n/a"))
-        (is (str/includes? (nth lines 2) "alpha"))
-        (is (str/includes? (nth lines 2) "post:pass"))
-        (is (str/includes? (nth lines 2) "→ exec-agent")))
-      (finally
-        (doseq [f (reverse (file-seq (io/file tmp)))]
-          (.delete f))))))
-
-(deftest test-todo-next-handoff-variants
-  (testing "PASS recommends exec-agent (key difference vs plan-agent's todo-agent)"
-    (let [r (todo/todo$next-handoff :pre {:verdict :go} :post {:verdict :pass}
-                                    :slug "x" :dossier-path "doss.md")]
+(deftest test-handoff-from-verdicts-variants
+  (testing "PASS → exec-agent with the dossier path"
+    (let [r (#'todo/td-handoff-from-verdicts :go :pass "x" "doss.md")]
       (is (= "exec-agent" (:next-agent r)))
-      (is (str/includes? (:next-call r) "exec-agent"))
       (is (str/includes? (:next-call r) ":agent-context \"doss.md\""))))
-
-  (testing "HOLD recommends user (resolve holds, then re-call todo-agent)"
-    (let [r (todo/todo$next-handoff :pre {:verdict :go} :post {:verdict :hold})]
+  (testing "HOLD → user"
+    (let [r (#'todo/td-handoff-from-verdicts :go :hold "x" nil)]
       (is (= "user" (:next-agent r)))
       (is (str/includes? (str/lower-case (:next-call r)) "hold"))))
-
-  (testing "GATHER recommends user (typically run plan-agent first)"
-    (let [r (todo/todo$next-handoff :pre {:verdict :gather})]
+  (testing "GATHER → user (plan-agent first)"
+    (let [r (#'todo/td-handoff-from-verdicts :gather nil "x" nil)]
       (is (= "user" (:next-agent r)))
       (is (str/includes? (:next-call r) "plan-agent"))))
+  (testing "REFUSE → none"
+    (is (= "none" (:next-agent (#'todo/td-handoff-from-verdicts :refuse nil "x" nil))))))
 
-  (testing "REFUSE recommends none"
-    (let [r (todo/todo$next-handoff :pre {:verdict :refuse})]
-      (is (= "none" (:next-agent r))))))
+;; ============================================================================
+;; todo$sync — index-free checklist reconcile (the read seam)
+;; ============================================================================
+
+(deftest test-todo-sync-index-free
+  (testing "spawn → flip-by-text → todo$sync recomputes progress (index-free)"
+    (let [tmp  (.getCanonicalPath
+                (doto (io/file (System/getProperty "java.io.tmpdir")
+                               (str "todo-sync-" (System/currentTimeMillis)))
+                  .mkdirs))
+          dirs {:project-dir tmp}]
+      (try
+        (let [t    (todo/create-todo dirs :project "T" "goal"
+                                     [{:description "Alpha" :tags {:via :bash}}
+                                      {:description "Beta"}])
+              slug (:slug t)
+              f    (io/file tmp ".brainyard/agents/todo-agent/todos" (str slug ".md"))]
+          ;; index-free flip: edit the file line text (what update-file does)
+          (spit f (str/replace (slurp f) "- [ ] Alpha" "- [x] Alpha"))
+          (let [r (todo/todo$sync :slug slug :base-dir tmp)]
+            (is (= 2 (:total r)))
+            (is (= 1 (:completed r)))
+            (is (= 1 (:pending r)))
+            (is (= "Beta" (:next-item r)) "next pending item by text")
+            (is (= 2 (count (:items r))))
+            (is (true? (:done? (first (:items r)))))))
+        (finally
+          (doseq [f (reverse (file-seq (io/file tmp)))]
+            (.delete f))))))
+
+  (testing "todo$sync :path reconciles a WORKING checklist outside the canonical todos/ dir"
+    ;; The base substrate lets any agent keep a working checklist under its own
+    ;; dir (e.g. .brainyard/agents/<agent>/todos/); todo$sync must reconcile it
+    ;; by path, not just by canonical slug.
+    (let [tmp  (.getCanonicalPath
+                (doto (io/file (System/getProperty "java.io.tmpdir")
+                               (str "todo-sync-path-" (System/currentTimeMillis)))
+                  .mkdirs))
+          rel  ".brainyard/agents/coact-agent/todos/working.md"
+          f    (io/file tmp rel)]
+      (try
+        (.mkdirs (.getParentFile f))
+        (spit f (str "---\nid: working\nfile-type: todo\ntitle: Working\n"
+                     "scope: project\nstatus: active\ncreated: x\nupdated: x\n---\n\n"
+                     "# Working\n\n## Todo\n- [x] Alpha\n- [ ] Beta\n- [ ] Gamma\n"))
+        (let [r (todo/todo$sync :path rel :base-dir tmp)]
+          (is (= 3 (:total r)))
+          (is (= 1 (:completed r)))
+          (is (= "Beta" (:next-item r)))
+          (is (= "working" (:slug r)) "slug derived from filename"))
+        ;; absolute path also works
+        (let [r (todo/todo$sync :path (.getCanonicalPath f))]
+          (is (= 3 (:total r))))
+        (testing "missing path → :error"
+          (is (contains? (todo/todo$sync :path "nope/missing.md" :base-dir tmp) :error)))
+        (testing "neither :slug nor :path → :error"
+          (is (contains? (todo/todo$sync) :error)))
+        (finally
+          (doseq [x (reverse (file-seq (io/file tmp)))]
+            (.delete x))))))
+
+  (testing "insert-then-flip-earlier-by-text: the case a drifting :item-idx fails"
+    (let [tmp  (.getCanonicalPath
+                (doto (io/file (System/getProperty "java.io.tmpdir")
+                               (str "todo-sync2-" (System/currentTimeMillis)))
+                  .mkdirs))
+          dirs {:project-dir tmp}]
+      (try
+        (let [t    (todo/create-todo dirs :project "T" "goal"
+                                     [{:description "First task"} {:description "Second task"}])
+              slug (:slug t)
+              f    (io/file tmp ".brainyard/agents/todo-agent/todos" (str slug ".md"))]
+          ;; insert a NEW item (append), THEN flip an EARLIER item by text.
+          (spit f (str (slurp f) "- [ ] Third task\n"))
+          (spit f (str/replace (slurp f) "- [ ] First task" "- [x] First task"))
+          (let [r     (todo/todo$sync :slug slug :base-dir tmp)
+                items (:items r)]
+            (is (= 3 (:total r)))
+            (is (= 1 (:completed r)))
+            ;; The RIGHT item flipped despite the insertion (no index drift).
+            (is (true? (:done? (first (filter #(= "First task" (:description %)) items)))))
+            (is (false? (:done? (first (filter #(= "Third task" (:description %)) items)))))))
+        (finally
+          (doseq [f (reverse (file-seq (io/file tmp)))]
+            (.delete f)))))))
 
 ;; ============================================================================
 ;; todo-auto-persist hook
@@ -768,8 +783,8 @@
                               (str "todo-auto-skip-" (System/currentTimeMillis)))
                  .mkdirs))]
       (try
-        (let [{:keys [path]} (todo/todo$dossier-write :slug "real" :content "---\nslug: real\n---\nx" :base-dir tmp)
-              answer (str "Saved todo: x.md\nSaved dossier: " path "\nNext: ...")
+        (let [rel (write-todo-dossier! tmp "20260101-000000-real.md" "---\nslug: real\n---\nx")
+              answer (str "Saved todo: x.md\nSaved dossier: " rel "\nNext: ...")
               r (todo/materialize-todo-auto-dossier!
                  {:answer answer :question "Q" :base-dir tmp})]
           (is (nil? r))

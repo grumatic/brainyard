@@ -8,8 +8,8 @@
    roster (positive + negative assertions), and instruction-content anchors
    that pin the three-phase pipeline contract.
 
-   Helper unit tests for the new todo$dossier-* / todo$read-dossier /
-   todo$next-handoff commands, the :tags schema extension, the dual-read
+   Helper unit tests for the surviving read seams (todo$read-dossier /
+   todo$sync) + checklist edits, the :tags schema extension, the dual-read
    fallback, and the auto-persist hook live in todo_test.clj."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
@@ -85,14 +85,20 @@
       (is (not (contains? ids :plan$dossier-index-append)))
       (is (not (contains? ids :plan$next-handoff)))))
 
-  (testing "todo-agent :agent-tools includes the new todo dossier helpers"
+  (testing "todo-agent keeps the todo READ seams + gains file tools (write-side chain retired)"
     (let [ids (todo-tool-ids)]
-      (is (contains? ids :todo$dossier-slug))
-      (is (contains? ids :todo$dossier-frontmatter))
-      (is (contains? ids :todo$dossier-write))
-      (is (contains? ids :todo$dossier-index-append))
+      ;; Surviving read seams
       (is (contains? ids :todo$read-dossier))
-      (is (contains? ids :todo$next-handoff))))
+      (is (contains? ids :todo$sync))
+      ;; Checklist + dossier authored directly
+      (is (contains? ids :write-file))
+      (is (contains? ids :update-file))
+      ;; Retired write-side dossier chain
+      (is (not (contains? ids :todo$dossier-slug)))
+      (is (not (contains? ids :todo$dossier-frontmatter)))
+      (is (not (contains? ids :todo$dossier-write)))
+      (is (not (contains? ids :todo$dossier-index-append)))
+      (is (not (contains? ids :todo$next-handoff)))))
 
   (testing "todo-agent :agent-tools includes reads + probes + sub-LLM"
     (let [ids (todo-tool-ids)]
@@ -111,16 +117,13 @@
 
       (is (contains? ids :agent-runtime$config))))
 
-  (testing "todo-agent :agent-tools EXCLUDES write-side + cross-agent recursion"
+  (testing "todo-agent :agent-tools EXCLUDES recursion + out-of-scope surfaces"
     (let [ids (todo-tool-ids)]
       (is (not (contains? ids :query$clone))
           "query$clone must not be in todo-agent's roster (clone-self forbidden)")
 
-      (is (not (contains? ids :write-file))
-          "write-file is excluded — todo-agent writes through doc$* + todo$dossier-write only")
-      (is (not (contains? ids :update-file))
-          "update-file is excluded — todo-agent does not edit arbitrary files")
-
+      ;; fetch-url is the only file-tool stripped now — write-file/update-file
+      ;; are bound for direct checklist + dossier authoring.
       (is (not (contains? ids :fetch-url)))
       (is (not (contains? ids :web-search)))
       (is (not (contains? ids :mcp$server)))
@@ -171,7 +174,7 @@
       ;; :tags schema
       (is (str/includes? instruction ":tags"))
       (is (str/includes? instruction ":via"))
-      (is (str/includes? instruction ":covers"))
+      (is (str/includes? instruction "covers:"))
 
       ;; Storage + handoff contract
       (is (str/includes? instruction ".brainyard/agents/todo-agent/todos/"))
@@ -207,17 +210,17 @@
       (is (str/includes? tool-context "plan$read-dossier"))
       (is (str/includes? tool-context "READ-ONLY"))
 
-      ;; Todo dossier helpers (all six)
-      (is (str/includes? tool-context "todo$dossier-slug"))
-      (is (str/includes? tool-context "todo$dossier-frontmatter"))
-      (is (str/includes? tool-context "todo$dossier-write"))
-      (is (str/includes? tool-context "todo$dossier-index-append"))
+      ;; Todo read seams documented; write-side chain retired (file-edit path)
       (is (str/includes? tool-context "todo$read-dossier"))
-      (is (str/includes? tool-context "todo$next-handoff"))
+      (is (str/includes? tool-context "todo$sync"))
+      (is (str/includes? tool-context "write-file"))
+      (is (str/includes? tool-context "update-file"))
+      (is (not (str/includes? tool-context "todo$dossier-write")))
+      (is (not (str/includes? tool-context "todo$next-handoff")))
 
-      ;; :tags schema docs
-      (is (str/includes? tool-context ":tags"))
-      (is (str/includes? tool-context ":via"))
+      ;; Inline checklist tag format documented
+      (is (str/includes? tool-context "via:"))
+      (is (str/includes? tool-context "covers:"))
 
       ;; Sub-LLM
       (is (str/includes? tool-context "query$llm"))
