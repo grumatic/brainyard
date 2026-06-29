@@ -3,14 +3,15 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent.research-agent-test
-  "Tests for research-agent: registration, inherited bt-factory (CoAct),
-   curated agent-tools roster across the dossier substrate + the seven
-   research$* helpers (positive + negative assertions per Hard Rules 1, 2
-   of the design doc), instruction-content anchors that pin the dossier-
-   bootstrap / state-machine / termination contracts, and unit tests for
-   the research$* helper commands (id determinism, bootstrap idempotence,
-   resume probe round-trip, NDJSON append-only, status flip integrity,
-   verdict frontmatter, INDEX.md prepend ordering)."
+  "Tests for research-agent (lightweight redesign): registration, inherited
+   bt-factory (CoAct), the curated agent-tools roster, instruction/tool-context
+   anchors, and unit tests for the surviving research$* READ/DERIVE seams —
+   research$id (determinism), research$resume? (frontmatter + §5 acceptance
+   CHECKLIST parse, with legacy dual-read), and research$verdict-outcome (the
+   :achieved guard). The structured-construction helpers (bootstrap,
+   append-log, update-status, write-verdict, index-append) are retired — the
+   dossier markdown is authored directly with the file tools — so the auto-
+   finalize backstop is tested against directly-seeded dossier dirs."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -36,11 +37,6 @@
 
 ;; ============================================================================
 ;; Inheritance via run-coact-derived
-;;
-;; research-agent pins :bt-factory explicitly (mirroring rlm-agent and
-;; explore-agent) so direct entry-points (e.g. setup-agent-by-id used by
-;; `bb tui ask`) that resolve agent metadata without going through
-;; run-coact-derived still pick up the correct CoAct BT.
 ;; ============================================================================
 
 (deftest inheritance-test
@@ -61,15 +57,10 @@
 
     (testing "default :max-iterations is 30 (vs CoAct's 20)"
       (let [bt-factory (get-in res-def [:meta :bt-factory])
-            ;; bt-factory must accept a nil/missing :max-iterations and fall
-            ;; back to 30. Calling with {} exercises the (or ... 30) branch.
             bt-default (bt-factory {})
-            ;; Also: explicit 30 overrides nothing; should produce same shape.
             bt-30      (bt-factory {:max-iterations 30})]
         (is (vector? bt-default))
         (is (= :sequence (first bt-default)))
-        ;; Same root shape as the explicit-30 build — sanity that the default
-        ;; isn't degenerate.
         (is (= (first bt-default) (first bt-30)))))
 
     (testing "coact-agent (the parent) has the same bt-factory shape"
@@ -106,7 +97,7 @@
       ;; Synthesis — flat sub-LLM only
       (is (contains? ids :query$llm))
 
-      ;; Bookkeeping — call-tool reaches the five specialists
+      ;; Bookkeeping — call-tool reaches the specialists
       (is (contains? ids :list-tools))
       (is (contains? ids :get-tool-info))
       (is (contains? ids :call-tool))
@@ -117,24 +108,26 @@
       ;; Runtime config (max-iterations tuning)
       (is (contains? ids :agent-runtime$config))
 
-      ;; research$* helpers
+      ;; research$* surviving READ/DERIVE seams
       (is (contains? ids :research$id))
       (is (contains? ids :research$resume?))
-      (is (contains? ids :research$bootstrap))
-      (is (contains? ids :research$append-log))
-      (is (contains? ids :research$update-status))
-      (is (contains? ids :research$write-verdict))
-      (is (contains? ids :research$index-append))
+      (is (contains? ids :research$verdict-outcome))
 
-      ;; Sibling dossier read-helpers (cherry-picked, READ-ONLY) — let
-      ;; research-agent cheaply parse upstream dossier frontmatter for
-      ;; data-driven move decisions (e.g. eval-agent's
-      ;; score.recommendations drives heuristics 6/7/8).
+      ;; Sibling dossier read-helpers (cherry-picked, READ-ONLY)
       (is (contains? ids :plan$read-dossier))
       (is (contains? ids :todo$read-dossier))
       (is (contains? ids :exec$read-dossier))
       (is (contains? ids :eval$read-verdict))
       (is (contains? ids :edit$read-record))))
+
+  (testing "research-agent :agent-tools RETIRES the structured-construction helpers"
+    (let [ids (research-tool-ids)]
+      ;; Authoring is now direct write-file/update-file — these are gone.
+      (is (not (contains? ids :research$bootstrap)))
+      (is (not (contains? ids :research$append-log)))
+      (is (not (contains? ids :research$update-status)))
+      (is (not (contains? ids :research$write-verdict)))
+      (is (not (contains? ids :research$index-append)))))
 
   (testing "research-agent :agent-tools EXCLUDES forbidden + out-of-scope tools"
     (let [ids (research-tool-ids)]
@@ -142,8 +135,7 @@
       (is (not (contains? ids :query$clone))
           "query$clone must not be in research-agent's roster (clone-self forbidden)")
 
-      ;; Hard Rule 2 — plan/todo authoring lives in plan-agent / todo-agent;
-      ;; reach via call-tool, not direct command access.
+      ;; Hard Rule 2 — plan/todo authoring lives in plan-agent / todo-agent.
       (is (not (contains? ids :doc$create)))
       (is (not (contains? ids :doc$update)))
       (is (not (contains? ids :doc$delete)))
@@ -152,22 +144,17 @@
       (is (not (contains? ids :skills$write)))
       (is (not (contains? ids :skills$install)))
 
-      ;; Sibling-agent WRITE-side dossier/verdict/edit helpers are NOT bound
-      ;; — only the read-side cherry-picks are. Sibling writes go through
-      ;; call-tool to their specialists (Hard Rule 2). This protects against
-      ;; research-agent silently bypassing the specialists' pre/post-flight
-      ;; gates by writing dossier files directly.
+      ;; Sibling-agent WRITE-side helpers are NOT bound — only the read-side
+      ;; cherry-picks are. Sibling writes go through call-tool (Hard Rule 2).
       (is (not (contains? ids :plan$dossier-write)))
       (is (not (contains? ids :todo$dossier-write)))
       (is (not (contains? ids :exec$dossier-write)))
-      (is (not (contains? ids :eval$dossier-write)))
       (is (not (contains? ids :eval$verdict-write)))
       (is (not (contains? ids :edit$apply)))
       (is (not (contains? ids :edit$write))))))
 
 ;; ============================================================================
-;; Instruction content anchors — pin the dossier + state-machine + termination
-;; contract
+;; Instruction content anchors
 ;; ============================================================================
 
 (deftest instruction-content-test
@@ -177,10 +164,7 @@
       (is (string? instruction))
       (is (not (str/blank? instruction)))
 
-      ;; Six-specialist routing is the headline contract (revised when the
-      ;; four-agent pipeline (plan/todo/exec/eval) added pre/post-flight
-      ;; gating + dossier handoff and edit-agent joined as a 6th
-      ;; reachable specialist for one-off safe edits).
+      ;; Six-specialist routing is the headline contract.
       (is (str/includes? instruction "SIX SPECIALISTS"))
       (is (str/includes? instruction "explore-agent"))
       (is (str/includes? instruction "plan-agent"))
@@ -189,12 +173,10 @@
       (is (str/includes? instruction "eval-agent"))
       (is (str/includes? instruction "edit-agent"))
 
-      ;; Sibling-dossier handoff contract — research-agent threads
-      ;; `Saved dossier:` paths between specialists.
+      ;; Sibling-dossier handoff contract.
       (is (str/includes? instruction ".brainyard/agents/plan-agent/dossiers/"))
       (is (str/includes? instruction ".brainyard/agents/todo-agent/dossiers/"))
       (is (str/includes? instruction ".brainyard/agents/exec-agent/dossiers/"))
-      (is (str/includes? instruction ".brainyard/agents/eval-agent/dossiers/"))
       (is (str/includes? instruction ".brainyard/agents/eval-agent/verdicts/"))
       (is (str/includes? instruction ".brainyard/agents/edit-agent/edits/"))
       (is (str/includes? instruction "Saved dossier:"))
@@ -212,7 +194,12 @@
       (is (str/includes? instruction "findings.log"))
       (is (str/includes? instruction "dossier.md"))
 
-      ;; State machine — the LLM picks the next move per iteration
+      ;; Acceptance is a CHECKLIST now (shared todo substrate) — index-free flips
+      (is (str/includes? instruction "ACCEPTANCE CHECKLIST"))
+      (is (str/includes? instruction "todo substrate"))
+      (is (str/includes? instruction "INDEX-FREE"))
+
+      ;; State machine
       (is (str/includes? instruction "STATE MACHINE"))
       (is (str/includes? instruction "EXPLORE"))
       (is (str/includes? instruction "PLAN-AUTHOR"))
@@ -227,17 +214,18 @@
       (is (str/includes? instruction ":abandoned"))
       (is (str/includes? instruction "Saved research dossier:"))
 
-      ;; Strict 4-step finalize: step 1 (update-status) is the discipline
-      ;; gate that the 2026-05-10 smoke showed the LLM was skipping. Pin
-      ;; the language so the rule survives future instruction edits.
+      ;; Finalize: the surviving read-side guard + direct write-file authoring.
       (is (str/includes? instruction "Step 1"))
-      (is (str/includes? instruction "research$update-status"))
-      (is (str/includes? instruction "research$write-verdict"))
-      (is (str/includes? instruction "research$index-append"))
-      (is (str/includes? instruction "REJECT")
-          "instruction must warn that write-verdict rejects mismatched :achieved")
-      (is (str/includes? instruction "DO NOT include a")
-          "instruction must warn against the duplicate-heading footgun")
+      (is (str/includes? instruction "Step 2"))
+      (is (str/includes? instruction "research$verdict-outcome"))
+      (is (str/includes? instruction "VERDICT TEMPLATE"))
+      (is (str/includes? instruction "update-file"))
+      ;; The retired write-side helpers must NOT be referenced.
+      (is (not (str/includes? instruction "research$bootstrap")))
+      (is (not (str/includes? instruction "research$update-status")))
+      (is (not (str/includes? instruction "research$write-verdict")))
+      (is (not (str/includes? instruction "research$append-log")))
+      (is (not (str/includes? instruction "research$index-append")))
 
       ;; Hard Rule 1 — stay flat, no clone-self dispatch
       (is (str/includes? instruction "clone-self"))
@@ -247,7 +235,7 @@
       (is (str/includes? instruction "@<research-id>")))))
 
 (deftest tool-context-content-test
-  (testing "tool-context names tools and the five specialists"
+  (testing "tool-context names tools and the specialists"
     (let [agent-def    (get (tool/get-tool-defs :type :agent) :research-agent)
           tool-context (get-in agent-def [:meta :tool-context])]
       (is (string? tool-context))
@@ -271,17 +259,18 @@
       ;; Synthesis primitive
       (is (str/includes? tool-context "query$llm"))
 
-      ;; Invocation pattern documented (the only way to reach specialists)
+      ;; Invocation pattern documented
       (is (str/includes? tool-context "kebab-case"))
 
-      ;; research$* helpers documented
+      ;; research$* surviving seams documented; retired ones gone
       (is (str/includes? tool-context "research$id"))
       (is (str/includes? tool-context "research$resume?"))
-      (is (str/includes? tool-context "research$bootstrap"))
-      (is (str/includes? tool-context "research$append-log"))
-      (is (str/includes? tool-context "research$update-status"))
-      (is (str/includes? tool-context "research$write-verdict"))
-      (is (str/includes? tool-context "research$index-append"))
+      (is (str/includes? tool-context "research$verdict-outcome"))
+      (is (not (str/includes? tool-context "research$bootstrap")))
+      (is (not (str/includes? tool-context "research$append-log")))
+      (is (not (str/includes? tool-context "research$update-status")))
+      (is (not (str/includes? tool-context "research$write-verdict")))
+      (is (not (str/includes? tool-context "research$index-append")))
 
       ;; Sibling dossier read-helper cherry-picks documented
       (is (str/includes? tool-context "plan$read-dossier"))
@@ -302,9 +291,6 @@
           by-key       (into {} (map (juxt tool/malli-map-entry-key identity)) entries)]
       (is (contains? by-key :question))
       (is (contains? by-key :agent-context))
-      ;; question is required; agent-context is optional (for resume / handoff).
-      ;; In Malli [:map ...] form the :optional flag lives in the entry-props
-      ;; slot ([:agent-context {:optional true} <schema>]).
       (let [opts (tool/malli-map-entry-props (get by-key :agent-context))]
         (is (true? (:optional opts))
             "agent-context should be optional (used for @<research-id> resume)"))))
@@ -329,8 +315,30 @@
       (delete-recursive c)))
   (.delete f))
 
+(defn- status->box [st]
+  (case st :satisfied "x" :partial "~" :descoped "-" :contradicted "!" " "))
+
+(defn- seed-dossier!
+  "Write a research dossier dir DIRECTLY (no bootstrap helper): dossier.md
+   frontmatter + the §5 acceptance.md CHECKLIST. `acc` is a vector of
+   [id-keyword status-keyword] pairs. Returns the repo-relative dir path."
+  [base-dir id {:keys [last-iteration acc] :or {last-iteration 1 acc []}}]
+  (let [dir (io/file base-dir ".brainyard/agents/research-agent" id)]
+    (.mkdirs (io/file dir "artifacts"))
+    (spit (io/file dir "dossier.md")
+          (str "---\nresearch_id: " id "\ncreated: 2026-06-29T00:00:00Z\n"
+               "last_iteration: " last-iteration "\nstatus: in-progress\n---\n"
+               "\n## Purpose\np\n"))
+    (spit (io/file dir "acceptance.md")
+          (str "# Acceptance — " id "\n"
+               (str/join "" (for [[cid st] acc]
+                              (str "- [" (status->box st) "] " (name cid)
+                                   " (" (name st) ") — criterion " (name cid) "\n")))))
+    (spit (io/file dir "findings.log") "")
+    (str ".brainyard/agents/research-agent/" id)))
+
 ;; ============================================================================
-;; research$id — determinism + stopwords + cap
+;; research$id — determinism + stopwords + cap (unchanged)
 ;; ============================================================================
 
 (deftest research-id-test
@@ -343,7 +351,6 @@
 
   (testing "stopwords are dropped"
     (let [s (:slug (research/research$id :question "What is the loop guard"))]
-      ;; "what" "is" "the" are stopwords → only "loop guard" survives.
       (is (= "loop-guard" s))))
 
   (testing "kebab-case normalization"
@@ -370,7 +377,7 @@
     (is (contains? (research/research$id :question "x" :max-chars 0) :error))))
 
 ;; ============================================================================
-;; research$resume? — pre-bootstrap probe
+;; research$resume? — pre-bootstrap probe + §5 checklist round-trip
 ;; ============================================================================
 
 (deftest research-resume-pre-bootstrap-test
@@ -385,395 +392,91 @@
 
       (finally (delete-recursive (io/file tmp))))))
 
-;; ============================================================================
-;; research$bootstrap + research$resume? — round-trip
-;; ============================================================================
-
-(deftest research-bootstrap-test
-  (let [tmp (make-tmp-dir)]
+(deftest research-resume-checklist-roundtrip-test
+  (let [tmp (make-tmp-dir)
+        id  "resume-rt"]
     (try
-      (let [id "test-bootstrap"
-            boot (research/research$bootstrap
-                  :id id
-                  :purpose "Test purpose."
-                  :acceptance [{:id "a1" :text "First criterion" :status :open}
-                               {:id "a2" :text "Second criterion" :status :open}]
-                  :direction ["First step" "Second step"]
-                  :base-dir tmp)
-            dir (io/file tmp ".brainyard/agents/research-agent" id)]
-
-        (testing "fresh bootstrap returns dir + dossier-path"
-          (is (string? (:dir boot)))
-          (is (string? (:dossier-path boot)))
-          (is (not (contains? boot :exists?))))
-
-        (testing "all expected files written"
-          (is (.isDirectory dir))
-          (is (.isFile (io/file dir "purpose.md")))
-          (is (.isFile (io/file dir "acceptance.md")))
-          (is (.isFile (io/file dir "direction.md")))
-          (is (.isFile (io/file dir "dossier.md")))
-          (is (.isFile (io/file dir "findings.log")))
-          (is (.isDirectory (io/file dir "artifacts"))))
-
-        (testing "findings.log starts empty"
-          (is (= "" (slurp (io/file dir "findings.log")))))
-
-        (testing "dossier.md contains acceptance ids in frontmatter"
-          (let [body (slurp (io/file dir "dossier.md"))]
-            (is (str/includes? body "research_id: test-bootstrap"))
-            (is (str/includes? body "- id: a1"))
-            (is (str/includes? body "- id: a2"))
-            (is (str/includes? body "status: open"))))
-
-        (testing "second bootstrap is idempotent (no overwrite)"
-          (spit (io/file dir "purpose.md") "MARKER — should survive")
-          (let [boot2 (research/research$bootstrap
-                       :id id :purpose "different purpose"
-                       :acceptance [] :direction []
-                       :base-dir tmp)]
-            (is (true? (:exists? boot2)))
-            (is (= "MARKER — should survive"
-                   (slurp (io/file dir "purpose.md"))))))
-
-        (testing "resume? after bootstrap reflects frontmatter"
-          (let [s (research/research$resume? :id id :base-dir tmp)]
-            (is (true? (:exists? s)))
-            (is (= :in-progress (:status s)))
-            (is (= 1 (:last-iteration s)))
-            (is (= {:a1 :open :a2 :open} (:acceptance-state s))))))
-
+      (seed-dossier! tmp id {:last-iteration 4
+                             :acc [[:a1 :open] [:a2 :satisfied] [:a3 :partial]]})
+      (testing "resume? reads frontmatter + parses the §5 acceptance checklist"
+        (let [s (research/research$resume? :id id :base-dir tmp)]
+          (is (true? (:exists? s)))
+          (is (= :in-progress (:status s)))
+          (is (= 4 (:last-iteration s)))
+          (is (= {:a1 :open :a2 :satisfied :a3 :partial} (:acceptance-state s)))))
       (finally (delete-recursive (io/file tmp))))))
 
+(deftest research-resume-legacy-dual-read-test
+  (testing "legacy frontmatter acceptance block (no acceptance.md) still parses"
+    (let [tmp (make-tmp-dir)
+          id  "legacy-dossier"
+          dir (io/file tmp ".brainyard/agents/research-agent" id)]
+      (try
+        (.mkdirs dir)
+        ;; Pre-redesign shape: acceptance lives in dossier.md frontmatter, no
+        ;; acceptance.md checklist file.
+        (spit (io/file dir "dossier.md")
+              (str "---\nresearch_id: " id "\nlast_iteration: 2\nstatus: in-progress\n"
+                   "acceptance:\n"
+                   "  - id: a1\n    text: \"x\"\n    status: satisfied\n"
+                   "  - id: a2\n    text: \"y\"\n    status: open\n"
+                   "---\n# body\n"))
+        (let [s (research/research$resume? :id id :base-dir tmp)]
+          (is (true? (:exists? s)))
+          (is (= {:a1 :satisfied :a2 :open} (:acceptance-state s))
+              "dual-read falls back to the legacy frontmatter acceptance block"))
+        (finally (delete-recursive (io/file tmp)))))))
+
 ;; ============================================================================
-;; research$append-log — NDJSON append-only
+;; research$verdict-outcome — derive outcome + enforce the :achieved guard
 ;; ============================================================================
 
-(deftest research-append-log-test
-  (let [tmp (make-tmp-dir)
-        id  "test-log"]
+(deftest research-verdict-outcome-test
+  (let [tmp (make-tmp-dir)]
     (try
-      (research/research$bootstrap :id id :purpose "p"
-                                   :acceptance [] :direction []
-                                   :base-dir tmp)
+      (testing ":in-progress + not achieved-ok when any criterion is :open"
+        (seed-dossier! tmp "vo-open" {:acc [[:a1 :open] [:a2 :satisfied]]})
+        (let [r (research/research$verdict-outcome :id "vo-open" :base-dir tmp)]
+          (is (= :in-progress (:outcome r)))
+          (is (false? (:achieved-ok? r)))
+          (is (= ["a1:open"] (:blockers r)))))
 
-      (testing "consecutive appends produce N NDJSON lines"
-        (research/research$append-log :id id :iter 2 :agent "explore-agent"
-                                      :summary "s1" :pointers {:plan_slug "x"}
-                                      :base-dir tmp)
-        (research/research$append-log :id id :iter 3 :agent "plan-agent"
-                                      :summary "s2" :pointers {:plan_path "y"}
-                                      :base-dir tmp)
-        (let [lines (->> (slurp (io/file tmp ".brainyard/agents/research-agent" id "findings.log"))
-                         str/split-lines
-                         (remove str/blank?))]
-          (is (= 2 (count lines)))
-          (is (every? #(str/starts-with? % "{") lines))
-          (is (every? #(str/ends-with? % "}") lines))
-          (is (str/includes? (first lines) "\"iter\":2"))
-          (is (str/includes? (second lines) "\"iter\":3"))
-          (is (str/includes? (first lines) "\"plan_slug\":\"x\""))))
+      (testing ":achieved + achieved-ok when all :satisfied/:descoped"
+        (seed-dossier! tmp "vo-done" {:acc [[:a1 :satisfied] [:a2 :descoped]]})
+        (let [r (research/research$verdict-outcome :id "vo-done" :base-dir tmp)]
+          (is (= :achieved (:outcome r)))
+          (is (true? (:achieved-ok? r)))
+          (is (empty? (:blockers r)))
+          (is (= {:a1 "satisfied" :a2 "descoped"} (:acceptance-outcome r)))))
 
-      (testing "missing dossier → error (must bootstrap first)"
-        (is (contains? (research/research$append-log
-                        :id "no-such-id" :iter 1 :agent "x" :summary "y"
-                        :base-dir tmp)
-                       :error)))
+      (testing ":partial for a mixed (no :open) state, with blockers listed"
+        (seed-dossier! tmp "vo-mix" {:acc [[:a1 :satisfied] [:a2 :partial]]})
+        (let [r (research/research$verdict-outcome :id "vo-mix" :base-dir tmp)]
+          (is (= :partial (:outcome r)))
+          (is (false? (:achieved-ok? r)))
+          (is (= ["a2:partial"] (:blockers r)))))
+
+      (testing ":abandoned when all :contradicted"
+        (seed-dossier! tmp "vo-bad" {:acc [[:a1 :contradicted] [:a2 :contradicted]]})
+        (let [r (research/research$verdict-outcome :id "vo-bad" :base-dir tmp)]
+          (is (= :abandoned (:outcome r)))
+          (is (false? (:achieved-ok? r)))))
+
+      (testing "no acceptance checklist → error"
+        (is (contains? (research/research$verdict-outcome :id "no-such" :base-dir tmp) :error)))
 
       (testing "validation"
-        (is (contains? (research/research$append-log :id 1 :iter 1 :agent "x" :summary "y"
-                                                     :base-dir tmp) :error))
-        (is (contains? (research/research$append-log :id "x" :iter "bad" :agent "x" :summary "y"
-                                                     :base-dir tmp) :error)))
+        (is (contains? (research/research$verdict-outcome :id 123 :base-dir tmp) :error)))
 
       (finally (delete-recursive (io/file tmp))))))
 
 ;; ============================================================================
-;; research$update-status — flip one criterion, leave others alone
-;; ============================================================================
-
-(deftest research-update-status-test
-  (let [tmp (make-tmp-dir)
-        id  "test-status"]
-    (try
-      (research/research$bootstrap
-       :id id :purpose "p"
-       :acceptance [{:id "a1" :text "first" :status :open}
-                    {:id "a2" :text "second" :status :open}
-                    {:id "a3" :text "third" :status :open}]
-       :direction ["d1"]
-       :base-dir tmp)
-
-      (testing "flips a1 → :partial; siblings untouched"
-        (let [r (research/research$update-status
-                 :id id :criterion-id "a1" :status :partial :base-dir tmp)]
-          (is (true? (:updated r)))
-          (is (= :open (:from r)))
-          (is (= :partial (:to r))))
-        (let [s (research/research$resume? :id id :base-dir tmp)]
-          (is (= {:a1 :partial :a2 :open :a3 :open}
-                 (:acceptance-state s)))))
-
-      (testing "flips a2 → :satisfied via keyword id"
-        (research/research$update-status :id id :criterion-id :a2 :status :satisfied
-                                         :base-dir tmp)
-        (is (= {:a1 :partial :a2 :satisfied :a3 :open}
-               (:acceptance-state (research/research$resume? :id id :base-dir tmp)))))
-
-      (testing "non-existent criterion → error"
-        (is (contains? (research/research$update-status
-                        :id id :criterion-id "a99" :status :open
-                        :base-dir tmp)
-                       :error)))
-
-      (testing "invalid status → error"
-        (is (contains? (research/research$update-status
-                        :id id :criterion-id "a1" :status :bogus
-                        :base-dir tmp)
-                       :error)))
-
-      (finally (delete-recursive (io/file tmp))))))
-
-;; ============================================================================
-;; research$write-verdict — derives acceptance_outcome + iterations
-;; ============================================================================
-
-(deftest research-write-verdict-test
-  (let [tmp (make-tmp-dir)
-        id  "test-verdict"]
-    (try
-      (research/research$bootstrap
-       :id id :purpose "p"
-       :acceptance [{:id "a1" :text "x" :status :open}
-                    {:id "a2" :text "y" :status :open}]
-       :direction ["d1"]
-       :base-dir tmp)
-      (research/research$update-status :id id :criterion-id "a1" :status :satisfied
-                                       :base-dir tmp)
-
-      (testing "writes verdict.md with frontmatter + narrative"
-        (let [v (research/research$write-verdict
-                 :id id :status :partial
-                 :narrative "Got most of the way. a1 satisfied, a2 still open."
-                 :base-dir tmp)
-              path (:path v)
-              content (slurp (io/file path))]
-          (is (string? path))
-          (is (str/ends-with? path "verdict.md"))
-          (is (str/includes? content "research_id: test-verdict"))
-          (is (str/includes? content "status: partial"))
-          (is (str/includes? content "iterations: 1"))
-          (is (str/includes? content "acceptance_outcome:"))
-          (is (str/includes? content "a1: satisfied"))
-          (is (str/includes? content "a2: open"))
-          (is (str/includes? content "## Verdict"))
-          (is (str/includes? content "Got most of the way"))))
-
-      (testing "string status accepted"
-        (is (string? (:path (research/research$write-verdict
-                             :id id :status "partial"
-                             :narrative "ok" :base-dir tmp)))))
-
-      (testing "invalid status → error"
-        (is (contains? (research/research$write-verdict
-                        :id id :status :bogus :narrative "x"
-                        :base-dir tmp)
-                       :error)))
-
-      (finally (delete-recursive (io/file tmp))))))
-
-(deftest research-write-verdict-validation-test
-  ;; Mid-flight smoke (2026-05-10) showed the LLM could call write-verdict
-  ;; with :achieved while criteria were still :open, producing a verdict.md
-  ;; with status: achieved but acceptance_outcome all :open. Block that.
-  (let [tmp (make-tmp-dir)
-        id  "test-validate"]
-    (try
-      (research/research$bootstrap
-       :id id :purpose "p"
-       :acceptance [{:id "a1" :text "x" :status :open}
-                    {:id "a2" :text "y" :status :open}]
-       :direction ["d"]
-       :base-dir tmp)
-
-      (testing ":achieved blocked when any criterion is still :open"
-        (let [r (research/research$write-verdict
-                 :id id :status :achieved
-                 :narrative "all done" :base-dir tmp)]
-          (is (contains? r :error))
-          (is (str/includes? (:error r) "a1:open"))
-          (is (str/includes? (:error r) "a2:open"))
-          (is (str/includes? (:error r) "research$update-status"))
-          (is (not (.isFile (io/file tmp ".brainyard/agents/research-agent" id "verdict.md")))
-              "verdict.md must NOT be written when validation fails")))
-
-      (testing ":achieved blocked when any criterion is :partial"
-        (research/research$update-status :id id :criterion-id "a1" :status :satisfied :base-dir tmp)
-        (research/research$update-status :id id :criterion-id "a2" :status :partial   :base-dir tmp)
-        (let [r (research/research$write-verdict
-                 :id id :status :achieved
-                 :narrative "ok" :base-dir tmp)]
-          (is (contains? r :error))
-          (is (str/includes? (:error r) "a2:partial"))))
-
-      (testing ":achieved allowed when all criteria are :satisfied or :descoped"
-        (research/research$update-status :id id :criterion-id "a2" :status :descoped :base-dir tmp)
-        (let [r (research/research$write-verdict
-                 :id id :status :achieved
-                 :narrative "ok" :base-dir tmp)]
-          (is (string? (:path r)))
-          (is (.isFile (io/file tmp ".brainyard/agents/research-agent" id "verdict.md")))))
-
-      (testing ":partial unaffected by validation (catch-all)"
-        ;; Reset: bootstrap a fresh dossier with all-:open criteria.
-        (let [id2 "test-partial"]
-          (research/research$bootstrap
-           :id id2 :purpose "p"
-           :acceptance [{:id "a1" :text "x" :status :open}]
-           :direction ["d"]
-           :base-dir tmp)
-          (let [r (research/research$write-verdict
-                   :id id2 :status :partial
-                   :narrative "what got done" :base-dir tmp)]
-            (is (string? (:path r))
-                ":partial should be allowed regardless of acceptance state"))))
-
-      (testing ":abandoned unaffected by validation (giving up state)"
-        (let [id3 "test-abandoned"]
-          (research/research$bootstrap
-           :id id3 :purpose "p"
-           :acceptance [{:id "a1" :text "x" :status :open}]
-           :direction ["d"]
-           :base-dir tmp)
-          (let [r (research/research$write-verdict
-                   :id id3 :status :abandoned
-                   :narrative "blocked" :base-dir tmp)]
-            (is (string? (:path r))
-                ":abandoned should be allowed regardless of acceptance state"))))
-
-      (finally (delete-recursive (io/file tmp))))))
-
-(deftest research-write-verdict-strips-duplicate-heading-test
-  ;; Mid-flight smoke (2026-05-10) showed verdict.md ending up with two
-  ;; consecutive `## Verdict` lines: one from the template, one from the
-  ;; LLM's narrative. Strip the LLM's leading heading idempotently.
-  (let [tmp (make-tmp-dir)
-        id  "test-heading"]
-    (try
-      (research/research$bootstrap
-       :id id :purpose "p"
-       :acceptance [{:id "a1" :text "x" :status :satisfied}]
-       :direction ["d"] :base-dir tmp)
-
-      (testing "leading '## Verdict\\n' in narrative is stripped"
-        (let [r (research/research$write-verdict
-                 :id id :status :achieved
-                 :narrative "## Verdict\n\nReal content here."
-                 :base-dir tmp)
-              content (slurp (io/file (:path r)))]
-          ;; Exactly one '## Verdict' heading in the file.
-          (is (= 1 (count (re-seq #"## Verdict" content))))
-          (is (str/includes? content "Real content here."))))
-
-      (testing "leading '# Verdict' (h1) is also stripped"
-        (let [r (research/research$write-verdict
-                 :id id :status :achieved
-                 :narrative "# Verdict\n\nh1 form."
-                 :base-dir tmp)
-              content (slurp (io/file (:path r)))]
-          (is (= 1 (count (re-seq #"## Verdict" content))))
-          (is (not (re-find #"^# Verdict" content)))
-          (is (str/includes? content "h1 form."))))
-
-      (testing "narrative without leading heading is unchanged"
-        (let [r (research/research$write-verdict
-                 :id id :status :achieved
-                 :narrative "Just prose, no heading."
-                 :base-dir tmp)
-              content (slurp (io/file (:path r)))]
-          (is (= 1 (count (re-seq #"## Verdict" content))))
-          (is (str/includes? content "Just prose, no heading."))))
-
-      (testing "non-leading '## Verdict' (further down) is preserved"
-        (let [r (research/research$write-verdict
-                 :id id :status :achieved
-                 :narrative "Intro paragraph.\n\n## Verdict details\n\nMore content."
-                 :base-dir tmp)
-              content (slurp (io/file (:path r)))]
-          ;; Both headings present: template's '## Verdict' + the in-body
-          ;; '## Verdict details' (different heading, only leading is stripped).
-          (is (str/includes? content "## Verdict details"))
-          (is (str/includes? content "Intro paragraph."))))
-
-      (finally (delete-recursive (io/file tmp))))))
-
-;; ============================================================================
-;; research$index-append — newest-first prepend
-;; ============================================================================
-
-(deftest research-index-append-test
-  (let [tmp (make-tmp-dir)]
-    (try
-      (testing "first append creates INDEX.md"
-        (let [r (research/research$index-append
-                 :id "first-id" :status :achieved
-                 :one-line "first run"
-                 :base-dir tmp)
-              content (slurp (io/file tmp ".brainyard/agents/research-agent/INDEX.md"))]
-          (is (true? (:appended r)))
-          (is (str/starts-with? content "- "))
-          (is (str/includes? content "[first-id]"))
-          (is (str/includes? content "achieved"))
-          (is (str/includes? content "first run"))))
-
-      (testing "second append prepends (newest first)"
-        (research/research$index-append
-         :id "second-id" :status :partial
-         :one-line "second run"
-         :base-dir tmp)
-        (let [content (slurp (io/file tmp ".brainyard/agents/research-agent/INDEX.md"))
-              lines   (remove str/blank? (str/split-lines content))]
-          (is (= 2 (count lines)))
-          ;; Second-id is the most recent → first line.
-          (is (str/includes? (first lines) "second-id"))
-          (is (str/includes? (second lines) "first-id"))))
-
-      (testing "long one-line is truncated to ≤ 200 chars"
-        (let [long-text (str/join " " (repeat 100 "longwordxxxxxxxxxxxxx"))
-              r (research/research$index-append
-                 :id "long-id" :status :achieved
-                 :one-line long-text
-                 :base-dir tmp)
-              ;; 200-char cap + "- YYYY-MM-DD HH:MM [long-id](long-id/) — achieved · "
-              ;; prefix. Just assert the line itself is bounded reasonably.
-              line (:line r)]
-          (is (true? (:appended r)))
-          (is (<= (count line) 350))))
-
-      (testing "invalid status → error"
-        (is (contains? (research/research$index-append
-                        :id "x" :status :bogus :one-line "y"
-                        :base-dir tmp)
-                       :error)))
-
-      (finally (delete-recursive (io/file tmp))))))
-
-;; ============================================================================
-;; Auto-finalize hook (P2)
-;;
-;; Hook signature: `(research-auto-finalize {:keys [agent input result]})`.
-;; The hook gates on `(research-agent? agent)` and `(default-base-dir)`;
-;; both are private fns we rebind with with-redefs so the test doesn't have
-;; to construct a real agent record.
+;; Auto-finalize backstop
 ;; ============================================================================
 
 (deftest hook-registration-test
-  (testing "auto-finalize hook is registered on :agent.ask/post"
+  (testing "auto-finalize hook is registered on :agent.ask/finalize"
     (require 'ai.brainyard.agent.core.hooks)
-    ;; Other test namespaces (hooks_test.clj) use a :each fixture that calls
-    ;; hooks/reset-hooks! — which wipes the registry between test invocations.
-    ;; Re-install before checking so the assertion is independent of polylith
-    ;; test ordering.
     (research/install-auto-finalize!)
     (let [list-hooks (resolve 'ai.brainyard.agent.core.hooks/list-hooks)
           entries    (list-hooks :agent.ask/finalize)
@@ -781,41 +484,12 @@
       (is (contains? ids :ai.brainyard.agent.common.research/research-auto-finalize)
           "research-auto-finalize hook must register on :agent.ask/finalize"))))
 
-(deftest terminal-status-test
-  (let [ts @#'research/terminal-status]
-    (testing "empty acceptance-state → nil (degenerate)"
-      (is (nil? (ts {}))))
-
-    (testing "any :open → nil (mid-flight)"
-      (is (nil? (ts {:a1 :open})))
-      (is (nil? (ts {:a1 :satisfied :a2 :open})))
-      (is (nil? (ts {:a1 :open :a2 :open}))))
-
-    (testing "all :satisfied / :descoped → :achieved"
-      (is (= :achieved (ts {:a1 :satisfied})))
-      (is (= :achieved (ts {:a1 :satisfied :a2 :descoped})))
-      (is (= :achieved (ts {:a1 :descoped :a2 :descoped}))))
-
-    (testing "all :contradicted → :abandoned"
-      (is (= :abandoned (ts {:a1 :contradicted})))
-      (is (= :abandoned (ts {:a1 :contradicted :a2 :contradicted}))))
-
-    (testing "mixed → :partial"
-      (is (= :partial (ts {:a1 :satisfied :a2 :partial})))
-      (is (= :partial (ts {:a1 :satisfied :a2 :contradicted})))
-      (is (= :partial (ts {:a1 :partial :a2 :descoped}))))))
-
 (deftest hook-skips-when-criteria-open-test
   (let [tmp (make-tmp-dir)
         question "What dominates startup?"
         rid (:slug (research/research$id :question question))]
     (try
-      (research/research$bootstrap
-       :id rid :purpose question
-       :acceptance [{:id "a1" :text "x" :status :open}
-                    {:id "a2" :text "y" :status :open}]
-       :direction ["d"]
-       :base-dir tmp)
+      (seed-dossier! tmp rid {:acc [[:a1 :open] [:a2 :open]]})
       ;; Both criteria still :open — hook should bail.
       (with-redefs [research/research-agent?  (constantly true)
                     config/project-dir (constantly tmp)]
@@ -831,14 +505,7 @@
         question "What dominates startup?"
         rid (:slug (research/research$id :question question))]
     (try
-      (research/research$bootstrap
-       :id rid :purpose question
-       :acceptance [{:id "a1" :text "x" :status :open}
-                    {:id "a2" :text "y" :status :open}]
-       :direction ["d"]
-       :base-dir tmp)
-      (research/research$update-status :id rid :criterion-id "a1" :status :satisfied :base-dir tmp)
-      (research/research$update-status :id rid :criterion-id "a2" :status :partial   :base-dir tmp)
+      (seed-dossier! tmp rid {:last-iteration 5 :acc [[:a1 :satisfied] [:a2 :partial]]})
 
       (with-redefs [research/research-agent?  (constantly true)
                     config/project-dir (constantly tmp)]
@@ -848,33 +515,49 @@
 
       (let [verdict (io/file tmp ".brainyard/agents/research-agent" rid "verdict.md")
             index   (io/file tmp ".brainyard/agents/research-agent/INDEX.md")]
-        (testing "verdict.md written with derived :partial status"
+        (testing "verdict.md written with derived :partial status + acceptance_outcome"
           (is (.isFile verdict))
           (let [content (slurp verdict)]
             (is (str/includes? content "status: partial"))
-            (is (str/includes? content "research_id: "))
-            (is (str/includes? content rid))
+            (is (str/includes? content (str "research_id: " rid)))
+            (is (str/includes? content "iterations: 5"))
             (is (str/includes? content "acceptance_outcome:"))
             (is (str/includes? content "a1: satisfied"))
-            (is (str/includes? content "a2: partial"))))
+            (is (str/includes? content "a2: partial"))
+            (is (str/includes? content "## Verdict"))))
 
-        (testing "INDEX.md was appended"
+        (testing "INDEX.md was appended (status upper-cased)"
           (is (.isFile index))
           (let [content (slurp index)]
             (is (str/includes? content (str "[" rid "]")))
-            (is (str/includes? content "partial")))))
+            (is (str/includes? content "PARTIAL")))))
       (finally (delete-recursive (io/file tmp))))))
+
+(deftest hook-injects-handoff-line-test
+  (testing "hook returns a :replace decision injecting the contract line"
+    (let [tmp (make-tmp-dir)
+          question "inject test question"
+          rid (:slug (research/research$id :question question))]
+      (try
+        (seed-dossier! tmp rid {:acc [[:a1 :satisfied]]})
+        (with-redefs [research/research-agent?  (constantly true)
+                      config/project-dir (constantly tmp)]
+          (let [decision (research/research-auto-finalize
+                          {:agent {} :input question
+                           :result {:answer "Done with everything."}})]
+            (is (= :replace (:result decision)))
+            (is (str/includes? (get-in decision [:replacement :answer])
+                               "Saved research dossier:"))
+            (is (str/includes? (get-in decision [:replacement :answer])
+                               (str "research-agent/" rid "/")))))
+        (finally (delete-recursive (io/file tmp)))))))
 
 (deftest hook-idempotent-test
   (let [tmp (make-tmp-dir)
         question "another smoke question"
         rid (:slug (research/research$id :question question))]
     (try
-      (research/research$bootstrap
-       :id rid :purpose question
-       :acceptance [{:id "a1" :text "x" :status :open}]
-       :direction ["d"] :base-dir tmp)
-      (research/research$update-status :id rid :criterion-id "a1" :status :satisfied :base-dir tmp)
+      (seed-dossier! tmp rid {:acc [[:a1 :satisfied]]})
 
       (with-redefs [research/research-agent?  (constantly true)
                     config/project-dir (constantly tmp)]
@@ -894,14 +577,9 @@
         question "third question"
         rid (:slug (research/research$id :question question))]
     (try
-      (research/research$bootstrap
-       :id rid :purpose question
-       :acceptance [{:id "a1" :text "x" :status :open}]
-       :direction ["d"] :base-dir tmp)
-      (research/research$update-status :id rid :criterion-id "a1" :status :satisfied :base-dir tmp)
+      (seed-dossier! tmp rid {:acc [[:a1 :satisfied]]})
 
       ;; Answer carries the `Saved research dossier:` line — LLM did finalize.
-      ;; The hook should bail without writing verdict.md.
       (with-redefs [research/research-agent?  (constantly true)
                     config/project-dir (constantly tmp)]
         (research/research-auto-finalize
@@ -915,17 +593,15 @@
 (deftest hook-skips-when-no-dossier-test
   (let [tmp (make-tmp-dir)]
     (try
-      ;; No bootstrap — derived id has no dossier on disk.
+      ;; No dossier seeded — derived id has no dossier on disk.
       (with-redefs [research/research-agent?  (constantly true)
                     config/project-dir (constantly tmp)]
         (research/research-auto-finalize
          {:agent {} :input "totally novel question with no dossier"
           :result {:answer "I answered without a dossier."}}))
 
-      (testing "no .brainyard/agents/research-agent/ created — run wasn't research-shaped"
+      (testing "no dossier dir created — run wasn't research-shaped"
         (let [base (io/file tmp ".brainyard/agents/research-agent")]
-          ;; Either the dir doesn't exist OR if it does (from a prior test),
-          ;; the specific id-derived subdir for this question is absent.
           (when (.isDirectory base)
             (is (zero? (count (filter #(.isDirectory %) (.listFiles base))))
                 "hook must NOT retroactively create a dossier directory"))))
@@ -933,22 +609,13 @@
 
 (deftest hook-defensive-on-exception-test
   (testing "exceptions inside the hook are caught and never re-thrown"
-    ;; Force write-verdict to throw — hook must still return without raising.
     (with-redefs [research/research-agent?  (constantly true)
                   config/project-dir (constantly "/nonexistent/path/that/does/not/exist")]
       (is (nil? (research/research-auto-finalize
                  {:agent {} :input "x" :result {:answer "y"}}))))))
 
 ;; ============================================================================
-;; P3 — Integration: setup-agent-by-id round-trip + specialist reachability
-;;
-;; These tests exercise the actual agent runtime path that `bb tui ask -a
-;; research-agent` takes. They do NOT fire any LLM call — `setup-agent-by-id`
-;; only creates the agent, doesn't `ask` it. Their job is to catch contract
-;; drift between research-agent and:
-;;   - the CoAct BT factory (which gets called at setup time)
-;;   - the unified tool registry (which the LLM dispatches `call-tool` against)
-;;   - the SCI sandbox helper-binding path (mimicked here via tool/invoke-tool)
+;; Integration: setup-agent-by-id round-trip + specialist reachability
 ;; ============================================================================
 
 (deftest setup-agent-by-id-smoke-test
@@ -966,8 +633,7 @@
           (is (keyword? (:agent-id ag)))
           (is (= "research-agent" (namespace (:agent-id ag))))
           (is (= :idle (:status state)))
-          (is (some? (:memory-manager state))
-              "memory-manager always created (default in-memory)"))
+          (is (some? (:memory-manager state))))
 
         (testing "behavior-tree wired in (CoAct via :bt-factory)"
           (is (some? (:behavior-tree state))))
@@ -978,32 +644,21 @@
           (is (string? (:tool-context st-init)))
           (is (str/includes? (:tool-context st-init) "research$id")))
 
-        (testing "tools roster includes research$* helpers"
-          ;; LLM-facing :name is a string (or :keyword pre-string-coerce);
-          ;; normalize for either form.
+        (testing "tools roster includes the surviving research$* seams"
           (let [names (->> (:tools st-init)
                            (map (comp str :name))
                            set)]
             (is (contains? names "research$id"))
-            (is (contains? names "research$bootstrap"))
             (is (contains? names "research$resume?"))
-            (is (contains? names "research$append-log"))
-            (is (contains? names "research$update-status"))
-            (is (contains? names "research$write-verdict"))
-            (is (contains? names "research$index-append"))
-            ;; call-tool is :visibility :hidden — it self-registers in the
-            ;; tool registry for the MCP :server-name fallback path but
-            ;; never appears in any agent's LLM-facing roster.
+            (is (contains? names "research$verdict-outcome"))
+            (is (not (contains? names "research$bootstrap")))
+            (is (not (contains? names "research$write-verdict")))
             (is (not (contains? names "call-tool")))
             (is (contains? names "query$llm")))))
 
       (finally (.close ag)))))
 
 (deftest specialists-reachable-via-registry-test
-  ;; The five specialists are NOT directly bound in research-agent's roster
-  ;; (the LLM reaches them via `(call-tool "<name>" ...)`). This test asserts
-  ;; the registry side of that contract — every specialist must be a
-  ;; registered defagent so call-tool dispatch succeeds.
   (require 'ai.brainyard.agent.common.explore-agent
            'ai.brainyard.agent.common.plan-agent
            'ai.brainyard.agent.common.todo-agent
@@ -1018,9 +673,7 @@
 
 (deftest helpers-invokable-via-invoke-tool-test
   ;; The SCI sandbox dispatches helper calls through the tool registry. This
-  ;; test exercises the exact same path: tool/invoke-tool with the helper id.
-  ;; Catches drift between the helper's `defcommand` schema and what the
-  ;; sandbox passes through.
+  ;; test exercises the exact same path for the surviving seams.
   (let [tmp (make-tmp-dir)]
     (try
       (testing "research$id round-trips"
@@ -1032,44 +685,11 @@
                                   {:id "no-such-id" :base-dir tmp})]
           (is (= false (:exists? r)))))
 
-      (testing "research$bootstrap round-trips"
-        (let [r (tool/invoke-tool :research$bootstrap
-                                  {:id "invoke-test"
-                                   :purpose "test purpose"
-                                   :acceptance [{:id "a1" :text "x" :status :open}]
-                                   :direction ["d"]
-                                   :base-dir tmp})]
-          (is (string? (:dir r)))
-          (is (string? (:dossier-path r)))))
-
-      (testing "research$append-log round-trips"
-        (let [r (tool/invoke-tool :research$append-log
-                                  {:id "invoke-test" :iter 2
-                                   :agent "explore-agent"
-                                   :summary "x"
-                                   :base-dir tmp})]
-          (is (true? (:appended r)))))
-
-      (testing "research$update-status round-trips"
-        (let [r (tool/invoke-tool :research$update-status
-                                  {:id "invoke-test" :criterion-id "a1"
-                                   :status :satisfied
-                                   :base-dir tmp})]
-          (is (true? (:updated r)))
-          (is (= :satisfied (:to r)))))
-
-      (testing "research$write-verdict round-trips"
-        (let [r (tool/invoke-tool :research$write-verdict
-                                  {:id "invoke-test" :status :achieved
-                                   :narrative "all done"
-                                   :base-dir tmp})]
-          (is (string? (:path r)))))
-
-      (testing "research$index-append round-trips"
-        (let [r (tool/invoke-tool :research$index-append
-                                  {:id "invoke-test" :status :achieved
-                                   :one-line "smoke"
-                                   :base-dir tmp})]
-          (is (true? (:appended r)))))
+      (testing "research$verdict-outcome round-trips (seeded checklist)"
+        (seed-dossier! tmp "invoke-vo" {:acc [[:a1 :satisfied] [:a2 :descoped]]})
+        (let [r (tool/invoke-tool :research$verdict-outcome
+                                  {:id "invoke-vo" :base-dir tmp})]
+          (is (= :achieved (:outcome r)))
+          (is (true? (:achieved-ok? r)))))
 
       (finally (delete-recursive (io/file tmp))))))

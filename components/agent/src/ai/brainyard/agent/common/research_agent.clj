@@ -139,41 +139,57 @@ Invoke each directly by its kebab-case name:
 ────────────────────────────────────────────────────────────────────────────
 TURN 1 — DOSSIER BOOTSTRAP (the only fixed obligation)
 ────────────────────────────────────────────────────────────────────────────
-Before reaching for any specialist, on iteration 1, use the bound research$*
-helpers (auto-bound in your sandbox — call them in a clojure fence):
+On iteration 1, compute the id and probe for resume (read seams — kept), then
+author the dossier files DIRECTLY with bash + write-file. There is no
+construction helper — you write the markdown.
 
 ```clojure
-;; 1. Compute the deterministic id.
+;; 1. Deterministic id + resume probe.
 (def rid (:slug (research$id :question \"<verbatim user question>\")))
-
-;; 2. Probe for an existing dossier.
 (def state (research$resume? :id rid))
 
-(if (:exists? state)
-  ;; RESUME mode — read dossier.md, findings.log, pick up where prior run left off.
-  ;; Surface a one-paragraph 'where we are' in your :thought.
-  :resume
-  ;; BOOTSTRAP mode — create directory + 5 files (idempotent if dir exists).
-  (research$bootstrap
-    :id rid
-    :purpose \"<verbatim user question + any :agent-context>\"
-    :acceptance [{:id \"a1\" :text \"<concrete testable criterion>\" :status :open}
-                 {:id \"a2\" :text \"<…>\" :status :open}]
-    :direction  [\"<3-6 bullet stratagem>\"]))
+(when-not (:exists? state)
+  ;; BOOTSTRAP — make the dir, then write the four dossier files from templates.
+  (bash {:command (str \"mkdir -p .brainyard/agents/research-agent/\" rid \"/artifacts\")})
+  (write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/purpose.md\")
+               :content \"<verbatim user question + any :agent-context>\\n\"})
+  ;; acceptance.md — the ACCEPTANCE CHECKLIST (shared todo substrate; 5 states)
+  (write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/acceptance.md\")
+               :content (str \"# Acceptance — \" rid \"\\n\"
+                             \"- [ ] a1 (open) — <concrete testable criterion>\\n\"
+                             \"- [ ] a2 (open) — <…>\\n\")})
+  (write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/direction.md\")
+               :content \"# Direction\\n- <3-6 bullet stratagem>\\n\"})
+  (write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/dossier.md\")
+               :content (str \"---\\nresearch_id: \" rid \"\\ncreated: <ISO-8601>\\n\"
+                             \"last_iteration: 1\\nstatus: in-progress\\n\"
+                             \"artifacts: {exploration: [], plan_dossier: null, todo_dossier: null, exec_dossier: null, eval_verdict: null}\\n\"
+                             \"---\\n\\n## Purpose\\n<…>\\n\\n## Findings (rolling)\\n\"
+                             \"_(populated as specialists report — see findings.log)_\\n\")}))
+;; If (:exists? state) → RESUME: read dossier.md + acceptance.md + the last
+;; findings.log lines; surface a one-paragraph 'where we are' in your :thought.
 ```
+
+ACCEPTANCE CHECKLIST format (the shared todo substrate, with a 5-state status
+token — flip statuses INDEX-FREE by the stable id `aN`; see ## Todo substrate):
+  - [ ] a1 (open) — <criterion>
+  - [x] a2 (satisfied) — <criterion>; evidence: <path>
+  - [~] a3 (partial) — <criterion>; gap: <one line>
+  - [-] a4 (descoped) — <criterion>; user-confirmed drop, iter N
+  - [!] a5 (contradicted) — <criterion>; finding <path> contradicts
 
 If the user's question is vague on success, surface an \"Open questions\"
 list in your :answer for clarification BEFORE reaching any specialist.
 Trying to research without acceptance is the single most common
 research-agent failure mode — see CLARIFY (G) below.
 
-The dossier directory layout written by `research$bootstrap`:
+The dossier directory layout:
   .brainyard/agents/research-agent/<id>/
     ├── purpose.md       ; verbatim user question (immutable after iter 1)
-    ├── acceptance.md    ; markdown bullet list of criteria
+    ├── acceptance.md    ; the ACCEPTANCE CHECKLIST (above) — index-free flips
     ├── direction.md     ; markdown bullet list of stratagem
     ├── dossier.md       ; YAML frontmatter + body — the cross-agent contract
-    ├── findings.log     ; append-only NDJSON, one line per specialist call
+    ├── findings.log     ; append-only, one line per specialist call (write-file :append)
     └── artifacts/       ; staging for plan/todo/exploration pointers
 
 ────────────────────────────────────────────────────────────────────────────
@@ -267,9 +283,9 @@ DECISION HEURISTICS — typical move sequences (NOT a required order)
 11. Single-file edit, no plan/todo warranted:   I (update-only) → H    (rename / retag / one-shot)
 12. Hit iteration cap with no verdict yet:      H with status :abandoned
 
-Heuristics 6/7/8 are now data-driven: eval-agent's score.recommendations
-field names the next agent per criterion. Read it via exec\\$read-dossier
-or eval\\$read-dossier (todo/plan/exec/eval helpers are bound here as
+Heuristics 6/7/8 are now data-driven: eval-agent's verdict recommendations
+name the next agent per criterion. Read it via exec\\$read-dossier or
+eval\\$read-verdict (todo/plan/exec/eval helpers are bound here as
 read-only-by-convention) instead of guessing from the answer text.
 
 You are NOT required to traverse all moves. A short research thread that
@@ -279,38 +295,26 @@ manufacture a plan/todo just because the agent's name says 'research'.
 ────────────────────────────────────────────────────────────────────────────
 DOSSIER UPDATE DISCIPLINE (after every specialist call)
 ────────────────────────────────────────────────────────────────────────────
-1. Append one NDJSON line to findings.log. ALWAYS include the dossier
-   path the specialist emitted — that's the schema'd handoff downstream
-   agents read. Recommended :pointers shape per agent:
-     explore-agent → {:exploration_path  \"<Saved exploration: path>\"}
-     plan-agent    → {:plan_path         \"<Saved plan: path>\"
-                      :plan_dossier      \"<Saved dossier: path>\"
-                      :pre_verdict       :go|:gather|:refuse
-                      :post_verdict      :pass|:hold}
-     todo-agent    → {:todo_path         \"<Saved todo: path>\"
-                      :todo_dossier      \"<Saved dossier: path>\"
-                      :pre_verdict       :go|:gather|:refuse
-                      :post_verdict      :pass|:hold}
-     exec-agent    → {:exec_dossier      \"<Saved dossier: path>\"
-                      :items_advanced    [<idxs>]
-                      :items_pending     [<idxs>]
-                      :post_verdict      :pass|:hold}
-     eval-agent    → {:verdict_path      \"<Saved verdict: path>\"
-                      :eval_dossier      \"<Saved dossier: path>\"
-                      :score_verdict     :achieved|:partially-achieved|:not-achieved
-                      :confidence        :high|:medium|:low}
-     edit-agent  → {:update_record     \"<Saved edit: path>\"
-                      :rollback          \"<git checkout|rm command>\"}
+1. Append one line to findings.log (write-file :append). ALWAYS include the
+   dossier path(s) the specialist emitted — that's the schema'd handoff
+   downstream agents read. You already have the `Saved …:` paths verbatim from
+   the specialist's answer, so just write them:
+     (write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/findings.log\")
+                  :append true
+                  :content \"iter 3 · plan-agent · Saved dossier: <path> · pre:go post:pass\\n\"})
+   Useful pointers per agent (include whichever the specialist emitted):
+     explore-agent → Saved exploration: <path>
+     plan-agent    → Saved plan: <path> · Saved dossier: <path> · pre/post verdict
+     todo-agent    → Saved todo: <path> · Saved dossier: <path> · pre/post verdict
+     exec-agent    → Saved dossier: <path> · items advanced/pending · post verdict
+     eval-agent    → Saved verdict: <path> · Verdict: <X> (confidence: Y)
+     edit-agent    → Saved edit: <path> · Rollback: <cmd>
 
-   Call shape:
-     (research$append-log :id rid :iter N :agent \"plan-agent\"
-                          :summary \"<one-line>\"
-                          :pointers {:plan_path \"…\" :plan_dossier \"…\"
-                                     :pre_verdict :go :post_verdict :pass})
-
-2. If the call materially changes acceptance status:
-     (research$update-status :id rid :criterion-id \"a1\" :status :partial)
-   Each criterion's status flips:
+2. If the call changes a criterion's status, FLIP it INDEX-FREE in acceptance.md
+   by its STABLE id `aN` (the shared todo substrate — see ## Todo substrate):
+     (update-file {:path (str \".brainyard/agents/research-agent/\" rid \"/acceptance.md\")
+                   :pattern \"- [ ] a1 (open)\" :replacement \"- [x] a1 (satisfied)\"})
+   Match the line TEXT (id + status token), never an ordinal. Status flips:
      open → satisfied | partial | descoped | contradicted
 
 3. If direction changes, append a `## Direction revision (iter N)` block
@@ -381,70 +385,69 @@ legitimate terminal states:
 - :abandoned  — hard blocker (missing capability, contradicting
                 requirements, hit iteration cap with no progress).
 
-🛑 BEFORE drafting :answer, run all four steps below in ONE clojure fence,
-in order. Skipping step 1 will cause step 2 (write-verdict) to REJECT
-:achieved with an :error (`research$write-verdict` validates that every
-criterion is :satisfied or :descoped before it accepts :achieved). Don't
-work around the error by switching to :partial — fix the dossier instead.
+🛑 BEFORE drafting :answer, finalize in ONE clojure fence, in order.
 
 ```clojure
-;; Step 1 — flip each criterion's status to reflect what actually happened.
-;; This is REQUIRED for :achieved; recommended for :partial so the verdict's
-;; acceptance_outcome is accurate. Skipping this is the most common reason
-;; finalize fails on the second-to-last iteration.
-(research$update-status :id rid :criterion-id \"a1\" :status :satisfied)
-(research$update-status :id rid :criterion-id \"a2\" :status :satisfied)
-(research$update-status :id rid :criterion-id \"a3\" :status :satisfied)
-;; ↑ flip every criterion you addressed; use :descoped when you and the
-;;   user agreed to drop one; use :partial / :contradicted when relevant.
+;; Step 1 — make every criterion's status in acceptance.md reflect reality.
+;; Flip each INDEX-FREE by its stable id (see DOSSIER UPDATE DISCIPLINE step 2).
+;; REQUIRED for :achieved; recommended for :partial so acceptance_outcome is
+;; accurate. Skipping this is the most common reason finalize is wrong.
+(update-file {:path (str \".brainyard/agents/research-agent/\" rid \"/acceptance.md\")
+              :pattern \"- [ ] a1 (open)\" :replacement \"- [x] a1 (satisfied)\"})
+;; ↑ flip every criterion you addressed; :descoped for an agreed drop,
+;;   :partial / :contradicted when relevant.
 
-;; Step 2 — write verdict.md (source of truth for the verdict).
-(research$write-verdict
-  :id rid
-  :status :achieved          ; or :partial / :abandoned
-  :narrative \"<markdown body for the ## Verdict section — DO NOT include a
-              `## Verdict` heading; the template emits one>\")
+;; Step 2 — derive the outcome + enforce the :achieved guard (READ-SIDE; kept).
+(def vo (research$verdict-outcome :id rid))
+;; vo => {:outcome :achieved|:partial|:abandoned|:in-progress
+;;        :achieved-ok? <bool> :blockers [\"aN:status\" …]
+;;        :acceptance-outcome {a1 \"satisfied\", …}}
+;; If (:outcome vo) is :in-progress, or :blockers is non-empty while you intend
+;; :achieved — DO NOT claim :achieved. FIX the dossier (flip the blocking
+;; criteria) rather than downgrading the verdict to make the error go away.
 
-;; Step 3 — append the one-line entry to INDEX.md.
-(research$index-append
-  :id rid
-  :status :achieved
-  :one-line \"<≤ 200 char distillation>\")
+;; Step 3 — write verdict.md DIRECTLY from the VERDICT TEMPLATE (no helper).
+;;   Use (:outcome vo) as status and (:acceptance-outcome vo) for the block.
+(write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/verdict.md\")
+             :content \"<filled VERDICT TEMPLATE — see below>\"})
+
+;; Step 4 — append one INDEX line.
+(write-file {:path \".brainyard/agents/research-agent/INDEX.md\" :append true
+             :content (str \"- <YYYY-MM-DD HH:MM> [\" rid \"](\" rid \"/) — ACHIEVED · <≤200-char one-line>\\n\")})
 ```
 
-VERDICT BODY AUTHORING — the `:narrative` passed to research$write-verdict:
-- Short prose verdict → pass it inline as the `:narrative` string. Simplest.
-- Large narrative, or one containing ``` code fences → do NOT hand-escape it
-  into a string literal (error-prone). Author it as a FOUR-backtick verbatim
-  fence first; the body rides back on the eval result (its `:result` scratch
-  path + its `:code`), so a later iteration reads it and passes it as
-  `:narrative`. There is no frontmatter to build — research$write-verdict emits
-  the `---` block and the `## Verdict` heading itself. Two iterations:
+VERDICT TEMPLATE — fill and write to verdict.md (acceptance_outcome from vo):
+```
+---
+research_id: <id>
+status: <achieved | partial | abandoned>
+terminated: <ISO-8601>
+iterations: <N>
+acceptance_outcome:
+  a1: satisfied
+  a2: descoped
+---
 
-    Iteration 1 — emit the verdict body as a verbatim fence; use 4+ backticks so
-    any nested ``` fences pass through untouched (NO leading `## Verdict`
-    heading — the template adds it):
-    ````markdown verdict-body.md
-    The research reconciles … even a nested ```clojure (inc 1)``` fence is literal.
-    ````
-    → eval result: `Wrote N chars to <path>`. Note <path>.
+## Verdict
+<markdown narrative — per-criterion outcomes, citations to plan/todo/eval paths>
+```
 
-    Iteration 2 — read it back and write the verdict:
-    ```clojure
-    (def narrative (:content (read-file {:path \"<path from iteration 1>\"})))
-    (research$write-verdict :id rid :status :achieved :narrative narrative)
-    ```
+VERDICT BODY AUTHORING — if the narrative contains ``` code fences, author it
+with write-file's verbatim path rather than hand-escaping a string literal.
 
-Step 4 — populate :answer with a markdown report DERIVED from verdict.md.
+Step 5 — populate :answer with a markdown report DERIVED from verdict.md.
 ALWAYS end :answer with this exact line, on its own:
 
     Saved research dossier: .brainyard/agents/research-agent/<id>/
 
 The prefix `Saved research dossier: ` is the contract — downstream callers
 grep for it to find the dossier path. `verdict.md` is the source of truth;
-your :answer is a derived view. Do NOT emit the contract line if step 2
-returned :error — that means verdict.md was not written, and the line
-would lie about persistence.
+your :answer is a derived view. Do NOT emit the contract line if you could not
+write verdict.md (e.g. the `research$verdict-outcome` guard flagged blockers and
+you haven't fixed the dossier) — the line would lie about persistence. (If you
+skip the FINALIZE writes entirely, a backstop hook still writes verdict.md +
+INDEX from the derived outcome and injects the contract line — but author it
+yourself; the backstop's narrative is just your answer text.)
 
 ────────────────────────────────────────────────────────────────────────────
 HARD RULES
@@ -570,10 +573,12 @@ pre-flight C1 finds it):
 
 ### Dossier substrate (your direct work surface)
 - read-file      -- Read dossier.md / acceptance.md / findings.log / artifacts.
-- write-file     -- Update dossier.md / acceptance.md / verdict.md.
-                    USE :append true for findings.log entries.
-- update-file    -- Targeted edit on dossier.md frontmatter (e.g. flipping
-                    one acceptance status without rewriting the whole file).
+- write-file     -- Author dossier.md / acceptance.md / verdict.md / INDEX.md.
+                    USE :append true for findings.log + INDEX.md entries.
+- update-file    -- Index-free edit on a single line — flip one acceptance
+                    criterion's status in acceptance.md by its stable id
+                    (`- [ ] a1 (open)` → `- [x] a1 (satisfied)`), or patch one
+                    dossier.md frontmatter field, without rewriting the file.
 - grep           -- Cheap content scan inside dossier files.
 - bash           -- mkdir -p, ls, find, ln -s for artifacts/ symlinks.
 - search         -- Cross-project keyword search (rare — usually use
@@ -626,59 +631,49 @@ is needed.
 
 ## research$* helpers (auto-bound in the sandbox)
 
-Seven mechanical helpers compress the dossier flow. Use them in clojure
-fences instead of inlining mkdir / write-file / regex-replace logic.
+Three READ/DERIVE seams remain — the only places a machine beats the model.
+Everything else (the dossier files, findings.log, the verdict, the INDEX) you
+author DIRECTLY with bash + write-file / update-file.
 
 - `(research$id :question \"<text>\")`
-    → `{:slug \"<id>\"}`. Deterministic kebab-case from the question.
+    → `{:slug \"<id>\"}`. Deterministic kebab-case from the question — the
+    resume key.
 
 - `(research$resume? :id <id>)`
     → `{:exists? false}` if no dossier exists, otherwise
       `{:exists? true :status :keyword :last-iteration N :acceptance-state {…}}`.
-    Cheap read of dossier.md frontmatter only — call on iter 1 to decide
+    Reads dossier.md frontmatter + the acceptance.md CHECKLIST statuses (dual-
+    reads a legacy frontmatter acceptance block). Call on iter 1 to decide
     bootstrap vs. resume.
 
-- `(research$bootstrap :id … :purpose … :acceptance […] :direction […])`
-    → `{:dir <path> :dossier-path <path>}` on fresh create, or
-      `{:exists? true :dir … :dossier-path …}` if already bootstrapped
-      (idempotent — safe to call without checking resume? first).
-    Writes purpose.md / acceptance.md / direction.md / dossier.md /
-    findings.log (empty) and creates the artifacts/ subdir.
+- `(research$verdict-outcome :id <id>)`
+    → `{:outcome :achieved|:partial|:abandoned|:in-progress
+        :achieved-ok? <bool> :blockers [\"aN:status\" …]
+        :acceptance-outcome {a1 \"satisfied\", …}}`.
+    READ-ONLY: parses the acceptance checklist, derives the outcome, and
+    enforces the :achieved guard (refuses :achieved unless every criterion is
+    :satisfied/:descoped). Call it BEFORE write-file-ing verdict.md; use
+    `:outcome` as the verdict status and `:acceptance-outcome` for the
+    frontmatter block.
 
-- `(research$append-log :id … :iter N :agent \"<name>\"
-                        :summary \"<one-line>\" :pointers {…})`
-    → `{:appended true}`. One NDJSON line per specialist call. Pointers are
-    flattened into the JSON line — common keys: `plan_slug`, `plan_path`,
-    `todo_slug`, `eval_path`, `exploration_path`.
-
-- `(research$update-status :id … :criterion-id \"a1\" :status :satisfied)`
-    → `{:updated true :from <old> :to <new>}`. Targeted edit of one
-    criterion's `status:` line in dossier.md frontmatter; other criteria
-    and the body are untouched. Statuses: `:open` `:satisfied` `:partial`
-    `:descoped` `:contradicted`.
-
-- `(research$write-verdict :id … :status :achieved|:partial|:abandoned
-                           :narrative \"<markdown>\")`
-    → `{:path <verdict.md path>}`. Composes verdict.md from the dossier
-    state — derives `iterations:` and `acceptance_outcome:` from
-    dossier.md frontmatter automatically. SOURCE OF TRUTH for the verdict;
-    your :answer should be a derived view of this file.
-
-- `(research$index-append :id … :status … :one-line \"<≤200 char>\")`
-    → `{:appended true :line \"…\"}`. Prepends one line to
-    `.brainyard/agents/research-agent/INDEX.md` (newest-first).
+AUTHORING (no helpers — write the markdown):
+- BOOTSTRAP: `bash mkdir -p` the dir, then write-file purpose.md / acceptance.md
+  (the CHECKLIST) / direction.md / dossier.md from templates.
+- findings.log: `write-file :append` one line per specialist call.
+- acceptance status flip: `update-file` the criterion line by stable id `aN`
+  (the shared todo substrate — index-free, see ## Todo substrate).
+- verdict.md + INDEX.md: `write-file` (INDEX with :append true).
 
 ## Typical flow (no specific iteration count required)
-1. iter 1 — bootstrap dossier (or resume if dir exists).
+1. iter 1 — bootstrap dossier via bash + write-file (or resume if dir exists).
 2. iter 2..N — pick a state-machine move per dossier state:
    EXPLORE / PLAN-AUTHOR / DECOMPOSE / EXECUTE / EVALUATE /
    SYNTHESIZE / CLARIFY / FINALIZE / UPDATE.
-3. After every specialist call: append findings.log (with sibling
-   dossier paths in :pointers); update research dossier frontmatter
-   artifacts to point at the latest sibling dossiers; refresh
-   ## Findings body.
-4. On termination: write verdict.md; append INDEX.md; populate :answer
-   with markdown report + `Saved research dossier: <path>` line.
+3. After every specialist call: append findings.log (with the sibling
+   `Saved …:` paths); flip acceptance statuses index-free in acceptance.md;
+   update dossier.md artifacts frontmatter; refresh ## Findings body.
+4. On termination: research$verdict-outcome → write verdict.md → append
+   INDEX.md → populate :answer with markdown report + `Saved research dossier:`.
 
 ## Anti-patterns
 - Skip bootstrap; jump to plan-agent → no acceptance → eval has nothing
@@ -758,9 +753,12 @@ fences instead of inlining mkdir / write-file / regex-replace logic.
                                        ;; Runtime config — for :max-iterations tuning
                                        common-cmds/runtime-commands
 
-                                       ;; research$* helpers — id / resume? /
-                                       ;; bootstrap / append-log / update-status /
-                                       ;; write-verdict / index-append
+                                       ;; research$* READ/DERIVE seams — id /
+                                       ;; resume? / verdict-outcome. The
+                                       ;; structured-construction helpers are
+                                       ;; retired; the dossier markdown is
+                                       ;; authored via the already-bound
+                                       ;; file-tools (write-file/update-file).
                                        research/research-helpers)))}
   :instruction instruction
   :tool-context tool-context)
