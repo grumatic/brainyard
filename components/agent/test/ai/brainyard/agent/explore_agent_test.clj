@@ -399,21 +399,6 @@
         (finally
           (delete-recursive (io/file tmp-dir)))))))
 
-(deftest auto-persist-bolded-marker-idempotent-test
-  (testing "a markdown-bolded **Saved exploration:** marker still counts as saved (no re-persist)"
-    (let [tmp-dir (make-tmp-dir)]
-      (try
-        (with-redefs [config/project-dir (constantly tmp-dir)]
-          (let [answer (str "## Findings\n\nGuard is in `components/agent/src/ai/x.clj`.\n\n"
-                            "**Saved exploration:** `.brainyard/agents/explore-agent/results/20260101-120000-x.md`\n")
-                r      (explore/explore-auto-persist
-                        {:agent (fake-explore-agent) :input "Q" :result {:answer answer}})]
-            (is (nil? r) "bolded marker → already saved → no :replace decision")))
-        (is (not (.exists (io/file tmp-dir ".brainyard/agents/explore-agent")))
-            "must not re-persist when the LLM already emitted a (bolded) marker")
-        (finally
-          (delete-recursive (io/file tmp-dir)))))))
-
 ;; ============================================================================
 ;; explore$reuse? — freshness rule (§7.4)
 ;; ============================================================================
@@ -547,6 +532,21 @@
     (process [_ _ _] nil)
     (get-tools [_] [])
     (get-state [_] {})))
+
+(deftest auto-persist-bolded-marker-idempotent-test
+  (testing "a markdown-bolded **Saved exploration:** marker still counts as saved (no re-persist)"
+    (let [tmp-dir (make-tmp-dir)]
+      (try
+        (with-redefs [config/project-dir (constantly tmp-dir)]
+          (let [answer (str "## Findings\n\nGuard is in `components/agent/src/ai/x.clj`.\n\n"
+                            "**Saved exploration:** `.brainyard/agents/explore-agent/results/20260101-120000-x.md`\n")
+                r      (explore/explore-auto-persist
+                        {:agent (fake-explore-agent) :input "Q" :result {:answer answer}})]
+            (is (nil? r) "bolded marker → already saved → no :replace decision")))
+        (is (not (.exists (io/file tmp-dir ".brainyard/agents/explore-agent")))
+            "must not re-persist when the LLM already emitted a (bolded) marker")
+        (finally
+          (delete-recursive (io/file tmp-dir)))))))
 
 (deftest auto-persist-trivial-skip-test
   (testing "trivial answer (< 1000 chars, zero entities) is NOT persisted"
