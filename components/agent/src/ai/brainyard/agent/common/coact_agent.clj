@@ -981,6 +981,12 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
           true
           (assoc :skill-substrate agent-roster/skill-substrate-protocol)
 
+          ;; Base MCP substrate — discover→inspect→invoke an external MCP server,
+          ;; inherited by every coact-derived agent. Cousin of the skill
+          ;; substrate. The MCP command family rides default-agent-roster.
+          true
+          (assoc :mcp-substrate agent-roster/mcp-substrate-protocol)
+
           (and user-instructions (not (str/blank? user-instructions)))
           (assoc :user-instructions
                  (str "## User Instructions (~/.brainyard/BRAINYARD.md)\n"
@@ -1009,7 +1015,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                        :critical-rules :large-results-playbook
                        :instruction :agent-context
                        :project-instructions :project-memory :skill-substrate
-                       :user-instructions :todo-substrate :exec-substrate
+                       :mcp-substrate :user-instructions
+                       :todo-substrate :exec-substrate
                        :footer]
         content (str/join "\n\n" (keep #(get sections %) section-order))]
     (if return-breakdown?

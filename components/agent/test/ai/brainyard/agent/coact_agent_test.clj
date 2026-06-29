@@ -357,6 +357,25 @@
       (is (not (contains? ids :skills$write)))
       (is (not (contains? ids :skills$install))))))
 
+(deftest mcp-substrate-test
+  (testing "coact-system-context always carries the ## Using MCP servers section"
+    (let [sys      (deref #'rca/coact-system-context)
+          {:keys [sections order]} (sys {:instruction "I"} :return-breakdown? true)]
+      (is (contains? sections :mcp-substrate))
+      (is (str/includes? (:mcp-substrate sections) "Using MCP servers"))
+      (is (str/includes? (:mcp-substrate sections) "mcp$server"))
+      ;; discover→use cousins together: skill-substrate then mcp-substrate
+      (is (< (.indexOf ^java.util.List order :skill-substrate)
+             (.indexOf ^java.util.List order :mcp-substrate)
+             (.indexOf ^java.util.List order :user-instructions)))))
+
+  (testing "the MCP command family rides default-agent-roster"
+    (let [ids (set (map (comp :id meta deref)
+                        (:tools ai.brainyard.agent.common.agent-roster/default-agent-roster)))]
+      (is (contains? ids :mcp$server))
+      (is (contains? ids :mcp$tools))
+      (is (contains? ids :mcp$lifecycle)))))
+
 ;; ============================================================================
 ;; 5. Action-Level Unit Tests
 ;; ============================================================================
@@ -1245,7 +1264,7 @@
         (is (contains? sections :user-instructions))
       ;; Order places BRAINYARD.md (+ project-memory) between :agent-context and :footer
         (is (= (vec (drop-while #(not= % :project-instructions) order))
-               [:project-instructions :project-memory :skill-substrate
+               [:project-instructions :project-memory :skill-substrate :mcp-substrate
                 :user-instructions :todo-substrate :exec-substrate :footer])))))
 
   (testing "coact-user-context returns blank content + empty sections when nothing supplied"

@@ -291,6 +291,10 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
           true
           (assoc :skill-substrate agent-roster/skill-substrate-protocol)
 
+          ;; Base MCP substrate — discover→inspect→invoke an MCP server, as coact.
+          true
+          (assoc :mcp-substrate agent-roster/mcp-substrate-protocol)
+
           (and user-instructions (not (str/blank? user-instructions)))
           (assoc :user-instructions
                  (str "## User Instructions (~/.brainyard/BRAINYARD.md)\n"
@@ -308,7 +312,8 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
                        :tools :tool-context
                        :instruction :agent-context
                        :project-instructions :project-memory :skill-substrate
-                       :user-instructions :todo-substrate :exec-substrate
+                       :mcp-substrate :user-instructions
+                       :todo-substrate :exec-substrate
                        :footer]
         content (str/join "\n\n" (keep #(get sections %) section-order))]
     (if return-breakdown?

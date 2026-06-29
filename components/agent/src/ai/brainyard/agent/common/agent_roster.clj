@@ -26,17 +26,20 @@
   (:require [ai.brainyard.agent.common.tools :as common-tools]
             [ai.brainyard.agent.common.commands :as common-cmds]
             [ai.brainyard.agent.common.skills :as skills]
+            [ai.brainyard.agent.mcp.commands :as mcp-cmds]
             [clojure.string :as str]))
 
 (def default-agent-roster
   "Shared coact/react `:agent-tools` value: all common deftool tools + all
-   common commands + the skills READ subset (discover/read/list/reload — the
-   skill substrate's USE half), de-duped. Shape matches the defagent
-   `:agent-tools` slot (`{:tools [...]}`). The skills WRITE subset stays on
-   skill-agent only."
+   common commands + the skills READ subset (the skill substrate's USE half) +
+   the MCP command family (mcp$server/tools/lifecycle — the MCP substrate's USE
+   half), de-duped. Shape matches the defagent `:agent-tools` slot
+   (`{:tools [...]}`). The skills WRITE subset stays on skill-agent only; MCP
+   side-effect safety is the tool-permission layer, not the roster."
   {:tools (vec (distinct (concat common-tools/all-common-tools
                                  common-cmds/all-common-commands
-                                 skills/skills-read-subset)))})
+                                 skills/skills-read-subset
+                                 mcp-cmds/all-mcp-commands)))})
 
 (def todo-substrate-protocol
   "A `## Todo substrate` system-context section, installed in BOTH base agents
@@ -135,6 +138,45 @@ RULES:
   skill-agent's job. If no skill fits and one clearly should exist, finish the
   task, then suggest routing to skill-agent to capture it.
 - CITE the skill you used (`skill:<backend>:<name>`) so the trail is auditable.")
+
+(def mcp-substrate-protocol
+  "A `## Using MCP servers` system-context section, installed in BOTH base agents
+   (coact + react) so the WHOLE fleet can USE configured MCP servers (external
+   tools/resources/prompts — Linear, Slack, GitHub, …) — not just explore/exec/
+   mcp-agent. Paired with the MCP command family on `default-agent-roster`
+   (mcp$server/tools/lifecycle). USE is discover→inspect→invoke; the heavier
+   management (:stop/:restart, troubleshooting, multi-server flows) stays
+   mcp-agent's. Cousin of the skill substrate (both are discover→use).
+
+   NOTE: MCP calls can have external SIDE EFFECTS. The intended safety boundary
+   is the platform's fail-closed tool-permission mechanism (gate every MCP call,
+   default :approval-required) — but that gate is NOT yet wired (the proxy
+   `mcp$tools :op :call` bypasses check-permission and `permission-config` is
+   empty). Until it lands (deferred per the redesign doc §5.4/§8), MCP writes are
+   ungated; the prose below tells the model to surface external actions and not
+   assume prior approval carries forward."
+  "## Using MCP servers (mcp substrate)
+Configured MCP servers expose external tools / resources / prompts (Linear, Slack,
+Jira, GitHub, Notion, …). When a task needs external data or an external action,
+use them:
+
+1. DISCOVER — `(mcp$server :op :list)`. If the relevant server is `:connected
+   false`, `(mcp$lifecycle :op :start :server-name \"<s>\")` to connect it.
+   (`:stop` / `:restart` and troubleshooting a flaky server → route to mcp-agent.)
+2. INSPECT — `(mcp$tools :op :list :server-name \"<s>\")` to learn the native
+   tool-name + input-schema. NEVER invent server / tool names or arg keys.
+3. INVOKE — call the native tool, EITHER via the proxy `(mcp$tools :op :call
+   :tool-calls [{:server-name \"<s>\" :tool-name \"<native>\" :tool-args {…per
+   schema…}}])` OR by its registered binding `mcp$<server>$<tool>`. Resources via
+   `:read-resource`, prompts via `:get-prompt`. Cite `mcp:<server>:<tool>`.
+
+RULES:
+- INSPECT before INVOKE — never guess a tool's args; read the input-schema.
+- A call that changes EXTERNAL state (create / update / post / send / delete) is a
+  deliberate side effect: surface what you're about to do, and do NOT assume a
+  prior approval carries to a new external call.
+- USE covers discover / inspect / invoke / `:start`. Heavier management
+  (`:stop`/`:restart`, troubleshooting, complex multi-server flows) → mcp-agent.")
 
 (def project-memory-protocol
   "Shared `## Project Memory` protocol prose, installed in BOTH base agents
