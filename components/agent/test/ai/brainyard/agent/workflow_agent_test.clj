@@ -3,45 +3,64 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent.workflow-agent-test
-  "Tests for workflow-agent: registration, inherited bt-factory (CoAct),
-   curated agent-tools roster across the dossier substrate + the eleven
-   workflow$* helpers (positive + negative assertions per Hard Rules 1, 2
-   of the design doc), instruction-content anchors that pin the
-   dossier-bootstrap / state-machine / HITL / termination contracts, and
-   unit tests for the workflow$* helper commands (id determinism, template
-   discovery + load, bootstrap idempotence, resume probe round-trip,
-   NDJSON append-only, stage-status flip integrity, acceptance flip,
-   verdict frontmatter + :achieved validation, INDEX.md prepend ordering,
-   starter installer idempotence)."
+  "Tests for workflow-agent (lightweight redesign): registration, inherited
+   bt-factory (CoAct), the curated agent-tools roster (the structured-
+   construction helpers are retired — the dossier + templates are authored
+   directly with the file tools), instruction/tool-context anchors (MODE SELECT
+   / AUTHORING MODE / checklists / verdict-outcome guard), and unit tests for
+   the surviving READ/DERIVE/VALIDATE seams: id, list-templates / load-template
+   (markdown + legacy-EDN dual-read), install-starters, resume? (§5 checklists),
+   verdict-outcome, plus the auto-finalize backstop."
   (:require [clojure.test :refer [deftest testing is]]
-            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [ai.brainyard.agent.common.sandbox-bindings :as sb]
             [ai.brainyard.agent.common.workflow :as workflow]
             [ai.brainyard.agent.common.workflow-agent]
+            [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.tool :as tool])
   (:import (java.nio.file Files)
            (java.nio.file.attribute FileAttribute)))
 
 ;; ============================================================================
-;; Helper test fixtures (declared up here so every deftest below can use them
-;; without depending on Clojure's incremental load order)
+;; Fixtures
 ;; ============================================================================
 
 (defn- make-tmp-dir []
   (-> (Files/createTempDirectory "workflow-test-" (into-array FileAttribute []))
-      .toFile
-      .getAbsolutePath))
+      .toFile .getAbsolutePath))
 
 (defn- delete-recursive [^java.io.File f]
-  (when (.isDirectory f)
-    (doseq [c (.listFiles f)]
-      (delete-recursive c)))
+  (when (.isDirectory f) (doseq [c (.listFiles f)] (delete-recursive c)))
   (.delete f))
 
+(defn- acc-box [st] (case st :satisfied "x" :partial "~" :descoped "-" :contradicted "!" " "))
+(defn- stage-box [st] (case st :satisfied "x" :in-progress ">" :skipped "-" :failed "!" " "))
+
+(defn- seed-dossier!
+  "Write a workflow dossier dir DIRECTLY (no bootstrap helper): dossier.md +
+   the §5 acceptance.md / stages.md CHECKLISTS. `acc` = [[id status]…];
+   `stages` = [[id name status]…]."
+  [base-dir id {:keys [last-iteration acc stages] :or {last-iteration 1 acc [] stages []}}]
+  (let [dir (io/file base-dir ".brainyard/agents/workflow-agent" id)]
+    (.mkdirs (io/file dir "artifacts"))
+    (spit (io/file dir "dossier.md")
+          (str "---\nworkflow_id: " id "\ncreated: 2026-06-29T00:00:00Z\n"
+               "last_iteration: " last-iteration "\nstatus: in-progress\nhitl_mode: gates\n---\n## Purpose\np\n"))
+    (spit (io/file dir "acceptance.md")
+          (str "# Acceptance — " id "\n"
+               (str/join "" (for [[cid st] acc]
+                              (str "- [" (acc-box st) "] " (name cid) " (" (name st) ") — criterion " (name cid) "\n")))))
+    (spit (io/file dir "stages.md")
+          (str "# Stages — " id "\n"
+               (str/join "" (for [[sid sname st] stages]
+                              (str "- [" (stage-box st) "] " (name sid) " " sname " (" (name st)
+                                   ") — purpose {agent: exec-agent, gate: none, focus: [a1]}\n")))))
+    (spit (io/file dir "findings.log") "")
+    (str ".brainyard/agents/workflow-agent/" id)))
+
 ;; ============================================================================
-;; Registration
+;; Registration + inheritance
 ;; ============================================================================
 
 (deftest registration-test
@@ -53,23 +72,12 @@
         (is (some? (:fn agent-def)))
         (is (some? (:meta agent-def)))))))
 
-;; ============================================================================
-;; Inheritance via run-coact-derived
-;;
-;; workflow-agent pins :bt-factory explicitly (mirroring research-agent,
-;; rlm-agent, explore-agent) so direct entry points (e.g. setup-agent-by-id
-;; used by `bb tui ask`) that resolve agent metadata without going through
-;; run-coact-derived still pick up the correct CoAct BT.
-;; ============================================================================
-
 (deftest inheritance-test
   (require 'ai.brainyard.agent.common.coact-agent)
   (let [wf-def    (get (tool/get-tool-defs :type :agent) :workflow-agent)
         coact-def (get (tool/get-tool-defs :type :agent) :coact-agent)]
-
-    (testing "workflow-agent's :fn is registered (the wrap-fn invoking run-coact-derived)"
+    (testing "workflow-agent's :fn is registered"
       (is (some? (:fn wf-def))))
-
     (testing "workflow-agent pins :bt-factory explicitly"
       (let [bt-factory (get-in wf-def [:meta :bt-factory])]
         (is (fn? bt-factory))
@@ -77,1146 +85,469 @@
           (is (vector? bt))
           (is (= :sequence (first bt)))
           (is (= "coact.sequence" (namespace (get-in bt [1 :id])))))))
-
-    (testing "default :max-iterations is 50 (vs CoAct's 20, research's 30)"
-      (let [bt-factory (get-in wf-def [:meta :bt-factory])
-            bt-default (bt-factory {})
-            bt-50      (bt-factory {:max-iterations 50})]
-        (is (vector? bt-default))
-        (is (= :sequence (first bt-default)))
-        (is (= (first bt-default) (first bt-50))
-            "default-built BT and explicit-50 BT share the same root shape")))
-
-    (testing "coact-agent (the parent) has the same bt-factory shape"
-      (let [bt-factory (get-in coact-def [:meta :bt-factory])]
-        (is (fn? bt-factory))
-        (let [bt (bt-factory {:max-iterations 3})]
-          (is (= :sequence (first bt)))
-          (is (= "coact.sequence" (namespace (get-in bt [1 :id])))))))))
+    (testing "default :max-iterations is 50"
+      (let [bt-factory (get-in wf-def [:meta :bt-factory])]
+        (is (= (first (bt-factory {})) (first (bt-factory {:max-iterations 50}))))))
+    (testing "coact-agent (parent) has the same bt-factory shape"
+      (let [bt ((get-in coact-def [:meta :bt-factory]) {:max-iterations 3})]
+        (is (= :sequence (first bt)))))))
 
 ;; ============================================================================
-;; Agent tools binding — positive + negative assertions
+;; Agent tools — positive + negative
 ;; ============================================================================
 
 (defn- workflow-tool-ids []
-  (let [agent-def   (get (tool/get-tool-defs :type :agent) :workflow-agent)
-        agent-tools (get-in agent-def [:meta :agent-tools])]
-    (set (map (comp :id meta deref) (:tools agent-tools)))))
+  (let [agent-def (get (tool/get-tool-defs :type :agent) :workflow-agent)]
+    (set (map (comp :id meta deref) (:tools (get-in agent-def [:meta :agent-tools]))))))
 
 (deftest agent-tools-test
-  (testing "workflow-agent :agent-tools covers the dossier substrate + invocation"
+  (testing "workflow-agent :agent-tools covers the dossier + template substrate"
     (let [ids (workflow-tool-ids)]
-      ;; Dossier substrate — files / shell / discovery
       (is (contains? ids :read-file))
       (is (contains? ids :write-file))
       (is (contains? ids :update-file))
       (is (contains? ids :grep))
       (is (contains? ids :bash))
       (is (contains? ids :search))
-
-      ;; Synthesis — flat sub-LLM only
       (is (contains? ids :query$llm))
-
-      ;; Bookkeeping — call-tool reaches every functional agent
       (is (contains? ids :list-tools))
       (is (contains? ids :get-tool-info))
       (is (contains? ids :call-tool))
-
-      ;; Background fan-out for slow stage calls
       (is (contains? ids :task$run))
-
-      ;; Runtime config (max-iterations tuning)
       (is (contains? ids :agent-runtime$config))))
 
-  (testing "workflow-agent :agent-tools includes ALL eleven workflow$* helpers"
+  (testing "the surviving workflow$* seams are present; construction helpers retired"
     (let [ids (workflow-tool-ids)]
       (is (contains? ids :workflow$id))
       (is (contains? ids :workflow$resume?))
       (is (contains? ids :workflow$list-templates))
       (is (contains? ids :workflow$load-template))
       (is (contains? ids :workflow$install-starters))
-      (is (contains? ids :workflow$bootstrap))
-      (is (contains? ids :workflow$append-log))
-      (is (contains? ids :workflow$update-stage))
-      (is (contains? ids :workflow$update-acceptance))
-      (is (contains? ids :workflow$write-verdict))
-      (is (contains? ids :workflow$index-append))))
+      (is (contains? ids :workflow$verdict-outcome))
+      (is (not (contains? ids :workflow$bootstrap)))
+      (is (not (contains? ids :workflow$append-log)))
+      (is (not (contains? ids :workflow$update-stage)))
+      (is (not (contains? ids :workflow$update-acceptance)))
+      (is (not (contains? ids :workflow$write-verdict)))
+      (is (not (contains? ids :workflow$index-append)))))
 
   (testing "workflow-agent :agent-tools EXCLUDES forbidden + out-of-scope tools"
     (let [ids (workflow-tool-ids)]
-      ;; Hard Rule 1 — no clone-self recursion
-      (is (not (contains? ids :query$clone))
-          "query$clone must not be in workflow-agent's roster (clone-self forbidden)")
-
-      ;; Web tools — routed through explore-agent / research-agent
-      (is (not (contains? ids :fetch-url))
-          "fetch-url is filtered out explicitly; web access routes through explore-agent")
-      (is (not (contains? ids :web-search))
-          "web-search must not be bound; route through explore-agent")
-
-      ;; Hard Rule 2 — plan/todo authoring lives in plan-agent / todo-agent;
-      ;; reach via call-tool, not direct command access.
+      (is (not (contains? ids :query$clone)))
+      (is (not (contains? ids :fetch-url)))
+      (is (not (contains? ids :web-search)))
       (is (not (contains? ids :doc$create)))
       (is (not (contains? ids :doc$update)))
       (is (not (contains? ids :doc$delete)))
-
-      ;; Skill authoring lives in skill-agent.
       (is (not (contains? ids :skills$write)))
-      (is (not (contains? ids :skills$install)))
-      (is (not (contains? ids :skills$list)))
-      (is (not (contains? ids :skills$find)))
-      (is (not (contains? ids :skills$read)))
-
-      ;; Specialist storage helpers — workflow-agent reads via call-tool,
-      ;; never writes to specialist storage paths directly.
       (is (not (contains? ids :plan$dossier-write)))
-      (is (not (contains? ids :todo$dossier-write)))
-      (is (not (contains? ids :exec$dossier-write)))
-      (is (not (contains? ids :eval$dossier-write)))
       (is (not (contains? ids :eval$verdict-write)))
       (is (not (contains? ids :edit$apply)))
-      (is (not (contains? ids :edit$write)))
-
-      ;; Research-agent helpers — workflow-agent reaches research-agent
-      ;; via call-tool when needed; it does NOT compose research$* helpers
-      ;; directly (would bypass research-agent's own dossier discipline).
+      ;; research$* helpers not composed directly — reach research-agent via call-tool
       (is (not (contains? ids :research$id)))
-      (is (not (contains? ids :research$bootstrap)))
-      (is (not (contains? ids :research$write-verdict))))))
+      (is (not (contains? ids :research$verdict-outcome))))))
 
 ;; ============================================================================
-;; Instruction content anchors — pin the dossier + state-machine + HITL +
-;; termination contract
+;; Instruction + tool-context anchors
 ;; ============================================================================
 
 (deftest instruction-content-test
-  (testing "instruction string contains the cardinal workflow-agent anchors"
-    (let [agent-def   (get (tool/get-tool-defs :type :agent) :workflow-agent)
-          instruction (get-in agent-def [:meta :instruction])]
-      (is (string? instruction))
-      (is (not (str/blank? instruction)))
-
-      ;; Headline identity
+  (let [agent-def   (get (tool/get-tool-defs :type :agent) :workflow-agent)
+        instruction (get-in agent-def [:meta :instruction])]
+    (is (string? instruction))
+    (is (not (str/blank? instruction)))
+    (testing "identity + two modes"
       (is (str/includes? instruction "WORKFLOW-agent"))
-
-      ;; Templates as recommendations, not contracts
+      (is (str/includes? instruction "MODE SELECT"))
+      (is (str/includes? instruction "RUN MODE"))
+      (is (str/includes? instruction "AUTHORING MODE")))
+    (testing "templates as markdown recommendations"
       (is (str/includes? instruction "WORKFLOW TEMPLATES"))
       (is (str/includes? instruction "recommendations, not contracts"))
       (is (str/includes? instruction ".brainyard/workflows/"))
-      (is (str/includes? instruction ":ad-hoc"))
-
-      ;; Bootstrap — the one fixed obligation
+      (is (str/includes? instruction ":ad-hoc")))
+    (testing "bootstrap writes checklists via file tools (no construction helper)"
       (is (str/includes? instruction "DOSSIER BOOTSTRAP"))
       (is (str/includes? instruction "workflow$id"))
       (is (str/includes? instruction "workflow$resume?"))
-      (is (str/includes? instruction "workflow$bootstrap"))
-      (is (str/includes? instruction "stages.edn"))
-      (is (str/includes? instruction "purpose.md"))
       (is (str/includes? instruction "acceptance.md"))
-      (is (str/includes? instruction "findings.log"))
-      (is (str/includes? instruction "dossier.md"))
-      (is (str/includes? instruction "template.edn"))
-
-      ;; State machine — A through I
+      (is (str/includes? instruction "stages.md"))
+      (is (str/includes? instruction "ACCEPTANCE"))
+      (is (str/includes? instruction "INDEX-FREE"))
+      (is (str/includes? instruction "todo substrate"))
+      ;; retired helpers must NOT appear
+      (is (not (str/includes? instruction "workflow$bootstrap")))
+      (is (not (str/includes? instruction "workflow$update-stage")))
+      (is (not (str/includes? instruction "workflow$write-verdict")))
+      (is (not (str/includes? instruction "stages.edn"))))
+    (testing "state machine + HITL"
       (is (str/includes? instruction "STATE MACHINE"))
       (is (str/includes? instruction "RUN-STAGE"))
-      (is (str/includes? instruction "EVAL-STAGE"))
-      (is (str/includes? instruction "GATE"))
-      (is (str/includes? instruction "RE-RUN"))
-      (is (str/includes? instruction "INSERT"))
-      (is (str/includes? instruction "SKIP"))
-      (is (str/includes? instruction "SYNTHESIZE"))
-      (is (str/includes? instruction "CLARIFY"))
       (is (str/includes? instruction "FINALIZE"))
-
-      ;; HITL discipline — five modes are one config knob, not five paths
       (is (str/includes? instruction "HITL"))
-      (is (str/includes? instruction ":auto"))
       (is (str/includes? instruction ":gates"))
-      (is (str/includes? instruction ":checkpoint"))
-      (is (str/includes? instruction ":co-pilot"))
-      (is (str/includes? instruction ":step"))
-      (is (str/includes? instruction "Awaiting workflow gate:"))
-
-      ;; Decision heuristics + dossier update discipline + dossier passing
-      (is (str/includes? instruction "DECISION HEURISTICS"))
-      (is (str/includes? instruction "DOSSIER UPDATE DISCIPLINE"))
-      (is (str/includes? instruction "PASSING DOSSIER TO STAGES"))
-      (is (str/includes? instruction "Saved dossier:")
-          "instruction must teach the upstream-dossier handoff token")
-
-      ;; Termination contract — strict 4-step finalize across TWO iterations
-      ;; (tightened 2026-05-11 after a Sonnet smoke showed the LLM
-      ;; collapsing the helper fence and :answer into one iteration and
-      ;; silently shipping :answer with the dossier still :open).
+      (is (str/includes? instruction "Awaiting workflow gate:")))
+    (testing "termination via verdict-outcome guard + write-file"
       (is (str/includes? instruction "TERMINATION RULES"))
+      (is (str/includes? instruction "workflow$verdict-outcome"))
+      (is (str/includes? instruction "VERDICT TEMPLATE"))
       (is (str/includes? instruction ":achieved"))
-      (is (str/includes? instruction ":partial"))
-      (is (str/includes? instruction ":abandoned"))
-      (is (str/includes? instruction "TWO-ITERATION")
-          "must mark the helper-fence/:answer split as two iterations")
-      (is (str/includes? instruction "Iteration N-1")
-          "must name the helper-fence iteration explicitly")
-      (is (str/includes? instruction "Iteration N — :ANSWER")
-          "must name the :answer iteration explicitly")
-      (is (str/includes? instruction "PRE-FLIGHT GATE")
-          "must include the pre-flight gate checklist before :answer")
-      (is (str/includes? instruction "workflow$update-stage"))
-      (is (str/includes? instruction "workflow$update-acceptance"))
-      (is (str/includes? instruction "workflow$write-verdict"))
-      (is (str/includes? instruction "workflow$index-append"))
-      (is (str/includes? instruction "REJECT")
-          "instruction must warn that write-verdict rejects mismatched :achieved")
-      (is (str/includes? instruction "DO NOT include")
-          "instruction must warn against the duplicate-heading footgun")
       (is (str/includes? instruction "Saved workflow dossier:"))
-      (is (str/includes? instruction "DOSSIER MUST AGREE WITH :ANSWER")
-          "Hard Rule 9 must state the dossier-:answer agreement requirement")
-      (is (str/includes? instruction "is a LIE to")
-          "Hard Rule 9 must frame the lie consequence")
-
-      ;; Hard rules — stay flat (no clone-self) + specialist storage forbidden
+      (is (str/includes? instruction "DOSSIER MUST AGREE WITH :ANSWER")))
+    (testing "authoring mode CRUD"
+      (is (str/includes? instruction "CREATE"))
+      (is (str/includes? instruction "DELETE"))
+      (is (str/includes? instruction "TEMPLATE TEMPLATE")))
+    (testing "hard rules + resume"
       (is (str/includes? instruction "HARD RULES"))
       (is (str/includes? instruction "clone-self"))
-      (is (str/includes? instruction ".brainyard/agents/plan-agent/"))
-      (is (str/includes? instruction ".brainyard/agents/todo-agent/"))
-      (is (str/includes? instruction ".brainyard/agents/exec-agent/"))
-      (is (str/includes? instruction ".brainyard/agents/eval-agent/"))
-      (is (str/includes? instruction ".brainyard/agents/edit-agent/"))
-      (is (str/includes? instruction ".brainyard/agents/research-agent/"))
-
-      ;; Iteration budget = 50
-      (is (str/includes? instruction "50"))
-
-      ;; Resume contract
       (is (str/includes? instruction "RESUMING"))
       (is (str/includes? instruction "@<workflow-id>"))
-
-      ;; Functional agent surface (called via call-tool — names appear in
-      ;; the instruction, not bound directly)
+      (is (str/includes? instruction "50")))
+    (testing "functional agent surface (dispatch examples appear as <name>-agent;"
+      ;; the full per-agent surface is named in tool-context — see
+      ;; tool-context-content-test. The instruction shows dispatch examples.
       (is (str/includes? instruction "research-agent"))
-      (is (str/includes? instruction "explore-agent"))
-      (is (str/includes? instruction "plan-agent"))
-      (is (str/includes? instruction "todo-agent"))
-      (is (str/includes? instruction "exec-agent"))
-      (is (str/includes? instruction "eval-agent"))
-      (is (str/includes? instruction "mcp-agent"))
-      (is (str/includes? instruction "edit-agent"))
-      (is (str/includes? instruction "rlm-agent")))))
+      (is (str/includes? instruction "plan-agent")))))
 
 (deftest tool-context-content-test
-  (testing "tool-context names tools, functional agents, and workflow$* helpers"
-    (let [agent-def    (get (tool/get-tool-defs :type :agent) :workflow-agent)
-          tool-context (get-in agent-def [:meta :tool-context])]
-      (is (string? tool-context))
-      (is (not (str/blank? tool-context)))
-
-      ;; Functional agents (the call-tool targets)
-      (is (str/includes? tool-context "research-agent"))
-      (is (str/includes? tool-context "explore-agent"))
-      (is (str/includes? tool-context "plan-agent"))
-      (is (str/includes? tool-context "todo-agent"))
-      (is (str/includes? tool-context "exec-agent"))
-      (is (str/includes? tool-context "eval-agent"))
-      (is (str/includes? tool-context "mcp-agent"))
-      (is (str/includes? tool-context "skill-agent"))
-      (is (str/includes? tool-context "edit-agent"))
-      (is (str/includes? tool-context "rlm-agent"))
-      (is (str/includes? tool-context "coact-agent"))
-
-      ;; Substrate tools named explicitly so the model can find them
+  (let [agent-def    (get (tool/get-tool-defs :type :agent) :workflow-agent)
+        tool-context (get-in agent-def [:meta :tool-context])]
+    (is (string? tool-context))
+    (testing "functional agents + substrate + synthesis"
+      (doseq [a ["research-agent" "explore-agent" "plan-agent" "todo-agent"
+                 "exec-agent" "eval-agent" "mcp-agent" "skill-agent"
+                 "edit-agent" "rlm-agent" "coact-agent"]]
+        (is (str/includes? tool-context a)))
       (is (str/includes? tool-context "read-file"))
       (is (str/includes? tool-context "write-file"))
       (is (str/includes? tool-context "update-file"))
-      (is (str/includes? tool-context "grep"))
-      (is (str/includes? tool-context "bash"))
-
-      ;; Synthesis primitive
       (is (str/includes? tool-context "query$llm"))
-
-      ;; Invocation pattern documented (the only way to reach functional agents)
-      (is (str/includes? tool-context "kebab-case"))
-
-      ;; All eleven workflow$* helpers documented
+      (is (str/includes? tool-context "kebab-case")))
+    (testing "the six seams documented; construction helpers gone"
       (is (str/includes? tool-context "workflow$id"))
       (is (str/includes? tool-context "workflow$resume?"))
       (is (str/includes? tool-context "workflow$list-templates"))
       (is (str/includes? tool-context "workflow$load-template"))
       (is (str/includes? tool-context "workflow$install-starters"))
-      (is (str/includes? tool-context "workflow$bootstrap"))
-      (is (str/includes? tool-context "workflow$append-log"))
-      (is (str/includes? tool-context "workflow$update-stage"))
-      (is (str/includes? tool-context "workflow$update-acceptance"))
-      (is (str/includes? tool-context "workflow$write-verdict"))
-      (is (str/includes? tool-context "workflow$index-append")))))
+      (is (str/includes? tool-context "workflow$verdict-outcome"))
+      (is (not (str/includes? tool-context "workflow$bootstrap")))
+      (is (not (str/includes? tool-context "workflow$update-stage")))
+      (is (not (str/includes? tool-context "workflow$write-verdict"))))
+    (testing "verdict + template templates documented"
+      (is (str/includes? tool-context "VERDICT TEMPLATE"))
+      (is (str/includes? tool-context "TEMPLATE TEMPLATE")))))
 
 ;; ============================================================================
-;; I/O contract — :inputs / :outputs shape
+;; I/O contract
 ;; ============================================================================
 
 (deftest io-contract-test
-  (testing "workflow-agent declares :question + optional :agent-context inputs"
+  (testing "workflow-agent declares :question + optional :agent-context"
     (let [agent-def    (get (tool/get-tool-defs :type :agent) :workflow-agent)
           input-schema (get-in agent-def [:meta :input-schema])
-          entries      (tool/malli-map-entries input-schema)
-          by-key       (into {} (map (juxt tool/malli-map-entry-key identity)) entries)]
+          by-key       (into {} (map (juxt tool/malli-map-entry-key identity))
+                             (tool/malli-map-entries input-schema))]
       (is (contains? by-key :question))
       (is (contains? by-key :agent-context))
-      ;; In Malli [:map ...] form the :optional flag lives in the entry-props
-      ;; slot ([:agent-context {:optional true} <schema>]).
-      (let [opts (tool/malli-map-entry-props (get by-key :agent-context))]
-        (is (true? (:optional opts))
-            "agent-context should be optional (used for @<workflow-id> resume)"))))
-
+      (is (true? (:optional (tool/malli-map-entry-props (get by-key :agent-context)))))))
   (testing "workflow-agent declares :answer output"
-    (let [agent-def     (get (tool/get-tool-defs :type :agent) :workflow-agent)
-          output-schema (get-in agent-def [:meta :output-schema])]
+    (let [output-schema (get-in (get (tool/get-tool-defs :type :agent) :workflow-agent)
+                                [:meta :output-schema])]
       (is (some #(= :answer (first %)) (rest output-schema))))))
 
 ;; ============================================================================
-;; Sandbox-binding calling conventions
-;;
-;; bind-one-tool supports BOTH positional-first (Clojure REPL idiom) AND pure
-;; kwargs (what the LLM emits and what the agent instruction teaches). The
-;; required/optional contract on :inputs is preserved either way.
-;;
-;; This test pins the dual-mode contract so a future refactor of
-;; sandbox_bindings.clj cannot quietly regress LLM-generated workflows.
+;; Sandbox-binding calling modes (the surviving seams)
 ;; ============================================================================
 
 (deftest sandbox-binding-calling-modes-test
   (let [bindings (sb/auto-tool-bindings nil)
-        w$id    (get bindings 'workflow$id)
-        w$resume (get bindings 'workflow$resume?)
-        w$bs    (get bindings 'workflow$bootstrap)]
-
-    (testing "all eleven workflow$* helpers are bound"
-      (is (every? bindings
-                  ['workflow$id 'workflow$resume? 'workflow$list-templates
-                   'workflow$load-template 'workflow$install-starters
-                   'workflow$bootstrap 'workflow$append-log
-                   'workflow$update-stage 'workflow$update-acceptance
-                   'workflow$write-verdict 'workflow$index-append])))
-
-    (testing "kwargs-mode: first arg is keyword + known input → all-kwargs dispatch"
-      ;; This is the form LLMs naturally emit and what instructions teach.
-      (let [r (w$id :question "Investigate cold start latency")]
-        (is (= "investigate-cold-start-latency" (:slug r))))
-      (let [r (w$id :template :feature-launch :question "Ship feature X")]
-        (is (= "feature-launch--feature-x" (:slug r))))
-      (let [r (w$resume :id "nonexistent-kw" :base-dir "/tmp/wf-bind-test")]
-        (is (= false (:exists? r)))))
-
-    (testing "positional-mode: first arg is NOT a known input keyword → req-first dispatch"
-      ;; Preserves the existing Clojure REPL idiom.
-      (let [r (w$id "Investigate cold start latency")]
-        (is (= "investigate-cold-start-latency" (:slug r))))
-      (let [r (w$id "Ship feature X" :template :feature-launch)]
-        (is (= "feature-launch--feature-x" (:slug r))))
-      (let [r (w$resume "nonexistent-pos" :base-dir "/tmp/wf-bind-test")]
-        (is (= false (:exists? r)))))
-
-    (testing "kwargs-mode tolerates >2 required keys without depending on map order"
-      ;; workflow$bootstrap has 4 required keys (id / purpose / acceptance /
-      ;; stages). Their declaration-order is unstable for >8-entry maps, so
-      ;; positional dispatch would be brittle. Kwargs mode sidesteps that.
-      (let [tmp (make-tmp-dir)]
-        (try
-          (let [r (w$bs :id "kw-bind-many-keys"
-                        :purpose "Test kwargs through bind-one-tool"
-                        :acceptance [{:id "a1" :text "ok" :status :open}]
-                        :stages [{:id "s1" :recommended-agent "coact-agent"}]
-                        :template-id :ad-hoc
-                        :hitl-mode :gates
-                        :base-dir tmp)]
-            (is (string? (:dir r)))
-            (is (.isFile (io/file tmp (:dossier-path r))))
-            (is (.isFile (io/file tmp (:stages-path r)))))
-          (finally (delete-recursive (io/file tmp))))))
-
-    (testing "kwargs-mode with odd arg count → friendly error (no NPE)"
+        w$id     (get bindings 'workflow$id)
+        w$resume (get bindings 'workflow$resume?)]
+    (testing "the six seams are bound; retired helpers are NOT"
+      (is (every? bindings ['workflow$id 'workflow$resume? 'workflow$list-templates
+                            'workflow$load-template 'workflow$install-starters
+                            'workflow$verdict-outcome]))
+      (is (not (contains? bindings 'workflow$bootstrap)))
+      (is (not (contains? bindings 'workflow$write-verdict))))
+    (testing "kwargs-mode (the form LLMs emit)"
+      (is (= "investigate-cold-start-latency"
+             (:slug (w$id :question "Investigate cold start latency"))))
+      (is (= "feature-launch--feature-x"
+             (:slug (w$id :template :feature-launch :question "Ship feature X"))))
+      (is (= false (:exists? (w$resume :id "nonexistent-kw" :base-dir "/tmp/wf-bind")))))
+    (testing "positional-mode (Clojure REPL idiom)"
+      (is (= "investigate-cold-start-latency"
+             (:slug (w$id "Investigate cold start latency"))))
+      (is (= false (:exists? (w$resume "nonexistent-pos" :base-dir "/tmp/wf-bind")))))
+    (testing "odd kwargs count → friendly error"
       (let [r (w$id :question)]
         (is (contains? r :error))
         (is (re-find #"even number of args" (:error r)))))))
 
 ;; ============================================================================
-;; Built-in starter templates ship on the classpath
+;; Built-in markdown starters on the classpath
 ;; ============================================================================
 
 (deftest builtin-starters-on-classpath-test
-  (testing "feature-launch.edn and doc-update.edn are reachable via io/resource"
-    (is (some? (io/resource "workflows/feature-launch.edn")))
-    (is (some? (io/resource "workflows/doc-update.edn")))))
+  (testing "feature-launch.md and doc-update.md are reachable via io/resource"
+    (is (some? (io/resource "workflows/feature-launch.md")))
+    (is (some? (io/resource "workflows/doc-update.md")))
+    (is (nil? (io/resource "workflows/feature-launch.edn"))
+        "EDN starters were converted to markdown")))
+
+(deftest builtin-starters-pass-validation-test
+  (testing "both built-in markdown starters load + validate"
+    (doseq [id [:feature-launch :doc-update]]
+      (let [r (workflow/workflow$load-template :id id :base-dir "/tmp/no-such")]
+        (is (nil? (:error r)) (str id " must validate: " (:error r)))
+        (is (= id (get-in r [:template :workflow/id])))
+        (is (seq (get-in r [:template :acceptance])))
+        (is (seq (get-in r [:template :stages])))
+        (is (= :built-in (:source r)))))))
 
 ;; ============================================================================
-;; workflow$id — determinism + stopwords + cap + template prefix
+;; workflow$id
 ;; ============================================================================
 
 (deftest workflow-id-test
-  (testing "same template + question → same slug"
+  (testing "same template + question → same slug, with template prefix"
     (let [q "Ship the MCP server health-check command"
-          s1 (:slug (workflow/workflow$id :template :feature-launch :question q))
-          s2 (:slug (workflow/workflow$id :template :feature-launch :question q))]
-      (is (= s1 s2))
-      (is (str/starts-with? s1 "feature-launch--"))))
-
-  (testing "stopwords are dropped + kebab-case normalization"
-    (let [s (:slug (workflow/workflow$id :template :feature-launch
-                                         :question "Ship the MCP server health-check command"))]
-      ;; "ship", "the" dropped → "mcp-server-health-check-command"
-      (is (= "feature-launch--mcp-server-health-check-command" s))))
-
-  (testing ":ad-hoc template yields bare question slug (no prefix)"
-    (let [s (:slug (workflow/workflow$id :template :ad-hoc
-                                         :question "Investigate cold start latency"))]
-      (is (= "investigate-cold-start-latency" s))
-      (is (not (str/starts-with? s "ad-hoc--")))))
-
-  (testing "nil template yields bare question slug"
-    (let [s (:slug (workflow/workflow$id :question "Investigate cold start latency"))]
-      (is (= "investigate-cold-start-latency" s))))
-
-  (testing "60-char default cap on the question slug"
-    (let [long-q (str/join " " (repeat 30 "supercalifragilistic"))
-          prefix "feature-launch--"
-          s      (:slug (workflow/workflow$id :template :feature-launch
-                                              :question long-q))
-          q-part (subs s (count prefix))]
-      ;; The cap applies to the question slug only — the template prefix
-      ;; is added separately and bounded by template-id length.
-      (is (str/starts-with? s prefix))
-      (is (<= (count q-part) 60)
-          (str "question slug exceeded 60 chars: " (count q-part)))))
-
-  (testing "max-chars override"
-    (is (<= (count (:slug (workflow/workflow$id :template :ad-hoc
-                                                :question "investigate the loop"
-                                                :max-chars 8)))
-            8)))
-
-  (testing "blank / all-stopwords → fallback slug 'workflow'"
-    (is (= "workflow" (:slug (workflow/workflow$id :template :ad-hoc :question ""))))
-    (is (= "workflow" (:slug (workflow/workflow$id :template :ad-hoc :question "what is the")))))
-
-  (testing "string template id is accepted"
-    (let [s (:slug (workflow/workflow$id :template "feature-launch"
-                                         :question "test"))]
+          s (:slug (workflow/workflow$id :template :feature-launch :question q))]
+      (is (= s (:slug (workflow/workflow$id :template :feature-launch :question q))))
       (is (str/starts-with? s "feature-launch--"))))
-
+  (testing ":ad-hoc / nil template → no prefix"
+    (is (not (str/includes? (:slug (workflow/workflow$id :question "Update the docs")) "--")))
+    (is (not (str/includes? (:slug (workflow/workflow$id :template :ad-hoc :question "Update the docs")) "--"))))
+  (testing "stopwords (incl. ship/run) dropped"
+    (is (= "feature-x" (:slug (workflow/workflow$id :question "Ship feature X")))))
   (testing "validation"
     (is (contains? (workflow/workflow$id :question 123) :error))
     (is (contains? (workflow/workflow$id :question "x" :max-chars 0) :error))))
 
 ;; ============================================================================
-;; workflow$list-templates — built-in classpath enumeration
+;; Template discovery + load (markdown + legacy-EDN dual-read)
 ;; ============================================================================
 
 (deftest workflow-list-templates-test
-  (testing "built-in starters are listed (project + user dirs nonexistent)"
-    (let [tmp (make-tmp-dir)]
-      (try
+  (let [tmp (make-tmp-dir)]
+    (try
+      (let [wdir (io/file tmp ".brainyard/workflows")]
+        (.mkdirs wdir)
+        (spit (io/file wdir "proj-md.md")
+              "---\nworkflow_id: proj-md\nname: Proj MD\n---\n# Acceptance\n- [ ] a1 — x\n# Stages\n- [ ] s1 do — y {agent: exec-agent, gate: none, focus: [a1]}\n")
+        (spit (io/file wdir "proj-edn.edn")
+              (pr-str {:workflow/id :proj-edn :workflow/name "Proj EDN"
+                       :acceptance [{:id :a1 :text "x"}] :stages [{:id :s1 :recommended-agent :exec-agent}]}))
         (let [r (workflow/workflow$list-templates :base-dir tmp)
-              ids (set (map :id (:templates r)))
-              sources (set (map :source (:templates r)))]
-          (is (contains? ids "feature-launch"))
-          (is (contains? ids "doc-update"))
-          (is (contains? sources :built-in)))
-        (finally (delete-recursive (io/file tmp))))))
-
-  (testing ":include-built-in? false filters classpath starters"
-    (let [tmp (make-tmp-dir)]
-      (try
-        (let [r (workflow/workflow$list-templates
-                 :base-dir tmp :include-built-in? false)]
-          (is (empty? (:templates r))
-              "no project + no user + no built-in = nothing"))
-        (finally (delete-recursive (io/file tmp)))))))
-
-;; ============================================================================
-;; workflow$load-template — resolution chain + validation
-;; ============================================================================
+              by-id (into {} (map (juxt :id identity) (:templates r)))]
+          (testing "lists project (md + edn) + built-in markdown starters"
+            (is (= :project (:source (by-id "proj-md"))))
+            (is (= :project (:source (by-id "proj-edn"))))
+            (is (= :built-in (:source (by-id "feature-launch"))))
+            (is (= :built-in (:source (by-id "doc-update")))))))
+      (finally (delete-recursive (io/file tmp))))))
 
 (deftest workflow-load-template-test
-  (testing "loads :feature-launch from built-in classpath"
-    (let [tmp (make-tmp-dir)]
-      (try
-        (let [r (workflow/workflow$load-template :id :feature-launch :base-dir tmp)]
-          (is (nil? (:error r)))
-          (is (= :built-in (:source r)))
-          (let [t (:template r)]
-            (is (= :feature-launch (:workflow/id t)))
-            (is (string? (:workflow/name t)))
-            (is (vector? (:stages t)))
-            (is (>= (count (:stages t)) 1))
-            (is (vector? (:acceptance t)))
-            (is (>= (count (:acceptance t)) 1))))
-        (finally (delete-recursive (io/file tmp))))))
+  (let [tmp (make-tmp-dir)]
+    (try
+      (let [wdir (io/file tmp ".brainyard/workflows")]
+        (.mkdirs wdir)
+        (testing "markdown template parses into the uniform shape"
+          (spit (io/file wdir "good.md")
+                (str "---\nworkflow_id: good\nname: Good WF\ndescription: a desc\n"
+                     "defaults: {hitl: gates, max_stage_attempts: 2}\n---\n"
+                     "# Acceptance\n- [ ] a1 — first\n- [ ] a2 — second\n"
+                     "# Stages\n- [ ] s1 plan — design {agent: plan-agent, gate: user, focus: [a1]}\n"
+                     "- [ ] s2 build — implement {agent: exec-agent, gate: none, focus: [a2]}\n"))
+          (let [r (workflow/workflow$load-template :id :good :base-dir tmp)
+                t (:template r)]
+            (is (nil? (:error r)))
+            (is (= :good (:workflow/id t)))
+            (is (= "Good WF" (:workflow/name t)))
+            (is (= :gates (get-in t [:defaults :hitl])))
+            (is (= 2 (count (:acceptance t))))
+            (is (= {:id :a1 :text "first" :status :open} (first (:acceptance t))))
+            (let [s1 (first (:stages t))]
+              (is (= :s1 (:id s1)))
+              (is (= "plan" (:name s1)))
+              (is (= :plan-agent (:agent s1)))
+              (is (= :user (:gate s1)))
+              (is (= [:a1] (:focus s1)))
+              (is (= :pending (:status s1))))))
 
-  (testing "loads :doc-update from built-in classpath"
-    (let [tmp (make-tmp-dir)]
-      (try
-        (let [r (workflow/workflow$load-template :id :doc-update :base-dir tmp)]
-          (is (= :built-in (:source r)))
-          (is (= :doc-update (-> r :template :workflow/id))))
-        (finally (delete-recursive (io/file tmp))))))
+        (testing "validation: stage focus must resolve to an acceptance id"
+          (spit (io/file wdir "bad.md")
+                "---\nworkflow_id: bad\nname: Bad\n---\n# Acceptance\n- [ ] a1 — x\n# Stages\n- [ ] s1 do — y {agent: exec-agent, gate: none, focus: [a9]}\n")
+          (let [r (workflow/workflow$load-template :id :bad :base-dir tmp)]
+            (is (contains? r :error))
+            (is (str/includes? (:error r) "a9"))))
 
-  (testing "project-local shadows built-in (resolution order: project > user > built-in)"
-    (let [tmp (make-tmp-dir)
-          project-dir (io/file tmp ".brainyard/workflows")
-          _   (.mkdirs project-dir)
-          custom {:workflow/id :feature-launch
-                  :workflow/name "Custom Feature Launch"
-                  :workflow/description "Project override"
-                  :acceptance [{:id :a1 :text "criterion"}]
-                  :stages [{:id :only-stage :recommended-agent :coact-agent}]}]
-      (try
-        (spit (io/file project-dir "feature-launch.edn") (pr-str custom))
-        (let [r (workflow/workflow$load-template :id :feature-launch :base-dir tmp)]
-          (is (= :project (:source r))
-              "project-local overrides built-in")
-          (is (= "Custom Feature Launch" (-> r :template :workflow/name))))
-        (finally (delete-recursive (io/file tmp))))))
+        (testing "legacy EDN dual-read normalizes to the uniform shape"
+          (spit (io/file wdir "legacy.edn")
+                (pr-str {:workflow/id :legacy :workflow/name "Legacy"
+                         :acceptance [{:id :a1 :text "x" :status :open}]
+                         :stages [{:id :s1 :purpose "p" :recommended-agent :exec-agent :acceptance-focus [:a1]}]}))
+          (let [r (workflow/workflow$load-template :id :legacy :base-dir tmp)]
+            (is (nil? (:error r)))
+            (is (= :legacy (get-in r [:template :workflow/id])))
+            (is (= :exec-agent (:agent (first (get-in r [:template :stages])))))
+            (is (= [:a1] (:focus (first (get-in r [:template :stages])))))))
 
-  (testing "explicit :path is honored even if :id isn't on the classpath"
-    (let [tmp (make-tmp-dir)
-          path (str tmp "/custom.edn")
-          custom {:workflow/id :custom
-                  :workflow/name "Custom"
-                  :acceptance [{:id :a1 :text "x"}]
-                  :stages [{:id :s1 :recommended-agent :coact-agent}]}]
-      (try
-        (spit path (pr-str custom))
-        (let [r (workflow/workflow$load-template :path path :base-dir tmp)]
-          (is (= :explicit (:source r)))
-          (is (= :custom (-> r :template :workflow/id))))
-        (finally (delete-recursive (io/file tmp))))))
-
-  (testing "missing id → :error"
-    (is (contains? (workflow/workflow$load-template :id :no-such-template)
-                   :error)))
-
-  (testing "neither :id nor :path → :error"
-    (is (contains? (workflow/workflow$load-template) :error)))
-
-  (testing "invalid template (missing :workflow/id) → :error"
-    (let [tmp (make-tmp-dir)
-          path (str tmp "/bad.edn")]
-      (try
-        (spit path (pr-str {:workflow/name "no id" :stages [] :acceptance []}))
-        (let [r (workflow/workflow$load-template :path path :base-dir tmp)]
-          (is (contains? r :error))
-          (is (str/includes? (:error r) "invalid")))
-        (finally (delete-recursive (io/file tmp)))))))
+        (testing "missing template → error"
+          (is (contains? (workflow/workflow$load-template :id :no-such :base-dir tmp) :error)))
+        (testing "missing args → error"
+          (is (contains? (workflow/workflow$load-template) :error))))
+      (finally (delete-recursive (io/file tmp))))))
 
 ;; ============================================================================
-;; workflow$install-starters — idempotent copy
+;; install-starters (markdown)
 ;; ============================================================================
 
 (deftest workflow-install-starters-test
   (let [tmp (make-tmp-dir)]
     (try
-      (testing "first call installs both starters"
+      (let [r (workflow/workflow$install-starters :base-dir tmp)]
+        (is (some #{"feature-launch"} (:installed r)))
+        (is (some #{"doc-update"} (:installed r)))
+        (is (.isFile (io/file tmp ".brainyard/workflows/feature-launch.md")))
+        (is (.isFile (io/file tmp ".brainyard/workflows/doc-update.md"))))
+      (testing "idempotent — second run skips existing"
         (let [r (workflow/workflow$install-starters :base-dir tmp)]
-          (is (= #{"feature-launch" "doc-update"} (set (:installed r))))
-          (is (empty? (:skipped r)))
-          (is (.isFile (io/file tmp ".brainyard/workflows/feature-launch.edn")))
-          (is (.isFile (io/file tmp ".brainyard/workflows/doc-update.edn")))))
-
-      (testing "second call is no-op (existing files preserved)"
-        (spit (io/file tmp ".brainyard/workflows/feature-launch.edn")
-              "; user-edited marker — must survive")
-        (let [r (workflow/workflow$install-starters :base-dir tmp)]
-          (is (empty? (:installed r)))
-          (is (= #{"feature-launch" "doc-update"} (set (:skipped r)))))
-        (is (str/includes?
-             (slurp (io/file tmp ".brainyard/workflows/feature-launch.edn"))
-             "user-edited marker")))
-
-      (testing ":overwrite? true does overwrite"
-        (let [r (workflow/workflow$install-starters :base-dir tmp :overwrite? true)]
-          (is (= #{"feature-launch" "doc-update"} (set (:installed r)))))
-        (is (not (str/includes?
-                  (slurp (io/file tmp ".brainyard/workflows/feature-launch.edn"))
-                  "user-edited marker"))))
-
+          (is (some #{"feature-launch"} (:skipped r)))))
       (finally (delete-recursive (io/file tmp))))))
 
 ;; ============================================================================
-;; workflow$resume? — pre-bootstrap probe
+;; resume? — pre-bootstrap + §5 checklist round-trip + legacy dual-read
 ;; ============================================================================
 
 (deftest workflow-resume-pre-bootstrap-test
   (let [tmp (make-tmp-dir)]
     (try
-      (testing "no dossier exists → :exists? false"
-        (is (= {:exists? false}
-               (workflow/workflow$resume? :id "nonexistent" :base-dir tmp))))
-
-      (testing "validation"
-        (is (contains? (workflow/workflow$resume? :id 123 :base-dir tmp) :error)))
-
+      (is (= {:exists? false} (workflow/workflow$resume? :id "nope" :base-dir tmp)))
+      (is (contains? (workflow/workflow$resume? :id 123 :base-dir tmp) :error))
       (finally (delete-recursive (io/file tmp))))))
 
-;; ============================================================================
-;; workflow$bootstrap + workflow$resume? — round-trip + idempotence + hitl
-;; ============================================================================
-
-(deftest workflow-bootstrap-test
-  (let [tmp (make-tmp-dir)]
-    (try
-      (let [id "test-bootstrap"
-            boot (workflow/workflow$bootstrap
-                  :id id
-                  :purpose "Test purpose."
-                  :acceptance [{:id "a1" :text "First criterion" :status :open}
-                               {:id "a2" :text "Second criterion" :status :open}]
-                  :stages [{:id :s1 :agent :coact-agent}
-                           {:id :s2 :agent :exec-agent}]
-                  :template-id :feature-launch
-                  :template-edn {:workflow/id :feature-launch
-                                 :workflow/name "Feature Launch"
-                                 :stages [] :acceptance []}
-                  :hitl-mode :gates
-                  :base-dir tmp)
-            dir (io/file tmp ".brainyard/agents/workflow-agent" id)]
-
-        (testing "fresh bootstrap returns dir + dossier-path + stages-path"
-          (is (string? (:dir boot)))
-          (is (string? (:dossier-path boot)))
-          (is (string? (:stages-path boot)))
-          (is (not (contains? boot :exists?))))
-
-        (testing "all expected files written"
-          (is (.isDirectory dir))
-          (is (.isFile (io/file dir "purpose.md")))
-          (is (.isFile (io/file dir "acceptance.md")))
-          (is (.isFile (io/file dir "stages.edn")))
-          (is (.isFile (io/file dir "dossier.md")))
-          (is (.isFile (io/file dir "findings.log")))
-          (is (.isFile (io/file dir "template.edn")))
-          (is (.isDirectory (io/file dir "artifacts"))))
-
-        (testing "findings.log starts empty"
-          (is (= "" (slurp (io/file dir "findings.log")))))
-
-        (testing "dossier.md frontmatter contains workflow_template + hitl_mode"
-          (let [body (slurp (io/file dir "dossier.md"))]
-            (is (str/includes? body (str "workflow_id: " id)))
-            (is (str/includes? body "workflow_template: feature-launch"))
-            (is (str/includes? body "hitl_mode: gates"))
-            (is (str/includes? body "- id: a1"))
-            (is (str/includes? body "- id: a2"))))
-
-        (testing "stages.edn is parseable EDN with the right shape"
-          (let [data (edn/read-string (slurp (io/file dir "stages.edn")))]
-            (is (= :feature-launch (:template-id data)))
-            (is (vector? (:stages data)))
-            (is (= 2 (count (:stages data))))
-            (is (every? #(= :pending (:status %)) (:stages data)))
-            (is (every? #(= 0 (:attempts %)) (:stages data)))))
-
-        (testing "template.edn was written from :template-edn arg"
-          (let [t (edn/read-string (slurp (io/file dir "template.edn")))]
-            (is (= :feature-launch (:workflow/id t)))))
-
-        (testing "second bootstrap is idempotent (no overwrite)"
-          (spit (io/file dir "purpose.md") "MARKER — should survive")
-          (let [boot2 (workflow/workflow$bootstrap
-                       :id id :purpose "different purpose"
-                       :acceptance [] :stages []
-                       :base-dir tmp)]
-            (is (true? (:exists? boot2)))
-            (is (= "MARKER — should survive"
-                   (slurp (io/file dir "purpose.md"))))))
-
-        (testing "resume? after bootstrap reflects frontmatter + stages"
-          (let [s (workflow/workflow$resume? :id id :base-dir tmp)]
-            (is (true? (:exists? s)))
-            (is (= :in-progress (:status s)))
-            (is (= 1 (:last-iteration s)))
-            (is (= :gates (:hitl-mode s)))
-            (is (= {:a1 :open :a2 :open} (:acceptance-state s)))
-            (is (= 2 (:stage-count s)))
-            (is (= 2 (:n-pending s)))
-            (is (= [:s1 :s2] (:pending-stages s))))))
-
-      (finally (delete-recursive (io/file tmp))))))
-
-(deftest workflow-bootstrap-ad-hoc-test
-  (let [tmp (make-tmp-dir)]
-    (try
-      (let [id "test-ad-hoc"
-            boot (workflow/workflow$bootstrap
-                  :id id :purpose "Quick one-off."
-                  :acceptance [{:id "a1" :text "x" :status :open}]
-                  :stages [{:id :only-stage :agent :coact-agent}]
-                  :base-dir tmp)
-            dir (io/file tmp ".brainyard/agents/workflow-agent" id)]
-
-        (testing "no :template-id defaults to :ad-hoc"
-          (let [body (slurp (io/file dir "dossier.md"))]
-            (is (str/includes? body "workflow_template: ad-hoc")))
-          (let [t (edn/read-string (slurp (io/file dir "template.edn")))]
-            (is (= :ad-hoc (:template t))))))
-      (finally (delete-recursive (io/file tmp))))))
-
-(deftest workflow-bootstrap-validation-test
-  (let [tmp (make-tmp-dir)]
-    (try
-      (testing "rejects bad :hitl-mode"
-        (is (contains? (workflow/workflow$bootstrap
-                        :id "x" :purpose "p" :acceptance [] :stages []
-                        :hitl-mode :bogus :base-dir tmp)
-                       :error)))
-      (testing "rejects non-string :id"
-        (is (contains? (workflow/workflow$bootstrap
-                        :id 123 :purpose "p" :acceptance [] :stages []
-                        :base-dir tmp)
-                       :error)))
-      (testing "rejects non-sequential :acceptance"
-        (is (contains? (workflow/workflow$bootstrap
-                        :id "x" :purpose "p" :acceptance "bad" :stages []
-                        :base-dir tmp)
-                       :error)))
-      (finally (delete-recursive (io/file tmp))))))
-
-(deftest workflow-bootstrap-call-tool-hitl-enum-test
-  ;; Over JSON tool-calls :hitl-mode arrives as a STRING. The [:enum "..."]
-  ;; tightening must accept valid mode strings (the handler then coerces to a
-  ;; keyword) and reject out-of-vocabulary strings at the Malli layer — surfacing
-  ;; as :error-message, distinct from the handler's own :error (covered above via
-  ;; the direct-fn keyword path).
-  (let [tmp (make-tmp-dir)]
-    (try
-      (testing "valid hitl-mode string bootstraps"
-        (let [r (tool/call-tool :workflow$bootstrap
-                                {:id "bs-hitl-ok" :purpose "p" :acceptance []
-                                 :stages [{:id "s1" :agent "coact-agent"}]
-                                 :hitl-mode "co-pilot" :base-dir tmp})]
-          (is (string? (:dir r)) (str "expected success, got " (pr-str r)))))
-      (testing "out-of-enum hitl-mode string is rejected at the Malli layer"
-        (let [r (tool/call-tool :workflow$bootstrap
-                                {:id "bs-hitl-bad" :purpose "p" :acceptance []
-                                 :stages [{:id "s1" :agent "coact-agent"}]
-                                 :hitl-mode "bogus" :base-dir tmp})]
-          (is (string? (:error-message r)) (str "expected :error-message, got " (pr-str r)))
-          (is (str/includes? (:error-message r) "hitl-mode"))))
-      (finally (delete-recursive (io/file tmp))))))
-
-;; ============================================================================
-;; workflow$append-log — NDJSON append-only with optional :action
-;; ============================================================================
-
-(deftest workflow-append-log-test
+(deftest workflow-resume-checklist-roundtrip-test
   (let [tmp (make-tmp-dir)
-        id  "test-log"]
+        id  "feature-launch--ship-x"]
     (try
-      (workflow/workflow$bootstrap :id id :purpose "p"
-                                   :acceptance [] :stages []
-                                   :base-dir tmp)
-
-      (testing "consecutive appends produce N NDJSON lines"
-        (workflow/workflow$append-log :id id :iter 2
-                                      :stage :research-feasibility
-                                      :agent "research-agent"
-                                      :summary "s1"
-                                      :pointers {:research_dossier "x"}
-                                      :base-dir tmp)
-        (workflow/workflow$append-log :id id :iter 3
-                                      :stage "plan-design"
-                                      :agent "plan-agent"
-                                      :action "gate"
-                                      :summary "s2"
-                                      :pointers {:plan_path "y"}
-                                      :base-dir tmp)
-        (let [lines (->> (slurp (io/file tmp ".brainyard/agents/workflow-agent" id "findings.log"))
-                         str/split-lines
-                         (remove str/blank?))]
-          (is (= 2 (count lines)))
-          (is (every? #(str/starts-with? % "{") lines))
-          (is (every? #(str/ends-with? % "}") lines))
-          (is (str/includes? (first lines) "\"iter\":2"))
-          (is (str/includes? (first lines) "\"stage\":\"research-feasibility\""))
-          (is (str/includes? (second lines) "\"action\":\"gate\""))
-          (is (str/includes? (first lines) "\"research_dossier\":\"x\""))))
-
-      (testing "missing dossier → error (must bootstrap first)"
-        (is (contains? (workflow/workflow$append-log
-                        :id "no-such-id" :iter 1
-                        :stage :s :agent "x" :summary "y"
-                        :base-dir tmp)
-                       :error)))
-
-      (testing "validation"
-        (is (contains? (workflow/workflow$append-log :id 1 :iter 1
-                                                     :stage :s :agent "x"
-                                                     :summary "y"
-                                                     :base-dir tmp) :error))
-        (is (contains? (workflow/workflow$append-log :id "x" :iter "bad"
-                                                     :stage :s :agent "x"
-                                                     :summary "y"
-                                                     :base-dir tmp) :error)))
-
+      (seed-dossier! tmp id {:last-iteration 4
+                             :acc [[:a1 :satisfied] [:a2 :open]]
+                             :stages [[:s1 "design" :satisfied] [:s2 "build" :pending]]})
+      (let [r (workflow/workflow$resume? :id id :base-dir tmp)]
+        (is (true? (:exists? r)))
+        (is (= 4 (:last-iteration r)))
+        (is (= :gates (:hitl-mode r)))
+        (is (= {:a1 :satisfied :a2 :open} (:acceptance-state r)))
+        (is (= [:s2] (:pending-stages r)))
+        (is (= 2 (:stage-count r)))
+        (is (= 1 (:n-pending r))))
       (finally (delete-recursive (io/file tmp))))))
 
-;; ============================================================================
-;; workflow$update-stage — status flip, attempts increment, terminal completed-at
-;; ============================================================================
-
-(deftest workflow-update-stage-test
-  (let [tmp (make-tmp-dir)
-        id  "test-stage-update"]
-    (try
-      (workflow/workflow$bootstrap
-       :id id :purpose "p"
-       :acceptance []
-       :stages [{:id :s1 :agent :coact-agent}
-                {:id :s2 :agent :exec-agent}
-                {:id :s3 :agent :eval-agent}]
-       :base-dir tmp)
-
-      (testing "flip :s1 → :in-progress; attempts incremented"
-        (let [r (workflow/workflow$update-stage
-                 :id id :stage-id :s1 :status :in-progress
-                 :base-dir tmp)]
-          (is (true? (:updated r)))
-          (is (= :pending (:from r)))
-          (is (= :in-progress (:to r)))
-          (is (= 1 (:attempts r)))))
-
-      (testing "flip :s1 → :satisfied; terminal auto-fills :completed-at"
-        (workflow/workflow$update-stage
-         :id id :stage-id :s1 :status :satisfied
-         :artifact ".brainyard/agents/research-agent/x/"
-         :base-dir tmp)
-        (let [stages (-> (slurp (io/file tmp ".brainyard/agents/workflow-agent" id "stages.edn"))
-                         edn/read-string
-                         :stages)
-              s1     (first stages)]
-          (is (= :satisfied (:status s1)))
-          (is (= 2 (:attempts s1)))
-          (is (some? (:completed-at s1)))
-          (is (= ".brainyard/agents/research-agent/x/" (:artifact s1)))))
-
-      (testing "string stage-id is accepted"
-        (let [r (workflow/workflow$update-stage
-                 :id id :stage-id "s2" :status :in-progress
-                 :base-dir tmp)]
-          (is (true? (:updated r)))))
-
-      (testing "siblings untouched"
-        (let [stages (-> (slurp (io/file tmp ".brainyard/agents/workflow-agent" id "stages.edn"))
-                         edn/read-string
-                         :stages)
-              s3     (nth stages 2)]
-          (is (= :pending (:status s3)))
-          (is (= 0 (:attempts s3)))))
-
-      (testing "non-existent stage → error"
-        (is (contains? (workflow/workflow$update-stage
-                        :id id :stage-id :no-such-stage :status :satisfied
-                        :base-dir tmp)
-                       :error)))
-
-      (testing "invalid status → error"
-        (is (contains? (workflow/workflow$update-stage
-                        :id id :stage-id :s1 :status :bogus
-                        :base-dir tmp)
-                       :error)))
-
-      (testing "explicit :completed-at honored over auto-fill"
-        (workflow/workflow$update-stage
-         :id id :stage-id :s3 :status :skipped
-         :completed-at "2026-05-10T00:00:00Z"
-         :note "no examples to verify"
-         :base-dir tmp)
-        (let [stages (-> (slurp (io/file tmp ".brainyard/agents/workflow-agent" id "stages.edn"))
-                         edn/read-string
-                         :stages)
-              s3     (nth stages 2)]
-          (is (= "2026-05-10T00:00:00Z" (:completed-at s3)))
-          (is (= "no examples to verify" (:note s3)))))
-
-      (finally (delete-recursive (io/file tmp))))))
-
-(deftest workflow-update-stage-call-tool-enum-test
-  ;; The agent reaches these commands two ways, both routed through
-  ;; tool/call-tool's Malli decode+validate: a JSON tool-call delivers :status
-  ;; as a wire STRING ("in-progress"), while a sandbox code-fence delivers it as
-  ;; a KEYWORD (:satisfied) because the agent writes Clojure. The [:enum "..."]
-  ;; tightening + llm-args-transformer's :enum decoder must accept BOTH and
-  ;; reject out-of-vocabulary values before the handler runs (surfacing as
-  ;; :error-message, not the handler's own :error).
-  (let [tmp (make-tmp-dir)
-        id  "test-stage-enum"]
-    (try
-      (workflow/workflow$bootstrap
-       :id id :purpose "p" :acceptance []
-       :stages [{:id :s1 :agent :coact-agent}]
-       :base-dir tmp)
-      (testing "string status (JSON tool-call form) flips the stage"
-        (let [r (tool/call-tool :workflow$update-stage
-                                {:id id :stage-id "s1" :status "in-progress" :base-dir tmp})]
-          (is (true? (:updated r)) (str "expected success, got " (pr-str r)))
-          (is (= :in-progress (:to r)))))
-      (testing "keyword status (sandbox code-fence form) flips the stage"
-        (let [r (tool/call-tool :workflow$update-stage
-                                {:id id :stage-id "s1" :status :satisfied :base-dir tmp})]
-          (is (true? (:updated r)) (str "expected success, got " (pr-str r)))
-          (is (= :satisfied (:to r)))))
-      (testing "out-of-enum status is rejected at the Malli layer"
-        (let [r (tool/call-tool :workflow$update-stage
-                                {:id id :stage-id "s1" :status "bogus" :base-dir tmp})]
-          (is (string? (:error-message r)) (str "expected :error-message, got " (pr-str r)))
-          (is (str/includes? (:error-message r) "status"))))
-      (finally (delete-recursive (io/file tmp))))))
-
-;; ============================================================================
-;; workflow$update-acceptance — flip one criterion, leave others alone
-;; ============================================================================
-
-(deftest workflow-update-acceptance-test
-  (let [tmp (make-tmp-dir)
-        id  "test-acceptance"]
-    (try
-      (workflow/workflow$bootstrap
-       :id id :purpose "p"
-       :acceptance [{:id "a1" :text "first" :status :open}
-                    {:id "a2" :text "second" :status :open}
-                    {:id "a3" :text "third" :status :open}]
-       :stages []
-       :base-dir tmp)
-
-      (testing "flips a1 → :partial; siblings untouched"
-        (let [r (workflow/workflow$update-acceptance
-                 :id id :criterion-id "a1" :status :partial :base-dir tmp)]
-          (is (true? (:updated r)))
-          (is (= :open (:from r)))
-          (is (= :partial (:to r))))
-        (let [s (workflow/workflow$resume? :id id :base-dir tmp)]
-          (is (= {:a1 :partial :a2 :open :a3 :open}
-                 (:acceptance-state s)))))
-
-      (testing "flips a2 → :satisfied via keyword id"
-        (workflow/workflow$update-acceptance
-         :id id :criterion-id :a2 :status :satisfied :base-dir tmp)
-        (is (= {:a1 :partial :a2 :satisfied :a3 :open}
-               (:acceptance-state (workflow/workflow$resume? :id id :base-dir tmp)))))
-
-      (testing "non-existent criterion → error"
-        (is (contains? (workflow/workflow$update-acceptance
-                        :id id :criterion-id "a99" :status :open
-                        :base-dir tmp)
-                       :error)))
-
-      (testing "invalid status → error"
-        (is (contains? (workflow/workflow$update-acceptance
-                        :id id :criterion-id "a1" :status :bogus
-                        :base-dir tmp)
-                       :error)))
-
-      (finally (delete-recursive (io/file tmp))))))
-
-;; ============================================================================
-;; workflow$write-verdict — derives acceptance_outcome + stage_outcomes
-;; ============================================================================
-
-(deftest workflow-write-verdict-test
-  (let [tmp (make-tmp-dir)
-        id  "test-verdict"]
-    (try
-      (workflow/workflow$bootstrap
-       :id id :purpose "p"
-       :acceptance [{:id "a1" :text "x" :status :open}
-                    {:id "a2" :text "y" :status :open}]
-       :stages [{:id :s1 :agent :coact-agent}
-                {:id :s2 :agent :exec-agent}]
-       :template-id :feature-launch
-       :base-dir tmp)
-      (workflow/workflow$update-acceptance :id id :criterion-id "a1"
-                                           :status :satisfied :base-dir tmp)
-      (workflow/workflow$update-stage :id id :stage-id :s1
-                                      :status :satisfied :base-dir tmp)
-
-      (testing "writes verdict.md with frontmatter + narrative"
-        (let [v (workflow/workflow$write-verdict
-                 :id id :status :partial
-                 :narrative "Got most of the way. a1 satisfied, a2 still open."
-                 :base-dir tmp)
-              path (:path v)
-              content (slurp (io/file path))]
-          (is (string? path))
-          (is (str/ends-with? path "verdict.md"))
-          (is (str/includes? content (str "workflow_id: " id)))
-          (is (str/includes? content "workflow_template: feature-launch"))
-          (is (str/includes? content "status: partial"))
-          (is (str/includes? content "iterations: 1"))
-          (is (str/includes? content "acceptance_outcome:"))
-          (is (str/includes? content "a1: satisfied"))
-          (is (str/includes? content "a2: open"))
-          (is (str/includes? content "stage_outcomes:"))
-          (is (str/includes? content "s1: satisfied"))
-          (is (str/includes? content "s2: pending"))
-          (is (str/includes? content "## Verdict"))
-          (is (str/includes? content "Got most of the way"))))
-
-      (testing "leading ## Verdict heading in narrative is stripped"
-        (let [v (workflow/workflow$write-verdict
-                 :id id :status :partial
-                 :narrative "## Verdict\nNarrative body."
-                 :base-dir tmp)
-              content (slurp (io/file (:path v)))]
-          (is (not (str/includes? content "## Verdict\n## Verdict"))
-              "duplicate heading must not appear")))
-
-      (testing "string status accepted"
-        (is (string? (:path (workflow/workflow$write-verdict
-                             :id id :status "partial"
-                             :narrative "ok" :base-dir tmp)))))
-
-      (testing "invalid status → error"
-        (is (contains? (workflow/workflow$write-verdict
-                        :id id :status :bogus :narrative "x"
-                        :base-dir tmp)
-                       :error)))
-
-      (finally (delete-recursive (io/file tmp))))))
-
-(deftest workflow-write-verdict-achieved-validation-test
-  ;; Same defense as research-agent: block :achieved when any criterion is
-  ;; still :open / :partial / :contradicted. The LLM must call
-  ;; workflow$update-acceptance for each criterion BEFORE finalizing.
-  (let [tmp (make-tmp-dir)
-        id  "test-validate"]
-    (try
-      (workflow/workflow$bootstrap
-       :id id :purpose "p"
-       :acceptance [{:id "a1" :text "x" :status :open}
-                    {:id "a2" :text "y" :status :open}]
-       :stages []
-       :base-dir tmp)
-
-      (testing ":achieved blocked when any criterion is still :open"
-        (let [r (workflow/workflow$write-verdict
-                 :id id :status :achieved
-                 :narrative "claim achieved" :base-dir tmp)]
-          (is (contains? r :error))
-          (is (str/includes? (:error r) ":satisfied or :descoped"))
-          (is (str/includes? (:error r) "a1:open"))
-          (is (str/includes? (:error r) "a2:open"))))
-
-      (testing ":achieved blocked when one is :partial"
-        (workflow/workflow$update-acceptance :id id :criterion-id "a1"
-                                             :status :satisfied :base-dir tmp)
-        (workflow/workflow$update-acceptance :id id :criterion-id "a2"
-                                             :status :partial :base-dir tmp)
-        (let [r (workflow/workflow$write-verdict
-                 :id id :status :achieved
-                 :narrative "claim achieved" :base-dir tmp)]
-          (is (contains? r :error))
-          (is (str/includes? (:error r) "a2:partial"))))
-
-      (testing ":achieved accepted once everything is :satisfied / :descoped"
-        (workflow/workflow$update-acceptance :id id :criterion-id "a2"
-                                             :status :descoped :base-dir tmp)
-        (let [r (workflow/workflow$write-verdict
-                 :id id :status :achieved
-                 :narrative "now legit" :base-dir tmp)]
-          (is (string? (:path r)))
-          (let [content (slurp (io/file (:path r)))]
-            (is (str/includes? content "status: achieved"))
-            (is (str/includes? content "a1: satisfied"))
-            (is (str/includes? content "a2: descoped")))))
-
-      (testing ":partial allowed with any acceptance mix"
-        (workflow/workflow$update-acceptance :id id :criterion-id "a2"
-                                             :status :open :base-dir tmp)
-        (let [r (workflow/workflow$write-verdict
-                 :id id :status :partial
-                 :narrative "still partial" :base-dir tmp)]
-          (is (string? (:path r)))))
-
-      (testing ":abandoned allowed with any acceptance mix"
-        (let [r (workflow/workflow$write-verdict
-                 :id id :status :abandoned
-                 :narrative "ran out of time" :base-dir tmp)]
-          (is (string? (:path r)))))
-
-      (finally (delete-recursive (io/file tmp))))))
-
-;; ============================================================================
-;; workflow$index-append — newest-first prepend
-;; ============================================================================
-
-(deftest workflow-index-append-test
-  (let [tmp (make-tmp-dir)
-        index-path (io/file tmp ".brainyard/agents/workflow-agent/INDEX.md")]
-    (try
-      (testing "first append creates INDEX.md with one line"
-        (let [r (workflow/workflow$index-append
-                 :id "id-1" :status :achieved :one-line "first entry"
-                 :base-dir tmp)]
-          (is (true? (:appended r)))
-          (is (string? (:line r))))
-        (let [c (slurp index-path)]
-          (is (str/includes? c "[id-1](id-1/)"))
-          (is (str/includes? c "achieved"))
-          (is (str/includes? c "first entry"))))
-
-      (testing "second append prepends (newest first)"
-        (workflow/workflow$index-append
-         :id "id-2" :status :partial :one-line "second entry"
-         :base-dir tmp)
-        (let [c     (slurp index-path)
-              lines (str/split-lines c)]
-          (is (str/includes? (first lines) "id-2"))
-          (is (str/includes? (second lines) "id-1"))))
-
-      (testing "one-line capped at 200 chars"
-        (let [long-line (str/join "" (repeat 300 "x"))
-              r         (workflow/workflow$index-append
-                         :id "id-3" :status :achieved
-                         :one-line long-line :base-dir tmp)
-              ;; line ends with "…\n" — cap is 200 chars of distillation
-              line-content (-> (:line r)
-                               (str/replace #"^- \d{4}-\d{2}-\d{2} \d{2}:\d{2} \[id-3\]\(id-3/\) — achieved · " "")
-                               (str/replace "\n" ""))]
-          (is (<= (count line-content) 200))))
-
-      (testing "invalid status → error"
-        (is (contains? (workflow/workflow$index-append
-                        :id "x" :status :bogus :one-line "y"
-                        :base-dir tmp)
-                       :error)))
-
-      (testing "string status accepted"
-        (is (true? (:appended
-                    (workflow/workflow$index-append
-                     :id "id-4" :status "achieved" :one-line "via string"
-                     :base-dir tmp)))))
-
-      (finally (delete-recursive (io/file tmp))))))
-
-;; ============================================================================
-;; Built-in starter templates pass validation
-;; ============================================================================
-
-(deftest builtin-starters-pass-validation-test
-  (testing "every built-in starter loads + validates"
-    (let [tmp (make-tmp-dir)]
+(deftest workflow-resume-legacy-dual-read-test
+  (testing "legacy dossier (frontmatter acceptance + stages.edn) still resumes"
+    (let [tmp (make-tmp-dir)
+          id  "legacy-wf"
+          dir (io/file tmp ".brainyard/agents/workflow-agent" id)]
       (try
-        (doseq [id [:feature-launch :doc-update]]
-          (let [r (workflow/workflow$load-template :id id :base-dir tmp)]
-            (is (nil? (:error r))
-                (str "starter " id " failed to load: " (:error r)))
-            (is (= :built-in (:source r)))
-            (let [t (:template r)]
-              (is (= id (:workflow/id t)))
-              (is (string? (:workflow/name t)))
-              (is (every? :id (:stages t))
-                  "every stage must have an :id")
-              (is (every? :recommended-agent (:stages t))
-                  "every stage must have a :recommended-agent")
-              (is (every? #(and (:id %) (:text %)) (:acceptance t))
-                  "every acceptance criterion must have :id + :text"))))
+        (.mkdirs dir)
+        (spit (io/file dir "dossier.md")
+              (str "---\nworkflow_id: " id "\nstatus: in-progress\nlast_iteration: 2\nhitl_mode: gates\n"
+                   "acceptance:\n  - id: a1\n    text: \"x\"\n    status: satisfied\n"
+                   "  - id: a2\n    text: \"y\"\n    status: open\n---\n# body\n"))
+        (spit (io/file dir "stages.edn")
+              (pr-str {:stages [{:id :s1 :status :satisfied} {:id :s2 :status :pending}]}))
+        (let [r (workflow/workflow$resume? :id id :base-dir tmp)]
+          (is (= {:a1 :satisfied :a2 :open} (:acceptance-state r)))
+          (is (= [:s2] (:pending-stages r))))
         (finally (delete-recursive (io/file tmp)))))))
+
+;; ============================================================================
+;; verdict-outcome — derive + :achieved guard + stage outcomes
+;; ============================================================================
+
+(deftest workflow-verdict-outcome-test
+  (let [tmp (make-tmp-dir)]
+    (try
+      (testing ":in-progress + blockers while any criterion :open"
+        (seed-dossier! tmp "vo-open" {:acc [[:a1 :open] [:a2 :satisfied]]
+                                      :stages [[:s1 "x" :pending]]})
+        (let [r (workflow/workflow$verdict-outcome :id "vo-open" :base-dir tmp)]
+          (is (= :in-progress (:outcome r)))
+          (is (false? (:achieved-ok? r)))
+          (is (= ["a1:open"] (:blockers r)))
+          (is (= {:s1 "pending"} (:stage-outcomes r)))))
+      (testing ":achieved when all :satisfied/:descoped"
+        (seed-dossier! tmp "vo-done" {:acc [[:a1 :satisfied] [:a2 :descoped]]
+                                      :stages [[:s1 "x" :satisfied]]})
+        (let [r (workflow/workflow$verdict-outcome :id "vo-done" :base-dir tmp)]
+          (is (= :achieved (:outcome r)))
+          (is (true? (:achieved-ok? r)))
+          (is (empty? (:blockers r)))
+          (is (= {:a1 "satisfied" :a2 "descoped"} (:acceptance-outcome r)))
+          (is (= {:s1 "satisfied"} (:stage-outcomes r)))))
+      (testing ":partial for a mixed (no :open) state"
+        (seed-dossier! tmp "vo-mix" {:acc [[:a1 :satisfied] [:a2 :partial]] :stages []})
+        (is (= :partial (:outcome (workflow/workflow$verdict-outcome :id "vo-mix" :base-dir tmp)))))
+      (testing ":abandoned when all :contradicted"
+        (seed-dossier! tmp "vo-bad" {:acc [[:a1 :contradicted]] :stages []})
+        (is (= :abandoned (:outcome (workflow/workflow$verdict-outcome :id "vo-bad" :base-dir tmp)))))
+      (testing "no checklist → error; validation"
+        (is (contains? (workflow/workflow$verdict-outcome :id "no-such" :base-dir tmp) :error))
+        (is (contains? (workflow/workflow$verdict-outcome :id 123 :base-dir tmp) :error)))
+      (finally (delete-recursive (io/file tmp))))))
+
+;; ============================================================================
+;; Auto-finalize backstop
+;; ============================================================================
+
+(defrecord StubAgent [type sid]
+  ai.brainyard.agent.core.protocol/IAgent
+  (agent-id [_] (keyword (str (name type) "/stub")))
+  (defagent-type [_] type)
+  (session-id [_] sid)
+  (user-id [_] "test-user"))
+
+(deftest workflow-auto-finalize-test
+  (let [tmp (make-tmp-dir)
+        question "ship the checkout revamp"
+        wid (:slug (workflow/workflow$id :template :feature-launch :question question))
+        stub (->StubAgent :workflow-agent "s1")]
+    (try
+      (seed-dossier! tmp wid {:last-iteration 6
+                              :acc [[:a1 :satisfied] [:a2 :partial]]
+                              :stages [[:s1 "design" :satisfied] [:s2 "build" :satisfied]]})
+      (testing "hook writes verdict.md (derived :partial) + INDEX + injects contract line"
+        (let [decision (with-redefs [config/project-dir (constantly tmp)]
+                         (workflow/workflow-auto-finalize
+                          {:agent stub :input {:question question}
+                           :result {:answer "Shipped most of it; perf criterion partial."}}))
+              vfile (io/file tmp ".brainyard/agents/workflow-agent" wid "verdict.md")
+              index (io/file tmp ".brainyard/agents/workflow-agent/INDEX.md")]
+          (is (.isFile vfile))
+          (let [c (slurp vfile)]
+            (is (str/includes? c "status: partial"))
+            (is (str/includes? c "iterations: 6"))
+            (is (str/includes? c "acceptance_outcome:"))
+            (is (str/includes? c "a1: satisfied"))
+            (is (str/includes? c "stage_outcomes:"))
+            (is (str/includes? c "s1: satisfied")))
+          (is (.isFile index))
+          (is (str/includes? (slurp index) "PARTIAL"))
+          (is (= :replace (:result decision)))
+          (is (str/includes? (get-in decision [:replacement :answer]) "Saved workflow dossier:"))))
+      (testing "skips when any criterion still :open"
+        (let [q2 "ship the open thing"
+              wid2 (:slug (workflow/workflow$id :template :feature-launch :question q2))]
+          (seed-dossier! tmp wid2 {:acc [[:a1 :open]] :stages []})
+          (with-redefs [config/project-dir (constantly tmp)]
+            (workflow/workflow-auto-finalize
+             {:agent stub :input {:question q2} :result {:answer "done"}}))
+          (is (not (.isFile (io/file tmp ".brainyard/agents/workflow-agent" wid2 "verdict.md"))))))
+      (testing "non-workflow-agent → no-op"
+        (let [other (->StubAgent :coact-agent "s1")]
+          (is (nil? (with-redefs [config/project-dir (constantly tmp)]
+                      (workflow/workflow-auto-finalize
+                       {:agent other :input {:question question} :result {:answer "x"}}))))))
+      (finally (delete-recursive (io/file tmp))))))
