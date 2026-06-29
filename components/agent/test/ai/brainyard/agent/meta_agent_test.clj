@@ -56,4 +56,10 @@
       (is (str/includes? instr "user$agent$<name>"))
       (is (str/includes? instr ".brainyard/agents/user$agent"))
       ;; the central design rule: never bind tools
-      (is (str/includes? instr "NEVER bind tools")))))
+      (is (str/includes? instr "NEVER bind tools"))
+      ;; validate-before-create + verify-after-create are HARD RULES (codified)
+      (is (str/includes? instr "HARD RULE"))
+      (is (str/includes? instr "VALIDATE BEFORE CREATE"))
+      (is (str/includes? instr "VERIFY AFTER CREATE"))
+      ;; optional file-first authoring note
+      (is (str/includes? instr "FILE-FIRST")))))

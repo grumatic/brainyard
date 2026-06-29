@@ -53,4 +53,10 @@
       (is (str/includes? instr "tool-agent$validate"))
       (is (str/includes? instr "tool-agent$create"))
       (is (str/includes? instr "user$tool$<name>"))
-      (is (str/includes? instr ".brainyard/tools")))))
+      (is (str/includes? instr ".brainyard/tools"))
+      ;; validate-before-create + verify-after-create are HARD RULES (codified)
+      (is (str/includes? instr "HARD RULE"))
+      (is (str/includes? instr "VALIDATE BEFORE CREATE"))
+      (is (str/includes? instr "VERIFY AFTER CREATE"))
+      ;; optional file-first authoring note
+      (is (str/includes? instr "FILE-FIRST")))))
