@@ -416,10 +416,17 @@
     :else v))
 
 (defn redact-config-snapshot
-  "Apply `redact-config-value` across a whole config map (e.g. the snapshot
-   returned by `agent-runtime$config` read/set) so no secret reaches the LLM."
+  "Project a full effective config map down to the LLM-facing view used by
+   `agent-runtime$config :all true`: keep only SCHEMA keys (dropping non-schema,
+   session-injected runtime entries the snapshot merges in — e.g. `:permission-fn`,
+   `:usage-tracker`) and redact secrets via `redact-config-value`."
   [m]
-  (reduce-kv (fn [acc k v] (assoc acc k (redact-config-value k v))) {} m))
+  (reduce-kv (fn [acc k v]
+               (if (contains? config-keys k)
+                 (assoc acc k (redact-config-value k v))
+                 acc))
+             {}
+             m))
 
 ;; ============================================================================
 ;; Internal Constants (not user-configurable, but centralized to avoid magic numbers)

@@ -173,10 +173,17 @@
   (testing "ordinary values pass through"
     (is (= 7 (cfg/redact-config-value :max-iterations 7)))))
 
-(deftest redact-config-snapshot-masks-across-map
-  (let [m (cfg/redact-config-snapshot {:tavily-api-key "sk-1" :max-iterations 7})]
-    (is (= "***redacted***" (:tavily-api-key m)))
-    (is (= 7 (:max-iterations m)))))
+(deftest redact-config-snapshot-masks-and-filters-to-schema-keys
+  (let [m (cfg/redact-config-snapshot {:tavily-api-key "sk-1"
+                                       :max-iterations 7
+                                       :permission-fn  (fn [] :x)
+                                       :usage-tracker  (atom {})})]
+    (testing "schema keys kept, secrets redacted"
+      (is (= "***redacted***" (:tavily-api-key m)))
+      (is (= 7 (:max-iterations m))))
+    (testing "non-schema session-injected runtime entries are dropped"
+      (is (not (contains? m :permission-fn)))
+      (is (not (contains? m :usage-tracker))))))
 
 ;; ============================================================================
 ;; config-overview (agent-runtime$config no-arg curated read)
