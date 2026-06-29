@@ -16,7 +16,8 @@
      2. EXECUTE (only on GO) — inner loop bounded by :max-items-per-turn
         (default 5). Per item: pick → route per :tags.via (:edit-agent
         :bash :mcp :explore-agent :read-only :manual) → verify → record
-        → flip checkbox via doc$update :item-idx :item-done.
+        → flip checkbox INDEX-FREE via update-file (match line text) +
+        todo$sync to reconcile.
      3. POST-FLIGHT (confirmation check, R1–R7) — re-read evidence and
         self-critique. Verdict: PASS / HOLD. (Design's REVISE auto-retry
         is deferred to v1.5; HOLD covers all rubric failures.)
@@ -28,7 +29,8 @@
 
    Hard rule: every WRITE delegates to edit-agent.
    `(call-tool \"edit-agent\" {…})` per `:via :edit-agent` item;
-   exec-agent NEVER calls `update-file` / `write-file` directly.
+   exec-agent NEVER writes source directly (`write-file` is unbound);
+   `update-file` is used ONLY for the index-free checkbox flip on the todo file.
 
    Cross-agent dossier consumption: PRE-FLIGHT C1/C2 read the todo-agent
    dossier; C3 reads the plan-agent dossier referenced from the todo
@@ -181,10 +183,15 @@ first), pick → ROUTE on item :tags.via:
      STOP. Record :ok? :manual-pending. Surface in the `Manual:`
      answer line. Do NOT flip the checkbox.
 
-After ROUTE → VERIFY (:ok? per the rules above). If :ok? true →
-(doc$update {:kind :todo :slug <s> :item-idx <idx>
-             :item-done true}). If false → leave
-checkbox un-flipped, record failure, continue.
+After ROUTE → VERIFY (:ok? per the rules above) → RECORD evidence. Then FLIP
+the box, INDEX-FREE — only when :ok? is true:
+   (update-file {:path \"<todo path>\"
+                 :pattern \"- [ ] <unique item text>\"
+                 :replacement \"- [x] <unique item text>\"})
+   (todo$sync {:path \"<todo path>\"})   ; reconcile progress + refresh the TUI
+Match on enough of the item's description to be UNIQUE — never a drifting
+numeric index. If :ok? is false → leave the box un-flipped, record the failure,
+continue. NEVER flip a box without supporting evidence.
 
 LOOP TERMINATION:
 - :max-items-per-turn reached → soft stop, record budget-exhausted.
@@ -193,8 +200,10 @@ LOOP TERMINATION:
 - Hard blocker (manual item, missing creds discovered mid-loop, repeat
   failure on same item) → STOP.
 
-NEVER call update-file / write-file. NEVER call doc$update :body
-(plans). NEVER call doc$create :kind :todo (todo-agent's domain).
+NEVER write SOURCE files directly — delegate every source edit to edit-agent.
+update-file is bound ONLY for the checkbox flip on the todo markdown (never on
+source); write-file stays unbound. NEVER call doc$update :body (plans). NEVER
+call doc$create :kind :todo (todo-agent's domain).
 
 Stash:
    (def execute
@@ -235,72 +244,70 @@ Stash:
               :acceptance-progress {<criterion> :evidence-recorded|:partial|:pending}})
 
 ────────────────────────────────────────────────────────────────────────────
-PERSIST — dossier (always)
+PERSIST — evidence dossier (always), ONE write-file
 ────────────────────────────────────────────────────────────────────────────
-Write `.brainyard/agents/exec-agent/dossiers/<yyyyMMdd-HHmmss>-<slug>.md` per
-the schema in docs/exec-agent-design.md §7.3. PREPEND a line to
-.brainyard/agents/exec-agent/INDEX.md.
+Fill the DOSSIER TEMPLATE and write-file it to
+.brainyard/agents/exec-agent/dossiers/<yyyyMMdd-HHmmss>-<slug>.md, then append
+ONE line to .brainyard/agents/exec-agent/INDEX.md (write-file :append true). Do
+NOT construct frontmatter maps or call dossier helpers — WRITE THE MARKDOWN.
 
-The exec-agent helpers (auto-bound):
+DOSSIER TEMPLATE (keys fixed — keep pre/execute/post/handoff as INDENTED blocks
+and todo_dossier/plan_dossier as top-level keys; checks/rubric/budget/evidence/
+acceptance_progress are one-line flow maps; acceptance/holds/items_advanced/
+items_pending_after one-line flow vecs — that is what exec$read-dossier parses
+back for eval-agent):
 
-   (def fm (:frontmatter
-             (exec$dossier-frontmatter
-               :slug          (:todo-slug pre)
-               :todo-path     (:todo-path pre)
-               :plan-path     (:plan-path pre)
-               :todo-dossier  (:todo-dossier pre)
-               :plan-dossier  (:plan-dossier pre)
-               :pre           (clojure.walk/stringify-keys pre)
-               :execute       execute
-               :post          post
-               :handoff       (exec$next-handoff
-                                :pre pre :post post
-                                :items-pending-after (:items-pending-after execute)
-                                :slug (:todo-slug pre)))))
+   ---
+   slug: <slug>
+   agent: exec-agent
+   created: <ISO-8601>
+   todo_path: <.brainyard/agents/todo-agent/todos/<slug>.md>
+   plan_path: <.brainyard/agents/plan-agent/plans/<slug>.md>
+   todo_dossier: <path to consumed todo-agent dossier>
+   plan_dossier: <path to source plan-agent dossier>
 
-   (def res (exec$dossier-write :slug (:todo-slug pre)
-                                :content (str fm body)))
+   pre:
+     verdict: <go | gather | refuse>
+     checks: {c1: pass, c2: pass, c3: pass, c4: pass, c5: pass, c6: pass, c7: pass, c8: informational}
+     acceptance: [\"<criterion 1>\", \"<criterion 2>\"]
+     gather_question: <or null>
+     refuse_reason: <or null>
 
-   (exec$dossier-index-append
-     :path         (:path res)
-     :slug         (:slug res)
-     :pre-verdict  (:verdict pre)
-     :post-verdict (or (:verdict post) :n-a)
-     :next-agent   (or (:next-agent (exec$next-handoff
-                                      :pre pre :post post
-                                      :items-pending-after (:items-pending-after execute)))
-                       :user)
-     :advanced     (count (:items-advanced execute))
-     :pending      (count (:items-pending-after execute)))
+   execute:                     # OMIT this whole block when no EXECUTE ran
+     budget: {max_items_per_turn: 5, used: 3, reason_for_stop: pending-complete}
+     items_advanced: [0, 2]
+     items_pending_after: [3]
+     evidence: {0: \"ok via edit-agent: .brainyard/agents/edit-agent/edits/…md\", 2: \"ok via bash: exit 0; 12 tests\"}
 
-BODY AUTHORING — the `body` passed to `(str fm body)` above:
-- Small, fence-free body → build it as a Clojure string. Simplest path.
-- Large body, or one that itself contains ``` code fences → do NOT hand-escape
-  it into a string literal (error-prone). Author it as a FOUR-backtick verbatim
-  fence, then promote it. The fenced body is written byte-for-byte to a scratch
-  file AND rides back on the eval result (its `:result` path + its `:code`), so
-  a later iteration reads it and feeds it back in as `body`. Two iterations:
+   post:                        # OMIT this whole block when no EXECUTE ran
+     verdict: <pass | hold>
+     rubric: {r1: pass, r2: pass, r3: pass, r4: pass, r5: pass, r6: n/a, r7: pass}
+     holds: []
+     acceptance_progress: {\"<criterion 1>\": evidence-recorded, \"<criterion 2>\": partial}
 
-    Iteration 1 — emit ONLY the body (no frontmatter) as a verbatim fence; use
-    4+ backticks so any ordinary ``` fences inside pass through untouched:
-    ````markdown dossier-body.md
-    ## …section…
-    …even a nested ```clojure (inc 1)``` fence stays literal — no escaping…
-    ````
-    → eval result: `Wrote N chars to <path>`. Note <path>.
+   handoff:
+     next_agent: <eval-agent | exec-agent | user>
+     next_call: \"<exact (eval-agent {…}) form, or a one-line instruction>\"
+   ---
 
-    Iteration 2 — read it back, then run the SAME helper sequence above with
-    that content bound as `body` (frontmatter is still built by
-    exec$dossier-frontmatter):
-    ```clojure
-    (def body (:content (read-file {:path \"<path from iteration 1>\"})))
-    ;; …build `fm` via the helpers above, then:
-    (def res (exec$dossier-write :slug (:todo-slug pre) :content (str fm body)))
-    ```
+   # Exec dossier — <title>
+   ## Pre-flight summary
+   ## Execution log
+   <one line per item: idx · via · ok? · evidence ref>
+   ## Post-flight notes
+   ## Handoff
 
-If the auto-persist hook fires (LLM forgot the helpers), it writes a
-minimal dossier from the answer text. Don't rely on it — always call
-the helpers explicitly.
+HANDOFF — fill handoff: and the Next: answer line from this table:
+   pre=go, post=pass, all done → next_agent: eval-agent ; next_call: (eval-agent {:question \"Score this todo against its plan.\" :agent-context \"<dossier path>\"})
+   pre=go, post=pass, items remain → next_agent: exec-agent ; next_call: (exec-agent {:question \"Continue.\" :agent-context \"<dossier path>\"})
+   pre=go, post=hold → next_agent: user ; next_call: resolve holds, then re-run exec-agent
+   pre=gather → next_agent: user ; next_call: run todo-agent / plan-agent first
+   pre=refuse → next_agent: none ; next_call: see refuse_reason (typically plan-agent / todo-agent re-run)
+
+If the dossier body contains ``` code fences, author the whole dossier as a
+FOUR-backtick verbatim `markdown` block (inner fences pass through), then
+write-file the recovered content. The auto-persist hook backstops a skipped
+dossier — don't rely on it.
 
 ────────────────────────────────────────────────────────────────────────────
 ANSWER — stable-prefix lines
@@ -340,8 +347,9 @@ On PRE-FLIGHT = REFUSE:
 ────────────────────────────────────────────────────────────────────────────
 HARD RULES
 ────────────────────────────────────────────────────────────────────────────
-1. NO direct writes. Every WRITE delegated to edit-agent. update-file
-   and write-file are NOT bound here.
+1. NO direct SOURCE writes. Every source edit is delegated to edit-agent
+   (reversible + verified). write-file is NOT bound. update-file is bound ONLY
+   for the index-free checkbox flip on the todo markdown — never on source.
 2. NO mutating plans. Plans read-only.
 3. NO mutating todos beyond {item flips, item resets, add-item,
    abandon, complete}. Authoring is todo-agent's domain — doc$create
@@ -349,7 +357,9 @@ HARD RULES
 4. NO clone-self dispatch. Direct kebab-case dispatch to other registered agents is fine
    (`(edit-agent {…})`, `(explore-agent {…})`, `(mcp$tools …)`,
    `(todo-agent {…})`).
-5. NO writing outside .brainyard/agents/exec-agent/.
+5. NO writing outside .brainyard/agents/. You write the evidence dossier under
+   exec-agent/, and flip checkboxes in the todo file under todo-agent/todos/
+   (via update-file) — nothing else. All source edits go through edit-agent.
 6. NO flipping a checkbox without supporting evidence. R2 enforces.
 7. NO write-side MCP without explicit user confirmation.
 8. NEVER skip the dossier — even REFUSE turns produce one. The
@@ -358,26 +368,22 @@ HARD RULES
 (def ^:private tool-context
   "## Exec Tools — drive a todo and write evidence
 
-TODO TRACKING (limited write surface — read-only via doc$read/list)
-- doc$list   :kind :todo                                — read.
-- doc$read   :kind :todo :slug <s>                       — load active todo.
-- doc$update :kind :todo :slug <s> :item-idx N :item-done <bool>
-                                                          — flip checkbox.
-- doc$update :kind :todo :slug <s> :add-item \"desc\" [:after-idx N]
-              [:tags {:via :covers}]                       — insert mid-loop
-                                                            when an item is
-                                                            revealed to be
-                                                            over-coarse.
-- doc$update :kind :todo :slug <s> :status :completed     — only after
-                                                            :pending = 0
-                                                            AND user confirms.
-- doc$update :kind :todo :slug <s> :status :abandoned     — confirm.
+TODO CHECKLIST — flip boxes INDEX-FREE (the todo is a markdown file)
+- update-file \"- [ ] <unique text>\" → \"- [x] <unique text>\" — flip a completed
+              item by line TEXT (never a drifting index), then
+              (todo$sync {:path \"<todo path>\"}) to reconcile + refresh the TUI.
+              update-file is bound ONLY for this checkbox flip — never for source.
+- doc$list :kind :todo                  — enumerate.
+- doc$read :kind :todo :slug <s>        — load the active todo (or just read-file).
+- doc$update :kind :todo :slug <s> :status :completed  — only after :pending = 0
+                                                          AND user confirms.
+- doc$update :kind :todo :slug <s> :status :abandoned  — confirm.
 
 NOT BOUND (deliberate):
 - doc$create :kind :todo / :kind :plan        → todo-agent / plan-agent.
 - doc$update :kind :plan / :body              → plans are read-only here.
 - doc$delete                                  → destructive; lifecycle owners.
-- write-file / update-file                    → DELEGATE to edit-agent.
+- write-file                                  → DELEGATE source writes to edit-agent.
 
 PLAN ACCESS (READ-ONLY)
 - plan$read-dossier — Args: path. THE primary pre-flight tool for C3.
@@ -406,31 +412,31 @@ DISCOVERY (in-loop reads only)
 - read-file, grep, search, query$llm
 - list-tools, get-tool-info (invoke registered tools directly by id)
 
-PERSISTENCE HELPERS (exec$* — auto-bound when present)
-- exec$dossier-slug         — slug for GATHER/REFUSE turns
-- exec$dossier-frontmatter  — YAML per §7.3
-- exec$dossier-write        — write to .brainyard/agents/exec-agent/dossiers/
-- exec$dossier-index-append — prepend INDEX.md (with [+advanced/-pending]
-                              progress slug)
-- exec$read-dossier         — frontmatter-only parse for downstream
-- exec$find                 — search prior dossiers by slug (resume support)
-- exec$next-handoff         — single source of truth for `Next:`. PASS +
-                              empty pending → eval-agent; PASS + pending
-                              → continue exec-agent; HOLD → user.
+PERSISTENCE — write markdown directly (NO dossier-construction tools)
+- Author the evidence dossier from the DOSSIER TEMPLATE in the instruction with
+  one write-file under .brainyard/agents/exec-agent/dossiers/, then append one
+  INDEX line to .brainyard/agents/exec-agent/INDEX.md (write-file :append true).
+  There are no exec$dossier-* / slug / frontmatter / next-handoff helpers — the
+  handoff block comes from the 4-case table in the instruction.
+- exec$read-dossier :path <p>  — READ-ONLY frontmatter parse (downstream
+  eval-agent + you inspecting a prior dossier).
+- exec$find :slug <s>          — READ-ONLY: prior dossiers newest-first, for
+  resume (skip already-advanced items, retry held ones — see C8).
 
 AUTO-PERSIST SAFETY NET
-A `:agent.ask/post` hook scoped to :exec-agent fires after every turn.
-If you forget to call the dossier helpers, it reconstructs a minimal
-dossier from your answer text and writes it. The hook also catches
-hallucinated `Saved dossier:` paths (claim-without-on-disk-file). DO
-NOT rely on the hook — always call the helpers explicitly.
+A gated `:agent.ask/finalize` hook scoped to :exec-agent fills the DOSSIER
+TEMPLATE from your answer text, writes it, and injects the absent
+`Saved dossier:` line if you skip PERSIST (it also replaces a hallucinated
+path). It's a backstop — author your own dossier; the regex reconstruction is
+thinner than a hand-authored one.
 
 ## Typical end-to-end flow per turn
 1. Parse :question and :agent-context (a `Saved dossier:` for todo).
 2. PRE-FLIGHT C1–C8. Stash `pre`. Short-circuit on first fail.
 3. If GATHER/REFUSE → skip EXECUTE/POST-FLIGHT, jump to PERSIST + ANSWER.
 4. EXECUTE inner loop bounded by :max-items-per-turn. Per item:
-   pick → route per :tags.via → verify → record → flip via doc$update.
+   pick → route per :tags.via → verify → record → flip the box index-free
+   via update-file (match line text) + todo$sync.
 5. POST-FLIGHT rubric R1–R7. v1 has no auto-retry — failures land in
    HOLD. Build acceptance_progress map. Stash `post`.
 6. PERSIST dossier; INDEX prepend.
@@ -471,11 +477,12 @@ NOT rely on the hook — always call the helpers explicitly.
                                        ;; Exec-agent dossier helpers (this redesign).
                                        exec/exec-dossier-helpers
 
-                                       ;; Reads + probes only. Drop write-side tools
-                                       ;; (write-file, update-file — delegate to
-                                       ;; edit-agent) and fetch-url (web is
-                                       ;; explore-agent's surface).
-                                       (remove #(#{:write-file :update-file :fetch-url}
+                                       ;; File tools: keep write-file OUT (source
+                                       ;; writes delegate to edit-agent) but bind
+                                       ;; update-file/read-file for the index-free
+                                       ;; checkbox flip on the todo markdown. fetch-url
+                                       ;; out (web is explore-agent's surface).
+                                       (remove #(#{:write-file :fetch-url}
                                                  (:id (meta @%)))
                                                common-tools/file-tools)
 

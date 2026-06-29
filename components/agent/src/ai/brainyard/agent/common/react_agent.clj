@@ -294,13 +294,17 @@ set `goal-achieved` to true AND provide the final `answer` in the same response.
 
           ;; Base todo substrate — same checklist convention as coact.
           true
-          (assoc :todo-substrate agent-roster/todo-substrate-protocol))
+          (assoc :todo-substrate agent-roster/todo-substrate-protocol)
+
+          ;; Base exec substrate — route/verify/record/flip, as coact.
+          true
+          (assoc :exec-substrate agent-roster/exec-substrate-protocol))
         section-order [:role :system-info
                        :critical-rules :tool-call-format
                        :tools :tool-context
                        :instruction :agent-context
                        :project-instructions :project-memory :user-instructions
-                       :todo-substrate
+                       :todo-substrate :exec-substrate
                        :footer]
         content (str/join "\n\n" (keep #(get sections %) section-order))]
     (if return-breakdown?

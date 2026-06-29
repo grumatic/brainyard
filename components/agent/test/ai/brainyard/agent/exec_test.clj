@@ -29,203 +29,96 @@
   (.delete f))
 
 ;; ============================================================================
-;; exec$dossier-slug
+;; Dossier read seam + resume search + handoff fn unit tests
+;;
+;; The write-side dossier helper chain (exec$dossier-slug / -frontmatter /
+;; -write / -index-append / exec$next-handoff) is RETIRED — the LLM authors the
+;; evidence dossier as markdown directly. What survives: the deterministic
+;; readers (exec$read-dossier, exec$find) and the pure handoff fn.
 ;; ============================================================================
 
-(deftest test-dossier-slug-determinism
-  (testing "same question → same slug"
-    (let [q "Drive ship-v2-checkout to completion"
-          s1 (:slug (exec/exec$dossier-slug :question q))
-          s2 (:slug (exec/exec$dossier-slug :question q))]
-      (is (= s1 s2))
-      (is (= "ship-v2-checkout-completion" s1)
-          "stopwords (incl. 'drive') drop, leaving the verbs")))
+(defn- write-dossier!
+  "Spit a §7 exec dossier under <base-dir>/.brainyard/agents/exec-agent/dossiers/.
+   Returns the repo-relative path."
+  [base-dir filename content]
+  (let [f (io/file base-dir ".brainyard/agents/exec-agent/dossiers" filename)]
+    (.mkdirs (.getParentFile f))
+    (spit f content)
+    (str ".brainyard/agents/exec-agent/dossiers/" filename)))
 
-  (testing "blank → fallback slug 'exec'"
-    (is (= "exec" (:slug (exec/exec$dossier-slug :question ""))))
-    (is (= "exec" (:slug (exec/exec$dossier-slug :question "exec drive advance")))))
+(def ^:private sample-exec-dossier
+  "A model-authored §7 exec dossier: top-level todo_dossier/plan_dossier; blocks
+   for pre/execute/post/handoff; flow maps for checks/rubric/evidence/
+   acceptance_progress; flow vecs for acceptance/items_advanced."
+  (str "---\n"
+       "slug: ship-v2-checkout\nagent: exec-agent\ncreated: 2026-06-29T00:00:00Z\n"
+       "todo_path: .brainyard/agents/todo-agent/todos/ship-v2-checkout.md\n"
+       "plan_path: .brainyard/agents/plan-agent/plans/ship-v2-checkout.md\n"
+       "todo_dossier: .brainyard/agents/todo-agent/dossiers/x.md\n"
+       "plan_dossier: .brainyard/agents/plan-agent/dossiers/y.md\n\n"
+       "pre:\n"
+       "  verdict: go\n"
+       "  checks: {c1: pass, c2: pass, c8: informational}\n"
+       "  acceptance: [\"feature-flag toggleable\", \"all unit tests green\"]\n\n"
+       "execute:\n"
+       "  budget: {max_items_per_turn: 5, used: 3, reason_for_stop: hard-blocker}\n"
+       "  items_advanced: [0, 1, 2]\n"
+       "  items_pending_after: [3]\n"
+       "  evidence: {0: \"ok via edit-agent\", 2: \"ok via bash exit 0\"}\n\n"
+       "post:\n"
+       "  verdict: pass\n"
+       "  rubric: {r1: pass, r6: n/a, r7: pass}\n"
+       "  acceptance_progress: {\"feature-flag toggleable\": evidence-recorded, \"p99 unchanged\": pending}\n\n"
+       "handoff:\n  next_agent: exec-agent\n  next_call: \"(exec-agent {…})\"\n"
+       "---\n# Exec dossier — ship v2\n"))
 
-  (testing "max-chars cap"
-    (let [long-q (str/join " " (repeat 30 "supercalifragilistic"))]
-      (is (<= (count (:slug (exec/exec$dossier-slug :question long-q))) 60))
-      (is (<= (count (:slug (exec/exec$dossier-slug :question long-q :max-chars 7))) 7))))
-
-  (testing "validation"
-    (is (contains? (exec/exec$dossier-slug :question 123) :error))
-    (is (contains? (exec/exec$dossier-slug :question "x" :max-chars 0) :error))))
-
-;; ============================================================================
-;; exec$dossier-frontmatter + read-dossier round-trip
-;; ============================================================================
-
-(deftest test-dossier-frontmatter-and-read-roundtrip
+(deftest test-dossier-read-roundtrip
   (let [tmp (tmp-dir "exec-doss-rt")]
     (try
-      (let [{:keys [frontmatter]}
-            (exec/exec$dossier-frontmatter
-             :slug "ship-v2-checkout"
-             :todo-path ".brainyard/agents/todo-agent/todos/ship-v2-checkout.md"
-             :plan-path ".brainyard/agents/plan-agent/plans/ship-v2-checkout.md"
-             :todo-dossier ".brainyard/agents/todo-agent/dossiers/x.md"
-             :plan-dossier ".brainyard/agents/plan-agent/dossiers/y.md"
-             :pre {:verdict :go
-                   :checks {:c1_todo_dossier :pass :c2_todo_postflight :pass
-                            :c3_plan_postflight :pass :c4_todo_present :pass
-                            :c5_routing_tags :pass :c6_tools_available :pass
-                            :c7_tree_clean :pass :c8_resume :informational}
-                   :acceptance ["feature-flag toggleable" "all unit tests green"]
-                   :resume_from nil}
-             :execute {:budget {:max_items_per_turn 5 :used 3 :reason_for_stop :hard-blocker}
-                       :items_advanced [0 1 2]
-                       :items_pending_after [3]
-                       :evidence {0 {:ok true :via :edit-agent
-                                     :update_record ".brainyard/agents/edit-agent/edits/foo.md"}
-                                  2 {:ok true :via :bash :exit 0}}}
-             :post {:verdict :pass
-                    :rubric {:r1 :pass :r2 :pass :r3 :pass :r4 :pass
-                             :r5 :pass :r6 :n/a :r7 :pass}
-                    :revision_applied false
-                    :holds []
-                    :acceptance_progress {"feature-flag toggleable" :evidence-recorded
-                                          "all unit tests green" :evidence-recorded
-                                          "p99 unchanged" :pending}}
-             :handoff {:next_agent "exec-agent"
-                       :next_call "(call-tool \"exec-agent\" {…})"})
-            {:keys [path]} (exec/exec$dossier-write
-                            :slug "ship-v2-checkout"
-                            :content (str frontmatter "\n# body\n")
-                            :base-dir tmp)
+      (let [path   (write-dossier! tmp "20260629-000000-ship-v2-checkout.md" sample-exec-dossier)
             parsed (exec/exec$read-dossier :path path :base-dir tmp)]
-
-        (testing "scalar keys round-trip"
+        (testing "scalar keys (top-level todo_dossier/plan_dossier)"
           (is (= "ship-v2-checkout" (:slug parsed)))
           (is (= "exec-agent" (:agent parsed)))
           (is (= ".brainyard/agents/todo-agent/todos/ship-v2-checkout.md" (:todo_path parsed)))
-          (is (= ".brainyard/agents/plan-agent/plans/ship-v2-checkout.md" (:plan_path parsed)))
           (is (= ".brainyard/agents/todo-agent/dossiers/x.md" (:todo_dossier parsed)))
           (is (= ".brainyard/agents/plan-agent/dossiers/y.md" (:plan_dossier parsed))))
-
-        (testing "pre sub-block carries acceptance"
+        (testing "pre carries acceptance"
           (is (= "go" (get-in parsed [:pre :verdict])))
           (is (= ["feature-flag toggleable" "all unit tests green"]
                  (get-in parsed [:pre :acceptance]))))
-
-        (testing "execute sub-block: items + evidence"
-          (is (= [0 1 2] (get-in parsed [:execute :items_advanced]))
-              "flow-vector parser coerces ints back to longs")
+        (testing "execute: items vectors + evidence raw flow-string"
+          (is (= [0 1 2] (get-in parsed [:execute :items_advanced])))
           (is (= [3] (get-in parsed [:execute :items_pending_after])))
-          (is (string? (get-in parsed [:execute :evidence]))
-              "evidence map kept as raw flow-string for v1"))
-
-        (testing "post sub-block + acceptance_progress"
+          (is (string? (get-in parsed [:execute :evidence]))))
+        (testing "post + acceptance_progress raw flow-string; :n/a survives"
           (is (= "pass" (get-in parsed [:post :verdict])))
-          (is (string? (get-in parsed [:post :acceptance_progress])))
           (is (str/includes? (get-in parsed [:post :acceptance_progress])
                              "\"feature-flag toggleable\": evidence-recorded"))
-          (is (str/includes? (get-in parsed [:post :acceptance_progress])
-                             "\"all unit tests green\": evidence-recorded"))
-          (is (str/includes? (get-in parsed [:post :acceptance_progress])
-                             "\"p99 unchanged\": pending"))
-          (testing "namespaced keyword :n/a survives round-trip"
-            (is (str/includes? (get-in parsed [:post :rubric]) "r6: n/a"))))
-
+          (is (str/includes? (get-in parsed [:post :rubric]) "r6: n/a")))
         (testing "handoff next_agent"
           (is (= "exec-agent" (get-in parsed [:handoff :next_agent])))))
-
       (finally (delete-rec (io/file tmp))))))
 
-(deftest test-dossier-frontmatter-validation
-  (is (contains? (exec/exec$dossier-frontmatter :pre {} :post {}) :error)
-      "missing :slug → error"))
-
-;; ============================================================================
-;; exec$dossier-write collision
-;; ============================================================================
-
-(deftest test-dossier-write-collision-suffix
-  (let [tmp (tmp-dir "exec-doss-coll")]
-    (try
-      ;; dossier writers require YAML frontmatter on :content
-      (let [fm "---\nslug: rerun\n---\n"
-            c1 (str fm "x1") c2 (str fm "x2") c3 (str fm "x3")
-            r1 (exec/exec$dossier-write :slug "rerun" :content c1 :base-dir tmp)
-            r2 (exec/exec$dossier-write :slug "rerun" :content c2 :base-dir tmp)
-            r3 (exec/exec$dossier-write :slug "rerun" :content c3 :base-dir tmp)]
-        (is (= "rerun"   (:slug r1)))
-        (is (= "rerun-2" (:slug r2)))
-        (is (= "rerun-3" (:slug r3)))
-        (is (= c1 (slurp (io/file (:path r1))))))
-      (finally (delete-rec (io/file tmp))))))
-
-;; ============================================================================
-;; exec$dossier-index-append (with [+adv/-pend] progress)
-;; ============================================================================
-
-(deftest test-dossier-index-prepend-ordering
-  (let [tmp (tmp-dir "exec-doss-idx")]
-    (try
-      (exec/exec$dossier-index-append :path "dossiers/a.md" :slug "alpha"
-                                      :pre-verdict :go :post-verdict :pass
-                                      :advanced 3 :pending 1
-                                      :next-agent :exec-agent :base-dir tmp)
-      (exec/exec$dossier-index-append :path "dossiers/b.md" :slug "alpha"
-                                      :pre-verdict :go :post-verdict :pass
-                                      :advanced 1 :pending 0
-                                      :next-agent :eval-agent :base-dir tmp)
-      (exec/exec$dossier-index-append :path "dossiers/c.md" :slug "beta"
-                                      :pre-verdict :gather
-                                      :next-agent :user :base-dir tmp)
-      (let [content (slurp (io/file tmp ".brainyard/agents/exec-agent/INDEX.md"))
-            lines   (->> (str/split-lines content) (remove str/blank?))]
-        (is (= 3 (count lines)))
-        ;; Newest first
-        (is (str/includes? (nth lines 0) "beta"))
-        (is (str/includes? (nth lines 0) "pre:gather"))
-        (is (str/includes? (nth lines 0) "post:n/a"))
-        (is (str/includes? (nth lines 0) "→ user"))
-        (is (str/includes? (nth lines 1) "alpha"))
-        (is (str/includes? (nth lines 1) "[+1 / -0]"))
-        (is (str/includes? (nth lines 1) "→ eval-agent"))
-        (is (str/includes? (nth lines 2) "[+3 / -1]"))
-        (is (str/includes? (nth lines 2) "→ exec-agent")))
-      (finally (delete-rec (io/file tmp))))))
-
-;; ============================================================================
-;; exec$next-handoff
-;; ============================================================================
-
-(deftest test-next-handoff-variants
+(deftest test-handoff-from-state-variants
   (testing "PASS + all done (empty pending) → eval-agent"
-    (let [r (exec/exec$next-handoff :pre {:verdict :go} :post {:verdict :pass}
-                                    :items-pending-after []
-                                    :slug "x" :dossier-path "doss.md")]
+    (let [r (#'exec/handoff-from-state :go :pass [] "x" "doss.md")]
       (is (= "eval-agent" (:next-agent r)))
-      (is (str/includes? (:next-call r) "eval-agent"))))
-
+      (is (str/includes? (:next-call r) ":agent-context \"doss.md\""))))
   (testing "PASS + items pending → continue exec-agent"
-    (let [r (exec/exec$next-handoff :pre {:verdict :go} :post {:verdict :pass}
-                                    :items-pending-after [3]
-                                    :slug "x" :dossier-path "doss.md")]
+    (let [r (#'exec/handoff-from-state :go :pass [3] "x" "doss.md")]
       (is (= "exec-agent" (:next-agent r)))
       (is (str/includes? (:next-call r) "Continue"))))
-
   (testing "HOLD → user"
-    (let [r (exec/exec$next-handoff :pre {:verdict :go} :post {:verdict :hold})]
+    (let [r (#'exec/handoff-from-state :go :hold nil "x" nil)]
       (is (= "user" (:next-agent r)))
       (is (str/includes? (str/lower-case (:next-call r)) "hold"))))
-
-  (testing "GATHER → user (typically run todo-agent first)"
-    (let [r (exec/exec$next-handoff :pre {:verdict :gather})]
+  (testing "GATHER → user (todo-agent first)"
+    (let [r (#'exec/handoff-from-state :gather nil nil "x" nil)]
       (is (= "user" (:next-agent r)))
       (is (str/includes? (:next-call r) "todo-agent"))))
-
   (testing "REFUSE → none"
-    (let [r (exec/exec$next-handoff :pre {:verdict :refuse})]
-      (is (= "none" (:next-agent r))))))
-
-;; ============================================================================
-;; exec$find — resume-support search
-;; ============================================================================
+    (is (= "none" (:next-agent (#'exec/handoff-from-state :refuse nil nil "x" nil))))))
 
 (deftest test-exec-find
   (let [tmp (tmp-dir "exec-find")]
@@ -234,35 +127,20 @@
         (is (= {:matches [] :n-matches 0}
                (exec/exec$find :slug "no-such" :base-dir tmp))))
 
-      ;; Write three dossiers with two slugs to confirm filtering + ordering
-      (let [{:keys [frontmatter]}
-            (exec/exec$dossier-frontmatter
-             :slug "alpha"
-             :pre {:verdict :go :checks {:c1 :pass}}
-             :execute {:items_advanced [0]
-                       :items_pending_after [1 2]}
-             :post {:verdict :pass :rubric {:r1 :pass}})]
-        (Thread/sleep (long 1100))
-        (exec/exec$dossier-write :slug "alpha" :content frontmatter :base-dir tmp))
-      (Thread/sleep (long 1100))
-      (exec/exec$dossier-write :slug "beta" :content "---\nslug: beta\n---\n" :base-dir tmp)
-      (Thread/sleep (long 1100))
-      (exec/exec$dossier-write :slug "alpha" :content "---\nslug: alpha\n---\n" :base-dir tmp)
+      ;; Seed three dossiers (two slugs) with sortable timestamp filenames.
+      (write-dossier! tmp "20260101-000000-alpha.md"
+                      "---\nslug: alpha\nagent: exec-agent\nexecute:\n  items_advanced: [0]\n  items_pending_after: [1, 2]\n---\n")
+      (write-dossier! tmp "20260102-000000-beta.md"  "---\nslug: beta\n---\n")
+      (write-dossier! tmp "20260103-000000-alpha.md" "---\nslug: alpha\n---\n")
 
       (testing "find returns matching dossiers, newest-first"
         (let [r (exec/exec$find :slug "alpha" :base-dir tmp)]
           (is (= 2 (:n-matches r)))
           (is (every? #(= "alpha" (:slug %)) (:matches r)))
-          ;; Filename starts with timestamp; newest first means the second
-          ;; alpha dossier appears first.
-          (let [first-ts (-> r :matches first :path
-                             (str/split #"/") last (str/split #"-") first)
-                second-ts (-> r :matches second :path
-                              (str/split #"/") last (str/split #"-") first)]
-            (is (>= (compare first-ts second-ts) 0)
-                "first match is newer than second"))))
+          (is (str/includes? (-> r :matches first :path) "20260103")
+              "newest (20260103) alpha first")))
 
-      (testing "find for unrelated slug"
+      (testing "find for unrelated slug → 0"
         (is (= 0 (:n-matches (exec/exec$find :slug "no-such" :base-dir tmp)))))
 
       (testing "validation"
@@ -385,8 +263,8 @@
   (testing "answer naming an EXISTING dossier path → no-op"
     (let [tmp (tmp-dir "exec-skip")]
       (try
-        (let [{:keys [path]} (exec/exec$dossier-write :slug "real" :content "---\nslug: real\n---\nx" :base-dir tmp)
-              answer (str "Saved todo: x.md\nSaved dossier: " path "\nNext: ...")
+        (let [rel (write-dossier! tmp "20260101-000000-real.md" "---\nslug: real\n---\nx")
+              answer (str "Saved todo: x.md\nSaved dossier: " rel "\nNext: ...")
               r (exec/materialize-auto-dossier!
                  {:answer answer :question "Q" :base-dir tmp})]
           (is (nil? r))

@@ -67,6 +67,42 @@ Manage working checklists yourself, inline — no todo-agent dispatch. Reserve
 todo-agent for a VETTED, plan-derived, AUDITED contract backlog: it adds
 pre/post-flight gating + a dossier handoff that exec-agent/eval-agent consume.")
 
+(def exec-substrate-protocol
+  "An `## Executing a checklist` system-context section, installed in BOTH base
+   agents (coact + react) so any agent can DO a checklist item — not just track
+   it — with evidence and safe writes, no exec-agent dispatch. Layers the
+   execution discipline (route → verify → record → flip) over the todo
+   substrate's checklist editing. Tools referenced (edit-agent, bash, mcp$tools,
+   update-file, todo$sync) already ride default-agent-roster."
+  "## Executing a checklist (exec substrate)
+To DO a checklist item (not just track it), follow route → verify → record → flip:
+
+1. ROUTE — decide how the item gets done:
+   • source edit  → DELEGATE to edit-agent: (edit-agent {:question \"<item>\"
+                    :agent-context \"<context>\" :dirty-ok? \"false\"}). It diffs,
+                    verifies, and returns `Saved edit: <path>` + `Rollback: <cmd>`.
+                    Prefer this over raw write-file for tracked source — you get a
+                    reversible, verified edit.
+   • shell check  → (bash {:command \"<cmd>\"}); ok = exit 0.
+   • external/MCP → (mcp$tools …); reads proceed, writes need user confirm.
+   • lookup       → read-file / grep / query$llm; keep a short evidence excerpt.
+   • manual       → STOP, surface it, do NOT flip.
+
+2. VERIFY — confirm it actually worked (edit-agent diff_match, exit 0, recorded excerpt).
+3. RECORD — note the evidence (edit path + rollback, command + exit, excerpt).
+4. FLIP — only after VERIFY passes: update-file \"- [ ] <text>\" → \"- [x] <text>\"
+   on the checklist (match line TEXT, never an index), then todo$sync to
+   reconcile progress + refresh the TUI.
+
+RULES:
+- NEVER flip a box without supporting evidence (step 2).
+- Prefer edit-agent for tracked-source writes (reversible + verified).
+- Bound your work: a few items per turn, then summarize and continue.
+
+This is working execution — yours to run inline. Reserve exec-agent for CONTRACT
+execution: gated on passed plan+todo dossiers, bounded, and audited with an
+evidence dossier that eval-agent consumes.")
+
 (def project-memory-protocol
   "Shared `## Project Memory` protocol prose, installed in BOTH base agents
    (coact + react) so every derived agent gets it — paired with

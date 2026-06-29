@@ -85,15 +85,15 @@
       (is (not (contains? ids :todo$dossier-slug)))
       (is (not (contains? ids :todo$next-handoff)))))
 
-  (testing "exec-agent :agent-tools includes the new exec dossier helpers"
+  (testing "exec-agent keeps the exec READ seams (write-side chain retired)"
     (let [ids (exec-tool-ids)]
-      (is (contains? ids :exec$dossier-slug))
-      (is (contains? ids :exec$dossier-frontmatter))
-      (is (contains? ids :exec$dossier-write))
-      (is (contains? ids :exec$dossier-index-append))
       (is (contains? ids :exec$read-dossier))
       (is (contains? ids :exec$find))
-      (is (contains? ids :exec$next-handoff))))
+      (is (not (contains? ids :exec$dossier-slug)))
+      (is (not (contains? ids :exec$dossier-frontmatter)))
+      (is (not (contains? ids :exec$dossier-write)))
+      (is (not (contains? ids :exec$dossier-index-append)))
+      (is (not (contains? ids :exec$next-handoff)))))
 
   (testing "exec-agent :agent-tools includes reads + probes + MCP read-routing"
     (let [ids (exec-tool-ids)]
@@ -120,12 +120,12 @@
 
       (is (contains? ids :agent-runtime$config))))
 
-  (testing "exec-agent :agent-tools EXCLUDES write-side tools (HARD RULE: delegate to edit-agent)"
+  (testing "exec-agent keeps write-file OUT (delegate to edit-agent) but binds update-file for the flip"
     (let [ids (exec-tool-ids)]
       (is (not (contains? ids :write-file))
-          "write-file is excluded — exec-agent delegates writes to edit-agent")
-      (is (not (contains? ids :update-file))
-          "update-file is excluded — exec-agent delegates writes to edit-agent")))
+          "write-file is excluded — exec-agent delegates source writes to edit-agent")
+      (is (contains? ids :update-file)
+          "update-file is bound ONLY for the index-free checkbox flip on the todo markdown")))
 
   (testing "exec-agent :agent-tools EXCLUDES web/skills/clone-self"
     (let [ids (exec-tool-ids)]
@@ -214,14 +214,18 @@
       (is (str/includes? tool-context "todo$read-dossier"))
       (is (str/includes? tool-context "READ-ONLY"))
 
-      ;; Exec dossier helpers (all seven)
-      (is (str/includes? tool-context "exec$dossier-slug"))
-      (is (str/includes? tool-context "exec$dossier-frontmatter"))
-      (is (str/includes? tool-context "exec$dossier-write"))
-      (is (str/includes? tool-context "exec$dossier-index-append"))
+      ;; Exec dossier READ seams survive; write-side chain is retired
       (is (str/includes? tool-context "exec$read-dossier"))
       (is (str/includes? tool-context "exec$find"))
-      (is (str/includes? tool-context "exec$next-handoff"))
+      (is (not (str/includes? tool-context "exec$dossier-slug")))
+      (is (not (str/includes? tool-context "exec$dossier-frontmatter")))
+      (is (not (str/includes? tool-context "exec$dossier-write")))
+      (is (not (str/includes? tool-context "exec$dossier-index-append")))
+      (is (not (str/includes? tool-context "exec$next-handoff")))
+
+      ;; Index-free flip seam: update-file + todo$sync
+      (is (str/includes? tool-context "update-file"))
+      (is (str/includes? tool-context "todo$sync"))
 
       ;; Cross-agent dispatch (the key delegation rule)
       (is (str/includes? tool-context "edit-agent"))
