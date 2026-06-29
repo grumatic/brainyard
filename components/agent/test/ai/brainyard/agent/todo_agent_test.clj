@@ -73,15 +73,17 @@
       (is (contains? ids :doc$update))
       (is (contains? ids :doc$delete))))
 
-  (testing "todo-agent :agent-tools includes plan-agent dossier helpers (READ-ONLY)"
+  (testing "todo-agent binds the plan-agent dossier READ seam (only the reader survives)"
     (let [ids (todo-tool-ids)]
       (is (contains? ids :plan$read-dossier)
           "primary pre-flight tool: read plan-agent dossier")
-      (is (contains? ids :plan$dossier-slug))
-      (is (contains? ids :plan$dossier-frontmatter))
-      (is (contains? ids :plan$dossier-write))
-      (is (contains? ids :plan$dossier-index-append))
-      (is (contains? ids :plan$next-handoff))))
+      ;; The plan-agent write-side helper chain is retired (plan-agent now
+      ;; authors dossiers via write-file); downstream agents only ever read.
+      (is (not (contains? ids :plan$dossier-slug)))
+      (is (not (contains? ids :plan$dossier-frontmatter)))
+      (is (not (contains? ids :plan$dossier-write)))
+      (is (not (contains? ids :plan$dossier-index-append)))
+      (is (not (contains? ids :plan$next-handoff)))))
 
   (testing "todo-agent :agent-tools includes the new todo dossier helpers"
     (let [ids (todo-tool-ids)]

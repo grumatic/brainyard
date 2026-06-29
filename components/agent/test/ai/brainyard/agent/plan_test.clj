@@ -343,85 +343,69 @@
         "the legacy substring is mutually exclusive with the new substring")))
 
 ;; ============================================================================
-;; plan$dossier-* helper unit tests
+;; Dossier read seam + handoff fn unit tests
+;;
+;; The write-side helper chain (plan$dossier-slug / -frontmatter / -write /
+;; -index-append / plan$next-handoff) is RETIRED — the LLM authors the dossier
+;; as markdown directly. What's tested here is what survives: the deterministic
+;; reader (plan$read-dossier) against a HAND-AUTHORED dossier (what the model
+;; actually produces), the lenient validator, and the pure handoff fn.
 ;; ============================================================================
 
-(deftest test-dossier-slug-determinism
-  (testing "same question → same slug (deterministic)"
-    (let [q "Plan to ship checkout v2 next sprint"
-          s1 (:slug (plan/plan$dossier-slug :question q))
-          s2 (:slug (plan/plan$dossier-slug :question q))]
-      (is (= s1 s2))
-      (is (string? s1))
-      (is (= "ship-checkout-v2-next-sprint" s1)
-          "stopwords (incl. 'plan' and 'to') drop, leaving the content verbs")))
+(defn- write-dossier!
+  "Spit a dossier file under <base-dir>/.brainyard/agents/plan-agent/dossiers/.
+   Returns the repo-relative path."
+  [base-dir filename content]
+  (let [f (io/file base-dir ".brainyard/agents/plan-agent/dossiers" filename)]
+    (.mkdirs (.getParentFile f))
+    (spit f content)
+    (str ".brainyard/agents/plan-agent/dossiers/" filename)))
 
-  (testing "blank → fallback slug 'plan'"
-    (is (= "plan" (:slug (plan/plan$dossier-slug :question ""))))
-    (is (= "plan" (:slug (plan/plan$dossier-slug :question "   "))))
-    (is (= "plan" (:slug (plan/plan$dossier-slug :question "the a how"))))
-    (is (= "plan" (:slug (plan/plan$dossier-slug :question "plan plan plan")))
-        "'plan' is a stopword so an all-plan question collapses to fallback"))
+(def ^:private sample-dossier
+  "A model-authored dossier in the template shape (flow-map checks/rubric,
+   flow-vector holds/acceptance) — exactly what the DOSSIER TEMPLATE yields."
+  (str "---\n"
+       "slug: ship-checkout-v2\n"
+       "agent: plan-agent\n"
+       "created: 2026-06-29T14:03:11Z\n"
+       "plan_path: .brainyard/agents/plan-agent/plans/ship-checkout-v2.md\n"
+       "plan_status: draft\n"
+       "\n"
+       "pre:\n"
+       "  verdict: go\n"
+       "  checks: {c1: pass, c2: pass, c7: informational}\n"
+       "  exploration_path: .brainyard/agents/explore-agent/results/cp-20260509.md\n"
+       "  owner: jake\n"
+       "  related_plans: []\n"
+       "  gather_question: null\n"
+       "  refuse_reason: null\n"
+       "\n"
+       "author:\n"
+       "  action: created\n"
+       "  body_bytes: 4128\n"
+       "\n"
+       "post:\n"
+       "  verdict: pass\n"
+       "  rubric: {r1: pass, r2: pass, r7: pass}\n"
+       "  holds: []\n"
+       "  acceptance: [\"feature-flag toggleable\", \"all checkout/* unit tests green\"]\n"
+       "\n"
+       "handoff:\n"
+       "  next_agent: todo-agent\n"
+       "  next_call: \"(todo-agent {:question \\\"Spawn a todo.\\\"})\"\n"
+       "---\n\n"
+       "# Plan dossier — ship checkout v2\n\n"
+       "## Pre-flight summary\nAll checks passed.\n"))
 
-  (testing "60-char default cap and override"
-    (let [long-q (str/join " " (repeat 30 "supercalifragilistic"))]
-      (is (<= (count (:slug (plan/plan$dossier-slug :question long-q))) 60))
-      (is (<= (count (:slug (plan/plan$dossier-slug :question long-q :max-chars 7))) 7))))
-
-  (testing "validation"
-    (is (contains? (plan/plan$dossier-slug :question 123) :error))
-    (is (contains? (plan/plan$dossier-slug :question "x" :max-chars 0) :error))))
-
-(deftest test-dossier-frontmatter-and-read-roundtrip
-  (let [{:keys [frontmatter]}
-        (plan/plan$dossier-frontmatter
-         :slug "ship-checkout-v2"
-         :plan-path ".brainyard/agents/plan-agent/plans/ship-checkout-v2.md"
-         :plan-status "draft"
-         :pre {:verdict :go
-               :checks {:c1_goal_clear :pass :c2_no_duplicate :pass
-                        :c7_owner_known :informational}
-               :exploration_path ".brainyard/agents/explore-agent/results/cp-20260509.md"
-               :owner "jake"
-               :related_plans []
-               :gather_question nil
-               :refuse_reason nil}
-         :author {:action :created :body_bytes 4128}
-         :post {:verdict :pass
-                :rubric {:r1 :pass :r2 :pass :r3 :pass :r4 :pass
-                         :r5 :pass :r6 :pass :r7 :pass}
-                :revision_applied false
-                :revision_summary nil
-                :holds []
-                :acceptance ["feature-flag toggleable"
-                             "all checkout/* unit tests green"]}
-         :handoff {:next_agent "todo-agent"
-                   :next_call "(call-tool \"todo-agent\" {:question \"...\"})"})]
-
-    (testing "well-formed envelope"
-      (is (str/starts-with? frontmatter "---\n"))
-      (is (str/ends-with? frontmatter "---\n"))
-      (is (str/includes? frontmatter "slug: ship-checkout-v2"))
-      (is (str/includes? frontmatter "agent: plan-agent"))
-      (is (str/includes? frontmatter "plan_path: .brainyard/agents/plan-agent/plans/ship-checkout-v2.md")))
-
-    (testing "nested blocks rendered as YAML block style"
-      (is (str/includes? frontmatter "pre:\n"))
-      (is (str/includes? frontmatter "author:\n"))
-      (is (str/includes? frontmatter "post:\n"))
-      (is (str/includes? frontmatter "handoff:\n")))
-
-    (testing "round-trip via plan$read-dossier"
-      (let [tmp (.getCanonicalPath
-                 (doto (io/file (System/getProperty "java.io.tmpdir")
-                                (str "plan-doss-rt-" (System/currentTimeMillis)))
-                   .mkdirs))
-            {:keys [path]} (plan/plan$dossier-write
-                            :slug "ship-checkout-v2"
-                            :content (str frontmatter "\n# body\n")
-                            :base-dir tmp)
-            parsed (plan/plan$read-dossier :path path :base-dir tmp)]
-        (try
+(deftest test-dossier-read-roundtrip
+  (testing "plan$read-dossier parses a model-authored dossier's contract keys"
+    (let [tmp (.getCanonicalPath
+               (doto (io/file (System/getProperty "java.io.tmpdir")
+                              (str "plan-doss-rt-" (System/currentTimeMillis)))
+                 .mkdirs))]
+      (try
+        (let [path   (write-dossier! tmp "20260629-140311-ship-checkout-v2.md" sample-dossier)
+              parsed (plan/plan$read-dossier :path path :base-dir tmp)]
           (is (= "ship-checkout-v2" (:slug parsed)))
           (is (= "plan-agent" (:agent parsed)))
           (is (= ".brainyard/agents/plan-agent/plans/ship-checkout-v2.md" (:plan_path parsed)))
@@ -432,98 +416,95 @@
           (is (= "created" (get-in parsed [:author :action])))
           (is (= 4128 (get-in parsed [:author :body_bytes])))
           (is (= "pass" (get-in parsed [:post :verdict])))
-          (is (false? (get-in parsed [:post :revision_applied])))
-          (is (= ["feature-flag toggleable"
-                  "all checkout/* unit tests green"]
+          (is (= ["feature-flag toggleable" "all checkout/* unit tests green"]
                  (get-in parsed [:post :acceptance])))
           (is (= "todo-agent" (get-in parsed [:handoff :next_agent])))
-          (testing "rubric and checks survive as raw flow-map strings"
+          (testing "checks/rubric survive as raw flow-map strings"
             (is (string? (get-in parsed [:post :rubric])))
             (is (str/includes? (get-in parsed [:post :rubric]) "r1: pass"))
-            (is (str/includes? (get-in parsed [:pre :checks]) "c1_goal_clear: pass")))
-          (finally
-            (doseq [f (reverse (file-seq (io/file tmp)))]
-              (.delete f))))))
+            (is (str/includes? (get-in parsed [:pre :checks]) "c1: pass")))
+          (testing "no spurious :error / :warning on a complete dossier"
+            (is (not (contains? parsed :error)))
+            (is (not (contains? parsed :warning)))))
+        (finally
+          (doseq [f (reverse (file-seq (io/file tmp)))]
+            (.delete f)))))))
 
-    (testing "validation"
-      (is (contains? (plan/plan$dossier-frontmatter :pre {} :post {}) :error)
-          "missing :slug → error"))))
+(deftest test-dossier-read-block-list-style
+  (testing "post.acceptance parses from YAML block-list style; following blocks still parse"
+    (let [tmp (.getCanonicalPath
+               (doto (io/file (System/getProperty "java.io.tmpdir")
+                              (str "plan-doss-bl-" (System/currentTimeMillis)))
+                 .mkdirs))]
+      (try
+        (let [content (str "---\n"
+                           "slug: bl\nagent: plan-agent\ncreated: 2026-06-29T00:00:00Z\n"
+                           "plan_path: .brainyard/agents/plan-agent/plans/bl.md\nplan_status: draft\n\n"
+                           "pre:\n  verdict: go\n  checks: {c1: pass}\n  related_plans:\n    - other-plan\n\n"
+                           "author:\n  action: created\n  body_bytes: 100\n\n"
+                           "post:\n  verdict: pass\n  rubric: {r1: pass}\n  holds: []\n"
+                           "  acceptance:\n    - \"criterion one\"\n    - \"criterion two\"\n\n"
+                           "handoff:\n  next_agent: todo-agent\n  next_call: \"x\"\n---\n# body\n")
+              path    (write-dossier! tmp "20260629-000000-bl.md" content)
+              r       (plan/plan$read-dossier :path path :base-dir tmp)]
+          (is (= ["criterion one" "criterion two"] (get-in r [:post :acceptance]))
+              "block-list acceptance items are collected")
+          (is (= ["other-plan"] (get-in r [:pre :related_plans])))
+          (is (= "pass" (get-in r [:post :verdict])))
+          (is (= "todo-agent" (get-in r [:handoff :next_agent]))
+              "the handoff block after a block-list still parses (block didn't run away)"))
+        (finally
+          (doseq [f (reverse (file-seq (io/file tmp)))]
+            (.delete f)))))))
 
-(deftest test-dossier-write-collision-suffix
-  (let [tmp (.getCanonicalPath
-             (doto (io/file (System/getProperty "java.io.tmpdir")
-                            (str "plan-doss-coll-" (System/currentTimeMillis)))
-               .mkdirs))]
-    (try
-      ;; dossier writers require YAML frontmatter on :content
-      (let [fm "---\nslug: rerun\n---\n"
-            c1 (str fm "x1") c2 (str fm "x2") c3 (str fm "x3")
-            r1 (plan/plan$dossier-write :slug "rerun" :content c1 :base-dir tmp)
-            r2 (plan/plan$dossier-write :slug "rerun" :content c2 :base-dir tmp)
-            r3 (plan/plan$dossier-write :slug "rerun" :content c3 :base-dir tmp)]
-        (is (= "rerun"   (:slug r1)))
-        (is (= "rerun-2" (:slug r2)))
-        (is (= "rerun-3" (:slug r3)))
-        ;; All three files exist and content is preserved
-        (is (= c1 (slurp (io/file (:path r1)))))
-        (is (= c2 (slurp (io/file (:path r2)))))
-        (is (= c3 (slurp (io/file (:path r3))))))
-      (finally
-        (doseq [f (reverse (file-seq (io/file tmp)))]
-          (.delete f))))))
+(deftest test-extract-line-after-markdown-bold
+  (testing "a markdown-bolded **Saved dossier:** marker is matched and the path extracted"
+    (is (= ".brainyard/agents/plan-agent/dossiers/x.md"
+           (#'plan/extract-line-after
+            "**Saved dossier:** `.brainyard/agents/plan-agent/dossiers/x.md`"
+            plan/saved-dossier-prefix)))
+    (is (= "src/foo.clj"
+           (#'plan/extract-line-after "**Saved plan:** `src/foo.clj`"
+                                      plan/saved-plan-prefix)))))
 
-(deftest test-dossier-index-prepend-ordering
-  (let [tmp (.getCanonicalPath
-             (doto (io/file (System/getProperty "java.io.tmpdir")
-                            (str "plan-doss-idx-" (System/currentTimeMillis)))
-               .mkdirs))]
-    (try
-      (plan/plan$dossier-index-append :path "dossiers/a.md" :slug "alpha"
-                                      :pre-verdict :go :post-verdict :pass
-                                      :next-agent :todo-agent :base-dir tmp)
-      (plan/plan$dossier-index-append :path "dossiers/b.md" :slug "beta"
-                                      :pre-verdict :gather :next-agent :user
-                                      :base-dir tmp)
-      (plan/plan$dossier-index-append :path "dossiers/c.md" :slug "gamma"
-                                      :pre-verdict :refuse :next-agent :none
-                                      :base-dir tmp)
+(deftest test-dossier-read-validator-warning
+  (testing "a dossier missing a contract key (plan_path) gets a :warning, not an error"
+    (let [tmp (.getCanonicalPath
+               (doto (io/file (System/getProperty "java.io.tmpdir")
+                              (str "plan-doss-warn-" (System/currentTimeMillis)))
+                 .mkdirs))]
+      (try
+        (let [bad    (str "---\nslug: no-path\nagent: plan-agent\n"
+                          "pre:\n  verdict: gather\n---\n# body\n")
+              path   (write-dossier! tmp "20260629-150000-no-path.md" bad)
+              parsed (plan/plan$read-dossier :path path :base-dir tmp)]
+          (is (= "no-path" (:slug parsed)))
+          (is (not (contains? parsed :error)))
+          (is (string? (:warning parsed)))
+          (is (str/includes? (:warning parsed) "plan_path")))
+        (finally
+          (doseq [f (reverse (file-seq (io/file tmp)))]
+            (.delete f)))))))
 
-      (let [content (slurp (io/file tmp ".brainyard/agents/plan-agent/INDEX.md"))
-            lines   (->> (str/split-lines content) (remove str/blank?))]
-        (is (= 3 (count lines)))
-        ;; Newest first — gamma (last appended) is first.
-        (is (str/includes? (nth lines 0) "gamma"))
-        (is (str/includes? (nth lines 0) "pre:refuse"))
-        (is (str/includes? (nth lines 0) "→ none"))
-        (is (str/includes? (nth lines 1) "beta"))
-        (is (str/includes? (nth lines 1) "post:n/a"))
-        (is (str/includes? (nth lines 2) "alpha"))
-        (is (str/includes? (nth lines 2) "post:pass"))
-        (is (str/includes? (nth lines 2) "→ todo-agent")))
-      (finally
-        (doseq [f (reverse (file-seq (io/file tmp)))]
-          (.delete f))))))
-
-(deftest test-next-handoff-variants
+(deftest test-handoff-from-verdicts-variants
   (testing "PASS recommends todo-agent with the dossier path"
-    (let [r (plan/plan$next-handoff :pre {:verdict :go} :post {:verdict :pass}
-                                    :slug "ship-v2" :dossier-path "doss/ship.md")]
+    (let [r (#'plan/handoff-from-verdicts :go :pass "ship-v2" "doss/ship.md")]
       (is (= "todo-agent" (:next-agent r)))
       (is (str/includes? (:next-call r) "todo-agent"))
       (is (str/includes? (:next-call r) ":agent-context \"doss/ship.md\""))))
 
   (testing "HOLD recommends user (resolve holds, then re-call plan-agent)"
-    (let [r (plan/plan$next-handoff :pre {:verdict :go} :post {:verdict :hold})]
+    (let [r (#'plan/handoff-from-verdicts :go :hold "s" nil)]
       (is (= "user" (:next-agent r)))
       (is (str/includes? (str/lower-case (:next-call r)) "hold"))))
 
   (testing "GATHER recommends user (provide missing input)"
-    (let [r (plan/plan$next-handoff :pre {:verdict :gather})]
+    (let [r (#'plan/handoff-from-verdicts :gather nil "s" nil)]
       (is (= "user" (:next-agent r)))
       (is (str/includes? (:next-call r) "gather_question"))))
 
   (testing "REFUSE recommends none (redirect specified in dossier)"
-    (let [r (plan/plan$next-handoff :pre {:verdict :refuse})]
+    (let [r (#'plan/handoff-from-verdicts :refuse nil "s" nil)]
       (is (= "none" (:next-agent r)))
       (is (str/includes? (:next-call r) "refuse_reason")))))
 
@@ -630,10 +611,9 @@
         (is (not (#'plan/dossier-already-saved? "no marker" tmp))))
 
       (testing "claim + file exists → truthy"
-        (let [{:keys [path]}
-              (plan/plan$dossier-write :slug "real" :content "---\nslug: real\n---\nx" :base-dir tmp)]
+        (let [rel (write-dossier! tmp "20260101-000000-real.md" "---\nslug: real\n---\nx")]
           (is (#'plan/dossier-already-saved?
-               (str "Saved dossier: " path)
+               (str "Saved dossier: " rel)
                tmp))))
       (finally
         (doseq [f (reverse (file-seq (io/file tmp)))]
@@ -664,7 +644,7 @@
               (is (str/includes? content "agent: plan-agent"))
               (is (str/includes? content "verdict: go"))
               (is (str/includes? content "verdict: pass"))
-              (is (str/includes? content "## Original answer"))
+              (is (str/includes? content "## Plan summary (extracted)"))
               (is (str/includes? content "(auto-persisted)"))))
           ;; INDEX prepended
           (let [idx (io/file tmp ".brainyard/agents/plan-agent/INDEX.md")]
@@ -760,9 +740,9 @@
                  .mkdirs))]
       (try
         ;; Write a real dossier first
-        (let [{:keys [path]} (plan/plan$dossier-write
-                              :slug "real-one" :content "---\nslug: real-one\n---\nreal" :base-dir tmp)
-              answer (str "Saved plan: x.md\nSaved dossier: " path "\nNext: ...")
+        (let [rel (write-dossier! tmp "20260101-000000-real-one.md"
+                                  "---\nslug: real-one\n---\nreal")
+              answer (str "Saved plan: x.md\nSaved dossier: " rel "\nNext: ...")
               r (plan/materialize-auto-dossier!
                  {:answer answer :question "Q" :base-dir tmp})]
           (is (nil? r) "should skip — the on-disk file exists")

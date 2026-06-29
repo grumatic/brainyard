@@ -77,14 +77,20 @@
       (is (contains? ids :doc$update))
       (is (contains? ids :doc$delete))))
 
-  (testing "plan-agent :agent-tools includes the new dossier helpers"
+  (testing "plan-agent :agent-tools keeps ONLY the dossier read seam + gains file tools"
     (let [ids (plan-tool-ids)]
-      (is (contains? ids :plan$dossier-slug))
-      (is (contains? ids :plan$dossier-frontmatter))
-      (is (contains? ids :plan$dossier-write))
-      (is (contains? ids :plan$dossier-index-append))
+      ;; The one surviving dossier helper — the read seam.
       (is (contains? ids :plan$read-dossier))
-      (is (contains? ids :plan$next-handoff))))
+      ;; Dossier + INDEX are authored directly now.
+      (is (contains? ids :write-file))
+      (is (contains? ids :update-file))
+
+      ;; Retired write-side helper chain must be gone.
+      (is (not (contains? ids :plan$dossier-slug)))
+      (is (not (contains? ids :plan$dossier-frontmatter)))
+      (is (not (contains? ids :plan$dossier-write)))
+      (is (not (contains? ids :plan$dossier-index-append)))
+      (is (not (contains? ids :plan$next-handoff)))))
 
   (testing "plan-agent :agent-tools includes reads + probes + sub-LLM"
     (let [ids (plan-tool-ids)]
@@ -108,20 +114,15 @@
       ;; Runtime config
       (is (contains? ids :agent-runtime$config))))
 
-  (testing "plan-agent :agent-tools EXCLUDES write-side + cross-agent recursion"
+  (testing "plan-agent :agent-tools EXCLUDES recursion + out-of-scope surfaces"
     (let [ids (plan-tool-ids)]
       ;; Hard Rule — no clone-self
       (is (not (contains? ids :query$clone))
           "query$clone must not be in plan-agent's roster (clone-self forbidden)")
 
-      ;; Plan-agent writes ONLY through doc$create + plan$dossier-write —
-      ;; never directly via the file-system write tools.
-      (is (not (contains? ids :write-file))
-          "write-file is excluded — plan-agent writes only through doc$create + plan$dossier-write")
-      (is (not (contains? ids :update-file))
-          "update-file is excluded — plan-agent does not edit arbitrary files")
-
       ;; Web / fetch / MCP / skills surfaces all live in explore-agent.
+      ;; (fetch-url is the only file-tool stripped now — write-file/update-file
+      ;; are bound for direct dossier authoring.)
       (is (not (contains? ids :fetch-url)))
       (is (not (contains? ids :web-search)))
       (is (not (contains? ids :mcp$server)))
@@ -192,13 +193,15 @@
       (is (str/includes? tool-context "doc$update"))
       (is (str/includes? tool-context "doc$delete"))
 
-      ;; New dossier helpers (all six)
-      (is (str/includes? tool-context "plan$dossier-slug"))
-      (is (str/includes? tool-context "plan$dossier-frontmatter"))
-      (is (str/includes? tool-context "plan$dossier-write"))
-      (is (str/includes? tool-context "plan$dossier-index-append"))
+      ;; Only the read seam survives; authoring is direct write-file.
       (is (str/includes? tool-context "plan$read-dossier"))
-      (is (str/includes? tool-context "plan$next-handoff"))
+      (is (str/includes? tool-context "write-file"))
+      (is (str/includes? tool-context "write markdown directly"))
+
+      ;; Retired write-side helpers must not be documented.
+      (is (not (str/includes? tool-context "plan$dossier-write")))
+      (is (not (str/includes? tool-context "plan$dossier-frontmatter")))
+      (is (not (str/includes? tool-context "plan$next-handoff")))
 
       ;; Probes + sub-LLM
       (is (str/includes? tool-context "bash \"test -f"))

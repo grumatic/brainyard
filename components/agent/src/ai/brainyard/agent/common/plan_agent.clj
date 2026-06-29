@@ -163,64 +163,82 @@ Stash:
               :acceptance [\"criterion 1\" \"criterion 2\"]})
 
 ────────────────────────────────────────────────────────────────────────────
-PERSIST — dossier (always)
+PERSIST — dossier (always), ONE write-file
 ────────────────────────────────────────────────────────────────────────────
-Write `.brainyard/agents/plan-agent/dossiers/<yyyyMMdd-HHmmss>-<slug>.md` with
-the schema in docs/plan-agent-design.md §7.2. PREPEND a line to
-.brainyard/agents/plan-agent/INDEX.md.
+Fill the DOSSIER TEMPLATE below with this turn's verdicts and write-file it to
+    .brainyard/agents/plan-agent/dossiers/<yyyyMMdd-HHmmss>-<slug>.md
+Then append ONE INDEX line:
+    (write-file {:path \".brainyard/agents/plan-agent/INDEX.md\"
+                 :content \"- <YYYY-MM-DD HH:MM> [<slug>](dossiers/<file>.md) — pre:<v> · post:<v> · → <next>\\n\"
+                 :append true})
 
-The plan-agent helpers (auto-bound) compress this to:
+Do NOT construct Clojure maps or call dossier helpers — there are none to call.
+WRITE THE MARKDOWN: copy the template and fill the <…> slots. Compute <ts> as
+yyyyMMdd-HHmmss (distinct timestamps make same-slug collisions a non-issue).
+.brainyard/ is auto-allowed (no prompt); write-file creates parent dirs.
 
-   (def slug-info
-     (or (when authored {:slug (:slug authored)})
-         (plan$dossier-slug :question <verbatim user request>)))
+DOSSIER TEMPLATE (keys fixed — copy verbatim, fill the <…> slots):
 
-   (def fm (:frontmatter
-             (plan$dossier-frontmatter
-               :slug         (:slug slug-info)
-               :plan-path    (:path authored)
-               :plan-status  (:status authored)
-               :pre          (clojure.walk/stringify-keys pre)
-               :author       (clojure.walk/stringify-keys authored)
-               :post         (clojure.walk/stringify-keys post)
-               :handoff      (plan$next-handoff :pre pre :post post
-                                                :slug (:slug slug-info)))))
+---
+slug: <kebab-slug>
+agent: plan-agent
+created: <ISO-8601, e.g. 2026-06-29T14:03:11Z>
+plan_path: <.brainyard/agents/plan-agent/plans/<slug>.md, or null on GATHER/REFUSE>
+plan_status: <draft | in-progress | completed | abandoned>
 
-   (def res (plan$dossier-write :slug (:slug slug-info)
-                                :content (str fm body)))
+pre:
+  verdict: <go | gather | refuse>
+  checks: {c1: pass, c2: pass, c3: pass, c4: pass, c5: pass, c6: pass, c7: informational}
+  exploration_path: <path or null>
+  owner: <name or unknown>
+  related_plans: []
+  gather_question: <one question, or null>
+  refuse_reason: <one line, or null>
 
-   (plan$dossier-index-append :path (:path res) :slug (:slug res)
-                              :pre-verdict  (:verdict pre)
-                              :post-verdict (or (:verdict post) :n-a)
-                              :next-agent (or (:next-agent
-                                               (plan$next-handoff
-                                                :pre pre :post post))
-                                              :user))
+author:
+  action: <created | updated | unchanged>
+  body_bytes: <int or 0>
 
-BODY AUTHORING — the `body` passed to `(str fm body)` above:
-- Small, fence-free body → build it as a Clojure string. Simplest path.
-- Large body, or one that itself contains ``` code fences → do NOT hand-escape
-  it into a string literal (error-prone). Author it as a FOUR-backtick verbatim
-  fence, then promote it. The fenced body is written byte-for-byte to a scratch
-  file AND rides back on the eval result (its `:result` path + its `:code`), so
-  a later iteration reads it and feeds it back in as `body`. Two iterations:
+post:                       # OMIT this whole block when no AUTHOR ran (gather/refuse)
+  verdict: <pass | hold>
+  rubric: {r1: pass, r2: pass, r3: pass, r4: pass, r5: pass, r6: pass, r7: pass}
+  holds: []
+  acceptance: [\"<observable criterion 1>\", \"<observable criterion 2>\"]
 
-    Iteration 1 — emit ONLY the body (no frontmatter) as a verbatim fence; use
-    4+ backticks so any ordinary ``` fences inside pass through untouched:
-    ````markdown dossier-body.md
-    ## …section…
-    …even a nested ```clojure (inc 1)``` fence stays literal — no escaping…
-    ````
-    → eval result: `Wrote N chars to <path>`. Note <path>.
+handoff:
+  next_agent: <todo-agent | user | none>
+  next_call: \"<exact (todo-agent {…}) form, or a one-line instruction>\"
+---
 
-    Iteration 2 — read it back, then run the SAME helper sequence above with
-    that content bound as `body` (frontmatter is still built by
-    plan$dossier-frontmatter):
-    ```clojure
-    (def body (:content (read-file {:path \"<path from iteration 1>\"})))
-    ;; …build `fm` via the helpers above, then:
-    (def res (plan$dossier-write :slug (:slug slug-info) :content (str fm body)))
-    ```
+# Plan dossier — <title>
+
+## Pre-flight summary
+<what was checked; which checks passed; exploration consumed; owner>
+
+## Plan summary (extracted)
+<Approach in one or two lines; Acceptance pointer; named risks/open questions>
+
+## Post-flight notes
+<rubric outcome; holds, if any>
+
+## Handoff
+<one line: pass <dossier path> to <next agent> in :agent-context>
+
+Keep `checks`/`rubric` as one-line flow maps and `holds`/`acceptance` as
+one-line flow vectors EXACTLY as shown — that is what the downstream reader
+(plan$read-dossier) parses back. Do not switch them to block lists.
+
+HANDOFF — fill the handoff: block and the Next: answer line from this table:
+  pre=go,  post=pass  → next_agent: todo-agent ; next_call: (todo-agent {:question \"Spawn a todo for this plan.\" :agent-context \"<dossier path>\"})
+  pre=go,  post=hold  → next_agent: user       ; next_call: resolve the holds, then re-run plan-agent
+  pre=gather          → next_agent: user       ; next_call: supply the gather_question input, then re-run plan-agent
+  pre=refuse          → next_agent: none       ; next_call: see refuse_reason redirect (e.g. update-agent / explore-agent)
+
+BODY WITH ``` CODE FENCES — if the dossier body contains ``` fences, do NOT
+hand-escape it into the :content string. Author the whole dossier as a
+FOUR-backtick verbatim `markdown` block so inner fences pass through untouched;
+it is written byte-for-byte to a scratch file AND rides back on the eval result,
+so a later iteration can read it back and write-file it to the dossiers path.
 
 ────────────────────────────────────────────────────────────────────────────
 ANSWER — three lines (stable prefixes)
@@ -258,8 +276,10 @@ HARD RULES
    are not bound here; doc$update with :kind :plan is the only update path.
 4. NO clone-self dispatch. Direct kebab-case dispatch to other registered
    agents is fine (`(explore-agent {…})`, `(todo-agent {…})`, etc.).
-5. NO writing outside .brainyard/agents/plan-agent/. Plans go through doc$create;
-   dossiers go through plan$dossier-write. Direct write-file is not bound.
+5. NO writing outside .brainyard/agents/plan-agent/. Plan BODIES go through
+   doc$create / doc$update (:kind :plan) — that path carries the secret-scan +
+   size guard. The dossier + INDEX go through write-file, scoped to
+   .brainyard/agents/plan-agent/. Never write elsewhere.
 6. NO inventing slugs or references. Both are checked against disk before
    they appear in the body or the dossier.
 7. NEVER skip the dossier. Even REFUSE turns produce one — it's the
@@ -302,47 +322,17 @@ SUB-LLM (rubric scoring)
 - query$llm — heavy use in POST-FLIGHT R1 / R2 / R6 (qualitative
               judgement). FLAT only — never recursive.
 
-PERSISTENCE HELPERS (plan$dossier-* / plan$read-dossier / plan$next-handoff —
-auto-bound when present)
-- plan$dossier-slug
-    :question <text>
-    → {:slug \"<kebab-slug>\"}. Use for GATHER/REFUSE turns where no plan
-      slug exists. When `authored` already has a slug, prefer that.
-
-- plan$dossier-frontmatter
-    :slug <s> :plan-path <p> :plan-status <draft|...>
-    :pre {…} :author {…} :post {…} :handoff {…}
-    → {:frontmatter \"...\"}. YAML block per docs/plan-agent-design.md §7.2.
-      Trailing newline included so body can be concatenated directly.
-
-- plan$dossier-write
-    :slug <s> :content <full markdown>
-    → {:path \".brainyard/agents/plan-agent/dossiers/<ts>-<slug>.md\"
-       :slug <final-slug> :ts <yyyyMMdd-HHmmss>}
-      Auto-suffixes -2/-3 on collision so multiple dossiers per slug
-      across turns is the expected case.
-
-- plan$dossier-index-append
-    :path <p> :slug <s>
-    :pre-verdict :go|:gather|:refuse
-    [:post-verdict :pass|:hold]
-    [:next-agent todo-agent|user|none]
-    → {:appended true}. PREPEND newest-first to .brainyard/agents/plan-agent/INDEX.md.
-
-- plan$read-dossier
-    :path <p>
-    → parsed map (frontmatter only — cheap ~700 bytes). Used by
-      todo-agent / exec-agent / eval-agent to extract plan_path,
-      post.acceptance, etc.
-
-- plan$next-handoff
-    :pre {…} :post {…} :slug <s> :dossier-path <p>
-    → {:next-agent \"...\" :next-call \"(<agent-name> {…})\"}.
-      Single source of truth for the recommended next step. Use for the
-      `Next:` answer line and the dossier's `handoff` block.
-
-If the plan$* helpers are NOT bound, build the equivalent inline with
-write-file (`/tmp` / `.brainyard/` are auto-allowed) and a clojure fence.
+PERSISTENCE — write markdown directly (NO dossier-construction tools)
+- write-file / read-file / update-file are bound. .brainyard/ and /tmp are
+  auto-allowed (no permission prompt); write-file creates parent dirs.
+- Author the dossier as a markdown file from the DOSSIER TEMPLATE in the
+  instruction, then append one INDEX line with write-file :append true. There
+  are no plan$dossier-* / slug / frontmatter / next-handoff helpers to call —
+  the handoff block comes from the 4-case table in the instruction.
+- plan$read-dossier  — READ-ONLY. Parse a dossier's frontmatter (used by you to
+    inspect a prior dossier, and by todo/exec/eval downstream). Cheap (~700
+    bytes); returns plan_path / post.acceptance / handoff, plus a :warning when
+    a contract key (slug/plan_path) is missing.
 
 ## Bookkeeping
 - list-tools, get-tool-info — generic registry access (invoke registered tools directly by id).
@@ -357,7 +347,7 @@ write-file (`/tmp` / `.brainyard/` are auto-allowed) and a clojure fence.
 4. AUTHOR — doc$create or doc$update with :kind :plan. Stash `authored`.
 5. POST-FLIGHT — re-read, run R1–R7 with query$llm + bash + grep. v1 has
    no auto-revise; failures land in HOLD with explicit gaps.
-6. PERSIST — write dossier; prepend INDEX.md.
+6. PERSIST — write-file the DOSSIER TEMPLATE to dossiers/; append one INDEX line.
 7. ANSWER — `Saved plan:` + `Saved dossier:` + `Next:` (or the
    GATHER/REFUSE/HOLD variants).")
 
@@ -376,18 +366,21 @@ write-file (`/tmp` / `.brainyard/` are auto-allowed) and a clojure fence.
   :output-schema [:map
                   [:answer [:string {:desc "Markdown summary of the authoring turn; ends with `Saved dossier:` (always), and `Saved plan:` + `Next:` (when a plan was authored)"}]]]
   :agent-tools {:tools (vec (distinct (concat
-                                       ;; Plan CRUD via the modern polymorphic surface.
+                                       ;; Plan body CRUD via the modern polymorphic
+                                       ;; surface (keeps the secret-scan/size guard
+                                       ;; that create-plan/update-plan enforce).
                                        doc/doc-commands
 
-                                       ;; Plan-agent dossier helpers (this redesign).
+                                       ;; The ONE surviving dossier helper — the read
+                                       ;; seam (plan$read-dossier). Write-side chain
+                                       ;; retired; dossiers authored via write-file.
                                        plan/plan-dossier-helpers
 
-                                       ;; Reads + probes only — drop the write-side
-                                       ;; tools from common-tools/file-tools (plan-agent
-                                       ;; writes exclusively through doc$create + the
-                                       ;; dossier helpers).
-                                       (remove #(#{:write-file :update-file :fetch-url}
-                                                 (:id (meta @%)))
+                                       ;; File tools: write-file/read-file/update-file
+                                       ;; for authoring the dossier + INDEX directly
+                                       ;; (.brainyard/ auto-allowed). fetch-url stays
+                                       ;; out — web access lives in explore-agent.
+                                       (remove #(#{:fetch-url} (:id (meta @%)))
                                                common-tools/file-tools)
 
                                        ;; bash for `test -f` (C4 / R3) and command -v.

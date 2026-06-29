@@ -506,104 +506,83 @@
     (subs joined 0 (min max-chars (count joined)))))
 
 ;; ---------------------------------------------------------------------------
-;; YAML emission — slightly extended from explore/update to support
-;; flow-style flat maps (used for pre.checks / post.rubric).
+;; Dossier markdown template (private — backs the template-fill auto-persist
+;; hook; the happy path authors the same template directly via write-file, so
+;; the two writers can't diverge). The write-side helper chain
+;; (plan$dossier-frontmatter / -write / -index-append / -slug / plan$next-handoff)
+;; is RETIRED per docs/design/plan-agent-lightweight-redesign.md — the LLM emits
+;; the dossier as markdown, which it is reliably fluent at.
+;;
+;; checks/rubric stay one-line flow maps and holds/acceptance stay flow vectors
+;; because that is exactly what `parse-dossier-yaml` (kept) reads back — keeping
+;; the on-disk shape byte-compatible means NO downstream agent changes.
 ;; ---------------------------------------------------------------------------
 
-(def ^:private dossier-bareword-re #"^[A-Za-z0-9_./:-]+$")
-
-(defn- dossier-yaml-string
-  [s]
-  (str "\"" (-> (str s)
-                (str/replace "\\" "\\\\")
-                (str/replace "\"" "\\\""))
-       "\""))
-
-(defn- dossier-yaml-scalar
-  [v]
-  (cond
-    (nil? v)        "null"
-    (boolean? v)    (if v "true" "false")
-    (keyword? v)    (name v)
-    (number? v)     (str v)
-    (string? v)     (if (and (seq v) (re-matches dossier-bareword-re v))
-                      v
-                      (dossier-yaml-string v))
-    :else           (dossier-yaml-string (str v))))
-
-(defn- dossier-yaml-flow-vector
-  [xs]
-  (str "[" (str/join ", " (map dossier-yaml-scalar xs)) "]"))
-
-(defn- dossier-yaml-flow-map
-  "Single-line flow-style flat map: `{k1: v1, k2: v2}`. Used for
-   `pre.checks` and `post.rubric` — each is a flat map of keyword → :pass/
-   :fail values, where one-line emission is far more readable than block
-   style and our minimalist parser already handles bare scalars per slot."
+(defn- yaml-flow-map
+  "One-line YAML flow map `{k: v, …}` for pre.checks / post.rubric; `{}` when
+   empty or nil."
   [m]
-  (str "{"
-       (str/join ", "
-                 (map (fn [[k v]]
-                        (str (name k) ": " (dossier-yaml-scalar v)))
-                      m))
-       "}"))
+  (if (seq m)
+    (str "{" (str/join ", " (map (fn [[k v]]
+                                   (str (name k) ": "
+                                        (if (keyword? v) (name v) (str v))))
+                                 m)) "}")
+    "{}"))
 
-(defn- dossier-yaml-value
+(defn- yaml-flow-vec
+  "One-line YAML flow vector of quoted strings for holds / acceptance; `[]`
+   when empty or nil."
+  [items]
+  (str "[" (str/join ", " (map #(pr-str (str %)) items)) "]"))
+
+(defn- dossier-nn
+  "Render nil / blank as the YAML scalar `null`, else the value verbatim."
   [v]
-  (cond
-    (sequential? v) (dossier-yaml-flow-vector v)
-    (map? v)        (dossier-yaml-flow-map v)
-    :else           (dossier-yaml-scalar v)))
+  (if (or (nil? v) (and (string? v) (str/blank? v))) "null" v))
 
-(defn- dossier-yaml-block
-  "Top-level block: `<key>:` then 2-space-indented `<sub>: <value>` lines.
-   `entries` is a seq of [k v] pairs to preserve insertion order."
-  [block-key entries]
-  (apply str
-         (name block-key) ":\n"
-         (mapv (fn [[k v]]
-                 (str "  " (name k) ": " (dossier-yaml-value v) "\n"))
-               entries)))
-
-(defn- dossier-ordered-pairs
-  [m preferred]
-  (let [in-pref  (filter #(contains? m %) preferred)
-        leftover (remove (set preferred) (keys m))]
-    (mapv (fn [k] [k (get m k)]) (concat in-pref leftover))))
-
-(def ^:private pre-key-order
-  [:verdict :checks :exploration_path :owner :related_plans
-   :gather_question :refuse_reason])
-
-(def ^:private author-key-order
-  [:action :body_bytes])
-
-(def ^:private post-key-order
-  [:verdict :rubric :revision_applied :revision_summary :holds :acceptance])
-
-(def ^:private handoff-key-order
-  [:next_agent :next_call])
-
-(defn- build-dossier-frontmatter*
-  [{:keys [slug plan_path plan_status created turn-id session-id
-           pre author post handoff]}]
+(defn- render-dossier-md
+  "Fill the dossier template (frontmatter + 4 body sections). `pre` always
+   present (at least :verdict). `post` optional — omit the whole block when no
+   AUTHOR ran. Keys match docs/plan-agent-design.md §7.2 so downstream parsers
+   are unaffected. Returns the full markdown string ready to `spit`."
+  [{:keys [slug created plan-path plan-status pre author post handoff
+           title pre-summary plan-summary post-notes handoff-note]}]
   (str "---\n"
-       "slug: " (dossier-yaml-scalar slug) "\n"
+       "slug: " slug "\n"
        "agent: plan-agent\n"
        "created: " (or created (dossier-now-iso)) "\n"
-       "plan_path: " (dossier-yaml-value plan_path) "\n"
-       "plan_status: " (dossier-yaml-scalar (or plan_status "draft")) "\n"
-       (when turn-id   (str "turn_id: "   (dossier-yaml-string turn-id) "\n"))
-       (when session-id (str "session_id: " (dossier-yaml-string session-id) "\n"))
+       "plan_path: " (dossier-nn plan-path) "\n"
+       "plan_status: " (or plan-status "draft") "\n"
        "\n"
-       (dossier-yaml-block :pre     (dossier-ordered-pairs (or pre {})     pre-key-order))
+       "pre:\n"
+       "  verdict: " (name (or (:verdict pre) :go)) "\n"
+       "  checks: " (yaml-flow-map (:checks pre)) "\n"
+       "  exploration_path: " (dossier-nn (:exploration-path pre)) "\n"
+       "  owner: " (or (:owner pre) "unknown") "\n"
+       "  related_plans: " (yaml-flow-vec (:related-plans pre)) "\n"
+       "  gather_question: " (dossier-nn (:gather-question pre)) "\n"
+       "  refuse_reason: " (dossier-nn (:refuse-reason pre)) "\n"
        "\n"
-       (dossier-yaml-block :author  (dossier-ordered-pairs (or author {})  author-key-order))
+       "author:\n"
+       "  action: " (name (or (:action author) :unchanged)) "\n"
+       "  body_bytes: " (or (:body-bytes author) 0) "\n"
+       (when post
+         (str "\n"
+              "post:\n"
+              "  verdict: " (name (or (:verdict post) :pass)) "\n"
+              "  rubric: " (yaml-flow-map (:rubric post)) "\n"
+              "  holds: " (yaml-flow-vec (:holds post)) "\n"
+              "  acceptance: " (yaml-flow-vec (:acceptance post)) "\n"))
        "\n"
-       (dossier-yaml-block :post    (dossier-ordered-pairs (or post {})    post-key-order))
-       "\n"
-       (dossier-yaml-block :handoff (dossier-ordered-pairs (or handoff {}) handoff-key-order))
-       "---\n"))
+       "handoff:\n"
+       "  next_agent: " (or (:next-agent handoff) "user") "\n"
+       "  next_call: " (pr-str (str (:next-call handoff))) "\n"
+       "---\n\n"
+       "# Plan dossier — " (or title slug) "\n\n"
+       "## Pre-flight summary\n" (or pre-summary "") "\n\n"
+       "## Plan summary (extracted)\n" (or plan-summary "") "\n\n"
+       "## Post-flight notes\n" (or post-notes "") "\n\n"
+       "## Handoff\n" (or handoff-note "") "\n"))
 
 ;; ---------------------------------------------------------------------------
 ;; YAML parsing — flat scalars + named nested blocks; flow-map values are
@@ -677,167 +656,65 @@
 (def ^:private dossier-block-keys
   #{"pre" "author" "post" "handoff"})
 
+(def ^:private dossier-list-subkeys
+  "Flat-block sub-keys whose value is a list — accepted in flow style
+   (`[a, b]`) or YAML block-list style (`key:` then indented `- item` lines),
+   since capable models emit block lists even when the template shows flow."
+  #{:related_plans :holds :acceptance})
+
 (defn- parse-dossier-yaml
   [lines]
-  (loop [ls    lines
-         acc   {}
-         block nil]
+  (loop [ls        lines
+         acc       {}
+         block     nil
+         list-path nil]          ; key path armed for `- item` continuation
     (if (empty? ls)
       acc
       (let [ln    (first ls)
             rest* (rest ls)]
         (cond
+          ;; Block-list item under a flat-block list sub-key ("    - value")
+          (and list-path (re-matches #"^\s+-\s+\S.*$" ln))
+          (let [[_ raw] (re-matches #"^\s+-\s+(.*)$" ln)]
+            (recur rest* (update-in acc list-path (fnil conj []) (dossier-parse-scalar raw))
+                   block list-path))
+
           ;; Inside a flat block: 2-space indented `subkey: value` line
           (and (vector? block) (= :flat-block (first block))
-               (re-matches #"^\s{2,}\S.*" ln))
-          (if-let [[_ k v] (re-matches #"^\s+([\w_-]+):\s*(.*)$" ln)]
-            (recur rest*
-                   (assoc-in acc [(second block) (keyword k)] (dossier-parse-scalar v))
-                   block)
-            (recur rest* acc nil))
+               (re-matches #"^\s{2,}[\w_-]+:.*$" ln))
+          (let [[_ k v] (re-matches #"^\s+([\w_-]+):\s*(.*)$" ln)
+                kw (keyword k)
+                kp [(second block) kw]
+                tv (str/trim v)]
+            (if (and (str/blank? tv) (dossier-list-subkeys kw))
+              (recur rest* (assoc-in acc kp []) block kp)              ; arm block list
+              (recur rest* (assoc-in acc kp (dossier-parse-scalar v)) block nil)))
 
           ;; Block header (matches our nested-map keys)
           (re-matches #"^([\w_-]+):\s*$" ln)
           (let [[_ k] (re-matches #"^([\w_-]+):\s*$" ln)]
             (if (dossier-block-keys k)
-              (recur rest* (assoc acc (keyword k) {}) [:flat-block (keyword k)])
-              (recur rest* acc nil)))
+              (recur rest* (assoc acc (keyword k) {}) [:flat-block (keyword k)] nil)
+              (recur rest* acc nil nil)))
 
           ;; Standard flat key: value
           (re-matches #"^([\w_-]+):\s*(.*)$" ln)
           (let [[_ k v] (re-matches #"^([\w_-]+):\s*(.*)$" ln)]
-            (recur rest* (assoc acc (keyword k) (dossier-parse-scalar v)) nil))
+            (recur rest* (assoc acc (keyword k) (dossier-parse-scalar v)) nil nil))
 
           :else
-          (recur rest* acc block))))))
+          (recur rest* acc block list-path))))))
 
 ;; ---------------------------------------------------------------------------
-;; plan$dossier-slug
+;; Retired write-side dossier helpers (plan$dossier-slug / -frontmatter /
+;; -write) — the LLM now authors the dossier directly via write-file from the
+;; template in plan_agent.clj; the auto-persist hook fills render-dossier-md
+;; and spits it. The deterministic READ seam (plan$read-dossier) + the lenient
+;; parser stay below.
 ;; ---------------------------------------------------------------------------
 
-(defcommand plan$dossier-slug
-  "Deterministic kebab-case slug from a question for plan-agent dossiers (used on GATHER/REFUSE turns); caps at 60 chars."
-  (fn [& {:keys [question max-chars]
-          :or   {max-chars 60}}]
-    (cond
-      (not (string? question))
-      {:error ":question is required (string)"}
-
-      (or (not (integer? max-chars)) (<= max-chars 0))
-      {:error ":max-chars must be a positive integer"}
-
-      :else
-      {:slug (plan-slugify question max-chars)}))
-  :input-schema  [:map
-                  [:question  [:string {:desc "User question to slugify"}]]
-                  [:max-chars {:optional true} [:int {:desc "Cap on slug length in chars (default 60)"}]]]
-  :output-schema [:map
-                  [:slug  [:string {:desc "Kebab-case slug, stopwords dropped"}]]
-                  [:error [:string {:desc "Error if validation failed"}]]])
-
 ;; ---------------------------------------------------------------------------
-;; plan$dossier-frontmatter
-;; ---------------------------------------------------------------------------
-
-(defcommand plan$dossier-frontmatter
-  "Build a YAML frontmatter block for a plan-agent dossier with pre/author/post/handoff sub-blocks."
-  (fn [& {:keys [slug plan-path plan-status pre author post handoff
-                 created turn-id session-id]}]
-    (cond
-      (not (string? slug))    {:error ":slug is required (string)"}
-      :else
-      (let [fm (build-dossier-frontmatter*
-                {:slug         slug
-                 :plan_path    plan-path
-                 :plan_status  plan-status
-                 :pre          pre
-                 :author       author
-                 :post         post
-                 :handoff      handoff
-                 :created      created
-                 :turn-id      turn-id
-                 :session-id   session-id})]
-        (mulog/log ::plan.dossier-frontmatter
-                   :slug slug
-                   :pre-verdict (or (:verdict pre) :n-a)
-                   :post-verdict (or (:verdict post) :n-a)
-                   :next-agent (:next_agent handoff))
-        {:frontmatter fm})))
-  :input-schema  [:map
-                  [:slug         [:string {:desc "Plan slug (or dossier slug for GATHER/REFUSE turns)"}]]
-                  [:plan-path    {:optional true} [:string {:desc "Repo-relative path to the plan body (or null when no plan was authored)"}]]
-                  [:plan-status  {:optional true} [:string {:desc "Plan status: draft | in-progress | completed | abandoned"}]]
-                  [:pre          {:optional true} [:map    {:desc "Pre-flight outcomes (verdict, checks, exploration_path, owner, related_plans, gather_question, refuse_reason)"}]]
-                  [:author       {:optional true} [:map    {:desc "Author outcomes (action :created/:updated/:unchanged, body_bytes)"}]]
-                  [:post         {:optional true} [:map    {:desc "Post-flight outcomes (verdict, rubric, revision_applied, revision_summary, holds, acceptance)"}]]
-                  [:handoff      {:optional true} [:map    {:desc "Handoff suggestion (next_agent, next_call)"}]]
-                  [:created      {:optional true} [:string {:desc "ISO-8601 created timestamp (default: now)"}]]
-                  [:turn-id      {:optional true} [:string {:desc "Trajectory turn-id for cross-reference"}]]
-                  [:session-id   {:optional true} [:string {:desc "Trajectory session-id for cross-reference"}]]]
-  :output-schema [:map
-                  [:frontmatter [:string {:desc "Full YAML frontmatter block, trailing newline included"}]]
-                  [:error       [:string {:desc "Error if validation failed"}]]])
-
-;; ---------------------------------------------------------------------------
-;; plan$dossier-write
-;; ---------------------------------------------------------------------------
-
-(defn- dossier-existing-slug-count
-  [base-dir slug]
-  (let [dir (io/file base-dir dossiers-dir-rel)]
-    (let [^java.io.File dir dir]
-      (if (.isDirectory dir)
-        (let [slug-re (re-pattern (str "(?i)-" (java.util.regex.Pattern/quote slug)
-                                       "(-\\d+)?\\.md$"))]
-          (->> (.listFiles dir)
-               (filter (fn [^java.io.File f] (.isFile f)))
-               (map (fn [^java.io.File f] (.getName f)))
-               (filter #(re-find slug-re %))
-               count))
-        0))))
-
-(defn- dossier-final-slug-with-suffix
-  [base-dir base-slug]
-  (let [n (dossier-existing-slug-count base-dir base-slug)]
-    (if (zero? n)
-      base-slug
-      (str base-slug "-" (inc n)))))
-
-(defcommand plan$dossier-write
-  "Write a plan-agent dossier under .brainyard/agents/plan-agent/dossiers/ as <ts>-<slug>.md; appends -N suffix on slug collision."
-  (fn [& {:keys [slug content base-dir]
-          :or   {base-dir (dossier-default-base-dir)}}]
-    (cond
-      (not (string? slug))    {:error ":slug is required (string)"}
-      (not (string? content)) {:error ":content is required (string)"}
-      (not (re-find #"(?s)\A---\n.+?\n---\n" content))
-      {:error (str ":content must begin with a YAML frontmatter block "
-                   "(---\\n...\\n---\\n). Build it via plan$dossier-frontmatter "
-                   "and prepend before writing: "
-                   "(plan$dossier-write :slug ... :content (str fm body))")}
-      :else
-      (let [final-slug (dossier-final-slug-with-suffix base-dir slug)
-            ts         (dossier-now-ts)
-            rel-path   (str dossiers-dir-rel "/" ts "-" final-slug ".md")
-            file       (io/file base-dir rel-path)]
-        (.mkdirs (.getParentFile file))
-        (spit file content)
-        (mulog/log ::plan.dossier-write
-                   :slug final-slug :path rel-path
-                   :bytes (count content) :collision? (not= slug final-slug))
-        {:path (.getAbsolutePath file) :slug final-slug :ts ts})))
-  :input-schema  [:map
-                  [:slug     [:string {:desc "Plan slug (or dossier slug — will get -N suffix on collision)"}]]
-                  [:content  [:string {:desc "Full file content (frontmatter + body)"}]]
-                  [:base-dir {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
-  :output-schema [:map
-                  [:path  [:string {:desc "Absolute path of the written dossier"}]]
-                  [:slug  [:string {:desc "Final slug actually used (may have -N suffix)"}]]
-                  [:ts    [:string {:desc "Timestamp portion of filename (yyyyMMdd-HHmmss)"}]]
-                  [:error [:string {:desc "Error if validation failed"}]]])
-
-;; ---------------------------------------------------------------------------
-;; plan$dossier-index-append
+;; INDEX line + verdict coercion (kept — used by the auto-persist hook)
 ;; ---------------------------------------------------------------------------
 
 (def ^:private valid-pre-verdicts
@@ -871,46 +748,28 @@
          " [" slug "](" dossiers-subdir "/" filename ") — "
          pre-tok " · " post-tok " · " next-tok "\n")))
 
-(defcommand plan$dossier-index-append
-  "Prepend a one-line entry to .brainyard/agents/plan-agent/INDEX.md (newest-first) with pre/post verdicts and next-agent."
-  (fn [& {:keys [path slug pre-verdict post-verdict next-agent base-dir]
-          :or   {base-dir (dossier-default-base-dir)}}]
-    (cond
-      (not (string? path)) {:error ":path is required (string)"}
-      (not (string? slug)) {:error ":slug is required (string)"}
-      (not (or (keyword? pre-verdict) (string? pre-verdict)))
-      {:error ":pre-verdict is required (keyword or string)"}
-      :else
-      (let [pre-kw   (or (coerce-verdict pre-verdict valid-pre-verdicts :pre) :n-a)
-            post-kw  (coerce-verdict post-verdict valid-post-verdicts :post)
-            next-kw  (cond
-                       (keyword? next-agent) next-agent
-                       (string? next-agent)  (keyword next-agent)
-                       :else                 :unspecified)
-            line     (dossier-index-line {:path path :slug slug
-                                          :pre-verdict pre-kw
-                                          :post-verdict post-kw
-                                          :next-agent next-kw})
-            file     (io/file base-dir dossiers-index-rel)
-            existing (if (.isFile file) (slurp file) "")]
-        (.mkdirs (.getParentFile file))
-        (spit file (str line existing))
-        (mulog/log ::plan.dossier-index
-                   :slug slug :path path
-                   :pre-verdict pre-kw :post-verdict post-kw
-                   :next-agent next-kw)
-        {:appended true :line line})))
-  :input-schema  [:map
-                  [:path         [:string {:desc "Repo-relative path of the dossier (from plan$dossier-write)"}]]
-                  [:slug         [:string {:desc "Plan or dossier slug used"}]]
-                  [:pre-verdict  [:string {:desc "Pre-flight verdict: go | gather | refuse"}]]
-                  [:post-verdict {:optional true} [:string {:desc "Post-flight verdict: pass | revise | hold (or omit when no AUTHOR ran)"}]]
-                  [:next-agent   {:optional true} [:string {:desc "Recommended next agent (e.g. todo-agent | user)"}]]
-                  [:base-dir     {:optional true} [:string {:desc "Working directory (default: project root)"}]]]
-  :output-schema [:map
-                  [:appended [:boolean {:desc "true on success"}]]
-                  [:line     [:string  {:desc "The exact line that was prepended"}]]
-                  [:error    [:string  {:desc "Error if validation failed"}]]])
+(defn- append-index-line!
+  "Append one newest-last INDEX.md line for a freshly written dossier (doc §7
+   option 1 — append-only; explore$find-style discovery doesn't need ordering).
+   Verdicts are coerced to the grep-clean token set."
+  [base-dir {:keys [path slug pre-verdict post-verdict next-agent]}]
+  (let [pre-kw  (or (coerce-verdict pre-verdict valid-pre-verdicts :pre) :n-a)
+        post-kw (coerce-verdict post-verdict valid-post-verdicts :post)
+        next-kw (cond
+                  (keyword? next-agent) next-agent
+                  (string? next-agent)  (keyword next-agent)
+                  :else                 :unspecified)
+        line    (dossier-index-line {:path path :slug slug
+                                     :pre-verdict pre-kw
+                                     :post-verdict post-kw
+                                     :next-agent next-kw})
+        file    (io/file base-dir dossiers-index-rel)]
+    (.mkdirs (.getParentFile file))
+    (spit file line :append true)
+    (mulog/log ::plan.dossier-index
+               :slug slug :path path
+               :pre-verdict pre-kw :post-verdict post-kw :next-agent next-kw)
+    line))
 
 ;; ---------------------------------------------------------------------------
 ;; plan$read-dossier
@@ -934,7 +793,19 @@
 
           :else
           (if-let [lines (dossier-read-frontmatter-lines file)]
-            (parse-dossier-yaml lines)
+            (let [parsed (parse-dossier-yaml lines)
+                  ;; Lenient validation (doc §11/§13): flag — not reject — a
+                  ;; dossier missing a contract key, so a malformed hand-authored
+                  ;; frontmatter surfaces loud instead of returning silently nil.
+                  ;; Key-presence, not truthiness — an explicit `plan_path: null`
+                  ;; on a GATHER/REFUSE dossier is legitimate, not malformed.
+                  missing (cond-> []
+                            (not (contains? parsed :slug))      (conj "slug")
+                            (not (contains? parsed :plan_path)) (conj "plan_path"))]
+              (cond-> parsed
+                (seq missing)
+                (assoc :warning (str "dossier missing contract key(s): "
+                                     (str/join ", " missing)))))
             {:error (str "No frontmatter block at " path " (file did not start with ---)")})))))
   :input-schema  [:map
                   [:path     [:string {:desc "Repo-relative or absolute path to a plan-agent dossier"}]]
@@ -947,6 +818,7 @@
                   [:author      {:optional true} [:map    {:desc "Author sub-block"}]]
                   [:post        {:optional true} [:map    {:desc "Post-flight sub-block"}]]
                   [:handoff     {:optional true} [:map    {:desc "Handoff sub-block"}]]
+                  [:warning     {:optional true} [:string {:desc "Non-fatal: a contract key (slug/plan_path) is missing from the frontmatter"}]]
                   [:error       {:optional true} [:string {:desc "Error if file missing or no frontmatter"}]]])
 
 ;; ---------------------------------------------------------------------------
@@ -991,54 +863,33 @@
         {:next-agent "user"
          :next-call (str "Inspect the dossier and decide next step.")}))))
 
-(defcommand plan$next-handoff
-  "Compute recommended next agent and exact direct-invocation form from pre/post verdicts; single source of truth for dossier handoff block."
-  (fn [& {:keys [pre post slug dossier-path]}]
-    (let [pre-v  (when pre  (:verdict pre))
-          post-v (when post (:verdict post))]
-      (handoff-from-verdicts pre-v post-v slug dossier-path)))
-  :input-schema  [:map
-                  [:pre          {:optional true} [:map    {:desc "Pre-flight outcome map (only :verdict required)"}]]
-                  [:post         {:optional true} [:map    {:desc "Post-flight outcome map (only :verdict required); omit on GATHER/REFUSE"}]]
-                  [:slug         {:optional true} [:string {:desc "Plan slug"}]]
-                  [:dossier-path {:optional true} [:string {:desc "Repo-relative path to the dossier file"}]]]
-  :output-schema [:map
-                  [:next-agent [:string {:desc "Recommended next agent: todo-agent | user | none | plan-agent"}]]
-                  [:next-call  [:string {:desc "Exact direct-invocation form (<agent-name> {…}) for the dispatcher"}]]])
+;; `plan$next-handoff` (the command) is retired — the LLM writes the handoff:
+;; block + Next: line from the 4-case rule table in plan_agent.clj. The pure
+;; fn `handoff-from-verdicts` (above) is kept and used by the auto-persist hook.
 
 ;; ---------------------------------------------------------------------------
 ;; Plan-agent dossier helper roster
 ;; ---------------------------------------------------------------------------
 
 (def plan-dossier-helpers
-  "Vector of all plan$dossier-* / plan$read-dossier / plan$next-handoff
-   vars. plan-agent appends these to its :agent-tools roster so the SCI
-   sandbox auto-binds them (callable as `(plan$dossier-slug ...)` etc. in
-   a clojure fence)."
-  [#'plan$dossier-slug
-   #'plan$dossier-frontmatter
-   #'plan$dossier-write
-   #'plan$dossier-index-append
-   #'plan$read-dossier
-   #'plan$next-handoff])
+  "The ONE surviving plan dossier helper — the read seam. plan-agent and the
+   downstream consumers (todo/exec/eval) append this to their :agent-tools so
+   the SCI sandbox auto-binds `(plan$read-dossier ...)`. The write-side helper
+   chain is retired (dossiers are authored directly via write-file)."
+  [#'plan$read-dossier])
 
 ;; ============================================================================
-;; Auto-persist hook
+;; Auto-persist hook (gated :agent.ask/finalize)
 ;;
-;; The agent instruction tells the LLM to call plan$dossier-write at PERSIST
-;; time. Capable models usually do; smaller models often skip the helpers and
-;; just ASSERT in the answer text that they wrote a dossier — sometimes with
-;; hallucinated paths. This `:agent.ask/post` hook is the safety net: when
-;; plan-agent emits an answer that lacks a verifiable `Saved dossier: <path>`
-;; line (path missing OR claimed-but-doesn't-exist-on-disk), the hook
-;; reconstructs a minimal dossier from the answer text and persists it.
-;;
-;; Caveat: `:agent.ask/post` is observe-only (return values ignored). The
-;; hook can write the artifact and append INDEX.md, but it CANNOT inject a
-;; `Saved dossier:` line into the answer the caller already received.
-;; Downstream agents that need to discover auto-persisted dossiers should
-;; scan `.brainyard/agents/plan-agent/dossiers/` (newest-first by filename) rather
-;; than greppning the prior answer text.
+;; The agent instruction tells the LLM to write the dossier with write-file at
+;; PERSIST time. Capable models do; smaller models often skip it and just
+;; ASSERT in the answer text that they wrote a dossier — sometimes with
+;; hallucinated paths. This gated `:agent.ask/finalize` hook is the safety net:
+;; when plan-agent emits an answer that lacks a verifiable `Saved dossier:
+;; <path>` line (path missing OR claimed-but-doesn't-exist-on-disk), the hook
+;; fills `render-dossier-md` from the answer text, spits it, appends INDEX.md,
+;; AND — because finalize is gated — injects the absent `Saved dossier:` line
+;; back into the answer the caller receives.
 ;; ============================================================================
 
 (def saved-plan-prefix
@@ -1059,18 +910,20 @@
     (catch Throwable _ false)))
 
 (defn- extract-line-after
-  "Find the first line that starts with `prefix` and return what follows
-   (trimmed, up to the newline). Tolerant of leading punctuation/whitespace."
+  "Find the marker (matched on its trimmed core, so markdown emphasis like
+   `**Saved dossier:**` still matches) and return what follows on that line,
+   stripped of surrounding markdown emphasis / code markers / quotes."
   [^String answer ^String prefix]
   (when (and (string? answer) (string? prefix))
-    (when-let [start (str/index-of answer prefix)]
-      (let [after (subs answer (+ start (count prefix)))
-            end   (or (str/index-of after "\n") (count after))]
-        (-> (subs after 0 end)
-            ;; Strip surrounding `code` markers and quotes the LLM sometimes adds.
-            (str/replace #"^[`'\"\s]+" "")
-            (str/replace #"[`'\"\.,\s]+$" "")
-            str/trim)))))
+    (let [core (str/trimr prefix)]                 ; "Saved dossier:" (no trailing space)
+      (when-let [start (str/index-of answer core)]
+        (let [after (subs answer (+ start (count core)))
+              end   (or (str/index-of after "\n") (count after))]
+          (-> (subs after 0 end)
+              ;; Strip leading **bold** / `code` / quotes / colon-adjacent ws.
+              (str/replace #"^[*`'\"\s]+" "")
+              (str/replace #"[*`'\"\.,\s]+$" "")
+              str/trim))))))
 
 (defn- absolute->repo-relative
   "Turn an absolute path under base-dir into a repo-relative one. Pass-through
@@ -1157,14 +1010,17 @@
     (subs flat 0 (min max-chars (count flat)))))
 
 (defn materialize-auto-dossier!
-  "Core of the auto-persist hook. Given an answer string + question + base-dir
-   (no agent-state required), reconstruct a minimal dossier from answer text
-   and write it via the standard helpers. Returns
-   `{:path :slug :pre-verdict :post-verdict}` on success, `nil` when skipped
-   (already-saved-on-disk).
+  "Core of the auto-persist safety net (no agent-state required): given an
+   answer + question + base-dir, reconstruct a minimal dossier from the answer
+   text, fill `render-dossier-md`, and `spit` it under dossiers/ (timestamp-
+   prefixed filename, so same-slug turns never collide — the guarantee the old
+   `-N` suffix gave). Appends one INDEX line. Returns
+   `{:path :rel-path :slug :pre-verdict :post-verdict}` on success, `nil` when
+   skipped (blank answer, or a claimed dossier already exists on disk).
 
-   Extracted as a public fn so unit tests can drive it directly without
-   needing a real agent instance."
+   This now does the SAME thing the happy path does — write one templated
+   markdown file — so the backstop and the primary path can't diverge.
+   Public so unit tests can drive it directly."
   [{:keys [answer question base-dir]}]
   (cond
     (or (not (string? answer)) (str/blank? answer))
@@ -1180,63 +1036,42 @@
           plan-path     (when plan-path-raw
                           (absolute->repo-relative base-dir plan-path-raw))
           slug          (or (slug-from-plan-path plan-path-raw)
-                            (:slug (plan$dossier-slug
-                                    :question (or question "auto-persisted")))
+                            (plan-slugify (or question "auto-persisted") 60)
                             "plan")
           summary       (one-line-summary answer 200)
-          handoff       (let [pre-map  {:verdict pre-verdict}
-                              post-map (when post-verdict {:verdict post-verdict})
-                              ;; plan$next-handoff returns Clojure-idiomatic
-                              ;; :next-agent / :next-call; the schema (§7.2)
-                              ;; specs `next_agent` / `next_call`. Translate
-                              ;; before passing to the frontmatter builder so
-                              ;; the on-disk layout matches the contract.
-                              kebab     (if post-map
-                                          (#'plan$next-handoff :pre pre-map :post post-map :slug slug)
-                                          (#'plan$next-handoff :pre pre-map :slug slug))]
-                          {:next_agent (:next-agent kebab)
-                           :next_call  (:next-call  kebab)})
-          fm            (:frontmatter
-                         (#'plan$dossier-frontmatter
-                          :slug         slug
+          handoff       (handoff-from-verdicts pre-verdict post-verdict slug nil)
+          ts            (dossier-now-ts)
+          rel-path      (str dossiers-dir-rel "/" ts "-" slug ".md")
+          file          (io/file base-dir rel-path)
+          content       (render-dossier-md
+                         {:slug         slug
                           :plan-path    plan-path
                           :plan-status  "draft"
                           :pre          {:verdict pre-verdict}
-                          :author       (cond-> {}
-                                          plan-path-raw (assoc :action :created))
+                          :author       (cond-> {} plan-path-raw (assoc :action :created))
                           :post         (when post-verdict {:verdict post-verdict})
-                          :handoff      handoff))
-          body          (str "# Plan dossier (auto-persisted)\n\n"
-                             "*Reconstructed from the agent's answer text — the LLM did "
-                             "not call plan$dossier-write itself this turn.*\n\n"
-                             "## Summary\n" summary "\n\n"
-                             "## Original answer\n" answer "\n")
-          write-result  (#'plan$dossier-write :slug slug
-                                              :content (str fm body)
-                                              :base-dir base-dir)]
-      (if (:error write-result)
-        (do (mulog/warn ::plan.auto-persist-write-failed
-                        :slug slug :error (:error write-result))
-            nil)
-        (do
-          (#'plan$dossier-index-append
-           :path         (:path write-result)
-           :slug         (:slug write-result)
-           :pre-verdict  pre-verdict
-           :post-verdict post-verdict
-           :next-agent   (or (:next_agent handoff) :unspecified)
-           :base-dir     base-dir)
-          (mulog/log ::plan.auto-persist
-                     :slug          (:slug write-result)
-                     :path          (:path write-result)
-                     :pre-verdict   pre-verdict
-                     :post-verdict  post-verdict
-                     :answer-chars  (count answer)
-                     :had-plan-path? (boolean plan-path-raw))
-          {:path         (:path write-result)
-           :slug         (:slug write-result)
-           :pre-verdict  pre-verdict
-           :post-verdict post-verdict})))))
+                          :handoff      handoff
+                          :title        (str slug " (auto-persisted)")
+                          :pre-summary  (str "Reconstructed from the agent's answer text — the LLM "
+                                             "did not author the dossier itself this turn.")
+                          :plan-summary summary
+                          :post-notes   (if post-verdict (name post-verdict) "n/a")
+                          :handoff-note (:next-call handoff)})]
+      (.mkdirs (.getParentFile file))
+      (spit file content)
+      (append-index-line! base-dir
+                          {:path rel-path :slug slug
+                           :pre-verdict pre-verdict :post-verdict post-verdict
+                           :next-agent (:next-agent handoff)})
+      (mulog/log ::plan.auto-persist
+                 :slug slug :path rel-path
+                 :pre-verdict pre-verdict :post-verdict post-verdict
+                 :answer-chars (count answer) :had-plan-path? (boolean plan-path-raw))
+      {:path         (.getAbsolutePath file)
+       :rel-path     rel-path
+       :slug         slug
+       :pre-verdict  pre-verdict
+       :post-verdict post-verdict})))
 
 (defn plan-auto-persist
   "Gated handler for `:agent.ask/finalize`. Materializes the dossier when the

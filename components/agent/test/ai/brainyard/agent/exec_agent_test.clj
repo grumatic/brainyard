@@ -73,10 +73,11 @@
 
   (testing "exec-agent :agent-tools includes plan + todo dossier helpers (read-only)"
     (let [ids (exec-tool-ids)]
-      ;; Plan helpers (for C3)
+      ;; Plan helper (for C3) — only the read seam survives the plan-agent
+      ;; lightweight redesign (write-side chain retired).
       (is (contains? ids :plan$read-dossier))
-      (is (contains? ids :plan$dossier-slug))
-      (is (contains? ids :plan$next-handoff))
+      (is (not (contains? ids :plan$dossier-slug)))
+      (is (not (contains? ids :plan$next-handoff)))
       ;; Todo helpers (for C1/C2)
       (is (contains? ids :todo$read-dossier))
       (is (contains? ids :todo$dossier-slug))
