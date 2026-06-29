@@ -4,8 +4,10 @@
 
 (ns ai.brainyard.agent.common.main
   "Main-agent quality-of-life helpers — mechanical defcommands that compress
-   the routing-log bootstrap / append-log / append-pointer / index-append
-   flow described in docs/design/main-agent-design.md §8.
+   the routing-log bootstrap / append-pointer / index-append flow plus the
+   read seams (session-id / resume? / last-shape). The per-turn routing LINE is
+   hook-derived (main-agent-hooks/record-routing-line via the internal
+   `append-log!` fn) — `main$append-log` is retired as an LLM-facing tool.
 
    Each helper is a `defcommand` so it surfaces in the unified tool registry
    and is auto-bound into the SCI sandbox (callable as `(main$session-id)` in
@@ -33,8 +35,9 @@
 
 (def valid-shapes
   "The 22 routing-decision shapes from docs/design/main-agent-design.md §6
-   (decision-table letter labels A–V). Validated by `main$append-log` so
-   typos surface immediately rather than poisoning the log."
+   (decision-table letter labels A–V). The routing-log hook coerces a derived/
+   parsed shape against this set via `coerce-shape` (unknown → :unspecified),
+   so a mis-parsed shape never poisons the log nor fails the turn."
   #{:direct-answer    ;; A — answer channel; greeting / factual / explain
     :tool-fetch       ;; B — tool channel; one-shot RPC
     :code-compose     ;; C — code channel; composition / scripts
@@ -293,71 +296,54 @@
                   [:error         {:optional true} [:string  {:desc "Error if validation failed"}]]])
 
 ;; ============================================================================
-;; main$append-log
+;; Routing-log line writer (internal — the routing-log hook is the sole caller)
+;;
+;; Lightweight redesign: the routing line is HOOK-DERIVED, not LLM-constructed.
+;; `main$append-log` is retired as an LLM-facing tool; this plain fn renders the
+;; same NDJSON line and is called from main-agent-hooks/record-routing-line.
+;; The routing.log format is unchanged, so main$resume? / main$last-shape parse
+;; it identically.
 ;; ============================================================================
 
-(defcommand main$append-log
-  "Append one NDJSON line to routing.log. Validates :shape against the 20-element §6 enum."
-  (fn [& {:keys [session-id turn iter question shape routed-to artifact reason base-dir]
-          :or   {base-dir (config/project-dir)}}]
-    (let [sid       (or session-id (current-session-id))
-          shape-kw  (cond
-                      (keyword? shape) shape
-                      (string? shape)  (keyword shape)
-                      :else            nil)]
-      (cond
-        (not (string? sid))
-        {:error ":session-id is required (string) when not called from an agent ask loop"}
+(defn coerce-shape
+  "Return `shape` (a keyword/string) coerced to a known routing shape, or
+   :unspecified when it's nil/unknown. Lets the hook validate a derived or
+   parsed shape against the §6 enum without ever failing the turn."
+  [shape]
+  (let [kw (cond
+             (keyword? shape) shape
+             (string? shape)  (keyword shape)
+             :else            nil)]
+    (if (and kw (valid-shapes kw)) kw :unspecified)))
 
-        (not (integer? turn))
-        {:error ":turn is required (integer)"}
-
-        (not (integer? iter))
-        {:error ":iter is required (integer)"}
-
-        (not (string? question))
-        {:error ":question is required (string)"}
-
-        (or (nil? shape-kw) (not (valid-shapes shape-kw)))
-        {:error (str ":shape must be one of " (sort (map name valid-shapes)))}
-
-        (not (string? reason))
-        {:error ":reason is required (string) — one-sentence rationale tied to §6 decision table"}
-
-        :else
-        (let [dir      (io/file base-dir base-rel sid)
-              log-file (io/file dir "routing.log")]
-          (if-not (.isDirectory dir)
-            {:error (str "routing-log dir not found at " base-rel "/" sid
-                         " — call main$bootstrap first")}
-            (let [entry (array-map
-                         :turn       turn
-                         :iter       iter
-                         :question   question
-                         :shape      (name shape-kw)
-                         :routed-to  (when routed-to (str routed-to))
-                         :artifact   (when artifact  (str artifact))
-                         :reason     reason)
-                  line  (str (json-object entry) "\n")]
-              (spit log-file line :append true)
-              (mulog/log ::main.routing-decision
-                         :session-id sid :turn turn :iter iter :shape shape-kw
-                         :routed-to routed-to :artifact (boolean artifact))
-              {:appended true :line (str/trim-newline line)}))))))
-  :input-schema  [:map
-                  [:session-id {:optional true} [:string  {:desc "Agent-session id (default: current agent's session)"}]]
-                  [:turn       [:int     {:desc "1-based user-turn index within this session"}]]
-                  [:iter       [:int     {:desc "main-agent iteration within this turn"}]]
-                  [:question   [:string  {:desc "Distilled user-question or sub-question"}]]
-                  [:shape      [:string  {:desc "One of: direct-answer / tool-fetch / code-compose / explore / update / plan-author / decompose / execute / evaluate / research / workflow / rlm / memory / skill-lifecycle / mcp-lifecycle / tool-lifecycle / init / config / acp / meta-resume / clarify"}]]
-                  [:routed-to  {:optional true} [:string  {:desc "Specialist kebab-case name, or nil for self-answered moves"}]]
-                  [:artifact   {:optional true} [:string  {:desc "Path emitted by the specialist (from its Saved <kind>: line)"}]]
-                  [:reason     [:string  {:desc "One-sentence rationale tied to §6 decision-table rule"}]]
-                  [:base-dir   {:optional true} [:string  {:desc "Working directory (default: project root)"}]]]
-  :output-schema [:map
-                  [:appended {:optional true} [:boolean {:desc "true on success"}]]
-                  [:line     {:optional true} [:string  {:desc "The rendered NDJSON line (without trailing newline)"}]]
-                  [:error    {:optional true} [:string  {:desc "Error if validation failed or dir missing"}]]])
+(defn append-log!
+  "Append one NDJSON routing-decision line to routing.log. INTERNAL — the
+   routing-log hook is the sole caller (main-agent no longer constructs log
+   lines). `:shape` is coerced to :unspecified if unknown; the dossier dir is
+   created if missing. Returns {:appended true :line …} or {:error …}."
+  [& {:keys [session-id turn iter question shape routed-to artifact reason base-dir]
+      :or   {base-dir (config/project-dir) iter 1}}]
+  (let [sid (or session-id (current-session-id))]
+    (if-not (string? sid)
+      {:error ":session-id is required (string) when not called from an agent ask loop"}
+      (let [dir      (io/file base-dir base-rel sid)
+            log-file (io/file dir "routing.log")
+            shape-kw (coerce-shape shape)]
+        (when-not (.isDirectory dir) (.mkdirs dir))
+        (let [entry (array-map
+                     :turn       turn
+                     :iter       iter
+                     :question   (or question "")
+                     :shape      (name shape-kw)
+                     :routed-to  (when routed-to (str routed-to))
+                     :artifact   (when artifact  (str artifact))
+                     :reason     (or reason ""))
+              line  (str (json-object entry) "\n")]
+          (spit log-file line :append true)
+          (mulog/log ::main.routing-decision
+                     :session-id sid :turn turn :iter iter :shape shape-kw
+                     :routed-to routed-to :artifact (boolean artifact))
+          {:appended true :line (str/trim-newline line)})))))
 
 ;; ============================================================================
 ;; main$append-pointer
@@ -515,13 +501,14 @@
 ;; ============================================================================
 
 (def main-helpers
-  "Vector of all main$* helper vars. main-agent appends these to its
-   :agent-tools roster so the SCI sandbox auto-binds them (callable as
-   `(main$bootstrap ...)` in a clojure fence)."
+  "The main$* helper vars bound into main-agent's roster (auto-bound in the SCI
+   sandbox, e.g. `(main$session-id)`). The per-turn routing line is no longer
+   one of them — it is HOOK-DERIVED (see main-agent-hooks/record-routing-line);
+   `main$append-log` was retired as an LLM tool in favor of the internal
+   `append-log!` fn the hook calls."
   [#'main$session-id
    #'main$resume?
    #'main$bootstrap
-   #'main$append-log
    #'main$append-pointer
    #'main$last-shape
    #'main$index-append])

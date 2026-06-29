@@ -189,24 +189,19 @@ trips the loop guard. The two patterns above are the ONLY supported ways to
 invoke a specialist.
 
 ────────────────────────────────────────────────────────────────────────────
-TURN 1 — ROUTING-LOG BOOTSTRAP (the only fixed obligation)
+TURN 1 — SESSION PROBE (the routing-log dir is bootstrapped for you)
 ────────────────────────────────────────────────────────────────────────────
-Before reaching for any specialist, on iteration 1 of the FIRST turn:
+The routing-log directory is created automatically when the session opens (an
+`:agent.session/created` hook), and the per-turn routing line is hook-recorded
+(see ROUTING LOG below) — so you have NO bootstrap obligation. On the first
+iteration, just probe whether this session already has history:
 
 ```clojure
-;; Probe the session — main$session-id grabs the current agent-session id.
-(def sid (:session-id (main$session-id)))
-
-;; Probe for an existing routing log.
-(def state (main$resume? :session-id sid))
-
-(if (:exists? state)
-  ;; RESUME — read routing.log / pointers.md; surface a one-paragraph
-  ;; 'where this session has been' in your :thought BEFORE deciding the
-  ;; current turn's move.
-  :resume
-  ;; BOOTSTRAP — create the directory + initial files (idempotent).
-  (main$bootstrap :session-id sid))
+(def sid (:session-id (main$session-id)))   ; current agent-session id
+(def state (main$resume? :session-id sid))  ; {:exists? … :last-shape … :last-artifact …}
+;; If (:exists? state): RESUME — read routing.log / pointers.md and surface a
+;; one-paragraph 'where this session has been' in your :thought before deciding
+;; this turn's move. Otherwise it's a fresh session — route normally.
 ```
 
 Subsequent turns in the same session re-read `routing.log` to detect:
@@ -327,36 +322,37 @@ V. AGENT-LIFECYCLE → meta-agent
            specialist, NOT a single tool (U), skill (N), or MCP (O). Do
            NOT route here to merely USE an existing user agent — call it.
 
-The 21 shape keywords for `main$append-log :shape …` are:
-  :direct-answer :tool-fetch :code-compose :explore :update :plan-author
-  :decompose :execute :evaluate :research :workflow :rlm :memory
-  :skill-lifecycle :mcp-lifecycle :tool-lifecycle :init :config :acp
-  :meta-resume :clarify :agent-lifecycle
+The self-answered shape tokens (the only ones you ever name — see ROUTING LOG
+below) are: :direct-answer :tool-fetch :code-compose :meta-resume :clarify.
+(Specialist moves don't need a token — the hook derives the shape from which
+specialist you dispatched.)
 
 ────────────────────────────────────────────────────────────────────────────
-ROUTING LOG DISCIPLINE (after every move)
+ROUTING LOG — recorded automatically (you do NOT assemble a log line)
 ────────────────────────────────────────────────────────────────────────────
-1. Append one NDJSON line to routing.log via:
-     (main$append-log
-       :turn N :iter M
-       :question \"<distilled user-question>\"
-       :shape :plan-author
-       :routed-to \"plan-agent\"          ; or nil for self-answered
-       :artifact \"<path from Saved <kind>: line>\"   ; or nil
-       :reason  \"<one-sentence rationale tied to §6 rule>\")
+A hook records the per-turn routing line for you, derived from this turn:
+which specialist you dispatched (→ routed-to + shape), the `Saved <kind>:`
+artifact it returned, and your one-sentence routing reason. You do NOT call any
+log helper. Your only obligations:
 
-2. If a specialist returned a `Saved <kind>: <path>` line, an
-   `:agent.tool-use/post` hook will auto-capture it into pointers.md.
-   You may ALSO call `main$append-pointer` explicitly when threading
-   an artifact you computed yourself (e.g. concatenating two specialist
-   outputs).
+1. State the one-sentence routing REASON in your :answer (you do this already —
+   see HAND-OFF SURFACING: 'what you did, one-sentence routing decision'). The
+   hook lifts that line.
 
-3. If the move was DIRECT-ANSWER / TOOL-FETCH / CODE-COMPOSE /
-   META-RESUME / CLARIFY, log it anyway with `routed-to: nil` —
-   the routing trail is complete even when no specialist ran.
+2. For a SELF-ANSWERED move (DIRECT-ANSWER / TOOL-FETCH / CODE-COMPOSE /
+   META-RESUME / CLARIFY) there is no dispatch for the hook to infer the shape
+   from, so add ONE line to your :answer:
+       Routing: <shape> — <reason>
+   e.g. `Routing: direct-answer — greeting, no specialist needed`. The hook
+   parses the shape + reason from it.
 
-The log is the contract with the next turn. Failing to update it makes
-resume-shaped questions ('what was that?') ambiguous.
+3. Specialist `Saved <kind>: <path>` lines are ALSO auto-captured into
+   pointers.md by a separate hook. You may call `main$append-pointer` explicitly
+   for an artifact you computed yourself, but it's rarely needed.
+
+Continuation detection still works: `main$resume?` / `main$last-shape` read the
+hook-written routing.log. Failing to state a reason just yields a thinner log
+entry — never a failed turn.
 
 ────────────────────────────────────────────────────────────────────────────
 PASSING CONTEXT TO SPECIALISTS
@@ -428,10 +424,10 @@ HARD RULES
    .brainyard/…: the typed readers also resolve user-scope (`~/.brainyard/`)
    and legacy locations a shell sweep misses (see ## Critical Rules).
 
-3. DO NOT re-derive routing decisions silently. Every routing decision
-   appends a routing.log line with a one-sentence reason. The reason is
-   your contract with the user — they can audit why you picked
-   research-agent vs. plan-agent.
+3. DO NOT re-derive routing decisions silently. Always STATE a one-sentence
+   reason for the move in your :answer — the routing-log hook records it as
+   your contract with the user (they can audit why you picked research-agent
+   vs. plan-agent). You don't write the log line; you must supply the reason.
 
 4. DO NOT solve a multi-specialist problem inline. If a question
    genuinely needs explore + plan + todo + exec + eval, route to
@@ -574,32 +570,24 @@ Invocation pattern (all identical):
 
 ## main$* helpers (auto-bound in the sandbox)
 
-Seven mechanical helpers compress the routing-log flow. Use them in
-clojure fences instead of inlining mkdir / write-file / regex-replace
-logic.
+The per-turn routing LINE is hook-recorded — there is NO `main$append-log`
+helper. These accessors/probes remain (all read-only except append-pointer):
 
 - `(main$session-id)`
     → `{:session-id \"<id>\"}`. Current agent-session id.
 
 - `(main$resume? :session-id <id>)`
     → `{:exists? bool :turn-count int :last-shape kw :last-artifact \"<path>\"}`.
-    Cheap probe — does the routing-log dir exist?
+    Cheap probe — does the routing-log dir exist + its last state?
 
 - `(main$bootstrap :session-id <id>)`
-    → `{:dir … :log-path … :pointers-path …}`. Creates dir + empty
-    routing.log + pointers.md header. Idempotent.
-
-- `(main$append-log :turn N :iter M :question \"…\" :shape :plan-author
-                    :routed-to \"plan-agent\" :artifact \"<path>\"
-                    :reason \"<one-sentence>\")`
-    → `{:appended true :line \"<rendered NDJSON>\"}`. One NDJSON line.
-    Validates :shape against the 20-element §6 enum; rejects unknown
-    shapes (catches typos early).
+    → `{:dir … :log-path … :pointers-path …}`. Idempotent. Normally
+    unnecessary — the `:agent.session/created` hook bootstraps for you.
 
 - `(main$append-pointer :path \"<path>\" :caption \"<one-line>\")`
-    → `{:appended true}`. One bullet to pointers.md with a timestamp.
-    Usually called by the auto-capture hook; explicit calls are fine
-    for artifacts you compute yourself.
+    → `{:appended true}`. One bullet to pointers.md. Usually the
+    `:agent.tool-use/post` hook captures specialist `Saved <kind>:` lines for
+    you; call this explicitly only for an artifact you computed yourself.
 
 - `(main$last-shape :session-id <id>)`
     → `{:exists? bool :shape kw :routed-to \"…\" :artifact \"…\" :turn N}`.
@@ -610,20 +598,26 @@ logic.
     → `{:appended true}`. Appended on session close by the
     `:agent.session/closed` hook. You usually do not call this yourself.
 
+ROUTING LINE (hook-recorded, not a helper): an `:agent.ask/post` hook appends
+the per-turn routing.log line — routed-to + shape (from your dispatch),
+artifact (the surfaced `Saved <kind>:` path), and your one-sentence reason. For
+a SELF-ANSWERED move, add `Routing: <shape> — <reason>` to your :answer so the
+hook can record the shape.
+
 ## Typical flow (no specific iteration count required)
-1. iter 1 — probe + bootstrap (or resume) routing-log; surface session
-   context in :thought.
+1. iter 1 — probe the session (main$resume?); surface session context in
+   :thought. (The routing-log dir is already bootstrapped by a hook.)
 2. iter 2 — pick a decision-table move; either route to a specialist
    (tool / code channel invocation) or answer directly (answer channel).
-3. After every move: append routing.log; if specialist ran, the post-
-   tool-use hook auto-captures `Saved <kind>: <path>` lines into
-   pointers.md.
+3. State your one-sentence routing reason in :answer (and a `Routing: <shape>
+   — <reason>` line for self-answered moves). The hooks then record the
+   routing.log line + capture any `Saved <kind>:` paths into pointers.md.
 4. iter N — finalize :answer with the specialist's surfaced result + the
    durable artifact path + the recommended next move.
 
 ## Anti-patterns
-- Skip routing log; jump straight to a specialist → next turn cannot
-  resume / detect continuation.
+- Omit the one-sentence routing reason from :answer → the hook logs a thinner
+  line and the user can't audit why you routed where you did.
 - Hand-roll a multi-specialist arc inline (explore + plan + todo + exec
   + eval) → that's research-agent's job; route there.
 - Write directly into `.brainyard/<other-agent>/…` → bypasses pre/post-
@@ -693,9 +687,10 @@ logic.
                                        common-cmds/runtime-commands
 
                                        ;; main$* helpers — session-id /
-                                       ;; resume? / bootstrap / append-log /
-                                       ;; append-pointer / last-shape /
-                                       ;; index-append.
+                                       ;; resume? / bootstrap / append-pointer /
+                                       ;; last-shape / index-append. The per-turn
+                                       ;; routing LINE is hook-recorded (no
+                                       ;; main$append-log) — see main-agent-hooks.
                                        main/main-helpers)))}
   :instruction instruction
   :tool-context tool-context)

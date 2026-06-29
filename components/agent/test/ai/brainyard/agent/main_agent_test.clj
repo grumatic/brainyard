@@ -3,15 +3,14 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent.main-agent-test
-  "Tests for main-agent: registration, inherited bt-factory (CoAct), curated
-   agent-tools roster across the routing-log substrate + the seven main$*
-   helpers (positive + negative assertions per Hard Rules 1, 2 of the design
-   doc), instruction-content anchors that pin the bootstrap / decision-table
-   / hard-rules contracts, unit tests for the main$* helper commands
-   (bootstrap idempotence, NDJSON append-only with shape-enum validation,
-   last-shape round-trip, pointers append, index append, Saved-line
-   parsing), and a hook-side-effects test that confirms the post-tool-use
-   capture writes pointers.md bullets."
+  "Tests for main-agent (lightweight redesign): registration, inherited
+   bt-factory (CoAct), the curated agent-tools roster (the per-turn routing
+   line is now HOOK-DERIVED, so main$append-log is retired as an LLM tool),
+   instruction-content anchors, unit tests for the surviving main$* seams
+   (bootstrap idempotence, last-shape round-trip, pointers append, index
+   append, resume probe, Saved-line parsing) plus the internal append-log! /
+   coerce-shape writers, the post-tool-use pointers capture, and the
+   record-routing-line hook that derives + writes the per-turn routing line."
   (:require [ai.brainyard.agent.common.main :as main]
             [ai.brainyard.agent.common.main-agent]
             [ai.brainyard.agent.common.main-agent-hooks :as main-hooks]
@@ -104,14 +103,15 @@
       (is (contains? ids :eval$read-verdict))
       (is (contains? ids :edit$read-record)))
 
-    (testing "all seven main$* helpers are present"
+    (testing "the surviving main$* seams are present; main$append-log is retired"
       (is (contains? ids :main$session-id))
       (is (contains? ids :main$resume?))
       (is (contains? ids :main$bootstrap))
-      (is (contains? ids :main$append-log))
       (is (contains? ids :main$append-pointer))
       (is (contains? ids :main$last-shape))
-      (is (contains? ids :main$index-append)))
+      (is (contains? ids :main$index-append))
+      (is (not (contains? ids :main$append-log))
+          "the per-turn routing line is hook-derived — main$append-log is not an LLM tool"))
 
     (testing "routing-log substrate tools are present"
       (is (contains? ids :read-file))
@@ -148,10 +148,13 @@
       (is (str/includes? ins "clone-self"))
       (is (str/includes? ins "NO direct writes to sibling-specialist storage")))
 
-    (testing "bootstrap obligation is named"
-      (is (str/includes? ins "main$bootstrap"))
+    (testing "session-probe + hook-recorded routing line are documented"
       (is (str/includes? ins "main$resume?"))
-      (is (str/includes? ins "main$append-log")))))
+      ;; The routing line is hook-derived now — the instruction must NOT tell the
+      ;; LLM to call main$append-log, and must teach the self-answer convention.
+      (is (not (str/includes? ins "main$append-log")))
+      (is (str/includes? ins "Routing: <shape>"))
+      (is (str/includes? ins "hook")))))
 
 ;; ============================================================================
 ;; Unit tests for main$* helpers
@@ -192,23 +195,26 @@
       (let [log-body (slurp (io/file base ".brainyard/agents/main-agent" sid "routing.log"))]
         (is (str/includes? log-body "direct-answer"))))))
 
-(deftest append-log-shape-validation-test
+(deftest coerce-shape-test
+  (testing "known shapes pass through (keyword or string)"
+    (is (= :plan-author (main/coerce-shape :plan-author)))
+    (is (= :explore (main/coerce-shape "explore")))
+    (is (= :direct-answer (main/coerce-shape :direct-answer))))
+  (testing "unknown / nil → :unspecified (never fails the turn)"
+    (is (= :unspecified (main/coerce-shape :not-a-real-shape)))
+    (is (= :unspecified (main/coerce-shape "bogus")))
+    (is (= :unspecified (main/coerce-shape nil)))))
+
+(deftest append-log!-test
+  ;; append-log! is the internal NDJSON writer the routing-log hook calls
+  ;; (main$append-log was retired as an LLM tool). It coerces unknown shapes
+  ;; and creates the dir if missing — it never rejects.
   (let [base (tempdir)
         sid  "test-session-2"]
     (main/main$bootstrap :session-id sid :base-dir base)
 
-    (testing "rejects unknown shape with informative error"
-      (let [r (main/main$append-log
-               :session-id sid :base-dir base
-               :turn 1 :iter 1
-               :question "what is X?"
-               :shape :not-a-real-shape
-               :reason "test")]
-        (is (some? (:error r)))
-        (is (str/includes? (:error r) ":shape must be one of"))))
-
-    (testing "accepts a valid shape and writes one NDJSON line"
-      (let [r (main/main$append-log
+    (testing "writes one NDJSON line with routed-to + artifact"
+      (let [r (main/append-log!
                :session-id sid :base-dir base
                :turn 1 :iter 1
                :question "draft a plan to migrate auth"
@@ -217,27 +223,27 @@
                :artifact ".brainyard/agents/plan-agent/plans/migrate-auth.md"
                :reason "explicit 'draft a plan'")]
         (is (:appended r))
-        (is (some? (:line r)))
         (is (str/includes? (:line r) "plan-author"))
         (is (str/includes? (:line r) "plan-agent"))))
 
-    (testing "accepts shape as a string (coerced to keyword)"
-      (let [r (main/main$append-log
+    (testing "unknown shape is coerced to :unspecified (not rejected)"
+      (let [r (main/append-log!
                :session-id sid :base-dir base
                :turn 1 :iter 2
-               :question "what's in foo.clj?"
-               :shape "tool-fetch"
-               :reason "single-shot RPC")]
-        (is (:appended r))))
+               :question "what is X?"
+               :shape :not-a-real-shape
+               :reason "test")]
+        (is (:appended r))
+        (is (str/includes? (:line r) "unspecified"))))
 
-    (testing "errors when routing-log dir is missing"
-      (let [r (main/main$append-log
+    (testing "creates the routing-log dir if missing (no main$bootstrap needed)"
+      (let [r (main/append-log!
                :session-id "never-bootstrapped"
                :base-dir base
                :turn 1 :iter 1
                :question "?" :shape :clarify :reason "test")]
-        (is (some? (:error r)))
-        (is (str/includes? (:error r) "main$bootstrap"))))))
+        (is (:appended r))
+        (is (.isFile (io/file base ".brainyard/agents/main-agent" "never-bootstrapped" "routing.log")))))))
 
 (deftest last-shape-roundtrip-test
   (let [base (tempdir)
@@ -248,7 +254,7 @@
       (let [r (main/main$last-shape :session-id sid :base-dir base)]
         (is (not (:exists? r)))))
 
-    (main/main$append-log
+    (main/append-log!
      :session-id sid :base-dir base
      :turn 1 :iter 1
      :question "research how to reduce cold start"
@@ -266,7 +272,7 @@
         (is (= 1 (:turn r)))
         (is (str/includes? (:question r) "cold start"))))
 
-    (main/main$append-log
+    (main/append-log!
      :session-id sid :base-dir base
      :turn 2 :iter 1
      :question "what was that path again?"
@@ -317,10 +323,10 @@
         (is (= 0 (:turn-count r)))
         (is (nil? (:last-shape r)))))
 
-    (main/main$append-log
+    (main/append-log!
      :session-id sid :base-dir base
      :turn 1 :iter 1 :question "Hi" :shape :direct-answer :reason "greeting")
-    (main/main$append-log
+    (main/append-log!
      :session-id sid :base-dir base
      :turn 2 :iter 1 :question "Run X" :shape :execute
      :routed-to "exec-agent"
@@ -382,16 +388,27 @@
 ;; Hook side-effects — capture-saved-artifacts writes pointers.md bullets
 ;; ============================================================================
 
-(defrecord StubAgent [type sid !state]
+(defrecord StubAgent [type sid !state bt-mem]
   ai.brainyard.agent.core.protocol/IAgent
   (agent-id [_] (keyword (str (name type) "/stub")))
   (defagent-type [_] type)
   (session-id [_] sid)
-  (user-id [_] "test-user"))
+  (user-id [_] "test-user")
+  ai.brainyard.agent.core.protocol/IAgentBTIntegration
+  (get-bt-st-memory [_] bt-mem))
 
 (defn- mk-stub
-  ([type sid] (->StubAgent type sid (atom {})))
-  ([type sid initial-state] (->StubAgent type sid (atom initial-state))))
+  "Stub main-agent. `bt-mem` (optional) is an atom of short-term memory
+   (`{:iterations [...]}`) so the routing-line hook can derive routed-to from
+   the turn's specialist tool-calls; nil → no dispatch (self-answered turn)."
+  ([type sid] (->StubAgent type sid (atom {}) nil))
+  ([type sid bt-mem] (->StubAgent type sid (atom {}) bt-mem)))
+
+(defn- bt-mem-with-dispatch
+  "An st-memory atom whose last iteration dispatched `agent-name` (CoAct shape)."
+  [agent-name]
+  (atom {:iterations [{:channel :code
+                       :tool-results [{:tool-name agent-name}]}]}))
 
 (deftest capture-hook-test
   (let [base       (tempdir)
@@ -437,62 +454,92 @@
         (is (= pre-body (slurp (io/file base ".brainyard/agents/main-agent" sid "pointers.md"))))))))
 
 ;; ============================================================================
-;; Auto-log fallback — :agent.ask/pre + :agent.ask/post pair
+;; Routing-line recorder — :agent.ask/pre + :agent.ask/post pair
+;;
+;; The routing line is HOOK-DERIVED (main-agent no longer calls main$append-log):
+;; record-routing-line is the SOLE writer. It derives routed-to from the turn's
+;; dispatch, shape from specialist→shape / the `Routing:` answer line / a
+;; channel fallback, artifact from the surfaced `Saved <kind>:` path, and reason
+;; from the model's one-sentence routing decision.
 ;; ============================================================================
 
-(deftest auto-log-missing-decision-test
+(deftest record-routing-line-test
   (let [base (tempdir)
-        sid  "auto-log-session-1"]
+        sid  "routing-line-session-1"]
 
-    (testing "When the LLM forgot to log, the post hook appends one inferred line"
-      (let [stub (mk-stub :main-agent sid)]
+    (testing "specialist dispatch → routed-to + specialist→shape + artifact + reason"
+      (let [stub (mk-stub :main-agent sid (bt-mem-with-dispatch "plan-agent"))]
         (with-redefs [config/project-dir (constantly base)]
           (main/main$bootstrap :session-id sid :base-dir base)
           (main-hooks/capture-pre-turn {:agent stub})
-          (main-hooks/auto-log-missing-decision
+          (main-hooks/record-routing-line
            {:agent stub
-            :input  {:question "Hi"}
-            :result {:answer "Hello! How can I help?"}}))
-        (let [log (main/read-routing-log sid :base-dir base)]
-          (is (= 1 (count log)))
-          (is (= "direct-answer" (:shape (first log))))
-          (is (= 1 (:turn (first log))))
-          (is (str/includes? (:reason (first log)) "auto-logged")))))
+            :input  {:question "draft a plan to migrate auth"}
+            :result {:answer (str "Routed to plan-agent — your question reduced to plan authoring.\n\n"
+                                  "Saved plan: .brainyard/agents/plan-agent/plans/migrate-auth.md")}}))
+        (let [ln (first (main/read-routing-log sid :base-dir base))]
+          (is (= 1 (count (main/read-routing-log sid :base-dir base))))
+          (is (= "plan-author" (:shape ln)) "shape derived from the dispatched specialist")
+          (is (= "plan-agent" (:routed-to ln)))
+          (is (= ".brainyard/agents/plan-agent/plans/migrate-auth.md" (:artifact ln))
+              "artifact lifted from the surfaced Saved plan: line")
+          (is (str/includes? (:reason ln) "plan authoring")
+              "reason lifted from the model's one-sentence routing decision")
+          (is (= 1 (:turn ln))))))
 
-    (testing "When the LLM did log, the post hook is a no-op (pre/post counts differ)"
+    (testing "self-answered move → shape + reason parsed from the `Routing:` line"
+      (let [stub (mk-stub :main-agent sid)]  ; no dispatch
+        (with-redefs [config/project-dir (constantly base)]
+          (main-hooks/capture-pre-turn {:agent stub})
+          (main-hooks/record-routing-line
+           {:agent stub
+            :input  {:question "what is CoAct?"}
+            :result {:answer "CoAct is a behavior-tree loop.\n\nRouting: direct-answer — factual question, no specialist needed"}}))
+        (let [ln (last (main/read-routing-log sid :base-dir base))]
+          (is (= "direct-answer" (:shape ln)))
+          (is (nil? (:routed-to ln)) "self-answered → no routed-to")
+          (is (str/includes? (:reason ln) "factual question"))
+          (is (= 2 (:turn ln))))))
+
+    (testing "unknown `Routing:` shape → coerced to :unspecified (never fails)"
       (let [stub (mk-stub :main-agent sid)]
         (with-redefs [config/project-dir (constantly base)]
           (main-hooks/capture-pre-turn {:agent stub})
-          ;; Simulate the LLM appending its own log line for turn 2.
-          (main/main$append-log
-           :session-id sid :base-dir base
-           :turn 2 :iter 1
-           :question "draft a plan to migrate auth"
-           :shape :plan-author
-           :routed-to "plan-agent"
-           :reason "explicit 'draft a plan'")
-          (main-hooks/auto-log-missing-decision
+          (main-hooks/record-routing-line
            {:agent stub
-            :input  {:question "draft a plan to migrate auth"}
-            :result {:answer "Routed to plan-agent."}}))
-        (let [log (main/read-routing-log sid :base-dir base)]
-          (is (= 2 (count log)) "post hook must not double-log")
-          (is (= "plan-author" (:shape (second log)))))))
+            :input  {:question "weird"}
+            :result {:answer "Routing: bananas — nonsense shape"}}))
+        (let [ln (last (main/read-routing-log sid :base-dir base))]
+          (is (= "unspecified" (:shape ln))))))
 
-    (testing "Blank :answer → no auto-log (CoAct loop exhausted, not user-facing)"
+    (testing "idempotent — a re-fire on the same snapshot does not double-write"
+      (let [stub (mk-stub :main-agent sid)
+            pre  (count (main/read-routing-log sid :base-dir base))]
+        (with-redefs [config/project-dir (constantly base)]
+          (main-hooks/capture-pre-turn {:agent stub})  ; snapshots current max
+          (main-hooks/record-routing-line
+           {:agent stub :input {:question "x"} :result {:answer "Routing: clarify — ambiguous"}})
+          ;; Re-fire WITHOUT re-snapshotting: post-turn now advanced past the
+          ;; stale ::pre-max-turn, so the guard makes this a no-op.
+          (main-hooks/record-routing-line
+           {:agent stub :input {:question "x"} :result {:answer "Routing: clarify — ambiguous"}}))
+        (is (= (inc pre) (count (main/read-routing-log sid :base-dir base)))
+            "exactly one line added across the two fires")))
+
+    (testing "Blank :answer → no line (CoAct loop exhausted, not user-facing)"
       (let [stub (mk-stub :main-agent sid)
             pre  (count (main/read-routing-log sid :base-dir base))]
         (with-redefs [config/project-dir (constantly base)]
           (main-hooks/capture-pre-turn {:agent stub})
-          (main-hooks/auto-log-missing-decision
+          (main-hooks/record-routing-line
            {:agent stub :input {:question "x"} :result {:answer ""}}))
         (is (= pre (count (main/read-routing-log sid :base-dir base))))))
 
-    (testing "Non-main-agent caller → no auto-log"
+    (testing "Non-main-agent caller → no line"
       (let [pre  (count (main/read-routing-log sid :base-dir base))
             stub (mk-stub :coact-agent sid)]
         (with-redefs [config/project-dir (constantly base)]
           (main-hooks/capture-pre-turn {:agent stub})
-          (main-hooks/auto-log-missing-decision
+          (main-hooks/record-routing-line
            {:agent stub :input {:question "x"} :result {:answer "y"}}))
         (is (= pre (count (main/read-routing-log sid :base-dir base))))))))

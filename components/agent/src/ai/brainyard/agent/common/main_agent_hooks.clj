@@ -17,19 +17,21 @@
                                 the artifact trail without main-agent having
                                 to inline `main$append-pointer` calls in its
                                 instruction.
-   - `:agent.ask/post`        → safety-net auto-log: when main-agent emits a
-                                non-blank :answer but the LLM forgot to call
-                                main$append-log, infer the shape from the
-                                last iteration's tool calls and write a line
-                                anyway. Mirrors research-agent's auto-
-                                finalize hook.
+   - `:agent.ask/post`        → record the per-turn routing line. The line is
+                                HOOK-DERIVED (not LLM-constructed): routed-to
+                                from the turn's specialist dispatch, shape from
+                                specialist→shape / the `Routing:` answer line /
+                                a channel fallback, artifact from the surfaced
+                                `Saved <kind>:` path, reason from the model's
+                                one-sentence routing decision. This is the SOLE
+                                writer of routing.log (main-agent no longer
+                                calls main$append-log).
    - `:agent.session/closed`  → append a one-line summary to INDEX.md
                                 covering turn count + distinct shapes seen.
 
-   The hooks decouple routing-log discipline from the LLM's prompt — even
-   when the LLM forgets to call `main$append-pointer` or `main$append-log`,
-   the post hooks catch it. Every handler is wrapped in try/catch so hook
-   failures never propagate up into the user-facing answer."
+   The hooks own routing-log discipline entirely — the LLM just routes + states
+   a reason; the trail records itself. Every handler is wrapped in try/catch so
+   hook failures never propagate up into the user-facing answer."
   (:require [ai.brainyard.agent.common.main :as main]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
@@ -58,12 +60,14 @@
     "init-agent"
     "mcp-agent"
     "memory-agent"
+    "meta-agent"
     "plan-agent"
     "react-agent"
     "research-agent"
     "rlm-agent"
     "skill-agent"
     "todo-agent"
+    "tool-agent"
     "edit-agent"
     "workflow-agent"})
 
@@ -164,33 +168,31 @@
                    :exception t))))
 
 ;; ============================================================================
-;; Auto-log fallback (handlers 3 + 4) — :agent.ask/pre + :agent.ask/post
+;; Routing-line recorder (handlers 3 + 4) — :agent.ask/pre + :agent.ask/post
 ;;
-;; The instruction tells the LLM to call main$append-log after every routing
-;; decision. Sonnet+ follows it on multi-iteration arcs; small/quick turns
-;; (DIRECT-ANSWER greetings, CLARIFY, single META-RESUME lookups) often
-;; finalize in iteration 1 without ever calling the helper. These two hooks
-;; close the gap:
+;; Lightweight redesign: the routing line is HOOK-DERIVED, not LLM-constructed.
+;; main-agent no longer calls main$append-log; this hook is the SOLE writer of
+;; the per-turn routing.log line. It runs on every main-agent turn:
 ;;
-;;   pre  → snapshot max(turn) currently in routing.log on the agent's !state
-;;   post → if max(turn) didn't advance and :answer is non-blank, infer the
-;;          shape from the last iteration's tool calls and append one line.
-;;
-;; The inferred shape is best-effort:
-;;   - any specialist defagent in the last iteration's tool calls
-;;       → corresponding routing-decision shape (plan-agent → :plan-author,
-;;         research-agent → :research, etc.)
-;;   - any other tool call                       → :tool-fetch
-;;   - code-block channel only (no tool calls)   → :code-compose
-;;   - otherwise (or inference failure)          → :direct-answer
-;;
-;; This is strictly a safety net — when the LLM appends its own line, the
-;; pre/post counts differ and the post hook is a no-op.
+;;   pre  → snapshot max(turn) in routing.log on the agent's !state (so the
+;;          post hook knows the next turn number + can no-op a double-fire).
+;;   post → derive the line from the turn and append it:
+;;            routed-to → the dispatched specialist (scanned from the turn's
+;;                        tool calls)
+;;            shape     → specialist→shape when a specialist ran; else the
+;;                        `Routing: <shape> — <reason>` answer line for self-
+;;                        answered moves; else a channel fallback
+;;                        (code → :code-compose, tool → :tool-fetch,
+;;                         else :direct-answer); coerced to :unspecified if
+;;                        unknown (never fails the turn)
+;;            artifact  → the surfaced `Saved <kind>: <path>` line
+;;            reason    → the `Routing:` reason, else the first prose line of
+;;                        the answer (the model's one-sentence routing decision)
 ;; ============================================================================
 
 (def ^:private specialist->shape
   {"explore-agent"  :explore
-   "edit-agent"   :update
+   "edit-agent"     :update
    "plan-agent"     :plan-author
    "todo-agent"     :decompose
    "exec-agent"     :execute
@@ -200,6 +202,8 @@
    "rlm-agent"      :rlm
    "skill-agent"    :skill-lifecycle
    "mcp-agent"      :mcp-lifecycle
+   "tool-agent"     :tool-lifecycle
+   "meta-agent"     :agent-lifecycle
    "memory-agent"   :memory
    "init-agent"     :init
    "config-agent"   :config
@@ -228,18 +232,17 @@
     (catch Throwable t
       (mulog/error ::main.pre-turn-failed :exception t))))
 
-(defn- last-iteration-tool-names
-  "Best-effort extraction of tool-name strings from the latest BT iteration.
-   Tolerates both ReAct (`:actions`) and CoAct (`:tool-results`) shapes."
+(defn- all-iteration-tool-names
+  "Best-effort: tool-name strings across ALL of the turn's BT iterations
+   (not just the last), in order. Tolerates ReAct (`:actions`) and CoAct
+   (`:tool-results`) shapes. Used to find the dispatched specialist even when
+   the dispatch happened a few iterations before the final answer."
   [agent]
   (try
-    (let [st-mem  (some-> agent proto/get-bt-st-memory deref)
-          iters   (:iterations st-mem)
-          last-it (last iters)
-          calls   (or (seq (:tool-results last-it))
-                      (seq (:actions last-it))
-                      [])]
-      (->> calls
+    (let [st-mem (some-> agent proto/get-bt-st-memory deref)
+          iters  (:iterations st-mem)]
+      (->> iters
+           (mapcat (fn [it] (concat (:tool-results it) (:actions it))))
            (keep (fn [c] (when-let [n (:tool-name c)] (str n))))
            vec))
     (catch Throwable _ [])))
@@ -247,27 +250,65 @@
 (defn- last-iteration-channel
   "Returns the channel keyword of the latest iteration when available
    (:tool / :code / :answer / :repair). Used to distinguish :code-compose
-   from :direct-answer when no tool calls happened."
+   from :direct-answer when no specialist ran."
   [agent]
   (try
     (let [st-mem  (some-> agent proto/get-bt-st-memory deref)
-          iters   (:iterations st-mem)
-          last-it (last iters)]
+          last-it (last (:iterations st-mem))]
       (when-let [ch (:channel last-it)]
         (keyword ch)))
     (catch Throwable _ nil)))
 
-(defn- infer-shape
-  "Pick a shape keyword based on what the latest iteration actually did."
+(defn- routed-to-of
+  "The specialist defagent main-agent dispatched this turn — the LAST specialist
+   tool-call across the turn's iterations, or nil for a self-answered turn."
   [agent]
-  (let [names (last-iteration-tool-names agent)
-        ch    (last-iteration-channel agent)
-        spec  (some specialist->shape names)]
-    (cond
-      spec                spec
-      (seq names)         :tool-fetch
-      (= ch :code)        :code-compose
-      :else               :direct-answer)))
+  (->> (all-iteration-tool-names agent)
+       (filter specialist-agents)
+       last))
+
+(def ^:private routing-answer-re
+  "Matches the self-answered-move signal `Routing: <shape> — <reason>` the model
+   adds to its :answer (separator may be em-dash, hyphen, or colon; reason
+   optional). `(?im)` so it can be found anywhere in the answer body."
+  #"(?im)^\s*Routing:\s*([a-z][a-z0-9-]+)\b\s*(?:[—:-]+\s*(.*\S))?\s*$")
+
+(defn- extract-routing-answer-line
+  "Parse a `Routing: <shape> — <reason>` line from the answer → `{:shape kw
+   :reason str-or-nil}`, or nil when absent."
+  [^String answer]
+  (when (string? answer)
+    (when-let [[_ shape reason] (re-find routing-answer-re answer)]
+      {:shape  (keyword shape)
+       :reason (some-> reason str/trim not-empty)})))
+
+(defn- first-prose-line
+  "First non-blank line of the answer that isn't a `Saved <kind>:` / `Routing:`
+   marker, a heading, table, or fence — the model's one-sentence routing
+   decision. Collapsed + capped. nil when none."
+  [^String answer]
+  (->> (str/split-lines (or answer ""))
+       (map str/trim)
+       (remove str/blank?)
+       (remove #(re-matches #"(?i)^(saved\s+[a-z][a-z0-9-]*:|routing:|#|\||```).*" %))
+       first
+       (#(when % (let [flat (str/replace % #"\s+" " ")]
+                   (subs flat 0 (min 200 (count flat))))))))
+
+(defn- derive-shape
+  "Resolve the routing shape: a dispatched specialist is authoritative
+   (specialist→shape); else the `Routing:` answer-line shape (self-answered);
+   else a channel fallback. Coerced to a known shape (:unspecified otherwise)."
+  [agent ans-line routed-to]
+  (main/coerce-shape
+   (cond
+     routed-to        (specialist->shape routed-to)
+     (:shape ans-line) (:shape ans-line)
+     :else            (let [ch (last-iteration-channel agent)]
+                        (cond
+                          (= ch :code)                          :code-compose
+                          (seq (all-iteration-tool-names agent)) :tool-fetch
+                          :else                                 :direct-answer)))))
 
 (defn- summary-question
   "Pull a short question string out of the :input map / string. Capped at
@@ -280,40 +321,50 @@
         flat (-> (str raw) (str/replace #"\s+" " ") str/trim)]
     (subs flat 0 (min 200 (count flat)))))
 
-(defn auto-log-missing-decision
-  "When main-agent emits a non-blank :answer without appending a routing.log
-   line, write one anyway with an inferred shape. The LLM's explicit
-   `main$append-log` call is still the primary contract — this hook only
-   fires when the count of log entries didn't change between :agent.ask/pre
-   and :agent.ask/post."
+(defn record-routing-line
+  "Primary writer of the per-turn routing.log line (hook-derived, not LLM-
+   constructed — main-agent no longer calls main$append-log). On main-agent's
+   :agent.ask/post: derive routed-to (dispatched specialist), shape
+   (specialist→shape / `Routing:` answer line / channel fallback), artifact
+   (surfaced `Saved <kind>:` path), and reason (`Routing:` reason or the first
+   prose line), then append ONE line. Defensive — failures logged, never
+   re-thrown."
   [{:keys [agent input result]}]
   (try
     (when (main-agent? agent)
-      (let [sid       (session-id-of agent)
-            answer    (result-answer result)]
-        (when (and sid
-                   (string? answer)
-                   (not (str/blank? answer)))
+      (let [sid    (session-id-of agent)
+            answer (result-answer result)]
+        (when (and sid (string? answer) (not (str/blank? answer)))
           (let [pre-turn  (or (some-> (:!state agent) deref ::pre-max-turn) 0)
                 post-turn (max-turn-in-log sid)]
+            ;; main-agent no longer writes its own line, so this is normally the
+            ;; only write per turn; the guard just no-ops a double-fire.
             (when (= pre-turn post-turn)
-              (let [shape    (infer-shape agent)
-                    question (summary-question input)
+              (let [ans-line  (extract-routing-answer-line answer)
+                    routed-to (routed-to-of agent)
+                    shape     (derive-shape agent ans-line routed-to)
+                    artifact  (first (map :path (main/parse-saved-lines answer)))
+                    reason    (or (:reason ans-line)
+                                  (first-prose-line answer)
+                                  "(routing reason not stated)")
+                    question  (summary-question input)
                     next-turn (inc pre-turn)
-                    r (main/main$append-log
+                    r (main/append-log!
                        :session-id sid
                        :turn next-turn
                        :iter 1
                        :question (if (str/blank? question) "(no question captured)" question)
                        :shape shape
-                       :reason "auto-logged by :agent.ask/post hook (LLM did not call main$append-log)")]
+                       :routed-to routed-to
+                       :artifact artifact
+                       :reason reason)]
                 (when (:appended r)
-                  (mulog/log ::main.auto-logged-decision
-                             :session-id sid
-                             :turn next-turn
-                             :shape shape))))))))
+                  (mulog/log ::main.routing-line-recorded
+                             :session-id sid :turn next-turn
+                             :shape shape :routed-to routed-to
+                             :artifact (boolean artifact)))))))))
     (catch Throwable t
-      (mulog/error ::main.auto-log-failed :exception t))))
+      (mulog/error ::main.routing-line-failed :exception t))))
 
 ;; ============================================================================
 ;; Handler 5 — :agent.session/closed → INDEX.md summary
@@ -369,8 +420,8 @@
    :match  (fn [{:keys [agent]}] (main-agent? agent)))
   (hooks/register-hook!
    :agent.ask/post
-   ::auto-log-missing-decision
-   auto-log-missing-decision
+   ::record-routing-line
+   record-routing-line
    :source ::main-agent
    :match  (fn [{:keys [agent]}] (main-agent? agent)))
   (hooks/register-hook!
