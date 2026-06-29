@@ -11,7 +11,7 @@
    into a single `chat-completion` result, flattening away plans,
    tool-call lifecycle, and permission prompts. For the full ACP UX
    (streamed plans, tool calls, permissions in the TUI) callers should
-   use the `acp-agent` defagent (Phase 5 of docs/acp-design.md) — that
+   use the `acp-agent` defagent (Phase 5 of docs/design/acp-design.md) — that
    path bypasses clj-llm and lets the external agent own its loop.
 
    ## Soft coupling
@@ -34,7 +34,7 @@
    ## Caching
 
    Phase 4 spawns a fresh subprocess per call. Per the per-LM cache
-   design in §4.3 of docs/acp-design.md, a future revision will cache
+   design in §4.3 of docs/design/acp-design.md, a future revision will cache
    AcpClients keyed by `(provider, backend, model, config-hash)` (Open
    Decision 5) for conversational continuity. Stub testing doesn't
    need it; real backends with multi-second startup will."

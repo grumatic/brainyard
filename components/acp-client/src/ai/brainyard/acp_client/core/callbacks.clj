@@ -13,7 +13,7 @@
    with `:type :acp/method-error` to produce an error response.
 
    Permission-outcome mapping uses the fallback policy from
-   docs/acp-design.md §9.2 decision 4:
+   docs/design/acp-design.md §9.2 decision 4:
 
      :allow → first option whose id starts with \"allow_\", else first
               option in the list

@@ -8,7 +8,7 @@
    so the existing TUI iteration block, todo updates, tool-use widgets,
    and permission popups continue to work unchanged.
 
-   Per docs/acp-design.md §4.4. The default backend is `:stub`
+   Per docs/design/acp-design.md §4.4. The default backend is `:stub`
    (in-tree, deterministic — see `bases/acp-stub-agent`). Real backends
    like `:claude-agent-acp`, `:gemini`, `:codex` will land in Phase 6
    as `acp-client/registry` entries.

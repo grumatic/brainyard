@@ -19,7 +19,7 @@
    The MCP client (components/agent/mcp/client.clj) embeds equivalent
    logic inline; this module factors it out so it can be reused by
    components/acp-client without dragging in agent semantics. A future
-   refactor may move MCP onto this module — see docs/acp-design.md §9.2."
+   refactor may move MCP onto this module — see docs/design/acp-design.md §9.2."
   (:require [clojure.data.json :as json])
   (:import [java.util.concurrent.atomic AtomicLong]))
 

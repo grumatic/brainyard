@@ -18,7 +18,7 @@
    `--coact` mode (Phase 5) will wrap coact-agent and translate its
    hooks into `session/update` payloads.
 
-   Per <docs/acp-design.md §4.5>."
+   Per <docs/design/acp-design.md §4.5>."
   (:require [ai.brainyard.acp.interface :as acp]
             [clojure.data.json :as json]
             [clojure.string :as str])

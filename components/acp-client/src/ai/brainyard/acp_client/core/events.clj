@@ -13,7 +13,7 @@
    `:on-event` callback. The Phase 5 `acp-agent` defagent provides a
    callback that fires real brainyard hooks.
 
-   The translation table mirrors §4.2.1 of docs/acp-design.md.
+   The translation table mirrors §4.2.1 of docs/design/acp-design.md.
 
    Each translation returns either:
      - `nil` if no event is fired (e.g. unknown sessionUpdate variant)

@@ -16,7 +16,7 @@
 
    This component is **pure protocol plumbing**. It must not depend on
    `agent` or `clj-llm`; lifecycle, dispatch, and event-bridge logic
-   live in components/acp-client. See docs/acp-design.md."
+   live in components/acp-client. See docs/design/acp-design.md."
   (:require [ai.brainyard.acp.core.jsonrpc :as jsonrpc]
             [ai.brainyard.acp.core.methods :as methods]
             [ai.brainyard.acp.core.schema :as schema]
