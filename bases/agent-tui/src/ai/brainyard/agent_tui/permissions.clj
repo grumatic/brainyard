@@ -436,65 +436,121 @@
         ;; Unknown kind — treat as select for forward-compat.
         (do-select req feedback-lock !input-reader-thread)))))
 
-(defn make-permission-fn
-  "Create a file-access permission callback bound to a session as
-   `:permission-fn`. A thin adapter over `feedback-fn`: keeps path
-   normalization + a per-session approved-dir cache, and delegates the actual
-   prompt to a :confirm request (so in-stream and tmux-popup rendering both live
-   in the feedback primitive). Falls back to a non-interactive auto-deny + a
-   `/allow-path` hint when no input channel is available.
+(defn- mcp-permission-confirm
+  "MCP-tool branch of `make-permission-fn`'s callback. Handles a
+   `{:type :mcp-tool :servers […] :tools [\"s/t\"…] :display …}` request from the
+   fail-closed MCP permission gate (mcp/permission.clj): prompts via `feedback-fn`
+   (in-stream or tmux popup), caching always/never per *server* name, and
+   auto-denies with a hint when there is no interactive channel."
+  [!mcp-allowed !mcp-denied !input-reader-thread feedback-fn req]
+  (let [servers (vec (distinct (or (:servers req) [])))
+        display (or (:display req)
+                    (when (seq (:tools req)) (str/join ", " (:tools req)))
+                    "MCP tool")]
+    (cond
+      ;; every server in this call already trusted this session
+      (and (seq servers) (every? #(contains? @!mcp-allowed %) servers))
+      {:allowed true}
 
-   Request:  {:path <p> | :paths [<p>…] :action :read|:write|:bash …}
+      ;; a server was denied with :never earlier — don't re-prompt
+      (and (seq servers) (some #(contains? @!mcp-denied %) servers))
+      {:denied true :reason "User denied MCP access (won't ask again this session)"}
+
+      ;; interactive — in-stream OR tmux popup
+      (or @!input-reader-thread (mode-b-popup-feasible?))
+      (let [resp (feedback-fn
+                  {:kind :confirm
+                   :question (str "MCP tool call requested: " display)
+                   :choices [{:key \y :label "yes"    :value :yes}
+                             {:key \n :label "no"     :value :no}
+                             {:key \a :label "always (remember server)" :value :always}
+                             {:key \d :label "never (deny, don't ask again)" :value :never}]
+                   :timeout-ms 30000})]
+        (case (:value resp)
+          :yes    {:allowed true}
+          :always (do (doseq [s servers] (swap! !mcp-allowed conj s))
+                      {:allowed true})
+          :no     {:denied true :reason "User denied MCP access"}
+          :never  (do (doseq [s servers] (swap! !mcp-denied conj s))
+                      {:denied true :reason "User denied MCP access (won't ask again this session)"})
+          (if (:timeout resp)
+            {:denied true :reason "Permission prompt timed out (30s)"}
+            {:denied true :reason "User denied MCP access"})))
+
+      ;; non-interactive — auto-deny with a hint
+      :else
+      {:denied true
+       :reason (str "MCP tool call (" display ") denied (non-interactive mode). "
+                    "Allowlist it via :mcp-allow-tools or set [:permissions :mode] :auto-approve.")})))
+
+(defn make-permission-fn
+  "Create a permission callback bound to a session as `:permission-fn`. A thin
+   adapter over `feedback-fn`: keeps path normalization + a per-session approved
+   cache, and delegates the actual prompt to a :confirm request (so in-stream and
+   tmux-popup rendering both live in the feedback primitive). Falls back to a
+   non-interactive auto-deny + a `/allow-path` hint when no input channel is
+   available.
+
+   Requests:
+     file access — {:path <p> | :paths [<p>…] :action :read|:write|:bash …}
+     MCP call    — {:type :mcp-tool :servers [<s>…] :tools [\"s/t\"…] :display <s>}
+                   (the fail-closed MCP permission gate; see mcp/permission.clj)
    Returns:  {:allowed true} | {:denied true :reason …}"
   [!input-reader-thread feedback-fn]
   (let [!session-allowed (atom #{})
-        !session-denied  (atom #{})]
-    (fn [{:keys [path paths] :as _req}]
-      ;; Support both :path (single) and :paths (vector from bash security check)
-      (let [all-paths (or (when paths (seq paths)) (when path [path]))
-            display-path (if (and all-paths (> (count all-paths) 1))
-                           (str/join ", " all-paths)
-                           (first all-paths))
-            parent-dirs (keep #(when % (.getParent (io/file %))) all-paths)]
-        (cond
-          ;; Already approved all directories in this session
-          (and (seq parent-dirs)
-               (every? #(contains? @!session-allowed %) parent-dirs))
-          {:allowed true}
+        !session-denied  (atom #{})
+        ;; Separate caches for MCP-tool approvals, keyed by server name.
+        !mcp-allowed     (atom #{})
+        !mcp-denied      (atom #{})]
+    (fn [{:keys [path paths type] :as req}]
+      (if (= :mcp-tool type)
+        (mcp-permission-confirm !mcp-allowed !mcp-denied !input-reader-thread feedback-fn req)
+        ;; ---- file-access permission ----
+        ;; Support both :path (single) and :paths (vector from bash security check)
+        (let [all-paths (or (when paths (seq paths)) (when path [path]))
+              display-path (if (and all-paths (> (count all-paths) 1))
+                             (str/join ", " all-paths)
+                             (first all-paths))
+              parent-dirs (keep #(when % (.getParent (io/file %))) all-paths)]
+          (cond
+            ;; Already approved all directories in this session
+            (and (seq parent-dirs)
+                 (every? #(contains? @!session-allowed %) parent-dirs))
+            {:allowed true}
 
-          ;; A directory was denied with :never earlier this session — deny
-          ;; without re-prompting (symmetric to the :always allow cache).
-          (and (seq parent-dirs)
-               (some #(contains? @!session-denied %) parent-dirs))
-          {:denied true :reason "User denied file access (won't ask again this session)"}
+            ;; A directory was denied with :never earlier this session — deny
+            ;; without re-prompting (symmetric to the :always allow cache).
+            (and (seq parent-dirs)
+                 (some #(contains? @!session-denied %) parent-dirs))
+            {:denied true :reason "User denied file access (won't ask again this session)"}
 
-          ;; Interactive — raw in-stream OR tmux popup. Delegate the prompt to
-          ;; the unified feedback primitive as a :confirm request.
-          (or @!input-reader-thread (mode-b-popup-feasible?))
-          (let [resp (feedback-fn
-                      {:kind :confirm
-                       :question (str "File access requested: " display-path)
-                       :choices [{:key \y :label "yes"    :value :yes}
-                                 {:key \n :label "no"     :value :no}
-                                 {:key \a :label "always (remember dir)" :value :always}
-                                 {:key \d :label "never (deny, don't ask again)" :value :never}]
-                       :timeout-ms 30000})]
-            (case (:value resp)
-              :yes    {:allowed true}
-              :always (do (doseq [d parent-dirs] (swap! !session-allowed conj d))
-                          {:allowed true})
-              :no     {:denied true :reason "User denied file access"}
-              :never  (do (doseq [d parent-dirs] (swap! !session-denied conj d))
-                          {:denied true :reason "User denied file access (won't ask again this session)"})
-              (if (:timeout resp)
-                {:denied true :reason "Permission prompt timed out (30s)"}
-                {:denied true :reason "User denied file access"})))
+            ;; Interactive — raw in-stream OR tmux popup. Delegate the prompt to
+            ;; the unified feedback primitive as a :confirm request.
+            (or @!input-reader-thread (mode-b-popup-feasible?))
+            (let [resp (feedback-fn
+                        {:kind :confirm
+                         :question (str "File access requested: " display-path)
+                         :choices [{:key \y :label "yes"    :value :yes}
+                                   {:key \n :label "no"     :value :no}
+                                   {:key \a :label "always (remember dir)" :value :always}
+                                   {:key \d :label "never (deny, don't ask again)" :value :never}]
+                         :timeout-ms 30000})]
+              (case (:value resp)
+                :yes    {:allowed true}
+                :always (do (doseq [d parent-dirs] (swap! !session-allowed conj d))
+                            {:allowed true})
+                :no     {:denied true :reason "User denied file access"}
+                :never  (do (doseq [d parent-dirs] (swap! !session-denied conj d))
+                            {:denied true :reason "User denied file access (won't ask again this session)"})
+                (if (:timeout resp)
+                  {:denied true :reason "Permission prompt timed out (30s)"}
+                  {:denied true :reason "User denied file access"})))
 
-          ;; Non-raw mode (inline, piped) — auto-deny with hint
-          :else
-          {:denied true
-           :reason (str "Access to " display-path " denied (non-interactive mode). "
-                        "Use /allow-path " (or (first parent-dirs) display-path) " to grant access, then retry.")})))))
+            ;; Non-raw mode (inline, piped) — auto-deny with hint
+            :else
+            {:denied true
+             :reason (str "Access to " display-path " denied (non-interactive mode). "
+                          "Use /allow-path " (or (first parent-dirs) display-path) " to grant access, then retry.")}))))))
 
 (defn handle-allow-path-command
   "Handle /allow-path <dir> command. Adds directory to agent's allowed-dirs config."

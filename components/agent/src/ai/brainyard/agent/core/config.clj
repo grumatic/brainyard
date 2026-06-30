@@ -318,6 +318,9 @@
                                 :doc "Allow-list of directories for filesystem-touching tools (bash/read/write/grep/task$run). Lazy default: /tmp + project-dir + user-config-dir."}
    :permission-mode            {:type "keyword" :default :ask-each-time
                                 :doc "Permission-prompt policy for sensitive tool ops: :auto-approve | :ask-each-time | :deny-by-default. Persisted as [:permissions :mode]."}
+   :mcp-allow-tools            {:type "array"
+                                :default []
+                                :doc "Allowlist of MCP tools that skip the fail-closed permission gate (auto-approved). Each entry is a `server/tool` glob — `*` matches any run of chars (e.g. \"linear/*\", \"slack/post_message\", \"*/*_read\"). Side-effecting MCP tools NOT matched here (and lacking readOnlyHint) prompt for approval via the same UI as write-file/bash. See mcp/permission.clj."}
    :nrepl-enabled?             {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_NREPL_ENABLED")]
                                            (= "true" v) ::env-unset)

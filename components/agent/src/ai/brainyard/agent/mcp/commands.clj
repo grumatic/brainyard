@@ -13,6 +13,11 @@
    - `mcp$lifecycle` — start / stop / restart a server"
   (:require [ai.brainyard.agent.core.tool :refer [defcommand]]
             [ai.brainyard.agent.mcp.integration :as mcp-int]
+            ;; Side-effect load: installs the fail-closed MCP permission gate
+            ;; (`:agent.tool-use/pre`) so every side-effecting MCP call — native
+            ;; binding or the `mcp$tools :op :call` proxy below — is gated
+            ;; through the same permission UI as write-file/bash.
+            ai.brainyard.agent.mcp.permission
             [ai.brainyard.agent.mcp.client :as mcp-client]
             [clojure.data.json :as json]
             [clojure.string :as str]

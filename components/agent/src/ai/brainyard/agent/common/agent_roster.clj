@@ -148,13 +148,14 @@ RULES:
    management (:stop/:restart, troubleshooting, multi-server flows) stays
    mcp-agent's. Cousin of the skill substrate (both are discover→use).
 
-   NOTE: MCP calls can have external SIDE EFFECTS. The intended safety boundary
-   is the platform's fail-closed tool-permission mechanism (gate every MCP call,
-   default :approval-required) — but that gate is NOT yet wired (the proxy
-   `mcp$tools :op :call` bypasses check-permission and `permission-config` is
-   empty). Until it lands (deferred per the redesign doc §5.4/§8), MCP writes are
-   ungated; the prose below tells the model to surface external actions and not
-   assume prior approval carries forward."
+   NOTE: MCP calls can have external SIDE EFFECTS. The safety boundary is the
+   fail-closed permission gate in `mcp/permission.clj` (a `:agent.tool-use/pre`
+   hook covering BOTH call paths — native `mcp$<server>$<tool>` bindings and the
+   `mcp$tools :op :call` proxy): a side-effecting MCP call requires approval
+   through the same UI as write-file/bash, honoring `[:permissions :mode]`.
+   readOnlyHint tools and `:mcp-allow-tools`-matched tools are auto-allowed. The
+   prose below reinforces this: surface external actions and don't assume a
+   prior approval carries forward."
   "## Using MCP servers (mcp substrate)
 Configured MCP servers expose external tools / resources / prompts (Linear, Slack,
 Jira, GitHub, Notion, …). When a task needs external data or an external action,

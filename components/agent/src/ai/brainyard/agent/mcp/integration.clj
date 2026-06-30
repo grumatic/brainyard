@@ -322,7 +322,12 @@
                 {:server-name server-name
                  :name (:name tool)
                  :description (:description tool)
-                 :parameters (:inputSchema tool)})
+                 :parameters (:inputSchema tool)
+                 ;; MCP tool annotations (incl. readOnlyHint) — the permission
+                 ;; gate downgrades read-only-hinted tools to auto-allow. Raw
+                 ;; tools/list JSON carries these; absent ⇒ treated as not
+                 ;; read-only (fail-closed). See mcp/permission.clj.
+                 :annotations (or (:annotations tool) (get tool "annotations"))})
               (:tools tools-list)))
       (catch Exception e
         (mulog/error ::list-tools-failed
@@ -592,7 +597,7 @@
         _ (swap! !server-tools-cache assoc server-name tools)
         registered
         (into #{}
-              (keep (fn [{:keys [name description parameters]}]
+              (keep (fn [{:keys [name description parameters annotations]}]
                       (cond
                         (not (safe-symbol-name? server-name))
                         (do (mulog/warn ::mcp-tool-skipped
@@ -621,7 +626,11 @@
                                          :input-schema input-schema
                                          :output-schema [:map]
                                          :mcp-server server-name
-                                         :mcp-tool name}
+                                         :mcp-tool name
+                                         ;; Carry the tool's MCP annotations so the
+                                         ;; permission gate can read :readOnlyHint
+                                         ;; off the registry entry (mcp/permission.clj).
+                                         :mcp-annotations annotations}
                                 fn-impl (make-mcp-wrapper-fn server-name name accepted-keys)
                                 v       (intern-mcp-tool-var id meta fn-impl)]
                             (swap! tool/!tool-defs assoc id
