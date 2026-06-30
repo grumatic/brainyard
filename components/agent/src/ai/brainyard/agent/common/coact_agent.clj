@@ -329,6 +329,15 @@ Your reasoning is captured automatically by the chain-of-thought layer — no se
 field is required. Pick exactly one of (1), (2), (3); the router treats populated-field-count > 1
 as a conflict and prefers code > tool > answer.")
 
+(def ^:private coact-role-tool-only
+  "You are an AI agent that answers questions by choosing ONE of two output channels per turn:
+(1) **tool-calls** — invoke registered tools via a JSON array (ReAct-style).
+(2) **answer** — finalize with a rich markdown answer. Non-blank `answer` TERMINATES the loop.
+Your reasoning is captured automatically by the chain-of-thought layer — no separate `thought`
+field is required. There is NO code-blocks channel for this agent — never emit fenced code to
+execute; reach for a registered tool instead. Pick exactly one of (1), (2); the router prefers
+tool > answer.")
+
 (def ^:private coact-channel-routing
   "## When to Use Which Channel
 - **tool-calls** for: one-shot RPC-style operations with a known tool — `slack$search`,
@@ -526,6 +535,15 @@ For MCP tools that aren't registered locally, use `call-tool` with `:server-name
 (call-tool \"fetch\" {:url \"…\"} :server-name \"fetch-server\")
 ```")
 
+(def ^:private coact-tools-overview-tool-only
+  "Every tool below is invoked via the JSON `tool-calls` channel (one-shot RPC, ReAct-style):
+```
+[{\"tool-name\": \"<id>\",
+  \"tool-args\": [{\"name\": \"<arg>\", \"value\": \"<val>\"}]}]
+```
+There is no code-blocks channel for this agent — to reach a tool not bound below, discover it with
+`list-tools` / `get-tool-info` and call it through `tool-calls`.")
+
 (def ^:private coact-tools-hotpath
   "These are the primitives to reach for unprompted — the rest of the registry is
 on-demand (see `### Sandbox Categories` and `### Discovery`).
@@ -613,9 +631,12 @@ anything outside the per-turn `### Agent Tools` block:
                            The static rules / format / hot-path / discovery blocks
                            are never disabled."
   [{:keys [sandbox-bindings agent-tools tool-context-overlay include-directory?
-           disabled-tiers]}]
+           disabled-tiers code-channel?]
+    :or {code-channel? true}}]
   (let [disabled (or disabled-tiers #{})
-        bindings? (seq sandbox-bindings)
+        ;; Tool-only agents have no code channel, so the sandbox function
+        ;; directory/index is irrelevant — suppress it regardless of bindings.
+        bindings? (and code-channel? (seq sandbox-bindings))
         ;; When the agent has a curated :agent-tools roster (the same vector
         ;; rendered in `### Agent Tools`), scope the compact index to those
         ;; symbols so a focused agent doesn't see the global registry's noise.
@@ -641,9 +662,12 @@ anything outside the per-turn `### Agent Tools` block:
                   tool-context-overlay)]
     (when (or function-directory function-index agent-tools-block overlay)
       (str/join "\n\n"
-                (cond-> ["## Tools" coact-tools-overview
-                         "### Hot-path primitives (reach for these first)"
-                         coact-tools-hotpath]
+                (cond-> (if code-channel?
+                          ["## Tools" coact-tools-overview
+                           "### Hot-path primitives (reach for these first)"
+                           coact-tools-hotpath]
+                          ;; Tool-only: JSON tool-calls overview, no sandbox hot-path.
+                          ["## Tools" coact-tools-overview-tool-only])
                   (and function-directory (not (str/blank? function-directory)))
                   (conj "### Function Directory (sandbox callables, by category)"
                         function-directory
@@ -922,14 +946,16 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                           dspy-action for per-section token attribution)."
   [{:keys [sandbox-bindings instruction agent-context tool-context agent-tools
            include-function-directory? system-info tools-disabled-tiers
-           brainyard-instructions project-memory execution-model]}
+           brainyard-instructions project-memory execution-model code-channel?]
+    :or {code-channel? true}}
    & {:keys [return-breakdown?]}]
   (let [tools-section (build-tools-section
                        {:sandbox-bindings     sandbox-bindings
                         :agent-tools          agent-tools
                         :tool-context-overlay tool-context
                         :include-directory?   include-function-directory?
-                        :disabled-tiers       tools-disabled-tiers})
+                        :disabled-tiers       tools-disabled-tiers
+                        :code-channel?        code-channel?})
         {:keys [user-instructions project-instructions]} brainyard-instructions
         ;; :execution-model is pre-resolved by execution-model-for (keyed
         ;; off the agent's :clj-backend config). Caller may still pass nil
@@ -937,14 +963,20 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; sandbox text in that case.
         exec-model (or execution-model execution-model-sandbox)
         sections
-        (cond-> {:role                         coact-role
-                 :execution-model              exec-model
-                 :channel-routing              coact-channel-routing
+        (cond-> {:role                         (if code-channel? coact-role coact-role-tool-only)
                  :tool-call-format             coact-tool-call-format
-                 :code-blocks-format           coact-code-blocks-format
-                 :sandbox-context-accessor     sandbox-context-accessor
                  :critical-rules               coact-critical-rules
                  :large-results-playbook       coact-large-results-playbook}
+
+          ;; Code-channel-only sections — dropped for a tool-only agent
+          ;; (react-agent). When present (default) they describe the SCI/bash/
+          ;; python/js sandbox, the three-channel routing, and the code-blocks
+          ;; envelope; none of that applies without a code channel.
+          code-channel?
+          (assoc :execution-model          exec-model
+                 :channel-routing          coact-channel-routing
+                 :code-blocks-format       coact-code-blocks-format
+                 :sandbox-context-accessor sandbox-context-accessor)
 
           (and system-info (not (str/blank? system-info)))
           (assoc :system-info system-info)
@@ -1353,7 +1385,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                                    :include-function-directory? :system-info
                                    :tools-disabled-tiers
                                    :brainyard-instructions :project-memory
-                                   :execution-model])
+                                   :execution-model :code-channel?])
                :return-breakdown? true)
           usr (coact-user-context
                (select-keys state [:conversation :previous-turns
@@ -1641,6 +1673,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                          ;; agent-clj-backend / run-clj-sandbox-block / run-clj-nrepl-block). No
                          ;; separate :execution-model knob.
                          :execution-model (execution-model-for agent)
+                         ;; Tool-only agents (react-agent pins :code-channel? false)
+                         ;; drop the code-blocks prompt sections. Default true.
+                         :code-channel? (boolean (get cfg-snap :code-channel? true))
                          :conversation           (:conversation st)
                          :previous-turns         previous-turns
                          :live-artifacts         resolved-artifacts
@@ -1713,6 +1748,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
              :existing-sandbox-reused (boolean existing-sandbox)
              :system-context   system-context
              :user-context     user-context
+             ;; Tool-only guard: when false, coact-has-code-blocks? ignores any
+             ;; emitted code so the router never routes to code-eval (react-agent).
+             :code-channel?    (boolean (get cfg-snap :code-channel? true))
              :prompt-token-breakdown prompt-token-breakdown
              :context-briefing briefing
              :iterations       []
@@ -2330,8 +2368,12 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
    case) and then to repair, where `coact-repair-action`'s :none-channel
    loop guard can escalate."
   [{:keys [st-memory]}]
-  (let [cb (:code-blocks @st-memory)]
-    (and (string? cb)
+  (let [m  @st-memory
+        cb (:code-blocks m)]
+    ;; Tool-only agents (:code-channel? false) never route to code-eval, even
+    ;; if the model emits a fence — it falls through to tool/answer/repair.
+    (and (get m :code-channel? true)
+         (string? cb)
          (not (str/blank? cb))
          (boolean (seq (clj-sandbox/extract-all-code-blocks-multi cb))))))
 
@@ -4476,9 +4518,14 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
 ;; ============================================================================
 
 (def ^:private coact-instruction
-  "Use the CoAct three-channel framework (tool-calls / code-blocks / answer)
-to answer the user's question. Channel rules, formats, and the truncated-results
-playbook are in the system context above.")
+  ;; Channel-count-agnostic on purpose: run-coact-derived merges this onto every
+  ;; derived agent, including the tool-only react-agent (:code-channel? false),
+  ;; whose system context advertises only tool-calls + answer. The authoritative
+  ;; channel list lives in the `## Role` / routing sections, which are gated by
+  ;; :code-channel?.
+  "Use your available output channels to answer the user's question. Channel
+rules, formats, and the truncated-results playbook are in the system context
+above.")
 
 ;; ============================================================================
 ;; Derived-agent dispatch helper

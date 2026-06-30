@@ -262,6 +262,44 @@
     (is (true? (get config/default-config :compact-agent-tools)))))
 
 ;; ============================================================================
+;; 3c. Code channel flag (:code-channel?) — the react-agent unification knob
+;; ============================================================================
+
+(deftest code-channel-flag-test
+  (testing ":code-channel? defaults true (every non-react agent unchanged)"
+    (is (true? (get config/default-config :code-channel?))))
+
+  (let [sysctx (resolve 'ai.brainyard.agent.common.coact-agent/coact-system-context)
+        code-keys [:execution-model :channel-routing :code-blocks-format
+                   :sandbox-context-accessor]
+        with-code (sysctx {:agent-tools [] :code-channel? true}  :return-breakdown? true)
+        no-code   (sysctx {:agent-tools [] :code-channel? false} :return-breakdown? true)]
+
+    (testing "default (code-channel? true) carries the code-blocks sections + 3-channel role"
+      (doseq [k code-keys]
+        (is (contains? (:sections with-code) k)
+            (str "code-channel? true must keep " k)))
+      (is (str/includes? (get-in with-code [:sections :role]) "three output channels")))
+
+    (testing "code-channel? false drops every code-blocks section + uses the tool-only role"
+      (doseq [k code-keys]
+        (is (not (contains? (:sections no-code) k))
+            (str "code-channel? false must drop " k)))
+      (is (str/includes? (get-in no-code [:sections :role]) "two output channels"))
+      ;; tool-calls format survives (still the live channel); large-results too.
+      (is (contains? (:sections no-code) :tool-call-format))))
+
+  (testing "build-tools-section is tool-only when code-channel? false (no sandbox hot-path)"
+    (let [build (resolve 'ai.brainyard.agent.common.coact-agent/build-tools-section)
+          tools [{:name "test-coact-echo" :description "Echo." :tool-fn-type :command
+                  :parameters {:properties {"text" {:type "string" :desc "t"}} :required ["text"]}}]
+          tool-only (build {:agent-tools tools :code-channel? false})]
+      (is (str/includes? tool-only "test-coact-echo")
+          "the agent-tools roster is still rendered")
+      (is (not (str/includes? tool-only "Hot-path primitives"))
+          "tool-only mode drops the sandbox hot-path table"))))
+
+;; ============================================================================
 ;; 4. Critical Rules & Prompt Content
 ;; ============================================================================
 

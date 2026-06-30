@@ -104,11 +104,13 @@
        :input-schema [:map [:status {:optional true} [:string {:desc \"Optional status filter\"}]]]
        :output-schema [:map [:tasks [:any {:desc \"Vector of task summaries\"}]]])
 
-     (deftool react-agent
-       \"ReAct agent\"
-       react-agent-fn
+     ;; Agents are normally defined via the `defagent` macro (which expands to
+     ;; deftool … :type :agent); this shows the underlying deftool shape.
+     (deftool my-agent
+       \"Example agent\"
+       my-agent-fn
        :type :agent
-       :bt-factory react-behavior-tree
+       :bt-factory my-behavior-tree
        :agent-tools {:tools [...]}
        :instruction \"...\")
 
@@ -134,8 +136,8 @@
         ;; same name (e.g. RAG passing :id, agent calls passing instance :id,
         ;; skills passing :description). Rename them to :_deftool$<key>
         ;; in the per-call merge map so tool-fns can still read their own
-        ;; registered meta when they need it (see react-skill$thinking-loop)
-        ;; while caller args dominate on the bare keys.
+        ;; registered meta when they need it (e.g. a skill reading its own
+        ;; registered :description) while caller args dominate on the bare keys.
         meta-keys [:id :type :description :input-schema :output-schema]
         merge-opts (reduce (fn [acc k]
                              (-> acc

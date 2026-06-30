@@ -92,6 +92,8 @@
                                 :doc "CoAct system-context: include the full sandbox function directory (categories + signatures for all bound callables) instead of a compact category index."}
    :compact-agent-tools        {:type "boolean" :default true
                                 :doc "CoAct system-context: render the `### Agent Tools` roster compactly (one line per tool) instead of full per-tool specs. ReAct ignores this (its roster is its menu)."}
+   :code-channel?              {:type "boolean" :default true
+                                :doc "CoAct: expose the code-blocks channel (SCI/bash/python/javascript sandbox). When false the agent is tool-only — the code-blocks prompt sections are dropped and the BT never routes code (react-agent pins this false). Default true keeps every other agent unchanged."}
    :max-context-tokens         {:type "integer" :default 128000
                                 :doc "RLM context-window size (tokens); the after-turn auto-compaction valve fires when estimated context exceeds this."}
    :max-output-chars           {:type "integer" :default 32000

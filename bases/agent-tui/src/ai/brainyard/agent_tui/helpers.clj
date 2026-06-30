@@ -57,11 +57,6 @@
        (some-> (System/getProperty "user.name") str/trim not-empty)
        user-id-fallback)))
 
-(defn resolve-react-bt
-  "Resolve react-behavior-tree from common.react-agent."
-  []
-  agent/react-behavior-tree)
-
 (defn setup-lm!
   "Auto-setup LM with provider defaults."
   [provider & {:keys [model]}]

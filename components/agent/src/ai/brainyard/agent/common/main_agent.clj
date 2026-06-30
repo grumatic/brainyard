@@ -170,8 +170,9 @@ ADVANCED FALLBACKS (rare — only when no specialist fits)
                    instruction). Reach for it only when the user
                    explicitly requests 'no routing' or when the question
                    is so generic that even the routing log can't decide.
-- react-agent    → classic ReAct loop. Niche — use when the user
-                   explicitly wants ReAct semantics.
+- react-agent    → CoAct with the code channel off (tool-only: tool-calls +
+                   answer, no SCI/bash/python/js). Niche — use when you want
+                   strictly tool-driven behavior with no code execution.
 
 Invoke each by direct kebab-case dispatch from a clojure fence:
     (plan-agent      {:question \"...\" :agent-context \"...\"})
