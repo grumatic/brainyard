@@ -370,6 +370,16 @@
      (or (get @!server-tools-cache server-name)
          (refresh-server-tools! server-name)))))
 
+(defn cached-tool-annotations
+  "MCP annotations (incl. :readOnlyHint) for a (server, tool) from the
+   connect-time cache ONLY — no live RPC, returns nil on a cache miss. Lets the
+   permission gate classify a tool's read-only-ness even when it isn't registered
+   as an `mcp$<server>$<tool>` binding (e.g. `:auto-register-tools false`, so the
+   tool is reachable only via the `mcp$tools :op :call` proxy)."
+  [server-name tool-name]
+  (some (fn [t] (when (= (:name t) tool-name) (:annotations t)))
+        (get @!server-tools-cache server-name)))
+
 (defn cached-all-server-tools
   "Tools across all connected servers, cache-first. `refresh?` forces live."
   ([] (cached-all-server-tools false))

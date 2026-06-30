@@ -36,6 +36,7 @@
    [ai.brainyard.agent.core.hooks :as hooks]
    [ai.brainyard.agent.core.session :as session]
    [ai.brainyard.agent.core.tool :as tool]
+   [ai.brainyard.agent.mcp.integration :as mcp-int]
    [clojure.string :as str]
    [ai.brainyard.mulog.interface :as mulog]))
 
@@ -61,10 +62,18 @@
   (get-in (tool/get-tool-defs :id (keyword (str "mcp$" server "$" tool)))
           [:meta :mcp-annotations]))
 
+(defn- tool-annotations
+  "MCP annotations for a (server, tool): the registered binding's :meta first,
+   else the connect-time tools/list cache (no live RPC). The cache fallback lets
+   a proxy-only / unregistered tool still be classified read-only."
+  [server tool]
+  (or (registry-annotations server tool)
+      (mcp-int/cached-tool-annotations server tool)))
+
 (defn- read-only?
   "True when the MCP tool declares `readOnlyHint`. Absent ⇒ false (fail-closed)."
   [server tool]
-  (let [ann (registry-annotations server tool)]
+  (let [ann (tool-annotations server tool)]
     (boolean (or (:readOnlyHint ann) (get ann "readOnlyHint")))))
 
 (defn- allowlisted?

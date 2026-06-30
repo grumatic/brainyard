@@ -9,6 +9,7 @@
    readOnlyHint / `:mcp-allow-tools` / `[:permissions :mode]` downgrades."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [ai.brainyard.agent.mcp.permission :as mp]
+            [ai.brainyard.agent.mcp.integration :as itg]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.tool :as tool]))
 
@@ -71,6 +72,16 @@
     (try
       (is (nil? (gate "mcp$ro$peek" {})))
       (finally (swap! tool/!tool-defs dissoc :mcp$ro$peek)))))
+
+(deftest read-only-hint-cache-fallback
+  (testing "an UNregistered tool (proxy-only) is classified read-only via the connect-time cache"
+    (swap! @#'itg/!server-tools-cache assoc "svc"
+           [{:server-name "svc" :name "peek"   :annotations {:readOnlyHint true}}
+            {:server-name "svc" :name "mutate" :annotations {:readOnlyHint false}}])
+    (try
+      (is (nil? (gate "mcp$svc$peek" {})) "cache readOnlyHint ⇒ allow")
+      (is (= :replace (:result (gate "mcp$svc$mutate" {}))) "cache non-read-only ⇒ gated")
+      (finally (swap! @#'itg/!server-tools-cache dissoc "svc")))))
 
 ;; ---------------------------------------------------------------------------
 ;; Allowlist downgrade
