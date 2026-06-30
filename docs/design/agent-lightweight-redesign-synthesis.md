@@ -189,6 +189,17 @@ prose string, inserted as a `:section` into both `coact-system-context` and
 `run-coact-derived`'s `merge-derived-tools`, so `update-file`, `edit$apply`,
 `todo$read`, `bash` are already bound everywhere. **Only the guidance is missing.**
 
+**Aside — the layered-memory steward already embodies this shape.**
+[memory-agent](./memory-agent-design.md) is the steward of the *other* memory
+(the L1/L2/L3 `IMemoryStore`), and it independently lands on the substrate rule:
+its reads (`memory$recall`/`stats`/`read`/`explain`) are ambient to every agent,
+while curation/writes are gated to the steward via a write-guard hook — *use is
+ambient; the lifecycle stays the specialist's.* It is also a **keep-the-mechanism**
+case like tool/meta/mcp (its artifacts are typed DB rows, not markdown, so there
+is no authoring chain to retire) and is reuse-aware by construction (content-hash
+dedupe, recall-before-write, `supersedes`). So the series *confirms* memory-agent
+rather than redesigning it; see its design doc §19 for the full analysis.
+
 **eval has no substrate** — and that closes the specialist set symmetrically.
 Casual self-assessment ("did I meet the goal?") already lives in the base loop's
 `goal-achieved` output every turn; formal criterion-by-criterion scoring against

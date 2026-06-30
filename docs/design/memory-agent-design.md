@@ -727,3 +727,123 @@ Five items are documented but not built. None are blocking the core "memory-agen
 **Kept.** `memory$essence-extract`, the `EssenceExtraction` signature, and the `:op :essence` playbook (now manual/REPL only). The always-on capture pipeline (`:enable-memory-capture`) is untouched.
 
 **Tests.** `memory_agent/essence_test.clj`'s `essence-extract-*` tests are unchanged; the `essence-capture-*` tests were replaced with `consolidation-cadence-*` and `session-end-flush-*` coverage (14 tests / 38 assertions in that ns; the four sibling memory-agent namespaces + capture-lifecycle stay green). A real-LLM end-to-end harness — `scripts/test-memory-auto-consolidate.sh` (`bb test:memory:auto`) — drives `by ask` with `BY_ENABLE_MEMORY_CONSOLIDATION=true` and asserts L2→L3 promotion happens automatically at agent close (no `by memory consolidate` call), with a gated-off negative control. Validated 9/9 against `claude-code:haiku`. The `BY_ENABLE_MEMORY_CONSOLIDATION` env-fn was added to `:enable-memory-consolidation` for this (mirrors `:enable-graph-memory`).
+
+---
+
+## 19. Relationship to the Redesign Synthesis
+
+memory-agent was **not** part of the
+[agent lightweight redesign series](./agent-lightweight-redesign-synthesis.md),
+and on review the series' central argument deliberately **does not apply** here —
+it *confirms* memory-agent's design rather than redesigning it. Recorded so the
+analysis isn't re-litigated.
+
+### 19.1 Authoring: a "keep the mechanism" case (like tool/meta/mcp)
+
+The series' core move is *"retire the micro-tools that make the LLM **construct** a
+structured artifact; let it author the markdown directly."* That move targets
+agents whose artifact is a **markdown document** (a plan/explore/eval dossier)
+that a construct-a-map → render-YAML helper chain was needlessly mediating.
+
+memory-agent's artifacts are not documents — they are **typed rows in a
+SQLite-backed `IMemoryStore`** (layer · kind · confidence · tags · sources ·
+content-hash `entry_id` · FTS5 index). The `memory$*` write commands
+(`write`/`promote`/`forget`/`keep!`/`archive!`/`consolidate`/`sweep-l2`) are
+deterministic store operations with Malli-validated shapes — exactly the *good
+kind* of mechanism the synthesis says to **keep**. There is no "write prose
+instead" alternative: the structure *is* the data model, not incidental
+serialization. So memory-agent is a **keep-the-mechanism** exemplar alongside
+tool-agent / meta-agent / mcp-agent, not a lightweight-authoring candidate.
+
+The judgment half is likewise already in the synthesis-approved shape: the three
+DSPy signatures (`EssenceExtraction`, `FactVerification`, `LlmReducer`, §8) front
+the LLM-inherent decisions and return Malli-checked structured output — *judgment
+via the LLM, mechanism via typed tools.*
+
+### 19.2 memory-agent IS the substrate precedent's steward
+
+The synthesis builds its whole substrate theory on **Project Memory** as the
+precedent ("this isn't new machinery — it copies the existing Project Memory
+protocol"; the skill substrate is described as "a cousin … skills = procedures,
+memory = facts"). memory-agent matches the substrate rule on its own terms:
+
+- **Reads are ambient** — `memory$recall` / `memory$stats` / `memory$read` /
+  `memory$explain` / `memory$keywords` are open to every agent (§5.1), so
+  "consult the store before reinventing" is already a fleet-wide capability.
+- **Writes/curation are gated to the steward** — the `:agent.tool-use/pre`
+  write-guard hook (§5.3, §9) confines `write`/`promote`/`forget`/`consolidate`/
+  `sweep`/`verify` to memory-agent.
+
+That is precisely the synthesis's *"use is ambient; the lifecycle stays the
+specialist's"* shape — nothing to add. If anything, memory-agent is the concrete
+steward behind the precedent the rest of the substrates were modeled on.
+
+### 19.3 Already maximally reuse-aware
+
+The series' reuse-via-references pillar (don't redo what's already on disk;
+explore §5.0) is baked into memory-agent **by construction**: content-hash
+`entry-id-for` dedupe, upsert/read-after-write on duplicate key (§18.2 dec. 5),
+recall-before-write (§7.2), and the `supersedes` / `:op :verify-fact` machinery.
+There is no missing prior-art gate like rlm-agent's
+([rlm §15](./rlm-agent-design.md)) — memory-agent is arguably the most
+reuse-aware agent in the fleet.
+
+### 19.4 The one place the pattern transfers
+
+The only surface where the explore pattern has purchase is the **deferred
+working-area artifact files** (`consolidations/`, `purges/`, `verifications/`,
+§4.1 / §18.3 item 4), which today are unbuilt — the LLM stashes its summary in
+the `:answer` block. *If* those get built, author them as direct markdown from a
+fixed template + add a cheap discovery seam, exactly as explore does. Specified
+as a proposal in §20; it is small, additive, and contingent on building the
+deferred artifacts.
+
+---
+
+## 20. Proposed Next Step — Template-Authored Working-Area Artifacts + `memory$find` (NOT yet built)
+
+> **Status:** Proposal. The single place the
+> [redesign synthesis](./agent-lightweight-redesign-synthesis.md) improves
+> memory-agent. Borrows the pattern shipped in
+> [`explore-agent-design.md`](./explore-agent-design.md) §5.2/§10. Contingent on
+> building the deferred per-run artifact files (§18.3 item 4) — independent of the
+> DB store, which is unaffected.
+
+### 20.1 Why
+
+§18.3 item 4 defers the on-disk audit trail (`consolidations/<ts>-<slug>.md`,
+`purges/<ts>.edn`, `verifications/<ts>-<fact-id>.md`). The structured `:answer`
+block is fine until log-grep gets unwieldy; once these land, the agent's
+*commentary on the DB* becomes a small corpus — and the explore lesson is that a
+write-only audit pile wants a read seam, or nobody consults it.
+
+### 20.2 What to add (mirrors explore)
+
+1. **Author the markdown directly from a fixed template** (frontmatter + body),
+   via `memory$state-write` to the §4.1 paths — not through a construct-a-map
+   helper. Frontmatter carries `op`, `created`, `scope`, `counts`
+   (`{:written :promoted :tombstoned …}`), `session_id`, and a one-line
+   `summary`; the body is the human-readable consolidation/purge/verification
+   narrative. This keeps the artifact LLM-fluent and the §12 output map remains
+   the machine contract.
+2. **A read-only `memory$find` discovery seam** over the working-area corpus
+   (INDEX-first, per-file frontmatter fallback), plus a cheap
+   `memory$read-frontmatter` — the exact shape of `explore$find` /
+   `explore$read-frontmatter`. Lets the agent (and operators) answer "what did
+   the last purge tombstone?" without re-deriving it from the DB.
+3. **An append-only `INDEX.md`** under `.brainyard/agents/memory-agent/<user-id>/`
+   (the §4.1 directory already exists for `INDEX.md`), one line per op, newest
+   first — the navigable spine of the audit trail.
+
+### 20.3 Scope and non-goals
+
+Additive and mechanism-only: a template-fill writer + two read seams in
+`memory_agent/commands.clj` (or `working_area.clj`), and three artifact-writing
+call sites in the `:consolidate` / `:purge` / `:verify-fact` ops. It does **not**
+touch the `IMemoryStore`, the DSPy signatures, the write-guard gating, or the
+ambient-read surface. `freshness:` is **not** needed here — these are immutable
+event records (an op that happened at time T), not cacheable findings, so the
+explore freshness rule doesn't carry over; only the template-authoring and the
+`find`/`read-frontmatter` discovery seams do. Verification mirrors explore's
+reader tests: write one artifact per op, assert frontmatter parses and
+`memory$find` surfaces it.
