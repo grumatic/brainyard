@@ -26,7 +26,7 @@
    list-templates / load-template / install-starters / verdict-outcome. The
    structured-construction helpers are retired.
 
-   See docs/design/workflow-agent-lightweight-redesign.md for the rationale."
+   See docs/design/workflow-agent-design.md for the rationale."
   (:require [ai.brainyard.agent.core.tool :refer [defagent]]
             [ai.brainyard.agent.common.coact-agent :as coact]
             [ai.brainyard.agent.common.commands :as common-cmds]

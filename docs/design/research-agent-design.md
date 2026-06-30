@@ -1,31 +1,54 @@
 # Research-Agent — LLM-Driven Multi-Specialist Research Loop (CoAct-derived)
 
-> **Status:** Shipped + revised (revision 2 — refreshed for the four-agent pipeline redesign)
-> **Scope:** `components/agent/src/ai/brainyard/agent/common/research_agent.clj` + `research.clj`
-> **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
-> **Replaces:** `autoresearch` (now fully retired — the `autoresearch/` directory has been removed; see §14)
-> **Related reading:** `docs/CoAct.md`, `docs/explore-agent-design.md`, `docs/rlm-agent-design.md`, `docs/plan-agent-design.md`, `docs/todo-agent-design.md`, `docs/exec-agent-design.md`, `docs/eval-agent-design.md`, `docs/edit-agent-design.md`
+> **Status:** Shipped. Four-agent pipeline + dossier handoff shipped (2026-05);
+> the lightweight authoring redesign shipped (2026-06). This doc is the as-built
+> reference — the former `research-agent-lightweight-redesign.md` has been folded
+> in here and removed.
 >
-> **As-built (2026-06):** Two design-vs-shipped divergences run through this whole doc:
-> 1. **Specialists are reached by DIRECT kebab-case dispatch, not `call-tool`.** The shipped
->    instruction/tool-context invoke `(plan-agent {…})`, `(exec-agent {…})`, etc. directly in a
->    clojure fence (the defagents self-register as callable sandbox fns). Wherever this doc says
->    "via `call-tool`", read "via the direct kebab-case call". `call-tool` is still bound (for
->    generic registry access) but is not the specialist dispatch path.
-> 2. **`autoresearch` is gone, not coexisting.** The migration in §14 completed: there is no
->    `components/agent/src/ai/brainyard/agent/autoresearch/` and no `docs/AUTORESEARCH.md`.
->    Benchmark mode (§10) was **never implemented** — the shipped Hard Rule 7 says hill-climbing
->    is "planned for a later milestone".
-
-## Revision history
-
-- **rev 1 (2026-04)** — initial design proposal; five specialists (explore / plan / todo / exec / eval); plan + todo bodies at `.brainyard/plans/<slug>.md` / `.brainyard/todos/<slug>.md`; evidence threaded via `:answer` strings and slug-shaped `:agent-context`.
-- **rev 2 (2026-05)** — refreshed after the four-agent pipeline (plan/todo/exec/eval) was redesigned with pre/post-flight gating + dossier handoff (see §10), and after edit-agent was added as a sixth reachable specialist for safe one-off edits. Headline changes:
-  - **Six specialists**, not five. edit-agent joins the roster; reach it via move I (UPDATE) for single-edit work that doesn't warrant a plan/todo arc.
-  - **Sibling-agent storage migrated** to per-agent directories: `.brainyard/agents/plan-agent/plans/`, `.brainyard/agents/todo-agent/todos/`, plus `dossiers/` and `verdicts/` siblings. Legacy paths are dual-read for one release.
-  - **Dossier handoff is the cross-agent contract.** Each specialist emits `Saved dossier: <path>` (plus the body file's `Saved plan:` / `Saved todo:` / `Saved verdict:` / `Saved edit:`). Pre-flight gates on each downstream specialist consume the upstream dossier — research-agent threads paths between them instead of stringy slugs.
-  - **Read-only sibling dossier helpers** (`plan$read-dossier`, `todo$read-dossier`, `exec$read-dossier`, `eval$read-dossier`, `edit$read-record`) are cherry-picked into research-agent's roster so it can parse upstream frontmatter cheaply for data-driven move decisions. Write-side dossier helpers are NOT bound — sibling writes go through `call-tool`.
-  - **Decision heuristics are now data-driven.** When eval-agent returns NOT_ACHIEVED, its `score.recommendations` field names the next agent per criterion. research-agent reads that instead of inferring from the answer text.
+> **As-built (verify against `common/research_agent.clj`, `common/research.clj`):**
+> - **Structured-authoring helpers are retired.** `research$bootstrap` (with its
+>   `:acceptance [{:id :text :status}]` vector-of-maps), `research$update-status`,
+>   `research$write-verdict`'s frontmatter emission, `research$append-log`, and
+>   `research$index-append` are **gone**. The agent now `bash mkdir -p`s the
+>   dossier dir and `write-file`s `purpose.md` / `acceptance.md` / `direction.md`
+>   / `dossier.md` / `verdict.md` directly from templates; appends `findings.log`
+>   and `INDEX.md` with `write-file :append`. Only three READ/DERIVE seams
+>   survive in `research.clj`: `research$id`, `research$resume?`,
+>   `research$verdict-outcome` (§8).
+> - **research-agent already binds `write-file` / `update-file`.** The file tools
+>   are bound with **no `remove` clause**, so the move to direct authoring needed
+>   **no roster change** — only the instruction + the shrunk helpers namespace
+>   changed (§5, §10).
+> - **The move state machine stays LLM judgment.** Orchestration — pick a move
+>   (EXPLORE / PLAN-AUTHOR / DECOMPOSE / EXECUTE / EVALUATE / SYNTHESIZE / CLARIFY
+>   / FINALIZE / UPDATE), dispatch the specialist by **direct kebab-case** name,
+>   read its dossier to decide the next move — is untouched (§6, §7). Specialists
+>   are reached by direct `(plan-agent {…})` / `(exec-agent {…})` calls, **not**
+>   `call-tool` (still bound for generic registry access, but not the dispatch
+>   path).
+> - **Acceptance tracking reuses the todo substrate.** Criteria-with-status is a
+>   markdown **checklist** (`- [ ] a1 (open) — …`), flipped index-free by stable
+>   id `aN` via `update-file`, parsed back by the read seam — the same substrate
+>   the todo redesign installs in the base agents (§5).
+> - **An `:agent.ask/finalize` auto-finalize hook** derives the outcome, writes
+>   `verdict.md` + appends `INDEX.md`, and injects an absent
+>   `Saved research dossier:` line when the LLM skips the FINALIZE step (common on
+>   smaller models). Strict trigger: only fires when the dossier exists AND no
+>   criterion is `:open` AND `verdict.md` doesn't already exist (§10.1).
+> - `autoresearch` is **gone** (§14): no
+>   `components/agent/src/ai/brainyard/agent/autoresearch/`, no
+>   `docs/AUTORESEARCH.md`. Benchmark mode (§10) was **never implemented** — the
+>   shipped Hard Rule 7 says hill-climbing is "planned for a later milestone".
+>
+> **Scope:** `components/agent/src/ai/brainyard/agent/common/research_agent.clj`,
+> `components/agent/src/ai/brainyard/agent/common/research.clj`
+> **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
+> **Supersedes:** `autoresearch` (deleted)
+> **Related reading:** `docs/CoAct.md`, `docs/design/explore-agent-design.md`,
+> `docs/design/rlm-agent-design.md`, `docs/design/plan-agent-design.md`,
+> `docs/design/todo-agent-design.md`, `docs/design/exec-agent-design.md`,
+> `docs/design/eval-agent-design.md`, `docs/design/edit-agent-design.md`,
+> `docs/design/agent-lightweight-redesign-synthesis.md`
 
 ---
 
@@ -47,11 +70,12 @@
 
 1. **Owns one durable artifact** — a research dossier under `.brainyard/agents/research-agent/<research-id>/` capturing *purpose*, *direction*, *acceptance criteria*, *findings log*, and *handoff state* across turns and across calls to specialist agents. This is the cross-agent context carrier.
 2. **Uses CoAct's loop** — no new BT. The LLM picks the next move per iteration: explore, plan, decompose, execute, evaluate, refine, or finish.
-3. **Reaches the six specialists by direct kebab-case dispatch** — `(explore-agent {...})`, `(plan-agent {...})`, `(todo-agent {...})`, `(exec-agent {...})`, `(eval-agent {...})`, `(edit-agent {...})`. Every defagent registers in the same tool registry and is auto-bound as a callable sandbox fn, so dispatch is flat. **As-built:** the proposal called this through `call-tool`; the shipped code invokes the defagents directly.
+3. **Reaches the six specialists by direct kebab-case dispatch** — `(explore-agent {...})`, `(plan-agent {...})`, `(todo-agent {...})`, `(exec-agent {...})`, `(eval-agent {...})`, `(edit-agent {...})`. Every defagent registers in the same tool registry and is auto-bound as a callable sandbox fn, so dispatch is flat. (`call-tool` is still bound for generic registry access, but is not the specialist dispatch path.)
 4. **Threads the dossier path through `:agent-context`** so each specialist receives the same purpose/direction/acceptance — solving defect 1 without changing the specialists' contracts.
-5. **Stops when the LLM judges the goal achieved or definitively unreachable**, bounded by an iteration cap. Hill-climbing scoring (the autoresearch hallmark) becomes optional — kept for benchmark-style evaluation, removed from the default user-facing loop.
-6. **Inherits CoAct's full BT, sandbox, router, accumulator** — no substrate changes. Whole feature is one new agent file plus an optional helpers namespace, mirroring `rlm-agent` / `explore-agent`.
-7. **Coexists with autoresearch** during a staged migration (§14), then retires it.
+5. **Authors the dossier as markdown directly.** Bootstrap `bash mkdir -p`s the dir and `write-file`s `purpose.md` / `acceptance.md` / `direction.md` / `dossier.md` from templates; the verdict from a template. There is no structured-construction helper chain — orchestration is judgment (which the LLM owns) and persistence is prose (which the LLM writes), so the only things kept mechanical are the deterministic resume key, the resume/acceptance parser, and the verdict-outcome derivation + `:achieved` guard (§5, §8).
+6. **Stops when the LLM judges the goal achieved or definitively unreachable**, bounded by an iteration cap. Hill-climbing scoring (the autoresearch hallmark) is an opt-in mode, removed from the default user-facing loop — and not yet implemented (§10).
+7. **Inherits CoAct's full BT, sandbox, router, accumulator** — no substrate changes. Whole feature is one agent file plus a slim read/derive helpers namespace, mirroring `rlm-agent` / `explore-agent`.
+8. **Retired autoresearch.** The staged migration (§14) completed — `autoresearch/` is gone.
 
 ---
 
@@ -59,14 +83,15 @@
 
 1. **One coherent loop, not a hard-wired pipeline.** The pipeline specialists (plan / todo / exec / eval / update) plus explore-agent become *callable subroutines*, not stages of a fixed sequence. The research-agent is the only thing that sees the whole research arc.
 2. **Durable research dossier.** Cross-agent state lives in a directory of markdown + EDN files, not in slugs or transient `:agent-context` strings. Every specialist call writes into the dossier; every subsequent specialist call reads from it.
-3. **The LLM owns sequencing.** Should we re-plan? Decompose more? Re-explore? Mark eval criteria as descoped? These are reasoning calls, not BT branches. The instruction names the decision points; the LLM picks the next move.
-4. **Small tool registry.** The agent reaches the world through (a) the six specialists via `call-tool` (explore / plan / todo / exec / eval / update), (b) basic CoAct file/shell/sandbox primitives for dossier maintenance, (c) read-only dossier-helper cherry-picks from each sibling (`plan$read-dossier`, `todo$read-dossier`, `exec$read-dossier`, `eval$read-dossier`, `edit$read-record`), (d) `query$llm` for synthesis. That's it.
-5. **Acceptance criteria are first-class.** They are written into the dossier on the first iteration, threaded through every specialist call, and re-evaluated explicitly before the agent considers terminating.
-6. **Bounded but generous iteration cap.** Default 30 iterations (vs. CoAct's 20). Research workflows have legitimate reason to take more steps than a single-question agent.
-7. **Honest termination.** The agent can finish in one of three states: `:achieved`, `:partial`, or `:abandoned` — and each has explicit conditions. No silent timeouts that look like answers.
-8. **No clone-self recursion.** `query$clone` is excluded — calling research-agent from inside research-agent is the depth-2 anti-pattern. Calling *other* agents (explore / plan / todo / exec / eval) via `call-tool` is flat dispatch and IS the design.
-9. **Resumable.** The dossier is the only state of record. A research run interrupted mid-flight (TUI exit, max iterations, user pause) can be resumed by passing the research-id on a later turn and reading the dossier — no in-memory state lost.
-10. **Optional benchmark mode.** The autoresearch hill-climbing score (LLM judge × 0.5 + pattern × 0.3 + efficiency × 0.2) is preserved as an *optional* observability layer, not a control mechanism. Keeps the autoresearch eval corpus and the `:expected-patterns` test program useful without forcing every research run to be a tournament.
+3. **The LLM owns sequencing — orchestration is judgment, not mechanism.** Should we re-plan? Decompose more? Re-explore? Mark eval criteria as descoped? These are reasoning calls, not BT branches or structured tool calls. The instruction names the decision points; the LLM picks the next move and dispatches the specialist by name. This is the heart of the agent and the redesign left it **untouched**.
+4. **Authoring is templated markdown; reading stays typed.** The dossier files are written directly from templates (no vector-of-maps construction, no frontmatter-emitting helper); the machine-readable bits survive as *frontmatter/checklist the model writes* plus a *parser that reads them back*. This is the cross-agent principle in `agent-lightweight-redesign-synthesis.md`: separate *judgment* (authoring prose, choosing moves) from *mechanism* (parsing, derivation, the verdict guard). For an orchestrator, "reading" is the whole job, so the typed read seams are sacrosanct.
+5. **Small tool registry.** The agent reaches the world through (a) the six specialists by direct kebab-case dispatch (explore / plan / todo / exec / eval / update), (b) basic CoAct file/shell/sandbox primitives for dossier maintenance — already bound, no `remove` clause, (c) read-only dossier-helper cherry-picks from each sibling (`plan$read-dossier`, `todo$read-dossier`, `exec$read-dossier`, `eval$read-verdict`, `edit$read-record`), (d) `query$llm` for synthesis, (e) the three surviving `research$*` read/derive seams. That's it.
+6. **Acceptance criteria are first-class — and a checklist.** They are written into the dossier on the first iteration as a markdown checklist (the shared todo substrate, §5), threaded through every specialist call, flipped index-free by stable id `aN`, and re-evaluated explicitly before the agent considers terminating. Research-agent's acceptance tracking is an *instance* of the todo substrate — one fewer bespoke mechanism in the codebase.
+7. **Bounded but generous iteration cap.** Default 30 iterations (vs. CoAct's 20). Research workflows have legitimate reason to take more steps than a single-question agent.
+8. **Honest termination, guarded.** The agent can finish in one of three states: `:achieved`, `:partial`, or `:abandoned` — and each has explicit conditions. The `:achieved` guard (`research$verdict-outcome` refuses `:achieved` unless every criterion is `:satisfied`/`:descoped`) is the one load-bearing validator kept from the old `write-verdict`, now a read-side check the model calls before writing `verdict.md`. No silent timeouts that look like answers.
+9. **No clone-self recursion.** `query$clone` is excluded — calling research-agent from inside research-agent is the depth-2 anti-pattern. Calling *other* agents (explore / plan / todo / exec / eval / update) by direct kebab-case dispatch is flat and IS the design.
+10. **Resumable.** The dossier is the only state of record. A research run interrupted mid-flight (TUI exit, max iterations, user pause) can be resumed by passing the research-id on a later turn and reading the dossier — no in-memory state lost.
+11. **Optional benchmark mode (not yet built).** The autoresearch hill-climbing score (LLM judge × 0.5 + pattern × 0.3 + efficiency × 0.2) is reserved as an *opt-in* observability layer, not a control mechanism — planned for a later milestone (§10).
 
 ---
 
@@ -103,7 +128,7 @@ coact-agent  (parent — full BT, sandbox, router, accumulator)
 | "Drive the existing todo Z to completion" | exec-agent | Already plan + todo dossiers exist. |
 | "Score whether todo Z met plan Z's acceptance" | eval-agent | Pure verdict; reads upstream dossiers. |
 | "Research question X end-to-end: figure out the right approach, plan it, execute it, evaluate it." | **research-agent** | The orchestration layer threading the dossiers. |
-| "Run the autoresearch test suite to score model X on N questions" | autoresearch (during migration) → research-agent + benchmark mode | Hill-climbing eval, not a user research turn. |
+| "Run a test suite to score model X on N questions" | research-agent benchmark mode (planned; §10) | Hill-climbing eval, not a user research turn. |
 
 Rule: **research-agent is for end-to-end research turns where the user wants the system to drive multi-specialist work coherently**. The six specialists (explore / plan / todo / exec / eval / update) own their respective domains; research-agent owns the *thread* through them.
 
@@ -144,7 +169,14 @@ The `artifacts/` directory's symlink layout mirrors the per-agent storage that l
 
 ### 4.2 `dossier.md` — The Cross-Agent Context Carrier
 
-The single document every specialist reads. YAML frontmatter + body:
+The single document every specialist reads. YAML frontmatter + body. **As-built,
+acceptance criteria do NOT live inline in this frontmatter** — they live in a
+sibling `acceptance.md` markdown checklist (§5), the shared todo substrate, so
+they can be flipped index-free with `update-file`. The illustrative block below
+shows the acceptance criteria *in situ* for readability; the real
+`dossier.md` carries `purpose` / `direction` / `artifacts` / `status` /
+`last_iteration` and points at `acceptance.md`. (The pre-redesign inline
+`acceptance:` block is still dual-read by `research$resume?` for old threads.)
 
 ```markdown
 ---
@@ -155,16 +187,11 @@ status: in_progress           # in_progress | achieved | partial | abandoned
 purpose: >
   Reduce `bb tui` cold-start latency from ~2.5s to under 1.0s without
   regressing the agent-tui-app native binary's startup (currently 0.5s).
-acceptance:
-  - id: a1
-    text: "REPL-mode `bb tui` cold start <= 1.0s on M-series Mac"
-    status: open                # open | satisfied | partial | descoped | contradicted
-  - id: a2
-    text: "Native binary cold start does NOT regress beyond 0.6s"
-    status: open
-  - id: a3
-    text: "Documented profiling reproducer + root-cause writeup"
-    status: open
+# acceptance criteria live in acceptance.md (the §5 checklist); shown here
+# inline for readability only:
+#   - [ ] a1 (open) — REPL-mode `bb tui` cold start <= 1.0s on M-series Mac
+#   - [ ] a2 (open) — Native binary cold start does NOT regress beyond 0.6s
+#   - [ ] a3 (open) — Documented profiling reproducer + root-cause writeup
 direction:
   - "First narrow down which subsystems dominate startup (probably classloader + Integrant init)"
   - "Then evaluate fix candidates: AOT, lazy init, deferred ns loads"
@@ -223,14 +250,14 @@ calls_log: findings.log
 |---|---|---|
 | `research_id` | string | Stable identifier. |
 | `purpose` | string | Verbatim from `purpose.md`. Never re-written. |
-| `acceptance` | vector of `{id, text, status}` | First-class, status updates land here. |
+| `acceptance` | markdown checklist in `acceptance.md` (`- [ ] aN (status) — text`) | First-class; status flipped index-free by stable id `aN` via `update-file` (the shared todo substrate, §5). Parsed back by `research$resume?` / `research$verdict-outcome`. Legacy inline-frontmatter form is dual-read. |
 | `direction` | vector of strings | Stratagem; revisions logged in body. |
 | `artifacts` | map | Pointers to specialists' outputs. Keys: `explorations` (vec), `plan_slug`, `plan_path`, `plan_dossier`, `todo_slug`, `todo_path`, `todo_dossier`, `exec_dossiers` (vec), `verdict_path`, `eval_dossiers` (vec), `edits` (vec). All paths are repo-relative; the dossier helpers (`plan$read-dossier` etc.) are bound here for cheap frontmatter parse. |
 | `status` | enum | Current research-agent state machine. |
 | `last_iteration` | int | For resume sanity-check. |
 | `calls_log` | string | Path to `findings.log`. |
 
-The `acceptance.status` field is the bookkeeping the LLM updates as criteria are demonstrably met or descoped. Eval-agent reports back into this field on every call.
+The acceptance checklist's per-criterion status is the bookkeeping the LLM updates (via an index-free `update-file` on the `aN` line) as criteria are demonstrably met or descoped. eval-agent's verdict feeds these flips on every EVALUATE.
 
 ### 4.3 `findings.log` — Append-Only Call Log (NDJSON)
 
@@ -323,17 +350,19 @@ Append-only, newest first, one line per research run:
   [ai.brainyard.agent.common.todo      :as todo-helpers]
   [ai.brainyard.agent.common.exec      :as exec-helpers]
   [ai.brainyard.agent.common.eval      :as eval-helpers]
-  [ai.brainyard.agent.common.update    :as edit-helpers]
+  [ai.brainyard.agent.common.edit      :as edit-helpers]
   [ai.brainyard.agent.common.research  :as research]
   [ai.brainyard.agent.task.commands    :as task-cmds])
 
 (def research-tools
   (vec (distinct
          (concat
-           ;; Filesystem — for research-agent's OWN dossier dir.
-           ;; Hard Rule 2 forbids writes to sibling dossier dirs.
+           ;; Filesystem — for research-agent's OWN dossier dir. Bound with
+           ;; NO `remove` clause, so write-file/update-file author the dossier
+           ;; markdown directly (no construction helpers). Hard Rule 2 forbids
+           ;; writes to sibling dossier dirs.
            common-tools/file-tools          ; read-file, write-file, update-file, grep, fetch-url
-           common-tools/shell-tools         ; bash (mkdir, ls, ln -s for artifacts/)
+           common-tools/shell-tools         ; bash (mkdir -p, ls, ln -s for artifacts/)
 
            ;; Web — direct one-off lookups; explore-agent for non-trivial discovery
            common-tools/web-tools           ; web-search, fetch-url
@@ -341,24 +370,29 @@ Append-only, newest first, one line per research run:
            ;; Read-only sibling dossier helpers — cherry-picked. Let
            ;; research-agent parse upstream dossier frontmatter cheaply
            ;; for data-driven move decisions. Write-side helpers are NOT
-           ;; bound — sibling writes go through call-tool.
+           ;; bound — sibling writes go through the specialist directly.
            [#'plan-helpers/plan$read-dossier
             #'todo-helpers/todo$read-dossier
             #'exec-helpers/exec$read-dossier
-            #'eval-helpers/eval$read-dossier
+            #'eval-helpers/eval$read-verdict
             #'edit-helpers/edit$read-record]
-
-           ;; Bookkeeping
-           common-tools/bootstrap-tools     ; list-tools, get-tool-info, search
-           common-tools/invocation-tools    ; call-tool
 
            ;; Sub-LLM synthesis (flat only)
            [#'common-cmds/query$llm]        ; intentionally excludes #'query$clone
 
+           ;; Bookkeeping
+           common-tools/bootstrap-tools     ; list-tools, get-tool-info, search
+           common-tools/invocation-tools    ; call-tool (generic registry access)
+
            ;; Background jobs (rarely needed; specialists own their long ops)
            task-cmds/task-commands
 
-           ;; research$* helpers
+           ;; Runtime config — :max-iterations tuning
+           common-cmds/runtime-commands
+
+           ;; research$* READ/DERIVE seams ONLY — id / resume? / verdict-outcome.
+           ;; The structured-construction helpers are RETIRED; the dossier
+           ;; markdown is authored via the already-bound file tools.
            research/research-helpers))))
 
 ;; The SIX specialist agents (explore / plan / todo / exec / eval /
@@ -367,13 +401,14 @@ Append-only, newest first, one line per research run:
 ;; listed in :agent-tools to be reachable; they ARE in the registry.
 ```
 
-The six specialist agents (`explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `edit-agent`) are reached via direct kebab-case dispatch — `(explore-agent {...})`, `(plan-agent {...})`, etc. — from a clojure fence, or via the `tool-calls` channel. The instruction's job is to *teach the LLM when to reach for each*. **As-built:** the proposal routed these through `(call-tool "<agent-name>" {...})`; the shipped instruction calls the auto-bound defagent fns directly.
+The six specialist agents (`explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `edit-agent`) are reached via direct kebab-case dispatch — `(explore-agent {...})`, `(plan-agent {...})`, etc. — from a clojure fence, or via the `tool-calls` channel. The instruction's job is to *teach the LLM when to reach for each*. (`call-tool` remains bound for generic registry access but is not the specialist dispatch path.)
 
-What is *deliberately bound* (and was not in revision 1):
+What is *deliberately bound*:
 
 | Bound | Why |
 |---|---|
-| `plan$read-dossier`, `todo$read-dossier`, `exec$read-dossier`, `eval$read-dossier`, `edit$read-record` | Read-only cherry-picks. Let research-agent parse upstream sibling dossier frontmatter cheaply (~700 bytes/read) for data-driven move decisions — most importantly, `eval$read-dossier` returns `score.recommendations` which drives heuristics 6/7/8 (re-plan / re-decompose / resume). Write-side helpers from the same vectors are NOT bound. |
+| `plan$read-dossier`, `todo$read-dossier`, `exec$read-dossier`, `eval$read-verdict`, `edit$read-record` | Read-only cherry-picks. Let research-agent parse upstream sibling dossier frontmatter cheaply (~700 bytes/read) for data-driven move decisions — most importantly, `eval$read-verdict` returns `score.recommendations` which drives heuristics 6/7/8 (re-plan / re-decompose / resume). Write-side helpers from the same vectors are NOT bound. |
+| `research$id`, `research$resume?`, `research$verdict-outcome` | The three surviving READ/DERIVE seams — a deterministic resume key, the resume/acceptance-checklist parser, and the verdict-outcome derivation + `:achieved` guard. Everything authoring-shaped (`bootstrap`/`update-status`/`write-verdict`/`append-log`/`index-append`) is retired (§8, §10). |
 
 What is *deliberately omitted*:
 
@@ -396,271 +431,75 @@ The shrinkage of `plan$*` / `todo$*` / `skills$*` / `query$clone` write paths is
 
 ## 6. Instruction (System Prompt Body)
 
-Layered on top of `coact-agent`'s instruction by `run-coact-derived`.
+Layered on top of `coact-agent`'s instruction by `run-coact-derived`. The
+authoritative text lives in `research_agent.clj` under `(def ^:private
+instruction …)`; this section captures the section structure + the load-bearing
+contracts as-built. The redesign changed only the *persistence* steps — the
+six-specialist roster, the move state machine, the dossier-threading discipline,
+and the hard rules are intact.
 
-> The full instruction body lives in `components/agent/src/ai/brainyard/agent/common/research_agent.clj` under `(def ^:private instruction …)`. This section reproduces the section headers + key contracts for reviewers; consult the source for the authoritative current text.
+The instruction's sections (in order):
 
-```text
-You are a RESEARCH-agent. You drive an end-to-end research thread by composing
-six specialist agents — explore, plan, todo, exec, eval, update — through
-CALL-TOOL, maintaining a durable research dossier in
-.brainyard/agents/research-agent/<id>/ that threads PURPOSE, DIRECTION, and
-ACCEPTANCE CRITERIA across every specialist call. You decide the order. You
-decide when to stop. The CoAct loop and the dossier are your only fixed
-scaffolding.
-
-────────────────────────────────────────────────────────────────────────────
-THE SIX SPECIALISTS (reachable via call-tool — flat, NOT recursive)
-────────────────────────────────────────────────────────────────────────────
-Each specialist (except explore-agent and edit-agent) ships a redesigned
-pre/post-flight gated pipeline. Pre-flight may emit GO / GATHER / REFUSE;
-post-flight may emit PASS / HOLD. The dossier they emit carries the
-verdicts + supporting evidence in machine-readable YAML frontmatter —
-read it instead of re-parsing prose.
-
-- explore-agent  → multi-surface discovery. Saves under
-                   .brainyard/agents/explore-agent/results/ and emits
-                   `Saved exploration: <path>`. Read-mostly.
-- plan-agent     → authors .brainyard/agents/plan-agent/plans/<slug>.md.
-                   Emits `Saved plan:` AND `Saved dossier:`. Dossier
-                   carries `post.acceptance`.
-- todo-agent     → spawns .brainyard/agents/todo-agent/todos/<slug>.md from
-                   plan dossier. Items carry :tags {:via :covers}.
-                   Emits `Saved todo:` AND `Saved dossier:`. Dossier
-                   carries `post.acceptance_coverage`.
-- exec-agent     → advances todo. Reads upstream todo + plan dossiers.
-                   Per-item routing via :tags.via; :edit-agent items
-                   delegate to edit-agent. Emits `Saved dossier:` +
-                   `Done:`/`Manual:`. Dossier carries
-                   `execute.evidence` + `post.acceptance_progress`.
-- eval-agent     → scores executed todo vs plan acceptance. Reads
-                   three upstream dossiers (plan + todo + exec). Emits
-                   `Saved verdict:` AND `Saved dossier:` AND
-                   `Verdict: <X> (confidence: <Y>)`. Dossier carries
-                   `score.criteria` + `score.recommendations` — the
-                   per-criterion next-agent table.
-- edit-agent   → safe single-file edit. Emits `Saved edit:` AND
-                   `Rollback: <cmd>`. Use directly via move I (UPDATE)
-                   for one-off edits; exec-agent delegates here for
-                   :via :edit-agent items automatically.
-
-Invoke each via:
-    (call-tool "<name>" {:question "<sub-question>"
-                         :agent-context "<dossier path + relevant pointers>"})
-
-────────────────────────────────────────────────────────────────────────────
-TURN 1 — DOSSIER BOOTSTRAP (the only fixed obligation)
-────────────────────────────────────────────────────────────────────────────
-Before reaching for any specialist, on iteration 1:
-
-1. Compute <research-id> as a deterministic kebab-case slug from the user's
-   question (drop stopwords, cap 60 chars).
-2. If .brainyard/agents/research-agent/<research-id>/ exists → RESUME mode:
-   read dossier.md and findings.log, summarize state in your :thought, then
-   pick up where the prior run left off (per §STATE MACHINE below).
-3. Otherwise → BOOTSTRAP mode:
-   a. Create the directory (bash `mkdir -p`).
-   b. Write purpose.md — verbatim user question (and any :agent-context
-      they supplied).
-   c. Draft acceptance.md — concrete, testable criteria. If the user's
-      question is vague on success, write an explicit "Open questions"
-      list and SURFACE these in your :answer for clarification BEFORE
-      reaching any specialist. (Trying to research without acceptance is
-      the single most common research-agent failure mode.)
-   d. Draft direction.md — your initial stratagem (3–6 bullets).
-   e. Build dossier.md (frontmatter + body) by combining the three.
-   f. Initialize findings.log (empty file).
-
-────────────────────────────────────────────────────────────────────────────
-STATE MACHINE — what the LLM is choosing each iteration
-────────────────────────────────────────────────────────────────────────────
-After bootstrap, every iteration picks ONE of these moves. There is no fixed
-order; the LLM decides based on the dossier state.
-
-A. EXPLORE     — call-tool explore-agent to gather information across
-                 surfaces (files / web / MCP / skills).
-                 Use when: the question is under-specified, you do not
-                 yet know what subsystems / docs / external sources
-                 matter, or acceptance criteria reference data you
-                 do not have.
-
-B. PLAN-AUTHOR — call-tool plan-agent to draft a new plan, OR plan-agent
-                 with `(doc$update :kind :plan :body …)`-shaped intent to
-                 revise an existing one.
-                 Use when: exploration is sufficient and you need a
-                 blueprint to execute against; OR the prior plan is
-                 contradicted by new findings.
-
-C. DECOMPOSE   — call-tool todo-agent to spawn a todo from the plan's
-                 ## Approach, OR add/split items mid-stream.
-                 Use when: a plan exists and is stable enough to
-                 execute; OR exec-agent reported an over-coarse item.
-
-D. EXECUTE     — call-tool exec-agent to advance the todo.
-                 Use when: a todo with pending items exists AND the
-                 plan is current AND no blocking question is open.
-
-E. EVALUATE    — call-tool eval-agent to score the executed todo
-                 against the plan's ## Acceptance.
-                 Use when: items have been executed AND you need a
-                 verdict before deciding next move; OR the user asked
-                 for a status check.
-
-F. SYNTHESIZE  — single-iteration use of query$llm to merge findings
-                 across multiple specialists into a coherent dossier
-                 update or candidate answer.
-                 Use when: you have two or more specialist outputs
-                 that need to be reconciled before the next move.
-
-G. CLARIFY     — populate :answer with a clarification request or
-                 surface an unresolved acceptance gap. The CoAct loop
-                 exits; the user replies; you resume next turn.
-                 Use when: acceptance is ambiguous, the user must
-                 make a scope choice, or a hard blocker requires user
-                 input.
-
-H. FINALIZE    — populate :answer with the final research report;
-                 write verdict.md; append INDEX.md; the loop exits.
-                 Use when: every acceptance criterion is satisfied
-                 (=> :achieved), some are satisfied/descoped (=>
-                 :partial), or work has hit an unresolvable blocker
-                 (=> :abandoned).
-
-────────────────────────────────────────────────────────────────────────────
-DECISION HEURISTICS — typical move sequences (NOT a required order)
-────────────────────────────────────────────────────────────────────────────
-1. Open question with no clear scope:           A → G    (explore, then clarify)
-2. Well-scoped open question:                   A → B → C → D → E → H
-3. User hands an existing plan:                 (skip A, B) → C → D → E → H
-4. User hands an existing todo:                 (skip A, B, C) → D → E → H
-5. User asks "what's the status of <id>?":      RESUME → E → H        (re-evaluate, report)
-6. Eval verdict NOT_ACHIEVED, plan was wrong:   B → C → D → E         (re-plan)
-7. Eval verdict NOT_ACHIEVED, items were wrong: C → D → E             (re-decompose)
-8. Eval verdict NOT_ACHIEVED, exec stuck mid:   D (continue) → E
-9. Eval verdict PARTIAL, gap is small/known:    D (continue) → E
-10. Eval verdict PARTIAL, gap is fundamental:   F (synthesize) → G or H
-11. Hit iteration cap with no verdict yet:      H with status :abandoned
-
-You are NOT required to traverse all moves. A short research thread that
-genuinely needs only EXPLORE → SYNTHESIZE → FINALIZE is fine — do not
-manufacture a plan/todo just because the agent's name says "research."
-
-────────────────────────────────────────────────────────────────────────────
-DOSSIER UPDATE DISCIPLINE (after every specialist call)
-────────────────────────────────────────────────────────────────────────────
-1. Append one NDJSON line to findings.log with iter / agent / summary +
-   relevant pointers (plan_slug, todo_slug, eval verdict, etc).
-2. If the call materially changes acceptance status, update acceptance
-   frontmatter in dossier.md. Each criterion's :status field flips:
-     open → satisfied | partial | descoped | contradicted
-3. If direction changes, append a "## Direction revision (iter N)" block
-   to dossier.md body. The acceptance fields are re-shape-able; direction
-   is append-only with revisions tagged.
-4. Update the artifacts section of frontmatter to point at the new
-   plan/todo/exploration/eval files.
-
-The dossier is the contract with the next iteration. Failing to update it
-breaks resumability and starves the next specialist call of context.
-
-────────────────────────────────────────────────────────────────────────────
-PASSING DOSSIER TO SPECIALISTS
-────────────────────────────────────────────────────────────────────────────
-Every call-tool to a specialist MUST include the dossier path in
-:agent-context. Recommended shape:
-
-    Dossier: .brainyard/agents/research-agent/<id>/dossier.md
-    Purpose: <one-line distillation>
-    Acceptance focus: <criterion id(s) this call should advance>
-    Prior artifacts:
-      - plan: <slug>           (omit if none)
-      - todo: <slug>           (omit if none)
-      - last eval: <path>      (omit if none)
-    Hint: <any direction-specific guidance for THIS specialist>
-
-The specialist's own :agent-context handler (each one parses slugs/paths
-already — see their own design docs) will pick up what it needs. Do NOT
-inline the full dossier body — paths are sufficient and the specialists
-read-file what they need.
-
-────────────────────────────────────────────────────────────────────────────
-TERMINATION RULES
-────────────────────────────────────────────────────────────────────────────
-You terminate by populating :answer (the CoAct answer channel) with a
-markdown report AND writing verdict.md AND appending INDEX.md. Three
-legitimate termination states:
-
-- :achieved   — every acceptance criterion's :status is :satisfied (or
-                :descoped with explicit user-confirmed descope). Report
-                what was done, cite plan/todo/eval paths, suggest any
-                noteworthy follow-ups.
-- :partial    — at least one :satisfied and at least one :partial /
-                :open / :descoped — but NOT all open. Report what was
-                done, what remains, and a recommended next research
-                turn (or a switch to a specialist).
-- :abandoned  — hard blocker (missing capability, contradicting
-                requirements, hit iteration cap with no progress on
-                latest criterion). Report what was tried, why it
-                stopped, and what would unblock it.
-
-Always include the :saved-research line:
-    Saved research dossier: .brainyard/agents/research-agent/<id>/
-
-────────────────────────────────────────────────────────────────────────────
-HARD RULES
-────────────────────────────────────────────────────────────────────────────
-1. NO query$clone. It clones research-agent itself = clone-self recursion.
-   Cross-specialist dispatch goes through call-tool on the registered
-   defagents.
-2. NO direct writes to sibling-agent storage:
-     .brainyard/agents/plan-agent/plans/         (legacy: .brainyard/plans/)
-     .brainyard/agents/todo-agent/todos/         (legacy: .brainyard/todos/)
-     .brainyard/agents/plan-agent/dossiers/
-     .brainyard/agents/todo-agent/dossiers/
-     .brainyard/agents/exec-agent/dossiers/
-     .brainyard/agents/eval-agent/verdicts/
-     .brainyard/agents/eval-agent/dossiers/
-     .brainyard/agents/edit-agent/edits/
-   These are owned by their respective specialists. You read-file them
-   freely to inform research-agent's own dossier; you NEVER write them.
-   Reach for the specialist via call-tool when you need new content
-   under any of these paths.
-3. Acceptance criteria are FROZEN once the user has confirmed them, with
-   one exception: a user-confirmed descope (G→a follow-up turn). Do NOT
-   silently relax acceptance to make a verdict look better.
-4. Every specialist call's :agent-context MUST include the dossier path.
-   Specialists rely on it for cross-call coherence.
-5. The dossier is the only durable cross-iteration state. Do NOT keep
-   load-bearing facts in your iterations log alone — write them to
-   dossier.md.
-6. Iteration budget: 30 by default (vs CoAct's 20). Override via
-   `agent-runtime$config :key "max-iterations" :value "N"`. If you cross 80% of
-   the budget without a candidate verdict, START preparing FINALIZE —
-   the user prefers an honest :partial over a silent timeout.
-7. NO benchmarking/scoring in the default loop. Hill-climbing strategies
-   are an opt-in mode (`:research-mode :benchmark`) — see §10.
-8. CITE EVERYTHING. Every claim in the final report should point at a
-   path / criterion id / line range. The dossier and the artifacts/
-   directory exist precisely so this is cheap.
-
-────────────────────────────────────────────────────────────────────────────
-RESUMING A RESEARCH THREAD
-────────────────────────────────────────────────────────────────────────────
-The user can re-invoke you with `@<research-id>` (or with a question that
-hashes to the same slug). On resume:
-
-1. Read dossier.md frontmatter + last 50 lines of findings.log.
-2. Reconstruct the open acceptance criteria from frontmatter.
-3. Decide the next state-machine move based on what's already in the
-   dossier — do NOT re-bootstrap, do NOT re-explore what's already
-   in artifacts/.
-4. Surface a one-paragraph "where we are" in your :thought before
-   making the next call, so the user (and the trajectory log) can see
-   the resume context.
-
-A resume that genuinely cannot proceed (dossier corrupted, all
-specialists report stale/missing prior artifacts) is a CLARIFY (G):
-surface the broken state and ask whether to bootstrap fresh.
-```
+1. **THE SIX SPECIALISTS** — `explore` / `plan` / `todo` / `exec` / `eval` /
+   `edit`, each reached by **direct kebab-case dispatch** (`(plan-agent {…})`),
+   flat and non-recursive. Each (except explore + edit) ships a pre/post-flight
+   gated pipeline whose `Saved dossier:` carries machine-readable frontmatter —
+   read it instead of re-parsing prose. Invocation:
+   `(<name> {:question "…" :agent-context "<dossier path + pointers>"})`.
+2. **TURN 1 — DOSSIER BOOTSTRAP** — compute the id and probe for resume
+   (`research$id` / `research$resume?` — read seams kept), then author the
+   dossier files **directly** with `bash mkdir -p` + `write-file`. There is **no
+   construction helper** — the model writes `purpose.md`, the acceptance
+   CHECKLIST (`acceptance.md`), `direction.md`, and `dossier.md` from templates.
+   If success is vague, surface an "Open questions" list in `:answer` before
+   reaching any specialist (the single most common failure mode).
+3. **STATE MACHINE** — every post-bootstrap iteration picks ONE move; no fixed
+   order. The nine moves: **A EXPLORE / B PLAN-AUTHOR / C DECOMPOSE / D EXECUTE /
+   E EVALUATE / F SYNTHESIZE / G CLARIFY / H FINALIZE / I UPDATE**. Move **I
+   (UPDATE)** dispatches `(edit-agent {…})` for a one-off single-file edit that
+   doesn't warrant a plan/todo arc; for multi-edit work use B→C→D so exec-agent
+   chains edit-agent per item.
+4. **DECISION HEURISTICS** — typical (not required) sequences. Heuristics 6/7/8
+   are **data-driven**: eval-agent's verdict `score.recommendations` names the
+   next agent per criterion (read via `eval$read-verdict`), not inferred from the
+   answer text.
+5. **DOSSIER UPDATE DISCIPLINE** (after every specialist call) — (1) `write-file
+   :append` one `findings.log` line carrying the `Saved …:` paths the specialist
+   just emitted; (2) flip changed acceptance statuses **index-free** in
+   `acceptance.md` by stable id `aN` via `update-file` (the shared todo
+   substrate); (3) append a `## Direction revision (iter N)` block if direction
+   changed; (4) `update-file` the artifacts pointers in `dossier.md` frontmatter.
+6. **PASSING DOSSIER TO SPECIALISTS** — every call's `:agent-context` MUST lead
+   with the upstream sibling `Saved dossier: <path>` line (the specialist's
+   pre-flight C1 greps for `^Saved dossier: `) plus the research dossier path,
+   purpose, acceptance focus, and prior-artifact pointers. Never inline the full
+   dossier body.
+7. **TERMINATION RULES — strict 4-step finalize, in order:**
+   (1) flip every criterion's status in `acceptance.md` to reflect reality;
+   (2) `(research$verdict-outcome :id rid)` to derive the outcome + **enforce the
+   `:achieved` guard** (if it flags blockers while you intend `:achieved`, FIX
+   the dossier — never downgrade the verdict to hide the error);
+   (3) `write-file` `verdict.md` directly from the VERDICT TEMPLATE using
+   `(:outcome vo)` / `(:acceptance-outcome vo)`;
+   (4) `write-file :append` one `INDEX.md` line.
+   Then populate `:answer` with a report derived from `verdict.md`, ending with
+   the exact contract line `Saved research dossier: .brainyard/agents/research-agent/<id>/`.
+   Do **not** emit the contract line if `verdict.md` couldn't be written.
+8. **HARD RULES** — (1) STAY FLAT, no `query$clone`; cross-specialist dispatch is
+   the direct kebab-case call. (2) NO direct writes to sibling-agent storage
+   (`plan-agent/plans`, `todo-agent/todos`, the `*/dossiers/`, `eval-agent/verdicts`,
+   `edit-agent/edits`) — read them freely (prefer the typed readers), invoke the
+   specialist to create new content. (3) acceptance is FROZEN once confirmed,
+   except a user-confirmed descope. (4) every call's `:agent-context` carries the
+   dossier path. (5) the dossier is the only durable cross-iteration state.
+   (6) iteration budget 30 (override via `agent-runtime$config`); prep FINALIZE at
+   80%. (7) NO benchmarking/scoring in the default loop — hill-climbing is an
+   opt-in mode **planned for a later milestone** (§10). (8) CITE EVERYTHING.
+9. **RESUMING A RESEARCH THREAD** — re-invoke with `@<research-id>`: read
+   `dossier.md` frontmatter + the `acceptance.md` checklist + last findings;
+   reconstruct open criteria; pick the next move without re-bootstrapping or
+   re-exploring `artifacts/`; surface a one-paragraph "where we are" in
+   `:thought`. A genuinely-broken resume is a CLARIFY (G).
 
 ---
 
@@ -669,7 +508,7 @@ surface the broken state and ask whether to bootstrap fresh.
 ```text
 ## Research Tools — six specialists + dossier substrate
 
-### Specialists (reach via call-tool — NOT bound directly)
+### Specialists (direct kebab-case dispatch — NOT bound directly)
 - explore-agent  → discovery across files / web / MCP / skills.
                    Args: :question, :agent-context (dossier path + focus).
                    Returns: an answer ending with `Saved exploration: <path>`.
@@ -724,16 +563,18 @@ surface the broken state and ask whether to bootstrap fresh.
 Invocation pattern (all six identical; sibling dossier path goes FIRST
 in :agent-context as `Saved dossier: <path>` so the specialist's
 pre-flight C1 finds it):
-    (call-tool "<agent-name>"
-               {:question      "<directed sub-question>"
-                :agent-context "Saved dossier: <upstream sibling path>\n\nResearch dossier: <research path>\nAcceptance focus: <ids>\n…"})
+    (<agent-name>
+      {:question      "<directed sub-question>"
+       :agent-context "Saved dossier: <upstream sibling path>\n\nResearch dossier: <research path>\nAcceptance focus: <ids>\n…"})
 
 ### Dossier substrate (your direct work surface)
 - read-file      -- Read dossier.md / acceptance.md / findings.log / artifacts.
-- write-file     -- Update dossier.md / acceptance.md / verdict.md.
-                    USE :append true for findings.log entries.
-- update-file    -- Targeted edit on dossier.md frontmatter (e.g. flipping
-                    one acceptance status without rewriting the whole file).
+- write-file     -- Author dossier.md / acceptance.md / verdict.md / INDEX.md.
+                    USE :append true for findings.log + INDEX.md entries.
+- update-file    -- Index-free single-line edit — flip one acceptance
+                    criterion's status in acceptance.md by stable id
+                    (`- [ ] a1 (open)` → `- [x] a1 (satisfied)`), or patch one
+                    dossier.md frontmatter field, without rewriting the file.
 - grep           -- Cheap content scan inside dossier files.
 - bash           -- mkdir -p, ls, find, ln -s for artifacts/ symlinks.
 - search         -- Cross-project keyword search (rare — usually use
@@ -748,17 +589,17 @@ pre-flight C1 finds it):
 - exec$read-dossier   -- Args: path. Returns exec-agent dossier
                           frontmatter — :execute.evidence,
                           :post.acceptance_progress.
-- eval$read-dossier   -- Args: path. Returns eval-agent dossier
-                          frontmatter — :score.criteria,
-                          :score.recommendations, :score.confidence.
+- eval$read-verdict   -- Args: path. Returns eval-agent verdict
+                          frontmatter — :verdict, :confidence,
+                          :criteria, :recommendations.
 - edit$read-record  -- Args: path. Returns an edit-agent record's
                           :verify :apply :rollback for diff-level audit.
 
 These let you make data-driven move decisions (e.g. read eval-agent's
 score.recommendations for the next move per criterion) without paying
 for the full dossier body. The corresponding write helpers from each
-sibling are NOT bound — research-agent reaches via call-tool to the
-specialists when new sibling content is needed.
+sibling are NOT bound — research-agent invokes the specialists directly
+when new sibling content is needed.
 
 ### Synthesis
 - query$llm      -- Cross-specialist synthesis. Use for:
@@ -772,7 +613,8 @@ specialists when new sibling content is needed.
                     distillations across multiple criteria).
 
 ### Bookkeeping
-- list-tools, get-tool-info, call-tool — generic registry access.
+- list-tools, get-tool-info — generic registry access (invoke registered tools by id).
+- call-tool — generic registry dispatch (NOT the specialist path; those go direct).
 - task$run with :job-type :tool|:bash         — async wrapper if a specialist
                                           call is expected to take >5s
                                           (rare; specialists usually
@@ -783,47 +625,80 @@ specialists when new sibling content is needed.
                  -- Tune `:max-iterations` mid-run if a specialist
                     surfaces work worth a longer arc.
 
-## Optional research$* helpers (when bound; see §8)
-- research$id            -- Deterministic id from a question.
-- research$bootstrap     -- Create dossier directory + initial files.
-- research$append-log    -- Append one NDJSON line to findings.log.
-- research$update-status -- Flip an acceptance criterion's :status.
-- research$write-verdict -- Compose verdict.md from final state.
-- research$index-append  -- Append one line to .brainyard/agents/research-agent/INDEX.md.
+## research$* helpers (auto-bound; the THREE surviving read/derive seams — see §8)
+- research$id             -- Deterministic kebab id from a question (the resume key).
+- research$resume?         -- Probe: does the dossier exist + its acceptance-state?
+- research$verdict-outcome -- Read the acceptance checklist, derive the outcome,
+                              and enforce the :achieved guard. READ-ONLY — call
+                              before write-file-ing verdict.md.
 
-If these helpers aren't bound, build the equivalent inline with
-write-file + a clojure fence.
+AUTHORING has no helpers — write the markdown directly: BOOTSTRAP via `bash
+mkdir -p` + `write-file` (purpose/acceptance-checklist/direction/dossier);
+findings.log + INDEX.md via `write-file :append`; acceptance status flips via
+`update-file` on the `aN` line (the shared todo substrate). The structured
+constructors (`research$bootstrap`/`update-status`/`write-verdict`/`append-log`/
+`index-append`) are RETIRED.
 
 ## Typical flow (no specific iteration count required)
-1. iter 1 — bootstrap dossier (or resume if dir exists).
+1. iter 1 — bootstrap dossier via bash + write-file (or resume if dir exists).
 2. iter 2..N — pick a state-machine move per dossier state:
-   EXPLORE / PLAN / DECOMPOSE / EXECUTE / EVALUATE / SYNTHESIZE /
-   CLARIFY / FINALIZE.
-3. After every specialist call: append findings.log; update dossier
-   frontmatter; refresh artifacts/.
-4. On termination: write verdict.md; append INDEX.md; populate :answer
-   with markdown report + `Saved research dossier: <path>` line.
+   EXPLORE / PLAN-AUTHOR / DECOMPOSE / EXECUTE / EVALUATE / SYNTHESIZE /
+   CLARIFY / FINALIZE / UPDATE.
+3. After every specialist call: append findings.log (with the sibling
+   `Saved …:` paths); flip acceptance statuses index-free in acceptance.md;
+   update dossier.md artifacts frontmatter; refresh ## Findings body.
+4. On termination: research$verdict-outcome → write verdict.md → append
+   INDEX.md → populate :answer with markdown report + `Saved research dossier:`.
 ```
 
 ---
 
-## 8. Optional `(research$*)` Sandbox Helpers
+## 8. The Surviving `(research$*)` Read/Derive Seams
 
-Mirrors the helpers introduced in `rlm-agent` and `explore-agent`. They live in `ai.brainyard.agent.common.research`, register as `defcommand`s, and surface in the sandbox via auto-binding.
+`research.clj` ships exactly **three** `defcommand`s (in `research-helpers`),
+auto-bound in the SCI sandbox. They are the only places a machine beats the
+model — everything authoring-shaped is retired and the model writes the dossier
+markdown directly.
 
 | Helper | Signature | What it does |
 |---|---|---|
-| `research$id` | `(research$id :question "<text>")` → `"<id>"` | Deterministic kebab-case id, stopwords dropped, cap 60. |
-| `research$bootstrap` | `(research$bootstrap :id … :purpose … :acceptance […] :direction […])` → `{:dir … :dossier-path …}` | Creates directory, writes purpose.md / acceptance.md / direction.md / dossier.md / findings.log (empty). Idempotent: if directory exists, returns its current state instead of overwriting. |
-| `research$append-log` | `(research$append-log :id … :iter … :agent … :summary … :pointers {…})` → `{:appended true}` | Appends one NDJSON line to findings.log. |
-| `research$update-status` | `(research$update-status :id … :criterion-id … :status :satisfied)` → `{:updated true}` | Targeted edit of acceptance frontmatter status. |
-| `research$write-verdict` | `(research$write-verdict :id … :status :achieved|:partial|:abandoned :narrative …)` → `{:path …}` | Compose verdict.md from frontmatter + acceptance state + narrative. |
-| `research$index-append` | `(research$index-append :id … :status … :one-line …)` → `{:appended true}` | Append entry to `.brainyard/agents/research-agent/INDEX.md`. |
-| `research$resume?` | `(research$resume? :id …)` → `{:exists? true :status :in-progress :last-iteration 7 :acceptance-state {…}}` | Cheap probe to decide bootstrap vs. resume. |
+| `research$id` | `(research$id :question "<text>" [:max-chars 60])` → `{:slug "<id>"}` | Deterministic kebab-case id, stopwords dropped, cap 60. The resume key. |
+| `research$resume?` | `(research$resume? :id …)` → `{:exists? false}` or `{:exists? true :status :keyword :last-iteration N :acceptance-state {…}}` | Cheap probe to decide bootstrap vs. resume. Reads `dossier.md` frontmatter + the `acceptance.md` checklist statuses; **dual-reads** a legacy inline-frontmatter `acceptance:` block for old threads. |
+| `research$verdict-outcome` | `(research$verdict-outcome :id …)` → `{:outcome :achieved\|:partial\|:abandoned\|:in-progress :achieved-ok? bool :blockers ["aN:status" …] :acceptance-outcome {a1 "satisfied" …}}` | READ-ONLY. Parses the acceptance checklist, derives the outcome, and **enforces the `:achieved` guard** (refuses `:achieved` unless every criterion is `:satisfied`/`:descoped`). The one load-bearing bit carved out of the old `write-verdict` — called *before* `write-file`-ing `verdict.md`. |
 
-**As-built:** the shipped `research-helpers` roster binds exactly seven of these — `research$id`, `research$resume?`, `research$bootstrap`, `research$append-log`, `research$update-status`, `research$write-verdict`, `research$index-append`. `research$summarize-log` was **never implemented** as a `defcommand`: the helper layer is kept mechanical/side-effect-only, and the agent calls `query$llm` directly with the findings.log content as `:sub-context` to roll up the ## Findings section. (This is rather than the proposed dedicated helper.)
+**Retired** (do not exist anymore): `research$bootstrap` (with its
+`:acceptance [{:id :text :status}]` vector-of-maps + `:direction` object
+handling and five-file write), `research$update-status`,
+`research$write-verdict`'s frontmatter emission, `research$append-log`, and
+`research$index-append`. Acceptance editing now rides the shared **todo
+substrate**'s index-free checklist edit; the dossier markdown is authored via
+the already-bound `write-file` / `update-file`.
 
-The agent works without these — but the prompt becomes 30-40% shorter because the dossier mechanics no longer have to be inlined every iteration.
+The slim helper surface keeps the prompt short because the dossier mechanics no
+longer have to be inlined every iteration — the model writes the markdown it is
+fluent at and reaches for the three seams only for the resume key, the
+resume/acceptance parse, and the verdict-outcome derivation + guard.
+
+### 8.1 Auto-Finalize Backstop
+
+`research.clj` installs an `:agent.ask/finalize` hook
+(`install-auto-finalize!`, self-installing at namespace load) that materializes
+the terminal artifacts when the LLM emits a non-blank answer without finalizing
+itself (common on smaller models). It is a **safety net**, not the primary path:
+
+- `render-verdict-md` composes `verdict.md` (frontmatter + `## Verdict`) from the
+  derived outcome and a `one-line-summary` of the answer; `append-index!` adds
+  one `INDEX.md` line; the absent `Saved research dossier:` line is injected.
+- **Strict trigger:** only fires when the dossier exists AND the acceptance state
+  has no `:open` criterion (else the LLM is mid-flight / in CLARIFY) AND
+  `verdict.md` doesn't already exist. It never retroactively bootstraps.
+- Idempotent and defensive — failures are logged (`::research.auto-finalize-failed`),
+  never re-thrown. Per-turn opt-out via `agent-runtime$config :key
+  "research-auto-finalize" :value "false"`.
+
+Because the trigger is observe-only on the answer, a missing `Saved research
+dossier:` line does not always mean nothing persisted — the backstop may have
+written it.
 
 ---
 
@@ -887,77 +762,76 @@ Real, multi-turn, user-facing research. Run via `bb tui run -a research-agent`.
 
 ````markdown
 ```clojure
-(def rid (research$id :question "Reduce bb tui cold start to under 1 second"))
+(def rid (:slug (research$id :question "Reduce bb tui cold start to under 1 second")))
 ;; => "reduce-bb-tui-cold-start-under-1-second"
+(def state (research$resume? :id rid))   ; => {:exists? false} → BOOTSTRAP
 
-(def init
-  (research$bootstrap
-    :id rid
-    :purpose "Reduce `bb tui` cold-start latency from ~2.5s to under 1.0s without regressing the agent-tui-app native binary's startup."
-    :acceptance [{:id "a1" :text "REPL-mode `bb tui` cold start <= 1.0s on M-series Mac" :status :open}
-                 {:id "a2" :text "Native binary cold start does NOT regress beyond 0.6s" :status :open}
-                 {:id "a3" :text "Documented profiling reproducer + root-cause writeup" :status :open}]
-    :direction ["Narrow down which subsystems dominate startup"
-                "Evaluate fix candidates: AOT, lazy init, deferred ns loads"
-                "Implement the cheapest viable fix"]))
-;; => {:dir ".brainyard/agents/research-agent/reduce-bb-tui-cold-start-under-1-second/"
-;;     :dossier-path ".../dossier.md"}
+;; Author the dossier files DIRECTLY — no construction helper.
+(bash {:command (str "mkdir -p .brainyard/agents/research-agent/" rid "/artifacts")})
+(write-file {:path (str ".brainyard/agents/research-agent/" rid "/purpose.md")
+             :content "Reduce `bb tui` cold-start latency from ~2.5s to under 1.0s without regressing the agent-tui-app native binary's startup.\n"})
+;; acceptance.md — the §5 CHECKLIST (shared todo substrate; flip by stable id aN)
+(write-file {:path (str ".brainyard/agents/research-agent/" rid "/acceptance.md")
+             :content (str "# Acceptance — " rid "\n"
+                           "- [ ] a1 (open) — REPL-mode `bb tui` cold start <= 1.0s on M-series Mac\n"
+                           "- [ ] a2 (open) — Native binary cold start does NOT regress beyond 0.6s\n"
+                           "- [ ] a3 (open) — Documented profiling reproducer + root-cause writeup\n")})
+(write-file {:path (str ".brainyard/agents/research-agent/" rid "/direction.md")
+             :content "# Direction\n- Narrow down which subsystems dominate startup\n- Evaluate fix candidates: AOT, lazy init, deferred ns loads\n- Implement the cheapest viable fix\n"})
+(write-file {:path (str ".brainyard/agents/research-agent/" rid "/dossier.md")
+             :content "<frontmatter (research_id/created/last_iteration/status/artifacts) + body>\n"})
 ```
 ````
 
-### Iteration 2 — EXPLORE (tool channel)
+### Iteration 2 — EXPLORE (code channel — direct kebab-case dispatch)
 
 ````markdown
-```json
-[{"tool-name": "explore-agent",
-  "tool-args": [{"name": "question",
-                 "value": "What dominates bb tui cold-start latency in this project? Looking for profiling docs, prior issues, and the actual init code paths."},
-                {"name": "agent-context",
-                 "value": "Dossier: .brainyard/agents/research-agent/reduce-bb-tui-cold-start-under-1-second/dossier.md\nPurpose: Reduce `bb tui` cold start to <1s.\nAcceptance focus: a1, a2."}]}]
+```clojure
+(explore-agent
+  {:question      "What dominates bb tui cold-start latency in this project? Looking for profiling docs, prior issues, and the actual init code paths."
+   :agent-context (str "Research dossier: .brainyard/agents/research-agent/" rid "/dossier.md\n"
+                       "Purpose: Reduce `bb tui` cold start to <1s.\nAcceptance focus: a1, a2.")})
 ```
 ````
 
-(One tool-call iteration, dispatched by CoAct's tool channel. Result inlines as a `tool-results` entry in the iteration history.)
+(Flat dispatch on the auto-bound defagent fn. Its answer ends with
+`Saved exploration: <path>`, which you carry verbatim into findings.log.)
 
 ### Iteration 3 — Log + decide (code channel)
 
 ````markdown
 ```clojure
-;; Append the explore result to the dossier log.
-(research$append-log
-  :id rid :iter 2 :agent "explore-agent"
-  :summary "Startup spent 1.7s in clojure.core init, 0.4s in Integrant. No prior profiling docs in repo."
-  :pointers {:exploration ".brainyard/agents/explore-agent/results/20260509-181244-bb-tui-cold-start.md"})
+;; Append the explore result to findings.log — write the `Saved …:` path verbatim.
+(write-file {:path (str ".brainyard/agents/research-agent/" rid "/findings.log")
+             :append true
+             :content "iter 2 · explore-agent · Saved exploration: .brainyard/agents/explore-agent/results/20260509-181244-bb-tui-cold-start.md · startup = 1.7s clojure.core + 0.4s Integrant\n"})
 
 ;; Decision: enough to draft a plan. PLAN-AUTHOR next.
 :next-move :plan
 ```
 ````
 
-### Iteration 4 — PLAN (tool channel)
-
-````markdown
-```json
-[{"tool-name": "plan-agent",
-  "tool-args": [{"name": "question",
-                 "value": "Author a plan to bring `bb tui` cold-start under 1.0s. See dossier for purpose and acceptance. Approach must enumerate candidate fixes (AOT, lazy init, deferred ns loads) with trade-offs."},
-                {"name": "agent-context",
-                 "value": "Dossier: .brainyard/agents/research-agent/reduce-bb-tui-cold-start-under-1-second/dossier.md\nAcceptance focus: a1, a2, a3.\nPrior artifacts:\n  - exploration: .brainyard/agents/explore-agent/results/20260509-181244-bb-tui-cold-start.md"}]}]
-```
-````
-
-### Iteration 5 — Log + DECOMPOSE (code channel + tool channel — split across 2 iterations)
+### Iteration 4 — PLAN (code channel — direct kebab-case dispatch)
 
 ````markdown
 ```clojure
-(research$append-log
-  :id rid :iter 4 :agent "plan-agent"
-  :summary "Plan tui-startup-latency drafted with 6 candidate items across AOT/lazy-init/deferred-ns; post-flight PASS."
-  :pointers {:plan_slug    "tui-startup-latency"
-             :plan_path    ".brainyard/agents/plan-agent/plans/tui-startup-latency.md"
-             :plan_dossier ".brainyard/agents/plan-agent/dossiers/20260510-104503-tui-startup-latency.md"
-             :pre_verdict  :go
-             :post_verdict :pass})
+(plan-agent
+  {:question      "Author a plan to bring `bb tui` cold-start under 1.0s. See dossier for purpose and acceptance. Approach must enumerate candidate fixes (AOT, lazy init, deferred ns loads) with trade-offs."
+   :agent-context (str "Research dossier: .brainyard/agents/research-agent/" rid "/dossier.md\n"
+                       "Acceptance focus: a1, a2, a3.\nPrior artifacts:\n"
+                       "  - exploration: .brainyard/agents/explore-agent/results/20260509-181244-bb-tui-cold-start.md")})
+```
+````
+
+### Iteration 5 — Log + DECOMPOSE (code channel + dispatch — split across 2 iterations)
+
+````markdown
+```clojure
+(write-file {:path (str ".brainyard/agents/research-agent/" rid "/findings.log")
+             :append true
+             :content (str "iter 4 · plan-agent · Saved plan: .brainyard/agents/plan-agent/plans/tui-startup-latency.md"
+                           " · Saved dossier: .brainyard/agents/plan-agent/dossiers/20260510-104503-tui-startup-latency.md"
+                           " · pre:go post:pass\n")})
 ```
 ````
 
@@ -1025,13 +899,13 @@ The user can resume with the same id to continue items 3–4 in a future turn �
 | 3 | Silently relax acceptance to make a verdict look better | Erodes the contract with the user | Descope only with explicit user confirmation; flag clearly in verdict. |
 | 4 | Re-run explore-agent on something already in `artifacts/explore/` | Wastes a round-trip | Read-file the existing exploration; only re-explore if material has changed. |
 | 5 | Call eval-agent without a current todo | Eval has nothing to evaluate; produces hallucinated verdicts | Only EVALUATE after EXECUTE has produced a fresh exec record. |
-| 6 | Use `query$clone` to "delegate the research" | Clones research-agent itself = clone-self recursion | Stay flat; reach the specialists via call-tool. |
-| 7 | Update findings.log in your head, not in the file | Resume on a new turn loses the context | Always `research$append-log` (or write-file with `:append true`) after every specialist call. |
+| 6 | Use `query$clone` to "delegate the research" | Clones research-agent itself = clone-self recursion | Stay flat; reach the specialists by direct kebab-case dispatch. |
+| 7 | Update findings.log in your head, not in the file | Resume on a new turn loses the context | Always `write-file :append` one line (carrying the `Saved …:` paths) after every specialist call. |
 | 8 | Push past iteration cap with no candidate verdict | User gets an opaque timeout | Start preparing FINALIZE at 80% budget; honest :partial > silent timeout. |
 | 9 | Treat plan-agent / todo-agent as optional | "I'll just exec-agent it" — but exec-agent's PRE-FLIGHT C1/C2 require a todo dossier whose post-flight passed | If the question is research-shaped, the plan/todo authoring is part of the contract. |
-| 10 | Author plan/todo/dossier files via write-file directly | Bypasses specialists' pre/post-flight gating + dossier handoff contract | Always go through the specialist via call-tool. |
+| 10 | Author plan/todo/dossier files via write-file directly | Bypasses specialists' pre/post-flight gating + dossier handoff contract | Always go through the specialist by direct dispatch — `(plan-agent {…})`, etc. (Your OWN dossier files you DO write-file directly; only sibling-agent storage is off-limits.) |
 | 11 | Chain `edit-agent` calls during EXECUTE | Exec-agent already delegates writes to edit-agent for every `:via :edit-agent` item — chaining yourself duplicates the audit trail and skips exec-agent's per-item evidence map | Use move I (UPDATE) only for one-off edits that DON'T need a plan/todo arc; otherwise let exec-agent (move D) handle delegation. |
-| 12 | Read sibling dossier bodies with `read-file` when the helpers would do | Wastes tokens parsing markdown the frontmatter already encoded | Use `plan$read-dossier` / `todo$read-dossier` / `exec$read-dossier` / `eval$read-dossier` / `edit$read-record` — they return the frontmatter as a parsed map. |
+| 12 | Read sibling dossier bodies with `read-file` when the helpers would do | Wastes tokens parsing markdown the frontmatter already encoded | Use `plan$read-dossier` / `todo$read-dossier` / `exec$read-dossier` / `eval$read-verdict` / `edit$read-record` — they return the frontmatter as a parsed map. |
 
 ---
 
@@ -1044,20 +918,23 @@ The user can resume with the same id to continue items 3–4 in a future turn �
 | Acceptance ambiguity | Vague question ("make startup faster"). | Agent goes to CLARIFY (G) before any specialist call. |
 | Eval-driven re-plan | Force eval-agent to return NOT_ACHIEVED. | Agent goes to B (re-plan) or C (re-decompose) per the verdict's recommended follow-up. |
 | Iteration-cap finalize | Force a long thread that won't converge. | At 80% budget the agent surfaces :partial with what it has, NOT a runaway. |
-| `:research-mode :benchmark` | Run an autoresearch program file through research-agent's benchmark mode. | Hill-climbing loop runs; results comparable to autoresearch baseline. |
+| Bootstrap authoring | First iteration of a fresh thread. | `bash mkdir -p` + `write-file` create the dir and `purpose.md` / `acceptance.md` (checklist) / `direction.md` / `dossier.md` — no construction helper called. |
+| Acceptance flip (index-free) | A criterion is met mid-thread. | `update-file` flips `- [ ] aN (open)` → `- [x] aN (satisfied)` by stable id; `research$resume?` reflects it; other criteria untouched. |
+| Verdict guard | Try to FINALIZE `:achieved` while a criterion is `:open`/`:partial`. | `research$verdict-outcome` returns `:in-progress`/non-empty `:blockers`; the `Saved research dossier:` line is withheld until the dossier is fixed. |
+| Auto-finalize backstop | Smaller model emits an answer without finalizing. | The strict-trigger hook writes `verdict.md` + appends `INDEX.md` + injects the contract line — only when the dossier exists, no `:open` criterion, and `verdict.md` is absent. |
 | Cross-agent context propagation | Inspect the `:agent-context` strings passed to each specialist. | Every call carries dossier path; acceptance focus; relevant prior artifacts. |
 | Hard-rule enforcement | Try to invoke `query$clone` from inside the agent. | Tool-not-found / refusal; the curated roster excludes it. |
 | Direct plan/todo/dossier write attempt | Try to `write-file` to `.brainyard/agents/plan-agent/plans/<slug>.md` or `.brainyard/<agent>/dossiers/…` directly. | Caught by the instruction (Hard Rule 2). Soft enforcement; optional follow-up is a `:agent.tool-use/pre` hook scoped to those paths. |
-| Sibling dossier read via helper | Inspect tool-call log for `plan$read-dossier` / `exec$read-dossier` etc. | The cherry-picked read-helpers are bound; their use should dominate `read-file` on sibling dossier bodies once the LLM gets the pattern. |
+| Sibling dossier read via helper | Inspect tool-call log for `plan$read-dossier` / `exec$read-dossier` / `eval$read-verdict` etc. | The cherry-picked read-helpers are bound; their use should dominate `read-file` on sibling dossier bodies once the LLM gets the pattern. |
 | Eval-recommendation-driven re-move | Eval returns NOT_ACHIEVED with `score.recommendations` naming todo-agent. | Next iteration is move C (DECOMPOSE), not a guess. Verifies heuristics 6/7/8 use the structured recommendation. |
 
-Per-iteration mulog signals to add (mirroring `::rlm.*` and `::explore.*`):
+mulog signals emitted by the shipped helpers (`research.clj`):
 
-- `::research.bootstrap` — `{:id … :acceptance-count N}`
-- `::research.move` — `{:iter N :move :explore|:plan|:decompose|:execute|:evaluate|:synthesize|:clarify|:finalize :rationale "<short>"}`
-- `::research.handoff` — `{:agent <name> :dossier-path … :acceptance-focus [ids]}`
-- `::research.acceptance-flip` — `{:criterion-id "a1" :from :open :to :partial}`
-- `::research.terminate` — `{:status :achieved|:partial|:abandoned :iterations N}`
+- `::research.verdict-outcome` — `{:id … :outcome … :achieved-ok? bool :n-criteria N}` (from `research$verdict-outcome`).
+- `::research.index` — `{:id … :status …}` (on `INDEX.md` append).
+- `::research.auto-finalize` — `{:id … :status … :answer-chars N :n-criteria N}` (backstop fired).
+- `::research.auto-finalize-skip` — `{:id … :reason :verdict-exists|:no-acceptance|:open-criteria-remain …}`.
+- `::research.no-dossier-skip` / `::research.auto-finalize-failed` — backstop no-op / defensive failure.
 
 These are `mulog/log` calls in the helpers (§8) — no agent-loop changes required.
 
@@ -1114,27 +991,25 @@ The phases sequence; there is no fixed schedule. Treat each gate as a hard prere
 
 ## 15. Files Summary
 
-| File | What changes |
+| File | Role |
 |---|---|
-| `components/agent/src/ai/brainyard/agent/common/research_agent.clj` | NEW — `instruction`, `tool-context`, `defagent research-agent` mirroring `explore-agent` shape; uses `coact/run-coact-derived` with `:max-iterations 30` default. |
-| `components/agent/src/ai/brainyard/agent/common/research.clj` | NEW (shipped) — `research$id`, `research$resume?`, `research$bootstrap`, `research$append-log`, `research$update-status`, `research$write-verdict`, `research$index-append` as `defcommand`s. **As-built:** `research$summarize-log` was dropped; the agent calls `query$llm` directly instead. |
-| `components/agent/test/ai/brainyard/agent/research_agent_test.clj` | NEW — registration smoke, bootstrap, resume detection, acceptance-flip integrity, INDEX.md append-only. |
-| `.brainyard/agents/research-agent/README.md` | NEW (templated by helpers on first write) — directory layout cheat-sheet. |
-| `bases/agent-tui` / `bases/agent-web` | NO CHANGES at Phase 0/1. Update at Phase 3 to drop autoresearch references. |
-| `bb.edn` | OPTIONAL — `repl:research` task. |
-| `docs/research-agent-design.md` | THIS FILE. |
-| `components/agent/src/ai/brainyard/agent/autoresearch/` | TOUCHED only at Phases 2 and 3 (deprecation log, then deletion of BT/orchestrator while keeping library bits). |
-| `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` | NO CHANGES. |
+| `components/agent/src/ai/brainyard/agent/common/research_agent.clj` | `instruction` (direct-dispatch six-specialist roster + move state machine + write-file/checklist persistence + strict 4-step finalize), `tool-context`, `defagent research-agent` via `coact/run-coact-derived` with `:max-iterations 30` default. |
+| `components/agent/src/ai/brainyard/agent/common/research.clj` | The three surviving READ/DERIVE seams — `research$id`, `research$resume?`, `research$verdict-outcome` — plus the `:agent.ask/finalize` auto-finalize backstop. The structured-construction helpers (`research$bootstrap`/`update-status`/`write-verdict`/`append-log`/`index-append`) are RETIRED. |
+| `components/agent/test/ai/brainyard/agent/research_agent_test.clj` | Registration smoke, bootstrap, resume detection, acceptance-checklist flip integrity, verdict-outcome guard, INDEX.md append-only. |
+| `.brainyard/agents/research-agent/README.md` | Directory layout cheat-sheet. |
+| `bases/agent-tui` / `bases/agent-web` | Carry no autoresearch references (removed). |
+| `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` | NO CHANGES — substrate, BT, sandbox, DSPy signature untouched. |
+| `components/agent/src/ai/brainyard/agent/autoresearch/` | DELETED — BT, orchestrator, defagent, and library bits all removed. |
 
-The substrate (CoAct BT, sandbox, DSPy signature) is not touched. The whole feature ships as one new agent file plus an optional helpers file, identical in shape to `explore-agent` and `rlm-agent`.
+The substrate (CoAct BT, sandbox, DSPy signature) is not touched. The feature is one agent file plus a slim read/derive helpers file, identical in shape to `explore-agent` and `rlm-agent` — the lightweight redesign was contained in the instruction + the shrunk helpers namespace, not the roster.
 
 ---
 
 ## 16. Open Questions
 
 1. **Should the dossier directory be created lazily?** Right now bootstrap is on iteration 1 unconditionally. For a question that turns out to be a single specialist call ("just plan this"), creating a full dossier directory feels heavy. Suggestion: defer directory creation until the second specialist call, OR until the LLM explicitly decides the question is research-shaped. Trade-off: harder to resume mid-flight if the directory hasn't been created yet.
-2. **Should research-agent be allowed to call rlm-agent?** A research thread that hits "summarize 200 log files" is genuinely MapReduce-shaped. Reaching for rlm-agent would extend the playbook to data-heavy work. Currently the roster is silent on rlm-agent (it's reachable via `call-tool` like any other defagent). The question is whether to *teach* the agent to do this in the instruction. Suggestion: yes, as a sixth specialist mention in §6 — but only after rlm-agent itself ships and stabilizes.
-3. **Acceptance criteria as Malli schema?** The current `acceptance` is a free-form list of `{id, text, status}`. For benchmark mode, mapping onto autoresearch's `:expected-patterns` + `:acceptance-criteria` would be cleaner with a proper schema. Worth doing as part of Phase 1.
+2. **Should research-agent be allowed to call rlm-agent?** A research thread that hits "summarize 200 log files" is genuinely MapReduce-shaped. Reaching for rlm-agent would extend the playbook to data-heavy work. Currently the roster is silent on rlm-agent (it's reachable by direct dispatch like any other defagent). The question is whether to *teach* the agent to do this in the instruction. Suggestion: yes, as an additional specialist mention in §6 — but only after rlm-agent itself ships and stabilizes.
+3. **Fold acceptance fully into the todo substrate, or keep a research-flavored variant?** Acceptance is now the §5 markdown checklist (the shared todo substrate) — the only delta is the 5-status token (`open`/`satisfied`/`partial`/`descoped`/`contradicted`) vs. todo's binary checkbox, a small superset. Lean: extend the shared checklist reader to accept an optional `(status)` token so research and todo share one parser.
 4. **Should research-agent ever auto-confirm a descope?** Hard rule 3 says no — descope requires the user. But for tightly-scoped acceptance criteria (e.g., a3 "writeup exists" trivially satisfied by a markdown file), the friction may be unnecessary. Suggestion: keep the rule strict; relax via runtime config for power users only.
 5. **Cost-aware sub-LM defaults?** Like rlm-agent's haiku-sub-LM recommendation, research-agent's `query$llm` synthesis calls could default to a cheaper sub-model. Worth measuring after Phase 0.
 6. **Terminal verdict.md vs. final answer drift.** What if the agent's `:answer` says :partial but `verdict.md` says :achieved (e.g., because of a buggy helper)? Suggestion: make `verdict.md` the source of truth; the agent's answer is *derived* from verdict.md after it's written. Unify in Phase 1.

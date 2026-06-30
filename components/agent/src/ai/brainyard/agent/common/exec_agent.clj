@@ -36,7 +36,7 @@
    dossier; C3 reads the plan-agent dossier referenced from the todo
    dossier. Both helper suites are bound read-only.
 
-   See `docs/exec-agent-design.md` for the design rationale."
+   See `docs/design/exec-agent-design.md` for the design rationale."
   (:require [ai.brainyard.agent.core.tool :refer [defagent]]
             [ai.brainyard.agent.common.coact-agent :as coact]
             [ai.brainyard.agent.common.commands :as common-cmds]

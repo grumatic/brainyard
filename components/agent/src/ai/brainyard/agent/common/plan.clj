@@ -510,7 +510,7 @@
 ;; hook; the happy path authors the same template directly via write-file, so
 ;; the two writers can't diverge). The write-side helper chain
 ;; (plan$dossier-frontmatter / -write / -index-append / -slug / plan$next-handoff)
-;; is RETIRED per docs/design/plan-agent-lightweight-redesign.md — the LLM emits
+;; is RETIRED per docs/design/plan-agent-design.md — the LLM emits
 ;; the dossier as markdown, which it is reliably fluent at.
 ;;
 ;; checks/rubric stay one-line flow maps and holds/acceptance stay flow vectors

@@ -4,7 +4,7 @@
 
 (ns ai.brainyard.agent.common.research
   "Research-agent helpers — the surviving READ/DERIVE seams + auto-finalize
-   backstop (lightweight redesign, docs/design/research-agent-lightweight-redesign.md).
+   backstop (lightweight redesign, docs/design/research-agent-design.md).
 
    Orchestration is LLM judgment and persistence is markdown the model authors
    directly, so the structured-construction helpers (research$bootstrap with its

@@ -1,23 +1,59 @@
 # Workflow-Agent — Domain-Specific Multi-Agent Workflow Automation (CoAct-derived)
 
-> **Status:** Shipped — `workflow-agent` is registered in `components/agent` (`common/workflow_agent.clj`). This document is the original design proposal (revision 1); the shipped implementation diverges in the details flagged with **As-built** notes below. See [core/agent.md](../core/agent.md) for the current roster.
-> **Scope:** `components/agent/src/ai/brainyard/agent/common/workflow_agent.clj` + `workflow.clj`
-> **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
-> **Replaces:** `pipeline` (now fully retired — the `pipeline/` directory has been removed; see §14)
-> **Related reading:** `docs/CoAct.md`, `docs/research-agent-design.md`, `docs/explore-agent-design.md`, `docs/rlm-agent-design.md`
+> **Status:** Shipped. `pipeline` retired (the `pipeline/` directory was removed; see §14);
+> lightweight authoring + template-CRUD redesign shipped (2026-06). This doc is the as-built
+> reference — the former `workflow-agent-lightweight-redesign.md` has been folded in here and removed.
 >
-> **As-built (2026-06):** Recurring divergences that run through this whole doc:
-> 1. **Stages are dispatched by DIRECT kebab-case agent calls, not `call-tool`.** The shipped
->    instruction/tool-context invoke `(plan-agent {…})`, `(research-agent {…})`, etc. directly in a
->    clojure fence (the defagents self-register as callable sandbox fns). Wherever this doc says
->    "via `call-tool`", read "via the direct kebab-case call". `call-tool` is still bound for
->    generic registry access, but is not the stage-dispatch path.
-> 2. **`pipeline` is gone, not coexisting.** The migration in §14 completed: there is no
->    `components/agent/src/ai/brainyard/agent/pipeline/` and the `/pipeline` slash commands were removed.
-> 3. **`workflow$summarize-log` was never implemented**; **`workflow$install-starters` and
->    `workflow$load-template` were** — see the corrected helper roster in §9.
-> 4. **Only two starter templates ship** (`feature-launch.edn`, `doc-update.edn`), not the six listed
->    in §4.2. They live under `components/agent/resources/workflows/`.
+> **As-built (verify against `common/workflow_agent.clj`, `common/workflow.clj`):**
+> - **Dossier authoring is direct markdown, not a construct-a-map helper chain.** Bootstrap is
+>   `bash mkdir` + `write-file` of `purpose.md` / `acceptance.md` / `stages.md` / `dossier.md` from
+>   the loaded template. The old write-side helpers `workflow$bootstrap` /
+>   `workflow$update-stage` / `workflow$update-acceptance` / `workflow$write-verdict` /
+>   `workflow$append-log` / `workflow$index-append` (and the never-built `workflow$summarize-log`)
+>   are **retired** (§9). Six read/derive/validate seams survive: `workflow$id`,
+>   `workflow$resume?`, `workflow$list-templates`, `workflow$load-template`,
+>   `workflow$install-starters`, and the new `workflow$verdict-outcome`.
+> - **Acceptance criteria AND the stage roster are CHECKLISTS on the shared todo substrate.**
+>   `acceptance.md` and `stages.md` are markdown checklists with a stable id per line; status is
+>   flipped **index-free by id** via `update-file` (never by ordinal). One parser serves three
+>   status-list concerns — todo items, workflow acceptance, workflow stages. Acceptance tokens:
+>   `open[ ] satisfied[x] partial[~] descoped[-] contradicted[!]`; stage tokens:
+>   `pending[ ] in-progress[>] satisfied[x] skipped[-] failed[!]` (parser also accepts `:abandoned`).
+> - **Workflow templates are MARKDOWN with a managed CRUD lifecycle, not hand-authored EDN.** A
+>   template is frontmatter (`workflow_id` / `name` / `description` / `defaults`) + a `# Acceptance`
+>   checklist + a `# Stages` checklist — the same checklist shape a run dossier uses. CREATE / UPDATE /
+>   DELETE are plain file ops (`write-file` / `update-file` / `rm`), owned by workflow-agent in an
+>   explicit **AUTHORING MODE** (§6), validated by `workflow$load-template` after each write. Hard
+>   Rule 3 still forbids self-modify *mid-run* — authoring is a separate invocation. `iteration 1`
+>   does a MODE SELECT (run vs. authoring).
+> - **Stages are dispatched by DIRECT kebab-case agent calls.** `(plan-agent {…})`,
+>   `(research-agent {…})`, `(edit-agent {…})`, etc. in a clojure fence (defagents self-register as
+>   callable sandbox fns). `call-tool` is bound for generic registry access but is not the
+>   stage-dispatch path. Wherever older prose below says "via `call-tool`", read "via the direct
+>   kebab-case call".
+> - **A `:agent.ask/finalize` auto-finalize backstop** derives the outcome, renders `verdict.md`,
+>   appends `INDEX.md`, and injects the absent `Saved workflow dossier:` line when the LLM emits a
+>   non-blank answer but skipped the FINALIZE fence — *gated* on the dossier existing, no acceptance
+>   criterion `:open`, and `verdict.md` absent. Per-turn opt-out via the `workflow-auto-finalize`
+>   config. (The original proposal placed this on `:agent.ask/post`; as-built it is
+>   `:agent.ask/finalize`.)
+> - **Templates dual-read legacy EDN** and dossiers dual-read legacy `stages.edn` / frontmatter
+>   acceptance for one deprecation window, so existing user/project templates and in-flight runs
+>   keep working.
+> - **Only two starter templates ship** (`feature-launch`, `doc-update`) under
+>   `components/agent/resources/workflows/`, now as **markdown**. The other four sketched in §4.2
+>   were never authored.
+> - Migration §14 (retiring `pipeline`) is **complete** — `pipeline/` is gone and `/pipeline` slash
+>   commands were removed.
+>
+> **Scope:** `components/agent/src/ai/brainyard/agent/common/workflow_agent.clj`,
+> `components/agent/src/ai/brainyard/agent/common/workflow.clj`, and the markdown template format
+> under `.brainyard/workflows/`
+> **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
+> **Supersedes:** `pipeline` (deleted)
+> **Related reading:** `docs/CoAct.md`, `docs/design/research-agent-design.md`,
+> `docs/design/explore-agent-design.md`, `docs/design/rlm-agent-design.md`,
+> `docs/design/agent-lightweight-redesign-synthesis.md`
 
 ---
 
@@ -35,34 +71,41 @@ It works. It also has the same shape of problems the `research-agent` design (`d
 
 3. **HITL embedded in the DAG, not the conversation.** The five HITL modes and SmartPause are first-class features of the executor. That made sense when the pipeline was a separate state machine; in a CoAct-driven world it duplicates the agent loop's own approval surface (`request-user-action`, `user-approval-action`, `user-interrupt-action`) and can't be tuned per stage by the LLM mid-flight.
 
+A fourth issue, surfaced once `pipeline`'s replacement was in use: **the template gap.** Workflow templates were hand-authored EDN, and nothing owned their lifecycle. Editing one meant emitting precise EDN — the same structured-construction brittleness the lightweight redesign retires elsewhere — and there was no agent-managed CREATE/UPDATE/DELETE, even though tools (tool-agent), agents (meta-agent), and skills (skill-agent) all have lifecycle owners. So a user who wanted "make a workflow template for our release process" or "add a canary stage to feature-launch" had to hand-edit EDN. (Closed by §6: templates become markdown checklist docs with a managed CRUD lifecycle.)
+
 **The CoAct lesson — applied again.** `research-agent` showed that a single CoAct loop with a curated instruction and a durable dossier replaces a hard-sequenced multi-specialist BT (autoresearch's plan→todo→exec→eval). The same recipe applies one tier up: at the *workflow* scale, where each "stage" is itself a multi-specialist call (often a `research-agent` invocation, sometimes an explore / plan / exec call directly).
 
-`workflow-agent` is the CoAct equivalent of `pipeline`. It owns one durable artifact (the workflow dossier), reaches stages via `call-tool` to whichever functional agent fits each stage, and lets the LLM decide stage order, retries, and termination. The `:agent`/`:gate`/`:decision`/`:sub-pipeline` ontology becomes implicit moves in a state machine the LLM picks from per iteration.
+`workflow-agent` is the CoAct equivalent of `pipeline`. It owns one durable artifact (the workflow dossier), reaches stages via **direct kebab-case dispatch** to whichever functional agent fits each stage, and lets the LLM decide stage order, retries, and termination. The `:agent`/`:gate`/`:decision`/`:sub-pipeline` ontology becomes implicit moves in a state machine the LLM picks from per iteration.
 
-**Thesis.** Add a CoAct-derived `workflow-agent` that:
+The shipped design is **lightweight**: the orchestration loop is judgment the LLM does well and stays untouched, but persistence is markdown the model authors directly rather than structured objects it constructs through helpers. The dossier's acceptance criteria and stage roster are **markdown checklists** flipped index-free by stable id (the shared todo substrate), and workflow **templates are markdown** with a managed CRUD lifecycle — so authoring, running, and tracking all speak one checklist format. (This is the cross-agent argument in `agent-lightweight-redesign-synthesis.md`: separate *judgment* — orchestration, authoring prose — from *mechanism* — discovery, parsing, validation, verdict derivation.)
 
-1. **Owns one durable artifact** — a workflow dossier under `.brainyard/agents/workflow-agent/<workflow-id>/` capturing *purpose*, *domain constraints*, *workflow-level acceptance criteria*, *stage roster + status*, *cumulative findings*, and *handoff state* across iterations and across stages.
-2. **Treats workflow templates as data, not logic** — domain-specific templates (`.brainyard/workflows/<domain>.edn`) declare the *expected shape* (typical stage sequence, recommended agents, default acceptance criteria) but do NOT bind the LLM to them. The instruction tells the agent: *templates are starting points, not contracts.*
+**Thesis.** A CoAct-derived `workflow-agent` that:
+
+1. **Owns one durable artifact** — a workflow dossier under `.brainyard/agents/workflow-agent/<workflow-id>/` capturing *purpose*, *domain constraints*, *workflow-level acceptance criteria*, *stage roster + status*, *cumulative findings*, and *handoff state* across iterations and across stages. The acceptance + stage roster are markdown checklists (§5).
+2. **Treats workflow templates as data, not logic — and authored as markdown.** Domain-specific templates (`.brainyard/workflows/<domain>.md`) declare the *expected shape* (typical stage sequence, recommended agents, default acceptance criteria) but do NOT bind the LLM to them. The instruction tells the agent: *templates are starting points, not contracts.* Templates get a managed CRUD lifecycle (§6) — they are markdown checklist docs, so editing one is editing a file.
 3. **Uses CoAct's loop** — no new BT, no executor, no DAG walker. The LLM picks the next move per iteration: load template, draft workflow plan, run a stage, evaluate, gate (ask user), branch, re-run a stage, finalize.
-4. **Reaches functional agents via `call-tool`** — `(call-tool "research-agent" {...})`, `(call-tool "explore-agent" {...})`, `(call-tool "exec-agent" {...})`, plus any other registered defagent. Cross-agent dispatch is flat call-tool, not pipeline executor wiring.
-5. **HITL collapses into the conversation.** Approval gates become `answer`-channel pauses (the user replies, the workflow resumes). The five HITL modes become one runtime config knob (`:workflow-hitl :auto|:gates|:checkpoint|:co-pilot|:step`) the LLM consults — no executor branch.
-6. **Inherits CoAct's full BT, sandbox, router, accumulator** — no substrate changes. Whole feature is one new agent file plus an optional helpers namespace, mirroring `research-agent`.
-7. **Coexists with pipeline** during a staged migration (§14), then retires it.
+4. **Reaches functional agents via direct kebab-case dispatch** — `(research-agent {...})`, `(explore-agent {...})`, `(exec-agent {...})`, `(edit-agent {...})`, plus any other registered defagent. Cross-agent dispatch is flat, not pipeline executor wiring.
+5. **HITL collapses into the conversation.** Approval gates become `answer`-channel pauses (the user replies, the workflow resumes). The five HITL modes become one config knob (`:hitl_mode :auto|:gates|:checkpoint|:co-pilot|:step`) the LLM consults — no executor branch.
+6. **Inherits CoAct's full BT, sandbox, router, accumulator** — no substrate changes. Whole feature is one agent file plus a slim read/derive/validate helpers namespace, mirroring `research-agent`.
+7. **Owns workflow-template CRUD** in an explicit authoring mode (§6), the workflow analog of the tool/agent/skill lifecycles — distinct from run mode, with no self-modify mid-run.
 
 ---
 
 ## 2. Design Principles
 
-1. **Workflow shape is a recommendation, not a contract.** Domain templates declare what *typically* happens. The LLM adapts shape to the actual question.
-2. **Durable workflow dossier.** Cross-stage state lives in markdown + EDN files, not in `pipeline/state.clj` atoms or per-stage `:result` strings. Every stage call writes; every subsequent stage call reads.
-3. **The LLM owns sequencing.** Re-run a stage? Skip ahead? Branch? Pause for user input? These are reasoning calls. The instruction names the moves; the LLM picks one per iteration.
-4. **Stages are agent invocations.** Each stage is a `call-tool` to a functional agent (research / explore / plan / todo / exec / eval / mcp / skill / rlm / coact). The workflow-agent does not implement domain logic — it composes agents.
-5. **Domain knowledge lives in templates.** A `.edn` for `feature-launch` knows the typical stage sequence (research → plan → implement → test → release-notes → announce) and recommends agents per stage. A `.edn` for `incident-response` knows a different sequence. The agent reads the template; the user picks which template to instantiate.
-6. **HITL is a single conversational surface.** Approval prompts are `answer`-channel pauses with a stable prefix the dispatcher can identify. No second approval system.
-7. **Acceptance criteria are workflow-scoped.** The dossier carries *workflow-level* acceptance ("the feature is launched: PR merged, docs published, announcement sent") distinct from each stage's per-call acceptance. Workflow termination requires workflow-level acceptance, not stage-level.
-8. **No clone-self recursion.** `query$clone` is excluded — the workflow agent calling itself is the depth-2 anti-pattern. Cross-agent `call-tool` to other defagents is flat dispatch and IS the design.
-9. **Resumable.** The dossier is the only state of record. A workflow run interrupted mid-flight (TUI exit, gate timeout, max iterations) can be resumed by passing the workflow-id; the agent reads the dossier and continues.
-10. **Generous iteration cap.** Default 50 iterations. A workflow with 6–8 stages, each occasionally needing retry/branch, easily hits 30–40 actual moves. Override via `agent-runtime$config :key "max-iterations" :value "N"`.
+1. **Orchestration is judgment — untouched.** The 9-move state machine (RUN-STAGE / EVAL / GATE / RE-RUN / INSERT / SKIP / SYNTHESIZE / CLARIFY / FINALIZE), the HITL modes, and direct kebab-case dispatch stay exactly as designed. Only the *persisting* was over-tooled.
+2. **Workflow shape is a recommendation, not a contract.** Domain templates declare what *typically* happens. The LLM adapts shape to the actual question — skip / insert / re-run / reorder / substitute the agent as real work demands.
+3. **Acceptance and stages are checklists (substrate reuse).** Cross-stage state lives in markdown checklists — `acceptance.md` and `stages.md` — not in `pipeline/state.clj` atoms, per-stage `:result` strings, or vectors-of-maps. Both ride the todo substrate's checklist + index-free flip + parse-back read seam: one mechanism for three status-list concerns (todo items, workflow acceptance, workflow stages). Every move writes; every subsequent move reads.
+4. **The LLM owns sequencing.** Re-run a stage? Skip ahead? Branch? Pause for user input? These are reasoning calls. The instruction names the moves; the LLM picks one per iteration.
+5. **Stages are agent invocations via direct dispatch.** Each stage is a direct kebab-case call to a functional agent (research / explore / plan / todo / exec / eval / mcp / skill / edit / rlm / coact). The workflow-agent does not implement domain logic — it composes agents.
+6. **Templates are markdown, not EDN — with a managed CRUD lifecycle.** A `feature-launch.md` declares the typical stage sequence (research → plan → implement → test → release-notes → announce) and recommends agents per stage, in the *same checklist format* the run dossier uses. CREATE/READ/UPDATE/DELETE are file ops owned by workflow-agent in an authoring mode (§6) — the missing lifecycle, matching tool-agent / meta-agent / skill-agent.
+7. **HITL is a single conversational surface.** Approval prompts are `answer`-channel pauses with a stable prefix the dispatcher can identify. No second approval system.
+8. **Acceptance criteria are workflow-scoped.** The dossier carries *workflow-level* acceptance ("the feature is launched: PR merged, docs published, announcement sent") distinct from each stage's per-call acceptance. Workflow termination requires workflow-level acceptance, not stage-level.
+9. **No clone-self recursion.** `query$clone` is excluded — the workflow agent calling itself is the depth-2 anti-pattern. Direct cross-agent dispatch to other defagents is flat and IS the design.
+10. **Run/edit separation preserved.** No template self-modification *during* a run (Hard Rule 3); template editing is a separate, explicit authoring-mode invocation.
+11. **Keep deterministic discovery/validation/derivation.** Listing/loading/validating templates, deriving the verdict outcome, and enforcing the `:achieved` guard are all mechanism — kept as typed `workflow$*` seams (§9).
+12. **Resumable.** The dossier is the only state of record. A workflow run interrupted mid-flight (TUI exit, gate timeout, max iterations) can be resumed by passing the workflow-id; the agent reads the dossier and continues.
+13. **Generous iteration cap.** Default 50 iterations. A workflow with 6–8 stages, each occasionally needing retry/branch, easily hits 30–40 actual moves. Override via `agent-runtime$config :key "max-iterations" :value "N"`.
 
 ---
 
@@ -79,8 +122,7 @@ coact-agent  (parent — full BT, sandbox, router, accumulator)
   ├─ exec-agent        (advance an existing todo)
   ├─ eval-agent        (verdict against plan ## Acceptance)
   ├─ research-agent    (multi-specialist research thread; dossier)
-  ├─ pipeline          (DEPRECATED — see §14)
-  └─ workflow-agent    (NEW — domain-specific multi-agent workflow automation)
+  └─ workflow-agent    (domain-specific multi-agent workflow automation; supersedes the retired pipeline)
 ```
 
 | Question / task shape | Use | Why |
@@ -90,7 +132,7 @@ coact-agent  (parent — full BT, sandbox, router, accumulator)
 | "Investigate Y end-to-end and produce a recommendation" | research-agent | Multi-specialist research thread. |
 | "Run the feature-launch workflow for feature F: research, plan, implement, test, release-notes, announce." | **workflow-agent** | Multi-stage domain workflow. |
 | "Run the incident-response runbook for outage O: detect, mitigate, root-cause, postmortem." | **workflow-agent** | Multi-stage domain workflow. |
-| "Walk me through this static `.pipeline.edn` DAG with HITL gates" | pipeline (during migration) → workflow-agent | Migration target. |
+| "Create a workflow template for our release process" / "add a canary stage to feature-launch" | **workflow-agent** (authoring mode) | Template CRUD — the workflow-template lifecycle (§6). |
 
 Rule: **research-agent is for one research thread end-to-end. workflow-agent is for a multi-stage *domain workflow* where most stages are themselves multi-specialist work** (typically themselves research-agent or exec-agent invocations).
 
@@ -111,96 +153,81 @@ Each level is flat — no agent recurses on itself. Workflow → Research → Sp
 
 ---
 
-## 4. Workflow Templates — `.brainyard/workflows/<domain>.edn`
+## 4. Workflow Templates — `.brainyard/workflows/<domain>.md`
 
-Workflow templates are the data side of the design. They are read by the LLM and treated as *recommendations*. They are NOT executed by a DAG walker.
+Workflow templates are the data side of the design — **markdown checklist docs** (§6 gives them a
+managed CRUD lifecycle). They are read by the LLM and treated as *recommendations*. They are NOT
+executed by a DAG walker.
 
-### 4.1 Template Shape
+### 4.1 Template Shape (markdown)
 
-```edn
-{:workflow/id   :feature-launch
- :workflow/name "Feature Launch Workflow"
- :workflow/description
- "End-to-end feature delivery: research → plan → implement → test → release."
+A workflow template is frontmatter (id / name / description / defaults) + a `# Acceptance`
+checklist + a `# Stages` checklist — the *same* checklist shape a bootstrapped dossier uses, minus
+the run state (all criteria `(open)`, all stages unchecked). Stage metadata (`agent`, `gate`,
+`focus`) rides an inline `{…}` tag, exactly how todo items carry inline tags.
 
- :acceptance
- [{:id :a1 :text "Feature meets the user-stated success criteria"}
-  {:id :a2 :text "Implementation merged to main"}
-  {:id :a3 :text "Tests added and passing"}
-  {:id :a4 :text "Release notes published"}
-  {:id :a5 :text "Stakeholders notified"}]
+```markdown
+---
+workflow_id: feature-launch
+name: Feature Launch
+description: End-to-end feature delivery — research → plan → implement → test → release.
+defaults: {hitl: gates, max_stage_attempts: 2, sub_lm: claude-haiku-4-5-20251001}
+---
 
- :stages
- [{:id :research-feasibility
-   :purpose "Validate the feature is worth doing and surface unknowns"
-   :recommended-agent :research-agent
-   :gate-after :user                     ; default :auto | :user | :smart
-   :acceptance-focus [:a1]}
+# Acceptance
+- [ ] a1 — feature meets the user-stated success criteria
+- [ ] a2 — implementation merged to main
+- [ ] a3 — tests added and passing
+- [ ] a4 — release notes published
+- [ ] a5 — stakeholders notified
 
-  {:id :plan-design
-   :purpose "Author a concrete implementation plan"
-   :recommended-agent :plan-agent
-   :acceptance-focus [:a1 :a2]}
-
-  {:id :implement
-   :purpose "Execute the plan's todo list"
-   :recommended-agent :exec-agent
-   :acceptance-focus [:a2 :a3]}
-
-  {:id :test
-   :purpose "Run/extend tests; capture failures"
-   :recommended-agent :exec-agent
-   :acceptance-focus [:a3]}
-
-  {:id :release-notes
-   :purpose "Draft user-facing release notes"
-   :recommended-agent :coact-agent
-   :acceptance-focus [:a4]}
-
-  {:id :announce
-   :purpose "Notify stakeholders via configured channels"
-   :recommended-agent :mcp-agent
-   :gate-after :user
-   :acceptance-focus [:a5]}]
-
- :defaults
- {:hitl :gates                           ; :auto | :gates | :checkpoint | :co-pilot | :step
-  :max-stage-attempts 3
-  :sub-lm "claude-haiku-4-5-20251001"}}
+# Stages
+- [ ] s1 research-feasibility — validate the feature is worth doing {agent: research-agent, gate: user, focus: [a1]}
+- [ ] s2 plan-design — author a concrete implementation plan {agent: plan-agent, gate: none, focus: [a1, a2]}
+- [ ] s3 implement — execute the plan's todo list {agent: exec-agent, gate: none, focus: [a2, a3]}
+- [ ] s4 test — run/extend tests; capture failures {agent: exec-agent, gate: none, focus: [a3]}
+- [ ] s5 release-notes — draft user-facing release notes {agent: coact-agent, gate: none, focus: [a4]}
+- [ ] s6 announce — notify stakeholders via configured channels {agent: mcp-agent, gate: user, focus: [a5]}
 ```
 
-**Stage fields are advisory.** The LLM is told (via instruction) that templates declare *typical shape* but it can:
+`workflow$load-template` parses this markdown (read + validate) into the run's starting acceptance +
+stages. Because templates are markdown checklists, **one checklist format serves the template, the
+run dossier, and the todo substrate** — the template a user reads is byte-for-byte the shape the run
+consumes. The shipped parser also **dual-reads legacy `.edn` templates** for the deprecation window
+(it normalizes the old `:acceptance`/`:stages` vectors-of-maps to the uniform shape).
 
-- Skip a stage (`:test` is unnecessary if the implementation is doc-only).
-- Insert a stage (an unforeseen `:migrate-data` step before `:implement`).
-- Re-run a stage (post-`:test`, return to `:implement`).
-- Reorder (`:release-notes` before `:test` if the feature is feature-flag gated).
-- Substitute the agent (use `coact-agent` for `:research-feasibility` if the question is trivial).
+**Stage lines are advisory.** The LLM is told (via instruction) that templates declare *typical
+shape* but it can:
+
+- Skip a stage (`test` is unnecessary if the implementation is doc-only).
+- Insert a stage (an unforeseen `migrate-data` step before `implement`).
+- Re-run a stage (post-`test`, return to `implement`).
+- Reorder (`release-notes` before `test` if the feature is feature-flag gated).
+- Substitute the agent (use `coact-agent` for `research-feasibility` if the question is trivial).
 
 ### 4.2 Where Templates Live
 
 ```
 .brainyard/
 └── workflows/
-    ├── feature-launch.edn
-    ├── incident-response.edn
-    ├── doc-update.edn
-    ├── refactor-and-verify.edn
-    ├── data-migration.edn
-    └── library-upgrade.edn
+    ├── feature-launch.md      ; shipped starter
+    └── doc-update.md          ; shipped starter
 ```
 
-Templates are versioned in the project repo (or in `~/.brainyard/workflows/` for personal templates). They are how *domain knowledge* flows from senior engineers into agent runs without anyone having to write executor logic.
-
-> **As-built:** Of the six templates sketched above, only **two ship** today — `feature-launch.edn`
-> and `doc-update.edn`, under `components/agent/resources/workflows/` (the classpath `workflows/`
-> resource dir). The other four (`incident-response`, `refactor-and-verify`, `data-migration`,
-> `library-upgrade`) were never authored. Users can still author their own under
-> `.brainyard/workflows/` or `~/.brainyard/workflows/`.
+Templates are markdown, versioned in the project repo (or in `~/.brainyard/workflows/` for personal
+templates), and resolved project → user → built-in. They are how *domain knowledge* flows from
+senior engineers into agent runs without anyone having to write executor logic — and now without
+hand-authoring EDN (§6). **As-built:** only two starters ship (`feature-launch`, `doc-update`),
+under `components/agent/resources/workflows/` (the classpath `workflows/` resource dir). The four
+others sketched in earlier drafts (`incident-response`, `refactor-and-verify`, `data-migration`,
+`library-upgrade`) were never authored; users author their own under `.brainyard/workflows/` or
+`~/.brainyard/workflows/`.
 
 ### 4.3 Template Bootstrapping
 
-A small set of starter templates ships with brainyard on the classpath under `resources/workflows/`. On first invocation that doesn't find any project-local templates, `workflow$install-starters` copies the starters into `.brainyard/workflows/` for the user to edit. This mirrors how `.brainyard/skills/` is bootstrapped. **As-built:** the shipped helper is `workflow$install-starters` (idempotent; `:overwrite?` opt-in), and only the two starters above are copied.
+The two starter templates ship on the classpath under `resources/workflows/` as markdown.
+`workflow$install-starters` (idempotent; `:overwrite?` opt-in) copies them into
+`.brainyard/workflows/` for the user to edit. This mirrors how `.brainyard/skills/` is bootstrapped.
 
 ---
 
@@ -211,28 +238,74 @@ A small set of starter templates ships with brainyard on the classpath under `re
 ```
 .brainyard/
 └── workflow-agent/
-    ├── INDEX.md                            ; one line per workflow run, newest first
+    ├── INDEX.md                            ; one line per workflow run (append-only)
     └── <workflow-id>/                       ; one directory per workflow thread
-        ├── dossier.md                       ; durable workflow context (see §5.2)
-        ├── purpose.md                       ; immutable after iteration 1
-        ├── acceptance.md                    ; workflow-level criteria
-        ├── stages.edn                       ; current stage roster + status
-        ├── findings.log                     ; append-only NDJSON of stage calls
-        ├── handoff.md                       ; what to pass to the next stage
-        ├── verdict.md                       ; written at termination
-        ├── template.edn                     ; copy of the source template (for diff/audit)
-        └── artifacts/                       ; pointers into other agents' outputs
-            ├── research/                    ; symlinks to .brainyard/agents/research-agent/<id>/
-            ├── plans/                       ; symlinks to .brainyard/plans/<slug>.md
-            ├── todos/                       ; symlinks
-            ├── evals/                       ; symlinks
-            ├── exploration/                 ; symlinks to explore-agent results
-            └── stage-outputs/<stage-id>.md  ; freeform per-stage notes the workflow agent owns
+        ├── purpose.md                       ; verbatim question (immutable after iteration 1)
+        ├── acceptance.md                    ; the ACCEPTANCE CHECKLIST — index-free flips (§5.2)
+        ├── stages.md                        ; the STAGE CHECKLIST — index-free flips (§5.2)
+        ├── dossier.md                       ; YAML frontmatter + body — the cross-stage contract
+        ├── findings.log                     ; append-only, one line per move (write-file :append)
+        ├── verdict.md                       ; written at termination (§5.4)
+        └── artifacts/                       ; pointers (symlinks) into other agents' outputs
 ```
 
-The `<workflow-id>` is a kebab-case slug (workflow-template name + a deterministic suffix from the user's question). Re-runs of the same workflow on the same target produce the same id; the dossier accumulates.
+The `<workflow-id>` is a kebab-case slug (`<template-id>--<question-slug>`, or just
+`<question-slug>` for `:ad-hoc`), derived by `workflow$id`. Re-runs of the same workflow on the same
+target produce the same id; the dossier accumulates and `workflow$resume?` resumes it.
 
-### 5.2 `dossier.md` — Cross-Stage Context Carrier
+> The pre-redesign dossier kept acceptance as a frontmatter vector-of-maps and the stage roster in a
+> separate `stages.edn`. As-built, **both are markdown checklists** (`acceptance.md`, `stages.md`)
+> on the shared todo substrate. `workflow$resume?` and `workflow$verdict-outcome` **dual-read** the
+> legacy frontmatter-acceptance + `stages.edn` shapes so in-flight runs finish on the old format.
+
+### 5.2 `acceptance.md` + `stages.md` — Checklists (the shared todo substrate)
+
+Both files are markdown checklists with a stable id per line and a `(status)` token. Status is
+flipped **index-free by id** with `update-file` — matched on the line text (id + token), never on an
+ordinal — the same safety as todo and research.
+
+**`acceptance.md`** (identical to research-agent's acceptance checklist):
+
+```markdown
+# Acceptance — feature-launch--mcp-server-health-check
+- [x] a1 (satisfied) — Health-check command reachable via mcp$server :op :health-check; evidence: <plan/eval path>
+- [ ] a2 (open) — PR merged to main
+- [x] a3 (satisfied) — Unit tests added with >= 80% line coverage on new code
+- [ ] a4 (open) — Release notes published
+- [ ] a5 (open) — Slack #releases announcement sent
+```
+
+Acceptance status tokens: `open [ ]` · `satisfied [x]` · `partial [~]` · `descoped [-]` ·
+`contradicted [!]`.
+
+**`stages.md`** (the stage roster — a checklist with inline metadata tags, exactly how todo items
+carry `{…}`):
+
+```markdown
+# Stages — feature-launch--mcp-server-health-check
+- [x] s1 research-feasibility (satisfied) — validate feasibility {agent: research-agent, gate: user, focus: [a1]}
+- [x] s2 plan-design (satisfied) — author the plan {agent: plan-agent, gate: none, focus: [a1, a2]}
+- [>] s3 implement (in-progress) — execute the todo {agent: exec-agent, gate: none, focus: [a2, a3]}
+- [ ] s4 test (pending) — run/extend tests {agent: exec-agent, gate: none, focus: [a3]}
+- [ ] s5 release-notes (pending) — draft release notes {agent: coact-agent, gate: none, focus: [a4]}
+- [ ] s6 announce (pending) — notify stakeholders {agent: mcp-agent, gate: user, focus: [a5]}
+```
+
+Stage status tokens: `pending [ ]` · `in-progress [>]` · `satisfied [x]` · `skipped [-]` ·
+`failed [!]` (the parser also accepts `~`→`partial` and `:abandoned`). The inline `{agent, gate,
+focus}` tag carries the per-stage metadata; **`attempts` is derived** from the count of RE-RUN
+entries for that stage id in `findings.log`, and **`completed-at`** is the flip timestamp — no
+separate structured counter to maintain.
+
+A single read seam (`workflow$resume?` / the shared checklist reader) parses both into
+`{:acceptance-state {a1 :satisfied …} :pending-stages [s4 s5 s6] …}` for resume *and* for the
+verdict-outcome derivation. This unifies **three** status-list concerns onto one parser: todo items,
+workflow acceptance, and workflow stages.
+
+### 5.3 `dossier.md` — Cross-Stage Context Carrier
+
+`dossier.md` carries lightweight frontmatter (the run's identity + mode) plus a narrative body; the
+authoritative status lists live in the two checklists (§5.2).
 
 ```markdown
 ---
@@ -240,158 +313,84 @@ workflow_id: feature-launch--mcp-server-health-check
 workflow_template: feature-launch
 created: 2026-05-09T18:12:44Z
 last_iteration: 14
-status: in_progress              # in_progress | achieved | partial | abandoned
-purpose: >
-  Add a health-check command to the MCP server that surfaces per-server
-  status in the TUI's status bar. Should ship as a 0.1% feature flag
-  rollout next Tuesday.
-acceptance:
-  - id: a1
-    text: "Health-check command implemented; reachable via mcp$server :op :health-check"
-    status: satisfied
-  - id: a2
-    text: "PR merged to main"
-    status: open
-  - id: a3
-    text: "Unit tests added with >= 80% line coverage on new code"
-    status: satisfied
-  - id: a4
-    text: "Release notes published"
-    status: open
-  - id: a5
-    text: "Slack #releases announcement sent"
-    status: open
-stages:
-  - id: research-feasibility   { agent: research-agent, status: satisfied,
-                                 artifact: artifacts/research/feature-launch--mcp-server-health-check/ }
-  - id: plan-design             { agent: plan-agent, status: satisfied,
-                                  plan_slug: mcp-server-health-check }
-  - id: implement               { agent: exec-agent, status: in_progress,
-                                  todo_slug: mcp-server-health-check }
-  - id: test                    { agent: exec-agent, status: pending }
-  - id: release-notes           { agent: coact-agent, status: pending }
-  - id: announce                { agent: mcp-agent, status: pending }
+status: in-progress              # in-progress | achieved | partial | abandoned
 hitl_mode: gates                 # auto | gates | checkpoint | co-pilot | step
-artifacts:
-  research_dossier: .brainyard/agents/research-agent/feature-launch--mcp-server-health-check/
-  plan_slug: mcp-server-health-check
-  todo_slug: mcp-server-health-check
-  evals: []
-calls_log: findings.log
-template: template.edn
 ---
 
 ## Purpose
 [verbatim from purpose.md, immutable]
 
-## Acceptance criteria (workflow-level)
-[mirror of frontmatter for readability]
-
 ## Stage progress
-[narrative log of completed/active stages with brief findings]
+[narrative log of completed/active stages with brief findings — regenerated from findings.log via SYNTHESIZE]
 
 ## Pending decisions / branches
 - Should we batch the announcement with next week's release? (open question)
 
 ## Open risks
-- Tests caught a flaky case in CI — needs investigation in :test stage.
+- Tests caught a flaky case in CI — needs investigation in the test stage.
 ```
 
-**Stable contract:**
+**Stable contract** (the read seams rely on these):
 
 | Frontmatter key | Type | Purpose |
 |---|---|---|
 | `workflow_id` | string | Stable identifier. |
 | `workflow_template` | keyword string | Source template id. |
-| `purpose` | string | Verbatim user request. |
-| `acceptance` | vector of `{id, text, status}` | Workflow-level criteria. |
-| `stages` | vector of `{id, agent, status, ...}` | Current roster + per-stage state. |
+| `last_iteration` | int | Drives resume + verdict iteration count. |
+| `status` | enum | `in-progress | achieved | partial | abandoned` |
 | `hitl_mode` | enum | `auto | gates | checkpoint | co-pilot | step` |
-| `artifacts` | map | Pointers to specialists' outputs (and to a research-agent dossier when one exists). |
-| `template` | path | Copy of the source template at workflow-init time. |
 
-### 5.3 `findings.log` — Append-Only Stage Call Log (NDJSON)
+The acceptance criteria and stage roster are **not** in this frontmatter — they are the §5.2
+checklists, which `workflow$resume?` reads alongside the frontmatter.
 
-```ndjson
-{"iter":2,"stage":"research-feasibility","agent":"research-agent","summary":"Health check is feasible; identified existing mcp$server :op :health as the place to extend.","artifact":".brainyard/agents/research-agent/feature-launch--mcp-server-health-check/"}
-{"iter":3,"stage":"plan-design","agent":"plan-agent","plan_slug":"mcp-server-health-check","plan_path":".brainyard/plans/mcp-server-health-check.md","summary":"Plan with 5 items; AOT-friendly approach"}
-{"iter":4,"stage":"plan-design","action":"gate","outcome":"approved","note":"User confirmed the plan"}
-{"iter":5,"stage":"implement","agent":"exec-agent","items_done":[0,1,2],"summary":"3 of 5 items done; client/server protocol wiring complete"}
-…
-```
+### 5.4 `findings.log`, `verdict.md`, `INDEX.md`
 
-The same NDJSON shape as research-agent's `findings.log` but with an extra `:stage` field. The workflow agent appends after every stage call; the dossier body's "## Stage progress" is regenerated periodically from the log.
-
-### 5.4 `stages.edn` — Live Stage Roster
-
-```edn
-{:workflow/id :feature-launch--mcp-server-health-check
- :template-id :feature-launch
- :stages
- [{:id :research-feasibility
-   :status :satisfied
-   :agent :research-agent
-   :acceptance-focus [:a1]
-   :attempts 1
-   :artifact ".brainyard/agents/research-agent/feature-launch--mcp-server-health-check/"
-   :completed-at "2026-05-09T18:31:12Z"}
-
-  {:id :plan-design
-   :status :satisfied
-   :agent :plan-agent
-   :acceptance-focus [:a1 :a2]
-   :attempts 1
-   :plan-slug :mcp-server-health-check
-   :gate {:status :approved :at "2026-05-09T18:42:00Z"}
-   :completed-at "2026-05-09T18:42:31Z"}
-
-  {:id :implement
-   :status :in-progress
-   :agent :exec-agent
-   :acceptance-focus [:a2 :a3]
-   :attempts 1
-   :todo-slug :mcp-server-health-check
-   :item-progress "3/5"}
-
-  ;; ...remaining stages...
-  ]}
-```
-
-**Stage status values:** `:pending → :in-progress → :satisfied | :failed | :skipped | :abandoned`. The workflow agent updates this file after each stage call. Read once per iteration to decide the next move.
-
-### 5.5 `handoff.md`, `verdict.md`, `INDEX.md`
-
-Same shape as research-agent's: a `handoff.md` pre-call (what the next stage receives), a `verdict.md` post-termination (one-shot), and an append-only `INDEX.md` at `.brainyard/agents/workflow-agent/INDEX.md`.
+- **`findings.log`** — append-only, one plain line per move via `write-file :append`, including the
+  specialist dossier path(s) the stage emitted (the verbatim `Saved …:` lines):
+  ```
+  iter 4 · s3 implement · exec-agent · Saved dossier: .brainyard/agents/exec-agent/<id>/
+  ```
+  (The pre-redesign log was NDJSON built by `workflow$append-log`; as-built it is a plain append the
+  model writes, with no construction helper.) The dossier body's `## Stage progress` is regenerated
+  from it periodically via SYNTHESIZE.
+- **`verdict.md`** — written once at termination from the VERDICT TEMPLATE (frontmatter +
+  `## Verdict` body). The model fills it with `write-file` after `workflow$verdict-outcome` derives
+  the outcome (`acceptance_outcome` / `stage_outcomes`) and clears the `:achieved` guard. The
+  auto-finalize backstop renders the same file if the model skips FINALIZE.
+- **`INDEX.md`** — append-only at `.brainyard/agents/workflow-agent/INDEX.md`, one line per run.
 
 ---
 
 ## 6. Tool Roster
 
 ```clojure
-(:require
-  [ai.brainyard.agent.common.tools     :as common-tools]
-  [ai.brainyard.agent.common.commands  :as common-cmds]
-  [ai.brainyard.agent.task.commands    :as task-cmds])
-
-(def workflow-tools
-  (vec (distinct
-         (concat
-           ;; Filesystem — for dossier / template maintenance
-           common-tools/file-tools          ; read-file, write-file, grep, fetch-url, update-file
-           common-tools/shell-tools         ; bash (mkdir, ls, ln -s, cp)
-
-           ;; Bookkeeping
-           common-tools/bootstrap-tools     ; list-tools, get-tool-info, search
-           common-tools/invocation-tools    ; call-tool
-
-           ;; Sub-LLM synthesis (flat only)
-           [#'common-cmds/query$llm]        ; intentionally excludes #'query$clone
-
-           ;; Background jobs (long-running stages can be wrapped)
-           task-cmds/task-commands))))
+;; from common/workflow_agent.clj — the shipped :agent-tools (abridged)
+:agent-tools
+{:tools (vec
+         (remove
+          ;; web tools route through explore-agent / research-agent; fetch-url
+          ;; tags along with file-tools, so filter it out explicitly.
+          #(= :fetch-url (:id (meta (deref %))))
+          (distinct
+            (concat
+              common-tools/file-tools        ; read-file, write-file, grep, update-file (NOT fetch-url)
+              common-tools/shell-tools       ; bash (mkdir, ls, ln -s, rm)
+              [#'common-cmds/query$llm]       ; sub-LLM synthesis (flat — excludes query$clone)
+              common-tools/bootstrap-tools   ; list-tools, get-tool-info, search
+              common-tools/invocation-tools  ; call-tool (generic registry access)
+              task-cmds/task-commands        ; background jobs for >5s stage calls
+              common-cmds/runtime-commands   ; agent-runtime$config — :max-iterations tuning
+              workflow/workflow-helpers))))}  ; the 6 READ/DERIVE/VALIDATE seams (§9)
 ```
 
-The functional agents (`research-agent`, `explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`, `mcp-agent`, `skill-agent`, `edit-agent`, `rlm-agent`, `coact-agent`) are reached via direct kebab-case dispatch — `(plan-agent {...})`, `(research-agent {...})`, etc. They are not bound as named tools in the roster; they live in the registry as auto-bound sandbox fns, and the agent calls them as needed. **As-built:** the proposal routed these through `(call-tool "<agent-name>" {...})`; the shipped instruction calls the defagent fns directly. The roster also binds the `workflow$*` helpers, `runtime-commands`, and (per the shipped code) explicitly *removes* `fetch-url` even though `file-tools` carries it.
+The functional agents (`research-agent`, `explore-agent`, `plan-agent`, `todo-agent`, `exec-agent`,
+`eval-agent`, `mcp-agent`, `skill-agent`, `edit-agent`, `rlm-agent`, `coact-agent`) are reached via
+**direct kebab-case dispatch** — `(plan-agent {...})`, `(research-agent {...})`, etc. They are not
+bound as named tools in the roster; they live in the registry as auto-bound sandbox fns, and the
+agent calls them as needed. `call-tool` is bound for generic registry access but is not the
+stage-dispatch path. The roster also binds the slim `workflow/workflow-helpers` (the six
+read/derive/validate seams — §9) and `runtime-commands`, and explicitly **removes `fetch-url`** even
+though `file-tools` carries it (web access routes through explore/research for auditability).
 
 What is *deliberately omitted*:
 
@@ -404,9 +403,102 @@ What is *deliberately omitted*:
 
 ---
 
-## 7. Instruction (System Prompt Body)
+## 7. Instruction (System Prompt Body) — As-Built Shape
 
-Layered on top of `coact-agent`'s instruction by `run-coact-derived`.
+The full instruction lives in `common/workflow_agent.clj` (`def instruction`), layered on
+`coact-agent`'s by `run-coact-derived`. It is the source of truth; this section summarizes its
+as-built shape rather than re-transcribing it (so the two cannot drift). The instruction opens with
+a **MODE SELECT** and then branches.
+
+### 7.1 MODE SELECT (iteration 1)
+
+- **RUN MODE** — the user wants to *run* a workflow ("run the feature-launch workflow for X", "ship
+  feature Y", a domain-shaped multi-stage request, or `@<workflow-id>` to resume).
+- **AUTHORING MODE** — the user wants to *manage a template* ("create a workflow template for our
+  release process", "add a canary stage to feature-launch", "delete the data-migration template",
+  "show me the feature-launch template"). No dossier, no stage run.
+
+When ambiguous, the agent CLARIFYs. The two modes never mix in one turn — Hard Rule 3 forbids
+editing a template while a workflow runs.
+
+### 7.2 RUN MODE
+
+- **Templates (recommendations, not contracts).** Markdown at `.brainyard/workflows/<domain>.md`
+  (project), `~/.brainyard/workflows/<domain>.md` (user), or classpath starters. Resolve with
+  `workflow$list-templates` (discover) + `workflow$load-template` (parse + validate). Stages are
+  RECOMMENDATIONS — skip / insert / re-run / reorder / substitute the agent as real work demands,
+  documenting deviations in the dossier.
+- **Turn-1 bootstrap (the only fixed obligation).** Resolve the template, compute the id
+  (`workflow$id`), probe resume (`workflow$resume?`). On a fresh start, author the dossier files
+  **directly** — `bash mkdir` then `write-file` `purpose.md`, the `acceptance.md` and `stages.md`
+  **checklists** (from the template), and `dossier.md` — no construction helper. On an existing id,
+  RESUME: read the dossier + checklists + last `findings.log` lines and pick up at the next pending
+  stage. SURFACE the acceptance criteria (and, for `:ad-hoc`, the stage list) in `:answer` for user
+  confirmation BEFORE running stages.
+- **State machine — one move per iteration** (the unchanged judgment): **A** RUN-STAGE · **B**
+  EVAL-STAGE · **C** GATE · **D** RE-RUN · **E** INSERT · **F** SKIP · **G** SYNTHESIZE · **H**
+  CLARIFY · **I** FINALIZE.
+- **Calling a functional agent for a stage** — a direct kebab-case call, `(<agent> {…})`. The
+  `:agent-context` MUST include the workflow dossier path AND the stage's acceptance focus; when the
+  callee has its own pre-flight (plan/todo/exec/eval), the upstream sibling `Saved dossier: <path>`
+  goes FIRST so its pre-flight finds it. Default to the stage's `agent`; substitute (coact for
+  trivial, rlm for too-big, explore for discovery, research for multi-specialist).
+- **HITL — a config knob, not five code paths.** `hitl_mode ∈ :auto | :gates (default) |
+  :checkpoint | :co-pilot | :step`. A "prompt" is a GATE move (C): `:answer` ends with `Awaiting
+  workflow gate: <stage-id>`. The mode may be upgraded mid-run, not downgraded without user
+  approval.
+- **Dossier update discipline (after every move — all file-native).** Append one `findings.log`
+  line (`write-file :append`); flip the stage status in `stages.md` **index-free by id** with
+  `update-file`; if the stage advanced acceptance, flip the criterion in `acceptance.md` (index-free
+  by id); update `artifacts/` symlinks; periodically regenerate the dossier `## Stage progress` via
+  SYNTHESIZE. Match the line TEXT (id + status token), never an ordinal.
+- **FINALIZE (move I).** In one fence: flip every stage + criterion to reflect reality, then
+  `workflow$verdict-outcome` derives the outcome + enforces the `:achieved` guard (refuses
+  `:achieved` while any criterion is `:open`), then `write-file` `verdict.md` from the VERDICT
+  TEMPLATE and append one `INDEX.md` line. `:answer` is DERIVED from `verdict.md` and ends with
+  `Saved workflow dossier: <path>` — emitted only if `verdict.md` was actually written.
+
+### 7.3 AUTHORING MODE — template CRUD
+
+Templates are markdown under `.brainyard/workflows/<domain>.md`; workflow-agent owns their
+lifecycle (the workflow analog of tool-agent / meta-agent / skill-agent). CRUD is plain file ops:
+
+- **CREATE** → `write-file` from the TEMPLATE TEMPLATE (frontmatter + `# Acceptance` + `# Stages`).
+- **READ** → `workflow$list-templates` (discover) + `workflow$load-template` (parse + validate + show).
+- **UPDATE** → `update-file` index-free — add a `- [ ] aN — …` criterion, insert / reorder / retag a
+  `- [ ] sN <name> — … {agent:…}` stage line by its stable id.
+- **DELETE** → `rm` (confirm first).
+
+After ANY create/update, call `workflow$load-template` to VALIDATE (required frontmatter keys, ≥1
+stage, every stage `focus` resolves to an acceptance id). No dossier, no stage run; Hard Rule 3
+forbids template edits while a workflow runs.
+
+### 7.4 Hard rules (as-built)
+
+1. **STAY FLAT** — no clone-self dispatch; cross-agent dispatch is the direct kebab-case call.
+2. **NO direct writes to specialist storage** (`.brainyard/agents/<other>/…`) — read freely; invoke
+   the specialist for new content.
+3. **NO template edits during a RUN** — edit in authoring mode (a separate invocation).
+4. **Acceptance criteria are FROZEN once confirmed** (one exception: a user-confirmed descope).
+5. **Every stage call's `:agent-context` MUST include the workflow dossier path.**
+6. **The dossier** (`dossier.md` + `acceptance.md` + `stages.md` + `findings.log`) **is the only
+   durable cross-iteration state.**
+7. **Iteration budget: 50.** At 80% without a candidate verdict, start FINALIZE — an honest
+   `:partial` beats a silent timeout.
+8. **CITE EVERYTHING** — every claim points at a stage artifact.
+9. **THE DOSSIER MUST AGREE WITH `:ANSWER`.** An `:answer` claiming the workflow finished while
+   `acceptance.md` still shows `(open)` criteria or `verdict.md` is missing is a lie; if `:answer`
+   says `:achieved`, `workflow$verdict-outcome` MUST return `:outcome :achieved`.
+
+### 7.5 (Historical) original instruction
+
+The original revision-1 instruction routed stage dispatch through `CALL-TOOL`, loaded EDN templates,
+constructed acceptance/stages vectors-of-maps via `workflow$bootstrap`, and flipped status via
+`workflow$update-stage` / `workflow$update-acceptance`. That prompt is preserved in git history; the
+shipped prompt above replaces it.
+
+<details>
+<summary>Original CALL-TOOL/EDN instruction sketch (historical)</summary>
 
 ```text
 You are a WORKFLOW-agent. You drive a domain-specific multi-stage workflow by
@@ -681,9 +773,38 @@ a research dossier is missing) → CLARIFY (H): name the discrepancy
 and ask the user how to proceed.
 ```
 
+</details>
+
 ---
 
-## 8. Tool-Context (How to Use the Bound Tools)
+## 8. Tool-Context (How to Use the Bound Tools) — As-Built Shape
+
+The shipped tool-context lives in `common/workflow_agent.clj` (`def tool-context`) and is the source
+of truth. Its as-built shape:
+
+- **Functional agents (direct kebab-case invocation):** `(<name> {:question "<q>" :agent-context
+  "<dossier path + …>"})`. Each is annotated with the `Saved …:` handoff prefix it emits —
+  research-agent (`Saved research dossier:`), explore-agent (`Saved exploration:`), plan-agent,
+  todo-agent, exec-agent, eval-agent, mcp-agent, skill-agent, **edit-agent** (`Saved edit:` +
+  `Rollback:`), rlm-agent, coact-agent.
+- **Dossier + template substrate (the direct work surface):** `read-file`, `write-file`
+  (authors `dossier.md` / `acceptance.md` / `stages.md` / `verdict.md` / `INDEX.md` **and** workflow
+  templates; `:append true` for `findings.log` / `INDEX.md`), `update-file` (index-free single-line
+  flips of a criterion or stage, or a template line, by stable id), `grep`, `bash` (`mkdir -p`, `ls`,
+  `ln -s`, `rm`), `search`.
+- **Synthesis:** `query$llm` (distill `findings.log` → `## Stage progress`; draft the `verdict.md`
+  narrative; reconcile conflicting outputs).
+- **Bookkeeping:** `list-tools`, `get-tool-info`; `task$run` for >5s stage calls;
+  `agent-runtime$config` for `:max-iterations` tuning.
+- **`workflow$*` seams (READ/DERIVE/VALIDATE only):** the six of §9.
+- **VERDICT TEMPLATE** (written to `verdict.md`) and **TEMPLATE TEMPLATE** (written to
+  `.brainyard/workflows/<domain>.md` in authoring mode) are carried verbatim in the tool-context.
+- **Anti-patterns** called out inline: running without confirmed acceptance; slavishly following the
+  template; authoring plan/todo/dossier files via `write-file` directly (go through the specialist);
+  editing a template mid-run; finalizing `:achieved` while a criterion is `(open)`.
+
+<details>
+<summary>Original CALL-TOOL/EDN tool-context sketch (historical)</summary>
 
 ```text
 ## Workflow Tools — functional agents + dossier substrate
@@ -780,11 +901,52 @@ write-file + clojure fence.
    with markdown report + `Saved workflow dossier: <path>` line.
 ```
 
+</details>
+
 ---
 
-## 9. Optional `(workflow$*)` Sandbox Helpers
+## 9. `workflow$*` Sandbox Helpers — READ/DERIVE/VALIDATE only
 
-Mirrors the helpers introduced for `rlm-agent`, `explore-agent`, and `research-agent`. They live in `ai.brainyard.agent.common.workflow`, register as `defcommand`s, and surface in the sandbox via auto-binding.
+The helpers live in `ai.brainyard.agent.common.workflow`, register as `defcommand`s, and surface in
+the sandbox via auto-binding. **The lightweight redesign retired the structured-construction
+helpers** — the dossier + templates are authored directly with the file tools. What survives is the
+mechanism a machine does better than the model: deterministic id, the resume/parse seam, template
+discovery + load+validate + starter install, and verdict-outcome derivation with the `:achieved`
+guard. The shipped `workflow-helpers` roster binds exactly **six**:
+
+| Helper | Signature | What it does |
+|---|---|---|
+| `workflow$id` | `(workflow$id :template <kw\|:ad-hoc> :question …)` → `{:slug "<id>"}` | Deterministic resume key: `<template-id>--<question-slug>` (or just `<question-slug>` for `:ad-hoc`). |
+| `workflow$resume?` | `(workflow$resume? :id …)` → `{:exists? :status :last-iteration :hitl-mode :acceptance-state {…} :pending-stages […] :stage-count :n-pending}` | Cheap probe: parses `dossier.md` frontmatter + the `acceptance.md` / `stages.md` checklists (dual-reads legacy frontmatter acceptance + `stages.edn`). Iter-1 bootstrap-vs-resume gate. |
+| `workflow$list-templates` | `(workflow$list-templates :include-built-in? …)` → `{:templates [{:id :name :description :source :path} …]}` | Enumerate project + user + built-in `*.md` (and legacy `*.edn`) templates. |
+| `workflow$load-template` | `(workflow$load-template :id … \| :path …)` → `{:template {…} :source :path}` or `{:error …}` | Parse a markdown template (dual-reads legacy EDN) into `{:workflow/id :workflow/name :defaults :acceptance [{…}] :stages [{…}]}` and **validate** (required keys, ≥1 stage, every stage `focus` resolves to an acceptance id). Called after any template create/update. |
+| `workflow$install-starters` | `(workflow$install-starters :overwrite? …)` → `{:installed […] :skipped […] :dir …}` | Copy built-in **markdown** starters (`feature-launch`, `doc-update`) to `.brainyard/workflows/`. Idempotent. |
+| `workflow$verdict-outcome` | `(workflow$verdict-outcome :id …)` → `{:outcome :achieved\|:partial\|:abandoned\|:in-progress :achieved-ok? :blockers [...] :acceptance-outcome {…} :stage-outcomes {…}}` | **(New — carved from `write-verdict`.)** READ-ONLY: derives the verdict from the checklists + enforces the `:achieved` guard. Called BEFORE `write-file`-ing `verdict.md`. |
+
+**Retired** (do not exist anymore): `workflow$bootstrap` (the `:acceptance`/`:stages`
+vectors-of-maps construction), `workflow$update-stage`, `workflow$update-acceptance`,
+`workflow$write-verdict` (frontmatter emission), `workflow$append-log`, `workflow$index-append`, and
+the never-implemented `workflow$summarize-log`. Bootstrap is `bash mkdir` + `write-file` of the
+checklists; status flips are index-free `update-file`s; the verdict is a direct `write-file` after
+`workflow$verdict-outcome`; the log + INDEX are `write-file :append`.
+
+### 9.1 Auto-Finalize Backstop
+
+`workflow.clj` installs an `:agent.ask/finalize` hook (`workflow-auto-finalize`, scoped to
+workflow-agent) as a safety net for when the LLM emits a non-blank answer but skips the FINALIZE
+fence. It is **gated**: it fires only when the dossier exists, **no** acceptance criterion is
+`:open`, and `verdict.md` does not already exist. It then derives the outcome (`derive-outcome` over
+the acceptance-state map), renders `verdict.md` via `render-verdict-md`, appends `INDEX.md`, and
+injects the absent `Saved workflow dossier:` line. It is idempotent (the `Saved workflow dossier:`
+prefix check + verdict-exists check), defensive (failures logged, never re-thrown), and self-installs
+at namespace load. Per-turn opt-out via `agent-runtime$config :key "workflow-auto-finalize" :value
+"false"`. (The original proposal placed it on `:agent.ask/post`; as-built it is
+`:agent.ask/finalize`.)
+
+<details>
+<summary>Original 11-helper roster (historical)</summary>
+
+The revision-1 proposal sketched eleven helpers, including the now-retired construction helpers:
 
 | Helper | Signature | What it does |
 |---|---|---|
@@ -800,9 +962,11 @@ Mirrors the helpers introduced for `rlm-agent`, `explore-agent`, and `research-a
 | `workflow$index-append` | `(workflow$index-append :id … :status … :one-line …)` → `{:appended true}` | Prepend to `.brainyard/agents/workflow-agent/INDEX.md`. |
 | `workflow$resume?` | `(workflow$resume? :id …)` → `{:exists? true :status :in-progress :pending-stages [...] :hitl-mode … :acceptance-state {…}}` | Cheap probe for bootstrap vs. resume. |
 
-**As-built:** The shipped `workflow-helpers` roster binds exactly **eleven** helpers — `workflow$id`, `workflow$resume?`, `workflow$list-templates`, `workflow$load-template`, `workflow$install-starters`, `workflow$bootstrap`, `workflow$append-log`, `workflow$update-stage`, `workflow$update-acceptance`, `workflow$write-verdict`, `workflow$index-append`. `workflow$summarize-log` was **never implemented** (the helper layer is kept mechanical/side-effect-only; the agent calls `query$llm` directly with findings.log content as `:sub-context` — same decision as research-agent). `workflow.clj` also ships an `:agent.ask/post` **auto-finalize hook** that writes `verdict.md` + appends `INDEX.md` when the LLM emits a non-blank answer but skipped the finalize fence, *provided* the dossier exists and all acceptance criteria have moved off `:open`.
+The redesign retired the six construction helpers above (`bootstrap`, `append-log`, `update-stage`,
+`update-acceptance`, `write-verdict`, `index-append`) and added `workflow$verdict-outcome` — leaving
+the six READ/DERIVE/VALIDATE seams shipped today.
 
-The agent works without these — the prompt becomes 30–40% shorter when they are bound.
+</details>
 
 ---
 
@@ -836,62 +1000,79 @@ User question: *"Run the feature-launch workflow to ship the MCP server health-c
 
 ### Iteration 1 — Bootstrap (code channel)
 
+The template is loaded (read seam) and the dossier files are authored DIRECTLY — `bash mkdir` +
+`write-file` of the two checklists — no construction helper:
+
 ````markdown
 ```clojure
-(def template (workflow$load-template :id :feature-launch))
-
-(def wid (workflow$id :template :feature-launch
-                      :question "Ship the MCP server health-check command, target this Tuesday"))
+(def tmpl (:template (workflow$load-template :id :feature-launch)))  ; read + validate (kept)
+(def wid  (:slug (workflow$id :template :feature-launch
+                  :question "Ship the MCP server health-check command, target this Tuesday")))
 ;; => "feature-launch--mcp-server-health-check"
 
-(def init
-  (workflow$bootstrap
-    :id wid
-    :template-path ".brainyard/workflows/feature-launch.edn"
-    :purpose "Add a health-check command to the MCP server, surfaced in the TUI status bar. Target rollout: Tuesday."
-    :acceptance [{:id "a1" :text "Health-check command implemented; reachable via mcp$server :op :health-check" :status :open}
-                 {:id "a2" :text "PR merged to main" :status :open}
-                 {:id "a3" :text "Unit tests added with >= 80% line coverage on new code" :status :open}
-                 {:id "a4" :text "Release notes published" :status :open}
-                 {:id "a5" :text "Slack #releases announcement sent" :status :open}]))
-;; => {:dir ".brainyard/agents/workflow-agent/feature-launch--mcp-server-health-check/" ...}
+(when-not (:exists? (workflow$resume? :id wid))
+  (def d (str ".brainyard/agents/workflow-agent/" wid "/"))
+  (bash {:command (str "mkdir -p " d "artifacts")})
+  (write-file {:path (str d "purpose.md")
+               :content "Add a health-check command to the MCP server, surfaced in the TUI status bar. Target rollout: Tuesday.\n"})
+  ;; acceptance.md — the ACCEPTANCE CHECKLIST (refined from the template)
+  (write-file {:path (str d "acceptance.md")
+               :content (str "# Acceptance — " wid "\n"
+                             "- [ ] a1 (open) — Health-check command reachable via mcp$server :op :health-check\n"
+                             "- [ ] a2 (open) — PR merged to main\n"
+                             "- [ ] a3 (open) — Unit tests added with >= 80% line coverage on new code\n"
+                             "- [ ] a4 (open) — Release notes published\n"
+                             "- [ ] a5 (open) — Slack #releases announcement sent\n")})
+  ;; stages.md — the STAGE CHECKLIST (from the template, adapt as needed)
+  (write-file {:path (str d "stages.md")
+               :content (str "# Stages — " wid "\n"
+                             "- [ ] s1 research-feasibility (pending) — validate feasibility {agent: research-agent, gate: user, focus: [a1]}\n"
+                             "- [ ] s2 plan-design (pending) — author the plan {agent: plan-agent, gate: none, focus: [a1, a2]}\n"
+                             "- [ ] s3 implement (pending) — execute the todo {agent: exec-agent, gate: none, focus: [a2, a3]}\n"
+                             "- [ ] s4 test (pending) — run/extend tests {agent: exec-agent, gate: none, focus: [a3]}\n"
+                             "- [ ] s5 release-notes (pending) — draft release notes {agent: coact-agent, gate: none, focus: [a4]}\n"
+                             "- [ ] s6 announce (pending) — notify stakeholders {agent: mcp-agent, gate: user, focus: [a5]}\n")})
+  (write-file {:path (str d "dossier.md")
+               :content (str "---\nworkflow_id: " wid "\nworkflow_template: feature-launch\n"
+                             "created: <ISO>\nlast_iteration: 1\nstatus: in-progress\nhitl_mode: gates\n---\n"
+                             "\n## Purpose\nAdd a health-check command…\n\n## Stage progress\n_(populated as stages run)_\n")}))
 ```
 ````
 
 Then `:answer` surfaces the acceptance criteria for the user to confirm, and the loop pauses. User replies "looks good, run it."
 
-### Iteration 2 — RUN-STAGE :research-feasibility (tool channel)
+### Iteration 2 — RUN-STAGE s1 research-feasibility (code channel — direct dispatch)
 
 ````markdown
-```json
-[{"tool-name": "research-agent",
-  "tool-args": [{"name": "question",
-                 "value": "Investigate the feasibility of adding a health-check command to the MCP server, surfacing per-server status in the TUI status bar. Identify code touch points and unknowns."},
-                {"name": "agent-context",
-                 "value": "Workflow dossier: .brainyard/agents/workflow-agent/feature-launch--mcp-server-health-check/dossier.md\nStage: research-feasibility\nAcceptance focus: a1\nHint: focus on existing mcp$server :op :health and TUI status-bar wiring."}]}]
+```clojure
+(research-agent
+  {:question      "Investigate the feasibility of adding a health-check command to the MCP server, surfacing per-server status in the TUI status bar. Identify code touch points and unknowns."
+   :agent-context (str "Workflow dossier: .brainyard/agents/workflow-agent/" wid "/dossier.md\n"
+                       "Stage: s1 research-feasibility\nAcceptance focus: a1\n"
+                       "Hint: focus on existing mcp$server :op :health and TUI status-bar wiring.")})
 ```
 ````
 
 research-agent runs its own loop (exploring, planning, evaluating) and returns an answer with `Saved research dossier: .brainyard/agents/research-agent/feature-launch--mcp-server-health-check/`.
 
-### Iteration 3 — Log + decide (code channel)
+### Iteration 3 — Log + flip status index-free (code channel)
 
 ````markdown
 ```clojure
-(workflow$append-log
-  :id wid :iter 2 :stage "research-feasibility" :agent "research-agent"
-  :summary "Feasible. Existing mcp$server :op :health already pings; need to add :op :health-check that returns structured per-server status. TUI status bar has a slot pattern for it."
-  :pointers {:research_dossier ".brainyard/agents/research-agent/feature-launch--mcp-server-health-check/"})
+;; append one plain findings line (write-file :append)
+(write-file {:path (str d "findings.log") :append true
+             :content "iter 2 · s1 research-feasibility · research-agent · Saved research dossier: .brainyard/agents/research-agent/feature-launch--mcp-server-health-check/\n"})
 
-(workflow$update-stage :id wid :stage-id "research-feasibility"
-                        :status :satisfied
-                        :artifact ".brainyard/agents/research-agent/feature-launch--mcp-server-health-check/")
+;; flip the stage status by stable id — index-free (NOT by ordinal)
+(update-file {:path (str d "stages.md")
+              :pattern "- [ ] s1 research-feasibility (pending)"
+              :replacement "- [x] s1 research-feasibility (satisfied)"})
 
-(workflow$update-acceptance :id wid :criterion-id "a1" :status :pending)  ; not yet satisfied; criterion is implementation
+;; a1 is an implementation criterion — still open after research; leave it
 ```
 ````
 
-Template's `:research-feasibility` had `:gate-after :user` — workflow-agent enters GATE.
+Stage `s1`'s inline `gate: user` — workflow-agent enters GATE.
 
 ### Iteration 4 — GATE (answer channel; loop pauses)
 
@@ -904,34 +1085,44 @@ Findings: feasible. Two touch-points:
 
 Risks: none surfaced.
 
-Next stage: `:plan-design` via plan-agent.
+Next stage: `s2 plan-design` via plan-agent.
 
-Awaiting workflow gate: research-feasibility
+Awaiting workflow gate: s1 research-feasibility
 ```
 
 User replies "go ahead." Loop resumes on the next turn.
 
 ### Iterations 5–13 — RUN-STAGE through implementation, test, release notes
 
-Plan-agent drafts `mcp-server-health-check` plan; gate; exec-agent runs the todo (5 items); query$llm synthesizes log; eval-agent verifies a1 + a3; coact-agent drafts release notes for a4.
+Plan-agent drafts `mcp-server-health-check` plan; gate; exec-agent runs the todo (5 items); query$llm synthesizes the log into `## Stage progress`; eval-agent verifies a1 + a3; coact-agent drafts release notes for a4. After each move: append `findings.log`, flip the stage (and any advanced criterion) index-free.
 
-### Iteration 14 — Last stage with :gate-after :user (announce)
+### Iteration 14 — Last stage with `gate: user` (announce)
 
 Workflow-agent presents the announcement draft, asks for approval, then on the next turn calls mcp-agent to post.
 
 ### Iteration 15 — FINALIZE (code channel + answer channel)
 
+Flip every remaining criterion to reflect reality, derive + guard, then write `verdict.md` and append INDEX — all file-native:
+
 ````markdown
 ```clojure
-(workflow$write-verdict
-  :id wid
-  :status :achieved
-  :narrative "All 5 acceptance criteria satisfied. Feature shipped Tuesday as planned.")
+;; Step 1 — make the checklists reflect reality (index-free flips; e.g.)
+(update-file {:path (str d "acceptance.md")
+              :pattern "- [ ] a2 (open)" :replacement "- [x] a2 (satisfied)"})
+;; … a4, a5 likewise …
 
-(workflow$index-append
-  :id wid
-  :status :achieved
-  :one-line "Shipped MCP health-check command; PR #2347 merged Tue.")
+;; Step 2 — derive the outcome + enforce the :achieved guard (read-side; kept)
+(def vo (workflow$verdict-outcome :id wid))
+;; => {:outcome :achieved :achieved-ok? true :blockers []
+;;     :acceptance-outcome {:a1 "satisfied" …} :stage-outcomes {:s1 "satisfied" …}}
+
+;; Step 3 — write verdict.md DIRECTLY from the VERDICT TEMPLATE (no helper)
+(write-file {:path (str d "verdict.md")
+             :content "<filled VERDICT TEMPLATE — status (:outcome vo); acceptance_outcome/stage_outcomes from vo>"})
+
+;; Step 4 — append one INDEX line
+(write-file {:path ".brainyard/agents/workflow-agent/INDEX.md" :append true
+             :content (str "- <YYYY-MM-DD HH:MM> [" wid "](" wid "/) — ACHIEVED · Shipped MCP health-check command; PR #2347 merged Tue.\n")})
 ```
 ````
 
@@ -951,12 +1142,12 @@ Final answer:
 | a5 | Slack #releases announcement sent | satisfied |
 
 **Stages run:**
-1. `:research-feasibility` (research-agent) — feasibility confirmed, two touch-points identified.
-2. `:plan-design` (plan-agent) — `mcp-server-health-check` plan; 5 items.
-3. `:implement` (exec-agent) — items 0–4 done; PR #2347 opened.
-4. `:test` (exec-agent) — coverage 89% on new code; one flaky test fixed.
-5. `:release-notes` (coact-agent) — published to docs/releases/.
-6. `:announce` (mcp-agent) — Slack #releases at 14:32 Tue.
+1. `s1 research-feasibility` (research-agent) — feasibility confirmed, two touch-points identified.
+2. `s2 plan-design` (plan-agent) — `mcp-server-health-check` plan; 5 items.
+3. `s3 implement` (exec-agent) — items 0–4 done; PR #2347 opened.
+4. `s4 test` (exec-agent) — coverage 89% on new code; one flaky test fixed.
+5. `s5 release-notes` (coact-agent) — published to docs/releases/.
+6. `s6 announce` (mcp-agent) — Slack #releases at 14:32 Tue.
 
 **Artifacts:**
 - Research dossier: `.brainyard/agents/research-agent/feature-launch--mcp-server-health-check/`
@@ -976,13 +1167,15 @@ Saved workflow dossier: .brainyard/agents/workflow-agent/feature-launch--mcp-ser
 | 1 | Skip bootstrap; jump straight to RUN-STAGE | No dossier → no acceptance → workflow rudderless | Always bootstrap on iter 1 (or detect resume). |
 | 2 | Slavishly follow the template even when reality has changed | Templates are recommendations, not contracts | INSERT/SKIP/RE-RUN/reorder as the work demands; document deviation. |
 | 3 | Never write workflow-level acceptance | Final verdict has nothing to score against | Acceptance is bootstrap turn-1 obligation. Surface to user for confirm. |
-| 4 | Use `query$clone` to "delegate" the workflow | Clones workflow-agent itself = clone-self recursion | Stay flat; reach the functional agents via call-tool. |
+| 4 | Use `query$clone` to "delegate" the workflow | Clones workflow-agent itself = clone-self recursion | Stay flat; reach the functional agents via direct kebab-case dispatch. |
 | 5 | Inline the full dossier body in every `:agent-context` | Bloats stage context; specialists read-file what they need | Pass path + 4-line distillation. |
 | 6 | Ignore HITL mode | Surprises the user with state-mutating stages | Read `hitl_mode` from dossier; GATE per the rules in §7. |
-| 7 | Re-run a `:satisfied` stage on resume | Wastes work and may un-do prior state | Resume reads stages.edn; only :pending / :failed / :in-progress are eligible. |
+| 7 | Re-run a `(satisfied)` stage on resume | Wastes work and may un-do prior state | Resume reads `stages.md`; only `(pending)` / `(failed)` / `(in-progress)` are eligible. |
 | 8 | Write `.brainyard/plans/<slug>.md` directly | Bypasses plan-agent's safety + slug-collision checks | Always go through plan-agent. |
 | 9 | Treat workflow as one big research turn | research-agent already exists for that | If the question is single-thread research → research-agent. workflow-agent is for multi-stage domain workflows where most stages are themselves multi-specialist. |
-| 10 | Modify `.brainyard/workflows/<template>.edn` mid-run | Templates are domain knowledge under version control | Improve templates between runs (manually, or via skill-agent). Mid-run deviations live in the dossier, not the template. |
+| 10 | Edit `.brainyard/workflows/<template>.md` mid-run | Templates are domain knowledge under version control | Edit templates in AUTHORING MODE (a separate invocation); mid-run deviations live in the dossier, not the template (Hard Rule 3). |
+| 13 | Flip a checklist line by ordinal / rewrite the whole file | Off-by-one corrupts the wrong stage/criterion | `update-file` by stable id (`a2`, `s2`); never by position. |
+| 14 | FINALIZE `:achieved` while a criterion is `(open)` | The verdict lies | `workflow$verdict-outcome` refuses it — fix the checklists, don't downgrade to hide it. |
 | 11 | FINALIZE early because some stages are :satisfied | :achieved requires ALL workflow acceptance, not all stages | Workflow-level acceptance is the gate. Stages are the means. |
 | 12 | Push past iteration cap silently | User gets opaque timeout | At 80%, prepare FINALIZE :partial. Honest reporting > silent timeout. |
 
@@ -992,19 +1185,23 @@ Saved workflow dossier: .brainyard/agents/workflow-agent/feature-launch--mcp-ser
 
 | Benchmark / smoke test | Shape | What it verifies |
 |---|---|---|
-| Single-template happy path | Run `feature-launch` end-to-end on a small change. | Bootstrap → 6 stages → FINALIZE :achieved; dossier complete; INDEX.md appended. |
-| Resume mid-workflow | Kill TUI between stages, resume with `@<id>`. | Dossier reload; only :pending stages run; no duplicate work. |
-| Template mismatch (RE-RUN) | Force exec-agent to surface a bug in test stage. | Workflow re-runs :implement; second pass succeeds; verdict :achieved. |
-| INSERT new stage | User mid-flight requests a `:migrate-data` step. | Stage inserted into stages.edn; dossier records insertion; workflow continues. |
-| SKIP stage | Internal-only change; user requests skipping :release-notes. | Stage marked :skipped with rationale; workflow continues without it. |
-| HITL :checkpoint mode | Set `:hitl-mode :checkpoint` at bootstrap. | Gate after every state-mutating stage; user must approve to continue. |
-| :ad-hoc workflow | User asks workflow-shaped question with no template. | Agent sketches stage list; surfaces for user confirmation; runs it. |
-| Iteration-cap finalize | Force a workflow that won't converge in 50 iterations. | Agent finalizes :partial at 80% with what's been done. |
-| Cross-agent dossier propagation | Inspect `:agent-context` strings to each stage call. | All include workflow dossier path + acceptance focus + relevant prior artifacts. |
+| Single-template happy path | Run `feature-launch` end-to-end on a small change. | Bootstrap writes the acceptance + stages checklists → 6 stages → FINALIZE `:achieved`; `verdict.md` written; INDEX.md appended. |
+| Resume mid-workflow | Kill TUI between stages, resume with `@<id>`. | `workflow$resume?` reloads from the checklists; only `(pending)` stages run; no duplicate work. |
+| Template CRUD | Create a `.md` template (`write-file`); `workflow$load-template` validates it; update a stage line (`update-file`) by id; delete (`rm`). | All without EDN construction or template-write helpers; authoring mode (no dossier). |
+| Stage flip (index-free) | `update-file` flips `s2 (pending)` → `s2 (satisfied)`. | Resume reflects it; other stages untouched (matched by id, not ordinal). |
+| Acceptance flip + verdict guard | `workflow$verdict-outcome` while a criterion is `(open)`. | Refuses `:achieved`; accepts once all `(satisfied)`/`(descoped)`. |
+| Template mismatch (RE-RUN) | Force exec-agent to surface a bug in the test stage. | Workflow re-runs `s3 implement`; second pass succeeds; verdict `:achieved`; `attempts` derivable from `findings.log`. |
+| INSERT new stage | User mid-flight requests a `migrate-data` step. | A stage line is inserted into `stages.md`; dossier records insertion; workflow continues. |
+| SKIP stage | Internal-only change; user requests skipping `release-notes`. | Stage flipped `(skipped)` with rationale; workflow continues without it. |
+| HITL `:checkpoint` mode | Set `hitl_mode: checkpoint` at bootstrap. | Gate after every state-mutating stage; user must approve to continue. |
+| `:ad-hoc` workflow | User asks workflow-shaped question with no template. | Agent sketches a stage checklist; surfaces for user confirmation; runs it. |
+| Iteration-cap finalize | Force a workflow that won't converge in 50 iterations. | Agent finalizes `:partial` at 80% with what's been done. |
+| Mode select | "create a workflow template for X" vs. "run the X workflow". | Authoring mode (no dossier) vs. run mode (bootstrap). |
+| Dual-read | A legacy `.edn` template; a legacy `stages.edn` dossier. | Both still load / resume for the deprecation window. |
 | Hard-rule enforcement | Try `query$clone` from inside the agent. | Refusal; the curated roster excludes it. |
 | Direct plan-write attempt | Try `write-file` to `.brainyard/plans/<slug>.md`. | Soft refusal via instruction; future hard enforcement via `:agent.tool-use/pre` hook. |
-| Workflow + research compose | Stage uses research-agent; research-agent in turn uses explore/plan/exec/eval. | Three flat layers; workflow dossier records research dossier path; research dossier records its own findings; specialists' artifacts are linked from both. |
-| ~~Pipeline-EDN compatibility (read-only)~~ | ~~Load a `.pipeline.edn` file via `workflow$load-template`.~~ | **As-built: not implemented.** The pipeline-EDN → workflow-EDN translator was never written; `workflow$load-template` only reads workflow templates. Port legacy `.pipeline.edn` by hand (see §14). |
+| Workflow + research compose | Stage uses research-agent; research-agent in turn uses explore/plan/exec/eval. | Three flat layers; workflow dossier records research dossier path; specialists' artifacts are linked from both. |
+| Auto-finalize backstop | Skip the FINALIZE fence with all criteria off `(open)`. | The `:agent.ask/finalize` hook writes `verdict.md` + INDEX from the derived outcome and injects the `Saved workflow dossier:` line. |
 
 Per-iteration mulog signals to add (mirroring `::research.*`):
 
@@ -1033,22 +1230,18 @@ If a future user surfaces a real need to run legacy `.pipeline.edn` files, the c
 
 ## 15. Files Summary
 
-| File | What changes |
+| File | Role (as-built) |
 |---|---|
-| `components/agent/src/ai/brainyard/agent/common/workflow_agent.clj` | NEW — `instruction`, `tool-context`, `defagent workflow-agent` mirroring `research-agent` shape; uses `coact/run-coact-derived` with `:max-iterations 50` default. |
-| `components/agent/src/ai/brainyard/agent/common/workflow.clj` | NEW (shipped) — `workflow$id`, `workflow$resume?`, `workflow$list-templates`, `workflow$load-template`, `workflow$install-starters`, `workflow$bootstrap`, `workflow$append-log`, `workflow$update-stage`, `workflow$update-acceptance`, `workflow$write-verdict`, `workflow$index-append` as `defcommand`s, plus an `:agent.ask/post` auto-finalize hook. **As-built:** `workflow$summarize-log` was dropped (agent uses `query$llm`); the pipeline-EDN ↔ workflow-EDN translator was never written (deferred — see §14). |
-| `components/agent/resources/workflows/*.edn` | NEW (starter templates) — **As-built:** only `feature-launch` and `doc-update` shipped; `incident-response`, `refactor-and-verify`, `data-migration`, `library-upgrade` were never authored. |
-| `components/agent/test/ai/brainyard/agent/workflow_agent_test.clj` | NEW — registration smoke, bootstrap, resume, INSERT/SKIP/RE-RUN, HITL, pipeline-EDN compat. |
-| `.brainyard/agents/workflow-agent/README.md` | NEW (templated by helpers on first write) — directory layout cheat-sheet. |
-| `bases/agent-tui/.../pipeline_commands.clj` | TOUCHED at Phase 1 — alias `/pipeline` → workflow-agent; add `/workflow` slash commands. |
-| `bases/agent-tui` / `bases/agent-web` | NO CHANGES at Phase 0/1; remove pipeline references at Phase 3. |
-| `bb.edn` | OPTIONAL — `repl:workflow` task; `workflow:migrate-edn` task at Phase 2. |
-| `docs/workflow-agent-design.md` | THIS FILE. |
-| `docs/agent-tui-app/pipeline.md` | TOUCHED at Phase 2 — point at workflow-agent. |
-| `components/agent/src/ai/brainyard/agent/pipeline/` | TOUCHED only at Phases 2 and 3 (deprecation log; namespace extraction; deletion of executor/BT-factory while keeping SmartPause + state-shape library). |
-| `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` | NO CHANGES. |
+| `components/agent/src/ai/brainyard/agent/common/workflow_agent.clj` | `instruction` (MODE SELECT + run-mode checklist authoring + authoring-mode template CRUD + FINALIZE fence), `tool-context` (functional agents + dossier substrate + VERDICT/TEMPLATE templates), `defagent workflow-agent` via `coact/run-coact-derived` with `:max-iterations 50` default; roster removes `fetch-url`, adds `runtime-commands`. |
+| `components/agent/src/ai/brainyard/agent/common/workflow.clj` | The six surviving seams `workflow$id`, `workflow$resume?`, `workflow$list-templates`, `workflow$load-template`, `workflow$install-starters`, `workflow$verdict-outcome` as `defcommand`s, the markdown-checklist parser (one format for templates/dossiers/todo substrate), legacy EDN + `stages.edn` dual-read, and the `:agent.ask/finalize` auto-finalize backstop. **Retired:** `workflow$bootstrap` / `workflow$update-stage` / `workflow$update-acceptance` / `workflow$write-verdict` / `workflow$append-log` / `workflow$index-append`; `workflow$summarize-log` never shipped. |
+| `components/agent/resources/workflows/*.md` | Starter templates (markdown) — only `feature-launch` and `doc-update` shipped. |
+| `components/agent/test/ai/brainyard/agent/workflow_agent_test.clj` | Registration smoke, bootstrap-from-markdown-template, resume, template CRUD, index-free stage/acceptance flip, verdict guard, dual-read, INSERT/SKIP/RE-RUN, HITL, mode select. |
+| `.brainyard/agents/workflow-agent/README.md` | Directory layout cheat-sheet. |
+| `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` | NO CHANGES — substrate, BT, sandbox, DSPy signature untouched. |
 
-The substrate (CoAct BT, sandbox, DSPy signature) is not touched. The whole feature ships as one new agent file plus an optional helpers file plus starter templates.
+The substrate (CoAct BT, sandbox, DSPy signature) is not touched. The whole feature ships as one
+agent file plus a slim read/derive/validate helpers file plus the markdown starter templates. The
+retired `pipeline/` directory and `/pipeline` slash commands are gone (§14).
 
 ---
 
@@ -1056,7 +1249,7 @@ The substrate (CoAct BT, sandbox, DSPy signature) is not touched. The whole feat
 
 1. **Should the workflow agent be allowed to call itself (sub-workflows) via `call-tool "workflow-agent" {...}`?** Pipelines support `:sub-pipeline` as a stage type. A sub-call to `workflow-agent` would NOT be `query$clone` (different invocation), but it IS workflow-on-workflow recursion. The Paper-2 anti-pattern argument is weaker here than for RLM (workflows are not LLM-on-LLM), but the dossier-on-dossier complexity is real. Suggestion: forbid it in v1 (Hard Rule 1 already covers it via the no-clone-self rule, but the *call-tool* path is technically distinct). Reconsider once the single-level workflow surface is stable.
 
-2. **Templates as skills?** A workflow template is conceptually a skill (a domain procedure). Storing them in `~/.brainyard/skills/` instead of `.brainyard/workflows/` and discovering them via `skills$find` would give us search, sharing, and `skills$install` for free. Trade-off: skills are SKILL.md markdown; workflow templates are EDN. Could compromise via SKILL.md frontmatter that points at a sibling `.edn`. Worth piloting in Phase 2.
+2. **Templates as skills?** A workflow template is conceptually a skill (a domain procedure). Storing them in `~/.brainyard/skills/` instead of `.brainyard/workflows/` and discovering them via `skills$find` would give us search, sharing, and `skills$install` for free. Now that templates are markdown (the same family as SKILL.md), the gap is small — a SKILL.md-style frontmatter convention over the existing acceptance/stages checklists could converge the two. Worth piloting.
 
 3. **First-class parallel stages?** Pipelines support per-stage `:parallel?` markers; the executor can run independent stages concurrently. workflow-agent currently sequences moves one per iteration (CoAct's contract). Two paths: (a) the LLM emits a parallel `<!-- ParallelBlock -->` clojure fence with multiple `call-tool` calls per iteration — works today via CoAct; (b) extend the helpers to manage cross-stage dependency tracking automatically. Suggestion: start with (a); revisit (b) if benchmarks show meaningful latency wins.
 

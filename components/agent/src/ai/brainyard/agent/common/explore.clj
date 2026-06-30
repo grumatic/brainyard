@@ -6,7 +6,7 @@
   "Explore-agent persistence — READ & DISCOVERY seams plus an auto-persist
    safety net. The write-side helper chain (explore$slug / explore$frontmatter /
    explore$write / explore$index-append) is RETIRED: per
-   docs/design/explore-agent-lightweight-redesign.md the dossier is just a
+   docs/design/explore-agent-design.md the dossier is just a
    markdown file, so explore-agent authors it directly with `write-file` from a
    fixed template instead of constructing it through precisely-keyed helpers.
 

@@ -5,7 +5,7 @@
 (ns ai.brainyard.agent.common.workflow
   "Workflow-agent helpers — the surviving READ/DERIVE/VALIDATE seams + the
    auto-finalize backstop (lightweight redesign, docs/design/
-   workflow-agent-lightweight-redesign.md).
+   workflow-agent-design.md).
 
    Orchestration is LLM judgment and persistence is markdown the model authors,
    so the structured-construction helpers (workflow$bootstrap's acceptance/

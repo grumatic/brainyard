@@ -1,13 +1,49 @@
 # RLM-Agent — Recursive Language Model Agent (CoAct-derived, MapReduce-shaped)
 
-> **Status:** Shipped — `rlm-agent` is registered in `components/agent` (`common/rlm_agent.clj`). This document is the original design proposal (revision 1); the shipped implementation may diverge in details. See [core/agent.md](../core/agent.md) for the current roster.
-> **Scope:** new `components/agent/src/ai/brainyard/agent/common/rlm_agent.clj`
+> **Status:** Shipped. `rlm-agent` is registered in `components/agent`
+> (`common/rlm_agent.clj`, helpers in `common/rlm.clj`). This doc is the
+> as-built reference. See [core/agent.md](../core/agent.md) for the current roster.
+>
+> **As-built (verify against `common/rlm_agent.clj`, `common/rlm.clj`,
+> `common/commands.clj`):**
+> - **`query$clone` (clone-self / depth-2) is bound and gated to `rlm-*` only.**
+>   The original "Depth = 1, never clone-self" principle was reversed: `query$agent`
+>   was renamed `query$clone`, the `:tool-use-control {:allow ["rlm-*"]}` gate lives
+>   on the **`query$clone` `defcommand`** (not the defagent — rlm-agent's own
+>   `:tool-use-control` is `{}`), and rlm-agent's roster binds it. rlm-agent is the
+>   **sole home** for depth-2 recursion. It remains a **gated LAST RESORT** (Hard
+>   Rule A): flat `query$llm` MapReduce is the default shape (Paper-2 risk is real).
+>   The "Depth=1 / excluded / forbidden" wording later in this doc is original-design
+>   context only — read it through this correction.
+> - **Five deterministic helpers ship in `rlm.clj`** (§8): `rlm$chunk-text`,
+>   `rlm$chunk-files`, `rlm$parse-map-results`, `rlm$reduce-counts`,
+>   `rlm$conservative-verdict`. All are chunk/parse/reduce **mechanism** — the
+>   "good kind" of micro-tool the [redesign synthesis](./agent-lightweight-redesign-synthesis.md)
+>   says to keep. rlm authors its report as **direct markdown** (`write-file`), not
+>   via a construct-a-frontmatter helper chain, so the synthesis's authoring-half
+>   has nothing to retire here.
+> - **An `:agent.ask/finalize` auto-persist hook** (`::rlm-auto-persist`, scoped to
+>   rlm-agent) persists non-trivial answers (≥1000 chars) to
+>   `.brainyard/agents/rlm-agent/results/<yyyyMMdd-HHmmss>-<slug>.md` with **minimal
+>   frontmatter** (`slug`, `question`, `created`, `agent`), prepends an `INDEX.md`
+>   line, and injects the `Saved RLM report: <path>` handoff line if the answer
+>   lacks one. A missing line therefore does NOT mean nothing was saved.
+> - **rlm-agent correctly has NO substrate.** Unlike skills/MCP, MapReduce-over-
+>   large-context is deliberately *not* made ambient to the whole fleet — it is
+>   expensive and carries the Paper-2 depth risk, so it stays a gated specialist.
+>   This is consistent with the synthesis substrate rule (gate the risky/expensive
+>   capability; don't spread it).
+> - **Not yet built: reuse-via-references.** rlm has no prior-art gate, no
+>   `freshness:`, no cheap-read seam — so every run re-does the full (expensive)
+>   sweep. This is the one place the redesign synthesis offers a real improvement;
+>   it is specified as a proposed next step in §15.
+>
+> **Scope:** `components/agent/src/ai/brainyard/agent/common/rlm_agent.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
-> **Related reading:** `docs/CoAct.md`, `docs/RLM-RESEARCH.md`, `docs/RLM-BENCHMARK.md`, `components/agent/.../explore_agent.clj`, `components/agent/.../skill_agent.clj`
->
-> **⚠️ REVISION 2 (depth-2 reversal):** The original "Depth = 1, `query$agent` forbidden" principle below has been **reversed**. `query$agent` was renamed to **`query$clone`** and is now **allow-listed to `rlm-*` ONLY** and bound by rlm-agent's roster — every *other* agent excludes it. rlm-agent is now the **sole home** for clone-self / depth-2 recursion. Hard Rule A was softened from "DO NOT call" to "PREFER FLAT MapReduce; `query$clone` is a gated LAST RESORT." The Paper-2 risk is real, so flat `query$llm` MapReduce remains the default shape — but the tool is no longer forbidden for rlm. The Depth=1 / "excluded" / "forbidden" statements that follow describe the original design and are retained for context only.
->
-> **As-built (2026-06):** The `:tool-use-control {:allow ["rlm-*"]}` gate lives on the **`query$clone` `defcommand`** (`common/commands.clj`), not on the `rlm-agent` defagent — the agent's own `:tool-use-control` is `{}`. The gate matches the agent's `rlm-*` name, so only rlm-agent (and any future `rlm-*` agent) can bind it. rlm-agent additionally registers an **`:agent.ask/finalize` safety-net hook** (`common/rlm.clj`): when it emits a non-trivial answer without a `Saved RLM report: <path>` line, the hook persists the report under `.brainyard/agents/rlm-agent/results/` and injects the handoff line.
+> **Related reading:** `docs/CoAct.md`, `docs/RLM-RESEARCH.md`,
+> `docs/RLM-BENCHMARK.md`, [`explore-agent-design.md`](./explore-agent-design.md)
+> (the reuse-via-references pattern §15 borrows),
+> [`agent-lightweight-redesign-synthesis.md`](./agent-lightweight-redesign-synthesis.md)
 
 ---
 
@@ -317,15 +353,15 @@ then inline a short summary + the path in `answer`.
 
 The `:agent-tools` map for `defagent rlm-agent` is the curated set. Inherits commonly-needed CoAct primitives via `run-coact-derived`, then adds RLM specifics, and excludes unrelated sub-domains (todo$*, plan$*, skills$*, etc).
 
-> **As-built (per revision 2):** the shipped roster **binds `#'common-cmds/query$clone`** (between the `query$llm` MAP primitive and the bookkeeping tools) and also adds `rlm/rlm-helpers`. The "intentionally excludes `query$clone`" comment in the `rlm-tools` sketch below and the `query$clone` row in the "deliberately omitted" table reflect the original design only — see the banner at the top of this doc.
+The shipped roster (as-built):
 
 ```clojure
 (:require
   [ai.brainyard.agent.common.tools    :as common-tools]
   [ai.brainyard.agent.common.commands :as common-cmds]
+  [ai.brainyard.agent.common.rlm      :as rlm]
   [ai.brainyard.agent.task.commands   :as task-cmds])
 
-;; Conceptually:
 (def rlm-tools
   (vec (distinct
          (concat
@@ -333,8 +369,13 @@ The `:agent-tools` map for `defagent rlm-agent` is the curated set. Inherits com
            common-tools/file-tools         ; read-file, write-file, grep, fetch-url, update-file
            common-tools/shell-tools        ; bash
 
-           ;; MAP primitive — sub-LLM calls (single + batched, same command)
-           [#'common-cmds/query$llm]       ; intentionally excludes #'query$clone
+           ;; MAP primitive — flat sub-LLM calls (single + batched, same command)
+           [#'common-cmds/query$llm]
+
+           ;; RECURSE primitive — clone-self (depth-2), gated to rlm-* via
+           ;; :tool-use-control on the query$clone defcommand. rlm-agent is the
+           ;; SOLE holder; it is a LAST RESORT (Hard Rule A), not a per-chunk MAP tool.
+           [#'common-cmds/query$clone]
 
            ;; Bookkeeping
            common-tools/bootstrap-tools    ; list-tools, get-tool-info, search
@@ -344,14 +385,22 @@ The `:agent-tools` map for `defagent rlm-agent` is the curated set. Inherits com
            task-cmds/task-commands         ; task$run with :job-type :tool|:bash, task$detail, ...
 
            ;; Runtime config (sub-lm switching is RLM-critical)
-           common-cmds/runtime-commands)))) ; agent-runtime$config
+           common-cmds/runtime-commands    ; agent-runtime$config
+
+           ;; RLM helpers (chunk / parse / reduce) — see §8
+           rlm/rlm-helpers))))
 ```
+
+`query$clone` is bound here but gated: the `:tool-use-control {:allow ["rlm-*"]}`
+stamp on the `query$clone` `defcommand` (`common/commands.clj`) means only an
+agent named `rlm-*` can bind it — every other agent excludes it. It is a gated
+LAST RESORT (Hard Rule A), not a per-chunk MAP tool; flat `query$llm` MapReduce
+stays the default.
 
 What is *deliberately omitted*:
 
 | Excluded | Reason |
 |---|---|
-| `query$clone` | Clones the CURRENT agent (rlm-agent itself) and runs another copy with a child loop = depth-2 RLM-on-RLM recursion (Paper-2 anti-pattern). Forbidden by Hard Rule A. *Calling a DIFFERENT registered agent via `(call-tool "<agent-name>" …)` is unaffected — that is flat cross-agent dispatch, not query$clone.* |
 | `todo$*` / `plan$*` | Out of scope. Use `explore-agent` or `plan-agent` for those. |
 | `skills$*` | Out of scope. |
 | `web-search` / web fetch (mostly) | The default RLM use case is local filesystem; web tools tempt the model away from chunking the actual input. They are inherited from CoAct via `bootstrap-tools` for one-off lookups but are NOT highlighted in the tool-context. |
@@ -642,3 +691,50 @@ No changes to `coact_agent.clj`, the BT layer, the DSPy signature, or the sandbo
 2. **Is 20 the right `query$llm :prompts` cap for RLM?** The cap lives in `clj-llm/create-llm-query-batched-fn`. RLM is the primary user; if benchmarks show 30–50 is safe and meaningfully reduces iteration count, the cap may be worth tuning per-agent.
 3. **Do we want a default `<-write-report->` step?** Right now Iteration 5's `write-file` call is encoded in the instruction. Could be lifted into a final BT action that runs *only when* the inline answer would exceed N chars. Lighter prompt; less opaque mechanism.
 4. **Benchmarks first, prompt last?** The `bench/` tree already supports plug-in benchmarks. Running OOLONG against the parent before writing the prompt would let us measure the lift attributable to the instruction alone vs. the helper namespace. Worth doing if the helper turns out controversial.
+
+---
+
+## 15. Proposed Next Step — Reuse-via-References (NOT yet built)
+
+> **Status:** Proposal. The one improvement the
+> [redesign synthesis](./agent-lightweight-redesign-synthesis.md) offers rlm-agent
+> that is not already satisfied. Borrows the pattern shipped in
+> [`explore-agent-design.md`](./explore-agent-design.md) §5.0/§5.4/§10.
+
+### 15.1 Why rlm wants this most
+
+rlm runs are the **most expensive in the fleet** — a non-trivial run is multiple
+batches of concurrent sub-LLM calls over tens of MB. Today every run starts cold
+(enumerate → chunk → map → reduce) with **no prior-art check**, and the persisted
+report carries only minimal frontmatter (`slug`, `question`, `created`, `agent`).
+So a repeat of "what are the top error categories in last month's logs?" pays the
+full sweep again even if a fresh report is already on disk. Explore's reuse pillar
+turns the `results/` corpus from a write-only log into a **reuse cache**, and the
+cost asymmetry makes the payoff larger here than anywhere else.
+
+### 15.2 What to add (mirrors explore)
+
+1. **An iteration-0 prior-art gate** in the instruction: before enumerating, call
+   `(rlm$find :query "<key nouns>")`; on a fresh, on-topic hit, answer from the
+   prior report (re-emit its path with a `Reused:` note) instead of re-sweeping.
+2. **`freshness:` + a reuse check.** rlm is the textbook case: a report over live
+   logs / time-bounded data is `volatile` (short window); one over unchanged repo
+   files is `static` (valid until the cited inputs change, via git/mtime). Reuse
+   `explore$reuse?`'s rule verbatim — `static` gated on inputs unchanged, `volatile`
+   gated on age.
+3. **Richer frontmatter + a cheap-read seam.** Extend the persisted frontmatter
+   with `summary`, `inputs` (files/dirs/byte-count scanned — the rlm analogue of
+   explore's `surfaces`/`entities`), `related`, and `freshness`; add a read-only
+   `rlm$read-frontmatter` so downstream agents consume reports cheaply and the
+   reuse gate can judge staleness.
+
+### 15.3 Scope and non-goals
+
+This is **additive** and mechanism-only — it touches `rlm.clj` (three read-side
+helpers + a richer frontmatter writer) and `rlm_agent.clj` (the iteration-0
+instruction step). It does **not** touch the MapReduce playbook, the BT, or the
+`query$clone` gating, and it does **not** introduce a substrate — rlm stays the
+gated specialist. The on-disk format stays a superset of today's (extra keys are
+optional), so existing reports remain readable. Verification mirrors explore's
+reuse tests: fresh-hit short-circuit (no `::rlm.map-batch`), stale-volatile
+re-sweep, static-invalidation on a changed input.

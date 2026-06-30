@@ -19,7 +19,7 @@
    stable `Saved exploration: <path>` line for downstream-agent handoff. A
    mandatory iteration-0 reuse gate (explore$find + explore$reuse?) makes the
    corpus a reuse cache, and each dossier links the prior ones it builds on
-   (`related:` lineage). See docs/design/explore-agent-lightweight-redesign.md.
+   (`related:` lineage). See docs/design/explore-agent-design.md.
 
    query$clone is gated to rlm-agent (via :tool-use-control), so it never
    appears in this agent's roster. Also omits the skill-authoring subset

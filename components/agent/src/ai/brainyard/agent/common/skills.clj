@@ -993,7 +993,7 @@
 (def skills-read-subset
   "The USE half of the skill lifecycle — discover + read + registry refresh.
    Added to `default-agent-roster` so every coact/react-derived agent can use
-   skills (the skill substrate, docs/design/skill-agent-lightweight-redesign.md
+   skills (the skill substrate, docs/design/skill-agent-design.md
    §6). The WRITE half (skills$write / install / import / sync + the proposal
    commands) stays on skill-agent only — use is universal, management is not."
   [#'skills$find #'skills$read #'skills$list #'skills$reload])

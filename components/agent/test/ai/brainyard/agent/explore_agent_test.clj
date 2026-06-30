@@ -14,7 +14,7 @@
    The write-side helper chain (explore$slug / explore$frontmatter /
    explore$write / explore$index-append) is RETIRED — explore-agent now
    authors the dossier as markdown directly with write-file from the RESULT
-   TEMPLATE (see docs/design/explore-agent-lightweight-redesign.md), so there
+   TEMPLATE (see docs/design/explore-agent-design.md), so there
    are no helper-roundtrip tests; the readers are tested against hand-written
    frontmatter (what the LLM actually produces)."
   (:require [clojure.test :refer [deftest testing is]]

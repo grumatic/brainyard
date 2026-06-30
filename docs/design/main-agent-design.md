@@ -1,24 +1,71 @@
 # Main-Agent — The Front-Door Orchestrator (CoAct-derived)
 
-> **Status:** Shipped (opt-in) — `main-agent` is registered in `components/agent` (`common/main_agent.clj`) and runs via `-a main-agent` (not yet the default). This document is the original design proposal (revision 1); the shipped implementation may diverge in details. See [core/agent.md](../core/agent.md) for the current roster.
+> **Status:** Shipped. main-agent is registered in `components/agent`
+> (`common/main_agent.clj`) and is the front-door router; the lightweight,
+> hook-derived redesign shipped (2026-06). This doc is the as-built reference —
+> the former `main-agent-lightweight-redesign.md` has been folded in here and
+> removed.
 >
-> **As-built (verify against `common/main_agent.clj`, `common/main.clj`, `common/main_agent_hooks.clj`):**
-> - **Roster grew to 21 specialists.** The shipped instruction adds **`tool-agent`** (user-defined `(fn [args] …)` tools under `.brainyard/tools` — the `tool-agent$*` family) and **`meta-agent`** (user-defined CoAct-derived agents/personas under `.brainyard/agents/user$agent` — the `meta-agent$*` family). The decision table therefore has **22 shapes** (adds `U. TOOL-LIFECYCLE` → tool-agent and `V. AGENT-LIFECYCLE` → meta-agent); `main$append-log :shape` validates against the 22-keyword enum. Wherever this doc says "nineteen defagents" / "20 question shapes," read 21 / 22.
-> - **Cross-agent dispatch is direct kebab-case**, not `call-tool`. The shipped instruction invokes `(plan-agent {…})` / `(research-agent {…})` directly (or via the tool-channel JSON), not `(call-tool "plan-agent" {…})`. The `call-tool` forms throughout this doc are equivalent but not how the shipped prompt phrases it.
-> - **Hard Rule 1 is "STAY FLAT — no clone-self dispatch,"** not literally "NO `query$clone`." `query$clone` is excluded by simply not being in the roster (it is gated to rlm-agent). The intent is identical.
-> - **`task$run` for specialists is explicitly forbidden** (Hard Rule 9, not in this design): specialists return promptly and polling them trips the loop guard. `task$run :job-type :bash` is for arbitrary subprocesses only.
-> - Hooks shipped in `common/main_agent_hooks.clj` (§10 names them in `main_agent.clj`; the actual file is `main_agent_hooks.clj`).
-> **Scope:** new `components/agent/src/ai/brainyard/agent/common/main_agent.clj`
+> **As-built (verify against `common/main_agent.clj`, `common/main.clj`,
+> `common/main_agent_hooks.clj`):**
+> - **main-agent is the front-door router.** Each user turn it routes to the
+>   right specialist (or answers inline via CoAct's own answer / tool / code
+>   channels). Routing is pure LLM judgment over the §6 decision table; main-agent
+>   authors no plan/edit/verdict and drives no research arc of its own.
+> - **It already binds the file tools and is already hook-driven.** The roster
+>   includes `file-tools`/`shell-tools` with no `remove` clause; `pointers.md` is
+>   auto-captured by a `:agent.tool-use/post` hook and the session `INDEX.md` by a
+>   `:agent.session/closed` hook (`common/main_agent_hooks.clj`).
+> - **The routing-log line is HOOK-DERIVED, not LLM-constructed.** The redesign
+>   moved the per-move routing line off an LLM-facing constructor
+>   (`main$append-log`, now **retired** as a tool) onto a **turn-derived hook**
+>   (`record-routing-line` on `:agent.ask/post`, the sole writer of
+>   `routing.log`). The model just routes, states a one-sentence reason, and adds
+>   a `Routing: <shape> — <reason>` line for self-answered moves; the hook derives
+>   `routed-to`/`shape`/`artifact` from the turn and appends the NDJSON line.
+>   `routing.log` format is unchanged, so `main$resume?`/`main$last-shape` parse it
+>   identically. See §4.2, §5, §10.
+> - **Five hooks shipped** in `common/main_agent_hooks.clj` (not the three this
+>   doc originally proposed): `:agent.session/created` (bootstrap),
+>   `:agent.ask/pre` (snapshot max-turn), `:agent.tool-use/post` (capture `Saved
+>   <kind>:` → pointers.md), `:agent.ask/post` (**record the routing line** — the
+>   redesign's new derivation hook), `:agent.session/closed` (finalize INDEX.md).
+> - **Roster grew to 21 specialists / 22 shapes.** Adds **`tool-agent`**
+>   (user-defined `(fn [args] …)` tools under `.brainyard/tools` — `tool-agent$*`)
+>   and **`meta-agent`** (user-defined CoAct-derived agents/personas under
+>   `.brainyard/agents/user$agent` — `meta-agent$*`). The decision table has 22
+>   shapes (adds `U. TOOL-LIFECYCLE` → tool-agent, `V. AGENT-LIFECYCLE` →
+>   meta-agent); `coerce-shape` validates against the 22-keyword `valid-shapes` set
+>   with an `:unspecified` fallback that never fails the turn.
+> - **Cross-agent dispatch is direct kebab-case**, not `call-tool`. The shipped
+>   instruction invokes `(plan-agent {…})` / `(research-agent {…})` directly (or
+>   via the tool-channel JSON). The `call-tool` forms shown elsewhere are
+>   equivalent but not how the shipped prompt phrases it.
+> - **Hard Rule 1 is "STAY FLAT — no clone-self dispatch,"** not literally "NO
+>   `query$clone`." `query$clone` is excluded by simply not being in the roster
+>   (gated to rlm-agent). Intent is identical.
+> - **`task$run` for specialists is explicitly forbidden** (Hard Rule 9):
+>   specialists return promptly and polling them trips the loop guard.
+>   `task$run :job-type :bash` is for arbitrary subprocesses only.
+> - **Names align with the shipped agents:** the safe-edit specialist is
+>   `edit-agent` (not `update-agent`); the cherry-picked eval reader is
+>   `eval$read-verdict` (not `eval$read-dossier`).
+>
+> **Scope:** `components/agent/src/ai/brainyard/agent/common/main_agent.clj`,
+> `common/main.clj`, `common/main_agent_hooks.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
-> **Related reading:** `docs/core/agent.md`, `docs/core/reasoning.md`, `docs/core/tool.md`, `docs/design/research-agent-design.md`, `docs/design/workflow-agent-design.md`, `docs/design/explore-agent-design.md`
+> **Related reading:** `docs/core/agent.md`, `docs/core/reasoning.md`,
+> `docs/core/tool.md`, `docs/design/research-agent-design.md`,
+> `docs/design/workflow-agent-design.md`, `docs/design/explore-agent-design.md`,
+> `docs/design/agent-lightweight-redesign-synthesis.md`
 
 ---
 
 ## 1. Motivation
 
-Today the user lands on `coact-agent` by default (`bb tui run` with no `-a`). `coact-agent` is the right *substrate* — three channels, a persistent SCI sandbox, a curated set of generic tools, no domain prejudice. It is intentionally minimal: a clean reasoning loop with no awareness of the specialist agents stacked on top of it.
+Before main-agent, the user landed on `coact-agent` by default (`bb tui run` with no `-a`). `coact-agent` is the right *substrate* — three channels, a persistent SCI sandbox, a curated set of generic tools, no domain prejudice. It is intentionally minimal: a clean reasoning loop with no awareness of the specialist agents stacked on top of it.
 
-That neutrality is a problem the moment the agent population grows beyond a handful. The current stack already ships a large `defagent` population (coact / react / explore / plan / todo / exec / eval / update / memory / init / config / skill / mcp / tool / meta / rlm / research / workflow / acp / debug / main), each with non-trivial when-to-use / when-to-avoid rules baked into their own design docs. (**As-built:** the proposal said "nineteen"; the shipped roster includes `tool-agent` and `meta-agent` on top of the agents listed in this doc.) A first-time user asking *"can you draft a plan to migrate our auth middleware and execute it?"* has to either:
+That neutrality is a problem the moment the agent population grows beyond a handful. The stack ships a large `defagent` population (coact / react / explore / plan / todo / exec / eval / edit / memory / init / config / skill / mcp / tool / meta / rlm / research / workflow / acp / debug / main), each with non-trivial when-to-use / when-to-avoid rules baked into their own design docs. A first-time user asking *"can you draft a plan to migrate our auth middleware and execute it?"* has to either:
 
 1. Know in advance to type `bb tui run -a research-agent`, or
 2. Land on `coact-agent` and watch it solve a three-specialist problem with `bash`, `read-file`, and `query$llm` — bypassing the pre/post-flight gating, dossier handoff, and acceptance criteria that the dedicated specialists were designed for.
@@ -35,15 +82,15 @@ Three structural defects in the current default:
 
 **The CoAct lesson — applied at the front door.** `research-agent` showed that a CoAct loop with a curated instruction and a small specialist roster outperforms a bespoke BT for multi-specialist orchestration. `workflow-agent` showed the same recipe scales up to domain workflows. `main-agent` is the recipe applied one level further out: at the *user-question* boundary, where the right move could be anything from "answer in one iteration" to "delegate to workflow-agent for a 50-iteration arc".
 
-**Thesis.** Add a CoAct-derived `main-agent` that:
+**Thesis.** A CoAct-derived `main-agent` that:
 
-1. **Owns the routing instruction** — a curated decision tree mapping question shape to the right specialist (or to coact-agent's own channels when no specialist fits).
+1. **Owns the routing instruction** — a curated decision table mapping question shape to the right specialist (or to coact-agent's own channels when no specialist fits). Routing is pure LLM judgment; nothing about it is over-tooled.
 2. **Reaches every registered specialist via flat dispatch** — `(plan-agent {…})`, `(research-agent {…})`, `(workflow-agent {…})`, … — through the unified `!tool-defs` registry. No new dispatch substrate.
-3. **Maintains a thin session log** — `.brainyard/agents/main-agent/<session-id>/routing.log` — recording each routing decision (which specialist was picked + why) so subsequent questions in the same session can short-circuit re-derivation, and the trajectory log retains an explicit routing trail.
+3. **Records a thin session log that records itself** — `.brainyard/agents/main-agent/<session-id>/routing.log` — capturing each routing decision (which specialist was picked + why) so subsequent questions in the same session can short-circuit re-derivation. The line is **hook-derived, not LLM-constructed**: the model routes and states a reason; a `:agent.ask/post` hook observes the turn and appends the structured NDJSON line (§5). The root agent ends each turn with **zero structured artifacts to author**.
 4. **Inherits the CoAct loop, sandbox, router, and accumulator** from `coact-agent` via `run-coact-derived` — no new BT, no new DSPy signature.
-5. **Becomes the new TUI default** (`bb tui run` with no `-a` resolves to `main-agent`), with `coact-agent` retained as the bare-substrate fallback for power users who want zero routing assistance.
+5. **Is the front-door router** — the front-door entry that routes by question shape, with `coact-agent` retained as the bare-substrate fallback (`-a coact-agent`) for power users who want zero routing assistance.
 
-This is the same minimal-diff pattern that `explore-agent`, `rlm-agent`, `research-agent`, and `workflow-agent` already follow. The whole feature is one new agent file plus an optional small helpers namespace, no substrate changes.
+This is the same minimal-diff pattern that `explore-agent`, `rlm-agent`, `research-agent`, and `workflow-agent` follow, and the same judgment-vs-mechanism split as the rest of the [lightweight-redesign series](./agent-lightweight-redesign-synthesis.md): **route in prose; record the route with a hook; keep reads typed.** The whole feature is one agent file, a small helpers namespace, and a hooks namespace — no substrate changes.
 
 ---
 
@@ -53,7 +100,9 @@ This is the same minimal-diff pattern that `explore-agent`, `rlm-agent`, `resear
 
 2. **Specialists own their domains; main-agent owns the seam between them.** main-agent never writes to `.brainyard/agents/plan-agent/`, `.brainyard/agents/todo-agent/`, `.brainyard/agents/exec-agent/`, etc. Those are specialist territories. main-agent writes only to `.brainyard/agents/main-agent/<session-id>/routing.log` and reads sibling outputs through their cherry-picked read-helpers.
 
-3. **The instruction encodes the routing decisions.** A decision-table layer in the instruction (§6) names every question shape and the right move. The LLM uses the table; the BT does not branch on it. Same `coact-loop-subtree`.
+3. **The instruction encodes the routing decisions; routing is judgment.** A decision-table layer in the instruction (§6) names every question shape and the right move. The LLM uses the table; the BT does not branch on it. Same `coact-loop-subtree`. The deciding — pick the move, state a one-sentence reason — is inherent LLM capability and is left entirely to the model.
+
+   3a. **The routing log is observation, not authoring.** Most of a routing-log line is *observable from the turn itself* — which specialist was dispatched, what `Saved <kind>:` artifact came back, the user's question, the turn/iter counters. So a hook derives the line; the model never assembles a structured map. This is the main-agent analog of eval's "scoring is judgment" and research's "orchestration is judgment": the *deciding* is inherent; only the *logging* was over-tooled. See §5.
 
 4. **Small tool registry.** main-agent reaches the world through (a) every other `defagent` via direct kebab-case dispatch (they are in `!tool-defs`), (b) basic CoAct primitives for the routing log (read-file / write-file / bash), (c) bootstrap discovery (list-tools / get-tool-info / search) so the agent can introspect when an unfamiliar question requires it. That's it.
 
@@ -83,16 +132,16 @@ coact-agent  (substrate — full BT, sandbox, router, accumulator)
   ├─ todo-agent        (todo decomposition from plan; per-item :tags routing)
   ├─ exec-agent        (advance a todo; delegates writes to edit-agent)
   ├─ eval-agent        (verdict against plan acceptance)
-  ├─ edit-agent      (safe single-file edit; probe→apply→verify→rollback)
+  ├─ edit-agent        (safe single-file edit; probe→apply→verify→rollback)
   ├─ memory-agent      (long-term memory: read/write/consolidate)
   ├─ init-agent        (BRAINYARD.md / project bootstrap)
   ├─ config-agent      (.brainyard/config tuning)
   ├─ acp-agent         (Agentic Context Protocol — external backends)
-  ├─ tool-agent        (user-defined tool lifecycle — tool-agent$* family)   ; As-built: present in shipped roster
-  ├─ meta-agent        (user-defined agent/persona lifecycle — meta-agent$*) ; As-built: present in shipped roster
+  ├─ tool-agent        (user-defined tool lifecycle — tool-agent$* family)
+  ├─ meta-agent        (user-defined agent/persona lifecycle — meta-agent$*)
   ├─ research-agent    (end-to-end multi-specialist research thread)
   ├─ workflow-agent    (domain workflow templates; multi-stage automation)
-  └─ main-agent        (NEW — front-door router; default TUI entry)
+  └─ main-agent        (front-door router — the user-facing entry)
 ```
 
 `main-agent` does **not** replace any existing agent. It is the layer above all of them.
@@ -137,9 +186,9 @@ The single piece of state main-agent itself owns. Thin, append-only, session-sco
 
 The `<session-id>` is the agent-session's `:session-id` (the same identity carried by sub-agents). main-agent does NOT manufacture its own ids — it piggybacks on the session machinery already in place (see `docs/core/agent.md` §Two-layer session model).
 
-### 4.2 `routing.log` — NDJSON Decision Trail
+### 4.2 `routing.log` — NDJSON Decision Trail (hook-written)
 
-One line per routing decision. Cheap to read selectively (jq, grep, or `read-file :lines [N M]`).
+One line per routing decision. Cheap to read selectively (jq, grep, or `read-file :lines [N M]`). The line is **written by the `:agent.ask/post` routing-line hook**, not by the LLM — main-agent no longer calls `main$append-log` (retired as a tool). The hook derives `routed-to`/`shape`/`artifact` from the turn and lifts `reason` from the model's answer; the format below is unchanged so `main$resume?`/`main$last-shape` parse it identically. See §5 for the derivation.
 
 ```ndjson
 {"turn":1,"iter":1,"question":"draft a plan to migrate auth middleware","shape":"plan-author","routed-to":"plan-agent","artifact":".brainyard/agents/plan-agent/plans/migrate-auth.md","reason":"explicit 'draft a plan'"}
@@ -155,10 +204,10 @@ Fields:
 | `turn` | int | 1-based user-turn index within this session. |
 | `iter` | int | main-agent iteration within that turn. |
 | `question` | string | Distilled user-question or sub-question. |
-| `shape` | enum | One of `direct-answer` / `tool-fetch` / `explore` / `update` / `plan-author` / `decompose` / `execute` / `evaluate` / `research` / `workflow` / `memory` / `skill` / `mcp` / `rlm` / `init` / `config` / `meta-resume`. |
-| `routed-to` | string or null | The specialist's kebab-case name, or `null` for self-answered. |
+| `shape` | enum | One of the 22 `valid-shapes` keywords (decision-table letters A–V): `direct-answer` / `tool-fetch` / `code-compose` / `explore` / `update` / `plan-author` / `decompose` / `execute` / `evaluate` / `research` / `workflow` / `rlm` / `memory` / `skill-lifecycle` / `mcp-lifecycle` / `init` / `config` / `acp` / `meta-resume` / `clarify` / `tool-lifecycle` / `agent-lifecycle`. Coerced by `coerce-shape`; an unknown value falls back to `:unspecified` (never fails the turn). |
+| `routed-to` | string or null | The specialist's kebab-case name (derived from the turn's dispatch), or `null` for self-answered. |
 | `artifact` | string or null | Path emitted by the specialist (parsed from its `Saved <kind>: <path>` line). |
-| `reason` | string | One-sentence rationale tied to the decision-table rule. |
+| `reason` | string | One-sentence rationale lifted from the model's `:answer` (its `Routing:` line, or the first prose line). |
 
 ### 4.3 `pointers.md` — Session Artifact Roll-up
 
@@ -172,7 +221,28 @@ Human-readable companion to the log. Newest first. Lets the user see "what files
 - 2026-05-16 09:14 [plan body — migrate-auth](computer://...) + dossier `post.verdict=:pass`
 ```
 
-Both files are append-only. On session close (`agent.session/closed`), the `INDEX.md` at `.brainyard/agents/main-agent/` gets a one-line entry with the session-id, turn count, and the headline routing shapes seen.
+Both files are append-only. `pointers.md` is auto-captured by the `:agent.tool-use/post` hook (§10.2); on session close (`:agent.session/closed`), the `INDEX.md` at `.brainyard/agents/main-agent/` gets a one-line entry with the session-id, turn count, and the headline routing shapes seen.
+
+### 4.4 The Routing Log as Hook-Derived Observation (the main-agent-specific move)
+
+main-agent is the **least brittle** agent in the set — most of its bookkeeping was already hooks + read seams. Before the redesign there was exactly one authoring micro-tool left: `main$append-log`, which made the model assemble a per-move map `{:turn :iter :question :shape :routed-to :artifact :reason}` and classify `:shape` against the multi-element enum every single turn. The instruction leaned on it hard (*"the log is the contract with the next turn; failing to update it makes resume-shaped questions ambiguous"*) — the same per-turn-obligation pressure with the same failure mode: a smaller model skips it, and continuation detection silently degrades. Because the root agent runs on *every* turn, that tax was paid the most often here.
+
+The redesign replaces that with a hook that **observes** the turn:
+
+**What the hook derives on its own (no model effort):**
+
+- **`routed-to`** — the specialist defagent dispatched this turn, scanned from the turn's tool-calls across all iterations (`routed-to-of`). `nil` if the turn was self-answered.
+- **`shape`** — for specialist moves, a deterministic map from the routed-to agent (`specialist->shape`: `plan-agent → :plan-author`, `todo-agent → :decompose`, `exec-agent → :execute`, `eval-agent → :evaluate`, `explore-agent → :explore`, `edit-agent → :update`, `research-agent → :research`, …). The decision table is essentially a shape↔agent bijection on the specialist rows, so the hook reads shape off the dispatch for free.
+- **`artifact`** — the first `Saved <kind>: <path>` line the specialist emitted (`parse-saved-lines`), already extracted by the capture hook.
+- **`question`** — the user's turn input (capped at 200 chars).
+- **`turn` / `iter`** — the loop already tracks these (the `:agent.ask/pre` hook snapshots `max(turn)` so the post hook knows the next turn number and can no-op a double-fire).
+
+**What the model still supplies (judgment, in prose it writes anyway):**
+
+- **`reason`** — the one-sentence routing rationale. The instruction *already* requires the model to surface "what you did (one-sentence routing decision)" in its `:answer`. The hook lifts that line (the `Routing:` reason, or the first prose line of the answer); no separate field.
+- **`shape` for self-answered moves** — `:direct-answer` / `:tool-fetch` / `:code-compose` / `:meta-resume` / `:clarify` have no dispatch to infer from. For these the model emits one stable line in its answer — `Routing: <shape> — <reason>` — and the hook parses it (`routing-answer-re`). One line, one enum token, not a seven-key map. If the line is absent, shape falls back through a channel heuristic (`:code` → `:code-compose`, any tool call → `:tool-fetch`, else `:direct-answer`) and finally `:unspecified` — the entry is thinner but never missing.
+
+The `:shape` enum is still validated — but at *parse* time in the hook (`coerce-shape` against the 22-keyword `valid-shapes` set), with an `:unspecified` fallback that never fails the turn, instead of an eager hard-reject on a typo. The result: **the routing trail is complete (and arguably more complete, since the hook can't forget), while the root agent ends each turn having done only judgment.**
 
 ---
 
@@ -186,7 +256,7 @@ Both files are append-only. On session close (`agent.session/closed`), the `INDE
   [ai.brainyard.agent.common.todo      :as todo-helpers]
   [ai.brainyard.agent.common.exec      :as exec-helpers]
   [ai.brainyard.agent.common.eval      :as eval-helpers]
-  [ai.brainyard.agent.common.update    :as edit-helpers]
+  [ai.brainyard.agent.common.edit      :as edit-helpers]
   [ai.brainyard.agent.common.main      :as main]
   [ai.brainyard.agent.task.commands    :as task-cmds])
 
@@ -212,7 +282,7 @@ Both files are append-only. On session close (`agent.session/closed`), the `INDE
            [#'plan-helpers/plan$read-dossier
             #'todo-helpers/todo$read-dossier
             #'exec-helpers/exec$read-dossier
-            #'eval-helpers/eval$read-dossier
+            #'eval-helpers/eval$read-verdict
             #'edit-helpers/edit$read-record]
 
            ;; Sub-LLM synthesis (flat only) — intentionally excludes #'query$clone
@@ -227,7 +297,9 @@ Both files are append-only. On session close (`agent.session/closed`), the `INDE
            ;; Runtime config — for tuning :max-iterations mid-session
            common-cmds/runtime-commands
 
-           ;; main$* helpers (see §8)
+           ;; main$* helpers (see §8) — session-id / resume? / bootstrap /
+           ;; append-pointer / last-shape / index-append. main$append-log is
+           ;; NOT here: the per-turn routing LINE is hook-recorded (§5, §10).
            main/main-helpers))))
 ```
 
@@ -250,7 +322,8 @@ What is *deliberately omitted*:
 | Excluded | Reason |
 |---|---|
 | `query$clone` | Clones main-agent itself = clone-self recursion. Forbidden. Cross-agent dispatch is direct kebab-case + flat. |
-| Direct `plan$dossier-write`, `todo$dossier-write`, `exec$dossier-write`, `eval$dossier-write`, `eval$verdict-write`, `edit$apply` | Sibling-specialist writes go through their specialists, never directly. The read-only cherry-pick (`*$read-dossier` + `edit$read-record`) is the deliberate asymmetry. |
+| `main$append-log` (as an LLM tool) | **Retired.** The per-turn routing line is hook-derived (§5, §10) — the model no longer assembles it. A private `append-log!` fn renders the same NDJSON line and is called only from the routing-line hook. |
+| Direct `plan$dossier-write`, `todo$dossier-write`, `exec$dossier-write`, `eval$dossier-write`, `eval$verdict-write`, `edit$apply` | Sibling-specialist writes go through their specialists, never directly. The read-only cherry-pick (`plan$/todo$/exec$read-dossier` + `eval$read-verdict` + `edit$read-record`) is the deliberate asymmetry. |
 | `mcp$tools :call` (write-side), `skills$write` / `skills$install` | These belong to mcp-agent / skill-agent. main-agent routes; it does not bypass. |
 
 What is *bound directly* but should be reached for sparingly:
@@ -393,24 +466,19 @@ OR via the tool channel (JSON):
                     {"name": "agent-context", "value": "..."}]}]
 
 ────────────────────────────────────────────────────────────────────────────
-TURN 1 — ROUTING-LOG BOOTSTRAP (the only fixed obligation)
+TURN 1 — SESSION PROBE (the routing-log dir is bootstrapped for you)
 ────────────────────────────────────────────────────────────────────────────
-Before reaching for any specialist, on iteration 1 of the FIRST turn:
+The routing-log directory is created automatically when the session opens (an
+`:agent.session/created` hook), and the per-turn routing line is hook-recorded
+(see ROUTING LOG below) — so you have NO bootstrap obligation. On the first
+iteration, just probe whether this session already has history:
 
 ```clojure
-;; Probe the session — main$session-id grabs the current agent-session id.
-(def sid (main$session-id))
-
-;; Probe for an existing routing log.
-(def state (main$resume? :session-id sid))
-
-(if (:exists? state)
-  ;; RESUME — read routing.log and pointers.md; surface a one-paragraph
-  ;; 'where this session has been' in your :thought BEFORE deciding the
-  ;; current turn's move.
-  :resume
-  ;; BOOTSTRAP — create the directory + initial files (idempotent).
-  (main$bootstrap :session-id sid))
+(def sid (:session-id (main$session-id)))   ; current agent-session id
+(def state (main$resume? :session-id sid))  ; {:exists? … :last-shape … :last-artifact …}
+;; If (:exists? state): RESUME — read routing.log / pointers.md and surface a
+;; one-paragraph 'where this session has been' in your :thought before deciding
+;; this turn's move. Otherwise it's a fresh session — route normally.
 ```
 
 Subsequent turns in the same session re-read `routing.log` to detect:
@@ -534,19 +602,49 @@ T. CLARIFY         (answer channel)
            targeted questions BEFORE picking a move. The loop exits;
            user replies; you resume next turn.
 
-────────────────────────────────────────────────────────────────────────────
-ROUTING LOG DISCIPLINE (after every move)
-────────────────────────────────────────────────────────────────────────────
-1. Append one NDJSON line to routing.log with turn / iter / question /
-   shape / routed-to / artifact / reason.
-2. If a specialist returned a `Saved <kind>: <path>` line, append a
-   bullet to pointers.md with the path + one-line caption.
-3. If the move was a DIRECT-ANSWER / TOOL-FETCH / CODE-COMPOSE /
-   META-RESUME, log it anyway with `routed-to: null` — the routing
-   trail is complete even when no specialist ran.
+U. TOOL-LIFECYCLE  → tool-agent
+   Shapes: "make me a tool that …", "add a command for …", "what tools
+           have I built", "fix my <name> tool", "delete <name>". For
+           user-defined (fn [args] …) tools under .brainyard/tools. NOT
+           skills (N), NOT MCP (O), NOT one-off inline computation.
 
-The log is the contract with the next turn. Failing to update it makes
-resume-shaped questions ("what was that?") ambiguous.
+V. AGENT-LIFECYCLE → meta-agent
+   Shapes: "make me an agent that …", "what agents have I built", "tweak
+           my <name> agent", "delete <name>". For user-defined
+           CoAct-derived agents (personas = instruction + tool-context)
+           under .brainyard/agents/user$agent. A whole reusable
+           specialist, NOT a single tool (U), skill (N), or MCP (O). Do
+           NOT route here to merely USE an existing user agent — call it.
+
+The self-answered shape tokens (the only ones you ever name — see ROUTING LOG
+below) are: :direct-answer :tool-fetch :code-compose :meta-resume :clarify.
+(Specialist moves don't need a token — the hook derives the shape from which
+specialist you dispatched.)
+
+────────────────────────────────────────────────────────────────────────────
+ROUTING LOG — recorded automatically (you do NOT assemble a log line)
+────────────────────────────────────────────────────────────────────────────
+A hook records the per-turn routing line for you, derived from this turn:
+which specialist you dispatched (→ routed-to + shape), the `Saved <kind>:`
+artifact it returned, and your one-sentence routing reason. You do NOT call any
+log helper (main$append-log is retired). Your only obligations:
+
+1. State the one-sentence routing REASON in your :answer (you do this already —
+   see HAND-OFF SURFACING: 'what you did, one-sentence routing decision'). The
+   hook lifts that line.
+2. For a SELF-ANSWERED move (DIRECT-ANSWER / TOOL-FETCH / CODE-COMPOSE /
+   META-RESUME / CLARIFY) there is no dispatch for the hook to infer the shape
+   from, so add ONE line to your :answer:
+       Routing: <shape> — <reason>
+   e.g. `Routing: direct-answer — greeting, no specialist needed`. The hook
+   parses the shape + reason from it.
+3. Specialist `Saved <kind>: <path>` lines are ALSO auto-captured into
+   pointers.md by a separate hook. You may call `main$append-pointer` explicitly
+   for an artifact you computed yourself, but it's rarely needed.
+
+Continuation detection still works: `main$resume?` / `main$last-shape` read the
+hook-written routing.log. Failing to state a reason just yields a thinner log
+entry — never a failed turn.
 
 ────────────────────────────────────────────────────────────────────────────
 PASSING CONTEXT TO SPECIALISTS
@@ -598,9 +696,10 @@ Example :answer:
 ────────────────────────────────────────────────────────────────────────────
 HARD RULES
 ────────────────────────────────────────────────────────────────────────────
-1. NO query$clone. It clones main-agent itself = clone-self recursion.
-   Cross-specialist dispatch is direct kebab-case on each registered
-   defagent — `(plan-agent {…})`, `(research-agent {…})`, etc.
+1. STAY FLAT — no clone-self dispatch. `query$clone` clones main-agent itself
+   = clone-self recursion, and is omitted from your roster. Cross-specialist
+   dispatch is direct kebab-case on each registered defagent —
+   `(plan-agent {…})`, `(research-agent {…})`, etc.
 
 2. NO direct writes to sibling-specialist storage:
      .brainyard/agents/plan-agent/plans/        .brainyard/agents/plan-agent/dossiers/
@@ -614,10 +713,10 @@ HARD RULES
    freely; you NEVER write them. Reach for the specialist via direct
    kebab-case dispatch when new content is needed.
 
-3. DO NOT re-derive routing decisions silently. Every routing decision
-   appends a routing.log line with a one-sentence reason. The reason
-   is your contract with the user — they can audit why you picked
-   research-agent vs. plan-agent.
+3. DO NOT re-derive routing decisions silently. Always STATE a one-sentence
+   reason for the move in your :answer — the routing-log hook records it as
+   your contract with the user (they can audit why you picked research-agent
+   vs. plan-agent). You don't write the log line; you must supply the reason.
 
 4. DO NOT solve a multi-specialist problem inline. If a question
    genuinely needs explore + plan + todo + exec + eval, route to
@@ -639,6 +738,11 @@ HARD RULES
 8. CLARIFY OVER SPECULATE. If the question is ambiguous, ask 1–2
    targeted questions in your :answer before routing. A misrouted
    specialist call wastes more time than the round-trip.
+
+9. NO task$run for specialists. Specialist defagents return promptly;
+   wrapping them in task$run forces you to poll, which trips the loop
+   guard. Use direct kebab-case dispatch or the tool channel JSON.
+   task$run is for arbitrary bash subprocesses only.
 
 ────────────────────────────────────────────────────────────────────────────
 RESUMING A SESSION
@@ -664,11 +768,11 @@ every turn after the first:
 ## Main-agent tools — specialists + routing-log substrate
 
 ### Specialists (direct kebab-case dispatch — NOT bound directly)
-All nineteen `defagent`s are reachable. See §6 for the full per-agent
-decision table. Headline:
+All registered specialist `defagent`s are reachable by name. See §6 for the
+full per-agent decision table. Headline:
 
 - explore-agent    → discovery across files / web / MCP / skills.
-- edit-agent     → safe single-file edit.
+- edit-agent       → safe single-file edit.
 - plan-agent       → plan authoring (pre/post-flight gated).
 - todo-agent       → decomposition (pre/post-flight gated).
 - exec-agent       → advance a todo (per-item routing).
@@ -678,6 +782,8 @@ decision table. Headline:
 - rlm-agent        → MapReduce over too-big context.
 - skill-agent      → skill lifecycle (write/install).
 - mcp-agent        → MCP lifecycle + write-side calls.
+- tool-agent       → user-defined tool lifecycle (tool-agent$* author/refine/remove).
+- meta-agent       → user-defined agent/persona lifecycle (meta-agent$*).
 - memory-agent     → long-term memory read/write.
 - init-agent       → project bootstrap.
 - config-agent     → .brainyard/config tuning.
@@ -715,11 +821,11 @@ Invocation pattern (all identical):
 - exec$read-dossier   -- Parse exec-agent dossier frontmatter.
                           Returns :execute.evidence, :post.acceptance_progress.
                           Use to detect "exec ran; route to eval?"
-- eval$read-dossier   -- Parse eval-agent dossier frontmatter.
-                          Returns :score.criteria, :score.recommendations.
-                          Use to detect "did acceptance pass; should
-                          we route back to plan/todo/exec?"
-- edit$read-record  -- Parse an edit-agent record. Returns :apply
+- eval$read-verdict   -- Parse eval-agent verdict frontmatter.
+                          Returns :verdict, :confidence, :criteria,
+                          :recommendations. Use to detect "did acceptance
+                          pass; should we route back to plan/todo/exec?"
+- edit$read-record    -- Parse an edit-agent record. Returns :apply
                           :verify :rollback for diff-level audit.
 
 ### Synthesis
@@ -742,9 +848,13 @@ Invocation pattern (all identical):
                           routes through explore-agent.
 
 ### Background tasks
-- task$run (:job-type :tool|:bash) — async wrapper for >5s specialist
-                                      calls (rare; specialists usually
-                                      return promptly).
+- task$run (:job-type :bash) — async wrapper for arbitrary long-running
+                                bash subprocesses (build, log scan, data
+                                pipeline). NEVER wrap a specialist defagent
+                                in task$run — specialists are reached by
+                                direct kebab-case dispatch / the tool channel;
+                                polling for their result trips the loop guard
+                                (Hard Rule 9).
 
 ### Runtime config
 - agent-runtime$config — view (no args) or tune (`:key`/`:value`)
@@ -753,47 +863,54 @@ Invocation pattern (all identical):
 
 ## main$* helpers (auto-bound in the sandbox)
 
-Six mechanical helpers compress the routing-log flow. Use them in
-clojure fences instead of inlining mkdir / write-file / regex-replace
-logic.
+The per-turn routing LINE is hook-recorded — there is NO `main$append-log`
+helper. These accessors/probes remain (all read-only except append-pointer);
+use them in clojure fences instead of inlining mkdir / write-file logic.
 
 | Helper | Signature | What it does |
 |---|---|---|
-| `main$session-id` | `(main$session-id)` → `"<id>"` | Returns current agent-session id. |
-| `main$resume?` | `(main$resume? :session-id …)` → `{:exists? bool :turn-count int :last-shape kw}` | Cheap probe — does the routing-log dir exist? |
-| `main$bootstrap` | `(main$bootstrap :session-id …)` → `{:dir … :log-path …}` | Creates dir + initial routing.log + pointers.md. Idempotent. |
-| `main$append-log` | `(main$append-log :session-id … :turn … :iter … :shape :plan-author :routed-to "plan-agent" :artifact "<path>" :reason "<one-sentence>")` → `{:appended true}` | One NDJSON line into routing.log. |
-| `main$append-pointer` | `(main$append-pointer :session-id … :path "<path>" :caption "<one-line>")` → `{:appended true}` | One bullet into pointers.md. |
-| `main$last-shape` | `(main$last-shape :session-id …)` → `:plan-author | :execute | :research | …` | Last routing decision in the current session — drives continuation detection. |
+| `main$session-id` | `(main$session-id)` → `{:session-id "<id>"}` | Returns current agent-session id. |
+| `main$resume?` | `(main$resume? :session-id …)` → `{:exists? bool :turn-count int :last-shape kw :last-artifact "<path>"}` | Cheap probe — does the routing-log dir exist + its last state? |
+| `main$bootstrap` | `(main$bootstrap :session-id …)` → `{:dir … :log-path …}` | Creates dir + initial routing.log + pointers.md. Idempotent. Normally unnecessary — the `:agent.session/created` hook bootstraps for you. |
+| `main$append-pointer` | `(main$append-pointer :session-id … :path "<path>" :caption "<one-line>")` → `{:appended true}` | One bullet into pointers.md. Usually the `:agent.tool-use/post` hook captures specialist `Saved <kind>:` lines for you. |
+| `main$last-shape` | `(main$last-shape :session-id …)` → `{:shape :plan-author :routed-to … :artifact … :turn N}` | Last routing decision in the current session — drives continuation detection. |
+| `main$index-append` | `(main$index-append :session-id … :turn-count N :shapes [...])` → `{:appended true}` | Appended on session close by the `:agent.session/closed` hook; you rarely call it. |
+
+ROUTING LINE (hook-recorded, not a helper): an `:agent.ask/post` hook appends
+the per-turn routing.log line — routed-to + shape (from your dispatch),
+artifact (the surfaced `Saved <kind>:` path), and your one-sentence reason. For
+a SELF-ANSWERED move, add `Routing: <shape> — <reason>` to your :answer so the
+hook can record the shape.
 
 ## Typical flow (no specific iteration count required)
-1. iter 1 — probe + bootstrap (or resume) routing-log; surface session
-   context in :thought.
+1. iter 1 — probe the session (main$resume?); surface session context in
+   :thought. (The routing-log dir is already bootstrapped by a hook.)
 2. iter 2 — pick a decision-table move; either route to a specialist
    (tool / code channel invocation) or answer directly (answer channel).
-3. After every move: append routing.log; if specialist ran, parse the
-   `Saved <kind>: <path>` line and append to pointers.md.
+3. State your one-sentence routing reason in :answer (and a `Routing: <shape>
+   — <reason>` line for self-answered moves). The hooks record the routing.log
+   line + capture any `Saved <kind>:` paths into pointers.md.
 4. iter N — finalize :answer with the specialist's surfaced result + the
    durable artifact path + the recommended next move.
 ```
 
 ---
 
-## 8. Optional `(main$*)` Sandbox Helpers
+## 8. `(main$*)` Sandbox Helpers
 
-Mirrors the helpers introduced in `research-agent`, `workflow-agent`, and `explore-agent`. They live in `ai.brainyard.agent.common.main` (new namespace), register as `defcommand`s, and surface in the sandbox via auto-binding.
+Mirrors the helpers introduced in `research-agent`, `workflow-agent`, and `explore-agent`. They live in `ai.brainyard.agent.common.main`, register as `defcommand`s, and surface in the sandbox via auto-binding. They are **read seams + accessors** — the only structured-authoring helper, `main$append-log`, was **retired as an LLM tool** in the redesign: a private `append-log!` fn renders the same NDJSON line and is called only from the routing-line hook (§5, §10.4). The bound roster (`main-helpers`) is `main$session-id`, `main$resume?`, `main$bootstrap`, `main$append-pointer`, `main$last-shape`, `main$index-append`.
 
 | Helper | Signature | What it does |
 |---|---|---|
-| `main$session-id` | `(main$session-id)` → `{:session-id "<id>"}` | Returns the current agent-session id (reads `*current-agent*` and pulls `:session-id` from `!session`). |
-| `main$resume?` | `(main$resume? :session-id "<id>")` → `{:exists? bool :turn-count int :last-shape kw :last-artifact "<path>"}` | Cheap probe: does the routing-log dir exist? How many turns has it seen? What was the last decision shape? |
-| `main$bootstrap` | `(main$bootstrap :session-id "<id>")` → `{:dir "<path>" :log-path "<path>" :pointers-path "<path>"}` | Creates `.brainyard/agents/main-agent/<session-id>/` with empty `routing.log` and a header in `pointers.md`. Idempotent — if dir exists, returns its current state instead of overwriting. |
-| `main$append-log` | `(main$append-log :session-id … :turn N :iter M :question "…" :shape :plan-author :routed-to "plan-agent" :artifact "<path>" :reason "<one-sentence>")` → `{:appended true :line "<rendered NDJSON>"}` | Appends one NDJSON line. Validates `shape` against the enum; rejects unknown shapes (catches typos early). |
-| `main$append-pointer` | `(main$append-pointer :session-id … :path "<path>" :caption "<one-line>")` → `{:appended true}` | Appends one markdown bullet to `pointers.md` with a timestamp + caption. |
-| `main$last-shape` | `(main$last-shape :session-id …)` → `{:shape :plan-author :routed-to "plan-agent" :artifact "<path>" :turn N}` | Reads the last line of `routing.log` and returns it parsed. Drives continuation detection ("user said 'now do X with the thing' — what was the thing?"). |
-| `main$index-append` | `(main$index-append :session-id … :turn-count N :shapes [:plan-author :decompose :execute])` → `{:appended true}` | Append a one-line entry to `.brainyard/agents/main-agent/INDEX.md` on session close. |
+| `main$session-id` | `(main$session-id)` → `{:session-id "<id>"}` | Returns the current agent-session id (reads `*current-agent*` and pulls the `:session-id` via `proto/session-id`). A runtime accessor — the model cannot construct it. |
+| `main$resume?` | `(main$resume? :session-id "<id>")` → `{:exists? bool :line-count int :turn-count int :last-shape kw :last-artifact "<path>"}` | Cheap probe: does the routing-log dir exist? How many lines/turns has it seen? What was the last decision shape/artifact? Single pass over `routing.log`. |
+| `main$bootstrap` | `(main$bootstrap :session-id "<id>")` → `{:dir "<path>" :log-path "<path>" :pointers-path "<path>" :exists? bool}` | Creates `.brainyard/agents/main-agent/<session-id>/` with empty `routing.log` and a header in `pointers.md`. Idempotent — if dir exists, returns its current state instead of overwriting. **Normally driven by the `:agent.session/created` hook**, so the model rarely calls it. |
+| `main$append-pointer` | `(main$append-pointer :session-id … :path "<path>" :caption "<one-line>")` → `{:appended true}` | Appends one markdown bullet to `pointers.md` with a timestamp + caption. Usually unnecessary — the `:agent.tool-use/post` hook auto-captures specialist `Saved <kind>:` lines. |
+| `main$last-shape` | `(main$last-shape :session-id …)` → `{:exists? bool :shape kw :routed-to "<agent>" :artifact "<path>" :turn N :iter M :question "…" :reason "…"}` | Reads + parses the last line of `routing.log`. Drives continuation detection ("user said 'now do X with the thing' — what was the thing?"). |
+| `main$index-append` | `(main$index-append :session-id … :turn-count N :shapes [:plan-author :decompose :execute])` → `{:appended true}` | Append a one-line entry to `.brainyard/agents/main-agent/INDEX.md`. Driven by the `:agent.session/closed` hook. |
+| `coerce-shape` / `append-log!` (private) | `(append-log! :session-id … :turn … :shape … :routed-to … :artifact … :reason …)` | NOT bound as an LLM tool. `append-log!` renders one NDJSON line (coercing `:shape` via `coerce-shape` against the 22-keyword `valid-shapes` set → `:unspecified` on a miss); the routing-line hook is its sole caller. |
 
-The agent works without these — but the instruction becomes 30-40% shorter because the routing-log mechanics no longer have to be inlined every iteration.
+The model works with read seams + accessors only; the routing-log mechanics no longer have to be inlined every iteration, and there is **no per-turn structured-authoring obligation**.
 
 ---
 
@@ -823,18 +940,25 @@ No new BT actions, no new schemas, no SCI binding additions are required for the
 
 ## 10. Hooks Integration
 
-main-agent uses the existing hooks registry (see `docs/core/agent.md` §Hooks) — no new event types. Three integration points worth calling out:
+main-agent uses the existing hooks registry (see `docs/core/agent.md` §Hooks) — no new event types. They ship in `common/main_agent_hooks.clj`, all `:source ::main-agent`, self-installing at namespace load via `(install!)` and each wrapped in try/catch so a hook failure never propagates into the user answer. **Five** handlers ship (the redesign added the `:agent.ask/pre` snapshot + the `:agent.ask/post` routing-line recorder — together they make the routing log hook-derived, retiring `main$append-log`):
+
+| Event | Handler | Role |
+|---|---|---|
+| `:agent.session/created` | `routing-log-bootstrap` | Bootstrap the routing-log dir before the first turn (idempotent). |
+| `:agent.ask/pre` | `capture-pre-turn` | Snapshot `max(turn)` in `routing.log` onto the agent `!state` so the post hook knows the next turn number + can no-op a double-fire. |
+| `:agent.tool-use/post` | `capture-saved-artifacts` | Parse specialist `Saved <kind>:` lines → `pointers.md` bullets. |
+| `:agent.ask/post` | `record-routing-line` | **Derive + append the per-turn routing line** (the redesign's core hook; sole writer of `routing.log`). |
+| `:agent.session/closed` | `finalize-index` | Append a turn-count + distinct-shapes summary to `INDEX.md`. |
 
 ### 10.1 `:agent.session/created` — bootstrap routing log
 
-A side-effecting handler (`main-agent.routing-log-bootstrap-handler`) runs on session creation to ensure `.brainyard/agents/main-agent/<session-id>/` exists before the first user turn. Idempotent.
+A side-effecting handler (`routing-log-bootstrap`) runs on session creation to ensure `.brainyard/agents/main-agent/<session-id>/` exists before the first user turn. Idempotent, and runs for every session (any agent may invoke main-agent later).
 
 ```clojure
 (hooks/register-hook!
   :agent.session/created
   ::routing-log-bootstrap
-  (fn [{:keys [session-id]}]
-    (main/main$bootstrap :session-id session-id))
+  routing-log-bootstrap            ; (fn [{:keys [session-id]}] (main/main$bootstrap :session-id session-id))
   :source ::main-agent)
 ```
 
@@ -846,35 +970,54 @@ A read-only observer parses every sub-agent's result for `Saved <kind>: <path>` 
 (hooks/register-hook!
   :agent.tool-use/post
   ::capture-saved-artifacts
-  (fn [{:keys [agent tool-name result]}]
-    (when (and (= (proto/defagent-type agent) :main-agent)
-               (specialist-defagent? tool-name))
-      (when-let [artifact (parse-saved-line result)]
-        (main/main$append-pointer
-          :session-id (agent-session-id agent)
-          :path (:path artifact)
-          :caption (:caption artifact)))))
-  :match (hooks/match-defagent-type :main-agent)
-  :source ::main-agent)
+  capture-saved-artifacts          ; main-agent? + (specialist-agents tool-name) →
+                                   ; (doseq [{:keys [kind path]} (main/parse-saved-lines answer)]
+                                   ;   (main/main$append-pointer :session-id sid :path path :caption …))
+  :source ::main-agent
+  :match  (fn [{:keys [agent]}] (main-agent? agent)))
 ```
 
-This decouples artifact tracking from instruction discipline — even if the LLM forgets to call `main$append-pointer` itself, the hook catches it.
+This decouples artifact tracking from instruction discipline — even if the LLM forgets to call `main$append-pointer` itself, the hook catches it. `pointers.md` was already hook-driven before the redesign and stays so.
 
-### 10.3 `:agent.session/closed` — finalize INDEX.md
+### 10.3 `:agent.ask/pre` — snapshot the turn boundary
 
-Appends one line to `.brainyard/agents/main-agent/INDEX.md` summarizing the session's turn count and headline routing shapes.
+A tiny observer records `max(turn)` currently in `routing.log` onto the agent's `!state` (`::pre-max-turn`) so the post hook (§10.4) can compute the next turn number and no-op a double-fire.
+
+```clojure
+(hooks/register-hook!
+  :agent.ask/pre ::capture-pre-turn capture-pre-turn
+  :source ::main-agent
+  :match  (fn [{:keys [agent]}] (main-agent? agent)))
+```
+
+### 10.4 `:agent.ask/post` — record the routing line (the redesign's core hook)
+
+The **sole writer** of `routing.log`. main-agent no longer calls `main$append-log`; this hook derives the per-turn line from the turn itself (§5) and appends it via the private `main/append-log!`:
+
+- **`routed-to`** — `routed-to-of`: the last specialist defagent in the turn's tool-calls (`nil` if self-answered).
+- **`shape`** — `derive-shape`: a dispatched specialist is authoritative (`specialist->shape`); else the `Routing: <shape> — <reason>` answer line; else a channel fallback (`:code` → `:code-compose`, any tool call → `:tool-fetch`, else `:direct-answer`). All coerced through `coerce-shape` (→ `:unspecified` on a miss).
+- **`artifact`** — the first `Saved <kind>: <path>` path (`parse-saved-lines`).
+- **`reason`** — the `Routing:` reason, else the first prose line of the answer.
+- **`question`** — the turn's input, capped at 200 chars.
+
+```clojure
+(hooks/register-hook!
+  :agent.ask/post ::record-routing-line record-routing-line
+  :source ::main-agent
+  :match  (fn [{:keys [agent]}] (main-agent? agent)))
+```
+
+Because the hook observes rather than asks the model to author, the trail can't be forgotten — strictly better than the old "model skipped `main$append-log` entirely" failure mode. Shape validation moved from an eager hard-reject to a parse-time coerce (`:unspecified` fallback), so a mis-derived shape never fails the turn.
+
+### 10.5 `:agent.session/closed` — finalize INDEX.md
+
+Appends one line to `.brainyard/agents/main-agent/INDEX.md` summarizing the session's turn count and distinct routing shapes (no-op when main-agent was never invoked).
 
 ```clojure
 (hooks/register-hook!
   :agent.session/closed
   ::finalize-index
-  (fn [{:keys [session-id]}]
-    (let [log (main/read-routing-log session-id)
-          shapes (->> log (map :shape) distinct vec)]
-      (main/main$index-append
-        :session-id session-id
-        :turn-count (->> log (map :turn) (apply max 0))
-        :shapes shapes)))
+  finalize-index                   ; reads main/read-routing-log → main/main$index-append
   :source ::main-agent)
 ```
 
@@ -884,14 +1027,15 @@ Appends one line to `.brainyard/agents/main-agent/INDEX.md` summarizing the sess
 
 ### Turn 1 — User: *"Draft a plan to migrate the auth middleware off legacy session storage to JWT"*
 
-#### Iteration 1 — Bootstrap + route (code channel)
+#### Iteration 1 — Probe + route (code channel)
+
+The routing-log dir is already bootstrapped by the `:agent.session/created` hook, so the model just probes for prior history before routing.
 
 ````markdown
 ```clojure
-;; Bootstrap routing log.
 (def sid (:session-id (main$session-id)))
-(main$bootstrap :session-id sid)
-;; => {:dir ".brainyard/agents/main-agent/sess-7f3a/" :log-path "…/routing.log" :pointers-path "…/pointers.md"}
+(main$resume? :session-id sid)
+;; => {:exists? true :line-count 0 :turn-count 0}   ; fresh session, nothing to resume
 
 ;; Shape detection: "draft a plan to X" → F. PLAN-AUTHOR → plan-agent.
 :next-move :plan-author
@@ -919,20 +1063,9 @@ Saved plan: .brainyard/agents/plan-agent/plans/migrate-auth-jwt.md
 Saved dossier: .brainyard/agents/plan-agent/dossiers/20260516-091412-migrate-auth-jwt.md
 ```
 
-#### Iteration 3 — Log + finalize (code channel + answer channel — split across 2 iterations)
+#### Iteration 3 — Finalize (answer channel)
 
-````markdown
-```clojure
-(main$append-log
-  :session-id sid :turn 1 :iter 2
-  :question "draft a plan to migrate the auth middleware …"
-  :shape :plan-author :routed-to "plan-agent"
-  :artifact ".brainyard/agents/plan-agent/plans/migrate-auth-jwt.md"
-  :reason "explicit 'draft a plan'; no execution requested")
-
-;; Hook captured the Saved-line bullets into pointers.md automatically.
-```
-````
+main-agent writes no log line itself. It just surfaces the specialist's result + its one-sentence routing reason; the `:agent.ask/post` hook then derives and appends the routing.log line (`routed-to: plan-agent`, `shape: plan-author`, the captured plan path, the reason lifted from the first prose line), and the `:agent.tool-use/post` hook has already captured the `Saved`-line bullets into `pointers.md`.
 
 Final `:answer`:
 
@@ -950,6 +1083,8 @@ Saved dossier: .brainyard/agents/plan-agent/dossiers/20260516-091412-migrate-aut
 Next: `(todo-agent {:question "spawn a todo from migrate-auth-jwt"})` when you're
 ready to decompose.
 ```
+
+The hook derives `{turn 1, iter 1, question "draft a plan…", routed-to "plan-agent", shape :plan-author, artifact ".../migrate-auth-jwt.md", reason "Routed to plan-agent — your question reduced to plan authoring."}` and appends it. No map was built by the model.
 
 ### Turn 2 — User: *"now spawn a todo from it"*
 
@@ -1006,9 +1141,11 @@ Session pointers so far (most recent first):
 - 2026-05-16 09:14 [plan body — migrate-auth-jwt](computer://...) (`post.verdict`: :pass)
 
 Want me to route to exec-agent and start driving the todo?
+
+Routing: meta-resume — answered from routing.log; no verdict exists yet.
 ```
 
-Note: turn 3 uses NO specialist — main-agent answers from the routing log directly. This is `S. META-RESUME` from §6's decision table.
+Note: turn 3 uses NO specialist — main-agent answers from the routing log directly. This is `S. META-RESUME` from §6's decision table. Because there's no dispatch for the hook to infer from, the model adds the `Routing: meta-resume — …` line so the `:agent.ask/post` hook records the shape (`routed-to: null`).
 
 ---
 
@@ -1033,49 +1170,55 @@ main-agent is a thin specialization of coact-agent. The diffs:
 | | coact-agent | main-agent |
 |---|---|---|
 | **Instruction** | Tool / code / answer channel mechanics + sandbox contract + critical rules. | All of coact-agent's, **plus** the §6 decision table + §7 specialist roster context + routing-log discipline. |
-| **Tool roster** | Generic CoAct tools (file/shell/web/bootstrap/invocation/discovery). | coact-agent's roster **plus** the read-only sibling dossier helpers + the `main$*` helpers namespace. |
-| **State** | None of its own; sandbox `def`s reset per agent instance. | Persists `.brainyard/agents/main-agent/<session-id>/routing.log` + `pointers.md`. |
+| **Tool roster** | Generic CoAct tools (file/shell/web/bootstrap/invocation/discovery). | coact-agent's roster **plus** the read-only sibling dossier helpers + the `main$*` helpers namespace (read seams/accessors — no `main$append-log`). |
+| **State** | None of its own; sandbox `def`s reset per agent instance. | Persists `.brainyard/agents/main-agent/<session-id>/routing.log` + `pointers.md` — both **hook-written**, not LLM-authored. |
 | **Default `:max-iterations`** | 20. | 20 (most turns finish in 1–3). |
-| **Hooks** | Inherits the global registry. | Adds three handlers (`:agent.session/created`, `:agent.tool-use/post`, `:agent.session/closed`) under `:source ::main-agent`. |
-| **TUI default** | Current default. | **New default** (`bb tui run` resolves to `main-agent`). coact-agent retained as power-user fallback. |
+| **Hooks** | Inherits the global registry. | Adds **five** handlers (`:agent.session/created`, `:agent.ask/pre`, `:agent.tool-use/post`, `:agent.ask/post`, `:agent.session/closed`) under `:source ::main-agent` — the `:agent.ask/post` recorder is the sole writer of `routing.log`. |
 | **clone-self** | `query$clone` available (clones coact-agent). | `query$clone` excluded (gated to rlm-agent; not in roster) — Hard Rule 1 phrased as "STAY FLAT — no clone-self dispatch." |
 
 The minimal diff is intentional. Anything coact-agent already does well (channel discipline, sandbox state, parallel blocks, finalize) main-agent inherits unchanged. The only new thing is the *routing knowledge*.
 
 ---
 
-## 14. Migration & Rollout
+## 14. Migration — Complete
 
-main-agent ships as additive, alongside coact-agent. No code is removed; users opt in by either:
+main-agent shipped as additive, alongside coact-agent — no code was removed.
 
-1. **TUI default flip.** A small flag in `bases/agent-tui-app` resolves the default agent at startup. Phase 1 ships main-agent registered + selectable but coact-agent remains the default (`bb tui run -a main-agent` works). Phase 2 flips the default to main-agent after a release of seasoning. coact-agent stays available via explicit `-a coact-agent`.
+### 14.1 The lightweight, hook-derived redesign (2026-06, done)
 
-2. **Sub-agent dispatch unaffected.** Other specialists that today dispatch to coact-agent (none currently — coact-agent is a leaf-level reasoning style) continue to do so. main-agent is the *user-facing* default, not a substrate.
+The redesign removed main-agent's last per-turn structured-authoring obligation. It landed as:
 
-3. **Telemetry.** Phase 1 (opt-in main-agent) accumulates routing logs across volunteer users. Phase 2 ships once the routing-log corpus shows the decision table covers >95% of observed user-question shapes with no misroutes (measured by user follow-up or thumbs-down feedback in the TUI).
+1. **Routing-line hook.** `record-routing-line` on `:agent.ask/post` (plus the `:agent.ask/pre` `capture-pre-turn` snapshot) became the **sole writer** of `routing.log`, deriving the line from the turn (§5, §10.4).
+2. **`main$append-log` retired** as an LLM tool. Its NDJSON rendering moved to the private `main/append-log!`, called only from the hook. The bound roster (`main-helpers`) dropped it.
+3. **Instruction simplified** — the per-turn "assemble + submit a log map" obligation became "state a one-sentence reason (you already do); add a `Routing: <shape> — <reason>` line for self-answered moves."
+4. **`routing.log` format unchanged** (same NDJSON keys) — only the *writer* moved from the model to the hook, so `main$resume?` / `main$last-shape` parse it identically. **No data migration.**
 
-4. **Compatibility with `bb tui ask`.** `bb tui ask -m opus 'What is 2+2?'` continues to work — main-agent's `A. DIRECT-ANSWER` move handles it in one iteration via the answer channel; the routing-log overhead is one NDJSON line.
+The change paired naturally with the base-substrate rollout (main-agent is the chief beneficiary of the inline track/execute/edit substrates — see [the synthesis](./agent-lightweight-redesign-synthesis.md)), but was independent and could land any time.
 
-5. **ACP & web app.** `bases/agent-web` and `bases/acp-stub-agent` are unchanged. ACP backends choose their own entry agent; if a backend wants the new front-door behavior, it switches its entry to `main-agent`. Default per-base resolution lives in each base's `core.clj`.
+### 14.2 Front-door entry & compatibility
+
+- **Sub-agent dispatch unaffected.** coact-agent is a leaf-level reasoning style; nothing dispatches to it as a substrate. main-agent is the *user-facing* front door, not a substrate. coact-agent stays available via explicit `-a coact-agent`.
+- **Compatibility with `bb tui ask`.** `bb tui ask -m opus 'What is 2+2?'` works — main-agent's `A. DIRECT-ANSWER` move handles it in one iteration via the answer channel; the routing-log overhead is one hook-written NDJSON line.
+- **ACP & web app.** `bases/agent-web` and `bases/acp-stub-agent` choose their own entry agent; a backend wanting the front-door behavior switches its entry to `main-agent`. Default per-base resolution lives in each base's `core.clj`.
 
 ---
 
-## 15. File Map (proposed)
+## 15. File Map
 
 | File | Purpose |
 |---|---|
-| `components/agent/src/ai/brainyard/agent/common/main_agent.clj` | The `defagent` form + instruction + tool-context + roster wiring. ~700 lines following the research-agent / workflow-agent template. |
-| `components/agent/src/ai/brainyard/agent/common/main.clj` | The `main$*` helpers (`main$session-id`, `main$resume?`, `main$bootstrap`, `main$append-log`, `main$append-pointer`, `main$last-shape`, `main$index-append`) as `defcommand`s. ~300 lines. |
-| `components/agent/src/ai/brainyard/agent/common/main_agent_hooks.clj` | The three hook handlers (bootstrap / capture-saved-artifacts / finalize-index). ~150 lines. |
-| `components/agent/test/ai/brainyard/agent/main_agent_test.clj` | Tests: routing log bootstrap idempotency, decision-table dispatch (one-question-per-shape harness), session continuation detection, hook side-effects. |
-| `docs/design/main-agent-design.md` | This document. |
-| `docs/core/agent.md` (revision) | Add `main-agent` to the built-in agents table; note it as the new TUI default after phase 2. |
+| `components/agent/src/ai/brainyard/agent/common/main_agent.clj` | The `defagent` form + instruction + tool-context + roster wiring. Routing-log obligation is hook-recorded; the instruction states only the reason + the `Routing:` self-answer convention. |
+| `components/agent/src/ai/brainyard/agent/common/main.clj` | The `main$*` helpers (`main$session-id`, `main$resume?`, `main$bootstrap`, `main$append-pointer`, `main$last-shape`, `main$index-append`) as `defcommand`s, plus the **private** `append-log!` + `coerce-shape` (the 22-keyword `valid-shapes`) and `parse-saved-lines`. `main$append-log` is **not** a bound tool. |
+| `components/agent/src/ai/brainyard/agent/common/main_agent_hooks.clj` | The **five** hook handlers (bootstrap / capture-pre-turn / capture-saved-artifacts / record-routing-line / finalize-index), self-installing at load. |
+| `components/agent/test/ai/brainyard/agent/main_agent_test.clj` | Tests: routing-log bootstrap idempotency, decision-table dispatch, session continuation detection, hook-derived routing line + self-answer `Routing:` parsing + `:unspecified` fallback. |
+| `docs/design/main-agent-design.md` | This document (as-built). |
+| `docs/core/agent.md` | Lists `main-agent` in the built-in agents table. |
 
 ---
 
 ## 16. Open Questions
 
-1. **Should main-agent surface a routing-decision "reason" to the user, or keep it internal to routing.log?** Current proposal: log + a one-sentence routing line at the top of `:answer` ("Routed to plan-agent — your question reduced to plan authoring."). Some users may prefer this; others may find it noisy. A `:show-routing? true|false` runtime config setting could let the user choose.
+1. **Should main-agent surface a routing-decision "reason" to the user, or keep it internal to routing.log?** **Resolved (as-built):** the model states a one-sentence routing reason at the top of `:answer` ("Routed to plan-agent — your question reduced to plan authoring."), which the `:agent.ask/post` hook lifts into `routing.log` — so the reason is both user-visible and logged, with no separate authoring step. A `:show-routing? true|false` runtime knob to mute the user-facing line remains a possible follow-up.
 
 2. **Should `agent-context` to specialists include the FULL routing.log path or a digest?** Path is cheaper but forces the specialist to read-file it. Digest in-line wastes context. Current proposal: path-only (specialists read-file as needed). May need revisiting if specialists complain about extra round-trips.
 
@@ -1091,11 +1234,11 @@ main-agent ships as additive, alongside coact-agent. No code is removed; users o
 
 ## 17. Summary
 
-`main-agent` is the front-door router brainyard has been quietly missing: a thin CoAct specialization whose entire job is to look at a user question and pick the right specialist (or coact-agent's own channels) per question shape. The substrate, the loop, the sandbox, the hooks — all unchanged from coact-agent. What's new is:
+`main-agent` is the front-door router for brainyard: a thin CoAct specialization whose entire job is to look at a user question and pick the right specialist (or coact-agent's own channels) per question shape. The substrate, the loop, the sandbox — all inherited from coact-agent. What it adds:
 
-- A curated **decision table** in the instruction (§6) covering 20 question shapes and the right move for each.
-- A small **routing log** under `.brainyard/agents/main-agent/<session-id>/` that gives session continuity, audit trail, and continuation detection.
+- A curated **decision table** in the instruction (§6) covering 22 question shapes (A–V, including `tool-agent` and `meta-agent`) and the right move for each. Routing is pure LLM judgment.
+- A **self-recording routing log** under `.brainyard/agents/main-agent/<session-id>/` that gives session continuity, audit trail, and continuation detection — **hook-written, not LLM-authored**. The model routes and states a reason; the `:agent.ask/post` hook derives and appends the structured line (`main$append-log` retired).
 - A **flat dispatch model** — every other `defagent` is reachable by direct kebab-case call, no recursion, no clone-self.
-- Three **hook handlers** that decouple routing-log discipline from the LLM's instruction (bootstrap on session-created, capture Saved-lines on tool-use/post, finalize INDEX on session-closed).
+- **Five hook handlers** that own routing-log discipline entirely (bootstrap on session-created, snapshot on ask/pre, capture Saved-lines on tool-use/post, **record the routing line** on ask/post, finalize INDEX on session-closed).
 
-The user no longer has to pre-classify their question into the right `-a <agent>` flag. They land on main-agent, ask a question, and the right specialist runs. The specialists keep their pre/post-flight gating, their dossiers, their hard rules. main-agent owns the seam.
+The root agent ends each turn having done only judgment — pick the route, state the reason — while the structured trail records itself. The user no longer has to pre-classify their question into the right `-a <agent>` flag: they ask, and the right specialist runs. The specialists keep their pre/post-flight gating, their dossiers, their hard rules. main-agent owns the seam.

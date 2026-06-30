@@ -10,7 +10,7 @@
    structured per-item evidence (with :ok? + :evidence per idx), post-flight
    rubric (incl. acceptance_progress map), recommended next agent. Lives
    under `.brainyard/agents/exec-agent/dossiers/<yyyyMMdd-HHmmss>-<slug>.md` per
-   docs/exec-agent-design.md §7.3.
+   docs/design/exec-agent-design.md §7.2.
 
    Mirrors the plan-agent / todo-agent dossier helper patterns with
    exec-specific schema additions: `execute` block (items_advanced,

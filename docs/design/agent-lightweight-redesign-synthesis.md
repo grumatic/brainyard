@@ -1,23 +1,26 @@
-# Agent Lightweight Redesign — Synthesis & Rollout
+# Agent Lightweight Redesign — Synthesis
 
-> **Status:** Umbrella note for the six per-agent redesign proposals. Read this
-> first; it states the one principle behind all of them, what each agent
-> contributes, the shared invariants, the cross-cutting decisions to settle
-> once, and a phased rollout order.
+> **Status:** Shipped (2026-06). Umbrella note for the agent lightweight
+> redesign, now landed across the fleet. Read this first; it states the one
+> principle behind all of it, what each agent contributes, the shared
+> invariants, the cross-cutting decisions that were settled, and the rollout
+> order that was executed. Each per-agent redesign has been **folded into that
+> agent's `-agent-design.md`** and the standalone redesign docs removed — the
+> links below point at the as-built design docs.
 >
 > The docs:
-> [plan](./plan-agent-lightweight-redesign.md) ·
-> [explore](./explore-agent-lightweight-redesign.md) ·
-> [todo](./todo-agent-lightweight-redesign.md) ·
-> [exec](./exec-agent-lightweight-redesign.md) ·
+> [plan](./plan-agent-design.md) ·
+> [explore](./explore-agent-design.md) ·
+> [todo](./todo-agent-design.md) ·
+> [exec](./exec-agent-design.md) ·
 > [edit](./edit-agent-design.md) (renamed from update-agent) ·
-> [eval](./eval-agent-lightweight-redesign.md) ·
-> [research](./research-agent-lightweight-redesign.md) (the orchestrator) ·
-> [workflow](./workflow-agent-lightweight-redesign.md) (template-driven orchestrator) ·
-> [skill](./skill-agent-lightweight-redesign.md) (lifecycle + skill substrate) ·
-> [mcp](./mcp-agent-lightweight-redesign.md) (lifecycle + MCP substrate) ·
-> [tool + meta](./tool-meta-agent-lightweight-redesign.md) (user-artifact lifecycle pair) ·
-> [main](./main-agent-lightweight-redesign.md) (the front-door router).
+> [eval](./eval-agent-design.md) ·
+> [research](./research-agent-design.md) (the orchestrator) ·
+> [workflow](./workflow-agent-design.md) (template-driven orchestrator) ·
+> [skill](./skill-agent-design.md) (lifecycle + skill substrate) ·
+> [mcp](./mcp-agent-design.md) (lifecycle + MCP substrate) ·
+> [tool](./tool-agent-design.md) + [meta](./meta-agent-design.md) (user-artifact lifecycle pair) ·
+> [main](./main-agent-design.md) (the front-door router).
 >
 > Boundary: [acp-agent](./acp-agent-redesign-boundary.md) sits *outside* the
 > series — a pure transport adapter (not CoAct-derived, authors nothing), so the
@@ -225,9 +228,11 @@ edits, durable research) to the specialists. Main-agent's own redesign is the
 lightest of all: it's already hook-driven, so the only change is moving its last
 per-turn authoring obligation (the routing-log line) onto a hook too.
 
-## 5. Cross-cutting decisions to settle once
+## 5. Cross-cutting decisions (settled)
 
-These recur as open questions across the docs; decide them centrally.
+These recurred as open questions across the per-agent docs and were decided
+centrally. The recommendations below are what shipped (revisit only if telemetry
+warrants).
 
 1. **Enforcement: prompt vs. hook.** The substrates are prose discipline today
    (reconcile after a flip; prefer `edit$apply` for tracked source). A
@@ -256,9 +261,11 @@ These recur as open questions across the docs; decide them centrally.
    normalizer **with or after** the todo+exec substrate work (which already
    revisits `:via` routing) so the normalizer lands once.
 
-## 6. Rollout sequence
+## 6. Rollout sequence (executed)
 
-Ordered to minimize churn and risk; each phase is independently shippable.
+This is the order the series was rolled out in — ordered to minimize churn and
+risk, each phase independently shippable. Retained as the record of how the
+migration proceeded; all phases have landed.
 
 **Phase 0 — settle §5 decisions.** Especially the combined-substrate question
 and the enforcement model, since they shape the base-agent edits.
@@ -329,7 +336,7 @@ Each phase keeps the system shippable: schemas and handoff lines are invariant
 
 ## 7. Net effect
 
-When the series lands:
+With the series shipped:
 
 - The brittle construct-a-map-then-render-YAML authoring path is gone; agents
   write the markdown they're fluent at, and a keyword typo can't fail a write.

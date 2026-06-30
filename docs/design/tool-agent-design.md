@@ -1,14 +1,54 @@
 # Tool-Agent — LLM-Mediated Authoring of Persistent User-Defined Tools (CoAct-derived)
 
-> Status: **shipped.** The `tool-agent` specialist (`common/tool_agent.clj`) and the
-> `tool-agent$*` command family (`common/user_tools.clj`) are both live, including
-> `tool-agent$validate`. This document is the original design proposal; **as-built**
-> notes mark where the implementation diverged. Key divergences: the command family
-> was renamed `tools$*` → `tool-agent$*` (commit `d96797b`) and user-tool ids
+> **Status:** Shipped. The `tool-agent` specialist (`common/tool_agent.clj`) and
+> the `tool-agent$*` command family (`common/user_tools.clj`) are both live,
+> including `tool-agent$validate`. The lightweight-authoring redesign shipped
+> (2026-06); this doc is the as-built reference — the former
+> `tool-meta-agent-lightweight-redesign.md` (which covered tool-agent **and**
+> meta-agent together) has been folded in here and removed.
+>
+> **As-built (verify against `tool_agent.clj` / `user_tools.clj`):**
+> - **The content is already code; the helpers are the right mechanism.** A tool
+>   is `.brainyard/tools/<name>.edn` (metadata: name / description / `:input-schema`
+>   Malli map) + `<name>.clj` (the verbatim `(fn [args] …)` body source). The body
+>   is code the model writes; the only structured input is the small `:input-schema`
+>   vector. There was no brittle dossier-frontmatter constructor to retire here, so
+>   the redesign **confirmed** the design rather than gutting it (§2A.1).
+> - **`tool-agent$validate` is the kept "good mechanism."** It dry-runs the draft —
+>   parse + eval-smoke-test the body in a throwaway sandbox fork (`sb/fork-sandbox`),
+>   with an optional `:sample` behavior check — and **persists/registers nothing**.
+>   A model cannot reliably self-assess "does this `(fn …)` eval and behave?"; the
+>   fork can. **Validate-before-create and verify-after-create are HARD RULES** in
+>   the shipped instruction (§5A, §6), not soft "disciplined path" guidance.
+> - **`tool-agent$create`'s register step is irreducibly a tool.** `write-file`
+>   makes bytes; only create *registers* `user$tool$<name>` into `!tool-defs` so it
+>   is callable. Create is the only path to a live artifact.
+> - **No substrate — and that's correct.** A created tool is *registered*, so using
+>   it is already ambient: any agent calls `user$tool$<name>`, and
+>   `list-tools`/`get-tool-info` discover it. The registry **is** the substrate;
+>   there is nothing to push down to the base (§2A.2). USE is free (registry),
+>   MANAGE is the specialist.
+> - **FILE-FIRST authoring shipped in the instruction, not as a new create arg.**
+>   The redesign floated optional `:body-path` args on `*$create`; those did **not**
+>   ship. Instead the instruction (§6, AUTHORING step 2) tells the model that for a
+>   large body or one with nested ``` fences it may `write-file` a scratch `.clj`,
+>   `read-file` it back, and pass that content as the `:body` *string*. The
+>   `:body`/`:input-schema` args stay string-only; it's a convenience for dodging
+>   escaping, not a schema change.
+>
+> Key persistence/rename divergences (vs. the original proposal below): the command
+> family was renamed `tools$*` → `tool-agent$*` (commit `d96797b`) and user-tool ids
 > `user$*` → `user$tool$*` (commit `d771de3`); tools persist as a `.edn` metadata +
 > `.clj` body sidecar pair (commit `14b5264`), not a single `.edn`.
-> Sibling docs: `skill-agent` (skill lifecycle), `mcp-agent` (MCP lifecycle),
-> `config-agent` (config lifecycle), `main-agent-design.md` (router).
+>
+> **Scope:** `common/tool_agent.clj`, `common/user_tools.clj`
+> **Mirrors:** `meta_agent.clj` / `user_agents.clj` (the user-artifact lifecycle
+> pair — see `meta-agent-design.md`; both share this "keep the mechanism, no
+> substrate" rationale).
+> Sibling docs: `meta-agent-design.md` (user-agent lifecycle), `skill-agent`
+> (skill lifecycle), `mcp-agent` (MCP lifecycle), `config-agent` (config
+> lifecycle), `main-agent-design.md` (router),
+> `agent-lightweight-redesign-synthesis.md` (the series principle).
 
 ## 1. Motivation
 
@@ -78,7 +118,78 @@ before authoring, and prefers refining an existing tool to minting a near-clone.
 It never invents tools. If discovery turns up nothing, it says so and offers to
 author one — it does not fabricate a `user$tool$…` that was never defined.
 
-## 2A. Scope — Project vs User
+## 2A. Why tool-agent is the lightest case in the series — and why it has no substrate
+
+This is the cleanest **"keep the mechanism"** exemplar in the
+[lightweight-redesign series](./agent-lightweight-redesign-synthesis.md). The
+series retired micro-tools that made the LLM *construct* artifacts it could have
+written directly (dossier-frontmatter chains, plan/eval builders) and **kept**
+micro-tools that do *deterministic work the model can't*. tool-agent's helpers
+are entirely the second kind, so almost nothing retired here — the redesign
+*confirmed* the design.
+
+### 2A.1 The content is already code; the helpers are the mechanism
+
+A tool is metadata (name, one-line description, a small `:input-schema` Malli
+`[:map …]`) plus a **verbatim body** — a `"(fn [args] …)"` string. The body is
+code the model writes in its native medium; there is no construct-and-render
+helper chain to remove. The one structured input, `:input-schema`, is small,
+load-bearing (it drives `call-tool` coercion, the sandbox arglist, and the doc
+string), and validated on create — not worth retiring.
+
+The helpers are the *opposite* of brittle constructors:
+
+- **`tool-agent$validate` is the dry-run** (§5A). Like `edit$apply`'s
+  probe/verify, it tells the model whether the artifact is sound **before** it
+  goes live — eval-smoke-testing the body in a throwaway sandbox fork with an
+  optional `:sample` behavior check. A model cannot reliably read its own
+  `(fn …)` and know it evals and behaves; the fork can. **Kept, and made
+  mandatory before create.**
+- **`tool-agent$create`'s register is irreducibly a tool.** Persisting
+  `<name>.edn` + `<name>.clj` makes bytes; **registering** `user$tool$<name>` makes
+  it a *callable*. The model can `write-file` the bytes but cannot register the
+  runtime entry — so create stays the seam even when the body arrives via a file.
+- **`tool-agent$list` / `tool-agent$read` are read seams** for the mandatory
+  dup-check before authoring. Kept.
+
+So unlike plan/exec/eval (where the helper *constructed* an artifact the model
+could have written), here the helper *does something the model can't* — validate
+in a fork, register in the runtime. That is exactly what the series keeps. The
+behavioral firming-up was to promote **validate-before-create + verify-after-
+create from "disciplined path" to HARD RULES** in the instruction (§6) — shipped.
+
+### 2A.2 Why there is no substrate — and what it tells us about the substrate theory
+
+The skill-agent doc added a base **skill substrate** so any agent could *use*
+skills. A natural question: should tool-agent get a "use" substrate too?
+**No — and the reason completes the substrate theory.**
+
+A substrate is worth installing when *using* a thing is a **multi-step
+LLM-inherent procedure** that should be ambient:
+
+- A **skill** is a *procedure* (a SKILL.md of steps). Using it = **discover →
+  read → follow** — three LLM acts. A substrate makes that habit ambient. ✓
+- A **user tool** is a *callable function*. Using it = **call it**. Once
+  `tool-agent$create` registers `user$tool$<name>`, it is a first-class tool any
+  agent can invoke, and `list-tools`/`get-tool-info` already discover it. There is
+  no "follow" step to make ambient — **the registry already is the substrate.** ✗
+
+The rule the series converges on:
+
+> **Install a substrate when "use" is a procedure the model performs; rely on the
+> registry when "use" is a call the runtime performs.**
+
+skills get a substrate (use is *read+follow*); tools don't (use is a *registry
+call*). The **lifecycle** (create/validate/register/delete) stays the
+specialist's regardless: authoring a persistent, registered, sandbox-running
+artifact is a deliberate, validated act — not something to scatter into every
+agent (a "create a tool inline" substrate is the wrong call: the body runs in a
+sandbox with the agent's capabilities, exactly the deliberate act that belongs
+behind the mandatory dry-run). The two-kinds split degenerates cleanly here:
+**USE is free (the registry), MANAGE is the specialist.** meta-agent shares this
+rationale exactly — see `meta-agent-design.md`.
+
+## 2B. Scope — Project vs User
 
 Today `tool-agent$create` persists to `<project>/.brainyard/tools/<name>.edn` only —
 project scope, mirroring `.brainyard/skills` and `.brainyard/plans`. A tool
@@ -287,7 +398,7 @@ DECISION FLOW
 2. Before authoring, ALWAYS tool-agent$list (and tool-agent$read near-matches) to avoid
    duplicating an existing tool. Prefer refining an existing tool to a clone.
 
-AUTHORING (the disciplined path)
+AUTHORING (validate → create → verify — the dry-run and the verify are HARD RULES)
 1. Settle the triple BEFORE writing the body:
    - :name          lowercase-kebab, leading letter, matches ^[a-z][a-z0-9-]*$
                     (no user$tool$ prefix). It becomes the filename and the symbol.
@@ -298,14 +409,21 @@ AUTHORING (the disciplined path)
    existing palette by direct symbol — (read-file {...}), (bash {...}), or a
    peer (user$tool$other {...}) — instead of re-implementing or reaching for host
    interop. Pull args out of the `args` map by the schema's keys.
-3. DRY-RUN: tool-agent$validate the draft (:name :body :input-schema, plus a :sample
-   args map for a behavior check). Persists nothing. Iterate here until :valid
-   is true. If :collision is true, you would OVERWRITE an existing tool —
+   FILE-FIRST (optional, for a large body or one with nested ``` fences): rather
+   than hand-escaping the body into a string literal, write-file it to a scratch
+   .clj (verbatim), read-file it back, and pass that content as :body. The body
+   is code you write either way — this just dodges escaping. (No :body-path arg;
+   :body stays a string.)
+3. DRY-RUN — HARD RULE: tool-agent$validate the draft (:name :body :input-schema,
+   plus a :sample args map for a behavior check). Persists/registers NOTHING.
+   Iterate until :valid is true. NEVER call tool-agent$create without a passing
+   validate. If :collision is true, you would OVERWRITE an existing tool —
    confirm that is intended (a refine) before proceeding.
 4. tool-agent$create with the same name/body/schema. If it returns :error, the body
-   failed to eval — fix and retry.
-5. VERIFY: call user$tool$<name> with a representative input and read the result.
-   Only report success after the tool actually runs and returns sane output.
+   failed to eval — fix and retry. Never report success on an :error.
+5. VERIFY — HARD RULE: call user$tool$<name> with a representative input and read
+   the result. NEVER report success before the tool actually runs and returns
+   sane output.
 
 CONTENT HANDLING
 - A tool body is a macro over the tool palette, not a new primitive. Keep it
@@ -318,7 +436,13 @@ LARGE OUTPUTS
   do not echo a huge body verbatim.
 - When listing many tools, give id + one-line description, not full schemas.
 
-SAFETY
+SAFETY (hard rules)
+- VALIDATE BEFORE CREATE: never tool-agent$create without a passing
+  tool-agent$validate (:valid true) for the same draft. The dry-run eval-smoke-
+  tests the body in a throwaway fork — the cheap check that stops a broken tool
+  going live. create is the ONLY path that persists + registers.
+- VERIFY AFTER CREATE: never report success before calling user$tool$<name> once
+  and seeing it run.
 - Never author a body that exfiltrates secrets, shells out destructively, or
   writes outside the workspace. The body runs in the tools sandbox with the
   agent's existing capabilities — do not expand them.

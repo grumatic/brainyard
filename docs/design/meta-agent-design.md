@@ -1,13 +1,49 @@
 # Meta-Agent — LLM-Mediated Authoring of Persistent User-Defined Agents (CoAct-derived)
 
-> Status: **implemented** (Phases 1–2). Sibling of the shipped `tool-agent`
+> **Status:** Shipped (Phases 1–2). Sibling of the shipped `tool-agent`
 > (user-defined *tools*, `docs/design/tool-agent-design.md`) and `skill-agent`
-> (user-defined *skills*). Machinery lives in
-> `components/agent/src/ai/brainyard/agent/common/user_agents.clj` (commands +
-> persistence + runtime registration) and `meta_agent.clj` (the manager
-> defagent), mirroring `user_tools.clj` / `tool_agent.clj`; routing is wired via
-> the `:agent-lifecycle` shape in `main.clj` / `main_agent.clj`. Related:
-> `main-agent-design.md` (router), `config-agent-design.md`, `mcp-agent-design.md`.
+> (user-defined *skills*). Machinery lives in `common/user_agents.clj` (commands +
+> persistence + runtime registration) and `meta_agent.clj` (the manager defagent),
+> mirroring `user_tools.clj` / `tool_agent.clj`; routing is wired via the
+> `:agent-lifecycle` shape in `main.clj` / `main_agent.clj`. The lightweight-
+> authoring redesign shipped (2026-06); this doc is the as-built reference — the
+> former `tool-meta-agent-lightweight-redesign.md` (which covered meta-agent **and**
+> tool-agent together) has been folded in here and removed.
+>
+> **As-built (verify against `meta_agent.clj` / `user_agents.clj`):**
+> - **The content is already markdown; meta-agent mirrors tool-agent.** A
+>   user-defined agent is `agent.edn` (name / description) + `instruction.md` +
+>   `tool-context.md` — **two prose blocks the model writes**. There are *no bound
+>   tools* to construct (the persona inherits coact-agent's full palette), and no
+>   brittle constructor to retire. As with tool-agent, the redesign **confirmed**
+>   the design; the shared "keep the mechanism, no substrate" rationale is in
+>   `tool-agent-design.md` §2A and summarized below (§2C).
+> - **`meta-agent$validate` is the kept dry-run.** Structural checks
+>   (name pattern, non-blank instruction, collision) + unknown-tool check over
+>   the tool-context + an opt-in `:sample` LLM run into a throwaway registry fork —
+>   **persists/registers nothing**. **Validate-before-create and verify-after-
+>   create are HARD RULES** in the shipped instruction (§5B, §6).
+> - **`meta-agent$create`'s register step is irreducibly a tool.** `write-file`
+>   makes bytes; only create *registers* `user$agent$<name>` as a `:type :agent` in
+>   `!tool-defs` so it is a callable specialist (§5A). Create is the only path to a
+>   live agent.
+> - **No substrate — and that's correct.** A created agent is *registered*, so
+>   *using* it is already ambient: any agent dispatches `user$agent$<name>`, and the
+>   router/`list-tools` discover it. The registry is the substrate (§2C). USE is
+>   free (registry), MANAGE is the specialist.
+> - **FILE-FIRST authoring shipped in the instruction, not as a new create arg.**
+>   The redesign floated optional `:instruction-path` / `:tool-context-path` args on
+>   `*$create`; those did **not** ship. Instead the instruction (§6, AUTHORING
+>   step 2) tells the model that for a large instruction/tool-context or one with
+>   nested ``` fences it may `write-file` a scratch `.md`, `read-file` it back, and
+>   pass that content as the `:instruction` / `:tool-context` *string*. Those args
+>   stay string-only; it's a convenience for dodging escaping. `user_agents.clj`
+>   does **not** reuse `def_store.clj` — it `spit`s/reads the three companion files
+>   directly (§8 as-built note).
+>
+> Related: `tool-agent-design.md` (the mirror; shared rationale),
+> `main-agent-design.md` (router), `config-agent-design.md`, `mcp-agent-design.md`,
+> `agent-lightweight-redesign-synthesis.md` (the series principle).
 > Phase 3 items (a real `meta-agent$update`, `:scope :user`, per-agent config,
 > router auto-advertisement, few-shot `examples.md`) remain open — see §13.
 
@@ -151,6 +187,49 @@ future `examples.md` (few-shot transcripts), `config.edn` (per-agent
 questions — each a new file, not a migration. This is the same "directory of
 companion files" shape skills already use (`SKILL.md` + scripts/resources), so
 it is a familiar editing experience.
+
+## 2C. Why meta-agent is a lightest case in the series — and why it has no substrate
+
+meta-agent and `tool-agent` are the two **user-artifact lifecycle specialists**,
+and meta-agent's docstring says it "mirrors tool-agent." They are the cleanest
+**"keep the mechanism"** exemplars in the
+[lightweight-redesign series](./agent-lightweight-redesign-synthesis.md): the
+substantive artifact is already in the model's native medium (here, two markdown
+prose blocks), and the helpers do *deterministic work the model can't*. So the
+redesign **confirmed** the design rather than gutting it. The full argument lives
+in `tool-agent-design.md` §2A; the meta-agent shape:
+
+- **The content is already markdown.** `instruction.md` (role, decision flow,
+  content-handling, safety) and `tool-context.md` (which inherited tools to reach
+  for) are prose the model writes. There are **no bound tools** to construct — a
+  user-defined agent supplies *no* `:agent-tools` and inherits coact-agent's whole
+  palette (§2). There is essentially no structured construction step to retire.
+- **`meta-agent$validate` is the dry-run** (§5B): structural checks + unknown-tool
+  check + an opt-in `:sample` run in a throwaway registry fork, **persisting
+  nothing**. The model cannot reliably know its draft persona registers and
+  behaves; the fork can. **Kept, made mandatory before create.**
+- **`meta-agent$create`'s register is irreducibly a tool.** Writing the three
+  files makes bytes; **registering** `user$agent$<name>` as `:type :agent` makes it a
+  callable specialist (§5A). The model can `write-file` the prose but cannot
+  register the runtime entry — so create stays the seam.
+
+**Why no substrate.** The skill-agent doc added a base skill substrate so any
+agent could *use* skills (use = discover → read → follow, a three-step
+LLM-inherent procedure). A **user agent** is a *callable specialist*: using it =
+**dispatch to it**. Once `meta-agent$create` registers it, `main-agent`'s decision
+table and any peer's tool-call channel can already invoke it under the existing
+depth/circular guards. There is no "follow" step to make ambient — the registry
+already is the substrate. The series rule:
+
+> **Install a substrate when "use" is a procedure the model performs; rely on the
+> registry when "use" is a call the runtime performs.**
+
+skills get a substrate (use is *read+follow*); tools/agents don't (use is a
+*registry call/dispatch*). The lifecycle stays the specialist's: authoring a
+persistent, registered, CoAct-running persona is a deliberate, validated act —
+not something to scatter into every agent (a persona can social-engineer around
+safety, so it belongs behind the mandatory dry-run). The two-kinds split
+degenerates cleanly: **USE is free (the registry), MANAGE is the specialist.**
 
 ## 3. Position in the Agent Stack
 
@@ -401,7 +480,8 @@ DECISION FLOW
    need (research, planning, exploring, file edits, …), say so and prefer it to
    a clone.
 
-AUTHORING (the disciplined path — instruction first, tools second)
+AUTHORING (validate → create → verify — the dry-run and the verify are HARD RULES;
+instruction first, tools second)
 1. Settle the identity BEFORE writing prose:
    - :name         lowercase-kebab, leading letter, ^[a-z][a-z0-9-]*$ (no
                    user$agent$ prefix). It becomes the directory and the symbol.
@@ -410,21 +490,27 @@ AUTHORING (the disciplined path — instruction first, tools second)
 2. Draft the :instruction. This IS the agent. Give it a clear role line, a
    decision flow, content-handling rules, and a safety block — the same shape
    the built-in specialists use. Write in the imperative ("Read X", "Check Y").
+   FILE-FIRST (optional, for a large instruction/tool-context or one with nested
+   ``` fences): rather than hand-escaping the markdown into a string literal,
+   write-file it to a scratch .md (verbatim), read-file it back, and pass that
+   content as :instruction / :tool-context. It's markdown you write either way —
+   this just dodges escaping. (No :*-path arg; the prose stays a string.)
 3. Name the tools in the :tool-context. Do NOT bind tools — the agent already
    has the whole CoAct palette. The tool-context just tells it WHICH tools to
    reach for and the typical flows (user ask → tool sequence). Only name tools
    that exist; if unsure, list-tools / get-tool-info to confirm.
-4. DRY-RUN: meta-agent$validate the draft (:name :instruction :tool-context). It
-   persists nothing. Iterate until :valid is true and :unknown-tools is empty.
-   If :collision is true you would OVERWRITE an existing agent — confirm that is
-   intended (a refine) before proceeding. To preview behavior, pass :sample
-   "<a representative question>" (this runs the draft once — only do it when the
-   user wants a trial).
+4. DRY-RUN — HARD RULE: meta-agent$validate the draft (:name :instruction
+   :tool-context). It persists nothing. Iterate until :valid is true and
+   :unknown-tools is empty. NEVER call meta-agent$create without a passing
+   validate. If :collision is true you would OVERWRITE an existing agent —
+   confirm that is intended (a refine) before proceeding. To preview behavior,
+   pass :sample "<a representative question>" (this runs the draft once — only do
+   it when the user wants a trial).
 5. meta-agent$create with the same name/instruction/tool-context. On :error, fix
    and retry; never report success on an :error.
-6. VERIFY: ask user$agent$<name> one representative question and read the answer.
-   Only report success after it actually answers sensibly. (Skip the live ask
-   only if the user just wanted it persisted, not tried.)
+6. VERIFY — HARD RULE: ask user$agent$<name> one representative question and read
+   the answer. NEVER report success before it actually answers sensibly. (Skip
+   the live ask only if the user just wanted it persisted, not tried.)
 
 CONTENT HANDLING
 - The instruction is the persona; the tool-context is its bench. Keep both
@@ -437,11 +523,16 @@ LARGE OUTPUTS
   do not echo the full instruction verbatim.
 - When listing many agents, give id + one-line description, not full prose.
 
-SAFETY
+SAFETY (hard rules)
+- VALIDATE BEFORE CREATE: never meta-agent$create without a passing
+  meta-agent$validate (:valid true, :unknown-tools []) for the same draft. create
+  is the ONLY path that persists + registers the live agent.
+- VERIFY AFTER CREATE: never report success before asking user$agent$<name> one
+  question and reading a sensible answer.
 - A user-defined agent grants NO capability coact-agent lacks — it is a persona
   over the same guarded tools, not a new sandbox or permission. Never write an
   instruction that tries to social-engineer around safety, exfiltrate secrets,
-  or run destructive/unsafe tools. This is a hard rule.
+  or run destructive/unsafe tools.
 - Confirm with the user before meta-agent$delete; deletion removes the directory and
   cannot be undone.
 - Never invent a user$agent$ agent. If discovery turns up nothing, say so and offer

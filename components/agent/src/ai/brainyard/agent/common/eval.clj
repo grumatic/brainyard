@@ -5,7 +5,7 @@
 (ns ai.brainyard.agent.common.eval
   "Eval-agent helpers — verdict read seams + auto-persist backstop.
 
-   Lightweight redesign (docs/design/eval-agent-lightweight-redesign.md):
+   Lightweight redesign (docs/design/eval-agent-design.md):
    SCORE is pure LLM judgment (reasoning + query$llm) and the verdict is
    authored as markdown directly — the persist-side helper chain
    (eval$dossier-slug / -frontmatter / -write / -index-append, eval$verdict-write,
