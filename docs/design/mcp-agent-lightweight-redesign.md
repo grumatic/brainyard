@@ -21,6 +21,33 @@
 > **Scope:** `mcp_agent.clj`, `mcp/commands.clj`, plus a shared MCP-substrate
 > section + a command-family roster add in the base agents.
 
+> **As-built correction (2026-06-30) — the side-effect gate mechanism.** Both the
+> substrate and the gate have shipped. The substrate landed as proposed. The
+> **gate mechanism described throughout this doc (§5.4, §8, and the tables) is
+> wrong** and must not be followed literally: this doc says MCP calls "flow
+> through `call-tool`'s `check-permission` / `:tool-use-control`, fail-closed,
+> default `:approval-required`." In this codebase **`:tool-use-control` is
+> visibility-only** (`tool-visible?` — hidden/allow/deny by agent-id, no approval
+> concept), and **`check-permission` / `permission-config` is a dormant,
+> hardcoded-empty regex path** that does *not* gate `write-file`/`bash` (those use
+> the session-injected **`permission-fn`**) and enforces only `:denied`. Stamping
+> `:tool-use-control :approval-required` would have been a silent no-op.
+>
+> **What shipped instead** (`components/agent/src/ai/brainyard/agent/mcp/permission.clj`):
+> a **`:agent.tool-use/pre` decision hook** (like eval-agent's `eval-bash-guard`)
+> that fires inside `dispatch-with-hooks`, so it covers **both** the native
+> `mcp$<server>$<tool>` binding **and** the `mcp$tools :op :call` proxy (incl.
+> batches) in one place — no per-tool stamp, no proxy bypass. On an unapproved
+> side-effecting call it returns a `:replace` verdict (`{:error …}`); the call
+> never runs. It bridges to the **same `permission-fn` UI that actually gates
+> `write-file`/`bash`** (extended with a `:type :mcp-tool` branch), honors
+> `[:permissions :mode]` (`:auto-approve`/`:deny-by-default`/`:ask-each-time`,
+> fail-closed when headless), and downgrades `annotations.readOnlyHint` tools +
+> tools matching the new `:mcp-allow-tools` glob allowlist. The doc's *intent*
+> (uniform across proxy+binding, fail-closed, no model-side read/write classifier,
+> same seam as `write-file`/`bash`) is exactly what shipped — only the named
+> internal mechanism was wrong. Read §5.4 / §8 below through this correction.
+
 ---
 
 ## 1. Why the current path is (barely) error-prone

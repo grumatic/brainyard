@@ -23,6 +23,24 @@
 > series — a pure transport adapter (not CoAct-derived, authors nothing), so the
 > arguments don't apply. It's the limit case that defines where the series stops.
 
+> **As-built correction (2026-06-30) — the MCP side-effect gate.** The series has
+> landed; one mechanism diverged from this proposal. This doc and the mcp-agent
+> doc prescribed gating MCP calls by stamping **`:tool-use-control
+> :approval-required`** at registration and leaning on `call-tool`'s
+> **`check-permission`/`permission-config`**. That mechanism does **not** exist as
+> described: `:tool-use-control` is **visibility-only** (`tool-visible?`), and
+> `check-permission`/`permission-config` is a **dormant, hardcoded-empty** path
+> that does *not* gate `write-file`/`bash` (those go through the session-injected
+> **`permission-fn`**). The shipped gate uses the *real* seam — a
+> **`:agent.tool-use/pre` decision hook** (`components/agent/src/ai/brainyard/agent/mcp/permission.clj`)
+> that covers **both** the native `mcp$<server>$<tool>` binding and the `mcp$tools
+> :op :call` proxy in one place, bridging to the **same `permission-fn` UI that
+> actually gates `write-file`/`bash`**, honoring `[:permissions :mode]`, with
+> `readOnlyHint` + `:mcp-allow-tools` downgrades. The proposal's *intent*
+> (uniform, fail-closed, no model-side read/write classifier, same seam as
+> `write-file`/`bash`) is preserved — only the named mechanism was wrong. Read the
+> §2 / §4 / §6 MCP mechanism lines below through this correction.
+
 ---
 
 ## 1. The one principle: judgment vs. mechanism
@@ -255,9 +273,11 @@ existing — they do. **Also add the skill substrate** (a base section: find →
 read-subset (`skills$find/read/list/reload`) added to `default-agent-roster`,
 since skills aren't inherited today. **And the MCP substrate** (discover → inspect
 → invoke MCP tools) — additive, also needs the MCP command family added to the
-base roster; its side-effect safety is the **existing tool-permission mechanism,
-fail-closed** (stamp `:approval-required` on `mcp$<server>$<tool>` at
-registration), *not* a bespoke read/write classifier. **Pair all of this with main-agent's routing-log
+base roster; its side-effect safety is **fail-closed**, via a
+`:agent.tool-use/pre` hook that bridges to the same `permission-fn` UI as
+`write-file`/`bash` (covering the native binding *and* the proxy), *not* a bespoke
+read/write classifier. (See the as-built correction above — this is **not** a
+`:tool-use-control`/`check-permission` stamp.) **Pair all of this with main-agent's routing-log
 hook** (move `main$append-log` to a `:agent.ask/finalize` hook): every piece here
 touches the base/root agent, and main-agent is the chief substrate beneficiary, so
 they land together.
@@ -282,9 +302,10 @@ dependency and simplicity:
    roster add). Independent of the rewrites; can land with Phase 1.
 9. **mcp** — no CRUD change (already all-mechanism); the substantive change is the
    **MCP substrate** (Phase 1: a base section + the MCP-command roster add + a
-   fail-closed `:tool-use-control` stamp on registered MCP tools — safety via the
-   existing permission layer, no model classification). Independent; lands with
-   Phase 1.
+   fail-closed `:agent.tool-use/pre` permission hook bridging to `permission-fn`,
+   covering the native binding *and* the proxy — safety via the same seam as
+   `write-file`/`bash`, no model classification; see the as-built correction
+   above, *not* a `:tool-use-control` stamp). Independent; lands with Phase 1.
 10. **tool + meta** — almost no change (the lightest cases): make
     validate-before-create a hard rule, optional file-first authoring. Independent;
     the optional validate-enforcing hook fits Phase 4. **No substrate** (use is
