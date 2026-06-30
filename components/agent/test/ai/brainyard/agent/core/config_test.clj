@@ -128,11 +128,16 @@
       (let [oauth (first (cfg/search-config-keys nil "oauth-flow"))]
         (is (not (contains? oauth :read-only)))))))
 
-(deftest search-config-keys-redacts-secret-value
-  (testing "a sensitive key's value is masked in search results"
-    (with-redefs [cfg/get-config (fn [_ _] "sk-supersecret")]
-      (let [hit (first (cfg/search-config-keys nil "tavily"))]
-        (is (= "***redacted***" (:value hit)))))))
+(deftest search-config-keys-redacts-embedded-api-key
+  (testing "an :api-key leaf inside a config object is masked in search results"
+    ;; Flat secrets are no longer config keys (env-only); the only secret that
+    ;; reaches config is an :api-key embedded in a config object like :lm-config.
+    (with-redefs [cfg/get-config (fn [_ k] (when (= k :lm-config)
+                                             {:provider :bedrock :api-key "sk-supersecret"}))]
+      (let [hit (->> (cfg/search-config-keys nil "lm-config")
+                     (filter #(map? (:value %)))
+                     first)]
+        (is (= "***redacted***" (get-in hit [:value :api-key])))))))
 
 ;; ============================================================================
 ;; read-only keys + redaction
@@ -164,22 +169,21 @@
         (is (not (contains? hit :requires-restart)))))))
 
 (deftest redact-config-value-masks-secrets
-  (is (= "***redacted***" (cfg/redact-config-value :tavily-api-key "sk-abc")))
-  (testing "unset sensitive key stays nil"
-    (is (nil? (cfg/redact-config-value :tavily-api-key nil))))
-  (testing "api-key leaf inside a map is masked"
+  (testing "api-key leaf inside a config object is masked"
     (is (= {:provider :bedrock :api-key "***redacted***"}
            (cfg/redact-config-value :lm-config {:provider :bedrock :api-key "z"}))))
+  (testing "a map without an :api-key leaf passes through"
+    (is (= {:provider :bedrock} (cfg/redact-config-value :lm-config {:provider :bedrock}))))
   (testing "ordinary values pass through"
     (is (= 7 (cfg/redact-config-value :max-iterations 7)))))
 
 (deftest redact-config-snapshot-masks-and-filters-to-schema-keys
-  (let [m (cfg/redact-config-snapshot {:tavily-api-key "sk-1"
+  (let [m (cfg/redact-config-snapshot {:lm-config      {:provider :bedrock :api-key "sk-1"}
                                        :max-iterations 7
                                        :permission-fn  (fn [] :x)
                                        :usage-tracker  (atom {})})]
-    (testing "schema keys kept, secrets redacted"
-      (is (= "***redacted***" (:tavily-api-key m)))
+    (testing "schema keys kept, embedded api-key redacted"
+      (is (= "***redacted***" (get-in m [:lm-config :api-key])))
       (is (= 7 (:max-iterations m))))
     (testing "non-schema session-injected runtime entries are dropped"
       (is (not (contains? m :permission-fn)))
@@ -226,14 +230,22 @@
         (is (not (contains? (:overrides ov) :dirs)))
         (is (not (contains? (:overrides ov) :max-iterations)))))))
 
-(deftest config-overview-omits-secret-env-only-keys
-  (testing "an env-only secret key (no static default) never appears in the overview"
-    ;; :tavily-api-key has only an :env-fn, so it is not in default-config and is
-    ;; excluded by the static-default filter — secrets cannot reach the overview.
-    (seed-project-config! {:agent {:config {:tavily-api-key "sk-leak"}}})
+(deftest tavily-secret-is-not-a-config-key
+  (testing "the Tavily key is env-only (not in the schema), so config can't carry it"
+    ;; Secrets have one source of truth — their env var, read at point of use
+    ;; (agent.common.tools/get-tavily-api-key). Being absent from the schema means
+    ;; the config.edn layer (select-keys config-keys) structurally drops it, so a
+    ;; committed config.edn can neither set nor leak it.
+    (is (not (contains? cfg/config-keys :tavily-api-key))
+        ":tavily-api-key must not be a schema key")
+    (seed-project-config! {:agent {:config {:tavily-api-key "sk-leak-from-config-edn"}}})
     (cfg/invalidate-global-config!)
-    (let [ov (cfg/config-overview nil)]
-      (is (not (contains? (:overrides ov) :tavily-api-key))))))
+    (cfg/load-global-config!)
+    (is (not (contains? @cfg/!global-config :tavily-api-key))
+        "a planted config.edn secret never enters the global-config layer")
+    (when (nil? (System/getenv "TAVILY_API_KEY"))
+      (is (nil? (cfg/get-config :tavily-api-key))
+          "config.edn secret must not leak through get-config"))))
 
 (deftest config-overview-omits-untouched-defaults
   (seed-project-config! {:agent {:config {}}})

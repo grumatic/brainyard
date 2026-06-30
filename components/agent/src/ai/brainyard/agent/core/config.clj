@@ -312,9 +312,11 @@
                                 :read-only true
                                 :default-fn #(resolve-dirs)
                                 :doc "Resolved dirs map ({:user-dir :project-dir :working-dir}). Read-only — derived fresh at runtime (flag/env/git-root), never set via config; seeded into session-config at startup, else resolve-dirs."}
-   :tavily-api-key             {:type "string"
-                                :env-fn #(or (System/getenv "TAVILY_API_KEY") ::env-unset)
-                                :doc "Tavily web-search API key. Env TAVILY_API_KEY wins (highest precedence); no persisted default (nil when unset)."}
+   ;; NOTE: the Tavily web-search key is intentionally NOT a config key. Like
+   ;; working-dir (above), a secret has one source of truth — the TAVILY_API_KEY
+   ;; env var, read directly at the web-search tool. Keeping it out of the schema
+   ;; means a (committable) config.edn can't carry it, and it never enters config
+   ;; snapshots/displays. See agent.common.tools/get-tavily-api-key.
    :allowed-dirs               {:type "array"
                                 :default-fn #(default-allowed-dirs)
                                 :doc "Allow-list of directories for filesystem-touching tools (bash/read/write/grep/task$run). Lazy default: /tmp + project-dir + user-config-dir."}
@@ -405,20 +407,14 @@
   [k]
   (contains? restart-required-keys k))
 
-(def sensitive-config-keys
-  "Config keys whose value is a secret and must be masked before it reaches the
-   LLM (e.g. surfaced via `agent-runtime$config` search / read). The real value
-   still flows to the tools that need it; only the config-command presentation
-   is redacted. See `redact-config-value`."
-  #{:tavily-api-key})
-
 (defn redact-config-value
-  "Mask a config value for LLM-facing display: a sensitive key (`tavily-api-key`)
-   collapses to a placeholder when set; any map carrying an `:api-key` (e.g. a
-   resolved `:lm-config`) has that leaf masked. Other values pass through."
-  [k v]
+  "Mask a config value for LLM-facing display. Flat secrets are intentionally
+   NOT config keys (they live in env vars — see the working-dir / tavily notes in
+   `config-schema`), so the only secret reaching config is an `:api-key` leaf
+   embedded in a config object (e.g. a resolved `:lm-config`): that leaf is
+   masked. Other values pass through."
+  [_k v]
   (cond
-    (contains? sensitive-config-keys k) (when (some? v) "***redacted***")
     (and (map? v) (contains? v :api-key)) (assoc v :api-key "***redacted***")
     :else v))
 

@@ -588,14 +588,18 @@
 ;; Web Search Tools
 ;; ============================================================================
 
-(defn- get-tavily-api-key [] (config/get-config proto/*current-agent* :tavily-api-key))
+;; Read the secret straight from the env — it is deliberately NOT a config key
+;; (one source of truth; a committed config.edn can't carry it), mirroring how
+;; working-dir is resolved purely at runtime. See the NOTE by :allowed-dirs in
+;; agent.core.config/config-schema.
+(defn- get-tavily-api-key [] (System/getenv "TAVILY_API_KEY"))
 
 (deftool web-search
-  "Search the web via Tavily. Requires TAVILY_API_KEY env or agent :tavily-api-key."
+  "Search the web via Tavily. Requires the TAVILY_API_KEY env var."
   (fn [{:keys [query max-results search-depth include-answer]}]
     (let [api-key (get-tavily-api-key)]
       (if (str/blank? api-key)
-        {:error "TAVILY_API_KEY not set (configure env or agent :tavily-api-key in config)"}
+        {:error "TAVILY_API_KEY not set (export the env var to enable web-search)"}
         (ref/tavily-search query
                            :api-key api-key
                            :max-results (or max-results 5)
