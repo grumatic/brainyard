@@ -45,6 +45,19 @@ a pre-existing multi-process race.
   the listener thread.
 - ✅ **§3c `:op :cancel` (shipped)** — cancels the running turn for the socket's session
   (`input/cancel-ask-for-agent!`, shared with Ctrl-C); returns `{:cancelled bool}`.
+- ✅ **§3d `:op :config` (shipped)** — non-blocking read of the session's *effective*
+  configuration (never injects a turn). Mirrors the LLM-facing `agent-runtime$config`
+  read: `:overrides` (schema keys whose live value differs from their default) + the full
+  redacted `:snapshot`, or `{:matches …}` when a `:query` term is given. Secrets
+  (`:api-key` leaves) are masked server-side via the config layer's own
+  `redact-config-snapshot`; all values pass through `edn-safe`. `handle-config-op` reuses
+  `config/config-overview` / `search-config-keys` / `get-config-snapshot` (exported through
+  the `agent` interface). CLI: **`by sessions config <sid> [--json] [--query T]`** resolves
+  the session's `:ask-socket-path` from the project-scoped index (honoring `-C`) and sends
+  the op via `ask-channel/send-op!` (the generic one-shot client factored out of
+  `ask-via-socket!`). Consumed by the **playground** per-workspace config view
+  (`GET /api/sessions/:id/brainyard[/:sid/config]`, which `docker exec`s the verb inside the
+  tenant container). `:ops` now `[:ask :status :config :inject :cancel :subscribe]`.
 - ✅ **§5a `:op :subscribe` (shipped)** — Mode B streaming. The transport gained a
   `stream-response` path: `handle-connection!` keeps the connection open and runs the
   handler's `(fn [emit! alive?] …)`, with a daemon watcher flipping `alive?` on client
@@ -147,7 +160,7 @@ required).
 {:ask-socket-path "/…/sessions/<sid>/ask.sock"
  :pid            <owning-pid>          ; from lock.clj / ProcessHandle (§1 fix 3)
  :protocol       1                     ; ask.sock protocol version
- :ops            #{:ask :inject :subscribe :status :cancel}  ; capability set
+ :ops            #{:ask :inject :subscribe :status :config :cancel}  ; capability set
  :agent          "coact-agent"
  :label          "main0"}
 ```
@@ -157,7 +170,7 @@ the file exists, **and** `(alive? (:pid meta))`. PID-checked, not existence-chec
 correct across crashes.
 
 > **As-built:** `start-ask-listener!` stamps `:ask-socket-path` and `:ops` (a
-> **vector** `[:ask :status :inject :cancel :subscribe]`, not the set shown above);
+> **vector** `[:ask :status :config :inject :cancel :subscribe]`, not the set shown above);
 > `:pid` is stamped separately by `acquire-session-lock!`. The `:protocol` version
 > field was **not** implemented — capability is advertised via `:ops` alone (so the
 > §6 "bump `:protocol`" note is unrealized).
@@ -189,6 +202,7 @@ One frame in, one frame out, close.
 → {:op :ask    :question "…" :timeout-ms 120000}        ; exists
 → {:op :inject :as :artifact|:turn|:memory … :await? false}   ; §4
 → {:op :status}                                          ; non-blocking snapshot
+→ {:op :config :query "…"}                              ; non-blocking effective-config read
 → {:op :cancel}                                          ; cancel active turn
 ← {:status :ok …}                                        ; shape per-op
 ← {:status :error :error "…"}
@@ -197,6 +211,15 @@ One frame in, one frame out, close.
 `:status` → `{:status :ok :state :idle|:running :iteration N :pending-turns K
 :provider … :tasks […]}`. `:cancel` wires to the per-tab `cancel-active-ask!` from the
 multi-tab refactor.
+
+`:config` → `{:status :ok :session-id … :agent … :provider … :model … :total N
+:overrides {…} :snapshot {…}}` — read-only, injects no turn. `:overrides` is the subset of
+schema keys whose effective value deviates from its default; `:snapshot` is the full merged
+config (env > per-agent > session > global > default), both redacted. With a non-blank
+`:query`, it instead returns `{:matches [{:key :type :value :default :doc?} …]}` for keys
+matching the term (name / type / `:doc`). This is the ask-channel twin of the LLM's
+`agent-runtime$config` tool, so external readers (the playground config view) see exactly
+what the agent sees.
 
 ### Mode B — Subscription / streaming (new)
 
@@ -273,6 +296,7 @@ A specialized outbound subscription — the external env wants what the agent *r
 → {:op :ask     :question "…" :timeout-ms 120000}
 → {:op :inject  :as :artifact|:turn|:memory … :await? false}
 → {:op :status}
+→ {:op :config  :query "…"}                       ; read-only effective config
 → {:op :cancel}
 ← {:status :ok …}            ← {:status :error :error "…"}
 

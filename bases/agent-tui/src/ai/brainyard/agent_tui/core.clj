@@ -825,17 +825,42 @@
              (finally
                (agent/unregister-source! src)))))))))
 
+(defn- handle-config-op
+  "Non-blocking read of the session's effective configuration — never injects a
+   turn. Mirrors the LLM-facing `agent-runtime$config` read: `:overrides` (schema
+   keys whose effective value differs from their default) plus the full redacted
+   `:snapshot`. An optional `:query` narrows to keys matching a term. Secrets
+   (`:api-key` leaves) are masked by the config layer's own redaction. All wire
+   values are run through `edn-safe` so the frame is always `pr-str`-clean."
+  [ag {:keys [query]}]
+  (let [lm   (session-lm ag)
+        base {:status     :ok
+              :session-id (try (agent/session-id ag) (catch Throwable _ nil))
+              :agent      (some-> (try (agent/defagent-type ag) (catch Throwable _ nil)) name)
+              :provider   (some-> (:provider lm) name)
+              :model      (:model lm)}]
+    (if-not (str/blank? (str query))
+      (assoc base :query query :matches (edn-safe (agent/search-config-keys ag query)))
+      (let [ov (agent/config-overview ag)]
+        (assoc base
+               :total     (:total ov)
+               :overrides (edn-safe (:overrides ov))
+               :snapshot  (edn-safe (agent/redact-config-snapshot
+                                     (agent/get-config-snapshot ag))))))))
+
 (defn- ask-handle-fn
   "Op-dispatcher for a session's ask socket. `:ask` injects a question and blocks
-   for the answer; `:status` returns a non-blocking snapshot; `:inject` pushes
-   external data in (artifact / turn / memory); `:cancel` stops the running turn;
-   `:subscribe` streams runtime events until disconnect. Unknown ops get a clear
-   error. See docs/design/session-channel-extensions.md."
+   for the answer; `:status` returns a non-blocking snapshot; `:config` returns a
+   non-blocking effective-config read; `:inject` pushes external data in (artifact
+   / turn / memory); `:cancel` stops the running turn; `:subscribe` streams
+   runtime events until disconnect. Unknown ops get a clear error. See
+   docs/design/session-channel-extensions.md."
   [ag cap-ms]
   (fn [{:keys [op] :as req}]
     (case op
       :ask    (handle-ask-op ag cap-ms req)
       :status (handle-status-op ag)
+      :config (handle-config-op ag req)
       :inject    (handle-inject-op ag cap-ms req)
       :cancel    {:status :ok :cancelled (boolean (input/cancel-ask-for-agent! ag))}
       :subscribe (handle-subscribe-op ag req)
@@ -858,7 +883,7 @@
             ;; discovery client (`by sessions list`) can advertise capability
             ;; without connecting. Keep in sync with `ask-handle-fn`'s dispatch.
             (try (persist/save-meta! sid {:ask-socket-path path
-                                          :ops [:ask :status :inject :cancel :subscribe]})
+                                          :ops [:ask :status :config :inject :cancel :subscribe]})
                  (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
           (catch clojure.lang.ExceptionInfo e
@@ -1019,6 +1044,20 @@
                        (when (and c l) "  ·  ")
                        (when l (str "lazy " (str/join ", " l))))))))
 
+(defn- write-startup-notice!
+  "Emit (once) a notice stashed by `create-tui-agent!` that must appear AFTER the
+   banner — e.g. the no-provider-key warning. It's deferred because
+   create-tui-agent! runs before the alt-screen is initialized, which would wipe
+   an early emit before the user could read it. Routes through
+   `layout/write-output!` like the banner so it lands on the active surface
+   (fullscreen or inline) and is called from BOTH banner sites (`start!`'s
+   inline/REPL path and `run!`'s fullscreen path); `skip-banner` ensures exactly
+   one of them runs per launch."
+  []
+  (when-let [notice (:startup-notice @tui-session/!tui-state)]
+    (layout/write-output! (str notice "\n"))
+    (swap! tui-session/!tui-state dissoc :startup-notice)))
+
 (defn start!
   "Start a TUI session with an agent.
 
@@ -1069,9 +1108,20 @@
   ;; (Mode-B Tmux side-channel install is deferred to step 5b so it can be
   ;; passed the agent's persistence directory.)
 
-  ;; 2. Auto-setup LM if requested
+  ;; 2. Auto-setup LM if requested. A provider that needs an API key but has
+  ;;    none must NOT abort the session: notify and boot WITHOUT a default LM so
+  ;;    the interactive user can `/model` to a usable provider (or set the key
+  ;;    and relaunch) and keep working, rather than seeing the session die. The
+  ;;    one-shot `by ask` path pre-flights and exits instead (no way to recover
+  ;;    mid-turn). The notice is STASHED (not emitted here) and surfaced AFTER
+  ;;    the banner by `write-startup-notice!` — create-tui-agent! runs before the
+  ;;    alt-screen is initialized, which would wipe an early emit before the user
+  ;;    could read it. See helpers/no-provider-message.
   (when lm-provider
-    (helpers/setup-lm! lm-provider :model lm-model))
+    (if (helpers/missing-provider-key lm-provider)
+      (swap! tui-session/!tui-state assoc :startup-notice
+             (ansi/warning (helpers/no-provider-message lm-provider)))
+      (helpers/setup-lm! lm-provider :model lm-model)))
 
   ;; 2b. Mulog publisher setup
   (when (= verbosity :verbose)
@@ -1385,7 +1435,9 @@
         ;; CR-MEM-21: if the embedding model changed, semantic recall is paused
         ;; until the vector index is rebuilt — surface the one-line guidance.
         (when-let [notice (agent/graph-vec-stale-notice ag)]
-          (layout/write-output! (str notice "\n")))))
+          (layout/write-output! (str notice "\n")))
+        ;; Deferred startup notice (e.g. no provider key) — after the banner.
+        (write-startup-notice!)))
     :ok))
 
 (defn stop!
@@ -1551,6 +1603,9 @@
         ;; `memory$reembed`) — under the banner, both inline and fullscreen.
         (when-let [notice (agent/graph-vec-stale-notice ag)]
           (layout/write-output! (str notice "\n")))
+        ;; Deferred startup notice (e.g. no provider key) — after the banner so
+        ;; the alt-screen init doesn't wipe it before the user can read it.
+        (write-startup-notice!)
         (when fullscreen-ok?
           (layout/draw-separator!)
           (layout/draw-bottom-separator!)

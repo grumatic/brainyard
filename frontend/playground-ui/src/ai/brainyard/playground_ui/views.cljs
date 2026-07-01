@@ -120,12 +120,81 @@
      [:option {:replicant/key container :value host}
       (str ":" container " → 127.0.0.1:" host)])])
 
-(defn workspace-view [{:keys [ports]} id]
+(defn- config-kv-table
+  "Render a config map (keyword keys) as a two-column key/value table. Values are
+   `pr-str`'d so nested maps/vectors (and redacted secrets) show verbatim."
+  [m]
+  [:table.env.config-kv
+   [:tbody
+    (for [[k v] (sort-by (comp str first) m)]
+      [:tr {:replicant/key (str k)}
+       [:td [:code (if (keyword? k) (name k) (str k))]]
+       [:td [:code (pr-str v)]]])]])
+
+(defn- config-detail
+  "The selected brainyard session's effective config: header line, overrides
+   table, and a toggle to reveal the full effective snapshot."
+  [id show-snapshot? cfg]
+  (cond
+    (nil? cfg)              [:p.hint "Select a session to view its configuration."]
+    (:loading? cfg)         [:p.hint "Reading configuration…"]
+    (false? (:success cfg)) [:p.hint.err (str "Error: " (:error cfg))]
+    :else
+    (let [{:keys [agent provider model total overrides snapshot]} cfg]
+      [:div.config-detail-body
+       [:p.config-head
+        (when agent    [:span "agent: " [:code agent] "  "])
+        (when provider [:span "provider: " [:code provider] "  "])
+        (when model    [:span "model: " [:code model]])]
+       [:h3 (str "Overrides — " (count overrides) " of " total " keys differ")]
+       (if (seq overrides)
+         (config-kv-table overrides)
+         [:p.hint "Every key is at its default."])
+       [:div.toolbar
+        [:button {:on {:click [[:brainyard/toggle-snapshot id]]}}
+         (if show-snapshot? "Hide full config" "Show full config")]]
+       (when show-snapshot?
+         [:div.config-snapshot
+          [:h3 "Full effective config"]
+          (config-kv-table snapshot)])])))
+
+(defn brainyard-config-modal
+  "Read-only per-session configuration overlay for a workspace. A session picker
+   (one entry per live brainyard session / project dir) drives a config detail
+   pane. Data is read over each session's ask channel; secrets are pre-redacted
+   server-side."
+  [id {:keys [open? status sessions selected config show-snapshot?]}]
+  (when open?
+    [:div.modal-backdrop {:replicant/key :brainyard-config}
+     [:div.modal.config-modal
+      [:header
+       [:h2 "Session configuration"]
+       [:div.spacer]
+       [:button {:on {:click [[:brainyard/toggle id]]}} "Close"]]
+      (cond
+        (= :loading status) [:p.hint "Loading sessions…"]
+        (= :error status)   [:p.hint.err "Couldn't reach the workspace container."]
+        (empty? sessions)   [:p.hint "No live brainyard sessions in this workspace yet. "
+                             "Open the terminal and start one, then reopen this panel."]
+        :else
+        [:div.config-body
+         [:div.config-sessions
+          (for [{:keys [session-id project-dir model]} sessions]
+            [:button.config-session {:replicant/key session-id
+                                     :class (when (= session-id selected) "active")
+                                     :on {:click [[:brainyard/select id session-id]]}}
+             [:span.id session-id]
+             [:span.hint (str project-dir (when model (str " · " model)))]])]
+         [:div.config-detail
+          (config-detail id show-snapshot? (get config selected))]])]]))
+
+(defn workspace-view [{:keys [ports brainyard]} id]
   [:div.workspace {:replicant/key :view/workspace}
    [:header
     [:button {:on {:click [[:nav/dashboard]]}} "← Workspaces"]
     [:span.id id]
     [:div.spacer]
+    [:button {:on {:click [[:brainyard/toggle id]]}} "Config"]
     (port-menu (get ports id))]
    ;; ttyd's own client, proxied same-origin. Stable :replicant/key so the iframe
    ;; (and its live ttyd session) survives header re-renders.
@@ -133,7 +202,8 @@
    ;; (Shift-drag to select past the TUI's mouse mode) can write to the clipboard.
    [:iframe.term {:replicant/key (str "term-" id)
                   :allow "clipboard-read; clipboard-write"
-                  :src (str "/api/sessions/" id "/term/")}]])
+                  :src (str "/api/sessions/" id "/term/")}]
+   (brainyard-config-modal id (get brainyard id))])
 
 ;; ~time the 0→95% ramp targets; real readiness snaps it to ready/dismiss.
 (def ^:private provision-expected-ms 15000)

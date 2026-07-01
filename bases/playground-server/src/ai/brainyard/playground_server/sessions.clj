@@ -116,6 +116,32 @@
       (workspace/published-dev-ports id)
       [])))
 
+(defn brainyard-sessions
+  "Live brainyard sessions inside `id`'s workspace container (for the config
+   view). nil when not owned (the tenant boundary); [] when the workspace isn't
+   running (fake/suspended)."
+  [user-id id]
+  (when-let [rec (owned user-id id)]
+    (if (and (not (:fake rec)) (workspace/running? id))
+      (workspace/brainyard-sessions id)
+      [])))
+
+(defn brainyard-session-config
+  "Effective config of brainyard session `sid` inside `id`'s container, read over
+   its ask channel. `sid`'s project dir is resolved from the live enumeration, so
+   the sid is validated against this container and the project dir is never
+   client-supplied. nil when not owned; {:success false …} when the workspace
+   isn't running or `sid` is unknown."
+  [user-id id sid query]
+  (when-let [rec (owned user-id id)]
+    (if (or (:fake rec) (not (workspace/running? id)))
+      {:success false :session-id sid :error "workspace not running"}
+      (if-let [wd (some #(when (= sid (:session-id %)) (:project-dir %))
+                        (workspace/brainyard-sessions id))]
+        (workspace/brainyard-session-config id wd sid query)
+        {:success false :session-id sid
+         :error (str "no live brainyard session '" sid "' in this workspace")}))))
+
 (defn mark-down!
   "The container for `id` is gone/unreachable: drop its stale upstream cache and
    mark it suspended so the dashboard shows Resume. No-op if not owned/fake."

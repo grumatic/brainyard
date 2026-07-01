@@ -47,3 +47,10 @@
    socket can't be reached."
   [opts]
   (client/ask-via-socket! opts))
+
+(defn send-op!
+  "Send one non-streaming request frame `req` (an EDN map with `:op`) to the
+   socket at `path` and return the response map. Backs the one-shot verbs
+   (`:status`, `:config`, …). Throws if the socket can't be reached."
+  [path req]
+  (client/send-op! path req))

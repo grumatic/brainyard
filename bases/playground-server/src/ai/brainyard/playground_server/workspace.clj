@@ -266,3 +266,71 @@
       (let [{:keys [exit out]} (sh "docker" "exec" cid "printenv" "BY_WEB_PASS")]
         (when (and (zero? exit) (not (str/blank? out)))
           {:host-port port :ttyd-user ttyd-user :ttyd-pass (str/trim out)})))))
+
+;; --- brainyard session introspection (per-workspace config view) ------------
+;; A workspace container runs one or more `by` sessions — the default at
+;; /workspace plus any in nested project dirs (each has its own
+;; `<dir>/.brainyard/sessions` store). We reach INTO the container as the `by`
+;; tenant to enumerate live sessions and read each session's effective config
+;; over its ask channel (`by sessions config`), never touching secrets.
+
+(def ^:private workspace-root "/workspace")
+
+(def ^:private json-mapper (j/object-mapper {:decode-key-fn keyword}))
+
+(defn- exec-by-tenant
+  "docker exec into the session's container as the `by` tenant, with cwd `wd`
+   (so project-scoped session/config resolution matches that project dir).
+   Returns {:exit :out :err}. HOME is pinned so user-config resolution is stable."
+  [session-id wd & args]
+  (apply sh "docker" "exec" "-u" "by" "-w" wd "-e" "HOME=/home/by"
+         (str "pg-" session-id) args))
+
+(defn- parse-json [s]
+  (try (j/read-value s json-mapper) (catch Exception _ nil)))
+
+(defn brainyard-project-dirs
+  "Project directories inside the container that hold a brainyard session store
+   (`<dir>/.brainyard/sessions`), always including the default /workspace. Found
+   by scanning up to 3 levels under /workspace; container-side errors collapse to
+   just the default root."
+  [session-id]
+  (let [{:keys [exit out]} (exec-by-tenant session-id workspace-root
+                                           "find" workspace-root "-maxdepth" "3"
+                                           "-type" "d" "-path" "*/.brainyard/sessions")]
+    (->> (when (zero? exit) (str/split-lines out))
+         (remove str/blank?)
+         ;; /workspace/proj/.brainyard/sessions -> /workspace/proj
+         (map #(some-> (io/file %) .getParentFile .getParentFile .getPath))
+         (remove nil?)
+         (cons workspace-root)
+         distinct vec)))
+
+(defn brainyard-sessions
+  "Every LIVE brainyard session across the container's project dirs. Each row:
+   {:session-id :project-dir :live? :model :agent :ops :label}. [] when docker or
+   the container is unavailable. Only sessions with a live ask socket are
+   returned (`--live`), since config is read over that socket."
+  [session-id]
+  (vec
+   (for [wd    (brainyard-project-dirs session-id)
+         :let  [{:keys [exit out]} (exec-by-tenant session-id wd
+                                                   "by" "sessions" "list" "--json" "--live")]
+         :when (zero? exit)
+         row   (or (parse-json out) [])]
+     (-> (select-keys row [:session-id :live? :model :agent :ops :label])
+         (assoc :project-dir wd)))))
+
+(defn brainyard-session-config
+  "Effective config of brainyard session `sid` (living in project dir `wd`) read
+   over its ask channel. Returns the parsed `by sessions config --json` payload
+   (`{:success true :overrides … :snapshot … …}` or `{:success false :error …}`).
+   `--query` narrows to matching keys when non-blank."
+  [session-id wd sid query]
+  (let [args (cond-> ["by" "sessions" "config" "-s" sid "--json"]
+               (and query (not (str/blank? (str query)))) (conj "-q" (str query)))
+        {:keys [exit out err]} (apply exec-by-tenant session-id wd args)]
+    ;; `by sessions config --json` prints valid JSON even on failure (then exits
+    ;; non-zero), so prefer stdout; only synthesize an error if it's unparseable.
+    (or (parse-json out)
+        {:success false :error (or (not-empty err) (str "docker exec failed (exit " exit ")"))})))

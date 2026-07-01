@@ -19,4 +19,12 @@
          ;; :provision — id -> {:status "provisioning"|"failed" :elapsed ms :nav? bool}
          ;; in-flight workspace startup, driving the progress-bar modal. Entries
          ;; are added on create/resume and removed once the workspace is ready.
-         :provision {}}))
+         :provision {}
+         ;; :brainyard — workspace-id -> config-view state:
+         ;;   {:open? bool                 modal open
+         ;;    :status :loading|:error|nil session-list fetch state
+         ;;    :sessions [{:session-id :project-dir :model :agent} …]
+         ;;    :selected <brainyard-session-id>
+         ;;    :config { <sid> -> config-payload | {:loading? true} }
+         ;;    :show-snapshot? bool        reveal the full effective config}
+         :brainyard {}}))

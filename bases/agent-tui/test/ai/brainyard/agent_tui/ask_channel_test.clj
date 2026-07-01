@@ -67,6 +67,35 @@
           (is (not (.exists (persist/file-of sid :ask-sock))))
           (is (not (contains? @@#'core/!ask-listeners sid))))))))
 
+(deftest config-op-reads-effective-config
+  (testing ":config returns a non-blocking effective-config read (no turn injected)"
+    (let [root (tmp-root) sid "agt-cfg-1"]
+      (persist/with-root root
+        (with-redefs [agent/session-id (fn [_] sid)
+                      agent/get-config (fn [k] (case k
+                                                 :ask-channel-enabled? true
+                                                 :ask-timeout-ms 5000 nil))
+                      ;; a :config read must NEVER inject a turn — fail loudly if it does
+                      core/inject-side-ask! (fn [_ _]
+                                              (throw (ex-info "config op injected a turn!" {})))]
+          (try
+            (core/start-ask-listener! fake-ag)
+            (let [sock (.getAbsolutePath (persist/file-of sid :ask-sock))]
+              (testing "full read carries overrides + a redacted snapshot"
+                (let [resp (ask/send-op! sock {:op :config})]
+                  (is (= :ok (:status resp)))
+                  (is (= sid (:session-id resp)))
+                  (is (integer? (:total resp)))
+                  (is (map? (:overrides resp)))
+                  (is (map? (:snapshot resp)))
+                  (is (<= (count (:overrides resp)) (:total resp)))))
+              (testing "query mode narrows to matching keys"
+                (let [resp (ask/send-op! sock {:op :config :query "iteration"})]
+                  (is (= :ok (:status resp)))
+                  (is (= "iteration" (:query resp)))
+                  (is (vector? (:matches resp))))))
+            (finally (core/stop-ask-listener! sid))))))))
+
 (deftest disabled-by-config
   (testing "no socket is opened when :ask-channel-enabled? is false"
     (let [root (tmp-root) sid "agt-off-1"]

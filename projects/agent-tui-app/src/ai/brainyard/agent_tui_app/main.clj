@@ -279,6 +279,12 @@
         model (or (:model opts)
                   (get-in file-config [:llm :default-model]))
 
+        ;; NOTE: a missing provider key is handled INSIDE the TUI (create-tui-agent!
+        ;; step 2 notifies and boots without a default LM so the user can `/model`
+        ;; or `by config` and keep going) — deliberately no exit here, unlike the
+        ;; one-shot `by ask` path which pre-flights and exits (can't recover
+        ;; mid-turn). See helpers/missing-provider-key.
+
         inline? (:inline opts)
         verbose? (:verbose opts)
         max-iter (:max-iterations opts)
@@ -769,6 +775,15 @@
             (println "Usage: by ask [options] QUESTION")))
       (System/exit 1))
 
+    ;; Pre-flight the provider credential. In --json mode a setup failure is
+    ;; surfaced as JSON below (the catch around `run`); in plain mode, notify
+    ;; with actionable guidance and exit cleanly rather than letting setup-lm!
+    ;; throw a raw stack trace up to cli-matic.
+    (when (and (not json?) (helpers/missing-provider-key provider))
+      (binding [*out* *err*]
+        (println (str "⚠  " (helpers/no-provider-message provider))))
+      (System/exit 1))
+
     ;; Run setup + ask, collecting the result and the LM actually used. When
     ;; --json, run under *out*→*err* so incidental console output ("LM
     ;; configured", any agent emit!) lands on stderr and stdout stays pure JSON.
@@ -1142,6 +1157,86 @@
       (let [row (first (filter #(= id (:session-id %)) (ssum/enriched-summaries)))]
         (doseq [line (ssum/format-detail row)] (println line))))))
 
+(defn- format-config-lines
+  "Human-readable rendering of a `:config` op response — a header line plus the
+   overrides (or `--query` matches). The machine path is `--json`; this is the
+   terminal-friendly fallback."
+  [{:keys [session-id agent provider model total overrides query matches]}]
+  (concat
+   [(str "session " session-id
+         (when agent (str "  agent=" agent))
+         (when provider (str "  provider=" provider))
+         (when model (str "  model=" model)))]
+   (if query
+     (cons (str "config keys matching \"" query "\":")
+           (if (seq matches)
+             (for [{:keys [key value default]} matches]
+               (str "  " key " = " (pr-str value)
+                    (when (some? default) (str "  (default " (pr-str default) ")"))))
+             ["  (no matching keys)"]))
+     (cons (str (count overrides) " of " total " keys differ from their default:")
+           (if (seq overrides)
+             (for [[k v] (sort-by (comp name key) overrides)]
+               (str "  " (name k) " = " (pr-str v)))
+             ["  (all keys at their default)"])))))
+
+(defn cmd-sessions-config
+  "Read the effective configuration of a LIVE session over its ask channel
+   (read-only — never injects a turn). Resolves the session's `:ask-socket-path`
+   from the project-scoped session index (honoring `-C`), sends a `:config` op,
+   and prints the snapshot. `--json` emits machine-readable JSON (the playground
+   path); `--query TERM` narrows to config keys matching a term. Adapts the
+   `by config --snapshot` idea to the existing `sessions` subcommand tree
+   (`by config` is already the bootstrap wizard)."
+  [opts]
+  (install-working-dir! opts)
+  (let [json? (:json opts)
+        id    (or (:session-id opts) (first (:_arguments opts)))
+        query (:query opts)]
+    (cond
+      (str/blank? (str id))
+      (do (if json?
+            (print-json! {:success false :error "session-id argument is required"})
+            (emit-err! "Usage: by sessions config <session-id> [--json] [--query TERM]"))
+          (System/exit 1))
+
+      :else
+      (let [row  (first (filter #(= id (:session-id %)) (ssum/enriched-summaries)))
+            sock (:ask-socket-path row)]
+        (cond
+          (nil? row)
+          (do (if json?
+                (print-json! {:success false :session-id id :error (str "session not found: " id)})
+                (emit-err! (str "Session not found: " id)))
+              (System/exit 1))
+
+          (or (str/blank? (str sock)) (not (.exists (io/file ^String sock))))
+          (do (if json?
+                (print-json! {:success false :session-id id :attachable false
+                              :error (str "session '" id "' is not attachable (no live ask socket)")})
+                (emit-err! (str "Error: session '" id "' is not attachable "
+                                "(not open in a running `by`).")))
+              (System/exit 1))
+
+          :else
+          (let [req  (cond-> {:op :config}
+                       (not (str/blank? (str query))) (assoc :query query))
+                resp (try (ask-channel/send-op! sock req)
+                          (catch Exception e
+                            {:status :error
+                             :error (str "could not reach session: " (.getMessage e)
+                                         " (is it still running?)")}))
+                ok?  (= :ok (:status resp))]
+            (if json?
+              (print-json! (if ok?
+                             (assoc resp :success true :session-id id)
+                             {:success false :session-id id :attachable true
+                              :error (:error resp)}))
+              (if ok?
+                (doseq [line (format-config-lines resp)] (println line))
+                (emit-err! (str "Error: " (:error resp)))))
+            (System/exit (if ok? 0 1))))))))
+
 (defn cmd-sessions-label
   "Set (or clear) a persisted session's label. Usage:
      by sessions label <session-id> <text…>   ; set
@@ -1365,6 +1460,15 @@
                                                 :as "Session ID" :type :string}
                                                working-dir-opt]
                                  :runs        cmd-sessions-show}
+                                {:command     "config"
+                                 :description "Read a live session's effective configuration over its ask channel"
+                                 :opts        [{:option "session-id" :short "s"
+                                                :as "Session ID" :type :string}
+                                               {:option "query" :short "q"
+                                                :as "Only config keys matching this term" :type :string}
+                                               working-dir-opt
+                                               json-opt]
+                                 :runs        cmd-sessions-config}
                                 {:command     "label"
                                  :description "Set or clear a session's label (no text = clear)"
                                  :opts        [{:option "session-id" :short "s"

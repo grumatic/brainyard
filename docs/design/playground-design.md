@@ -231,6 +231,8 @@ GET    /api/sessions/:id        → 200 {id, status, lastActiveAt}
 POST   /api/sessions/:id/resume → 200 {status}
 DELETE /api/sessions/:id        → 204                          (destroy!)
 WSS    /api/sessions/:id/tty    → ttyd WebSocket (proxied)
+GET    /api/sessions/:id/brainyard            → 200 {sessions:[…]}   (live by-sessions in the container)
+GET    /api/sessions/:id/brainyard/:sid/config → 200 {overrides, snapshot, …}  (read-only, via ask.sock)
 GET    /api/me                  → 200 {userId, quota, workspaces}
 ```
 All mutate endpoints require the JWT; `:id` is authorized against the owning
@@ -430,7 +432,11 @@ The browser→`by` path is working end-to-end, and **Phase 1 is complete**:
   The iframe is granted `clipboard-write`; the proxy injects a small script for
   **copy-on-select** (Shift- or ⌥-drag past the TUI's mouse mode) and
   **browser-context-menu suppression**. **Settings** edits per-user BYO env
-  (provider keys, etc.) with a datalist of suggested names.
+  (provider keys, etc.) with a datalist of suggested names. The workspace view
+  also has a **read-only Session-config panel**: a modal (opened from the header)
+  that lists the container's live `by` sessions and shows each one's *effective*
+  configuration — overrides plus the full redacted snapshot — read over the
+  session's ask channel (see `docs/design/session-channel-extensions.md` §3d).
 - **`bases/playground-server`** — the control plane (renamed from
   `playground-http`):
   - `auth.clj` (`playground-auth`) — **real OIDC** authorization-code flow when
@@ -444,7 +450,11 @@ The browser→`by` path is working end-to-end, and **Phase 1 is complete**:
     reconcile** (rebuilds host port + ttyd password from live containers —
     secrets never hit the DB), the **idle reaper** (suspends a workspace with no
     connected client after `PG_IDLE_TIMEOUT_MIN`, default 30; non-destructive),
-    and BYO-env overlay over Vault.
+    and BYO-env overlay over Vault. Also exposes the **config view** bridge:
+    `brainyard-sessions` / `brainyard-session-config` `docker exec` the tenant's
+    `by sessions list --live` / `by sessions config` per project dir under
+    `/workspace` (the `:sid`'s project dir is re-derived server-side, never
+    client-supplied) — all behind the same owner check.
   - `workspace.clj` (`workspace-runtime`) — the Docker driver: a container per
     session on a loopback-published ephemeral port; health-check ttyd; `~/.aws`
     mount for Bedrock; **persistent per-session volumes** (`pg-state-<id>` →

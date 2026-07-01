@@ -35,6 +35,17 @@
 (defn destroy!        [id] (request "DELETE" (str "/api/sessions/" id) nil))
 (defn ports           [id] (get-json (str "/api/sessions/" id "/ports")))
 
+;; Per-workspace brainyard-session config view.
+;; brainyard-sessions -> {:sessions [{:session-id :project-dir :model …} …]}
+(defn brainyard-sessions [id] (get-json (str "/api/sessions/" id "/brainyard")))
+(defn session-config
+  "Effective config of brainyard session `sid` in workspace `id`. Optional
+   `query` narrows to matching config keys."
+  ([id sid] (session-config id sid nil))
+  ([id sid query]
+   (get-json (str "/api/sessions/" id "/brainyard/" sid "/config"
+                  (when (seq query) (str "?query=" (js/encodeURIComponent query)))))))
+
 ;; BYO env (settings). env is a {name -> value} map.
 (defn get-env         []    (get-json "/api/me/env"))
 (defn put-env         [env] (request "PUT" "/api/me/env" {:env env}))

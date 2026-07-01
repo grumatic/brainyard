@@ -10,6 +10,8 @@
      GET    /api/sessions/:id             -> 200 session | 404
      POST   /api/sessions/:id/resume      -> 200 session | 404
      GET    /api/sessions/:id/ports       -> 200 {:ports [...]} | 404
+     GET    /api/sessions/:id/brainyard   -> 200 {:sessions [...]} | 404
+     GET    /api/sessions/:id/brainyard/:sid/config -> 200 {config} | 404
      DELETE /api/sessions/:id             -> 204
      POST   /api/sessions/:id/tty-token   -> 200 {:token ...}
      GET    /api/sessions/:id/tty         -> WebSocket (ttyd protocol)
@@ -119,6 +121,27 @@
       (json 200 {:ports (or (sessions/ports uid id) [])})
       (json 404 {:error "not found"}))))
 
+(defn- brainyard-sessions
+  "Live brainyard sessions inside the owned workspace container, for the config
+   view's session picker."
+  [req]
+  (let [uid (user-id req) id (-> req :path-params :id)]
+    (if-let [rows (sessions/brainyard-sessions uid id)]
+      (json 200 {:sessions rows})
+      (json 404 {:error "not found"}))))
+
+(defn- brainyard-session-config
+  "Effective configuration of one brainyard session inside the owned workspace,
+   read over its ask channel (read-only). `?query=` narrows to matching keys."
+  [req]
+  (let [uid   (user-id req)
+        id    (-> req :path-params :id)
+        sid   (-> req :path-params :sid)
+        query (get-in req [:query-params "query"])]
+    (if-let [cfg (sessions/brainyard-session-config uid id sid query)]
+      (json 200 cfg)
+      (json 404 {:error "not found"}))))
+
 (defn- resume-session [req]
   (if-let [s (sessions/resume! (user-id req) (-> req :path-params :id))]
     (json 200 s)
@@ -194,6 +217,9 @@
                                   :delete (wrap-require-auth destroy-session)}]
      ["/sessions/:id/resume"     {:post (wrap-require-auth resume-session)}]
      ["/sessions/:id/ports"      {:get (wrap-require-auth session-ports)}]
+     ["/sessions/:id/brainyard"  {:get (wrap-require-auth brainyard-sessions)}]
+     ["/sessions/:id/brainyard/:sid/config"
+      {:get (wrap-require-auth brainyard-session-config)}]
      ;; ttyd's own client, proxied same-origin (workspace iframe)
      ["/sessions/:id/term"       {:get (wrap-require-auth term-page)}]
      ["/sessions/:id/term/"      {:get (wrap-require-auth term-page)}]

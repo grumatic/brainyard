@@ -83,6 +83,34 @@
         background: linear-gradient(90deg, #2563eb, #16a34a);
         transition: width .6s ease; }
       .progress.err .bar { background: #f85149; transition: none; }
+      /* Read-only session-config modal (per-workspace).
+         Cap height to the viewport and scroll the body internally so a long
+         config list can't push the header + Close button off-screen. */
+      .modal.config-modal { width: min(760px, 92vw); max-height: 85vh;
+        display: flex; flex-direction: column; }
+      .config-modal > header { display: flex; align-items: center; gap: .5rem;
+        margin-bottom: .75rem; flex: 0 0 auto; }
+      .config-body { display: flex; gap: 1rem; flex: 1 1 auto;
+        min-height: 0; overflow: hidden; }
+      .config-sessions { display: flex; flex-direction: column; gap: .35rem;
+        flex: 0 0 190px; overflow-y: auto; }
+      .config-session { text-align: left; background: #161b22;
+        border: 1px solid #30363d; border-radius: 6px; padding: .4rem .5rem;
+        cursor: pointer; display: flex; flex-direction: column; gap: .15rem; }
+      .config-session:hover { border-color: #388bfd; }
+      .config-session.active { border-color: #2563eb; background: #1c2333; }
+      .config-session .id { font-family: ui-monospace, monospace;
+        font-size: .78rem; color: #c9d1d9; }
+      .config-detail { flex: 1 1 auto; min-width: 0; overflow-y: auto;
+        padding-right: .25rem; }
+      .config-head { color: #8b949e; font-size: .85rem; margin: 0 0 .5rem; }
+      .config-head code { color: #c9d1d9; }
+      .config-modal h3 { font-size: .95rem; margin: .5rem 0 .25rem; }
+      table.config-kv td { vertical-align: top; padding: .15rem .5rem .15rem 0; }
+      table.config-kv td:first-child { width: 44%; white-space: normal;
+        word-break: break-word; color: #8b949e; }
+      table.config-kv td:last-child { word-break: break-word; }
+      table.config-kv code { font-size: .8rem; }
     </style>
   </head>
   <body>

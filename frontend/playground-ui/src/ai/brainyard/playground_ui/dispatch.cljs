@@ -145,6 +145,41 @@
       ;; reset the <select> back to its placeholder so it reads as a menu
       (when-let [t (some-> dom-event .-target)] (set! (.-value t) "")))
 
+    ;; --- brainyard session config view (per workspace) --------------------
+    :brainyard/toggle
+    (let [id    (first args)
+          open? (get-in @state/app-state [:brainyard id :open?])]
+      (swap! state/app-state assoc-in [:brainyard id :open?] (not open?))
+      ;; Lazily load the session list the first time the panel opens.
+      (when (and (not open?) (nil? (get-in @state/app-state [:brainyard id :sessions])))
+        (run-action nil [:brainyard/load-sessions id])))
+    :brainyard/load-sessions
+    (let [id (first args)]
+      (swap! state/app-state assoc-in [:brainyard id :status] :loading)
+      (-> (api/brainyard-sessions id)
+          (.then (fn [{:keys [sessions]}]
+                   (let [ss (vec sessions)]
+                     (swap! state/app-state update-in [:brainyard id] merge
+                            {:sessions ss :status nil})
+                     ;; Auto-select the first session so the panel isn't empty.
+                     (when-let [sid (:session-id (first ss))]
+                       (run-action nil [:brainyard/select id sid])))))
+          (.catch (fn [_] (swap! state/app-state assoc-in [:brainyard id :status] :error)))))
+    :brainyard/select
+    (let [[id sid] args]
+      (swap! state/app-state assoc-in [:brainyard id :selected] sid)
+      (when (nil? (get-in @state/app-state [:brainyard id :config sid]))
+        (run-action nil [:brainyard/load-config id sid])))
+    :brainyard/load-config
+    (let [[id sid] args]
+      (swap! state/app-state assoc-in [:brainyard id :config sid] {:loading? true})
+      (-> (api/session-config id sid)
+          (.then (fn [cfg] (swap! state/app-state assoc-in [:brainyard id :config sid] cfg)))
+          (.catch (fn [_] (swap! state/app-state assoc-in [:brainyard id :config sid]
+                                 {:success false :error "request failed"})))))
+    :brainyard/toggle-snapshot
+    (swap! state/app-state update-in [:brainyard (first args) :show-snapshot?] not)
+
     ;; --- escape hatch for imperative event control ------------------------
     :event/prevent-default (some-> dom-event .preventDefault)
 

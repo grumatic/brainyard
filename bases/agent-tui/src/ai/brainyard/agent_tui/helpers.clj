@@ -57,24 +57,64 @@
        (some-> (System/getProperty "user.name") str/trim not-empty)
        user-id-fallback)))
 
+(def provider-key-env
+  "Providers whose auto-setup requires an API key, mapped to the env var that
+   supplies it. Providers absent from this map need no key (claude-code, ollama,
+   apple-fm) or resolve credentials through clj-llm's catalog at `create-lm`."
+  {:openai    "OPENAI_API_KEY"
+   :anthropic "ANTHROPIC_API_KEY"})
+
+(defn- credential
+  "Resolve a credential env var the way the rest of `by` does: real env var
+   first, then a JVM system property (the dotenv loader bridges `.env` keys into
+   properties, not the environment — see dotenv.clj). Returns nil when neither
+   is set to a non-blank value."
+  [k]
+  (let [v (or (System/getenv k) (System/getProperty k))]
+    (when-not (str/blank? v) v)))
+
+(defn missing-provider-key
+  "When `provider` requires an API key that isn't present (neither as an env var
+   nor a `.env`-bridged system property), return that env-var name; otherwise
+   nil. Non-throwing companion to `setup-lm!` — a pre-flight can call this to
+   notify the user instead of letting setup throw. Blank values count as absent."
+  [provider]
+  (when-let [env-var (get provider-key-env provider)]
+    (when-not (credential env-var)
+      env-var)))
+
+(defn no-provider-message
+  "A user-facing, actionable message when `provider` has no usable API key.
+   Shared by the `by run` pre-flight (notify + graceful exit) and `setup-lm!`
+   (the exception message), so both read identically."
+  [provider]
+  (let [env-var (get provider-key-env provider)]
+    (str "No LLM provider available: the '" (name provider) "' provider needs an "
+         "API key, but " env-var " is not set.\n"
+         "  Fix one of:\n"
+         "    • set " env-var " (export it, or add it to your .env), or\n"
+         "    • choose a provider you have credentials for (`by run -p <provider>`), or\n"
+         "    • run `by config` to configure a provider interactively.")))
+
 (defn setup-lm!
-  "Auto-setup LM with provider defaults."
+  "Auto-setup LM with provider defaults.
+
+   Throws `ex-info` with `{:provider … ::no-provider true}` when the provider
+   requires an API key that is absent — callers that can present a friendlier
+   surface should pre-flight with `missing-provider-key` instead of catching
+   this. The message is `no-provider-message`."
   [provider & {:keys [model]}]
   (let [default-models {:openai      "gpt-4.1-mini"
                         :anthropic   "claude-opus-4-7"
                         :claude-code "opus"
                         :ollama      "glm-5:cloud"
                         :apple-fm    "apple-foundationmodel"}
-        env-vars       {:openai    "OPENAI_API_KEY"
-                        :anthropic "ANTHROPIC_API_KEY"}
         resolved-model (or model (get default-models provider))
-        resolved-key   (when-not (#{:claude-code :ollama :apple-fm} provider)
-                         (when-let [env-var (get env-vars provider)]
-                           (System/getenv env-var)))]
-    (when (and (nil? resolved-key) (get env-vars provider))
-      (throw (ex-info (str "No API key for " (name provider)
-                           ". Set " (get env-vars provider) " env var")
-                      {:provider provider})))
+        resolved-key   (when-let [env-var (get provider-key-env provider)]
+                         (credential env-var))]
+    (when (missing-provider-key provider)
+      (throw (ex-info (no-provider-message provider)
+                      {:provider provider ::no-provider true})))
     (let [lm (clj-llm/create-lm (cond-> {:model resolved-model :provider provider}
                                   resolved-key (assoc :api-key resolved-key)))]
       (clj-llm/configure-default-lm! lm)
