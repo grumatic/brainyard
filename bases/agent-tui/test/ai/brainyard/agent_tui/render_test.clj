@@ -39,8 +39,8 @@
       (is (str/includes? out "calls         : 2"))
       (is (str/includes? out "total time    : 750"))
       (is (str/includes? out "avg per call  : 375"))
-      (is (str/includes? out "openai:gpt-4o-mini") "first call's model surfaced")
-      (is (str/includes? out "anthropic:claude-haiku") "second call's model surfaced")
+      (is (str/includes? out "openai/gpt-4o-mini") "first call's model surfaced")
+      (is (str/includes? out "anthropic/claude-haiku") "second call's model surfaced")
       (is (str/includes? out "250ms"))
       (is (str/includes? out "500ms")))))
 
@@ -51,7 +51,7 @@
           out (strip-ansi (render/perf-block history))
           rows (clojure.string/split-lines out)
           header (first (filter #(re-find #"In Tok" %) rows))
-          data   (first (filter #(re-find #"openai:" %) rows))]
+          data   (first (filter #(re-find #"openai/" %) rows))]
       (is (some? header))
       (is (some? data))
       ;; The 'k' of "In Tok" must end at the same column as the last
@@ -62,7 +62,7 @@
       ;; The right edge of "Model" header must align with the start of
       ;; the model value (both are left-aligned in the last column).
       (is (= (.indexOf ^String header "Model")
-             (.indexOf ^String data "openai:"))
+             (.indexOf ^String data "openai/"))
           "Model column starts at the same column in both rows"))))
 
 (deftest perf-block-caps-table-to-last-20
@@ -73,7 +73,7 @@
                           :output-tokens 5
                           :provider :openai :model (str "m" i)}))
           out (strip-ansi (render/perf-block history))
-          model-rows (count (re-seq #"openai:m\d+" out))]
+          model-rows (count (re-seq #"openai/m\d+" out))]
       (is (= 20 model-rows) "exactly 20 model rows shown")
       (is (str/includes? out "calls         : 30") "aggregate still reflects all 30 calls"))))
 
@@ -681,8 +681,8 @@
       (is (str/includes? out "LLM Usage") "aggregate header still present")
       (is (str/includes? out "In Tok") "per-call header column shown")
       (is (str/includes? out "Cached") "Cached column shown")
-      (is (str/includes? out "openai:gpt-4o-mini"))
-      (is (str/includes? out "anthropic:claude-haiku"))
+      (is (str/includes? out "openai/gpt-4o-mini"))
+      (is (str/includes? out "anthropic/claude-haiku"))
       (is (str/includes? out "$0.0010"))
       (is (str/includes? out "$0.0020"))
       (is (str/includes? out "100") "first call's input tokens")

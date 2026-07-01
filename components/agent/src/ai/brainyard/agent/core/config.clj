@@ -115,7 +115,7 @@
    :max-refinements            {:type "integer" :default 0
                                 :doc "Max answer-refinement passes after the evaluation check (0 = no refinement)."}
    :eval-lm-config             {:type "string"  :default nil
-                                :doc "Model for the answer-evaluation (hallucination/completeness) check that gates refinement. nil/blank → use the agent's :lm-config; a \"provider:model\" label routes to a dedicated model. See resolve-eval-lm."}
+                                :doc "Model for the answer-evaluation (hallucination/completeness) check that gates refinement. nil/blank → use the agent's :lm-config; a \"provider/model\" (or legacy \"provider:model\") label routes to a dedicated model. See resolve-eval-lm."}
    :sub-lm-config              {:type "string"  :default nil
                                 :doc "Model for sub-LLM queries (llm-query / rlm-query in the sandbox). nil → use the agent's :lm-config."}
    :llm-query-max-depth        {:type "integer" :default 1
@@ -163,7 +163,7 @@
    :sandbox-cache-max-age-days  {:type "integer" :default 7
                                  :doc "Artifact GC: age cap (days) on the clj-sandbox cache (oldest dropped first)."}
    :analytics-lm-config        {:type "string" :default nil
-                                :doc "LM for the optional LLM-enhanced analytics pass (session$analytics :deep true), as a settable \"provider:model\" label (e.g. \"bedrock:amazon.nova-lite-v1:0\") resolved via resolve-analytics-lm. nil/blank → fall back to the agent's :lm-config."}
+                                :doc "LM for the optional LLM-enhanced analytics pass (session$analytics :deep true), as a settable \"provider/model\" (or legacy \"provider:model\") label (e.g. \"bedrock/amazon.nova-lite-v1:0\") resolved via resolve-analytics-lm. nil/blank → fall back to the agent's :lm-config."}
    :analytics-shs-weights      {:type "object" :default nil
                                 :doc "Override map for the composite Session Health Score weights (e.g. {:pqs 0.2 :tce 0.2 …}; must sum to 1.0 or it falls back). nil → built-in defaults."}
    :enable-memory-capture      {:type "boolean" :default true
@@ -1479,10 +1479,11 @@
      :sub-lm-config (string) → parsed via `clj-llm/parse-lm-str` if non-blank
      otherwise → main `:lm-config`
    Unparseable sub-strings fall back to the main config rather than yielding
-   nil. `parse-lm-str` returns nil for anything that isn't a strict
-   `provider:model` pair (a bare model like \"opus\" → nil), and a nil
-   sub-LM would crash `query$llm` with \"No LM configuration provided\" — so
-   we `or` it against the main LM. Arity-0 uses `proto/*current-agent*`."
+   nil. `parse-lm-str` returns nil for anything that isn't a `provider/model`
+   (preferred) or legacy `provider:model` pair (a bare model like \"opus\" →
+   nil), and a nil sub-LM would crash `query$llm` with \"No LM configuration
+   provided\" — so we `or` it against the main LM. Arity-0 uses
+   `proto/*current-agent*`."
   ([] (resolve-sub-lm proto/*current-agent*))
   ([agent]
    (let [main-lm (get-config agent :lm-config)

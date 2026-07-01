@@ -564,16 +564,28 @@
     (is (= main-lm (cfg/resolve-sub-lm ag)))))
 
 (deftest resolve-sub-lm-falls-back-to-main-when-sub-unparseable
-  ;; A non-blank sub-lm-config that isn't a strict provider:model pair (e.g.
-  ;; a bare model name like "opus") makes clj-llm/parse-lm-str return nil.
-  ;; resolve-sub-lm must `or` that against the main LM — returning nil here
-  ;; crashes query$llm with "No LM configuration provided".
+  ;; A non-blank sub-lm-config that isn't a provider/model (preferred) or
+  ;; legacy provider:model pair (e.g. a bare model name like "opus") makes
+  ;; clj-llm/parse-lm-str return nil. resolve-sub-lm must `or` that against
+  ;; the main LM — returning nil here crashes query$llm with "No LM
+  ;; configuration provided".
   (cfg/invalidate-global-config!)
   (let [main-lm {:provider "main" :model "m"}]
-    (doseq [bad ["opus" "claude-code/opus" "claude-opus-4-8" "sonnet"]]
+    (doseq [bad ["opus" "claude-opus-4-8" "sonnet"]]
       (let [ag (fake-agent {:lm-config main-lm :sub-lm-config bad})]
         (is (= main-lm (cfg/resolve-sub-lm ag))
             (str "unparseable sub-lm-config " (pr-str bad) " should fall back to main"))))))
+
+(deftest resolve-sub-lm-prefers-slash-provider-model-form
+  ;; A `provider/model` sub-lm-config resolves to that provider+model — the
+  ;; `/` form is preferred, with the model carrying any embedded `:`.
+  (cfg/invalidate-global-config!)
+  (let [ag  (fake-agent {:lm-config     {:provider "main" :model "m"}
+                         :sub-lm-config "claude-code/opus"})
+        sub (cfg/resolve-sub-lm ag)]
+    (is (map? sub))
+    (is (= :claude-code (:provider sub)))
+    (is (= "opus" (:model sub)))))
 
 (deftest set-allowed-dirs!-writes-per-agent-override
   ;; Post-b2c371c: set-allowed-dirs! writes the flat :allowed-dirs schema

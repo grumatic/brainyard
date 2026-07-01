@@ -732,13 +732,23 @@
                      r)))
                futures))))))
 
+(defn split-lm-str
+  "Split an LM identifier string into `[provider model]`, preferring the
+   `provider/model` form and falling back to legacy `provider:model`. Canonical
+   implementation lives in `providers/split-lm-str` (the provider registry's
+   home); delegated here so `core.llm` and the interface share one splitter."
+  [lm-str]
+  (providers/split-lm-str lm-str))
+
 (defn parse-lm-str
-  "Parse an LM identifier string `provider:model` into an LM instance via
-   `providers/create-lm`. Returns nil if the string is blank or `create-lm`
-   throws — callers should fall back to a default LM in that case."
+  "Parse an LM identifier string into an LM instance via `providers/create-lm`.
+
+   The string is interpreted as `provider/model` (preferred) or, when it has
+   no `/`, the legacy `provider:model`. Returns nil if the string is blank or
+   `create-lm` throws — callers should fall back to a default LM in that case."
   [lm-str]
   (when (and lm-str (not (str/blank? lm-str)))
-    (let [[provider model] (str/split lm-str #":" 2)]
+    (let [[provider model] (split-lm-str lm-str)]
       (try
         (providers/create-lm {:provider (keyword provider) :model model})
         (catch Exception _ nil)))))

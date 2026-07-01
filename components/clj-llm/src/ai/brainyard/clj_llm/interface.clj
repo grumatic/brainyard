@@ -152,8 +152,15 @@
   "Return true if the default LM has a resolved API key."
   providers/lm-initialized?)
 
+(def split-lm-str
+  "Split an LM identifier string into [provider model]. Prefers the
+   'provider/model' form (first '/'), falling back to legacy 'provider:model'
+   (first ':') when no '/' is present."
+  llm/split-lm-str)
+
 (def parse-lm-str
-  "Parse an LM identifier string 'provider:model' into an LM instance via create-lm.
+  "Parse an LM identifier string into an LM instance via create-lm. Interpreted
+   as 'provider/model' (preferred) or, with no '/', legacy 'provider:model'.
    Returns nil if the string is blank or create-lm throws."
   llm/parse-lm-str)
 
@@ -169,6 +176,13 @@
 (def get-provider-from-model
   "Determine the provider for a given model string."
   providers/get-provider-from-model)
+
+(def format-lm-label
+  "Canonical 'provider/model' display label from a provider (keyword/string/nil)
+   and a model (bare id, or itself a 'provider/model'/'provider:model' spec).
+   Normalizes a combined model to the '/' form without mis-splitting a bare id
+   that contains ':' (e.g. bedrock 'amazon.nova-lite-v1:0')."
+  providers/format-lm-label)
 
 (def get-popular-models
   "Get a curated list of popular models across providers."

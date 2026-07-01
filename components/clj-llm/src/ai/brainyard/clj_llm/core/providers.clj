@@ -413,6 +413,57 @@
 ;; LM Configuration
 ;; ============================================================================
 
+(defn split-lm-str
+  "Split an LM identifier string into [provider model].
+
+   Prefers the `provider/model` form — separator is the FIRST `/`. With no `/`,
+   falls back to the legacy `provider:model` form — separator is the FIRST `:`.
+   Splitting on the first separator keeps model ids that themselves contain `:`
+   intact (e.g. the bedrock id `amazon.nova-lite-v1:0` after a `bedrock/`
+   provider). With no separator at all, returns `[lm-str nil]`."
+  [^String lm-str]
+  (let [slash (.indexOf lm-str "/")]
+    (if (>= slash 0)
+      [(subs lm-str 0 slash) (subs lm-str (inc slash))]
+      (let [colon (.indexOf lm-str ":")]
+        (if (>= colon 0)
+          [(subs lm-str 0 colon) (subs lm-str (inc colon))]
+          [lm-str nil])))))
+
+(defn- resolve-model-spec
+  "When `model` is a provider-qualified spec — `provider/model` (preferred) or
+   legacy `provider:model` — whose leading token is a REGISTERED provider,
+   return `[provider-kw bare-model]`; otherwise `[nil model]`.
+
+   The known-provider gate is what keeps a bare id that merely contains a
+   separator intact: a bedrock id like `amazon.nova-lite-v1:0` has the leading
+   token `amazon.nova-lite-v1`, which is not a provider, so it is left whole and
+   routed by `get-provider-from-model`. An OpenRouter-style `vendor/model` id is
+   likewise left whole unless its vendor is itself a registered provider."
+  [model]
+  (if (string? model)
+    (let [[lead bare] (split-lm-str model)]
+      (if (and bare (contains? providers (keyword lead)))
+        [(keyword lead) bare]
+        [nil model]))
+    [nil model]))
+
+(defn format-lm-label
+  "Canonical `provider/model` display label from a `provider` (keyword/string/
+   nil) and a `model` (a bare id, or itself a provider-qualified spec). Uses the
+   same registered-provider gate as `create-lm`, so a combined `:model` like
+   `claude-code:opus` renders as `claude-code/opus` while a bare id that merely
+   contains `:` (bedrock `amazon.nova-lite-v1:0`) is shown whole. Returns `\"?\"`
+   when neither is present."
+  [provider model]
+  (let [[spec-provider bare] (resolve-model-spec model)
+        prov (or provider spec-provider)]
+    (cond
+      (and prov bare) (str (name prov) "/" bare)
+      bare            (str bare)
+      prov            (name prov)
+      :else           "?")))
+
 (defn create-lm
   "Create an LM configuration map.
    Options:
@@ -434,7 +485,17 @@
                              provider; overrides profile/env-based detection."
   [{:keys [model api-key temperature max-tokens base-url provider prompt-cache drop-params
            region aws-profile credentials-provider]}]
-  (let [detected-provider (or provider (get-provider-from-model model))
+  (let [;; `:provider` is a keyword internally, but callers at the boundary may
+        ;; pass a string (e.g. the CLI's `-p`/legacy `provider:model` opt).
+        ;; Keywordize defensively — `keyword` is idempotent on a keyword and nil-safe
+        ;; — so a string provider still hits the keyword-keyed `providers` registry.
+        provider          (some-> provider keyword)
+        ;; A `:model` may itself be a provider-qualified spec ("claude-code/opus"
+        ;; or legacy "claude-code:opus"). Strip a registered-provider prefix so
+        ;; the bare model id flows downstream; an explicit `:provider` still wins.
+        [spec-provider spec-model] (resolve-model-spec model)
+        model             (or spec-model model)
+        detected-provider (or provider spec-provider (get-provider-from-model model))
         provider-config   (get providers detected-provider)
         ;; For OAuth providers (anthropic-max), api-key is resolved dynamically at call time
         oauth?            (= :oauth (:auth-type provider-config))

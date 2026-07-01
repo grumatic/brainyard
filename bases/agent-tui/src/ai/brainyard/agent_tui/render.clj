@@ -15,7 +15,8 @@
      :status — single-row status pane.  We use a CR + erase-line prefix so
                every write overwrites the row in place; this gives the user
                a true 'status bar' rather than a spam of appended lines."
-  (:require [clojure.string :as str]))
+  (:require [ai.brainyard.clj-llm.interface :as clj-llm]
+            [clojure.string :as str]))
 
 ;; -- minimal ANSI helpers ----------------------------------------------------
 ;;
@@ -718,11 +719,7 @@
                          (style "Cost" dim) "  "
                          (style "Model" dim))
                 row (fn [i c]
-                      (let [model-s (cond
-                                      (and (:provider c) (:model c))
-                                      (str (name (:provider c)) ":" (:model c))
-                                      (:model c) (str (:model c))
-                                      :else "?")
+                      (let [model-s (clj-llm/format-lm-label (:provider c) (:model c))
                             model-clamped (if (> (count model-s) 32)
                                             (subs model-s 0 32)
                                             model-s)]
@@ -796,11 +793,7 @@
                           (style (fmt-int "Out Tok" w-out) dim) "  "
                           (style "Model" dim))
           row-of (fn [i c]
-                   (let [model-s (cond
-                                   (and (:provider c) (:model c))
-                                   (str (name (:provider c)) ":" (:model c))
-                                   (:model c) (str (:model c))
-                                   :else "?")
+                   (let [model-s (clj-llm/format-lm-label (:provider c) (:model c))
                          model-clamped (if (> (count model-s) 32)
                                          (subs model-s 0 32)
                                          model-s)]

@@ -11,6 +11,7 @@
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
             [ai.brainyard.agent.interface.tui.format :as fmt]
+            [ai.brainyard.clj-llm.interface :as clj-llm]
             [clojure.string :as str]))
 
 ;; ============================================================================
@@ -554,19 +555,18 @@
 
 (defn format-session-indicator
   "Format the active-session indicator for the status bar as
-   `agent-id [provider:model]`. Tabs themselves live in the dedicated tab
+   `agent-id [provider/model]`. Tabs themselves live in the dedicated tab
    row (see `format-tab-strip`). Returns nil when no sessions exist."
   []
   (when (pos? (session-count))
     (let [current (get-active-session)
           lm (try (agent/get-config (:agent current) :lm-config)
                   (catch Exception _ nil))
-          provider (or (some-> (:provider lm) name) "?")
-          model (or (:model lm) "?")
+          label (clj-llm/format-lm-label (:provider lm) (:model lm))
           agent-id (or (some-> (:defagent-id current) name)
                        (:agent-id current))]
       (ansi/muted (str (when agent-id (str agent-id " "))
-                       "[" provider ":" model "]")))))
+                       "[" label "]")))))
 
 (defn- agent-running?
   "True when `session`'s agent is currently in an :ask/:running state."

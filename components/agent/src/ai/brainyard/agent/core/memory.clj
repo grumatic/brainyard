@@ -179,22 +179,16 @@
         "~/.brainyard/memory")))
 
 (defn- resolve-graph-lm
-  "Resolve a `provider/model` graph-model string to a clj-llm lm-config via
-   explicit `create-lm`. We do NOT use `parse-lm-str` here because it rejects
-   models absent from the curated catalog — which embedding models almost
-   always are (e.g. `ollama/nomic-embed-text`, `openai/text-embedding-3-small`).
-   Splits on the first `/` so models containing `:` (e.g. bedrock ids) survive.
-   Returns nil on a blank string or any resolution failure (⇒ provider off)."
+  "Resolve a `provider/model` (or legacy `provider:model`) graph-model string
+   to a clj-llm lm-config via `clj-llm/parse-lm-str`. `parse-lm-str` prefers
+   the `/` separator (so models containing `:`, e.g. bedrock ids, survive) and
+   `create-lm` accepts ids absent from the curated catalog — which embedding
+   models almost always are (e.g. `ollama/nomic-embed-text`,
+   `openai/text-embedding-3-small`). Returns nil on a blank string or any
+   resolution failure (⇒ provider off)."
   [s]
   (when-let [s (some-> s str/trim not-empty)]
-    (let [i        (str/index-of s "/")
-          provider (when i (subs s 0 i))
-          model    (if i (subs s (inc i)) s)]
-      (try
-        (if provider
-          (llm/create-lm {:provider (keyword provider) :model model})
-          (llm/parse-lm-str s))
-        (catch Exception _ nil)))))
+    (llm/parse-lm-str s)))
 
 (defn- graph-provider-opts
   "Build the context-graph provider fns (CR-MEM-21/22) from config, or `{}`.
