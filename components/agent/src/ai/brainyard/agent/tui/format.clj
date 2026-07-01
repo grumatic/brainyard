@@ -1146,6 +1146,28 @@
     (vec (str/split-lines s))
     []))
 
+(defn format-tool-result-block
+  "Render a tool call's result as a boxed, display-block-backed `Result`
+   section — the same visual + collapsible treatment as the code-eval
+   `Result` section. Long bodies collapse with a `[*Block:<id>* collapsed:
+   …]` marker.
+
+   A tool result map carries both normal output and any error description
+   (e.g. `{:error \"File not found: …\"}`), so one box surfaces everything —
+   there's no separate Error box.
+
+   Options:
+     :id  stable display-block id so live re-renders (called→done) overwrite
+          the same provider rather than leaking a new one each tick. Omit for
+          one-shot emits.
+
+   Returns a flat vector of ANSI-styled lines (`[]` when body is blank)."
+  [body-str & {:keys [id]}]
+  (if-let [s (format-eval-section "Result" body-str identity
+                                  :class "eval-result" :id id)]
+    (vec (str/split-lines s))
+    []))
+
 ;; ============================================================================
 ;; Goal Status
 ;; ============================================================================

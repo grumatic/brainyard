@@ -1123,7 +1123,10 @@
 ;;                  :reasoning   string|nil    ; from dspy-action/post
 ;;                  :streaming   string|nil    ; from dspy-action/chunk; cleared on /post
 ;;                  :tool-batch  [{:call-id :name :args :status :start-ms :end-ms
-;;                                  :result-chars :error-msg}]
+;;                                  :result-chars :error-msg :result-body}]
+;;                                  ; :result-body = stringified success result
+;;                                  ; for the boxed Result section (:error-msg
+;;                                  ; drives the Error box); both collapsible.
 ;;                  :code        string|nil
 ;;                  :code-output {:result :output :error :duration-ms}|nil
 ;;                  :eval-section-lines [str]|nil  ; pre-rendered Code/Result/
@@ -1224,6 +1227,14 @@
   [call-id]
   (str "tc" (Long/toString (Math/abs (long (hash call-id))) 36)))
 
+(defn- tool-result-box-id
+  "Stable display-block id for a tool call's boxed `Result` / `Error`
+   section — distinct from `tool-call-box-id` (the args `Call` box) so the
+   two providers don't collide. A call resolves to exactly one of done/error,
+   so one id per call-id serves both kinds."
+  [call-id]
+  (str "tr" (Long/toString (Math/abs (long (hash call-id))) 36)))
+
 (defn- format-iter-elapsed
   "Format elapsed millis as 'Nms', 'N.Ns', or 'Nm Ns'."
   [ms]
@@ -1269,7 +1280,7 @@
    (e.g. `theme/set-active-theme!`) propagates here without any code change.
 
    Returns a vector of lines."
-  [{:keys [name args status start-ms end-ms result-chars error-msg call-id]}]
+  [{:keys [name args status start-ms end-ms result-chars error-msg result-body call-id]}]
   (let [styled-name (ansi/tool-name name)
         bullet      (ansi/tool-bullet ansi/arrow)
         elapsed     (when (and start-ms end-ms) (format-iter-elapsed (- end-ms start-ms)))
@@ -1286,14 +1297,25 @@
         ;; pr-str length is the established "one-line limit" (`format-iter-args`
         ;; truncates past 120); a code-like multi-line arg always boxes.
         boxed?      (or (args-multiline? args)
-                        (> (count (try (pr-str args) (catch Exception _ ""))) 120))]
-    (if boxed?
-      (let [head (str "  " bullet " " styled-name ": called" outcome)
-            body (iter-args-body args)]
-        (if (str/blank? (str body))
-          [head]
-          (into [head] (fmt/format-tool-call-block body :id (tool-call-box-id call-id)))))
-      [(str "  " bullet " " styled-name "(" (format-iter-args args) "): called" outcome)])))
+                        (> (count (try (pr-str args) (catch Exception _ ""))) 120))
+        ;; Head line(s): the compact `→ name(args): called → done/error`
+        ;; summary, with the args in a boxed `Call` section when they're
+        ;; code-like / overflow the inline budget.
+        head-lines  (if boxed?
+                      (let [head (str "  " bullet " " styled-name ": called" outcome)
+                            body (iter-args-body args)]
+                        (if (str/blank? (str body))
+                          [head]
+                          (into [head] (fmt/format-tool-call-block body :id (tool-call-box-id call-id)))))
+                      [(str "  " bullet " " styled-name "(" (format-iter-args args) "): called" outcome)])
+        ;; Result body in a boxed, collapsible section — the same treatment
+        ;; as the code-eval `Result` section. The result map carries both
+        ;; normal output and any error description, so one box surfaces
+        ;; everything (no separate Error box).
+        result-box  (when (and result-body (not (str/blank? (str result-body))))
+                      (fmt/format-tool-result-block result-body
+                                                    :id (tool-result-box-id call-id)))]
+    (into head-lines (or result-box []))))
 
 (defn- render-iteration-block-lines
   "Build ANSI lines for an iteration block."
@@ -2988,9 +3010,38 @@
                 :start-ms (System/currentTimeMillis)})
         (update-iteration-block! aid rid iter)))))
 
+(def ^:private tool-result-body-cap
+  "Max chars of a successful tool result stashed for the iteration-block
+   `Result` box. The display-block collapses long content visually; this
+   bounds the raw string held in state / written to the file-backed
+   provider so a multi-MB blob can't blow up memory."
+  20000)
+
+(defn- tool-result->body
+  "Stringify a tool result for the iteration-block `Result` box. The result
+   map carries both normal output and any error description (e.g.
+   `{:error \"File not found: …\"}`), so the box shows the whole thing.
+   Returns a bounded string, or nil when there's nothing worth showing
+   (nil / boolean / empty map / blank string). A map's `:answer` is
+   surfaced directly (mirrors `render/tool-post-line`); anything else is
+   `pr-str`'d."
+  [result]
+  (let [raw (cond
+              (string? result)                     result
+              (and (map? result) (:answer result)) (str (:answer result))
+              (or (nil? result) (boolean? result)) nil
+              (and (map? result) (empty? result))  nil
+              :else                                 (pr-str result))]
+    (when (and raw (not (str/blank? (str raw))))
+      (let [s (str raw)]
+        (if (> (count s) tool-result-body-cap)
+          (str (subs s 0 tool-result-body-cap) "\n… [truncated]")
+          s)))))
+
 (defn tool-use-post-handler
   "Handler for :agent.tool-use/post. Locates the matching tool-batch entry
-   by :call-id and updates its status / timing / result-chars / error-msg."
+   by :call-id and updates its status / timing / result-chars / error-msg /
+   result-body (the boxed Result/Error section body)."
   [{:keys [agent tool-name call-id result]}]
   (when-let [[aid rid iter] (iter-current-key agent)]
     (let [k [aid rid iter]
@@ -2999,6 +3050,7 @@
         (let [now (System/currentTimeMillis)
               error? (and (map? result) (some? (:error-message result)))
               error-msg (when error? (str (:error-message result)))
+              result-body (tool-result->body result)
               chars (try (count (pr-str result)) (catch Exception _ nil))
               tb (or (:tool-batch state) [])
               idx (or (some (fn [[i e]]
@@ -3015,7 +3067,8 @@
                    merge {:status (if error? :error :done)
                           :end-ms now
                           :result-chars chars
-                          :error-msg error-msg})
+                          :error-msg error-msg
+                          :result-body result-body})
             (update-iteration-block! aid rid iter)))))))
 
 (defn- accumulate-eval-entry

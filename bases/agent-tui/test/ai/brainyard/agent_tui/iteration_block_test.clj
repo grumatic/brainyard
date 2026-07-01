@@ -157,6 +157,41 @@
       (is (str/includes? text "→ read({:path \"a.clj\"}): called → done"))
       (is (not (str/includes? text "• Call:"))))))
 
+(deftest render-tools-section-boxes-result
+  (testing "an entry with :result-body renders a boxed Result section
+            (code-eval Result box style) below the head line"
+    (let [state {:iteration 1 :max-iterations 5 :stage :tools
+                 :tool-batch [{:call-id 21 :name "search" :args {:q "x"}
+                               :status :done :start-ms 0 :end-ms 900
+                               :result-chars 34
+                               :result-body "hit-1: foo.clj:12\nhit-2: bar.clj:88"}]}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      (is (str/includes? text "→ search({:q \"x\"}): called → done"))
+      (is (str/includes? text "• Result:") "boxed Result section header present")
+      (is (str/includes? text "┌─"))
+      (is (str/includes? text "hit-1: foo.clj:12") "result body content shown")
+      (is (str/includes? text "hit-2: bar.clj:88"))
+      (is (str/includes? text "└─"))))
+  (testing "a tool-reported error shows in the same Result box (no Error box) —
+            the result map carries the error description"
+    (let [state {:iteration 1 :stage :tools
+                 :tool-batch [{:call-id 22 :name "read-file" :args {:path "x"}
+                               :status :done :start-ms 0 :end-ms 8
+                               :result-chars 40
+                               :result-body "{:error \"File not found: /x\"}"}]}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      (is (str/includes? text "• Result:") "one Result box surfaces everything")
+      (is (not (str/includes? text "• Error:")) "no separate Error box")
+      (is (str/includes? text "File not found: /x")
+          "the error description survives in the Result box")))
+  (testing "an entry with no :result-body renders no Result box"
+    (let [state {:iteration 1 :stage :tools
+                 :tool-batch [{:call-id 23 :name "noop" :args {} :status :done
+                               :start-ms 0 :end-ms 10 :result-chars 3}]}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      (is (str/includes? text "→ noop({}): called → done"))
+      (is (not (str/includes? text "• Result:")) "no empty Result box"))))
+
 (deftest render-splices-eval-section-lines
   ;; The renderer no longer formats Code / Result / Error sections
   ;; inline from `:code` and `:code-output`. Instead, the code-eval
@@ -427,7 +462,30 @@
           (is (= "boom" (-> by-name (get "search") :error-msg)))
           (is (= :done (-> by-name (get "fetch") :status))
               "fetch post resolved as done")
+          ;; The full result (normal output AND any error description) is
+          ;; stringified into :result-body for a single Result box.
+          (is (= "{:status 200}" (-> by-name (get "fetch") :result-body))
+              "success result stringified into :result-body for the Result box")
+          (is (= "{:error-message \"boom\"}" (-> by-name (get "search") :result-body))
+              "error result also stringified into :result-body (no separate Error box)")
           (is (every? :end-ms tb)))))))
+
+(deftest tool-use-post-result-body-stringification
+  (testing "string / :answer-map / error-map / nil / empty-map results reduce
+            to the right :result-body (nil ⇒ no Result box)"
+    (is (= "hello world" (#'s/tool-result->body "hello world")))
+    (is (= "the answer"  (#'s/tool-result->body {:answer "the answer"})))
+    (is (= "{:error \"nope\"}" (#'s/tool-result->body {:error "nope"}))
+        "an error map is boxed as-is — the Result box shows the error description")
+    (is (nil? (#'s/tool-result->body nil)))
+    (is (nil? (#'s/tool-result->body true)))
+    (is (nil? (#'s/tool-result->body {})))
+    (is (nil? (#'s/tool-result->body "   ")) "blank string ⇒ no box"))
+  (testing "an oversized body is capped so a multi-MB blob can't blow up state"
+    (let [big (apply str (repeat 50000 "x"))
+          out (#'s/tool-result->body big)]
+      (is (< (count out) 50000))
+      (is (str/includes? out "[truncated]")))))
 
 (deftest code-eval-pre-then-post-records-output
   (let [a (stub-agent)]
