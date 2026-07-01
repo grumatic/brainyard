@@ -47,13 +47,16 @@
 ;; Formatters (private — accessed via #')
 ;; ----------------------------------------------------------------------------
 
-(deftest format-iter-args-truncates-past-60
+(deftest format-iter-args-truncates-past-120
   (let [tiny-args   {:k "v"}
-        long-args   {:msg (apply str (repeat 100 "x"))}
+        mid-args    {:msg (apply str (repeat 100 "x"))} ; ~109 chars pr-str → within cap
+        long-args   {:msg (apply str (repeat 130 "x"))} ; ~139 chars pr-str → truncated
         out-tiny    (#'s/format-iter-args tiny-args)
+        out-mid     (#'s/format-iter-args mid-args)
         out-long    (#'s/format-iter-args long-args)]
     (is (= "{:k \"v\"}" out-tiny) "small args render as-is")
-    (is (<= (count out-long) 60) "long args truncated to 60 chars")
+    (is (not (str/ends-with? out-mid "...")) "args within 120 chars render in full")
+    (is (<= (count out-long) 120) "long args truncated to 120 chars")
     (is (str/ends-with? out-long "...") "truncation marker appended")))
 
 (deftest format-iter-elapsed-bands
@@ -104,6 +107,55 @@
     (is (str/includes? text "Connection refused"))
     (is (str/includes? text "→ slow({}): called")
         "in-flight tool shows just 'called'")))
+
+(deftest render-tools-section-boxes-code-like-args
+  (testing "a multi-line script arg moves into a boxed Call section,
+            the head line drops the inline args, and the script lines survive
+            under a `command:` label"
+    (let [state {:iteration 1 :max-iterations 5 :stage :tools
+                 :tool-batch [{:call-id 9 :name "bash"
+                               :args {:command "echo hi\nfor i in 1 2 3; do\n  echo $i\ndone"}
+                               :status :done :start-ms 0 :end-ms 800 :result-chars 12}]}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      ;; Head line: name + status, no inline args spilled onto it.
+      (is (str/includes? text "→ bash: called → done"))
+      (is (not (str/includes? text "→ bash(")) "inline args are not on the head line")
+      ;; Boxed Call section: arg shown as `name:` then the indented script.
+      (is (str/includes? text "• Call:"))
+      (is (str/includes? text "┌─"))
+      (is (str/includes? text "command:") "arg name labels the value uniformly")
+      (is (str/includes? text "echo hi"))
+      (is (str/includes? text "for i in 1 2 3; do"))
+      (is (str/includes? text "└─"))))
+  (testing "a long single-line arg (>120 chars) also boxes rather than truncating"
+    (let [long-q (apply str (repeat 130 "x"))
+          state {:iteration 1 :stage :tools
+                 :tool-batch [{:call-id 10 :name "search" :args {:query long-q}
+                               :status :called :start-ms 0}]}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      (is (str/includes? text "• Call:"))
+      (is (str/includes? text "query:") "arg name labels the value")
+      ;; The box word-wraps long lines, so the 130 x's may span rows — assert
+      ;; all 130 survive (vs. the 120-char pr-str cap) and nothing is elided.
+      (is (= 130 (count (filter #{\x} text))) "full query preserved across wrapped rows")
+      (is (not (str/includes? text "...")) "no pr-str truncation ellipsis")))
+  (testing "a multi-arg call boxes with each arg on its own `name: value` line"
+    (let [state {:iteration 1 :stage :tools
+                 :tool-batch [{:call-id 12 :name "write"
+                               :args {:path "a.clj"
+                                      :content (apply str (repeat 130 "y"))}
+                               :status :called :start-ms 0}]}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      (is (str/includes? text "• Call:"))
+      (is (str/includes? text "path: a.clj") "scalar arg inline after colon")
+      (is (str/includes? text "content:") "long arg labeled by name too")))
+  (testing "short args still render as a compact inline one-liner (no box)"
+    (let [state {:iteration 1 :stage :tools
+                 :tool-batch [{:call-id 11 :name "read" :args {:path "a.clj"}
+                               :status :done :start-ms 0 :end-ms 50}]}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      (is (str/includes? text "→ read({:path \"a.clj\"}): called → done"))
+      (is (not (str/includes? text "• Call:"))))))
 
 (deftest render-splices-eval-section-lines
   ;; The renderer no longer formats Code / Result / Error sections

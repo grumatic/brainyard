@@ -123,6 +123,10 @@
          :tool/bullet         [:cyan]
          :tool/done           [:bright-green]
          :tool/error          [:bright-red]
+         ;; Boxed `Call` section: arg name is a dim label, the value pops
+         ;; in the code color (values are often scripts / content).
+         :tool/arg-name       [:dim]
+         :tool/arg-value      [:bright-cyan]
          :spinner/active      [:bold :bright-yellow]
          :iter/marker-running [:bold :bright-cyan]
          :iter/marker-success [:bright-green]
@@ -196,6 +200,8 @@
 (defn tool-bullet         [s] (theme-style s :tool/bullet))
 (defn tool-done           [s] (theme-style s :tool/done))
 (defn tool-error          [s] (theme-style s :tool/error))
+(defn tool-arg-name       [s] (theme-style s :tool/arg-name))
+(defn tool-arg-value      [s] (theme-style s :tool/arg-value))
 (defn spinner-active      [s] (theme-style s :spinner/active))
 
 ;; ============================================================================

@@ -1157,12 +1157,72 @@
     (str "i" (Long/toString h 36))))
 
 (defn- format-iter-args
-  "Compact pr-str of args, truncated to 60 chars."
+  "Compact pr-str of args, truncated to 120 chars. Kept in lockstep with
+   `render-iter-tool-line`'s boxing trigger: args within this budget render
+   inline, longer args move into a boxed `Call` section, so the inline path
+   never actually truncates in practice."
   [args]
   (let [s (try (pr-str args) (catch Exception _ "<unprintable>"))]
-    (if (> (count s) 60)
-      (str (subs s 0 57) "...")
+    (if (> (count s) 120)
+      (str (subs s 0 117) "...")
       s)))
+
+(defn- args-multiline?
+  "True when any string-valued arg carries a newline — i.e. the args are
+   really code (a bash script, a heredoc) rather than a flat scalar map.
+   Such calls render as a boxed `Call` section instead of an inline
+   one-liner so the script stays readable."
+  [args]
+  (boolean
+   (cond
+     (map? args)        (some #(and (string? %) (str/includes? % "\n")) (vals args))
+     (string? args)     (str/includes? args "\n")
+     :else              false)))
+
+(defn- iter-args-body
+  "Readable, uniform rendering of tool args for a boxed `Call` section.
+
+   Every arg renders as `name: value`, regardless of how many args there
+   are or which one is the long/code-like one:
+     - a scalar or single-line string sits inline after the colon
+         path: foo.clj
+     - a multi-line string value (a bash script / heredoc) drops to its own
+       2-space-indented block beneath the name so the code stays readable
+         command:
+           echo hi
+           for i in 1 2 3; do …
+   String values render raw (unquoted) so newlines/quotes read naturally;
+   non-strings go through `pr-str` (`:kw`, `42`, `[1 2]`). Non-map args fall
+   back to `pr-str` of the whole value.
+
+   Names and values are styled distinctly so they read apart inside the box:
+   the arg name is a dim label (`ansi/tool-arg-name`) and the value pops in
+   the code color (`ansi/tool-arg-value`). The Call box renders this body
+   with an identity style-fn, so this embedded styling is what shows."
+  [args]
+  (letfn [(nm [k] (ansi/tool-arg-name
+                   (str (if (keyword? k) (clojure.core/name k) (str k)) ":")))
+          (render-pair [k v]
+            (if (and (string? v) (str/includes? v "\n"))
+              ;; multi-line: dim `name:` on its own line, value indented + styled
+              (str (nm k) "\n"
+                   (->> (str/split-lines v)
+                        (map #(str "  " (ansi/tool-arg-value %)))
+                        (str/join "\n")))
+              ;; scalar / single-line: `name: value` with value styled inline
+              (str (nm k) " " (ansi/tool-arg-value (if (string? v) v (pr-str v))))))]
+    (if (map? args)
+      (->> args
+           (map (fn [[k v]] (render-pair k v)))
+           (str/join "\n"))
+      (ansi/tool-arg-value (try (pr-str args) (catch Exception _ "<unprintable>"))))))
+
+(defn- tool-call-box-id
+  "Stable display-block id for a tool call's boxed `Call` section, derived
+   from its call-id so the called→done→error re-renders overwrite the same
+   provider instead of leaking a new one each tick."
+  [call-id]
+  (str "tc" (Long/toString (Math/abs (long (hash call-id))) 36)))
 
 (defn- format-iter-elapsed
   "Format elapsed millis as 'Nms', 'N.Ns', or 'Nm Ns'."
@@ -1191,29 +1251,49 @@
       s)))
 
 (defn- render-iter-tool-line
-  "One line per tool: '  → name(args): called [→ done|error, Ns, Mchars]'.
-   Styling routes through the theme: `:tool/bullet` for the leading
-   arrow, `:tool/name` for the tool name, `:tool/done` / `:tool/error`
-   for the outcome marker, `:fg/muted` for the inline transition. A
-   theme switch (e.g. `theme/set-active-theme!`) propagates here without
-   any code change."
-  [{:keys [name args status start-ms end-ms result-chars error-msg]}]
-  (let [args-str    (format-iter-args args)
-        styled-name (ansi/tool-name name)
+  "Lines for one tool call. Normally a single compact line:
+     '  → name(args): called [→ done|error, Ns, Mchars]'.
+
+   When the args are code-like — a multi-line string (bash script /
+   heredoc) or longer than the 60-char inline limit — the args move into a
+   boxed, collapsible `Call` section (the same display-block treatment as
+   the `Code` eval section) and the head line drops the inline args:
+     '  → name: called → done, …'
+     '    • Call:'
+     '      ┌─ … └─'
+   so a script-valued arg stays readable instead of being pr-str-truncated.
+
+   Styling routes through the theme: `:tool/bullet` for the leading arrow,
+   `:tool/name` for the tool name, `:tool/done` / `:tool/error` for the
+   outcome marker, `:fg/muted` for the inline transition. A theme switch
+   (e.g. `theme/set-active-theme!`) propagates here without any code change.
+
+   Returns a vector of lines."
+  [{:keys [name args status start-ms end-ms result-chars error-msg call-id]}]
+  (let [styled-name (ansi/tool-name name)
         bullet      (ansi/tool-bullet ansi/arrow)
-        head        (str "  " bullet " " styled-name "(" args-str "): called")
-        elapsed     (when (and start-ms end-ms) (format-iter-elapsed (- end-ms start-ms)))]
-    (case status
-      :called head
-      :done   (str head " " (ansi/muted "→") " "
-                   (ansi/tool-done "done")
-                   (when (seq elapsed) (str ", " elapsed))
-                   (when result-chars (str ", " (format-iter-result-chars result-chars))))
-      :error  (str head " " (ansi/muted "→") " "
-                   (ansi/tool-error "error")
-                   (when (seq elapsed) (str ", " elapsed))
-                   (when error-msg (str ", " (pr-str (truncate-iter-line error-msg 40)))))
-      head)))
+        elapsed     (when (and start-ms end-ms) (format-iter-elapsed (- end-ms start-ms)))
+        outcome     (case status
+                      :done  (str " " (ansi/muted "→") " "
+                                  (ansi/tool-done "done")
+                                  (when (seq elapsed) (str ", " elapsed))
+                                  (when result-chars (str ", " (format-iter-result-chars result-chars))))
+                      :error (str " " (ansi/muted "→") " "
+                                  (ansi/tool-error "error")
+                                  (when (seq elapsed) (str ", " elapsed))
+                                  (when error-msg (str ", " (pr-str (truncate-iter-line error-msg 40)))))
+                      "")
+        ;; pr-str length is the established "one-line limit" (`format-iter-args`
+        ;; truncates past 120); a code-like multi-line arg always boxes.
+        boxed?      (or (args-multiline? args)
+                        (> (count (try (pr-str args) (catch Exception _ ""))) 120))]
+    (if boxed?
+      (let [head (str "  " bullet " " styled-name ": called" outcome)
+            body (iter-args-body args)]
+        (if (str/blank? (str body))
+          [head]
+          (into [head] (fmt/format-tool-call-block body :id (tool-call-box-id call-id)))))
+      [(str "  " bullet " " styled-name "(" (format-iter-args args) "): called" outcome)])))
 
 (defn- render-iteration-block-lines
   "Build ANSI lines for an iteration block."
@@ -1278,7 +1358,7 @@
                                      (rest kept))]
                 (vec (concat [head-line first-extra] rest-extras))))))
         tool-lines (when (seq tool-batch)
-                     (mapv render-iter-tool-line tool-batch))
+                     (vec (mapcat render-iter-tool-line tool-batch)))
         ;; Advisory notice (usage guide / self-improvement nudge) the LLM also
         ;; reads via the record's :notices. Wrapped + capped so a long usage
         ;; guide can't dominate the iteration block; a short nudge shows in full.

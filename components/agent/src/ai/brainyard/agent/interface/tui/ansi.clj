@@ -18,6 +18,7 @@
                 iter-marker-failure iter-marker-done
                 iter-label iter-usage
                 tool-bullet tool-done tool-error
+                tool-arg-name tool-arg-value
                 spinner-active)
 
 ;; Cursor & screen control

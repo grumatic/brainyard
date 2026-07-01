@@ -14,7 +14,8 @@
                 format-recovery-status
                 format-thought format-tool-calls format-tool-results
                 format-todo-progress format-todo-list
-                format-observation format-eval-sections format-goal-status
+                format-observation format-eval-sections format-tool-call-block
+                format-goal-status
                 format-next-prompt format-eval-verdict
                 format-answer format-usage-summary format-usage-table
                 format-conversation-message format-conversation-history

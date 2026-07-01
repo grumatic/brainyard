@@ -1117,6 +1117,35 @@
         []
         (vec (str/split-lines joined))))))
 
+(defn format-tool-call-block
+  "Render a tool call's args as a boxed, display-block-backed section —
+   the same visual + collapsible treatment as the `Code` eval section.
+
+   Used when the inline `→ name(args)` one-liner would overflow the pane
+   (e.g. a tool whose arg is a multi-line bash script), so the script stays
+   readable as code and long bodies collapse with an expand marker instead
+   of being `pr-str`-truncated.
+
+   `body-str` is the already-stringified args; the caller is expected to
+   have styled it (e.g. arg names dim, values in the code color), so the
+   default `:style-fn` is `identity` — the body's own ANSI is preserved
+   rather than re-wrapped.
+
+   Options:
+     :label    header label (default \"Call\").
+     :id       stable display-block id so live re-renders (called→done→error)
+               overwrite the same provider rather than leaking a new one each
+               tick. Omit for one-shot emits.
+     :style-fn per-line decorator (default `identity`). Pass a styling fn to
+               colorize an unstyled body uniformly instead.
+
+   Returns a flat vector of ANSI-styled lines (`[]` when body is blank)."
+  [body-str & {:keys [label id style-fn] :or {label "Call" style-fn identity}}]
+  (if-let [s (format-eval-section label body-str style-fn
+                                  :class "eval-code" :id id)]
+    (vec (str/split-lines s))
+    []))
+
 ;; ============================================================================
 ;; Goal Status
 ;; ============================================================================
