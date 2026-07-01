@@ -54,7 +54,15 @@
 
 (deftest clj-eval-injection-seam
   (testing "LocalBackend.exec-clj-code dispatches to the injected fn"
-    (let [seen (atom nil)]
+    (let [seen (atom nil)
+          ;; Save the CURRENT impl and restore it in the finally. When the
+          ;; full suite is loaded this is coact-agent's real sandbox|nrepl
+          ;; dispatch (wired at load via set-local-clj-eval!); standalone it's
+          ;; the built-in "not wired" default. Hardcoding an "unwired" stub
+          ;; here (the old behavior) permanently clobbered the real dispatch,
+          ;; so every later test's code-eval returned {:error "unwired"} with
+          ;; nil code/result — which crashed capture.emit-sites-test.
+          prior @@#'eb/!local-clj-eval]
       (eb/set-local-clj-eval! (fn [code opts] (reset! seen [code opts])
                                 {:lang "clojure" :code code :result "ok" :output "" :error ""}))
       (try
@@ -63,9 +71,7 @@
           (is (= "(inc 41)" (first @seen)))
           (is (= :A (:agent (second @seen)))))
         (finally
-          ;; restore the "unwired" default so we don't leak a stub into other
-          ;; namespaces' tests if coact-agent isn't loaded in this run.
-          (eb/set-local-clj-eval! (fn [_ _] {:error "unwired"})))))))
+          (eb/set-local-clj-eval! prior))))))
 
 ;; ============================================================================
 ;; resolve-backend
