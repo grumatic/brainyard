@@ -125,7 +125,16 @@ by_ask_in() {
         echo "FATAL: runner reported failure: $(jq -r '.error // "unknown"' <<<"$json")" >&2
         exit 2
     fi
-    jq -r '.answer // ""' <<<"$json"
+    local answer; answer="$(jq -r '.answer // ""' <<<"$json")"
+    # Provider quota/rate-limit exhaustion comes back as a "successful" run whose
+    # answer IS the limit notice (e.g. claude-code: "You've hit your session
+    # limit · resets …"). That is a CANNOT-RUN condition, not an agent failure —
+    # classify it as exit 2 so it never masquerades as a failed assertion.
+    if grep -qiE 'hit your session limit|session limit · resets|rate.?limit(ed)?|quota exceeded|429 too many' <<<"$answer"; then
+        echo "FATAL: provider limit reached (cannot run): $(head -1 <<<"$answer")" >&2
+        exit 2
+    fi
+    printf '%s' "$answer"
 }
 
 # by_ask <question> → run against $AGENT (the agent under test).
