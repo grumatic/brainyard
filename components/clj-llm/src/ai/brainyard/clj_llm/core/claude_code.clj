@@ -180,9 +180,41 @@
         ;; Fallback: return a pseudo-result with the raw text
         {:result trimmed})))
 
+(defn- value-wrapper?
+  "True when a parsed StructuredOutput tool input is the single-key
+   `{:value \"<json>\"}` envelope some models (observed with claude-code:sonnet)
+   emit instead of filling the schema fields directly (as claude-code:haiku
+   does). A real signature never has a lone `value` string field, so this shape
+   is unambiguously the wrapper."
+  [m]
+  (and (map? m)
+       (= [:value] (keys m))
+       (string? (:value m))))
+
+(defn- unwrap-structured-input
+  "Normalize a StructuredOutput tool_use `:input` MAP into the JSON string the
+   parser expects: unwrap the `{:value \"<json>\"}` envelope to its inner JSON
+   string; otherwise write the map out as-is."
+  [input]
+  (if (value-wrapper? input)
+    (:value input)
+    (json/write-str input)))
+
+(defn- unwrap-structured-json
+  "Same as `unwrap-structured-input` but for an already-serialized JSON STRING
+   (the streaming path accumulates the tool input as raw `partial_json`). Returns
+   the inner JSON when the string is the `{\"value\":\"<json>\"}` envelope, else
+   the string unchanged (non-JSON / natural-language text passes through)."
+  [json-str]
+  (or (try
+        (let [m (json/read-str json-str :key-fn keyword)]
+          (when (value-wrapper? m) (:value m)))
+        (catch Exception _ nil))
+      json-str))
+
 (defn- extract-structured-output
   "Extract structured output from CLI events when the LLM uses the StructuredOutput tool.
-   Returns the tool input map as a JSON string, or nil if not found."
+   Returns the tool input as a JSON string, or nil if not found."
   [stdout]
   (let [trimmed (str/trim stdout)
         parsed-all (try (json/read-str trimmed :key-fn keyword) (catch Exception _ nil))
@@ -200,7 +232,7 @@
               (some (fn [block]
                       (when (and (= "tool_use" (:type block))
                                  (= "StructuredOutput" (:name block)))
-                        (json/write-str (:input block))))
+                        (unwrap-structured-input (:input block))))
                     (get-in event [:message :content]))))
           events)))
 
@@ -442,10 +474,16 @@
                                   fr-result (when fr
                                               (let [r (:result fr)]
                                                 (when-not (str/blank? r) r)))]
-                              (or fr-result
-                                  (when-not (str/blank? tool-json-str) tool-json-str)
-                                  structured-output
-                                  (str accumulated)))
+                              ;; Any of these candidates may be the
+                              ;; `{"value":"<json>"}` StructuredOutput envelope
+                              ;; (observed with claude-code:sonnet); unwrap it so
+                              ;; the downstream JSON parser sees the real fields.
+                              ;; Non-envelope text passes through untouched.
+                              (unwrap-structured-json
+                               (or fr-result
+                                   (when-not (str/blank? tool-json-str) tool-json-str)
+                                   structured-output
+                                   (str accumulated))))
                 model (:model lm-config)
                 duration-ms (quot (- (System/nanoTime) start-ns) 1000000)]
             (when (str/blank? result-text)
