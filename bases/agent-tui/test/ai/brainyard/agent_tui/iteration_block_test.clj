@@ -172,18 +172,18 @@
       (is (str/includes? text "hit-1: foo.clj:12") "result body content shown")
       (is (str/includes? text "hit-2: bar.clj:88"))
       (is (str/includes? text "└─"))))
-  (testing "a tool-reported error shows in the same Result box (no Error box) —
-            the result map carries the error description"
+  (testing "a failed call (:status :error) renders a red Error box, not a Result box"
     (let [state {:iteration 1 :stage :tools
                  :tool-batch [{:call-id 22 :name "read-file" :args {:path "x"}
-                               :status :done :start-ms 0 :end-ms 8
+                               :status :error :start-ms 0 :end-ms 8
                                :result-chars 40
+                               :error-msg "File not found: /x"
                                :result-body "{:error \"File not found: /x\"}"}]}
           text (joined (#'s/render-iteration-block-lines state "⠋"))]
-      (is (str/includes? text "• Result:") "one Result box surfaces everything")
-      (is (not (str/includes? text "• Error:")) "no separate Error box")
+      (is (str/includes? text "• Error:") "failed call surfaces an Error box")
+      (is (not (str/includes? text "• Result:")) "no neutral Result box on failure")
       (is (str/includes? text "File not found: /x")
-          "the error description survives in the Result box")))
+          "the error description survives in the Error box")))
   (testing "an entry with no :result-body renders no Result box"
     (let [state {:iteration 1 :stage :tools
                  :tool-batch [{:call-id 23 :name "noop" :args {} :status :done
@@ -467,8 +467,31 @@
           (is (= "{:status 200}" (-> by-name (get "fetch") :result-body))
               "success result stringified into :result-body for the Result box")
           (is (= "{:error-message \"boom\"}" (-> by-name (get "search") :result-body))
-              "error result also stringified into :result-body (no separate Error box)")
+              "error result stringified into :result-body (rendered in the Error box)")
           (is (every? :end-ms tb)))))))
+
+(deftest tool-use-post-returned-error-map-flags-error
+  ;; A tool that RETURNS {:error "..."} (the common deftool convention, e.g.
+  ;; update-file's "Pattern not found") must flip the entry to :status :error
+  ;; so the head line shows ✗ error and the body renders in the Error box.
+  ;; Previously only a THROWN :error-message flagged failure, so a returned
+  ;; error map showed a green `done` + neutral Result box.
+  (let [a (stub-agent)
+        cid (random-uuid)]
+    (with-stub-agent a
+      (fn []
+        (s/iteration-pre-handler {:agent a :iteration 1 :max-iterations 5
+                                  :repeat-id "main"})
+        (s/tool-calls-pre-handler {:agent a})
+        (s/tool-use-pre-handler {:agent a :tool-name "update-file"
+                                 :args {:path "x"} :call-id cid})
+        (s/tool-use-post-handler {:agent a :tool-name "update-file"
+                                  :call-id cid
+                                  :result {:error "Pattern not found in x"}})
+        (let [entry (-> @@#'s/!iteration-blocks vals first :tool-batch first)]
+          (is (= :error (:status entry))
+              "returned {:error ...} map resolves as :error status")
+          (is (= "Pattern not found in x" (:error-msg entry))))))))
 
 (deftest tool-use-post-result-body-stringification
   (testing "string / :answer-map / error-map / nil / empty-map results reduce
@@ -476,7 +499,7 @@
     (is (= "hello world" (#'s/tool-result->body "hello world")))
     (is (= "the answer"  (#'s/tool-result->body {:answer "the answer"})))
     (is (= "{:error \"nope\"}" (#'s/tool-result->body {:error "nope"}))
-        "an error map is boxed as-is — the Result box shows the error description")
+        "an error map is stringified as-is — surfaced in the Error box")
     (is (nil? (#'s/tool-result->body nil)))
     (is (nil? (#'s/tool-result->body true)))
     (is (nil? (#'s/tool-result->body {})))

@@ -456,6 +456,25 @@
                    entry))))
         (malli-map-entries input-schema)))
 
+(defn- reject-invalid-args
+  "Validate `decoded` (keyword-keyed) args against `inputs-schema`. When invalid,
+   fire `:agent.tool-use/rejected` and return an `{:error-message ...}` map so the
+   caller short-circuits dispatch; returns nil when valid.
+
+   Shared by the :json (bound-fn) and :malli (registry) dispatch paths so BOTH
+   reject malformed args before the tool body runs. Without this on the :json
+   path, a missing required arg reached the body as `nil` and threw deep inside
+   (e.g. `update-file` with no :pattern → `Pattern/quote(nil)` NPE) instead of a
+   clean, LLM-legible rejection."
+  [inputs-schema decoded agent tool-name]
+  (when-let [malli-error (m/explain inputs-schema decoded)]
+    (let [result {:error-message (format "Invalid tool args for %s: %s"
+                                         tool-name (pr-str (me/humanize malli-error)))}]
+      (hooks/fire! :agent.tool-use/rejected
+                   {:agent agent :tool-name tool-name :args decoded
+                    :result result :reason :invalid-args})
+      result)))
+
 (defn call-tool
   "Dispatch a tool call. Auto-detects the resolution path (and thus the schema
    format) from the tool's location:
@@ -523,17 +542,22 @@
                 (= schema-format :json)
                 (let [tool-id (keyword tool-name)
                       registry-def (get-tool-defs :id tool-id)
-                      input-schema (get-in registry-def [:meta :input-schema])
-                      coerced (if (and input-schema (seq (malli-map-entries input-schema)))
-                                ;; Malli decode path: keywordize, decode, then back to string keys
-                                (let [kw-args (update-keys normalized-args keyword)
-                                      inputs-schema (inputs->malli-map-schema input-schema)
-                                      decoded (m/decode inputs-schema kw-args llm-args-transformer)]
-                                  (update-keys decoded name))
-                                ;; JSON coerce path: for plain fn->tool without registry entry
-                                (let [props (get-in bound-entry [:parameters :properties])]
-                                  (coerce-tool-args normalized-args props)))]
-                  (do-call-tool--bound-fn agent bound-fn coerced tool-name))
+                      input-schema (get-in registry-def [:meta :input-schema])]
+                  (if (and input-schema (seq (malli-map-entries input-schema)))
+                    ;; Malli decode + validate path: keywordize, decode, reject
+                    ;; malformed args, then back to string keys for the bound fn.
+                    (let [kw-args (update-keys normalized-args keyword)
+                          inputs-schema (inputs->malli-map-schema input-schema)
+                          decoded (m/decode inputs-schema kw-args llm-args-transformer)]
+                      (or (reject-invalid-args inputs-schema decoded agent tool-name)
+                          (do-call-tool--bound-fn agent bound-fn
+                                                  (update-keys decoded name) tool-name)))
+                    ;; JSON coerce path: for plain fn->tool without registry entry
+                    ;; (no schema to validate against).
+                    (let [props (get-in bound-entry [:parameters :properties])]
+                      (do-call-tool--bound-fn agent bound-fn
+                                              (coerce-tool-args normalized-args props)
+                                              tool-name))))
 
                 ;; ---- :malli — registry path (deftool-registered tools) ----
                 ;; Keywordize top-level arg keys (LLM JSON has string keys, but
@@ -547,20 +571,14 @@
                       kw-args0      (update-keys normalized-args keyword)
                       kw-args       (if inputs-schema
                                       (m/decode inputs-schema kw-args0 llm-args-transformer)
-                                      kw-args0)
-                      malli-error   (when inputs-schema (m/explain inputs-schema kw-args))]
-                  (if malli-error
-                    (let [result {:error-message (format "Invalid tool args for %s: %s"
-                                                         tool-name (pr-str (me/humanize malli-error)))}]
-                      ;; Rejected before any dispatch, so :agent.tool-use/post
-                      ;; never fires. Emit a dedicated observer event so things
-                      ;; like usage-nudge can still react to a malformed call to
-                      ;; a real tool.
-                      (hooks/fire! :agent.tool-use/rejected
-                                   {:agent agent :tool-name tool-name :args kw-args
-                                    :result result :reason :invalid-args})
-                      result)
-                    (do-call-tool--registered-fn agent registry-id tool-name tool-def kw-args)))))]
+                                      kw-args0)]
+                  ;; Reject malformed args before dispatch (so :agent.tool-use/post
+                  ;; never fires); `reject-invalid-args` emits the dedicated
+                  ;; :agent.tool-use/rejected observer event so usage-nudge etc.
+                  ;; can still react to a malformed call to a real tool.
+                  (or (when inputs-schema
+                        (reject-invalid-args inputs-schema kw-args agent tool-name))
+                      (do-call-tool--registered-fn agent registry-id tool-name tool-def kw-args)))))]
     (mulog/debug ::call-tool
                  :tool-id tool-id :tool-name tool-name
                  :tool-args tool-args :schema-format schema-format)

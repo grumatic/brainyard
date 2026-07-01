@@ -1309,12 +1309,15 @@
                           (into [head] (fmt/format-tool-call-block body :id (tool-call-box-id call-id)))))
                       [(str "  " bullet " " styled-name "(" (format-iter-args args) "): called" outcome)])
         ;; Result body in a boxed, collapsible section — the same treatment
-        ;; as the code-eval `Result` section. The result map carries both
-        ;; normal output and any error description, so one box surfaces
-        ;; everything (no separate Error box).
+        ;; as the code-eval `Result` section. A failed call (:error status —
+        ;; a thrown exception or a returned error map) renders a red `Error`
+        ;; box so it stands out; a success renders a neutral `Result` box.
         result-box  (when (and result-body (not (str/blank? (str result-body))))
-                      (fmt/format-tool-result-block result-body
-                                                    :id (tool-result-box-id call-id)))]
+                      (if (= status :error)
+                        (fmt/format-tool-error-block result-body
+                                                     :id (tool-result-box-id call-id))
+                        (fmt/format-tool-result-block result-body
+                                                      :id (tool-result-box-id call-id))))]
     (into head-lines (or result-box []))))
 
 (defn- render-iteration-block-lines
@@ -3048,8 +3051,14 @@
           state (get @!iteration-blocks k)]
       (when (and state (not (iter-tool-suppressed? state)))
         (let [now (System/currentTimeMillis)
-              error? (and (map? result) (some? (:error-message result)))
-              error-msg (when error? (str (:error-message result)))
+              ;; A tool signals failure two ways: a THROWN exception (wrapped by
+              ;; call-tool into `:error-message`) or a RETURNED error map
+              ;; (`:error`, the common deftool convention). Flag both so the
+              ;; head line shows a red `✗ error` and the body renders in the
+              ;; red `Error` box — not a neutral green `done` + `Result` box.
+              error? (and (map? result)
+                          (or (some? (:error-message result)) (some? (:error result))))
+              error-msg (when error? (str (or (:error-message result) (:error result))))
               result-body (tool-result->body result)
               chars (try (count (pr-str result)) (catch Exception _ nil))
               tb (or (:tool-batch state) [])

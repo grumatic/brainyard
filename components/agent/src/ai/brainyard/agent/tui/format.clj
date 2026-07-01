@@ -1152,9 +1152,8 @@
    `Result` section. Long bodies collapse with a `[*Block:<id>* collapsed:
    …]` marker.
 
-   A tool result map carries both normal output and any error description
-   (e.g. `{:error \"File not found: …\"}`), so one box surfaces everything —
-   there's no separate Error box.
+   Renders a SUCCESSFUL result in a neutral box; failures go through
+   `format-tool-error-block` (a red `Error` box) instead.
 
    Options:
      :id  stable display-block id so live re-renders (called→done) overwrite
@@ -1165,6 +1164,22 @@
   [body-str & {:keys [id]}]
   (if-let [s (format-eval-section "Result" body-str identity
                                   :class "eval-result" :id id)]
+    (vec (str/split-lines s))
+    []))
+
+(defn format-tool-error-block
+  "Render a FAILED tool call's result as a boxed, display-block-backed `Error`
+   section — the red-styled counterpart to `format-tool-result-block`. Used
+   when a tool threw (its result carries `:error-message`) or returned an
+   error map (`:error`), so the failure stands out from a normal Result box
+   rather than being folded into a neutral one.
+
+   Same `:id` semantics as `format-tool-result-block` (stable id so live
+   re-renders overwrite the same provider). Returns a flat vector of
+   ANSI-styled lines (`[]` when body is blank)."
+  [body-str & {:keys [id]}]
+  (if-let [s (format-eval-section "Error" body-str ansi/failure
+                                  :class "eval-error" :id id)]
     (vec (str/split-lines s))
     []))
 

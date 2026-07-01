@@ -181,6 +181,47 @@
       (finally
         (swap! tool/!tool-defs dissoc tool-id)))))
 
+(deftest call-tool-json-path-rejects-missing-required-args
+  ;; Regression: the :json (bound-fn) dispatch path used to DECODE but never
+  ;; VALIDATE, so missing required args reached the tool body as nil and threw
+  ;; deep inside (e.g. `update-file` with wrong param names → nil :pattern →
+  ;; `Pattern/quote(nil)` NPE "Cannot invoke String.indexOf because s is null").
+  ;; Both dispatch paths must now reject before the body runs.
+  (let [tool-id  (keyword (str "test-json-required-" (System/nanoTime)))
+        reached? (atom false)
+        tool-def {:meta {:name        (name tool-id)
+                         :description "regression test fixture (:json path)"
+                         :type        :tool
+                         :input-schema  [:map
+                                         [:pattern     :string]
+                                         [:replacement :string]]
+                         :output-schema [:map]}
+                  :fn   (fn [& _] {:ok? true})
+                  :type :tool}
+        ;; Bound-fn dispatch: presence in `:tools` + `:tools-fn-map` selects the
+        ;; :json path. The bound fn flips the flag so we can assert it never ran.
+        bound-tools  [{:name (name tool-id)}]
+        bound-fn-map {(name tool-id) (fn [_] (reset! reached? true) {:ok? true})}]
+    (try
+      (swap! tool/!tool-defs assoc tool-id tool-def)
+      (testing "wrong param names (missing required) are rejected, body not reached"
+        (let [result (tool/call-tool tool-id
+                                     {"old_string" "a" "new_string" "b"}
+                                     :tools bound-tools :tools-fn-map bound-fn-map)]
+          (is (re-find #"Invalid tool args" (str (:error-message result))))
+          (is (re-find #"pattern" (str (:error-message result))))
+          (is (false? @reached?) "bound fn must NOT run when args are invalid")))
+      (testing "correct params pass validation and reach the bound fn"
+        (reset! reached? false)
+        (let [result (tool/call-tool tool-id
+                                     {"pattern" "a" "replacement" "b"}
+                                     :tools bound-tools :tools-fn-map bound-fn-map)]
+          (is (not (contains? result :error-message))
+              (str "valid args should dispatch; got: " (pr-str result)))
+          (is (true? @reached?) "bound fn runs when args are valid")))
+      (finally
+        (swap! tool/!tool-defs dissoc tool-id)))))
+
 ;; ----------------------------------------------------------------------------
 ;; Sanity: Malli does reject the un-coerced shape (so the regression test
 ;; above would have failed before the fix).
