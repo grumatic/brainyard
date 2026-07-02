@@ -51,6 +51,24 @@
   (let [s (str s)]
     (keyword (if (str/starts-with? s ":") (subs s 1) s))))
 
+(defn- resolve-instance
+  "Resolve an id string to a live Agent, tolerating (1) a leading colon and
+   (2) a BARE SUFFIX with the `<defagent-type>/` prefix dropped — LLMs tend to
+   recall the memorable suffix (\"lime-mole-8966\") rather than the full
+   \"explore-agent/lime-mole-8966\". Exact-id match wins; a bare suffix resolves
+   against the registry (scoped to `session-id` when given) iff it uniquely
+   names one instance. Returns the Agent, or nil."
+  [id-str & {:keys [session-id]}]
+  (let [aid (->instance-id id-str)]
+    (or (agent-core/get-agent aid)
+        (when (nil? (namespace aid))
+          (let [suffix  (name aid)
+                pool    (if session-id
+                          (agent-core/list-agents-for-session session-id)
+                          (agent-core/list-agents))
+                matches (filter #(= suffix (name (proto/agent-id %))) pool)]
+            (when (= 1 (count matches)) (first matches)))))))
+
 (defn- instance-summary
   "One-line summary row for an agent instance — identity, turn/iter counters, and
    lifecycle fields (owner/idle/answers/last-question) used by
@@ -105,8 +123,8 @@
     (let [id-str (:id args)]
       (if (str/blank? (str id-str))
         {:error "id is required"}
-        (let [aid (->instance-id id-str)]
-          (if-let [a (agent-core/get-agent aid)]
+        (let [caller proto/*current-agent*]
+          (if-let [a (resolve-instance id-str :session-id (some-> caller proto/session-id))]
             (let [st     @(:!state a)
                   st-mem (some-> (proto/get-bt-st-memory a) deref)
                   lc     (agent-core/lifecycle a)]
@@ -179,12 +197,12 @@
         (str/blank? (str id)) {:error "id is required"}
         (str/blank? (str q))  {:error "question is required"}
         :else
-        (let [aid    (->instance-id id)
-              target (agent-core/get-agent aid)]
+        (let [target (resolve-instance id :session-id (some-> caller proto/session-id))]
           (if (nil? target)
             {:error (str "Instance not found: " id)}
             (or (authorize-instance-op caller target)
-                (agent-core/resume-agent aid q :caller-id (some-> caller proto/agent-id))))))))
+                (agent-core/resume-agent (proto/agent-id target) q
+                                         :caller-id (some-> caller proto/agent-id))))))))
   :input-schema  [:map
                   [:id [:string {:desc "Instance id to resume (e.g. \"exec-agent/crimson-parrot-42\"); from agent-registry$list"}]]
                   [:question [:string {:desc "Follow-up question for the subagent"}]]]
@@ -205,12 +223,11 @@
           caller proto/*current-agent*]
       (if (str/blank? (str id))
         {:error "id is required"}
-        (let [aid    (->instance-id id)
-              target (agent-core/get-agent aid)]
+        (let [target (resolve-instance id :session-id (some-> caller proto/session-id))]
           (if (nil? target)
             {:error (str "Instance not found: " id)}
             (or (authorize-instance-op caller target)
-                (agent-core/close-instance! aid)))))))
+                (agent-core/close-instance! (proto/agent-id target))))))))
   :input-schema  [:map
                   [:id [:string {:desc "Instance id to close (e.g. \"exec-agent/crimson-parrot-42\")"}]]]
   :output-schema [:map
