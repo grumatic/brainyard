@@ -322,6 +322,11 @@
                                 :doc "Allow-list of directories for filesystem-touching tools (bash/read/write/grep/task$run). Lazy default: /tmp + project-dir + user-config-dir."}
    :permission-mode            {:type "keyword" :default :ask-each-time
                                 :doc "Permission-prompt policy for sensitive tool ops: :auto-approve | :ask-each-time | :deny-by-default. Persisted as [:permissions :mode]."}
+   :display-format             {:type "keyword"
+                                :env-fn #(if-let [v (not-empty (System/getenv "BY_DISPLAY_FORMAT"))]
+                                           (keyword v) ::env-unset)
+                                :default :normal
+                                :doc "TUI display detail level (source of truth for the /display-format command and the -v flag): :quiet (think bullets + box-less answer) | :normal (iterations+tools+answer) | :verbose (+ BT traces). Env: BY_DISPLAY_FORMAT."}
    :mcp-allow-tools            {:type "array"
                                 :default []
                                 :doc "Allowlist of MCP tools that skip the fail-closed permission gate (auto-approved). Each entry is a `server/tool` glob — `*` matches any run of chars (e.g. \"linear/*\", \"slack/post_message\", \"*/*_read\"). Side-effecting MCP tools NOT matched here (and lacking readOnlyHint) prompt for approval via the same UI as write-file/bash. See mcp/permission.clj."}

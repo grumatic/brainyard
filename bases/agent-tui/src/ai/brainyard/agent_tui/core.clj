@@ -954,7 +954,7 @@
    Uses invoke-tool with :setup-only? true to follow the same dispatch path
    as any defagent invocation, with a generated instance-id.
    Returns the agent instance with permission-fn, user-feedback-fn, and dirs configured."
-  [agent-id & {:keys [user-id session-id max-iterations instance-id]}]
+  [agent-id & {:keys [user-id session-id max-iterations instance-id display-format]}]
   (let [user-id  (or user-id (helpers/resolve-user-id))
         sess-id  (or session-id
                      (throw (ex-info "create-tui-agent! requires :session-id" {})))
@@ -988,12 +988,17 @@
         ;; working-dir is not a config key — the resolved `:dirs` map (seeded
         ;; below via set-session-config) is the single carrier, read by
         ;; config/working-dir + config/project-dir.
+        ;; `:display-format` is a schema config-key, so passing it as a setup
+        ;; option seeds a per-agent config override (transient, not persisted) —
+        ;; how the `-v` flag reaches the config source of truth. Omitted when nil
+        ;; so callers without it fall through to the global/default layer.
         ag (agent/invoke-tool agent-id
-                              {:id inst-id
-                               :setup-only? true
-                               :agent-session {:user-id user-id :session-id sess-id}
-                               :max-iterations max-iterations
-                               :session-store !session-store})
+                              (cond-> {:id inst-id
+                                       :setup-only? true
+                                       :agent-session {:user-id user-id :session-id sess-id}
+                                       :max-iterations max-iterations
+                                       :session-store !session-store}
+                                display-format (assoc :display-format display-format)))
         ;; Defense-in-depth: the fallback above guarantees a registered type, so
         ;; invoke-tool returns a real Agent — but surface any residual setup
         ;; failure as a clear error rather than a downstream nil-swap! NPE.
@@ -1282,7 +1287,8 @@
         ag (create-tui-agent! agent-id
                               :user-id user-id
                               :session-id agt-sess-id
-                              :max-iterations max-iter)
+                              :max-iterations max-iter
+                              :display-format display-format)
         ;; Resume hydration step: replay the persisted usage-tracker snap
         ;; into the freshly-minted tracker atom inside ag's session config
         ;; (the agent's init created an empty one — we overwrite from disk).
@@ -1349,7 +1355,6 @@
                                :agent-session-id agt-sess-id
                                :agent-instances [ag]
                                :max-iterations max-iter
-                               :display-format display-format
                                :started-at (System/currentTimeMillis)
                                :skip-agent-creation true})
 
@@ -1370,7 +1375,6 @@
     ;; 6. Attach watches (session-aware)
     (tui-session/set-agent! ag (:agent-id ag)
                             :max-iterations max-iter
-                            :display-format display-format
                             :session-idx 0)
 
     ;; 7. Store agent's session-id for run logging
@@ -1425,7 +1429,6 @@
              (fmt/format-welcome-banner
               {:agent-id    agent-id
                :session-id  agt-sess-id
-               :display-format   display-format
                :lm-provider (:provider lm)
                :lm-model    (:model lm)
                :agents      agents}))))
@@ -1551,7 +1554,7 @@
       ;; (with resume-tail replay) or inline. `start!` was told to skip
       ;; its own banner; `run!` owns it to avoid duplicates (teardown
       ;; replays alt-screen scrollback to the primary buffer).
-      (let [{:keys [defagent-id agent-id display-format resumed?]} @tui-session/!tui-state
+      (let [{:keys [defagent-id agent-id resumed?]} @tui-session/!tui-state
             ag (tui-session/get-active-agent)
             sess-id (when ag (try (agent/session-id ag) (catch Throwable _ nil)))
             sess    (when ag (try @(:!session ag) (catch Throwable _ nil)))
@@ -1591,7 +1594,6 @@
              (fmt/format-welcome-banner
               {:agent-id    (or defagent-id agent-id :unknown)
                :session-id  (or sess-id "unknown")
-               :display-format   (or display-format :normal)
                :lm-provider (:provider lm)
                :lm-model    (:model lm)
                :agents      agents}))))

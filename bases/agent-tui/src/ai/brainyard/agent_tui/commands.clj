@@ -277,7 +277,7 @@
    :normal — iterations + tools + answer
    :verbose — + BT traces"
   [level]
-  (let [old-level (:display-format @tui-session/!tui-state)]
+  (let [old-level (agent/get-config (tui-session/get-active-agent) :display-format)]
     (tui-session/set-display-format! level)
     ;; Toggle TUI mulog publisher based on display-format
     (cond
@@ -305,7 +305,7 @@
    No arg → show current. With arg → set level."
   [args]
   (if (str/blank? args)
-    (tui-session/emit! (ansi/muted (str "Display format: " (name (:display-format @tui-session/!tui-state)))))
+    (tui-session/emit! (ansi/muted (str "Display format: " (name (agent/get-config (tui-session/get-active-agent) :display-format)))))
     (let [level (keyword args)]
       (if (#{:quiet :normal :verbose} level)
         (display-format! level)
@@ -1049,8 +1049,7 @@
       (tui-session/emit! (ansi/warning "Agent is currently running. Wait for it to finish or cancel first."))
 
       :else
-      (let [max-iter  (:max-iterations @tui-session/!tui-state)
-            display-format (:display-format @tui-session/!tui-state)]
+      (let [max-iter  (:max-iterations @tui-session/!tui-state)]
         (when current-ag
           (tui-session/detach-watches!))
         (try
@@ -1063,8 +1062,7 @@
             (sessions/update-session! (sessions/active-idx)
                                       update :agent-instances conj new-ag)
             (tui-session/set-agent! new-ag (:agent-id new-ag)
-                                    :max-iterations max-iter
-                                    :display-format display-format)
+                                    :max-iterations max-iter)
             (let [n-instances (count (session-instances))]
               (tui-session/emit!
                (str "\n" (ansi/success (str "Created new " (agent-id-str target-agent-id)))
@@ -1073,8 +1071,7 @@
           (catch Exception e
             (when current-ag
               (tui-session/set-agent! current-ag (:agent-id current-ag)
-                                      :max-iterations max-iter
-                                      :display-format display-format))
+                                      :max-iterations max-iter))
             (tui-session/emit!
              (ansi/failure (str "Failed to create agent: " (.getMessage e))))))))))
 
@@ -1131,12 +1128,10 @@
         (if-not target-ag
           (tui-session/emit! (ansi/warning (str "Instance not found: " (agent-id-str target-instance-id)
                                                 ". Use /agent switch to see instances.")))
-          (let [max-iter  (:max-iterations @tui-session/!tui-state)
-                display-format (:display-format @tui-session/!tui-state)]
+          (let [max-iter  (:max-iterations @tui-session/!tui-state)]
             (tui-session/detach-watches!)
             (tui-session/set-agent! target-ag target-instance-id
-                                    :max-iterations max-iter
-                                    :display-format display-format)
+                                    :max-iterations max-iter)
 
             (let [msg-count (count (agent/get-messages @(:!session target-ag)))]
               (tui-session/emit!
@@ -1232,8 +1227,7 @@
             others          (remove #(= target-id (:agent-id %)) instances)
             next-ag         (when closed-current? (first others))
             next-id         (:agent-id next-ag)
-            max-iter        (:max-iterations @tui-session/!tui-state)
-            display-format       (:display-format @tui-session/!tui-state)]
+            max-iter        (:max-iterations @tui-session/!tui-state)]
         (when closed-current?
           (tui-session/detach-watches!))
         (try (.close ^java.io.Closeable target) (catch Exception _))
@@ -1242,8 +1236,7 @@
                                   (fn [insts] (vec (remove #(= target-id (:agent-id %)) insts))))
         (when closed-current?
           (tui-session/set-agent! next-ag next-id
-                                  :max-iterations max-iter
-                                  :display-format display-format))
+                                  :max-iterations max-iter))
         (tui-session/emit!
          (str (ansi/success (str "Closed " (agent-id-str target-id)))
               (when closed-current?

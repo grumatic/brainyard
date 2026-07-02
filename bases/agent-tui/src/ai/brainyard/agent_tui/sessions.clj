@@ -135,7 +135,6 @@
             :st-memory-atom   nil
             :sub-trackers     []
             :max-iterations   20
-            :display-format        :normal
             :started-at       nil
             :agent-instances  []
             :session-type     :chat      ;; :chat (interactive) or :output (read-only)

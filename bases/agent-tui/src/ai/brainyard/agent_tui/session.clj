@@ -26,6 +26,7 @@
 
 (declare update-status-bar!)
 (declare handle-session-change)
+(declare get-active-agent)
 (declare find-session-for-agent)
 (declare session-idx-for-agent-session-id)
 (declare root-of-agent)
@@ -42,7 +43,6 @@
          :writer      nil      ;; captured java.io.Writer for nREPL
          :watches     []       ;; [{:atom :key}] for cleanup
          :max-iterations nil
-         :display-format   :normal  ;; :quiet | :normal | :verbose
          :queue-count 0        ;; number of items in the input queue
          :sub-trackers []      ;; [{:tracker atom :label str}] from sub-agents
          :mode        nil      ;; :A | :B (Mode C exits before start!) — see agent-tui.mode
@@ -139,7 +139,7 @@
    spinner, subagents block, TODO block) and intermediate scrollback
    emissions (observation, goal status) are suppressed."
   []
-  (= :quiet (:display-format @!tui-state)))
+  (= :quiet (agent/get-config (get-active-agent) :display-format)))
 
 ;; Per-task live block state
 ;; {task-id {:name str, :status :pending|:running|:completed|:failed|:cancelled,
@@ -776,10 +776,11 @@
 
 (defn set-display-format!
   "Set display-format level: :quiet (answer only), :normal (iterations+tools+answer),
-   :verbose (+BT traces)."
+   :verbose (+BT traces). Writes the config key `:display-format` (the single
+   source of truth) on the active agent — per-agent override + persisted."
   [level]
   {:pre [(#{:quiet :normal :verbose} level)]}
-  (swap! !tui-state assoc :display-format level))
+  (agent/set-config! (get-active-agent) :display-format level))
 
 ;; ============================================================================
 ;; TUI Mulog Publisher (verbose mode)
@@ -1656,7 +1657,7 @@
             (when-not (layout/fullscreen?)
               (render-agent-activity-entry! agent-name stage data)))))))
   ;; ── Verbose BT traces (existing) ──
-  (when (= :verbose (:display-format @!tui-state))
+  (when (= :verbose (agent/get-config (get-active-agent) :display-format))
     (let [old-traces (get-in old [:data :traces])
           new-traces (get-in new [:data :traces])]
       (when (and new-traces (> (count new-traces) (count (or old-traces []))))
@@ -2185,8 +2186,8 @@
 (defn set-agent!
   "Set the TUI agent for a session. Detaches old watches, attaches new ones.
    Derives defagent-id from agent-id namespace (e.g. :coact-agent/tui-123 → :coact-agent).
-   Options: :max-iterations, :display-format, :session-idx"
-  [agent agent-id & {:keys [max-iterations display-format session-idx]}]
+   Options: :max-iterations, :session-idx"
+  [agent agent-id & {:keys [max-iterations session-idx]}]
   (let [sidx   (or session-idx (sessions/active-idx))
         def-id (if (namespace agent-id)
                  (keyword (namespace agent-id))
@@ -2194,8 +2195,7 @@
         now    (System/currentTimeMillis)
         updates (cond-> {:agent agent :agent-id agent-id
                          :defagent-id def-id :started-at now}
-                  max-iterations (assoc :max-iterations max-iterations)
-                  display-format      (assoc :display-format display-format))]
+                  max-iterations (assoc :max-iterations max-iterations))]
     (detach-watches! sidx)
     (sessions/update-session! sidx merge updates)
     (swap! !tui-state merge updates)

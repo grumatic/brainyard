@@ -111,14 +111,14 @@
 (deftest render-quiet-display-format-shows-only-bulleted-think
   (testing ":quiet display-format renders only the think text with a '●' bullet —
             no header, tool, or eval lines; empty when there's no think text"
-    (let [prev  (:display-format @@#'s/!tui-state)
-          state {:iteration 3 :max-iterations 10 :stage :think
+    ;; `quiet?` now reads the `:display-format` config value; force it on for
+    ;; the render assertions rather than poking (removed) !tui-state.
+    (let [state {:iteration 3 :max-iterations 10 :stage :think
                  :reasoning "Check the render path then verify the tests pass."
                  :tool-batch [{:call-id 1 :name "search" :args {:q "x"}
                                :status :done :start-ms 0 :end-ms 100}]
                  :usage {:total 42}}]
-      (try
-        (swap! @#'s/!tui-state assoc :display-format :quiet)
+      (with-redefs [s/quiet? (constantly true)]
         (let [lines (#'s/render-iteration-block-lines state "⠋")
               text  (joined lines)]
           (is (= "" (first lines)) "leading blank line before the bullet block")
@@ -136,30 +136,24 @@
              (joined (#'s/render-iteration-block-lines
                       (assoc state :reasoning nil :streaming "partial thought…") "⠋"))
              "● partial thought…")
-            "streaming think text renders as a bullet")
-        (finally
-          (swap! @#'s/!tui-state assoc :display-format (or prev :normal)))))))
+            "streaming think text renders as a bullet")))))
 
 (deftest render-agent-activity-quiet-shows-only-bulleted-think
   (testing ":quiet display-format renders a sub-agent's think text as a
             name-prefixed '●' bullet and suppresses all other activity stages"
-    (let [prev     (:display-format @@#'s/!tui-state)
-          captured (atom [])]
-      (try
-        (swap! @#'s/!tui-state assoc :display-format :quiet)
-        (with-redefs [s/emit! (fn [& args] (swap! captured conj (first args)))]
-          (#'s/render-agent-activity-entry!
-           "eval-agent" :think {:last-reasoning "Reviewing the diff then running tests."})
-          (#'s/render-agent-activity-entry! "eval-agent" :iteration-start {:iteration-count 2})
-          (#'s/render-agent-activity-entry! "eval-agent" :tool-calls {:tool-calls [{:name "bash"}]})
-          (#'s/render-agent-activity-entry! "eval-agent" :think {}))
-        (is (= 1 (count @captured)) "only the :think stage with reasoning emits")
-        (let [line (strip-ansi (first @captured))]
-          (is (str/includes? line "● [eval-agent] ") "bullet, then name prefix")
-          (is (str/starts-with? line "\n") "leading blank line before the bullet")
-          (is (str/includes? line "Reviewing the diff") "carries the think text"))
-        (finally
-          (swap! @#'s/!tui-state assoc :display-format (or prev :normal)))))))
+    (let [captured (atom [])]
+      (with-redefs [s/quiet? (constantly true)
+                    s/emit! (fn [& args] (swap! captured conj (first args)))]
+        (#'s/render-agent-activity-entry!
+         "eval-agent" :think {:last-reasoning "Reviewing the diff then running tests."})
+        (#'s/render-agent-activity-entry! "eval-agent" :iteration-start {:iteration-count 2})
+        (#'s/render-agent-activity-entry! "eval-agent" :tool-calls {:tool-calls [{:name "bash"}]})
+        (#'s/render-agent-activity-entry! "eval-agent" :think {}))
+      (is (= 1 (count @captured)) "only the :think stage with reasoning emits")
+      (let [line (strip-ansi (first @captured))]
+        (is (str/includes? line "● [eval-agent] ") "bullet, then name prefix")
+        (is (str/starts-with? line "\n") "leading blank line before the bullet")
+        (is (str/includes? line "Reviewing the diff") "carries the think text")))))
 
 (deftest render-tools-section-boxes-code-like-args
   (testing "a multi-line script arg moves into a boxed Call section,
