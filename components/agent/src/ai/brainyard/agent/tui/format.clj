@@ -618,6 +618,10 @@
    ["/compact"          " [ratio]"                "Compact context to ratio of max tokens (default 0.2)"]
    ["/config"           " [key [val]]"            "Show/set runtime config"]
    ["/continue"         " [N]"                    "Resume last answer with N more iterations"]
+   ["/display-format"   " [level]"                "Show/set display detail level"
+    {:completions [["quiet"   "Minimal output"]
+                   ["normal"  "Default output"]
+                   ["verbose" "Full BT traces"]]}]
    ["/effort"           " [level]"                "Set effort level"
     {:completions [["low"    "No finalize, no refinements"]
                    ["medium" "Finalize answer, no refinements"]
@@ -678,11 +682,7 @@
                    ["log"    "Show task output (ID [N])"]
                    ["run"    "Run bash command as background task (CMD)"]]}]
    ["/todo"             ""                        "Show TODO list"]
-   ["/usage"            ""                        "Show token/cost summary + per-call latency"]
-   ["/verbose"          " [level]"                "Show/set verbosity"
-    {:completions [["quiet"   "Minimal output"]
-                   ["normal"  "Default output"]
-                   ["verbose" "Full BT traces"]]}]])
+   ["/usage"            ""                        "Show token/cost summary + per-call latency"]])
 
 (defn format-help
   "Format the /help command output listing all available TUI commands."
@@ -1971,7 +1971,7 @@
      :lm-provider - keyword provider (e.g. :claude-code) or nil
      :lm-model    - string model name or nil
 
-   `:verbosity` and `:agents` are accepted for caller compatibility but
+   `:display-format` and `:agents` are accepted for caller compatibility but
    no longer rendered."
   [{:keys [agent-id session-id lm-provider lm-model]}]
   (let [sep      (ansi/style " · " ansi/dim)

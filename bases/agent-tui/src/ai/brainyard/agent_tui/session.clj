@@ -42,7 +42,7 @@
          :writer      nil      ;; captured java.io.Writer for nREPL
          :watches     []       ;; [{:atom :key}] for cleanup
          :max-iterations nil
-         :verbosity   :normal  ;; :quiet | :normal | :verbose
+         :display-format   :normal  ;; :quiet | :normal | :verbose
          :queue-count 0        ;; number of items in the input queue
          :sub-trackers []      ;; [{:tracker atom :label str}] from sub-agents
          :mode        nil      ;; :A | :B (Mode C exits before start!) — see agent-tui.mode
@@ -134,12 +134,12 @@
 (defonce ^:private !subagents-ticker-thread (atom nil))
 
 (defn- quiet?
-  "True when the TUI is in :quiet verbosity — only the final answer box
+  "True when the TUI is in :quiet display-format — only the final answer box
    should be rendered. All intermediate widgets (iteration block, think
    spinner, subagents block, TODO block) and intermediate scrollback
    emissions (observation, goal status) are suppressed."
   []
-  (= :quiet (:verbosity @!tui-state)))
+  (= :quiet (:display-format @!tui-state)))
 
 ;; Per-task live block state
 ;; {task-id {:name str, :status :pending|:running|:completed|:failed|:cancelled,
@@ -774,12 +774,12 @@
   (swap! !tui-state assoc :writer *out*)
   (layout/set-writer! *out*))
 
-(defn set-verbosity!
-  "Set verbosity level: :quiet (answer only), :normal (iterations+tools+answer),
+(defn set-display-format!
+  "Set display-format level: :quiet (answer only), :normal (iterations+tools+answer),
    :verbose (+BT traces)."
   [level]
   {:pre [(#{:quiet :normal :verbose} level)]}
-  (swap! !tui-state assoc :verbosity level))
+  (swap! !tui-state assoc :display-format level))
 
 ;; ============================================================================
 ;; TUI Mulog Publisher (verbose mode)
@@ -1014,7 +1014,7 @@
    scrollback only needs the per-sub-agent summary lines)."
   ([root-agent-id] (update-subagents-block! root-agent-id false))
   ([root-agent-id final?]
-   ;; Suppressed in :quiet verbosity (answer-only mode).
+   ;; Suppressed in :quiet display-format (answer-only mode).
    (when-not (quiet?)
      (when-let [{:keys [block-id session-idx] :as st}
                 (get @!subagents-blocks root-agent-id)]
@@ -1426,7 +1426,7 @@
    because `iteration-post-handler`'s `already-buffered?` guard trusts the
    last rendered snapshot. Mirrors the per-task and subagents blocks.
 
-   Suppressed entirely in :quiet verbosity — only the answer box is shown."
+   Suppressed entirely in :quiet display-format — only the answer box is shown."
   [agent-id repeat-id iteration]
   (when-not (quiet?)
     (when-let [state (get @!iteration-blocks [agent-id repeat-id iteration])]
@@ -1505,7 +1505,7 @@
    - every item is :done (renders once, then disposes), or
    - 5 seconds elapse since the last update with no new events."
   [{:keys [agent todo-list]}]
-  ;; Suppressed in :quiet verbosity (answer-only mode).
+  ;; Suppressed in :quiet display-format (answer-only mode).
   (when-not (quiet?)
     (let [items (vec (or todo-list []))
           session (find-session-for-agent agent)
@@ -1530,7 +1530,7 @@
   "Render a single sub-agent display event with agent name prefix."
   [agent-name stage data]
   (let [prefix (str (ansi/style (str "[" agent-name "] ") ansi/bold ansi/bright-magenta))]
-    (when (not= :quiet (:verbosity @!tui-state))
+    (when (not= :quiet (:display-format @!tui-state))
       (case stage
         :iteration-start
         (emit! (str "\n" prefix
@@ -1600,7 +1600,7 @@
             (when-not (layout/fullscreen?)
               (render-agent-activity-entry! agent-name stage data)))))))
   ;; ── Verbose BT traces (existing) ──
-  (when (= :verbose (:verbosity @!tui-state))
+  (when (= :verbose (:display-format @!tui-state))
     (let [old-traces (get-in old [:data :traces])
           new-traces (get-in new [:data :traces])]
       (when (and new-traces (> (count new-traces) (count (or old-traces []))))
@@ -2129,8 +2129,8 @@
 (defn set-agent!
   "Set the TUI agent for a session. Detaches old watches, attaches new ones.
    Derives defagent-id from agent-id namespace (e.g. :coact-agent/tui-123 → :coact-agent).
-   Options: :max-iterations, :verbosity, :session-idx"
-  [agent agent-id & {:keys [max-iterations verbosity session-idx]}]
+   Options: :max-iterations, :display-format, :session-idx"
+  [agent agent-id & {:keys [max-iterations display-format session-idx]}]
   (let [sidx   (or session-idx (sessions/active-idx))
         def-id (if (namespace agent-id)
                  (keyword (namespace agent-id))
@@ -2139,7 +2139,7 @@
         updates (cond-> {:agent agent :agent-id agent-id
                          :defagent-id def-id :started-at now}
                   max-iterations (assoc :max-iterations max-iterations)
-                  verbosity      (assoc :verbosity verbosity))]
+                  display-format      (assoc :display-format display-format))]
     (detach-watches! sidx)
     (sessions/update-session! sidx merge updates)
     (swap! !tui-state merge updates)
@@ -2898,7 +2898,7 @@
     ;; freezes so it appears just below the frozen iteration record. Route
     ;; through the origin session so a sub-agent's line lands in the sub-agent's
     ;; :output session even when the parent session is currently active.
-    ;; Suppressed in :quiet verbosity (answer-only mode). The goal-achieved
+    ;; Suppressed in :quiet display-format (answer-only mode). The goal-achieved
     ;; verdict + next-user-prompt are surfaced once per turn by ask-post-handler.
     (when-not (quiet?)
       (let [origin-idx (:session-idx outgoing)]

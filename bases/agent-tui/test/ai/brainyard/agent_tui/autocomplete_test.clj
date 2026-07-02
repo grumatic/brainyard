@@ -98,11 +98,11 @@
           names   (set (map first matches))]
       (is (contains? names "/help"))))
   (testing "typing a non-prefix substring still matches (bucket 1)"
-    ;; /verbose contains 'se' as a substring (verbo-SE) but doesn't start
+    ;; /pause contains 'se' as a substring (pau-SE) but doesn't start
     ;; with it; the filter should still surface it.
     (let [matches (ac/filter-commands "/se")
           names   (set (map first matches))]
-      (is (contains? names "/verbose")))))
+      (is (contains? names "/pause")))))
 
 (deftest filter-commands-does-not-match-description-text
   (testing "regression: /clear stayed in the menu for /he because its description
@@ -116,18 +116,18 @@
           "/quit must NOT match /he — neither name nor description contains 'he'"))))
 
 (deftest filter-commands-prefix-matches-sort-before-substring-matches
-  (testing "for /se: /session is a prefix match (bucket 0) and /verbose is
-            substring-only (bucket 1, via 'se' in 'verbo-SE'). /session must sort
+  (testing "for /se: /session is a prefix match (bucket 0) and /pause is
+            substring-only (bucket 1, via 'se' in 'pau-SE'). /session must sort
             first. Uses command-registry-only entries so the test does not depend
             on !tool-defs being populated."
     (let [matches (ac/filter-commands "/se")
           names   (mapv first matches)
           idx     (fn [n] (.indexOf ^java.util.List names n))
           i-sess  (idx "/session")
-          i-verb  (idx "/verbose")]
+          i-paus  (idx "/pause")]
       (is (>= i-sess 0)
           "/session must appear (prefix match)")
-      (is (>= i-verb 0)
-          "/verbose must appear (substring match on name)")
-      (is (< i-sess i-verb)
-          "/session (prefix) must sort before /verbose (substring only)"))))
+      (is (>= i-paus 0)
+          "/pause must appear (substring match on name)")
+      (is (< i-sess i-paus)
+          "/session (prefix) must sort before /pause (substring only)"))))

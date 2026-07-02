@@ -354,7 +354,7 @@
                           :mode (:mode probe)]
                    model      (into [:lm-model model])
                    inline?    (into [:inline true])
-                   verbose?   (into [:verbosity :verbose])
+                   verbose?   (into [:display-format :verbose])
                    max-iter   (into [:max-iterations max-iter])
                    session-id (into [:session-id session-id])
                    user-id    (into [:user-id user-id])

@@ -86,7 +86,7 @@
    "/sandbox eval CODE · /allow-path PATH to whitelist files"
    "Ctrl-N/Ctrl-P switch sessions · Ctrl-T new · Ctrl-W close"
    "Shift+←/→ navigate prompt history · Ctrl-O toggles the TODO list"
-   "/verbose to set detail · /quit to exit"])
+   "/display-format to set detail · /quit to exit"])
 
 (defonce ^:private !static-idx (atom 0))
 

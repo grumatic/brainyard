@@ -271,22 +271,22 @@
                                  (str (ansi/muted (str "  [trace] " t))))))
           (tui-session/emit! (ansi/muted "No traces.")))))))
 
-(defn verbosity!
-  "Set TUI verbosity level.
+(defn display-format!
+  "Set TUI display-format level.
    :quiet  — answer only
    :normal — iterations + tools + answer
    :verbose — + BT traces"
   [level]
-  (let [old-level (:verbosity @tui-session/!tui-state)]
-    (tui-session/set-verbosity! level)
-    ;; Toggle TUI mulog publisher based on verbosity
+  (let [old-level (:display-format @tui-session/!tui-state)]
+    (tui-session/set-display-format! level)
+    ;; Toggle TUI mulog publisher based on display-format
     (cond
       (and (= level :verbose) (not= old-level :verbose))
       (tui-session/start-tui-publisher!)
 
       (and (not= level :verbose) (= old-level :verbose))
       (tui-session/stop-tui-publisher!))
-    (tui-session/emit! (ansi/muted (str "Verbosity: " (name level))))))
+    (tui-session/emit! (ansi/muted (str "Display format: " (name level))))))
 
 (defn deliver!
   "Deliver a user response to a pending action promise."
@@ -300,15 +300,15 @@
 ;; Config Commands (private)
 ;; ============================================================================
 
-(defn- handle-verbose-command
-  "Handle /verbose with optional level argument.
+(defn- handle-display-format-command
+  "Handle /display-format with optional level argument.
    No arg → show current. With arg → set level."
   [args]
   (if (str/blank? args)
-    (tui-session/emit! (ansi/muted (str "Verbosity: " (name (:verbosity @tui-session/!tui-state)))))
+    (tui-session/emit! (ansi/muted (str "Display format: " (name (:display-format @tui-session/!tui-state)))))
     (let [level (keyword args)]
       (if (#{:quiet :normal :verbose} level)
-        (verbosity! level)
+        (display-format! level)
         (tui-session/emit! (ansi/warning (str "Invalid level: " args ". Use quiet, normal, or verbose.")))))))
 
 (defn- switch-model!
@@ -1050,7 +1050,7 @@
 
       :else
       (let [max-iter  (:max-iterations @tui-session/!tui-state)
-            verbosity (:verbosity @tui-session/!tui-state)]
+            display-format (:display-format @tui-session/!tui-state)]
         (when current-ag
           (tui-session/detach-watches!))
         (try
@@ -1064,7 +1064,7 @@
                                       update :agent-instances conj new-ag)
             (tui-session/set-agent! new-ag (:agent-id new-ag)
                                     :max-iterations max-iter
-                                    :verbosity verbosity)
+                                    :display-format display-format)
             (let [n-instances (count (session-instances))]
               (tui-session/emit!
                (str "\n" (ansi/success (str "Created new " (agent-id-str target-agent-id)))
@@ -1074,7 +1074,7 @@
             (when current-ag
               (tui-session/set-agent! current-ag (:agent-id current-ag)
                                       :max-iterations max-iter
-                                      :verbosity verbosity))
+                                      :display-format display-format))
             (tui-session/emit!
              (ansi/failure (str "Failed to create agent: " (.getMessage e))))))))))
 
@@ -1132,11 +1132,11 @@
           (tui-session/emit! (ansi/warning (str "Instance not found: " (agent-id-str target-instance-id)
                                                 ". Use /agent switch to see instances.")))
           (let [max-iter  (:max-iterations @tui-session/!tui-state)
-                verbosity (:verbosity @tui-session/!tui-state)]
+                display-format (:display-format @tui-session/!tui-state)]
             (tui-session/detach-watches!)
             (tui-session/set-agent! target-ag target-instance-id
                                     :max-iterations max-iter
-                                    :verbosity verbosity)
+                                    :display-format display-format)
 
             (let [msg-count (count (agent/get-messages @(:!session target-ag)))]
               (tui-session/emit!
@@ -1233,7 +1233,7 @@
             next-ag         (when closed-current? (first others))
             next-id         (:agent-id next-ag)
             max-iter        (:max-iterations @tui-session/!tui-state)
-            verbosity       (:verbosity @tui-session/!tui-state)]
+            display-format       (:display-format @tui-session/!tui-state)]
         (when closed-current?
           (tui-session/detach-watches!))
         (try (.close ^java.io.Closeable target) (catch Exception _))
@@ -1243,7 +1243,7 @@
         (when closed-current?
           (tui-session/set-agent! next-ag next-id
                                   :max-iterations max-iter
-                                  :verbosity verbosity))
+                                  :display-format display-format))
         (tui-session/emit!
          (str (ansi/success (str "Closed " (agent-id-str target-id)))
               (when closed-current?
@@ -2080,7 +2080,7 @@
         "/compact"      (do (emit-command-header! input) (compact-cmd args) :continue)
         "/todo"         (do (emit-command-header! input) (todo) :continue)
         "/usage"        (do (emit-command-header! input) (usage args) :continue)
-        "/verbose"      (do (emit-command-header! input) (handle-verbose-command args) :continue)
+        "/display-format" (do (emit-command-header! input) (handle-display-format-command args) :continue)
         "/model"        (do (emit-command-header! input) (handle-model-command args reader) :continue)
         "/config"       (do (emit-command-header! input) (handle-config-command args) :continue)
         "/init"         (do (emit-command-header! input) (handle-init-command args) :continue)

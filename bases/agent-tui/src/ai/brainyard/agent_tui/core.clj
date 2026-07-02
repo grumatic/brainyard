@@ -1069,7 +1069,7 @@
                        BY_USER_ID env, else the `user.name` system property)
      :session-id     - Session ID (default: auto-generated)
      :max-iterations - Override max iterations
-     :verbosity      - :quiet | :normal | :verbose (default: :normal)
+     :display-format      - :quiet | :normal | :verbose (default: :normal)
      :lm-provider    - :claude-code | :anthropic | :openai | :ollama (auto-setup LM)
      :lm-model       - Override model name for LM
      :inline         - Force inline mode (no alt screen). Useful for scripted testing.
@@ -1083,10 +1083,10 @@
                        `:session-id` of an existing on-disk session.
 
    Returns: :ok"
-  [& {:keys [agent-id user-id session-id max-iterations verbosity
+  [& {:keys [agent-id user-id session-id max-iterations display-format
              lm-provider lm-model inline mode resume? skip-banner]
       :or {agent-id :coact-agent
-           verbosity :normal
+           display-format :normal
            inline false
            mode :A
            resume? false
@@ -1124,7 +1124,7 @@
       (helpers/setup-lm! lm-provider :model lm-model)))
 
   ;; 2b. Mulog publisher setup
-  (when (= verbosity :verbose)
+  (when (= display-format :verbose)
     (tui-session/start-tui-publisher!))
 
   ;; 2b2. Route Java SLF4J logs through mulog
@@ -1349,7 +1349,7 @@
                                :agent-session-id agt-sess-id
                                :agent-instances [ag]
                                :max-iterations max-iter
-                               :verbosity verbosity
+                               :display-format display-format
                                :started-at (System/currentTimeMillis)
                                :skip-agent-creation true})
 
@@ -1370,7 +1370,7 @@
     ;; 6. Attach watches (session-aware)
     (tui-session/set-agent! ag (:agent-id ag)
                             :max-iterations max-iter
-                            :verbosity verbosity
+                            :display-format display-format
                             :session-idx 0)
 
     ;; 7. Store agent's session-id for run logging
@@ -1425,7 +1425,7 @@
              (fmt/format-welcome-banner
               {:agent-id    agent-id
                :session-id  agt-sess-id
-               :verbosity   verbosity
+               :display-format   display-format
                :lm-provider (:provider lm)
                :lm-model    (:model lm)
                :agents      agents}))))
@@ -1551,7 +1551,7 @@
       ;; (with resume-tail replay) or inline. `start!` was told to skip
       ;; its own banner; `run!` owns it to avoid duplicates (teardown
       ;; replays alt-screen scrollback to the primary buffer).
-      (let [{:keys [defagent-id agent-id verbosity resumed?]} @tui-session/!tui-state
+      (let [{:keys [defagent-id agent-id display-format resumed?]} @tui-session/!tui-state
             ag (tui-session/get-active-agent)
             sess-id (when ag (try (agent/session-id ag) (catch Throwable _ nil)))
             sess    (when ag (try @(:!session ag) (catch Throwable _ nil)))
@@ -1591,7 +1591,7 @@
              (fmt/format-welcome-banner
               {:agent-id    (or defagent-id agent-id :unknown)
                :session-id  (or sess-id "unknown")
-               :verbosity   (or verbosity :normal)
+               :display-format   (or display-format :normal)
                :lm-provider (:provider lm)
                :lm-model    (:model lm)
                :agents      agents}))))

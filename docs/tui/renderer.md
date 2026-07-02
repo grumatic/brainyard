@@ -249,7 +249,7 @@ The built-in roster (non-exhaustive):
 |---|---|
 | `/help`, `/status`, `/history`, `/clear` | General info; runtime-config snapshot; conversation tools. |
 | `/model <provider[:model]>` | Switch provider/model mid-session. |
-| `/verbose <level>` | `:quiet` / `:normal` / `:verbose` / `:debug`. |
+| `/display-format <level>` | `:quiet` / `:normal` / `:verbose` / `:debug`. |
 | `/effort <level>` | LM thinking-effort knob (where supported). |
 | `/config` | Edit runtime-config (mutates `:runtime-config` live). |
 | `/compact [args]` | Force a context compaction. |
@@ -436,7 +436,7 @@ observability story see [design/observability.md](../design/observability.md).
 - `:debug` — extra detail (e.g. per-tool delta lines that are
   hidden at `:verbose`).
 
-Verbosity is live-mutable via `/verbose`. The render fns read it
+Verbosity is live-mutable via `/display-format`. The render fns read it
 per-render, so there is no cache to invalidate. The iteration
 widget shares the same level — its `[Think]` section is gated on a
 verbosity check.
