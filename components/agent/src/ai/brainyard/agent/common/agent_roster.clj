@@ -190,28 +190,52 @@ RULES:
   "## Persistent subagents (agent lifecycle substrate)
 By default a subagent you dispatch (explore-agent, exec-agent, …) is EPHEMERAL:
 it runs once, answers, and is closed — a later call spawns a FRESH instance that
-starts from zero (no memory of the last one). To keep one alive for multi-turn
-work on the same context, pass `:keep-alive? true` and reuse it by id.
+starts from zero (no memory of the last one). To reuse the SAME subagent — with
+its built-up context — across turns, you MUST pass `:keep-alive? true` on the
+dispatch and then resume it by its instance-id.
 
-1. KEEP ALIVE — add `:keep-alive? true` when you expect follow-ups:
+WHEN to keep alive (pass `:keep-alive? true` on the dispatch — it is not
+automatic): the user says to keep it alive / expects follow-ups; you plan to ask
+this subagent more after seeing its answer; or you're iterating with one
+explorer/executor over several turns. When in doubt and a follow-up is even
+plausible, keep it alive — you can always `agent-registry$close` it early.
+
+1. KEEP ALIVE — add `:keep-alive? true` to the dispatch itself:
    `(explore-agent {:question \"map the auth module\" :keep-alive? true})`
    The result carries `:subagent-id \"explore-agent/<suffix>\"` + a `:resume-hint`.
-   CAPTURE that id — it is the ONLY handle for resuming; a fresh dispatch is a
-   different instance.
+   CAPTURE that instance-id — it is the ONLY handle for resuming; a fresh
+   dispatch is a DIFFERENT instance with no memory of this one.
 2. RESUME — follow up on the SAME instance (it still sees its ## Previous Turns):
    `(agent-registry$resume {:id \"explore-agent/<suffix>\" :question \"now check token refresh\"})`
+   Use the `:subagent-id` from step 1 — never a task id (see the distinction below).
 3. LIST / INSPECT — `(agent-registry$list)` shows live instances with `:mode`,
    `:owner`, `:idle-ms`, `:last-question`; `(agent-registry$detail {:id \"…\"})`
    gives status + last answer + `:reap-eligible?`.
 4. CLOSE — when done, free it: `(agent-registry$close {:id \"…\"})`. Idle
    persistent subagents are also reaped automatically (`agent-registry$sweep`).
 
+KEEP-ALIVE (instance) vs. DETACH (background task) — two DIFFERENT things; do
+NOT confuse them:
+- A slow subagent call may DETACH into a background TASK (`task-N`). That is
+  about WHERE one call runs (background thread) — you poll it with
+  `task$detail` / `task$wait` by its TASK id. It does NOT make the subagent
+  reusable, and a `task-N` id is NOT a `:subagent-id`.
+- `:keep-alive?` is about the INSTANCE surviving for a follow-up — you resume it
+  with `agent-registry$resume` by its `:subagent-id`.
+- A dispatch can be BOTH: a `:keep-alive?` subagent whose call detaches — you
+  `task$wait` for THAT call to finish, then `agent-registry$resume` the instance
+  for the NEXT question. Never tell the user a task is \"resumable via
+  agent-registry$resume\", and never pass a `task-N` id to `agent-registry$resume`.
+
 RULES:
-- Default to EPHEMERAL (omit `:keep-alive?`). Keep one alive ONLY when you
-  genuinely need multi-turn follow-up with the same subagent's built-up context.
+- Reuse across turns REQUIRES `:keep-alive? true` on the dispatch — narrating
+  \"I'll keep it alive\" without the flag does nothing; the instance is closed on
+  answer and its id won't resolve.
+- Default to EPHEMERAL (omit `:keep-alive?`) for one-shot work. Keep alive ONLY
+  when you genuinely need multi-turn follow-up with the same subagent's context.
 - Resume/close only an instance you dispatched, and only when it is `:idle` — a
-  `:running` one is busy (poll `agent-registry$detail`, or `task$wait` if it was
-  detached). Do not close it on a quiet-but-growing idle window alone.
+  `:running` one is busy (poll `agent-registry$detail`, or `task$wait` if the
+  call detached). Do not close it on a quiet-but-growing idle window alone.
 - Per-session cap (`:max-persistent-agents`): at the cap a `:keep-alive?`
   dispatch falls back to ephemeral (see `:agent-cap-note` in the result) — close
   idle ones you no longer need, then retry.")
