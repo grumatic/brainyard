@@ -443,12 +443,20 @@
                         nil))
                     (catch Exception _ nil)))
                 (recur))))
-          ;; Wait for process to finish
-          (.waitFor proc (or (:timeout-ms opts) default-timeout-ms) TimeUnit/MILLISECONDS)
-          (let [exit-code (.exitValue proc)]
+          ;; Wait for the process to finish. `.waitFor` with a timeout returns a
+          ;; boolean and does NOT throw — but `.exitValue` on a still-running
+          ;; process throws IllegalThreadStateException, so guard the timeout
+          ;; explicitly (mirrors the non-streaming path).
+          (let [exited? (.waitFor proc (or (:timeout-ms opts) default-timeout-ms) TimeUnit/MILLISECONDS)]
+            (when-not exited?
+              (.destroyForcibly proc)
+              (throw (ex-info "Claude CLI stream timed out"
+                              {:timeout-ms (or (:timeout-ms opts) default-timeout-ms) :args args}))))
+          (let [exit-code (.exitValue proc)
+                nonzero-stderr (when (not= 0 exit-code)
+                                 (try (slurp (.getErrorStream proc)) (catch Exception _ "")))]
             (when (not= 0 exit-code)
-              (let [stderr (try (slurp (.getErrorStream proc)) (catch Exception _ ""))
-                    acc-len (.length accumulated)
+              (let [acc-len (.length accumulated)
                     has-rate-limit (some #(= "rate_limit_event" (:type %)) @all-events)]
                 ;; Downgrade to debug when we have accumulated text (rate-limit with partial response)
                 (if (and (pos? acc-len) has-rate-limit)
@@ -456,68 +464,84 @@
                                :exit exit-code
                                :accumulated-length acc-len)
                   (mulog/warn ::claude-code-stream-nonzero-exit
-                              :exit exit-code :stderr stderr
+                              :exit exit-code :stderr nonzero-stderr
                               :event-types (mapv :type @all-events)
                               :accumulated-length acc-len
-                              :tool-json-length (.length tool-json))))))
-          (let [tool-json-str (str tool-json)
-                structured-output (when (str/blank? tool-json-str)
-                                    (some (fn [event]
-                                            (when (= "assistant" (:type event))
-                                              (some (fn [block]
-                                                      (when (and (= "tool_use" (:type block))
-                                                                 (= "StructuredOutput" (:name block)))
-                                                        (json/write-str (:input block))))
-                                                    (get-in event [:message :content]))))
-                                          @all-events))
-                result-text (let [fr @final-result
-                                  fr-result (when fr
-                                              (let [r (:result fr)]
-                                                (when-not (str/blank? r) r)))]
-                              ;; Any of these candidates may be the
-                              ;; `{"value":"<json>"}` StructuredOutput envelope
-                              ;; (observed with claude-code:sonnet); unwrap it so
-                              ;; the downstream JSON parser sees the real fields.
-                              ;; Non-envelope text passes through untouched.
-                              (unwrap-structured-json
-                               (or fr-result
-                                   (when-not (str/blank? tool-json-str) tool-json-str)
-                                   structured-output
-                                   (str accumulated))))
-                model (:model lm-config)
-                duration-ms (quot (- (System/nanoTime) start-ns) 1000000)]
-            (when (str/blank? result-text)
-              (mulog/warn ::claude-code-stream-empty-result
-                          :event-count (count @all-events)
-                          :event-types (mapv :type @all-events)
-                          :accumulated-length (.length accumulated)
-                          :tool-json-length (.length tool-json)
-                          :final-result-keys (when @final-result (keys @final-result))
-                          :final-result-result (:result @final-result)
-                          :assistant-events (filterv #(= "assistant" (:type %)) @all-events)))
-            (when on-chunk
-              (on-chunk {:type :done :usage {}}))
-            (let [response {:content [{:type "text" :text result-text}]
-                            :model   model
-                            :usage   {:input_tokens                (or (get-in @final-result [:usage :input_tokens]) 0)
-                                      :output_tokens               (or (get-in @final-result [:usage :output_tokens]) 0)
-                                      :cache_read_input_tokens     (or (get-in @final-result [:usage :cache_read_input_tokens]) 0)
-                                      :cache_creation_input_tokens (or (get-in @final-result [:usage :cache_creation_input_tokens]) 0)}
-                            ::cli-cost    (:total_cost_usd @final-result)
-                            ::duration-ms (:duration_ms @final-result)
-                            ::num-turns   (:num_turns @final-result)}]
-              (mulog/log ::cli-call-result
-                         :provider :claude-code
-                         :model model
-                         :stream true
-                         :duration-ms duration-ms
-                         :input-tokens (get-in response [:usage :input_tokens])
-                         :output-tokens (get-in response [:usage :output_tokens])
-                         :cli-cost (::cli-cost response)
-                         :num-turns (::num-turns response)
-                         :response response)
-              response)))
-        (catch Exception e
+                              :tool-json-length (.length tool-json)))))
+            (let [tool-json-str (str tool-json)
+                  structured-output (when (str/blank? tool-json-str)
+                                      (some (fn [event]
+                                              (when (= "assistant" (:type event))
+                                                (some (fn [block]
+                                                        (when (and (= "tool_use" (:type block))
+                                                                   (= "StructuredOutput" (:name block)))
+                                                          (json/write-str (:input block))))
+                                                      (get-in event [:message :content]))))
+                                            @all-events))
+                  result-text (let [fr @final-result
+                                    fr-result (when fr
+                                                (let [r (:result fr)]
+                                                  (when-not (str/blank? r) r)))]
+                                ;; Any of these candidates may be the
+                                ;; `{"value":"<json>"}` StructuredOutput envelope
+                                ;; (observed with claude-code:sonnet); unwrap it so
+                                ;; the downstream JSON parser sees the real fields.
+                                ;; Non-envelope text passes through untouched.
+                                (unwrap-structured-json
+                                 (or fr-result
+                                     (when-not (str/blank? tool-json-str) tool-json-str)
+                                     structured-output
+                                     (str accumulated))))
+                  model (:model lm-config)
+                  duration-ms (quot (- (System/nanoTime) start-ns) 1000000)]
+              (when (str/blank? result-text)
+                (mulog/warn ::claude-code-stream-empty-result
+                            :event-count (count @all-events)
+                            :event-types (mapv :type @all-events)
+                            :accumulated-length (.length accumulated)
+                            :tool-json-length (.length tool-json)
+                            :final-result-keys (when @final-result (keys @final-result))
+                            :final-result-result (:result @final-result)
+                            :assistant-events (filterv #(= "assistant" (:type %)) @all-events)))
+              ;; A nonzero exit that yielded NO recoverable text is a hard failure:
+              ;; throw a clean, classifiable error instead of returning an empty
+              ;; answer that silently corrupts the turn (mirrors chat-completion,
+              ;; which throws on an unrecoverable nonzero exit). The salvageable
+              ;; cases — StructuredOutput tool_use / accumulated text under
+              ;; --max-turns 1 — already produced non-blank result-text above.
+              (when (and (not= 0 exit-code) (str/blank? result-text))
+                (throw (ex-info (str "Claude CLI stream exited with code " exit-code
+                                     " and produced no output")
+                                {:exit exit-code :stderr nonzero-stderr
+                                 :event-types (mapv :type @all-events)})))
+              (when on-chunk
+                (on-chunk {:type :done :usage {}}))
+              (let [response {:content [{:type "text" :text result-text}]
+                              :model   model
+                              :usage   {:input_tokens                (or (get-in @final-result [:usage :input_tokens]) 0)
+                                        :output_tokens               (or (get-in @final-result [:usage :output_tokens]) 0)
+                                        :cache_read_input_tokens     (or (get-in @final-result [:usage :cache_read_input_tokens]) 0)
+                                        :cache_creation_input_tokens (or (get-in @final-result [:usage :cache_creation_input_tokens]) 0)}
+                              ::cli-cost    (:total_cost_usd @final-result)
+                              ::duration-ms (:duration_ms @final-result)
+                              ::num-turns   (:num_turns @final-result)}]
+                (mulog/log ::cli-call-result
+                           :provider :claude-code
+                           :model model
+                           :stream true
+                           :duration-ms duration-ms
+                           :input-tokens (get-in response [:usage :input_tokens])
+                           :output-tokens (get-in response [:usage :output_tokens])
+                           :cli-cost (::cli-cost response)
+                           :num-turns (::num-turns response)
+                           :response response)
+                response))))
+        (catch Throwable e
+          ;; Throwable, not Exception: a StackOverflowError / OutOfMemoryError
+          ;; from the read/parse path is an Error, not an Exception — catching
+          ;; only Exception would let it escape with the `claude` subprocess
+          ;; still alive (a leak). Destroy the process, then re-throw so the
+          ;; caller's error classification handles it.
           (.destroyForcibly proc)
           (throw e))
         (finally
