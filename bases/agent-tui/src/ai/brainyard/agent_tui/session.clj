@@ -42,7 +42,6 @@
          :defagent-id nil    ;; keyword — defagent type (e.g. :coact-agent) for display
          :writer      nil      ;; captured java.io.Writer for nREPL
          :watches     []       ;; [{:atom :key}] for cleanup
-         :max-iterations nil
          :queue-count 0        ;; number of items in the input queue
          :sub-trackers []      ;; [{:tracker atom :label str}] from sub-agents
          :mode        nil      ;; :A | :B (Mode C exits before start!) — see agent-tui.mode
@@ -2186,16 +2185,15 @@
 (defn set-agent!
   "Set the TUI agent for a session. Detaches old watches, attaches new ones.
    Derives defagent-id from agent-id namespace (e.g. :coact-agent/tui-123 → :coact-agent).
-   Options: :max-iterations, :session-idx"
-  [agent agent-id & {:keys [max-iterations session-idx]}]
+   Options: :session-idx"
+  [agent agent-id & {:keys [session-idx]}]
   (let [sidx   (or session-idx (sessions/active-idx))
         def-id (if (namespace agent-id)
                  (keyword (namespace agent-id))
                  agent-id)
         now    (System/currentTimeMillis)
-        updates (cond-> {:agent agent :agent-id agent-id
-                         :defagent-id def-id :started-at now}
-                  max-iterations (assoc :max-iterations max-iterations))]
+        updates {:agent agent :agent-id agent-id
+                 :defagent-id def-id :started-at now}]
     (detach-watches! sidx)
     (sessions/update-session! sidx merge updates)
     (swap! !tui-state merge updates)
@@ -2211,14 +2209,12 @@
                              {:agent nil
                               :agent-id nil
                               :defagent-id nil
-                              :max-iterations nil
                               :started-at nil})
    ;; Keep !tui-state in sync
    (swap! !tui-state assoc
           :agent nil
           :agent-id nil
           :defagent-id nil
-          :max-iterations nil
           :started-at nil)))
 
 (defn get-active-agent

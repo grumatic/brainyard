@@ -66,8 +66,7 @@
 (defn status
   "Show current agent state snapshot."
   []
-  (let [ag    (tui-session/get-active-agent)
-        state @tui-session/!tui-state]
+  (let [ag    (tui-session/get-active-agent)]
     (if-not ag
       (tui-session/emit! (ansi/warning "No TUI agent running."))
       (let [st-mem-atom (agent/get-bt-st-memory ag)
@@ -80,7 +79,7 @@
           {:agent-id       (agent/agent-id ag)
            :status         (:status @(:!state ag))
            :iteration      (:iteration-count st-mem)
-           :max-iterations (:max-iterations state)
+           :max-iterations (agent/get-config ag :max-iterations)
            :todo-progress  (when (pos? total) (str done "/" total))
            :goal-achieved  (:goal-achieved st-mem)}))))))
 
@@ -435,9 +434,6 @@
                                   ". Valid: " (str/join ", " (sort (map name agent/config-keys))))))
               (let [coerced (agent/coerce-config-value k v-str)]
                 (agent/set-config! ag k coerced)
-                ;; Sync max-iterations to TUI display state
-                (when (= k :max-iterations)
-                  (swap! tui-session/!tui-state assoc :max-iterations coerced))
                 (tui-session/emit!
                  (ansi/success (str (name k) " = " coerced)))))))))))
 
@@ -946,8 +942,6 @@
         ;; Continuation state lives on st-memory-init (survives run-bt reset).
         (swap! st-mem-init assoc :continuation
                {:max-iterations extra-iters})
-        ;; Sync TUI display with the new effective limit.
-        (swap! tui-session/!tui-state assoc :max-iterations extra-iters)
         (tui-session/emit!
          (str "\n" (ansi/style
                     (str "Continuing with " extra-iters " more iterations...")
@@ -1008,7 +1002,7 @@
                                  :idle    (ansi/muted "idle")
                                  (ansi/muted (str (or (:status state) "unknown")))) "\n"
               "  Iteration:  " (or (:iteration-count st-mem) 0)
-              "/" (:max-iterations tui-st) "\n"
+              "/" (agent/get-config ag :max-iterations) "\n"
               "  Messages:   " msg-cnt "\n"
               "  Session:    " (ansi/muted (or (agent/session-id ag) "unknown")) "\n"
               (when resumed?
@@ -1049,7 +1043,9 @@
       (tui-session/emit! (ansi/warning "Agent is currently running. Wait for it to finish or cancel first."))
 
       :else
-      (let [max-iter  (:max-iterations @tui-session/!tui-state)]
+      ;; Seed the new agent's iteration cap from the current agent's resolved
+      ;; config (the source of truth), flowing into its per-agent override.
+      (let [max-iter (agent/get-config current-ag :max-iterations)]
         (when current-ag
           (tui-session/detach-watches!))
         (try
@@ -1061,8 +1057,7 @@
             ;; Register new agent in TUI session's :agent-instances
             (sessions/update-session! (sessions/active-idx)
                                       update :agent-instances conj new-ag)
-            (tui-session/set-agent! new-ag (:agent-id new-ag)
-                                    :max-iterations max-iter)
+            (tui-session/set-agent! new-ag (:agent-id new-ag))
             (let [n-instances (count (session-instances))]
               (tui-session/emit!
                (str "\n" (ansi/success (str "Created new " (agent-id-str target-agent-id)))
@@ -1070,8 +1065,7 @@
                       (str " " (ansi/muted (str "(" n-instances " instances, /agent switch to navigate)"))))))))
           (catch Exception e
             (when current-ag
-              (tui-session/set-agent! current-ag (:agent-id current-ag)
-                                      :max-iterations max-iter))
+              (tui-session/set-agent! current-ag (:agent-id current-ag)))
             (tui-session/emit!
              (ansi/failure (str "Failed to create agent: " (.getMessage e))))))))))
 
@@ -1128,10 +1122,9 @@
         (if-not target-ag
           (tui-session/emit! (ansi/warning (str "Instance not found: " (agent-id-str target-instance-id)
                                                 ". Use /agent switch to see instances.")))
-          (let [max-iter  (:max-iterations @tui-session/!tui-state)]
+          (do
             (tui-session/detach-watches!)
-            (tui-session/set-agent! target-ag target-instance-id
-                                    :max-iterations max-iter)
+            (tui-session/set-agent! target-ag target-instance-id)
 
             (let [msg-count (count (agent/get-messages @(:!session target-ag)))]
               (tui-session/emit!
@@ -1226,8 +1219,7 @@
             closed-current? (= target-id current-id)
             others          (remove #(= target-id (:agent-id %)) instances)
             next-ag         (when closed-current? (first others))
-            next-id         (:agent-id next-ag)
-            max-iter        (:max-iterations @tui-session/!tui-state)]
+            next-id         (:agent-id next-ag)]
         (when closed-current?
           (tui-session/detach-watches!))
         (try (.close ^java.io.Closeable target) (catch Exception _))
@@ -1235,8 +1227,7 @@
                                   update :agent-instances
                                   (fn [insts] (vec (remove #(= target-id (:agent-id %)) insts))))
         (when closed-current?
-          (tui-session/set-agent! next-ag next-id
-                                  :max-iterations max-iter))
+          (tui-session/set-agent! next-ag next-id))
         (tui-session/emit!
          (str (ansi/success (str "Closed " (agent-id-str target-id)))
               (when closed-current?

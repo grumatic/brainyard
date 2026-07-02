@@ -134,7 +134,6 @@
             :watches          []
             :st-memory-atom   nil
             :sub-trackers     []
-            :max-iterations   20
             :started-at       nil
             :agent-instances  []
             :session-type     :chat      ;; :chat (interactive) or :output (read-only)

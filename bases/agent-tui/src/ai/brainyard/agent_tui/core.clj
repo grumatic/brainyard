@@ -992,12 +992,18 @@
         ;; option seeds a per-agent config override (transient, not persisted) —
         ;; how the `-v` flag reaches the config source of truth. Omitted when nil
         ;; so callers without it fall through to the global/default layer.
+        ;; `:max-iterations` and `:display-format` are schema config-keys, so
+        ;; passing them as setup options seeds per-agent config overrides — how
+        ;; the CLI flags (`-n`, `-v`) reach the config source of truth. Both are
+        ;; omitted when nil so callers without them fall through to the
+        ;; session/global/default layers (a nil override would make get-config
+        ;; return nil and break /status).
         ag (agent/invoke-tool agent-id
                               (cond-> {:id inst-id
                                        :setup-only? true
                                        :agent-session {:user-id user-id :session-id sess-id}
-                                       :max-iterations max-iterations
                                        :session-store !session-store}
+                                max-iterations (assoc :max-iterations max-iterations)
                                 display-format (assoc :display-format display-format)))
         ;; Defense-in-depth: the fallback above guarantees a registered type, so
         ;; invoke-tool returns a real Agent — but surface any residual setup
@@ -1354,7 +1360,6 @@
                                :agent-id agent-id
                                :agent-session-id agt-sess-id
                                :agent-instances [ag]
-                               :max-iterations max-iter
                                :started-at (System/currentTimeMillis)
                                :skip-agent-creation true})
 
@@ -1374,7 +1379,6 @@
 
     ;; 6. Attach watches (session-aware)
     (tui-session/set-agent! ag (:agent-id ag)
-                            :max-iterations max-iter
                             :session-idx 0)
 
     ;; 7. Store agent's session-id for run logging
