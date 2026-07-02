@@ -260,6 +260,78 @@
               rows)))))
 
 ;; =====================================================
+;; Node budget / eviction (total-size cap)
+;; =====================================================
+;;
+;; Per-episode caps (extract/default-graph-limits) bound the growth RATE; this
+;; bounds the TOTAL. When a user's node count exceeds the budget we hard-delete
+;; the lowest-retention nodes down to a low-water mark (hysteresis, so eviction
+;; runs in batches rather than every episode).
+;;
+;; Classification — which nodes to KEEP within the limit (kept high → evicted
+;; low), all SQL-computable:
+;;   1. DEGREE (valid-edge count) — a hub wired into many relations is worth far
+;;      more to relational recall than an orphan; degree-0 nodes go first.
+;;   2. TYPE — the generic `entity` fallback (auto-created for unlisted edge
+;;      endpoints / weak extractions) ranks below curated types (component, file,
+;;      config-key, person, concept …).
+;;   3. SUMMARY — a node carrying a summary is richer than a bare name.
+;;   4. RECENCY (updated_at, bumped on every re-mention) — stalest evicted first.
+;; Victims are the inverse of that order.
+
+(defn count-nodes
+  "Total node count for `user-id`."
+  [ds user-id]
+  (long (or (val1 (jdbc/execute-one! ds ["SELECT COUNT(*) AS c FROM graph_nodes WHERE user_id = ?" user-id])
+                  :c :graph_nodes/c)
+            0)))
+
+(defn prune-nodes-to-budget!
+  "Enforce a total-node budget for `user-id`. No-op unless `max-nodes` is a
+  positive int AND the count exceeds it. Over budget, hard-delete the
+  lowest-retention nodes (and their edges + `graph_vec` rows) down to
+  `(* max-nodes low-water-ratio)` (default 0.9). Returns the count evicted."
+  [ds user-id {:keys [max-nodes low-water-ratio] :or {low-water-ratio 0.9}}]
+  (if-not (and (integer? max-nodes) (pos? max-nodes))
+    0
+    (let [total (count-nodes ds user-id)]
+      (if (<= total max-nodes)
+        0
+        (let [target  (long (Math/floor (* max-nodes (double low-water-ratio))))
+              n-evict (max 0 (- total target))
+              ;; Rank ascending by retention → the first n-evict are the victims.
+              victims (mapv #(or (:id %) (:graph_nodes/id %))
+                            (jdbc/execute!
+                             ds [(str "SELECT n.id AS id FROM graph_nodes n "
+                                      "LEFT JOIN (SELECT node, COUNT(*) AS deg FROM ("
+                                      "  SELECT src_id AS node FROM graph_edges WHERE user_id = ? AND t_invalid IS NULL "
+                                      "  UNION ALL "
+                                      "  SELECT dst_id AS node FROM graph_edges WHERE user_id = ? AND t_invalid IS NULL) "
+                                      "  GROUP BY node) d ON d.node = n.id "
+                                      "WHERE n.user_id = ? "
+                                      "ORDER BY COALESCE(d.deg, 0) ASC, "          ;; orphans first
+                                      "         (n.node_type = 'entity') DESC, "    ;; generic fallback first
+                                      "         (n.summary IS NULL OR n.summary = '') DESC, " ;; no-summary first
+                                      "         n.updated_at ASC "                  ;; stalest first
+                                      "LIMIT ?")
+                                 user-id user-id user-id n-evict]))]
+          (when (seq victims)
+            (let [ph (str/join "," (repeat (count victims) "?"))]
+              (jdbc/execute-one! ds (into [(str "DELETE FROM graph_edges WHERE user_id = ? "
+                                                "AND (src_id IN (" ph ") OR dst_id IN (" ph "))")]
+                                          (concat [user-id] victims victims)))
+              (when (vec-available? ds)
+                (try (jdbc/execute-one! ds (into [(str "DELETE FROM graph_vec WHERE ref_kind = 'node' "
+                                                       "AND ref_id IN (" ph ")")] victims))
+                     (catch Exception _)))
+              (jdbc/execute-one! ds (into [(str "DELETE FROM graph_nodes WHERE user_id = ? "
+                                                "AND id IN (" ph ")")]
+                                          (concat [user-id] victims)))))
+          (mulog/info ::graph-nodes-evicted
+                      :evicted (count victims) :total-before total :budget max-nodes)
+          (count victims))))))
+
+;; =====================================================
 ;; Vector index (CR-MEM-21, sqlite-vec graph_vec)
 ;; =====================================================
 

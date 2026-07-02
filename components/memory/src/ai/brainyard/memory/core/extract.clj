@@ -160,7 +160,7 @@
   dropped; relations are kept highest-confidence-first, then capped. This is the
   primary guard against node/edge explosion from a large episode."
   [store {:keys [entities relations]} source-entry-id & [limits]]
-  (let [{:keys [max-entities max-relations]} (merge default-graph-limits limits)
+  (let [{:keys [max-entities max-relations max-nodes]} (merge default-graph-limits limits)
         n-ent-in  (count entities)
         n-rel-in  (count relations)
         ;; Confine explosion: cap entities (as-returned) and keep the
@@ -219,6 +219,10 @@
       (doseq [n nodes :when (and (:summary n) (not (str/blank? (:summary n))))]
         (when-let [v (embed/embed-one embed-fn (str (:name n) ": " (:summary n)))]
           (graph/upsert-node-embedding! ds (:id n) v))))
-    (mulog/debug ::extraction-applied :nodes (count nodes) :edges (count edges)
-                 :source-entry-id source-entry-id)
-    {:nodes (count nodes) :edges (count edges)}))
+    ;; 3. Total-size guard: after adding this episode's nodes, evict the
+    ;; lowest-retention nodes if the graph is over the node budget.
+    (let [evicted (when max-nodes
+                    (graph/prune-nodes-to-budget! ds (:user-id store) {:max-nodes max-nodes}))]
+      (mulog/debug ::extraction-applied :nodes (count nodes) :edges (count edges)
+                   :evicted (or evicted 0) :source-entry-id source-entry-id)
+      {:nodes (count nodes) :edges (count edges) :evicted (or evicted 0)})))

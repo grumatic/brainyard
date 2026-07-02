@@ -617,7 +617,8 @@
                ;; extractor (only relevant when :enable-graph-memory is on).
                :graph-limits {:max-input-chars (config/get-config agent :graph-extract-max-input-chars)
                               :max-entities    (config/get-config agent :graph-max-entities-per-episode)
-                              :max-relations   (config/get-config agent :graph-max-relations-per-episode)})
+                              :max-relations   (config/get-config agent :graph-max-relations-per-episode)
+                              :max-nodes       (config/get-config agent :graph-max-nodes)})
               (catch Exception e
                 (mulog/warn ::capture-start-failed
                             :agent-id agent-id

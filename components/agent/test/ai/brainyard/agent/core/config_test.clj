@@ -152,7 +152,9 @@
 (deftest restart-required-keys-derived-from-schema
   (testing "the startup-baked memory/graph keys are flagged :requires-restart"
     (is (= #{:enable-graph-memory :graph-embed-model :graph-extract-model
-             :enable-memory-capture :memory-question-max-chars :memory-answer-max-chars}
+             :enable-memory-capture :memory-question-max-chars :memory-answer-max-chars
+             :graph-extract-max-input-chars :graph-max-entities-per-episode
+             :graph-max-relations-per-episode :graph-max-nodes}
            cfg/restart-required-keys))
     (is (cfg/requires-restart-key? :enable-graph-memory))
     (is (cfg/requires-restart-key? :graph-embed-model))
