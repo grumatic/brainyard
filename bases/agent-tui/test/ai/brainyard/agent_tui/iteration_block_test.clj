@@ -109,7 +109,7 @@
         "in-flight tool shows just 'called'")))
 
 (deftest render-quiet-display-format-shows-only-bulleted-think
-  (testing ":quiet display-format renders only the think text with a '•' bullet —
+  (testing ":quiet display-format renders only the think text with a '●' bullet —
             no header, tool, or eval lines; empty when there's no think text"
     (let [prev  (:display-format @@#'s/!tui-state)
           state {:iteration 3 :max-iterations 10 :stage :think
@@ -122,8 +122,8 @@
         (let [lines (#'s/render-iteration-block-lines state "⠋")
               text  (joined lines)]
           (is (= 1 (count lines)) "single bulleted line for one-line think text")
-          (is (str/starts-with? (strip-ansi (first lines)) "• ")
-              "line begins with a simple bullet")
+          (is (str/starts-with? (strip-ansi (first lines)) "● ")
+              "line begins with the solid-circle bullet")
           (is (str/includes? text "Check the render path") "carries the think text")
           (is (not (str/includes? text "Iteration 3")) "no iteration header in quiet")
           (is (not (str/includes? text "search")) "no tool lines in quiet"))
@@ -135,7 +135,7 @@
         (is (str/includes?
              (joined (#'s/render-iteration-block-lines
                       (assoc state :reasoning nil :streaming "partial thought…") "⠋"))
-             "• partial thought…")
+             "● partial thought…")
             "streaming think text renders as a bullet")
         (finally
           (swap! @#'s/!tui-state assoc :display-format (or prev :normal)))))))
@@ -155,7 +155,7 @@
           (#'s/render-agent-activity-entry! "eval-agent" :think {}))
         (is (= 1 (count @captured)) "only the :think stage with reasoning emits")
         (let [line (strip-ansi (first @captured))]
-          (is (str/starts-with? line "• [eval-agent] ") "bullet, then name prefix")
+          (is (str/starts-with? line "● [eval-agent] ") "bullet, then name prefix")
           (is (str/includes? line "Reviewing the diff") "carries the think text"))
         (finally
           (swap! @#'s/!tui-state assoc :display-format (or prev :normal)))))))

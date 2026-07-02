@@ -1338,8 +1338,8 @@
        []
        (let [cols          (or (:cols @layout/!layout) 80)
              normalized    (-> text-for-think (str/replace #"\s+" " ") str/trim)
-             head-prefix   "• "
-             head-prefix-w (count head-prefix)
+             head-prefix   "● "
+             head-prefix-w (fmt/display-width head-prefix)
              cont-prefix   (apply str (repeat head-prefix-w \space))
              first-w       (max 10 (- cols head-prefix-w (or label-w 0)))
              rest-w        (max 10 (- cols head-prefix-w))
@@ -1347,7 +1347,7 @@
              remainder     (str/triml (subs normalized (count first-fit)))
              extra-lines   (if (str/blank? remainder) [] (wrap-snippet-to-width remainder rest-w))
              extras-cap    (max 0 (dec think-max-lines))
-             head-line     (str (ansi/muted head-prefix) (or label "") (ansi/muted first-fit))]
+             head-line     (str (ansi/style head-prefix ansi/bright-white) (or label "") (ansi/muted first-fit))]
          (if (<= (count extra-lines) extras-cap)
            (vec (cons head-line (map #(str cont-prefix (ansi/muted %)) extra-lines)))
            (let [hidden      (- (count extra-lines) extras-cap)

@@ -1308,7 +1308,11 @@
    (when (and answer-str (not (str/blank? answer-str)))
      (let [wrap-w (-> cols (- 4) (max 40))
            lines  (render-markdown (expand-tabs (str/trim answer-str)) wrap-w)]
-       (str "\n" (str/join "\n" lines))))))
+       ;; Indent 2 spaces so the answer aligns with the goal-status / next-prompt
+       ;; lines (`format-goal-status` / `format-next-prompt` both indent by 2).
+       (str "\n" (->> lines
+                      (map #(if (str/blank? %) % (str "  " %)))
+                      (str/join "\n")))))))
 
 ;; ============================================================================
 ;; Usage Summary
