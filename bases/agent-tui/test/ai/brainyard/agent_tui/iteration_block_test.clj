@@ -121,9 +121,9 @@
         (swap! @#'s/!tui-state assoc :display-format :quiet)
         (let [lines (#'s/render-iteration-block-lines state "⠋")
               text  (joined lines)]
-          (is (= 1 (count lines)) "single bulleted line for one-line think text")
-          (is (str/starts-with? (strip-ansi (first lines)) "● ")
-              "line begins with the solid-circle bullet")
+          (is (= "" (first lines)) "leading blank line before the bullet block")
+          (is (some #(str/starts-with? (strip-ansi %) "● ") lines)
+              "a line begins with the solid-circle bullet")
           (is (str/includes? text "Check the render path") "carries the think text")
           (is (not (str/includes? text "Iteration 3")) "no iteration header in quiet")
           (is (not (str/includes? text "search")) "no tool lines in quiet"))
@@ -142,7 +142,7 @@
 
 (deftest render-agent-activity-quiet-shows-only-bulleted-think
   (testing ":quiet display-format renders a sub-agent's think text as a
-            name-prefixed '•' bullet and suppresses all other activity stages"
+            name-prefixed '●' bullet and suppresses all other activity stages"
     (let [prev     (:display-format @@#'s/!tui-state)
           captured (atom [])]
       (try
@@ -155,7 +155,8 @@
           (#'s/render-agent-activity-entry! "eval-agent" :think {}))
         (is (= 1 (count @captured)) "only the :think stage with reasoning emits")
         (let [line (strip-ansi (first @captured))]
-          (is (str/starts-with? line "● [eval-agent] ") "bullet, then name prefix")
+          (is (str/includes? line "● [eval-agent] ") "bullet, then name prefix")
+          (is (str/starts-with? line "\n") "leading blank line before the bullet")
           (is (str/includes? line "Reviewing the diff") "carries the think text"))
         (finally
           (swap! @#'s/!tui-state assoc :display-format (or prev :normal)))))))

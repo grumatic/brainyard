@@ -1323,13 +1323,14 @@
 (defn- render-iteration-quiet-lines
   "Minimal iteration render for :quiet display-format: the iteration's think
    text (streaming, else final reasoning) as a single bulleted entry — no
-   header, tool, eval, or notice lines. Wrapped to width and capped at
+   header, tool, eval, or notice lines. A leading blank line separates the
+   bullet block from whatever precedes it. Wrapped to width and capped at
    `think-max-lines` (with a `[-N lines]` indicator), mirroring the normal
    `Think:` section. Empty when the iteration has no think text yet.
 
    With `label` (a pre-styled string of visible width `label-w`) the label is
    inserted right after the bullet on the first line — e.g. a sub-agent name so
-   its think reads `• [name] …`; continuation lines stay indented under the
+   its think reads `● [name] …`; continuation lines stay indented under the
    bullet only."
   ([state] (render-iteration-quiet-lines state nil 0))
   ([{:keys [reasoning streaming]} label label-w]
@@ -1347,15 +1348,17 @@
              remainder     (str/triml (subs normalized (count first-fit)))
              extra-lines   (if (str/blank? remainder) [] (wrap-snippet-to-width remainder rest-w))
              extras-cap    (max 0 (dec think-max-lines))
-             head-line     (str (ansi/style head-prefix ansi/bright-white) (or label "") (ansi/muted first-fit))]
-         (if (<= (count extra-lines) extras-cap)
-           (vec (cons head-line (map #(str cont-prefix (ansi/muted %)) extra-lines)))
-           (let [hidden      (- (count extra-lines) extras-cap)
-                 kept        (subvec (vec extra-lines) (- (count extra-lines) extras-cap))
-                 indicator   (ansi/style (str "[-" hidden " lines] ") ansi/dim)
-                 first-extra (str cont-prefix indicator (ansi/muted (first kept)))
-                 rest-extras (map #(str cont-prefix (ansi/muted %)) (rest kept))]
-             (vec (concat [head-line first-extra] rest-extras)))))))))
+             head-line     (str (ansi/style head-prefix ansi/bright-white) (or label "") (ansi/muted first-fit))
+             body          (if (<= (count extra-lines) extras-cap)
+                             (vec (cons head-line (map #(str cont-prefix (ansi/muted %)) extra-lines)))
+                             (let [hidden      (- (count extra-lines) extras-cap)
+                                   kept        (subvec (vec extra-lines) (- (count extra-lines) extras-cap))
+                                   indicator   (ansi/style (str "[-" hidden " lines] ") ansi/dim)
+                                   first-extra (str cont-prefix indicator (ansi/muted (first kept)))
+                                   rest-extras (map #(str cont-prefix (ansi/muted %)) (rest kept))]
+                               (vec (concat [head-line first-extra] rest-extras))))]
+         ;; Leading blank line so the bullet block breathes from what precedes it.
+         (into [""] body))))))
 
 (defn- render-iteration-block-lines
   "Build ANSI lines for an iteration block. In :quiet display-format, renders
@@ -2696,12 +2699,14 @@
             (emit! (if (quiet?)
                      (fmt/format-answer-plain answer)
                      (fmt/format-answer answer)))
+            ;; In :quiet the box-less answer needs a blank line after it —
+            ;; prepend one to the first of the goal / next-prompt lines.
             (when (some? goal-achieved)
-              (emit! (fmt/format-goal-status goal-achieved)))
+              (emit! (str (when (quiet?) "\n") (fmt/format-goal-status goal-achieved))))
             ;; Suggested follow-up (:next-user-prompt). format-next-prompt
             ;; returns nil if blank.
             (when-let [np (fmt/format-next-prompt (:next-user-prompt st))]
-              (emit! np)))))))
+              (emit! (str (when (and (quiet?) (nil? goal-achieved)) "\n") np))))))))
   ;; Sub-agent: stamp :done in the consolidated subagents block (handled
   ;; centrally in `mark-sub-agent-done!` — also auto-freezes the block
   ;; if this was the last running sub-agent under the root) and emit the
@@ -2725,9 +2730,11 @@
             (sessions/emit-to-session! sidx (if (quiet?)
                                               (fmt/format-answer-plain answer)
                                               (fmt/format-answer answer)))
+            ;; In :quiet the box-less answer needs a blank line after it —
+            ;; prepend one to the goal-status line (mirrors the root path).
             (when (some? goal-achieved)
               (sessions/emit-to-session!
-               sidx (fmt/format-goal-status goal-achieved))))
+               sidx (str (when (quiet?) "\n") (fmt/format-goal-status goal-achieved)))))
           (sessions/emit-to-session!
            sidx (str (ansi/muted (str "[" (name agent-id) " completed]"))))
           ;; Only mark the session :completed when it's a legacy per-sub-agent
