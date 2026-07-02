@@ -202,10 +202,28 @@
   [skill-name description use-fn & {:as args}]
   `(deftool ~skill-name ~description ~use-fn ~@(mapcat identity (assoc args :type :skill))))
 
+(def keep-alive-schema-entry
+  "Shared optional agent-tool input field: keep the dispatched subagent alive
+   after it answers so the caller can follow up via agent-registry$resume.
+   Injected into every defagent's :input-schema by the macro below — see
+   docs/design/agent-lifecycle-management.md §5.2."
+  [:keep-alive? {:optional true}
+   [:boolean {:desc "Keep this subagent alive after it answers (persistent) so you can follow up on it via agent-registry$resume; default false = ephemeral (closed on answer)."}]])
+
 (defmacro defagent
-  "Define an agent. Thin wrapper around deftool with :type :agent."
+  "Define an agent. Thin wrapper around deftool with :type :agent.
+
+   Auto-injects the shared optional :keep-alive? field (`keep-alive-schema-entry`)
+   into the agent's :input-schema so every agent tool uniformly advertises the
+   persistence knob to the LLM and coerces it string->boolean. A persistent
+   (:keep-alive? true) subagent survives its answer for follow-up via
+   agent-registry$resume. See docs/design/agent-lifecycle-management.md §5.2."
   [agent-name description ask-fn & {:as args}]
-  `(deftool ~agent-name ~description ~ask-fn ~@(mapcat identity (assoc args :type :agent))))
+  (let [schema  (vec (:input-schema args [:map]))
+        present? (some #(and (vector? %) (= :keep-alive? (first %))) (rest schema))
+        schema' (if present? schema (conj schema keep-alive-schema-entry))
+        args'   (assoc args :input-schema schema' :type :agent)]
+    `(deftool ~agent-name ~description ~ask-fn ~@(mapcat identity args'))))
 
 ;; ============================================================================
 ;; Registry Accessor & Reset
@@ -260,6 +278,12 @@
 (def ^:private !get-config (delay (requiring-resolve 'ai.brainyard.agent.core.config/get-config)))
 (def ^:private !generate-instance-id
   (delay (requiring-resolve 'ai.brainyard.agent.core.agent/generate-instance-id)))
+(def ^:private !count-persistent-agents
+  (delay (requiring-resolve 'ai.brainyard.agent.core.agent/count-persistent-agents)))
+(def ^:private !lru-persistent-agent
+  (delay (requiring-resolve 'ai.brainyard.agent.core.agent/lru-persistent-agent)))
+(def ^:private !close-instance!
+  (delay (requiring-resolve 'ai.brainyard.agent.core.agent/close-instance!)))
 
 (defn- do-call-tool--agent
   "Dispatch a registered :agent-type tool with subagent guards.
@@ -306,17 +330,40 @@
               ;; the top one captured by the detach path.
               _           (when-let [cap proto/*subagent-capture*]
                             (compare-and-set! cap nil instance-id))
-              ;; Sub-agent instances are ephemeral — auto-close after ask completes
-              ;; so we don't accumulate dead entries in !agent-registry. The caller
-              ;; may override by passing an explicit :auto-close? false in parsed-args.
-              auto-close? (get parsed-args :auto-close? (some? agent))]
-          (resolve-agent-ref
-           (apply invoke-tool target-id
-                  (mapcat identity
-                          (cond-> parsed-args
-                            true          (assoc :id instance-id :auto-close? auto-close?)
-                            agent-session (assoc :agent-session agent-session)
-                            agent         (assoc :parent-agent agent))))))))))
+              ;; Sub-agent instances are ephemeral by default — auto-close after
+              ;; ask completes so we don't accumulate dead entries in
+              ;; !agent-registry. Two overrides: an explicit :auto-close? false,
+              ;; or :keep-alive? true (persistent — survives for
+              ;; agent-registry$resume; see agent-lifecycle-management.md §5).
+              keep-alive?0 (contains? #{true "true"} (:keep-alive? parsed-args))
+              ;; Per-session cap on live persistent subagents (§7.3). At the cap,
+              ;; :fallback (default) downgrades this dispatch to ephemeral with a
+              ;; note; :evict-lru closes the least-recently-asked idle persistent
+              ;; instance to make room.
+              [keep-alive? cap-note]
+              (if (and keep-alive?0 agent)
+                (let [sid  (proto/session-id agent)
+                      maxp (or (@!get-config agent :max-persistent-agents) 8)
+                      cur  (@!count-persistent-agents sid)]
+                  (if (>= cur maxp)
+                    (if (= :evict-lru (@!get-config agent :persistent-agent-cap-policy))
+                      (do (when-let [victim (@!lru-persistent-agent sid)]
+                            (@!close-instance! (proto/agent-id victim)))
+                          [true (format "persistent-agent cap (%d) reached — evicted the least-recently-used idle persistent subagent to make room." maxp)])
+                      [false (format "persistent-agent cap (%d) reached — dispatched as ephemeral (not kept alive). Close an idle one via agent-registry$close, then retry with :keep-alive?." maxp)])
+                    [keep-alive?0 nil]))
+                [keep-alive?0 nil])
+              auto-close? (and (get parsed-args :auto-close? (some? agent))
+                               (not keep-alive?))]
+          (let [r (resolve-agent-ref
+                   (apply invoke-tool target-id
+                          (mapcat identity
+                                  (cond-> parsed-args
+                                    true          (assoc :id instance-id :auto-close? auto-close?
+                                                         :keep-alive? keep-alive?)
+                                    agent-session (assoc :agent-session agent-session)
+                                    agent         (assoc :parent-agent agent)))))]
+            (if (and cap-note (map? r)) (assoc r :agent-cap-note cap-note) r)))))))
 
 (defn- blocked-tool-result
   "Synthetic tool-result produced when a :agent.tool-use/pre hook returns :block.

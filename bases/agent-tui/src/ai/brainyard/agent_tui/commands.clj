@@ -997,6 +997,12 @@
          (str (ansi/header "Agent Status") "\n"
               "  Type:       " (ansi/tool-name (agent-id-str defid)) "\n"
               "  Instance:   " (ansi/muted (agent-id-str inst-id)) "\n"
+              (let [lc (agent/lifecycle ag)]
+                (str "  Lifecycle:  "
+                     (ansi/muted (name (or (:mode lc) :ephemeral)))
+                     (when (:owner lc)
+                       (ansi/muted (str " · owned by " (agent-id-str (:owner lc)))))
+                     "\n"))
               "  Status:     " (case (:status state)
                                  :running (ansi/success "running")
                                  :idle    (ansi/muted "idle")

@@ -6,7 +6,7 @@
   "Common commands for agent system.
 
    Provides:
-   - Registry:  agent-registry$instances
+   - Registry:  agent-registry$list
    - Runtime:   agent-runtime$config (read or set)
    - Memory:    memory$remember, memory$recall, memory$status, memory$explain
    - Query:     query$llm (accepts :prompt or :prompts)
@@ -44,30 +44,196 @@
 ;; Registry Commands
 ;; ============================================================================
 
-(defcommand agent-registry$instances
-  "List registered agent instances (root + sub-agents)."
-  (fn [& _]
-    (let [agents (agent-core/list-agents)
-          first-session (some-> agents first :!session deref)
-          entries (->> agents
-                       (mapv (fn [a]
-                               (let [st      @(:!state a)
-                                     st-init (some-> (proto/get-st-memory-init a) deref)
-                                     st-mem  (some-> (proto/get-bt-st-memory a) deref)
-                                     parent  (runtime/get-parent-agent (:!state a))]
-                                 {:agent-id  (proto/agent-id a)
-                                  :turn      (or (:turn-id st-init) 0)
-                                  :iter      (or (:iteration-count st-mem) 0)
-                                  :parent-id (some-> parent proto/agent-id)
-                                  :status    (:status st)}))))]
-      {:agents      entries
-       :total       (count entries)
+(defn- instance-summary
+  "One-line summary row for an agent instance — identity, turn/iter counters, and
+   lifecycle fields (mode/owner/idle/answers/last-question) used by
+   agent-registry$list."
+  [a]
+  (let [st      @(:!state a)
+        st-init (some-> (proto/get-st-memory-init a) deref)
+        st-mem  (some-> (proto/get-bt-st-memory a) deref)
+        parent  (runtime/get-parent-agent (:!state a))
+        lc      (agent-core/lifecycle a)]
+    {:agent-id      (proto/agent-id a)
+     :turn          (or (:turn-id st-init) 0)
+     :iter          (or (:iteration-count st-mem) 0)
+     :parent-id     (some-> parent proto/agent-id)
+     :status        (:status st)
+     :mode          (:mode lc)
+     :owner         (:owner lc)
+     :answers       (or (:answers lc) 0)
+     :idle-ms       (agent-core/instance-idle-ms a)
+     :last-question (:last-question lc)}))
+
+(defcommand agent-registry$list
+  "List registered agent instances (root + sub-agents) with lifecycle info
+   (:mode :ephemeral|:persistent, :owner, :idle-ms, :answers, :last-question).
+   Pass :session-id to filter to one agent-session's instances; omit it to list
+   every instance in the process registry (all sessions). Persistent
+   (:keep-alive?) subagents survive their answer and can be followed up via
+   agent-registry$resume or ended via agent-registry$close."
+  (fn [& {:as args}]
+    (let [sid    (:session-id args)
+          agents (if (str/blank? (str sid))
+                   (agent-core/list-agents)
+                   (agent-core/list-agents-for-session sid))
+          first-session (some-> agents first :!session deref)]
+      {:agents      (mapv instance-summary agents)
+       :total       (count agents)
        :total-turns (or (:total-turns first-session) 0)}))
-  :input-schema  [:map]
+  :input-schema  [:map
+                  [:session-id {:optional true} [:string {:desc "Agent-session id (e.g. \"agt-…\") to filter to; omit to list all instances across every session."}]]]
   :output-schema [:map
-                  [:agents [:string {:desc "Vector of {:agent-id :turn :iter :parent-id :status}"}]]
-                  [:total [:int {:desc "Total agent instances registered"}]]
+                  [:agents [:string {:desc "Vector of {:agent-id :turn :iter :parent-id :status :mode :owner :answers :idle-ms :last-question}. :mode :persistent = kept alive for follow-up; :owner = dispatching instance-id (nil for root)."}]]
+                  [:total [:int {:desc "Number of instances returned (scoped to :session-id when given, else all)"}]]
                   [:total-turns [:int {:desc "Cumulative ask count across the session"}]]])
+
+(defcommand agent-registry$detail
+  "Detail for one live agent instance by :id — lifecycle (mode/owner/answers/
+   timestamps), current status, idle age, latest reasoning + last answer, and
+   whether it is reap-eligible. Use before agent-registry$resume to check a
+   persistent subagent is idle (not :running) and still alive.
+
+   Liveness note: a large-but-growing idle window on a :running instance means
+   'alive but mid-turn', NOT wedged — do not close it on a quiet window alone."
+  (fn [& {:as args}]
+    (let [id-str (:id args)]
+      (if (str/blank? (str id-str))
+        {:error "id is required"}
+        (let [aid (keyword id-str)]
+          (if-let [a (agent-core/get-agent aid)]
+            (let [st     @(:!state a)
+                  st-mem (some-> (proto/get-bt-st-memory a) deref)
+                  lc     (agent-core/lifecycle a)]
+              {:id            (proto/agent-id a)
+               :type          (proto/defagent-type a)
+               :status        (:status st)
+               :mode          (:mode lc)
+               :owner         (:owner lc)
+               :answers       (or (:answers lc) 0)
+               :created-at    (:created-at lc)
+               :last-ask-at   (:last-ask-at lc)
+               :idle-ms       (agent-core/instance-idle-ms a)
+               :last-question (:last-question lc)
+               :iteration     (or (:iteration-count st-mem) 0)
+               :last-reasoning (some-> (:last-reasoning st-mem) str)
+               :last-answer   (agent-core/last-answer a)
+               :reap-eligible? (agent-core/reap-eligible? a)})
+            {:error (str "Instance not found: " id-str)})))))
+  :input-schema  [:map
+                  [:id [:string {:desc "Instance id (e.g. \"exec-agent/crimson-parrot-42\")"}]]]
+  :output-schema [:map
+                  [:id [:string {:desc "Instance id"}]]
+                  [:type [:string {:desc "defagent-type keyword"}]]
+                  [:status [:string {:desc ":idle | :running | :paused | :stopped"}]]
+                  [:mode [:string {:desc ":persistent (kept alive) | :ephemeral"}]]
+                  [:owner [:string {:desc "Dispatching instance-id (nil for root)"}]]
+                  [:answers [:int {:desc "Completed asks on this instance"}]]
+                  [:created-at [:int {:desc "Creation epoch ms"}]]
+                  [:last-ask-at [:int {:desc "Epoch ms the latest ask started (nil if never asked)"}]]
+                  [:idle-ms [:int {:desc "ms since the last ask started (or creation). Large + :running = alive mid-turn; large + :idle = quiescent."}]]
+                  [:last-question [:string {:desc "Truncated latest question"}]]
+                  [:iteration [:int {:desc "Current/last BT iteration count"}]]
+                  [:last-reasoning [:string {:desc "Latest 'Think:' reasoning text"}]]
+                  [:last-answer [:string {:desc "Most recent answer (from the per-instance previous-turns chain)"}]]
+                  [:reap-eligible? [:boolean {:desc "True when idle beyond :persistent-agent-idle-ms and not running — the idle sweep may close it."}]]
+                  [:error [:string {:desc "Error if id missing or instance not found"}]]])
+
+(defn- authorize-instance-op
+  "Return nil when the current agent (`caller`, may be nil) may act on `target`,
+   else an {:error ...} map. Enforces the subagent kill-switch, same-session
+   scoping, and ownership. Top-level callers (no parent, or no caller at all)
+   bypass the ownership check — a root/human caller manages any instance in its
+   session; a subagent may only manage instances it dispatched."
+  [caller target]
+  (let [caller-id    (some-> caller proto/agent-id)
+        caller-root? (or (nil? caller)
+                         (nil? (runtime/get-parent-agent (:!state caller))))
+        owner        (:owner (agent-core/lifecycle target))]
+    (cond
+      (and caller (not (config/get-config caller :enable-subagent-calls)))
+      {:error "Subagent management is disabled (enable-subagent-calls=false)."}
+
+      (and caller (not= (proto/session-id target) (proto/session-id caller)))
+      {:error "Instance belongs to a different session; you can only manage instances in your own session."}
+
+      (and (not caller-root?) (not= owner caller-id))
+      {:error (format "Not owned by you (owner: %s). You may only resume/close subagents you dispatched with :keep-alive?."
+                      (pr-str owner))}
+
+      :else nil)))
+
+(defcommand agent-registry$resume
+  "Follow-up ask to a live, persistent (:keep-alive?) subagent by :id — reuses
+   the instance and its accumulated history (## Previous Turns) instead of
+   spawning a fresh one. Runs synchronously and leaves the instance alive for
+   further follow-ups. Errors if the instance is missing, :running (poll
+   agent-registry$detail, or task$wait if detached), not owned by you, or the
+   agent-call depth limit is reached."
+  (fn [& {:as args}]
+    (let [id     (:id args)
+          q      (:question args)
+          caller proto/*current-agent*]
+      (cond
+        (str/blank? (str id)) {:error "id is required"}
+        (str/blank? (str q))  {:error "question is required"}
+        :else
+        (let [aid    (keyword id)
+              target (agent-core/get-agent aid)]
+          (if (nil? target)
+            {:error (str "Instance not found: " id)}
+            (or (authorize-instance-op caller target)
+                (agent-core/resume-agent aid q :caller-id (some-> caller proto/agent-id))))))))
+  :input-schema  [:map
+                  [:id [:string {:desc "Instance id to resume (e.g. \"exec-agent/crimson-parrot-42\"); from agent-registry$list"}]]
+                  [:question [:string {:desc "Follow-up question for the kept-alive subagent"}]]]
+  :output-schema [:map
+                  [:id [:string {:desc "Instance id"}]]
+                  [:answer [:string {:desc "The subagent's answer to the follow-up"}]]
+                  [:status [:string {:desc "Instance status after the ask (typically :idle)"}]]
+                  [:error [:string {:desc "Error: missing/blank args, not found, :running (busy), not owned, or depth-limit."}]]])
+
+(defcommand agent-registry$close
+  "Close (reclaim) a live persistent subagent by :id — the LLM counterpart of
+   `/agent close`. Frees its sandbox/registry entry and cascades to any
+   persistent subagents it owned. Refuses while the instance is :running (cancel
+   it first — task$cancel if it was detached). Ownership-checked."
+  (fn [& {:as args}]
+    (let [id     (:id args)
+          caller proto/*current-agent*]
+      (if (str/blank? (str id))
+        {:error "id is required"}
+        (let [aid    (keyword id)
+              target (agent-core/get-agent aid)]
+          (if (nil? target)
+            {:error (str "Instance not found: " id)}
+            (or (authorize-instance-op caller target)
+                (agent-core/close-instance! aid)))))))
+  :input-schema  [:map
+                  [:id [:string {:desc "Instance id to close (e.g. \"exec-agent/crimson-parrot-42\")"}]]]
+  :output-schema [:map
+                  [:closed [:boolean {:desc "True when the instance was closed"}]]
+                  [:id [:string {:desc "Instance id"}]]
+                  [:error [:string {:desc "Error: missing id, not found, :running (busy), not owned, or different session."}]]])
+
+(defcommand agent-registry$sweep
+  "Reap idle persistent subagents — close those idle beyond
+   :persistent-agent-idle-ms that are not running. Defaults to your own session;
+   pass :session-id to target another, or :dry-run \"true\" to report without
+   closing. Root agents and ephemeral instances are never reaped."
+  (fn [& {:as args}]
+    (let [caller proto/*current-agent*
+          sid    (let [s (:session-id args)]
+                   (if (str/blank? (str s)) (some-> caller proto/session-id) s))
+          dry?   (contains? #{true "true"} (:dry-run args))]
+      (agent-core/reap-idle-agents! :session-id sid :dry-run? dry?)))
+  :input-schema  [:map
+                  [:session-id {:optional true} [:string {:desc "Session to sweep; omit for your own session."}]]
+                  [:dry-run {:optional true} [:string {:desc "\"true\" to report reap-eligible instances without closing them."}]]]
+  :output-schema [:map
+                  [:scanned [:int {:desc "Instances examined"}]]
+                  [:reaped [:string {:desc "Vector of closed (or, in dry-run, would-close) instance ids"}]]
+                  [:kept [:int {:desc "Instances left alive"}]]])
 
 ;; The agent-knowledge$* commands (update / remove / list) were removed
 ;; in the L1 simplification refactor. System context is now operator-
@@ -779,8 +945,14 @@ results are intentionally kept out of semantic recall so it stays focused on kno
 ;; ============================================================================
 
 (def registry-commands
-  "Commands for inspecting the agent registry (root + sub-agent instances)"
-  [#'agent-registry$instances])
+  "Commands for inspecting and managing the agent registry (root + sub-agent
+   instances). Lifecycle verbs (resume/close/sweep) act on persistent
+   (:keep-alive?) subagents — see docs/design/agent-lifecycle-management.md."
+  [#'agent-registry$list
+   #'agent-registry$detail
+   #'agent-registry$resume
+   #'agent-registry$close
+   #'agent-registry$sweep])
 
 (def runtime-commands
   "Commands for reading and updating runtime configuration"
