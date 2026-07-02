@@ -363,6 +363,18 @@
       (is (= 1 (count (distinct (map fmt/display-width rows))))
           "all │…│ rows must be equal width so the right border aligns"))))
 
+(deftest format-answer-plain-has-no-box-but-keeps-content-test
+  (testing "the :quiet box-less variant renders the markdown content with no
+            border chars, while the default keeps its box"
+    (let [answer "Hello **world**\n\n- one\n- two"
+          boxed  (strip-ansi (fmt/format-answer answer 60))
+          plain  (strip-ansi (fmt/format-answer-plain answer 60))]
+      (is (re-find #"[┌┐└┘─│]" boxed) "boxed variant draws a border")
+      (is (not (re-find #"[┌┐└┘─│]" plain)) "plain variant has no border chars")
+      (is (str/includes? plain "Hello world") "plain keeps the rendered text")
+      (is (str/includes? plain "• one") "plain keeps list markdown")
+      (is (nil? (fmt/format-answer-plain "   " 60)) "blank answer → nil"))))
+
 (deftest format-recovery-status-test
   (testing "empty-result shows N/M progress"
     (let [s (strip-ansi (fmt/format-recovery-status :empty-result 2 5))]

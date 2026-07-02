@@ -18,7 +18,7 @@
                 format-tool-result-block format-tool-error-block
                 format-goal-status
                 format-next-prompt format-eval-verdict
-                format-answer format-usage-summary format-usage-table
+                format-answer format-answer-plain format-usage-summary format-usage-table
                 format-conversation-message format-conversation-history
                 format-status-summary
                 format-trace format-mulog-event format-mulog-event-data)

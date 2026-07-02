@@ -1320,97 +1320,139 @@
                                                       :id (tool-result-box-id call-id))))]
     (into head-lines (or result-box []))))
 
+(defn- render-iteration-quiet-lines
+  "Minimal iteration render for :quiet display-format: the iteration's think
+   text (streaming, else final reasoning) as a single bulleted entry — no
+   header, tool, eval, or notice lines. Wrapped to width and capped at
+   `think-max-lines` (with a `[-N lines]` indicator), mirroring the normal
+   `Think:` section. Empty when the iteration has no think text yet.
+
+   With `label` (a pre-styled string of visible width `label-w`) the label is
+   inserted right after the bullet on the first line — e.g. a sub-agent name so
+   its think reads `• [name] …`; continuation lines stay indented under the
+   bullet only."
+  ([state] (render-iteration-quiet-lines state nil 0))
+  ([{:keys [reasoning streaming]} label label-w]
+   (let [text-for-think (or streaming reasoning)]
+     (if-not (and (string? text-for-think) (not (str/blank? text-for-think)))
+       []
+       (let [cols          (or (:cols @layout/!layout) 80)
+             normalized    (-> text-for-think (str/replace #"\s+" " ") str/trim)
+             head-prefix   "• "
+             head-prefix-w (count head-prefix)
+             cont-prefix   (apply str (repeat head-prefix-w \space))
+             first-w       (max 10 (- cols head-prefix-w (or label-w 0)))
+             rest-w        (max 10 (- cols head-prefix-w))
+             first-fit     (or (first (wrap-snippet-to-width normalized first-w)) "")
+             remainder     (str/triml (subs normalized (count first-fit)))
+             extra-lines   (if (str/blank? remainder) [] (wrap-snippet-to-width remainder rest-w))
+             extras-cap    (max 0 (dec think-max-lines))
+             head-line     (str (ansi/muted head-prefix) (or label "") (ansi/muted first-fit))]
+         (if (<= (count extra-lines) extras-cap)
+           (vec (cons head-line (map #(str cont-prefix (ansi/muted %)) extra-lines)))
+           (let [hidden      (- (count extra-lines) extras-cap)
+                 kept        (subvec (vec extra-lines) (- (count extra-lines) extras-cap))
+                 indicator   (ansi/style (str "[-" hidden " lines] ") ansi/dim)
+                 first-extra (str cont-prefix indicator (ansi/muted (first kept)))
+                 rest-extras (map #(str cont-prefix (ansi/muted %)) (rest kept))]
+             (vec (concat [head-line first-extra] rest-extras)))))))))
+
 (defn- render-iteration-block-lines
-  "Build ANSI lines for an iteration block."
+  "Build ANSI lines for an iteration block. In :quiet display-format, renders
+   only the think text as a bulleted entry (see `render-iteration-quiet-lines`);
+   otherwise the full header + Think + tools + eval + notices block."
   [{:keys [iteration max-iterations stage reasoning streaming
-           tool-batch eval-section-lines usage result start-ms end-ms notices]}
+           tool-batch eval-section-lines usage result start-ms end-ms notices]
+    :as state}
    spinner-char]
-  (let [cols (or (:cols @layout/!layout) 80)
-        ;; Bracketed indicator matches the legacy `[+] Iteration` style — `+`
-        ;; while running, `✓` on success, `✗` on failure. Each marker
-        ;; goes through its theme token so the live indicator switches
-        ;; with the active theme.
-        marker (case result
-                 :success (ansi/iter-marker-success "✓")
-                 :failure (ansi/iter-marker-failure "✗")
-                 (case stage
-                   :done (ansi/iter-marker-done "●")
-                   (ansi/iter-marker-running "+")))
-        usage-tot (:total usage)
-        elapsed-str (when start-ms
-                      (format-iter-elapsed (- (or end-ms (System/currentTimeMillis))
-                                              start-ms)))
-        label (if max-iterations
-                (format "Iteration %d / %d" iteration max-iterations)
-                (format "Iteration %d" iteration))
-        header (str (ansi/muted "[") marker (ansi/muted "] ")
-                    (ansi/iter-label label)
-                    (when usage-tot (str "  " (ansi/iter-usage (format "(%d tok)" usage-tot))))
-                    (when elapsed-str (str "  " (ansi/muted (str "(" elapsed-str ")")))))
-        text-for-think (or streaming reasoning)
-        ;; Multi-line Think section (per docs/simplified-agent-tui-arch-design.md
-        ;; Phase 9): keep the same cap (`think-max-lines`) as the live-block so
-        ;; the block doesn't dominate the iteration widget. Header line is
-        ;;   `  Think: first wrapped line ...`
-        ;; with continuation lines indented under the colon.
-        think-block-lines
-        (when (and (string? text-for-think) (not (str/blank? text-for-think)))
-          (let [normalized (-> text-for-think
-                               (str/replace #"\s+" " ")
-                               str/trim)
-                head-prefix "  Think: "
-                head-prefix-w (count head-prefix)
-                cont-prefix (apply str (repeat head-prefix-w \space))
-                first-w (max 10 (- cols head-prefix-w))
-                rest-w  (max 10 (- cols head-prefix-w))
-                first-fit (or (first (wrap-snippet-to-width normalized first-w)) "")
-                remainder (str/triml (subs normalized (count first-fit)))
-                extra-lines (if (str/blank? remainder)
-                              []
-                              (wrap-snippet-to-width remainder rest-w))
-                extras-cap (max 0 (dec think-max-lines))
-                head-line (str (ansi/muted head-prefix) (ansi/muted first-fit))]
-            (if (<= (count extra-lines) extras-cap)
-              (vec (cons head-line
-                         (map #(str cont-prefix (ansi/muted %)) extra-lines)))
-              (let [hidden (- (count extra-lines) extras-cap)
-                    kept (subvec (vec extra-lines)
-                                 (- (count extra-lines) extras-cap))
-                    indicator (ansi/style (str "[-" hidden " lines] ") ansi/dim)
-                    first-extra (str cont-prefix indicator
-                                     (ansi/muted (first kept)))
-                    rest-extras (map #(str cont-prefix (ansi/muted %))
-                                     (rest kept))]
-                (vec (concat [head-line first-extra] rest-extras))))))
-        tool-lines (when (seq tool-batch)
-                     (vec (mapcat render-iter-tool-line tool-batch)))
-        ;; Advisory notice (usage guide / self-improvement nudge) the LLM also
-        ;; reads via the record's :notices. Wrapped + capped so a long usage
-        ;; guide can't dominate the iteration block; a short nudge shows in full.
-        notice-lines
-        (when (and (string? notices) (not (str/blank? notices)))
-          (let [normalized (-> notices (str/replace #"\s+" " ") str/trim)
-                prefix "  "
-                w (max 10 (- cols (count prefix)))
-                wrapped (wrap-snippet-to-width normalized w)
-                cap notice-max-lines]
-            (if (<= (count wrapped) cap)
-              (mapv #(str prefix (ansi/muted %)) wrapped)
-              (let [kept (subvec (vec wrapped) 0 cap)
-                    hidden (- (count wrapped) cap)]
-                (conj (mapv #(str prefix (ansi/muted %)) kept)
-                      (str prefix (ansi/style (str "[-" hidden " lines]") ansi/dim)))))))]
-    ;; Eval sections (Code / Result / Output / Error) are pre-rendered
-    ;; into :eval-section-lines by the code-eval hook handlers. Each
-    ;; section is a display-block-backed boxed segment, so long content
-    ;; collapses with a marker the user can expand. Using a stable
-    ;; id-prefix per iteration means the pre-render and post-render
-    ;; calls overwrite the same providers instead of leaking new ones.
-    (vec (concat [header]
-                 (or think-block-lines [])
-                 (or tool-lines [])
-                 (or eval-section-lines [])
-                 (or notice-lines [])))))
+  (if (quiet?)
+    (render-iteration-quiet-lines state)
+    (let [cols (or (:cols @layout/!layout) 80)
+          ;; Bracketed indicator matches the legacy `[+] Iteration` style — `+`
+          ;; while running, `✓` on success, `✗` on failure. Each marker
+          ;; goes through its theme token so the live indicator switches
+          ;; with the active theme.
+          marker (case result
+                   :success (ansi/iter-marker-success "✓")
+                   :failure (ansi/iter-marker-failure "✗")
+                   (case stage
+                     :done (ansi/iter-marker-done "●")
+                     (ansi/iter-marker-running "+")))
+          usage-tot (:total usage)
+          elapsed-str (when start-ms
+                        (format-iter-elapsed (- (or end-ms (System/currentTimeMillis))
+                                                start-ms)))
+          label (if max-iterations
+                  (format "Iteration %d / %d" iteration max-iterations)
+                  (format "Iteration %d" iteration))
+          header (str (ansi/muted "[") marker (ansi/muted "] ")
+                      (ansi/iter-label label)
+                      (when usage-tot (str "  " (ansi/iter-usage (format "(%d tok)" usage-tot))))
+                      (when elapsed-str (str "  " (ansi/muted (str "(" elapsed-str ")")))))
+          text-for-think (or streaming reasoning)
+          ;; Multi-line Think section (per docs/simplified-agent-tui-arch-design.md
+          ;; Phase 9): keep the same cap (`think-max-lines`) as the live-block so
+          ;; the block doesn't dominate the iteration widget. Header line is
+          ;;   `  Think: first wrapped line ...`
+          ;; with continuation lines indented under the colon.
+          think-block-lines
+          (when (and (string? text-for-think) (not (str/blank? text-for-think)))
+            (let [normalized (-> text-for-think
+                                 (str/replace #"\s+" " ")
+                                 str/trim)
+                  head-prefix "  Think: "
+                  head-prefix-w (count head-prefix)
+                  cont-prefix (apply str (repeat head-prefix-w \space))
+                  first-w (max 10 (- cols head-prefix-w))
+                  rest-w  (max 10 (- cols head-prefix-w))
+                  first-fit (or (first (wrap-snippet-to-width normalized first-w)) "")
+                  remainder (str/triml (subs normalized (count first-fit)))
+                  extra-lines (if (str/blank? remainder)
+                                []
+                                (wrap-snippet-to-width remainder rest-w))
+                  extras-cap (max 0 (dec think-max-lines))
+                  head-line (str (ansi/muted head-prefix) (ansi/muted first-fit))]
+              (if (<= (count extra-lines) extras-cap)
+                (vec (cons head-line
+                           (map #(str cont-prefix (ansi/muted %)) extra-lines)))
+                (let [hidden (- (count extra-lines) extras-cap)
+                      kept (subvec (vec extra-lines)
+                                   (- (count extra-lines) extras-cap))
+                      indicator (ansi/style (str "[-" hidden " lines] ") ansi/dim)
+                      first-extra (str cont-prefix indicator
+                                       (ansi/muted (first kept)))
+                      rest-extras (map #(str cont-prefix (ansi/muted %))
+                                       (rest kept))]
+                  (vec (concat [head-line first-extra] rest-extras))))))
+          tool-lines (when (seq tool-batch)
+                       (vec (mapcat render-iter-tool-line tool-batch)))
+          ;; Advisory notice (usage guide / self-improvement nudge) the LLM also
+          ;; reads via the record's :notices. Wrapped + capped so a long usage
+          ;; guide can't dominate the iteration block; a short nudge shows in full.
+          notice-lines
+          (when (and (string? notices) (not (str/blank? notices)))
+            (let [normalized (-> notices (str/replace #"\s+" " ") str/trim)
+                  prefix "  "
+                  w (max 10 (- cols (count prefix)))
+                  wrapped (wrap-snippet-to-width normalized w)
+                  cap notice-max-lines]
+              (if (<= (count wrapped) cap)
+                (mapv #(str prefix (ansi/muted %)) wrapped)
+                (let [kept (subvec (vec wrapped) 0 cap)
+                      hidden (- (count wrapped) cap)]
+                  (conj (mapv #(str prefix (ansi/muted %)) kept)
+                        (str prefix (ansi/style (str "[-" hidden " lines]") ansi/dim)))))))]
+      ;; Eval sections (Code / Result / Output / Error) are pre-rendered
+      ;; into :eval-section-lines by the code-eval hook handlers. Each
+      ;; section is a display-block-backed boxed segment, so long content
+      ;; collapses with a marker the user can expand. Using a stable
+      ;; id-prefix per iteration means the pre-render and post-render
+      ;; calls overwrite the same providers instead of leaking new ones.
+      (vec (concat [header]
+                   (or think-block-lines [])
+                   (or tool-lines [])
+                   (or eval-section-lines [])
+                   (or notice-lines []))))))
 
 (defn- update-iteration-block!
   "Re-render an iteration block.
@@ -1426,14 +1468,16 @@
    because `iteration-post-handler`'s `already-buffered?` guard trusts the
    last rendered snapshot. Mirrors the per-task and subagents blocks.
 
-   Suppressed entirely in :quiet display-format — only the answer box is shown."
+   In :quiet display-format the block renders only the think text as a bullet
+   (`render-iteration-block-lines` delegates to `render-iteration-quiet-lines`),
+   so an iteration with no think text yet produces no lines and is skipped."
   [agent-id repeat-id iteration]
-  (when-not (quiet?)
-    (when-let [state (get @!iteration-blocks [agent-id repeat-id iteration])]
-      (let [origin-idx   (:session-idx state)
-            block-id     (iteration-block-id agent-id repeat-id iteration)
-            spinner-char (nth subagents-spinner-frames @!subagents-spinner-idx)
-            lines        (render-iteration-block-lines state spinner-char)]
+  (when-let [state (get @!iteration-blocks [agent-id repeat-id iteration])]
+    (let [origin-idx   (:session-idx state)
+          block-id     (iteration-block-id agent-id repeat-id iteration)
+          spinner-char (nth subagents-spinner-frames @!subagents-spinner-idx)
+          lines        (render-iteration-block-lines state spinner-char)]
+      (when (seq lines)
         (if (or (nil? origin-idx) (= origin-idx (sessions/active-idx)))
           (iter-sink/write-widget! block-id lines)
           (sessions/update-live-block-in-session! origin-idx block-id lines))))))
@@ -1527,10 +1571,19 @@
             (schedule-todo-auto-dispose! sidx now)))))))
 
 (defn- render-agent-activity-entry!
-  "Render a single sub-agent display event with agent name prefix."
+  "Render a single sub-agent display event with agent name prefix.
+   In :quiet display-format, mirror the main-agent iteration block: render only
+   the sub-agent's think text as a name-prefixed `•` bullet and skip every other
+   stage (iteration headers, tool calls/results, observations, eval sections)."
   [agent-name stage data]
   (let [prefix (str (ansi/style (str "[" agent-name "] ") ansi/bold ansi/bright-magenta))]
-    (when (not= :quiet (:display-format @!tui-state))
+    (if (quiet?)
+      (when (and (= stage :think) (:last-reasoning data))
+        (let [label-w (count (str "[" agent-name "] "))
+              lines   (render-iteration-quiet-lines {:reasoning (:last-reasoning data)}
+                                                    prefix label-w)]
+          (when (seq lines)
+            (emit! (str/join "\n" lines)))))
       (case stage
         :iteration-start
         (emit! (str "\n" prefix
@@ -2640,7 +2693,9 @@
               goal-achieved (:goal-achieved st)]
           (when (and (string? answer) (not (str/blank? answer)))
             (when (render-active?) (stop-thinking-indicator!))
-            (emit! (fmt/format-answer answer))
+            (emit! (if (quiet?)
+                     (fmt/format-answer-plain answer)
+                     (fmt/format-answer answer)))
             (when (some? goal-achieved)
               (emit! (fmt/format-goal-status goal-achieved)))
             ;; Suggested follow-up (:next-user-prompt). format-next-prompt
@@ -2667,7 +2722,9 @@
                           (when (string? result) result))
               goal-achieved (:goal-achieved st)]
           (when (and (string? answer) (not (str/blank? answer)))
-            (sessions/emit-to-session! sidx (fmt/format-answer answer))
+            (sessions/emit-to-session! sidx (if (quiet?)
+                                              (fmt/format-answer-plain answer)
+                                              (fmt/format-answer answer)))
             (when (some? goal-achieved)
               (sessions/emit-to-session!
                sidx (fmt/format-goal-status goal-achieved))))

@@ -1295,6 +1295,21 @@
                  (str/join "\n")) "\n"
             (gb bottom))))))
 
+(defn format-answer-plain
+  "Render the final answer as ANSI (markdown → styling) WITHOUT the highlighted
+   box — the bare content lines. Used in :quiet display-format. Mirrors
+   `format-answer`'s content rendering (tab-expansion, markdown, identical wrap
+   width) so the text wraps the same way; it just drops the border.
+
+   1-arity uses the cached terminal width; 2-arity accepts an explicit pane
+   width (parity with `format-answer`)."
+  ([answer-str] (format-answer-plain answer-str (terminal-columns)))
+  ([answer-str cols]
+   (when (and answer-str (not (str/blank? answer-str)))
+     (let [wrap-w (-> cols (- 4) (max 40))
+           lines  (render-markdown (expand-tabs (str/trim answer-str)) wrap-w)]
+       (str "\n" (str/join "\n" lines))))))
+
 ;; ============================================================================
 ;; Usage Summary
 ;; ============================================================================
