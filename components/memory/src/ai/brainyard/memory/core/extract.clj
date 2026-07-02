@@ -136,6 +136,15 @@
   prior valid edge with the same (src, relation) but a different dst."
   #{:prefers})
 
+(def default-graph-limits
+  "Per-episode caps that CONFINE graph node/edge explosion. One file-heavy
+  episode (e.g. an explore-agent turn listing dozens of files) can otherwise
+  yield a huge entity/relation set, ballooning the graph and every downstream
+  recall. We keep the highest-signal items: entities as returned (the extractor
+  is prompted to list durable ones first), relations by descending confidence.
+  Overridable per manager via start-capture! :graph-limits."
+  {:max-entities 24 :max-relations 48})
+
 (defn- norm-type [t]
   (let [k (keyword t)] (if (proto/valid-node-type? k) k :entity)))
 
@@ -144,9 +153,28 @@
   graph behind `store`. Resolves entities (create/merge by name+alias),
   inserts edges tagged with `source-entry-id` provenance, reconciles
   functional-relation supersession, and embeds node summaries when the
-  store has an embed-fn. Returns `{:nodes n :edges n}`."
-  [store {:keys [entities relations]} source-entry-id]
-  (let [embed-fn (:embed-fn store)
+  store has an embed-fn. Returns `{:nodes n :edges n}`.
+
+  `limits` (optional) caps how much a SINGLE episode may add — `:max-entities`
+  and `:max-relations` (see `default-graph-limits`). Entities beyond the cap are
+  dropped; relations are kept highest-confidence-first, then capped. This is the
+  primary guard against node/edge explosion from a large episode."
+  [store {:keys [entities relations]} source-entry-id & [limits]]
+  (let [{:keys [max-entities max-relations]} (merge default-graph-limits limits)
+        n-ent-in  (count entities)
+        n-rel-in  (count relations)
+        ;; Confine explosion: cap entities (as-returned) and keep the
+        ;; highest-confidence relations before capping.
+        entities  (take max-entities entities)
+        relations (->> relations
+                       (sort-by #(- (double (or (:confidence %) 0.0))))
+                       (take max-relations))
+        _ (when (or (> n-ent-in max-entities) (> n-rel-in max-relations))
+            (mulog/debug ::extraction-capped
+                         :entities-in n-ent-in :entities-kept (count entities)
+                         :relations-in n-rel-in :relations-kept (count relations)
+                         :source-entry-id source-entry-id))
+        embed-fn (:embed-fn store)
         ds       (:ds store)
         ;; 1. Upsert entities; index name + aliases (lowercased) → node.
         nodes (vec (for [e entities :when (:name e)]

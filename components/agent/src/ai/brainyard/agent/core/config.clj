@@ -188,6 +188,12 @@
                                 :default nil
                                 :requires-restart true
                                 :doc "Chat LM that extracts entities/relationships from episodes and writes community summaries for the context graph. nil → graph stays storage-only (manual edge API). The extract-fn is built at memory-manager startup — changing it needs a `by` restart. Env: BY_GRAPH_EXTRACT_MODEL."}
+   :graph-extract-max-input-chars {:type "integer" :default 12000 :requires-restart true
+                                   :doc "Confines graph explosion: truncate each L2 episode to this many chars before entity/relationship extraction (only when :enable-graph-memory). A large episode otherwise yields far more nodes/edges than are worth keeping. Baked into the extractor at start-capture! — needs a `by` restart."}
+   :graph-max-entities-per-episode {:type "integer" :default 24 :requires-restart true
+                                    :doc "Confines graph explosion: max entities a single episode may add to the graph (only when :enable-graph-memory). Extras are dropped (durable ones are listed first). Baked into the extractor at start-capture! — needs a `by` restart."}
+   :graph-max-relations-per-episode {:type "integer" :default 48 :requires-restart true
+                                     :doc "Confines graph explosion: max relationships (edges) a single episode may add (only when :enable-graph-memory). Kept highest-confidence-first, then capped. Baked into the extractor at start-capture! — needs a `by` restart."}
    :enable-memory-consolidation {:type "boolean"
                                  :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY_CONSOLIDATION")]
                                             (= "true" v) ::env-unset)

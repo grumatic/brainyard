@@ -612,7 +612,12 @@
               (mem/start-capture!
                mm
                :limits {:question (config/get-config agent :memory-question-max-chars)
-                        :answer   (config/get-config agent :memory-answer-max-chars)})
+                        :answer   (config/get-config agent :memory-answer-max-chars)}
+               ;; Confine graph node/edge explosion: per-episode caps for the
+               ;; extractor (only relevant when :enable-graph-memory is on).
+               :graph-limits {:max-input-chars (config/get-config agent :graph-extract-max-input-chars)
+                              :max-entities    (config/get-config agent :graph-max-entities-per-episode)
+                              :max-relations   (config/get-config agent :graph-max-relations-per-episode)})
               (catch Exception e
                 (mulog/warn ::capture-start-failed
                             :agent-id agent-id

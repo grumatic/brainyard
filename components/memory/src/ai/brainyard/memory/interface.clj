@@ -347,22 +347,26 @@
     :limits          — storage-truncation override map for the parser, merged
                        over `parser/default-limits` (e.g. the agent's configured
                        `:question`/`:answer` caps).
+    :graph-limits    — per-episode graph caps for the extractor (`:max-input-chars`,
+                       `:max-entities`, `:max-relations`), confining node/edge
+                       explosion. Merged over the extractor/extract defaults.
 
   Idempotent: calling twice on the same manager returns the existing
   capture handle."
-  [manager & {:keys [limits] :as opts}]
+  [manager & {:keys [limits graph-limits] :as opts}]
   (when-not manager
     (throw (ex-info "start-capture! requires a memory manager" {})))
   (let [!cap (:!capture manager)
-        ;; :limits is consumed by the sidecar, not the dispatcher.
-        disp-opts (dissoc opts :limits)]
+        ;; :limits / :graph-limits are consumed by the sidecar / extractor,
+        ;; not the dispatcher.
+        disp-opts (dissoc opts :limits :graph-limits)]
     (or @!cap
         (let [d   (apply capture-dispatcher/start! (mapcat identity disp-opts))
               ;; CR-MEM-22: when the manager carries an extract-fn, run the
               ;; graph-extraction sidecar and feed it persisted L2 entries
               ;; via the sidecar's :on-write seam.
               ex  (when-let [ef (:extract-fn manager)]
-                    (capture-extractor/start! (:store manager) ef))
+                    (capture-extractor/start! (:store manager) ef :limits graph-limits))
               s   (apply capture-sidecar/start! (:store manager) d
                          (concat (when ex [:on-write #(capture-extractor/enqueue! ex %)])
                                  (when limits [:limits limits])))

@@ -22,7 +22,13 @@
 ;; Episodes shorter than this are almost never worth an LLM round-trip.
 (def ^:private default-min-content 40)
 
-(defrecord Extractor [store extract-fn ch thread !running])
+;; Truncate an episode to this many chars before extraction: a huge episode
+;; (e.g. an explore-agent answer listing many files) both stresses the extractor
+;; LLM and yields far more entities/relations than are worth keeping. Caps input
+;; → caps output → confines graph growth. Overridable via :limits :max-input-chars.
+(def ^:private default-max-input-chars 12000)
+
+(defrecord Extractor [store extract-fn ch thread !running limits])
 
 (defn enqueue!
   "Offer an L2 entry for extraction. Non-blocking; a full channel drops the
@@ -32,12 +38,16 @@
     (async/offer! (:ch ex) entry)))
 
 (defn- process!
-  [store extract-fn entry]
+  [store extract-fn entry limits]
   (try
-    (let [content (:content entry)]
+    (let [raw     (:content entry)
+          max-in  (:max-input-chars limits default-max-input-chars)
+          content (if (and (string? raw) (> (count raw) max-in))
+                    (subs raw 0 max-in)
+                    raw)]
       (when (and (string? content) (>= (count content) default-min-content))
         (when-let [result (extract-fn content)]
-          (extract/process-extraction! store result (:id entry)))))
+          (extract/process-extraction! store result (:id entry) limits))))
     (catch Exception e
       (mulog/warn ::graph-extract-failed :entry-id (:id entry) :error (ex-message e)))))
 
@@ -48,35 +58,42 @@
    sidecar, for scripted/backfill graph builds. Entries whose content is below
    `:min-content` chars are skipped (same threshold as the async path).
    Returns {:attempted <n eligible> :total <n entries>}."
-  [store extract-fn entries & {:keys [min-content] :or {min-content default-min-content}}]
+  [store extract-fn entries & {:keys [min-content limits] :or {min-content default-min-content}}]
   (let [attempted (reduce (fn [n entry]
                             (let [content (:content entry)]
                               (if (and (string? content) (>= (count content) min-content))
-                                (do (process! store extract-fn entry) (inc n))
+                                (do (process! store extract-fn entry limits) (inc n))
                                 n)))
                           0 entries)]
     {:attempted attempted :total (count entries)}))
 
 (defn- run-loop!
-  [store extract-fn ch !running]
+  [store extract-fn ch !running limits]
   (try
     (loop []
       (when @!running
         (when-let [entry (async/<!! ch)]
-          (process! store extract-fn entry)
+          (process! store extract-fn entry limits)
           (recur))))
     (catch Throwable t
       (mulog/error ::extractor-crashed :exception t))))
 
 (defn start!
   "Spawn the extractor thread. `extract-fn` is `(fn [text] -> {:entities
-  [...] :relations [...]})`. Returns an `Extractor`."
-  [store extract-fn & {:keys [buffer] :or {buffer 256}}]
+  [...] :relations [...]})`. Returns an `Extractor`.
+
+  Options:
+    :buffer — sliding-buffer size (default 256).
+    :limits — per-episode graph caps merged over the extractor/extract defaults:
+              `:max-input-chars` (episode truncation), `:max-entities`,
+              `:max-relations` (see extract/default-graph-limits). Confines
+              node/edge explosion from large episodes."
+  [store extract-fn & {:keys [buffer limits] :or {buffer 256}}]
   (let [ch       (async/chan (async/sliding-buffer buffer))
         !running (atom true)
-        t        (async/thread (run-loop! store extract-fn ch !running))]
-    (mulog/info ::graph-extractor-started)
-    (->Extractor store extract-fn ch t !running)))
+        t        (async/thread (run-loop! store extract-fn ch !running limits))]
+    (mulog/info ::graph-extractor-started :limits limits)
+    (->Extractor store extract-fn ch t !running limits)))
 
 (defn stop!
   "Signal the extractor to exit and close its channel. Idempotent."
