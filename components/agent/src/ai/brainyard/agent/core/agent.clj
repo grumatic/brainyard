@@ -1093,12 +1093,12 @@
       {:error (str "Instance not found: " instance-id)}
 
       (running-instance? ag)
-      {:id (str aid) :status "running"
+      {:id (util/kw->str aid) :status "running"
        :error (format "Instance %s is running; cannot resume until idle. Poll agent-registry$detail (or task$wait if it was detached)."
                       (name aid))}
 
       (>= proto/*call-depth* (or (config/get-config ag :max-agent-call-depth) 3))
-      {:id (str aid)
+      {:id (util/kw->str aid)
        :error (format "Agent call depth limit reached (%d); cannot resume '%s'."
                       proto/*call-depth* (name aid))}
 
@@ -1108,7 +1108,7 @@
         ;; A resumed instance is by definition kept alive — never auto-close it.
         (mark-persistent! ag)
         (let [result (ask ag question)]
-          {:id     (str aid)
+          {:id     (util/kw->str aid)
            :answer (:answer result)
            :error  (:error result)
            :status (name (:status @(:!state ag)))})))))
@@ -1126,13 +1126,13 @@
       {:error (str "Instance not found: " instance-id)}
 
       (running-instance? ag)
-      {:id (str aid)
+      {:id (util/kw->str aid)
        :error (format "Instance %s is running; cancel it first (task$cancel if it was detached) before closing."
                       (name aid))}
 
       :else
       (do (close-agent-quietly! ag)
-          {:closed true :id (str aid)}))))
+          {:closed true :id (util/kw->str aid)}))))
 
 (defn reap-idle-agents!
   "Close persistent, owned subagents idle beyond :persistent-agent-idle-ms
