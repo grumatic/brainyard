@@ -71,22 +71,24 @@
     (Thread/sleep 150)
     (is (zero? (count (l2-entries "sp"))))))
 
-(deftest errors-only-for-tools-and-evals-test
-  (testing "successful tool/eval are dropped; errors + the Q&A are kept"
+(deftest tool-eval-exception-events-not-captured-test
+  (testing "tool-use / code-eval / agent-exception are NOT captured — L2 keeps
+            only the Q&A episode (errors are operational, live in logs)"
     (mem/start-capture! *mm*)
+    ;; None of these should produce an L2 episode anymore (not subscribed):
     (hooks/fire! :agent.tool-use/post {:session-id "s2" :user-id "u"
-                                       :tool-name "bash" :args {:cmd "ls"} :result "ok"})        ; dropped
+                                       :tool-name "bash" :args {:cmd "boom"} :result {:error "exit 1"}})
     (hooks/fire! :agent.code-eval/post {:session-id "s2" :user-id "u"
-                                        :code "(+ 1 2)" :result 3 :error ""})                     ; dropped
-    (hooks/fire! :agent.tool-use/post {:session-id "s2" :user-id "u"
-                                       :tool-name "bash" :args {:cmd "boom"} :result {:error "exit 1"}}) ; kept
-    (hooks/fire! :agent.ask/post {:session-id "s2" :user-id "u" :input "Q" :result "A"})          ; kept
-    (is (= 2 (await-count "s2" 2 1000)))
+                                        :code "(/ 1 0)" :result nil :error "divide by zero"})
+    (hooks/fire! :agent/exception {:session-id "s2" :user-id "u"
+                                   :exception (ex-info "boom" {})})
+    ;; Only the Q&A is captured:
+    (hooks/fire! :agent.ask/post {:session-id "s2" :user-id "u" :input "Q" :result "A"})
+    (is (= 1 (await-count "s2" 1 1000)))
     (let [tags (set (mapcat :tags (l2-entries "s2")))]
       (is (contains? tags "kind:qa"))
-      (is (contains? tags "kind:tool-error"))
-      (is (not (contains? tags "kind:tool-result")) "successful tool not captured")
-      (is (not (contains? tags "kind:user-message")) "bare question not captured"))))
+      (is (not (contains? tags "kind:tool-error")) "tool errors no longer captured")
+      (is (not (contains? tags "kind:tool-result"))))))
 
 (deftest qa-upsert-dedup-test
   (testing "re-asking the same question upserts the Q&A episode (no dup)"
@@ -97,16 +99,6 @@
     (Thread/sleep 200)
     (is (= 1 (count (l2-entries "s3"))) "same normalized question deduped to one episode")
     (is (str/includes? (:content (first (l2-entries "s3"))) "A: second") "latest answer kept")))
-
-(deftest tool-error-dedup-applies-end-to-end-test
-  (testing "identical tool errors dedup via the debounce window"
-    (mem/start-capture! *mm*)
-    (dotimes [_ 5]
-      (hooks/fire! :agent.tool-use/post {:session-id "s4" :user-id "u"
-                                         :tool-name "bash" :args {:cmd "x"} :result {:error "boom"}}))
-    (Thread/sleep 200)
-    (is (= 1 (count (l2-entries "s4")))
-        "5 identical tool errors should dedup to 1 L2 entry")))
 
 (deftest capture-disabled-by-default-test
   ;; No start-capture! call — verify no entries are written.

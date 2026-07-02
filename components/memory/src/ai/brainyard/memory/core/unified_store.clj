@@ -47,6 +47,8 @@
   Supported query keys:
     :text         — FTS5 query string
     :session-id   — restrict to a session
+    :exclude-session-id — exclude a session (cross-session recall; NULL-session
+                          rows kept). Used by recall to skip the current session.
     :user-id      — restrict to a user
     :kind / :episode-type — restrict to one episode type
     :time-after, :time-before — bounds on `timestamp`
@@ -59,7 +61,7 @@
     :include-archived   — default false
     :include-tombstoned — default false"
   [ds user-id query opts]
-  (let [{:keys [text id session-id kind episode-type
+  (let [{:keys [text id session-id exclude-session-id kind episode-type
                 time-after time-before match]} query
         {:keys [limit include-archived include-tombstoned]
          :or   {limit 20}} opts
@@ -77,6 +79,7 @@
           text
           (episodic/search-fts ds text
                                :session-id session-id
+                               :exclude-session-id exclude-session-id
                                :limit limit
                                :episode-types types
                                :time-after time-after

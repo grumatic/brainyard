@@ -33,14 +33,19 @@
                           :session-id "s1"
                           :id (mem/l1-entry-id :system-context :tool-context "naming")
                           :data {:field :tool-context :section "naming"}})
+      ;; L2 episodes live in a PRIOR session (s0). Recall runs with :session-id
+      ;; "s1", and L2 recall is cross-session (excludes the current session), so
+      ;; these prior-session episodes are what L2 should surface — the additive,
+      ;; non-redundant behavior. (Same-session episodes are already in the
+      ;; agent's previous-turns.)
       (proto/write-entry store :l2
                          {:kind :conversation :role "user"
                           :content "How do I deploy to prod?"
-                          :session-id "s1"})
+                          :session-id "s0"})
       (proto/write-entry store :l2
                          {:kind :conversation :role "assistant"
                           :content "Run scripts/deploy.sh."
-                          :session-id "s1"})
+                          :session-id "s0"})
       (proto/write-entry store :l3
                          {:kind :preference
                           :content "User prefers Polylith layout"})
@@ -80,6 +85,23 @@
           l3-contents (mapv :content (get-in r [:layers :l3]))]
       (is (some #(str/includes? % "Datomic") l3-contents))
       (is (not (some #(str/includes? % "Polylith") l3-contents))))))
+
+(deftest l2-recall-is-cross-session-test
+  (testing "L2 recall EXCLUDES the current session — additive (prior-session
+            knowledge), not redundant with the agent's own previous-turns"
+    ;; Fixture seeded two 'deploy' episodes in the PRIOR session s0. Add one in
+    ;; the CURRENT session s1; recall at s1 must surface the s0 ones and NOT s1.
+    (proto/write-entry *store* :l2
+                       {:kind :conversation :role "assistant"
+                        :content "deploy note from the current session only"
+                        :session-id "s1"})
+    (let [r        (r2/recall-layered :store *store* :query "deploy" :session-id "s1")
+          contents (mapv :content (get-in r [:layers :l2]))]
+      (is (pos? (count contents)) "prior-session L2 episodes are recalled")
+      (is (some #(str/includes? % "deploy.sh") contents)
+          "prior-session (s0) episode is included")
+      (is (not (some #(str/includes? % "current session only") contents))
+          "current-session (s1) episode is EXCLUDED"))))
 
 ;; =====================================================
 ;; Combined / RRF

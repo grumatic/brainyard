@@ -65,10 +65,15 @@
     (vec (take (or limit default-per-layer-limit) all))))
 
 (defn- read-l2
+  "L2 (episodic) recall is CROSS-SESSION: it EXCLUDES the current session so it
+  brings back knowledge from PRIOR sessions rather than duplicating the agent's
+  own previous-turns (same-session Q&A is already in-context). Contrast L1, which
+  is deliberately restricted to the current session (its reference/system
+  context)."
   [store query _keywords {:keys [session-id limit match]}]
   (proto/read-entries store :l2
                       (cond-> {:text query}
-                        session-id (assoc :session-id session-id)
+                        session-id (assoc :exclude-session-id session-id)
                         match      (assoc :match match))
                       {:limit (or limit default-per-layer-limit)}))
 

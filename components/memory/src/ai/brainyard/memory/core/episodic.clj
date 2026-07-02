@@ -117,7 +117,7 @@
 (defn- build-fts-query
   "Build a parameterized FTS5 search query.
   Returns: [sql-string & params]"
-  [query & {:keys [session-id limit episode-types time-after time-before]
+  [query & {:keys [session-id exclude-session-id limit episode-types time-after time-before]
             :or {limit 20}}]
   (let [base-sql "SELECT e.*, bm25(episodes_fts) as rank
                   FROM episodes e
@@ -130,6 +130,15 @@
         (if session-id
           [(conj conditions "e.session_id = ?")
            (conj params session-id)]
+          [conditions params])
+
+        ;; Cross-session recall: EXCLUDE the current session so recall is
+        ;; additive (prior-session knowledge) rather than redundant with the
+        ;; agent's own previous-turns. NULL-session rows are kept.
+        [conditions params]
+        (if exclude-session-id
+          [(conj conditions "(e.session_id IS NULL OR e.session_id != ?)")
+           (conj params exclude-session-id)]
           [conditions params])
 
         [conditions params]
@@ -164,7 +173,9 @@
   "Search episodic memory using FTS5 with BM25 ranking.
 
   Options:
-    :session-id    - Filter by session
+    :session-id    - Restrict to a session
+    :exclude-session-id - Exclude a session (cross-session recall). NULL-session
+                          rows are kept. Mutually distinct from :session-id.
     :limit         - Maximum results (default 20)
     :episode-types - Vector of types to filter
     :time-after    - Only episodes after this timestamp
@@ -173,12 +184,13 @@
                      (see fts/normalize-fts-query for semantics)
 
   Returns: Vector of episodes sorted by relevance"
-  [ds query & {:keys [session-id limit episode-types time-after time-before match]
+  [ds query & {:keys [session-id exclude-session-id limit episode-types time-after time-before match]
                :or {limit 20 match :or}}]
   (if-let [normalized-query (fts/normalize-fts-query query match)]
     (try
       (let [sql-and-params (build-fts-query normalized-query
                                             :session-id session-id
+                                            :exclude-session-id exclude-session-id
                                             :limit limit
                                             :episode-types episode-types
                                             :time-after time-after

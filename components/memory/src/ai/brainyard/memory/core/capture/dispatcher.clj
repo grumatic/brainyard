@@ -59,20 +59,30 @@
 (def ^:private default-channel-size 1024)
 
 (def ^:private critical-events
-  "Events that must never be dropped: the conversation record + errors."
-  #{:agent.ask/post :agent/exception})
+  "Events that must never be dropped: the conversation record."
+  #{:agent.ask/post})
 
 (def ^:private subscribed-events
-  "Hooks the dispatcher subscribes to. NOTE: `:agent.ask/pre` is deliberately
-  NOT subscribed — the user's bare question is captured together with its
-  answer as a single Q&A episode at `:agent.ask/post` (turn end). Capturing
-  the pre-question separately made it the top BM25 hit when recall ran over
-  that same question, and doubled the conversational episode count."
-  [:agent.ask/post :agent.tool-use/post :agent.code-eval/post :agent/exception])
+  "Hooks the dispatcher subscribes to. L2 captures ONLY the Q&A episode
+  (`:agent.ask/post`, turn end).
+
+  NOT subscribed:
+    - `:agent.ask/pre` — the bare question is captured with its answer as one
+      Q&A episode at `:agent.ask/post`; capturing it separately made it the top
+      BM25 self-hit on recall and doubled episode count.
+    - `:agent.tool-use/post` / `:agent.code-eval/post` / `:agent/exception` —
+      these only ever produced tool/code/agent ERROR episodes, which are
+      operational (recoverable from logs), rarely useful BM25 recall targets,
+      and never a durable lesson in raw form. L2 is the cross-session Q&A record
+      that feeds L3 consolidation, not an error journal. (Other subscribers to
+      `:agent/exception`, e.g. the TUI, are unaffected — only capture stops
+      indexing it.)"
+  [:agent.ask/post])
 
 (def ^:private debounce-events
-  "Events whose dedup keys collapse identical entries within a window."
-  #{:agent.tool-use/post :agent.code-eval/post})
+  "Events whose dedup keys collapse identical entries within a window. Empty
+  now that only the (already deduped) Q&A episode is captured."
+  #{})
 
 ;; =====================================================
 ;; Helpers

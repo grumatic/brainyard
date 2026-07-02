@@ -33,26 +33,24 @@
 ;; Subscription
 ;; =====================================================
 
-(deftest start-registers-all-events-test
+(deftest start-registers-only-ask-post-test
   (let [d (disp/start!)]
     (try
-      ;; :agent.ask/pre is intentionally NOT subscribed — the question is
-      ;; captured with its answer at :agent.ask/post (see parser).
-      (let [counts (into {}
-                         (for [ev [:agent.ask/post :agent.tool-use/post
-                                   :agent.code-eval/post :agent/exception]]
-                           [ev (count (or (hooks/list-hooks ev) []))]))]
-        (is (every? pos? (vals counts)))
-        (is (= 4 (count counts)))
-        (is (zero? (count (or (hooks/list-hooks :agent.ask/pre) [])))
-            "ask/pre is not subscribed"))
+      ;; L2 captures ONLY the Q&A episode at :agent.ask/post. tool-use/post,
+      ;; code-eval/post and agent/exception are deliberately NOT subscribed —
+      ;; they only ever produced operational error episodes (see dispatcher's
+      ;; subscribed-events). ask/pre is folded into ask/post.
+      (is (pos? (count (or (hooks/list-hooks :agent.ask/post) []))))
+      (doseq [ev [:agent.ask/pre :agent.tool-use/post
+                  :agent.code-eval/post :agent/exception]]
+        (is (zero? (count (or (hooks/list-hooks ev) [])))
+            (str ev " is not subscribed by capture")))
       (finally (disp/stop! d)))))
 
 (deftest stop-unregisters-test
   (let [d (disp/start!)]
     (disp/stop! d)
-    (is (zero? (count (or (hooks/list-hooks :agent.ask/post) []))))
-    (is (zero? (count (or (hooks/list-hooks :agent.tool-use/post) []))))))
+    (is (zero? (count (or (hooks/list-hooks :agent.ask/post) []))))))
 
 ;; =====================================================
 ;; Routing — critical vs non-critical
@@ -70,52 +68,17 @@
         (is (zero? (count ev-events))))
       (finally (disp/stop! d)))))
 
-(deftest non-critical-events-route-to-events-channel-test
-  (let [d (disp/start!)
-        [crit ev] (disp/channels d)]
-    (try
-      (hooks/fire! :agent.tool-use/post {:session-id "s" :user-id "u"
-                                         :tool-name "bash" :args {} :result "ok"})
-      (let [crit-events (drain crit 50)
-            ev-events   (drain ev 200)]
-        (is (zero? (count crit-events)))
-        (is (= 1 (count ev-events)))
-        (is (= :agent.tool-use/post (-> ev-events first :event-key))))
-      (finally (disp/stop! d)))))
+;; NOTE: the dispatcher still supports a non-critical (droppable, debounced)
+;; channel generically, but no currently-subscribed event routes there — L2
+;; captures only the critical `:agent.ask/post` episode. The former
+;; non-critical-routing and dedup/debounce tests exercised that path via
+;; `:agent.tool-use/post`, which capture no longer subscribes to, so they were
+;; removed. `dedup-does-not-collapse-critical-events-test` below still covers the
+;; critical-path no-dedup guarantee.
 
 ;; =====================================================
 ;; Dedup
 ;; =====================================================
-
-(deftest dedup-collapses-identical-tool-post-test
-  (let [d (disp/start!)
-        [_ ev-ch] (disp/channels d)]
-    (try
-      ;; Fire 5 identical agent.tool-use/post events. Dedup should collapse to 1.
-      (dotimes [_ 5]
-        (hooks/fire! :agent.tool-use/post {:session-id "s" :user-id "u"
-                                           :tool-name "bash"
-                                           :args {:cmd "ls"}
-                                           :result "deploy.sh"}))
-      (let [out (drain ev-ch 200)]
-        (is (= 1 (count out))
-            "Identical agent.tool-use/post events deduped to one"))
-      (finally (disp/stop! d)))))
-
-(deftest dedup-allows-distinct-tool-post-test
-  (let [d (disp/start!)
-        [_ ev-ch] (disp/channels d)]
-    (try
-      (hooks/fire! :agent.tool-use/post {:session-id "s" :user-id "u"
-                                         :tool-name "bash" :args {:cmd "ls"} :result "a"})
-      (hooks/fire! :agent.tool-use/post {:session-id "s" :user-id "u"
-                                         :tool-name "bash" :args {:cmd "pwd"} :result "b"})
-      (hooks/fire! :agent.tool-use/post {:session-id "s" :user-id "u"
-                                         :tool-name "find" :args {:path "."} :result "c"})
-      (let [out (drain ev-ch 200)]
-        (is (= 3 (count out))
-            "Distinct agent.tool-use/post events all pass through"))
-      (finally (disp/stop! d)))))
 
 (deftest dedup-does-not-collapse-critical-events-test
   (let [d (disp/start!)
@@ -134,14 +97,14 @@
 ;; =====================================================
 
 (deftest match-pred-scopes-capture-test
+  ;; Match scoping gates every event before channel routing; tested here on the
+  ;; critical :agent.ask/post path (the only subscribed event).
   (let [d (disp/start! :match (fn [m] (= "u-keep" (:user-id m))))
-        [_ ev-ch] (disp/channels d)]
+        [crit-ch _] (disp/channels d)]
     (try
-      (hooks/fire! :agent.tool-use/post {:session-id "s" :user-id "u-keep"
-                                         :tool-name "bash" :args {} :result "ok"})
-      (hooks/fire! :agent.tool-use/post {:session-id "s" :user-id "u-skip"
-                                         :tool-name "bash" :args {:x 1} :result "ok"})
-      (let [out (drain ev-ch 200)]
+      (hooks/fire! :agent.ask/post {:session-id "s" :user-id "u-keep" :input "a" :result "x"})
+      (hooks/fire! :agent.ask/post {:session-id "s" :user-id "u-skip" :input "b" :result "y"})
+      (let [out (drain crit-ch 200)]
         (is (= 1 (count out)))
         (is (= "u-keep" (-> out first :user-id))))
       (finally (disp/stop! d)))))
@@ -153,20 +116,18 @@
 (deftest hook-replaced-events-skipped-test
   (testing "Events carrying :hook-replaced true never enter the channels"
     (let [d (disp/start!)
-          [_crit-ch ev-ch] (disp/channels d)]
+          [crit-ch _] (disp/channels d)]
       (try
-        ;; A real call should enter the channel.
-        (hooks/fire! :agent.tool-use/post
-                     {:session-id "s" :user-id "u"
-                      :tool-name "bash" :args {:cmd "ls"} :result "ok"})
-        ;; The cached replay carries :hook-replaced true — should drop.
-        (hooks/fire! :agent.tool-use/post
-                     {:session-id "s" :user-id "u"
-                      :tool-name "bash" :args {:cmd "ls"} :result "ok"
+        ;; A real turn should enter the channel.
+        (hooks/fire! :agent.ask/post
+                     {:session-id "s" :user-id "u" :input "q" :result "ok"})
+        ;; A replayed/replaced event carries :hook-replaced true — should drop.
+        (hooks/fire! :agent.ask/post
+                     {:session-id "s" :user-id "u" :input "q" :result "ok"
                       :hook-replaced true
                       :replaced-by :context-actions/tool-cache-lookup})
-        (let [out (drain ev-ch 200)]
-          ;; Only the real call survives.
+        (let [out (drain crit-ch 200)]
+          ;; Only the real turn survives.
           (is (= 1 (count out)))
           (is (not (:hook-replaced (first out)))))
         (finally (disp/stop! d))))))
