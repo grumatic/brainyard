@@ -427,8 +427,21 @@ narrating it without the flag does nothing"), and draws the **keep-alive
 (instance) vs. detach (background task)** distinction so the model doesn't call a
 `task-N` id resumable — a real-scenario failure mode observed before the wording
 was sharpened. The tools it references already ride `default-agent-roster`, so
-the substrate is guidance only — no roster change. It is **gated on
-`:enable-subagent-calls`** (threaded through
+the substrate is guidance only — no roster change.
+
+Prompt guidance alone proved insufficient (a real run showed the model dispatch
+ephemerally, then *hallucinate* "the instance stays alive" — conflating the
+detached background task with a live instance). The reliable fix is a
+**mechanism-level nudge at the detach marker** (`adopt-tool-into-task`): when a
+subagent call detaches, the "STILL RUNNING" marker now carries a lifecycle note
+keyed off the instance's actual `:mode` — *persistent* → "task$wait this call,
+then agent-registry$resume the SAME instance-id"; *ephemeral* → "this closes on
+finish and is NOT resumable; re-dispatch with `:keep-alive? true` to follow up."
+This fires exactly when the model forms its mental model, and in testing it
+stopped the hallucination (the model then described the ephemeral lifecycle
+accurately, including flagging the sub-agent's own aspirational "staying
+resident" text as not runtime-enforced). The substrate is
+**gated on `:enable-subagent-calls`** (threaded through
 `assembler-state` → `coact-system-context`): an agent with subagent dispatch
 disabled has nothing to keep alive, so the section is dropped rather than
 carried as dead prompt weight.

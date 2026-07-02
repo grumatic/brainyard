@@ -1137,6 +1137,7 @@
           ;; the upward parent-chain `cancelled?` walk and aborts at its next BT
           ;; checkpoint — no child registry needed.
           get-agent   (when sub-agent-id @(requiring-resolve 'ai.brainyard.agent.core.agent/get-agent))
+          persistent? (when sub-agent-id @(requiring-resolve 'ai.brainyard.agent.core.agent/persistent-instance?))
           cancel-run  (when sub-agent-id @(requiring-resolve 'ai.brainyard.agent.core.runtime/cancel-run))
           tname       (str "tool: " (subs (str/replace (str tool-name) #"\n" " ")
                                           0 (min 60 (count (str tool-name)))))
@@ -1173,12 +1174,29 @@
           (tool-post-hook pre result)
           result)
         (let [tid    (:task-id r)
+              ;; Subagent lifecycle note — counters the observed failure where a
+              ;; model treats a detached background TASK as a resumable INSTANCE.
+              ;; task-<id> is a task handle for THIS call; only a :keep-alive?
+              ;; instance is resumable, by its instance-id.
+              sa-note (when sub-agent-id
+                        (if (try (boolean (persistent? (get-agent sub-agent-id))) (catch Throwable _ false))
+                          (str " NOTE: this is a PERSISTENT subagent (instance "
+                               (util/kw->str sub-agent-id) "). task$wait for THIS call,"
+                               " then follow up on the SAME instance via"
+                               " (agent-registry$resume {:id \"" (util/kw->str sub-agent-id)
+                               "\" :question …}) — NOT the task-id.")
+                          (str " NOTE: this subagent is EPHEMERAL — it closes when this"
+                               " call finishes and is NOT resumable; task-" tid
+                               " is a TASK handle, not an instance you can"
+                               " agent-registry$resume. To follow up on the SAME subagent,"
+                               " re-dispatch it with :keep-alive? true.")))
               marker (str "[" tool-name " STILL RUNNING — task-id=" tid
                           ". DO NOT re-call " tool-name " — it is already running."
                           " It emits a periodic liveness heartbeat; a subagent can"
                           " run for minutes with little output — read task$detail"
                           " (:elapsed-ms, :last-output-age-ms) for liveness and DO NOT"
                           " task$cancel just because output looks quiet."
+                          sa-note
                           (detached-wait-options tid) "]")]
           (tool-post-hook pre marker)
           marker)))
