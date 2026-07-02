@@ -946,8 +946,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                           dspy-action for per-section token attribution)."
   [{:keys [sandbox-bindings instruction agent-context tool-context agent-tools
            include-function-directory? system-info tools-disabled-tiers
-           brainyard-instructions project-memory execution-model code-channel?]
-    :or {code-channel? true}}
+           brainyard-instructions project-memory execution-model code-channel?
+           enable-subagent-calls]
+    :or {code-channel? true enable-subagent-calls true}}
    & {:keys [return-breakdown?]}]
   (let [tools-section (build-tools-section
                        {:sandbox-bindings     sandbox-bindings
@@ -1037,8 +1038,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
 
           ;; Base agent-lifecycle substrate — keep a dispatched subagent alive
           ;; (:keep-alive?) and manage it via agent-registry$*, inherited by
-          ;; every coact-derived agent. Tools ride default-agent-roster.
-          true
+          ;; every coact-derived agent. Tools ride default-agent-roster. Gated on
+          ;; :enable-subagent-calls: skip the section when subagent dispatch is
+          ;; off (nothing to keep alive, so the guidance is dead weight).
+          enable-subagent-calls
           (assoc :subagent-substrate agent-roster/subagent-substrate-protocol)
 
           true
@@ -1391,7 +1394,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                                    :include-function-directory? :system-info
                                    :tools-disabled-tiers
                                    :brainyard-instructions :project-memory
-                                   :execution-model :code-channel?])
+                                   :execution-model :code-channel?
+                                   :enable-subagent-calls])
                :return-breakdown? true)
           usr (coact-user-context
                (select-keys state [:conversation :previous-turns
@@ -1682,6 +1686,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                          ;; Tool-only agents (react-agent pins :code-channel? false)
                          ;; drop the code-blocks prompt sections. Default true.
                          :code-channel? (boolean (get cfg-snap :code-channel? true))
+                         ;; Gate the agent-lifecycle substrate: no point teaching
+                         ;; keep-alive?/agent-registry$* when subagent dispatch is
+                         ;; disabled for this agent.
+                         :enable-subagent-calls (boolean (get cfg-snap :enable-subagent-calls true))
                          :conversation           (:conversation st)
                          :previous-turns         previous-turns
                          :live-artifacts         resolved-artifacts

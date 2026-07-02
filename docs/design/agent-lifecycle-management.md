@@ -423,6 +423,10 @@ true` for multi-turn follow-up; **capture the returned `:subagent-id`**; resume
 with `agent-registry$resume`, inspect via `$list`/`$detail`, close via `$close`;
 and the ownership / busy / cap rules. The tools it references already ride
 `default-agent-roster`, so the substrate is guidance only — no roster change.
+It is **gated on `:enable-subagent-calls`** (threaded through
+`assembler-state` → `coact-system-context`): an agent with subagent dispatch
+disabled has nothing to keep alive, so the section is dropped rather than
+carried as dead prompt weight.
 
 ## 8. TUI parity
 
