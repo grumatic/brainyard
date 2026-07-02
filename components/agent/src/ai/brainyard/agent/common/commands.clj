@@ -44,6 +44,13 @@
 ;; Registry Commands
 ;; ============================================================================
 
+(defn- ->instance-id
+  "Parse an instance-id string to a keyword, tolerating a leading colon — LLMs
+   often copy the printed `:ns/name` form verbatim into a string arg."
+  [s]
+  (let [s (str s)]
+    (keyword (if (str/starts-with? s ":") (subs s 1) s))))
+
 (defn- instance-summary
   "One-line summary row for an agent instance — identity, turn/iter counters, and
    lifecycle fields (mode/owner/idle/answers/last-question) used by
@@ -100,7 +107,7 @@
     (let [id-str (:id args)]
       (if (str/blank? (str id-str))
         {:error "id is required"}
-        (let [aid (keyword id-str)]
+        (let [aid (->instance-id id-str)]
           (if-let [a (agent-core/get-agent aid)]
             (let [st     @(:!state a)
                   st-mem (some-> (proto/get-bt-st-memory a) deref)
@@ -178,7 +185,7 @@
         (str/blank? (str id)) {:error "id is required"}
         (str/blank? (str q))  {:error "question is required"}
         :else
-        (let [aid    (keyword id)
+        (let [aid    (->instance-id id)
               target (agent-core/get-agent aid)]
           (if (nil? target)
             {:error (str "Instance not found: " id)}
@@ -203,7 +210,7 @@
           caller proto/*current-agent*]
       (if (str/blank? (str id))
         {:error "id is required"}
-        (let [aid    (keyword id)
+        (let [aid    (->instance-id id)
               target (agent-core/get-agent aid)]
           (if (nil? target)
             {:error (str "Instance not found: " id)}

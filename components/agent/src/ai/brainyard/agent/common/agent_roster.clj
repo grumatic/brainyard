@@ -179,6 +179,43 @@ RULES:
 - USE covers discover / inspect / invoke / `:start`. Heavier management
   (`:stop`/`:restart`, troubleshooting, complex multi-server flows) → mcp-agent.")
 
+(def subagent-substrate-protocol
+  "A `## Persistent subagents` system-context section, installed in BOTH base
+   agents (coact + react) so the whole fleet knows how to keep a dispatched
+   subagent alive (`:keep-alive?`) and manage it via the `agent-registry$*`
+   family. The tools it references ride `default-agent-roster` (the
+   agent-registry$* commands) and every subagent tool advertises `:keep-alive?`
+   via the defagent macro — so this is guidance only, no roster change. See
+   docs/design/agent-lifecycle-management.md."
+  "## Persistent subagents (agent lifecycle substrate)
+By default a subagent you dispatch (explore-agent, exec-agent, …) is EPHEMERAL:
+it runs once, answers, and is closed — a later call spawns a FRESH instance that
+starts from zero (no memory of the last one). To keep one alive for multi-turn
+work on the same context, pass `:keep-alive? true` and reuse it by id.
+
+1. KEEP ALIVE — add `:keep-alive? true` when you expect follow-ups:
+   `(explore-agent {:question \"map the auth module\" :keep-alive? true})`
+   The result carries `:subagent-id \"explore-agent/<suffix>\"` + a `:resume-hint`.
+   CAPTURE that id — it is the ONLY handle for resuming; a fresh dispatch is a
+   different instance.
+2. RESUME — follow up on the SAME instance (it still sees its ## Previous Turns):
+   `(agent-registry$resume {:id \"explore-agent/<suffix>\" :question \"now check token refresh\"})`
+3. LIST / INSPECT — `(agent-registry$list)` shows live instances with `:mode`,
+   `:owner`, `:idle-ms`, `:last-question`; `(agent-registry$detail {:id \"…\"})`
+   gives status + last answer + `:reap-eligible?`.
+4. CLOSE — when done, free it: `(agent-registry$close {:id \"…\"})`. Idle
+   persistent subagents are also reaped automatically (`agent-registry$sweep`).
+
+RULES:
+- Default to EPHEMERAL (omit `:keep-alive?`). Keep one alive ONLY when you
+  genuinely need multi-turn follow-up with the same subagent's built-up context.
+- Resume/close only an instance you dispatched, and only when it is `:idle` — a
+  `:running` one is busy (poll `agent-registry$detail`, or `task$wait` if it was
+  detached). Do not close it on a quiet-but-growing idle window alone.
+- Per-session cap (`:max-persistent-agents`): at the cap a `:keep-alive?`
+  dispatch falls back to ephemeral (see `:agent-cap-note` in the result) — close
+  idle ones you no longer need, then retry.")
+
 (def project-memory-protocol
   "Shared `## Project Memory` protocol prose, installed in BOTH base agents
    (coact + react) so every derived agent gets it — paired with

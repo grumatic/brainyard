@@ -310,6 +310,17 @@ lifecycle timestamps, and whether it is reap-eligible. Analogous to `task$detail
 (`task/commands.clj:51`) — including the liveness guidance ("large-but-growing
 idle window ≠ wedged; do not close on a quiet window alone").
 
+### 6.2b Surfacing the resumable id (how the LLM learns what to resume)
+
+A `:keep-alive?` dispatch mints the instance-id *inside* `do-call-tool--agent`,
+so the LLM never sees it unless we return it. The dispatch result therefore
+carries, **only when persistent**, `:subagent-id` (the colon-less
+`ns/name` form that round-trips through `(keyword …)`), `:resumable true`, and a
+`:resume-hint` naming the exact `agent-registry$resume`/`$close` calls. Without
+this the keep-alive flag would be unusable — the caller would have a live
+instance it can't address. The command-side id parse (`->instance-id`) also
+tolerates a leading colon, in case the model copies a printed `:ns/name` keyword.
+
 ### 6.3 `agent-registry$resume` (the core new capability)
 
 Follow-up ask to a **named, live** instance. Does not mint a new instance; does
@@ -400,6 +411,18 @@ config.
 Reaping and the cascade emit mulog events (`::persistent-agent-reaped`,
 `::persistent-agent-cascade-closed`) so the sweep's drops are observable rather
 than silent — same discipline as the "no silent caps" rule.
+
+## 7b. System-prompt substrate (how the LLM knows to use any of this)
+
+A `## Persistent subagents (agent lifecycle substrate)` section
+(`agent-roster/subagent-substrate-protocol`) is installed in the coact
+system-context builder (`:subagent-substrate`, in `section-order`), so **every
+coact/react-derived agent inherits it** — the same mechanism as the todo / exec
+/ skill / MCP substrates. It teaches: default to ephemeral; pass `:keep-alive?
+true` for multi-turn follow-up; **capture the returned `:subagent-id`**; resume
+with `agent-registry$resume`, inspect via `$list`/`$detail`, close via `$close`;
+and the ownership / busy / cap rules. The tools it references already ride
+`default-agent-roster`, so the substrate is guidance only — no roster change.
 
 ## 8. TUI parity
 

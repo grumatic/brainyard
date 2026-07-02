@@ -1035,6 +1035,12 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
           true
           (assoc :exec-substrate agent-roster/exec-substrate-protocol)
 
+          ;; Base agent-lifecycle substrate — keep a dispatched subagent alive
+          ;; (:keep-alive?) and manage it via agent-registry$*, inherited by
+          ;; every coact-derived agent. Tools ride default-agent-roster.
+          true
+          (assoc :subagent-substrate agent-roster/subagent-substrate-protocol)
+
           true
           (assoc :footer coact-footer))
         ;; Stable display order. :system-info (priority 98) and
@@ -1048,7 +1054,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                        :instruction :agent-context
                        :project-instructions :project-memory :skill-substrate
                        :mcp-substrate :user-instructions
-                       :todo-substrate :exec-substrate
+                       :todo-substrate :exec-substrate :subagent-substrate
                        :footer]
         content (str/join "\n\n" (keep #(get sections %) section-order))]
     (if return-breakdown?

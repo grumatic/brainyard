@@ -363,7 +363,20 @@
                                                          :keep-alive? keep-alive?)
                                     agent-session (assoc :agent-session agent-session)
                                     agent         (assoc :parent-agent agent)))))]
-            (if (and cap-note (map? r)) (assoc r :agent-cap-note cap-note) r)))))))
+            ;; Surface the resumable instance-id back to the caller so a
+            ;; keep-alive? dispatch is actually followable — the LLM otherwise
+            ;; never learns the auto-generated id. Only when persistent (a cap
+            ;; :fallback downgrade already flipped keep-alive? off, so we don't
+            ;; falsely promise a resumable handle).
+            (if (map? r)
+              (let [id-str (util/kw->str instance-id)] ;; colon-less, round-trips through (keyword …)
+                (cond-> r
+                  keep-alive? (assoc :subagent-id id-str
+                                     :resumable true
+                                     :resume-hint (format "Kept alive. Follow up with (agent-registry$resume {:id \"%s\" :question \"…\"}); end it with (agent-registry$close {:id \"%s\"})."
+                                                          id-str id-str))
+                  cap-note    (assoc :agent-cap-note cap-note)))
+              r)))))))
 
 (defn- blocked-tool-result
   "Synthetic tool-result produced when a :agent.tool-use/pre hook returns :block.
