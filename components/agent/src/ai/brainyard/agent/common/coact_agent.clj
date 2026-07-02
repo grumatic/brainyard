@@ -1036,11 +1036,11 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
           true
           (assoc :exec-substrate agent-roster/exec-substrate-protocol)
 
-          ;; Base agent-lifecycle substrate — keep a dispatched subagent alive
-          ;; (:keep-alive?) and manage it via agent-registry$*, inherited by
-          ;; every coact-derived agent. Tools ride default-agent-roster. Gated on
-          ;; :enable-subagent-calls: skip the section when subagent dispatch is
-          ;; off (nothing to keep alive, so the guidance is dead weight).
+          ;; Base agent-lifecycle substrate — every dispatched subagent stays
+          ;; alive in the registry; manage/resume it via agent-registry$*,
+          ;; inherited by every coact-derived agent. Tools ride
+          ;; default-agent-roster. Gated on :enable-subagent-calls: skip the
+          ;; section when subagent dispatch is off (nothing to manage).
           enable-subagent-calls
           (assoc :subagent-substrate agent-roster/subagent-substrate-protocol)
 
@@ -1687,8 +1687,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                          ;; drop the code-blocks prompt sections. Default true.
                          :code-channel? (boolean (get cfg-snap :code-channel? true))
                          ;; Gate the agent-lifecycle substrate: no point teaching
-                         ;; keep-alive?/agent-registry$* when subagent dispatch is
-                         ;; disabled for this agent.
+                         ;; the agent-registry$* subagent management when subagent
+                         ;; dispatch is disabled for this agent.
                          :enable-subagent-calls (boolean (get cfg-snap :enable-subagent-calls true))
                          :conversation           (:conversation st)
                          :previous-turns         previous-turns

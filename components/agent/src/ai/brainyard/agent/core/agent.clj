@@ -108,22 +108,24 @@
   (reset! !agent-creation-locks {}))
 
 ;; ============================================================================
-;; Instance Lifecycle (persistent subagents)
-;; See docs/design/agent-lifecycle-management.md §5. The :lifecycle map on
-;; @!state makes instance lifetime explicit: an :ephemeral subagent is
-;; auto-closed on answer (current behavior); a :persistent one survives for
-;; follow-up via agent-registry$resume and is reap-eligible when idle.
+;; Instance Lifecycle (subagents)
+;; See docs/design/agent-lifecycle-management.md §5. Every subagent dispatched
+;; via call-tool is kept alive in the registry — resumable via
+;; agent-registry$resume until agent-registry$close, task cancellation, LRU
+;; eviction at the per-session cap, or session teardown. The :lifecycle map on
+;; @!state carries :owner (parent instance-id; nil for a root agent — roots are
+;; never evicted/cascaded) plus ask bookkeeping. There is no ephemeral/persistent
+;; mode: a subagent IS a managed instance, keyed off :owner.
 ;; ============================================================================
 
 (defn- now-ms ^long [] (System/currentTimeMillis))
 
 (defn make-lifecycle
   "Build the initial :lifecycle map stamped on @!state at creation.
-   :mode is :persistent for a root agent (no parent) or a :keep-alive? subagent,
-   else :ephemeral. :owner is the parent instance-id (nil for root)."
-  [{:keys [parent-agent keep-alive?]}]
-  {:mode          (if (or (nil? parent-agent) keep-alive?) :persistent :ephemeral)
-   :owner         (some-> parent-agent proto/agent-id)
+   :owner is the parent instance-id (nil for a root agent). An instance with a
+   non-nil :owner is a managed subagent (evictable / closeable / cascade target)."
+  [{:keys [parent-agent]}]
+  {:owner         (some-> parent-agent proto/agent-id)
    :answers       0
    :created-at    (now-ms)
    :last-ask-at   nil
@@ -134,22 +136,16 @@
   [agent]
   (some-> agent :!state deref :lifecycle))
 
-(defn persistent-instance?
-  "True when the agent's lifecycle mode is :persistent."
+(defn subagent?
+  "True when `agent` is a managed subagent (has an :owner) — i.e. not a root."
   [agent]
-  (= :persistent (:mode (lifecycle agent))))
+  (some? (:owner (lifecycle agent))))
 
 (defn owned-subagent?
-  "True when `agent` is a persistent subagent whose :owner is owner-id."
+  "True when `agent` is a subagent whose :owner is (non-nil) owner-id."
   [agent owner-id]
-  (let [lc (lifecycle agent)]
-    (and (= :persistent (:mode lc)) (some? (:owner lc)) (= owner-id (:owner lc)))))
-
-(defn mark-persistent!
-  "Upgrade an instance's lifecycle to :persistent (idempotent)."
-  [agent]
-  (swap! (:!state agent) update :lifecycle
-         (fn [lc] (assoc (or lc {}) :mode :persistent))))
+  (let [o (:owner (lifecycle agent))]
+    (and (some? o) (= owner-id o))))
 
 (defn mark-ask-start!
   "Bump lifecycle bookkeeping at the start of an ask. Leaves an unstamped
@@ -181,19 +177,6 @@
   "True when the instance's status is :running."
   [agent]
   (= :running (:status @(:!state agent))))
-
-(defn reap-eligible?
-  "True when a persistent, owned (subagent) instance has been idle beyond
-   `:persistent-agent-idle-ms` and is not currently running. Root agents
-   (owner nil) and ephemeral instances are never reap-eligible."
-  [agent]
-  (let [lc (lifecycle agent)]
-    (boolean
-     (and (= :persistent (:mode lc))
-          (some? (:owner lc))
-          (not (running-instance? agent))
-          (when-let [idle (instance-idle-ms agent)]
-            (>= idle (or (config/get-config agent :persistent-agent-idle-ms) 600000)))))))
 
 (defn last-answer
   "Return the instance's most recent answer text (from the per-instance
@@ -552,7 +535,7 @@
    Returns: Agent instance (not yet started)"
   [user-id session-id agent-id
    & {:keys [meta config bt-config memory-manager memory-opts
-             session-store parent-agent st-memory-init keep-alive?]
+             session-store parent-agent st-memory-init]
       :or {meta {} config {} memory-opts {} st-memory-init {}}}]
 
   ;; Create or use provided memory manager (always created, defaults to in-memory)
@@ -592,8 +575,7 @@
                        :session-store session-store
                        :runtime runtime-state
                        :st-memory-init (atom st-memory-init)
-                       :lifecycle (make-lifecycle {:parent-agent parent-agent
-                                                   :keep-alive? keep-alive?})
+                       :lifecycle (make-lifecycle {:parent-agent parent-agent})
                        :status :created}
 
         !state (atom initial-state)
@@ -906,7 +888,7 @@
    back via (config/get-config agent :key)."
   [& {:keys [id bt-factory agent-tools instruction tool-context
              agent-context max-iterations parent-agent
-             config-extra st-memory-extra session-store keep-alive?
+             config-extra st-memory-extra session-store
              _deftool$id _deftool$description]
       {:keys [user-id session-id]} :agent-session
       :as options}]
@@ -976,8 +958,7 @@
                              :bt-config      bt-config
                              :st-memory-init st-init
                              :memory-opts    (:memory-opts options)
-                             :parent-agent   parent-agent
-                             :keep-alive?    (boolean keep-alive?)}
+                             :parent-agent   parent-agent}
                       session-store (assoc :session-store session-store))]
     (get-or-create-agent user-id session-id instance-id create-opts)))
 
@@ -1041,22 +1022,15 @@
      :auto-close? - Close the agent after ask completes. For sync ask, closes in a
                     finally block. For async ask, attaches a one-shot watch that
                     closes when the clj-agent's :output transitions to non-nil.
-                    Defaults to true for sub-agent calls (see do-call-tool--agent).
-     :keep-alive? - Persist the subagent past its answer so the caller can follow
-                    up via agent-registry$resume. Forces auto-close off and stamps
-                    :lifecycle :persistent (see agent-lifecycle-management.md §5.2)."
-  [& {:keys [question query parent-agent ask-async? setup-only? auto-close? keep-alive?] :as options}]
+                    Subagent dispatch (do-call-tool--agent) passes false so the
+                    instance stays alive in the registry for agent-registry$resume;
+                    direct one-shot callers may pass true."
+  [& {:keys [question query parent-agent ask-async? setup-only? auto-close?] :as options}]
   (let [question (or question query "")]
     (when (and (not setup-only?)
                (or (nil? question) (and (string? question) (clojure.string/blank? question))))
       (throw (ex-info "run-agent requires a non-empty :question" {:question question})))
-    (let [ag (apply setup-agent (mapcat identity (assoc options :question question)))
-          ;; A :keep-alive? subagent is persistent — never auto-closed, so the
-          ;; caller can agent-registry$resume it. This is path-independent: it
-          ;; holds whether we arrived via do-call-tool--agent (code-block path)
-          ;; or the bound-fn (JSON tool-call) path.
-          _           (when keep-alive? (mark-persistent! ag))
-          auto-close? (and auto-close? (not keep-alive?))]
+    (let [ag (apply setup-agent (mapcat identity (assoc options :question question)))]
       (cond
         setup-only?
         ag
@@ -1073,9 +1047,10 @@
             (when auto-close? (close-agent-quietly! ag))))))))
 
 ;; ============================================================================
-;; Lifecycle actions — resume / close / reap
-;; Backing fns for the agent-registry$resume / $close / $sweep tools and the
-;; parent-close cascade. See docs/design/agent-lifecycle-management.md §6–§7.
+;; Lifecycle actions — resume / close / eviction
+;; Backing fns for the agent-registry$resume / $close tools, the per-session LRU
+;; eviction at dispatch, task-cancellation close, and the parent-close cascade.
+;; See docs/design/agent-lifecycle-management.md §6–§7.
 ;; ============================================================================
 
 (defn resume-agent
@@ -1105,8 +1080,6 @@
       :else
       (binding [proto/*call-depth* (inc proto/*call-depth*)
                 proto/*call-chain* (conj proto/*call-chain* (or caller-id aid))]
-        ;; A resumed instance is by definition kept alive — never auto-close it.
-        (mark-persistent! ag)
         (let [result (ask ag question)]
           {:id     (util/kw->str aid)
            :answer (:answer result)
@@ -1114,10 +1087,10 @@
            :status (name (:status @(:!state ag)))})))))
 
 (defn close-instance!
-  "Close a live instance by id with the shared close guard (no-close-while-
-   running). `.close` unregisters, releases the sandbox, and (via the
-   :agent.instance/closed cascade hook) closes any persistent subagents it
-   owned. Returns {:closed true :id ...} or {:error ...}."
+  "Close a live instance by id with the close guard (no-close-while-running).
+   `.close` unregisters, releases the sandbox, and (via the
+   :agent.instance/closed cascade hook) closes any subagents it owned. Returns
+   {:closed true :id ...} or {:error ...}."
   [instance-id]
   (let [aid (if (keyword? instance-id) instance-id (keyword instance-id))
         ag  (get-agent aid)]
@@ -1134,44 +1107,50 @@
       (do (close-agent-quietly! ag)
           {:closed true :id (util/kw->str aid)}))))
 
-(defn reap-idle-agents!
-  "Close persistent, owned subagents idle beyond :persistent-agent-idle-ms
-   (`reap-eligible?`). Scoped to session-id when given, else the whole registry.
-   Never closes a running instance. Emits ::persistent-agent-reaped per drop.
-   Returns {:scanned :reaped [ids] :kept}."
-  [& {:keys [session-id dry-run?]}]
-  (let [agents   (if session-id (list-agents-for-session session-id) (list-agents))
-        eligible (filterv reap-eligible? agents)]
-    (doseq [a eligible]
-      (mulog/info ::persistent-agent-reaped
-                  :agent-id (proto/agent-id a) :idle-ms (instance-idle-ms a))
-      (when-not dry-run? (close-agent-quietly! a)))
-    {:scanned (count agents)
-     :reaped  (mapv #(str (proto/agent-id %)) eligible)
-     :kept    (- (count agents) (count eligible))}))
+(defn force-close-instance!
+  "Unconditionally close a live instance by id — bypasses the running guard.
+   Used by task cancellation (a cancelled subagent leaves the registry) where
+   the instance is by definition still :running. No-op if not found."
+  [instance-id]
+  (let [aid (if (keyword? instance-id) instance-id (keyword instance-id))]
+    (when-let [ag (get-agent aid)]
+      (mulog/info ::subagent-cancelled-closed :agent-id aid)
+      (close-agent-quietly! ag)
+      true)))
 
-(defn count-persistent-agents
-  "Number of live persistent, owned subagents in a session (for the cap check)."
+(defn count-subagents
+  "Number of live managed subagents (non-nil :owner) in a session — the LRU cap
+   counts against this."
+  [session-id]
+  (->> (list-agents-for-session session-id) (filter subagent?) count))
+
+(defn lru-subagent
+  "The least-recently-asked, non-running managed subagent in a session, or nil.
+   The eviction victim when a dispatch would exceed the per-session cap."
   [session-id]
   (->> (list-agents-for-session session-id)
-       (filter (fn [a] (let [lc (lifecycle a)]
-                         (and (= :persistent (:mode lc)) (some? (:owner lc))))))
-       count))
-
-(defn lru-persistent-agent
-  "The least-recently-asked idle persistent subagent in a session, or nil.
-   Used by the :evict-lru cap policy."
-  [session-id]
-  (->> (list-agents-for-session session-id)
-       (filter (fn [a] (and (persistent-instance? a)
-                            (some? (:owner (lifecycle a)))
-                            (not (running-instance? a)))))
+       (filter #(and (subagent? %) (not (running-instance? %))))
        (sort-by #(or (:last-ask-at (lifecycle %)) (:created-at (lifecycle %)) 0))
        first))
 
+(defn evict-subagents-to-cap!
+  "Before adding a new subagent, evict least-recently-used non-running subagents
+   until the session holds fewer than `cap`. Best-effort: stops early if no
+   evictable (non-running) victim remains. Returns the vector of evicted ids."
+  [session-id cap]
+  (loop [evicted []]
+    (if (< (count-subagents session-id) cap)
+      evicted
+      (if-let [victim (lru-subagent session-id)]
+        (let [vid (proto/agent-id victim)]
+          (mulog/info ::subagent-evicted-lru :session-id session-id :agent-id vid)
+          (close-agent-quietly! victim)
+          (recur (conj evicted (util/kw->str vid))))
+        evicted))))
+
 ;; ---- Parent-close cascade -------------------------------------------------
-;; When an instance closes, close the persistent subagents it owned so a reaped
-;; or user-closed parent never orphans its helpers. Folded in through the
+;; When an instance closes, close the subagents it owned so a user-closed or
+;; evicted parent never orphans its helpers. Folded in through the
 ;; :agent.instance/closed hook (fired inside .close before unregister), so it is
 ;; a single handler rather than a change to .close's body. Closing a child fires
 ;; its own :agent.instance/closed, cascading naturally down the tree.
@@ -1184,7 +1163,7 @@
           owned    (->> (if sid (list-agents-for-session sid) (list-agents))
                         (filter #(owned-subagent? % owner-id)))]
       (doseq [child owned]
-        (mulog/info ::persistent-agent-cascade-closed
+        (mulog/info ::subagent-cascade-closed
                     :owner owner-id :child (proto/agent-id child))
         (close-agent-quietly! child)))))
 

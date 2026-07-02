@@ -256,20 +256,6 @@
 (defonce ^:private !last-sweep-ms (atom 0))
 (def     ^:private throttle-ms (long (* 60 60 1000)))
 
-(defn- reap-idle-agents-quietly!
-  "Best-effort idle-reap of persistent subagents across the in-memory registry.
-   Lazily resolved so this disk-GC ns takes no static dep on agent core.
-   In-memory sibling to the on-disk sweeps — see
-   docs/design/agent-lifecycle-management.md §7.2."
-  []
-  (try
-    (when-let [reap (requiring-resolve 'ai.brainyard.agent.core.agent/reap-idle-agents!)]
-      (let [r (reap)]
-        (when (seq (:reaped r))
-          (mulog/log ::agent-idle-reap :reaped (:reaped r) :kept (:kept r)))))
-    (catch Throwable t
-      (mulog/warn ::agent-idle-reap-failed :exception t))))
-
 (defn- maybe-sweep-async!
   "Run all sweeps in a future, gated by the in-process throttle. Logs the
    aggregate result. Best-effort — exceptions never propagate to the hook
@@ -286,9 +272,7 @@
                        :results (mapv #(select-keys % [:class :scanned :deleted :kept :bytes-freed])
                                       results)))
           (catch Throwable t
-            (mulog/warn ::session-sweep-failed :exception t)))
-        ;; In-memory: reap idle persistent subagents alongside the disk sweeps.
-        (reap-idle-agents-quietly!)))))
+            (mulog/warn ::session-sweep-failed :exception t)))))))
 
 (defonce ^:private !session-hook-registered?
   (delay

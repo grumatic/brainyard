@@ -202,28 +202,10 @@
   [skill-name description use-fn & {:as args}]
   `(deftool ~skill-name ~description ~use-fn ~@(mapcat identity (assoc args :type :skill))))
 
-(def keep-alive-schema-entry
-  "Shared optional agent-tool input field: keep the dispatched subagent alive
-   after it answers so the caller can follow up via agent-registry$resume.
-   Injected into every defagent's :input-schema by the macro below — see
-   docs/design/agent-lifecycle-management.md §5.2."
-  [:keep-alive? {:optional true}
-   [:boolean {:desc "Keep this subagent alive after it answers (persistent) so you can follow up on it via agent-registry$resume; default false = ephemeral (closed on answer)."}]])
-
 (defmacro defagent
-  "Define an agent. Thin wrapper around deftool with :type :agent.
-
-   Auto-injects the shared optional :keep-alive? field (`keep-alive-schema-entry`)
-   into the agent's :input-schema so every agent tool uniformly advertises the
-   persistence knob to the LLM and coerces it string->boolean. A persistent
-   (:keep-alive? true) subagent survives its answer for follow-up via
-   agent-registry$resume. See docs/design/agent-lifecycle-management.md §5.2."
+  "Define an agent. Thin wrapper around deftool with :type :agent."
   [agent-name description ask-fn & {:as args}]
-  (let [schema  (vec (:input-schema args [:map]))
-        present? (some #(and (vector? %) (= :keep-alive? (first %))) (rest schema))
-        schema' (if present? schema (conj schema keep-alive-schema-entry))
-        args'   (assoc args :input-schema schema' :type :agent)]
-    `(deftool ~agent-name ~description ~ask-fn ~@(mapcat identity args'))))
+  `(deftool ~agent-name ~description ~ask-fn ~@(mapcat identity (assoc args :type :agent))))
 
 ;; ============================================================================
 ;; Registry Accessor & Reset
@@ -278,12 +260,8 @@
 (def ^:private !get-config (delay (requiring-resolve 'ai.brainyard.agent.core.config/get-config)))
 (def ^:private !generate-instance-id
   (delay (requiring-resolve 'ai.brainyard.agent.core.agent/generate-instance-id)))
-(def ^:private !count-persistent-agents
-  (delay (requiring-resolve 'ai.brainyard.agent.core.agent/count-persistent-agents)))
-(def ^:private !lru-persistent-agent
-  (delay (requiring-resolve 'ai.brainyard.agent.core.agent/lru-persistent-agent)))
-(def ^:private !close-instance!
-  (delay (requiring-resolve 'ai.brainyard.agent.core.agent/close-instance!)))
+(def ^:private !evict-subagents-to-cap!
+  (delay (requiring-resolve 'ai.brainyard.agent.core.agent/evict-subagents-to-cap!)))
 
 (defn- do-call-tool--agent
   "Dispatch a registered :agent-type tool with subagent guards.
@@ -330,52 +308,34 @@
               ;; the top one captured by the detach path.
               _           (when-let [cap proto/*subagent-capture*]
                             (compare-and-set! cap nil instance-id))
-              ;; Sub-agent instances are ephemeral by default — auto-close after
-              ;; ask completes so we don't accumulate dead entries in
-              ;; !agent-registry. Two overrides: an explicit :auto-close? false,
-              ;; or :keep-alive? true (persistent — survives for
-              ;; agent-registry$resume; see agent-lifecycle-management.md §5).
-              keep-alive?0 (contains? #{true "true"} (:keep-alive? parsed-args))
-              ;; Per-session cap on live persistent subagents (§7.3). At the cap,
-              ;; :fallback (default) downgrades this dispatch to ephemeral with a
-              ;; note; :evict-lru closes the least-recently-asked idle persistent
-              ;; instance to make room.
-              [keep-alive? cap-note]
-              (if (and keep-alive?0 agent)
-                (let [sid  (proto/session-id agent)
-                      maxp (or (@!get-config agent :max-persistent-agents) 8)
-                      cur  (@!count-persistent-agents sid)]
-                  (if (>= cur maxp)
-                    (if (= :evict-lru (@!get-config agent :persistent-agent-cap-policy))
-                      (do (when-let [victim (@!lru-persistent-agent sid)]
-                            (@!close-instance! (proto/agent-id victim)))
-                          [true (format "persistent-agent cap (%d) reached — evicted the least-recently-used idle persistent subagent to make room." maxp)])
-                      [false (format "persistent-agent cap (%d) reached — dispatched as ephemeral (not kept alive). Close an idle one via agent-registry$close, then retry with :keep-alive?." maxp)])
-                    [keep-alive?0 nil]))
-                [keep-alive?0 nil])
-              auto-close? (and (get parsed-args :auto-close? (some? agent))
-                               (not keep-alive?))]
+              ;; Every dispatched subagent is kept alive in the registry
+              ;; (resumable via agent-registry$resume) — so auto-close is off for
+              ;; the subagent path. Direct one-shot callers may still force it by
+              ;; passing an explicit :auto-close? true.
+              auto-close? (get parsed-args :auto-close? false)
+              ;; Bound live subagents per session: before adding this one, evict
+              ;; least-recently-used non-running subagents down to the cap (§7).
+              evicted (when agent
+                        (seq (@!evict-subagents-to-cap!
+                              (proto/session-id agent)
+                              (or (@!get-config agent :max-subagents-per-session) 8))))]
           (let [r (resolve-agent-ref
                    (apply invoke-tool target-id
                           (mapcat identity
                                   (cond-> parsed-args
-                                    true          (assoc :id instance-id :auto-close? auto-close?
-                                                         :keep-alive? keep-alive?)
+                                    true          (assoc :id instance-id :auto-close? auto-close?)
                                     agent-session (assoc :agent-session agent-session)
                                     agent         (assoc :parent-agent agent)))))]
-            ;; Surface the resumable instance-id back to the caller so a
-            ;; keep-alive? dispatch is actually followable — the LLM otherwise
-            ;; never learns the auto-generated id. Only when persistent (a cap
-            ;; :fallback downgrade already flipped keep-alive? off, so we don't
-            ;; falsely promise a resumable handle).
+            ;; Always surface the resumable instance-id back to the caller — the
+            ;; auto-generated id is the only handle for a follow-up.
             (if (map? r)
               (let [id-str (util/kw->str instance-id)] ;; colon-less, round-trips through (keyword …)
-                (cond-> r
-                  keep-alive? (assoc :subagent-id id-str
-                                     :resumable true
-                                     :resume-hint (format "Kept alive. Follow up with (agent-registry$resume {:id \"%s\" :question \"…\"}); end it with (agent-registry$close {:id \"%s\"})."
-                                                          id-str id-str))
-                  cap-note    (assoc :agent-cap-note cap-note)))
+                (cond-> (assoc r
+                               :subagent-id id-str
+                               :resumable true
+                               :resume-hint (format "This subagent stays alive as %s. Follow up on it with (agent-registry$resume {:id \"%s\" :question \"…\"}); end it with (agent-registry$close {:id \"%s\"})."
+                                                    id-str id-str id-str))
+                  evicted (assoc :evicted-subagents (vec evicted))))
               r)))))))
 
 (defn- blocked-tool-result
@@ -1132,13 +1092,13 @@
           get-task-fn @(requiring-resolve 'ai.brainyard.agent.task.protocol/get-task)
           hb-poll-fn  @(requiring-resolve 'ai.brainyard.agent.task.executor/make-heartbeat-poll-fn)
           ;; Cascading cancel: when this task wraps a sub-agent, cancel-run its
-          ;; state on cancel. cancel-run sets the cooperative :cancelled? flag +
-          ;; closes its in-flight HTTP; every descendant sub-agent sees it via
-          ;; the upward parent-chain `cancelled?` walk and aborts at its next BT
-          ;; checkpoint — no child registry needed.
+          ;; state on cancel (cooperative :cancelled? flag + closes in-flight HTTP;
+          ;; every descendant sub-agent sees it via the upward parent-chain
+          ;; `cancelled?` walk and aborts at its next BT checkpoint), THEN close
+          ;; the instance so a cancelled subagent leaves the registry.
           get-agent   (when sub-agent-id @(requiring-resolve 'ai.brainyard.agent.core.agent/get-agent))
-          persistent? (when sub-agent-id @(requiring-resolve 'ai.brainyard.agent.core.agent/persistent-instance?))
           cancel-run  (when sub-agent-id @(requiring-resolve 'ai.brainyard.agent.core.runtime/cancel-run))
+          force-close (when sub-agent-id @(requiring-resolve 'ai.brainyard.agent.core.agent/force-close-instance!))
           tname       (str "tool: " (subs (str/replace (str tool-name) #"\n" " ")
                                           0 (min 60 (count (str tool-name)))))
           owner-sid   (when agent (try (proto/session-id agent) (catch Throwable _ nil)))
@@ -1159,6 +1119,9 @@
                                   (future-cancel fut)
                                   (when sub-agent-id
                                     (try (some-> (get-agent sub-agent-id) :!state cancel-run)
+                                         (catch Throwable _ nil))
+                                    ;; Cancelled subagent leaves the registry.
+                                    (try (force-close sub-agent-id)
                                          (catch Throwable _ nil)))))
           _           (when !task-ref (proto/update-task-id! !task-ref (:id task)))
           mgr         (get-mgr)
@@ -1174,22 +1137,16 @@
           (tool-post-hook pre result)
           result)
         (let [tid    (:task-id r)
-              ;; Subagent lifecycle note — counters the observed failure where a
-              ;; model treats a detached background TASK as a resumable INSTANCE.
-              ;; task-<id> is a task handle for THIS call; only a :keep-alive?
-              ;; instance is resumable, by its instance-id.
+              ;; Subagent lifecycle note — the subagent stays alive as a
+              ;; resumable instance; task-<id> is only the handle for THIS call.
+              ;; Keeps the model from conflating the two (task$wait the call vs.
+              ;; agent-registry$resume the instance).
               sa-note (when sub-agent-id
-                        (if (try (boolean (persistent? (get-agent sub-agent-id))) (catch Throwable _ false))
-                          (str " NOTE: this is a PERSISTENT subagent (instance "
-                               (util/kw->str sub-agent-id) "). task$wait for THIS call,"
-                               " then follow up on the SAME instance via"
-                               " (agent-registry$resume {:id \"" (util/kw->str sub-agent-id)
-                               "\" :question …}) — NOT the task-id.")
-                          (str " NOTE: this subagent is EPHEMERAL — it closes when this"
-                               " call finishes and is NOT resumable; task-" tid
-                               " is a TASK handle, not an instance you can"
-                               " agent-registry$resume. To follow up on the SAME subagent,"
-                               " re-dispatch it with :keep-alive? true.")))
+                        (str " NOTE: this subagent stays alive as instance "
+                             (util/kw->str sub-agent-id) ". task$wait for THIS call to"
+                             " finish, then ask it more via (agent-registry$resume {:id \""
+                             (util/kw->str sub-agent-id) "\" :question …}) — that instance-id,"
+                             " NOT the task-id. Close it with agent-registry$close when done."))
               marker (str "[" tool-name " STILL RUNNING — task-id=" tid
                           ". DO NOT re-call " tool-name " — it is already running."
                           " It emits a periodic liveness heartbeat; a subagent can"

@@ -235,12 +235,8 @@
                                 :doc "Max nesting depth for subagent (agent-call) recursion."}
    :enable-subagent-calls      {:type "boolean" :default true
                                 :doc "Allow the agent to dispatch subagents (agent-call); when false, subagent dispatch is disabled."}
-   :persistent-agent-idle-ms   {:type "integer" :default 600000
-                                :doc "Idle window (ms) after which a persistent (:keep-alive?) subagent is reap-eligible by agent-registry$sweep. Never reaps a running instance."}
-   :max-persistent-agents      {:type "integer" :default 8
-                                :doc "Per-session cap on live persistent (:keep-alive?) subagents. At the cap, a new :keep-alive? dispatch is handled per :persistent-agent-cap-policy."}
-   :persistent-agent-cap-policy {:type "keyword" :default :fallback
-                                 :doc "At the :max-persistent-agents cap: :fallback (dispatch as ephemeral instead, with a marker) or :evict-lru (close the least-recently-asked idle persistent instance first)."}
+   :max-subagents-per-session  {:type "integer" :default 8
+                                :doc "Per-session cap on live subagents in the registry. Every dispatched subagent is kept alive (resumable via agent-registry$resume); at the cap a new dispatch evicts the least-recently-used non-running subagent (LRU) to make room."}
    :enable-user-hooks          {:type "boolean" :default true
                                 :doc "Global kill-switch for LLM-authored user hooks (.brainyard/hooks/*.edn). When false, persisted hooks stay on disk but do not fire."}
    :dispose-think-block        {:type "boolean" :default true

@@ -999,7 +999,7 @@
               "  Instance:   " (ansi/muted (agent-id-str inst-id)) "\n"
               (let [lc (agent/lifecycle ag)]
                 (str "  Lifecycle:  "
-                     (ansi/muted (name (or (:mode lc) :ephemeral)))
+                     (ansi/muted (if (:owner lc) "subagent" "root"))
                      (when (:owner lc)
                        (ansi/muted (str " · owned by " (agent-id-str (:owner lc)))))
                      "\n"))

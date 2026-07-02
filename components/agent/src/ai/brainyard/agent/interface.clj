@@ -126,10 +126,10 @@
                 generate-instance-id
                 create-agent
                 setup-agent setup-agent-by-id run-agent
-                ;; Instance lifecycle (persistent subagents) —
+                ;; Instance lifecycle (subagents) —
                 ;; docs/design/agent-lifecycle-management.md
-                lifecycle persistent-instance? instance-idle-ms reap-eligible?
-                resume-agent close-instance! reap-idle-agents!)
+                lifecycle subagent? instance-idle-ms
+                resume-agent close-instance!)
 
 ;; Memory-manager factory — wires the context-graph provider opts (embed /
 ;; extract / summarize fns) from config on top of the bare memory-component

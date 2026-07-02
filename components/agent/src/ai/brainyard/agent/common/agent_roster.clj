@@ -180,65 +180,48 @@ RULES:
   (`:stop`/`:restart`, troubleshooting, complex multi-server flows) → mcp-agent.")
 
 (def subagent-substrate-protocol
-  "A `## Persistent subagents` system-context section, installed in BOTH base
-   agents (coact + react) so the whole fleet knows how to keep a dispatched
-   subagent alive (`:keep-alive?`) and manage it via the `agent-registry$*`
-   family. The tools it references ride `default-agent-roster` (the
-   agent-registry$* commands) and every subagent tool advertises `:keep-alive?`
-   via the defagent macro — so this is guidance only, no roster change. See
-   docs/design/agent-lifecycle-management.md."
-  "## Persistent subagents (agent lifecycle substrate)
-By default a subagent you dispatch (explore-agent, exec-agent, …) is EPHEMERAL:
-it runs once, answers, and is closed — a later call spawns a FRESH instance that
-starts from zero (no memory of the last one). To reuse the SAME subagent — with
-its built-up context — across turns, you MUST pass `:keep-alive? true` on the
-dispatch and then resume it by its instance-id.
+  "A `## Subagents` system-context section, installed in BOTH base agents (coact
+   + react) so the whole fleet knows every dispatched subagent stays alive in the
+   registry and how to manage it via the `agent-registry$*` family. The tools it
+   references ride `default-agent-roster` — so this is guidance only, no roster
+   change. See docs/design/agent-lifecycle-management.md."
+  "## Subagents (agent lifecycle substrate)
+Every subagent you dispatch (explore-agent, exec-agent, …) STAYS ALIVE as a
+registry instance after it answers — it is NOT thrown away. So you can ask the
+SAME subagent follow-up questions and it remembers the previous ones (its ##
+Previous Turns), instead of spawning a fresh one that starts from zero.
 
-WHEN to keep alive (pass `:keep-alive? true` on the dispatch — it is not
-automatic): the user says to keep it alive / expects follow-ups; you plan to ask
-this subagent more after seeing its answer; or you're iterating with one
-explorer/executor over several turns. When in doubt and a follow-up is even
-plausible, keep it alive — you can always `agent-registry$close` it early.
-
-1. KEEP ALIVE — add `:keep-alive? true` to the dispatch itself:
-   `(explore-agent {:question \"map the auth module\" :keep-alive? true})`
-   The result carries `:subagent-id \"explore-agent/<suffix>\"` + a `:resume-hint`.
-   CAPTURE that instance-id — it is the ONLY handle for resuming; a fresh
-   dispatch is a DIFFERENT instance with no memory of this one.
-2. RESUME — follow up on the SAME instance (it still sees its ## Previous Turns):
+1. DISPATCH — call it normally. The result carries `:subagent-id
+   \"explore-agent/<suffix>\"` + a `:resume-hint`. CAPTURE that instance-id — it
+   is the handle for following up. (Nothing to opt into — this is automatic.)
+2. RESUME — ask the SAME instance more (it still sees its ## Previous Turns):
    `(agent-registry$resume {:id \"explore-agent/<suffix>\" :question \"now check token refresh\"})`
-   Use the `:subagent-id` from step 1 — never a task id (see the distinction below).
-3. LIST / INSPECT — `(agent-registry$list)` shows live instances with `:mode`,
-   `:owner`, `:idle-ms`, `:last-question`; `(agent-registry$detail {:id \"…\"})`
-   gives status + last answer + `:reap-eligible?`.
-4. CLOSE — when done, free it: `(agent-registry$close {:id \"…\"})`. Idle
-   persistent subagents are also reaped automatically (`agent-registry$sweep`).
+   Prefer resuming the existing subagent over re-dispatching a fresh one when the
+   follow-up builds on what it already explored.
+3. LIST / INSPECT — `(agent-registry$list)` shows live instances (`:owner`,
+   `:idle-ms`, `:answers`, `:last-question`); `(agent-registry$detail {:id \"…\"})`
+   gives status + last answer.
+4. CLOSE — when you're DONE with a subagent, free it:
+   `(agent-registry$close {:id \"…\"})`. This matters: there is a per-session cap
+   (`:max-subagents-per-session`) and dispatching a new subagent at the cap
+   EVICTS the least-recently-used one (its `:subagent-id` won't resolve after
+   that). Close the ones you no longer need so a useful one isn't evicted.
 
-KEEP-ALIVE (instance) vs. DETACH (background task) — two DIFFERENT things; do
-NOT confuse them:
-- A slow subagent call may DETACH into a background TASK (`task-N`). That is
-  about WHERE one call runs (background thread) — you poll it with
-  `task$detail` / `task$wait` by its TASK id. It does NOT make the subagent
-  reusable, and a `task-N` id is NOT a `:subagent-id`.
-- `:keep-alive?` is about the INSTANCE surviving for a follow-up — you resume it
-  with `agent-registry$resume` by its `:subagent-id`.
-- A dispatch can be BOTH: a `:keep-alive?` subagent whose call detaches — you
-  `task$wait` for THAT call to finish, then `agent-registry$resume` the instance
-  for the NEXT question. Never tell the user a task is \"resumable via
-  agent-registry$resume\", and never pass a `task-N` id to `agent-registry$resume`.
+INSTANCE (resume) vs. TASK (background execution) — don't confuse them:
+- A slow subagent call may DETACH into a background TASK (`task-N`): that is WHERE
+  one call runs. Poll it with `task$detail` / `task$wait` by its TASK id. When it
+  finishes, the subagent INSTANCE is still alive.
+- To ask the subagent ANOTHER question, use `agent-registry$resume` with its
+  `:subagent-id` (an `explore-agent/…` id) — NEVER a `task-N` id.
 
 RULES:
-- Reuse across turns REQUIRES `:keep-alive? true` on the dispatch — narrating
-  \"I'll keep it alive\" without the flag does nothing; the instance is closed on
-  answer and its id won't resolve.
-- Default to EPHEMERAL (omit `:keep-alive?`) for one-shot work. Keep alive ONLY
-  when you genuinely need multi-turn follow-up with the same subagent's context.
+- To follow up on a subagent, RESUME it by `:subagent-id` — a fresh dispatch is a
+  different instance with no memory of the last one.
 - Resume/close only an instance you dispatched, and only when it is `:idle` — a
   `:running` one is busy (poll `agent-registry$detail`, or `task$wait` if the
   call detached). Do not close it on a quiet-but-growing idle window alone.
-- Per-session cap (`:max-persistent-agents`): at the cap a `:keep-alive?`
-  dispatch falls back to ephemeral (see `:agent-cap-note` in the result) — close
-  idle ones you no longer need, then retry.")
+- Cancelling a subagent's task (`task$cancel`) also ends the instance — it is no
+  longer resumable.")
 
 (def project-memory-protocol
   "Shared `## Project Memory` protocol prose, installed in BOTH base agents
