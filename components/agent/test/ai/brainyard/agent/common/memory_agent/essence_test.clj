@@ -169,14 +169,22 @@
                             :parent-agent parent)]
       (is (false? (boolean (ma-hooks/consolidation-eligible? child))))))
 
-  (testing "flag off → not eligible even on a root coact-agent"
+  (testing "both flags off → not eligible even on a root coact-agent"
     (let [ag (make-stub :coact-agent/root
-                        :config {:enable-memory-consolidation false})]
+                        :config {:enable-memory-consolidation false
+                                 :enable-graph-memory false})]
       (is (false? (boolean (ma-hooks/consolidation-eligible? ag))))))
 
-  (testing "flag on + root coact-agent → eligible"
+  (testing "consolidation flag on + root coact-agent → eligible (graph off)"
     (let [ag (make-stub :coact-agent/root
-                        :config {:enable-memory-consolidation true})]
+                        :config {:enable-memory-consolidation true
+                                 :enable-graph-memory false})]
+      (is (true? (boolean (ma-hooks/consolidation-eligible? ag))))))
+
+  (testing "graph memory on IMPLIES consolidation even with the flag off"
+    (let [ag (make-stub :coact-agent/root
+                        :config {:enable-memory-consolidation false
+                                 :enable-graph-memory true})]
       (is (true? (boolean (ma-hooks/consolidation-eligible? ag)))))))
 
 (deftest consolidation-cadence-fires-every-n-test
@@ -201,6 +209,7 @@
           root  (make-stub :coact-agent/root
                            :session-id "s-off"
                            :config {:enable-memory-consolidation false
+                                    :enable-graph-memory false
                                     :memory-consolidate-every-n-turns 1})]
       (with-redefs [ma-hooks/run-consolidation! (fn [_] (swap! fires inc) nil)]
         (dotimes [_ 5]
@@ -254,7 +263,8 @@
     (let [fires (atom 0)
           root  (make-stub :coact-agent/root
                            :session-id "s-off2"
-                           :config {:enable-memory-consolidation false})]
+                           :config {:enable-memory-consolidation false
+                                    :enable-graph-memory false})]
       (swap! @#'ma-hooks/!turn-counters assoc "s-off2" 9)
       (with-redefs [ma-hooks/run-consolidation! (fn [_] (swap! fires inc) nil)]
         (ma-hooks/session-end-flush-handler {:agent root})

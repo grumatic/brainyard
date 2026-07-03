@@ -117,7 +117,14 @@
   "True when the just-finished agent should drive batch consolidation:
      1. Not memory-agent itself (would consolidate its own bookkeeping).
      2. Is a root agent (sub-agents share a session — root handles it).
-     3. `:enable-memory-consolidation` resolves true via `config/get-config`."
+     3. `:enable-memory-consolidation` is true, OR `:enable-graph-memory` is on.
+
+   The graph coupling: when graph memory is enabled the async extractor is
+   already populating the entity graph, and `run-consolidation!` routes to the
+   community reducer (which harvests those communities into L3). Turning graph
+   memory on without consolidation would build a graph nobody harvests, so we
+   imply consolidation from it — derived at this read site rather than baking a
+   second default that would drift."
   [agent]
   (when agent
     (try
@@ -127,7 +134,8 @@
           (= "memory-agent" ag-type) false
           (not (root-agent? agent))  false
           :else
-          (boolean (config/get-config agent :enable-memory-consolidation))))
+          (boolean (or (config/get-config agent :enable-memory-consolidation)
+                       (config/get-config agent :enable-graph-memory)))))
       (catch Exception _ false))))
 
 (defn- run-consolidation!
