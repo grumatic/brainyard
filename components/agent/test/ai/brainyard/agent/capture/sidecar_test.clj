@@ -90,6 +90,19 @@
       (is (not (contains? tags "kind:tool-error")) "tool errors no longer captured")
       (is (not (contains? tags "kind:tool-result"))))))
 
+(deftest match-predicate-scopes-capture-test
+  (testing ":match passed to start-capture! filters writes end-to-end — the
+            mechanism behind root-only capture (subagent ask/post is dropped)"
+    ;; Stand in for root-agent-capture-event? with a simple flag on the event.
+    (mem/start-capture! *mm* :match (fn [m] (:keep? m)))
+    (hooks/fire! :agent.ask/post {:session-id "sm" :user-id "u"
+                                  :input "root turn" :result "a" :keep? true})
+    (hooks/fire! :agent.ask/post {:session-id "sm" :user-id "u"
+                                  :input "subagent turn" :result "b" :keep? false})
+    (is (= 1 (await-count "sm" 1 1000)))
+    (is (str/includes? (:content (first (l2-entries "sm"))) "root turn"))
+    (is (not (str/includes? (:content (first (l2-entries "sm"))) "subagent turn")))))
+
 (deftest qa-upsert-dedup-test
   (testing "re-asking the same question upserts the Q&A episode (no dup)"
     (mem/start-capture! *mm*)

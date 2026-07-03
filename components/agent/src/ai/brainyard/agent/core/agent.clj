@@ -508,6 +508,17 @@
 ;; Agent Factory
 ;; ============================================================================
 
+(defn- root-agent-capture-event?
+  "L2-capture match predicate: keep only ROOT-agent turns. A subagent's
+   `:agent.ask/post` is operational detail (sub-task execution) rather than the
+   essential, cross-session Q&A worth remembering, so it is dropped. Runs on the
+   raw hook event-map (before capture normalizes away `:agent`). A missing agent
+   ⇒ keep (defensive)."
+  [event-map]
+  (let [ag (:agent event-map)]
+    (or (nil? ag)
+        (nil? (runtime/get-parent-agent (:!state ag))))))
+
 (defn- create-agent
   "Create a new Agent instance. Internal — call setup-agent instead.
 
@@ -611,6 +622,9 @@
               ;; agent on a shared manager fixes the caps for the session).
               (mem/start-capture!
                mm
+               ;; Capture only ROOT-agent turns; a subagent's ask/post is
+               ;; operational, not the essential cross-session Q&A.
+               :match root-agent-capture-event?
                :limits {:question (config/get-config agent :memory-question-max-chars)
                         :answer   (config/get-config agent :memory-answer-max-chars)}
                ;; Confine graph node/edge explosion: per-episode caps for the
