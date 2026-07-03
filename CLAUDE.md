@@ -190,9 +190,12 @@ The graph (`components/memory`: `graph_nodes`/`graph_edges`/`graph_vec` +
 RRF recall signals — semantic-similarity (`:vec`) and relational/multi-hop
 (`:graph`) — never a replacement. Off by default (`BY_ENABLE_GRAPH_MEMORY`), it
 **degrades gracefully**: no embedder ⇒ no `:vec`; empty graph ⇒ recall is
-byte-identical to pure FTS; no extract model ⇒ storage-only. Self-population
-runs off the capture sidecar (LLM extraction). Community summaries replace the
-heuristic L2→L3 reducer (**closes CR-MEM-07**). Two decisions worth knowing:
+byte-identical to pure FTS; no extract model ⇒ storage-only. Self-population is
+LLM extraction, run in one of two modes (`:graph-extract-mode`, default
+`:at-consolidation`): batch-extract new episodes at each consolidation, or
+`:per-episode` off the capture sidecar. Community summaries replace the
+heuristic L2→L3 reducer (**closes CR-MEM-07**) and are harvested by consolidation,
+which is now implied by `BY_ENABLE_GRAPH_MEMORY`. Two decisions worth knowing:
 
 - **Embeddings can be fully self-contained.** The default `BY_GRAPH_EMBED_MODEL
   "static"` is a pure-JVM **Model2Vec** embedder bundled into the binary (no

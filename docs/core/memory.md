@@ -213,10 +213,17 @@ hook event ──► S0 dispatcher ──► S1 parser ──► sidecar thread 
 
 - **S0 — Dispatcher** (`memory.core.capture.dispatcher`) subscribes to
   lifecycle events from `agent.core.hooks` via `requiring-resolve` (no
-  agent → memory cycle). Critical events (`:agent.ask/pre`,
-  `:agent.ask/post`, `:agent/exception`) go to a large fixed buffer that
-  never drops. Other events go to a `sliding-buffer` channel with a
-  dedup transducer over a 30-event window.
+  agent → memory cycle). **Only `:agent.ask/post` is subscribed** — one
+  Q&A episode per turn, on the critical (never-dropped) channel. The bare
+  `:agent.ask/pre` question, and the `:agent.tool-use/post` /
+  `:agent.code-eval/post` / `:agent/exception` events, are **not** captured
+  (pre self-recalled and doubled episode count; tool/eval/error episodes
+  were operational noise — successes *and* errors live in the trajectory
+  log + `memory_audit`, queryable via `trajectory$search`). Capture is
+  further scoped to **ROOT-agent turns** by a `:match` predicate
+  (`root-agent-capture-event?`): a subagent's ask/post is sub-task detail,
+  dropped. The generic droppable `sliding-buffer` + dedup path still exists
+  but no subscribed event routes there.
 - **S1 — Parser** (`memory.core.capture.parser`) is a pure multimethod
   by `:event-key`. Each event becomes an L2 episode with populated
   `:sources` and inferred `:tags` (`event:`, `kind:`, `role:`, `tool:`,
@@ -224,12 +231,22 @@ hook event ──► S0 dispatcher ──► S1 parser ──► sidecar thread 
 - **Sidecar** (`memory.core.capture.sidecar`) runs one `core.async/thread`
   per `MemoryManager`. `alts!! :priority true` drains the critical
   channel first so the chronicle never adds tail latency to a turn.
-- **S2 — Reducer** (`memory.core.capture.reducer`) groups by tag-set +
-  10-min window. Default reducer is a deterministic heuristic (longest
-  common prefix or templated summary) so consolidation costs nothing and
-  is reproducible. An optional `:reducer :llm` slot is wired but
-  currently warns and falls back to the heuristic. Auto-marks source
-  episodes `keep_flag=1` so the L3 `:sources` chain stays valid forever.
+- **S2 — Reducer.** Two L2→L3 consolidation paths, selected by
+  `:enable-graph-memory`. **Graph off:** the heuristic reducer
+  (`memory.core.capture.reducer`) groups by tag-set + 10-min window and
+  emits a templated per-window digest — deterministic, LLM-free,
+  reproducible; auto-marks sources `keep_flag=1`. **Graph on:** community
+  consolidation (`memory.core.community`) clusters the entity graph (label
+  propagation) and LLM-summarizes each community into an L3 fact +
+  `graph_communities` row (CR-MEM-24) — the real distillation. In the
+  default `:at-consolidation` extraction mode, each consolidation first
+  **batch-extracts** the episodes captured since the last one into the
+  graph in one LLM call, then summarizes.
+  Consolidation is driven by two hooks in `memory_agent/hooks.clj` — an
+  every-`:memory-consolidate-every-n-turns` (default **12**) cadence plus a
+  session-end flush — gated on `:enable-memory-consolidation`, which is
+  **implied by `:enable-graph-memory`** (turning the graph on with nobody
+  harvesting its communities would be pointless).
 
 The pipeline is gated behind `start-capture!`, driven by the
 `:enable-memory-capture` config key, which **defaults to `true`** in
@@ -266,13 +283,25 @@ for callers that have not yet migrated.
 ```
 score_i = Σ weight_l / (k + rank_l)
 k       = 60      ;; :rrf-k default
-weights = {:l1 0.3 :l2 0.4 :l3 0.6}   ;; default-weights, tunable via :weights
+;; default-weights, tunable via :weights — the distilled hierarchy:
+weights = {:l1 0.25 :l2 0.35 :l3 0.7 :vec 0.6 :graph 0.55}
 ```
 
-L1 (system + user context) ranks lowest, L3 (distilled facts) highest.
-Default fan-out is `default-layers [:l1 :l2 :l3]`.
+Ordering **L3 > vec > graph > L2 > L1**: L3 (distilled community summaries)
+outranks the raw L2 episodes it was distilled from (~2×), so a summary wins
+the briefing slot and its source episodes fall past the total-limit cut; L2
+is the recency / empty-L3 fallback; L1 ranks lowest (already verbatim in the
+prompt). Default fan-out is `default-layers [:l1 :l2 :l3 :vec :graph]`
+(`:vec`/`:graph` are no-ops until an embedder / graph is populated).
 
-Layers with no hits contribute nothing — RRF degrades gracefully.
+Layers with no hits contribute nothing — RRF is rank-based, so the high L3
+weight is free when L3 is empty.
+
+**L2 recall is cross-session:** it excludes the *current* session
+(`:exclude-session-id`) and surfaces prior-session episodes — additive,
+non-redundant knowledge, since the current session's own turns are already
+in the agent's previous-turns. L1 stays session-scoped; L3 facts are
+inherently cross-session.
 
 ---
 

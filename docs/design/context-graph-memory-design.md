@@ -26,10 +26,13 @@ The long-term store (`components/memory`) is a three-layer design behind the
 
 Recall (`recall_v2.clj`) fans out a query across the three layers, ranks within
 each layer by **BM25**, and fuses across layers with **Reciprocal Rank Fusion**
-(RRF, k=60, weights `{:l1 0.3 :l2 0.4 :l3 0.6}`). L2→L3 consolidation
+(RRF, k=60, weights `{:l1 0.3 :l2 0.4 :l3 0.6}` — the pre-graph baseline; the
+shipped defaults are now `{:l1 0.25 :l2 0.35 :l3 0.7 :vec 0.6 :graph 0.55}`, see
+§4.4). L2→L3 consolidation
 (`capture/reducer.clj`) is a deterministic, heuristic reducer — it buckets
 episodes by `(tag, time-window)` and emits a templated summary (CR-MEM-07 is
-still **Partial**: no LLM reduction). Provenance exists as a one-directional
+still **Partial**: no LLM reduction — later **closed** by the CR-MEM-24 community
+reducer, §6). Provenance exists as a one-directional
 `:sources` chain (fact → episode → L1 entry), used for audit/`explain`, not for
 search.
 
@@ -297,29 +300,41 @@ Notes:
 ### 4.3 Ingestion / extraction pipeline
 
 This is the one genuinely new component, and it slots into the **existing capture
-pipeline** (CR-MEM-06: the dispatcher already subscribes to
-`:agent.ask/{pre,post}`, `:agent.tool-use/post`, `:agent.code-eval/post`,
-`:agent/exception`). Extraction runs **asynchronously off the capture sidecar**,
-so it never blocks the agent loop:
+pipeline** (CR-MEM-06: as-shipped, the dispatcher subscribes to **`:agent.ask/post`
+only**, root-agent turns only). Extraction has two modes, selected by
+`:graph-extract-mode`:
 
-1. **Episode lands in L2** (unchanged).
-2. **Sidecar enqueues** the episode for graph extraction (async channel, same
-   pattern as today's L2 drain).
-3. **Entity extraction (LLM).** Extract candidate entities + types from the
-   episode content. Resolve against `graph_nodes` by name/alias/embedding
+- **`:at-consolidation` (default) — batch extraction (Design A).** The per-episode
+  async extractor stays off (`start-capture! :defer-extraction?`). Instead, each
+  L2→L3 consolidation first concatenates the episodes captured since the last one
+  (`episodic/episodes-after-id`, an incremental id marker in
+  `memory_agent/hooks.clj`) and runs **one** extraction over the batch
+  (`extract-l2-batch!`), then summarizes the resulting communities. Trades a
+  ~N-turns-stale graph for **~N× fewer extraction LLM calls** than per-episode.
+- **`:per-episode` — async extraction.** The original path: the sidecar enqueues
+  each L2 episode to a dedicated extractor thread (sliding-buffer, best-effort),
+  one extraction per turn. Fresher graph, one LLM call per turn.
+
+Either way, one extraction does:
+
+1. **Entity extraction (LLM).** Extract candidate entities + types from the
+   content. Resolve against `graph_nodes` by name/alias/embedding
    similarity (entity resolution) — create or merge.
-4. **Relationship extraction (LLM).** Emit `(src, relation, dst, fact, t_valid,
-   confidence)` triplets (Mem0's two-stage pattern).
-5. **Edge reconciliation.** Insert new edges; for any edge that contradicts an
-   existing one, set `t_invalid` on the old edge (Graphiti invalidation).
-6. **Embed.** Compute embeddings for new/updated node summaries and L3 facts;
-   upsert into `graph_vec`.
+2. **Relationship extraction (LLM).** Emit `(src, relation, dst, fact, t_valid,
+   confidence)` triplets (Mem0's two-stage pattern) — same call, curated-vocab
+   JSON schema.
+3. **Edge reconciliation.** Insert new edges; for any functional-relation edge
+   that contradicts an existing one, set `t_invalid` on the old edge (Graphiti
+   invalidation).
+4. **Embed.** Compute embeddings for new/updated node summaries; upsert into
+   `graph_vec`.
 
-Because extraction is LLM-bound, it must be **batched, debounced, and
-budget-bounded** (reuse the reducer's window/threshold knobs) and degrade
-gracefully: if no embedding/extraction provider is configured, the graph simply
-stays empty and recall falls back to today's pure-FTS behavior. This makes the
-whole feature **opt-in and non-regressing**.
+Extraction is LLM-bound, so it is **bounded**: input truncated to
+`:graph-extract-max-input-chars` (400K ≈ 100K tokens), per-episode entity/relation
+caps, and a **total node budget** (`:graph-max-nodes` 100) that evicts
+lowest-retention nodes (degree → curated-type → has-summary → recency). It
+degrades gracefully: no extraction provider ⇒ the graph stays empty and recall
+falls back to pure FTS. The whole feature is **opt-in and non-regressing**.
 
 ### 4.4 Retrieval
 
@@ -332,7 +347,7 @@ Extend `recall_v2/recall-flat` with two new candidate producers, fused by the
   hops over `graph_edges` (bounded `WITH RECURSIVE`, `t_invalid IS NULL`), return
   neighbor facts. Catches relational/multi-hop answers.
 
-New default weights (tune empirically): `{:l1 0.3 :l2 0.4 :l3 0.6 :vec 0.5 :graph 0.55}`.
+Default weights (the distilled hierarchy): `{:l1 0.25 :l2 0.35 :l3 0.7 :vec 0.6 :graph 0.55}` — L3 (distilled community summaries) outranks the raw L2 it was distilled from; L2 is the recency/fallback tier; L1 lowest.
 `render-briefing` gains a **"## Related"** section showing the graph neighborhood
 (e.g. `BY_SANDBOX_INTEROP —configures→ clj-sandbox —part_of→ code-eval`), giving
 the agent explicit relational context, not just a flat list.
@@ -351,7 +366,7 @@ today). Proposed new contracts continue the `CR-MEM` series:
 |---|---|---|
 | **0 ✅** | `GraphStore` protocol + SQLite impl behind the `:enable-graph-memory` flag; `graph_nodes`/`graph_edges` DDL (schema 2.1.0, IF-NOT-EXISTS migration); manual node/edge API + bounded multi-hop `expand` + bi-temporal `as-of`. Shipped & tested (`graph_test.clj`). | CR-MEM-20 |
 | **1 ✅** | `sqlite-vec` integration + `graph_vec` (vec0); per-connection extension auto-load; embedding via injected `embed-fn`; L3 facts indexed on write; `read-vec` + `:vec` RRF weight (0.5). `bb sqlite-vec:fetch` bundled into the native image. Two embed-fn providers: clj-llm `/embeddings` (any OpenAI-compatible endpoint), **or** a self-contained in-binary **Model2Vec** static embedder (`:graph-embed-model "static"`, `potion-base-8M` 256-dim, pure-JVM — no server, no native libs, `bb model2vec:fetch`). JVM-tested (`vec_test.clj`, `embed_static_test.clj`). | CR-MEM-21 |
-| **2 ✅** | LLM extraction sidecar off the capture pipeline (`extract.clj` + `capture/extractor.clj`): entity + relationship extraction (curated-vocab JSON schema), name/alias resolution, functional-relation bi-temporal supersession, provenance, node-summary embeddings. Async (sliding-buffer, best-effort), gated by an injected `extract-fn`. Wired live via `:graph-extract-model` / `:graph-embed-model` (off unless set). JVM-tested (`extract_test.clj`). | CR-MEM-22 |
+| **2 ✅** | LLM extraction (`extract.clj` + `capture/extractor.clj`): entity + relationship extraction (curated-vocab JSON schema), name/alias resolution, functional-relation bi-temporal supersession, provenance, node-summary embeddings, bounded by per-episode caps + a total node budget (`:graph-max-nodes`). Two modes via `:graph-extract-mode` — **`:at-consolidation` (default, Design A)** batch-extracts new episodes in one call at each consolidation (`extract-l2-batch!`); `:per-episode` runs the async sidecar (sliding-buffer, best-effort) one call per turn. Gated by an injected `extract-fn`; wired via `:graph-extract-model` / `:graph-embed-model` (off unless set). JVM-tested (`extract_test.clj`). | CR-MEM-22 |
 | **3 ✅** | `read-graph` relational recall: keyword seed resolution (`search-nodes`) → bounded multi-hop `expand-edges` → relationship entries fused into RRF (`:graph` 0.55); "## Related" briefing section; reachable as-of history (`graph-as-of`). JVM-tested (`graph_recall_test.clj`). | CR-MEM-23 |
 | **4 ✅** | Community detection (deterministic label propagation) + community summaries (`community.clj`): clusters the entity graph, summarizes each into a `graph_communities` row + L3 `:summary` fact (LLM `summarize-fn` or templated fallback). Routed via `consolidate-layer :reducer :community` — **replaces** the heuristic L2→L3 reducer, **closing CR-MEM-07**. JVM-tested (`community_test.clj`). | CR-MEM-24 |
 | **5 (opt.)** | Pluggable **neo4j** backend behind `GraphStore` for hosted/team mode; Kuzu evaluated only if CTE traversal is measured as a bottleneck. | CR-MEM-25 |
