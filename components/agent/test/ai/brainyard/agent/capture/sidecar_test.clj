@@ -64,6 +64,15 @@
       (is (contains? (:tags e) "kind:qa"))
       (is (= 1 (count (:sources e)))))))
 
+(deftest capture-quiesce-flushes-pending-writes-test
+  (testing "capture-quiesce! blocks until in-flight L2 writes are committed —
+            the barrier that lets at-consolidation batch extraction see the
+            just-captured turn (asserted WITHOUT polling)"
+    (mem/start-capture! *mm*)
+    (hooks/fire! :agent.ask/post {:session-id "sq" :user-id "u" :input "q" :result "a"})
+    (is (true? (mem/capture-quiesce! *mm* 5000)) "quiesce drains within timeout")
+    (is (= 1 (count (l2-entries "sq"))) "write visible immediately after quiesce")))
+
 (deftest ask-pre-not-captured-test
   (testing "the bare question (ask/pre) is NOT written — only ask/post is"
     (mem/start-capture! *mm*)

@@ -28,24 +28,29 @@
 
 (defn- handle-event!
   [store event on-write limits]
-  (try
-    ;; `parse` returns nil for events that should not become episodes
-    ;; (successful tool/code-eval — errors only). Skip the write entirely.
-    (when-let [entry (parser/parse event limits)]
-      (let [written (proto/write-entry store :l2 entry)]
-        (mulog/debug ::capture-write
-                     :event-key (:event-key event)
-                     :session-id (:session-id event))
-        ;; Forward the persisted L2 entry (with its stable :id) to the graph
-        ;; extractor, when one is wired. Best-effort; never blocks capture.
-        (when on-write
-          (try (on-write (or written entry))
-               (catch Exception e
-                 (mulog/warn ::capture-on-write-failed :exception e))))))
-    (catch Exception e
-      (mulog/warn ::capture-handle-failed
-                  :event-key (:event-key event)
-                  :exception e))))
+  ;; Barrier sentinel (see `quiesce!`): because the critical channel is FIFO,
+  ;; reaching this sentinel means every event queued before it is already
+  ;; written. Deliver the promise instead of parsing/writing.
+  (if-let [p (::barrier event)]
+    (deliver p true)
+    (try
+      ;; `parse` returns nil for events that should not become episodes
+      ;; (successful tool/code-eval — errors only). Skip the write entirely.
+      (when-let [entry (parser/parse event limits)]
+        (let [written (proto/write-entry store :l2 entry)]
+          (mulog/debug ::capture-write
+                       :event-key (:event-key event)
+                       :session-id (:session-id event))
+          ;; Forward the persisted L2 entry (with its stable :id) to the graph
+          ;; extractor, when one is wired. Best-effort; never blocks capture.
+          (when on-write
+            (try (on-write (or written entry))
+                 (catch Exception e
+                   (mulog/warn ::capture-on-write-failed :exception e))))))
+      (catch Exception e
+        (mulog/warn ::capture-handle-failed
+                    :event-key (:event-key event)
+                    :exception e)))))
 
 (defn- run-loop!
   [store critical-ch events-ch !running on-write limits]
@@ -115,3 +120,24 @@
   (when s
     (let [[v _] (async/alts!! [(:thread s) (async/timeout timeout-ms)])]
       v)))
+
+(defn quiesce!
+  "Block until the sidecar has processed everything queued *before* this call —
+  i.e. all currently-pending L2 writes are committed — WITHOUT stopping capture.
+  Pushes a barrier sentinel onto the (FIFO) critical channel and waits for the
+  worker to reach it. Returns true if drained within `timeout-ms`, false on
+  timeout or if the sentinel can't be enqueued (best-effort — never blocks the
+  caller past the timeout).
+
+  Used by at-consolidation batch extraction so the just-captured turn — whose
+  async write may still be in flight — is visible before L2 is read."
+  [^Sidecar s timeout-ms]
+  (if-let [dispatcher (:dispatcher s)]
+    (let [[crit _] ((requiring-resolve
+                     'ai.brainyard.memory.core.capture.dispatcher/channels)
+                    dispatcher)
+          p (promise)]
+      (if (async/offer! crit {::barrier p})
+        (= true (deref p timeout-ms false))
+        false))
+    false))

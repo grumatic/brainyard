@@ -433,6 +433,16 @@
       (capture-extractor/extract-batch! s extract-fn entries))
     {:attempted 0 :total 0 :no-extract-fn true}))
 
+(defn capture-quiesce!
+  "Block until the capture pipeline has flushed everything queued so far — all
+  pending L2 writes committed — up to `timeout-ms`, WITHOUT stopping capture.
+  Returns true if drained, false on timeout / no running capture. Call before
+  `:at-consolidation` batch extraction so the triggering turn's async write is
+  visible in L2."
+  [manager timeout-ms]
+  (boolean (when-let [s (some-> manager :!capture deref :sidecar)]
+             (capture-sidecar/quiesce! s timeout-ms))))
+
 (defn extract-l2-batch!
   "Batch graph extraction for the `:at-consolidation` mode: concatenate a
   session's L2 episodes NEWER than `:after-id` (oldest-first) into ONE text

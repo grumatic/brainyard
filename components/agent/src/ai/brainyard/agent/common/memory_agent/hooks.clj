@@ -150,6 +150,11 @@
    No-op in `:per-episode` mode (the async extractor already populated the graph)."
   [agent mm sid]
   (when (= :at-consolidation (config/get-config agent :graph-extract-mode))
+    ;; Capture is async and the cadence can fire on the same ask/post whose L2
+    ;; write is still in flight — flush pending writes so the triggering turn's
+    ;; episode is visible before we read L2 (else it slips to the next window,
+    ;; or is lost entirely at session-end).
+    (mem/capture-quiesce! mm 5000)
     (let [skey  (str sid)
           after (get @!extract-marker skey 0)
           r (mem/extract-l2-batch!
@@ -195,14 +200,19 @@
   nil)
 
 (defn install-consolidation-cadence!
-  "Register the consolidation-cadence hook globally. Idempotent."
+  "Register the consolidation-cadence hook globally. Idempotent.
+
+   Priority -200 runs this AFTER the capture dispatcher (-100), so the current
+   turn's episode is offered to the capture channel BEFORE the cadence spawns its
+   consolidation future — a prerequisite for the future's `capture-quiesce!`
+   barrier to actually wait for that episode (higher priority fires first)."
   []
   (hooks/register-hook!
    :agent.ask/post
    ::consolidation-cadence
    consolidation-cadence-handler
    :source   :memory-agent
-   :priority 50))
+   :priority -200))
 
 ;; ============================================================================
 ;; Session-end consolidation flush — :agent.instance/closed
@@ -215,31 +225,42 @@
 ;; in `agent.core/close` BEFORE the manager's capture is torn down, so the
 ;; memory manager is still live here. We block close on the reduce (we want it
 ;; to finish before exit) but bound it with a timeout so a slow community/LLM
-;; reduce can't wedge shutdown; the default heuristic reducer is LLM-free and
-;; returns in milliseconds.
+;; reduce can't wedge shutdown. The bound is mode-aware: the heuristic reducer is
+;; LLM-free and returns in milliseconds, but the graph path (batch extraction +
+;; per-community LLM summaries) legitimately takes tens of seconds — a 10s bound
+;; would abandon it and lose the session's tail. See `flush-timeout-ms`.
 
-(def ^:private ^:const session-end-flush-timeout-ms 10000)
+(def ^:private ^:const session-end-flush-timeout-ms 10000)       ; heuristic (LLM-free)
+(def ^:private ^:const session-end-flush-timeout-graph-ms 60000) ; graph path (LLM extract + summaries)
+
+(defn- flush-timeout-ms
+  "How long the session-end flush may block on the final consolidation, given the
+   agent's reducer path. Graph mode does real LLM work; the heuristic does not."
+  [agent]
+  (if (config/get-config agent :enable-graph-memory)
+    session-end-flush-timeout-graph-ms
+    session-end-flush-timeout-ms))
 
 (defn session-end-flush-handler
   "`:agent.instance/closed` handler. For an eligible root agent whose session
    saw at least one counted turn, run a final consolidation (bounded by
-   `session-end-flush-timeout-ms`) and drop the session's turn counter. Returns
-   nil and never throws."
+   `flush-timeout-ms`) and drop the session's turn counter. Returns nil and never
+   throws."
   [{:keys [agent]}]
   (when (consolidation-eligible? agent)
     (let [sid   (str (some-> agent proto/session-id))
-          tally (get @!turn-counters sid 0)]
+          tally (get @!turn-counters sid 0)
+          to    (flush-timeout-ms agent)]
       ;; Clear the per-session tally + extraction marker regardless so they
       ;; never leak across a resume; only do real work when the session actually
       ;; had turns. (The flush's own run-consolidation! extracts the tail first.)
       (swap! !turn-counters dissoc sid)
       (when (pos? (long tally))
         (try
-          (let [r (deref (future (run-consolidation! agent))
-                         session-end-flush-timeout-ms ::timeout)]
+          (let [r (deref (future (run-consolidation! agent)) to ::timeout)]
             (if (= r ::timeout)
               (mulog/warn ::session-end-flush-timeout
-                          :session-id sid :after-ms session-end-flush-timeout-ms)
+                          :session-id sid :after-ms to)
               (mulog/info ::session-end-flush-ran
                           :session-id sid :turns tally :report r)))
           (catch Exception e
