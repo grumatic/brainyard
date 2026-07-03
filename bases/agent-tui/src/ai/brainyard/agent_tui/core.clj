@@ -1468,6 +1468,12 @@
   ;; explicitly kill it here. Best-effort. The double-Ctrl-C / SIGTERM paths
   ;; bypass `stop!` and get the same teardown from the JVM shutdown hook below.
   (try (agent/task-shutdown) (catch Throwable _))
+  ;; The session-end memory consolidation runs synchronously inside
+  ;; close-session! below (via the :agent.instance/closed flush hook) and can
+  ;; block for several seconds on the graph path — batch extraction + per-community
+  ;; LLM summaries. Warn the user first so the post-/quit pause isn't a mystery.
+  (when (try (agent/pending-consolidation?) (catch Throwable _ false))
+    (tui-session/emit! (str "\n" (ansi/muted "⏳ Finalizing memory — folding this session into long-term memory (may take a few seconds)…"))))
   ;; Close all sessions (closes their agents and detaches watches)
   (doseq [idx (sessions/session-indices)]
     (sessions/close-session! idx))

@@ -112,6 +112,15 @@
 ;; captured since the last one, so edges aren't re-inserted.
 (defonce ^:private !extract-marker (atom {}))
 
+(defn pending-consolidation?
+  "True when at least one session has completed turns not yet flushed to L3 — so
+   the session-end flush will do real (and, on the graph path, multi-second)
+   consolidation work. Lets the TUI warn the user before it blocks on `/quit`.
+   The turn counter is only incremented for consolidation-eligible turns, so a
+   non-empty map already implies consolidation is enabled."
+  []
+  (boolean (seq @!turn-counters)))
+
 (defn- agent-memory-manager
   "The per-agent memory manager (same slot `memory$*` commands read via
    `current-mm`). nil when none is bound (tests / REPL without memory)."

@@ -243,7 +243,7 @@ hook event ──► S0 dispatcher ──► S1 parser ──► sidecar thread 
   **batch-extracts** the episodes captured since the last one into the
   graph in one LLM call, then summarizes.
   Consolidation is driven by two hooks in `memory_agent/hooks.clj` — an
-  every-`:memory-consolidate-every-n-turns` (default **12**) cadence plus a
+  every-`:memory-consolidate-every-n-turns` (default **5**) cadence plus a
   session-end flush — gated on `:enable-memory-consolidation`, which is
   **implied by `:enable-graph-memory`** (turning the graph on with nobody
   harvesting its communities would be pointless).

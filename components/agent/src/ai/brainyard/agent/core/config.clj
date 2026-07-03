@@ -203,7 +203,7 @@
                                             (= "true" v) ::env-unset)
                                  :default false
                                  :doc "Batch L2→L3 memory consolidation: an ask/post hook runs the pipeline's reducer every :memory-consolidate-every-n-turns turns (community consolidation when :enable-graph-memory is on, else heuristic). IMPLIED by :enable-graph-memory — when graph memory is on, consolidation runs even if this is false (the extractor builds communities that consolidation harvests into L3). Set this true to also run the heuristic reducer with graph memory off. Replaces the retired per-turn essence loop. Env: BY_ENABLE_MEMORY_CONSOLIDATION."}
-   :memory-consolidate-every-n-turns {:type "integer" :default 12
+   :memory-consolidate-every-n-turns {:type "integer" :default 5
                                       :doc "Cadence for the batch consolidation hook: run the reducer once every N completed turns (higher = cheaper/coarser). Ignored when :enable-memory-consolidation is false."}
    ;; Self-improvement loop (R1 — docs/design/self-improve-design.md).
    :enable-skill-distillation  {:type "boolean"
