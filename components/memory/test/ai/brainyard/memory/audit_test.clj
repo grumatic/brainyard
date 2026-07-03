@@ -20,10 +20,13 @@
         (finally (.close (:ds mm)))))))
 
 (defn- seed-l2! []
+  ;; Seed in a PRIOR session: L2 recall is cross-session (excludes the current
+  ;; session), so the audit tests recall from "s-aud" and must surface an episode
+  ;; that lives in a different session.
   (proto/write-entry (mem/store *mm*) :l2
                      {:kind :conversation :role "user"
                       :content "How do I deploy?"
-                      :session-id "s-aud"
+                      :session-id "s-prior"
                       :tags #{"topic:deploy"}}))
 
 (defn- contextual-recall! [opts]
