@@ -236,11 +236,11 @@
 ;; to finish before exit) but bound it with a timeout so a slow community/LLM
 ;; reduce can't wedge shutdown. The bound is mode-aware: the heuristic reducer is
 ;; LLM-free and returns in milliseconds, but the graph path (batch extraction +
-;; per-community LLM summaries) legitimately takes tens of seconds — a 10s bound
-;; would abandon it and lose the session's tail. See `flush-timeout-ms`.
+;; per-community LLM summaries) can take minutes on a long session — a short
+;; bound would abandon it and lose the session's tail. See `flush-timeout-ms`.
 
-(def ^:private ^:const session-end-flush-timeout-ms 10000)       ; heuristic (LLM-free)
-(def ^:private ^:const session-end-flush-timeout-graph-ms 60000) ; graph path (LLM extract + summaries)
+(def ^:private ^:const session-end-flush-timeout-ms 10000)        ; heuristic (LLM-free)
+(def ^:private ^:const session-end-flush-timeout-graph-ms 300000) ; graph path (LLM extract + summaries)
 
 (defn- flush-timeout-ms
   "How long the session-end flush may block on the final consolidation, given the
