@@ -262,6 +262,11 @@
 ;; =====================================================
 ;; Node budget / eviction (total-size cap)
 ;; =====================================================
+
+;; `vec-available?` is defined below in the Vector-index section; forward-declare
+;; it so `prune-nodes-to-budget!` (which deletes evicted nodes' graph_vec rows)
+;; compiles on a clean top-to-bottom load.
+(declare vec-available?)
 ;;
 ;; Per-episode caps (extract/default-graph-limits) bound the growth RATE; this
 ;; bounds the TOTAL. When a user's node count exceeds the budget we hard-delete
