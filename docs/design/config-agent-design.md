@@ -1,6 +1,6 @@
 # Config-Agent — LLM-Mediated Configuration Management with Snapshot/Revert (CoAct-derived)
 
-> **Status:** Shipped — `config-agent` is registered in `components/agent` (`common/config_agent.clj`). This document is the original design proposal (revision 1 — draft); the shipped implementation may diverge in details. See [core/agent.md](../core/agent.md) for the current roster.
+> **Status:** Shipped — `config-agent` is registered in `components/agent` (`common/config_agent.clj`). This doc carries inline `> **As-built:**` notes where the shipped code refines the original proposal; §14 records how the [redesign synthesis](./agent-lightweight-redesign-synthesis.md) applies (short version: it *confirms* config-agent — a keep-the-mechanism, edit-agent-family transactional writer over structured EDN). See [core/agent.md](../core/agent.md) for the current roster.
 > **Scope:** new `components/agent/src/ai/brainyard/agent/common/config_agent.clj` and a thin command namespace `components/agent/src/ai/brainyard/agent/common/config.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
 > **Upstream:** `docs/design/bootstrapping-design.md` (the `bb tui config` wizard owns first-LLM bootstrap; this agent owns everything after)
@@ -372,4 +372,60 @@ No on-disk data migration needed for phase 1.
 2. **Should config-agent be able to install MCP servers** (npm, uv tool install, etc.) **on its own?** Today `mcp-agent` enumerates and connects but does not install. If config-agent can shell out to install, it shortens the "add server" path; if not, it has to tell the user "now run `npm i -g @linear/mcp-server` and come back." Lean: install with explicit per-package confirmation (mirrors bootstrap's Ollama-install policy).
 3. **Snapshot retention policy** — 20 is arbitrary. Make it `:bootstrap.snapshot-retention` configurable?
 4. **Does config-agent run inside `bb tui` or as its own entry point?** Currently the design assumes `bb tui run -a config-agent`. A dedicated `bb tui config --interactive` (different from the wizard) could be more discoverable. Bikeshed.
-5. **How does config-agent surface `BRAINYARD.md`?** Today `BRAINYARD.md` is a long-form rules file the agent reads; users routinely edit it by hand. Should config-agent's writable surface include "edit BRAINYARD.md sections" via `edit-agent`? Probably yes — but the contract there is "edit the file" not "edit a structured config," so it's adjacent rather than core. Out of scope for revision 1.
+5. **How does config-agent surface `BRAINYARD.md`?** Today `BRAINYARD.md` is a long-form rules file the agent reads; users routinely edit it by hand. Should config-agent's writable surface include "edit BRAINYARD.md sections" via `edit-agent`? Probably yes — but the contract there is "edit the file" not "edit a structured config," so it's adjacent rather than core. Out of scope for revision 1. (`init-agent` now owns BRAINYARD.md; see [init-agent-design.md](./init-agent-design.md).)
+
+---
+
+## 14. Relationship to the Redesign Synthesis
+
+config-agent was **not** part of the
+[agent lightweight redesign series](./agent-lightweight-redesign-synthesis.md).
+Reviewed against it, the series **confirms** config-agent rather than redesigning
+it — it is the cleanest **keep-the-mechanism** case among the transactional
+writers, for the same reason [memory-agent](./memory-agent-design.md) §19 is:
+**its artifact is structured data, not prose.** Recorded so it isn't re-litigated
+(verified against `common/config.clj` / `config_agent.clj`).
+
+### 14.1 The artifact is a validated EDN tree — mechanism is the whole point
+
+The series' authoring move ("let the LLM write the markdown directly; retire the
+construct-a-map → render chain") targets agents whose artifact is a **document**.
+config-agent's artifact is `config.edn` — a **structured EDN tree with a schema and
+a `writable-keys` allowlist** (§7). `config$apply` takes **`:proposed [:map …]`** —
+a partial map — then `deep-merge`s it over the current config, stamps
+`:updated-at`, type-checks each leaf against `config-schema`, enforces the
+allowlist, and pretty-prints via `core-config/write-edn-config!`. That
+map-construct → validate → merge → render path is not authoring ceremony to
+retire; it *is* the value — it is what makes an LLM-proposed config change
+schema-safe and allowlist-bounded. "Write EDN as prose" would throw away exactly
+the guarantees the tool exists to provide. So config-agent is a
+**keep-the-mechanism** exemplar alongside memory (typed rows) / mcp / tool / meta.
+
+### 14.2 `config$apply` is the edit-agent transaction, over EDN
+
+Like `edit$apply` / `init$apply`, `config$apply` is a transaction the synthesis
+says to keep: allowlist → schema → secret-scan → confirm-gate → mtime check →
+snapshot → write → smoke-test → dossier + INDEX, with `config$revert` for
+rollback. The judgment half (which key, what value, runtime-vs-persisted) is the
+LLM's; the mechanism half (validate/merge/snapshot/rollback) is the tool's —
+already the synthesis-approved split.
+
+### 14.3 Ambient reads, gated writes = the substrate shape already
+
+Config is *read* ambiently — any agent reads the merged snapshot via
+`agent-runtime$config` (and the runtime honors `config.edn` on load) — while
+*persisted writes* are funnelled through config-agent (and bootstrap for
+`:llm.default-*`). That is the synthesis substrate rule — *use is ambient; the
+lifecycle stays the specialist's* — so there is nothing to add.
+
+### 14.4 Dossier is a deterministic audit byproduct; no reuse gap
+
+The per-conversation dossier is emitted by the private
+`build-dossier-frontmatter*` + `append-dossier!` helpers from the transaction's
+own data — a machine-written audit record, not an LLM artifact fighting a schema
+(same call as [memory §19.1](./memory-agent-design.md) and
+[init §16.4](./init-agent-design.md)). Keep it. And the reuse-via-references
+pillar has no purchase: `config.edn` is a *single canonical file*, and config-agent
+is already conflict-aware (mtime check) and idempotent (deep-merge + schema). No
+`config$find` seam is warranted. The series contributes nothing to change here —
+only the confirmation that the design is already correct.

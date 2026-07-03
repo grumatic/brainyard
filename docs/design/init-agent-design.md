@@ -1,6 +1,6 @@
 # Init-Agent — BRAINYARD.md Authoring and Maintenance (CoAct-derived)
 
-> **Status:** Shipped — `init-agent` is registered in `components/agent` (`common/init_agent.clj`). This document is the original design proposal (revision 1 — draft); the shipped implementation may diverge in details. See [core/agent.md](../core/agent.md) for the current roster.
+> **Status:** Shipped — `init-agent` is registered in `components/agent` (`common/init_agent.clj`). This doc carries inline `> **As-built:**` notes where the shipped code refines the original proposal; §16 records how the [redesign synthesis](./agent-lightweight-redesign-synthesis.md) applies (short version: it *confirms* init-agent — an edit-agent-family transactional-writer that already authors its markdown artifact directly). See [core/agent.md](../core/agent.md) for the current roster.
 > **Scope:** new `components/agent/src/ai/brainyard/agent/common/init_agent.clj` and a thin command namespace `components/agent/src/ai/brainyard/agent/common/init.clj`
 > **Built on:** `coact_agent.clj` via `coact/run-coact-derived`
 > **Sibling of:** `config-agent` (config.edn), `edit-agent` (safe file edits — used here for the actual write), `explore-agent` (read-mostly discovery — used for project sniffing)
@@ -522,3 +522,70 @@ Phase 3 (follow-up): bidirectional sync — propagate selected changes back to C
 5. **Should `/init` be exposed in the agent-web UI as well?** Yes, eventually — same `init-agent` engine, different shell. Out of scope here.
 6. **Reseed conflict resolution.** When the user has hand-edited a section AND CLAUDE.md has changed the same section, which wins? Today's plan: surface the conflict, user picks per-section. Could become a structured 3-way merge if the volume justifies it.
 7. **Should init-agent be able to *read* memory (L3) and suggest persisting durable facts into BRAINYARD.md?** Promising — memory and BRAINYARD.md serve overlapping purposes (always-on context vs recall-on-demand). Could be the phase-2 hook's natural input.
+
+---
+
+## 16. Relationship to the Redesign Synthesis
+
+init-agent was **not** part of the
+[agent lightweight redesign series](./agent-lightweight-redesign-synthesis.md).
+Reviewed against it, the series **confirms** init-agent rather than redesigning
+it — it is an **edit-agent-family transactional writer** that already sits on the
+right side of every axis the synthesis cares about. Recorded so it isn't
+re-litigated (verified against `common/init.clj` / `init_agent.clj`).
+
+### 16.1 The artifact is already authored as direct markdown
+
+The series' core move is *"don't make the LLM construct a structured object that a
+helper renders — let it author the markdown directly."* init-agent already does
+exactly that: `init$apply` takes **`:body [:string …]`** — the *full proposed
+BRAINYARD.md as a markdown string the model wrote* — and the write is a plain
+`(spit file body)`. There is no construct-a-section-map → render-markdown chain on
+the persisted artifact. (The seed path's section-keyed summary in §8.2 is a
+`query$llm` *summarization* of CLAUDE.md/AGENTS.md — LLM judgment — that the model
+turns into the markdown body before calling `init$apply`; it is not a
+persisted-artifact schema.) So on the authoring axis init-agent is already at the
+synthesis's endpoint.
+
+### 16.2 `init$apply` is the "good kind" of mechanism (the edit-agent lesson)
+
+The synthesis sharpens its own rule with edit-agent: a transaction like
+`edit$apply` (probe → verify → rollback → audit) is a micro-tool *worth keeping* —
+it is mechanism, not authoring ceremony. `init$apply` is the same shape:
+validate (`:op`/scope/8 KB cap/secret-scan/`## Notes` guard) → confirm-gate
+(§7.4) → mtime check → snapshot → write → smoke-test (`load-brainyard-instructions`
+round-trip) → **auto-revert on smoke-test failure** → dossier + INDEX. That
+transaction is precisely why BRAINYARD.md — a load-bearing, every-turn
+user-context file — goes through a tool instead of a raw `write-file`. Keep it.
+
+### 16.3 Ambient reads, gated writes = the substrate shape already
+
+Every CoAct-derived agent already *reads* both BRAINYARD.md files for free via
+`coact-user-context` (§1, §4.1) — the read side is ambient to the whole fleet.
+*Writes* are funnelled through init-agent as the single writer (Principle 1). That
+is exactly the synthesis substrate rule — *use is ambient; the lifecycle stays the
+specialist's* — so there is nothing to add. (init-agent is also a natural cousin of
+the Project Memory protocol the synthesis cites as its substrate precedent: both
+persist always-on context that every agent then reads.)
+
+### 16.4 The dossier is a deterministic audit byproduct — keep it
+
+init-agent writes a per-conversation markdown dossier via the private
+`build-dossier-frontmatter*` + `append-dossier!` helpers (map → YAML/markdown).
+That looks like the construct-then-render pattern the series retired elsewhere —
+but here the dossier is **not authored by the LLM**; it is a deterministic record
+the tool emits from the transaction's own data (op, scope, snapshots, diff) as a
+byproduct of `init$apply`. That is the same call the memory-agent working-area
+records make ([memory §19.1](./memory-agent-design.md)): a machine-written audit
+trail, not an LLM artifact fighting a schema. Retiring it buys nothing.
+
+### 16.5 The one marginal, optional improvement
+
+init-agent holds snapshots + an INDEX + dossiers but exposes **no
+read-frontmatter / find seam** over them (unlike `explore$find` /
+`explore$read-frontmatter`). The reuse-via-references pillar has weak purchase
+here — BRAINYARD.md is a *single canonical file*, not a corpus of findings, so
+there is no expensive re-derivation to cache-avoid. The only additive value would
+be a cheap `init$read-frontmatter` so `explore-agent` can consume init dossiers
+("what did init-agent change last week?", §9) without a full read. Marginal and
+optional — noted, not proposed. Nothing else in the series applies.

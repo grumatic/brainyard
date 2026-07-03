@@ -200,6 +200,18 @@ is no authoring chain to retire) and is reuse-aware by construction (content-has
 dedupe, recall-before-write, `supersedes`). So the series *confirms* memory-agent
 rather than redesigning it; see its design doc §19 for the full analysis.
 
+**Aside — the config/BRAINYARD stewards are edit-agent-family, also confirmed.**
+[config-agent](./config-agent-design.md) and [init-agent](./init-agent-design.md)
+are the transactional writers for `config.edn` and `BRAINYARD.md`. Both land on
+the same rule set: their `*$apply` commands are edit-agent-shape transactions
+(validate → snapshot → write → smoke-test → dossier, with revert) worth keeping;
+their artifacts are read ambiently (config via `agent-runtime$config`, BRAINYARD
+via `coact-user-context`) while writes stay gated to the steward. config-agent is
+a **keep-the-mechanism** case for the memory reason — its artifact is a
+schema-validated, allowlisted EDN tree, not prose — while init-agent already
+authors its markdown artifact directly (`init$apply :body <string>`). The series
+confirms both; see config §14 and init §16.
+
 **eval has no substrate** — and that closes the specialist set symmetrically.
 Casual self-assessment ("did I meet the goal?") already lives in the base loop's
 `goal-achieved` output every turn; formal criterion-by-criterion scoring against
