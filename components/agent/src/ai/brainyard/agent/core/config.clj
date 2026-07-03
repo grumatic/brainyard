@@ -188,8 +188,10 @@
                                 :default nil
                                 :requires-restart true
                                 :doc "Chat LM that extracts entities/relationships from episodes and writes community summaries for the context graph. nil → graph stays storage-only (manual edge API). The extract-fn is built at memory-manager startup — changing it needs a `by` restart. Env: BY_GRAPH_EXTRACT_MODEL."}
-   :graph-extract-max-input-chars {:type "integer" :default 12000 :requires-restart true
-                                   :doc "Confines graph explosion: truncate each L2 episode to this many chars before entity/relationship extraction (only when :enable-graph-memory). A large episode otherwise yields far more nodes/edges than are worth keeping. Baked into the extractor at start-capture! — needs a `by` restart."}
+   :graph-extract-mode         {:type "keyword" :default :at-consolidation :requires-restart true
+                                :doc "When graph extraction runs (only when :enable-graph-memory). :at-consolidation (default) — batch-extract the episodes captured since the last consolidation in ONE LLM call at each consolidation (fewer calls; graph is stale between consolidations). :per-episode — the async extractor runs one extraction per captured L2 turn (fresher graph, one LLM call per turn). Baked at start-capture! — needs a `by` restart."}
+   :graph-extract-max-input-chars {:type "integer" :default 400000 :requires-restart true
+                                   :doc "Max chars fed to a single graph-extraction call before truncation (only when :enable-graph-memory). ~400K chars ≈ 100K tokens, enough to batch a whole consolidation window in one call (:at-consolidation), or cap one large episode (:per-episode). Baked into the extractor at start-capture! — needs a `by` restart."}
    :graph-max-entities-per-episode {:type "integer" :default 24 :requires-restart true
                                     :doc "Confines graph explosion: max entities a single episode may add to the graph (only when :enable-graph-memory). Extras are dropped (durable ones are listed first). Baked into the extractor at start-capture! — needs a `by` restart."}
    :graph-max-relations-per-episode {:type "integer" :default 48 :requires-restart true

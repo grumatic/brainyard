@@ -107,6 +107,11 @@
 ;; A `defonce` empty map is native-image-safe (only mutated at runtime).
 (defonce ^:private !turn-counters (atom {}))
 
+;; session-id → max L2 episode id already batch-extracted into the graph
+;; (`:at-consolidation` mode). Lets each consolidation extract only the episodes
+;; captured since the last one, so edges aren't re-inserted.
+(defonce ^:private !extract-marker (atom {}))
+
 (defn- agent-memory-manager
   "The per-agent memory manager (same slot `memory$*` commands read via
    `current-mm`). nil when none is bound (tests / REPL without memory)."
@@ -138,16 +143,36 @@
                        (config/get-config agent :enable-graph-memory)))))
       (catch Exception _ false))))
 
+(defn- batch-extract-if-deferred!
+  "In `:at-consolidation` mode, batch-extract the L2 episodes captured since the
+   last consolidation into the graph (one LLM call) before it is summarized. The
+   per-session marker advances by max episode id so nothing is re-extracted.
+   No-op in `:per-episode` mode (the async extractor already populated the graph)."
+  [agent mm sid]
+  (when (= :at-consolidation (config/get-config agent :graph-extract-mode))
+    (let [skey  (str sid)
+          after (get @!extract-marker skey 0)
+          r (mem/extract-l2-batch!
+             mm :session-id sid :after-id after
+             :max-input-chars (config/get-config agent :graph-extract-max-input-chars)
+             :max-entities    (config/get-config agent :graph-max-entities-per-episode)
+             :max-relations   (config/get-config agent :graph-max-relations-per-episode)
+             :max-nodes       (config/get-config agent :graph-max-nodes))]
+      (swap! !extract-marker assoc skey (:max-id r))
+      r)))
+
 (defn- run-consolidation!
   "Run one batch L2→L3 reduction over the agent's current session. Community
    consolidation when `:enable-graph-memory` is on (the GraphRAG reducer that
-   supersedes the heuristic), else the LLM-free heuristic reducer. No-op when
-   no memory manager is bound."
+   supersedes the heuristic), else the LLM-free heuristic reducer. In graph mode
+   with `:at-consolidation` extraction, the new episodes are batch-extracted into
+   the graph first. No-op when no memory manager is bound."
   [agent]
   (when-let [mm (agent-memory-manager agent)]
     (let [sid (some-> agent proto/session-id)]
       (if (config/get-config agent :enable-graph-memory)
-        (mem/consolidate-graph! mm :session-id sid)
+        (do (batch-extract-if-deferred! agent mm sid)
+            (mem/consolidate-graph! mm :session-id sid))
         (mem/consolidate-l2!    mm :session-id sid)))))
 
 (defn consolidation-cadence-handler
@@ -204,8 +229,9 @@
   (when (consolidation-eligible? agent)
     (let [sid   (str (some-> agent proto/session-id))
           tally (get @!turn-counters sid 0)]
-      ;; Clear the per-session tally regardless so it never leaks across a
-      ;; resume; only do real work when the session actually had turns.
+      ;; Clear the per-session tally + extraction marker regardless so they
+      ;; never leak across a resume; only do real work when the session actually
+      ;; had turns. (The flush's own run-consolidation! extracts the tail first.)
       (swap! !turn-counters dissoc sid)
       (when (pos? (long tally))
         (try
@@ -218,7 +244,11 @@
                           :session-id sid :turns tally :report r)))
           (catch Exception e
             (mulog/warn ::session-end-flush-failed :session-id sid :exception e)
-            nil)))))
+            nil)))
+      ;; Clear the extraction marker AFTER the flush consolidation (which read it
+      ;; to extract the tail) so a resumed session with the same id restarts from
+      ;; a clean marker rather than re-extracting from 0.
+      (swap! !extract-marker dissoc sid)))
   nil)
 
 (defn install-session-end-flush!

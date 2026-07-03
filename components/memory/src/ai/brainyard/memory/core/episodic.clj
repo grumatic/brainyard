@@ -205,6 +205,18 @@
 ;; Temporal Queries
 ;; =====================================================
 
+(defn episodes-after-id
+  "Session episodes with `id` > `after-id`, OLDEST-first (id ASC). Backs the
+  incremental batch extraction at consolidation — each run extracts only the
+  episodes captured since the last run's max id."
+  [ds session-id after-id]
+  (mapv normalize-episode
+        (jdbc/execute! ds
+                       ["SELECT * FROM episodes
+                         WHERE session_id = ? AND id > ?
+                         ORDER BY id ASC"
+                        session-id (or after-id 0)])))
+
 (defn get-recent-episodes
   "Get most recent episodes for a session.
   Returns episodes ordered by timestamp DESC (newest first)."

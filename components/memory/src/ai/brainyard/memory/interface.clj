@@ -25,11 +25,13 @@
   The legacy episodic/semantic/working accessors that used to live
   here were removed in the unified-store refactor — see
   docs/architecture/memory.md."
-  (:require [ai.brainyard.memory.core.manager :as manager]
+  (:require [clojure.string :as str]
+            [ai.brainyard.memory.core.manager :as manager]
             [ai.brainyard.memory.core.fts :as fts]
             [ai.brainyard.memory.core.embed :as embed]
             [ai.brainyard.memory.core.embed-static :as embed-static]
             [ai.brainyard.memory.core.extract :as extract]
+            [ai.brainyard.memory.core.episodic :as episodic]
             [ai.brainyard.memory.core.unified-store :as us]
             [ai.brainyard.memory.core.l1-store :as l1]
             [ai.brainyard.memory.core.capture.dispatcher :as capture-dispatcher]
@@ -350,23 +352,28 @@
     :graph-limits    — per-episode graph caps for the extractor (`:max-input-chars`,
                        `:max-entities`, `:max-relations`), confining node/edge
                        explosion. Merged over the extractor/extract defaults.
+    :defer-extraction? — when true, do NOT start the async per-episode extractor
+                       even if an extract-fn is present. Graph extraction then
+                       happens in batch at consolidation (`extract-l2-batch!`) —
+                       the `:graph-extract-mode :at-consolidation` path.
 
   Idempotent: calling twice on the same manager returns the existing
   capture handle."
-  [manager & {:keys [limits graph-limits] :as opts}]
+  [manager & {:keys [limits graph-limits defer-extraction?] :as opts}]
   (when-not manager
     (throw (ex-info "start-capture! requires a memory manager" {})))
   (let [!cap (:!capture manager)
-        ;; :limits / :graph-limits are consumed by the sidecar / extractor,
-        ;; not the dispatcher.
-        disp-opts (dissoc opts :limits :graph-limits)]
+        ;; :limits / :graph-limits / :defer-extraction? are consumed here, not
+        ;; by the dispatcher.
+        disp-opts (dissoc opts :limits :graph-limits :defer-extraction?)]
     (or @!cap
         (let [d   (apply capture-dispatcher/start! (mapcat identity disp-opts))
               ;; CR-MEM-22: when the manager carries an extract-fn, run the
               ;; graph-extraction sidecar and feed it persisted L2 entries
-              ;; via the sidecar's :on-write seam.
-              ex  (when-let [ef (:extract-fn manager)]
-                    (capture-extractor/start! (:store manager) ef :limits graph-limits))
+              ;; via the sidecar's :on-write seam — UNLESS extraction is
+              ;; deferred to consolidation (:at-consolidation mode).
+              ex  (when (and (:extract-fn manager) (not defer-extraction?))
+                    (capture-extractor/start! (:store manager) (:extract-fn manager) :limits graph-limits))
               s   (apply capture-sidecar/start! (:store manager) d
                          (concat (when ex [:on-write #(capture-extractor/enqueue! ex %)])
                                  (when limits [:limits limits])))
@@ -425,6 +432,45 @@
                                       {:limit 1000})]
       (capture-extractor/extract-batch! s extract-fn entries))
     {:attempted 0 :total 0 :no-extract-fn true}))
+
+(defn extract-l2-batch!
+  "Batch graph extraction for the `:at-consolidation` mode: concatenate a
+  session's L2 episodes NEWER than `:after-id` (oldest-first) into ONE text
+  (bounded by `:max-input-chars`, default 400K chars ≈ 100K tokens) and run a
+  SINGLE extraction over it, populating the graph. The at-consolidation
+  counterpart to the per-episode async extractor — one LLM call per
+  consolidation window instead of one per turn. Entity/relation/node caps are
+  passed through to `process-extraction!`.
+
+  Incremental: pass the previous run's `:max-id` back as `:after-id` so each run
+  only extracts episodes captured since. Returns
+  `{:calls 0|1 :new-episodes n :nodes n :edges n :max-id id}`; `:no-extract-fn
+  true` when the graph tier is off."
+  [manager & {:keys [session-id after-id max-input-chars max-entities max-relations max-nodes]
+              :or   {after-id 0 max-input-chars 400000}}]
+  (if-let [extract-fn (:extract-fn manager)]
+    (let [store  (:store manager)
+          eps    (episodic/episodes-after-id (:ds store) session-id after-id)
+          max-id (reduce max after-id (keep :id eps))
+          text0  (str/join "\n\n" (keep :content eps))
+          text   (if (> (count text0) max-input-chars) (subs text0 0 max-input-chars) text0)]
+      (if (or (empty? eps) (< (count text) 40))
+        {:calls 0 :new-episodes (count eps) :nodes 0 :edges 0 :max-id max-id}
+        (let [result  (extract-fn text)
+              ;; Batch extraction spans many episodes, so there is no single
+              ;; source-entry-id to attribute (nil ⇒ no per-edge provenance).
+              applied (when result
+                        (extract/process-extraction!
+                         store result nil
+                         (cond-> {}
+                           max-entities  (assoc :max-entities max-entities)
+                           max-relations (assoc :max-relations max-relations)
+                           max-nodes     (assoc :max-nodes max-nodes))))]
+          (mulog/debug ::l2-batch-extracted :session-id session-id
+                       :new-episodes (count eps) :nodes (:nodes applied 0) :edges (:edges applied 0))
+          {:calls 1 :new-episodes (count eps)
+           :nodes (:nodes applied 0) :edges (:edges applied 0) :max-id max-id})))
+    {:calls 0 :no-extract-fn true :max-id after-id}))
 
 ;; =====================================================
 ;; Retention & Archive (P4)

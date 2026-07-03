@@ -632,7 +632,11 @@
                :graph-limits {:max-input-chars (config/get-config agent :graph-extract-max-input-chars)
                               :max-entities    (config/get-config agent :graph-max-entities-per-episode)
                               :max-relations   (config/get-config agent :graph-max-relations-per-episode)
-                              :max-nodes       (config/get-config agent :graph-max-nodes)})
+                              :max-nodes       (config/get-config agent :graph-max-nodes)}
+               ;; :at-consolidation mode defers extraction to the consolidation
+               ;; hook (batch), so the async per-episode extractor stays off.
+               :defer-extraction? (= :at-consolidation
+                                     (config/get-config agent :graph-extract-mode)))
               (catch Exception e
                 (mulog/warn ::capture-start-failed
                             :agent-id agent-id

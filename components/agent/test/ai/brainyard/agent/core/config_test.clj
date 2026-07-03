@@ -154,7 +154,7 @@
     (is (= #{:enable-graph-memory :graph-embed-model :graph-extract-model
              :enable-memory-capture :memory-question-max-chars :memory-answer-max-chars
              :graph-extract-max-input-chars :graph-max-entities-per-episode
-             :graph-max-relations-per-episode :graph-max-nodes}
+             :graph-max-relations-per-episode :graph-max-nodes :graph-extract-mode}
            cfg/restart-required-keys))
     (is (cfg/requires-restart-key? :enable-graph-memory))
     (is (cfg/requires-restart-key? :graph-embed-model))
