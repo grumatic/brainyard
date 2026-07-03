@@ -10,13 +10,16 @@
   events onto two channels:
 
     :critical-ch — unbounded, undroppable. Carries `:agent.ask/post`
-                   (the Q&A conversation record) and `:agent/exception` so a
-                   noisy run can never lose the conversation or its errors.
-    :events-ch   — bounded, sliding-buffer. Carries debounced
-                   high-volume events (`:agent.tool-use/post`,
-                   `:agent.code-eval/post`). Under back-pressure the oldest
-                   non-critical events are dropped (a μ/log warn is
-                   emitted).
+                   (the Q&A conversation record) so a noisy run can
+                   never lose the conversation.
+    :events-ch   — bounded, sliding-buffer. Reserved for debounced
+                   high-volume events, but currently UNUSED: as of the
+                   2026-07 narrowing only the Q&A episode is captured
+                   (`subscribed-events` = `[:agent.ask/post]`,
+                   `debounce-events` = `#{}`), so nothing is routed here.
+                   Kept structurally for future high-volume capture; on
+                   back-pressure the oldest events would be dropped (μ/log
+                   warn).
 
   This namespace knows nothing about persistence — it only normalizes
   and routes. The sidecar worker (`sidecar.clj`) consumes from both
