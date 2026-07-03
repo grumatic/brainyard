@@ -1797,6 +1797,12 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
              :turn-id          turn-id
              :total-turns      total-turns
              :started-at       (System/currentTimeMillis)
+             ;; Cumulative usage snapshot at turn start. Finalize diffs the
+             ;; end-of-turn cumulative against this to record PER-TURN (not
+             ;; session-accumulated) token/cost usage in trajectory.edn.
+             :usage-baseline   (some-> (or (:usage-tracker opts)
+                                           (when agent (get-in @(:!session agent) [:config :usage-tracker])))
+                                       ai.brainyard.clj-llm.interface/get-usage-summary)
              ;; Stash for the per-iteration rebudget action (M4).
              :cached-sections  (:sections enforced)
              :sys-order        sys-order
@@ -4264,8 +4270,13 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
     (when (and enable-trajectory-recording agent (proto/session-id agent))
       (try
         (let [model-id (when (map? lm-config) (:model lm-config))
+              ;; Per-turn (not session-cumulative) usage: diff the end-of-turn
+              ;; cumulative totals against the snapshot taken at turn start
+              ;; (:usage-baseline, set by coact-init-action).
               usage-summary (when usage-tracker
-                              (try (ai.brainyard.clj-llm.interface/get-usage-summary usage-tracker)
+                              (try (ai.brainyard.clj-llm.interface/diff-usage-summaries
+                                    (ai.brainyard.clj-llm.interface/get-usage-summary usage-tracker)
+                                    (:usage-baseline st))
                                    (catch Exception _ nil)))
               session-id (str (proto/session-id agent))
               traj (trajectory/build-turn-trajectory

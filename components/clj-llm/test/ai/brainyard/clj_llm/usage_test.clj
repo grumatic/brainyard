@@ -303,3 +303,44 @@
       (usage/record-usage! t2 (entry {:t 3 :input-tokens 32500 :iteration 2}))
       (is (= {:last-input-tokens 32500 :input-tokens-delta 2500}
              (usage/last-input-tokens-with-delta [t1 t2]))))))
+
+(deftest diff-usage-summaries-test
+  (testing "Per-turn usage = end-of-turn cumulative minus turn-start baseline"
+    (let [tracker (usage/create-usage-tracker)]
+      ;; turn 1
+      (usage/record-usage! tracker (entry {:t 1000 :input-tokens 100}))
+      (usage/record-usage! tracker (entry {:t 2000 :input-tokens 200}))
+      (let [base-turn2 (usage/get-usage-summary tracker)]      ;; snapshot at turn-2 start
+        ;; turn 2
+        (usage/record-usage! tracker (entry {:t 5000 :input-tokens 300}))
+        (let [end-turn2  (usage/get-usage-summary tracker)
+              turn1      (:totals (usage/diff-usage-summaries base-turn2 nil))
+              turn2      (:totals (usage/diff-usage-summaries end-turn2 base-turn2))]
+          ;; turn 1: nil baseline ⇒ delta == cumulative-so-far
+          (is (= 300 (:input-tokens turn1)))
+          (is (= 2 (:call-count turn1)))
+          ;; turn 2: only the third call
+          (is (= 300 (:input-tokens turn2)))
+          (is (= 1 (:call-count turn2)))
+          ;; per-turn reconciles with the session cumulative
+          (is (= (get-in end-turn2 [:totals :input-tokens])
+                 (+ (:input-tokens turn1) (:input-tokens turn2))))))))
+  (testing "Handles --resume: non-empty baseline yields only the turn's own usage"
+    (let [tracker (usage/create-usage-tracker)]
+      ;; simulate a hydrated tracker from a resumed session
+      (usage/record-usage! tracker (entry {:t 1 :input-tokens 50000}))
+      (let [base (usage/get-usage-summary tracker)]
+        (usage/record-usage! tracker (entry {:t 2 :input-tokens 1234}))
+        (is (= 1234 (get-in (usage/diff-usage-summaries
+                             (usage/get-usage-summary tracker) base)
+                            [:totals :input-tokens]))))))
+  (testing "nil later yields nil; nil baseline treated as zero"
+    (is (nil? (usage/diff-usage-summaries nil {:totals {:input-tokens 5}})))
+    (is (= {:totals {:input-tokens 5 :output-tokens 0 :total-tokens 5
+                     :cache-read-tokens 0 :cache-write-tokens 0
+                     :total-cost 0.0 :call-count 0}}
+           (usage/diff-usage-summaries
+            {:totals {:input-tokens 5 :output-tokens 0 :total-tokens 5
+                      :cache-read-tokens 0 :cache-write-tokens 0
+                      :total-cost 0.0 :call-count 0}}
+            nil)))))

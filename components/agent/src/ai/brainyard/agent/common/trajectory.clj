@@ -29,9 +29,13 @@
                       {:n 2 :channel \"tool\" :thought \"...\"
                        :tools [{:name \"read-file\" :args {...} :result \"...\"}]}]
     :model           \"...\"
-    :cost            0.0042
-    :usage           {:in N :out N :cache-read N :cache-write N}
+    :cost            0.0042            ;; per-turn, not session-cumulative
+    :usage           {:in N :out N :cache-read N :cache-write N}  ;; per-turn
     :duration-ms     N}
+
+   `:cost`/`:usage` are the tokens+cost spent *by this turn alone* — the caller
+   windows the session-wide usage tracker to the turn's wall-clock span before
+   handing the summary here (see `usage-summary-in-window`).
 
    Newline-delimiting is safe because records are written with `pr-str`
    (readable printing escapes embedded newlines inside strings, so every record

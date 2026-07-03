@@ -331,6 +331,12 @@
   "Merge multiple usage summaries into one combined summary."
   usage/merge-usage-summaries)
 
+(def diff-usage-summaries
+  "Field-wise subtract a baseline usage summary from a later one, returning a
+   {:totals ...} summary of (later − baseline). nil baseline ⇒ result == later.
+   Used to derive per-turn usage from two cumulative session-tracker snapshots."
+  usage/diff-usage-summaries)
+
 (def last-input-tokens-with-delta
   "Given a seq of usage trackers, return {:last-input-tokens N
    :input-tokens-delta M-or-nil} for the most recent call across them.

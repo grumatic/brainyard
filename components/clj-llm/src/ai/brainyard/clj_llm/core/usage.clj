@@ -457,6 +457,27 @@
                                                   (:history-cap state)
                                                   default-history-cap))))))
 
+(defn diff-usage-summaries
+  "Field-wise subtract a baseline usage summary from a later one, returning a
+   summary whose `:totals` are (later − baseline) for every totals key. A nil
+   `baseline` (or a baseline with no `:totals`) is treated as all-zero, so the
+   result's totals equal `later`'s. Returns nil when `later` is nil.
+
+   Both args are `get-usage-summary`-shaped ({:totals {...} :by-model {...}}).
+   Used to derive **per-turn** usage from two cumulative snapshots of a shared
+   session usage tracker: snapshot at turn start, snapshot at turn end, diff.
+   Because tracker totals only ever accumulate (never decrement), the diff is
+   exactly what this turn added — correct across `--resume` (baseline carries
+   the restored cumulative) and immune to history eviction / clock skew."
+  [later baseline]
+  (when later
+    (let [lt (:totals later)
+          bt (or (:totals baseline) {})]
+      {:totals (reduce (fn [m k]
+                         (assoc m k (- (or (get lt k) 0) (or (get bt k) 0))))
+                       {}
+                       (keys lt))})))
+
 (defn merge-usage-summaries
   "Merge multiple usage summaries (as returned by get-usage-summary) into one.
    Sums :totals and merges :by-model breakdowns."
