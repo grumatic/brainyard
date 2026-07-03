@@ -37,14 +37,27 @@
   [:l1 :l2 :l3 :vec :graph])
 
 (def default-weights
-  "Per-layer RRF weights. L1 (system + user context) ranks lowest
-  because it is already in the system prompt; L2/L3 surface more
-  aggressively. `:vec` fuses semantic hits alongside L3 FTS; `:graph`
-  contributes relational neighbors."
-  {:l1 0.3
-   :l2 0.4
-   :l3 0.6
-   :vec 0.5
+  "Per-layer RRF weights, ordered for the hierarchical memory:
+     L3 (0.7) > vec (0.6) > graph (0.55) > L2 (0.35) > L1 (0.25).
+
+  L3 is the DISTILLED, cross-session tier (community summaries harvested from L2),
+  so it outranks the raw L2 episodes it was distilled from (~2x) — a summary wins
+  the briefing slot and its source episodes fall past the total-limit cut
+  (refined-over-raw, less redundancy). L2 is cross-session raw Q&A: the recency
+  tier for not-yet-consolidated items and the fallback when L3 is empty. L1 is
+  lowest — it is already verbatim in the system prompt. `:vec` (semantic over L3
+  / node summaries) complements L3's exact-term FTS; `:graph` contributes
+  relational multi-hop neighbors.
+
+  Note (RRF is rank-based): an empty layer contributes nothing regardless of
+  weight, so the high L3 weight is free when consolidation is off (L3 empty). The
+  one suboptimal case is consolidation-on + graph-off, where L3 holds weak
+  heuristic digests at this high weight; that config is rare since consolidation
+  is now implied by :enable-graph-memory."
+  {:l1 0.25
+   :l2 0.35
+   :l3 0.7
+   :vec 0.6
    :graph 0.55})
 
 (def default-per-layer-limit 8)
