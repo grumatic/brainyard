@@ -139,6 +139,13 @@
   [conn]
   (doseq [pragma ["journal_mode = WAL"
                   "synchronous = NORMAL"
+                  ;; WAL permits a separate OS process (the detached session-end
+                  ;; consolidation child, `by memory reduce`) to write the same
+                  ;; db file while this process still writes L2. Without a busy
+                  ;; timeout the loser of a write race gets SQLITE_BUSY *immediately*
+                  ;; instead of waiting; 30s covers the brief interactive write
+                  ;; bursts. Single-process use is unaffected.
+                  "busy_timeout = 30000"
                   "cache_size = -64000"
                   "foreign_keys = ON"
                   "temp_store = MEMORY"]]

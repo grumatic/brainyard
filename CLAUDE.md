@@ -46,6 +46,19 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
 - **`AWS_PROFILE`** — Bedrock credential profile (`AWS_DEFAULT_PROFILE` is **not** honored).
 - **`BY_JAR=1`** — run the uberjar instead of the native binary (reflection-config debugging).
 - **`BY_ENV_FILE`** / **`BY_NO_DOTENV=1`** — force a specific `.env`, or skip `.env` discovery.
+- **`BY_MEMORY_SELF`** — override for how the interactive TUI re-execs itself to
+  run the **detached session-end memory consolidation**. On a graph-mode root
+  session close the TUI hands the session's L2→graph→L3 tail to a detached
+  `by memory reduce -u <uid> -s <sid>` child (surviving `/quit` via a
+  `trap '' HUP INT TERM` + `setsid`/`perl` new-session detach), so `/quit` never
+  blocks on minutes of extraction + community summaries. The child is resolved to
+  the **real** binary (native-image self path, else `which by`) — deliberately
+  **not** via `BY_WEB_SELF`, which is often a ttyd stand-in (`BY_WEB_SELF=cat`)
+  and would silently misfire the reduce. Set `BY_MEMORY_SELF` (whitespace-split,
+  e.g. a dev `clojure -M -m … run` command) to point that re-exec elsewhere for
+  source/dev testing; parallel to `BY_WEB_SELF` / `BY_SANDBOX_SELF`. Unset ⇒ real
+  binary. Falls back to a bounded in-process flush when the child can't be
+  spawned. Impl: `spawn-detached-reduce!` / `reduce-self-argv` in the app `main`.
 - **`BY_WEB`, `BY_WEB_*`** — web-sharing defaults (one per `--web*` flag; flag
   wins). The `--web` launcher sets **`BY_WEB_CHILD=1`** on the ttyd child as a
   re-entrancy guard so the relaunched TUI runs in-process instead of spawning

@@ -207,9 +207,11 @@
                 match-all match-any match-agent-id match-defagent-type
                 match-root-agent)
 
-;; Memory-agent consolidation surface (for the TUI's shutdown banner).
+;; Memory-agent consolidation surface (for the TUI's shutdown banner, and the
+;; app-installed detached session-end consolidation launcher).
 (export-symbols ai.brainyard.agent.common.memory-agent.hooks
-                pending-consolidation?)
+                pending-consolidation?
+                set-offload-fn!)
 
 ;; ============================================================================
 ;; Current Agent Dynamic Var

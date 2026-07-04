@@ -250,34 +250,79 @@
     session-end-flush-timeout-graph-ms
     session-end-flush-timeout-ms))
 
+(defonce ^{:doc
+           "Optional detached-consolidation launcher, installed by the app layer via
+   `set-offload-fn!`. A fn of `{:user-id :session-id :reducer}` that spawns a
+   DETACHED `by memory reduce` child and returns a truthy handle (the pid) on a
+   successful spawn, or nil to make the session-end flush fall back to the
+   bounded in-process reduce.
+
+   The seam is a function slot rather than a hardcoded subprocess call because
+   components/agent can't resolve the `by` binary path or honor BY_JAR — that's
+   a project concern. nil when unset (tests / non-TUI entrypoints), so behavior
+   is byte-identical to the old in-process flush until the app installs it."}
+  !offload-fn
+  (atom nil))
+
+(defn set-offload-fn!
+  "Install (or clear, with nil) the detached session-end consolidation launcher.
+   See `!offload-fn`. Called once by the app layer at TUI startup."
+  [f]
+  (reset! !offload-fn f))
+
+(defn- run-flush-blocking!
+  "Run the final consolidation in-process, bounded by `flush-timeout-ms`. Used
+   for the LLM-free heuristic path, and as the fallback when no detached-offload
+   launcher is installed (or it declines to spawn). Never throws."
+  [agent sid tally]
+  (let [to (flush-timeout-ms agent)
+        r  (deref (future (run-consolidation! agent)) to ::timeout)]
+    (if (= r ::timeout)
+      (mulog/warn ::session-end-flush-timeout :session-id sid :after-ms to)
+      (mulog/info ::session-end-flush-ran :session-id sid :turns tally :report r))))
+
 (defn session-end-flush-handler
   "`:agent.instance/closed` handler. For an eligible root agent whose session
-   saw at least one counted turn, run a final consolidation (bounded by
-   `flush-timeout-ms`) and drop the session's turn counter. Returns nil and never
-   throws."
+   saw at least one counted turn, finalize the session's tail into L3 and drop
+   the session's turn counter. Returns nil and never throws.
+
+   Graph mode does minutes of LLM work (batch extraction + per-community
+   summaries). When a detached launcher is installed (`!offload-fn`), hand that
+   work to a `by memory reduce` child scoped to this session and return
+   immediately, so /quit isn't blocked for up to `session-end-flush-timeout-graph-ms`.
+   The heuristic path (LLM-free, ms) — and the fallback when no launcher is
+   installed or it declines — runs the bounded in-process flush inline."
   [{:keys [agent]}]
   (when (consolidation-eligible? agent)
     (let [sid   (str (some-> agent proto/session-id))
-          tally (get @!turn-counters sid 0)
-          to    (flush-timeout-ms agent)]
+          tally (get @!turn-counters sid 0)]
       ;; Clear the per-session tally + extraction marker regardless so they
       ;; never leak across a resume; only do real work when the session actually
-      ;; had turns. (The flush's own run-consolidation! extracts the tail first.)
+      ;; had turns.
       (swap! !turn-counters dissoc sid)
       (when (pos? (long tally))
         (try
-          (let [r (deref (future (run-consolidation! agent)) to ::timeout)]
-            (if (= r ::timeout)
-              (mulog/warn ::session-end-flush-timeout
-                          :session-id sid :after-ms to)
-              (mulog/info ::session-end-flush-ran
-                          :session-id sid :turns tally :report r)))
+          (let [graph?  (config/get-config agent :enable-graph-memory)
+                offload (and graph? @!offload-fn)
+                pid     (when offload
+                          (offload {:user-id    (some-> agent proto/user-id)
+                                    :session-id sid
+                                    :reducer    :community}))]
+            (if pid
+              ;; Detached: the child extracts this session's L2 tail into the
+              ;; graph and runs the community reducer AFTER we exit. Scoped to
+              ;; `-s sid`, so it re-reads only this session's episodes from the
+              ;; db (not the whole user history) even though the in-process
+              ;; !extract-marker doesn't cross the process boundary.
+              (mulog/info ::session-end-flush-detached
+                          :session-id sid :turns tally :pid pid)
+              ;; Heuristic path, or no launcher / it declined → bounded inline.
+              (run-flush-blocking! agent sid tally)))
           (catch Exception e
             (mulog/warn ::session-end-flush-failed :session-id sid :exception e)
             nil)))
-      ;; Clear the extraction marker AFTER the flush consolidation (which read it
-      ;; to extract the tail) so a resumed session with the same id restarts from
-      ;; a clean marker rather than re-extracting from 0.
+      ;; Clear the extraction marker AFTER any in-process flush (which read it to
+      ;; extract the tail) so a resumed session with the same id restarts clean.
       (swap! !extract-marker dissoc sid)))
   nil)
 

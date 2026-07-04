@@ -249,11 +249,106 @@
 ;; Subcommand: run — interactive TUI
 ;; ============================================================================
 
+(defn- sh-single-quote
+  "POSIX single-quote `s` so it survives as one literal word inside a `sh -c`
+   command line (handles the `/`, `:`, spaces in model strings and paths)."
+  [s]
+  (str \' (str/replace (str s) "'" "'\\''") \'))
+
+(defn- reduce-self-argv
+  "Resolve the argv prefix that re-execs THIS `by` for the detached memory-reduce
+   child. Deliberately does NOT honor BY_WEB_SELF: that override answers 'what
+   command should ttyd relaunch' (a web-share concern) and is commonly set to a
+   stand-in that is not a real `by` — the smoke tests use `BY_WEB_SELF=cat` /
+   `BY_WEB_SELF='bb tui'`, and a --web child inherits it from the parent env.
+   Re-execing that here would silently break consolidation. So we resolve the
+   real binary — native-image current-executable, else `which by` — by reusing
+   web-share's resolver with BY_WEB_SELF stripped from the env it sees, with a
+   dedicated BY_MEMORY_SELF escape hatch for dev/source testing (parallel to
+   BY_WEB_SELF / BY_SANDBOX_SELF). Returns {:ok? bool :argv [...]}."
+  []
+  (let [override (some-> (System/getenv "BY_MEMORY_SELF") str/trim not-empty)]
+    (if override
+      {:ok? true :argv (vec (str/split override #"\s+"))}
+      (web-share/self-exec-argv (dissoc (into {} (System/getenv)) "BY_WEB_SELF")))))
+
+(defn- spawn-detached-reduce!
+  "Re-exec `by memory reduce -u <uid> -s <sid>` as a DETACHED child and return
+   the launcher pid, or nil if the `by` argv can't be resolved / the spawn fails.
+   The child inherits our full environment (BY_ENABLE_GRAPH_MEMORY, the extract/
+   embed model vars, AWS_PROFILE, …) — required for it to do graph work — and its
+   combined output is appended to a per-session log under $TMPDIR for post-mortem.
+
+   Detachment matters because the flush fires as the TUI is exiting: a plain
+   ProcessBuilder child stays in our process group and on the controlling
+   terminal, so the terminal teardown at /quit delivers it SIGHUP and it dies
+   mid-run (nohup alone is NOT enough — a real tmux e2e confirmed the nohup
+   child was still killed). Two layers make the child survive:
+
+     1. `trap '' HUP INT TERM` FIRST, in the wrapping `/bin/sh`, before anything
+        is launched. SIG_IGN is inherited across both fork and exec, so the whole
+        pipeline (sh → detacher → the child JVM) ignores those signals through
+        the vulnerable window — this closes the RACE where the TUI tears the
+        terminal down before the child has finished detaching.
+     2. A BRAND-NEW SESSION before the child ever starts the JVM: `setsid` when
+        available (Linux), else the `perl -MPOSIX` equivalent (perl ships with
+        stock macOS, which has no setsid binary), else `nohup`. This makes the
+        detachment permanent, not just race-window-wide.
+
+   The shell owns the child's IO redirection and backgrounds it, so we never
+   `.waitFor` it."
+  [{:keys [user-id session-id]}]
+  (let [self (reduce-self-argv)]                 ;; {:ok? true :argv [...]} | {:ok? false}
+    (when (:ok? self)
+      (let [uid  (some-> user-id str str/trim not-empty)
+            sid  (some-> session-id str str/trim not-empty)
+            argv (cond-> (into (vec (:argv self)) ["memory" "reduce"])
+                   uid (into ["-u" uid])
+                   sid (into ["-s" sid]))
+            log  (io/file (or (System/getenv "TMPDIR")
+                              (System/getProperty "java.io.tmpdir") "/tmp")
+                          (str "by-memory-reduce-" (or sid "session") ".log"))
+            cmd  (str (str/join " " (map sh-single-quote argv))
+                      " >> " (sh-single-quote (.getAbsolutePath log)) " 2>&1")
+            ;; trap FIRST (closes the teardown race), then a new session:
+            ;; setsid (Linux) / perl POSIX::setsid (stock macOS) / nohup fallback.
+            script (str "trap '' HUP INT TERM; "
+                        "if command -v setsid >/dev/null 2>&1; then setsid " cmd " & "
+                        "elif command -v perl >/dev/null 2>&1; then "
+                        "perl -MPOSIX -e 'POSIX::setsid() or exit 1; exec @ARGV' " cmd " & "
+                        "else nohup " cmd " & fi")
+            pb   (doto (ProcessBuilder. ^java.util.List ["/bin/sh" "-c" script])
+                   (.redirectOutput java.lang.ProcessBuilder$Redirect/DISCARD)
+                   (.redirectError java.lang.ProcessBuilder$Redirect/DISCARD))
+            proc (.start pb)]
+        (.pid proc)))))
+
+(defn- install-consolidation-offload!
+  "Install the detached session-end consolidation launcher into the memory-agent
+   hook (idempotent). With it installed, a root session closing in graph mode
+   hands its L2→graph→L3 tail to `spawn-detached-reduce!` and returns from close
+   immediately, instead of blocking /quit for up to 5 minutes on batch extraction
+   + community summaries. Returning nil (unresolved binary / spawn failure) makes
+   the hook fall back to the bounded in-process flush."
+  []
+  (agent/set-offload-fn!
+   (fn [ctx]
+     (try
+       (spawn-detached-reduce! ctx)
+       (catch Exception e
+         (mulog/warn ::consolidation-offload-spawn-failed :exception e)
+         nil)))))
+
 (defn- run-tui!
   "Start the interactive TUI agent session in this process.
    Config precedence: CLI flags > config.edn > hardcoded defaults.
    `opts` is assumed already normalized by `parse-legacy-provider`."
   [opts]
+  ;; Offload the heavy graph-mode session-end consolidation to a detached
+  ;; `by memory reduce` child so /quit never blocks on it (this process knows how
+  ;; to re-exec the binary; components/agent can't). No-op unless graph memory is
+  ;; on — the hook only calls the launcher in graph mode.
+  (install-consolidation-offload!)
   (let [;; Load persisted config for fallback defaults
         file-config (agent/read-edn-config (agent/init-dirs!))
 
@@ -949,6 +1044,45 @@
           (println "Error:" (.getMessage e)))
         (System/exit 1)))))
 
+(defn cmd-memory-reduce
+  "One-shot 'finalize this session into L3': batch-extract the session's L2 tail
+   into the context-graph, then run the community reducer — i.e. `graph-build`
+   followed by `consolidate --reducer community` in a single manager lifecycle.
+
+   This is the entrypoint the DETACHED session-end offload re-execs
+   (`by memory reduce -u <uid> -s <sid>`), so the interactive TUI doesn't block
+   /quit on minutes of graph work; it is equally runnable by hand. Requires the
+   graph tier configured (BY_ENABLE_GRAPH_MEMORY + an extract model); the child
+   inherits those env vars from the launching process."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        sid   (some-> (:session opts) str/trim not-empty)]
+    (try
+      (let [report (with-memory-manager
+                     uid
+                     (fn [mm]
+                       (let [g (apply mem/extract-l2-graph! mm
+                                      (cond-> [] sid (into [:session-id sid])))
+                             c (apply mem/consolidate-l2! mm
+                                      (cond-> [:reducer :community]
+                                        sid (into [:session-id sid])))]
+                         {:graph-build g :consolidate c})))]
+        (if json?
+          (print-json! {:success true :user-id uid :session sid :report report})
+          (println (format "Reduced [%s%s] → graph-attempted=%s/%s consolidate-produced=%s consumed=%s"
+                           uid (if sid (str " / " sid) "")
+                           (get-in report [:graph-build :attempted])
+                           (get-in report [:graph-build :total])
+                           (get-in report [:consolidate :produced])
+                           (get-in report [:consolidate :consumed])))))
+      (catch Exception e
+        (if json?
+          (print-json! {:success false :error (.getMessage e) :user-id uid})
+          (println "Error:" (.getMessage e)))
+        (System/exit 1)))))
+
 ;; ============================================================================
 ;; Subcommand: agents — list available agents
 ;; ============================================================================
@@ -1503,6 +1637,10 @@
                                  :description "Synchronously extract L2 episodes into the context-graph (graph tier; precedes --reducer community)"
                                  :opts        [user-id-opt session-opt json-opt]
                                  :runs        cmd-memory-graph-build}
+                                {:command     "reduce"
+                                 :description "graph-build + consolidate --reducer community in one shot; entrypoint for the detached session-end offload"
+                                 :opts        [user-id-opt session-opt json-opt]
+                                 :runs        cmd-memory-reduce}
                                 {:command     "stats"
                                  :description "Report L1/L2/L3 counts for a user"
                                  :opts        [user-id-opt json-opt]
