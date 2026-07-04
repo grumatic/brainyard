@@ -55,9 +55,14 @@
       (is (= :claude-code (:provider lm)))
       (is (= "opus" (:model lm)))))
   (testing "a bare id whose ':' is part of the model (not a provider) is left whole"
+    ;; Since the bare-Nova inference-profile rewrite (386dea0), create-lm may
+    ;; prepend a region prefix ("us."/"eu."/"apac.") — region-dependent, so
+    ;; assert the id survives intact as a suffix rather than pinning the
+    ;; prefix. The point under test is that ':0' is NOT parsed as a
+    ;; provider separator.
     (let [lm (providers/create-lm {:model "amazon.nova-lite-v1:0"})]
       (is (= :bedrock (:provider lm)))
-      (is (= "amazon.nova-lite-v1:0" (:model lm)))))
+      (is (clojure.string/ends-with? (:model lm) "amazon.nova-lite-v1:0"))))
   (testing "a plain model name is untouched"
     (let [lm (providers/create-lm {:model "gpt-4o"})]
       (is (= :openai (:provider lm)))
