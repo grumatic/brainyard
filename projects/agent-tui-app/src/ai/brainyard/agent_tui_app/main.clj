@@ -957,13 +957,24 @@
 (defn- with-memory-manager
   "Create a user-scoped memory manager (graph opts wired from config when
    `:enable-graph-memory` is on), initialize it, run `f` on it, and always
-   shut it down. Returns f's value."
+   shut it down. Returns f's value.
+
+   Starts the mulog file publisher for the duration so the memory pipeline's
+   structured events (graph extraction, `::graph-consolidated`,
+   `::communities-summarized`, errors) persist to the app log — the detached
+   `by memory reduce` child leaves no other durable audit trail (its stdout goes
+   to a transient $TMPDIR log). `teardown-app-log!` in the finally flushes the
+   async publisher before the one-shot process exits, else the events are lost."
   [user-id f]
+  (mulog/setup-slf4j-bridge!)
+  (setup-app-log!)
   (let [mm (agent/create-memory-manager user-id)]
     (try
       (mem/initialize mm)
       (f mm)
-      (finally (mem/shutdown mm)))))
+      (finally
+        (mem/shutdown mm)
+        (teardown-app-log!)))))
 
 (defn cmd-memory-consolidate
   "Run L2→L3 consolidation for a user (optionally one session). Deterministic
