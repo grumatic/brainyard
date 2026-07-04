@@ -302,7 +302,8 @@
                      (assoc pre-event :result p/failure :error "missing-inputs")))
             p/failure)))
       (catch Exception e
-        (let [raw-text (get (ex-data e) :raw-text)
+        (let [data     (ex-data e)
+              raw-text (:raw-text data)
               msg (cond-> (str (.getMessage e))
                     raw-text (str "\nLLM raw text: " (subs raw-text 0 (min (count raw-text) 300))))
               ;; Classify the failure (parse vs network/server vs fatal) so the
@@ -311,7 +312,12 @@
               {:keys [class reason]} (clj-llm/classify-error e)]
           (mulog/error ::dspy-error :node-id id :message msg
                        :error-class class :error-reason reason :exception e)
-          (swap! st-memory assoc :dspy-error msg :dspy-error-class class :dspy-error-reason reason)
+          ;; Stash the raw model text + the plain-prose flag alongside the error
+          ;; so the agent repair path can preserve a pure-prose reply AS the
+          ;; iteration thought instead of dumping it into a code-result error.
+          (swap! st-memory assoc :dspy-error msg :dspy-error-class class :dspy-error-reason reason
+                 :dspy-raw-text raw-text
+                 :dspy-no-json-envelope? (boolean (:no-json-envelope? data)))
           (when fire!
             (fire! :agent.dspy-action/post
                    (assoc base-event :result p/failure :error msg)))

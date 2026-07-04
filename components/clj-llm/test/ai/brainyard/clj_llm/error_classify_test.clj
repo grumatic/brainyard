@@ -7,9 +7,28 @@
    re-prompt (malformed) vs retry-with-backoff (transient) vs abort (fatal).
    Cases are drawn from real dspy-error causes seen in agent-tui-app.log."
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.brainyard.clj-llm.interface :as llm]))
+            [clojure.string :as str]
+            [ai.brainyard.clj-llm.interface :as llm]
+            [ai.brainyard.clj-llm.core.llm :as core-llm]))
 
 (defn- cls [e] (:class (llm/classify-error e)))
+
+(deftest parse-json-response-no-envelope
+  (testing "a pure-prose reply (no {...} anywhere) is flagged :no-json-envelope?"
+    (let [prose "I have the full modal source. I'll rewrite MemoryModal.tsx cleanly."
+          ex    (try (core-llm/parse-json-response prose) (catch Exception e e))
+          data  (ex-data ex)]
+      (is (true? (:no-json-envelope? data)) "distinct flag → surface prose as a thought")
+      (is (= prose (:raw-text data)) "full text rides :raw-text for the thought")
+      (is (not (str/includes? (ex-message ex) "MemoryModal"))
+          "the message must NOT dump the prose (it goes to the thought, not the error)")
+      (is (= :malformed (cls ex)) "still a re-prompt-class failure, like any parse error")))
+  (testing "malformed JSON that DID carry a {...} envelope is NOT flagged no-envelope"
+    (let [ex   (try (core-llm/parse-json-response "sure: {\"answer\": broken}") (catch Exception e e))
+          data (ex-data ex)]
+      (is (nil? (:no-json-envelope? data)))
+      (is (contains? data :raw-text))
+      (is (= :malformed (cls ex))))))
 
 (deftest malformed-output-cases
   (testing "parse failures = the model's output, not the transport"

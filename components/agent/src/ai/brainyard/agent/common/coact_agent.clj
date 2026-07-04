@@ -3576,27 +3576,48 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
          :terminated-by :llm-error
          :tool-calls [] :code-blocks ""
          :dspy-error nil :dspy-error-class nil :dspy-error-reason nil :dspy-validation-errors nil
+         :dspy-raw-text nil :dspy-no-json-envelope? nil
          :last-code-results [{:lang "other" :code "" :result ""
                               :output "" :error (str "FATAL: " reason ". Aborting.")
                               :parallel? false}]
          :last-channel :none))
 
+(def ^:private plain-text-format-guidance
+  "Descriptive re-prompt guide for a pure-prose reply (no JSON envelope). Routed
+   to the iteration record's `:notices` (a model-visible advisory) rather than a
+   fake code-result error, so the model reads its own prose back as the thought
+   plus this correction."
+  (str "FORMAT: your previous response was plain prose with no JSON object, so the "
+       "framework could not act on it — it has been kept as this turn's thought. "
+       "Every turn you must reply with a JSON object matching the output schema: put "
+       "any reasoning in the chain-of-thought `reasoning` field, and populate exactly "
+       "ONE action channel — `code-blocks` (run the shell/clojure/python/js you were "
+       "describing), `tool-calls` (invoke a tool), or `answer` (finish). Re-issue your "
+       "intended action now as JSON; do not narrate it as text."))
+
 (defn- repair-malformed-output!
-  "Recover from a malformed ThinkActCode result. Two triggers, same remedy:
+  "Recover from a malformed ThinkActCode result. Three triggers, same remedy:
      1. `bt/dspy` threw a parse error (`:dspy-error` with `:dspy-error-class
         :malformed`).
      2. `bt/dspy` succeeded but the parsed response failed output-schema
         validation (`:dspy-validation-errors`, set by dspy-action) — e.g. the
         model wrapped its output in placeholder/wrong keys (`$PARAMETER_NAME`)
         and populated no usable channel.
+     3. The model replied with pure prose and NO JSON envelope at all
+        (`:dspy-no-json-envelope?`, from parse-json-response). This is a thought
+        the model failed to wrap as JSON — so on the re-prompt path we keep that
+        prose AS the iteration's `:thought` (via `:last-reasoning`) with empty
+        `code-results`, and route the schema correction to the record's
+        `:notices` (`:pending-format-guidance`, drained in
+        `coact-accumulate-iteration-action`) instead of a fake code-result error.
    Aborts the turn on a FATAL error (`:dspy-error-class :fatal` — auth / 4xx /
    429 / quota / billing / model-config) using the classifier's `:dspy-error-reason`,
    or once `:consecutive-llm-failures` reaches `:max-retries-on-llm-malformed-output`;
-   otherwise re-prompts: pushes a FORMAT ERROR eval-result naming the schema and
-   clears the channels so the next iteration's ThinkActCode retries. Clears the
-   error keys so the router-slot re-entry of `coact-repair-action` doesn't
-   re-classify the same failure. (Transient network/server failures are handled
-   separately by `repair-transient-failure!`, not here.)"
+   otherwise re-prompts (see the two re-prompt branches above) and clears the
+   channels so the next iteration's ThinkActCode retries. Clears the error keys so
+   the router-slot re-entry of `coact-repair-action` doesn't re-classify the same
+   failure. (Transient network/server failures are handled separately by
+   `repair-transient-failure!`, not here.)"
   [{:keys [st-memory agent]}]
   (let [dspy-err  (:dspy-error @st-memory)
         err-class (:dspy-error-class @st-memory)
@@ -3607,9 +3628,16 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                         (str "your previous output did not match the required schema "
                              (pr-str verrs)))
                       "LLM call failed")
+        ;; A pure-prose reply (no JSON envelope) is preserved AS the iteration
+        ;; thought rather than surfaced as an error — see the re-prompt branch.
+        no-json?  (:dspy-no-json-envelope? @st-memory)
+        raw-text  (:dspy-raw-text @st-memory)
         ;; Distinguish a schema-validation failure from a hard parse/throw so
         ;; the TUI can show the right progress line.
-        kind      (if (and (nil? dspy-err) (seq verrs)) :validation-failure :malformed-output)
+        kind      (cond
+                    no-json?                         :plain-text-output
+                    (and (nil? dspy-err) (seq verrs)) :validation-failure
+                    :else                             :malformed-output)
         max-r     (or (config/get-config agent :max-retries-on-llm-malformed-output) 3)
         ;; dspy-action classifies every thrown error, so a fatal one always
         ;; carries :dspy-error-class :fatal. Validation-only failures (no
@@ -3627,18 +3655,38 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
           (hooks/fire! :agent.recovery/retrying
                        {:agent agent :kind kind
                         :attempt (inc consec) :max max-r}))
-        (swap! st-memory assoc
-               :tool-calls [] :code-blocks ""
-               :dspy-error nil :dspy-error-class nil :dspy-error-reason nil :dspy-validation-errors nil
-               :consecutive-llm-failures (inc consec)
-               :last-code-results [{:lang "other" :code "" :result "" :output ""
-                                    :error (str "FORMAT ERROR: " err
-                                                ". You MUST respond with valid JSON matching the output schema. "
-                                                "Populate exactly ONE of `tool-calls` / `code-blocks` / `answer` "
-                                                "using those exact field names — do NOT wrap your output in "
-                                                "placeholder keys like $PARAMETER_NAME.")
-                                    :parallel? false}]
-               :last-channel :none)))))
+        (if (and no-json? (not (str/blank? raw-text)))
+          ;; Pure-prose reply: the model narrated its plan instead of emitting
+          ;; JSON. Keep that prose AS this iteration's thought (via :last-reasoning)
+          ;; and route the schema correction to :notices (drained in
+          ;; coact-accumulate-iteration-action) — NOT a fake code-result error.
+          ;; So the next turn reads back its own reasoning + a clean guide.
+          (swap! st-memory assoc
+                 :tool-calls [] :code-blocks ""
+                 :dspy-error nil :dspy-error-class nil :dspy-error-reason nil :dspy-validation-errors nil
+                 :dspy-raw-text nil :dspy-no-json-envelope? nil
+                 :consecutive-llm-failures (inc consec)
+                 :last-reasoning (let [s (str/trim (str raw-text))]
+                                   (if (> (count s) 12000) (str (subs s 0 12000) "…") s))
+                 :last-tool-results []
+                 :last-code-results []
+                 :pending-format-guidance plain-text-format-guidance
+                 :last-channel :none)
+          ;; Malformed/invalid JSON that DID carry an envelope (or wrong keys):
+          ;; push a concise FORMAT ERROR eval-result naming the schema.
+          (swap! st-memory assoc
+                 :tool-calls [] :code-blocks ""
+                 :dspy-error nil :dspy-error-class nil :dspy-error-reason nil :dspy-validation-errors nil
+                 :dspy-raw-text nil :dspy-no-json-envelope? nil
+                 :consecutive-llm-failures (inc consec)
+                 :last-code-results [{:lang "other" :code "" :result "" :output ""
+                                      :error (str "FORMAT ERROR: " err
+                                                  ". You MUST respond with valid JSON matching the output schema. "
+                                                  "Populate exactly ONE of `tool-calls` / `code-blocks` / `answer` "
+                                                  "using those exact field names — do NOT wrap your output in "
+                                                  "placeholder keys like $PARAMETER_NAME.")
+                                      :parallel? false}]
+                 :last-channel :none))))))
 
 (defn- repair-transient-failure!
   "Recover from a TRANSIENT provider/network failure (`:dspy-error-class
@@ -3665,7 +3713,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                       :attempt attempt :max max-r :reason reason})
         (retry-sleep! (backoff-delay-ms attempt base-ms))
         ;; Clear the error before the re-run so a fresh failure is detectable.
-        (swap! st-memory assoc :dspy-error nil :dspy-error-class nil :dspy-error-reason nil)
+        (swap! st-memory assoc :dspy-error nil :dspy-error-class nil :dspy-error-reason nil
+               :dspy-raw-text nil :dspy-no-json-envelope? nil)
         (bt/dspy (assoc context :opts
                         {:id          :coact.action/repair-retry-transient
                          :signature   #'ThinkActCode
@@ -3874,9 +3923,15 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; model reads them next: first-use usage guides (usage-nudge) and
         ;; pending skill-proposal nudges (self-improve-nudge). Only drain when
         ;; there's a record to carry them (the :answer path exits).
+        ;; A pure-prose repair queues its schema correction here so it rides the
+        ;; record's :notices (a model-visible advisory) instead of a fake
+        ;; code-result error. Read-and-clear so it surfaces exactly once.
+        fmt-guide (:pending-format-guidance @st-memory)
+        _ (when fmt-guide (swap! st-memory dissoc :pending-format-guidance))
         record (if record
                  (let [parts (->> [(usage-nudge/drain-iteration-notices! st-memory)
-                                   (self-improve-nudge/drain-iteration-notice! st-memory)]
+                                   (self-improve-nudge/drain-iteration-notice! st-memory)
+                                   fmt-guide]
                                   (remove str/blank?))]
                    (if (seq parts)
                      (assoc record :notices (str/join "\n\n" parts))

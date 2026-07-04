@@ -735,8 +735,9 @@
 (defn format-recovery-status
   "Muted one-line progress notice for the CoAct loop working through a
    transient stall (`:agent.recovery/retrying`). `kind` ∈
-   #{:empty-result :malformed-output :validation-failure :provider-error
-     :no-action}; `attempt`/`max` describe progress (`max` may be nil). For
+   #{:empty-result :malformed-output :validation-failure :plain-text-output
+     :provider-error :no-action}; `attempt`/`max` describe progress (`max` may be
+   nil). For
    `:provider-error`, `reason` is the classifier's cause (e.g. \"provider error
    (HTTP 503)\") and replaces the generic label so the line is accurate rather
    than a blanket \"malformed output\"."
@@ -752,6 +753,7 @@
                :empty-result       (str "Model returned an empty response — retrying" progress "…")
                :malformed-output   (str "Malformed model output — re-prompting" progress "…")
                :validation-failure (str "Model output didn't match the schema — re-prompting" progress "…")
+               :plain-text-output  (str "Model replied in plain text — kept as thought, re-prompting for JSON" progress "…")
                :provider-error     (str (or reason* "Provider/network error") " — retrying" progress "…")
                :no-action          (str "No action this turn (no tool, code, or answer) — nudging the model" progress "…")
                (str "Recovering" progress "…"))]

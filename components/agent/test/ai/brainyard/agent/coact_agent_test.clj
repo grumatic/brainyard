@@ -1208,6 +1208,34 @@
       (is (nil? (:dspy-error @st)) "malformed handler clears :dspy-error")
       (is (str/includes? (:error (first (:last-code-results @st))) "FORMAT ERROR")))))
 
+(deftest repair-malformed-plain-text-test
+  (testing "a pure-prose reply (no JSON envelope) is kept AS the thought, not dumped as an error"
+    (let [prose "I have the full modal source. I'll rewrite MemoryModal.tsx cleanly, drop the This turn section."
+          st (fresh-st-memory :iteration-count 9
+                              :dspy-error (str "LLM response was plain text with no JSON object."
+                                               "\nLLM raw text: " prose)
+                              :dspy-error-class :malformed
+                              :dspy-raw-text prose
+                              :dspy-no-json-envelope? true
+                              :consecutive-llm-failures 0)]
+      (rca/coact-repair-action {:st-memory st})
+      (is (= 1 (:consecutive-llm-failures @st)) "still counts as a retry")
+      (is (false? (boolean (:terminated @st))))
+      (is (= :none (:last-channel @st)))
+      (is (= prose (:last-reasoning @st)) "prose becomes the iteration thought")
+      (is (empty? (:last-code-results @st)) "no fake FORMAT ERROR eval-result")
+      (is (nil? (:dspy-no-json-envelope? @st)) "the flag is cleared so it can't leak forward")
+      ;; The schema correction rides :notices (a model-visible advisory), queued
+      ;; here and folded into the record by coact-accumulate-iteration-action.
+      (rca/coact-accumulate-iteration-action {:st-memory st})
+      (let [rec (last (:iterations @st))]
+        (is (= prose (:thought rec)))
+        (is (= "none" (:channel rec)))
+        (is (empty? (:code-results rec)))
+        (is (str/includes? (:notices rec) "plain prose")
+            "the descriptive guide lives in :notices, not the code-result error")
+        (is (nil? (:pending-format-guidance @st)) "guidance drained once")))))
+
 (deftest repair-malformed-fatal-test
   (testing "fatal LLM error (auth) terminates with apology answer regardless of count"
     ;; dspy-action stamps :dspy-error-class :fatal for auth/4xx/quota errors.

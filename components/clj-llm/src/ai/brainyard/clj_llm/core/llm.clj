@@ -104,11 +104,14 @@
                                      "\nLLM response: " preview)
                                 {:raw-text cleaned}
                                 e)))))
-          (let [preview (subs cleaned 0 (min (count cleaned) 200))]
-            (throw (ex-info (str "JSON parse failed: " (.getMessage e)
-                                 "\nLLM response: " preview)
-                            {:raw-text cleaned}
-                            e))))))))
+          ;; No balanced {...} object anywhere — the model replied with plain
+          ;; prose instead of the required JSON envelope. Flag it distinctly
+          ;; (:no-json-envelope?) so callers can surface the prose as a thought
+          ;; rather than as a parse error, and keep the message free of a prose
+          ;; dump (the full text rides :raw-text).
+          (throw (ex-info "LLM response was plain text with no JSON object."
+                          {:raw-text cleaned :no-json-envelope? true}
+                          e)))))))
 
 (defn- extract-openai-content
   "Extract text content from an OpenAI-compatible response."
