@@ -147,8 +147,29 @@ phase has before/after numbers.
 - ✅ `mulog/warn ::cache-zone-fallback` on the silent zone-location fallback
   in both `build-anthropic-body` (llm.clj) and `build-system-blocks`
   (bedrock.clj) (G6).
-- ⬜ Capture a baseline: one 10-turn / multi-iteration benchmark session per
-  provider (anthropic, bedrock).
+- ✅ First Bedrock baseline (2026-07-04, `bedrock/apac.amazon.nova-lite-v1:0`,
+  2×`ask` + a 2-turn TUI session):
+  - Zone sizes: `agent-core` 20,588 chars (byte-identical sha across
+    processes AND across turns), `session-context` 16,664 chars
+    (byte-identical across turns within a session; differs per process —
+    session id), `user-context` 657→844 chars (+26 tok/turn on trivial
+    turns). Zero `::cache-zone-fallback` events.
+  - The cached static segment (DSPy preamble + `agent-core`) measured
+    8,424 tokens via an observed cross-process read hit.
+  - `/usage` renders CacheR/CacheW per call, hit rate, and the net-saved
+    line as designed.
+  - **Operational caveat discovered:** cross-region inference profiles
+    (`apac.`/`us.` Nova rewrites) defeat Bedrock cache locality — the
+    prompt cache is region-scoped, and consecutive byte-identical requests
+    can route to different regions (observed: turn-2 CacheR=0 despite
+    sha-identical zones). Hits are probabilistic under a profile; pin a
+    single-region model id when cache economics matter.
+  - Known gap: ephemeral `ask` processes exit before the mulog publisher
+    flushes the API-result event — per-call cache tokens for `ask` are
+    only visible via the provider console, not the app log. TUI sessions
+    flush fine.
+- ⬜ Anthropic-direct baseline + a longer (10-turn, multi-iteration)
+  session still pending.
 
 ### Phase 1 — Explicit zone order (S) — fixes G1 — **LANDED 2026-07-04**
 

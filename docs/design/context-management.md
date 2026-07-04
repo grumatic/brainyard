@@ -4,6 +4,16 @@
 > described below are shipped and current; the §7–8 budgeting and
 > cache-breakpoint improvements are proposals, only partially landed.
 >
+> **Update (2026-07-04) — cache breakpoints superseded.** §P3.3's
+> 2-breakpoint layout landed (M7) and has since been extended to a
+> 3-zone system split (`:agent-core` / `:session-context` /
+> `:user-context`), a user-message stable-prefix breakpoint, ordered
+> stable-keys, an opt-in 1h cache TTL, and cache observability. The
+> authoritative, as-landed record is
+> **`docs/design/prompt-cache-arrangement.md`** — read that instead of
+> §P3.3 for the current layout. §P4.1's system-info/turn-info split
+> is landed as designed.
+>
 > **Update (2026-05-31) — compaction simplified to one mechanism.** The
 > parallel RLM-based compaction stack was removed. `common/compaction.clj`
 > and `common/compaction_action.clj` are **deleted**; the per-iteration
@@ -705,6 +715,10 @@ implement (recall is FTS5), high-leverage on multi-hop tasks.
 Default: off. Enabled via `runtime-config :enable-mid-turn-recall`.
 
 ### P3.3 Provider-aware cache breakpoints
+
+> **Landed & superseded (2026-07-04):** shipped as M7 (the 2-breakpoint
+> layout below), then extended — see `prompt-cache-arrangement.md` for
+> the current 3-zone + user-prefix layout. Kept for design rationale.
 
 Extend the BT dspy-action to emit cache-breakpoint markers between sections.
 Two breakpoints — both fit inside Anthropic's 4-breakpoint budget and leave
