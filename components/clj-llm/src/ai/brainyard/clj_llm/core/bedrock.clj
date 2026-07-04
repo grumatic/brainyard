@@ -256,16 +256,25 @@
 (defn- throw-on-anomaly
   [resp lm-config]
   (when (anomaly? resp)
-    (throw (ex-info (str "Bedrock invoke failed: "
-                         (or (:cognitect.anomalies/message resp)
-                             (:message resp)
-                             (:Message resp)
-                             (:cognitect.aws.error/code resp)
-                             "anomaly"))
-                    {:provider :bedrock
-                     :model    (:model lm-config)
-                     :region   (:region lm-config)
-                     :anomaly  resp}))))
+    (let [msg  (or (:cognitect.anomalies/message resp)
+                   (:message resp)
+                   (:Message resp)
+                   (:cognitect.aws.error/code resp)
+                   "anomaly")
+          ;; This model requires a cross-region inference profile, not on-demand
+          ;; with the bare id. Bare Amazon Nova is auto-rewritten in create-lm;
+          ;; other models (or an unusual region) may still hit this — point the
+          ;; user at the fix.
+          hint (when (re-find #"(?i)on-demand throughput|inference profile" (str msg))
+                 (str "\nHint: model '" (:model lm-config)
+                      "' needs a cross-region inference profile. Try a region-"
+                      "prefixed id, e.g. us./eu./apac. + the model id "
+                      "(us.amazon.nova-lite-v1:0, us.anthropic.claude-…)."))]
+      (throw (ex-info (str "Bedrock invoke failed: " msg hint)
+                      {:provider :bedrock
+                       :model    (:model lm-config)
+                       :region   (:region lm-config)
+                       :anomaly  resp})))))
 
 ;; ============================================================================
 ;; Public API

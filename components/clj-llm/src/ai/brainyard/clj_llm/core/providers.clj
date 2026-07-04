@@ -394,6 +394,30 @@
   (some (fn [m] (when (= model (:model m)) (:region m)))
         (get-popular-models)))
 
+(defn- bedrock-region-prefix
+  "Bedrock cross-region inference-profile prefix for an AWS region
+   (us-* → us, eu-* → eu, ap-* → apac). Defaults to `us`."
+  [region]
+  (let [^String r (str region)]
+    (cond
+      (.startsWith r "us-") "us"
+      (.startsWith r "eu-") "eu"
+      (.startsWith r "ap-") "apac"
+      :else "us")))
+
+(defn- bedrock-inference-profile-model
+  "Amazon Nova can't be invoked on-demand with the BARE model id in most
+   accounts/regions — it needs a cross-region inference profile
+   (`<prefix>.amazon.nova-…`, e.g. `us.amazon.nova-lite-v1:0`), or AWS returns
+   \"Invocation … with on-demand throughput isn't supported\". Rewrite a bare
+   `amazon.nova-*` id to the region-appropriate profile id; leave already-prefixed
+   ids (`us.amazon.…`) and non-Nova models untouched."
+  [model region]
+  (if (and (string? model)
+           (re-matches #"amazon\.nova-(?:pro|lite|micro).*" model))
+    (str (bedrock-region-prefix region) "." model)
+    model))
+
 (defn aws-credentials-detected?
   "Return true if any AWS credential source is present.
    Checks env vars (static keys, AWS_PROFILE/AWS_DEFAULT_PROFILE, IRSA, ECS
@@ -528,6 +552,11 @@
                             (or region
                                 (bedrock-model-region model)
                                 (detect-aws-region nil)))
+        ;; Bare Amazon Nova ids need a cross-region inference profile to invoke
+        ;; on-demand — rewrite to `<prefix>.amazon.nova-…` for the resolved region.
+        resolved-model    (if bedrock?
+                            (bedrock-inference-profile-model model resolved-region)
+                            model)
         resolved-profile  (when bedrock?
                             (or aws-profile
                                 (System/getenv "AWS_PROFILE")
@@ -540,7 +569,7 @@
                               (when-let [env-var (:base-url-env provider-config)]
                                 (or (System/getenv env-var)
                                     (System/getProperty env-var))))]
-    (cond-> {:model       model
+    (cond-> {:model       resolved-model
              :provider    detected-provider
              :api-key     resolved-api-key
              :temperature (or temperature 0.0)
