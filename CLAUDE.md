@@ -86,7 +86,14 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   - **`BY_GRAPH_EXTRACT_MODEL`** — chat LM (`provider/model`, e.g.
     `bedrock/amazon.nova-lite-v1:0`) that extracts entities/relationships from
     episodes and writes community summaries. **Unset ⇒ graph stays storage-only**
-    (manual edge API; no self-population).
+    (manual edge API; no self-population). The extractor asks for a fixed JSON
+    schema: providers with native structured output (OpenAI/Google/Groq/… —
+    `:supports-json-schema? true`) get API-level enforcement; providers without
+    it (**Bedrock**, Anthropic, Ollama) have the schema appended to the system
+    prompt instead (clj-llm `chat-completion` injects it), so `bedrock/*` models
+    do extract. Watch `::extracted {:entities N :relations M}` in the app log to
+    confirm a model is actually yielding entities (0/0 ⇒ the model is ignoring
+    the JSON contract — pick a stronger extract model).
   - **`BY_GRAPH_EMBED_DIMS`** — `graph_vec` vector dimension (default 768). Must
     match the embed model's output; `static` auto-drives it to 256. Changing the
     embed model fingerprint-mismatches the index, which **pauses** vector recall

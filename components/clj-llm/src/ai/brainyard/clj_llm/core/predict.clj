@@ -84,6 +84,10 @@
         response (apply llm/chat-completion lm messages
                         (mapcat identity
                                 (cond-> {:json-schema json-schema
+                                         ;; prompt.clj already put the schema in the
+                                         ;; system prompt — don't let chat-completion
+                                         ;; inject it again for non-native providers.
+                                         :schema-in-prompt? true
                                          :usage-tracker usage-tracker
                                          :on-chunk on-chunk
                                          :input-token-breakdown breakdown}

@@ -89,14 +89,22 @@
     (let [lm (if model (assoc lm-config :model model) lm-config)]
       (fn [text]
         (try
-          (-> (llm/chat-completion lm
-                                   [{:role "system" :content system-prompt}
-                                    {:role "user"   :content (str "Activity:\n" text)}]
-                                   :json-schema extraction-schema)
-              (llm/extract-content lm)
-              parse-json)
+          (let [result (-> (llm/chat-completion lm
+                                                [{:role "system" :content system-prompt}
+                                                 {:role "user"   :content (str "Activity:\n" text)}]
+                                                :json-schema extraction-schema)
+                           (llm/extract-content lm)
+                           parse-json)]
+            ;; Surface the yield so silent no-extract cases (e.g. a model that
+            ;; ignores the JSON contract) are visible in the app log rather than
+            ;; looking like "0 nodes = nothing worth recording".
+            (mulog/info ::extracted
+                        :model (:model lm)
+                        :entities (count (:entities result))
+                        :relations (count (:relations result)))
+            result)
           (catch Exception e
-            (mulog/warn ::extract-call-failed :error (ex-message e))
+            (mulog/warn ::extract-call-failed :model (:model lm) :error (ex-message e))
             nil))))))
 
 ;; =====================================================

@@ -596,6 +596,17 @@
     (when-not (#{:ollama :claude-code :acp :apple-fm :bedrock :free-llm} (:provider lm-config))
       (mulog/warn ::no-api-key :provider (:provider lm-config) :message "No API key found for provider")))
   (let [start-ms (System/currentTimeMillis)
+        ;; Structured-output fallback for providers WITHOUT native json_schema
+        ;; (:supports-json-schema? false — Bedrock/Anthropic/Ollama): append the
+        ;; schema as a system-prompt instruction so the model still returns JSON.
+        ;; The DSPy path (predict/CoT) already injects the schema via prompt.clj
+        ;; and passes :schema-in-prompt? true, so we don't double-inject there.
+        ;; Native-schema providers keep API-level enforcement (build-openai-body).
+        messages (if (and json-schema
+                          (not (:supports-json-schema? lm-config))
+                          (not (:schema-in-prompt? opts)))
+                   (inject-json-schema-into-messages messages json-schema)
+                   messages)
         ;; Bedrock ConverseStream is not yet supported by cognitect aws-api
         ;; (no event-stream codec). Force non-streaming for any Bedrock LM,
         ;; even if a caller passed :stream? true or an :on-chunk callback.
