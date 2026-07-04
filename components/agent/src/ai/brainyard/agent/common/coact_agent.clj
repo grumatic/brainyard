@@ -3719,7 +3719,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                         {:id          :coact.action/repair-retry-transient
                          :signature   #'ThinkActCode
                          :operation   :chain-of-thought
-                         :stable-keys [:system-context :user-context]}))
+                         :stable-keys [:system-context :user-context]
+                         :user-cache-boundary :iterations}))
         (cond
           ;; A retry recovered a usable channel — dispatch it now, same iteration.
           (any-channel-populated? context)
@@ -3859,7 +3860,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                               {:id         :coact.action/repair-retry-think
                                :signature  #'ThinkActCode
                                :operation  :chain-of-thought
-                               :stable-keys [:system-context :user-context]}))
+                               :stable-keys [:system-context :user-context]
+                               :user-cache-boundary :iterations}))
               (when (and (empty-llm-result? context) (< attempt max-empty))
                 (recur (inc attempt))))))
         (if (any-channel-populated? context)
@@ -4433,6 +4435,11 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                  :operation :chain-of-thought
                  ;; system-context + user-context ride the system message
                  :stable-keys [:system-context :user-context]
+                 ;; Inputs before :iterations (question / context-briefing /
+                 ;; recalled-memory) are turn-stable — providers put a cache
+                 ;; breakpoint at this boundary so iterations 2..N read them
+                 ;; from cache.
+                 :user-cache-boundary :iterations
                  :debug {:source :reasoning}}
         bt/dspy]
        [:action {:id (kw :action/repair-llm-guard)}

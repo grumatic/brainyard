@@ -58,7 +58,8 @@
    Throws on validation failure or LLM error."
   [signature inputs & {:keys [lm-config usage-tracker system-context
                               stream? on-chunk
-                              input-token-breakdown cache-zones]
+                              input-token-breakdown cache-zones
+                              user-cache-boundary]
                        :as opts}]
   (let [lm (or lm-config (providers/get-default-lm))
         _  (when-not lm
@@ -66,8 +67,10 @@
                              {:signature (:name signature)})))
         ;; Build messages with JSON schema in system prompt + token breakdown
         json-schema (:output-json-schema signature)
-        {:keys [messages token-breakdown]}
-        (prompt/build-messages-with-breakdown signature inputs {:json-schema json-schema})
+        {:keys [messages token-breakdown user-cache-prefix]}
+        (prompt/build-messages-with-breakdown
+         signature inputs {:json-schema json-schema
+                           :user-cache-boundary user-cache-boundary})
         ;; Merge caller-provided breakdown (hierarchical — :system-prompt group from BT)
         breakdown (merge token-breakdown input-token-breakdown)
         ;; Append system-context to the signature system message
@@ -92,7 +95,8 @@
                                          :on-chunk on-chunk
                                          :input-token-breakdown breakdown}
                                   (contains? opts :stream?) (assoc :stream? stream?)
-                                  (seq cache-zones) (assoc :cache-zones cache-zones))))
+                                  (seq cache-zones) (assoc :cache-zones cache-zones)
+                                  user-cache-prefix (assoc :user-cache-prefix user-cache-prefix))))
         ;; Parse response, fill defaults for missing keys
         raw-text (llm/extract-content response lm)
         parsed   (-> (llm/parse-json-response raw-text)

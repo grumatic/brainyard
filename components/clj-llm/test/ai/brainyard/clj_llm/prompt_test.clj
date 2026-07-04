@@ -73,3 +73,68 @@
 
     (testing "CoT user message reminds about reasoning field first"
       (is (str/includes? (-> msgs second :content) "starting with the field `reasoning`")))))
+
+;; ============================================================================
+;; Ordered user-message rendering + user-cache-prefix (prompt-cache Phase 2)
+;; ============================================================================
+
+(def ^:private ordered-sig
+  (sig/compile-signature
+   "OrderedSig"
+   "Do the thing."
+   {:question        [:string {:desc "q"}]
+    :recalled-memory [:string {:desc "m"}]
+    :iterations      [:string {:desc "volatile history"}]}
+   {:answer [:string {:desc "a"}]}))
+
+(deftest user-message-renders-in-declared-order-test
+  (testing "input values render in :input-order, not map-iteration order"
+    (let [{:keys [messages]}
+          (prompt/build-messages-with-breakdown
+           ordered-sig
+           {:iterations "ITER" :question "Q" :recalled-memory "M"}
+           {})
+          user-content (:content (second messages))]
+      (is (str/starts-with? user-content
+                            "question: Q\nrecalled-memory: M\niterations: ITER")))))
+
+(deftest user-cache-prefix-test
+  (let [big-m (apply str (repeat 5000 "m"))]
+    (testing "prefix covers the fields before the boundary and leads the message"
+      (let [{:keys [messages user-cache-prefix]}
+            (prompt/build-messages-with-breakdown
+             ordered-sig
+             {:question "Q" :recalled-memory big-m :iterations "ITER"}
+             {:user-cache-boundary :iterations})
+            user-content (:content (second messages))]
+        (is (= (str "question: Q\nrecalled-memory: " big-m) user-cache-prefix))
+        (is (str/starts-with? user-content user-cache-prefix)
+            "prefix must be an exact leading substring so providers can split on it")))
+
+    (testing "no prefix when the stable part is below the min cacheable size"
+      (let [{:keys [user-cache-prefix]}
+            (prompt/build-messages-with-breakdown
+             ordered-sig
+             {:question "Q" :recalled-memory "small" :iterations "ITER"}
+             {:user-cache-boundary :iterations})]
+        (is (nil? user-cache-prefix))))
+
+    (testing "no prefix when the boundary field is first (nothing stable before it)"
+      (let [sig (sig/compile-signature
+                 "IterFirst" "t"
+                 {:iterations [:string] :question [:string]}
+                 {:answer [:string]})
+            {:keys [user-cache-prefix]}
+            (prompt/build-messages-with-breakdown
+             sig
+             {:iterations big-m :question "Q"}
+             {:user-cache-boundary :iterations})]
+        (is (nil? user-cache-prefix))))
+
+    (testing "no prefix when no boundary requested"
+      (let [{:keys [user-cache-prefix]}
+            (prompt/build-messages-with-breakdown
+             ordered-sig
+             {:question "Q" :recalled-memory big-m :iterations "ITER"}
+             {})]
+        (is (nil? user-cache-prefix))))))

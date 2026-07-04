@@ -374,49 +374,96 @@
    {:type \"ephemeral\"}}` block. The DSPy preamble (everything before
    the first zone) becomes a leading uncached block.
 
+   When `cache-ttl` is \"1h\", every zone EXCEPT the last gets
+   `:ttl \"1h\"` on its cache_control (the earlier zones are the stabler
+   ones — declared ascending-volatility — and the ones worth keeping past
+   the 5m default across human-paced turn gaps). The last zone stays at
+   the 5m default: it changes every turn, so a longer TTL only buys extra
+   write premium. Anthropic requires longer-TTL blocks to precede shorter
+   ones — this layout complies by construction. Callers must send the
+   `extended-cache-ttl-2025-04-11` beta header when 1h is used (see
+   build-anthropic-headers).
+
    Returns nil if any zone's text can't be located inside the system
-   message — defensive fallback so callers can drop back to the plain
-   string form."
-  [system-text cache-zones]
-  (loop [remaining system-text
-         zones (vec cache-zones)
-         blocks []]
-    (if (empty? zones)
-      (cond-> blocks
-        (not (str/blank? remaining))
-        (conj {:type "text" :text remaining}))
-      (let [zone-text (:text (first zones))
-            idx (str/index-of remaining zone-text)]
-        (if idx
-          (let [preamble (subs remaining 0 idx)
-                rest-after (subs remaining (+ idx (count zone-text)))
-                ;; Trim trailing inter-block separator from the preamble.
-                preamble-clean (str/replace preamble #"\n\n\z" "")
-                blocks (cond-> blocks
-                         (not (str/blank? preamble-clean))
-                         (conj {:type "text" :text preamble-clean}))
-                blocks (conj blocks {:type "text"
-                                     :text zone-text
-                                     :cache_control {:type "ephemeral"}})]
-            (recur (str/replace rest-after #"\A\n\n" "")
-                   (vec (rest zones))
-                   blocks))
-          ;; zone text not found — bail out so the caller can fall back
-          ;; to the unstructured string form.
-          nil)))))
+   message — the caller falls back to the plain string form (and warns)."
+  ([system-text cache-zones]
+   (build-anthropic-system-blocks system-text cache-zones nil))
+  ([system-text cache-zones cache-ttl]
+   (let [n (count cache-zones)
+         long-ttl? (= "1h" cache-ttl)]
+     (loop [remaining system-text
+            zones (vec cache-zones)
+            blocks []]
+       (if (empty? zones)
+         (cond-> blocks
+           (not (str/blank? remaining))
+           (conj {:type "text" :text remaining}))
+         (let [zone-text (:text (first zones))
+               zone-idx (- n (count zones))
+               last-zone? (= zone-idx (dec n))
+               cache-control (if (and long-ttl? (not last-zone?))
+                               {:type "ephemeral" :ttl "1h"}
+                               {:type "ephemeral"})
+               idx (str/index-of remaining zone-text)]
+           (if idx
+             (let [preamble (subs remaining 0 idx)
+                   rest-after (subs remaining (+ idx (count zone-text)))
+                   ;; Trim trailing inter-block separator from the preamble.
+                   preamble-clean (str/replace preamble #"\n\n\z" "")
+                   blocks (cond-> blocks
+                            (not (str/blank? preamble-clean))
+                            (conj {:type "text" :text preamble-clean}))
+                   blocks (conj blocks {:type "text"
+                                        :text zone-text
+                                        :cache_control cache-control})]
+               (recur (str/replace rest-after #"\A\n\n" "")
+                      (vec (rest zones))
+                      blocks))
+             ;; zone text not found — bail out so the caller can fall back
+             ;; to the unstructured string form.
+             nil)))))))
+
+(defn- split-user-message-at-prefix
+  "Split the last user message into two content blocks at
+   `user-cache-prefix` (the turn-stable prefix computed by prompt.clj) and
+   mark the prefix block `cache_control: ephemeral`. Iterations 2..N of a
+   turn then hit this breakpoint instead of re-billing the stable inputs
+   at the full rate. Returns nil when the prefix doesn't lead the last
+   user message — caller falls back to the unsplit form (and warns)."
+  [messages user-cache-prefix]
+  (let [idx (->> messages
+                 (keep-indexed (fn [i m] (when (= "user" (:role m)) i)))
+                 last)
+        content (when idx (get-in messages [idx :content]))]
+    (when (and idx
+               (string? content)
+               (not (str/blank? user-cache-prefix))
+               (str/starts-with? content user-cache-prefix))
+      (let [rest-text (subs content (count user-cache-prefix))
+            blocks (cond-> [{:type "text"
+                             :text user-cache-prefix
+                             :cache_control {:type "ephemeral"}}]
+                     (not (str/blank? rest-text))
+                     (conj {:type "text" :text rest-text}))]
+        (assoc-in (vec messages) [idx :content] blocks)))))
 
 (defn- build-anthropic-body
   "Build the request body for Anthropic Messages API.
    JSON schema is already in the system prompt (injected by prompt.clj).
    When :prompt-cache is enabled in lm-config AND :cache-zones are
    provided (M7), the system field is emitted as a structured content
-   array with `cache_control: {type: \"ephemeral\"}` on each zone block.
-   Otherwise the system field is a single string (legacy behaviour)."
-  [lm-config messages {:keys [json-schema stream? cache-zones]}]
+   array with `cache_control: {type: \"ephemeral\"}` on each zone block
+   (1h TTL on all but the last zone when lm-config :cache-ttl is \"1h\").
+   Otherwise the system field is a single string (legacy behaviour).
+   When :user-cache-prefix is provided (prompt-cache Phase 2), the last
+   user message is split at that boundary and the turn-stable prefix
+   block gets its own cache_control marker."
+  [lm-config messages {:keys [json-schema stream? cache-zones user-cache-prefix]}]
   (let [{:keys [system messages]} (convert-messages-for-anthropic messages)
         prompt-cache? (:prompt-cache lm-config)
         system-blocks (when (and prompt-cache? system (seq cache-zones))
-                        (or (build-anthropic-system-blocks system cache-zones)
+                        (or (build-anthropic-system-blocks system cache-zones
+                                                           (:cache-ttl lm-config))
                             ;; Zone text not found in the system message —
                             ;; cache_control markers silently dropped would
                             ;; hide a caching regression; make it loud.
@@ -428,6 +475,16 @@
                                                           " message — falling back to plain string"
                                                           " system (no cache breakpoints)"))
                                 nil)))
+        messages (if (and prompt-cache? user-cache-prefix)
+                   (or (split-user-message-at-prefix messages user-cache-prefix)
+                       (do (mulog/warn ::cache-zone-fallback
+                                       :provider :anthropic
+                                       :model (:model lm-config)
+                                       :where :user-message
+                                       :message (str "user cache prefix does not lead the last"
+                                                     " user message — user breakpoint dropped"))
+                           messages))
+                   messages)
         system-field  (or system-blocks system)]
     ;; Use array-map to preserve key order: model, system, messages, ...
     ;; This matches Anthropic's docs and makes request body readable in logs.
@@ -446,10 +503,14 @@
 
 (defn- build-anthropic-headers
   "Build HTTP headers for Anthropic API calls.
-   Supports both API key auth (x-api-key) and OAuth bearer token (Authorization)."
+   Supports both API key auth (x-api-key) and OAuth bearer token (Authorization).
+   A :cache-ttl of \"1h\" in lm-config adds the extended-cache-ttl beta
+   header required for 1-hour cache_control blocks."
   [lm-config]
-  (let [base-headers {"Content-Type"      "application/json"
-                      "anthropic-version"  "2023-06-01"}]
+  (let [base-headers (cond-> {"Content-Type"      "application/json"
+                              "anthropic-version"  "2023-06-01"}
+                       (= "1h" (:cache-ttl lm-config))
+                       (assoc "anthropic-beta" "extended-cache-ttl-2025-04-11"))]
     (if (= :oauth (:auth-type lm-config))
       ;; OAuth: resolve bearer token dynamically
       (let [oauth-ns (try (require 'ai.brainyard.clj-llm.core.oauth) true

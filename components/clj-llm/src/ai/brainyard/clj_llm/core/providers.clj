@@ -499,6 +499,12 @@
      :provider     - Override auto-detected provider (optional)
                      Use :anthropic-max for Max/Pro plan subscription auth (no API key)
      :prompt-cache - Enable prompt caching (default: provider-specific, true for Anthropic)
+     :cache-ttl    - Cache-entry TTL for stable prompt zones: \"5m\" (default) or
+                     \"1h\". \"1h\" keeps the cross-turn prefix cached across
+                     human-paced turn gaps (Anthropic only — adds the
+                     extended-cache-ttl beta header; write premium is 2x base
+                     input, paid once per stable zone per session). No-op on
+                     other providers.
      :drop-params  - Set of param keywords to omit from API requests (auto-detected for
                      models that reject temperature, e.g. o-series, gpt-5 family)
      :region       - (Bedrock) AWS region. Falls back to AWS_REGION /
@@ -507,8 +513,8 @@
                      Falls back to AWS_PROFILE then AWS_DEFAULT_PROFILE env vars.
      :credentials-provider - (Bedrock) Custom cognitect aws-api credentials
                              provider; overrides profile/env-based detection."
-  [{:keys [model api-key temperature max-tokens base-url provider prompt-cache drop-params
-           region aws-profile credentials-provider]}]
+  [{:keys [model api-key temperature max-tokens base-url provider prompt-cache cache-ttl
+           drop-params region aws-profile credentials-provider]}]
   (let [;; `:provider` is a keyword internally, but callers at the boundary may
         ;; pass a string (e.g. the CLI's `-p`/legacy `provider:model` opt).
         ;; Keywordize defensively — `keyword` is idempotent on a keyword and nil-safe
@@ -580,6 +586,7 @@
       oauth?          (assoc :auth-type :oauth)
       max-tokens      (assoc :max-tokens max-tokens)
       resolved-cache  (assoc :prompt-cache true)
+      cache-ttl       (assoc :cache-ttl cache-ttl)
       resolved-drop   (assoc :drop-params resolved-drop)
       bedrock?        (assoc :auth-type :aws-sigv4
                              :region    resolved-region)

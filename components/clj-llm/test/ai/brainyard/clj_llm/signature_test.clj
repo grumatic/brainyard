@@ -52,3 +52,42 @@
           meta (sig/extract-signature-metadata sig-map)]
       (is (= [:question] (:input-keys meta)))
       (is (= [:answer] (:output-keys meta))))))
+
+;; ============================================================================
+;; :input-order (prompt-cache Phase 2, step 0)
+;; ============================================================================
+
+(deftest input-order-preserved-test
+  (testing "compile-signature records declaration order of inputs"
+    (let [result (sig/compile-signature
+                  "Ordered" "t"
+                  {:zebra [:string] :alpha [:string] :mike [:string]}
+                  {:answer [:string]})]
+      (is (= [:zebra :alpha :mike] (:input-order result)))))
+
+  (testing "explicit input-order overrides map order"
+    (let [result (sig/compile-signature
+                  "Explicit" "t"
+                  {:a [:string] :b [:string]}
+                  {:answer [:string]}
+                  [:b :a])]
+      (is (= [:b :a] (:input-order result))))))
+
+(deftest input-order-over-8-inputs-test
+  (testing "more than 8 inputs without explicit order throws (map-literal order is lost)"
+    (let [inputs (into {} (for [i (range 9)] [(keyword (str "k" i)) [:string]]))]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (sig/compile-signature "Big" "t" inputs {:answer [:string]})))
+      (is (= (vec (sort (keys inputs)))
+             (:input-order (sig/compile-signature "Big" "t" inputs {:answer [:string]}
+                                                  (vec (sort (keys inputs)))))
+          )))))
+
+(deftest extract-metadata-ordered-test
+  (testing "extract-signature-metadata returns input keys in declared order"
+    (let [result (sig/compile-signature
+                  "Ordered" "t"
+                  {:zebra [:string] :alpha [:string]}
+                  {:answer [:string]})]
+      (is (= [:zebra :alpha]
+             (:input-keys (sig/extract-signature-metadata result)))))))

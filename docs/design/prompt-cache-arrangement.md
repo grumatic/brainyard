@@ -153,7 +153,7 @@ phase has before/after numbers.
   (`cache_breakpoints_test.clj` unchanged — zone consumption is
   order-agnostic downstream).
 
-### Phase 2 — User-message stable-prefix breakpoint (M) — fixes G3 + G4
+### Phase 2 — User-message stable-prefix breakpoint (M) — fixes G3 + G4 + G8 — **LANDED 2026-07-04**
 
 - dspy-action already knows which inputs are turn-stable (everything except
   `:iterations`). Emit a `:user-cache-boundary` marker (char offset or split
@@ -177,6 +177,16 @@ phase has before/after numbers.
   (< ~1K tokens ≈ provider minimum cacheable prefix) to avoid wasting a slot.
 - Expected win: (question+briefing+recalled-memory) × (iterations−1) × 90%
   per turn; recalled-memory alone is often 1-4K tokens.
+
+**As landed:** `compile-signature` records `:input-order` (declaration order;
+>8 inputs must pass `:input-order` explicitly or it throws);
+`build-user-message`/`collect-user-parts` render by it; the BT node opt
+`:user-cache-boundary :iterations` (all three CoAct ThinkActCode nodes) flows
+through predict/CoT as `:user-cache-prefix` — prompt.clj emits it only when
+the stable prefix ≥ 4000 chars (`min-user-cache-prefix-chars`). Anthropic
+splits the last user message into `[prefix (cache_control)][tail]`; Bedrock
+moves its reserved user cachePoint to that boundary (trailing-point fallback
++ `::cache-zone-fallback` warn when the prefix doesn't match).
 
 ### Phase 3 — Three-zone system split (M) — fixes G2
 
@@ -249,18 +259,19 @@ ZONE C2  turn-volatile — NO own breakpoint; covered by the Phase-2
   headers → one full C1 re-write; rare, and at that point the session is at
   its context ceiling anyway.
 
-### Phase 4 — TTL knob (S) — fixes G5, likely the biggest real-world win
+### Phase 4 — TTL knob (S) — fixes G5, likely the biggest real-world win — **LANDED 2026-07-04** (opt-in)
 
-- lm-config `:cache-ttl` (`"5m"` default | `"1h"`). Anthropic: emit
-  `cache_control {:type "ephemeral" :ttl "1h"}` on zones A+B, keep C at 5m
-  (Anthropic requires longer-TTL entries before shorter — our order already
-  complies); send the `extended-cache-ttl-2025-04-11` beta header when 1h is
-  used. Bedrock: probe Converse `ttl` support per model at implementation
-  time; no-op where unsupported.
-- Default policy: `1h` for interactive root agents (human-paced turn gaps
-  routinely exceed 5m), `5m` for subagents (machine-paced bursts). 1h write
-  premium is 2× base input, paid once per session per stable zone — recouped by
-  a single cross-turn hit.
+- ✅ lm-config `:cache-ttl` (`"5m"` default | `"1h"`), passed through
+  `create-lm`. Anthropic: `cache_control {:type "ephemeral" :ttl "1h"}` on
+  every zone EXCEPT the last (the per-turn zone — longer TTL there only buys
+  write premium); longest-TTL-first ordering holds by construction; the
+  `extended-cache-ttl-2025-04-11` beta header is sent whenever 1h is used.
+  Bedrock: no-op (Converse cachePoint is `{:type "default"}` only, and
+  cognitect aws-api silently strips unknown fields).
+- ⬜ Default policy (`1h` for interactive root agents, `5m` for subagents)
+  deliberately NOT wired — 1h write premium is 2× base input, so flipping the
+  default is a billing-behavior change; decide after the Phase-0 baseline.
+  Users opt in via `:cache-ttl "1h"` in their `:lm-config`.
 
 ### Phase 5 — Regression guards + docs (S)
 
@@ -278,8 +289,8 @@ ZONE C2  turn-volatile — NO own breakpoint; covered by the Phase-2
 |---|---|---|---|
 | 0 Measure | S | enables the rest | **DONE** (baseline capture pending) |
 | 1 Ordered zones | S | hardening | **DONE** — prerequisite for 2/3 |
-| 4 TTL | S/M | **high** (human-paced TUI) | independent — can ship right after 0 |
-| 2 User-prefix breakpoint | M | high (multi-iteration turns) | step 0 fixes hash-order rendering (G8); also removes Bedrock dead writes |
+| 4 TTL | S/M | **high** (human-paced TUI) | **DONE** (opt-in `:cache-ttl`; default flip pending baseline) |
+| 2 User-prefix breakpoint | M | high (multi-iteration turns) | **DONE** — step 0 fixed hash-order rendering (G8); Bedrock dead writes removed |
 | 3 Three-zone split | M | medium (edit-heavy sessions) | consumes both providers' caps exactly |
 | 3b History zone | M | high (long sessions) | requires Phase 4 first; includes batched compression in `append-turn` |
 | 5 Guards + docs | S | keeps it won | |

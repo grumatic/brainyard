@@ -138,11 +138,52 @@
 ;; User Messages
 ;; ============================================================================
 
+(defn- ordered-input-pairs
+  "Deterministic render order for user-message input values: the signature's
+   :input-order (declaration order — see compile-signature) first, then any
+   undeclared extra keys, sorted. Skips keys absent from `inputs`.
+
+   Order is cache-significant: with inputs declared in ascending volatility,
+   the turn-stable fields form a byte-stable message prefix across
+   iterations (prompt-cache Phase 2). Hand-built signatures without
+   :input-order render in `inputs` map order, as before."
+  [signature inputs]
+  (let [order (or (:input-order signature) (vec (keys inputs)))
+        extra (sort (remove (set order) (keys inputs)))]
+    (for [k (concat order extra)
+          :when (contains? inputs k)]
+      [k (get inputs k)])))
+
+(defn- input-line
+  [[k v]]
+  (str (name k) ": " (str v)))
+
+(def ^:private min-user-cache-prefix-chars
+  "Providers only cache prefixes above ~1K tokens (model-dependent minimum);
+   a breakpoint on a smaller prefix wastes one of the 4 slots. ~4 chars/token."
+  4000)
+
+(defn- user-cache-prefix
+  "Text of the rendered input lines for the fields BEFORE `boundary-key` in
+   render order — the turn-stable user-message prefix a provider can mark as
+   a cache breakpoint. Returns nil when the boundary key is absent from the
+   rendered pairs, nothing precedes it, or the prefix is below the minimum
+   cacheable size."
+  [pairs boundary-key]
+  (when boundary-key
+    (let [pairs (vec pairs)
+          idx (first (keep-indexed (fn [i [k _]] (when (= k boundary-key) i)) pairs))]
+      (when (and idx (pos? idx))
+        (let [prefix (str/join "\n" (map input-line (subvec pairs 0 idx)))]
+          (when (>= (count prefix) min-user-cache-prefix-chars)
+            prefix))))))
+
 (defn- build-user-message
-  "Build the user message from input values.
+  "Build the user message from input values (rendered in signature-declared
+   order — see ordered-input-pairs).
    Appends an output field reminder listing all required output fields."
   [signature inputs opts]
-  (let [input-lines (map (fn [[k v]] (str (name k) ": " (str v))) inputs)
+  (let [input-lines (map input-line (ordered-input-pairs signature inputs))
         reminder (output-requirements signature opts)]
     {:role    "user"
      :content (str (str/join "\n" input-lines) "\n\n" reminder)}))
@@ -173,9 +214,10 @@
         instructions    (conj [:instructions (str "In adhering to this structure, your objective is:\n" instructions)])))))
 
 (defn- collect-user-parts
-  "Collect user message parts as a named map."
+  "Collect user message parts as a named map (inputs rendered in
+   signature-declared order — see ordered-input-pairs)."
   [signature inputs opts]
-  (let [input-text (str/join "\n" (map (fn [[k v]] (str (name k) ": " (str v))) inputs))
+  (let [input-text (str/join "\n" (map input-line (ordered-input-pairs signature inputs)))
         reminder (output-requirements signature opts)]
     [[:input-values input-text]
      [:output-reminder reminder]]))
@@ -209,13 +251,22 @@
 (defn build-messages-with-breakdown
   "Like build-messages, but also returns hierarchical token breakdown.
    Returns {:messages [...] :token-breakdown {:dspy-signature {...} :user-message {...}}}.
-   Each group has :text-length, :estimated-tokens, and :parts with sub-categories."
-  [signature inputs {:keys [chain-of-thought? json-schema] :as opts}]
+   Each group has :text-length, :estimated-tokens, and :parts with sub-categories.
+
+   opts additionally accepts :user-cache-boundary — a field keyword marking
+   the first per-iteration-volatile input. When set (and the preceding
+   turn-stable prefix is large enough to cache), the result carries
+   :user-cache-prefix — the exact leading substring of the user message a
+   provider adapter can mark as a cache breakpoint."
+  [signature inputs {:keys [chain-of-thought? json-schema user-cache-boundary] :as opts}]
   (let [sys-parts  (collect-system-parts signature json-schema chain-of-thought?)
         usr-parts  (collect-user-parts signature inputs opts)
         sys-msg    {:role "system" :content (parts->content sys-parts)}
         usr-msg    {:role "user"   :content (parts->content usr-parts)}
         breakdown  {:dspy-signature (usage/build-token-group (parts->breakdown sys-parts))
-                    :user-message   (usage/build-token-group (parts->breakdown usr-parts))}]
-    {:messages [sys-msg usr-msg]
-     :token-breakdown breakdown}))
+                    :user-message   (usage/build-token-group (parts->breakdown usr-parts))}
+        prefix     (user-cache-prefix (ordered-input-pairs signature inputs)
+                                      user-cache-boundary)]
+    (cond-> {:messages [sys-msg usr-msg]
+             :token-breakdown breakdown}
+      prefix (assoc :user-cache-prefix prefix))))

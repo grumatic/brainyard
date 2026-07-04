@@ -101,7 +101,7 @@
   (let [build-request* @#'bedrock/build-request
         build-request  (fn
                          ([lm msgs]            (build-request* lm msgs nil))
-                         ([lm msgs zones]      (build-request* lm msgs zones)))
+                         ([lm msgs zones]      (build-request* lm msgs {:cache-zones zones})))
         lm-config {:model       "amazon.nova-pro-v1:0"
                    :provider    :bedrock
                    :temperature 0.5
@@ -205,7 +205,26 @@
                                [{:key :system-context :text "## system-context\nnot in sys"}])]
         (is (= [{:text "A different system"} {:cachePoint {:type "default"}}]
                (:system req))
-            "fallback path preserves the existing single-block behavior")))))
+            "fallback path preserves the existing single-block behavior")))
+
+    (testing ":user-cache-prefix moves the user cachePoint to the stable-prefix boundary"
+      (let [prefix "question: Q\ncontext-briefing: B\nrecalled-memory: M"
+            content (str prefix "\niterations: [...]\n\nRespond with JSON.")
+            req (build-request* (assoc lm-config :prompt-cache true)
+                                [{:role "user" :content content}]
+                                {:user-cache-prefix prefix})]
+        (is (= [{:text prefix}
+                {:cachePoint {:type "default"}}
+                {:text "\niterations: [...]\n\nRespond with JSON."}]
+               (get-in req [:messages 0 :content]))
+            "cachePoint sits after the turn-stable prefix, not at end-of-message")))
+
+    (testing ":user-cache-prefix not matching → trailing cachePoint fallback"
+      (let [req (build-request* (assoc lm-config :prompt-cache true)
+                                [{:role "user" :content "totally different"}]
+                                {:user-cache-prefix "question: Q"})]
+        (is (= [{:text "totally different"} {:cachePoint {:type "default"}}]
+               (get-in req [:messages 0 :content])))))))
 
 (deftest prompt-cache-default-test
   (testing "Bedrock Anthropic models default :prompt-cache on"

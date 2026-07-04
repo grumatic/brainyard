@@ -132,3 +132,59 @@
           body-plain  (build-body cached-lm-config sample-messages {})]
       (is (not (contains? body-cached :cache_control)))
       (is (not (contains? body-plain :cache_control))))))
+
+;; ============================================================================
+;; cache-ttl (prompt-cache Phase 4)
+;; ============================================================================
+
+(deftest ttl-marks-all-but-last-zone
+  (testing ":cache-ttl \"1h\" → 1h on all zones except the last (which stays 5m default)"
+    (let [body (build-body (assoc cached-lm-config :cache-ttl "1h")
+                           sample-messages
+                           {:cache-zones sample-zones})
+          system (:system body)]
+      (is (= {:type "ephemeral" :ttl "1h"} (:cache_control (nth system 1))))
+      (is (= {:type "ephemeral"} (:cache_control (nth system 2)))
+          "last zone changes every turn — longer TTL would only buy write premium"))))
+
+(deftest no-ttl-yields-plain-ephemeral
+  (testing "without :cache-ttl every zone gets plain ephemeral"
+    (let [body (build-body cached-lm-config sample-messages
+                           {:cache-zones sample-zones})]
+      (is (every? #(= {:type "ephemeral"} (:cache_control %))
+                  (rest (:system body)))))))
+
+;; ============================================================================
+;; user-cache-prefix (prompt-cache Phase 2)
+;; ============================================================================
+
+(deftest user-prefix-splits-last-user-message
+  (testing "turn-stable prefix becomes its own cached block; volatile tail uncached"
+    (let [prefix "question: Q\nrecalled-memory: M"
+          content (str prefix "\niterations: [...]\n\nRespond with JSON.")
+          body (build-body cached-lm-config
+                           [{:role "system" :content "sys"}
+                            {:role "user" :content content}]
+                           {:user-cache-prefix prefix})
+          user-content (get-in body [:messages 0 :content])]
+      (is (vector? user-content))
+      (is (= {:type "text" :text prefix :cache_control {:type "ephemeral"}}
+             (first user-content)))
+      (is (= {:type "text" :text "\niterations: [...]\n\nRespond with JSON."}
+             (second user-content))))))
+
+(deftest user-prefix-mismatch-leaves-message-unsplit
+  (testing "prefix not leading the last user message → string content preserved"
+    (let [body (build-body cached-lm-config
+                           [{:role "system" :content "sys"}
+                            {:role "user" :content "something else"}]
+                           {:user-cache-prefix "question: Q"})]
+      (is (string? (get-in body [:messages 0 :content]))))))
+
+(deftest user-prefix-ignored-without-prompt-cache
+  (testing "prompt-cache disabled → no user-message split even with a prefix"
+    (let [body (build-body base-lm-config
+                           [{:role "system" :content "sys"}
+                            {:role "user" :content "question: Q\niterations: []"}]
+                           {:user-cache-prefix "question: Q"})]
+      (is (string? (get-in body [:messages 0 :content]))))))

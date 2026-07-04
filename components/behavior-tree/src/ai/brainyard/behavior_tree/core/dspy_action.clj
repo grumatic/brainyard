@@ -177,7 +177,10 @@
    Forwards :stream? only when the BT node explicitly set it, so callers that
    pass nothing keep the current `on-chunk`-driven default behavior.
    Forwards :cache-zones (M7) so the Anthropic adapter can build structured
-   system blocks with cache_control markers."
+   system blocks with cache_control markers, and :user-cache-boundary
+   (prompt-cache Phase 2) — the signature input keyword marking where the
+   per-iteration-volatile tail of the user message starts — so the prompt
+   layer can hand providers a turn-stable user-message prefix to cache."
   [context lm-config usage-tracker on-chunk system-context token-breakdown
    cache-zones]
   (let [node-opts (:opts context)
@@ -189,7 +192,9 @@
     (mapcat identity
             (cond-> base
               (contains? node-opts :stream?) (assoc :stream? (:stream? node-opts))
-              (seq cache-zones) (assoc :cache-zones cache-zones)))))
+              (seq cache-zones) (assoc :cache-zones cache-zones)
+              (:user-cache-boundary node-opts)
+              (assoc :user-cache-boundary (:user-cache-boundary node-opts))))))
 
 (defmethod execute-dspy-operation :predict
   [_ signature context inputs]

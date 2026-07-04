@@ -122,6 +122,30 @@
       (update-in (vec messages) [last-user :content] conj cache-point-block)
       messages)))
 
+(defn- insert-user-cache-point-at-prefix
+  "Place the reserved user cachePoint at the end of the turn-stable prefix
+   of the last user message (prompt-cache Phase 2), instead of at
+   end-of-message — where the per-iteration-volatile tail means the point
+   is written on every call and never read back. Expects the converted
+   single-`{:text …}` content shape from convert-messages. Returns nil when
+   the prefix doesn't lead the message — caller falls back (and warns)."
+  [messages user-cache-prefix]
+  (let [idx (->> messages
+                 (keep-indexed (fn [i m] (when (= "user" (:role m)) i)))
+                 last)
+        content (when idx (get-in messages [idx :content]))
+        text (when (and (vector? content)
+                        (= 1 (count content)))
+               (:text (first content)))]
+    (when (and text
+               (not (str/blank? user-cache-prefix))
+               (str/starts-with? text user-cache-prefix))
+      (let [rest-text (subs text (count user-cache-prefix))
+            blocks (cond-> [{:text user-cache-prefix} cache-point-block]
+                     (not (str/blank? rest-text))
+                     (conj {:text rest-text}))]
+        (assoc-in (vec messages) [idx :content] blocks)))))
+
 (defn- system-blocks-from-zones
   "Split `system-text` at cache-zone boundaries and return Converse content
    blocks: each zone becomes a `{:text zone-text}` block followed by a
@@ -190,9 +214,11 @@
      `{:text zone}` blocks separated by cachePoint markers (per-zone
      breakpoints — same shape Anthropic uses with cache_control ephemeral);
    - otherwise a single trailing cachePoint is appended to the system block.
-   A cachePoint is also appended to the last user message so the
-   conversation prefix through that turn is cached on the next request."
-  [lm-config messages cache-zones]
+   The reserved user cachePoint goes at the `:user-cache-prefix` boundary
+   when the caller provides one (prompt-cache Phase 2 — the turn-stable
+   prefix is then read back on iterations 2..N); without one it trails the
+   last user message as before."
+  [lm-config messages {:keys [cache-zones user-cache-prefix]}]
   (let [{:keys [system messages]} (convert-messages messages)
         cache?    (boolean (:prompt-cache lm-config))
         drop?     (or (:drop-params lm-config) #{})
@@ -202,7 +228,20 @@
                     (:max-tokens lm-config)
                     (assoc :maxTokens (:max-tokens lm-config)))
         system-blocks (build-system-blocks system cache? cache-zones)
-        messages' (if cache? (append-cache-point-to-last-user messages) messages)]
+        messages' (cond
+                    (not cache?) messages
+
+                    user-cache-prefix
+                    (or (insert-user-cache-point-at-prefix messages user-cache-prefix)
+                        (do (mulog/warn ::cache-zone-fallback
+                                        :provider :bedrock
+                                        :where :user-message
+                                        :message (str "user cache prefix does not lead the"
+                                                      " last user message — cachePoint"
+                                                      " appended at end-of-message instead"))
+                            (append-cache-point-to-last-user messages)))
+
+                    :else (append-cache-point-to-last-user messages))]
     (cond-> {:modelId  (:model lm-config)
              :messages messages'}
       (seq inference) (assoc :inferenceConfig inference)
@@ -296,7 +335,8 @@
    dspy-action) so each zone gets its own cachePoint breakpoint."
   [lm-config messages opts]
   (let [client   (get-client lm-config)
-        request  (build-request lm-config messages (:cache-zones opts))
+        request  (build-request lm-config messages
+                                (select-keys opts [:cache-zones :user-cache-prefix]))
         start-ns (System/nanoTime)]
     (mulog/log ::bedrock-api-call
                :provider :bedrock :model (:model lm-config) :region (:region lm-config)
@@ -371,7 +411,8 @@
    is unsupported and we fail fast with a clear error."
   [lm-config messages opts on-chunk]
   (let [client   (get-client lm-config)
-        request  (build-request lm-config messages (:cache-zones opts))
+        request  (build-request lm-config messages
+                                (select-keys opts [:cache-zones :user-cache-prefix]))
         start-ns (System/nanoTime)]
     (mulog/log ::bedrock-api-call
                :provider :bedrock :model (:model lm-config) :region (:region lm-config)
