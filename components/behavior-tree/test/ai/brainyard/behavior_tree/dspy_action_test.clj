@@ -265,3 +265,15 @@
           {:keys [text zones]} (build-system-prompt state [:missing :present])]
       (is (= [:present] (mapv :key zones)))
       (is (= "## present\nhere" text)))))
+
+(deftest build-system-prompt-no-zone-keys-test
+  (testing "no-zone keys render in the text but get NO cache zone (Phase 3b:
+            the volatile tail rides the next downstream breakpoint)"
+    (let [state {:stable-a "sa" :volatile-tail "vt"}
+          {:keys [text zones]} (build-system-prompt
+                                state [:stable-a :volatile-tail] #{:volatile-tail})]
+      (is (= [:stable-a] (mapv :key zones)))
+      (is (= (str "## stable-a\nsa\n\n"
+                  "## volatile-tail\nvt")
+             text)
+          "the no-zone key still renders, after the last zone"))))

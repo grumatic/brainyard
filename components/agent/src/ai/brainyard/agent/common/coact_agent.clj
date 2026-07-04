@@ -1400,8 +1400,23 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                       Invalidates on file edit / L1 overlay write /
                       tools-tier compaction — without re-billing the
                       much larger static zone above it.
+     :history-context append-only across turns (Phase 3b) — the
+                      previous-turns chain. Grows monotonically at the
+                      tail (batched depth-demotion in
+                      previous-turns/append-turn keeps old entries
+                      byte-stable between demotions), so the breakpoint
+                      advances turn-over-turn and old history reads from
+                      cache instead of re-billing wholesale.
+                      NOT here: :conversation-history — it is a SLIDING
+                      window (take-last :conversation-limit re-snapshotted
+                      each turn, so its head churns in long sessions);
+                      it stays in the volatile tail below.
 
-   (:user-context — the per-turn zone — is the whole user-order side.)
+   (:user-context — the per-turn volatile tail (turn-info, parent-trail,
+   conversation window, live artifacts) — is the user-order side. It
+   renders after these zones WITHOUT a breakpoint of its own
+   (:no-zone-keys on the BT nodes); the Phase-2 user-message
+   stable-prefix breakpoint covers it within a turn.)
 
    NB the concatenation of these section vectors IS the system render
    order (system-order derives from it), so every section listed in
@@ -1419,7 +1434,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
    [:session-context
     [:system-info :tools :instruction :agent-context
      :project-instructions :project-memory :user-instructions
-     :footer]]])
+     :footer]]
+   [:history-context
+    [:previous-turns]]])
 
 (defrecord CoActAssembler []
   sa/SectionAssembler
@@ -1443,8 +1460,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
   (system-zones [_]
     coact-system-zones)
   (user-order [_]
+    ;; Per-turn volatile tail (Phase 3b): :previous-turns moved to the
+    ;; :history-context zone; the sliding conversation window stays here.
     [:turn-info :parent-trail
-     :conversation-history :previous-turns :live-artifacts])
+     :conversation-history :live-artifacts])
   (policies [_] cb/default-section-policies)
   (strategies [_ st-memory] (coact-strategies st-memory)))
 
@@ -1767,9 +1786,14 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; :agent-core / :session-context stable keys); user sections
         ;; may have been trimmed or dropped by strategies.
         system-zone-orders (sa/system-zones assembler)
+        ;; Blank zones compose to nil (not "") so the dspy renderer skips
+        ;; the key entirely — an empty `## history-context` zone on turn 1
+        ;; would burn a provider breakpoint slot on ~20 chars. A zone
+        ;; appearing later never disturbs the byte-prefix of earlier zones.
         zone-strings   (into {}
                              (map (fn [[zone-key zone-order]]
-                                    [zone-key (cb/compose (:sections enforced) zone-order)]))
+                                    (let [s (cb/compose (:sections enforced) zone-order)]
+                                      [zone-key (when-not (str/blank? s) s)])))
                              system-zone-orders)
         user-context   (cb/compose (:sections enforced) usr-order)
 
@@ -1798,11 +1822,15 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
              :sandbox          sandbox
              :sandbox-context  sandbox-context
              :existing-sandbox-reused (boolean existing-sandbox)
-             ;; One st-memory key per system cache zone (Phase 3) — the BT
+             ;; One st-memory key per system cache zone (Phases 3/3b:
+             ;; :agent-core / :session-context / :history-context) — the BT
              ;; dspy node's ordered :stable-keys renders them as separate
-             ;; provider cache breakpoints.
+             ;; provider cache breakpoints. KEEP IN SYNC with
+             ;; coact-system-zones and the nodes' :stable-keys (the
+             ;; zone-wiring test pins all three).
              :agent-core       (:agent-core zone-strings)
              :session-context  (:session-context zone-strings)
+             :history-context  (:history-context zone-strings)
              :user-context     user-context
              ;; Tool-only guard: when false, coact-has-code-blocks? ignores any
              ;; emitted code so the router never routes to code-eval (react-agent).
@@ -1893,6 +1921,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                :previous-turns-count (count (or (:previous-turns @st-memory) []))
                :agent-core-chars      (count (or (:agent-core zone-strings) ""))
                :session-context-chars (count (or (:session-context zone-strings) ""))
+               :history-context-chars (count (or (:history-context zone-strings) ""))
                :user-context-chars    (count user-context)
                :budget-tokens        (:budget enforced)
                :prompt-tokens        (:total-tokens enforced)
@@ -2343,7 +2372,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                        :strategies strategies})
             new-zones (into {}
                             (map (fn [[zone-key zone-order]]
-                                   [zone-key (cb/compose (:sections enforced) zone-order)]))
+                                   (let [s (cb/compose (:sections enforced) zone-order)]
+                                     ;; nil (not "") for blank zones — see init.
+                                     [zone-key (when-not (str/blank? s) s)])))
                             zone-orders)
             new-usr (cb/compose (:sections enforced) usr-order)
             new-breakdown (clj-llm/build-token-breakdown
@@ -3766,7 +3797,11 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                         {:id          :coact.action/repair-retry-transient
                          :signature   #'ThinkActCode
                          :operation   :chain-of-thought
-                         :stable-keys [:agent-core :session-context :user-context]
+                         :stable-keys [:agent-core :session-context :history-context :user-context]
+                 ;; :user-context is the volatile tail — rendered in the
+                 ;; system text but with NO breakpoint of its own (the
+                 ;; Phase-2 user-message marker covers it within a turn).
+                         :no-zone-keys #{:user-context}
                          :user-cache-boundary :iterations}))
         (cond
           ;; A retry recovered a usable channel — dispatch it now, same iteration.
@@ -3907,7 +3942,11 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                               {:id         :coact.action/repair-retry-think
                                :signature  #'ThinkActCode
                                :operation  :chain-of-thought
-                               :stable-keys [:agent-core :session-context :user-context]
+                               :stable-keys [:agent-core :session-context :history-context :user-context]
+                 ;; :user-context is the volatile tail — rendered in the
+                 ;; system text but with NO breakpoint of its own (the
+                 ;; Phase-2 user-message marker covers it within a turn).
+                               :no-zone-keys #{:user-context}
                                :user-cache-boundary :iterations}))
               (when (and (empty-llm-result? context) (< attempt max-empty))
                 (recur (inc attempt))))))
@@ -4483,7 +4522,11 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                  ;; The three cache zones ride the system message in
                  ;; ascending-volatility order: static agent core,
                  ;; session-stable overlays, per-turn context.
-                 :stable-keys [:agent-core :session-context :user-context]
+                 :stable-keys [:agent-core :session-context :history-context :user-context]
+                 ;; :user-context is the volatile tail — rendered in the
+                 ;; system text but with NO breakpoint of its own (the
+                 ;; Phase-2 user-message marker covers it within a turn).
+                 :no-zone-keys #{:user-context}
                  ;; Inputs before :iterations (question / context-briefing /
                  ;; recalled-memory) are turn-stable — providers put a cache
                  ;; breakpoint at this boundary so iterations 2..N read them

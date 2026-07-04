@@ -168,6 +168,14 @@ phase has before/after numbers.
     flushes the API-result event — per-call cache tokens for `ask` are
     only visible via the provider console, not the app log. TUI sessions
     flush fine.
+  - **Phase-3b live validation** (second 2-turn TUI session, same model):
+    turn 1 emitted 2 zones (blank history zone correctly skipped); turn 2
+    emitted 3 — `history-context` (106 chars) appeared while
+    `agent-core`/`session-context` shas stayed byte-identical, and
+    `user-context` no longer claims a breakpoint. Cross-turn economics
+    (same-region routing this time): turn 2 read **13,524** tokens from
+    cache and wrote only **1,584** — cost $0.0012 → $0.0003 (−75%),
+    latency 1.8s → 1.2s.
 - ⬜ Anthropic-direct baseline + a longer (10-turn, multi-iteration)
   session still pending.
 
@@ -268,11 +276,35 @@ unit tests passed because they inspected the section map, not the composed
 string). They now render in the `:agent-core` zone, and a partition-invariant
 test (zones ⊆⊇ system-order; every built section covered) guards the class.
 
-### Phase 3b — Append-only history zone (M) — fixes G7
+### Phase 3b — Append-only history zone (M) — fixes G7 — **LANDED 2026-07-04**
 
 The advancing-breakpoint-over-chat-history pattern, applied to zone C. Only
 worth shipping **after Phase 4** (without a 1h TTL, cross-turn hits rarely
 survive the human gap between turns).
+
+**As landed (deviations from the sketch below):**
+
+- **C1 = `:history-context` = `previous-turns` ONLY.** `conversation-history`
+  turned out to be a SLIDING window (`prepare-conversation-action` re-snapshots
+  `take-last :conversation-limit` session messages every turn), so its head
+  churns in long sessions — it stays in the volatile tail. Previous-turns is
+  the append-only (and much larger) payload anyway.
+- **C2 stays under the `:user-context` stable key** (turn-info, parent-trail,
+  conversation window, live-artifacts), rendered after `:history-context` via
+  the new dspy `:no-zone-keys` node opt — in the system text but with NO
+  breakpoint of its own; the Phase-2 user-message marker covers it.
+  Breakpoints: A, B, C1 = 3 system (Bedrock cap) + 1 user (Anthropic 4/4).
+- **Batched demotion shipped as `:demote-batch`** (default 10) in
+  `append-turn`: boundaries move in batches, so with the defaults the
+  10–19 most recent turns hold `:full` and crossing 20 demotes ten at once.
+  `:demote-batch 1` reproduces the old slide-by-one behavior. Tests cover
+  byte-stability of demoted entries across a batch window and
+  re-compression idempotence (the truncate-to-file concern).
+- **Caveat:** when the Phase-2 user breakpoint is skipped (turn-stable user
+  prefix < 4000 chars), C2 + the user message re-bill per iteration —
+  previously zone C had its own marker. Live-artifact-heavy turns with tiny
+  questions are the exposure; revisit the guard threshold if Phase-0 numbers
+  show it firing often.
 
 Split zone C by cadence:
 
@@ -343,7 +375,7 @@ ZONE C2  turn-volatile — NO own breakpoint; covered by the Phase-2
 | 4 TTL | S/M | **high** (human-paced TUI) | **DONE** (opt-in `:cache-ttl`; default flip pending baseline) |
 | 2 User-prefix breakpoint | M | high (multi-iteration turns) | **DONE** — step 0 fixed hash-order rendering (G8); Bedrock dead writes removed |
 | 3 Three-zone split | M | medium (edit-heavy sessions) | **DONE** — caps now 4/4 on both providers; also restored the silently-dropped substrate sections |
-| 3b History zone | M | high (long sessions) | pending — wants Phase-0 baseline + TTL data first; includes batched compression in `append-turn` (caps hold: C1 takes zone C's breakpoint, C2 rides the user one) |
+| 3b History zone | M | high (long sessions) | **DONE** — C1 = previous-turns only (conversation is a sliding window); batched `:demote-batch` compression; caps hold at 4/4 |
 | 5 Guards + docs | S | keeps it won | **DONE** (guards; context-management.md refresh pending) |
 
 ## 6. Risks & constraints

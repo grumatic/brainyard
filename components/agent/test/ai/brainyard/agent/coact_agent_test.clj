@@ -193,9 +193,12 @@
           think-act-code (nth llm-guard 2)
           opts (second think-act-code)]
       (is (= :coact.action/think-act-code (:id opts)))
-      ;; Ordered vector (prompt-cache Phases 1+3): declared order = zone/
-      ;; cache-breakpoint order, most-stable first.
-      (is (= [:agent-core :session-context :user-context] (:stable-keys opts)))
+      ;; Ordered vector (prompt-cache Phases 1+3+3b): declared order = zone/
+      ;; cache-breakpoint order, most-stable first. :user-context is the
+      ;; volatile tail — rendered but breakpoint-less (:no-zone-keys).
+      (is (= [:agent-core :session-context :history-context :user-context]
+             (:stable-keys opts)))
+      (is (= #{:user-context} (:no-zone-keys opts)))
       (is (= :chain-of-thought (:operation opts))))))
 
 ;; ============================================================================
@@ -2010,6 +2013,10 @@
   (testing "zone section lists concatenate to exactly system-order, no dupes"
     (let [zones     (sa/system-zones rca/coact-assembler)
           zone-secs (into [] (mapcat second) zones)]
+      ;; Pins the zone table against the init assoc + BT :stable-keys
+      ;; (all three must stay in sync — see coact-init-action).
+      (is (= [:agent-core :session-context :history-context]
+             (mapv first zones)))
       (is (= (sa/system-order rca/coact-assembler) zone-secs))
       (is (= (count zone-secs) (count (distinct zone-secs)))
           "a section in two zones would render twice")

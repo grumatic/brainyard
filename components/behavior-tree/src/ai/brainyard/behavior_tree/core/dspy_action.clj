@@ -111,31 +111,41 @@
    `:prompt-cache` is enabled in lm-config (M7). Other providers ignore
    zones and consume `:text` as before.
 
+   `no-zone-keys` (set) marks stable keys that render in the system text
+   but do NOT get a cache zone / breakpoint of their own — used for a
+   trailing turn-volatile block that is instead covered by the NEXT
+   breakpoint downstream (the user-message stable-prefix marker). Such
+   keys must sit at the END of the order: an un-zoned key between two
+   zoned ones would break the providers' sequential zone location.
+
    For token breakdown: if st-memory contains :prompt-token-breakdown (a pre-computed
    per-category breakdown from build-system-prompt), uses those sub-categories instead
    of estimating stable keys as opaque blobs. Stable keys that have a pre-breakdown
    are excluded from blob estimation to avoid double-counting."
-  [state stable-key-order]
-  (let [ordered-keys stable-key-order
-        pre-breakdown (:prompt-token-breakdown state)
-        key-texts (reduce (fn [acc k]
-                            (if-let [v (get state k)]
-                              (assoc acc k (str "## " (name k) "\n" v))
-                              acc))
-                          {} ordered-keys)
-        parts (keep #(get key-texts %) ordered-keys)
-        text (when (seq parts) (str/join "\n\n" parts))
-        zones (vec (keep (fn [k]
-                           (when-let [t (get key-texts k)]
-                             {:key k :text t}))
-                         ordered-keys))
-        ;; Build hierarchical breakdown: wrap sub-categories in a :system-prompt group
-        breakdown (if pre-breakdown
-                    {:system-prompt (clj-llm/build-token-group pre-breakdown)}
-                    (when (seq key-texts)
-                      {:system-prompt (clj-llm/build-token-group
-                                       (clj-llm/build-token-breakdown key-texts))}))]
-    {:text text :token-breakdown breakdown :zones zones}))
+  ([state stable-key-order]
+   (build-system-prompt state stable-key-order #{}))
+  ([state stable-key-order no-zone-keys]
+   (let [ordered-keys stable-key-order
+         pre-breakdown (:prompt-token-breakdown state)
+         key-texts (reduce (fn [acc k]
+                             (if-let [v (get state k)]
+                               (assoc acc k (str "## " (name k) "\n" v))
+                               acc))
+                           {} ordered-keys)
+         parts (keep #(get key-texts %) ordered-keys)
+         text (when (seq parts) (str/join "\n\n" parts))
+         zones (vec (keep (fn [k]
+                            (when-let [t (get key-texts k)]
+                              (when-not (contains? (or no-zone-keys #{}) k)
+                                {:key k :text t})))
+                          ordered-keys))
+         ;; Build hierarchical breakdown: wrap sub-categories in a :system-prompt group
+         breakdown (if pre-breakdown
+                     {:system-prompt (clj-llm/build-token-group pre-breakdown)}
+                     (when (seq key-texts)
+                       {:system-prompt (clj-llm/build-token-group
+                                        (clj-llm/build-token-breakdown key-texts))}))]
+     {:text text :token-breakdown breakdown :zones zones})))
 
 (defn- sha256-16
   "First 16 hex chars of the SHA-256 of `s` — compact content fingerprint
@@ -207,7 +217,8 @@
         usage-tracker (resolve-usage-tracker context)
         on-chunk (get-in context [:opts :on-chunk])
         {:keys [text token-breakdown zones]}
-        (build-system-prompt (:state inputs) (:stable-keys inputs))
+        (build-system-prompt (:state inputs) (:stable-keys inputs)
+                             (:no-zone-keys inputs))
         _ (log-cache-zones! (get-in context [:opts :id]) zones)
         result (apply clj-llm/predict sig (:inputs inputs)
                       (build-llm-call-opts context lm-config usage-tracker
@@ -226,7 +237,8 @@
         usage-tracker (resolve-usage-tracker context)
         on-chunk (get-in context [:opts :on-chunk])
         {:keys [text token-breakdown zones]}
-        (build-system-prompt (:state inputs) (:stable-keys inputs))
+        (build-system-prompt (:state inputs) (:stable-keys inputs)
+                             (:no-zone-keys inputs))
         _ (log-cache-zones! (get-in context [:opts :id]) zones)
         result (apply clj-llm/chain-of-thought sig (:inputs inputs)
                       (build-llm-call-opts context lm-config usage-tracker
@@ -251,6 +263,11 @@
                      - Included in system-context (system message)
                      - Excluded from signature inputs (user message)
                      Custom keys get a generic '## <key-name>' section header.
+   - :no-zone-keys — (optional) set of stable keys that render in the system
+                     text WITHOUT a cache zone/breakpoint of their own (they
+                     ride the next downstream breakpoint — the user-message
+                     stable-prefix marker). Must be trailing keys in the
+                     :stable-keys order.
 
    Reads inputs from st-memory, executes the DSPy operation, and stores
    outputs back into st-memory.
@@ -300,7 +317,9 @@
         (when fire! (fire! :agent.dspy-action/pre pre-event))
         (if (seq all-inputs)
           (let [result (execute-dspy-operation operation signature context
-                                               {:inputs filtered-inputs :state state :stable-keys stable-keys})]
+                                               {:inputs filtered-inputs :state state
+                                                :stable-keys stable-keys
+                                                :no-zone-keys (set (get-in context [:opts :no-zone-keys]))})]
             ;; Batch all state updates (outputs + reasoning + usage) into a
             ;; single swap! so TUI watch handlers see all changes atomically.
             (swap! st-memory
