@@ -59,6 +59,41 @@
                               other-msgs)))}))
 
 ;; ============================================================================
+;; Structured-output reinforcement
+;; ============================================================================
+
+(def ^:private structured-output-directive
+  "Claude-code-specific hardening for structured output. `--json-schema` exposes
+   a StructuredOutput tool but with tool_choice=auto — it is OPTIONAL, so on
+   large/agentic prompts the model can answer in plain prose (which fails JSON
+   parsing) or try to DO the task itself. This directive closes that gap; it is
+   appended to the system prompt only when --json-schema is in force. (If the
+   CLI ever gains a force-tool-choice flag, that would be the stronger successor
+   to this prompt-level nudge.)"
+  (str "\n\n=== STRUCTURED OUTPUT — MANDATORY ===\n"
+       "You are a headless structured-output endpoint, NOT an interactive assistant. "
+       "Return your ENTIRE response by calling the StructuredOutput tool with a single "
+       "JSON object matching the schema. Never reply in prose, markdown, or natural "
+       "language, and never narrate a plan.\n"
+       "You have NO tools and NO filesystem access: never write files, never run shell "
+       "or heredocs (e.g. `cat > file <<'EOF'`), and never perform the task yourself. "
+       "To run code, put it verbatim as a STRING in the `code-blocks` field — the host "
+       "executes it and returns the result to you on the next turn. This holds for code "
+       "of ANY size, including large or multi-file edits: emit it in `code-blocks`, never "
+       "inline it as prose.\n"
+       "If you still need information, populate `tool-calls`. Populate `answer` ONLY when "
+       "the task is complete."))
+
+(defn- reinforce-structured-output
+  "Append `structured-output-directive` to the system prompt when structured
+   output (--json-schema) is active, else return it unchanged. Applied to both
+   the buffered and streaming CLI paths."
+  [system-prompt opts]
+  (if (:json-schema opts)
+    (str system-prompt structured-output-directive)
+    system-prompt))
+
+;; ============================================================================
 ;; CLI Argument Building
 ;; ============================================================================
 
@@ -298,6 +333,7 @@
    Returns an Anthropic-like response map."
   [lm-config messages opts]
   (let [{:keys [system-prompt prompt]} (flatten-messages messages)
+        system-prompt (reinforce-structured-output system-prompt opts)
         spooled (spool-system-prompt system-prompt)
         args    (build-cli-args lm-config opts
                                 {:system-prompt-flag  (:flag spooled)
@@ -368,6 +404,7 @@
    discarded). Returns the final reconstructed response."
   [lm-config messages opts on-chunk]
   (let [{:keys [system-prompt prompt]} (flatten-messages messages)
+        system-prompt (reinforce-structured-output system-prompt opts)
         spooled (spool-system-prompt system-prompt)
         args (-> (build-cli-args lm-config opts
                                  {:system-prompt-flag  (:flag spooled)
