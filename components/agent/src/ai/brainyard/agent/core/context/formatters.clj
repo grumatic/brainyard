@@ -41,7 +41,7 @@
   "Detailed listing of the tools bound to an agent for the current turn.
 
    Each entry renders:
-       - `<id>` [<type>] — <description>
+       - `<id>` — <description>
          Inputs:
            - `<arg>` : <type>[ (optional)] — <desc>
          Outputs:                              ;; only when registry meta declares them
@@ -74,10 +74,8 @@
                             (str "    - `" (clojure.core/name k) "` : " t
                                  (when-not (str/blank? d) (str " — " d)))))
           render-tool
-          (fn [{:keys [name description tool-fn-type parameters]}]
+          (fn [{:keys [name description parameters]}]
             (let [desc (str description)
-                  type-tag (when tool-fn-type
-                             (str " [" (clojure.core/name tool-fn-type) "]"))
                   props (:properties parameters)
                   required (set (:required parameters))
                   input-lines (when (seq props)
@@ -106,20 +104,18 @@
                                 "any")
                           d (str (or (:desc parsed) ""))]
                       (str "    " t (when-not (str/blank? d) (str " — " d)))))]
-              (cond-> (str "- `" name "`" type-tag
+              (cond-> (str "- `" name "`"
                            (when-not (str/blank? desc) (str " — " desc)))
                 input-lines  (str "\n  Inputs:\n"  input-lines)
                 output-lines (str "\n  Outputs:\n" output-lines))))]
       (->> tools (map render-tool) (str/join "\n\n")))))
 
 (defn format-agent-tools-compact
-  "One-line listing of bound tools: `- id (type)`. Used as the budget-tier
+  "One-line listing of bound tools: `- id`. Used as the budget-tier
    fallback when the verbose `format-agent-tools` block is too big."
   [tools]
   (when (seq tools)
     (->> tools
-         (map (fn [{:keys [name tool-fn-type]}]
-                (str "- `" name "`"
-                     (when tool-fn-type
-                       (str " (" (clojure.core/name tool-fn-type) ")")))))
+         (map (fn [{:keys [name]}]
+                (str "- `" name "`")))
          (str/join "\n"))))

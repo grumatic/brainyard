@@ -254,9 +254,11 @@
           "verbose block must carry per-tool input specs")
       (is (not (str/includes? compact "Inputs:"))
           "compact block must drop per-tool input specs")
-      ;; Compact uses the `(type)` one-liner shape.
-      (is (str/includes? compact "(command)")
-          "compact block must render the one-line `id (type)` shape")))
+      ;; Compact uses the bare `- `id`` one-liner shape (no registry type tag).
+      (is (str/includes? compact "- `test-coact-echo`")
+          "compact block must render the one-line `- `id`` shape")
+      (is (not (str/includes? compact "test-coact-echo`\n  Inputs"))
+          "compact block must not carry per-tool specs")))
 
   (testing ":compact-agent-tools config default is true (compact-by-default)"
     (is (true? (get config/default-config :compact-agent-tools)))))
@@ -1539,9 +1541,9 @@
   (testing ":agent-tools-details replaces verbose block with one-liner"
     (let [out (build-sample-tools #{:agent-tools-details})]
       (is (str/includes? out "### Agent Tools"))
-      ;; Compact one-liner format: `- `echo-tool` (tool)`
-      (is (str/includes? out "(tool)"))
-      (is (str/includes? out "(command)"))
+      ;; Compact one-liner format: bare `- `echo-tool`` (no type tag)
+      (is (str/includes? out "- `echo-tool`"))
+      (is (str/includes? out "- `add-tool`"))
       ;; Verbose Inputs block absent
       (is (not (str/includes? out "Inputs:"))))))
 
