@@ -176,8 +176,33 @@ phase has before/after numbers.
     (same-region routing this time): turn 2 read **13,524** tokens from
     cache and wrote only **1,584** — cost $0.0012 → $0.0003 (−75%),
     latency 1.8s → 1.2s.
-- ⬜ Anthropic-direct baseline + a longer (10-turn, multi-iteration)
-  session still pending.
+- **TTL-flip experiment (2026-07-05,
+  `bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0`,
+  ~7m15s gaps between turns; `ttl "1h"` presence verified in request
+  logs):**
+  - Control (5m default): post-gap turn read 0, re-wrote 15.8K — the 5m
+    expiry problem, reproduced.
+  - 1h leg #1: post-gap turn read 0 (see routing caveat below).
+  - Routing baseline: 7/7 quick-succession calls hit the same region's
+    cache (incl. cross-session) — the global profile's routing is stable
+    but not perfectly so.
+  - **1h leg #2: post-gap turn read back EXACTLY the 1h-marked
+    checkpoint's span (8,895 tok) and re-wrote exactly the 5m-marked
+    segments (6,961 tok)** — the 1h/5m split behaving to spec; the quick
+    third turn then hit everything (14,134). Verdict: **the 1h TTL works
+    on Bedrock Claude**; leg #1's miss is attributed to an occasional
+    cross-region routing flip (a flip costs one full re-write — the same
+    as today's every-gap behavior, so 1h's downside is only the write
+    premium on the long-TTL zones).
+  - Pricing caveat: usage.clj's cache-write rates don't distinguish a 1h
+    write premium on Bedrock (Anthropic-direct bills 1h writes at 2x base
+    vs 1.25x for 5m). Verify against a real bill before trusting the
+    /usage net-saved estimate with 1h on.
+- ⬜ Anthropic-direct (API-key or anthropic-max OAuth) confirmation + a
+  longer (10-turn, multi-iteration) session still pending. The
+  `BY_CACHE_TTL=1h` default-flip decision for Claude-family models is now
+  data-backed on Bedrock; flipping requires per-model gating (never send
+  `ttl` to Nova — 5m-only).
 
 ### Phase 1 — Explicit zone order (S) — fixes G1 — **LANDED 2026-07-04**
 
