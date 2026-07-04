@@ -23,8 +23,8 @@ dspy-action build-system-prompt                          dspy_action.clj:86-122
         ↓
 predict / chain-of-thought                               predict.clj:73-78
   system message = [DSPy signature preamble] ++ "\n\n" ++ [zone texts]
-  user   message = signature inputs in declared order ++ output reminder
-                                                         prompt.clj:141-148
+  user   message = signature inputs in HASH-SET order (see NB below)
+                   ++ output reminder                    prompt.clj:141-148
         ↓ provider adapters
 Anthropic  (llm.clj:370-434)   :prompt-cache default true (providers.clj:25)
   system → content array; cache_control {ephemeral} ON EACH ZONE block;
@@ -53,13 +53,23 @@ The resulting request layout for the main CoAct loop:
      turn-info, parent-trail, conversation-history,
      previous-turns, live-artifacts
 ─── user message ───────────────────────────────────────────────
-  question:         <per-turn stable>
-  context-briefing: <per-turn stable — built once at init, :1743/:1769>
   recalled-memory:  <per-turn stable — primed pre-init>
+  question:         <per-turn stable>
   iterations:       <PER-ITERATION, append-only, compacted under budget>
+  context-briefing: <per-turn stable — built once at init, :1743/:1769>
   output reminder   <constant>
 ─────────────────────────────────────────────────────────────────
 ```
+
+**NB the user-message field order above is HASH-SET order, not declaration
+order**: `compile-signature` stores `:input-keys` as `(set (keys inputs))`
+(signature.clj:14), dspy-action reduces over that set into the inputs map, and
+`build-user-message` iterates the map. The order is deterministic for a fixed
+key set (hence still cacheable) but semantically arbitrary — the volatile
+`iterations` lands mid-message, ahead of the turn-stable `context-briefing`.
+(Verified empirically: declared `[:question :context-briefing :recalled-memory
+:iterations]` renders as `[:recalled-memory :question :iterations
+:context-briefing]`.)
 
 Supporting facts:
 
@@ -111,6 +121,7 @@ Cache-hit profile today:
 | G5 | No TTL control. 5-minute ephemeral kills cross-turn caching for human-paced TUI sessions — the dominant usage mode. | biggest real-world miss |
 | G6 | No observability: the `::cache-prefix-hash` validation proposed in context-management.md §P3.3 was never implemented; zone-location failures fall back **silently**; /usage doesn't surface cache-read/write per turn. | can't measure or regress-guard |
 | G7 | **Previous-turns history is re-billed wholesale every turn.** The chain (`previous_turns.clj`) is nearly append-only — appended most-recent-last, position-stable `[Turn N]` headers — but rides zone C, which is rewritten per turn. The payload grows monotonically with session length. Three byte-stability breakers: (a) progressive compression slides the `:full`→`:summary` (recency 10) and `:summary`→`:minimal` (recency 40) boundaries by one **every turn**, rewriting a mid-chain entry each time; (b) head drops (`:bump-previous-turns`, max-turns trim) renumber all `[Turn N]` headers; (c) per-turn `:turn-info` renders FIRST in usr-order, ahead of the history. | dominant cross-turn cost in long sessions |
+| G8 | **User-message field order is hash-set order, not declared order.** `:input-keys` is a `set` (signature.clj:14); the rendered order is deterministic per key set but arbitrary — today `iterations` (per-iteration volatile) renders *before* the turn-stable `context-briefing`, re-billing it every iteration even under automatic prefix caching, and any input-key change can silently reshuffle the whole message. Also a hard blocker for G3's stable-prefix breakpoint. | per-iteration waste + reshuffle landmine |
 
 ## 4. Improvement plan
 
@@ -145,9 +156,17 @@ phase has before/after numbers.
   `[question+briefing+recalled-memory](cache_control)` + `[iterations+reminder]`.
 - Bedrock: **move** the existing trailing cachePoint to that boundary (stops
   the every-iteration dead write; same 3+1 budget).
-- Prompt-order prerequisite (already true): `:iterations` is the last input in
-  `ThinkActCode` — keep the output reminder after it; document that input
-  declaration order is cache-significant.
+- **Step 0 — ordered input rendering (fixes G8, hard prerequisite).** The
+  user message currently renders in hash-set order because `compile-signature`
+  stores `:input-keys` as a `set`. Preserve declaration order: keep an ordered
+  `:input-order` vector on the compiled signature (the `:inputs` map literal is
+  an array-map for ≤8 entries, so `(vec (keys inputs))` is declaration order —
+  add a compile-time assert for the >8 cliff), and have `build-user-message` /
+  `collect-user-parts` render by it. Contract: declare inputs in **ascending
+  volatility** — `ThinkActCode` already declares `:iterations` last, so the
+  layout becomes question, context-briefing, recalled-memory, iterations.
+  No ordered-sections machinery is needed on the user side: four fields with a
+  single stable/volatile split — an ordered key vector is sufficient.
 - Guard: skip the marker when the stable prefix is trivially small
   (< ~1K tokens ≈ provider minimum cacheable prefix) to avoid wasting a slot.
 - Expected win: (question+briefing+recalled-memory) × (iterations−1) × 90%
@@ -254,7 +273,7 @@ ZONE C2  turn-volatile — NO own breakpoint; covered by the Phase-2
 | 0 Measure | S | enables the rest | do first |
 | 1 Ordered zones | S | hardening | prerequisite for 2/3 |
 | 4 TTL | S/M | **high** (human-paced TUI) | independent — can ship right after 0 |
-| 2 User-prefix breakpoint | M | high (multi-iteration turns) | also removes Bedrock dead writes |
+| 2 User-prefix breakpoint | M | high (multi-iteration turns) | step 0 fixes hash-order rendering (G8); also removes Bedrock dead writes |
 | 3 Three-zone split | M | medium (edit-heavy sessions) | consumes both providers' caps exactly |
 | 3b History zone | M | high (long sessions) | requires Phase 4 first; includes batched compression in `append-turn` |
 | 5 Guards + docs | S | keeps it won | |
