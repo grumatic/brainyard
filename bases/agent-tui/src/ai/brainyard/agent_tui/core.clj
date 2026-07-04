@@ -1468,15 +1468,26 @@
   ;; explicitly kill it here. Best-effort. The double-Ctrl-C / SIGTERM paths
   ;; bypass `stop!` and get the same teardown from the JVM shutdown hook below.
   (try (agent/task-shutdown) (catch Throwable _))
-  ;; The session-end memory consolidation runs synchronously inside
-  ;; close-session! below (via the :agent.instance/closed flush hook) and can
-  ;; block for several seconds on the graph path — batch extraction + per-community
-  ;; LLM summaries. Warn the user first so the post-/quit pause isn't a mystery.
-  (when (try (agent/pending-consolidation?) (catch Throwable _ false))
-    (tui-session/emit! (str "\n" (ansi/muted "⏳ Finalizing memory — folding this session into long-term memory (may take a few seconds)…"))))
-  ;; Close all sessions (closes their agents and detaches watches)
-  (doseq [idx (sessions/session-indices)]
-    (sessions/close-session! idx))
+  ;; Session-end memory consolidation fires inside close-session! below (via the
+  ;; :agent.instance/closed flush hook). In graph mode it is handed to a DETACHED
+  ;; `by memory reduce` child — /quit no longer blocks; we report the spawned
+  ;; PID(s) afterward. The heuristic path still runs inline (LLM-free, ms). We
+  ;; snapshot whether any work is pending BEFORE close clears the per-session turn
+  ;; tallies, then report the outcome once the flush has actually run.
+  (let [pending? (try (agent/pending-consolidation?) (catch Throwable _ false))]
+    ;; Close all sessions (closes their agents and detaches watches)
+    (doseq [idx (sessions/session-indices)]
+      (sessions/close-session! idx))
+    (when pending?
+      (let [detached (try (agent/drain-detached-consolidations!) (catch Throwable _ nil))]
+        (tui-session/emit!
+         (str "\n"
+              (ansi/muted
+               (if (seq detached)
+                 (str "🧠 Spawned background process (PID "
+                      (str/join ", " (map (comp str :pid) detached))
+                      ") to fold this session into long-term memory — it continues after exit.")
+                 "🧠 Folded this session into long-term memory.")))))))
   ;; Also close any agent in !tui-state (backward compat)
   (when-let [^java.io.Closeable ag (tui-session/get-active-agent)]
     (try

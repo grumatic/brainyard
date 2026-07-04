@@ -285,18 +285,20 @@
    mid-run (nohup alone is NOT enough — a real tmux e2e confirmed the nohup
    child was still killed). Two layers make the child survive:
 
-     1. `trap '' HUP INT TERM` FIRST, in the wrapping `/bin/sh`, before anything
-        is launched. SIG_IGN is inherited across both fork and exec, so the whole
-        pipeline (sh → detacher → the child JVM) ignores those signals through
+     1. `trap '' HUP INT TERM` FIRST in the wrapping `/bin/sh`. SIG_IGN is
+        inherited across exec, so the whole chain ignores those signals through
         the vulnerable window — this closes the RACE where the TUI tears the
         terminal down before the child has finished detaching.
      2. A BRAND-NEW SESSION before the child ever starts the JVM: `setsid` when
         available (Linux), else the `perl -MPOSIX` equivalent (perl ships with
-        stock macOS, which has no setsid binary), else `nohup`. This makes the
-        detachment permanent, not just race-window-wide.
+        stock macOS, which has no setsid binary).
 
-   The shell owns the child's IO redirection and backgrounds it, so we never
-   `.waitFor` it."
+   The shell `exec`s down a pure exec chain (sh → setsid/perl → by) with NO `&`,
+   so every hop keeps the same pid and `(.pid proc)` — the ProcessBuilder child —
+   IS the final `by memory reduce` pid we report to the user. (An earlier `… &` +
+   `echo $!` version reported the detacher's pid, which forks/exits and is gone by
+   the time the message prints.) ProcessBuilder.start returns immediately, so we
+   never block; it owns the child's IO redirection to the per-session log."
   [{:keys [user-id session-id]}]
   (let [self (reduce-self-argv)]                 ;; {:ok? true :argv [...]} | {:ok? false}
     (when (:ok? self)
@@ -308,18 +310,17 @@
             log  (io/file (or (System/getenv "TMPDIR")
                               (System/getProperty "java.io.tmpdir") "/tmp")
                           (str "by-memory-reduce-" (or sid "session") ".log"))
-            cmd  (str (str/join " " (map sh-single-quote argv))
-                      " >> " (sh-single-quote (.getAbsolutePath log)) " 2>&1")
-            ;; trap FIRST (closes the teardown race), then a new session:
-            ;; setsid (Linux) / perl POSIX::setsid (stock macOS) / nohup fallback.
+            cmd  (str/join " " (map sh-single-quote argv))   ; no shell redirection: ProcessBuilder redirects
+            ;; Pure exec chain (no &): trap first, then exec setsid/perl → by, so
+            ;; the ProcessBuilder child pid == the final `by` pid.
             script (str "trap '' HUP INT TERM; "
-                        "if command -v setsid >/dev/null 2>&1; then setsid " cmd " & "
+                        "if command -v setsid >/dev/null 2>&1; then exec setsid " cmd "; "
                         "elif command -v perl >/dev/null 2>&1; then "
-                        "perl -MPOSIX -e 'POSIX::setsid() or exit 1; exec @ARGV' " cmd " & "
-                        "else nohup " cmd " & fi")
+                        "exec perl -MPOSIX -e 'POSIX::setsid() or exit 1; exec @ARGV' " cmd "; "
+                        "else exec " cmd "; fi")
             pb   (doto (ProcessBuilder. ^java.util.List ["/bin/sh" "-c" script])
-                   (.redirectOutput java.lang.ProcessBuilder$Redirect/DISCARD)
-                   (.redirectError java.lang.ProcessBuilder$Redirect/DISCARD))
+                   (.redirectErrorStream true)
+                   (.redirectOutput (java.lang.ProcessBuilder$Redirect/appendTo log)))
             proc (.start pb)]
         (.pid proc)))))
 

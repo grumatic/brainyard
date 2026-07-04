@@ -211,7 +211,8 @@
 ;; app-installed detached session-end consolidation launcher).
 (export-symbols ai.brainyard.agent.common.memory-agent.hooks
                 pending-consolidation?
-                set-offload-fn!)
+                set-offload-fn!
+                drain-detached-consolidations!)
 
 ;; ============================================================================
 ;; Current Agent Dynamic Var

@@ -112,6 +112,20 @@
 ;; captured since the last one, so edges aren't re-inserted.
 (defonce ^:private !extract-marker (atom {}))
 
+;; Session-end flushes that were handed to a detached `by memory reduce` child,
+;; as {:session-id :pid}. Populated only by the session-end flush (the cadence
+;; runs in-process), and drained by the TUI after it closes its sessions so it
+;; can report the spawned background process(es) instead of a blocking notice.
+(defonce ^:private !detached-consolidations (atom []))
+
+(defn drain-detached-consolidations!
+  "Return-and-clear the session-end consolidations handed to a detached
+   `by memory reduce` child since the last drain, as a vector of
+   {:session-id :pid}. The TUI calls this after `close-session!` to surface the
+   spawned background process. Atomic, so concurrent closes don't lose entries."
+  []
+  (first (reset-vals! !detached-consolidations [])))
+
 (defn pending-consolidation?
   "True when at least one session has completed turns not yet flushed to L3 — so
    the session-end flush will do real (and, on the graph path, multi-second)
@@ -313,9 +327,12 @@
               ;; graph and runs the community reducer AFTER we exit. Scoped to
               ;; `-s sid`, so it re-reads only this session's episodes from the
               ;; db (not the whole user history) even though the in-process
-              ;; !extract-marker doesn't cross the process boundary.
-              (mulog/info ::session-end-flush-detached
-                          :session-id sid :turns tally :pid pid)
+              ;; !extract-marker doesn't cross the process boundary. Record the
+              ;; spawn so the TUI can report the PID after close.
+              (do
+                (swap! !detached-consolidations conj {:session-id sid :pid pid})
+                (mulog/info ::session-end-flush-detached
+                            :session-id sid :turns tally :pid pid))
               ;; Heuristic path, or no launcher / it declined → bounded inline.
               (run-flush-blocking! agent sid tally)))
           (catch Exception e
