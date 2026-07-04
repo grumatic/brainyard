@@ -286,12 +286,27 @@
       (update-in (vec messages) [idx :content] str schema-instruction)
       (into [{:role "system" :content schema-instruction}] messages))))
 
+(def ^:private openai-cache-param-providers
+  "Providers that accept OpenAI's prompt-cache parameters
+   (prompt_cache_retention / prompt_cache_key). Gated because the OpenAI
+   body builder is shared by every OpenAI-compatible provider (groq,
+   together, ollama, free-llm, …) and strict servers may 400 on unknown
+   params."
+  #{:openai :azure})
+
 (defn- build-openai-body
   "Build the request body for OpenAI-compatible chat completion.
    JSON schema is already in the system prompt (injected by prompt.clj).
-   For providers that support response_format, we also pass it as API-level enforcement."
+   For providers that support response_format, we also pass it as API-level enforcement.
+
+   Prompt-cache params (OpenAI/Azure only — see openai-cache-param-providers):
+   - lm-config :cache-ttl beyond \"5m\" → prompt_cache_retention \"24h\"
+     (OpenAI's extended retention; same price as in-memory).
+   - lm-config :prompt-cache-key → prompt_cache_key (combined with the
+     prefix hash for cache routing — keep one stable key per session)."
   [lm-config messages {:keys [json-schema stream?]}]
-  (let [use-json-schema? (and json-schema (:supports-json-schema? lm-config))]
+  (let [use-json-schema? (and json-schema (:supports-json-schema? lm-config))
+        cache-params? (contains? openai-cache-param-providers (:provider lm-config))]
     (let [drop? (or (:drop-params lm-config) #{})]
       (cond-> {:model    (:model lm-config)
                :messages messages}
@@ -300,6 +315,14 @@
 
         (:max-tokens lm-config)
         (assoc :max_tokens (:max-tokens lm-config))
+
+        (and cache-params?
+             (:cache-ttl lm-config)
+             (not= "5m" (:cache-ttl lm-config)))
+        (assoc :prompt_cache_retention "24h")
+
+        (and cache-params? (:prompt-cache-key lm-config))
+        (assoc :prompt_cache_key (:prompt-cache-key lm-config))
 
         use-json-schema?
         (assoc :response_format

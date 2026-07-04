@@ -506,8 +506,13 @@
                      {:ttl \"1h\"} (Converse CacheTTL; needs bedrock-runtime
                      ≥ 871.2.42.29 and a model that supports extended cache
                      — Anthropic Claude models). Write premium is 2x base
-                     input, paid once per stable zone per session. No-op on
-                     other providers.
+                     input, paid once per stable zone per session. OpenAI/
+                     Azure: any value beyond \"5m\" requests
+                     prompt_cache_retention \"24h\" (extended retention, same
+                     price as in-memory). No-op on other providers.
+     :prompt-cache-key - (OpenAI/Azure) stable routing key combined with the
+                     prefix hash to improve cache hit rates. One key per
+                     session; keep each prefix+key under ~15 req/min.
      :drop-params  - Set of param keywords to omit from API requests (auto-detected for
                      models that reject temperature, e.g. o-series, gpt-5 family)
      :region       - (Bedrock) AWS region. Falls back to AWS_REGION /
@@ -517,7 +522,7 @@
      :credentials-provider - (Bedrock) Custom cognitect aws-api credentials
                              provider; overrides profile/env-based detection."
   [{:keys [model api-key temperature max-tokens base-url provider prompt-cache cache-ttl
-           drop-params region aws-profile credentials-provider]}]
+           prompt-cache-key drop-params region aws-profile credentials-provider]}]
   (let [;; `:provider` is a keyword internally, but callers at the boundary may
         ;; pass a string (e.g. the CLI's `-p`/legacy `provider:model` opt).
         ;; Keywordize defensively — `keyword` is idempotent on a keyword and nil-safe
@@ -590,6 +595,7 @@
       max-tokens      (assoc :max-tokens max-tokens)
       resolved-cache  (assoc :prompt-cache true)
       cache-ttl       (assoc :cache-ttl cache-ttl)
+      prompt-cache-key (assoc :prompt-cache-key prompt-cache-key)
       resolved-drop   (assoc :drop-params resolved-drop)
       bedrock?        (assoc :auth-type :aws-sigv4
                              :region    resolved-region)

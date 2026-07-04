@@ -188,3 +188,39 @@
                             {:role "user" :content "question: Q\niterations: []"}]
                            {:user-cache-prefix "question: Q"})]
       (is (string? (get-in body [:messages 0 :content]))))))
+
+;; ============================================================================
+;; OpenAI prompt-cache params (prompt_cache_retention / prompt_cache_key)
+;; ============================================================================
+
+(def ^:private build-openai-body @#'llm/build-openai-body)
+
+(def ^:private openai-lm
+  {:model "gpt-4.1" :provider :openai :temperature 0.0})
+
+(def ^:private openai-msgs
+  [{:role "user" :content "hi"}])
+
+(deftest openai-cache-retention-param-test
+  (testing ":cache-ttl beyond 5m → prompt_cache_retention 24h (extended retention)"
+    (let [body (build-openai-body (assoc openai-lm :cache-ttl "1h") openai-msgs {})]
+      (is (= "24h" (:prompt_cache_retention body)))))
+  (testing "\"5m\" or absent → param omitted (server default applies)"
+    (is (nil? (:prompt_cache_retention
+               (build-openai-body (assoc openai-lm :cache-ttl "5m") openai-msgs {}))))
+    (is (nil? (:prompt_cache_retention (build-openai-body openai-lm openai-msgs {}))))))
+
+(deftest openai-cache-key-param-test
+  (testing ":prompt-cache-key flows through for openai"
+    (let [body (build-openai-body (assoc openai-lm :prompt-cache-key "by-abc") openai-msgs {})]
+      (is (= "by-abc" (:prompt_cache_key body))))))
+
+(deftest openai-cache-params-gated-to-openai-azure-test
+  (testing "OpenAI-compatible third parties never receive the params (strict
+            servers may 400 on unknown fields)"
+    (let [body (build-openai-body {:model "llama-3.3-70b-versatile" :provider :groq
+                                   :temperature 0.0
+                                   :cache-ttl "1h" :prompt-cache-key "by-abc"}
+                                  openai-msgs {})]
+      (is (nil? (:prompt_cache_retention body)))
+      (is (nil? (:prompt_cache_key body))))))

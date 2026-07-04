@@ -124,7 +124,11 @@
     (when (missing-provider-key provider)
       (throw (ex-info (no-provider-message provider)
                       {:provider provider ::no-provider true})))
-    (let [lm (clj-llm/create-lm (cond-> {:model resolved-model :provider provider}
+    (let [lm (clj-llm/create-lm (cond-> {:model resolved-model :provider provider
+                                         ;; Stable per-process cache-routing key
+                                         ;; (OpenAI prompt_cache_key — combined with
+                                         ;; the prefix hash; ignored elsewhere).
+                                         :prompt-cache-key (str "by-" (random-uuid))}
                                   resolved-key (assoc :api-key resolved-key)
                                   cache-ttl    (assoc :cache-ttl cache-ttl)))]
       (clj-llm/configure-default-lm! lm)

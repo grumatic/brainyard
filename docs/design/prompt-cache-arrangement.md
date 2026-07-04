@@ -381,6 +381,22 @@ ZONE C2  turn-volatile — NO own breakpoint; covered by the Phase-2
   5m-only — expect a validation error or ignore on unsupported models).
 - ✅ `BY_CACHE_TTL` env/dotenv knob wires the value into the TUI session LM
   (`setup-lm!` in agent-tui helpers).
+- ✅ **OpenAI (2026-07-05):** caching there is automatic prefix-matching, so
+  the zone/ordering work IS the optimization (no markers). Two params wired
+  into `build-openai-body`, gated to `#{:openai :azure}` (OpenAI-compatible
+  third parties never receive them): `:cache-ttl` beyond "5m" →
+  `prompt_cache_retention "24h"` (extended retention, same price — already
+  the server default for non-ZDR orgs on gpt-5.x/gpt-4.1), and
+  `:prompt-cache-key` → `prompt_cache_key` (session-stable routing key,
+  combined with the prefix hash; the TUI sets `by-<uuid>` per process).
+  OpenAI has no write premium, so there is no flip trade-off at all there.
+
+**TTL default-flip matrix (as measured):** OpenAI — effectively already on
+(24h server default, free); Bedrock Claude — works (proven leg #2), opt-in
+via `BY_CACHE_TTL=1h` recommended for interactive sessions, needs per-model
+gating before any hard default (Nova is 5m-only); Anthropic direct /
+anthropic-max — implemented, unmeasured (needs a one-time `/login
+anthropic`).
 - ⬜ Default policy (`1h` for interactive root agents, `5m` for subagents)
   deliberately NOT wired — 1h write premium is 2× base input, so flipping the
   default is a billing-behavior change; decide after the Phase-0 baseline.
