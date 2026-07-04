@@ -24,6 +24,7 @@
      L3. Same gate as the cadence; bounded by a timeout so it can't
      wedge shutdown."
   (:require [ai.brainyard.agent.common.memory-agent.commands :as cmds]
+            [clojure.string :as str]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
@@ -315,29 +316,38 @@
       ;; had turns.
       (swap! !turn-counters dissoc sid)
       (when (pos? (long tally))
-        (try
-          (let [graph?  (config/get-config agent :enable-graph-memory)
-                offload (and graph? @!offload-fn)
-                pid     (when offload
-                          (offload {:user-id    (some-> agent proto/user-id)
-                                    :session-id sid
-                                    :reducer    :community}))]
-            (if pid
-              ;; Detached: the child extracts this session's L2 tail into the
-              ;; graph and runs the community reducer AFTER we exit. Scoped to
-              ;; `-s sid`, so it re-reads only this session's episodes from the
-              ;; db (not the whole user history) even though the in-process
-              ;; !extract-marker doesn't cross the process boundary. Record the
-              ;; spawn so the TUI can report the PID after close.
-              (do
-                (swap! !detached-consolidations conj {:session-id sid :pid pid})
-                (mulog/info ::session-end-flush-detached
-                            :session-id sid :turns tally :pid pid))
-              ;; Heuristic path, or no launcher / it declined → bounded inline.
-              (run-flush-blocking! agent sid tally)))
-          (catch Exception e
-            (mulog/warn ::session-end-flush-failed :session-id sid :exception e)
-            nil)))
+        (if (str/blank? sid)
+          ;; A blank session-id would make BOTH paths unscoped: the detached child
+          ;; drops the empty `-s` and the inline `run-consolidation!` passes
+          ;; `:session-id nil` — either way `extract-l2-graph!` + the community
+          ;; reducer would run over the user's ENTIRE L2 history (a whole-history
+          ;; backfill), never the intent at session end. A real root session always
+          ;; has an id, so this only fires defensively; when it does, skip rather
+          ;; than trigger an accidental expensive full reduce.
+          (mulog/warn ::session-end-flush-skipped-no-session :turns tally)
+          (try
+            (let [graph?  (config/get-config agent :enable-graph-memory)
+                  offload (and graph? @!offload-fn)
+                  pid     (when offload
+                            (offload {:user-id    (some-> agent proto/user-id)
+                                      :session-id sid
+                                      :reducer    :community}))]
+              (if pid
+                ;; Detached: the child extracts this session's L2 tail into the
+                ;; graph and runs the community reducer AFTER we exit. Scoped to
+                ;; `-s sid`, so it re-reads only this session's episodes from the
+                ;; db (not the whole user history) even though the in-process
+                ;; !extract-marker doesn't cross the process boundary. Record the
+                ;; spawn so the TUI can report the PID after close.
+                (do
+                  (swap! !detached-consolidations conj {:session-id sid :pid pid})
+                  (mulog/info ::session-end-flush-detached
+                              :session-id sid :turns tally :pid pid))
+                ;; Heuristic path, or no launcher / it declined → bounded inline.
+                (run-flush-blocking! agent sid tally)))
+            (catch Exception e
+              (mulog/warn ::session-end-flush-failed :session-id sid :exception e)
+              nil))))
       ;; Clear the extraction marker AFTER any in-process flush (which read it to
       ;; extract the tail) so a resumed session with the same id restarts clean.
       (swap! !extract-marker dissoc sid)))

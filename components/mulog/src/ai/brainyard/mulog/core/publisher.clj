@@ -73,6 +73,59 @@
               (catch Exception _))))
         (rb/clear buffer)))))
 
+(defn pretty-event-str
+  "Format one mulog event as a native-safe pretty string with a trailing
+   newline — human timestamp added, ANSI stripped, via mulog's own
+   `pprint-event-str` (NOT `clojure.pprint`, which throws under native-image).
+   The single-event counterpart to what the file publishers write per line."
+  [event]
+  (str (ut/pprint-event-str (add-human-timestamp (strip-ansi-deep event))) \newline))
+
+(defn- rotate-log-file!
+  "Rotate `filename` → `filename.1`, `.1` → `.2`, …, dropping anything past
+   `max-rotations`. Best-effort — a failed rename just means the live file keeps
+   growing this once rather than losing events."
+  [^String filename max-rotations]
+  (try
+    (let [oldest (java.io.File. (str filename "." max-rotations))]
+      (when (.exists oldest) (.delete oldest)))
+    (doseq [n (range (dec max-rotations) 0 -1)]
+      (let [src (java.io.File. (str filename "." n))]
+        (when (.exists src)
+          (.renameTo src (java.io.File. (str filename "." (inc n)))))))
+    (let [live (java.io.File. filename)]
+      (when (.exists live)
+        (.renameTo live (java.io.File. (str filename ".1")))))
+    (catch Exception _)))
+
+(defn make-rotating-pretty-file-publisher
+  "Like `make-pretty-file-publisher`, but rotates `filename` → .1 … .N once the
+   live file reaches `:max-bytes` (checked per publish batch, so it may overshoot
+   by at most one batch), keeping `:max-rotations` backups. Same native-safe
+   formatting path — deliberately a direct PPublisher reify (NOT a
+   `make-fn-publisher` + `clojure.pprint` combo, which throws under native-image
+   and would silently drop every event)."
+  [filename & {:keys [buffer-size delay max-bytes max-rotations]
+               :or {buffer-size 10000 delay 500
+                    max-bytes (* 50 1024 1024) max-rotations 3}}]
+  (let [buf (rb/agent-buffer buffer-size)]
+    (reify pub/PPublisher
+      (agent-buffer [_] buf)
+      (publish-delay [_] delay)
+      (publish [_ buffer]
+        (let [items (map second (rb/items buffer))]
+          (when (seq items)
+            (try
+              (let [f (java.io.File. ^String filename)]
+                (when (and (.exists f) (>= (.length f) (long max-bytes)))
+                  (rotate-log-file! filename max-rotations)))
+              (with-open [w (java.io.FileWriter. ^String filename true)]
+                (doseq [item items]
+                  (.write w (str (ut/pprint-event-str (add-human-timestamp (strip-ansi-deep item))) \newline))
+                  (.flush w)))
+              (catch Exception _))))
+        (rb/clear buffer)))))
+
 (defn- make-repl-publisher
   "Create a PPublisher that writes pretty-printed events to the Writer in !writer."
   [!writer]

@@ -284,3 +284,17 @@
      {:type :inline
       :publisher (make-pretty-file-publisher \"/tmp/app.log\")})"
   publisher/make-pretty-file-publisher)
+
+(def pretty-event-str
+  "Format one mulog event as a native-safe pretty string (trailing newline;
+   human timestamp, ANSI stripped). Use for custom per-event file sinks instead
+   of `clojure.pprint`, which throws under native-image."
+  publisher/pretty-event-str)
+
+(def make-rotating-pretty-file-publisher
+  "Like `make-pretty-file-publisher` but rotates the file at `:max-bytes`
+   (default 50 MiB), keeping `:max-rotations` backups (default 3;
+   `<file>.1` … `.N`, oldest dropped). Same native-safe formatting path.
+
+   Args: filename, plus :buffer-size, :delay, :max-bytes, :max-rotations."
+  publisher/make-rotating-pretty-file-publisher)
