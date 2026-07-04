@@ -111,12 +111,21 @@
                         :apple-fm    "apple-foundationmodel"}
         resolved-model (or model (get default-models provider))
         resolved-key   (when-let [env-var (get provider-key-env provider)]
-                         (credential env-var))]
+                         (credential env-var))
+        ;; Prompt-cache TTL for the stable prompt zones ("5m" default | "1h").
+        ;; Env/dotenv opt-in — "1h" keeps the cross-turn prefix cached across
+        ;; human-paced turn gaps (Anthropic-format providers only; 2x write
+        ;; premium, paid once per stable zone per session). See
+        ;; docs/design/prompt-cache-arrangement.md Phase 4.
+        cache-ttl      (let [v (or (System/getenv "BY_CACHE_TTL")
+                                   (System/getProperty "BY_CACHE_TTL"))]
+                         (when-not (str/blank? v) v))]
     (when (missing-provider-key provider)
       (throw (ex-info (no-provider-message provider)
                       {:provider provider ::no-provider true})))
     (let [lm (clj-llm/create-lm (cond-> {:model resolved-model :provider provider}
-                                  resolved-key (assoc :api-key resolved-key)))]
+                                  resolved-key (assoc :api-key resolved-key)
+                                  cache-ttl    (assoc :cache-ttl cache-ttl)))]
       (clj-llm/configure-default-lm! lm)
       (tui-session/emit! (str (ansi/muted (str "LM configured: " (name provider) " / " resolved-model))))
       lm)))
