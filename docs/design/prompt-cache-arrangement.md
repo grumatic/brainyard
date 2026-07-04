@@ -7,6 +7,14 @@
 
 ## 1. As-built pipeline (verified against code)
 
+> **Superseded in part (2026-07-04):** this section records the layout as
+> investigated, BEFORE Phases 1-4 landed. Current state: three ordered system
+> zones `## agent-core` / `## session-context` / `## user-context` (see
+> `coact-system-zones`), declared-order user-message rendering with a
+> stable-prefix breakpoint before `iterations`, and an opt-in 1h `:cache-ttl`.
+> The mechanics below (zone derivation, provider adapters, index-of splitting)
+> are otherwise unchanged.
+
 ```
 coact-init-action (once per turn)
   CoActAssembler.sections  →  {section-kw text}          coact_agent.clj:1388-1417
@@ -188,7 +196,7 @@ splits the last user message into `[prefix (cache_control)][tail]`; Bedrock
 moves its reserved user cachePoint to that boundary (trailing-point fallback
 + `::cache-zone-fallback` warn when the prefix doesn't match).
 
-### Phase 3 — Three-zone system split (M) — fixes G2
+### Phase 3 — Three-zone system split (M) — fixes G2 — **LANDED 2026-07-04**
 
 Split `:system-context` into two stable keys so the system message carries
 three zones ordered by ascending volatility:
@@ -219,6 +227,25 @@ ZONE C  :user-context     per-turn (unchanged)
   (`system-core-order` / `system-session-order` or a slot-tag per section);
   init composes three strings; `:stable-keys [:agent-core :session-context
   :user-context]` (ordered, per Phase 1).
+
+**As landed:** `SectionAssembler` gained a `system-zones` method returning the
+ordered `[[stable-key section-kws] …]` partition; `coact-system-zones` is the
+single source of truth and `system-order` derives from it. Init/rebudget
+compose one string per zone into st-memory keys `:agent-core` /
+`:session-context` / `:user-context` (`:system-zone-orders` replaces
+`:sys-order` in the rebudget stash). `:footer` stayed at the very end (zone B)
+rather than moving mid-prompt — no semantic reordering risk for ~100 tokens of
+session-zone exposure. Zone budget: Bedrock 3/3 system points, Anthropic
+3 system + 1 user = 4/4.
+
+**Bug found & fixed during this phase:** the flat `system-order` was missing
+the five base substrate sections (`:skill-substrate :mcp-substrate
+:todo-substrate :exec-substrate :subagent-substrate`) — `cb/compose` silently
+drops sections absent from the order, so the substrates were built by
+`coact-system-context` but **never rendered into the live prompt** (their
+unit tests passed because they inspected the section map, not the composed
+string). They now render in the `:agent-core` zone, and a partition-invariant
+test (zones ⊆⊇ system-order; every built section covered) guards the class.
 
 ### Phase 3b — Append-only history zone (M) — fixes G7
 
@@ -273,15 +300,18 @@ ZONE C2  turn-volatile — NO own breakpoint; covered by the Phase-2
   default is a billing-behavior change; decide after the Phase-0 baseline.
   Users opt in via `:cache-ttl "1h"` in their `:lm-config`.
 
-### Phase 5 — Regression guards + docs (S)
+### Phase 5 — Regression guards + docs (S) — **LANDED 2026-07-04** (guards)
 
-- Test: two consecutive `coact-init-action` runs in one session produce
-  byte-identical ZONE A and ZONE B strings (the §P3.3 "prefix hash" assertion,
-  done at the string level — no provider call needed).
-- Test: volatility leak scan — ZONE A/B text contains no ISO timestamp /
-  turn-id patterns.
-- Update `context-management.md` §P3.3/§P4 status (M7 landed; this doc
-  supersedes the breakpoint layout sketch) and CLAUDE.md if config keys land.
+- ✅ Zone partition invariant test: `system-zones` concatenates to exactly
+  `system-order`, no duplicates, disjoint from `user-order`, and every
+  section the builder emits is covered by a zone (this is the guard that
+  would have caught the dropped substrates).
+- ✅ Byte-stability test: same assembler state → byte-identical zone strings
+  (the string-level form of the §P3.3 prefix-hash assertion).
+- ✅ Volatility scan: `build-system-info-section` output contains no ISO
+  wall-clock timestamp (would invalidate the cross-turn cache every turn).
+- ⬜ `context-management.md` §P3.3/§P4 status refresh (this doc is the
+  authoritative record meanwhile).
 
 ## 5. Priority / effort summary
 
@@ -291,9 +321,9 @@ ZONE C2  turn-volatile — NO own breakpoint; covered by the Phase-2
 | 1 Ordered zones | S | hardening | **DONE** — prerequisite for 2/3 |
 | 4 TTL | S/M | **high** (human-paced TUI) | **DONE** (opt-in `:cache-ttl`; default flip pending baseline) |
 | 2 User-prefix breakpoint | M | high (multi-iteration turns) | **DONE** — step 0 fixed hash-order rendering (G8); Bedrock dead writes removed |
-| 3 Three-zone split | M | medium (edit-heavy sessions) | consumes both providers' caps exactly |
-| 3b History zone | M | high (long sessions) | requires Phase 4 first; includes batched compression in `append-turn` |
-| 5 Guards + docs | S | keeps it won | |
+| 3 Three-zone split | M | medium (edit-heavy sessions) | **DONE** — caps now 4/4 on both providers; also restored the silently-dropped substrate sections |
+| 3b History zone | M | high (long sessions) | pending — wants Phase-0 baseline + TTL data first; includes batched compression in `append-turn` (caps hold: C1 takes zone C's breakpoint, C2 rides the user one) |
+| 5 Guards + docs | S | keeps it won | **DONE** (guards; context-management.md refresh pending) |
 
 ## 6. Risks & constraints
 

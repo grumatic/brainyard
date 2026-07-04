@@ -11,12 +11,16 @@
    End-to-end scenarios (full LLM loop) are out of scope here — see design
    docs/CoAct.md §9 Phase 5 for the benchmark harness plan."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [clojure.set]
             [clojure.string :as str]
             [ai.brainyard.agent.common.coact-agent :as rca]
             [ai.brainyard.agent.common.react-agent]
             [ai.brainyard.agent.common.agent-roster :as agent-roster]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
+            [ai.brainyard.agent.core.context.section-assembler :as sa]
+            [ai.brainyard.agent.core.context-budget :as cb]
+            [ai.brainyard.agent.core.system-info :as sysinfo]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.task.manager :as task-mgr]
@@ -189,9 +193,9 @@
           think-act-code (nth llm-guard 2)
           opts (second think-act-code)]
       (is (= :coact.action/think-act-code (:id opts)))
-      ;; Ordered vector (prompt-cache Phase 1): declared order = zone/cache-
-      ;; breakpoint order, most-stable first.
-      (is (= [:system-context :user-context] (:stable-keys opts)))
+      ;; Ordered vector (prompt-cache Phases 1+3): declared order = zone/
+      ;; cache-breakpoint order, most-stable first.
+      (is (= [:agent-core :session-context :user-context] (:stable-keys opts)))
       (is (= :chain-of-thought (:operation opts))))))
 
 ;; ============================================================================
@@ -1674,17 +1678,17 @@
           st-memory (atom {:iteration-count 0
                            :iterations []
                            :cached-sections {:role "r"}
-                           :sys-order [:role]
+                           :system-zone-orders [[:agent-core [:role]]]
                            :usr-order []
                            :merged-order [:role]
                            :budget-tokens 100000})
-          old-system-context (:system-context @st-memory)
+          old-agent-core (:agent-core @st-memory)
           result (with-redefs [ai.brainyard.agent.core.hooks/fire!
                                (fn [& _] (swap! hook-fires inc))]
                    (rca/coact-rebudget-action {:st-memory st-memory :agent nil}))]
       (is (= bt/success result))
       ;; No state mutation, no hook fired.
-      (is (= old-system-context (:system-context @st-memory)))
+      (is (= old-agent-core (:agent-core @st-memory)))
       (is (zero? @hook-fires)))))
 
 (deftest rebudget-action-respects-cadence-test
@@ -1695,7 +1699,7 @@
                                                      :rebudget-every-n-iter 3}})})}
           base {:iterations []
                 :cached-sections {:role "r"}
-                :sys-order [:role]
+                :system-zone-orders [[:agent-core [:role]]]
                 :usr-order []
                 :merged-order [:role]
                 :budget-tokens 100000}]
@@ -1997,3 +2001,61 @@
             "code-fence keyword :alpha reaches the handler and is echoed")
         (is (str/includes? (str (:result bad)) "should be either")
             "out-of-enum keyword is rejected at the Malli layer")))))
+
+;; ============================================================================
+;; Prompt-cache Phase 3 (three-zone split) + Phase 5 (regression guards)
+;; ============================================================================
+
+(deftest system-zones-partition-invariant-test
+  (testing "zone section lists concatenate to exactly system-order, no dupes"
+    (let [zones     (sa/system-zones rca/coact-assembler)
+          zone-secs (into [] (mapcat second) zones)]
+      (is (= (sa/system-order rca/coact-assembler) zone-secs))
+      (is (= (count zone-secs) (count (distinct zone-secs)))
+          "a section in two zones would render twice")
+      (is (empty? (clojure.set/intersection
+                   (set zone-secs)
+                   (set (sa/user-order rca/coact-assembler))))
+          "a section in both a system zone and user-order would render twice")))
+
+  (testing "every section coact-system-context can emit is covered by a zone
+            (compose silently drops sections missing from the order — this is
+            the guard that would have caught the dropped substrates)"
+    (let [sections  (sa/sections rca/coact-assembler
+                                 {:instruction "I" :agent-context "AC"
+                                  :tool-context "TC" :system-info "SI"
+                                  :project-memory {:index "idx"}
+                                  :brainyard-instructions
+                                  {:user-instructions "UI"
+                                   :project-instructions "PI"}})
+          sys-keys  (remove (set (sa/user-order rca/coact-assembler))
+                            (keys sections))
+          covered   (set (sa/system-order rca/coact-assembler))]
+      (is (empty? (remove covered sys-keys))
+          (str "sections built but absent from every zone: "
+               (vec (remove covered sys-keys)))))))
+
+(deftest system-zones-substrates-restored-test
+  (testing "the base substrates render in the :agent-core zone"
+    (let [sections (sa/sections rca/coact-assembler {})
+          zones    (into {} (sa/system-zones rca/coact-assembler))
+          zone-a   (cb/compose sections (:agent-core zones))]
+      (doseq [needle ["## Using a skill" "## Using MCP servers"]]
+        (is (str/includes? zone-a needle)
+            (str needle " must be in the composed agent-core zone"))))))
+
+(deftest system-zones-byte-stability-test
+  (testing "same assembler state → byte-identical zone strings (cache prereq)"
+    (let [state {:instruction "I" :system-info "SI"}
+          compose-zones (fn []
+                          (let [sections (sa/sections rca/coact-assembler state)]
+                            (mapv (fn [[_ order]] (cb/compose sections order))
+                                  (sa/system-zones rca/coact-assembler))))]
+      (is (= (compose-zones) (compose-zones))))))
+
+(deftest system-info-carries-no-wall-clock-test
+  (testing ":system-info sits in the session zone — a wall-clock timestamp in
+            it would invalidate the cross-turn cache every turn (P4.1 split)"
+    (let [text (sysinfo/build-system-info-section)]
+      (is (not (re-find #"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}" text))
+          "ISO timestamp found in :system-info — belongs in :turn-info"))))

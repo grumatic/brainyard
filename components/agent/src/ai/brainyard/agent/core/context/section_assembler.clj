@@ -36,6 +36,14 @@
   (system-order [this]
     "Render order for sections that ride the system message. Sections
      missing from `sections` are skipped silently.")
+  (system-zones [this]
+    "Ordered [[stable-key section-kws] ...] partition of the system-side
+     sections into prompt-cache zones, ascending volatility (static
+     agent-version prose first, session-stable content last). Each zone
+     is composed into its own st-memory stable key and rides its own
+     provider cache breakpoint. INVARIANT: the concatenation of all zone
+     section vectors must equal `system-order` — a section missing from
+     every zone is silently dropped from the prompt by compose.")
   (user-order [this]
     "Render order for sections that ride the user message. Sections
      missing from `sections` are skipped silently.")

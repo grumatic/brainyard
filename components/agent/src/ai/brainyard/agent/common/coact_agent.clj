@@ -1385,6 +1385,42 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
              (assoc secs :tools new-text)
              (dissoc secs :tools))))))})
 
+(def coact-system-zones
+  "System-side cache-zone partition (prompt-cache Phase 3), ascending
+   volatility. Each zone composes into its own st-memory stable key and
+   rides its own provider cache breakpoint:
+
+     :agent-core      static per agent version — role, execution model,
+                      channel/format rules, critical rules, playbook,
+                      and the base substrates. Invalidates only on an
+                      agent/binary upgrade or a code-channel/config flip.
+     :session-context session-stable — system-info, tools, per-agent
+                      instruction/agent-context (L1 overlays),
+                      BRAINYARD.md files, project memory, footer.
+                      Invalidates on file edit / L1 overlay write /
+                      tools-tier compaction — without re-billing the
+                      much larger static zone above it.
+
+   (:user-context — the per-turn zone — is the whole user-order side.)
+
+   NB the concatenation of these section vectors IS the system render
+   order (system-order derives from it), so every section listed in
+   coact-system-context must appear in exactly one zone — compose drops
+   sections missing from the order. The five base substrates were
+   restored here after being absent from the previous flat system-order
+   (they were built but silently dropped from the prompt)."
+  [[:agent-core
+    [:role :execution-model
+     :channel-routing :tool-call-format :code-blocks-format
+     :sandbox-context-accessor
+     :critical-rules :large-results-playbook
+     :skill-substrate :mcp-substrate :todo-substrate :exec-substrate
+     :subagent-substrate]]
+   [:session-context
+    [:system-info :tools :instruction :agent-context
+     :project-instructions :project-memory :user-instructions
+     :footer]]])
+
 (defrecord CoActAssembler []
   sa/SectionAssembler
   (sections [_ state]
@@ -1403,13 +1439,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                :return-breakdown? true)]
       (merge (:sections sys) (:sections usr))))
   (system-order [_]
-    [:role :system-info :execution-model
-     :channel-routing :tool-call-format :code-blocks-format
-     :sandbox-context-accessor :tools
-     :critical-rules :large-results-playbook
-     :instruction :agent-context
-     :project-instructions :project-memory :user-instructions
-     :footer])
+    (into [] (mapcat second) coact-system-zones))
+  (system-zones [_]
+    coact-system-zones)
   (user-order [_]
     [:turn-info :parent-trail
      :conversation-history :previous-turns :live-artifacts])
@@ -1460,8 +1492,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
      `def`s from prior turns persist); otherwise creates a fresh one,
      optionally seeded from `:sandbox-state` when `enable-sandbox-persistence`
      is on.
-   - :system-context (system-wide rules + function directory)
-   - :user-context (brainyard instructions + conversation + previous turns + live artifacts)
+   - system cache zones (Phase 3): :agent-core (static rules + substrates)
+     and :session-context (system-info, tools, instructions, BRAINYARD.md,
+     project memory, footer)
+   - :user-context (turn-info + conversation + previous turns + live artifacts)
    Seeds :iterations [], :answer \"\", :terminated false, :iteration-count 0."
   [{:keys [st-memory agent opts] :as context}]
   (let [st @st-memory
@@ -1696,7 +1730,6 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                          :turn-info       turn-info-text
                          :parent-trail    parent-trail}
         merged-sections (sa/sections assembler assembler-state)
-        sys-order       (sa/system-order assembler)
         usr-order       (sa/user-order assembler)
         merged-order    (sa/order assembler)
         strategies      (sa/strategies assembler st-memory)
@@ -1728,11 +1761,16 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                     :compactions  []
                     :over-budget? false})
 
-        ;; Recompose the two prompt strings from the post-enforcement
-        ;; sections, preserving each side's original order. System
-        ;; sections never have compact strategies, so they pass through
-        ;; unchanged; user sections may have been trimmed or dropped.
-        system-context (cb/compose (:sections enforced) sys-order)
+        ;; Recompose the prompt strings from the post-enforcement
+        ;; sections, preserving each side's original order. The system
+        ;; side composes into one string PER CACHE ZONE (Phase 3 —
+        ;; :agent-core / :session-context stable keys); user sections
+        ;; may have been trimmed or dropped by strategies.
+        system-zone-orders (sa/system-zones assembler)
+        zone-strings   (into {}
+                             (map (fn [[zone-key zone-order]]
+                                    [zone-key (cb/compose (:sections enforced) zone-order)]))
+                             system-zone-orders)
         user-context   (cb/compose (:sections enforced) usr-order)
 
         prompt-token-breakdown
@@ -1760,7 +1798,11 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
              :sandbox          sandbox
              :sandbox-context  sandbox-context
              :existing-sandbox-reused (boolean existing-sandbox)
-             :system-context   system-context
+             ;; One st-memory key per system cache zone (Phase 3) — the BT
+             ;; dspy node's ordered :stable-keys renders them as separate
+             ;; provider cache breakpoints.
+             :agent-core       (:agent-core zone-strings)
+             :session-context  (:session-context zone-strings)
              :user-context     user-context
              ;; Tool-only guard: when false, coact-has-code-blocks? ignores any
              ;; emitted code so the router never routes to code-eval (react-agent).
@@ -1805,7 +1847,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                                        ai.brainyard.clj-llm.interface/get-usage-summary)
              ;; Stash for the per-iteration rebudget action (M4).
              :cached-sections  (:sections enforced)
-             :sys-order        sys-order
+             :system-zone-orders system-zone-orders
              :usr-order        usr-order
              :merged-order     merged-order
              :budget-tokens    (:budget enforced)))
@@ -1849,8 +1891,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                :turn-id turn-id
                :total-turns total-turns
                :previous-turns-count (count (or (:previous-turns @st-memory) []))
-               :system-context-chars (count system-context)
-               :user-context-chars   (count user-context)
+               :agent-core-chars      (count (or (:agent-core zone-strings) ""))
+               :session-context-chars (count (or (:session-context zone-strings) ""))
+               :user-context-chars    (count user-context)
                :budget-tokens        (:budget enforced)
                :prompt-tokens        (:total-tokens enforced)
                :budget-compactions   (count (:compactions enforced))
@@ -2263,8 +2306,9 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         iterations into a single summary record; the user-context
         strategies (bump/shrink/drop) may also fire if other sections
         have grown.
-     3. Re-composes :system-context / :user-context and stores them
-        back in st-memory.
+     3. Re-composes the system zone strings (:agent-core /
+        :session-context) and :user-context and stores them back in
+        st-memory.
      4. Fires :agent.context/budgeted with :phase :rebudget so the
         observability layer can distinguish init from per-iter passes.
 
@@ -2276,12 +2320,12 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         iter-count (:iteration-count st 0)
         budget-enabled? (config/get-config agent :enable-context-budget)
         cached-sections (:cached-sections st)
-        sys-order (:sys-order st)
+        zone-orders (:system-zone-orders st)
         usr-order (:usr-order st)
         merged-order (:merged-order st)
         budget (:budget-tokens st)]
     (when (and budget-enabled?
-               cached-sections sys-order usr-order merged-order budget
+               cached-sections zone-orders usr-order merged-order budget
                (pos? iter-count)
                (zero? (mod iter-count (max 1 rebudget-n))))
       (let [iters (or (:iterations st) [])
@@ -2297,15 +2341,18 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                        :budget     budget
                        :policies   (sa/policies coact-assembler)
                        :strategies strategies})
-            new-sys (cb/compose (:sections enforced) sys-order)
+            new-zones (into {}
+                            (map (fn [[zone-key zone-order]]
+                                   [zone-key (cb/compose (:sections enforced) zone-order)]))
+                            zone-orders)
             new-usr (cb/compose (:sections enforced) usr-order)
             new-breakdown (clj-llm/build-token-breakdown
                            (select-keys (:sections enforced) budget-order))]
-        (swap! st-memory assoc
-               :system-context         new-sys
-               :user-context           new-usr
-               :cached-sections        (:sections enforced)
-               :prompt-token-breakdown new-breakdown)
+        (swap! st-memory merge
+               new-zones
+               {:user-context           new-usr
+                :cached-sections        (:sections enforced)
+                :prompt-token-breakdown new-breakdown})
         (when agent
           (hooks/fire! :agent.context/budgeted
                        {:agent          agent
@@ -3719,7 +3766,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                         {:id          :coact.action/repair-retry-transient
                          :signature   #'ThinkActCode
                          :operation   :chain-of-thought
-                         :stable-keys [:system-context :user-context]
+                         :stable-keys [:agent-core :session-context :user-context]
                          :user-cache-boundary :iterations}))
         (cond
           ;; A retry recovered a usable channel — dispatch it now, same iteration.
@@ -3860,7 +3907,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                               {:id         :coact.action/repair-retry-think
                                :signature  #'ThinkActCode
                                :operation  :chain-of-thought
-                               :stable-keys [:system-context :user-context]
+                               :stable-keys [:agent-core :session-context :user-context]
                                :user-cache-boundary :iterations}))
               (when (and (empty-llm-result? context) (< attempt max-empty))
                 (recur (inc attempt))))))
@@ -4433,8 +4480,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
        [:action {:id (kw :action/think-act-code)
                  :signature #'ThinkActCode
                  :operation :chain-of-thought
-                 ;; system-context + user-context ride the system message
-                 :stable-keys [:system-context :user-context]
+                 ;; The three cache zones ride the system message in
+                 ;; ascending-volatility order: static agent core,
+                 ;; session-stable overlays, per-turn context.
+                 :stable-keys [:agent-core :session-context :user-context]
                  ;; Inputs before :iterations (question / context-briefing /
                  ;; recalled-memory) are turn-stable — providers put a cache
                  ;; breakpoint at this boundary so iterations 2..N read them
