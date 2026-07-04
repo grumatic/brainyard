@@ -19,6 +19,20 @@
    via :stable-keys in the BT node opts."
   #{})
 
+(defn- normalize-stable-keys
+  "Normalize a node's :stable-keys into an ordered vector of keywords.
+
+   Accepts an ordered vector/seq (rendered in DECLARED order — contract:
+   ascending volatility, most-stable first, so each zone boundary is a
+   sensible cache breakpoint) or a set (legacy — rendered alphabetically,
+   which is deterministic but order-by-naming-accident; prefer a vector).
+   Returns a duplicate-free vector."
+  [stable-keys]
+  (cond
+    (nil? stable-keys)        []
+    (sequential? stable-keys) (vec (distinct stable-keys))
+    :else                     (vec (sort stable-keys))))
+
 ;; Lazy-resolved so behavior-tree doesn't hard-depend on the agent component.
 ;; Wrapped in try so the delay is safe when the agent ns isn't on classpath
 ;; (behavior-tree standalone tests).
@@ -85,8 +99,10 @@
 
 (defn- build-system-prompt
   "Build system context string from st-memory state for the system message.
-   Only includes keys present in both the stable-keys set and state.
-   Each key gets a '## <key-name>' header, sorted alphabetically.
+   Only includes keys present in both `stable-key-order` and state.
+   Each key gets a '## <key-name>' header, rendered in the order given
+   (see `normalize-stable-keys` — declared order for vectors, alphabetical
+   for legacy sets).
    Returns {:text str-or-nil :token-breakdown map :zones [...]}.
 
    :zones is a vector of `{:key <kw> :text \"## <key>\\n<value>\"}` blocks
@@ -99,20 +115,20 @@
    per-category breakdown from build-system-prompt), uses those sub-categories instead
    of estimating stable keys as opaque blobs. Stable keys that have a pre-breakdown
    are excluded from blob estimation to avoid double-counting."
-  [state stable-keys]
-  (let [sorted-keys (sort stable-keys)
+  [state stable-key-order]
+  (let [ordered-keys stable-key-order
         pre-breakdown (:prompt-token-breakdown state)
         key-texts (reduce (fn [acc k]
                             (if-let [v (get state k)]
                               (assoc acc k (str "## " (name k) "\n" v))
                               acc))
-                          {} sorted-keys)
-        parts (keep #(get key-texts %) sorted-keys)
+                          {} ordered-keys)
+        parts (keep #(get key-texts %) ordered-keys)
         text (when (seq parts) (str/join "\n\n" parts))
         zones (vec (keep (fn [k]
                            (when-let [t (get key-texts k)]
                              {:key k :text t}))
-                         sorted-keys))
+                         ordered-keys))
         ;; Build hierarchical breakdown: wrap sub-categories in a :system-prompt group
         breakdown (if pre-breakdown
                     {:system-prompt (clj-llm/build-token-group pre-breakdown)}
@@ -120,6 +136,30 @@
                       {:system-prompt (clj-llm/build-token-group
                                        (clj-llm/build-token-breakdown key-texts))}))]
     {:text text :token-breakdown breakdown :zones zones}))
+
+(defn- sha256-16
+  "First 16 hex chars of the SHA-256 of `s` — compact content fingerprint
+   for cache-zone telemetry."
+  [^String s]
+  (let [d (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                   (.getBytes s "UTF-8"))]
+    (apply str (map #(format "%02x" (bit-and 0xff (long %))) (take 8 d)))))
+
+(defn- log-cache-zones!
+  "Cache observability (prompt-cache Phase 0): one event per LLM call
+   recording each zone's key, size, and content hash. A zone hash that
+   changes between two calls that should share a prefix is a
+   cache-invalidating byte diff; correlate with the cache-read/write
+   token counts on `::dspy-completed` to verify breakpoints actually hit."
+  [node-id zones]
+  (when (seq zones)
+    (mulog/log ::cache-zones
+               :node-id node-id
+               :zones (mapv (fn [{:keys [key text]}]
+                              {:key key
+                               :chars (count text)
+                               :sha (sha256-16 text)})
+                            zones))))
 
 (defn extract-signature-metadata
   "Extract input and output keys from a signature (var or compiled map)."
@@ -163,6 +203,7 @@
         on-chunk (get-in context [:opts :on-chunk])
         {:keys [text token-breakdown zones]}
         (build-system-prompt (:state inputs) (:stable-keys inputs))
+        _ (log-cache-zones! (get-in context [:opts :id]) zones)
         result (apply clj-llm/predict sig (:inputs inputs)
                       (build-llm-call-opts context lm-config usage-tracker
                                            on-chunk text token-breakdown zones))]
@@ -181,6 +222,7 @@
         on-chunk (get-in context [:opts :on-chunk])
         {:keys [text token-breakdown zones]}
         (build-system-prompt (:state inputs) (:stable-keys inputs))
+        _ (log-cache-zones! (get-in context [:opts :id]) zones)
         result (apply clj-llm/chain-of-thought sig (:inputs inputs)
                       (build-llm-call-opts context lm-config usage-tracker
                                            on-chunk text token-breakdown zones))]
@@ -196,8 +238,11 @@
    - :id          — node identifier
    - :signature   — DSPy signature (var or compiled map)
    - :operation   — :predict or :chain-of-thought
-   - :stable-keys — (optional) extra keys to add to system-context beyond defaults.
-                     Unioned with default-stable-keys. Each key is:
+   - :stable-keys — (optional) keys to lift into system-context. Prefer an
+                     ORDERED VECTOR — zones render (and cache breakpoints
+                     land) in declared order; contract: ascending volatility,
+                     most-stable first. A set is accepted for back-compat and
+                     renders alphabetically. Each key is:
                      - Included in system-context (system message)
                      - Excluded from signature inputs (user message)
                      Custom keys get a generic '## <key-name>' section header.
@@ -212,7 +257,8 @@
     :keys [st-memory agent]
     :as context}]
   (let [{:keys [input-keys]} (extract-signature-metadata signature)
-        stable-keys (into default-stable-keys stable-keys)
+        stable-keys (normalize-stable-keys
+                     (if (some? stable-keys) stable-keys default-stable-keys))
         fire!       (when agent (force !fire-hook))
         base-event  {:agent agent :node-id id :signature signature
                      :operation operation :stable-keys stable-keys}]
@@ -286,7 +332,9 @@
                                        :turn-id turn-id
                                        :iteration iter-count)
                                h)))))))
-            (mulog/debug ::dspy-completed :node-id id)
+            (mulog/debug ::dspy-completed :node-id id
+                         :cache-read-tokens (get-in result [:usage :cache :read-tokens])
+                         :cache-write-tokens (get-in result [:usage :cache :write-tokens]))
             (when fire!
               (fire! :agent.dspy-action/post
                      (assoc pre-event

@@ -1352,6 +1352,36 @@
         cache-w (get-in c [:cache :write-tokens] 0)]
     (max 0 (- base cache-r cache-w))))
 
+(defn- estimated-cache-net-savings
+  "Estimate the net $ effect of prompt caching across `calls`:
+   Σ (cache-read tokens billed at the full input rate − actual read cost)
+   + (cache-write tokens at input rate − actual write cost, i.e. minus the
+   write premium). The per-1M input rate is derived per call from
+   :cost :input-cost / non-cached tokens, so no pricing table is needed
+   here; calls with no fresh input or no pricing are skipped.
+   Returns nil when no call had any cache activity."
+  [calls]
+  (let [active (filter #(or (pos? (get-in % [:cache :read-tokens] 0))
+                            (pos? (get-in % [:cache :write-tokens] 0)))
+                       calls)]
+    (when (seq active)
+      (reduce
+       (fn [acc c]
+         (let [fresh-tok  (non-cached-input-tokens c)
+               input-cost (get-in c [:cost :input-cost] 0.0)
+               rate       (when (and (pos? fresh-tok) (pos? input-cost))
+                            (/ (double input-cost) fresh-tok))]
+           (if rate
+             (let [read-tok   (get-in c [:cache :read-tokens] 0)
+                   write-tok  (get-in c [:cache :write-tokens] 0)
+                   read-cost  (get-in c [:cost :cache-read-cost] 0.0)
+                   write-cost (get-in c [:cost :cache-write-cost] 0.0)]
+               (+ acc
+                  (- (* read-tok rate) read-cost)
+                  (- (* write-tok rate) write-cost)))
+             acc)))
+       0.0 active))))
+
 (defn- compute-attrib-rows
   "Per-call attribution data drawn from `:input-token-breakdown`. Always
    computed; only displayed when `:breakdown?` is on."
@@ -1567,6 +1597,12 @@
                               (str (int (* 100 (/ cache-hits (double n)))) "%"
                                    " (" cache-hits "/" n " calls)")
                               "N/A")))
+           (when-let [saved (estimated-cache-net-savings calls)]
+             (str "\n"
+                  (ansi/muted (str "  Cache net saved:  "
+                                   (if (neg? saved) "-$" "$")
+                                   (format "%.4f" (Math/abs (double saved)))
+                                   " (est., net of caching premiums)"))))
            "\n"
            (ansi/muted (str "  Avg input tokens: " (format-number (long avg-in))
                             "  |  Avg output tokens: " (format-number (long avg-out))))

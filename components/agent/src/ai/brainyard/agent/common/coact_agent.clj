@@ -3719,7 +3719,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                         {:id          :coact.action/repair-retry-transient
                          :signature   #'ThinkActCode
                          :operation   :chain-of-thought
-                         :stable-keys #{:system-context :user-context}}))
+                         :stable-keys [:system-context :user-context]}))
         (cond
           ;; A retry recovered a usable channel — dispatch it now, same iteration.
           (any-channel-populated? context)
@@ -3859,7 +3859,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                               {:id         :coact.action/repair-retry-think
                                :signature  #'ThinkActCode
                                :operation  :chain-of-thought
-                               :stable-keys #{:system-context :user-context}}))
+                               :stable-keys [:system-context :user-context]}))
               (when (and (empty-llm-result? context) (< attempt max-empty))
                 (recur (inc attempt))))))
         (if (any-channel-populated? context)
@@ -4432,7 +4432,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                  :signature #'ThinkActCode
                  :operation :chain-of-thought
                  ;; system-context + user-context ride the system message
-                 :stable-keys #{:system-context :user-context}
+                 :stable-keys [:system-context :user-context]
                  :debug {:source :reasoning}}
         bt/dspy]
        [:action {:id (kw :action/repair-llm-guard)}

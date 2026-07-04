@@ -167,7 +167,17 @@
   [system cache? cache-zones]
   (when system
     (or (when (and cache? (seq cache-zones))
-          (system-blocks-from-zones system cache-zones))
+          (or (system-blocks-from-zones system cache-zones)
+              ;; Zone text not found in the system message — losing the
+              ;; per-zone cachePoints silently would hide a caching
+              ;; regression; make it loud before falling back.
+              (do (mulog/warn ::cache-zone-fallback
+                              :provider :bedrock
+                              :zone-keys (mapv :key cache-zones)
+                              :message (str "cache zone text not found in system"
+                                            " text — falling back to a single"
+                                            " trailing cachePoint block"))
+                  nil)))
         (cond-> [{:text system}]
           cache? (conj cache-point-block)))))
 

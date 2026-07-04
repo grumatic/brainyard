@@ -128,24 +128,30 @@ Cache-hit profile today:
 Ordered so each phase is independently shippable; Phase 0 first so every later
 phase has before/after numbers.
 
-### Phase 0 — Measure (S)
+### Phase 0 — Measure (S) — **LANDED 2026-07-04** (except baseline capture)
 
-- Emit `mulog ::cache-zones` at each dspy call: per-zone SHA-256 + char size,
-  plus the provider's returned cache-read/creation tokens from usage.
-- Surface per-turn cache-read/write tokens + estimated $ saved in `/usage`
-  (data already in the tracker history — display only).
-- Add a `mulog/warn` on the silent zone-location fallback in
-  `build-anthropic-system-blocks` / `system-blocks-from-zones` (G6).
-- Capture a baseline: one 10-turn / multi-iteration benchmark session per
+- ✅ `mulog ::cache-zones` at each dspy call: per-zone key + char size +
+  16-hex SHA-256 prefix (`log-cache-zones!` in dspy_action.clj); the
+  provider's returned cache-read/write tokens ride `::dspy-completed`.
+- ✅ `/usage` already had per-call CacheR/CacheW columns + hit rate; added a
+  `Cache net saved` estimate line (`estimated-cache-net-savings` in
+  tui/format.clj — per-call input rate derived from cost, no pricing import).
+- ✅ `mulog/warn ::cache-zone-fallback` on the silent zone-location fallback
+  in both `build-anthropic-body` (llm.clj) and `build-system-blocks`
+  (bedrock.clj) (G6).
+- ⬜ Capture a baseline: one 10-turn / multi-iteration benchmark session per
   provider (anthropic, bedrock).
 
-### Phase 1 — Explicit zone order (S) — fixes G1
+### Phase 1 — Explicit zone order (S) — fixes G1 — **LANDED 2026-07-04**
 
-- Change `:stable-keys` to accept an **ordered vector** (set still allowed for
-  b/c; vector wins). `build-system-prompt` renders in declared order instead of
-  `sort`. Declared order contract: **ascending volatility**.
-- Files: `dspy_action.clj` (drop `sort`, doc the contract), coact/react BT node
-  opts, `cache_breakpoints_test.clj`.
+- ✅ `:stable-keys` accepts an **ordered vector** (`normalize-stable-keys` in
+  dspy_action.clj; legacy sets still render alphabetically). Declared order
+  contract: **ascending volatility**, most-stable first.
+- ✅ All three CoAct/ReAct BT nodes now pass
+  `[:system-context :user-context]`; hook events carry the normalized
+  vector. Ordering tests added to `dspy_action_test.clj`
+  (`cache_breakpoints_test.clj` unchanged — zone consumption is
+  order-agnostic downstream).
 
 ### Phase 2 — User-message stable-prefix breakpoint (M) — fixes G3 + G4
 
@@ -270,8 +276,8 @@ ZONE C2  turn-volatile — NO own breakpoint; covered by the Phase-2
 
 | Phase | Effort | Impact | Notes |
 |---|---|---|---|
-| 0 Measure | S | enables the rest | do first |
-| 1 Ordered zones | S | hardening | prerequisite for 2/3 |
+| 0 Measure | S | enables the rest | **DONE** (baseline capture pending) |
+| 1 Ordered zones | S | hardening | **DONE** — prerequisite for 2/3 |
 | 4 TTL | S/M | **high** (human-paced TUI) | independent — can ship right after 0 |
 | 2 User-prefix breakpoint | M | high (multi-iteration turns) | step 0 fixes hash-order rendering (G8); also removes Bedrock dead writes |
 | 3 Three-zone split | M | medium (edit-heavy sessions) | consumes both providers' caps exactly |

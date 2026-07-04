@@ -416,7 +416,18 @@
   (let [{:keys [system messages]} (convert-messages-for-anthropic messages)
         prompt-cache? (:prompt-cache lm-config)
         system-blocks (when (and prompt-cache? system (seq cache-zones))
-                        (build-anthropic-system-blocks system cache-zones))
+                        (or (build-anthropic-system-blocks system cache-zones)
+                            ;; Zone text not found in the system message —
+                            ;; cache_control markers silently dropped would
+                            ;; hide a caching regression; make it loud.
+                            (do (mulog/warn ::cache-zone-fallback
+                                            :provider :anthropic
+                                            :model (:model lm-config)
+                                            :zone-keys (mapv :key cache-zones)
+                                            :message (str "cache zone text not found in system"
+                                                          " message — falling back to plain string"
+                                                          " system (no cache breakpoints)"))
+                                nil)))
         system-field  (or system-blocks system)]
     ;; Use array-map to preserve key order: model, system, messages, ...
     ;; This matches Anthropic's docs and makes request body readable in logs.

@@ -136,8 +136,8 @@
           ;; All inputs present — nothing filtered when defaults are empty
           (is (= {:question "Q" :instruction "I" :tools "T"}
                  (:inputs @captured-inputs)))
-          ;; :stable-keys is empty by default
-          (is (= #{} (:stable-keys @captured-inputs))))
+          ;; :stable-keys normalizes to an empty vector by default
+          (is (= [] (:stable-keys @captured-inputs))))
         (finally
           (remove-method dspy-action/execute-dspy-operation :mock-stable))))))
 
@@ -165,8 +165,9 @@
           ;; :custom-context filtered from inputs; :question and :instruction remain
           (is (= {:question "Q" :instruction "I"}
                  (:inputs @captured-inputs)))
-          ;; :stable-keys is just the custom set (defaults are empty)
-          (is (= #{:custom-context}
+          ;; :stable-keys normalizes to an ordered vector (legacy set input
+          ;; → alphabetical order)
+          (is (= [:custom-context]
                  (:stable-keys @captured-inputs))))
         (finally
           (remove-method dspy-action/execute-dspy-operation :mock-custom-stable))))))
@@ -230,3 +231,37 @@
   (testing "nil resolves to nil (clj-llm falls back to global default)"
     (is (nil? (resolve-lm-config {:opts {}})))
     (is (nil? (resolve-lm-config {})))))
+
+;; ============================================================================
+;; build-system-prompt zone ordering (prompt-cache Phase 1)
+;; ============================================================================
+
+(def ^:private build-system-prompt
+  @#'dspy-action/build-system-prompt)
+
+(def ^:private normalize-stable-keys
+  @#'dspy-action/normalize-stable-keys)
+
+(deftest normalize-stable-keys-test
+  (testing "vector input → declared order preserved, duplicates dropped"
+    (is (= [:b :a :c] (normalize-stable-keys [:b :a :c :b]))))
+  (testing "set input (legacy) → alphabetical order"
+    (is (= [:a :b :c] (normalize-stable-keys #{:c :a :b}))))
+  (testing "nil → empty vector"
+    (is (= [] (normalize-stable-keys nil)))))
+
+(deftest build-system-prompt-declared-order-test
+  (testing "zones and text render in the DECLARED key order, not alphabetical"
+    (let [state {:zebra-context "z-text" :alpha-context "a-text"}
+          {:keys [text zones]} (build-system-prompt state [:zebra-context :alpha-context])]
+      (is (= [:zebra-context :alpha-context] (mapv :key zones)))
+      (is (= (str "## zebra-context\nz-text\n\n"
+                  "## alpha-context\na-text")
+             text)))))
+
+(deftest build-system-prompt-skips-absent-keys-test
+  (testing "keys missing from state produce no zone and no text gap"
+    (let [state {:present "here"}
+          {:keys [text zones]} (build-system-prompt state [:missing :present])]
+      (is (= [:present] (mapv :key zones)))
+      (is (= "## present\nhere" text)))))

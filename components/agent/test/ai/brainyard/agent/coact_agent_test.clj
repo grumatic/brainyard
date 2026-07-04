@@ -189,7 +189,9 @@
           think-act-code (nth llm-guard 2)
           opts (second think-act-code)]
       (is (= :coact.action/think-act-code (:id opts)))
-      (is (= #{:system-context :user-context} (:stable-keys opts)))
+      ;; Ordered vector (prompt-cache Phase 1): declared order = zone/cache-
+      ;; breakpoint order, most-stable first.
+      (is (= [:system-context :user-context] (:stable-keys opts)))
       (is (= :chain-of-thought (:operation opts))))))
 
 ;; ============================================================================
