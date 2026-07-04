@@ -214,13 +214,19 @@
         instructions    (conj [:instructions (str "In adhering to this structure, your objective is:\n" instructions)])))))
 
 (defn- collect-user-parts
-  "Collect user message parts as a named map (inputs rendered in
-   signature-declared order — see ordered-input-pairs)."
+  "Collect user-message parts for token attribution: one entry PER INPUT
+   FIELD (its rendered `name: value` line, in signature-declared order)
+   plus the output reminder — so /usage --breakdown shows :question /
+   :recalled-memory / :iterations etc. instead of one :input-values blob.
+
+   Attribution only — the actual user-message content is built by
+   build-user-message (fields join with \"\\n\", not the \"\\n\\n\" part
+   separator), so these parts must never be recomposed into content."
   [signature inputs opts]
-  (let [input-text (str/join "\n" (map input-line (ordered-input-pairs signature inputs)))
+  (let [pairs (ordered-input-pairs signature inputs)
         reminder (output-requirements signature opts)]
-    [[:input-values input-text]
-     [:output-reminder reminder]]))
+    (conj (mapv (fn [[k _ :as pair]] [k (input-line pair)]) pairs)
+          [:output-reminder reminder])))
 
 (defn- parts->content
   "Join collected parts into a single content string."
@@ -262,7 +268,10 @@
   (let [sys-parts  (collect-system-parts signature json-schema chain-of-thought?)
         usr-parts  (collect-user-parts signature inputs opts)
         sys-msg    {:role "system" :content (parts->content sys-parts)}
-        usr-msg    {:role "user"   :content (parts->content usr-parts)}
+        ;; Content comes from build-user-message, NOT parts->content:
+        ;; usr-parts are per-field attribution entries whose "\n\n" part
+        ;; separator would not match the real "\n" field separator.
+        usr-msg    (build-user-message signature inputs opts)
         breakdown  {:dspy-signature (usage/build-token-group (parts->breakdown sys-parts))
                     :user-message   (usage/build-token-group (parts->breakdown usr-parts))}
         prefix     (user-cache-prefix (ordered-input-pairs signature inputs)

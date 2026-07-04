@@ -138,3 +138,24 @@
              {:question "Q" :recalled-memory big-m :iterations "ITER"}
              {})]
         (is (nil? user-cache-prefix))))))
+
+(deftest user-message-breakdown-per-field-test
+  (testing "token breakdown attributes each input field separately (not one
+            :input-values blob), and content stays byte-identical to the
+            single-field renderer"
+    (let [{:keys [messages token-breakdown]}
+          (prompt/build-messages-with-breakdown
+           ordered-sig
+           {:question "Q" :recalled-memory "MEMORY" :iterations "ITER"}
+           {})
+          parts (get-in token-breakdown [:user-message :parts])]
+      (is (= #{:question :recalled-memory :iterations :output-reminder}
+             (set (keys parts))))
+      (is (nil? (:input-values parts)))
+      ;; Per-field text-length covers the rendered `name: value` line.
+      (is (= (count "recalled-memory: MEMORY")
+             (get-in parts [:recalled-memory :text-length])))
+      ;; Content is the plain field-per-line form, reminder after blank line.
+      (is (str/starts-with?
+           (:content (second messages))
+           "question: Q\nrecalled-memory: MEMORY\niterations: ITER\n\n")))))
