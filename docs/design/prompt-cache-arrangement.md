@@ -1,0 +1,275 @@
+# Prompt-Cache Arrangement — coact-agent context layout by update frequency
+
+> Status: **investigation + plan** (2026-07-04). Companion to
+> `context-management.md` §P3.3/§P4 — this doc records what actually landed
+> (M7 zones), maps every prompt surface to its update cadence, and plans the
+> next round of cache-hit improvements.
+
+## 1. As-built pipeline (verified against code)
+
+```
+coact-init-action (once per turn)
+  CoActAssembler.sections  →  {section-kw text}          coact_agent.clj:1388-1417
+  cb/enforce (budget)      →  compacted sections
+  cb/compose sys-order     →  :system-context  string    coact_agent.clj:1735
+  cb/compose usr-order     →  :user-context    string    coact_agent.clj:1736
+        ↓ st-memory
+BT dspy node  :stable-keys #{:system-context :user-context}   coact_agent.clj:4435
+        ↓
+dspy-action build-system-prompt                          dspy_action.clj:86-122
+  – wraps each stable key as "## <key-name>\n<text>"
+  – **sorts keys ALPHABETICALLY**
+  – emits :zones [{:key :text} …]  (one candidate breakpoint per key)
+        ↓
+predict / chain-of-thought                               predict.clj:73-78
+  system message = [DSPy signature preamble] ++ "\n\n" ++ [zone texts]
+  user   message = signature inputs in declared order ++ output reminder
+                                                         prompt.clj:141-148
+        ↓ provider adapters
+Anthropic  (llm.clj:370-434)   :prompt-cache default true (providers.clj:25)
+  system → content array; cache_control {ephemeral} ON EACH ZONE block;
+  preamble = leading uncached block. User message: NO cache_control.
+Bedrock    (bedrock.clj:108-190)  :prompt-cache default true
+  zones → {:text}+cachePoint blocks, ≤3 system points (cap 4 total);
+  PLUS an unconditional trailing cachePoint on the last user message.
+OpenAI-compatible: zones ignored; relies on automatic prefix caching
+  (stable ordering is the only lever).
+```
+
+The resulting request layout for the main CoAct loop:
+
+```
+─── system message ─────────────────────────────────────────────
+  DSPy preamble: input/output field docs + JSON schema + ThinkActCode
+                 instructions              ← stable per agent version
+  ## system-context                        ← ZONE 1 (cache_control)
+     20 sections, sys-order:               coact_agent.clj:1405-1412
+     role, system-info, execution-model, channel-routing,
+     tool-call-format, code-blocks-format, sandbox-context-accessor,
+     tools, critical-rules, large-results-playbook, instruction,
+     agent-context, project-instructions, project-memory,
+     skill/mcp/todo/exec/subagent substrates, user-instructions, footer
+  ## user-context                          ← ZONE 2 (cache_control)
+     turn-info, parent-trail, conversation-history,
+     previous-turns, live-artifacts
+─── user message ───────────────────────────────────────────────
+  question:         <per-turn stable>
+  context-briefing: <per-turn stable — built once at init, :1743/:1769>
+  recalled-memory:  <per-turn stable — primed pre-init>
+  iterations:       <PER-ITERATION, append-only, compacted under budget>
+  output reminder   <constant>
+─────────────────────────────────────────────────────────────────
+```
+
+Supporting facts:
+
+- Usage already parses `cache_creation_input_tokens` / `cache_read_input_tokens`
+  (llm.clj:484-485) and usage.clj has cache-read/write pricing — the raw data
+  for measuring hit rates exists.
+- Mid-turn, `coact-rebudget-action` (coact_agent.clj:2253) recomposes BOTH
+  strings every `:rebudget-every-n-iter` (default 10) iterations; compaction
+  strategies only mutate zone-2 state (previous-turns / conversation /
+  artifacts / iterations) plus the `:tools-tier` ladder which rewrites the
+  `:tools` section inside zone 1.
+- `build-anthropic-system-blocks` / `system-blocks-from-zones` locate zone text
+  by `str/index-of` and **silently** fall back to the uncached / single-point
+  form when not found.
+
+## 2. Update-frequency map
+
+| Cadence | Sections / fields | Rides today |
+|---|---|---|
+| **Static per agent version** | DSPy preamble (schema+instructions), role, execution-model, channel-routing, tool-call-format, code-blocks-format, sandbox-context-accessor, critical-rules, large-results-playbook, skill/mcp/todo/exec/subagent substrates, footer | preamble (uncached lead) + zone 1 |
+| **Session-stable** (changes on model switch, cd, file edit, L1 overlay write, tool-registry change, tools-tier compaction) | system-info, tools, instruction, agent-context, project-instructions (BRAINYARD.md), project-memory, user-instructions | zone 1 |
+| **Per-turn, iteration-stable** | turn-info, parent-trail, conversation-history, previous-turns, live-artifacts — and, in the user message: question, context-briefing, recalled-memory | zone 2 / user message |
+| **Per-iteration** | iterations (append-only; collapsed under budget), output reminder (constant but positioned after iterations) | user message |
+
+Cache-hit profile today:
+
+- **Iterations 2..N within a turn**: zones 1+2 hit (90% discount on the whole
+  system message). The user message — question + briefing + recalled-memory +
+  full iteration history — is re-billed at full input price every iteration on
+  Anthropic/Bedrock. Recalled-memory and the iteration history are routinely
+  the largest per-iteration payloads.
+- **Across turns with < 5 min gap**: zone 1 hits; zone 2 re-written once.
+- **Across turns with > 5 min gap** (the *normal* interactive-TUI cadence):
+  everything expires — the 5-minute ephemeral TTL means human-paced sessions
+  get **zero** cross-turn caching.
+- **Bedrock only**: the unconditional trailing cachePoint on the last user
+  message writes a new checkpoint every iteration (25% write premium on the
+  user segment) and essentially never gets read back, because the user message
+  tail (`iterations` + reminder) differs on every call.
+
+## 3. Gaps
+
+| # | Gap | Impact |
+|---|---|---|
+| G1 | Zone order is **alphabetical coincidence** — `(sort stable-keys)` at dspy_action.clj:104 happens to put `:system-context` before `:user-context`. Any third stable key (e.g. `:agent-core`) silently reshuffles the prefix. | correctness landmine |
+| G2 | Zone 1 mixes static-per-version and session-stable cadences. A BRAINYARD.md edit, `memory$*` project-memory write, L1 overlay write, or tools-tier compaction invalidates the *entire* system prefix including ~10-20K tokens of byte-stable prose. | cross-turn misses |
+| G3 | No breakpoint after the turn-stable user-message prefix (question / context-briefing / recalled-memory). Re-billed every iteration on Anthropic/Bedrock. | per-iteration cost |
+| G4 | Bedrock's reserved 4th cachePoint sits at end-of-user-message where it never hits; pays write premium each iteration. | negative-value writes |
+| G5 | No TTL control. 5-minute ephemeral kills cross-turn caching for human-paced TUI sessions — the dominant usage mode. | biggest real-world miss |
+| G6 | No observability: the `::cache-prefix-hash` validation proposed in context-management.md §P3.3 was never implemented; zone-location failures fall back **silently**; /usage doesn't surface cache-read/write per turn. | can't measure or regress-guard |
+| G7 | **Previous-turns history is re-billed wholesale every turn.** The chain (`previous_turns.clj`) is nearly append-only — appended most-recent-last, position-stable `[Turn N]` headers — but rides zone C, which is rewritten per turn. The payload grows monotonically with session length. Three byte-stability breakers: (a) progressive compression slides the `:full`→`:summary` (recency 10) and `:summary`→`:minimal` (recency 40) boundaries by one **every turn**, rewriting a mid-chain entry each time; (b) head drops (`:bump-previous-turns`, max-turns trim) renumber all `[Turn N]` headers; (c) per-turn `:turn-info` renders FIRST in usr-order, ahead of the history. | dominant cross-turn cost in long sessions |
+
+## 4. Improvement plan
+
+Ordered so each phase is independently shippable; Phase 0 first so every later
+phase has before/after numbers.
+
+### Phase 0 — Measure (S)
+
+- Emit `mulog ::cache-zones` at each dspy call: per-zone SHA-256 + char size,
+  plus the provider's returned cache-read/creation tokens from usage.
+- Surface per-turn cache-read/write tokens + estimated $ saved in `/usage`
+  (data already in the tracker history — display only).
+- Add a `mulog/warn` on the silent zone-location fallback in
+  `build-anthropic-system-blocks` / `system-blocks-from-zones` (G6).
+- Capture a baseline: one 10-turn / multi-iteration benchmark session per
+  provider (anthropic, bedrock).
+
+### Phase 1 — Explicit zone order (S) — fixes G1
+
+- Change `:stable-keys` to accept an **ordered vector** (set still allowed for
+  b/c; vector wins). `build-system-prompt` renders in declared order instead of
+  `sort`. Declared order contract: **ascending volatility**.
+- Files: `dspy_action.clj` (drop `sort`, doc the contract), coact/react BT node
+  opts, `cache_breakpoints_test.clj`.
+
+### Phase 2 — User-message stable-prefix breakpoint (M) — fixes G3 + G4
+
+- dspy-action already knows which inputs are turn-stable (everything except
+  `:iterations`). Emit a `:user-cache-boundary` marker (char offset or split
+  texts) alongside `:cache-zones`.
+- Anthropic: render the user message as two content blocks —
+  `[question+briefing+recalled-memory](cache_control)` + `[iterations+reminder]`.
+- Bedrock: **move** the existing trailing cachePoint to that boundary (stops
+  the every-iteration dead write; same 3+1 budget).
+- Prompt-order prerequisite (already true): `:iterations` is the last input in
+  `ThinkActCode` — keep the output reminder after it; document that input
+  declaration order is cache-significant.
+- Guard: skip the marker when the stable prefix is trivially small
+  (< ~1K tokens ≈ provider minimum cacheable prefix) to avoid wasting a slot.
+- Expected win: (question+briefing+recalled-memory) × (iterations−1) × 90%
+  per turn; recalled-memory alone is often 1-4K tokens.
+
+### Phase 3 — Three-zone system split (M) — fixes G2
+
+Split `:system-context` into two stable keys so the system message carries
+three zones ordered by ascending volatility:
+
+```
+ZONE A  :agent-core     static per agent version
+        role, execution-model, channel-routing, tool-call-format,
+        code-blocks-format, sandbox-context-accessor, critical-rules,
+        large-results-playbook, skill/mcp/todo/exec/subagent substrates, footer
+ZONE B  :session-context  session-stable
+        system-info, tools, instruction, agent-context,
+        project-instructions, project-memory, user-instructions
+ZONE C  :user-context     per-turn (unchanged)
+```
+
+- `:tools` moves to ZONE B: its two change triggers (registry change,
+  tools-tier compaction) are session-cadence, so a change no longer invalidates
+  the big static-prose prefix.
+- Note `:footer` moves from prompt-end into ZONE A — a semantic reordering
+  (project/user instructions will now render after it). Verify with an eval
+  pass; if the footer's "final reminder" position matters, keep it at the end
+  of ZONE B instead (costs re-billing its ~100 tokens on session-var changes —
+  negligible).
+- Budget check: Bedrock 3 system cachePoints = its cap exactly; Anthropic
+  3 system + 1 user (Phase 2) = 4 = its cap exactly. Any future per-agent
+  overlay zone must displace one of these — document the cap as consumed.
+- Implementation: CoActAssembler grows a second system slot
+  (`system-core-order` / `system-session-order` or a slot-tag per section);
+  init composes three strings; `:stable-keys [:agent-core :session-context
+  :user-context]` (ordered, per Phase 1).
+
+### Phase 3b — Append-only history zone (M) — fixes G7
+
+The advancing-breakpoint-over-chat-history pattern, applied to zone C. Only
+worth shipping **after Phase 4** (without a 1h TTL, cross-turn hits rarely
+survive the human gap between turns).
+
+Split zone C by cadence:
+
+```
+ZONE C1  :history-context   append-only across turns (breakpoint at end)
+         conversation-history, previous-turns
+ZONE C2  turn-volatile — NO own breakpoint; covered by the Phase-2
+         user-message breakpoint (same cadence: per-turn, iteration-stable)
+         turn-info, parent-trail, live-artifacts
+```
+
+- Breakpoint budget holds: A, B, C1 = 3 system points (Bedrock cap exactly);
+  the Phase-2 user breakpoint covers C2 + question/briefing/recalled-memory =
+  4 total (Anthropic cap exactly).
+- **usr-order change**: `:turn-info` moves from first to after the history
+  block (into C2). Today its per-turn timestamp sits ahead of the history,
+  which also defeats OpenAI automatic prefix caching over zone C.
+- **Cache-aware compression cadence** in `append-turn`: replace the
+  slide-by-one depth boundaries with batched demotion + hysteresis (e.g. hold
+  10–19 recent turns at `:full`, demote ten at once when crossing 20). A
+  mid-chain rewrite then happens once per ~10 turns instead of every turn;
+  between demotions the chain is byte-append-only and the C1 prefix hits.
+- Cross-turn re-bill after this phase: new history entry + C2 + user stable
+  prefix (+ a batch-demotion tail once per ~10 turns) — instead of the entire
+  history every turn.
+- Verify: `truncate-to-file` idempotence on re-compression (`append-turn`
+  re-runs compression over all entries each call; the second pass must be a
+  no-op — if it ever re-emits a fresh `--- TRUNCATED` file path the whole
+  chain goes volatile). Add a unit test asserting entries older than the
+  demotion boundary are byte-identical across consecutive `append-turn` calls.
+- Accepted misses: head drops under budget pressure renumber `[Turn N]`
+  headers → one full C1 re-write; rare, and at that point the session is at
+  its context ceiling anyway.
+
+### Phase 4 — TTL knob (S) — fixes G5, likely the biggest real-world win
+
+- lm-config `:cache-ttl` (`"5m"` default | `"1h"`). Anthropic: emit
+  `cache_control {:type "ephemeral" :ttl "1h"}` on zones A+B, keep C at 5m
+  (Anthropic requires longer-TTL entries before shorter — our order already
+  complies); send the `extended-cache-ttl-2025-04-11` beta header when 1h is
+  used. Bedrock: probe Converse `ttl` support per model at implementation
+  time; no-op where unsupported.
+- Default policy: `1h` for interactive root agents (human-paced turn gaps
+  routinely exceed 5m), `5m` for subagents (machine-paced bursts). 1h write
+  premium is 2× base input, paid once per session per stable zone — recouped by
+  a single cross-turn hit.
+
+### Phase 5 — Regression guards + docs (S)
+
+- Test: two consecutive `coact-init-action` runs in one session produce
+  byte-identical ZONE A and ZONE B strings (the §P3.3 "prefix hash" assertion,
+  done at the string level — no provider call needed).
+- Test: volatility leak scan — ZONE A/B text contains no ISO timestamp /
+  turn-id patterns.
+- Update `context-management.md` §P3.3/§P4 status (M7 landed; this doc
+  supersedes the breakpoint layout sketch) and CLAUDE.md if config keys land.
+
+## 5. Priority / effort summary
+
+| Phase | Effort | Impact | Notes |
+|---|---|---|---|
+| 0 Measure | S | enables the rest | do first |
+| 1 Ordered zones | S | hardening | prerequisite for 2/3 |
+| 4 TTL | S/M | **high** (human-paced TUI) | independent — can ship right after 0 |
+| 2 User-prefix breakpoint | M | high (multi-iteration turns) | also removes Bedrock dead writes |
+| 3 Three-zone split | M | medium (edit-heavy sessions) | consumes both providers' caps exactly |
+| 3b History zone | M | high (long sessions) | requires Phase 4 first; includes batched compression in `append-turn` |
+| 5 Guards + docs | S | keeps it won | |
+
+## 6. Risks & constraints
+
+- **Breakpoint caps are fully consumed** after Phases 2+3 (Anthropic 4/4,
+  Bedrock 4/4). Gate the user-message breakpoint behind config so a future
+  per-agent overlay zone can reclaim a slot.
+- **Minimum cacheable prefix** (1024-4096 tokens depending on model): small
+  zones silently don't cache but still consume a slot — the Phase 0 size
+  logging tells us whether ZONE A/B ever fall under it (they won't for coact;
+  they might for slim derived agents).
+- **`str/index-of` zone location** stays fragile across recomposition; Phase 1
+  should pass zone texts explicitly end-to-end rather than re-locating them in
+  the joined string (the fallback warn from Phase 0 catches any residue).
+- **Semantic reordering** in Phase 3 (footer/tools positions) can shift model
+  behavior independently of caching — run the standard agent eval before/after.
