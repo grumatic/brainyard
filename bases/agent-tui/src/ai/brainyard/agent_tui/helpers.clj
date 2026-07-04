@@ -114,8 +114,9 @@
                          (credential env-var))
         ;; Prompt-cache TTL for the stable prompt zones ("5m" default | "1h").
         ;; Env/dotenv opt-in — "1h" keeps the cross-turn prefix cached across
-        ;; human-paced turn gaps (Anthropic-format providers only; 2x write
-        ;; premium, paid once per stable zone per session). See
+        ;; human-paced turn gaps (anthropic/anthropic-max beta header, bedrock
+        ;; Converse cachePoint ttl for Claude models; 2x write premium, paid
+        ;; once per stable zone per session). See
         ;; docs/design/prompt-cache-arrangement.md Phase 4.
         cache-ttl      (let [v (or (System/getenv "BY_CACHE_TTL")
                                    (System/getProperty "BY_CACHE_TTL"))]

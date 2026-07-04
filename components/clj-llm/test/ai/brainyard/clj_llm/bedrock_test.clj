@@ -332,3 +332,44 @@
       (is (= 64 (:total-tokens u)))
       (is (= 10 (get-in u [:cache :read-tokens])))
       (is (= 5  (get-in u [:cache :write-tokens]))))))
+
+(deftest cache-ttl-marks-all-but-last-system-point-test
+  (testing ":cache-ttl \"1h\" → 1h on system cachePoints except the last;
+            last zone + user point stay default (5m)"
+    (let [build-request* @#'bedrock/build-request
+          zone-a "## agent-core\nstatic"
+          zone-b "## session-context\nsession"
+          zone-c "## history-context\nhistory"
+          sys-text (clojure.string/join "\n\n" [zone-a zone-b zone-c])
+          req (build-request* {:model "anthropic.claude-haiku-4-5"
+                               :provider :bedrock
+                               :region "us-east-1"
+                               :prompt-cache true
+                               :cache-ttl "1h"}
+                              [{:role "system" :content sys-text}
+                               {:role "user" :content "Q?"}]
+                              {:cache-zones [{:key :agent-core :text zone-a}
+                                             {:key :session-context :text zone-b}
+                                             {:key :history-context :text zone-c}]})
+          points (filter :cachePoint (:system req))]
+      (is (= [{:cachePoint {:type "default" :ttl "1h"}}
+              {:cachePoint {:type "default" :ttl "1h"}}
+              {:cachePoint {:type "default"}}]
+             points))
+      ;; User-message point stays default.
+      (is (= {:cachePoint {:type "default"}}
+             (last (get-in req [:messages 0 :content])))))))
+
+(deftest cache-ttl-absent-keeps-default-points-test
+  (testing "no :cache-ttl → all cachePoints are plain default"
+    (let [build-request* @#'bedrock/build-request
+          zone-a "## agent-core\nstatic"
+          req (build-request* {:model "anthropic.claude-haiku-4-5"
+                               :provider :bedrock
+                               :region "us-east-1"
+                               :prompt-cache true}
+                              [{:role "system" :content zone-a}
+                               {:role "user" :content "Q?"}]
+                              {:cache-zones [{:key :agent-core :text zone-a}]})]
+      (is (every? #(= {:type "default"} (:cachePoint %))
+                  (filter :cachePoint (:system req)))))))

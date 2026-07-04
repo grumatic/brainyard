@@ -501,9 +501,12 @@
      :prompt-cache - Enable prompt caching (default: provider-specific, true for Anthropic)
      :cache-ttl    - Cache-entry TTL for stable prompt zones: \"5m\" (default) or
                      \"1h\". \"1h\" keeps the cross-turn prefix cached across
-                     human-paced turn gaps (Anthropic only — adds the
-                     extended-cache-ttl beta header; write premium is 2x base
-                     input, paid once per stable zone per session). No-op on
+                     human-paced turn gaps. Anthropic direct: adds the
+                     extended-cache-ttl beta header. Bedrock: cachePoint
+                     {:ttl \"1h\"} (Converse CacheTTL; needs bedrock-runtime
+                     ≥ 871.2.42.29 and a model that supports extended cache
+                     — Anthropic Claude models). Write premium is 2x base
+                     input, paid once per stable zone per session. No-op on
                      other providers.
      :drop-params  - Set of param keywords to omit from API requests (auto-detected for
                      models that reject temperature, e.g. o-series, gpt-5 family)

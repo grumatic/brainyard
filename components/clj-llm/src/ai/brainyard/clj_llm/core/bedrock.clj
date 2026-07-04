@@ -107,6 +107,17 @@
 (def ^:private cache-point-block
   {:cachePoint {:type "default"}})
 
+(defn- cache-point
+  "A Converse cachePoint block, optionally with an extended TTL.
+   `ttl` \"1h\" keeps the checkpoint alive across human-paced turn gaps
+   (CacheTTL enum [\"5m\" \"1h\"] — requires cognitect bedrock-runtime
+   ≥ 871.2.42.29, which carries the :ttl member; older schemas silently
+   strip it). nil/\"5m\" → the plain default block."
+  [ttl]
+  (if (= "1h" ttl)
+    {:cachePoint {:type "default" :ttl "1h"}}
+    cache-point-block))
+
 ;; Bedrock Converse allows up to 4 cachePoints per request. Reserve one for
 ;; the last user message, leaving 3 available for the system zones.
 (def ^:private max-system-cache-points 3)
@@ -154,44 +165,53 @@
 
    Mirrors `build-anthropic-system-blocks` from core.llm so the dspy-action's
    zone metadata gives Bedrock the same per-zone cache breakpoints Anthropic
-   already gets via `cache_control: ephemeral`.
+   already gets via `cache_control: ephemeral` — including the TTL policy:
+   when `cache-ttl` is \"1h\", every zone EXCEPT the last gets a 1h
+   cachePoint (the stabler zones, worth keeping across human-paced turn
+   gaps); the last zone changes every turn and stays at the 5m default.
 
    Returns nil if any zone's text can't be located inside system-text — the
    caller falls back to a single trailing cachePoint block."
-  [system-text cache-zones]
-  (loop [remaining system-text
-         zones (vec (take max-system-cache-points cache-zones))
-         blocks []]
-    (if (empty? zones)
-      (cond-> blocks
-        (not (str/blank? remaining))
-        (conj {:text remaining}))
-      (let [zone-text (:text (first zones))
-            idx (str/index-of remaining zone-text)]
-        (if idx
-          (let [preamble       (subs remaining 0 idx)
-                rest-after     (subs remaining (+ idx (count zone-text)))
-                preamble-clean (str/replace preamble #"\n\n\z" "")
-                blocks (cond-> blocks
-                         (not (str/blank? preamble-clean))
-                         (conj {:text preamble-clean}))
-                blocks (-> blocks
-                           (conj {:text zone-text})
-                           (conj cache-point-block))]
-            (recur (str/replace rest-after #"\A\n\n" "")
-                   (vec (rest zones))
-                   blocks))
-          ;; Zone text not found inside remaining — bail and let the caller
-          ;; fall back to a single trailing-cachePoint system block.
-          nil)))))
+  [system-text cache-zones cache-ttl]
+  (let [zones-capped (vec (take max-system-cache-points cache-zones))]
+    (loop [remaining system-text
+           zones zones-capped
+           blocks []]
+      (if (empty? zones)
+        (cond-> blocks
+          (not (str/blank? remaining))
+          (conj {:text remaining}))
+        (let [zone-text (:text (first zones))
+              last-zone? (= 1 (count zones))
+              point (if last-zone?
+                      cache-point-block
+                      (cache-point cache-ttl))
+              idx (str/index-of remaining zone-text)]
+          (if idx
+            (let [preamble       (subs remaining 0 idx)
+                  rest-after     (subs remaining (+ idx (count zone-text)))
+                  preamble-clean (str/replace preamble #"\n\n\z" "")
+                  blocks (cond-> blocks
+                           (not (str/blank? preamble-clean))
+                           (conj {:text preamble-clean}))
+                  blocks (-> blocks
+                             (conj {:text zone-text})
+                             (conj point))]
+              (recur (str/replace rest-after #"\A\n\n" "")
+                     (vec (rest zones))
+                     blocks))
+            ;; Zone text not found inside remaining — bail and let the caller
+            ;; fall back to a single trailing-cachePoint system block.
+            nil))))))
 
 (defn- build-system-blocks
   "Choose between zone-based multi-block system content (one cachePoint per
-   stable-key zone) and a single text block + trailing cachePoint."
-  [system cache? cache-zones]
+   stable-key zone; 1h TTL on all but the last when `cache-ttl` is \"1h\")
+   and a single text block + trailing cachePoint."
+  [system cache? cache-zones cache-ttl]
   (when system
     (or (when (and cache? (seq cache-zones))
-          (or (system-blocks-from-zones system cache-zones)
+          (or (system-blocks-from-zones system cache-zones cache-ttl)
               ;; Zone text not found in the system message — losing the
               ;; per-zone cachePoints silently would hide a caching
               ;; regression; make it loud before falling back.
@@ -227,7 +247,8 @@
                     (assoc :temperature (double (:temperature lm-config)))
                     (:max-tokens lm-config)
                     (assoc :maxTokens (:max-tokens lm-config)))
-        system-blocks (build-system-blocks system cache? cache-zones)
+        system-blocks (build-system-blocks system cache? cache-zones
+                                           (:cache-ttl lm-config))
         messages' (cond
                     (not cache?) messages
 

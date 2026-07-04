@@ -346,8 +346,16 @@ ZONE C2  turn-volatile — NO own breakpoint; covered by the Phase-2
   every zone EXCEPT the last (the per-turn zone — longer TTL there only buys
   write premium); longest-TTL-first ordering holds by construction; the
   `extended-cache-ttl-2025-04-11` beta header is sent whenever 1h is used.
-  Bedrock: no-op (Converse cachePoint is `{:type "default"}` only, and
-  cognitect aws-api silently strips unknown fields).
+- ✅ **Bedrock too (2026-07-05, corrects the earlier "no-op" note):** the
+  Converse `CachePointBlock` carries `:ttl {:shape "CacheTTL"}` with enum
+  `["5m" "1h"]` — verified in the pinned cognitect `bedrock-runtime
+  871.2.42.29` schema, so no silent-strip. `system-blocks-from-zones` now
+  emits `{:cachePoint {:type "default" :ttl "1h"}}` on all system zones
+  except the last; the last zone and the user-prefix point stay 5m.
+  Model support is per-model (Anthropic Claude models on Bedrock; Nova is
+  5m-only — expect a validation error or ignore on unsupported models).
+- ✅ `BY_CACHE_TTL` env/dotenv knob wires the value into the TUI session LM
+  (`setup-lm!` in agent-tui helpers).
 - ⬜ Default policy (`1h` for interactive root agents, `5m` for subagents)
   deliberately NOT wired — 1h write premium is 2× base input, so flipping the
   default is a billing-behavior change; decide after the Phase-0 baseline.
