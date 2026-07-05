@@ -10,8 +10,12 @@
    - :summary — question + answer (truncated)                  (medium age)
    - :minimal — question + short answer                        (oldest)
 
-   The LLM uses (get-previous-turn :index N) to selectively access any turn,
-   and (context-index) shows a lightweight summary of all turns."
+   The LLM reads the chain via the rendered `[Turn N · depth]` entries in
+   the Previous Turns prompt section, or programmatically through the
+   sandbox context accessors — `(context-index)` for sizes,
+   `(context-get [:previous-turns])` for the (compressed) records.
+   Iterations survive only at :full depth; older turns' full detail
+   lives in the session's trajectory.edn on disk."
   (:require [ai.brainyard.clj-sandbox.interface :as clj-sandbox]))
 
 (defn- batched-demotion-counts

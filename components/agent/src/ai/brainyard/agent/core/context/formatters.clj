@@ -21,16 +21,25 @@
   "One-line-per-message conversation formatter:
        - **role**: snippet
    `content` is truncated at 500 chars with an ellipsis. Returns nil for
-   an empty conversation."
+   an empty conversation.
+
+   `turn-ref` entries ({:role \"turn-ref\" :turn N}, ranged with :to —
+   produced by the timeline conversation style) render as pointers into
+   the Previous Turns section, which carries the full Q/A + iterations
+   for those turns."
   [conversation]
   (when (seq conversation)
     (->> conversation
-         (map (fn [{:keys [role content]}]
-                (let [snippet (let [s (str content)]
-                                (if (> (count s) 500)
-                                  (str (subs s 0 500) "…")
-                                  s))]
-                  (str "- **" (name (or role "unknown")) "**: " snippet))))
+         (map (fn [{:keys [role content turn to]}]
+                (if (= "turn-ref" role)
+                  (if to
+                    (str "- **[Turns " turn "–" to "]** → see Previous Turns")
+                    (str "- **[Turn " turn "]** → see Previous Turns"))
+                  (let [snippet (let [s (str content)]
+                                  (if (> (count s) 500)
+                                    (str (subs s 0 500) "…")
+                                    s))]
+                    (str "- **" (name (or role "unknown")) "**: " snippet)))))
          (str/join "\n"))))
 
 ;; ============================================================================

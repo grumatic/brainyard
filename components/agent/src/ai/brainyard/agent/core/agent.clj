@@ -713,7 +713,7 @@
       ;; parent's id; wakeup auto-ask: system message (not a user question).
       (swap! !session session/add-message
              (cond
-               parent                          (session/assistant-message input (:agent-id parent))
+               parent                          (session/assistant-message input (:agent-id parent) :dispatch)
                (#{:wakeup :auto-resume} source) (session/system-message input)
                :else                           (session/user-message input))))
 
@@ -742,7 +742,7 @@
         ;; Add assistant response to session
           (when-let [answer (:answer result)]
             (swap! !session session/add-message
-                   (session/assistant-message answer (:agent-id agent))))
+                   (session/assistant-message answer (:agent-id agent) :turn-answer)))
 
         ;; Post-ask hook: after process, before status :idle
           (hooks/fire! :agent.ask/post {:agent agent :input input :result result})

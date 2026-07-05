@@ -283,6 +283,10 @@
                                 :doc "BT loop: re-run the context budget reducer every N iterations."}
    :conversation-limit         {:type "integer" :default 20
                                 :doc "Max prior conversation turns retained in assembled context."}
+   :conversation-style         {:type "string" :default "timeline"
+                                :doc "Conversation-history rendering. \"timeline\": completed own-turn Q/A pairs older than :conversation-keep-verbatim collapse to [Turn N] references into the Previous Turns section (sub-agent/system messages stay verbatim) — removes the Q/A double-render between the two sections. \"full\": legacy verbatim window."}
+   :conversation-keep-verbatim {:type "integer" :default 2
+                                :doc "\"timeline\" conversation style: how many of the most recent completed own turns keep their Q/A verbatim in the window (recency anchor for pronoun-style follow-ups). Older turns become [Turn N] references."}
    :recall-limit               {:type "integer" :default 10
                                 :doc "Max recalled memory hits injected into a turn's context."}
    :memory-question-max-chars  {:type "integer" :default 8000

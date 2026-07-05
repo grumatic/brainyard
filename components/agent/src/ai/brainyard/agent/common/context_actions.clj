@@ -174,6 +174,88 @@
       (pop msgs)
       msgs)))
 
+(defn- completed-turn-units
+  "Identify this agent's completed turn units inside a message window.
+
+   A unit is a user question plus THIS agent's turn-final answer for it
+   (the same Q/A the previous-turns chain records). Segments are bounded
+   by user messages; within a segment the answer is the message tagged
+   `:kind :turn-answer` with `self-id`. Messages from sessions persisted
+   before the tag existed use the structural property that sub-agent
+   dispatch prompts (also self-tagged assistants) always precede the
+   turn answer, so the LAST untagged self assistant in a segment wins.
+
+   Returns [{:q-idx int-or-nil :a-idx int} ...] in window order; :q-idx
+   is nil when the window opens mid-segment (question cut off)."
+  [msgs self-id]
+  (let [n (count msgs)
+        answer? (fn [{:keys [role agent-id kind]}]
+                  (and (= "assistant" role)
+                       (= agent-id self-id)
+                       (or (= :turn-answer kind) (nil? kind))))
+        seg-starts (into [0] (keep-indexed
+                              (fn [i m] (when (and (pos? i) (= "user" (:role m))) i))
+                              msgs))]
+    (into []
+          (keep (fn [[start next-start]]
+                  (let [q-idx (when (= "user" (:role (nth msgs start))) start)
+                        a-idx (->> (range start (or next-start n))
+                                   (filter #(answer? (nth msgs %)))
+                                   last)]
+                    (when a-idx {:q-idx q-idx :a-idx a-idx}))))
+          (map vector seg-starts (concat (rest seg-starts) [nil])))))
+
+(defn- merge-adjacent-turn-refs
+  "Collapse consecutive turn-ref entries into range refs
+   ({:turn 3 :to 5} renders as [Turns 3–5])."
+  [msgs]
+  (reduce (fn [acc m]
+            (let [prev (peek acc)]
+              (if (and (= "turn-ref" (:role m))
+                       (= "turn-ref" (:role prev))
+                       (= (:turn m) (inc (or (:to prev) (:turn prev)))))
+                (conj (pop acc) (assoc prev :to (:turn m)))
+                (conj acc m))))
+          [] msgs))
+
+(defn- timeline-transform
+  "Collapse completed own-turn Q/A pairs (older than the `keep-verbatim`
+   most recent) into `{:role \"turn-ref\" :turn N}` entries pointing at
+   the previous-turns chain — the Q/A text already lives there (the
+   cached, append-only `[Turn N]` entries), so the volatile window keeps
+   only the session timeline: refs, sub-agent messages, system notes,
+   and the last few verbatim exchanges as a recency anchor.
+
+   Turn numbers tail-align with the chain: the last completed unit in
+   the window is the chain's last entry (`chain-count`). When the chain
+   is shorter than the window's unit count (deep compaction dropped
+   entries the window still shows) the window is returned untouched —
+   refs would point at renumbered or missing entries."
+  [msgs self-id chain-count keep-verbatim]
+  (let [units (completed-turn-units msgs self-id)
+        m (count units)
+        convert-n (- m (max 0 (long (or keep-verbatim 0))))
+        base (- (long chain-count) m)]
+    (if (or (<= convert-n 0) (neg? base))
+      msgs
+      (let [converted (take convert-n units)
+            drop-idxs (into #{} (mapcat (fn [{:keys [q-idx a-idx]}]
+                                          (remove nil? [q-idx a-idx])))
+                            converted)
+            ref-at (into {} (map-indexed
+                             (fn [j {:keys [q-idx a-idx]}]
+                               [(or q-idx a-idx) (+ base j 1)])
+                             converted))]
+        (->> msgs
+             (map-indexed (fn [i msg]
+                            (cond
+                              (ref-at i)    {:role "turn-ref" :turn (ref-at i)}
+                              (drop-idxs i) nil
+                              :else         msg)))
+             (remove nil?)
+             merge-adjacent-turn-refs
+             vec)))))
+
 (defn prepare-conversation-action
   "BT action: snapshot recent session messages into st-memory :conversation.
 
@@ -182,14 +264,28 @@
    trailing user message when its content equals the current :question
    to avoid duplicating it.
 
+   With :conversation-style \"timeline\" (default), completed own-turn
+   Q/A pairs older than the :conversation-keep-verbatim most recent
+   collapse to [Turn N] references into the Previous Turns section (see
+   timeline-transform) — de-duplicating the Q/A both sections used to
+   carry. \"full\" keeps the legacy verbatim window.
+
    Always returns bt/success."
   [{:keys [st-memory agent]}]
   (let [messages (some-> agent :!session deref :messages vec)
         limit    (config/get-config agent :conversation-limit)
         question (:question @st-memory)
-        trimmed  (-> (vec (take-last limit (or messages [])))
-                     (drop-question-tail question))]
-    (swap! st-memory assoc :conversation trimmed)
+        window   (-> (vec (take-last limit (or messages [])))
+                     (drop-question-tail question))
+        style    (str (or (config/get-config agent :conversation-style) "timeline"))
+        window   (if (and agent (= "timeline" style))
+                   (timeline-transform
+                    window
+                    (:agent-id agent)
+                    (count (:previous-turns @st-memory))
+                    (config/get-config agent :conversation-keep-verbatim))
+                   window)]
+    (swap! st-memory assoc :conversation window)
     bt/success))
 
 (defn prepare-recalled-memory-action

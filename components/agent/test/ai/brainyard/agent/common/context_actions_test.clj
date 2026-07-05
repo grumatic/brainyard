@@ -355,3 +355,80 @@
           :tool-name :foo$bar
           :args {}})
         (is (contains? @captured-tags "tool:foo$bar"))))))
+
+;; ============================================================================
+;; Timeline conversation transform (Q/A dedup vs Previous Turns)
+;; ============================================================================
+
+(def ^:private timeline-transform
+  @#'ctx-actions/timeline-transform)
+
+(def ^:private fmt-conversation
+  (requiring-resolve 'ai.brainyard.agent.core.context.formatters/format-conversation))
+
+(defn- u [s] {:role "user" :content s})
+(defn- a [s] {:role "assistant" :content s :agent-id :root :kind :turn-answer})
+(defn- sub-a [s] {:role "assistant" :content s :agent-id :explore-agent :kind :turn-answer})
+(defn- dispatch [s] {:role "assistant" :content s :agent-id :root :kind :dispatch})
+
+(deftest timeline-collapses-old-units-keeps-recent-verbatim-test
+  (testing "older completed Q/A pairs → merged turn refs; last K verbatim;
+            sub-agent + system messages stay in place"
+    (let [msgs [(u "q1") (a "a1")
+                (u "q2") (dispatch "explore this") (sub-a "found it") (a "a2")
+                {:role "system" :content "[wakeup] task done"}
+                (u "q3") (a "a3")
+                (u "q4") (a "a4")]
+          ;; chain has 4 completed turns; keep last 2 verbatim
+          out (timeline-transform msgs :root 4 2)]
+      ;; turns 1+2 collapse into ONE merged range ref; the dispatch/
+      ;; sub-agent/system messages survive.
+      (is (= {:role "turn-ref" :turn 1} (dissoc (first out) :to)))
+      (is (= 2 (:to (first out))) "turns 1–2 merged into a range ref")
+      (is (= 1 (count (filter #(= "turn-ref" (:role %)) out))))
+      (is (some #(= "explore this" (:content %)) out) "dispatch kept")
+      (is (some #(= "found it" (:content %)) out) "sub-agent answer kept")
+      (is (some #(= "system" (:role %)) out) "system note kept")
+      ;; last two units verbatim
+      (is (some #(= "q3" (:content %)) out))
+      (is (some #(= "a4" (:content %)) out))
+      (is (not-any? #(= "a1" (:content %)) out))
+      (is (not-any? #(= "q2" (:content %)) out)))))
+
+(deftest timeline-legacy-untagged-heuristic-test
+  (testing "untagged messages: last self assistant in a segment is the answer;
+            earlier self assistants (legacy dispatches) survive as events"
+    (let [legacy-a (fn [s] {:role "assistant" :content s :agent-id :root})
+          msgs [(u "q1") (legacy-a "dispatch-ish") (legacy-a "a1")
+                (u "q2") (legacy-a "a2")
+                (u "q3") (legacy-a "a3")]
+          out (timeline-transform msgs :root 3 2)]
+      ;; only turn 1 converts (3 units - keep 2)
+      (is (= {:role "turn-ref" :turn 1} (first out)))
+      (is (some #(= "dispatch-ish" (:content %)) out)
+          "the earlier self assistant is treated as an event, not the answer")
+      (is (not-any? #(= "a1" (:content %)) out)))))
+
+(deftest timeline-guards-test
+  (testing "chain shorter than window units (deep compaction) → untouched"
+    (let [msgs [(u "q1") (a "a1") (u "q2") (a "a2")]
+          out (timeline-transform msgs :root 1 0)]
+      (is (= msgs out))))
+  (testing "fewer units than keep-verbatim → untouched"
+    (let [msgs [(u "q1") (a "a1")]]
+      (is (= msgs (timeline-transform msgs :root 5 2)))))
+  (testing "window opening mid-segment: answer without its question still refs"
+    (let [msgs [(a "a-cut") (u "q2") (a "a2")]
+          out (timeline-transform msgs :root 5 1)]
+      (is (= {:role "turn-ref" :turn 4} (first out))
+          "tail-aligned: 2 units, chain 5 → first unit is turn 4"))))
+
+(deftest timeline-ref-rendering-test
+  (testing "format-conversation renders single and ranged refs"
+    (let [out (fmt-conversation [{:role "turn-ref" :turn 3}
+                                 {:role "turn-ref" :turn 5 :to 7}
+                                 (u "hello")])]
+      (is (str/includes? out "[Turn 3]"))
+      (is (str/includes? out "[Turns 5–7]"))
+      (is (str/includes? out "see Previous Turns"))
+      (is (str/includes? out "**user**: hello")))))

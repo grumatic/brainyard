@@ -129,6 +129,7 @@ Cache-hit profile today:
 | G5 | No TTL control. 5-minute ephemeral kills cross-turn caching for human-paced TUI sessions — the dominant usage mode. | biggest real-world miss |
 | G6 | No observability: the `::cache-prefix-hash` validation proposed in context-management.md §P3.3 was never implemented; zone-location failures fall back **silently**; /usage doesn't surface cache-read/write per turn. | can't measure or regress-guard |
 | G7 | **Previous-turns history is re-billed wholesale every turn.** The chain (`previous_turns.clj`) is nearly append-only — appended most-recent-last, position-stable `[Turn N]` headers — but rides zone C, which is rewritten per turn. The payload grows monotonically with session length. Three byte-stability breakers: (a) progressive compression slides the `:full`→`:summary` (recency 10) and `:summary`→`:minimal` (recency 40) boundaries by one **every turn**, rewriting a mid-chain entry each time; (b) head drops (`:bump-previous-turns`, max-turns trim) renumber all `[Turn N]` headers; (c) per-turn `:turn-info` renders FIRST in usr-order, ahead of the history. | dominant cross-turn cost in long sessions |
+| G9 | **Q/A double-render across conversation-history and previous-turns.** Every completed turn's question+answer appears verbatim in BOTH the cached `:history-context` zone (previous-turns `[Turn N]` entries, Q≤500 + A≤1000 chars) and the volatile conversation window (`You:/Agent:` lines ≤500 chars, re-billed every turn). Measured live: conversation-history ~1.2–1.4K tok/turn, almost entirely duplicate. | ~1.2–2.5K volatile tok/turn |
 | G8 | **User-message field order is hash-set order, not declared order.** `:input-keys` is a `set` (signature.clj:14); the rendered order is deterministic per key set but arbitrary — today `iterations` (per-iteration volatile) renders *before* the turn-stable `context-briefing`, re-billing it every iteration even under automatic prefix caching, and any input-key change can silently reshuffle the whole message. Also a hard blocker for G3's stable-prefix breakpoint. | per-iteration waste + reshuffle landmine |
 
 ## 4. Improvement plan
@@ -415,6 +416,36 @@ anthropic`).
 - ⬜ `context-management.md` §P3.3/§P4 status refresh (this doc is the
   authoritative record meanwhile).
 
+### Phase 6 — Conversation timeline (Q/A dedup) — fixes G9 — **LANDED 2026-07-05**
+
+The conversation window becomes a session TIMELINE instead of a second copy
+of the transcript: completed own-turn Q/A pairs older than the
+`:conversation-keep-verbatim` most recent (default 2) collapse to
+`[Turn N] → see Previous Turns` references (adjacent refs merge to ranges);
+sub-agent messages, system/wakeup notes, and the last K exchanges stay
+verbatim. Previous-turns (cached, append-only) is the single Q/A store; the
+volatile window drops from ~1.2–2.5K tok to ~100–300.
+
+Design points:
+- **Hybrid by design**: the K-verbatim tail preserves the recency anchor for
+  pronoun-style follow-ups ("make it shorter") — the main behavioral risk of
+  a pure-ref window. `:conversation-style "full"` restores the legacy window.
+- **Turn-answer vs dispatch disambiguation**: both land in the shared session
+  as self-tagged assistant messages, so `session/assistant-message` grew a
+  `:kind` (`:turn-answer` at ask-completion, `:dispatch` at sub-agent input
+  recording). Pre-tag persisted sessions use the structural fallback: within
+  a user-bounded segment, the LAST untagged self assistant is the answer
+  (dispatches always precede it).
+- **Tail-aligned numbering**: the window's last completed unit maps to the
+  chain's last entry, so refs match the rendered `[Turn N]` headers even
+  after chain trims; if deep compaction leaves the chain shorter than the
+  window's units, the transform backs off to the verbatim window.
+- Drill-down path for refs: the Previous Turns section itself, or
+  `(context-get [:previous-turns])` in the code channel. (NB the
+  previously-documented `get-previous-turn` sandbox fn never existed —
+  stale docstring, now fixed.)
+- ⬜ Phase-3 live continuity A/B (K=0 vs K=2 vs full) still to run.
+
 ## 5. Priority / effort summary
 
 | Phase | Effort | Impact | Notes |
@@ -426,6 +457,7 @@ anthropic`).
 | 3 Three-zone split | M | medium (edit-heavy sessions) | **DONE** — caps now 4/4 on both providers; also restored the silently-dropped substrate sections |
 | 3b History zone | M | high (long sessions) | **DONE** — C1 = previous-turns only (conversation is a sliding window); batched `:demote-batch` compression; caps hold at 4/4 |
 | 5 Guards + docs | S | keeps it won | **DONE** (guards; context-management.md refresh pending) |
+| 6 Conversation timeline | M | high (~1.2–2.5K volatile tok/turn) | **DONE** — hybrid refs + K=2 verbatim tail; live continuity A/B pending |
 
 ## 6. Risks & constraints
 

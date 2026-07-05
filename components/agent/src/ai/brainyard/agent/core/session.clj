@@ -222,8 +222,16 @@
   {:role "user" :content content})
 
 (defn assistant-message
-  "Create an assistant message, optionally tagged with an agent-id."
+  "Create an assistant message, optionally tagged with an agent-id and a
+   `kind` distinguishing the two assistant shapes that land in a shared
+   session: `:turn-answer` (an agent's final answer for a turn) vs
+   `:dispatch` (a sub-agent's input recorded under the parent's id). The
+   conversation timeline transform needs the distinction — both carry
+   the same agent-id; messages from sessions persisted before this tag
+   fall back to a structural heuristic (see context-actions)."
   ([content]
    {:role "assistant" :content content})
   ([content agent-id]
-   {:role "assistant" :content content :agent-id agent-id}))
+   {:role "assistant" :content content :agent-id agent-id})
+  ([content agent-id kind]
+   {:role "assistant" :content content :agent-id agent-id :kind kind}))
