@@ -46,10 +46,11 @@
             [ai.brainyard.agent.common.rlm-agent]
             [ai.brainyard.agent.common.explore-agent]
             ;; Live-runtime debug specialist. Requires the clj-nrepl
-            ;; server to be running on the host (BY_NREPL_ENABLED
-            ;; on agent-tui / agent-web) and an active grant
-            ;; (BY_NREPL_GRANT). Without those, the agent loads
-            ;; fine but its first code-eval surfaces the gate error.
+            ;; server to be running on the host (BY_NREPL_ENABLED on
+            ;; agent-tui / agent-web, or clj-nrepl$start-server on
+            ;; demand). Without it, the agent loads fine but its first
+            ;; code-eval surfaces the gate error. Full-trust: the
+            ;; deny-list is the only eval gate (no grant machinery).
             [ai.brainyard.agent.common.debug-agent]
             [ai.brainyard.agent.common.edit-agent]
             [ai.brainyard.agent.common.plan-agent]

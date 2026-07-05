@@ -59,7 +59,8 @@
 (defcommand code$eval
   "Evaluate Clojure code. Two backends:
      :sandbox  SCI sandbox (default, safe). Use a ```clojure fence in CoAct.
-     :nrepl    LIVE brainyard runtime (requires BY_NREPL_GRANT).
+     :nrepl    LIVE brainyard runtime (needs the clj-nrepl server up;
+               full-trust, deny-list is the only eval gate).
                Use to observe / debug / extend the running system."
   (fn [{:keys [code backend session timeout-ms]}]
     ;; When the caller doesn't pin :backend, default to the current agent's
