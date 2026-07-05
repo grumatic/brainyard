@@ -14,8 +14,9 @@
    the Previous Turns prompt section, or programmatically through the
    sandbox context accessors — `(context-index)` for sizes,
    `(context-get [:previous-turns])` for the (compressed) records.
-   Iterations survive only at :full depth; older turns' full detail
-   lives in the session's trajectory.edn on disk."
+   Iterations survive only at :full depth; older turns' operational
+   detail (tool calls, code evals + outputs) stays reachable via the
+   `trajectory$search` command over the session's trajectory records."
   (:require [ai.brainyard.clj-sandbox.interface :as clj-sandbox]))
 
 (defn- batched-demotion-counts

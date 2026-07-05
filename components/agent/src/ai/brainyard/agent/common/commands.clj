@@ -964,6 +964,16 @@ results are intentionally kept out of semantic recall so it stays focused on kno
    #'memory$status
    #'memory$explain])
 
+(def trajectory-commands
+  "Operational-trace lookup. Counterpart of memory-commands: memory$recall
+   holds durable knowledge; trajectory$search answers \"what did I run and
+   what did it output\" from the per-turn trajectory records — including
+   iterations that progressive compression has already dropped from the
+   previous-turns chain. The operational-recall-guidance tool-context
+   overlay (below) teaches the split, so this MUST ride
+   all-common-commands or the guidance points at an unbound tool."
+  [#'trajectory$search])
+
 (def query-commands
   "Commands for sub-LLM dispatch. query$clone (clone-self recursion) is
    intentionally NOT here — it is rlm-only, gated via :tool-use-control and
@@ -980,6 +990,7 @@ results are intentionally kept out of semantic recall so it stays focused on kno
   (vec (concat registry-commands
                runtime-commands
                memory-commands
+               trajectory-commands
                query-commands
                llm-commands
                artifacts/artifact-commands

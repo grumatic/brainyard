@@ -441,9 +441,13 @@ Design points:
   after chain trims; if deep compaction leaves the chain shorter than the
   window's units, the transform backs off to the verbatim window.
 - Drill-down path for refs: the Previous Turns section itself, or
-  `(context-get [:previous-turns])` in the code channel. (NB the
-  previously-documented `get-previous-turn` sandbox fn never existed —
-  stale docstring, now fixed.)
+  `(context-get [:previous-turns])` in the code channel; for turns whose
+  iterations compression already dropped, `trajectory$search :turn-id N`
+  searches the full per-turn operational records. (NB two wiring fixes
+  landed with this: the previously-documented `get-previous-turn` sandbox
+  fn never existed — stale docstring; and `trajectory$search` itself was
+  defined + taught by the operational-recall guidance but absent from
+  every roster vector, i.e. never actually bound to an agent.)
 - ✅ Live continuity check (2026-07-05, 6-turn bedrock claude-haiku session,
   K=2): refs render live (`[Turn 1]` at turn 4, merged `[Turns 1–2]` at
   turn 5 — verified in request bodies); the pronoun probe ("add 10 to it")

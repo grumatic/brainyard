@@ -2066,3 +2066,16 @@
     (let [text (sysinfo/build-system-info-section)]
       (is (not (re-find #"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}" text))
           "ISO timestamp found in :system-info — belongs in :turn-info"))))
+
+(deftest trajectory-search-rides-roster-test
+  (testing "trajectory$search is bound wherever its guidance is taught —
+            the operational-recall overlay flows to every coact-derived
+            agent, so the tool must ride default-agent-roster (it was
+            defined but absent from every roster vector before this pin)"
+    (let [ids (set (map (comp :id meta deref)
+                        (:tools ai.brainyard.agent.common.agent-roster/default-agent-roster)))]
+      (is (contains? ids :trajectory$search))
+      (is (contains? ids :trajectory$export))
+      (is (str/includes?
+           ai.brainyard.agent.common.commands/operational-recall-guidance
+           "trajectory$search")))))
