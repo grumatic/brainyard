@@ -384,9 +384,12 @@ debug-agent.
 
 The playground (`docs/design/playground-design.md`,
 `deploy/playground-workspace/`) gives each tenant a **dedicated, disposable,
-isolated container** running `by` from a browser terminal. It is not just *a*
-place debug-agent can run — for the live-runtime workflow it is close to the
-*only practical* place, and it makes debug-agent's full-trust posture safe.
+isolated container** running `by` from a browser terminal. For the **live-patch
++ introspect** half of the workflow (jobs A and B) it is close to the *only
+practical* place — it makes full-trust live surgery safe. The **durable
+source-fix** half (job C) is the exception: it needs a source checkout on the
+classpath, which the packaged container does not provide — see the caveat in
+point 1 and the dev-runtime note in §13b.
 
 **1. The playground runs the JVM uberjar — the one environment where nREPL eval
 works.** Per `clj-nrepl-eval` Principle 8, the GraalVM native binary "cannot
@@ -398,10 +401,27 @@ install ships the *native* binary. The playground image, by design, runs the
 "runs the `by` UBERJAR on a stock JRE — NOT the native binary"). So the
 container is exactly the runtime where:
 - ` ```clojure ` blocks actually evaluate against the live image, and
-- `(require 'ns :reload)` recompiles from source — making **step 6 of the
-  debug→fix loop (reload + verify from source) genuinely work**, not just the
-  ephemeral hot-patch. On the closed-world native binary, that reload is
-  constrained; on the JVM uberjar it is normal Clojure.
+- `(require 'ns :reload)` is *mechanically* able to recompile a namespace from
+  its `.clj` — the uberjar bundles the sources alongside the AOT classes, so the
+  `.clj` is on the classpath. On the closed-world native binary that reload is
+  unsupported; on the JVM uberjar it is normal Clojure.
+
+  **Caveat — which `.clj` a reload sees (why job C does NOT fully hold in the
+  container).** The tenant's `by` runs as `java -jar /opt/by/by.jar`
+  (`Dockerfile` `by` shim), so the process classpath is **the uberjar alone**,
+  and brainyard's `.clj` sources exist *only inside that jar*. `/workspace` is an
+  **empty `git init`-ed dir** (`entrypoint.sh`), not a brainyard checkout, and is
+  **not on the classpath**. Consequences for fixing *brainyard's own* code:
+  `(meta #'foo)` `:file` points at a path *inside the jar* with no on-disk twin;
+  `update-file` (project-root-anchored to `/workspace`) can't reach or edit a
+  file inside the jar; and `(require 'ns :reload)` reads the namespace from the
+  classpath — i.e. the jar's **frozen** copy — so it would never reflect a
+  `/workspace` edit anyway. The durable **edit-source → reload-from-source** loop
+  (steps 5–6) therefore belongs to the **dev source-checkout runtime**
+  (`bb tui` / `clojure -M …`, where the classpath *is* the component `src/`
+  dirs), not the packaged jar/container. In the container the source-fix loop
+  only works for a **tenant's own** Clojure project under `/workspace`, and only
+  once its `src` is put on the eval's classpath (`load-file` / `add-classpath`).
 
 **2. The container is the blast-radius boundary that makes full-trust safe.**
 Debug-agent's only eval gate is the deny-list tripwire (§11) — fine when the
@@ -415,17 +435,20 @@ the container away.
 
 **3. The image already ships everything the loop needs.** The playground
 Dockerfile bakes the full dev toolchain the agent drives via `bash`: `clj` / `bb`
-(reload + tests), `git` (the source edits land in a real repo, `git init`-ed at
-first boot), `rg`/`fd`/`jq`/`tree` (grep/search), plus `clj-nrepl-eval` (an
-external nREPL *client* pre-warmed for CIDER-style attach). Nothing extra to
-install for debug-agent to reproduce → probe → edit → reload → test.
+(reload + tests), `git` (the `/workspace` project repo is `git init`-ed at first
+boot — a tenant-project repo, not a brainyard checkout; point 1 caveat),
+`rg`/`fd`/`jq`/`tree` (grep/search), plus `clj-nrepl-eval` (an external nREPL
+*client* pre-warmed for CIDER-style attach). Nothing extra to install for
+debug-agent to reproduce → probe → live-patch → verify.
 
 **4. Persistence + reattach fit the workflow.** Per-session named volumes
-(`pg-state-<id>` → `~/.brainyard`, `pg-work-<id>` → `/workspace`) mean a
-source edit debug-agent makes under `/workspace` **survives suspend/resume**, and
-`--web-tmux` + `--resume-latest` means a dropped browser tab reattaches to the
-same live session — the investigation (and its pinned nREPL session) keeps
-running.
+(`pg-state-<id>` → `~/.brainyard`, `pg-work-<id>` → `/workspace`) mean any file
+debug-agent writes under `/workspace` (a tenant-project edit, a captured probe,
+notes) **survives suspend/resume**, and `--web-tmux` + `--resume-latest` means a
+dropped browser tab reattaches to the same live session — the investigation (and
+its pinned nREPL session) keeps running. (This persists `/workspace` files, not
+edits to brainyard's own source — those live in the jar; see the caveat in
+point 1.)
 
 **5. External attach for a human co-pilot.** `clj-nrepl$start-server` writes a
 per-instance port file so a developer can point CIDER/`clj-nrepl-eval` at the
@@ -436,11 +459,20 @@ JVM. The container makes that safe to expose on loopback.
 - **(B) Understand** — a tenant learning brainyard asks "how does config
   resolution actually work?" or "what tools does `code$eval` expose?" and
   debug-agent answers from the live registry/namespaces, not from stale docs.
-- **(A/C) Debug + fix** — "reproduce why my last agent turn errored and fix it"
-  runs the full loop against the running `by`, lands the source edit in
-  `/workspace`, and reloads to prove it — all inside the sandbox.
+  Fully works.
+- **(A) Debug + validate** — "reproduce why my last agent turn errored and prove
+  a fix" runs reproduce → probe → hypothesize → **ephemeral live-patch**
+  (`alter-var-root`/`def`/`defmethod`) against the running `by`, all inside the
+  sandbox. Fully works — the validation is exactly what the container is for.
+- **(C) Durable fix — dev checkout, not the container.** Making the fix permanent
+  in *brainyard's own* source (edit + reload-from-source, steps 5–6) does **not**
+  hold in the packaged container: its classpath is the uberjar, brainyard's
+  `.clj` lives inside the jar, and `/workspace` is empty and off-classpath (point
+  1 caveat). Do this in the dev source-checkout runtime (`bb tui` / `clojure -M`)
+  instead. In the container, job C applies only to a **tenant's own**
+  `/workspace` project.
 - **A throwaway teaching/demo sandbox** — because the container is disposable,
-  it's the ideal place to *show* the reproduce → hot-patch → edit → reload →
+  it's the ideal place to *show* the reproduce → probe → **live hot-patch** →
   verify loop end-to-end without risking anything.
 
 ---
@@ -509,12 +541,19 @@ browser TUI, invoke the specialist inline:
 @debug-agent understand how the hooks registry works — list registered hooks
 and the event catalog from the live image.
 
-@debug-agent reproduce and fix: <describe a fault>. Validate the patch live,
-edit the source under /workspace, reload the namespace, and re-verify.
+@debug-agent reproduce and validate: <describe a fault>. Reproduce it in the
+live image, hypothesize, and prove a fix with an ephemeral live-patch
+(alter-var-root / def). Report the root cause and the validated patch.
 ```
 
-The source edit lands in the `/workspace` git repo (persisted on
-`pg-work-<id>`); `--resume-latest` reattaches if the tab drops.
+The live-patch validation runs entirely in the container. To make the fix
+**permanent in brainyard's own source**, apply the reported patch in a dev
+source-checkout runtime (`bb tui` / `clojure -M`) and `:reload` there — the
+packaged container has no editable on-disk brainyard source and its `:reload`
+reads the jar's frozen copy (§12 point 1 caveat). `--resume-latest` reattaches
+the container session if the tab drops. (For a fault in the tenant's *own*
+`/workspace` project, the full edit → reload loop does work in-container once
+that project's `src` is on the eval classpath.)
 
 ### 13c. What to watch for
 
