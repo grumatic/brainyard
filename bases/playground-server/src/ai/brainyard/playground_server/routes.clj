@@ -12,6 +12,7 @@
      GET    /api/sessions/:id/ports       -> 200 {:ports [...]} | 404
      GET    /api/sessions/:id/brainyard   -> 200 {:sessions [...]} | 404
      GET    /api/sessions/:id/brainyard/:sid/config -> 200 {config} | 404
+     GET    /api/sessions/:id/graph       -> 200 {:nodes :edges :counts} | 404
      DELETE /api/sessions/:id             -> 204
      POST   /api/sessions/:id/tty-token   -> 200 {:token ...}
      GET    /api/sessions/:id/tty         -> WebSocket (ttyd protocol)
@@ -142,6 +143,15 @@
       (json 200 cfg)
       (json 404 {:error "not found"}))))
 
+(defn- brainyard-graph
+  "Context-graph memory (nodes + edges + counts) of the owned workspace, read
+   over `by memory graph --json`. Whole-DB / user-scoped (not per session)."
+  [req]
+  (let [uid (user-id req) id (-> req :path-params :id)]
+    (if-let [g (sessions/brainyard-graph uid id)]
+      (json 200 g)
+      (json 404 {:error "not found"}))))
+
 (defn- resume-session [req]
   (if-let [s (sessions/resume! (user-id req) (-> req :path-params :id))]
     (json 200 s)
@@ -218,6 +228,7 @@
      ["/sessions/:id/resume"     {:post (wrap-require-auth resume-session)}]
      ["/sessions/:id/ports"      {:get (wrap-require-auth session-ports)}]
      ["/sessions/:id/brainyard"  {:get (wrap-require-auth brainyard-sessions)}]
+     ["/sessions/:id/graph"      {:get (wrap-require-auth brainyard-graph)}]
      ["/sessions/:id/brainyard/:sid/config"
       {:get (wrap-require-auth brainyard-session-config)}]
      ;; ttyd's own client, proxied same-origin (workspace iframe)

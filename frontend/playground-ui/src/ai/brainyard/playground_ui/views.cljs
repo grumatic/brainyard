@@ -6,7 +6,8 @@
    The terminal is ttyd's own self-contained client, embedded same-origin via an
    iframe (`/api/sessions/:id/term/`) — so the TUI renders exactly as ttyd
    intends, with no hand-rolled xterm client to maintain."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [ai.brainyard.playground-ui.graph :as graph]))
 
 (defn login-view []
   [:div.center {:replicant/key :view/login}
@@ -188,14 +189,30 @@
          [:div.config-detail
           (config-detail id show-snapshot? (get config selected))]])]]))
 
-(defn workspace-view [{:keys [ports brainyard]} id]
+(defn graph-memory-modal
+  "Large overlay showing the workspace's context-graph memory as an interactive
+   node-link canvas (drag nodes, scroll to zoom, drag background to pan). Whole-DB
+   / user-scoped — not tied to a single brainyard session."
+  [id {:keys [open?] :as g}]
+  (when open?
+    [:div.modal-backdrop {:replicant/key :graph-memory}
+     [:div.modal.graph-modal
+      [:header
+       [:h2 "Graph memory"]
+       [:div.spacer]
+       [:button {:on {:click [[:graph/refresh id]]}} "Refresh"]
+       [:button {:on {:click [[:graph/toggle id]]}} "Close"]]
+      (graph/panel id g)]]))
+
+(defn workspace-view [state id]
   [:div.workspace {:replicant/key :view/workspace}
    [:header
     [:button {:on {:click [[:nav/dashboard]]}} "← Workspaces"]
     [:span.id id]
     [:div.spacer]
     [:button {:on {:click [[:brainyard/toggle id]]}} "Config"]
-    (port-menu (get ports id))]
+    [:button {:on {:click [[:graph/toggle id]]}} "Graph Memory"]
+    (port-menu (get (:ports state) id))]
    ;; ttyd's own client, proxied same-origin. Stable :replicant/key so the iframe
    ;; (and its live ttyd session) survives header re-renders.
    ;; `allow` grants clipboard access so the proxy-injected copy-on-select
@@ -203,7 +220,8 @@
    [:iframe.term {:replicant/key (str "term-" id)
                   :allow "clipboard-read; clipboard-write"
                   :src (str "/api/sessions/" id "/term/")}]
-   (brainyard-config-modal id (get brainyard id))])
+   (brainyard-config-modal id (get (:brainyard state) id))
+   (graph-memory-modal id (get (:graph state) id))])
 
 ;; ~time the 0→95% ramp targets; real readiness snaps it to ready/dismiss.
 (def ^:private provision-expected-ms 15000)

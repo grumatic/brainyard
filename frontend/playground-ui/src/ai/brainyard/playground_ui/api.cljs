@@ -46,6 +46,10 @@
    (get-json (str "/api/sessions/" id "/brainyard/" sid "/config"
                   (when (seq query) (str "?query=" (js/encodeURIComponent query)))))))
 
+;; Context-graph memory dump for a workspace (nodes + edges + counts).
+;; -> {:success :enabled? :nodes [...] :edges [...] :counts {:nodes :edges}}
+(defn graph [id] (get-json (str "/api/sessions/" id "/graph")))
+
 ;; BYO env (settings). env is a {name -> value} map.
 (defn get-env         []    (get-json "/api/me/env"))
 (defn put-env         [env] (request "PUT" "/api/me/env" {:env env}))

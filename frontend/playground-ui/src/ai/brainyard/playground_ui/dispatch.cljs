@@ -12,6 +12,7 @@
             [reitit.frontend.easy :as rfe]
             [ai.brainyard.playground-ui.state :as state]
             [ai.brainyard.playground-ui.api :as api]
+            [ai.brainyard.playground-ui.graph :as graph]
             [ai.brainyard.playground-ui.auth :as auth]))
 
 (defn- reload-sessions! []
@@ -31,6 +32,33 @@
                (swap! state/app-state assoc :settings
                       {:rows (env->rows env) :suggested (vec suggested)
                        :reveal #{} :status nil})))))
+
+(defn- load-graph! [id]
+  (swap! state/app-state assoc-in [:graph id :status] :loading)
+  (-> (api/graph id)
+      (.then
+       (fn [{:keys [success enabled? nodes edges counts] :as g}]
+         (let [nodes  (vec nodes)
+               edges  (vec edges)
+               status (cond
+                        (false? success)  :error
+                        (empty? nodes)    (if enabled? :empty :not-enabled)
+                        :else             :ready)
+               pos    (when (= status :ready) (graph/layout nodes edges))]
+           (swap! state/app-state update-in [:graph id] merge
+                  {:status status :enabled? enabled? :error (:error g)
+                   :nodes nodes :edges edges
+                   :counts (or counts {:nodes (count nodes) :edges (count edges)})
+                   :pos pos :view (when pos (graph/view pos))
+                   :selected nil :drag nil}))))
+      (.catch (fn [_] (swap! state/app-state assoc-in [:graph id :status] :error)))))
+
+;; Zoom the viewBox by `factor` about SVG point [cx cy] (keeps that point fixed).
+(defn- zoom-view [{:keys [x y w h]} factor cx cy]
+  (let [w' (-> (* w factor) (max 60) (min 40000))
+        h' (-> (* h factor) (max 42) (min 28000))
+        f  (/ w' w)]
+    {:x (- cx (* (- cx x) f)) :y (- cy (* (- cy y) f)) :w w' :h h'}))
 
 (defn- run-action [dom-event [action & args]]
   (case action
@@ -180,8 +208,79 @@
     :brainyard/toggle-snapshot
     (swap! state/app-state update-in [:brainyard (first args) :show-snapshot?] not)
 
+    ;; --- graph memory canvas (per workspace) ------------------------------
+    :graph/toggle
+    (let [id    (first args)
+          open? (get-in @state/app-state [:graph id :open?])]
+      (swap! state/app-state assoc-in [:graph id :open?] (not open?))
+      ;; (Re)load every time it opens so the canvas reflects the latest graph.
+      (when-not open? (load-graph! id)))
+    :graph/refresh (load-graph! (first args))
+
+    :graph/select
+    (let [[id nid] args]
+      (swap! state/app-state assoc-in [:graph id :selected] nid))
+
+    :graph/refit
+    (let [id (first args)]
+      (when-let [pos (get-in @state/app-state [:graph id :pos])]
+        (swap! state/app-state assoc-in [:graph id :view] (graph/view pos))))
+
+    :graph/zoom
+    (let [id (first args)
+          v  (get-in @state/app-state [:graph id :view])]
+      (when (and v dom-event)
+        (let [factor (if (neg? (.-deltaY dom-event)) 0.85 1.18)
+              [cx cy] (graph/event->svg dom-event v)]
+          (swap! state/app-state assoc-in [:graph id :view] (zoom-view v factor cx cy)))))
+
+    :graph/node-down
+    (let [[id nid] args
+          v (get-in @state/app-state [:graph id :view])
+          p (get-in @state/app-state [:graph id :pos nid])]
+      (when (and v p dom-event)
+        (let [[px py] (graph/event->svg dom-event v)]
+          (try (.setPointerCapture (.-currentTarget dom-event) (.-pointerId dom-event))
+               (catch :default _ nil))
+          (swap! state/app-state update-in [:graph id] assoc
+                 :selected nid
+                 :drag {:mode :node :nid nid :ox (- px (first p)) :oy (- py (second p))}))))
+
+    :graph/bg-down
+    (let [id (first args)
+          v  (get-in @state/app-state [:graph id :view])]
+      (when (and v dom-event)
+        (let [svg  (.-currentTarget dom-event)
+              rect (.getBoundingClientRect svg)]
+          (try (.setPointerCapture svg (.-pointerId dom-event))
+               (catch :default _ nil))
+          (swap! state/app-state assoc-in [:graph id :drag]
+                 {:mode :pan
+                  :sx (.-clientX dom-event) :sy (.-clientY dom-event)
+                  :vx (:x v) :vy (:y v)
+                  :kx (/ (:w v) (max 1 (.-width rect)))
+                  :ky (/ (:h v) (max 1 (.-height rect)))}))))
+
+    :graph/pointer-move
+    (let [id   (first args)
+          drag (get-in @state/app-state [:graph id :drag])]
+      (when (and drag dom-event)
+        (case (:mode drag)
+          :node (let [v (get-in @state/app-state [:graph id :view])
+                      [px py] (graph/event->svg dom-event v)]
+                  (swap! state/app-state assoc-in [:graph id :pos (:nid drag)]
+                         [(- px (:ox drag)) (- py (:oy drag))]))
+          :pan  (swap! state/app-state update-in [:graph id :view] merge
+                       {:x (- (:vx drag) (* (- (.-clientX dom-event) (:sx drag)) (:kx drag)))
+                        :y (- (:vy drag) (* (- (.-clientY dom-event) (:sy drag)) (:ky drag)))})
+          nil)))
+
+    :graph/pointer-up
+    (swap! state/app-state assoc-in [:graph (first args) :drag] nil)
+
     ;; --- escape hatch for imperative event control ------------------------
-    :event/prevent-default (some-> dom-event .preventDefault)
+    :event/prevent-default   (some-> dom-event .preventDefault)
+    :event/stop-propagation  (some-> dom-event .stopPropagation)
 
     (js/console.warn "Unknown action:" (pr-str action))))
 

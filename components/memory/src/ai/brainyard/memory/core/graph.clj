@@ -291,6 +291,39 @@
                   :c :graph_nodes/c)
             0)))
 
+(defn count-edges
+  "Total valid (non-invalidated) edge count for `user-id`."
+  [ds user-id]
+  (long (or (val1 (jdbc/execute-one!
+                   ds ["SELECT COUNT(*) AS c FROM graph_edges
+                        WHERE user_id = ? AND t_invalid IS NULL" user-id])
+                  :c :graph_edges/c)
+            0)))
+
+(defn all-nodes
+  "Every node for `user-id`, newest-first, capped at `limit` (default 1000).
+  A full-graph dump for visualisation/export — unlike `search-nodes`/`neighbors`
+  it is unscoped. Each row is the coerced node map (`:id :node-type :name
+  :summary :aliases :metadata`)."
+  ([ds user-id] (all-nodes ds user-id 1000))
+  ([ds user-id limit]
+   (mapv row->node
+         (jdbc/execute! ds ["SELECT * FROM graph_nodes WHERE user_id = ?
+                             ORDER BY updated_at DESC, id DESC LIMIT ?"
+                            user-id (long (or limit 1000))]))))
+
+(defn all-edges
+  "Every valid (non-invalidated) edge for `user-id`, capped at `limit` (default
+  2000). Companion to `all-nodes` for a full-graph dump; each row is the coerced
+  edge map (`:id :src_id :dst_id :relation :fact :confidence …`)."
+  ([ds user-id] (all-edges ds user-id 2000))
+  ([ds user-id limit]
+   (mapv row->edge
+         (jdbc/execute! ds ["SELECT * FROM graph_edges
+                             WHERE user_id = ? AND t_invalid IS NULL
+                             ORDER BY id DESC LIMIT ?"
+                            user-id (long (or limit 2000))]))))
+
 (defn prune-nodes-to-budget!
   "Enforce a total-node budget for `user-id`. No-op unless `max-nodes` is a
   positive int AND the count exceeds it. Over budget, hard-delete the

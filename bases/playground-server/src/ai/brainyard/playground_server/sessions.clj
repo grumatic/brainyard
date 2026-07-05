@@ -142,6 +142,17 @@
         {:success false :session-id sid
          :error (str "no live brainyard session '" sid "' in this workspace")}))))
 
+(defn brainyard-graph
+  "Context-graph memory dump for `id`'s workspace container (whole-DB, user-scoped
+   — not per brainyard-session). nil when not owned (the tenant boundary);
+   `{:success false …}` when the workspace isn't running."
+  [user-id id]
+  (when-let [rec (owned user-id id)]
+    (if (or (:fake rec) (not (workspace/running? id)))
+      {:success false :enabled? false :nodes [] :edges [] :counts {:nodes 0 :edges 0}
+       :error "workspace not running"}
+      (workspace/brainyard-graph id))))
+
 (defn mark-down!
   "The container for `id` is gone/unreachable: drop its stale upstream cache and
    mark it suspended so the dashboard shows Resume. No-op if not owned/fake."

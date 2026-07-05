@@ -334,3 +334,18 @@
     ;; non-zero), so prefer stdout; only synthesize an error if it's unparseable.
     (or (parse-json out)
         {:success false :error (or (not-empty err) (str "docker exec failed (exit " exit ")"))})))
+
+(defn brainyard-graph
+  "Dump the container's context-graph memory (nodes + edges + counts) as parsed
+   `by memory graph --json`. User-scoped over the whole workspace memory DB
+   (BY_USER_ID = the workspace session-id in the container), so — unlike config —
+   there is no per-brainyard-session narrowing. Read from the default
+   /workspace cwd; the memory store is HOME-scoped, not cwd-scoped. `by memory
+   graph --json` prints valid JSON even when the graph tier is off/empty (then
+   `:enabled? false`, empty collections)."
+  [session-id]
+  (let [{:keys [exit out err]} (exec-by-tenant session-id workspace-root
+                                               "by" "memory" "graph" "--json")]
+    (or (parse-json out)
+        {:success false :enabled? false :nodes [] :edges [] :counts {:nodes 0 :edges 0}
+         :error (or (not-empty err) (str "docker exec failed (exit " exit ")"))})))

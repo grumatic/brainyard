@@ -1041,6 +1041,42 @@
           (println "Error:" (.getMessage e)))
         (System/exit 1)))))
 
+(defn- graph-memory-enabled?
+  "Ground-truth read of whether the context-graph tier is on for this process —
+   the `BY_ENABLE_GRAPH_MEMORY` env var parsed as a boolean. Informational only:
+   the dump works regardless (an off/never-populated graph just dumps empty), but
+   surfaces let the UI explain an empty graph as \"not enabled\" vs \"no data yet\"."
+  []
+  (boolean (some-> (System/getenv "BY_ENABLE_GRAPH_MEMORY")
+                   str/trim str/lower-case
+                   #{"1" "true" "yes" "on"})))
+
+(defn cmd-memory-graph
+  "Dump a user's context-graph (nodes + valid edges + counts) as JSON for
+   visualisation/export. Unscoped full-graph read over
+   `~/.brainyard/memory/<user-id>.db`; degrades to empty collections when the
+   graph tier was never populated. `--json` is the only useful format."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json?   (:json opts)
+        uid     (helpers/resolve-user-id (:user-id opts))
+        enabled (graph-memory-enabled?)]
+    (try
+      (let [snap (with-memory-manager uid (fn [mm] (mem/graph-snapshot mm)))
+            out  (assoc snap :success true :user-id uid :enabled? enabled)]
+        (if json?
+          (print-json! out)
+          (println (format "Graph[%s]: nodes=%s edges=%s enabled=%s"
+                           uid (get-in snap [:counts :nodes])
+                           (get-in snap [:counts :edges]) enabled))))
+      (catch Exception e
+        (if json?
+          (print-json! {:success false :error (.getMessage e)
+                        :user-id uid :enabled? enabled
+                        :nodes [] :edges [] :counts {:nodes 0 :edges 0}})
+          (println "Error:" (.getMessage e)))
+        (System/exit 1)))))
+
 (defn cmd-memory-graph-build
   "Synchronously extract a user's L2 episodes into the context-graph
    (graph_nodes/graph_edges). Requires the graph tier configured
@@ -1675,7 +1711,11 @@
                                 {:command     "stats"
                                  :description "Report L1/L2/L3 counts for a user"
                                  :opts        [user-id-opt json-opt]
-                                 :runs        cmd-memory-stats}]}]})
+                                 :runs        cmd-memory-stats}
+                                {:command     "graph"
+                                 :description "Dump the context-graph (nodes + edges + counts) as JSON for visualisation"
+                                 :opts        [user-id-opt json-opt]
+                                 :runs        cmd-memory-graph}]}]})
 
 ;; ============================================================================
 ;; Entry point

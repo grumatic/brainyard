@@ -33,6 +33,7 @@
             [ai.brainyard.memory.core.extract :as extract]
             [ai.brainyard.memory.core.episodic :as episodic]
             [ai.brainyard.memory.core.unified-store :as us]
+            [ai.brainyard.memory.core.graph :as graph]
             [ai.brainyard.memory.core.l1-store :as l1]
             [ai.brainyard.memory.core.capture.dispatcher :as capture-dispatcher]
             [ai.brainyard.memory.core.capture.sidecar :as capture-sidecar]
@@ -127,6 +128,22 @@
   ([store-or-manager keywords] (graph-related store-or-manager keywords {}))
   ([store-or-manager keywords opts]
    (proto/related (->store store-or-manager) keywords opts)))
+
+(defn graph-snapshot
+  "Full-graph dump for visualisation/export: every node + every valid edge for
+  the store's user, plus counts. opts: {:node-limit :edge-limit}. Returns
+  `{:nodes [...] :edges [...] :counts {:nodes N :edges M}}`. Unscoped (not a
+  recall query) — degrades to empty collections when the graph tier was never
+  populated."
+  ([store-or-manager] (graph-snapshot store-or-manager {}))
+  ([store-or-manager {:keys [node-limit edge-limit]}]
+   (let [s       (->store store-or-manager)
+         ds      (:ds s)
+         user-id (:user-id s)]
+     {:nodes  (graph/all-nodes ds user-id (or node-limit 1000))
+      :edges  (graph/all-edges ds user-id (or edge-limit 2000))
+      :counts {:nodes (graph/count-nodes ds user-id)
+               :edges (graph/count-edges ds user-id)}})))
 
 (defn graph-vec-status
   "Embedding-model staleness of the vector index (CR-MEM-21).
