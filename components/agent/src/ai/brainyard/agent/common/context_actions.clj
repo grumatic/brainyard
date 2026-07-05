@@ -196,14 +196,16 @@
         seg-starts (into [0] (keep-indexed
                               (fn [i m] (when (and (pos? i) (= "user" (:role m))) i))
                               msgs))]
-    (into []
-          (keep (fn [[start next-start]]
-                  (let [q-idx (when (= "user" (:role (nth msgs start))) start)
-                        a-idx (->> (range start (or next-start n))
-                                   (filter #(answer? (nth msgs %)))
-                                   last)]
-                    (when a-idx {:q-idx q-idx :a-idx a-idx}))))
-          (map vector seg-starts (concat (rest seg-starts) [nil])))))
+    (if (zero? n)
+      []                                ; empty window: no units, and (nth msgs 0) would throw
+      (into []
+            (keep (fn [[start next-start]]
+                    (let [q-idx (when (= "user" (:role (nth msgs start))) start)
+                          a-idx (->> (range start (or next-start n))
+                                     (filter #(answer? (nth msgs %)))
+                                     last)]
+                      (when a-idx {:q-idx q-idx :a-idx a-idx}))))
+            (map vector seg-starts (concat (rest seg-starts) [nil]))))))
 
 (defn- merge-adjacent-turn-refs
   "Collapse consecutive turn-ref entries into range refs
