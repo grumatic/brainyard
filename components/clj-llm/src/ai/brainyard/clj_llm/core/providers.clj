@@ -204,7 +204,9 @@
     {:model "global.anthropic.claude-opus-4-6-v1" :curated-rank 24 :description "Claude Opus 4.6 on Bedrock (global cross-region)"}
     {:model "mistral.mistral-small-2402-v1:0"}
     {:model "qwen.qwen3-vl-235b-a22b" :curated-rank 39 :description "Qwen3 VL 235B A22B (vision) on Bedrock" :region "us-east-1"}
-    {:model "amazon.nova-pro-v1:0" :curated-rank 31 :description "Amazon Nova Pro (Bedrock, multimodal)"}
+    {:model "amazon.nova-pro-v1:0"}
+    {:model "us.amazon.nova-pro-v1:0" :curated-rank 31 :description "Amazon Nova Pro on Bedrock (US cross-region, multimodal)"}
+    {:model "eu.amazon.nova-pro-v1:0"}
     {:model "us.anthropic.claude-sonnet-4-5-20250929-v1:0" :curated-rank 28 :description "Claude Sonnet 4.5 on Bedrock (US cross-region)"}
     {:model "global.anthropic.claude-mythos-5" :curated-rank 57 :description "Claude Mythos 5 on Bedrock (global)"}
     {:model "cohere.command-r-plus-v1:0"}
@@ -236,11 +238,15 @@
     {:model "global.anthropic.claude-fable-5" :curated-rank 56 :description "Claude Fable 5 on Bedrock (global)"}
     {:model "qwen.qwen3-32b-v1:0" :curated-rank 37 :description "Qwen3 32B (dense) on Bedrock" :region "us-east-1"}
     {:model "amazon.nova-micro-v1:0"}
+    {:model "us.amazon.nova-micro-v1:0"}
+    {:model "eu.amazon.nova-micro-v1:0"}
     {:model "us.anthropic.claude-haiku-4-5-20251001-v1:0" :curated-rank 30 :description "Claude Haiku 4.5 on Bedrock (US cross-region)"}
     {:model "qwen.qwen3-coder-next"}
     {:model "global.anthropic.claude-opus-4-7" :curated-rank 23 :description "Claude Opus 4.7 on Bedrock (global cross-region, most capable)"}
     {:model "us.deepseek.r1-v1:0" :curated-rank 42 :description "DeepSeek-R1 on Bedrock (US cross-region)" :region "us-east-1"}
-    {:model "amazon.nova-lite-v1:0" :curated-rank 32 :description "Amazon Nova Lite (Bedrock, fast)"}
+    {:model "amazon.nova-lite-v1:0"}
+    {:model "us.amazon.nova-lite-v1:0" :curated-rank 32 :description "Amazon Nova Lite on Bedrock (US cross-region, fast)"}
+    {:model "eu.amazon.nova-lite-v1:0"}
     {:model "deepseek.r1-v1:0" :curated-rank 40 :description "DeepSeek-R1 (reasoning) on Bedrock" :region "us-east-1"}
     {:model "anthropic.claude-opus-4-1-20250805-v1:0"}
     {:model "anthropic.claude-3-5-sonnet-20241022-v2:0"}
