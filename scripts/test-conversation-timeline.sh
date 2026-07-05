@@ -37,11 +37,10 @@ harness_init "coact-agent"
 TMUX_SESSION="convtl-$$"
 CODEWORD="TOPAZ-7"
 STARTUP_TIMEOUT=150     # bb tui compiles from source on first launch
-# `run` always mints a FRESH auto-generated session id (it has no -s option and
-# --new is a deprecated no-op), so SESSION_ID is discovered post-boot from the
-# project's sessions/ dir rather than pinned.
-SESSION_ID=""
-SOCK=""
+# `run -s <id>` pins the session id (and errors on collision), so the ask-socket
+# path is deterministic and needs no post-boot discovery. SESSION_ID comes from
+# harness_init.
+SOCK="$PROJ/.brainyard/sessions/$SESSION_ID/ask.sock"
 NREPL_PORT=""
 
 # ---------- combined cleanup (tmux run process + harness isolation) ----------
@@ -68,45 +67,30 @@ echo "   tmux=$TMUX_SESSION  codeword=$CODEWORD"
 echo
 
 # ---------- boot a persistent `bb tui run` session in tmux -------------------
-# BY_NREPL_ENABLED exposes the in-process nREPL for structural inspection;
-# --new forces a fresh session under our pinned -s id (skips the picker).
-echo "[boot] launching persistent session (compiles from source; up to ${STARTUP_TIMEOUT}s)…"
+# -s pins the session id (deterministic ask-socket path); BY_NREPL_ENABLED
+# exposes the in-process nREPL for structural inspection.
+echo "[boot] launching persistent session '$SESSION_ID' (compiles from source; up to ${STARTUP_TIMEOUT}s)…"
 snapshot_ports() { clj-nrepl-eval --discover-ports 2>/dev/null | grep -oE 'localhost:[0-9]+' | grep -oE '[0-9]+' | sort -u; }
 PORTS_BEFORE="$(snapshot_ports)"
 
 tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-    "BY_NREPL_ENABLED=true BY_PROJECT_DIR='$PROJ' bb tui run \
+    "BY_NREPL_ENABLED=true BY_PROJECT_DIR='$PROJ' bb tui run -s '$SESSION_ID' \
        -u '$USER_ID' -p '$PROVIDER' -m '$MODEL' -a coact-agent -C '$PROJ'" \
     || { echo "FATAL: tmux new-session failed"; exit 2; }
 
-# Dismiss the session picker if one appears (fresh sessions usually skip it).
-for _ in $(seq 1 15); do
-    if tmux capture-pane -t "$TMUX_SESSION" -p 2>/dev/null | grep -qE '\(N\)ew'; then
-        tmux send-keys -t "$TMUX_SESSION" "N" Enter; break
-    fi
-    sleep 1
-done
-
-# ---------- discover the fresh session id + wait for it to be attachable -----
-SESS_DIR="$PROJ/.brainyard/sessions"
+# ---------- wait for the pinned session to become attachable -----------------
 deadline=$(( $(date +%s) + STARTUP_TIMEOUT ))
 while (( $(date +%s) < deadline )); do
-    if [[ -d "$SESS_DIR" ]]; then
-        SESSION_ID="$(ls -1t "$SESS_DIR" 2>/dev/null | head -1)"
-        if [[ -n "$SESSION_ID" ]]; then
-            SOCK="$SESS_DIR/$SESSION_ID/ask.sock"
-            [[ -S "$SOCK" ]] && break
-            # honour the ask.sock relocation fallback (deep paths overflow the
-            # ~104B AF_UNIX cap → recorded in meta.edn :ask-socket-path)
-            alt="$(grep -oE ':ask-socket-path "[^"]+"' "$SESS_DIR/$SESSION_ID/meta.edn" 2>/dev/null \
-                     | grep -oE '/[^"]+' | head -1)"
-            [[ -n "$alt" && -S "$alt" ]] && { SOCK="$alt"; break; }
-        fi
-    fi
+    [[ -S "$SOCK" ]] && break
+    # honour the ask.sock relocation fallback (deep paths overflow the ~104B
+    # AF_UNIX cap → recorded in meta.edn :ask-socket-path)
+    alt="$(grep -oE ':ask-socket-path "[^"]+"' "$PROJ/.brainyard/sessions/$SESSION_ID/meta.edn" 2>/dev/null \
+             | grep -oE '/[^"]+' | head -1)"
+    [[ -n "$alt" && -S "$alt" ]] && { SOCK="$alt"; break; }
     sleep 3
 done
-if [[ -z "$SESSION_ID" || ! -S "$SOCK" ]]; then
-    echo "FATAL: session never became attachable (session_id='$SESSION_ID' sock='$SOCK')"
+if [[ ! -S "$SOCK" ]]; then
+    echo "FATAL: session '$SESSION_ID' never became attachable (sock='$SOCK')"
     tmux capture-pane -t "$TMUX_SESSION" -p 2>/dev/null | tail -15
     exit 2
 fi

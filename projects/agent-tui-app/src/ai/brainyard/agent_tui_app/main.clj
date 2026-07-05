@@ -395,6 +395,11 @@
         ;; else fresh". Lets a relaunched workspace reattach without a stdin
         ;; picker. An explicit --resume <id> / bare picker still takes precedence.
         resume-latest? (or (:resume-latest opts) (env-truthy? "BY_RESUME_LATEST"))
+        ;; -s/--session <id>: start a NEW session with an explicit id (scripting
+        ;; / `ask --attach` targeting). Errors on collision — reattaching an
+        ;; existing session is --resume's job, not this flag's. Ignored when a
+        ;; resume flag is also present (resume is the more specific intent).
+        new-id (some-> (:session opts) str/trim not-empty)
         existing (set (persist/list-sessions))
         [session-id resume?]
         (cond
@@ -415,6 +420,15 @@
           (if-let [latest (latest-session-id existing)]
             [latest true]
             [nil false])
+
+          new-id
+          (do
+            (when (contains? existing new-id)
+              (binding [*out* *err*]
+                (println (str "Error: session '" new-id "' already exists; "
+                              "use --resume " new-id " to reattach.")))
+              (System/exit 1))
+            [new-id false])
 
           :else
           [nil false])
@@ -511,6 +525,7 @@
     (:model opts)          (into ["-m" (:model opts)])
     (:user-id opts)        (into ["-u" (:user-id opts)])
     (:working-dir opts)    (into ["-C" (:working-dir opts)])
+    (:session opts)        (into ["-s" (:session opts)])
     (:inline opts)         (conj "-i")
     (:verbose opts)        (conj "-v")
     (:max-iterations opts) (into ["-n" (str (:max-iterations opts))])
@@ -655,6 +670,7 @@
     (:model opts)          (into ["-m" (:model opts)])
     (:user-id opts)        (into ["-u" (:user-id opts)])
     (:working-dir opts)    (into ["-C" (:working-dir opts)])
+    (:session opts)        (into ["-s" (:session opts)])
     (:inline opts)         (conj "-i")
     (:verbose opts)        (conj "-v")
     (:max-iterations opts) (into ["-n" (str (:max-iterations opts))])
@@ -1504,6 +1520,9 @@
                                 {:option "resume-latest"
                                  :as "Resume the most-recent persisted session non-interactively (fresh if none); env BY_RESUME_LATEST"
                                  :type :with-flag :default false}
+                                {:option "session" :short "s"
+                                 :as "Start a NEW session with this exact id (deterministic paths for scripting/attach); errors if the id already exists — use --resume <id> to reattach"
+                                 :type :string}
                                 {:option "new"
                                  :as "(deprecated; sessions start fresh by default — accepted as a no-op)"
                                  :type :with-flag :default false}
