@@ -444,7 +444,14 @@ Design points:
   `(context-get [:previous-turns])` in the code channel. (NB the
   previously-documented `get-previous-turn` sandbox fn never existed —
   stale docstring, now fixed.)
-- ⬜ Phase-3 live continuity A/B (K=0 vs K=2 vs full) still to run.
+- ✅ Live continuity check (2026-07-05, 6-turn bedrock claude-haiku session,
+  K=2): refs render live (`[Turn 1]` at turn 4, merged `[Turns 1–2]` at
+  turn 5 — verified in request bodies); the pronoun probe ("add 10 to it")
+  resolved against the verbatim tail; the deep probe ("quote my very first
+  question") returned the exact text, which at that point existed verbatim
+  ONLY in the Previous Turns entry — ref-following works. The window held
+  flat at ~70–90 tokens instead of growing per turn. A K=0-vs-K=2 A/B
+  remains optional if further tightening is ever wanted.
 
 ## 5. Priority / effort summary
 
