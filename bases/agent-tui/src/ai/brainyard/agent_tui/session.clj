@@ -684,11 +684,19 @@
    Path 4 tees here so the default \"active session\" write path also reaches
    `<project>/.brainyard/sessions/<asid>/scrollback.stream.txt`. Path 3 (out-sink) is
    the daemon mode — the daemon writes through its own per-pane FIFOs which
-   are responsible for any persistence."
-  ([s] (emit! s nil))
-  ([s session-idx]
+   are responsible for any persistence.
+
+   Emitting normally finalizes the active session's thinking spinner — output
+   appearing means a thinking phase produced its result. Pass
+   `:keep-thinking? true` for INTERMEDIATE status lines emitted while the agent
+   is still working (e.g. quiet-mode sub-agent milestones dispatched mid-turn):
+   `write-output!` splices them in *above* the sticky-bottom think block, so the
+   spinner keeps animating instead of being torn down mid-turn."
+  ([s] (emit! s nil nil))
+  ([s session-idx] (emit! s session-idx nil))
+  ([s session-idx {:keys [keep-thinking?]}]
    (when (and s (not (str/blank? s)))
-     (when (render-active?) (stop-thinking-indicator!))
+     (when (and (render-active?) (not keep-thinking?)) (stop-thinking-indicator!))
      (let [target (or session-idx *render-session-idx*)]
        (cond
          target                  (sessions/emit-to-session! target s)
@@ -1980,7 +1988,9 @@
                  :tools-used       (:tools-used prior)
                  :code-blocks-used (:code-blocks-used prior)
                  :elapsed-ms       (when-let [st (:start-time prior)] (- now st))})
-               (:session-idx (get @!subagents-blocks root-aid)))))
+               (:session-idx (get @!subagents-blocks root-aid))
+               ;; Parent is still mid-turn — keep its think spinner alive.
+               {:keep-thinking? true})))
     (when (all-sub-agents-done? (get @!subagents-blocks root-aid))
       ;; Re-render in `final?` mode — drops the running-counter header so the
       ;; frozen scrollback record carries only the per-sub-agent summary
@@ -2573,7 +2583,9 @@
         (emit! (quiet-sub-milestone-line
                 {:agent-id agent-id :defagent-id defid
                  :depth display-depth :kind :started})
-               root-sidx)))))
+               root-sidx
+               ;; Parent is still mid-turn — keep its think spinner alive.
+               {:keep-thinking? true})))))
 
 (defn agent-closed-handler
   "Handler for :agent.instance/closed. Event: {:agent}.
