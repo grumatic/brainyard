@@ -47,6 +47,19 @@
     (is (= :transient (cls (java.net.SocketTimeoutException. "Read timed out"))))
     (is (= :transient (cls (java.io.IOException. "Connection reset by peer"))))
     (is (= :transient (cls (java.net.ConnectException. "Connection refused")))))
+  (testing "network throws with a NULL message → transient by TYPE, not the
+            :malformed default (regression: a bare ConnectException from a dead
+            endpoint has no message, so text matching alone misclassified it)"
+    (is (= :transient (cls (java.net.ConnectException.))))
+    (is (= :transient (cls (java.net.SocketException.))))
+    (is (= :transient (cls (java.net.UnknownHostException.))))
+    (is (= :transient (cls (java.net.SocketTimeoutException.))))
+    ;; and when wrapped in an ex-info with a generic message (as dspy/clj-http may)
+    (is (= :transient (cls (ex-info "LLM call failed" {} (java.net.ConnectException.)))))
+    ;; the surfaced reason is meaningful, never the bare class name
+    (let [{:keys [reason]} (llm/classify-error (java.net.ConnectException.))]
+      (is (str/includes? reason "connect"))
+      (is (not (str/includes? reason "java.net")))))
   (testing "provider phrasing → transient"
     (is (= :transient (cls (ex-info "Bedrock invoke failed: Bedrock is unable to process your request." {}))))
     (is (= :transient (cls (ex-info "model is overloaded, please try again" {}))))))

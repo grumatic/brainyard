@@ -219,9 +219,43 @@
   ;; Retryable network/server phrases that carry no HTTP :status.
   #"(?i)timed? ?out|timeout|connection reset|connection refused|connection closed|reset by peer|broken pipe|unexpected end of stream|stream closed|goaway|unknown ?host|no route to host|temporarily unavailable|service unavailable|overloaded|unable to process|bad gateway|gateway timeout|internal server error|please try again")
 
-(defn- error-text [e]
-  (str (or (ex-message e) (str e))
-       (when-let [c (some-> (ex-cause e) ex-message)] (str " | " c))))
+(defn- throwable-chain
+  "The exception and its transitive causes (bounded, cycle-safe)."
+  [^Throwable e]
+  (->> (iterate (fn [^Throwable t] (.getCause t)) e)
+       (take-while some?)
+       (take 12)))
+
+(defn- error-text
+  "Searchable text for an exception: every link in the cause chain, using the
+   class's simple name when a link has no message (a bare `ConnectException`
+   often has a null message — so `(ex-message e)` alone loses all signal)."
+  [e]
+  (->> (throwable-chain e)
+       (map (fn [^Throwable t] (or (ex-message t) (.getSimpleName (class t)))))
+       (str/join " | ")))
+
+(defn- network-failure-reason
+  "When any link in the cause chain is a JVM socket/DNS/TLS failure, return a
+   human-readable reason; else nil. These are classified `:transient` by TYPE —
+   robust to the frequently-null messages that defeat text matching (e.g. a bare
+   `java.net.ConnectException` with no message would otherwise fall through to
+   the `:malformed` default and surface as a bogus 'malformed model output')."
+  [e]
+  (some (fn [^Throwable t]
+          ;; Specific subclasses BEFORE their SocketException parent.
+          (condp instance? t
+            java.net.UnknownHostException     (str "provider host not found — DNS lookup failed"
+                                                   (when-let [m (ex-message t)] (str " (" m ")")))
+            java.net.NoRouteToHostException   "no network route to the provider host"
+            java.net.PortUnreachableException "provider port unreachable"
+            java.net.SocketTimeoutException   "provider connection timed out"
+            java.net.ConnectException         "could not connect to the provider (connection refused / unreachable)"
+            javax.net.ssl.SSLException        "TLS/SSL handshake with the provider failed"
+            java.net.SocketException          "network connection to the provider failed"
+            java.io.EOFException              "provider closed the connection unexpectedly"
+            nil))
+        (throwable-chain e)))
 
 (defn- first-line [s]
   (let [l (-> (str s) (str/split #"\n") first str/trim)]
@@ -232,15 +266,16 @@
      :malformed — the model produced unparseable/invalid output; the fix is to
                   re-prompt (re-running the same call won't help).
      :transient — a network/server failure that may succeed on retry: HTTP 5xx,
-                  connection/timeout errors, provider overloaded / unable-to-process.
+                  connection/DNS/TLS/timeout errors, provider overloaded.
      :fatal     — non-retryable: auth / quota / billing, malformed request, a 4xx
                   (incl. 429 rate-limit), or a model/endpoint misconfiguration.
    Returns `{:class <kw> :reason <short human string>}`. HTTP errors carry
    `:status` in ex-data; parse errors carry `:raw-text` (see parse-json-response)."
   [e]
-  (let [data   (when (instance? clojure.lang.ExceptionInfo e) (ex-data e))
-        status (:status data)
-        text   (error-text e)]
+  (let [data       (when (instance? clojure.lang.ExceptionInfo e) (ex-data e))
+        status     (:status data)
+        text       (error-text e)
+        net-reason (network-failure-reason e)]
     (cond
       ;; Parse failure → the model's output, not the transport.
       (or (contains? data :raw-text)
@@ -254,6 +289,10 @@
         (= status 429)  {:class :fatal     :reason "rate limited (HTTP 429)"}
         (>= status 400) {:class :fatal     :reason (str "request rejected (HTTP " status ")")}
         :else           {:class :transient :reason (str "HTTP " status)})
+
+      ;; Socket/DNS/TLS failure by TYPE — before the text regexes, which a
+      ;; null-message network exception (bare ConnectException) would slip past.
+      net-reason                        {:class :transient :reason net-reason}
 
       (re-find fatal-error-re text)     {:class :fatal     :reason (first-line text)}
       (re-find transient-error-re text) {:class :transient :reason (first-line text)}
