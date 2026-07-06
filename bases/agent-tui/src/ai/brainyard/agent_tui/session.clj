@@ -3196,8 +3196,33 @@
   [iter-state]
   (= :code (:stage iter-state)))
 
+(defn upsert-tool-call
+  "Add or merge a `:called` entry into `tool-batch` for one
+   `:agent.tool-use/pre` event. A streaming ACP backend can emit
+   `tool_call` twice for a single `call-id` — a placeholder with empty
+   input, then the real input — so a blind append would show two lines
+   (an empty `name({})` that reaches `:done` and a full `name(args)`
+   stuck at `:called`). When an entry with the same non-nil `call-id`
+   already exists, merge into it — take the latest `:name` and any
+   non-empty `:args` — instead of appending a duplicate. New / nil
+   call-ids append as before, so the single-emit coact path is unchanged."
+  [tool-batch {:keys [call-id tool-name args now]}]
+  (let [tb  (or tool-batch [])
+        idx (when call-id
+              (some (fn [[i e]] (when (= (:call-id e) call-id) i))
+                    (map-indexed vector tb)))]
+    (if idx
+      (update tb idx (fn [e]
+                       (cond-> (assoc e :name (str tool-name))
+                         (seq args) (assoc :args args))))
+      (conj tb {:call-id  call-id
+                :name     (str tool-name)
+                :args     args
+                :status   :called
+                :start-ms now}))))
+
 (defn tool-use-pre-handler
-  "Handler for :agent.tool-use/pre. Appends a :called entry to the current
+  "Handler for :agent.tool-use/pre. Upserts a :called entry into the current
    iteration's :tool-batch (unless suppressed for code-stage)."
   [{:keys [agent tool-name args call-id]}]
   (stamp-think-activity! agent (str "→ " tool-name))
@@ -3205,12 +3230,9 @@
     (let [k [aid rid iter]
           state (get @!iteration-blocks k)]
       (when (and state (not (iter-tool-suppressed? state)))
-        (swap! !iteration-blocks update-in [k :tool-batch] (fnil conj [])
-               {:call-id call-id
-                :name (str tool-name)
-                :args args
-                :status :called
-                :start-ms (System/currentTimeMillis)})
+        (swap! !iteration-blocks update-in [k :tool-batch]
+               upsert-tool-call {:call-id call-id :tool-name tool-name :args args
+                                 :now (System/currentTimeMillis)})
         (update-iteration-block! aid rid iter)))))
 
 (def ^:private tool-result-body-cap

@@ -943,3 +943,29 @@
                 "stage flipped to :done so the marker resolves to [●]")
             (is (nil? (:result @seen))
                 "result stays nil — we don't claim success or failure")))))))
+
+(deftest upsert-tool-call-dedupes-streamed-reemission
+  (testing "a new call-id appends a :called entry"
+    (let [tb (s/upsert-tool-call [] {:call-id "c1" :tool-name "Skill" :args {} :now 1})]
+      (is (= 1 (count tb)))
+      (is (= "Skill" (:name (first tb))))
+      (is (= :called (:status (first tb))))))
+  (testing "a re-emission of the same call-id merges (latest name, non-empty args) instead of duplicating"
+    (let [tb (-> []
+                 (s/upsert-tool-call {:call-id "c1" :tool-name "Skill" :args {} :now 1})
+                 (s/upsert-tool-call {:call-id "c1" :tool-name "Skill find-skills"
+                                      :args {:skill "find-skills" :args "aws"} :now 2}))]
+      (is (= 1 (count tb)) "one line, not two")
+      (is (= "Skill find-skills" (:name (first tb))) "name updated to the full-input title")
+      (is (= {:skill "find-skills" :args "aws"} (:args (first tb))) "args updated to the real input")
+      (is (= 1 (:start-ms (first tb))) "original start-ms preserved across the merge")))
+  (testing "an empty-args re-emission does not clobber previously-captured args"
+    (let [tb (-> []
+                 (s/upsert-tool-call {:call-id "c1" :tool-name "Read x" :args {:file_path "/x"} :now 1})
+                 (s/upsert-tool-call {:call-id "c1" :tool-name "Read x" :args {} :now 2}))]
+      (is (= {:file_path "/x"} (:args (first tb))))))
+  (testing "nil call-id always appends (single-emit coact path is unchanged)"
+    (let [tb (-> []
+                 (s/upsert-tool-call {:call-id nil :tool-name "a" :args {} :now 1})
+                 (s/upsert-tool-call {:call-id nil :tool-name "b" :args {} :now 2}))]
+      (is (= 2 (count tb))))))
