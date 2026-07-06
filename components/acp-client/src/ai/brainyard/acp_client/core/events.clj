@@ -121,14 +121,17 @@
   ;; (status: completed | failed) fire :post via tool_call_update.
   ;; Real ACP carries the fields inline in the update; the stub nests
   ;; them under :toolCall — accept either.
+  ;; Keys mirror the hooks event catalog for :agent.tool-use/pre —
+  ;; {:tool-name :args :call-id …} — so the TUI's tool-batch renderer picks
+  ;; up the arguments and correlates the later /post by :call-id.
   (let [{:keys [toolCallId title kind status rawInput]} (or toolCall params)]
     {:event event-tool-use-pre
-     :data  {:tool-call-id toolCallId
-             :tool-name    (or title (some-> kind name) "tool")
-             :tool-args    (or rawInput {})
-             :status       (or status "in_progress")
-             :session-id   sessionId
-             :observer?    true}}))
+     :data  {:call-id    toolCallId
+             :tool-name  (or title (some-> kind name) "tool")
+             :args       (or rawInput {})
+             :status     (or status "in_progress")
+             :session-id sessionId
+             :observer?  true}}))
 
 (defmethod dispatch-update "tool_call_update"
   [{:keys [toolCall sessionId] :as params}]
@@ -136,12 +139,12 @@
     (case status
       ("completed" "failed")
       {:event event-tool-use-post
-       :data  {:tool-call-id toolCallId
-               :tool-name    (or title (some-> kind name) "tool")
-               :result       (cond-> {:status status}
-                               (= status "failed")    (assoc :error content)
-                               (= status "completed") (assoc :content content))
-               :session-id   sessionId}}
+       :data  {:call-id    toolCallId
+               :tool-name  (or title (some-> kind name) "tool")
+               :result     (cond-> {:status status}
+                             (= status "failed")    (assoc :error content)
+                             (= status "completed") (assoc :content content))
+               :session-id sessionId}}
 
       ;; status pending or in_progress (or absent) — observer-only update,
       ;; no hook fired. The dispatcher may still surface progress to UIs

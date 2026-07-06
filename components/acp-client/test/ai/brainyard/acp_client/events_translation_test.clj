@@ -38,7 +38,7 @@
             :update {:sessionUpdate "tool_call"
                      :toolCallId "tc1" :title "Read x" :kind "read" :status "in_progress"}})]
       (is (= :agent.tool-use/pre event))
-      (is (= "tc1" (:tool-call-id data)))
+      (is (= "tc1" (:call-id data)))
       (is (= "Read x" (:tool-name data))))))
 
 (deftest agent-thought-chunk-test
@@ -79,9 +79,9 @@
                        :status "in_progress"
                        :rawInput {:path "/tmp/foo"}}})]
       (is (= :agent.tool-use/pre event))
-      (is (= "tc-1" (:tool-call-id data)))
+      (is (= "tc-1" (:call-id data)))
       (is (= "Read file" (:tool-name data)))
-      (is (= {:path "/tmp/foo"} (:tool-args data)))
+      (is (= {:path "/tmp/foo"} (:args data)))
       (is (true? (:observer? data))))))
 
 (deftest tool-call-update-completed-test
@@ -94,7 +94,7 @@
                        :status "completed"
                        :content [{:type "text" :text "ok"}]}})]
       (is (= :agent.tool-use/post event))
-      (is (= "tc-1" (:tool-call-id data)))
+      (is (= "tc-1" (:call-id data)))
       (is (= "completed" (-> data :result :status))))))
 
 (deftest tool-call-update-failed-test
