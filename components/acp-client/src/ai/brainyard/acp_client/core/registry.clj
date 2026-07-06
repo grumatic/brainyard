@@ -13,7 +13,7 @@
    Built-in backends:
 
      :stub               In-tree deterministic agent (bases/acp-stub-agent).
-     :claude-agent-acp   Claude Code over ACP, via npx (Anthropic).
+     :claude-code        Claude Code over ACP, via npx (Anthropic).
      :gemini             Google gemini-cli with ACP mode.
      :codex              OpenAI codex CLI with ACP mode.
 
@@ -98,7 +98,7 @@
                     (str "--chunk-delay-ms=" chunk-delay-ms)]
       :working-dir project-dir})))
 
-(defn claude-agent-acp-launch-spec
+(defn claude-code-launch-spec
   "Launch Anthropic's Claude Code over ACP via npx.
 
    Default command:
@@ -117,8 +117,9 @@
 
    Required prereqs:
      - `npx` on PATH (Node.js installed)
-     - either ANTHROPIC_API_KEY in env, or a logged-in `claude` CLI."
-  ([] (claude-agent-acp-launch-spec {}))
+     - either ANTHROPIC_API_KEY in env, or a logged-in `claude` CLI
+       (subscription / Pro / Max)."
+  ([] (claude-code-launch-spec {}))
   ([{:keys [command working-dir env forward-env]
      :or   {command     ["npx" "-y" "@zed-industries/claude-code-acp"]
             forward-env ["ANTHROPIC_API_KEY" "ANTHROPIC_AUTH_TOKEN"
@@ -202,8 +203,8 @@
      :experimental false
      :prereqs      ["clj"]}
 
-    :claude-agent-acp
-    {:factory      claude-agent-acp-launch-spec
+    :claude-code
+    {:factory      claude-code-launch-spec
      :description  "Claude Code over ACP (Anthropic) via npx @zed-industries/claude-code-acp."
      :experimental true
      :prereqs      ["npx"]}
@@ -294,6 +295,8 @@
   ([backend opts]
    (if-let [{:keys [factory]} (get @!backends backend)]
      (factory opts)
-     (throw (ex-info "unknown ACP backend"
-                     {:backend backend
-                      :supported (vec (keys @!backends))})))))
+     (let [supported (vec (keys @!backends))]
+       (throw (ex-info (str "unknown ACP backend " (pr-str backend)
+                            "; supported: " (pr-str supported))
+                       {:backend backend
+                        :supported supported}))))))

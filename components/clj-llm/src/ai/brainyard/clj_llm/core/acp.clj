@@ -28,8 +28,8 @@
 
    `:backend` on the lm-config selects the ACP agent subprocess:
      :stub                — in-tree stub agent (CI default)
-     :claude-agent-acp    — Phase 6: npx @agentclientprotocol/claude-agent-acp
-     :gemini / :codex / … — Phase 6: launch specs added to acp-client/registry
+     :claude-code         — npx @zed-industries/claude-code-acp
+     :gemini / :codex / … — launch specs in acp-client/registry
 
    ## Caching
 

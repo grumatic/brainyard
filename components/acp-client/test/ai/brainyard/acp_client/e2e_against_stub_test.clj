@@ -34,7 +34,7 @@
           client (spawn-stub-client! !log)]
       (try
         (let [init-result (acp-client/initialize! client {:timeout-ms 30000})]
-          (is (string? (:protocolVersion init-result))))
+          (is (integer? (:protocolVersion init-result))))
 
         (let [sess (acp-client/new-session! client)]
           (is (string? (:session-id sess)))

@@ -70,7 +70,7 @@
 
 (deftest encode-decode-roundtrip-test
   (testing "request roundtrips"
-    (let [req (jsonrpc/request 1 "initialize" {:protocolVersion "0.1.0"})
+    (let [req (jsonrpc/request 1 "initialize" {:protocolVersion 1})
           line (jsonrpc/encode req)
           parsed (jsonrpc/decode line)]
       (is (= req parsed))))

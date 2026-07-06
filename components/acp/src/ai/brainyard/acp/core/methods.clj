@@ -10,8 +10,11 @@
    reference methods symbolically.")
 
 (def ^:const PROTOCOL_VERSION
-  "ACP protocol version this client implements. Sent in `initialize`."
-  "0.1.0")
+  "ACP protocol version this client implements. Sent in `initialize`.
+   The ACP spec versions the protocol as an integer (major version),
+   not a semver string — real agents (claude-code-acp, gemini, codex)
+   reject a string `protocolVersion` with `Invalid params`."
+  1)
 
 (def client-methods
   "Methods the client (us) sends to the agent."

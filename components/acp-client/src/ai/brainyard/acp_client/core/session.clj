@@ -9,7 +9,8 @@
    AcpClient. Phase 5 wires this up to the agent runtime; for now it's
    used directly by tests and (eventually) by a `:acp` clj-llm
    provider."
-  (:require [ai.brainyard.acp-client.core.client :as client]
+  (:require [clojure.string :as str]
+            [ai.brainyard.acp-client.core.client :as client]
             [ai.brainyard.acp-client.core.events :as events]))
 
 ;; =============================================================================
@@ -26,7 +27,10 @@
      :mcp-servers  — vector of MCP server configs (default []).
      :timeout-ms   — handshake timeout (default 30000).
 
-   Returns: {:session-id str :client AcpClient}"
+   Returns: {:session-id str :client AcpClient :models map?}
+   where `:models` is the agent's advertised model state
+   `{:availableModels [{:modelId :name :description}] :currentModelId}`
+   (nil if the agent doesn't advertise models)."
   ([client] (new! client {}))
   ([acp-client {:keys [cwd mcp-servers timeout-ms]
                 :or   {cwd         (System/getProperty "user.dir")
@@ -39,7 +43,48 @@
                                   {:timeout-ms timeout-ms})
                  timeout-ms)]
      {:session-id (:sessionId result)
-      :client     acp-client})))
+      :client     acp-client
+      :models     (:models result)})))
+
+;; =============================================================================
+;; set-model!
+;; =============================================================================
+
+(defn set-model!
+  "Select the session's model via ACP `session/set_model`.
+
+   `model-id` must be one of the `:modelId`s the agent advertised in the
+   `session/new` response's `:models :availableModels` (e.g. the
+   claude-code adapter exposes the aliases \"default\" / \"sonnet\" /
+   \"haiku\"). The agent does not validate unknown ids — it silently
+   no-ops — so callers should resolve `model-id` against the advertised
+   list first. Returns the (usually empty) result map."
+  ([sess model-id] (set-model! sess model-id {}))
+  ([{:keys [session-id client] :as _sess} model-id {:keys [timeout-ms]
+                                                    :or   {timeout-ms 30000}}]
+   (client/await-result
+    (client/request! client "session/set_model"
+                     {:sessionId session-id :modelId model-id}
+                     {:timeout-ms timeout-ms})
+    timeout-ms)))
+
+(defn resolve-model-id
+  "Resolve a user-supplied model string against a session's advertised
+   `available-models` (vector of `{:modelId :name :description}`),
+   mirroring the claude-code adapter's fuzzy match: exact modelId, or
+   case-insensitive substring of modelId / name / description. Returns
+   the matched `:modelId`, or nil if nothing matches."
+  [available-models model]
+  (when (and (seq available-models) (some? model))
+    (let [m (str/lower-case (str model))]
+      (some (fn [{:keys [modelId name description]}]
+              (let [id (str modelId)]
+                (when (or (= id (str model))
+                          (str/includes? (str/lower-case id) m)
+                          (str/includes? (str/lower-case (str name)) m)
+                          (str/includes? (str/lower-case (str description)) m))
+                  id)))
+            available-models))))
 
 ;; =============================================================================
 ;; prompt!

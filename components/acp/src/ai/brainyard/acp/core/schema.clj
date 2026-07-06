@@ -171,13 +171,13 @@
 
 (def InitializeParams
   [:map {:closed false}
-   [:protocolVersion :string]
+   [:protocolVersion :int]
    [:clientCapabilities {:optional true} :map]
    [:clientInfo {:optional true} Implementation]])
 
 (def InitializeResult
   [:map {:closed false}
-   [:protocolVersion :string]
+   [:protocolVersion :int]
    [:agentCapabilities {:optional true} :map]
    [:authMethods {:optional true} [:vector :map]]])
 

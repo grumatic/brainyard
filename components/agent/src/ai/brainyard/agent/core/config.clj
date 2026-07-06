@@ -305,7 +305,7 @@
    :acp-backend                {:type "keyword" :default :stub
                                 :doc "ACP (agent-client-protocol) backend implementation; :stub by default."}
    :acp-backend-opts           {:type "object"  :default {}
-                                :doc "Options map passed to the ACP backend."}
+                                :doc "Options map for the ACP backend. Launch keys (:command/:working-dir/:env/:forward-env) go to the registry factory; :model (e.g. \"sonnet\"/\"opus\"/\"haiku\" for :claude-code) is resolved against the agent's advertised models and set per session via session/set_model."}
    :acp-timeout-ms             {:type "integer" :default 600000
                                 :doc "ACP request timeout (ms)."}
    :acp-permission-timeout-ms  {:type "integer" :default 120000

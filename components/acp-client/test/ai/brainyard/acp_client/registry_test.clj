@@ -7,7 +7,7 @@
 
    Each launch spec is exercised via `resolve-backend` and asserted on
    the returned map shape. No subprocesses spawned. Real backends
-   (claude-agent-acp / gemini / codex) require external CLIs at
+   (claude-code / gemini / codex) require external CLIs at
    runtime; we don't try to launch them here, only validate that the
    registry produces correctly-shaped launch specs and that
    `backend-available?` correctly classifies them based on PATH."
@@ -23,7 +23,7 @@
   (testing "all four built-in backends are registered out of the box"
     (let [backends (acp-client/list-backends)]
       (is (contains? backends :stub))
-      (is (contains? backends :claude-agent-acp))
+      (is (contains? backends :claude-code))
       (is (contains? backends :gemini))
       (is (contains? backends :codex))
       ;; No :factory leak — factories are kept private inside the atom.
@@ -39,7 +39,7 @@
   (testing ":stub is non-experimental; the three real backends are experimental"
     (let [backends (acp-client/list-backends)]
       (is (false? (-> backends :stub :experimental)))
-      (is (true?  (-> backends :claude-agent-acp :experimental)))
+      (is (true?  (-> backends :claude-code :experimental)))
       (is (true?  (-> backends :gemini :experimental)))
       (is (true?  (-> backends :codex :experimental))))))
 
@@ -56,19 +56,19 @@
       (is (string? (:working-dir spec)))
       (is (.contains ^String (:working-dir spec) "projects/acp-stub-agent")))))
 
-(deftest claude-agent-acp-spec-default-test
-  (testing "default :claude-agent-acp spec uses npx and the published adapter"
-    (let [spec (acp-client/resolve-backend :claude-agent-acp)]
+(deftest claude-code-spec-default-test
+  (testing "default :claude-code spec uses npx and the published adapter"
+    (let [spec (acp-client/resolve-backend :claude-code)]
       (is (= "npx" (first (:command spec))))
       (is (some #{"-y"} (:command spec)))
       (is (some #(re-find #"claude-code-acp" %) (:command spec)))
       (is (string? (:working-dir spec)))
       (is (map? (:env spec))))))
 
-(deftest claude-agent-acp-spec-override-test
+(deftest claude-code-spec-override-test
   (testing "user-supplied :command and :working-dir override the defaults"
     (let [spec (acp-client/resolve-backend
-                :claude-agent-acp
+                :claude-code
                 {:command ["my-bin" "--foo"]
                  :working-dir "/tmp/custom-workspace"
                  :env {"EXTRA_VAR" "yes"}})]
@@ -95,7 +95,7 @@
           data (ex-data thrown)]
       (is (some? thrown))
       (is (contains? (set (:supported data)) :stub))
-      (is (contains? (set (:supported data)) :claude-agent-acp)))))
+      (is (contains? (set (:supported data)) :claude-code)))))
 
 ;; =============================================================================
 ;; Env passthrough
@@ -106,7 +106,7 @@
     ;; We can't reliably set parent env vars from inside a Clojure test,
     ;; but we can assert that user-supplied values land in :env even
     ;; when the parent had no value.
-    (let [spec (acp-client/resolve-backend :claude-agent-acp
+    (let [spec (acp-client/resolve-backend :claude-code
                                            {:env {"ANTHROPIC_API_KEY" "test-key-123"}})]
       (is (= "test-key-123"
              (get-in spec [:env "ANTHROPIC_API_KEY"]))))))
@@ -129,7 +129,7 @@
 
 (deftest backend-available-experimental-test
   (testing "experimental backends report status based on PATH presence"
-    (doseq [k [:claude-agent-acp :gemini :codex]]
+    (doseq [k [:claude-code :gemini :codex]]
       (let [{:keys [status missing prereqs]} (acp-client/backend-available? k)]
         (is (#{:ok :missing-prereqs} status))
         (when (= :missing-prereqs status)

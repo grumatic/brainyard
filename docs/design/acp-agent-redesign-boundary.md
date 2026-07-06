@@ -27,8 +27,8 @@ of `*$` helpers it calls to author artifacts. acp-agent is none of that:
 - **`:agent-tools nil :instruction nil :tool-context nil`.** No roster, no
   prompt, no helper family. There is nothing to bind, retire, or rewrite.
 - **The external ACP backend owns the iteration loop.** acp-agent forwards the
-  `:question` to a backend (default `:stub`; real `:claude-agent-acp` / `:gemini`
-  / `:codex` land in Phase 6) over the Agentic Context Protocol and **streams the
+  `:question` to a backend (default `:stub`; real `:claude-code` / `:gemini`
+  / `:codex`) over the Agentic Context Protocol and **streams the
   answer back**. The reasoning, tool use, planning, and editing all happen on the
   *external* side.
 

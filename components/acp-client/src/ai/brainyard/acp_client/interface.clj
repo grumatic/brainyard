@@ -108,6 +108,19 @@
   ([sess] (session/cancel! sess))
   ([sess opts] (session/cancel! sess opts)))
 
+(defn set-model!
+  "Select the session's model via ACP `session/set_model`. `model-id`
+   must be one advertised in the `new-session!` result's `:models`
+   (resolve user input with `resolve-model-id` first)."
+  ([sess model-id] (session/set-model! sess model-id))
+  ([sess model-id opts] (session/set-model! sess model-id opts)))
+
+(defn resolve-model-id
+  "Fuzzy-match a user model string against a session's advertised
+   `:models :availableModels`; returns the matched `:modelId` or nil."
+  [available-models model]
+  (session/resolve-model-id available-models model))
+
 (defn iteration-pre-event
   "Build an iteration/pre event descriptor for `prompt!` callers that
    want to fire it through their own hook system."

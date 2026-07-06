@@ -26,6 +26,24 @@
 >   `:gemini`, `:codex`) — see §9.5. The phase language below that calls Phase 6
 >   "future"/"optional" is therefore stale; treat it as historical sequencing.
 >
+> **As-built update (2026-07-06).** Verified the Claude backend end-to-end
+> against the real `@zed-industries/claude-code-acp` adapter (on a Claude
+> subscription, no API key) and fixed three defects the `:stub` backend had
+> masked, plus added model selection. Throughout the sections below, read
+> **`:claude-agent-acp` as `:claude-code`** — the backend key was renamed
+> (the command is unchanged: `npx -y @zed-industries/claude-code-acp`).
+> - `PROTOCOL_VERSION` must be the integer `1`, not the string `"0.1.0"` —
+>   real agents reject the string with `Invalid params` at `initialize`.
+> - `session/update` payloads nest the discriminant under `:update`
+>   (`{sessionId, update:{sessionUpdate, …}}`); the translator now normalizes
+>   both the nested (real) and flat (stub) shapes, else streamed text is dropped.
+> - Backend key `:claude-agent-acp` → **`:claude-code`** (canonical; no alias).
+> - **Model selection**: `:acp-backend-opts {:model "sonnet"}` (aliases
+>   `default`/`opus`, `sonnet`, `haiku`) → resolved against the agent's
+>   advertised models and applied per session via ACP `session/set_model`.
+>   `ANTHROPIC_MODEL` is *not* honored by the adapter; settings.json `model`
+>   also works globally.
+>
 > Confirmed with the user before this doc was written:
 >
 > - Direction: **ACP client only** in this milestone (brainyard consumes

@@ -62,22 +62,42 @@
 ;; session/update translation
 ;; =============================================================================
 
-(defmulti translate-update
-  "Dispatch on `:sessionUpdate` discriminant. Returns nil for variants
-   that don't map to a single event (e.g. tool_call_update which is
-   merged into the in-progress tool_call's hook data by the dispatcher)."
+(defn- normalize-update
+  "Lift the ACP-spec `:update` object so translation is agnostic to
+   nesting. Real ACP `session/update` params are
+   `{:sessionId .. :update {:sessionUpdate .. <payload>}}` (the discriminant
+   and payload live inside `:update`); the in-tree stub and some tests emit
+   the payload flat at the params top level. Merge the `:update` fields up
+   (preserving the sibling `:sessionId`) so `dispatch-update` sees a single
+   flat map either way."
+  [params]
+  (if-let [u (:update params)]
+    (merge (dissoc params :update) u)
+    params))
+
+(defmulti ^:private dispatch-update
+  "Dispatch on the (normalized) `:sessionUpdate` discriminant. Returns nil
+   for variants that don't map to a single event (e.g. tool_call_update
+   which is merged into the in-progress tool_call's hook data)."
   (fn [params] (:sessionUpdate params)))
 
-(defmethod translate-update :default [_] nil)
+(defn translate-update
+  "Translate a `session/update` notification's params into a brainyard
+   hook event descriptor `{:event :data}`, or nil. Tolerant of both the
+   spec-compliant nested (`:update`) and flat payload shapes."
+  [params]
+  (dispatch-update (normalize-update params)))
 
-(defmethod translate-update "agent_message_chunk"
+(defmethod dispatch-update :default [_] nil)
+
+(defmethod dispatch-update "agent_message_chunk"
   [{:keys [content sessionId]}]
   (let [text (content-block-text content)]
     {:event event-dspy-chunk
      :data  {:chunk      text
              :session-id sessionId}}))
 
-(defmethod translate-update "agent_thought_chunk"
+(defmethod dispatch-update "agent_thought_chunk"
   [{:keys [content sessionId]}]
   (let [text (content-block-text content)]
     {:event event-dspy-chunk
@@ -85,7 +105,7 @@
              :session-id sessionId
              :meta       {:kind :thought}}}))
 
-(defmethod translate-update "plan"
+(defmethod dispatch-update "plan"
   [{:keys [entries sessionId]}]
   {:event event-todo-updated
    :data  {:todo-list  (mapv (fn [e]
@@ -95,11 +115,13 @@
                              entries)
            :session-id sessionId}})
 
-(defmethod translate-update "tool_call"
-  [{:keys [toolCall sessionId]}]
+(defmethod dispatch-update "tool_call"
+  [{:keys [toolCall sessionId] :as params}]
   ;; First time we see a tool call — fire :pre. Subsequent updates
   ;; (status: completed | failed) fire :post via tool_call_update.
-  (let [{:keys [toolCallId title kind status rawInput]} toolCall]
+  ;; Real ACP carries the fields inline in the update; the stub nests
+  ;; them under :toolCall — accept either.
+  (let [{:keys [toolCallId title kind status rawInput]} (or toolCall params)]
     {:event event-tool-use-pre
      :data  {:tool-call-id toolCallId
              :tool-name    (or title (some-> kind name) "tool")
@@ -108,9 +130,9 @@
              :session-id   sessionId
              :observer?    true}}))
 
-(defmethod translate-update "tool_call_update"
-  [{:keys [toolCall sessionId]}]
-  (let [{:keys [toolCallId title kind status content]} toolCall]
+(defmethod dispatch-update "tool_call_update"
+  [{:keys [toolCall sessionId] :as params}]
+  (let [{:keys [toolCallId title kind status content]} (or toolCall params)]
     (case status
       ("completed" "failed")
       {:event event-tool-use-post

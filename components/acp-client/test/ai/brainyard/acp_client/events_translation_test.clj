@@ -20,6 +20,27 @@
       (is (= "hello" (:chunk data)))
       (is (= "s1" (:session-id data))))))
 
+(deftest nested-update-shape-test
+  (testing "spec-compliant nested `:update` shape (real ACP agents) is translated too"
+    (let [{:keys [event data]}
+          (events/translate-update
+           {:sessionId "s1"
+            :update {:sessionUpdate "agent_message_chunk"
+                     :content {:type "text" :text "hello nested"}}})]
+      (is (= :agent.dspy-action/chunk event))
+      (is (= "hello nested" (:chunk data)))
+      (is (= "s1" (:session-id data))
+          "sessionId sibling of :update is preserved through normalization")))
+  (testing "nested tool_call with inline fields under :update"
+    (let [{:keys [event data]}
+          (events/translate-update
+           {:sessionId "s1"
+            :update {:sessionUpdate "tool_call"
+                     :toolCallId "tc1" :title "Read x" :kind "read" :status "in_progress"}})]
+      (is (= :agent.tool-use/pre event))
+      (is (= "tc1" (:tool-call-id data)))
+      (is (= "Read x" (:tool-name data))))))
+
 (deftest agent-thought-chunk-test
   (testing "agent_thought_chunk marks meta with :kind :thought"
     (let [{:keys [event data]}

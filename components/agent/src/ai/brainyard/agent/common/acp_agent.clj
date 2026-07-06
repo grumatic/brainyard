@@ -10,8 +10,8 @@
 
    Per docs/design/acp-design.md §4.4. The default backend is `:stub`
    (in-tree, deterministic — see `bases/acp-stub-agent`). Real backends
-   like `:claude-agent-acp`, `:gemini`, `:codex` will land in Phase 6
-   as `acp-client/registry` entries.
+   like `:claude-code`, `:gemini`, `:codex` are `acp-client/registry`
+   entries.
 
    ## Soft coupling
 
@@ -58,6 +58,8 @@
 (defn- spawn!*           [& args] (apply (acp-client-fn 'spawn!) args))
 (defn- initialize!*      [& args] (apply (acp-client-fn 'initialize!) args))
 (defn- new-session!*     [& args] (apply (acp-client-fn 'new-session!) args))
+(defn- set-model!*       [& args] (apply (acp-client-fn 'set-model!) args))
+(defn- resolve-model-id* [& args] (apply (acp-client-fn 'resolve-model-id) args))
 (defn- prompt!*          [& args] (apply (acp-client-fn 'prompt!) args))
 (defn- close!*           [& args] (apply (acp-client-fn 'close!) args))
 (defn- translate-update* [& args] (apply (acp-client-fn 'translate-update) args))
@@ -221,6 +223,21 @@
       ;; subdir, so the backend would resolve relative paths against the wrong
       ;; tree. Matches the bash-tool / code-fence cwd anchoring.
       (let [sess (new-session!* client {:cwd (config/project-dir agent)})
+            ;; Model selection: :acp-backend-opts {:model "sonnet"} → resolve
+            ;; against the agent's advertised models and set it for this
+            ;; session via ACP session/set_model (the launch spec / env can't
+            ;; carry a model — it's a per-session concern). Unmatched ⇒ warn
+            ;; and fall back to the agent's default model.
+            model (:model backend-opts)
+            _     (when model
+                    (let [avail (get-in sess [:models :availableModels])
+                          mid   (resolve-model-id* avail model)]
+                      (if mid
+                        (do (set-model!* sess mid)
+                            (mulog/info ::acp-model-selected :requested model :model-id mid))
+                        (mulog/warn ::acp-model-unmatched
+                                    :requested model
+                                    :available (mapv :modelId avail)))))
             {:keys [stop-reason]} (prompt!* sess
                                             [{:type "text" :text question}]
                                             {:timeout-ms (config/get-config agent :acp-timeout-ms)})
