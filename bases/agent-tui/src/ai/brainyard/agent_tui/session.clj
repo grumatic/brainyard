@@ -3497,13 +3497,17 @@
 (defn recovery-retrying-handler
   "Handler for :agent.recovery/retrying. Emits a muted progress line while the
    CoAct loop works through a transient stall (empty model response, no-channel
-   nudge, or malformed output) so the backoff/retry isn't a silent pause."
+   nudge, or malformed output) so the backoff/retry isn't a silent pause.
+
+   The turn CONTINUES through the retry, so the one-per-turn think spinner must
+   keep running — `:keep-thinking? true` splices the progress line in ABOVE the
+   sticky-bottom spinner instead of tearing it down and recreating it, which
+   would reset its elapsed clock (and reshuffle the rotating word) on every
+   errored iteration."
   [{:keys [agent kind attempt max reason]}]
   (with-agent-render-session agent
-    (let [active? (render-active?)]
-      (when active? (stop-thinking-indicator! agent))
-      (emit! (fmt/format-recovery-status kind attempt max reason))
-      (when active? (start-thinking-indicator! agent)))))
+    (emit! (fmt/format-recovery-status kind attempt max reason)
+           nil {:keep-thinking? true})))
 
 (defn auto-parked-handler
   "Handler for :agent.iteration/auto-parked. Emits a muted line when the loop
@@ -3530,42 +3534,40 @@
    `:evaluation-status :phase :started` watch branch."
   [{:keys [agent round]}]
   (with-agent-render-session agent
-    (let [active? (render-active?)]
-      (when active? (stop-thinking-indicator! agent))
-      (emit! (ansi/muted (str "\n  " ansi/v-line " Evaluating answer quality (round " round ")...")))
-      (when active? (start-thinking-indicator! agent)))))
+    ;; Turn continues through evaluation — keep the one-per-turn spinner running
+    ;; (see recovery-retrying-handler) rather than restarting it every round.
+    (emit! (ansi/muted (str "\n  " ansi/v-line " Evaluating answer quality (round " round ")..."))
+           nil {:keep-thinking? true})))
 
 (defn evaluation-llm-calling-handler
   "Handler for :agent.evaluation/llm-calling. Mirrors the legacy
    `:evaluation-status :phase :llm-calling` watch branch."
   [{:keys [agent has-evidence evidence-length eval-lm-label]}]
   (with-agent-render-session agent
-    (let [active? (render-active?)]
-      (when active? (stop-thinking-indicator! agent))
-      (emit! (ansi/muted (str "  " ansi/v-line " Checking against "
-                              (if has-evidence
-                                (str "sandbox evidence (" evidence-length " chars)")
-                                "general completeness")
-                              " via " (or eval-lm-label "LLM") "...")))
-      (when active?
-        (layout/draw-status-bar!
-         (ansi/muted "Evaluating...")
-         (:status-text @layout/!layout))
-        (start-thinking-indicator! agent)))))
+    ;; Turn continues — keep the spinner alive (see recovery-retrying-handler)
+    ;; and splice the progress line above it; just refresh the status-bar text.
+    (emit! (ansi/muted (str "  " ansi/v-line " Checking against "
+                            (if has-evidence
+                              (str "sandbox evidence (" evidence-length " chars)")
+                              "general completeness")
+                            " via " (or eval-lm-label "LLM") "..."))
+           nil {:keep-thinking? true})
+    (when (render-active?)
+      (layout/draw-status-bar!
+       (ansi/muted "Evaluating...")
+       (:status-text @layout/!layout)))))
 
 (defn evaluation-done-handler
   "Handler for :agent.evaluation/done. Mirrors the legacy
    `:evaluation-status :phase :done` watch branch."
   [{:keys [agent verdict detail]}]
   (with-agent-render-session agent
-    (let [active? (render-active?)]
-      (when active? (stop-thinking-indicator! agent))
-      (emit! (str "  " (fmt/format-eval-verdict verdict detail) "\n"))
-      ;; The turn continues after evaluation (refine / finalize / answer), so
-      ;; resume the sticky-bottom indicator — otherwise the cursor is left on
-      ;; the emitted verdict line instead of returning to the working/input
-      ;; line. Mirrors evaluation-started / evaluation-llm-calling handlers.
-      (when active? (start-thinking-indicator! agent)))))
+    ;; The turn continues after evaluation (refine / finalize / answer), so the
+    ;; one-per-turn spinner keeps running: `:keep-thinking? true` splices the
+    ;; verdict line above the sticky-bottom indicator instead of tearing it down
+    ;; and recreating it. Mirrors evaluation-started / evaluation-llm-calling.
+    (emit! (str "  " (fmt/format-eval-verdict verdict detail) "\n")
+           nil {:keep-thinking? true})))
 
 ;; ============================================================================
 ;; In-process iteration sink (wraps `agent-tui.layout` live-block primitives)
