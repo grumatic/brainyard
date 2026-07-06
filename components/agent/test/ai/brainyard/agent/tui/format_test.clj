@@ -429,3 +429,65 @@
       ;; (3) every bordered content row is the same visible width -> rectangular
       (is (= 1 (count (set (map count box))))
           (str "box rows must be equal width; got " (sort (set (map count box))))))))
+
+;; ============================================================================
+;; Memory activity milestones
+;; ============================================================================
+
+(defn- mem-line [event]
+  (strip-ansi (fmt/format-memory-activity-event event)))
+
+(deftest format-memory-activity-event-consolidation-test
+  (testing "heuristic consolidation → episodes/facts, plural-aware"
+    (is (= "🧠 memory · consolidated 12 episodes → +3 facts (L3)"
+           (mem-line {:mulog/event-name :m/consolidation-ran
+                      :report {:from-layer :l2 :to-layer :l3 :consumed 12 :produced 3}})))
+    (is (= "🧠 memory · consolidated 1 episode → +1 fact (L3)"
+           (mem-line {:mulog/event-name :m/consolidation-ran
+                      :report {:consumed 1 :produced 1}}))))
+  (testing "community consolidation → communities/summaries (-y → -ies plural)"
+    (is (= "🧠 memory · consolidated 4 communities → +4 summaries (L3)"
+           (mem-line {:mulog/event-name :m/consolidation-ran
+                      :report {:reducer :community :communities 4 :consumed 40 :produced 4}}))))
+  (testing "a no-op consolidation (produced 0) is suppressed — not a milestone"
+    (is (nil? (fmt/format-memory-activity-event
+               {:mulog/event-name :m/consolidation-ran
+                :report {:consumed 5 :produced 0}}))))
+  (testing "a failed consolidation surfaces (warning-tinted; content plain)"
+    (is (= "🧠 memory · consolidation failed"
+           (mem-line {:mulog/event-name :m/consolidation-failed :session-id "s"})))))
+
+(deftest format-memory-activity-event-extraction-test
+  (testing "graph extraction → entities/links, plural-aware (entity → entities)"
+    (is (= "🧠 memory · graph +5 entities, +7 links"
+           (mem-line {:mulog/event-name :m/extracted :model "x" :entities 5 :relations 7})))
+    (is (= "🧠 memory · graph +1 entity, +1 link"
+           (mem-line {:mulog/event-name :m/extracted :entities 1 :relations 1}))))
+  (testing "a zero-yield extraction is suppressed"
+    (is (nil? (fmt/format-memory-activity-event
+               {:mulog/event-name :m/extracted :entities 0 :relations 0})))))
+
+(deftest format-memory-activity-event-non-milestones-test
+  (testing "non-memory events return nil"
+    (is (nil? (fmt/format-memory-activity-event
+               {:mulog/event-name :m/chat-completion :model "claude"}))))
+  (testing "l2-batch-extracted is NOT curated — it fires redundantly right after
+            `extracted` in :at-consolidation mode, so surfacing it would double
+            the graph line"
+    (is (nil? (fmt/format-memory-activity-event
+               {:mulog/event-name :m/l2-batch-extracted :nodes 5 :edges 7})))))
+
+(deftest format-mulog-event-skips-memory-milestones-test
+  (testing "the verbose firehose suppresses curated memory events so the
+            dedicated memory-activity publisher is their sole surface"
+    (is (nil? (fmt/format-mulog-event
+               {:mulog/event-name :m/consolidation-ran :report {:consumed 1 :produced 1}})))
+    (is (nil? (fmt/format-mulog-event
+               {:mulog/event-name :m/consolidation-failed})))
+    (is (nil? (fmt/format-mulog-event
+               {:mulog/event-name :m/extracted :entities 5 :relations 7}))))
+  (testing "non-memory events still render in the verbose firehose"
+    (is (str/includes? (strip-ansi (fmt/format-mulog-event
+                                    {:mulog/event-name :m/chat-completion
+                                     :model "claude" :total-tokens 10}))
+                       "chat model=claude"))))

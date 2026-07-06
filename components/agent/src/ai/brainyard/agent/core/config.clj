@@ -205,6 +205,11 @@
                                  :doc "Batch L2→L3 memory consolidation: an ask/post hook runs the pipeline's reducer every :memory-consolidate-every-n-turns turns (community consolidation when :enable-graph-memory is on, else heuristic). IMPLIED by :enable-graph-memory — when graph memory is on, consolidation runs even if this is false (the extractor builds communities that consolidation harvests into L3). Set this true to also run the heuristic reducer with graph memory off. Replaces the retired per-turn essence loop. Env: BY_ENABLE_MEMORY_CONSOLIDATION."}
    :memory-consolidate-every-n-turns {:type "integer" :default 5
                                       :doc "Cadence for the batch consolidation hook: run the reducer once every N completed turns (higher = cheaper/coarser). Ignored when :enable-memory-consolidation is false."}
+   :show-memory-activity       {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_SHOW_MEMORY_ACTIVITY")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Surface background memory milestones in the TUI scrollback as muted `🧠 memory · …` lines (L2→L3 consolidation, graph extraction) so the user can see memory working. Read at event time by the TUI's dedicated mulog publisher — toggleable live. Off ⇒ memory activity stays silent (still logged). Env: BY_SHOW_MEMORY_ACTIVITY."}
    ;; Self-improvement loop (R1 — docs/design/self-improve-design.md).
    :enable-skill-distillation  {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_SKILL_DISTILLATION")]

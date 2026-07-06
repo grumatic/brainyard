@@ -163,3 +163,50 @@
           :metadata {:owner-session-id "agt-main"}})
     (is (= 0 (:session-idx (get @session/!task-blocks :t1)))
         "metadata owner (agt-main → session 0) wins over bridge (1) and active (1)")))
+
+;; ---------------------------------------------------------------------------
+;; A detached subagent dispatch (an :type :agent tool that timed out into a
+;; task) must NOT get its own per-task live block — the consolidated subagents
+;; block already surfaces it. `adopt-tool-into-task` stamps such tasks with
+;; `:coact/subagent-id`; `subagent-task?` keys the suppression off that marker.
+;; ---------------------------------------------------------------------------
+
+(deftest subagent-task?-detects-coact-subagent-id
+  (testing "a task carrying :coact/subagent-id is a subagent dispatch"
+    (is (#'session/subagent-task?
+         {:job-type :tool :metadata {:coact/subagent-id "research-agent/abc"}})))
+  (testing "ordinary tool / bash tasks are not"
+    (is (not (#'session/subagent-task?
+              {:job-type :tool :metadata {:display-mode :foreground}})))
+    (is (not (#'session/subagent-task? {:job-type :bash :metadata {}})))
+    (is (not (#'session/subagent-task? {})))))
+
+(defn- one-session! []
+  (reset! sessions/!sessions
+          {:active-idx 0 :next-id 1
+           :sessions   {0 {:id 0 :scrollback [] :live-blocks {}}}}))
+
+(deftest handle-tasks-change-suppresses-subagent-task-block
+  (testing "a :pending→:running subagent task (carries :coact/subagent-id) creates NO block"
+    (one-session!)
+    (reset! session/!task-blocks {})
+    (#'session/handle-tasks-change
+     nil nil
+     {:sub {:status :pending}}
+     {:sub {:status :running :name "tool: research-agent" :job-type :tool
+            :started-at (System/currentTimeMillis)
+            :metadata {:display-mode :foreground
+                       :coact/subagent-id "research-agent/abc"}}})
+    (is (not (contains? @session/!task-blocks :sub))
+        "subagent dispatch is covered by the subagents block — no redundant task block"))
+  (testing "a normal :tool task still gets its per-task block"
+    (one-session!)
+    (reset! session/!task-blocks {})
+    (#'session/handle-tasks-change
+     nil nil
+     {:t2 {:status :pending}}
+     {:t2 {:status :running :name "bash: ls" :job-type :bash
+           :started-at (System/currentTimeMillis)
+           :metadata {:display-mode :foreground}}})
+    (is (contains? @session/!task-blocks :t2)
+        "a non-subagent task is unaffected — block created as before")))

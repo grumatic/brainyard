@@ -509,12 +509,13 @@
           (is (= "boom" (-> by-name (get "search") :error-msg)))
           (is (= :done (-> by-name (get "fetch") :status))
               "fetch post resolved as done")
-          ;; The full result (normal output AND any error description) is
-          ;; stringified into :result-body for a single Result box.
-          (is (= "{:status 200}" (-> by-name (get "fetch") :result-body))
-              "success result stringified into :result-body for the Result box")
+          ;; A normal (non-error) map result renders as key-value lines for
+          ;; the neutral Result box (like the Call box); an error map stays a
+          ;; compact pr-str so the red Error box styles it uniformly.
+          (is (= "status: 200" (strip-ansi (-> by-name (get "fetch") :result-body)))
+              "success map result rendered as key-value for the Result box")
           (is (= "{:error-message \"boom\"}" (-> by-name (get "search") :result-body))
-              "error result stringified into :result-body (rendered in the Error box)")
+              "error result stringified as-is into :result-body (rendered in the Error box)")
           (is (every? :end-ms tb)))))))
 
 (deftest tool-use-post-returned-error-map-flags-error
@@ -541,12 +542,20 @@
           (is (= "Pattern not found in x" (:error-msg entry))))))))
 
 (deftest tool-use-post-result-body-stringification
-  (testing "string / :answer-map / error-map / nil / empty-map results reduce
-            to the right :result-body (nil ⇒ no Result box)"
+  (testing "string / :answer-map / normal-map / error-map / nil / empty-map
+            results reduce to the right :result-body (nil ⇒ no Result box)"
     (is (= "hello world" (#'s/tool-result->body "hello world")))
     (is (= "the answer"  (#'s/tool-result->body {:answer "the answer"})))
+    (is (= "status: completed\nexit-code: 0"
+           (strip-ansi (#'s/tool-result->body {:status "completed" :exit-code 0})))
+        "a normal (non-error) map renders as key-value lines, like the Call box")
+    (is (= "output:\n  hello\n  world"
+           (strip-ansi (#'s/tool-result->body {:output "hello\nworld"})))
+        "a multi-line string value drops to its own indented block")
     (is (= "{:error \"nope\"}" (#'s/tool-result->body {:error "nope"}))
         "an error map is stringified as-is — surfaced in the Error box")
+    (is (= "{:error-message \"boom\"}" (#'s/tool-result->body {:error-message "boom"}))
+        "an :error-message map is stringified as-is — surfaced in the Error box")
     (is (nil? (#'s/tool-result->body nil)))
     (is (nil? (#'s/tool-result->body true)))
     (is (nil? (#'s/tool-result->body {})))
@@ -709,7 +718,7 @@
     (is (str/includes? done-text "done"))
     (is (str/includes? done-text "✓") "done status uses ✓ marker")))
 
-(deftest subagents-block-shows-activity-for-running-only
+(deftest subagents-block-activity-rendering
   (let [base {:agent-id    :sub/act
               :defagent-id :coact-agent
               :start-time  (System/currentTimeMillis)
@@ -724,14 +733,19 @@
         running (#'s/render-sub-agent-lines (assoc base :status :running) "●")
         done    (#'s/render-sub-agent-lines (assoc base :status :done) "●")
         rtext   (joined running)]
-    (testing "running sub-agent shows tools, code-blocks, and a totals footer"
+    (testing "running sub-agent shows tools + code-blocks detail lines, with activity on the summary"
       (is (str/includes? rtext "tools: plan$read · grep"))
       (is (str/includes? rtext "code-blocks: clj 12 lines · bash 3 lines"))
-      (is (str/includes? rtext "(+5 tools used, +2 code-blocks used)"))
-      (is (>= (count running) 4) "summary + 2 activity lines + footer"))
-    (testing "finished sub-agent collapses to a single summary line"
+      (is (str/includes? (strip-ansi (first running)) "· 5 tools · 2 code-blocks")
+          "activity totals ride the summary line itself")
+      (is (not (str/includes? rtext "tools used"))
+          "the old running-only totals footer is retired")
+      (is (>= (count running) 3) "summary + 2 activity detail lines (no footer)"))
+    (testing "finished sub-agent collapses to a single summary line that KEEPS its activity"
       (is (= 1 (count done)))
-      (is (not (str/includes? (joined done) "tools:"))))))
+      (is (not (str/includes? (joined done) "tools:")) "no running-only detail lines")
+      (is (str/includes? (strip-ansi (first done)) "· 5 tools · 2 code-blocks")
+          "activity survives the :running→:done collapse into the frozen record"))))
 
 (deftest subagent-hooks-accumulate-tools-and-code-blocks
   ;; Drive the REAL tool-calls/post + code-eval/post handlers for a sub-agent
@@ -766,10 +780,12 @@
       (is (= [{:lang "clojure" :lines 2} {:lang "bash" :lines 1}]
              (:recent-code final))
           "lang from the event, line count from the code")
-      (let [text (joined (#'s/render-sub-agent-lines final "●"))]
+      (let [lines (#'s/render-sub-agent-lines final "●")
+            text  (joined lines)]
         (is (str/includes? text "tools: grep · read-file"))
         (is (str/includes? text "code-blocks: clojure 2 lines · bash 1 lines"))
-        (is (str/includes? text "(+2 tools used, +2 code-blocks used)"))))))
+        (is (str/includes? (strip-ansi (first lines)) "· 2 tools · 2 code-blocks")
+            "activity totals on the summary line (running-only footer retired)")))))
 
 ;; ----------------------------------------------------------------------------
 ;; Iteration-sink protocol — recording sink replays handler call shape

@@ -1137,6 +1137,11 @@
   ;; 2b. Mulog publisher setup
   (when (= display-format :verbose)
     (tui-session/start-tui-publisher!))
+  ;; 2b1. Dedicated memory-activity publisher (always on; gated live by the
+  ;;      :show-memory-activity config key). Surfaces background L2→L3
+  ;;      consolidation / graph-extraction milestones so the user sees memory
+  ;;      working even in normal/quiet mode.
+  (tui-session/start-memory-activity-publisher!)
 
   ;; 2b2. Route Java SLF4J logs through mulog
   (mulog/setup-slf4j-bridge!)
@@ -1494,6 +1499,7 @@
       (.close ag)
       (catch Exception _)))
   (tui-session/stop-tui-publisher!)
+  (tui-session/stop-memory-activity-publisher!)
   ;; Stop file publisher
   (try (tui-log/stop-file-publisher!) (catch Exception _))
   ;; Stop in-process nREPL server if we started one

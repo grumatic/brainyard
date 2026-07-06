@@ -82,6 +82,11 @@
 ;; TUI mulog publisher handle (verbose mode only)
 (defonce ^:private !tui-publisher (atom nil))
 
+;; Dedicated always-on mulog publisher handle for background memory milestones
+;; (L2→L3 consolidation, graph extraction). Independent of the verbose firehose
+;; above; gated at event time by the :show-memory-activity config key.
+(defonce ^:private !memory-activity-publisher (atom nil))
+
 ;; ----------------------------------------------------------------------
 ;; Subagents block — one consolidated live block per ROOT agent that lists
 ;; all of its descendant sub-agents (one line each). Replaces the legacy
@@ -809,6 +814,38 @@
   ;; Also ensure default console publisher is stopped
   (mulog/stop-default-publisher!))
 
+(defn start-memory-activity-publisher!
+  "Start a dedicated, always-on mulog publisher that surfaces background memory
+   milestones (`fmt/format-memory-activity-event`: L2→L3 consolidation, graph
+   extraction) as muted `🧠 memory · …` lines in the active session's
+   scrollback — so the user can see memory working even in normal/quiet mode.
+
+   Distinct from `start-tui-publisher!` (the verbose firehose): this one does
+   NOT stop the console publisher and only ever emits the curated milestone
+   lines. Gated at event time by `:show-memory-activity` (default true), so it
+   can be silenced live via config without tearing the publisher down. The
+   memory work runs off the agent thread (async sidecar / fire-and-forget
+   consolidation futures), so mulog — not an agent hook — is the signal source.
+   Idempotent."
+  []
+  (when-not @!memory-activity-publisher
+    (let [publisher (mulog/make-fn-publisher
+                     (fn [event]
+                       ;; Always live alongside the verbose firehose — no double-print,
+                       ;; since `format-mulog-event` skips these curated events.
+                       (when (not (false? (agent/get-config :show-memory-activity)))
+                         (when-let [formatted (fmt/format-memory-activity-event event)]
+                           (emit! formatted)))))
+          handle    (mulog/start-publisher! {:type :inline :publisher publisher})]
+      (reset! !memory-activity-publisher handle))))
+
+(defn stop-memory-activity-publisher!
+  "Stop the memory-activity mulog publisher. Idempotent."
+  []
+  (when-let [handle @!memory-activity-publisher]
+    (try (handle) (catch Exception _))
+    (reset! !memory-activity-publisher nil)))
+
 ;; Forward declaration for update-status-bar! (used by watch callbacks, defined below)
 (declare update-status-bar!)
 
@@ -869,18 +906,35 @@
     (< ms 3600000)           (format "%.1fm" (/ ms 60000.0))
     :else                    (format "%.1fh" (/ ms 3600000.0))))
 
+(defn- sub-activity-summary
+  "Compact ` · N tools · M code-blocks` segment from a sub-agent's retained
+   activity counters, or nil when it did neither. Singular-aware. Shared by the
+   subagents-block summary line and the quiet-mode close line so a sub-agent's
+   activity reads identically wherever it's surfaced."
+  [tools-used code-blocks-used]
+  (let [tu (or tools-used 0)
+        cu (or code-blocks-used 0)
+        parts (cond-> []
+                (pos? tu) (conj (str tu " tool" (when (not= 1 tu) "s")))
+                (pos? cu) (conj (str cu " code-block" (when (not= 1 cu) "s"))))]
+    (when (seq parts)
+      (str " · " (str/join " · " parts)))))
+
 (defn- render-sub-agent-lines
   "Build the line(s) for a sub-agent inside the subagents block.
 
    Summary line:
-     `{indent}{marker} {agent-id}  [{type}]  {status}  Iter N/M  ({tok})  {elapsed}`
-   Children are indented under their parent with `↳ ` per depth level.
+     `{indent}{marker} {agent-id}  [{type}]  {status}  Iter N/M  ({tok})  {elapsed}{activity}`
+   where `{activity}` is a ` · N tools · M code-blocks` segment (present for any
+   status once the sub-agent has done either — so it survives the
+   `:running → :done` collapse into the frozen record). Children are indented
+   under their parent with `↳ ` per depth level.
 
-   While `:running`, up to two muted activity lines follow (recent tool usage
-   and recent code-blocks evaluated), plus a muted totals footer
-   `(+N tools used, +M code-blocks used)`. Finished sub-agents (:done/:error)
-   and not-yet-started ones (:created) collapse to just the summary line.
-   Returns a vector of ANSI strings."
+   While `:running`, up to two muted detail lines follow the summary (recent
+   tool usage and recent code-blocks evaluated). Finished sub-agents
+   (:done/:error) and not-yet-started ones (:created) collapse to just the
+   summary line (which still carries the activity segment). Returns a vector of
+   ANSI strings."
   [{:keys [agent-id defagent-id status start-time end-time
            st-mem-atom iter-rollup depth
            recent-tools recent-code tools-used code-blocks-used]}
@@ -919,6 +973,12 @@
                      :done    (ansi/iter-marker-success "done")
                      :error   (ansi/iter-marker-failure "error")
                      (ansi/muted (str (or status "?"))))
+        ;; Activity totals (` · N tools · M code-blocks`) ride the summary line
+        ;; itself — so a finished sub-agent's frozen scrollback record still
+        ;; shows WHAT it did, not just that it ran. The counters are retained
+        ;; across the :running→:done transition, so this renders for every status.
+        activity (some-> (sub-activity-summary tools-used code-blocks-used)
+                         ansi/muted)
         summary (str prefix
                      marker " "
                      ;; Display the full agent-id (namespace/name), dropping the
@@ -928,7 +988,8 @@
                      "  " status-str
                      (when iter-text (str "  " (ansi/muted iter-text)))
                      (when tokens   (str "  " (ansi/muted tokens)))
-                     (when elapsed  (str "  " (ansi/muted elapsed))))]
+                     (when elapsed  (str "  " (ansi/muted elapsed)))
+                     activity)]
     (if (not= status :running)
       ;; Collapsed: created / done / error show only the summary line.
       [summary]
@@ -954,16 +1015,34 @@
                         (fn [i text]
                           (let [branch (if (= i (dec n)) "└ " "├ ")]
                             (str child-ind (ansi/muted (str branch (trunc text))))))
-                        act-items)
-            foot-parts (cond-> []
-                         (pos? (or tools-used 0))
-                         (conj (str "+" tools-used " tools used"))
-                         (pos? (or code-blocks-used 0))
-                         (conj (str "+" code-blocks-used " code-blocks used")))
-            footer     (when (seq foot-parts)
-                         (str child-ind
-                              (ansi/muted (str "(" (str/join ", " foot-parts) ")"))))]
-        (into [summary] (filterv some? (concat tree-lines [footer])))))))
+                        act-items)]
+        ;; Totals footer removed — the `· N tools · M code-blocks` segment on the
+        ;; summary line supersedes it (and, unlike the footer, survives to :done).
+        (into [summary] (filterv some? tree-lines))))))
+
+(defn- quiet-sub-milestone-line
+  "Compact one-line sub-agent milestone for :quiet display-format, where the
+   animated subagents block is suppressed so it's the only surface. `kind` is
+   :started | :done | :error. Matches the `↳`/`●` bullet aesthetic of quiet's
+   think bullets; the :done/:error line carries the activity summary + elapsed."
+  [{:keys [agent-id defagent-id depth kind tools-used code-blocks-used elapsed-ms]}]
+  (let [indent (apply str (repeat (or depth 0) "  "))
+        prefix (if (pos? (or depth 0)) (str indent "↳ ") indent)
+        marker (case kind
+                 :started (ansi/iter-marker-running "●")
+                 :done    (ansi/iter-marker-success "✓")
+                 :error   (ansi/iter-marker-failure "✗")
+                 (ansi/muted "○"))
+        label  (if defagent-id (name defagent-id) (subs (str agent-id) 1))
+        word   (case kind :started "started" :done "done" :error "error" "?")
+        activity (when (not= kind :started)
+                   (sub-activity-summary tools-used code-blocks-used))
+        elapsed  (when (and (not= kind :started) elapsed-ms)
+                   (format-elapsed-short elapsed-ms))]
+    (str prefix marker " " (ansi/header (str "[" label "]"))
+         "  " (ansi/muted word)
+         (when activity (ansi/muted activity))
+         (when elapsed  (str "  " (ansi/muted elapsed))))))
 
 (defn- subagents-rendering-order
   "Sort sub-agents for display: chronological within each parent, with
@@ -1182,27 +1261,28 @@
      (string? args)     (str/includes? args "\n")
      :else              false)))
 
-(defn- iter-args-body
-  "Readable, uniform rendering of tool args for a boxed `Call` section.
+(defn- render-kv-body
+  "Readable, uniform `name: value` rendering of a map for a boxed section
+   (the `Call` args box and the `Result` box both use this).
 
-   Every arg renders as `name: value`, regardless of how many args there
-   are or which one is the long/code-like one:
+   Every entry renders as `name: value`, regardless of how many there are
+   or which one is the long/code-like one:
      - a scalar or single-line string sits inline after the colon
          path: foo.clj
-     - a multi-line string value (a bash script / heredoc) drops to its own
-       2-space-indented block beneath the name so the code stays readable
-         command:
-           echo hi
-           for i in 1 2 3; do …
+     - a multi-line string value (a bash script / heredoc, or a tool's
+       combined stdout+stderr) drops to its own 2-space-indented block
+       beneath the name so the text stays readable
+         output:
+           hello
+           world
    String values render raw (unquoted) so newlines/quotes read naturally;
-   non-strings go through `pr-str` (`:kw`, `42`, `[1 2]`). Non-map args fall
-   back to `pr-str` of the whole value.
+   non-strings go through `pr-str` (`:kw`, `42`, `[1 2]`).
 
    Names and values are styled distinctly so they read apart inside the box:
-   the arg name is a dim label (`ansi/tool-arg-name`) and the value pops in
-   the code color (`ansi/tool-arg-value`). The Call box renders this body
-   with an identity style-fn, so this embedded styling is what shows."
-  [args]
+   the name is a dim label (`ansi/tool-arg-name`) and the value pops in the
+   code color (`ansi/tool-arg-value`). The box renders this body with an
+   identity style-fn, so this embedded styling is what shows."
+  [m]
   (letfn [(nm [k] (ansi/tool-arg-name
                    (str (if (keyword? k) (clojure.core/name k) (str k)) ":")))
           (render-pair [k v]
@@ -1214,11 +1294,18 @@
                         (str/join "\n")))
               ;; scalar / single-line: `name: value` with value styled inline
               (str (nm k) " " (ansi/tool-arg-value (if (string? v) v (pr-str v))))))]
-    (if (map? args)
-      (->> args
-           (map (fn [[k v]] (render-pair k v)))
-           (str/join "\n"))
-      (ansi/tool-arg-value (try (pr-str args) (catch Exception _ "<unprintable>"))))))
+    (->> m
+         (map (fn [[k v]] (render-pair k v)))
+         (str/join "\n"))))
+
+(defn- iter-args-body
+  "Readable, uniform rendering of tool args for a boxed `Call` section — a
+   map renders as `name: value` lines via `render-kv-body`; a non-map arg
+   falls back to a styled `pr-str` of the whole value."
+  [args]
+  (if (map? args)
+    (render-kv-body args)
+    (ansi/tool-arg-value (try (pr-str args) (catch Exception _ "<unprintable>")))))
 
 (defn- tool-call-box-id
   "Stable display-block id for a tool call's boxed `Call` section, derived
@@ -1869,12 +1956,31 @@
    record), and dissoc the tracking entry. A future sub-agent under the
    same root opens a fresh block instance."
   [root-aid sub-agent-id status]
-  (when (get-in @!subagents-blocks [root-aid :sub-agents sub-agent-id])
-    (swap! !subagents-blocks
-           update-in [root-aid :sub-agents sub-agent-id]
-           merge {:status   status
-                  :end-time (System/currentTimeMillis)})
-    (update-subagents-block! root-aid)
+  (when-let [prior (get-in @!subagents-blocks [root-aid :sub-agents sub-agent-id])]
+    (let [;; Guard on the real transition: this funnel is reachable twice (once
+          ;; at :agent.ask/post when the sub-agent answers, once at
+          ;; :agent.instance/closed), so only the first — from a non-terminal
+          ;; status — should fire the one-shot quiet close line.
+          transition? (not (#{:done :error} (:status prior)))
+          now         (System/currentTimeMillis)]
+      (swap! !subagents-blocks
+             update-in [root-aid :sub-agents sub-agent-id]
+             merge {:status   status
+                    :end-time now})
+      (update-subagents-block! root-aid)
+      ;; Quiet mode: the animated subagents block is suppressed, so surface a
+      ;; compact close milestone line to the root's session instead (emitted
+      ;; before the all-done freeze/dissoc, while session-idx is still tracked).
+      (when (and transition? (quiet?))
+        (emit! (quiet-sub-milestone-line
+                {:agent-id         sub-agent-id
+                 :defagent-id      (:defagent-id prior)
+                 :depth            (:depth prior)
+                 :kind             status
+                 :tools-used       (:tools-used prior)
+                 :code-blocks-used (:code-blocks-used prior)
+                 :elapsed-ms       (when-let [st (:start-time prior)] (- now st))})
+               (:session-idx (get @!subagents-blocks root-aid)))))
     (when (all-sub-agents-done? (get @!subagents-blocks root-aid))
       ;; Re-render in `final?` mode — drops the running-counter header so the
       ;; frozen scrollback record carries only the per-sub-agent summary
@@ -2020,6 +2126,17 @@
 ;; Task Watch
 ;; ============================================================================
 
+(defn- subagent-task?
+  "True when `task` is a detached subagent dispatch — a tool call whose tool
+   type is :agent, which `adopt-tool-into-task` stamps with `:coact/subagent-id`
+   (the live subagent's instance-id). Such a task is already surfaced by the
+   consolidated subagents block (started / tools / code / closed), so its
+   redundant per-task live block is suppressed. The marker's presence is the
+   exact redundancy condition: it means a subagent instance exists for this
+   task, i.e. the subagents block is (or will be) tracking it."
+  [task]
+  (some? (get-in task [:metadata :coact/subagent-id])))
+
 (defn- create-task-block!
   "Helper: stamp a fresh entry in !task-blocks, render the live block,
    and ensure the ticker is running. Used both on :pending→:running and
@@ -2087,8 +2204,11 @@
       (when (and old-status (not= old-status new-status))
         (cond
           ;; Task started running → create block iff display-mode :foreground
+          ;; AND it isn't a subagent dispatch (those are already shown by the
+          ;; consolidated subagents block — see `subagent-task?`).
           (= :running new-status)
-          (when (= :foreground new-display)
+          (when (and (= :foreground new-display)
+                     (not (subagent-task? new-task)))
             (create-task-block! task-id new-task))
           ;; Task finished → update block, schedule freeze/dispose
           (#{:completed :failed :cancelled} new-status)
@@ -2125,7 +2245,8 @@
           (when (get @!task-blocks task-id)
             (dispose-task-block-with-marker! task-id nil))
           :foreground
-          (when-not (get @!task-blocks task-id)
+          (when (and (not (get @!task-blocks task-id))
+                     (not (subagent-task? new-task)))
             (create-task-block! task-id new-task))
           nil)
         (update-status-bar!)))))
@@ -2445,7 +2566,14 @@
                        :code-blocks-used 0
                        :recent-code      []
                        :parent-agent-id parent-aid
-                       :depth           display-depth}))))
+                       :depth           display-depth})
+      ;; Quiet mode: the animated subagents block is suppressed, so surface a
+      ;; compact `● [type] started` milestone line to the root's session.
+      (when (quiet?)
+        (emit! (quiet-sub-milestone-line
+                {:agent-id agent-id :defagent-id defid
+                 :depth display-depth :kind :started})
+               root-sidx)))))
 
 (defn agent-closed-handler
   "Handler for :agent.instance/closed. Event: {:agent}.
@@ -3081,19 +3209,29 @@
   20000)
 
 (defn- tool-result->body
-  "Stringify a tool result for the iteration-block `Result` box. The result
-   map carries both normal output and any error description (e.g.
-   `{:error \"File not found: …\"}`), so the box shows the whole thing.
+  "Stringify a tool result for the iteration-block `Result` / `Error` box.
    Returns a bounded string, or nil when there's nothing worth showing
-   (nil / boolean / empty map / blank string). A map's `:answer` is
-   surfaced directly (mirrors `render/tool-post-line`); anything else is
-   `pr-str`'d."
+   (nil / boolean / empty map / blank string).
+
+   A map's `:answer` is surfaced directly (mirrors `render/tool-post-line`).
+   A normal (non-error) map result — e.g. `bash`'s `{:status … :exit-code …
+   :output …}` — renders as `name: value` lines via `render-kv-body`, the
+   same readable key-value treatment as the `Call` box (mirrors
+   `iter-args-body`) rather than a single cramped `pr-str` blob. An ERROR
+   map (`:error` / `:error-message`, matching `tool-use-post-handler`'s
+   `error?`) stays a compact `pr-str` so the red `Error` box styles it
+   uniformly instead of nesting the key-value styling under the red wrap.
+   Anything else is `pr-str`'d."
   [result]
-  (let [raw (cond
+  (let [error-map? (and (map? result)
+                        (or (some? (:error result))
+                            (some? (:error-message result))))
+        raw (cond
               (string? result)                     result
               (and (map? result) (:answer result)) (str (:answer result))
               (or (nil? result) (boolean? result)) nil
               (and (map? result) (empty? result))  nil
+              (and (map? result) (not error-map?)) (render-kv-body result)
               :else                                 (pr-str result))]
     (when (and raw (not (str/blank? (str raw))))
       (let [s (str raw)]

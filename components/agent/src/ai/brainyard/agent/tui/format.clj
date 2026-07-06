@@ -1692,13 +1692,84 @@
   (when event-name
     (name event-name)))
 
+;; ============================================================================
+;; Memory activity milestones
+;; ============================================================================
+
+(def ^:private memory-activity-events
+  "Bare mulog event-name suffixes the TUI's dedicated memory-activity publisher
+   renders as muted `🧠 memory · …` milestone lines. Milestones only —
+   per-turn L2 capture, recall and retention sweeps are intentionally omitted,
+   and session-end folding is surfaced separately at /quit.
+
+   `extracted` (fired inside the extract-fn on every graph-extraction call) is
+   the single graph milestone; `l2-batch-extracted` is deliberately NOT here
+   because in :at-consolidation mode it fires redundantly right after the same
+   `extracted`, which would double the graph line. `format-mulog-event` (the
+   verbose firehose) skips this set so the milestones aren't printed twice when
+   both publishers are live."
+  #{"consolidation-ran" "consolidation-failed" "extracted"})
+
+(defn- pluralize
+  "`n unit` with an English plural for the units the memory lines use:
+   a trailing `y` becomes `ies` (entity→entities, community→communities,
+   summary→summaries), everything else takes `s` (episode→episodes,
+   fact→facts, link→links). n=1 keeps the singular."
+  [n unit]
+  (str n " "
+       (if (= 1 (long n))
+         unit
+         (if (str/ends-with? unit "y")
+           (str (subs unit 0 (dec (count unit))) "ies")
+           (str unit "s")))))
+
+(defn format-memory-activity-event
+  "Format a curated background-memory milestone (see `memory-activity-events`)
+   as a muted `🧠 memory · …` line for the TUI scrollback, or nil when the event
+   isn't a memory milestone or did no work worth surfacing (a no-op
+   consolidation, a zero-yield extraction). A failed consolidation is
+   warning-tinted; everything else is muted."
+  [event]
+  (when-let [suffix (mulog-event-name-suffix (:mulog/event-name event))]
+    (when (contains? memory-activity-events suffix)
+      (let [line
+            (case suffix
+              "consolidation-ran"
+              (let [{:keys [reducer communities consumed produced]} (:report event)
+                    produced (long (or produced 0))]
+                (when (pos? produced)
+                  (if (= :community reducer)
+                    (str "consolidated " (pluralize (long (or communities consumed 0)) "community")
+                         " → +" (pluralize produced "summary") " (L3)")
+                    (str "consolidated " (pluralize (long (or consumed 0)) "episode")
+                         " → +" (pluralize produced "fact") " (L3)"))))
+
+              "consolidation-failed"
+              "consolidation failed"
+
+              "extracted"
+              (let [entities (long (or (:entities event) 0))
+                    relations (long (or (:relations event) 0))]
+                (when (or (pos? entities) (pos? relations))
+                  (str "graph +" (pluralize entities "entity")
+                       ", +" (pluralize relations "link"))))
+
+              nil)]
+        (when line
+          (let [prefixed (str "🧠 memory · " line)]
+            (if (= suffix "consolidation-failed")
+              (ansi/warning prefixed)
+              (ansi/muted prefixed))))))))
+
 (defn format-mulog-event
   "Format a mulog event map as a compact single-line string for TUI display.
-   Returns nil if the event should be suppressed."
+   Returns nil if the event should be suppressed. Curated memory milestones
+   (`memory-activity-events`) are suppressed here so the dedicated
+   memory-activity publisher is their sole surface (no double-print)."
   [event]
   (let [event-name (:mulog/event-name event)
         suffix (mulog-event-name-suffix event-name)]
-    (when suffix
+    (when (and suffix (not (contains? memory-activity-events suffix)))
       (let [line (case suffix
                    ;; LLM call events
                    "chat-completion"
