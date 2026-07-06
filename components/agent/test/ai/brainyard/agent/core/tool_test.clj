@@ -234,3 +234,16 @@
         "string \"b\" must not satisfy [:keyword] — this is the constraint that requires coercion")
     (is (nil? (m/explain schema {:rung :b}))
         "keyword :b satisfies [:keyword] — what coercion must produce")))
+
+(deftest coerce-value-object-array-accepts-edn-and-json
+  (testing "object coercion accepts EDN (keyword keys) — the natural form in an EDN app"
+    (is (= {:model "opus"} (tool/coerce-value "{:model \"opus\"}" "object"))))
+  (testing "object coercion still accepts JSON"
+    (is (= {:model "opus"} (tool/coerce-value "{\"model\": \"opus\"}" "object"))))
+  (testing "array/vector coercion accepts both EDN and JSON"
+    (is (= [1 2 3] (tool/coerce-value "[1 2 3]" "vector")))
+    (is (= [1 2 3] (tool/coerce-value "[1,2,3]" "array"))))
+  (testing "non-structured / unparseable input falls back to the original string"
+    (is (= "not-a-map" (tool/coerce-value "not-a-map" "object"))))
+  (testing "a value that is already a map/vector (not a string) passes through untouched"
+    (is (= {:model "opus"} (tool/coerce-value {:model "opus"} "object")))))

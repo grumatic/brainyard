@@ -20,6 +20,7 @@
             [ai.brainyard.clj-llm.interface :as clj-llm]
             [ai.brainyard.util.interface :as util]
             [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [malli.core :as m]
             [malli.error :as me]
@@ -623,6 +624,19 @@
 ;; Tool Argument Coercion
 ;; ============================================================================
 
+(defn- parse-structured
+  "Parse `value` (a string) into a structured value matching `pred?`,
+   trying JSON first then EDN. Returns the parsed value if it satisfies
+   `pred?`, else the original string. EDN is tried because this is an
+   EDN-native app: a user setting an object/array config key naturally
+   types EDN (e.g. `{:model \"opus\"}`), which is invalid JSON."
+  [value pred?]
+  (let [try-parse (fn [f] (try (let [p (f value)] (when (pred? p) p))
+                               (catch Exception _ nil)))]
+    (or (try-parse #(json/read-str % :key-fn keyword))
+        (try-parse edn/read-string)
+        value)))
+
 (defn coerce-value
   "Coerce a string value to the type indicated by type-str.
    Falls back to the original value on parse failure."
@@ -640,8 +654,8 @@
         "keyword" (keyword (if (.startsWith ^String value ":")
                              (subs value 1)
                              value))
-        ("array" "vector") (let [parsed (json/read-str value :key-fn keyword)] (if (vector? parsed) parsed value))
-        "object"  (let [parsed (json/read-str value :key-fn keyword)] (if (map? parsed) parsed value))
+        ("array" "vector") (parse-structured value vector?)
+        "object"  (parse-structured value map?)
         value)
       (catch Exception _ value))))
 
