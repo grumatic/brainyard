@@ -115,6 +115,19 @@
                              entries)
            :session-id sessionId}})
 
+(defn- acp-tool-name
+  "The display name for a tool call. Prefer the adapter's real tool name
+   (claude-code puts it in `_meta.claudeCode.toolName`, e.g. \"Bash\" /
+   \"Read\") over the ACP `:title`, which is a human-readable *description*
+   (the shell command, \"Read <path>\", …) — using `:title` would show the
+   argument text where the tool name belongs. Falls back to `:title`, then
+   `:kind`, for agents that don't populate the claude-code `_meta`."
+  [{:keys [title kind] :as src}]
+  (or (get-in src [:_meta :claudeCode :toolName])
+      title
+      (some-> kind name)
+      "tool"))
+
 (defmethod dispatch-update "tool_call"
   [{:keys [toolCall sessionId] :as params}]
   ;; First time we see a tool call — fire :pre. Subsequent updates
@@ -124,10 +137,10 @@
   ;; Keys mirror the hooks event catalog for :agent.tool-use/pre —
   ;; {:tool-name :args :call-id …} — so the TUI's tool-batch renderer picks
   ;; up the arguments and correlates the later /post by :call-id.
-  (let [{:keys [toolCallId title kind status rawInput]} (or toolCall params)]
+  (let [{:keys [toolCallId status rawInput] :as src} (or toolCall params)]
     {:event event-tool-use-pre
      :data  {:call-id    toolCallId
-             :tool-name  (or title (some-> kind name) "tool")
+             :tool-name  (acp-tool-name src)
              :args       (or rawInput {})
              :status     (or status "in_progress")
              :session-id sessionId
@@ -135,12 +148,12 @@
 
 (defmethod dispatch-update "tool_call_update"
   [{:keys [toolCall sessionId] :as params}]
-  (let [{:keys [toolCallId title kind status content]} (or toolCall params)]
+  (let [{:keys [toolCallId status content] :as src} (or toolCall params)]
     (case status
       ("completed" "failed")
       {:event event-tool-use-post
        :data  {:call-id    toolCallId
-               :tool-name  (or title (some-> kind name) "tool")
+               :tool-name  (acp-tool-name src)
                :result     (cond-> {:status status}
                              (= status "failed")    (assoc :error content)
                              (= status "completed") (assoc :content content))

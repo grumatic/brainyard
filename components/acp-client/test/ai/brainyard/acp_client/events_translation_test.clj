@@ -41,6 +41,27 @@
       (is (= "tc1" (:call-id data)))
       (is (= "Read x" (:tool-name data))))))
 
+(deftest tool-name-prefers-meta-over-title-test
+  (testing "real claude-code shape: :tool-name is _meta.claudeCode.toolName, not the :title description"
+    (let [{:keys [event data]}
+          (events/translate-update
+           {:sessionId "s1"
+            :update {:_meta {:claudeCode {:toolName "Bash"}}
+                     :sessionUpdate "tool_call"
+                     :toolCallId "tc-9"
+                     :title "`echo hi`"     ;; title is a description, not the tool name
+                     :kind "execute"
+                     :rawInput {:command "echo hi" :description "Echo hi"}}})]
+      (is (= :agent.tool-use/pre event))
+      (is (= "Bash" (:tool-name data)) "tool-name comes from _meta.claudeCode.toolName")
+      (is (= {:command "echo hi" :description "Echo hi"} (:args data)))
+      (is (= "tc-9" (:call-id data)))))
+  (testing "no _meta → falls back to :title"
+    (let [{:keys [data]}
+          (events/translate-update
+           {:update {:sessionUpdate "tool_call" :toolCallId "t" :title "Read x" :kind "read"}})]
+      (is (= "Read x" (:tool-name data))))))
+
 (deftest agent-thought-chunk-test
   (testing "agent_thought_chunk marks meta with :kind :thought"
     (let [{:keys [event data]}
