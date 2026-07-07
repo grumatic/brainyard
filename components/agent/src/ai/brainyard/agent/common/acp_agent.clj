@@ -163,6 +163,46 @@
           (swap! !state assoc cache-key cached)
           cached))))
 
+(def ^:private session-key ::session)
+
+(defn- open-session!
+  "Open a fresh ACP session on `client` and apply model selection once.
+
+   Anchors cwd at the project root (git-root), not the raw JVM user.dir
+   — under `bb tui` that's the projects/agent-tui-app/ subdir, so the
+   backend would resolve relative paths against the wrong tree.
+
+   Model: `:acp-backend-opts {:model \"sonnet\"}` → resolve against the
+   agent's advertised models and set it via ACP `session/set_model` (a
+   per-session concern; the launch spec / env can't carry a model).
+   Unmatched ⇒ warn and keep the agent's default model."
+  [agent client backend-opts]
+  (let [sess  (new-session!* client {:cwd (config/project-dir agent)})
+        model (:model backend-opts)]
+    (when model
+      (let [avail (get-in sess [:models :availableModels])
+            mid   (resolve-model-id* avail model)]
+        (if mid
+          (do (set-model!* sess mid)
+              (mulog/info ::acp-model-selected :requested model :model-id mid))
+          (mulog/warn ::acp-model-unmatched :requested model
+                      :available (mapv :modelId avail)))))
+    sess))
+
+(defn- get-or-open-session!
+  "Return the cached ACP session for this agent, opening one on the
+   cached client if absent. The session is created ONCE per agent
+   instance and reused across every `ask`, so the backend keeps
+   conversation context (the claude-code adapter streams each
+   `session/prompt` into one long-lived query). Torn down with the
+   client on agent close."
+  [agent client backend-opts]
+  (let [!state (:!state agent)]
+    (or (get @!state session-key)
+        (let [sess (open-session! agent client backend-opts)]
+          (swap! !state assoc session-key sess)
+          sess))))
+
 (defn- on-event-handler
   "Build the on-event closure used during one ACP turn. Translates each
    session/update notification through acp-client/translate-update and
@@ -218,26 +258,10 @@
     ;; through this atom so each turn sees its own accumulator.
     (reset! on-event-atom (on-event-handler agent accumulator))
     (try
-      ;; Anchor the ACP session at the project root (git-root), not the raw
-      ;; JVM user.dir — under `bb tui` that's the projects/agent-tui-app/
-      ;; subdir, so the backend would resolve relative paths against the wrong
-      ;; tree. Matches the bash-tool / code-fence cwd anchoring.
-      (let [sess (new-session!* client {:cwd (config/project-dir agent)})
-            ;; Model selection: :acp-backend-opts {:model "sonnet"} → resolve
-            ;; against the agent's advertised models and set it for this
-            ;; session via ACP session/set_model (the launch spec / env can't
-            ;; carry a model — it's a per-session concern). Unmatched ⇒ warn
-            ;; and fall back to the agent's default model.
-            model (:model backend-opts)
-            _     (when model
-                    (let [avail (get-in sess [:models :availableModels])
-                          mid   (resolve-model-id* avail model)]
-                      (if mid
-                        (do (set-model!* sess mid)
-                            (mulog/info ::acp-model-selected :requested model :model-id mid))
-                        (mulog/warn ::acp-model-unmatched
-                                    :requested model
-                                    :available (mapv :modelId avail)))))
+      ;; Reuse ONE ACP session per agent instance (opened lazily) so the
+      ;; backend keeps conversation context across asks — a fresh
+      ;; session/new per turn would reset the conversation.
+      (let [sess (get-or-open-session! agent client backend-opts)
             {:keys [stop-reason]} (prompt!* sess
                                             [{:type "text" :text question}]
                                             {:timeout-ms (config/get-config agent :acp-timeout-ms)})
@@ -314,7 +338,9 @@
        (close!* client)
        (catch Throwable t
          (mulog/warn ::acp-client-close-error :error (ex-message t))))
-     (swap! (:!state agent) dissoc cache-key)))
+     ;; Client close tears down the subprocess (and with it the session);
+     ;; drop both cache entries so a re-opened instance starts clean.
+     (swap! (:!state agent) dissoc cache-key session-key)))
  :source :acp-agent)
 
 ;; =============================================================================
