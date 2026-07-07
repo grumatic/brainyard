@@ -310,7 +310,7 @@
               _           (when-let [cap proto/*subagent-capture*]
                             (compare-and-set! cap nil instance-id))
               ;; Every dispatched subagent is kept alive in the registry
-              ;; (resumable via agent-registry$resume) — so auto-close is off for
+              ;; (askable via agent-registry$ask) — so auto-close is off for
               ;; the subagent path. Direct one-shot callers may still force it by
               ;; passing an explicit :auto-close? true.
               auto-close? (get parsed-args :auto-close? false)
@@ -327,15 +327,15 @@
                                     true          (assoc :id instance-id :auto-close? auto-close?)
                                     agent-session (assoc :agent-session agent-session)
                                     agent         (assoc :parent-agent agent)))))]
-            ;; Always surface the resumable instance-id back to the caller — the
+            ;; Always surface the askable instance-id back to the caller — the
             ;; auto-generated id is the only handle for a follow-up.
             (if (map? r)
               (let [id-str (util/kw->str instance-id)] ;; colon-less, round-trips through (keyword …)
                 (cond-> (assoc r
                                :subagent-id id-str
-                               :resumable true
-                               :resume-hint (format "This subagent stays alive as %s. Follow up on it with (agent-registry$resume {:id \"%s\" :question \"…\"}); end it with (agent-registry$close {:id \"%s\"})."
-                                                    id-str id-str id-str))
+                               :askable? true
+                               :ask-hint (format "This subagent stays alive as %s. Follow up on it with (agent-registry$ask {:id \"%s\" :question \"…\"}); end it with (agent-registry$close {:id \"%s\"})."
+                                                 id-str id-str id-str))
                   evicted (assoc :evicted-subagents (vec evicted))))
               r)))))))
 
@@ -1152,13 +1152,13 @@
           result)
         (let [tid    (:task-id r)
               ;; Subagent lifecycle note — the subagent stays alive as a
-              ;; resumable instance; task-<id> is only the handle for THIS call.
+              ;; askable instance; task-<id> is only the handle for THIS call.
               ;; Keeps the model from conflating the two (task$wait the call vs.
-              ;; agent-registry$resume the instance).
+              ;; agent-registry$ask the instance).
               sa-note (when sub-agent-id
                         (str " NOTE: this subagent stays alive as instance "
                              (util/kw->str sub-agent-id) ". task$wait for THIS call to"
-                             " finish, then ask it more via (agent-registry$resume {:id \""
+                             " finish, then ask it more via (agent-registry$ask {:id \""
                              (util/kw->str sub-agent-id) "\" :question …}) — that instance-id,"
                              " NOT the task-id. Close it with agent-registry$close when done."))
               marker (str "[" tool-name " STILL RUNNING — task-id=" tid

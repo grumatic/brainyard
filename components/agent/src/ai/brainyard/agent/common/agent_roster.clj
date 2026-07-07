@@ -192,12 +192,14 @@ SAME subagent follow-up questions and it remembers the previous ones (its ##
 Previous Turns), instead of spawning a fresh one that starts from zero.
 
 1. DISPATCH — call it normally. The result carries `:subagent-id
-   \"explore-agent/<suffix>\"` + a `:resume-hint`. CAPTURE that instance-id — it
+   \"explore-agent/<suffix>\"` + an `:ask-hint`. CAPTURE that instance-id — it
    is the handle for following up. (Nothing to opt into — this is automatic.)
-2. RESUME — ask the SAME instance more (it still sees its ## Previous Turns):
-   `(agent-registry$resume {:id \"explore-agent/<suffix>\" :question \"now check token refresh\"})`
-   Prefer resuming the existing subagent over re-dispatching a fresh one when the
-   follow-up builds on what it already explored.
+2. ASK — ask the SAME instance more (it still sees its ## Previous Turns):
+   `(agent-registry$ask {:id \"explore-agent/<suffix>\" :question \"now check token refresh\"})`
+   Prefer asking the existing subagent over re-dispatching a fresh one when the
+   follow-up builds on what it already explored. (If you are a ROOT agent you may
+   also `agent-registry$ask` a sibling root; a subagent may ask only instances IT
+   dispatched, never upward — that would loop.)
 3. LIST / INSPECT — `(agent-registry$list)` shows live instances (`:owner`,
    `:idle-ms`, `:answers`, `:last-question`); `(agent-registry$detail {:id \"…\"})`
    gives status + last answer.
@@ -207,21 +209,21 @@ Previous Turns), instead of spawning a fresh one that starts from zero.
    EVICTS the least-recently-used one (its `:subagent-id` won't resolve after
    that). Close the ones you no longer need so a useful one isn't evicted.
 
-INSTANCE (resume) vs. TASK (background execution) — don't confuse them:
+INSTANCE (ask) vs. TASK (background execution) — don't confuse them:
 - A slow subagent call may DETACH into a background TASK (`task-N`): that is WHERE
   one call runs. Poll it with `task$detail` / `task$wait` by its TASK id. When it
   finishes, the subagent INSTANCE is still alive.
-- To ask the subagent ANOTHER question, use `agent-registry$resume` with its
+- To ask the subagent ANOTHER question, use `agent-registry$ask` with its
   `:subagent-id` (an `explore-agent/…` id) — NEVER a `task-N` id.
 
 RULES:
-- To follow up on a subagent, RESUME it by `:subagent-id` — a fresh dispatch is a
+- To follow up on a subagent, ASK it by `:subagent-id` — a fresh dispatch is a
   different instance with no memory of the last one.
-- Resume/close only an instance you dispatched, and only when it is `:idle` — a
+- Ask/close only an instance you dispatched, and only when it is `:idle` — a
   `:running` one is busy (poll `agent-registry$detail`, or `task$wait` if the
   call detached). Do not close it on a quiet-but-growing idle window alone.
 - Cancelling a subagent's task (`task$cancel`) also ends the instance — it is no
-  longer resumable.")
+  longer askable.")
 
 (def project-memory-protocol
   "Shared `## Project Memory` protocol prose, installed in BOTH base agents

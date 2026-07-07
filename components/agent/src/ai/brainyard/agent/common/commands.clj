@@ -92,7 +92,7 @@
 (defcommand agent-registry$list
   "List live agent instances (root + subagents) with lifecycle info (:owner,
    :idle-ms, :answers, :last-question). Every dispatched subagent stays alive
-   here — resume it via agent-registry$resume or end it via agent-registry$close.
+   here — ask it via agent-registry$ask or end it via agent-registry$close.
    Pass :session-id to filter to one agent-session; omit it to list every
    instance in the process registry (all sessions)."
   (fn [& {:as args}]
@@ -107,14 +107,14 @@
   :input-schema  [:map
                   [:session-id {:optional true} [:string {:desc "Agent-session id (e.g. \"agt-…\") to filter to; omit to list all instances across every session."}]]]
   :output-schema [:map
-                  [:agents [:string {:desc "Vector of {:agent-id :turn :iter :parent-id :status :owner :answers :idle-ms :last-question}. :owner nil = root; non-nil = a managed subagent (resumable/closeable)."}]]
+                  [:agents [:string {:desc "Vector of {:agent-id :turn :iter :parent-id :status :owner :answers :idle-ms :last-question}. :owner nil = root; non-nil = a managed subagent (askable/closeable)."}]]
                   [:total [:int {:desc "Number of instances returned (scoped to :session-id when given, else all)"}]]
                   [:total-turns [:int {:desc "Cumulative ask count across the session"}]]])
 
 (defcommand agent-registry$detail
   "Detail for one live agent instance by :id — lifecycle (owner/answers/
    timestamps), current status, idle age, latest reasoning + last answer. Use
-   before agent-registry$resume to check the subagent is idle (not :running) and
+   before agent-registry$ask to check the subagent is idle (not :running) and
    still alive.
 
    Liveness note: a large-but-growing idle window on a :running instance means
@@ -182,13 +182,51 @@
 
       :else nil)))
 
-(defcommand agent-registry$resume
-  "Follow-up ask to a live subagent by :id — reuses the instance and its
-   accumulated history (## Previous Turns) instead of spawning a fresh one. Every
-   dispatched subagent is kept alive, so this is how you ask it more. Runs
-   synchronously and leaves the instance alive for further follow-ups. Errors if
-   the instance is missing, :running (poll agent-registry$detail, or task$wait if
-   detached), not owned by you, or the agent-call depth limit is reached."
+(defn- authorize-ask
+  "Return nil when `caller` may ask `target` (agent-registry$ask), else an
+   {:error ...} map. Reach is deliberately narrower than the registry as a whole,
+   for safety:
+   - ROOT caller — may ask a SIBLING ROOT (any other root, owner nil) OR a
+     subagent in its OWN session (its own subtree). NOT another root's subagents.
+   - SUBAGENT caller — may ask ONLY instances it directly dispatched
+     (owner == caller-id). Never its root, siblings, or other roots — a subagent
+     asking upward could loop, so it is fenced to its own children.
+   - nil caller (programmatic/test; a TUI colon-command dispatches AS the active
+     root, so this is not a live LLM path) — unrestricted.
+   Kill-switch (enable-subagent-calls) and self-ask are also enforced here."
+  [caller target]
+  (let [caller-id (some-> caller proto/agent-id)]
+    (cond
+      (nil? caller) nil
+
+      (not (config/get-config caller :enable-subagent-calls))
+      {:error "Agent-to-agent asks are disabled (enable-subagent-calls=false)."}
+
+      :else
+      (let [caller-root?  (nil? (runtime/get-parent-agent (:!state caller)))
+            target-owner  (:owner (agent-core/lifecycle target))
+            same-session? (= (proto/session-id target) (proto/session-id caller))]
+        (cond
+          (= caller-id (proto/agent-id target))
+          {:error "You cannot ask yourself."}
+
+          caller-root?
+          (when-not (or (nil? target-owner) same-session?)
+            {:error "agent-registry$ask (root): you may only ask a sibling root or a subagent in your own session, not another root's subagents."})
+
+          :else
+          (when-not (= target-owner caller-id)
+            {:error "agent-registry$ask (subagent): you may only ask instances you dispatched (not your root, siblings, or other roots)."}))))))
+
+(defcommand agent-registry$ask
+  "Send a follow-up question to a live agent instance by :id — reusing that
+   instance and its accumulated history (## Previous Turns) instead of spawning a
+   fresh one. Runs synchronously and leaves the target alive for more asks. Reach
+   is fenced for safety: a ROOT agent may ask a sibling root or a subagent in its
+   own session; a SUBAGENT may ask only instances it dispatched (never upward, to
+   avoid loops). Errors if the instance is missing, :running (poll
+   agent-registry$detail, or task$wait if detached), out of your allowed reach, or
+   the agent-call depth limit is reached."
   (fn [& {:as args}]
     (let [id     (:id args)
           q      (:question args)
@@ -197,20 +235,22 @@
         (str/blank? (str id)) {:error "id is required"}
         (str/blank? (str q))  {:error "question is required"}
         :else
-        (let [target (resolve-instance id :session-id (some-> caller proto/session-id))]
+        ;; Resolve across the whole registry (no session scoping) so a root can
+        ;; reach a sibling root; authorize-ask then enforces the safety fence.
+        (let [target (resolve-instance id)]
           (if (nil? target)
             {:error (str "Instance not found: " id)}
-            (or (authorize-instance-op caller target)
-                (agent-core/resume-agent (proto/agent-id target) q
-                                         :caller-id (some-> caller proto/agent-id))))))))
+            (or (authorize-ask caller target)
+                (agent-core/ask-agent (proto/agent-id target) q
+                                      :caller-id (some-> caller proto/agent-id))))))))
   :input-schema  [:map
-                  [:id [:string {:desc "Instance id to resume (e.g. \"exec-agent/crimson-parrot-42\"); from agent-registry$list"}]]
-                  [:question [:string {:desc "Follow-up question for the subagent"}]]]
+                  [:id [:string {:desc "Instance id to ask (e.g. \"exec-agent/crimson-parrot-42\"); from agent-registry$list"}]]
+                  [:question [:string {:desc "Question for the target instance"}]]]
   :output-schema [:map
                   [:id [:string {:desc "Instance id"}]]
-                  [:answer [:string {:desc "The subagent's answer to the follow-up"}]]
+                  [:answer [:string {:desc "The target's answer"}]]
                   [:status [:string {:desc "Instance status after the ask (typically :idle)"}]]
-                  [:error [:string {:desc "Error: missing/blank args, not found, :running (busy), not owned, or depth-limit."}]]])
+                  [:error [:string {:desc "Error: missing/blank args, not found, :running (busy), out of allowed reach, or depth-limit."}]]])
 
 (defcommand agent-registry$close
   "Close (reclaim) a live subagent by :id — the LLM counterpart of `/agent
@@ -950,7 +990,7 @@ results are intentionally kept out of semantic recall so it stays focused on kno
    them — see docs/design/agent-lifecycle-management.md."
   [#'agent-registry$list
    #'agent-registry$detail
-   #'agent-registry$resume
+   #'agent-registry$ask
    #'agent-registry$close])
 
 (def runtime-commands

@@ -1,7 +1,7 @@
 # Agent lifecycle management — always-alive subagents + registry control
 
 > Every subagent a parent dispatches stays alive in the agent registry as a
-> resumable instance, until it is closed, cancelled, LRU-evicted at the
+> askable instance, until it is closed, cancelled, LRU-evicted at the
 > per-session cap, or the session tears down. An `agent-registry$*` tool family
 > lets the LLM list, inspect, resume, and close those instances. There is no
 > opt-in flag — persistence is the default and only behavior.
@@ -15,7 +15,7 @@ The design went through one earlier iteration: an opt-in `:keep-alive?` flag tha
 made persistence a per-dispatch choice (ephemeral by default). Live testing with
 a real model (claude-code/opus) showed that framing didn't work — the model
 rarely set the flag when it should, and conflated "my subagent detached into a
-background task" with "my subagent is a resumable instance." The response was to
+background task" with "my subagent is an askable instance." The response was to
 **remove the choice**: every subagent is always kept alive, the registry is
 bounded by an LRU cap instead of a flag, and the substrate/marker only have to
 teach *management*, not *when to opt in*. That is what this doc now describes.
@@ -93,16 +93,16 @@ only at one of four events:
 
 There is **no `:mode`** — the ephemeral/persistent split is gone. Everything keys
 off `:owner`: a non-nil `:owner` marks a *managed subagent* (`subagent?`) —
-evictable, closeable, resumable, and a cascade target. A root agent (`:owner`
+evictable, closeable, askable, and a cascade target. A root agent (`:owner`
 nil) is none of those. `mark-ask-start!` / `mark-ask-done!` maintain the ask
 bookkeeping in `ask`.
 
-### 4.2 Surfacing the resumable id (always)
+### 4.2 Surfacing the askable id (always)
 
 Because the instance-id is minted inside `do-call-tool--agent`, the dispatch
 result **always** carries `:subagent-id` (colon-less `ns/name`, round-trips
-through `(keyword …)`), `:resumable true`, and a `:resume-hint` naming the exact
-`agent-registry$resume` / `$close` calls. Without this the caller would hold a
+through `(keyword …)`), `:askable? true`, and an `:ask-hint` naming the exact
+`agent-registry$ask` / `$close` calls. Without this the caller would hold a
 live instance it can't address. When a dispatch evicts to stay under the cap, the
 result also carries `:evicted-subagents [ids]`.
 
@@ -132,10 +132,10 @@ instances; `agent-runtime$*` operates on the running self.
   → all sessions).
 - **`agent-registry$detail {:id …}`** — one instance deeper: status, lifecycle
   timestamps, latest reasoning, last answer.
-- **`agent-registry$resume {:id … :question …}`** — follow-up ask to a live
+- **`agent-registry$ask {:id … :question …}`** — follow-up ask to a live
   instance; reuses its `## Previous Turns`. Guards: not-found, `:running` (busy),
-  depth limit, ownership (see §6.1). Increments `*call-depth*` / `*call-chain*`
-  so nested resumes obey the same limits.
+  depth limit, and the ask reach fence (see §6.1). Increments `*call-depth*` /
+  `*call-chain*` so nested asks obey the same limits.
 - **`agent-registry$close {:id …}`** — close + reclaim; cascades to owned
   subagents. Guards: not-found, `:running`, ownership.
 
@@ -143,12 +143,27 @@ instances; `agent-runtime$*` operates on the running self.
 `:ns/name` keyword). The mutating verbs honor the `:enable-subagent-calls`
 kill-switch; the read verbs stay ungated.
 
-### 6.1 Ownership & session scoping
+### 6.1 Ownership & reach scoping
 
-`authorize-instance-op` gates the mutating verbs: same-session only, and a
-subagent may act only on instances it dispatched (`:owner` = caller). A
+`agent-registry$close` is gated by `authorize-instance-op`: same-session only,
+and a subagent may act only on instances it dispatched (`:owner` = caller); a
 top-level caller (root, or no `*current-agent*`) bypasses the ownership check and
 manages any instance in its session.
+
+`agent-registry$ask` is gated by the narrower `authorize-ask` fence — the target
+is resolved across the **whole** registry (so a root can reach a sibling root),
+then bounded for safety:
+- **root** caller — may ask a **sibling root** (any other root, `:owner` nil) OR
+  a subagent in its **own session** (its own subtree); **not** another root's
+  subagents.
+- **subagent** caller — may ask **only** instances it directly dispatched
+  (`:owner` = caller). Never its root, siblings, or other roots — a subagent
+  asking upward could loop, so it is fenced to its own children.
+- **nil** caller (programmatic/test; a TUI colon-command dispatches *as* the
+  active root) — unrestricted.
+
+Both verbs honor the `:enable-subagent-calls` kill-switch; the read verbs stay
+ungated.
 
 ## 7. Task cancellation closes the instance
 
@@ -164,12 +179,12 @@ instance — it stays alive for resume.
 
 When a subagent call detaches, the "STILL RUNNING" marker carries a single
 lifecycle note: the subagent stays alive as instance `<id>`; `task$wait` for THIS
-call to finish, then ask it more via `agent-registry$resume` with that
+call to finish, then ask it more via `agent-registry$ask` with that
 instance-id — **not** the task-id. This is the mechanism-level counter to the
-model conflating a background task with a resumable instance (the failure mode
+model conflating a background task with an askable instance (the failure mode
 that motivated the redesign): it fires exactly when the model forms its mental
 model. In live testing the note reliably kept the model from calling a task
-resumable.
+askable.
 
 ## 9. Cascade & TUI parity
 
@@ -195,8 +210,8 @@ resumable.
 is installed in the coact system-context and inherited by every coact/react-derived
 agent (same mechanism as the todo/exec/skill/MCP substrates), **gated on
 `:enable-subagent-calls`**. It teaches: every dispatched subagent stays alive and
-remembers its turns; capture the returned `:subagent-id`; **resume** it by that
-id for follow-ups (prefer resume over re-dispatch when the follow-up builds on
+remembers its turns; capture the returned `:subagent-id`; **ask** it by that
+id for follow-ups (prefer asking over re-dispatch when the follow-up builds on
 prior work); **list/detail** to inspect; **close** when done (so a useful one
 isn't LRU-evicted); and the instance-vs-task distinction. No opt-in flag to
 explain — management is the whole surface.

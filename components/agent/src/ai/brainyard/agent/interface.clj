@@ -130,7 +130,7 @@
                 ;; Instance lifecycle (subagents) —
                 ;; docs/design/agent-lifecycle-management.md
                 lifecycle subagent? instance-idle-ms
-                resume-agent close-instance!)
+                ask-agent close-instance!)
 
 ;; Memory-manager factory — wires the context-graph provider opts (embed /
 ;; extract / summarize fns) from config on top of the bare memory-component

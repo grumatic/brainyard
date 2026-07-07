@@ -251,7 +251,7 @@
    :enable-subagent-calls      {:type "boolean" :default true
                                 :doc "Allow the agent to dispatch subagents (agent-call); when false, subagent dispatch is disabled."}
    :max-subagents-per-session  {:type "integer" :default 8
-                                :doc "Per-session cap on live subagents in the registry. Every dispatched subagent is kept alive (resumable via agent-registry$resume); at the cap a new dispatch evicts the least-recently-used non-running subagent (LRU) to make room."}
+                                :doc "Per-session cap on live subagents in the registry. Every dispatched subagent is kept alive (askable via agent-registry$ask); at the cap a new dispatch evicts the least-recently-used non-running subagent (LRU) to make room."}
    :enable-user-hooks          {:type "boolean" :default true
                                 :doc "Global kill-switch for LLM-authored user hooks (.brainyard/hooks/*.edn). When false, persisted hooks stay on disk but do not fire."}
    :dispose-think-block        {:type "boolean" :default true

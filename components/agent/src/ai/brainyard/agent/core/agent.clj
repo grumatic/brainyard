@@ -110,8 +110,8 @@
 ;; ============================================================================
 ;; Instance Lifecycle (subagents)
 ;; See docs/design/agent-lifecycle-management.md §5. Every subagent dispatched
-;; via call-tool is kept alive in the registry — resumable via
-;; agent-registry$resume until agent-registry$close, task cancellation, LRU
+;; via call-tool is kept alive in the registry — askable via
+;; agent-registry$ask until agent-registry$close, task cancellation, LRU
 ;; eviction at the per-session cap, or session teardown. The :lifecycle map on
 ;; @!state carries :owner (parent instance-id; nil for a root agent — roots are
 ;; never evicted/cascaded) plus ask bookkeeping. There is no ephemeral/persistent
@@ -1047,7 +1047,7 @@
                     finally block. For async ask, attaches a one-shot watch that
                     closes when the clj-agent's :output transitions to non-nil.
                     Subagent dispatch (do-call-tool--agent) passes false so the
-                    instance stays alive in the registry for agent-registry$resume;
+                    instance stays alive in the registry for agent-registry$ask;
                     direct one-shot callers may pass true."
   [& {:keys [question query parent-agent ask-async? setup-only? auto-close?] :as options}]
   (let [question (or question query "")]
@@ -1072,18 +1072,18 @@
 
 ;; ============================================================================
 ;; Lifecycle actions — resume / close / eviction
-;; Backing fns for the agent-registry$resume / $close tools, the per-session LRU
+;; Backing fns for the agent-registry$ask / $close tools, the per-session LRU
 ;; eviction at dispatch, task-cancellation close, and the parent-close cascade.
 ;; See docs/design/agent-lifecycle-management.md §6–§7.
 ;; ============================================================================
 
-(defn resume-agent
+(defn ask-agent
   "Follow-up ask to an existing live instance by id — reuses the instance (and
    its per-instance :previous-turns history), runs a synchronous ask, and does
    NOT close it. Guards: not-found, :running (busy), and the agent-call depth
    limit. Increments *call-depth* / *call-chain* for the duration so nested
-   resumes obey the same limits. Ownership / kill-switch are enforced by the
-   caller (the agent-registry$resume command). Returns a result map."
+   asks obey the same limits. Reach fence / kill-switch are enforced by the
+   caller (the agent-registry$ask command). Returns a result map."
   [instance-id question & {:keys [caller-id]}]
   (let [aid (if (keyword? instance-id) instance-id (keyword instance-id))
         ag  (get-agent aid)]
@@ -1093,12 +1093,12 @@
 
       (running-instance? ag)
       {:id (util/kw->str aid) :status "running"
-       :error (format "Instance %s is running; cannot resume until idle. Poll agent-registry$detail (or task$wait if it was detached)."
+       :error (format "Instance %s is running; cannot ask until idle. Poll agent-registry$detail (or task$wait if it was detached)."
                       (name aid))}
 
       (>= proto/*call-depth* (or (config/get-config ag :max-agent-call-depth) 3))
       {:id (util/kw->str aid)
-       :error (format "Agent call depth limit reached (%d); cannot resume '%s'."
+       :error (format "Agent call depth limit reached (%d); cannot ask '%s'."
                       proto/*call-depth* (name aid))}
 
       :else
