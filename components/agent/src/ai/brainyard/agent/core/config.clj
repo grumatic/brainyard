@@ -120,9 +120,9 @@
                                 :doc "Model for sub-LLM queries (llm-query / rlm-query in the sandbox). nil → use the agent's :lm-config."}
    :llm-query-max-depth        {:type "integer" :default 1
                                 :doc "Max recursion depth for nested llm-query / sub-LLM calls."}
-   :auto-background-timeout-ms {:type "integer" :default 120000
+   :auto-background-timeout-ms {:type "integer" :default 180000
                                 :doc "Auto-background deadline (ms) for an LLM-emitted code block: if a foreground task exceeds it, await-task detaches into background mode and returns a :pending snapshot; a later iteration harvests the result."}
-   :fast-eval-timeout-ms       {:type "integer" :default 10000
+   :fast-eval-timeout-ms       {:type "integer" :default 30000
                                 :doc "Fast-eval threshold (ms): Clojure code runs inline first and is promoted to a tracked task only if it exceeds this (0 = always create a task; not applied to bash)."}
    :enable-iteration-hold       {:type "boolean" :default false
                                  :doc "When true the BT loop blocks up to :hold-max-wait-ms waiting for in-flight tasks; when false (default) pending tasks flow to the next iteration and the LLM polls via task$wait."}

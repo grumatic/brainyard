@@ -453,7 +453,7 @@ REPL: one expression, read the result, then the next.
   on the fence is a fence error, not a routing hint.
 
 ### Long-running work — deferred tasking
-- A block that exceeds `:auto-background-timeout-ms` (default 30s) is auto-detached
+- A block that exceeds `:auto-background-timeout-ms` (default 180s) is auto-detached
   and returns a `[pending — task-id=…]` marker. The eval keeps running as a task.
 - Check it with `(task$list)` / `(task$detail {:task-id \"…\"})`, or the live
   `((:pending-tasks-fn rt))` from `(usage$guide :topic :agent-state)`. Do NOT re-emit the block —
