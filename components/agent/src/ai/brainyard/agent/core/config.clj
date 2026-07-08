@@ -260,10 +260,12 @@
                                 :doc "TUI iteration live block: true removes it from scrollback when the iteration ends; false freezes it as history."}
    :dispose-acp-block          {:type "boolean" :default false
                                 :doc "TUI ACP transcript live block: true removes it from scrollback when the ACP turn ends; false freezes it as history. Analog of :dispose-iteration-block for acp-agent instances."}
-   :acp-message-max-lines      {:type "integer" :default 12
-                                :doc "TUI ACP transcript block: max lines shown for the live streaming assistant-message tail (a [-N lines] fold caps the rest). The full answer still lands in scrollback at turn end."}
+   :acp-message-max-lines      {:type "integer" :default 100
+                                :doc "TUI ACP transcript block: max lines shown for the live streaming assistant-message tail (a [-N lines] fold caps the rest). Defaults high so the block shows the full message inline; the separate turn-end answer box is off by default (:acp-show-final-answer)."}
    :acp-show-thoughts          {:type "boolean" :default true
                                 :doc "TUI ACP transcript block: render agent_thought_chunk reasoning as dim '● Thinking:' segments interleaved with tools/message; false hides them."}
+   :acp-show-final-answer      {:type "boolean" :default false
+                                :doc "TUI: for acp-agent turns, whether ask-post also emits the separate answer box + 'Goal achieved' verdict. Default false because the ACP transcript block already shows the full streamed message inline; set true to restore the turn-end answer box."}
    :dispose-task-block         {:type "boolean" :default true
                                 :doc "TUI task live block: true removes it from scrollback when the task ends; false freezes it as history."}
    :dispose-agent-block        {:type "boolean" :default true

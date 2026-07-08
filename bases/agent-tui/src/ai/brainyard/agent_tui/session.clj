@@ -2836,15 +2836,21 @@
               ;; goal-achieved / next-user-prompt now come from ThinkActCode's
               ;; answer channel (the old FinalizeAnswer pass was merged in), so
               ;; they're surfaced unconditionally whenever present.
-              goal-achieved (:goal-achieved st)]
+              goal-achieved (:goal-achieved st)
+              ;; acp-agent turns render the full streamed message in the ACP
+              ;; transcript block, so the turn-end answer box + goal verdict are
+              ;; redundant — suppress them unless :acp-show-final-answer is on.
+              hide-final? (and (acp-agent-instance? agent)
+                               (not (agent/get-config agent :acp-show-final-answer)))]
           (when (and (string? answer) (not (str/blank? answer)))
             (when (render-active?) (stop-thinking-indicator!))
-            (emit! (if (quiet?)
-                     (fmt/format-answer-plain answer)
-                     (fmt/format-answer answer)))
+            (when-not hide-final?
+              (emit! (if (quiet?)
+                       (fmt/format-answer-plain answer)
+                       (fmt/format-answer answer))))
             ;; In :quiet the box-less answer needs a blank line after it —
             ;; prepend one to the first of the goal / next-prompt lines.
-            (when (some? goal-achieved)
+            (when (and (some? goal-achieved) (not hide-final?))
               (emit! (str (when (quiet?) "\n") (fmt/format-goal-status goal-achieved))))
             ;; Suggested follow-up (:next-user-prompt). format-next-prompt
             ;; returns nil if blank.
@@ -2868,8 +2874,10 @@
               st      (when st-atom @st-atom)
               answer  (or (:answer st)
                           (when (string? result) result))
-              goal-achieved (:goal-achieved st)]
-          (when (and (string? answer) (not (str/blank? answer)))
+              goal-achieved (:goal-achieved st)
+              hide-final? (and (acp-agent-instance? agent)
+                               (not (agent/get-config agent :acp-show-final-answer)))]
+          (when (and (string? answer) (not (str/blank? answer)) (not hide-final?))
             (sessions/emit-to-session! sidx (if (quiet?)
                                               (fmt/format-answer-plain answer)
                                               (fmt/format-answer answer)))
@@ -3467,7 +3475,7 @@
               (when (= :message (:type seg))
                 (acp-prefixed-block (:text seg)
                                     {:head-prefix "● " :cols cols
-                                     :max-lines (or message-max-lines 12)
+                                     :max-lines (or message-max-lines 100)
                                      :collapse-ws? false
                                      :prefix-style-fn #(ansi/style % ansi/bright-white)})))
             segments))
@@ -3485,7 +3493,7 @@
                                                  :prefix-style-fn ansi/muted}))
                  :message (acp-prefixed-block (:text seg)
                                               {:head-prefix "  " :cols cols
-                                               :max-lines (or message-max-lines 12)
+                                               :max-lines (or message-max-lines 100)
                                                :collapse-ws? false})
                  :tool    (render-iter-tool-line seg)
                  nil))
@@ -3607,7 +3615,7 @@
             :backend           backend
             :model-label       (:model (agent/get-config agent :acp-backend-opts))
             :show-thoughts?    (not= false (agent/get-config agent :acp-show-thoughts))
-            :message-max-lines (or (agent/get-config agent :acp-message-max-lines) 12)
+            :message-max-lines (or (agent/get-config agent :acp-message-max-lines) 100)
             :stage             :running
             :result            nil
             :segments          []
