@@ -47,6 +47,7 @@ dispatch is agnostic to nesting.
 | `plan` | `:todo/updated` | entries → todo-list |
 | `tool_call` | `:agent.tool-use/pre` | `{:call-id :tool-name :args :status :observer? true}` |
 | `tool_call_update` (completed \| failed) | `:agent.tool-use/post` | status pending / in_progress → **nil** (observer-only) |
+| `available_commands_update` | — | `nil` (ignored). claude-code sends this once per session with its slash-command list — see quirks below |
 | anything else | — | `nil` |
 
 **Stop reasons** come from the `session/prompt` *response*, not `session/update`
@@ -88,17 +89,46 @@ into an `acp-agent` defagent:
   **session recycle** (a new session = a new conversation). The `claude-code`
   model can also be set via `~/.claude/settings.json` `"model"`.
 
-## `claude-code-acp` quirks (verified live)
+## `claude-code-acp` quirks
 
-- **Reports no usage** over `session/update` → any token counter reads `0 tok`.
-  Consumers should treat a missing usage as "unknown", not zero work.
-- **Emits no `agent_thought_chunk`** for simple read/answer queries (opus).
-  Thought output is backend- and prompt-dependent — never assume it is present.
+Verified by tapping the raw ACP wire (`spawn!` `:claude-code` with a recording
+`:on-event`, inspecting every `session/update` and the `session/prompt`
+response's `:raw`) across three turns: a simple query, an explicit "think hard,
+reason step by step" prompt, and an "ultrathink: prove there are infinitely many
+primes" prompt.
+
+- **No usage/token data anywhere — confirmed.** The `session/prompt` response is
+  literally `{:stopReason "end_turn"}` — nothing else. No usage field there, and
+  no usage-bearing `session/update`. So a `0 tok` counter reflects a **genuine
+  absence** of any usage signal, not a dropped field. Treat missing usage as
+  "unknown", not "zero work".
+- **Never emits `agent_thought_chunk` — confirmed.** All three turns produced
+  only `agent_message_chunk` (12 and 24 chunks on the reasoning prompts); zero
+  thought chunks even with explicit "think hard" / "ultrathink" triggers. The
+  model's reasoning is **inlined into the message text**, not surfaced as a
+  separate ACP thinking stream. Consumers' thought-rendering paths are correct
+  but simply won't light up with this backend as configured. (Whether a
+  thinking-enabled Claude Code config would change this is unverified.)
+- **`available_commands_update`.** claude-code sends one `session/update` per
+  session carrying its slash-command list (`:availableCommands`). The translation
+  table maps it to `nil` (ignored) — a candidate surface if command discovery is
+  ever wanted.
+- **Advertised models are generic tiers, not versioned ids.** `new-session!`
+  returns three: `default` (name "Default (recommended)", desc "Opus 4.6 · Most
+  capable for complex work"), `sonnet` ("Sonnet 4.5 · …"), `haiku` ("Haiku 4.5 ·
+  …"); `:currentModelId "default"`. Because `resolve-model-id` substring-matches
+  modelId **/ name / description**, `:acp-backend-opts {:model "opus"}` resolves
+  to `default` (its description contains "Opus") — correct in effect, since
+  `default` *is* Opus 4.6, but note the effective modelId is `"default"`, not an
+  opus-named id.
 - May emit `tool_call` **twice for one `call-id`** (a placeholder with empty
   input, then the real input). Consumers must **upsert/merge by `call-id`**, not
   blindly append, or a single call shows as two lines.
 - Tool result content is nested, e.g.
   `{:status "completed" :content [{:type "content" :content {:type "text" :text "…"}}]}`.
+- Tool names arrive both bare (`Glob`) and MCP-prefixed (`mcp__acp__Read`) in the
+  same session (see "Tool naming" above).
 - In this repo's dev environment the default config routes `acp-agent` to
-  `:claude-code` / opus, **not** the schema's `:stub` default — check
-  `(config/get-config ag :acp-backend)` rather than assuming stub.
+  `:claude-code` (effective model `default` = Opus 4.6), **not** the schema's
+  `:stub` default — check `(config/get-config ag :acp-backend)` rather than
+  assuming stub.
