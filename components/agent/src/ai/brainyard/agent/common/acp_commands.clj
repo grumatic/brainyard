@@ -188,8 +188,7 @@
    over re-spawn). Pass :session-id to scope to another session; omit to list all
    sessions."
   (fn [& {:as args}]
-    (let [caller  proto/*current-agent*
-          sid     (or (:session-id args) (some-> caller proto/session-id))
+    (let [sid     (:session-id args)     ; omit → nil → all sessions (acp-instances nil)
           bkf     (->kw (:backend args))
           mdf     (:model args)
           rows    (->> (acp-instances (when-not (str/blank? (str sid)) sid))

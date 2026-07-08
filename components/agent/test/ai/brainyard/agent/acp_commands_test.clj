@@ -42,7 +42,10 @@
       (binding [proto/*current-agent* caller]
         (try
           (testing "acp$list surfaces the connection with backend/model/purpose"
-            (let [l (tool/invoke-tool :acp$list {})]
+            ;; Scope to this test's session — acp$list with no :session-id spans
+            ;; ALL sessions (like agent-registry$list), so other tests' instances
+            ;; would otherwise leak in.
+            (let [l (tool/invoke-tool :acp$list {:session-id sid})]
               (is (= 1 (:total l)))
               (let [row (first (:acp-agents l))]
                 (is (= acp-id-str (:acp-id row)))
@@ -51,8 +54,8 @@
                 (is (true? (:provisioned? row))))))
 
           (testing "backend filter matches / mismatches"
-            (is (= 1 (:total (tool/invoke-tool :acp$list {:backend "stub"}))))
-            (is (= 0 (:total (tool/invoke-tool :acp$list {:backend "gemini"})))))
+            (is (= 1 (:total (tool/invoke-tool :acp$list {:session-id sid :backend "stub"}))))
+            (is (= 0 (:total (tool/invoke-tool :acp$list {:session-id sid :backend "gemini"})))))
 
           (testing "acp$detail returns descriptor + advertised models accessor"
             (let [d (tool/invoke-tool :acp$detail {:id acp-id-str})]
@@ -76,7 +79,7 @@
           (testing "acp$close reaps the provisioned connection"
             (is (:closed (tool/invoke-tool :acp$close {:id acp-id-str})))
             (is (not (some #(= acp-id-str (:acp-id %))
-                           (:acp-agents (tool/invoke-tool :acp$list {}))))))
+                           (:acp-agents (tool/invoke-tool :acp$list {:session-id sid}))))))
           (finally
             (.close caller)
             (try (.close ag1) (catch Throwable _))))))))
