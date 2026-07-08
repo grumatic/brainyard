@@ -135,6 +135,19 @@
       (is (str/includes? joined "Read"))
       (is (str/includes? joined "Done — timeout set to 30s.")))))
 
+(deftest message-rendered-as-markdown
+  (testing "assistant message markdown is rendered (markers consumed), not shown literally"
+    (let [state (assoc base-state
+                       :segments [{:type :message
+                                   :text "See **bold** here.\n\n## Heading\n\n- item one\n- item two"}])
+          joined (str/join "\n" (render-plain state))]
+      (is (str/includes? joined "bold") "bold text is present")
+      (is (not (str/includes? joined "**bold**")) "literal ** emphasis markers are consumed")
+      (is (str/includes? joined "Heading") "heading text is present")
+      (is (not (str/includes? joined "## Heading")) "literal ## header markers are consumed")
+      (is (str/includes? joined "• item one") "list item rendered with a • bullet")
+      (is (not (re-find #"(?m)^\s*- item one" joined)) "raw '- ' list markers are consumed"))))
+
 (deftest message-tail-is-capped
   (testing "a long streamed message tail-caps to :message-max-lines with a [-N lines] fold"
     (let [long-msg (str/join " " (repeatedly 400 #(str "word")))

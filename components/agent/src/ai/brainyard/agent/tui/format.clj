@@ -574,8 +574,12 @@
 
 ;; --- Top-level renderer -----------------------------------------------
 
-(defn- render-markdown
-  "Convert markdown text to ANSI-styled lines, each ≤ max-width display columns."
+(defn render-markdown
+  "Convert markdown text to ANSI-styled lines, each ≤ max-width display columns.
+   Handles headers, bold/italic/inline-code, code fences, ul/ol lists,
+   blockquotes, hr, and GFM tables. Public so live blocks (e.g. the ACP
+   transcript block's streamed message) can render markdown the same way
+   `format-answer` does."
   [text max-width]
   (let [blocks (parse-markdown-blocks text)]
     (mapcat (fn [{:keys [type content]}]

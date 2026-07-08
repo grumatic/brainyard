@@ -3461,23 +3461,47 @@
          (ansi/iter-label label)
          (when (seq meta) (str "  " (ansi/muted (str "(" meta ")")))))))
 
+(defn- acp-message-lines
+  "Render an ACP `:message` segment as **markdown** (headers, bold/italic/inline
+   code, code fences, ul/ol lists, blockquotes, hr, GFM tables) via the shared
+   `fmt/render-markdown` — the same renderer `format-answer` uses — indented two
+   columns under the block. Assistant messages arrive as markdown; rendering them
+   raw would leak literal `**bold**` / `#` / fences.
+
+   Tail-capped to `max-lines`: when the message overflows, a dim `[-N lines]`
+   indicator replaces the elided head and the most-recent lines are kept (recent
+   content wins for a streaming tail). Falls back to plain wrapped text if
+   markdown rendering throws (e.g. on a mid-stream partial fence)."
+  [text cols max-lines]
+  (let [indent "  "
+        w      (max 10 (- cols 2))
+        md     (try (fmt/render-markdown text w)
+                    (catch Throwable _
+                      (wrap-snippet-to-width (str/replace (str text) #"\s+" " ") w)))
+        lines  (mapv #(str indent %) md)]
+    (cond
+      (empty? lines)              []
+      (<= (count lines) max-lines) lines
+      :else
+      (let [keep   (max 1 (dec max-lines))
+            hidden (- (count lines) keep)
+            tail   (subvec lines (- (count lines) keep))]
+        (into [(str indent (ansi/style (str "[-" hidden " lines]") ansi/dim))] tail)))))
+
 (defn- render-acp-block-lines
   "Build ANSI lines for an ACP transcript block: the header followed by its
    `:segments` rendered IN ORDER — dim `● Thinking:` reasoning, the streaming
-   assistant message (tail-capped to `:message-max-lines`), and tool calls via
-   the shared `render-iter-tool-line`. In :quiet display-format only the message
-   segments render (answer-only, bullet-led, no header/thoughts/tools)."
+   assistant message (markdown-rendered, tail-capped to `:message-max-lines`),
+   and tool calls via the shared `render-iter-tool-line`. In :quiet
+   display-format only the message segments render (answer-only markdown, no
+   header/thoughts/tools)."
   [{:keys [segments show-thoughts? message-max-lines] :as state} spinner-char]
   (let [cols (or (:cols @layout/!layout) 80)]
     (if (quiet?)
       (vec (mapcat
             (fn [seg]
               (when (= :message (:type seg))
-                (acp-prefixed-block (:text seg)
-                                    {:head-prefix "● " :cols cols
-                                     :max-lines (or message-max-lines 100)
-                                     :collapse-ws? false
-                                     :prefix-style-fn #(ansi/style % ansi/bright-white)})))
+                (acp-message-lines (:text seg) cols (or message-max-lines 100))))
             segments))
       (let [header (render-acp-header state spinner-char)
             seg-lines
@@ -3491,10 +3515,7 @@
                                                  :collapse-ws? true
                                                  :text-style-fn ansi/muted
                                                  :prefix-style-fn ansi/muted}))
-                 :message (acp-prefixed-block (:text seg)
-                                              {:head-prefix "  " :cols cols
-                                               :max-lines (or message-max-lines 100)
-                                               :collapse-ws? false})
+                 :message (acp-message-lines (:text seg) cols (or message-max-lines 100))
                  :tool    (render-iter-tool-line seg)
                  nil))
              segments)]
