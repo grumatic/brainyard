@@ -238,7 +238,8 @@ purpose, health):
 - CREATE a named connection: `(acp$create {:backend :claude-code :model \"opus\"
   :purpose \"refactor payments\"})` → returns `:acp-id`. Bounded per session
   (`:max-acp-agents-per-session`); it refuses at the cap (close one first).
-- ASK any connection in your session (no ownership fence — they're shared):
+- ASK a connection (same reach as agent-registry$ask — a root may ask a sibling
+  root or a subagent in its own session):
   `(acp$ask {:id \"acp-agent/<suffix>\" :question \"…\"})`.
 - RELABEL / SWITCH MODEL: `(acp$update {:id \"…\" :purpose \"…\"})`; a `:model` change
   RECYCLES the session (conversation context resets).

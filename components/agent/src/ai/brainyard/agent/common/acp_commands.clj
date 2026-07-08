@@ -20,22 +20,25 @@
                    optional :backend / :model filter for reuse lookup.
      acp$detail  — one connection deep: descriptor + advertised models +
                    last answer.
-     acp$ask     — follow-up ask to a shared connection (same-session, ANY
-                   caller — no ownership fence, unlike agent-registry$ask).
+     acp$ask     — follow-up ask to a connection, reusing its context. Reach
+                   mirrors agent-registry$ask (sibling-root / owned-subagent).
      acp$update  — relabel (:purpose) or switch model (:model → session
                    RECYCLE, conversation context resets).
      acp$close   — reap an acp$create-provisioned connection's subprocess.
 
-   Reach: ACP instances are shared, so reads are ungated and acp$ask is
-   same-session with no ownership fence. acp$close/update are same-session and
-   idle-only; acp$close only tears down PROVISIONED roots — TUI-attached roots
-   go through `/agent close`, owned subagents through `agent-registry$close`.
+   Reach: reads (list/detail) are ungated. acp$ask is topology-fenced exactly
+   like agent-registry$ask — a root may ask a sibling root or a subagent in its
+   own session; a subagent may ask only instances it dispatched (never upward).
+   acp$close/update are same-session and idle-only; acp$close only tears down
+   PROVISIONED roots — TUI-attached roots go through `/agent close`, owned
+   subagents through `agent-registry$close`.
 
    See docs/design/acp-agent-management.md."
   (:require [ai.brainyard.agent.core.tool :refer [defcommand]]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.agent :as agent-core]
+            [ai.brainyard.agent.core.runtime :as runtime]
             [ai.brainyard.agent.common.acp-agent :as acp]
             [ai.brainyard.util.interface :as util]
             [clojure.string :as str]))
@@ -79,6 +82,22 @@
         (when (= 1 (count matches)) (first matches)))
       :else nil)))
 
+(defn- reach-ask-acp
+  "Topology reach fence for acp$ask, mirroring agent-registry$ask's authorize-ask
+   (sibling-root / owned-subagent) — sibling roots may ask each other, and a
+   subagent may ask only instances it dispatched. Never sees a nil caller
+   (short-circuited in authorize-acp). Returns nil when allowed, else {:error …}."
+  [caller target]
+  (let [caller-id     (proto/agent-id caller)
+        caller-root?  (nil? (runtime/get-parent-agent (:!state caller)))
+        target-owner  (:owner (agent-core/lifecycle target))
+        same-session? (= (proto/session-id target) (proto/session-id caller))]
+    (if caller-root?
+      (when-not (or (nil? target-owner) same-session?)
+        {:error "acp$ask (root): you may only ask a sibling root or a subagent in your own session, not another root's subagents."})
+      (when-not (= target-owner caller-id)
+        {:error "acp$ask (subagent): you may only ask instances you dispatched (not your root, siblings, or other roots)."}))))
+
 (defn- authorize-acp
   "Shared-connection reach fence for acp$ask/update/close. Returns nil when the
    caller may act, else an {:error …} map. Reads (list/detail) do not call this."
@@ -89,11 +108,14 @@
     (not (config/get-config caller :enable-subagent-calls))
     {:error "ACP management is disabled (enable-subagent-calls=false)."}
 
-    (not= (proto/session-id target) (proto/session-id caller))
-    {:error "ACP instance belongs to a different session; you can only manage connections in your own session."}
-
     (and (= op :ask) (= (:agent-id caller) (:agent-id target)))
     {:error "You cannot ask yourself."}
+
+    (= op :ask)
+    (reach-ask-acp caller target)
+
+    (not= (proto/session-id target) (proto/session-id caller))
+    {:error "ACP instance belongs to a different session; you can only manage connections in your own session."}
 
     :else nil))
 
@@ -235,10 +257,11 @@
 
 (defcommand acp$ask
   "Send a question to a live ACP connection by :id, reusing its conversation
-   context. Because ACP connections are SHARED, any agent in the session may ask
-   any connection (no ownership fence — unlike agent-registry$ask). Runs
-   synchronously and leaves the connection alive. Errors if missing, :running
-   (busy), a different session, or the agent-call depth limit is reached."
+   context. Reach is fenced exactly like agent-registry$ask: a ROOT agent may ask
+   a sibling root or a subagent in its own session; a SUBAGENT may ask only
+   instances it dispatched (never upward, to avoid loops). Runs synchronously and
+   leaves the connection alive. Errors if missing, :running (busy), out of your
+   allowed reach, or the agent-call depth limit is reached."
   (fn [& {:as args}]
     (let [id     (:id args)
           q      (:question args)
@@ -259,7 +282,7 @@
                   [:id [:string {:desc "Instance id"}]]
                   [:answer [:string {:desc "The connection's answer"}]]
                   [:status [:string {:desc "Status after the ask (typically :idle)"}]]
-                  [:error [:string {:desc "Error: missing args, not found, :running, different session, or depth-limit"}]]])
+                  [:error [:string {:desc "Error: missing args, not found, :running, out of your allowed reach, or depth-limit"}]]])
 
 (defcommand acp$update
   "Update a live ACP connection by :id. :purpose relabels it. :model SWITCHES the

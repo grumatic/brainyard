@@ -48,11 +48,12 @@ An acp-agent is modeled as a **session-scoped shared connection**:
   from the generic LRU** (`evict-subagents-to-cap!` only evicts `subagent?`
   instances — non-nil `:owner`) and from parent-close cascade. It dies only on
   explicit `acp$close`, `/agent close`, task-cancel, or session teardown.
-- Governed by a dedicated `acp$*` family whose reach rules fit a *shared*
-  resource: reads are ungated, and **`acp$ask` has no ownership fence** — any
-  agent in the session may ask any connection (this is why `acp$ask` exists as
-  its own verb rather than reusing `agent-registry$ask`, whose fence is built
-  for owned subtrees).
+- Governed by a dedicated `acp$*` family layered over the same registry, so acp
+  connections get acp-aware reads/CRUD while the LRU leaves them alone. `acp$ask`
+  keeps the **same topology fence as `agent-registry$ask`** (a root may ask a
+  sibling root or a subagent in its own session; a subagent may ask only what it
+  dispatched) — it exists as its own verb for the acp-scoped surface, not to relax
+  reach.
 
 A dispatched `(acp-agent {:question …})` subagent (non-nil `:owner`) still
 works and is still managed by `agent-registry$*`; the `acp$*` family recognizes
@@ -90,12 +91,13 @@ gated on `:enable-subagent-calls`.
 | `acp$create {:backend :model :purpose :backend-opts}` | Eager provision: prereq-checked spawn + `initialize!` + open session (model pinned), `:owner nil`, `:provisioned? true`. Refuses at the per-session cap. Returns `:acp-id` + descriptor. |
 | `acp$list {:backend? :model?}` | ACP-only enriched rows (`:backend :model :purpose :session-id :health :prompts :status :owner :provisioned? :idle-ms`); optional filter for the reuse lookup. |
 | `acp$detail {:id}` | Descriptor + advertised models (what `acp$update :model` can switch to) + last answer. |
-| `acp$ask {:id :question}` | Follow-up ask to a shared connection — same-session, **no ownership fence**. Reuses conversation context. |
+| `acp$ask {:id :question}` | Follow-up ask reusing the connection's context. Reach = `agent-registry$ask`'s topology fence (**sibling-root / owned-subagent**). |
 | `acp$update {:id :purpose? :model?}` | `:purpose` relabels. `:model` **recycles the session** (fresh session, new model, **conversation context reset**); persisted as a per-agent override only. Idle-only. |
 | `acp$close {:id}` | Reaps the subprocess. Only tears down **provisioned** roots — a TUI-attached root goes through `/agent close`, an owned subagent through `agent-registry$close`. |
 
-Reach fence (`authorize-acp`): kill-switch + same-session; `acp$ask` adds a
-not-self check; `acp$close`/`update` are idle-only. `nil` caller
+Reach fence (`authorize-acp`): kill-switch throughout. `acp$ask` applies a
+not-self check plus the `agent-registry$ask` topology fence (`reach-ask-acp`);
+`acp$close`/`update` are same-session and idle-only. `nil` caller
 (programmatic/TUI colon-command dispatched *as* the root) is unrestricted.
 
 ## 5. The cap
@@ -129,9 +131,10 @@ registry, mirroring the generic-registry parity in the lifecycle design.
 
 ## 7. Design notes
 
-- **Why `acp$ask` is its own verb.** A shared connection has no owning subtree;
-  `agent-registry$ask`'s fence (subagent → only its own children) would wrongly
-  block a sibling from asking. `acp$ask` fences on session only.
+- **Why `acp$ask` is its own verb.** It gives the acp-scoped surface its own ask
+  entry point (acp-aware errors, paired with `acp$list`/`detail`) while keeping
+  the *same* topology fence as `agent-registry$ask` — a subagent still can't ask
+  upward and loop. The verb is separate for cohesion, not to relax reach.
 - **Why refuse-at-cap, not LRU.** Silently closing a paid external session on an
   unrelated dispatch is the worst outcome; making creation fail loudly puts the
   choice in the caller's hands.
