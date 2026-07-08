@@ -92,12 +92,14 @@ gated on `:enable-subagent-calls`.
 | `acp$list {:backend? :model?}` | ACP-only enriched rows (`:backend :model :purpose :session-id :health :prompts :status :owner :provisioned? :idle-ms`); optional filter for the reuse lookup. |
 | `acp$detail {:id}` | Descriptor + advertised models (what `acp$update :model` can switch to) + last answer. |
 | `acp$ask {:id :question}` | Follow-up ask reusing the connection's context. Reach = `agent-registry$ask`'s topology fence (**sibling-root / owned-subagent**). |
-| `acp$update {:id :purpose? :model?}` | `:purpose` relabels. `:model` **recycles the session** (fresh session, new model, **conversation context reset**); persisted as a per-agent override only. Idle-only. |
-| `acp$close {:id}` | Reaps the subprocess. Only tears down **provisioned** roots — a TUI-attached root goes through `/agent close`, an owned subagent through `agent-registry$close`. |
+| `acp$update {:id :purpose? :model?}` | `:purpose` relabels. `:model` **recycles the session** (fresh session, new model, **conversation context reset**); persisted as a per-agent override only. Ownership-fenced + idle-only. |
+| `acp$close {:id}` | Reaps the subprocess. Ownership-fenced; only tears down **provisioned** roots — a TUI-attached root goes through `/agent close`, an owned subagent through `agent-registry$close`. |
 
 Reach fence (`authorize-acp`): kill-switch throughout. `acp$ask` applies a
 not-self check plus the `agent-registry$ask` topology fence (`reach-ask-acp`);
-`acp$close`/`update` are same-session and idle-only. `nil` caller
+`acp$update`/`close` use the `agent-registry$close` topology fence
+(`reach-manage-acp` — same-session, and a subagent may act only on connections it
+dispatched) and are idle-only. `nil` caller
 (programmatic/TUI colon-command dispatched *as* the root) is unrestricted.
 
 ## 5. The cap

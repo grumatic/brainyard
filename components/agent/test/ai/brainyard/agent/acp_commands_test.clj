@@ -112,4 +112,23 @@
           (finally
             (.close caller)
             (try (.close tui-root) (catch Throwable _))
-            (try (.close owned) (catch Throwable _))))))))
+            (try (.close owned) (catch Throwable _)))))))
+
+  (testing "acp$update/close are ownership-fenced — a subagent may not touch a connection it didn't dispatch"
+    (let [sid  (str "acp-own-" (System/currentTimeMillis))
+          root (agent/setup-agent-by-id
+                :coact-agent :agent-session {:user-id "u" :session-id sid})
+          sub  (agent/setup-agent-by-id
+                :coact-agent :agent-session {:user-id "u" :session-id sid} :parent-agent root)
+          conn (provision! sid :provisioned? true)] ; owner nil, NOT dispatched by sub
+      (binding [proto/*current-agent* sub]
+        (try
+          (let [cid (subs (str (proto/agent-id conn)) 1)]
+            (is (re-find #"Not owned by you"
+                         (str (:error (tool/invoke-tool :acp$close {:id cid})))))
+            (is (re-find #"Not owned by you"
+                         (str (:error (tool/invoke-tool :acp$update {:id cid :purpose "x"}))))))
+          (finally
+            (.close root)
+            (try (.close sub) (catch Throwable _))
+            (try (.close conn) (catch Throwable _))))))))

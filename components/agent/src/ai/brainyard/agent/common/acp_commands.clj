@@ -29,9 +29,10 @@
    Reach: reads (list/detail) are ungated. acp$ask is topology-fenced exactly
    like agent-registry$ask — a root may ask a sibling root or a subagent in its
    own session; a subagent may ask only instances it dispatched (never upward).
-   acp$close/update are same-session and idle-only; acp$close only tears down
-   PROVISIONED roots — TUI-attached roots go through `/agent close`, owned
-   subagents through `agent-registry$close`.
+   acp$update/close are topology-fenced like agent-registry$close (same-session,
+   and a subagent may act only on connections it dispatched) and idle-only;
+   acp$close only tears down PROVISIONED roots — TUI-attached roots go through
+   `/agent close`, owned subagents through `agent-registry$close`.
 
    See docs/design/acp-agent-management.md."
   (:require [ai.brainyard.agent.core.tool :refer [defcommand]]
@@ -98,9 +99,31 @@
       (when-not (= target-owner caller-id)
         {:error "acp$ask (subagent): you may only ask instances you dispatched (not your root, siblings, or other roots)."}))))
 
+(defn- reach-manage-acp
+  "Topology reach fence for the mutating acp$update/close, mirroring
+   agent-registry$close's authorize-instance-op: same-session, and a subagent may
+   act only on instances it dispatched (a root / top-level caller manages any
+   connection in its session). Never sees a nil caller (short-circuited in
+   authorize-acp). Returns nil when allowed, else {:error …}."
+  [caller target]
+  (let [caller-id    (proto/agent-id caller)
+        caller-root? (nil? (runtime/get-parent-agent (:!state caller)))
+        owner        (:owner (agent-core/lifecycle target))]
+    (cond
+      (not= (proto/session-id target) (proto/session-id caller))
+      {:error "ACP instance belongs to a different session; you can only manage connections in your own session."}
+
+      (and (not caller-root?) (not= owner caller-id))
+      {:error (format "Not owned by you (owner: %s). You may only update/close ACP connections you dispatched."
+                      (pr-str owner))}
+
+      :else nil)))
+
 (defn- authorize-acp
-  "Shared-connection reach fence for acp$ask/update/close. Returns nil when the
-   caller may act, else an {:error …} map. Reads (list/detail) do not call this."
+  "Topology reach fence for acp$ask/update/close. Returns nil when the caller may
+   act, else an {:error …} map. Reads (list/detail) do not call this. acp$ask uses
+   the ask fence (sibling-root / owned-subagent); acp$update/close use the manage
+   fence (same-session, subagent → only what it dispatched)."
   [caller target op]
   (cond
     (nil? caller) nil ;; programmatic / TUI colon-command (dispatched AS the root)
@@ -114,10 +137,8 @@
     (= op :ask)
     (reach-ask-acp caller target)
 
-    (not= (proto/session-id target) (proto/session-id caller))
-    {:error "ACP instance belongs to a different session; you can only manage connections in your own session."}
-
-    :else nil))
+    :else ;; :update / :close
+    (reach-manage-acp caller target)))
 
 (defn- acp-row
   "One summary row for acp$list."
@@ -288,7 +309,8 @@
   "Update a live ACP connection by :id. :purpose relabels it. :model SWITCHES the
    model — since a model is fixed per ACP session, this RECYCLES the session: a
    fresh session opens with the new model and the conversation context is RESET.
-   Idle-only (wait out a :running connection)."
+   Same-session, ownership-fenced (a subagent may update only connections it
+   dispatched), and idle-only (wait out a :running connection)."
   (fn [& {:as args}]
     (let [id          (:id args)
           new-purpose (:purpose args)
@@ -320,12 +342,13 @@
                   [:descriptor [:map {:desc "Updated descriptor"}]]
                   [:model-recycled [:boolean {:desc "True when a model switch recycled the session"}]]
                   [:note [:string {:desc "Human note when the session was recycled"}]]
-                  [:error [:string {:desc "Error: missing id, not found, :running, different session"}]]])
+                  [:error [:string {:desc "Error: missing id, not found, :running, out of your allowed reach"}]]])
 
 (defcommand acp$close
   "Close (reap) an acp$create-provisioned ACP connection by :id — tears down its
-   subprocess and external session. Refuses while :running. Only tears down
-   PROVISIONED connections: a TUI-attached root goes through /agent close; an
+   subprocess and external session. Same-session and ownership-fenced (a subagent
+   may close only connections it dispatched). Refuses while :running. Only tears
+   down PROVISIONED connections: a TUI-attached root goes through /agent close; an
    owned subagent through agent-registry$close."
   (fn [& {:as args}]
     (let [id     (:id args)
@@ -351,7 +374,7 @@
   :output-schema [:map
                   [:closed [:boolean {:desc "True when closed"}]]
                   [:id [:string {:desc "Instance id"}]]
-                  [:error [:string {:desc "Error: missing id, not found, :running, different session, owned subagent, or TUI root"}]]])
+                  [:error [:string {:desc "Error: missing id, not found, :running, out of your allowed reach, owned subagent, or TUI root"}]]])
 
 ;; ============================================================================
 ;; Roster export
