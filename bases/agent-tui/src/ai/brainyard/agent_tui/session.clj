@@ -31,6 +31,13 @@
 (declare session-idx-for-agent-session-id)
 (declare root-of-agent)
 (declare format-iter-elapsed)
+;; ACP transcript block — the family is defined after the shared tool helpers
+;; (it reuses `render-iter-tool-line` / `tool-result->body`); the iteration hook
+;; handlers above it route here for acp-agent instances. Runtime resolution, so
+;; forward declares suffice.
+(declare acp-agent-instance?
+         acp-create-block! acp-freeze-block!
+         acp-append-chunk! acp-add-usage! acp-tool-pre! acp-tool-post!)
 
 ;; ============================================================================
 ;; State
@@ -2977,44 +2984,49 @@
    iter-block, task blocks, sub-agent blocks) is inserted ABOVE it
    automatically by `layout/update-live-block!`. No dispose+recreate dance
    is needed here; the think-block's state (incl. its elapsed-time
-   :start-time) persists across every iteration of the turn."
-  [{:keys [agent iteration max-iterations repeat-id]}]
-  (stamp-think-activity!
-   agent
-   (str "Iter " iteration (when max-iterations (str "/" max-iterations))))
-  (let [aid (:agent-id agent)
-        rid (str (or repeat-id "_"))
-        sidx (:id (find-session-for-agent agent))]
-    ;; The think-block lives ONE-PER-TURN, not per-iter. Its `!think-block`
-    ;; state (incl. :start-time used by the elapsed counter) was stamped
-    ;; once at start-thinking-indicator! time and persists across every
-    ;; iteration of this turn. The iter-block we're about to create is
-    ;; non-sticky; layout/update-live-block! inserts it ABOVE the
-    ;; sticky-bottom think-block automatically — no dispose+recreate dance
-    ;; needed here.
-    (iter-stamp-current! agent rid iteration)
-    (swap! !iteration-blocks assoc [aid rid iteration]
-           {:agent-id aid
-            :repeat-id rid
-            :iteration iteration
-            :max-iterations max-iterations
-            :stage :pre
-            :reasoning nil
-            :streaming nil
-            :tool-batch []
-            :code nil
-            :code-output nil
-            :eval-display nil
-            :eval-section-lines nil
-            :usage nil
-            :result nil
-            :session-idx sidx
-            :start-ms (System/currentTimeMillis)})
-    (update-iteration-block! aid rid iteration)
-    ;; Refresh the (N.Ns) elapsed-time counter every 1s while the iter is
-    ;; non-:done. Self-stops when no running iters remain. Idempotent —
-    ;; a single ticker covers all iterations across all sessions.
-    (start-iteration-block-ticker!)))
+   :start-time) persists across every iteration of the turn.
+
+   For an acp-agent instance the turn is one long external ACP stream, not a
+   discrete iteration — route to the ACP transcript block instead."
+  [{:keys [agent iteration max-iterations repeat-id] :as ev}]
+  (if (acp-agent-instance? agent)
+    (acp-create-block! ev)
+    (let [_ (stamp-think-activity!
+             agent
+             (str "Iter " iteration (when max-iterations (str "/" max-iterations))))
+          aid (:agent-id agent)
+          rid (str (or repeat-id "_"))
+          sidx (:id (find-session-for-agent agent))]
+      ;; The think-block lives ONE-PER-TURN, not per-iter. Its `!think-block`
+      ;; state (incl. :start-time used by the elapsed counter) was stamped
+      ;; once at start-thinking-indicator! time and persists across every
+      ;; iteration of this turn. The iter-block we're about to create is
+      ;; non-sticky; layout/update-live-block! inserts it ABOVE the
+      ;; sticky-bottom think-block automatically — no dispose+recreate dance
+      ;; needed here.
+      (iter-stamp-current! agent rid iteration)
+      (swap! !iteration-blocks assoc [aid rid iteration]
+             {:agent-id aid
+              :repeat-id rid
+              :iteration iteration
+              :max-iterations max-iterations
+              :stage :pre
+              :reasoning nil
+              :streaming nil
+              :tool-batch []
+              :code nil
+              :code-output nil
+              :eval-display nil
+              :eval-section-lines nil
+              :usage nil
+              :result nil
+              :session-idx sidx
+              :start-ms (System/currentTimeMillis)})
+      (update-iteration-block! aid rid iteration)
+      ;; Refresh the (N.Ns) elapsed-time counter every 1s while the iter is
+      ;; non-:done. Self-stops when no running iters remain. Idempotent —
+      ;; a single ticker covers all iterations across all sessions.
+      (start-iteration-block-ticker!))))
 
 (defn iteration-post-handler
   "Handler for :agent.iteration/post. Event:
@@ -3035,7 +3047,12 @@
    total iterations, total tokens, and the last iteration's outcome —
    so the one-line summary in the subagents block reflects the latest
    completed iteration."
-  [{:keys [agent iteration repeat-id result observation notices]}]
+  [{:keys [agent iteration repeat-id result observation notices] :as ev}]
+  ;; acp-agent instances freeze the ACP transcript block instead; they never
+  ;; populate !iteration-blocks, so the body below is a no-op for them
+  ;; (`outgoing` is nil) — the guard just adds the ACP freeze.
+  (when (acp-agent-instance? agent)
+    (acp-freeze-block! ev))
   (let [aid (:agent-id agent)
         rid (str (or repeat-id "_"))
         k [aid rid iteration]
@@ -3135,8 +3152,13 @@
 
 (defn dspy-chunk-handler
   "Handler for :agent.dspy-action/chunk. Appends the chunk's accumulated text
-   to the current iteration's :streaming field."
-  [{:keys [agent accumulated]}]
+   to the current iteration's :streaming field.
+
+   acp-agent instances route the delta chunk into the ACP transcript block's
+   thought/message segments instead (the body below no-ops — no iteration block)."
+  [{:keys [agent accumulated] :as ev}]
+  (when (acp-agent-instance? agent)
+    (acp-append-chunk! ev))
   (when-let [[aid rid iter] (iter-current-key agent)]
     (when (get @!iteration-blocks [aid rid iter])
       (swap! !iteration-blocks update [aid rid iter]
@@ -3144,8 +3166,12 @@
       (update-iteration-block! aid rid iter))))
 
 (defn dspy-post-handler
-  "Handler for :agent.dspy-action/post. Records reasoning + usage; clears streaming."
-  [{:keys [agent reasoning usage]}]
+  "Handler for :agent.dspy-action/post. Records reasoning + usage; clears streaming.
+
+   acp-agent instances fold usage into the ACP block's token counter instead."
+  [{:keys [agent reasoning usage] :as ev}]
+  (when (acp-agent-instance? agent)
+    (acp-add-usage! ev))
   (when-let [[aid rid iter] (iter-current-key agent)]
     (when (get @!iteration-blocks [aid rid iter])
       (swap! !iteration-blocks update [aid rid iter]
@@ -3223,8 +3249,13 @@
 
 (defn tool-use-pre-handler
   "Handler for :agent.tool-use/pre. Upserts a :called entry into the current
-   iteration's :tool-batch (unless suppressed for code-stage)."
-  [{:keys [agent tool-name args call-id]}]
+   iteration's :tool-batch (unless suppressed for code-stage).
+
+   acp-agent instances push the tool segment onto the ACP transcript block
+   instead (the body below no-ops — no iteration block)."
+  [{:keys [agent tool-name args call-id] :as ev}]
+  (when (acp-agent-instance? agent)
+    (acp-tool-pre! ev))
   (stamp-think-activity! agent (str "→ " tool-name))
   (when-let [[aid rid iter] (iter-current-key agent)]
     (let [k [aid rid iter]
@@ -3276,8 +3307,12 @@
 (defn tool-use-post-handler
   "Handler for :agent.tool-use/post. Locates the matching tool-batch entry
    by :call-id and updates its status / timing / result-chars / error-msg /
-   result-body (the boxed Result/Error section body)."
-  [{:keys [agent tool-name call-id result]}]
+   result-body (the boxed Result/Error section body).
+
+   acp-agent instances resolve the matching ACP transcript tool segment instead."
+  [{:keys [agent tool-name call-id result] :as ev}]
+  (when (acp-agent-instance? agent)
+    (acp-tool-post! ev))
   (when-let [[aid rid iter] (iter-current-key agent)]
     (let [k [aid rid iter]
           state (get @!iteration-blocks k)]
@@ -3311,6 +3346,376 @@
                           :error-msg error-msg
                           :result-body result-body})
             (update-iteration-block! aid rid iter)))))))
+
+;; ============================================================================
+;; ACP transcript block
+;;
+;; An acp-agent (backend :claude-code / :gemini / :codex / :stub) hands the whole
+;; turn to an external ACP loop that STREAMS an interleaved sequence of reasoning
+;; (`agent_thought_chunk`), assistant message (`agent_message_chunk`) and tool
+;; calls within a SINGLE BT iteration (its tree is `:repeat max-n=1`). The ReAct
+;; iteration block — one discrete think→act→observe step under an `Iteration N/M`
+;; header — is a poor fit: it flattens the interleave into a Think blob + tool
+;; list and mislabels the turn.
+;;
+;; This block renders the ACP event stream chronologically as an ordered vector
+;; of `:segments` (`:thought` | `:message` | `:tool`) under a backend/model
+;; header. It is driven by the SAME hooks the acp-agent fires (iteration/pre|post,
+;; dspy-action/chunk|post, tool-use/pre|post) — the handlers above route here via
+;; `acp-agent-instance?`. Keyed like the iteration block
+;; ([agent-id repeat-id iteration]); reuses the iteration sink, spinner,
+;; `render-iter-tool-line`, `tool-result->body`, and the same background-session
+;; buffering dance on freeze.
+;; ============================================================================
+
+(defonce !acp-blocks (atom {}))
+(defonce ^:private !acp-ticker-thread (atom nil))
+
+;; Live message-tail / thought caps. `:acp-message-max-lines` (config) overrides
+;; the message cap per agent; thoughts use a tighter fixed cap since reasoning is
+;; transient context, not the deliverable.
+(def ^:private acp-thought-max-lines 4)
+
+(defn- acp-block-id
+  "Live block key for an ACP turn."
+  [agent-id repeat-id iteration]
+  (keyword "acp-block"
+           (str (clojure.core/name agent-id) ":"
+                (clojure.core/name (or repeat-id :_)) ":" iteration)))
+
+(defn- acp-wrap-lines
+  "Wrap `text` to `cols` display columns. When `collapse-ws?`, internal
+   whitespace runs collapse to single spaces (right for streamed reasoning);
+   otherwise newlines are preserved and each line wrapped independently (right
+   for assistant prose). Returns plain (unstyled) wrapped lines."
+  [text cols collapse-ws?]
+  (let [cols (max 1 cols)]
+    (if collapse-ws?
+      (let [t (-> text (str/replace #"\s+" " ") str/trim)]
+        (if (str/blank? t) [] (wrap-snippet-to-width t cols)))
+      (->> (str/split-lines text)
+           (mapcat (fn [ln] (if (str/blank? ln) [""] (wrap-snippet-to-width ln cols))))
+           vec))))
+
+(defn- acp-prefixed-block
+  "Render `text` as a live-block section with a styled `head-prefix` on the
+   first line and continuation lines indented under it by the prefix's display
+   width. Wrapped to `cols`; the first line is always kept, and the continuation
+   lines are TAIL-capped so `max-lines` total show (recent content — right for a
+   streaming tail), with a dim `[-N lines]` indicator when truncated. Mirrors the
+   `Think:` section of `render-iteration-block-lines`.
+
+   `text-style-fn` styles the wrapped body; `prefix-style-fn` styles the (plain)
+   head-prefix. Returns a vector of ANSI line strings, or [] when text is blank."
+  [text {:keys [head-prefix cols max-lines collapse-ws? text-style-fn prefix-style-fn]
+         :or {head-prefix "" cols 80 max-lines 10 text-style-fn identity
+              prefix-style-fn identity}}]
+  (let [head-w (count head-prefix)
+        cont   (apply str (repeat head-w \space))
+        wrapped (acp-wrap-lines text (max 10 (- cols head-w)) collapse-ws?)]
+    (if (empty? wrapped)
+      []
+      (let [head-line  (str (prefix-style-fn head-prefix) (text-style-fn (first wrapped)))
+            extras     (vec (rest wrapped))
+            extras-cap (max 0 (dec max-lines))]
+        (if (<= (count extras) extras-cap)
+          (vec (cons head-line (map #(str cont (text-style-fn %)) extras)))
+          (let [hidden      (- (count extras) extras-cap)
+                kept        (subvec extras (- (count extras) extras-cap))
+                indicator   (ansi/style (str "[-" hidden " lines] ") ansi/dim)
+                first-extra (str cont indicator (text-style-fn (first kept)))
+                rest-extras (map #(str cont (text-style-fn %)) (rest kept))]
+            (vec (concat [head-line first-extra] rest-extras))))))))
+
+(defn- render-acp-header
+  "One-line header: `[<marker>] <backend> · <model>  (<elapsed>, <tok>)`. Marker
+   is a live spinner while running, `●` when done with no verdict, `✓`/`✗` on
+   success/failure."
+  [{:keys [backend model-label usage result stage start-ms end-ms]} spinner-char]
+  (let [marker (case result
+                 :success (ansi/iter-marker-success "✓")
+                 :failure (ansi/iter-marker-failure "✗")
+                 (if (= stage :done)
+                   (ansi/iter-marker-done "●")
+                   (ansi/spinner-active (str spinner-char))))
+        label (str (clojure.core/name (or backend :acp))
+                   (when (and model-label (not (str/blank? (str model-label))))
+                     (str " · " model-label)))
+        usage-tot (:total usage)
+        elapsed-str (when start-ms
+                      (format-iter-elapsed (- (or end-ms (System/currentTimeMillis))
+                                              start-ms)))
+        meta (str/join ", "
+                       (remove str/blank?
+                               [(or elapsed-str "")
+                                (when usage-tot (format "%d tok" usage-tot))]))]
+    (str (ansi/muted "[") marker (ansi/muted "] ")
+         (ansi/iter-label label)
+         (when (seq meta) (str "  " (ansi/muted (str "(" meta ")")))))))
+
+(defn- render-acp-block-lines
+  "Build ANSI lines for an ACP transcript block: the header followed by its
+   `:segments` rendered IN ORDER — dim `● Thinking:` reasoning, the streaming
+   assistant message (tail-capped to `:message-max-lines`), and tool calls via
+   the shared `render-iter-tool-line`. In :quiet display-format only the message
+   segments render (answer-only, bullet-led, no header/thoughts/tools)."
+  [{:keys [segments show-thoughts? message-max-lines] :as state} spinner-char]
+  (let [cols (or (:cols @layout/!layout) 80)]
+    (if (quiet?)
+      (vec (mapcat
+            (fn [seg]
+              (when (= :message (:type seg))
+                (acp-prefixed-block (:text seg)
+                                    {:head-prefix "● " :cols cols
+                                     :max-lines (or message-max-lines 12)
+                                     :collapse-ws? false
+                                     :prefix-style-fn #(ansi/style % ansi/bright-white)})))
+            segments))
+      (let [header (render-acp-header state spinner-char)
+            seg-lines
+            (mapcat
+             (fn [seg]
+               (case (:type seg)
+                 :thought (when show-thoughts?
+                            (acp-prefixed-block (:text seg)
+                                                {:head-prefix "  ● Thinking: " :cols cols
+                                                 :max-lines acp-thought-max-lines
+                                                 :collapse-ws? true
+                                                 :text-style-fn ansi/muted
+                                                 :prefix-style-fn ansi/muted}))
+                 :message (acp-prefixed-block (:text seg)
+                                              {:head-prefix "  " :cols cols
+                                               :max-lines (or message-max-lines 12)
+                                               :collapse-ws? false})
+                 :tool    (render-iter-tool-line seg)
+                 nil))
+             segments)]
+        (vec (cons header seg-lines))))))
+
+(defn- update-acp-block!
+  "Re-render an ACP block through the iteration sink, or into the origin
+   session's saved scrollback when that session is backgrounded (same rule as
+   `update-iteration-block!`)."
+  [agent-id repeat-id iteration]
+  (when-let [state (get @!acp-blocks [agent-id repeat-id iteration])]
+    (let [origin-idx   (:session-idx state)
+          block-id     (acp-block-id agent-id repeat-id iteration)
+          spinner-char (nth subagents-spinner-frames @!subagents-spinner-idx)
+          lines        (render-acp-block-lines state spinner-char)]
+      (when (seq lines)
+        (if (or (nil? origin-idx) (= origin-idx (sessions/active-idx)))
+          (iter-sink/write-widget! block-id lines)
+          (sessions/update-live-block-in-session! origin-idx block-id lines))))))
+
+(defn- start-acp-block-ticker!
+  "Refresh ACP block elapsed/spinner every 1s while any block is still running.
+   Self-stops when none remain. Idempotent — one ticker covers all ACP blocks."
+  []
+  (when-not @!acp-ticker-thread
+    (let [t (Thread.
+             (fn []
+               (try
+                 (loop []
+                   (let [blocks @!acp-blocks
+                         active (filterv #(not= :done (:stage (val %))) blocks)]
+                     (when (seq active)
+                       (doseq [[[aid rid iter] _] active]
+                         (try (update-acp-block! aid rid iter) (catch Exception _)))
+                       (Thread/sleep (long 1000))
+                       (recur))))
+                 (catch InterruptedException _))
+               (reset! !acp-ticker-thread nil)))]
+      (.setDaemon t true)
+      (.setName t "acp-block-ticker")
+      (.start t)
+      (reset! !acp-ticker-thread t))))
+
+;; --- Pure segment-vector transforms ----------------------------------------
+
+(defn- acp-append-text
+  "Append streamed `text` of `kind` (:thought | :message) to `segments`.
+   Coalesces into the trailing segment when it's the same kind, else opens a new
+   one — preserving the chronological think→tool→think→message interleave."
+  [segments kind text]
+  (let [segments (or segments [])
+        last-idx (dec (count segments))
+        last-seg (when (>= last-idx 0) (nth segments last-idx))]
+    (if (and last-seg (= (:type last-seg) kind))
+      (update segments last-idx update :text str text)
+      (conj segments {:type kind :text text}))))
+
+(defn- acp-upsert-tool
+  "Push or merge a `:tool` segment for a tool-use/pre event. Mirrors
+   `upsert-tool-call`: a streaming ACP backend can emit `tool_call` twice per
+   call-id (placeholder then real input), so an existing same-call-id segment is
+   merged rather than duplicated."
+  [segments {:keys [call-id tool-name args now]}]
+  (let [segments (or segments [])
+        idx (when call-id
+              (some (fn [[i s]] (when (and (= (:type s) :tool)
+                                           (= (:call-id s) call-id)) i))
+                    (map-indexed vector segments)))]
+    (if idx
+      (update segments idx (fn [s]
+                             (cond-> (assoc s :name (str tool-name))
+                               (seq args) (assoc :args args))))
+      (conj segments {:type :tool :call-id call-id :name (str tool-name)
+                      :args args :status :called :start-ms now}))))
+
+(defn- acp-resolve-tool
+  "Merge a tool-use/post outcome into the matching `:tool` segment (by call-id,
+   falling back to the last `:called` segment of the same name)."
+  [segments {:keys [call-id tool-name status end-ms result-chars error-msg result-body]}]
+  (let [segments (or segments [])
+        idx (or (some (fn [[i s]] (when (and (= (:type s) :tool)
+                                             (= (:call-id s) call-id)) i))
+                      (map-indexed vector segments))
+                (some (fn [[i s]] (when (and (= (:type s) :tool)
+                                             (= (:name s) (str tool-name))
+                                             (= (:status s) :called)) i))
+                      (reverse (map-indexed vector segments))))]
+    (if idx
+      (update segments idx merge {:status status :end-ms end-ms
+                                  :result-chars result-chars
+                                  :error-msg error-msg :result-body result-body})
+      segments)))
+
+;; --- Hook entry points (routed to from the iteration handlers) --------------
+
+(defn- acp-agent-instance?
+  "True when `agent` is an acp-agent instance (its instance-id is namespaced
+   `acp-agent`, e.g. :acp-agent/silver-otter-7). Mirrors
+   `acp-agent/acp-instance?` without a hard dependency on that ns."
+  [agent]
+  (let [aid (:agent-id agent)]
+    (and (keyword? aid) (= "acp-agent" (namespace aid)))))
+
+(defn- acp-create-block!
+  "Handler for :agent.iteration/pre on an acp instance — creates the ACP
+   transcript block for this turn and starts the ticker."
+  [{:keys [agent iteration repeat-id]}]
+  (let [aid     (:agent-id agent)
+        rid     (str (or repeat-id "_"))
+        sidx    (:id (find-session-for-agent agent))
+        backend (or (agent/get-config agent :acp-backend) :acp)]
+    (stamp-think-activity! agent (str (clojure.core/name backend) " …"))
+    (iter-stamp-current! agent rid iteration)
+    (swap! !acp-blocks assoc [aid rid iteration]
+           {:agent-id          aid
+            :repeat-id         rid
+            :iteration         iteration
+            :backend           backend
+            :model-label       (:model (agent/get-config agent :acp-backend-opts))
+            :show-thoughts?    (not= false (agent/get-config agent :acp-show-thoughts))
+            :message-max-lines (or (agent/get-config agent :acp-message-max-lines) 12)
+            :stage             :running
+            :result            nil
+            :segments          []
+            :usage             nil
+            :session-idx       sidx
+            :start-ms          (System/currentTimeMillis)})
+    (update-acp-block! aid rid iteration)
+    (start-acp-block-ticker!)))
+
+(defn- acp-append-chunk!
+  "Handler for :agent.dspy-action/chunk on an acp instance. Routes the DELTA
+   `chunk` into a :thought or :message segment by the translated `:meta :kind`."
+  [{:keys [agent chunk meta]}]
+  (when (and (string? chunk) (seq chunk))
+    (when-let [[aid rid iter] (iter-current-key agent)]
+      (when (get @!acp-blocks [aid rid iter])
+        (let [kind (if (= :thought (:kind meta)) :thought :message)]
+          (swap! !acp-blocks update-in [[aid rid iter] :segments]
+                 acp-append-text kind chunk)
+          (update-acp-block! aid rid iter))))))
+
+(defn- acp-add-usage!
+  "Handler for :agent.dspy-action/post on an acp instance — folds usage into the
+   header's running token counter."
+  [{:keys [agent usage]}]
+  (when-let [[aid rid iter] (iter-current-key agent)]
+    (when (get @!acp-blocks [aid rid iter])
+      (swap! !acp-blocks update-in [[aid rid iter] :usage]
+             (fn [prev]
+               (let [in  (or (:input-tokens usage) (:input usage) 0)
+                     out (or (:output-tokens usage) (:output usage) 0)]
+                 {:in    (+ (or (:in prev) 0) in)
+                  :out   (+ (or (:out prev) 0) out)
+                  :total (+ (or (:total prev) 0) in out)})))
+      (update-acp-block! aid rid iter))))
+
+(defn- acp-tool-pre!
+  "Handler for :agent.tool-use/pre on an acp instance — push/merge a :tool
+   segment in chronological order."
+  [{:keys [agent tool-name args call-id]}]
+  (stamp-think-activity! agent (str "→ " tool-name))
+  (when-let [[aid rid iter] (iter-current-key agent)]
+    (when (get @!acp-blocks [aid rid iter])
+      (swap! !acp-blocks update-in [[aid rid iter] :segments]
+             acp-upsert-tool {:call-id call-id :tool-name tool-name :args args
+                              :now (System/currentTimeMillis)})
+      (update-acp-block! aid rid iter))))
+
+(defn- acp-tool-post!
+  "Handler for :agent.tool-use/post on an acp instance — resolve the tool
+   segment's status / result. Reuses `tool-result->body` and the same error
+   detection as `tool-use-post-handler`."
+  [{:keys [agent tool-name call-id result]}]
+  (when-let [[aid rid iter] (iter-current-key agent)]
+    (when (get @!acp-blocks [aid rid iter])
+      (let [now         (System/currentTimeMillis)
+            error?      (and (map? result)
+                             (or (some? (:error-message result)) (some? (:error result))))
+            error-msg   (when error? (str (or (:error-message result) (:error result))))
+            result-body (tool-result->body result)
+            chars       (try (count (pr-str result)) (catch Exception _ nil))]
+        (swap! !acp-blocks update-in [[aid rid iter] :segments]
+               acp-resolve-tool {:call-id call-id :tool-name tool-name
+                                 :status (if error? :error :done)
+                                 :end-ms now :result-chars chars
+                                 :error-msg error-msg :result-body result-body})
+        (update-acp-block! aid rid iter)))))
+
+(defn- acp-freeze-block!
+  "Handler for :agent.iteration/post on an acp instance — set the final result,
+   freeze the widget into scrollback, and drop the in-memory entry. Mirrors
+   `iteration-post-handler`'s freeze + background-session buffering."
+  [{:keys [agent iteration repeat-id result]}]
+  (let [aid       (:agent-id agent)
+        rid       (str (or repeat-id "_"))
+        k         [aid rid iteration]
+        outgoing  (get @!acp-blocks k)
+        result-kw (cond
+                    (= result :success) :success
+                    (= result :failure) :failure
+                    :else (when result :success))]
+    (when outgoing
+      (swap! !acp-blocks update k merge
+             {:stage :done :result result-kw :end-ms (System/currentTimeMillis)})
+      (update-acp-block! aid rid iteration)
+      (let [dispose?   (boolean (agent/get-config agent :dispose-acp-block))
+            block-id   (acp-block-id aid rid iteration)
+            origin-idx (:session-idx outgoing)
+            active-idx (sessions/active-idx)]
+        (if dispose?
+          (do (iter-sink/clear-widget! block-id)
+              (when (and origin-idx (not= origin-idx active-idx))
+                (sessions/dispose-live-block-in-session! origin-idx block-id)))
+          (let [final-state (assoc outgoing :stage :done :result result-kw
+                                   :end-ms (System/currentTimeMillis))
+                already-buffered? (some-> (sessions/get-session origin-idx)
+                                          :live-blocks (get block-id))]
+            (iter-sink/freeze-widget! block-id)
+            (when (and origin-idx
+                       (not= origin-idx active-idx)
+                       (not already-buffered?))
+              (let [lines (render-acp-block-lines final-state \space)]
+                (when (seq lines)
+                  (sessions/emit-to-session! origin-idx (str/join "\n" lines)))))
+            (when (and origin-idx (not= origin-idx active-idx))
+              (sessions/update-session! origin-idx update :live-blocks dissoc block-id)))))
+      (swap! !acp-blocks dissoc k))
+    (iter-clear-current! agent)))
 
 (defn- accumulate-eval-entry
   "Slot a code-eval entry into the iteration-block's `:eval-display`

@@ -333,8 +333,15 @@
           (let [enriched
                 (case event
                   :agent.dspy-action/chunk
-                  (let [chunk (:chunk data)]
-                    (when (seq chunk) (.append accumulator ^String chunk))
+                  ;; `agent_thought_chunk` and `agent_message_chunk` both
+                  ;; translate to this event; only the MESSAGE text is the
+                  ;; answer. Thoughts (`:meta {:kind :thought}`) still fire the
+                  ;; hook (so the ACP block renders them) but must NOT append to
+                  ;; the accumulator, or reasoning would pollute `:answer`.
+                  (let [chunk    (:chunk data)
+                        thought? (= :thought (get-in data [:meta :kind]))]
+                    (when (and (seq chunk) (not thought?))
+                      (.append accumulator ^String chunk))
                     (assoc data :agent agent
                            :accumulated (str accumulator)))
 

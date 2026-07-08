@@ -258,6 +258,12 @@
                                 :doc "TUI thinking live block: true removes it from scrollback when thinking stops; false freezes it as history."}
    :dispose-iteration-block    {:type "boolean" :default false
                                 :doc "TUI iteration live block: true removes it from scrollback when the iteration ends; false freezes it as history."}
+   :dispose-acp-block          {:type "boolean" :default false
+                                :doc "TUI ACP transcript live block: true removes it from scrollback when the ACP turn ends; false freezes it as history. Analog of :dispose-iteration-block for acp-agent instances."}
+   :acp-message-max-lines      {:type "integer" :default 12
+                                :doc "TUI ACP transcript block: max lines shown for the live streaming assistant-message tail (a [-N lines] fold caps the rest). The full answer still lands in scrollback at turn end."}
+   :acp-show-thoughts          {:type "boolean" :default true
+                                :doc "TUI ACP transcript block: render agent_thought_chunk reasoning as dim '● Thinking:' segments interleaved with tools/message; false hides them."}
    :dispose-task-block         {:type "boolean" :default true
                                 :doc "TUI task live block: true removes it from scrollback when the task ends; false freezes it as history."}
    :dispose-agent-block        {:type "boolean" :default true

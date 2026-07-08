@@ -179,6 +179,28 @@
                      :agent.dspy-action/post]]
             (hooks/unregister-source! ::test)))))))
 
+(def ^:private on-event-handler #'acp-agent/on-event-handler)
+
+(deftest thought-chunk-excluded-from-accumulator-test
+  (testing "agent_thought_chunk fires the hook but does not append to the answer accumulator"
+    (let [acc     (StringBuilder.)
+          agent   {:agent-id :acp-agent/x}
+          handler (on-event-handler agent acc)
+          update! (fn [su text]
+                    (handler {:method "session/update"
+                              :params {:sessionId "s"
+                                       :update {:sessionUpdate su
+                                                :content {:type "text" :text text}}}}))]
+      (update! "agent_thought_chunk" "REASONING ")
+      (is (= "" (str acc))
+          "a thought chunk leaves the accumulator empty")
+      (update! "agent_message_chunk" "ANSWER")
+      (is (= "ANSWER" (str acc))
+          "only message-chunk text accumulates into the answer")
+      (update! "agent_thought_chunk" " MORE-REASONING")
+      (is (= "ANSWER" (str acc))
+          "a later thought chunk still does not pollute the accumulated answer"))))
+
 (deftest ^:integration accumulated-text-on-chunk-test
   (testing "chunk events carry both :chunk (delta) and :accumulated (running text)"
     (let [!log (atom [])]
