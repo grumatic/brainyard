@@ -954,7 +954,8 @@
    Uses invoke-tool with :setup-only? true to follow the same dispatch path
    as any defagent invocation, with a generated instance-id.
    Returns the agent instance with permission-fn, user-feedback-fn, and dirs configured."
-  [agent-id & {:keys [user-id session-id max-iterations instance-id display-format]}]
+  [agent-id & {:keys [user-id session-id max-iterations instance-id display-format
+                      acp-backend acp-backend-opts]}]
   (let [user-id  (or user-id (helpers/resolve-user-id))
         sess-id  (or session-id
                      (throw (ex-info "create-tui-agent! requires :session-id" {})))
@@ -1004,7 +1005,13 @@
                                        :agent-session {:user-id user-id :session-id sess-id}
                                        :session-store !session-store}
                                 max-iterations (assoc :max-iterations max-iterations)
-                                display-format (assoc :display-format display-format)))
+                                display-format (assoc :display-format display-format)
+                                ;; acp-agent root: pin the backend/model chosen at
+                                ;; `/agent new acp-agent <backend> <model>`. These
+                                ;; are config-schema keys, so they seed per-agent
+                                ;; overrides read by config/get-config.
+                                acp-backend (assoc :acp-backend acp-backend)
+                                acp-backend-opts (assoc :acp-backend-opts acp-backend-opts)))
         ;; Defense-in-depth: the fallback above guarantees a registered type, so
         ;; invoke-tool returns a real Agent — but surface any residual setup
         ;; failure as a clear error rather than a downstream nil-swap! NPE.

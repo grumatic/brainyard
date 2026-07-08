@@ -71,6 +71,10 @@
             ;; they want this agent to be invokable. Loading the ns is safe
             ;; either way (the resolve is lazy at first invocation).
             [ai.brainyard.agent.common.acp-agent]
+            ;; The acp$* CRUD/ask family for managing ACP connections. Rides
+            ;; default-agent-roster; required here so the defcommands register
+            ;; even if the roster ns hasn't been loaded yet.
+            [ai.brainyard.agent.common.acp-commands]
             ;; Front-door router. Loads main-agent AND its three lifecycle
             ;; hooks (:agent.session/created bootstrap, :agent.tool-use/post
             ;; capture-saved-artifacts, :agent.session/closed INDEX summary).

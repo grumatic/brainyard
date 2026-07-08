@@ -310,6 +310,8 @@
                                 :doc "ACP request timeout (ms)."}
    :acp-permission-timeout-ms  {:type "integer" :default 120000
                                 :doc "ACP permission-prompt timeout (ms)."}
+   :max-acp-agents-per-session {:type "integer" :default 3
+                                :doc "Per-session cap on live ACP agent instances (each backs an external subprocess + one model-pinned session). Counts ALL acp-agent instances in the session — TUI roots and acp$create-provisioned alike. acp$create refuses at the cap (a paid external session is never silently LRU-evicted); close one with acp$close first."}
    :parent-trail-k             {:type "integer" :default 3
                                 :doc "Depth of the parent-handoff trail surfaced to a subagent (how many ancestor turns of context)."}
    :react-loop-mode            {:type "string"  :default "single"

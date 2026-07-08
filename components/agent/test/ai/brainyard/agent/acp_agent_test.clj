@@ -23,9 +23,9 @@
       (is (= :agent (:type entry)))
       (is (some? (-> entry :meta :bt-factory))
           "metadata exposes a bt-factory")
-      (is (= [:question :agent-context :acp-backend :acp-backend-opts]
+      (is (= [:question :purpose :agent-context :acp-backend :acp-backend-opts]
              (mapv first (rest (get-in entry [:meta :input-schema]))))
-          "all four inputs declared")
+          "all inputs declared (including the :purpose label)")
       (is (= [:answer]
              (mapv first (rest (get-in entry [:meta :output-schema]))))))))
 
@@ -85,6 +85,42 @@
         (cb perm-params)
         (is (= "Permission requested: Write /etc/x [edit]" (:question @seen)))
         (is (= ["Allow once" "Reject once"] (:options @seen)))))))
+
+;; =============================================================================
+;; Descriptor + management API (the acp management overlay)
+;; =============================================================================
+
+(deftest ^:integration descriptor-and-api-test
+  (testing "ensure-connected! stamps a descriptor; the acp management API reads/mutates it"
+    (let [sess-id (str "acp-desc-" (System/currentTimeMillis))
+          ag (agent/setup-agent-by-id
+              :acp-agent
+              :agent-session {:user-id "test-user" :session-id sess-id}
+              :acp-backend :stub
+              :acp-backend-opts {:chunk-delay-ms 5})]
+      (try
+        (is (acp-agent/acp-instance? ag) "recognized as an acp instance by id")
+        (is (nil? (acp-agent/descriptor ag)) "no descriptor before connecting")
+        (let [d (acp-agent/ensure-connected! ag)]
+          (is (= :stub (:backend d)) "descriptor records the backend")
+          (is (some? (:session-id d)) "descriptor records the ACP session id")
+          (is (= :open (:health d)) "health probed live as :open once connected")
+          (is (string? (:purpose d)) "purpose falls back to a derived label")
+          (is (false? (boolean (:provisioned? d))) "not provisioned until marked"))
+        (acp-agent/mark-provisioned! ag)
+        (is (:provisioned? (acp-agent/descriptor ag)) "mark-provisioned! flips the flag")
+        (acp-agent/set-purpose! ag "refactor payments")
+        (is (= "refactor payments" (:purpose (acp-agent/descriptor ag)))
+            "set-purpose! overrides the derived label")
+        ;; advertised-models is nil-or-vector depending on what the stub advertises;
+        ;; either way the accessor must not throw.
+        (is (or (nil? (acp-agent/advertised-models ag))
+                (vector? (acp-agent/advertised-models ag))))
+        (finally
+          (.close ag)))
+      (testing "after close the client/session cache is cleared → health :unconnected"
+        (is (= :unconnected (:health (acp-agent/descriptor ag)))
+            "live-health reports :unconnected once the client cache is gone")))))
 
 (defn- record-events
   "Build a hook handler fn that records `[event-key data]` pairs into !log."

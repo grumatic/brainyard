@@ -244,7 +244,11 @@
                              (when-let [create-fn (requiring-resolve 'ai.brainyard.agent-tui.core/create-tui-agent!)]
                                (create-fn defagent-id
                                           :session-id (agent/generate-session-id "agt")
-                                          :max-iterations (:max-iterations opts)))))
+                                          :max-iterations (:max-iterations opts)
+                                          ;; acp-agent root backend/model from
+                                          ;; `/session new acp-agent <backend> <model>`.
+                                          :acp-backend (:acp-backend opts)
+                                          :acp-backend-opts (:acp-backend-opts opts)))))
         ;; Use the agent's actual instance-id if available
         instance-id (if agent-instance
                       (:agent-id agent-instance)

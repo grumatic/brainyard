@@ -25,6 +25,7 @@
    agent's `def` runs."
   (:require [ai.brainyard.agent.common.tools :as common-tools]
             [ai.brainyard.agent.common.commands :as common-cmds]
+            [ai.brainyard.agent.common.acp-commands :as acp-cmds]
             [ai.brainyard.agent.common.skills :as skills]
             [ai.brainyard.agent.mcp.commands :as mcp-cmds]
             [clojure.string :as str]))
@@ -38,6 +39,7 @@
    side-effect safety is the tool-permission layer, not the roster."
   {:tools (vec (distinct (concat common-tools/all-common-tools
                                  common-cmds/all-common-commands
+                                 acp-cmds/all-acp-commands
                                  skills/skills-read-subset
                                  mcp-cmds/all-mcp-commands)))})
 
@@ -223,7 +225,26 @@ RULES:
   `:running` one is busy (poll `agent-registry$detail`, or `task$wait` if the
   call detached). Do not close it on a quiet-but-growing idle window alone.
 - Cancelling a subagent's task (`task$cancel`) also ends the instance — it is no
-  longer askable.")
+  longer askable.
+
+### ACP connections (external backends) — manage with `acp$*`, not the above
+An acp-agent instance is NOT a throwaway subagent: it is a session-shared
+CONNECTION to an external backend (claude-code / gemini / codex / stub) — a
+subprocess + one MODEL-PINNED session + live conversation. Manage these with the
+acp-scoped family, which surfaces what the generic list can't (backend, model,
+purpose, health):
+- REUSE before spawning: `(acp$list {:backend :claude-code :model \"opus\"})` — if
+  a matching connection exists, ask it instead of creating another subprocess.
+- CREATE a named connection: `(acp$create {:backend :claude-code :model \"opus\"
+  :purpose \"refactor payments\"})` → returns `:acp-id`. Bounded per session
+  (`:max-acp-agents-per-session`); it refuses at the cap (close one first).
+- ASK any connection in your session (no ownership fence — they're shared):
+  `(acp$ask {:id \"acp-agent/<suffix>\" :question \"…\"})`.
+- RELABEL / SWITCH MODEL: `(acp$update {:id \"…\" :purpose \"…\"})`; a `:model` change
+  RECYCLES the session (conversation context resets).
+- CLOSE a provisioned connection (reaps the subprocess): `(acp$close {:id \"…\"})`.
+  (A TUI-attached acp root is closed with /agent close; an owned acp subagent
+  with agent-registry$close.)")
 
 (def project-memory-protocol
   "Shared `## Project Memory` protocol prose, installed in BOTH base agents

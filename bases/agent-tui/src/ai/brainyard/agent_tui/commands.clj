@@ -1032,8 +1032,13 @@
 (defn- create-new-agent!
   "Create a new agent of the given defagent type in the current session.
    Delegates to create-tui-agent! for actual creation. Keeps the current agent
-   alive in the registry (use /agent switch to return, /agent close to remove)."
-  [target-agent-id]
+   alive in the registry (use /agent switch to return, /agent close to remove).
+
+   For acp-agent, optional `:acp-backend` (keyword) and `:acp-model` (string)
+   pin the external backend + model at creation — `/agent new acp-agent
+   <backend> <model>`. Without them the acp-agent falls back to the configured
+   `:acp-backend` default (`:stub`)."
+  [target-agent-id & {:keys [acp-backend acp-model]}]
   (let [current-ag (tui-session/get-active-agent)
         n-existing (count (session-instances))]
     (cond
@@ -1059,7 +1064,9 @@
                 agt-sess-id (agent/generate-session-id "agt")
                 new-ag    (create-fn target-agent-id
                                      :session-id agt-sess-id
-                                     :max-iterations max-iter)]
+                                     :max-iterations max-iter
+                                     :acp-backend acp-backend
+                                     :acp-backend-opts (when acp-model {:model acp-model}))]
             ;; Register new agent in TUI session's :agent-instances
             (sessions/update-session! (sessions/active-idx)
                                       update :agent-instances conj new-ag)
@@ -1089,22 +1096,27 @@
     (tui-session/emit! (str "\n" (ansi/muted "Use /agent new <name|#> to create.")))))
 
 (defn- handle-agent-new
-  "Handle /agent new: create a new agent by name or number."
+  "Handle /agent new: create a new agent by name or number. For acp-agent, extra
+   tokens select the external backend + model:
+   `/agent new acp-agent <backend> [model]` (e.g. `acp-agent claude-code opus`)."
   [args]
   (let [agents      (available-agent-types)
-        numeric-arg (when-not (str/blank? args)
-                      (try (Long/parseLong (str/trim args)) (catch Exception _ nil)))]
+        toks        (when-not (str/blank? args) (str/split (str/trim args) #"\s+"))
+        head        (first toks)
+        [backend model] (rest toks)
+        acp-kwargs  [:acp-backend (when backend (keyword backend)) :acp-model model]
+        numeric-arg (when head (try (Long/parseLong head) (catch Exception _ nil)))]
     (cond
       (str/blank? args)
       (show-new-agent-menu!)
 
       (nil? numeric-arg)
-      (create-new-agent! (keyword (str/trim args)))
+      (apply create-new-agent! (keyword head) acp-kwargs)
 
       :else
       (let [n (count agents)]
         (if (<= 1 numeric-arg n)
-          (create-new-agent! (:id (nth agents (dec numeric-arg))))
+          (apply create-new-agent! (:id (nth agents (dec numeric-arg))) acp-kwargs)
           (tui-session/emit! (ansi/warning (str "Invalid selection. Choose 1-" n "."))))))))
 
 (defn- switch-to-instance!
@@ -1617,14 +1629,21 @@
       (= subcmd "fork")
       (handle-fork-command (or subcmd-args ""))
 
-      ;; /session new [agent-id] — create new session
+      ;; /session new [agent-id [backend [model]]] — create new session. For
+      ;; acp-agent, extra tokens pin the external backend + model, e.g.
+      ;; `/session new acp-agent claude-code opus`.
       (= subcmd "new")
-      (let [agent-id (or (when-not (str/blank? subcmd-args) (keyword subcmd-args))
+      (let [toks     (when-not (str/blank? subcmd-args) (str/split (str/trim subcmd-args) #"\s+"))
+            [nm backend model] toks
+            agent-id (or (when nm (keyword nm))
                          (tui-session/get-active-defagent-id)
                          :coact-agent)]
         (try
           (let [label (sessions/next-root-tab-label!)
-                idx (sessions/create-session! {:label label :agent-id agent-id})]
+                idx (sessions/create-session!
+                     (cond-> {:label label :agent-id agent-id}
+                       backend (assoc :acp-backend (keyword backend))
+                       model   (assoc :acp-backend-opts {:model model})))]
             (sessions/switch-to! idx)
             (tui-session/emit! (ansi/success (str "Created session " idx " [" label "]"))))
           (catch Exception e
