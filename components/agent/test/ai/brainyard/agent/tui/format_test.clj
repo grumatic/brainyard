@@ -337,6 +337,15 @@
     (is (= 0 (fmt/display-width "‍"))       "ZWJ is 0 cols")
     (is (= 16 (fmt/display-width "⚠️ Top two risks")) "prefix width counted correctly")))
 
+(deftest display-width-keycap-emoji-test
+  (testing "keycap emoji (digit + U+FE0F + U+20E3) render 2 columns, not 3"
+    ;; U+20E3 COMBINING ENCLOSING KEYCAP (category Me) is zero-width; the base
+    ;; digit is widened to 2 by the trailing VS16. Over-counting the keycap by
+    ;; one column shoves a box's right border left on numbered lines.
+    (is (= 2 (fmt/display-width "1️⃣")) "1️⃣ is 2 cols, not 3")
+    (is (= 2 (fmt/display-width "2️⃣")) "2️⃣ is 2 cols, not 3")
+    (is (= 12 (fmt/display-width "1️⃣ 배포 옵션")) "keycap + CJK width counted correctly")))
+
 (deftest display-width-skips-osc8-hyperlinks-test
   (testing "OSC-8 hyperlink payload (the URL) is zero-width -- only the label counts"
     (let [url "https://github.com/login/oauth/authorize?a=1&b=2&c=verylongvalue"

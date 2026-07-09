@@ -118,14 +118,21 @@
    (<= 0x1FC00 cp 0x1FFFD)))  ;; Symbols for Legacy Computing + rest
 
 (defn- zero-width-codepoint?
-  "Return true if codepoint is zero-width (variation selectors, ZWJ, tags, etc.)."
+  "Return true if codepoint is zero-width (combining marks, variation selectors,
+   ZWJ, tags, etc.)."
   [^long cp]
   (or (= cp 0x200B)              ;; zero-width space
       (= cp 0x200C)              ;; ZWNJ
       (= cp 0x200D)              ;; ZWJ (emoji sequences)
-      (<= 0xFE00 cp 0xFE0F)      ;; variation selectors
       (= cp 0xFEFF)              ;; BOM / ZWNBSP
-      (<= 0xE0020 cp 0xE007F)))  ;; tag characters (flag sequences)
+      (<= 0xE0020 cp 0xE007F)    ;; tag characters (flag sequences)
+      ;; Combining marks add no columns of their own — they stack on the
+      ;; preceding base char. Covers variation selectors (Mn, e.g. U+FE0F) and
+      ;; enclosing marks such as U+20E3 COMBINING ENCLOSING KEYCAP (Me), the
+      ;; trailing char of keycap emoji like 1️⃣ (U+0031 U+FE0F U+20E3).
+      (let [t (Character/getType cp)]
+        (or (= t Character/NON_SPACING_MARK)
+            (= t Character/ENCLOSING_MARK)))))
 
 (defn- skip-ansi-seq
   "From index i (pointing at ESC), skip an escape sequence and return the index
