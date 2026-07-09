@@ -716,10 +716,68 @@
      :model         (:model lm)
      :pid           (.pid (java.lang.ProcessHandle/current))}))
 
+(defn- memory-title+hook
+  "Derive an index pointer's title and one-line hook from injected slug content.
+   Title: YAML frontmatter `title:`, else the first `# Heading`, else a
+   humanized slug. Hook: frontmatter `description:`, else the first non-blank
+   body line that isn't frontmatter/heading (collapsed + capped)."
+  [safe-slug content]
+  (let [lines     (str/split-lines (str content))
+        fm-get    (fn [k]
+                    (some (fn [l]
+                            (let [m (re-matches (re-pattern (str "(?i)\\s*" k ":\\s*(.+?)\\s*")) l)]
+                              (some-> (second m) (str/replace #"^[\"']|[\"']$" "") str/trim not-empty)))
+                          (take-while #(not= (str/trim %) "---")
+                                      (if (= (str/trim (or (first lines) "")) "---")
+                                        (rest lines) lines))))
+        heading   (some (fn [l] (some-> (re-matches #"#+\s+(.+?)\s*" l) second str/trim not-empty))
+                        lines)
+        body-line (some (fn [l]
+                          (let [t (str/trim l)]
+                            (when (and (not-empty t)
+                                       (not= t "---")
+                                       (not (str/starts-with? t "#"))
+                                       (not (re-matches #"(?i)\w+:\s*.+" t)))
+                              t)))
+                        lines)
+        title     (or (fm-get "title") heading
+                      (->> (str/split safe-slug #"-")
+                           (map str/capitalize) (str/join " ")))
+        hook-raw  (or (fm-get "description") body-line "")
+        hook      (let [h (str/replace hook-raw #"\s+" " ")]
+                    (if (> (count h) 100) (str (subs h 0 99) "…") h))]
+    [title hook]))
+
+(defn- upsert-memory-index!
+  "Add or update the `index.md` pointer for `safe-slug`. If a line already links
+   `(<slug>.md)`, its whole line is replaced with the freshly-derived pointer;
+   otherwise the pointer is appended. Format matches the project-memory protocol:
+   `- [Title](<slug>.md) — one-line hook`. Best-effort; never throws."
+  [^java.io.File mem-dir safe-slug content]
+  (let [[title hook] (memory-title+hook safe-slug content)
+        pointer      (str "- [" title "](" safe-slug ".md)"
+                          (when (not-empty hook) (str " — " hook)))
+        idx          (java.io.File. mem-dir "index.md")
+        existing     (when (.isFile idx) (slurp idx))
+        link-token   (str "(" safe-slug ".md)")
+        replaced?    (atom false)
+        new-body     (if (str/blank? existing)
+                       (str "# Project Memory Index\n\n" pointer "\n")
+                       (let [lines  (str/split-lines existing)
+                             lines' (mapv (fn [l]
+                                            (if (str/includes? l link-token)
+                                              (do (reset! replaced? true) pointer)
+                                              l))
+                                          lines)]
+                         (str (str/join "\n" (if @replaced? lines' (conj lines' pointer)))
+                              "\n")))]
+    (spit idx new-body)))
+
 (defn- inject-memory!
   "Write external data into the project's file-based memory as
-   `<project-config-dir>/memory/<slug>.md` — the same store the LLM curates with
-   plain write-file (index.md is left to the curator). Returns the wire response."
+   `<project-config-dir>/memory/<slug>.md` and add/update its pointer in
+   `index.md` so the injected item is discoverable in the `## Project Memory`
+   context section (which only surfaces the index). Returns the wire response."
   [ag slug content]
   (cond
     (str/blank? (str slug))    {:status :error :error ":slug is required for :as :memory"}
@@ -735,7 +793,13 @@
                 f       (java.io.File. mem-dir (str safe ".md"))]
             (.mkdirs mem-dir)
             (spit f content)
-            {:status :ok :injected :memory :slug safe :path (.getAbsolutePath f)})))
+            (let [indexed? (try (upsert-memory-index! mem-dir safe content) true
+                                (catch Throwable e
+                                  (mulog/log ::inject-memory-index-failed
+                                             :slug safe :error (.getMessage e))
+                                  false))]
+              {:status :ok :injected :memory :slug safe
+               :path (.getAbsolutePath f) :indexed indexed?}))))
       (catch Throwable e
         {:status :error :error (str "memory write failed: " (.getMessage e))}))))
 
