@@ -76,6 +76,58 @@
      :label label
      :rich  (osc8 full-url (emph ansi/underline label))}))
 
+(defn ^:private url-truncated-in-box?
+  "True when `url` would be shortened by `url-row` at the current box width — i.e.
+   the in-box label ends in … and the full URL isn't visible/copyable there."
+  [url]
+  (boolean (and url (> (fmt/display-width url) (max 8 (- (target-inner-width) 5))))))
+
+(defn ^:private wrap-to-width
+  "Split `s` into segments each at most `w` display columns. URLs here are ASCII,
+   so a char cut matches the display width. Each segment fits one terminal row —
+   required because the viewport renders one scrollback line per physical row."
+  [s w]
+  (if (<= (fmt/display-width s) w)
+    [s]
+    (loop [rem s acc []]
+      (if (<= (count rem) w)
+        (conj acc rem)
+        (recur (subs rem w) (conj acc (subs rem 0 w)))))))
+
+(defn ^:private clipboard-cmd
+  "First available OS clipboard-write command as a vector, or nil. Local TUI ⇒
+   the OS clipboard IS the user's clipboard (unlike a width-bound terminal line)."
+  []
+  (some (fn [cmd]
+          (when (try (zero? (:exit (shell/sh "sh" "-c" (str "command -v " (first cmd)))))
+                     (catch Throwable _ false))
+            cmd))
+        [["pbcopy"]
+         ["wl-copy"]
+         ["xclip" "-selection" "clipboard"]
+         ["xsel" "--clipboard" "--input"]]))
+
+(defn ^:private copy-to-clipboard!
+  "Best-effort: put `s` on the OS clipboard. Returns true on success."
+  [s]
+  (boolean
+   (when-let [cmd (clipboard-cmd)]
+     (try (zero? (:exit (apply shell/sh (concat cmd [:in s]))))
+          (catch Throwable _ false)))))
+
+(defn ^:private emit-full-url!
+  "When the in-box URL is truncated, make the FULL url obtainable: copy it to the
+   OS clipboard (one-line confirmation), else fall back to printing it wrapped
+   across row-fitting lines so every character is at least visible. `emit` is the
+   sink (so this composes with the boot-time deferral gate)."
+  [emit url]
+  (when (url-truncated-in-box? url)
+    (if (copy-to-clipboard! url)
+      (emit (ansi/success (str "  " ansi/check " Full authorization URL copied to your clipboard — paste it in your browser.")))
+      (do (emit (ansi/muted "  Full authorization URL (browser didn't open? copy the lines below):"))
+          (doseq [seg (wrap-to-width url (max 40 (dec (or (fmt/terminal-columns) 80))))]
+            (emit seg))))))
+
 (defn frame
   "Box-draw `lines` (plain strings). `min-iw` forces a minimum inner width so the
    box can be padded to a consistent (e.g. ~80%-of-terminal) size."
@@ -221,6 +273,9 @@
         (and verification_uri user_code)       (emit! (device-box ev))
         (and authorize_uri (= :loopback mode)) (emit! (loopback-box ev))
         authorize_uri                          (emit! (paste-box ev)))
+      ;; The in-box URL is truncated to preserve one-line-per-row rendering; make
+      ;; the full URL obtainable (clipboard, else wrapped visible fallback).
+      (emit-full-url! emit! (or verification_uri authorize_uri))
       (when-let [qr (qr-block verification_uri_complete)]
         (emit! qr)))
 
