@@ -324,6 +324,14 @@
                 reload-skills!)
 
 ;; ============================================================================
+;; Auth methods — the /login /logout registry (api-key | oauth | cli-delegate)
+;; ============================================================================
+
+(export-symbols ai.brainyard.agent.common.auth
+                auth-targets auth-find-target auth-status auth-instructions
+                auth-logout! claude-logged-in?)
+
+;; ============================================================================
 ;; MCP (Model Context Protocol) Integration
 ;; ============================================================================
 

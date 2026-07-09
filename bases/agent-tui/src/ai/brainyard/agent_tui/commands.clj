@@ -861,17 +861,30 @@
 ;; subscription OAuth) — distinct from MCP servers, whose auth is handled by
 ;; /mcp <server> start|stop|auth|status.
 
+(defn- auth-status-badge [status]
+  (case status
+    :signed-in     (ansi/success "signed in")
+    :not-signed-in (ansi/muted "not signed in")
+    :cli-missing   (ansi/warning "CLI not installed")
+    (ansi/muted "unknown")))
+
+(defn- auth-status-line [t]
+  (str "  " (format "%-11s" (name (:id t))) " "
+       (auth-status-badge (agent/auth-status t))
+       "  " (ansi/muted (:label t))))
+
 (defn- provider-status-overview []
-  (let [anthropic? (try (clj-llm/oauth-authenticated?) (catch Exception _ false))]
-    (str (ansi/header "Auth providers") "\n"
-         "  anthropic  " (if anthropic? (ansi/success "signed in") (ansi/muted "not signed in")) "\n"
-         (ansi/muted "\n  /login <provider>   sign in    •    /logout <provider>   sign out")
-         "\n"
-         (ansi/muted "  (MCP server auth is separate — use /mcp <server> auth | status)"))))
+  (str (ansi/header "Auth providers") "\n"
+       (str/join "\n" (map auth-status-line agent/auth-targets)) "\n"
+       (ansi/muted "\n  /login <provider>   sign-in help    •    /logout <provider>   sign out")
+       "\n"
+       (ansi/muted "  (MCP server auth is separate — use /mcp <server> auth | status)")))
 
 (defn- handle-login-command
   "/login            → list auth providers and their sign-in status.
-   /login <provider> → sign in to a provider (e.g. anthropic).
+   /login <provider> → show how to sign in (detect-and-instruct).
+   Methods: :api-key (env/.env), :oauth (clj-oauth store), :cli-delegate
+   (e.g. `claude` — credential lives in the CLI's own store).
    MCP servers are NOT providers — authenticate them with /mcp <server> auth."
   [args]
   (let [target (some-> args str/trim str/lower-case not-empty)]
@@ -879,35 +892,31 @@
       (nil? target)
       (tui-session/emit! (provider-status-overview))
 
-      (= "anthropic" target)
-      (if (try (clj-llm/oauth-authenticated?) (catch Exception _ false))
-        (tui-session/emit! (ansi/muted "Already signed in to anthropic."))
-        (tui-session/emit! (ansi/warning
-                            (str "Anthropic subscription OAuth is restricted to Claude Code and "
-                                 "claude.ai, so it can't be completed here.\n"
-                                 "Other providers authenticate via API keys in your .env."))))
-
       :else
-      (tui-session/emit! (ansi/warning (str "Unknown auth provider: " target
-                                            "\nRun /login with no args to list providers."
-                                            "\n(For an MCP server, use /mcp " target " auth.)"))))))
+      (if-let [t (agent/auth-find-target target)]
+        (tui-session/emit!
+         (if (= :signed-in (agent/auth-status t))
+           (ansi/success (str "Already signed in to " (name (:id t)) "."))
+           (str (ansi/header (str "Sign in — " (:label t))) "\n"
+                (agent/auth-instructions t))))
+        (tui-session/emit! (ansi/warning (str "Unknown auth provider: " target
+                                              "\nRun /login with no args to list providers."
+                                              "\n(For an MCP server, use /mcp " target " auth.)")))))))
 
 (defn- handle-logout-command
-  "/logout <provider> → sign out of an auth provider (e.g. anthropic).
+  "/logout <provider> → sign out of an auth provider (e.g. anthropic, claude).
    MCP servers are managed via /mcp <server> stop — not here."
   [args]
   (let [target (some-> args str/trim str/lower-case not-empty)]
     (cond
       (nil? target)
-      (tui-session/emit! (ansi/warning "Usage: /logout <provider>   (e.g. anthropic)"))
-
-      (= "anthropic" target)
-      (do (try (clj-llm/oauth-logout!) (catch Exception _ nil))
-          (tui-session/emit! (ansi/success "Signed out of anthropic.")))
+      (tui-session/emit! (ansi/warning "Usage: /logout <provider>   (e.g. anthropic, claude)"))
 
       :else
-      (tui-session/emit! (ansi/warning (str "Unknown auth provider: " target
-                                            "\n(For an MCP server, use /mcp " target " stop.)"))))))
+      (if-let [t (agent/auth-find-target target)]
+        (tui-session/emit! (ansi/muted (agent/auth-logout! t)))
+        (tui-session/emit! (ansi/warning (str "Unknown auth provider: " target
+                                              "\n(For an MCP server, use /mcp " target " stop.)")))))))
 
 ;; ============================================================================
 ;; Continue Command (private)
