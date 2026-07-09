@@ -18,7 +18,7 @@
             [ai.brainyard.agent.core.agent :as ag]
             [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.protocol :as tp]
-            [ai.brainyard.agent.common.debug-agent] ;; trigger registration
+            [ai.brainyard.agent.common.debug-agent :as debug-agent] ;; trigger registration
             [ai.brainyard.clj-nrepl.interface :as clj-nrepl]
             [ai.brainyard.clj-sandbox.interface :as clj-sandbox]))
 
@@ -35,6 +35,12 @@
 
 (defn- with-server [t]
   (try
+    ;; A prior test in the same JVM may have wiped the global hook registry
+    ;; (hooks/reset-hooks! in hooks_test / capture_*); debug-agent's instance
+    ;; hooks are registered only at ns-load, so re-establish them here to keep
+    ;; these tests order-independent (the :clj-backend :nrepl pin depends on the
+    ;; :agent.instance/created hook firing).
+    (debug-agent/register-hooks!)
     (clj-nrepl/start-server! :bind "127.0.0.1" :port 0)
     (reset-globals!)
     (t)

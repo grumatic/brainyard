@@ -175,12 +175,19 @@
                   :agent-id (proto/agent-id agent)
                   :session  sid))))
 
-;; register-hook! dedupes by [event-key handler-id], so registering at
-;; ns load (and across reloads) is safe.
-(hooks/register-hook! :agent.instance/created ::debug-agent-created
-                      on-instance-created :source :debug-agent)
-(hooks/register-hook! :agent.instance/closed ::debug-agent-closed
-                      on-instance-closed :source :debug-agent)
+(defn register-hooks!
+  "(Re)register debug-agent's instance lifecycle hooks. Idempotent —
+   `register-hook!` dedupes by [event-key handler-id], so calling this at ns
+   load, across reloads, or from a test that has wiped the global registry
+   (`hooks/reset-hooks!`) is safe. Exposed so tests can re-establish these hooks
+   without depending on ambient registration surviving a prior test's reset."
+  []
+  (hooks/register-hook! :agent.instance/created ::debug-agent-created
+                        on-instance-created :source :debug-agent)
+  (hooks/register-hook! :agent.instance/closed ::debug-agent-closed
+                        on-instance-closed :source :debug-agent))
+
+(register-hooks!)
 
 ;; ============================================================================
 ;; Instruction

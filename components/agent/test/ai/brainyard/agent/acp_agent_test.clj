@@ -9,12 +9,22 @@
    test spawns the in-tree :stub backend via setup-agent-by-id + ask,
    verifies the BT iteration hooks fire, the streamed chunks land in
    st-memory, and a final :answer is produced."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.agent.common.acp-agent :as acp-agent]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.core.hooks :as hooks]))
+
+(use-fixtures :each
+  (fn [t]
+    ;; A prior test in the same JVM may have wiped the global hook registry
+    ;; (hooks/reset-hooks! in hooks_test / capture_*); acp-agent's cleanup hook
+    ;; is registered only at ns-load, and descriptor/live-health reports
+    ;; :unconnected only if that hook clears the client cache on close. Re-establish
+    ;; it here to keep these tests order-independent.
+    (acp-agent/register-hooks!)
+    (t)))
 
 (deftest registry-test
   (testing "acp-agent is in the unified tool registry as a :agent type"

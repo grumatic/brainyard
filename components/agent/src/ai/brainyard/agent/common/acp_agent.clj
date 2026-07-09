@@ -469,19 +469,30 @@
 ;; Cleanup hook — close cached AcpClient when the agent closes
 ;; =============================================================================
 
-(hooks/register-hook!
- :agent.instance/closed
- :acp-agent/cleanup
- (fn [{:keys [agent]}]
-   (when-let [{:keys [client]} (get @(:!state agent) cache-key)]
-     (try
-       (close!* client)
-       (catch Throwable t
-         (mulog/warn ::acp-client-close-error :error (ex-message t))))
-     ;; Client close tears down the subprocess (and with it the session);
-     ;; drop both cache entries so a re-opened instance starts clean.
-     (swap! (:!state agent) dissoc cache-key session-key)))
- :source :acp-agent)
+(defn register-hooks!
+  "(Re)register acp-agent's instance-close cleanup hook. Idempotent —
+   `register-hook!` dedupes by [event-key handler-id], so calling this at ns
+   load, across reloads, or from a test that has wiped the global registry
+   (`hooks/reset-hooks!`) is safe. Exposed so tests can re-establish the hook
+   without depending on ambient registration surviving a prior test's reset —
+   `live-health`/`descriptor` report `:unconnected` only if this hook clears the
+   client cache on close."
+  []
+  (hooks/register-hook!
+   :agent.instance/closed
+   :acp-agent/cleanup
+   (fn [{:keys [agent]}]
+     (when-let [{:keys [client]} (get @(:!state agent) cache-key)]
+       (try
+         (close!* client)
+         (catch Throwable t
+           (mulog/warn ::acp-client-close-error :error (ex-message t))))
+       ;; Client close tears down the subprocess (and with it the session);
+       ;; drop both cache entries so a re-opened instance starts clean.
+       (swap! (:!state agent) dissoc cache-key session-key)))
+   :source :acp-agent))
+
+(register-hooks!)
 
 ;; =============================================================================
 ;; defagent registration
