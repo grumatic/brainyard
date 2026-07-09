@@ -18,7 +18,13 @@
 (use-fixtures :each
   (fn [t]
     (reset! saved-global @config/!global-config)
-    (t)
+    ;; The default :permission-mode is now :auto (container ⇒ auto-approve).
+    ;; Pin container detection OFF so these gate tests are hermetic: :auto
+    ;; resolves to :ask-each-time (prompt / fail-closed) regardless of where the
+    ;; suite runs — e.g. CI inside Docker. Tests that need the container branch
+    ;; redef it back on locally.
+    (with-redefs [config/container-detected? (constantly false)]
+      (t))
     (reset! config/!global-config @saved-global)))
 
 (defn- gate [tool-name args & {:keys [agent]}]
@@ -104,6 +110,15 @@
 (deftest mode-deny-by-default
   (reset! config/!global-config {:permission-mode :deny-by-default})
   (is (= :replace (:result (gate "mcp$linear$create_issue" {})))))
+
+(deftest mode-auto-resolves-by-container
+  (reset! config/!global-config {:permission-mode :auto})
+  (testing ":auto ⇒ auto-approve inside a container (no prompt)"
+    (with-redefs [config/container-detected? (constantly true)]
+      (is (nil? (gate "mcp$linear$create_issue" {})))))
+  (testing ":auto ⇒ ask-each-time on a bare host (headless ⇒ fail-closed refuse)"
+    (with-redefs [config/container-detected? (constantly false)]
+      (is (= :replace (:result (gate "mcp$linear$create_issue" {})))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Interactive prompt via permission-fn

@@ -152,6 +152,29 @@
    :as "L2→L3 reducer: heuristic (default; per-(role,window) digest) | community (graph-community summaries; needs BY_ENABLE_GRAPH_MEMORY + an extract model)"
    :type :string :default "heuristic"})
 
+;; Context-graph size knobs for `memory reduce` / `memory graph-build`. Each
+;; defaults to its `:graph-max-*` config value when the flag is omitted
+;; (resolved at run time so env/config.edn overrides still apply).
+(def max-nodes-opt
+  {:option "max-nodes"
+   :as "Total node budget for the context graph (default: :graph-max-nodes). Over budget, lowest-retention nodes are evicted. 0 disables."
+   :type :int})
+
+(def max-edges-opt
+  {:option "max-edges"
+   :as "Total edge budget for the context graph (default: :graph-max-edges). Over budget, lowest-confidence/stalest edges are evicted. 0 disables."
+   :type :int})
+
+(def max-entities-per-episode-opt
+  {:option "max-entities-per-episode"
+   :as "Max entities (nodes) a single episode may add during extraction (default: :graph-max-entities-per-episode)"
+   :type :int})
+
+(def max-relations-per-episode-opt
+  {:option "max-relations-per-episode"
+   :as "Max relations (edges) a single episode may add during extraction (default: :graph-max-relations-per-episode)"
+   :type :int})
+
 ;; ============================================================================
 ;; Legacy provider:model parsing
 ;; ============================================================================
@@ -1086,15 +1109,21 @@
    `ask`."
   [opts]
   (helpers/suppress-jul-cookie-warnings!)
-  (let [json? (:json opts)
-        uid   (helpers/resolve-user-id (:user-id opts))
-        sid   (some-> (:session opts) str/trim not-empty)]
+  (let [json?         (:json opts)
+        uid           (helpers/resolve-user-id (:user-id opts))
+        sid           (some-> (:session opts) str/trim not-empty)
+        max-entities  (or (:max-entities-per-episode opts)
+                          (agent/get-config :graph-max-entities-per-episode))
+        max-relations (or (:max-relations-per-episode opts)
+                          (agent/get-config :graph-max-relations-per-episode))]
     (try
       (let [report (with-memory-manager
                      uid
                      (fn [mm]
                        (apply mem/extract-l2-graph! mm
-                              (cond-> [] sid (into [:session-id sid])))))]
+                              (cond-> [:max-entities max-entities
+                                       :max-relations max-relations]
+                                sid (into [:session-id sid])))))]
         (if json?
           (print-json! {:success true :user-id uid :session sid :report report})
           (println (format "Graph-build [%s%s] → attempted=%s/%s%s"
@@ -1117,28 +1146,66 @@
    (`by memory reduce -u <uid> -s <sid>`), so the interactive TUI doesn't block
    /quit on minutes of graph work; it is equally runnable by hand. Requires the
    graph tier configured (BY_ENABLE_GRAPH_MEMORY + an extract model); the child
-   inherits those env vars from the launching process."
+   inherits those env vars from the launching process.
+
+   Graph-size knobs (each defaults to its `:graph-max-*` config value):
+   `--max-entities-per-episode` / `--max-relations-per-episode` cap per-episode
+   extraction growth; `--max-nodes` / `--max-edges` cap the resulting total
+   graph (lowest-retention nodes/edges evicted once extraction finishes).
+   Per-stage progress is written to stderr (suppressed under `--json`)."
   [opts]
   (helpers/suppress-jul-cookie-warnings!)
-  (let [json? (:json opts)
-        uid   (helpers/resolve-user-id (:user-id opts))
-        sid   (some-> (:session opts) str/trim not-empty)]
+  (let [json?         (:json opts)
+        uid           (helpers/resolve-user-id (:user-id opts))
+        sid           (some-> (:session opts) str/trim not-empty)
+        ;; CLI flag wins; else fall back to the config default (env/config.edn
+        ;; still resolve through get-config).
+        max-nodes     (or (:max-nodes opts) (agent/get-config :graph-max-nodes))
+        max-edges     (or (:max-edges opts) (agent/get-config :graph-max-edges))
+        max-entities  (or (:max-entities-per-episode opts)
+                          (agent/get-config :graph-max-entities-per-episode))
+        max-relations (or (:max-relations-per-episode opts)
+                          (agent/get-config :graph-max-relations-per-episode))
+        progress!     (fn [fmt & args]
+                        (when-not json?
+                          (binding [*out* *err*]
+                            (println (apply format (str "reduce: " fmt) args)))))]
     (try
       (let [report (with-memory-manager
                      uid
                      (fn [mm]
+                       (progress! "extracting L2 → graph (max-entities=%s max-relations=%s)…"
+                                  max-entities max-relations)
                        (let [g (apply mem/extract-l2-graph! mm
-                                      (cond-> [] sid (into [:session-id sid])))
+                                      (cond-> [:max-entities max-entities
+                                               :max-relations max-relations]
+                                        sid (into [:session-id sid])))
+                             _ (progress! "  extracted %s/%s episode(s)"
+                                          (:attempted g) (:total g))
+                             _ (progress! "pruning graph to budget (max-nodes=%s max-edges=%s)…"
+                                          max-nodes max-edges)
+                             p (mem/prune-graph-to-budget! mm :max-nodes max-nodes
+                                                           :max-edges max-edges)
+                             _ (progress! "  graph now %s node(s) / %s edge(s) (evicted %s node(s), %s edge(s))"
+                                          (:nodes p) (:edges p)
+                                          (:nodes-evicted p) (:edges-evicted p))
+                             _ (progress! "consolidating L2 → L3 (community reducer)…")
                              c (apply mem/consolidate-l2! mm
                                       (cond-> [:reducer :community]
-                                        sid (into [:session-id sid])))]
-                         {:graph-build g :consolidate c})))]
+                                        sid (into [:session-id sid])))
+                             _ (progress! "  produced %s summary/summaries, consumed %s episode(s)"
+                                          (:produced c) (:consumed c))]
+                         {:graph-build g :prune p :consolidate c})))]
         (if json?
           (print-json! {:success true :user-id uid :session sid :report report})
-          (println (format "Reduced [%s%s] → graph-attempted=%s/%s consolidate-produced=%s consumed=%s"
+          (println (format "Reduced [%s%s] → graph-attempted=%s/%s nodes=%s edges=%s (evicted %s/%s) consolidate-produced=%s consumed=%s"
                            uid (if sid (str " / " sid) "")
                            (get-in report [:graph-build :attempted])
                            (get-in report [:graph-build :total])
+                           (get-in report [:prune :nodes])
+                           (get-in report [:prune :edges])
+                           (get-in report [:prune :nodes-evicted])
+                           (get-in report [:prune :edges-evicted])
                            (get-in report [:consolidate :produced])
                            (get-in report [:consolidate :consumed])))))
       (catch Exception e
@@ -1702,11 +1769,16 @@
                                  :runs        cmd-memory-consolidate}
                                 {:command     "graph-build"
                                  :description "Synchronously extract L2 episodes into the context-graph (graph tier; precedes --reducer community)"
-                                 :opts        [user-id-opt session-opt json-opt]
+                                 :opts        [user-id-opt session-opt
+                                               max-entities-per-episode-opt
+                                               max-relations-per-episode-opt json-opt]
                                  :runs        cmd-memory-graph-build}
                                 {:command     "reduce"
                                  :description "graph-build + consolidate --reducer community in one shot; entrypoint for the detached session-end offload"
-                                 :opts        [user-id-opt session-opt json-opt]
+                                 :opts        [user-id-opt session-opt
+                                               max-nodes-opt max-edges-opt
+                                               max-entities-per-episode-opt
+                                               max-relations-per-episode-opt json-opt]
                                  :runs        cmd-memory-reduce}
                                 {:command     "stats"
                                  :description "Report L1/L2/L3 counts for a user"

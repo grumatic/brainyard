@@ -366,7 +366,15 @@
 (defn- get-permission-fn []
   (let [agent proto/*current-agent*]
     (when agent
-      (some-> (:!session agent) deref (session/get-session-config :permission-fn)))))
+      ;; Honor the resolved permission mode: :auto-approve (explicit, or :auto
+      ;; in a container) auto-approves every file op with no prompt — even
+      ;; headless; :deny-by-default refuses every non-whitelisted op; otherwise
+      ;; the session's interactive permission-fn applies (approved-dir cache +
+      ;; prompt). Always-allowed /tmp and .brainyard/ paths never reach here.
+      (case (config/resolve-permission-mode agent)
+        :auto-approve    (constantly {:allowed true})
+        :deny-by-default (constantly {:denied true :reason "permission mode is :deny-by-default"})
+        (some-> (:!session agent) deref (session/get-session-config :permission-fn))))))
 
 (defn- get-dirs []
   (let [agent proto/*current-agent*]

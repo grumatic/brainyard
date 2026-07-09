@@ -448,7 +448,8 @@
               (get-in (:config session) [:dirs])
               {:working-dir (config/working-dir agent)
                :permissions {:allowed-dirs (config/get-config agent :allowed-dirs)
-                             :mode         (config/get-config agent :permission-mode)}}
+                             ;; effective mode (:auto resolved via container detection)
+                             :mode         (config/resolve-permission-mode agent)}}
               {:runtime (config/get-config-snapshot agent)})
      :runtime {:introspect-fn
                (fn [& path]

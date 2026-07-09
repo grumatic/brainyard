@@ -51,7 +51,7 @@
     [:mcp :servers]
     [:updated-at]})
 
-(defn- valid-mode?    [v] (contains? #{:auto-approve :ask-each-time :deny-by-default} v))
+(defn- valid-mode?    [v] (contains? #{:auto-approve :ask-each-time :deny-by-default :auto} v))
 (defn- valid-sandbox? [v] (contains? #{:permissive :standard :restricted} v))
 
 (def leaf-validators

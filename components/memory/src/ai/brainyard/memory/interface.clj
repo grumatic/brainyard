@@ -440,15 +440,40 @@
   `:enable-graph-memory` + a configured extract model). When absent this is a
   no-op returning `{:attempted 0 :total 0 :no-extract-fn true}`.
 
+  `:max-entities`/`:max-relations` cap how much a SINGLE episode may add
+  (per-episode explosion guard). Callers supply these from the
+  `:graph-max-entities-per-episode` / `:graph-max-relations-per-episode` config
+  (the memory brick can't read agent config); omitted ⇒ the in-component
+  `extract/default-graph-limits` fallback applies (kept in sync with the config
+  defaults). Total-graph budgets are enforced separately via
+  `prune-graph-to-budget!`.
+
   Returns `{:attempted <n eligible> :total <n episodes>}`."
-  [manager & {:keys [session-id]}]
+  [manager & {:keys [session-id max-entities max-relations]}]
   (if-let [extract-fn (:extract-fn manager)]
     (let [s       (:store manager)
           entries (proto/read-entries s :l2
                                       (cond-> {} session-id (assoc :session-id session-id))
-                                      {:limit 1000})]
-      (capture-extractor/extract-batch! s extract-fn entries))
+                                      {:limit 1000})
+          limits  (cond-> nil
+                    max-entities  (assoc :max-entities max-entities)
+                    max-relations (assoc :max-relations max-relations))]
+      (capture-extractor/extract-batch! s extract-fn entries :limits limits))
     {:attempted 0 :total 0 :no-extract-fn true}))
+
+(defn prune-graph-to-budget!
+  "Enforce total-size budgets on the user's context graph, evicting the
+  lowest-retention nodes/edges over budget (see `graph/prune-nodes-to-budget!`
+  and `graph/prune-edges-to-budget!`). A no-op arg (nil / 0) leaves that
+  dimension untouched. Returns
+  `{:nodes-evicted n :edges-evicted m :nodes <count-after> :edges <count-after>}`
+  — the post-prune counts give the resulting graph size for reporting."
+  [manager & {:keys [max-nodes max-edges]}]
+  (let [{:keys [ds user-id]} (:store manager)]
+    {:nodes-evicted (graph/prune-nodes-to-budget! ds user-id {:max-nodes max-nodes})
+     :edges-evicted (graph/prune-edges-to-budget! ds user-id {:max-edges max-edges})
+     :nodes         (graph/count-nodes ds user-id)
+     :edges         (graph/count-edges ds user-id)}))
 
 (defn capture-quiesce!
   "Block until the capture pipeline has flushed everything queued so far — all
@@ -466,14 +491,17 @@
   (bounded by `:max-input-chars`, default 400K chars ≈ 100K tokens) and run a
   SINGLE extraction over it, populating the graph. The at-consolidation
   counterpart to the per-episode async extractor — one LLM call per
-  consolidation window instead of one per turn. Entity/relation/node caps are
-  passed through to `process-extraction!`.
+  consolidation window instead of one per turn. Entity/relation/node/edge caps
+  are passed through to `process-extraction!`. Callers supply them from the
+  `:graph-max-*` config (the memory brick can't read agent config); omitted
+  caps fall back to `extract/default-graph-limits` (kept in sync with the
+  config defaults).
 
   Incremental: pass the previous run's `:max-id` back as `:after-id` so each run
   only extracts episodes captured since. Returns
   `{:calls 0|1 :new-episodes n :nodes n :edges n :max-id id}`; `:no-extract-fn
   true` when the graph tier is off."
-  [manager & {:keys [session-id after-id max-input-chars max-entities max-relations max-nodes]
+  [manager & {:keys [session-id after-id max-input-chars max-entities max-relations max-nodes max-edges]
               :or   {after-id 0 max-input-chars 400000}}]
   (if-let [extract-fn (:extract-fn manager)]
     (let [store  (:store manager)
@@ -492,7 +520,8 @@
                          (cond-> {}
                            max-entities  (assoc :max-entities max-entities)
                            max-relations (assoc :max-relations max-relations)
-                           max-nodes     (assoc :max-nodes max-nodes))))]
+                           max-nodes     (assoc :max-nodes max-nodes)
+                           max-edges     (assoc :max-edges max-edges))))]
           (mulog/debug ::l2-batch-extracted :session-id session-id
                        :new-episodes (count eps) :nodes (:nodes applied 0) :edges (:edges applied 0))
           {:calls 1 :new-episodes (count eps)

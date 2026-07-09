@@ -151,10 +151,11 @@ Sandboxing the session running inside a web share is planned but not yet wired.
 
 The OS seatbelt above *contains* the whole process. The in-process **SCI
 sandbox** (`clj-sandbox`) is the opposite concern: it restricts the Clojure
-code the agent writes and evaluates. By default that code runs with **no Java
-interop** — `System`, `Runtime`, `ProcessBuilder`, `ClassLoader` are denied and
-only a whitelist of pure classes (Math, numerics, `java.time.*`) is reachable.
-This is the right posture on a host.
+code the agent writes and evaluates. On a bare host that code runs with **no
+Java interop** — `System`, `Runtime`, `ProcessBuilder`, `ClassLoader` are denied
+and only a whitelist of pure classes (Math, numerics, `java.time.*`) is
+reachable. This is the right posture on a host, and the default (`:auto`)
+resolves to exactly it when no container is detected.
 
 When `by` itself runs inside a disposable container (Docker, devcontainer),
 that restriction can be safely relaxed so the agent can use full Java interop
@@ -163,9 +164,9 @@ the **`:sandbox-interop`** config key:
 
 | Value | Effect |
 |---|---|
-| `:restricted` | **default** — whitelist + denylist. The only safe posture on a host. |
+| `:restricted` | Whitelist + denylist. The only safe posture on a host. |
 | `:full` | Broad JDK class palette, no denylist. Arbitrary Java interop **plus a richer Clojure library surface** (see below). **Only safe inside a container.** |
-| `:auto` | `:full` when a container is detected (`env-detect` sees Docker/devcontainer), else `:restricted`. |
+| `:auto` | **default** — `:full` when a container is detected (`env-detect` sees Docker/devcontainer), else `:restricted`. |
 
 **Library surface at `:full`.** SCI deliberately withholds I/O functions from its
 defaults. At `:full` the sandbox additionally exposes (via compile-time
@@ -186,8 +187,10 @@ Set it in `.brainyard/config.edn`:
 ```
 
 …or via the **`BY_SANDBOX_INTEROP`** env var (`restricted` | `full` | `auto`),
-which seeds the schema default. The default is **explicit opt-in**: detection
-never auto-relaxes unless you set `:full` or `:auto`.
+which seeds the schema default. The default is **`:auto`**: it relaxes to
+`:full` only when a container is detected, and stays `:restricted` on a bare
+host — so no host is ever silently relaxed. Pin `:restricted` explicitly to
+opt out of container detection entirely.
 
 > ⚠ **`:full` removes the in-process code-eval guardrail.** Agent-written
 > Clojure can then spawn processes, read/write any path the process can, and

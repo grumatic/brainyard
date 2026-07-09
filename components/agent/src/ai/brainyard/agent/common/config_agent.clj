@@ -215,7 +215,7 @@ R8. SECURITY-SENSITIVE KEYS NEED A HUMAN — even in --auto. Writes to
 ────────────────────────────────────────────────────────────────────────────
 ALLOWLIST — keys you may write through config$apply
 ────────────────────────────────────────────────────────────────────────────
-    [:permissions :mode]                  :auto-approve | :ask-each-time | :deny-by-default
+    [:permissions :mode]                  :auto-approve | :ask-each-time | :deny-by-default | :auto
     [:permissions :allowed-dirs]          vector of strings
     [:agent :default-agent]               keyword
     [:agent :max-iterations]              positive int

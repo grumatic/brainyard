@@ -16,13 +16,16 @@
                                                 registered tool, so the hook
                                                 sees its `:op :call` args).
 
-   Policy (config `[:permissions :mode]` / `:permission-mode`):
+   Policy (config `[:permissions :mode]` / `:permission-mode`, `:auto` resolved
+   via `resolve-permission-mode` before this branch):
      :auto-approve     → allow everything (no prompt).
      :deny-by-default  → block every side-effecting MCP call (no prompt).
-     :ask-each-time    → (default) prompt via `permission-fn`; when there is no
+     :ask-each-time    → prompt via `permission-fn`; when there is no
                          interactive channel (headless / sub-agent with no
                          permission-fn) the call is REFUSED — fail-closed,
                          mirroring write-file's headless behavior.
+     :auto             → (default) :auto-approve in a detected container, else
+                         :ask-each-time (bare host still prompts).
 
    Downgraded to auto-allow (never prompts):
      - tools whose MCP `annotations.readOnlyHint` is true, and
@@ -153,9 +156,10 @@
 
 (defn- gate-verdict
   "Decide allow (nil) / refuse (:replace) for a set of approval-needing
-   targets, honoring [:permissions :mode]."
+   targets, honoring [:permissions :mode] (`:auto` resolved via
+   `resolve-permission-mode` — :auto-approve in a container, else prompt)."
   [agent targets]
-  (case (config/get-config agent :permission-mode)
+  (case (config/resolve-permission-mode agent)
     :auto-approve    nil
     :deny-by-default (deny-replace targets "permission mode is :deny-by-default")
     ;; :ask-each-time (default) and anything else → prompt, fail-closed headless

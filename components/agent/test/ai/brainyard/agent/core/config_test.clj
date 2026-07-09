@@ -154,7 +154,8 @@
     (is (= #{:enable-graph-memory :graph-embed-model :graph-extract-model
              :enable-memory-capture :memory-question-max-chars :memory-answer-max-chars
              :graph-extract-max-input-chars :graph-max-entities-per-episode
-             :graph-max-relations-per-episode :graph-max-nodes :graph-extract-mode}
+             :graph-max-relations-per-episode :graph-max-nodes :graph-max-edges
+             :graph-extract-mode}
            cfg/restart-required-keys))
     (is (cfg/requires-restart-key? :enable-graph-memory))
     (is (cfg/requires-restart-key? :graph-embed-model))
@@ -792,8 +793,12 @@
 ;; resolve-sandbox-interop
 ;; ============================================================================
 
-(deftest resolve-sandbox-interop-default-is-restricted
-  ;; No persisted override and no BY_SANDBOX_INTEROP → schema :default → :restricted.
+(deftest sandbox-interop-schema-default-is-auto
+  ;; Out-of-the-box (no persisted override, no BY_SANDBOX_INTEROP) the schema
+  ;; default is :auto — container-detected → :full, else :restricted.
+  (is (= :auto (get-in cfg/config-schema [:sandbox-interop :default]))))
+
+(deftest resolve-sandbox-interop-restricted-passes-through
   (with-redefs [cfg/get-config (fn ([_] :restricted) ([_ _] :restricted))]
     (is (= :restricted (cfg/resolve-sandbox-interop)))
     (is (= :restricted (cfg/resolve-sandbox-interop (fake-agent {}))))))
@@ -817,3 +822,57 @@
   (with-redefs [cfg/get-config (fn ([_] :bogus) ([_ _] nil))]
     (is (= :restricted (cfg/resolve-sandbox-interop)))
     (is (= :restricted (cfg/resolve-sandbox-interop (fake-agent {}))))))
+
+;; ============================================================================
+;; resolve-permission-mode
+;; ============================================================================
+
+(deftest permission-mode-schema-default-is-auto
+  ;; Out-of-the-box (no persisted override, no BY_SANDBOX_* env) the schema
+  ;; default is :auto — container-detected → :auto-approve, else :ask-each-time.
+  (is (= :auto (get-in cfg/config-schema [:permission-mode :default]))))
+
+(deftest resolve-permission-mode-auto-consults-container-detection
+  (testing ":auto → :auto-approve when a container is detected"
+    (with-redefs [cfg/get-config (fn ([_] :auto) ([_ _] :auto))
+                  cfg/container-detected? (constantly true)]
+      (is (= :auto-approve (cfg/resolve-permission-mode)))))
+  (testing ":auto → :ask-each-time when no container is detected"
+    (with-redefs [cfg/get-config (fn ([_] :auto) ([_ _] :auto))
+                  cfg/container-detected? (constantly false)]
+      (is (= :ask-each-time (cfg/resolve-permission-mode))))))
+
+(deftest resolve-permission-mode-explicit-values-pass-through
+  (doseq [m [:auto-approve :ask-each-time :deny-by-default]]
+    (with-redefs [cfg/get-config (fn ([_] m) ([_ _] m))]
+      (is (= m (cfg/resolve-permission-mode)))
+      (is (= m (cfg/resolve-permission-mode (fake-agent {})))))))
+
+(deftest resolve-permission-mode-unknown-falls-back-to-ask
+  (with-redefs [cfg/get-config (fn ([_] :bogus) ([_ _] nil))]
+    (is (= :ask-each-time (cfg/resolve-permission-mode)))
+    (is (= :ask-each-time (cfg/resolve-permission-mode (fake-agent {}))))))
+
+(deftest session-permission-fn-honors-resolved-mode
+  ;; The file/bash gate: :auto-approve (explicit, or :auto in a container) ⇒
+  ;; allow-all fn even over an interactive pfn and even headless; otherwise the
+  ;; session's interactive pfn (approved-dir cache + prompt) passes through.
+  (let [interactive (fn [_] {:denied true :reason "prompt"})
+        agent       {:!session (atom {:config {:permission-fn interactive}})}]
+    (testing ":auto-approve ⇒ allow-all (overrides the session pfn)"
+      (with-redefs [cfg/resolve-permission-mode (fn [_] :auto-approve)]
+        (let [pf (#'cfg/session-permission-fn agent)]
+          (is (fn? pf))
+          (is (= {:allowed true} (pf {:type :file-access :path "/etc/x" :action :write}))))))
+    (testing ":auto-approve ⇒ allow-all even headless (no session pfn)"
+      (with-redefs [cfg/resolve-permission-mode (fn [_] :auto-approve)]
+        (let [pf (#'cfg/session-permission-fn {:!session (atom {:config {}})})]
+          (is (= {:allowed true} (pf {:path "/etc/x" :action :write}))))))
+    (testing ":deny-by-default ⇒ deny-all (refuses non-whitelisted ops, no prompt)"
+      (with-redefs [cfg/resolve-permission-mode (fn [_] :deny-by-default)]
+        (let [pf (#'cfg/session-permission-fn agent)]
+          (is (fn? pf))
+          (is (:denied (pf {:type :file-access :path "/etc/x" :action :write}))))))
+    (testing ":ask-each-time / :auto-not-in-container ⇒ the session's interactive pfn passes through"
+      (with-redefs [cfg/resolve-permission-mode (fn [_] :ask-each-time)]
+        (is (identical? interactive (#'cfg/session-permission-fn agent)))))))

@@ -192,12 +192,14 @@
                                 :doc "When graph extraction runs (only when :enable-graph-memory). :at-consolidation (default) — batch-extract the episodes captured since the last consolidation in ONE LLM call at each consolidation (fewer calls; graph is stale between consolidations). :per-episode — the async extractor runs one extraction per captured L2 turn (fresher graph, one LLM call per turn). Baked at start-capture! — needs a `by` restart."}
    :graph-extract-max-input-chars {:type "integer" :default 400000 :requires-restart true
                                    :doc "Max chars fed to a single graph-extraction call before truncation (only when :enable-graph-memory). ~400K chars ≈ 100K tokens, enough to batch a whole consolidation window in one call (:at-consolidation), or cap one large episode (:per-episode). Baked into the extractor at start-capture! — needs a `by` restart."}
-   :graph-max-entities-per-episode {:type "integer" :default 24 :requires-restart true
+   :graph-max-entities-per-episode {:type "integer" :default 12 :requires-restart true
                                     :doc "Confines graph explosion: max entities a single episode may add to the graph (only when :enable-graph-memory). Extras are dropped (durable ones are listed first). Baked into the extractor at start-capture! — needs a `by` restart."}
-   :graph-max-relations-per-episode {:type "integer" :default 48 :requires-restart true
+   :graph-max-relations-per-episode {:type "integer" :default 24 :requires-restart true
                                      :doc "Confines graph explosion: max relationships (edges) a single episode may add (only when :enable-graph-memory). Kept highest-confidence-first, then capped. Baked into the extractor at start-capture! — needs a `by` restart."}
    :graph-max-nodes            {:type "integer" :default 100 :requires-restart true
                                 :doc "Total-size cap: max nodes retained in the context graph per user (only when :enable-graph-memory). Over budget, the lowest-retention nodes are evicted (ranked by edge-degree, then curated-type over the generic `entity` fallback, then has-summary, then recency) down to 90% of the cap. 0 disables the cap. Baked into the extractor at start-capture! — needs a `by` restart."}
+   :graph-max-edges            {:type "integer" :default 200 :requires-restart true
+                                :doc "Total-size cap: max valid (non-invalidated) edges retained in the context graph per user (only when :enable-graph-memory). Over budget, the lowest-retention edges are evicted (ranked by confidence, then recency — lowest-confidence, stalest first) down to 90% of the cap. 0 disables the cap. Baked into the extractor at start-capture! — needs a `by` restart."}
    :enable-memory-consolidation {:type "boolean"
                                  :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY_CONSOLIDATION")]
                                             (= "true" v) ::env-unset)
@@ -351,8 +353,8 @@
    :allowed-dirs               {:type "array"
                                 :default-fn #(default-allowed-dirs)
                                 :doc "Allow-list of directories for filesystem-touching tools (bash/read/write/grep/task$run). Lazy default: /tmp + project-dir + user-config-dir."}
-   :permission-mode            {:type "keyword" :default :ask-each-time
-                                :doc "Permission-prompt policy for sensitive tool ops: :auto-approve | :ask-each-time | :deny-by-default. Persisted as [:permissions :mode]."}
+   :permission-mode            {:type "keyword" :default :auto
+                                :doc "Permission-prompt policy for sensitive tool ops: :auto-approve | :ask-each-time | :deny-by-default | :auto (default; :auto-approve when a container is detected via env-detect, else :ask-each-time — so a bare host still prompts). Resolved by resolve-permission-mode. Persisted as [:permissions :mode]."}
    :display-format             {:type "keyword"
                                 :env-fn #(if-let [v (not-empty (System/getenv "BY_DISPLAY_FORMAT"))]
                                            (keyword v) ::env-unset)
@@ -404,13 +406,14 @@
    ;;   :auto       — :full when a container (Docker/devcontainer) is detected
    ;;                via env-detect, else :restricted. Resolved by
    ;;                `resolve-sandbox-interop`.
-   ;; Default reads BY_SANDBOX_INTEROP (restricted|full|auto); explicit opt-in,
-   ;; never auto-relaxes unless set to :full or :auto.
+   ;; Default reads BY_SANDBOX_INTEROP (restricted|full|auto). Defaults to
+   ;; :auto: :full only when a container is detected (env-detect), else it
+   ;; stays :restricted — so a bare host is never silently relaxed.
    :sandbox-interop            {:type "keyword"
                                 :env-fn #(if-let [v (not-empty (System/getenv "BY_SANDBOX_INTEROP"))]
                                            (keyword v) ::env-unset)
-                                :default :restricted
-                                :doc "SCI code-sandbox Java-interop level: :restricted (default, whitelisted pure classes + System/Runtime/ProcessBuilder/ClassLoader denied), :full (arbitrary interop, container-only), or :auto (:full when a container is detected). Env: BY_SANDBOX_INTEROP."}})
+                                :default :auto
+                                :doc "SCI code-sandbox Java-interop level: :restricted (whitelisted pure classes + System/Runtime/ProcessBuilder/ClassLoader denied), :full (arbitrary interop, container-only), or :auto (default; :full when a container is detected, else :restricted). Env: BY_SANDBOX_INTEROP."}})
 
 (def config-keys (set (keys config-schema)))
 
@@ -1353,10 +1356,8 @@
                              "set one with :key + :value; pass :all true for the full effective snapshot.")
                         (count overrides) (count config-keys))}))
 
-(defn- container-detected?
-  "Soft-dep probe for a container environment (Docker/devcontainer) via
-   env-detect. Returns false when the env-detect component is not on the
-   classpath (clj-sandbox/agent can run standalone in tests)."
+(defn- detect-container*
+  "Uncached container probe — see `container-detected?`."
   []
   (try
     (if-let [f (requiring-resolve
@@ -1365,6 +1366,24 @@
         (boolean (or (:docker? details) (:devcontainer? details))))
       false)
     (catch Throwable _ false)))
+
+(def ^:private !container-detected
+  "Process-lifetime cache for `container-detected?`. Container status can't
+   change mid-process, and the resolvers below consult it on the hot
+   file/bash/code-eval path (mode/interop `:auto`), so we probe env-detect
+   once and memoize."
+  (atom nil))
+
+(defn- container-detected?
+  "Soft-dep probe for a container environment (Docker/devcontainer) via
+   env-detect, cached for the process lifetime. Returns false when the
+   env-detect component is not on the classpath (clj-sandbox/agent can run
+   standalone in tests)."
+  []
+  (let [v @!container-detected]
+    (if (nil? v)
+      (reset! !container-detected (detect-container*))
+      v)))
 
 (defn resolve-sandbox-interop
   "Resolve the configured `:sandbox-interop` value to a concrete SCI interop
@@ -1385,6 +1404,29 @@
        :full       :full
        :restricted :restricted
        :restricted))))
+
+(defn resolve-permission-mode
+  "Resolve the configured `:permission-mode` to a concrete policy
+   (`:auto-approve` | `:ask-each-time` | `:deny-by-default`) for the permission
+   gates to branch on.
+
+   `:auto` consults env-detect: `:auto-approve` when a container
+   (Docker/devcontainer) is detected — a disposable environment where prompting
+   is pointless — else `:ask-each-time`, so a bare host still prompts. Any other
+   value passes through, defaulting to `:ask-each-time` for nil/unknown. Accepts
+   the same agent-or-st forms as `get-config` (1-arity uses the global/schema
+   layers only)."
+  ([] (resolve-permission-mode nil))
+  ([agent-or-st]
+   (let [v (if agent-or-st
+             (get-config agent-or-st :permission-mode)
+             (get-config :permission-mode))]
+     (case v
+       :auto            (if (container-detected?) :auto-approve :ask-each-time)
+       :auto-approve    :auto-approve
+       :ask-each-time   :ask-each-time
+       :deny-by-default :deny-by-default
+       :ask-each-time))))
 
 (defn- write-persisted-key!
   "Write a single `[:agent :config k]` leaf to `.brainyard/config.edn` at
@@ -1473,12 +1515,33 @@
      (swap! smi assoc-in [:config :allowed-dirs] dirs))
    dirs))
 
+(def ^:private allow-all-permission-fn
+  "A permission-fn that approves every request without prompting — the effective
+   gate when `resolve-permission-mode` is `:auto-approve` (explicit, or `:auto`
+   inside a container). Applies even headless (no interactive channel), so a
+   containerized `by` can write/exec freely."
+  (constantly {:allowed true}))
+
+(def ^:private deny-all-permission-fn
+  "A permission-fn that refuses every request without prompting — the effective
+   gate when `resolve-permission-mode` is `:deny-by-default`. Non-whitelisted
+   file/bash paths are denied; the always-allowed `/tmp` and `.brainyard/` paths
+   never reach the permission-fn, so the agent can still manage its own artifacts."
+  (constantly {:denied true :reason "permission mode is :deny-by-default"}))
+
 (defn- session-permission-fn
-  "Look up `(:permission-fn (:config @!session))` on the agent. Returns nil
-   when agent / session / fn is absent."
+  "Resolve the effective file/bash permission-fn for the agent, honoring the
+   resolved `:permission-mode`: `:auto-approve` (explicit or `:auto` in a
+   container) auto-approves every op; `:deny-by-default` refuses every
+   non-whitelisted op; otherwise returns the session's interactive
+   `:permission-fn` (which applies the approved-dir cache + prompt), or nil when
+   agent / session / fn is absent."
   [agent]
   (when agent
-    (some-> (:!session agent) deref (get-in [:config :permission-fn]))))
+    (case (resolve-permission-mode agent)
+      :auto-approve    allow-all-permission-fn
+      :deny-by-default deny-all-permission-fn
+      (some-> (:!session agent) deref (get-in [:config :permission-fn])))))
 
 (defn resolve-agent-dirs
   "Return the agent's `{:base-dir :canonical-allowed :permission-fn}` triple

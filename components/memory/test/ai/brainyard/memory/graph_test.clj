@@ -7,6 +7,7 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [ai.brainyard.memory.core.sqlite :as sqlite]
             [ai.brainyard.memory.core.unified-store :as us]
+            [ai.brainyard.memory.core.graph :as graph]
             [ai.brainyard.memory.interface.protocol :as proto]))
 
 (def ^:dynamic *store* nil)
@@ -143,3 +144,36 @@
     (let [n (node! :entity "lonely")]
       (is (empty? (proto/neighbors *store* (:id n) {})))
       (is (empty? (proto/expand *store* [(:id n)] {:max-hops 3}))))))
+
+;; =====================================================
+;; Total-size budget: edge eviction (prune-edges-to-budget!)
+;; =====================================================
+
+(deftest prune-edges-to-budget-test
+  (let [ds     (:ds *store*)
+        uid    (:user-id *store*)
+        hub    (node! :component "hub")
+        ;; 12 edges hub --relates_to--> leaf-i, confidence i/12 so leaf-0 is the
+        ;; weakest and leaf-11 the strongest (ascending → evicted low-first).
+        leaves (mapv #(node! :entity (str "leaf-" %)) (range 12))]
+    (doseq [[i leaf] (map-indexed vector leaves)]
+      (edge! hub leaf :relates_to :confidence (double (/ i 12))))
+    (testing "count-edges sees every valid edge"
+      (is (= 12 (graph/count-edges ds uid))))
+    (testing "disabled budget (nil / 0 / non-positive) is a no-op"
+      (is (= 0 (graph/prune-edges-to-budget! ds uid {:max-edges nil})))
+      (is (= 0 (graph/prune-edges-to-budget! ds uid {:max-edges 0})))
+      (is (= 12 (graph/count-edges ds uid))))
+    (testing "under budget is a no-op"
+      (is (= 0 (graph/prune-edges-to-budget! ds uid {:max-edges 20})))
+      (is (= 12 (graph/count-edges ds uid))))
+    (testing "over budget evicts to the 90% low-water mark, weakest-confidence first"
+      (let [evicted   (graph/prune-edges-to-budget! ds uid {:max-edges 10})
+            survivors (set (map :dst_id (graph/all-edges ds uid)))]
+        ;; target = floor(10 * 0.9) = 9; evict 12 - 9 = 3
+        (is (= 3 evicted))
+        (is (= 9 (graph/count-edges ds uid)))
+        (is (not (contains? survivors (:id (nth leaves 0)))) "weakest edge evicted")
+        (is (not (contains? survivors (:id (nth leaves 2)))) "3rd-weakest evicted")
+        (is (contains? survivors (:id (nth leaves 3))) "4th-weakest survives")
+        (is (contains? survivors (:id (nth leaves 11))) "strongest survives")))))

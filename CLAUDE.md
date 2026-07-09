@@ -104,10 +104,10 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
 - **`BY_SANDBOX_INTEROP`** — seeds the `:sandbox-interop` config default
   (`restricted` | `full` | `auto`) controlling Java interop in the **in-process
   SCI code-eval sandbox** (distinct from `--sandbox`, which is the OS seatbelt).
-  `restricted` (default) denies System/Runtime/ProcessBuilder/ClassLoader;
-  `full` permits arbitrary interop (container-only); `auto` relaxes to `full`
-  only when a container is detected via `env-detect`. Explicit opt-in — never
-  auto-relaxes unless set. Per the config precedence (below), a set
+  `restricted` denies System/Runtime/ProcessBuilder/ClassLoader; `full` permits
+  arbitrary interop (container-only); `auto` (default) relaxes to `full` only
+  when a container is detected via `env-detect`, else stays `restricted` — so a
+  bare host is never silently relaxed. Per the config precedence (below), a set
   `BY_SANDBOX_INTEROP` **wins over** `.brainyard/config.edn`; the file only
   applies when the env var is unset. Mechanism in `components/clj-sandbox`
   (`sci-init-opts`/`full-classes`); policy in

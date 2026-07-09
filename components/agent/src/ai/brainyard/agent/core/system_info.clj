@@ -127,7 +127,8 @@
    demand via the `agent-runtime$config` :query search. No secrets are read."
   [agent]
   (let [max-iter   (config/get-config agent :max-iterations)
-        perm-mode  (config/get-config agent :permission-mode)
+        ;; resolve :auto → :auto-approve|:ask-each-time so the line reflects reality
+        perm-mode  (config/resolve-permission-mode agent)
         clj-be     (config/get-config agent :clj-backend)
         ;; resolve :auto → :restricted|:full so the line reflects reality
         interop    (config/resolve-sandbox-interop agent)

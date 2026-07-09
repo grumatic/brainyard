@@ -186,7 +186,8 @@
              :max-input-chars (config/get-config agent :graph-extract-max-input-chars)
              :max-entities    (config/get-config agent :graph-max-entities-per-episode)
              :max-relations   (config/get-config agent :graph-max-relations-per-episode)
-             :max-nodes       (config/get-config agent :graph-max-nodes))]
+             :max-nodes       (config/get-config agent :graph-max-nodes)
+             :max-edges       (config/get-config agent :graph-max-edges))]
       (swap! !extract-marker assoc skey (:max-id r))
       r)))
 

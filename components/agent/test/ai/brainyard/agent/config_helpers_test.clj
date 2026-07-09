@@ -52,6 +52,7 @@
 (deftest validate-accepts-writable-leaves
   (is (:ok? (c/validate-persisted {:agent {:config {:max-iterations 200}}})))
   (is (:ok? (c/validate-persisted {:permissions {:mode :auto-approve}})))
+  (is (:ok? (c/validate-persisted {:permissions {:mode :auto}})))
   (is (:ok? (c/validate-persisted {:environment {:sandbox-mode :restricted}}))))
 
 (deftest validate-rejects-llm-default-provider

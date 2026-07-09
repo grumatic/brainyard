@@ -145,13 +145,14 @@
             (conj current-dirs project-dir)
             current-dirs)
           current-dirs)
-        current-mode (get-in existing-config [:permissions :mode] :ask-each-time)
-        mode-options [{:label "auto-approve"   :value :auto-approve   :description "Auto-approve within allowed dirs"}
-                      {:label "ask-each-time"  :value :ask-each-time  :description "Ask for each operation (recommended)"}
+        current-mode (get-in existing-config [:permissions :mode] :auto)
+        mode-options [{:label "auto"           :value :auto           :description "Auto-approve in a container, else ask (recommended)"}
+                      {:label "auto-approve"   :value :auto-approve   :description "Auto-approve within allowed dirs"}
+                      {:label "ask-each-time"  :value :ask-each-time  :description "Ask for each operation"}
                       {:label "deny-by-default" :value :deny-by-default :description "Deny unless explicitly allowed"}]
         default-idx  (or (some (fn [[i opt]] (when (= (:value opt) current-mode) (inc i)))
                                (map-indexed vector mode-options))
-                         2)
+                         1)
         selected     (:value (prompt-select "Permission mode:" mode-options
                                             :default default-idx :auto? (:auto opts)))]
     {:mode         selected
@@ -538,7 +539,7 @@
                          env)))
         (update :permissions
                 (fn [perm]
-                  (merge {:mode         :ask-each-time
+                  (merge {:mode         :auto
                           :allowed-dirs (agent/default-allowed-dirs dirs)}
                          perm)))
         (update :agent

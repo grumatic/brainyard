@@ -369,6 +369,46 @@
                       :evicted (count victims) :total-before total :budget max-nodes)
           (count victims))))))
 
+;; Edge budget / eviction — the total-edge counterpart to
+;; `prune-nodes-to-budget!`. Per-episode caps (`:max-relations`) bound the
+;; growth RATE; this bounds the TOTAL valid-edge count. Retention ranking
+;; (kept high → evicted low), all SQL-computable from `graph_edges`:
+;;   1. CONFIDENCE — a high-confidence relation is worth more than a weak one;
+;;      low/NULL-confidence edges go first.
+;;   2. RECENCY (ingested_at, then id) — stalest evicted first.
+;; Only valid (non-invalidated) edges are counted and evicted; invalidated
+;; edges are already tombstoned and excluded from recall.
+(defn prune-edges-to-budget!
+  "Enforce a total valid-edge budget for `user-id`. No-op unless `max-edges` is a
+  positive int AND the valid-edge count exceeds it. Over budget, hard-delete the
+  lowest-retention edges (lowest confidence, then stalest) down to
+  `(* max-edges low-water-ratio)` (default 0.9). Returns the count evicted."
+  [ds user-id {:keys [max-edges low-water-ratio] :or {low-water-ratio 0.9}}]
+  (if-not (and (integer? max-edges) (pos? max-edges))
+    0
+    (let [total (count-edges ds user-id)]
+      (if (<= total max-edges)
+        0
+        (let [target  (long (Math/floor (* max-edges (double low-water-ratio))))
+              n-evict (max 0 (- total target))
+              ;; Rank ascending by retention → the first n-evict are the victims.
+              victims (mapv #(or (:id %) (:graph_edges/id %))
+                            (jdbc/execute!
+                             ds [(str "SELECT id FROM graph_edges "
+                                      "WHERE user_id = ? AND t_invalid IS NULL "
+                                      "ORDER BY COALESCE(confidence, 0) ASC, " ;; weakest first
+                                      "         ingested_at ASC, id ASC "       ;; stalest first
+                                      "LIMIT ?")
+                                 user-id n-evict]))]
+          (when (seq victims)
+            (let [ph (str/join "," (repeat (count victims) "?"))]
+              (jdbc/execute-one! ds (into [(str "DELETE FROM graph_edges WHERE user_id = ? "
+                                                "AND id IN (" ph ")")]
+                                          (concat [user-id] victims)))))
+          (mulog/info ::graph-edges-evicted
+                      :evicted (count victims) :total-before total :budget max-edges)
+          (count victims))))))
+
 ;; =====================================================
 ;; Vector index (CR-MEM-21, sqlite-vec graph_vec)
 ;; =====================================================

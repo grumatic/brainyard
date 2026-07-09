@@ -150,8 +150,13 @@
   yield a huge entity/relation set, ballooning the graph and every downstream
   recall. We keep the highest-signal items: entities as returned (the extractor
   is prompted to list durable ones first), relations by descending confidence.
-  Overridable per manager via start-capture! :graph-limits."
-  {:max-entities 24 :max-relations 48})
+  Overridable per manager via start-capture! :graph-limits.
+
+  These values mirror the `:graph-max-entities-per-episode` /
+  `:graph-max-relations-per-episode` config defaults — they are the in-component
+  fallback for callers that don't supply limits (the memory brick can't read
+  agent config). Keep the two in sync when changing either."
+  {:max-entities 12 :max-relations 24})
 
 (defn- norm-type [t]
   (let [k (keyword t)] (if (proto/valid-node-type? k) k :entity)))
@@ -168,7 +173,7 @@
   dropped; relations are kept highest-confidence-first, then capped. This is the
   primary guard against node/edge explosion from a large episode."
   [store {:keys [entities relations]} source-entry-id & [limits]]
-  (let [{:keys [max-entities max-relations max-nodes]} (merge default-graph-limits limits)
+  (let [{:keys [max-entities max-relations max-nodes max-edges]} (merge default-graph-limits limits)
         n-ent-in  (count entities)
         n-rel-in  (count relations)
         ;; Confine explosion: cap entities (as-returned) and keep the
@@ -227,10 +232,14 @@
       (doseq [n nodes :when (and (:summary n) (not (str/blank? (:summary n))))]
         (when-let [v (embed/embed-one embed-fn (str (:name n) ": " (:summary n)))]
           (graph/upsert-node-embedding! ds (:id n) v))))
-    ;; 3. Total-size guard: after adding this episode's nodes, evict the
-    ;; lowest-retention nodes if the graph is over the node budget.
-    (let [evicted (when max-nodes
-                    (graph/prune-nodes-to-budget! ds (:user-id store) {:max-nodes max-nodes}))]
+    ;; 3. Total-size guard: after adding this episode's nodes/edges, evict the
+    ;; lowest-retention nodes/edges if the graph is over its budgets.
+    (let [evicted      (when max-nodes
+                         (graph/prune-nodes-to-budget! ds (:user-id store) {:max-nodes max-nodes}))
+          evicted-edge (when max-edges
+                         (graph/prune-edges-to-budget! ds (:user-id store) {:max-edges max-edges}))]
       (mulog/debug ::extraction-applied :nodes (count nodes) :edges (count edges)
-                   :evicted (or evicted 0) :source-entry-id source-entry-id)
-      {:nodes (count nodes) :edges (count edges) :evicted (or evicted 0)})))
+                   :evicted (or evicted 0) :evicted-edges (or evicted-edge 0)
+                   :source-entry-id source-entry-id)
+      {:nodes (count nodes) :edges (count edges)
+       :evicted (or evicted 0) :evicted-edges (or evicted-edge 0)})))
