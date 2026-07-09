@@ -450,15 +450,19 @@
                          (zero? (.waitFor p)))
                        (catch Exception _ false))
           ;; Build command
+          ;; `-H`/`--with-filename` forces the filename prefix even when the
+          ;; search target is a single file — without it rg/grep emit
+          ;; `line:text` (no path), which the `file:line:text` parser below
+          ;; would mis-split into {:file "" :line 0 :text "<line>:<text>"}.
           cmd (if use-rg?
-                (cond-> ["rg" "-n" "--no-heading" "-M" "500"]
+                (cond-> ["rg" "-n" "-H" "--no-heading" "-M" "500"]
                   (not recursive) (conj "--no-recursive")
                   include-exts (into (mapcat (fn [ext]
                                                ["-g" (str "*" ext)])
                                              include-exts))
                   true (conj pattern search-dir))
-                (cond-> ["grep" "-rn"]
-                  (not recursive) (-> (pop) (conj "-n"))
+                (cond-> ["grep" "-rnH"]
+                  (not recursive) (-> (pop) (conj "-nH"))
                   include-exts (conj (str "--include="
                                           (str/join " --include="
                                                     (map #(str "*" %) include-exts))))
