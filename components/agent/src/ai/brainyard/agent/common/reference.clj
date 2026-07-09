@@ -492,6 +492,45 @@
 ;; URL Fetching
 ;; ============================================================================
 
+(defn- fetch-via-curl
+  "Fallback fetch using the system `curl`, which validates against the OS trust
+   store. Used only when Java's strict TLS rejects a server (typically one that
+   omits an intermediate certificate, so the chain can't be built from cacerts).
+   Returns the same success shape as `fetch-url` (with `:via \"curl\"`), or throws."
+  [url timeout max-chars headers]
+  (let [tmp   (java.io.File/createTempFile "by-fetch" ".tmp")
+        secs  (max 1 (long (Math/ceil (/ (double timeout) 1000.0))))
+        hdrs  (mapcat (fn [[k v]] ["-H" (str (name k) ": " v)]) headers)
+        cmd   (vec (concat ["curl" "-sSL" "--max-time" (str secs)
+                            "-o" (.getPath tmp)
+                            "-w" "%{http_code}\t%{content_type}"]
+                           hdrs [url]))
+        proc  (.start (ProcessBuilder. ^java.util.List cmd))
+        meta  (slurp (.getInputStream proc))
+        err   (slurp (.getErrorStream proc))
+        code  (.waitFor proc)]
+    (try
+      (when-not (zero? code)
+        (throw (ex-info (str "curl exit " code ": " (str/trim err)) {:exit code})))
+      (let [[status-str content-type] (str/split (str/trim meta) #"\t" 2)
+            status  (try (Integer/parseInt status-str) (catch Exception _ 0))
+            content (with-open [rdr (BufferedReader. (InputStreamReader. (io/input-stream tmp) "UTF-8"))]
+                      (let [sb (StringBuilder.) buf (char-array 8192)]
+                        (loop []
+                          (let [n (.read rdr buf)]
+                            (if (or (neg? n) (>= (.length sb) max-chars))
+                              (.toString sb)
+                              (do (.append sb buf 0 n) (recur)))))))
+            size    (count content)]
+        {:url          url
+         :status       status
+         :body         content
+         :content-type (if (str/blank? content-type) "unknown" content-type)
+         :size         size
+         :truncated    (>= size max-chars)
+         :via          "curl"})
+      (finally (.delete tmp)))))
+
 (defn fetch-url
   "Fetch content from a URL using Java HTTP.
    Options:
@@ -531,6 +570,18 @@
        :content-type (or content-type "unknown")
        :size size
        :truncated (>= size max-chars)})
+    (catch javax.net.ssl.SSLException e
+      ;; Java's TLS is stricter than curl/browsers: a server that omits an
+      ;; intermediate cert can't be validated from cacerts (and AIA-chasing is
+      ;; unreliable through JSSE). Retry once via curl (OS trust store) before
+      ;; giving up, so such misconfigured-but-real sites still fetch.
+      (try
+        (fetch-via-curl url timeout max-chars headers)
+        (catch Exception ce
+          {:error (str "fetch-url failed: TLS validation failed (" (.getMessage e)
+                       ") and the curl fallback also failed (" (.getMessage ce)
+                       "). The server likely omits an intermediate certificate; "
+                       "try (bash {:command \"curl -sSL '<url>'\"}).")})))
     (catch Exception e
       {:error (str "fetch-url failed: " (.getMessage e))})))
 
