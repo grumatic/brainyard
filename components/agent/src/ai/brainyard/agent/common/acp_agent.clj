@@ -28,7 +28,8 @@
    `:agent.tool-use/post`) and fired through the standard hooks
    registry. The TUI's existing handlers (in `bases/agent-tui`)
    render these without any new code."
-  (:require [ai.brainyard.agent.common.schema :as acs]
+  (:require [ai.brainyard.agent.common.auth :as auth]
+            [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.core.agent :as agent]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
@@ -198,18 +199,30 @@
     (if (try (open?* client) (catch Throwable _ false)) :open :dead)
     :unconnected))
 
+(defn- backend-auth-status
+  "Live sign-in status for backends whose credential lives in an EXTERNAL CLI's
+   own store (detect-and-instruct; see /login). :claude-code consumes the
+   `claude` CLI's subscription credential. Returns :signed-in | :not-signed-in,
+   or nil for backends with no such notion (e.g. :stub, or API-key backends)."
+  [backend]
+  (case backend
+    :claude-code (if (auth/claude-logged-in?) :signed-in :not-signed-in)
+    nil))
+
 (defn descriptor
   "Return the acp connection descriptor for this instance, or nil if it was
    never connected. `:purpose` falls back to a derived `<backend>/<model>`
-   label; `:health` is probed live from the client."
+   label; `:health` is probed live from the client; `:auth` is the live
+   subscription sign-in status for CLI-delegated backends (nil otherwise)."
   [agent]
   (when-let [d (get @(:!state agent) descriptor-key)]
-    (assoc d
-           :health  (live-health agent)
-           :purpose (if (and (:purpose d) (not (str/blank? (:purpose d))))
-                      (:purpose d)
-                      (str (name (or (:backend d) :stub))
-                           (when (:model-label d) (str "/" (:model-label d))))))))
+    (cond-> (assoc d
+                   :health  (live-health agent)
+                   :purpose (if (and (:purpose d) (not (str/blank? (:purpose d))))
+                              (:purpose d)
+                              (str (name (or (:backend d) :stub))
+                                   (when (:model-label d) (str "/" (:model-label d))))))
+      (backend-auth-status (:backend d)) (assoc :auth (backend-auth-status (:backend d))))))
 
 (defn set-purpose!
   "Set the human/LLM-facing purpose (\"who's for what\") on the descriptor."

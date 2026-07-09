@@ -1,6 +1,6 @@
 # Multi-method `/login` (auth-method registry)
 
-Status: **slice 1 shipped** (detect-and-instruct). Slices 2–4 are follow-ups.
+Status: **slices 1–3 shipped**. Slices 4–5 are follow-ups.
 
 ## Problem
 
@@ -70,14 +70,42 @@ the credential. Three states: `:signed-in` / `:not-signed-in` /
   route through `agent/auth-*`; the dead "anthropic OAuth is restricted" branch
   is removed. Dispatch at `"/login"` / `"/logout"` unchanged.
 
-## Follow-ups (not in slice 1)
+## Slice 2 (shipped) — MCP OAuth servers as `/login` targets
 
-2. **Standalone OAuth targets** — promote `:oauth` from stub to
-   `clj-oauth/login!` (Notion etc. via `/login <name>`).
-3. **`acp$detail` / backend status** — surface `:claude-code` login state in the
-   ACP descriptor + detail formatter, and add `:logged-in?` to
-   `acp-client` `backend-available?`.
+The draft imagined "standalone OAuth *providers*" (Notion etc. via `/login
+<name>`). Investigation showed **every real OAuth flow in the tree is an MCP
+server** (e.g. the builtin `github2` — GitHub's hosted remote MCP over native
+`:http` + OAuth); there is **no non-MCP OAuth LLM provider** (Anthropic
+subscription OAuth is API-restricted and became the `:claude` cli-delegate
+target). Fabricating a standalone provider would be dishonest, so slice 2
+instead makes `/login` the single sign-in entry point by **folding MCP OAuth
+servers in as targets**:
+
+- `provider-status-overview` appends a row per `agent/mcp-oauth-status` entry
+  (`{:server :authenticated?}`), best-effort (empty if MCP isn't initialized).
+- `/login <server>` for an OAuth MCP server runs the **real** device/auth-code
+  flow via `reauth-mcp-async!` (same plumbing as `/mcp <server> auth`, which
+  still works).
+- `/logout <server>` clears its stored token via `agent/mcp-oauth-logout!`.
+- Static providers still win name resolution; MCP names resolve case-insensitively.
+
+The `:oauth` method in `auth.clj` stays as a tested mechanism/seam for a future
+genuine standalone OAuth provider, but no static target uses it today.
+
+## Slice 3 (shipped) — ACP backend auth visibility
+
+The subscription path (`:claude-code` backend consuming the `claude` CLI
+credential) worked but was invisible. Now `acp/descriptor` carries a live
+`:auth` field (`:signed-in | :not-signed-in`) for CLI-delegated backends,
+computed via `backend-auth-status` → `auth/claude-logged-in?`. It flows through
+both `acp$detail` (whole descriptor) and `acp$list` rows automatically. Kept in
+the agent layer — `acp-client` stays a soft dep and the probe isn't pushed down
+into it (so `backend-available?` is unchanged; deferred).
+
+## Follow-ups (not shipped)
+
 4. **Interactive `claude /login`** — PTY takeover instead of detect-and-instruct.
 5. **`.env` writes** — optionally append the key for the user instead of just
    instructing; auto-surface the full `clj-llm` provider catalog behind
-   `/login --all`.
+   `/login --all`. Optionally add `:logged-in?` to `acp-client`
+   `backend-available?` if a lower-layer consumer ever needs it.

@@ -152,6 +152,7 @@
      :purpose      (:purpose d)
      :session-id   (:session-id d)
      :health       (:health d)
+     :auth         (:auth d)
      :prompts      (or (:prompts d) 0)
      :status       (:status st)
      :owner        (:owner lc)
@@ -246,7 +247,7 @@
                   [:backend {:optional true} [:string {:desc "Filter to one backend (e.g. :claude-code)"}]]
                   [:model {:optional true} [:string {:desc "Filter to one model label (e.g. \"opus\")"}]]]
   :output-schema [:map
-                  [:acp-agents [:string {:desc "Vector of {:acp-id :backend :model :purpose :session-id :health :prompts :status :owner :provisioned? :idle-ms}"}]]
+                  [:acp-agents [:string {:desc "Vector of {:acp-id :backend :model :purpose :session-id :health :auth :prompts :status :owner :provisioned? :idle-ms}"}]]
                   [:total [:int {:desc "Number of connections returned"}]]])
 
 (defcommand acp$detail

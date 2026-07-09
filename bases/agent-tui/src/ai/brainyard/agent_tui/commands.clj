@@ -857,15 +857,17 @@
    (fn [_] (ansi/success (str "Re-authenticated " server-name)))
    (fn [e] (ansi/failure (str "Auth failed for " server-name ": " (.getMessage e))))))
 
-;; /login and /logout manage SPECIAL AUTH PROVIDERS (e.g. Anthropic
-;; subscription OAuth) — distinct from MCP servers, whose auth is handled by
-;; /mcp <server> start|stop|auth|status.
+;; /login and /logout are the single sign-in entry point across every real
+;; auth type: static providers (api-key / cli-delegate — see agent/auth-targets)
+;; PLUS MCP servers configured for native OAuth, which are folded in as targets
+;; here and delegate to the real device/auth-code flow. `/mcp <server> auth`
+;; still works and is equivalent for the MCP ones.
 
 (defn- auth-status-badge [status]
   (case status
-    :signed-in     (ansi/success "signed in")
-    :not-signed-in (ansi/muted "not signed in")
-    :cli-missing   (ansi/warning "CLI not installed")
+    (:signed-in true)      (ansi/success "signed in")
+    (:not-signed-in false) (ansi/muted "not signed in")
+    :cli-missing           (ansi/warning "CLI not installed")
     (ansi/muted "unknown")))
 
 (defn- auth-status-line [t]
@@ -873,19 +875,39 @@
        (auth-status-badge (agent/auth-status t))
        "  " (ansi/muted (:label t))))
 
+(defn- mcp-oauth-entries
+  "MCP servers configured for native OAuth, as {:server :authenticated?} rows.
+   Best-effort — empty when MCP isn't initialized."
+  []
+  (try (vec (agent/mcp-oauth-status)) (catch Exception _ [])))
+
+(defn- mcp-oauth-line [{:keys [server authenticated?]}]
+  (str "  " (format "%-11s" server) " "
+       (auth-status-badge authenticated?)
+       "  " (ansi/muted "MCP server (OAuth)")))
+
+(defn- find-mcp-oauth-server
+  "Resolve a /login arg to a real OAuth-configured MCP server name
+   (case-insensitive), or nil."
+  [target]
+  (let [k (str/lower-case target)]
+    (some (fn [{:keys [server]}] (when (= k (str/lower-case server)) server))
+          (mcp-oauth-entries))))
+
 (defn- provider-status-overview []
-  (str (ansi/header "Auth providers") "\n"
-       (str/join "\n" (map auth-status-line agent/auth-targets)) "\n"
-       (ansi/muted "\n  /login <provider>   sign-in help    •    /logout <provider>   sign out")
-       "\n"
-       (ansi/muted "  (MCP server auth is separate — use /mcp <server> auth | status)")))
+  (let [mcp (mcp-oauth-entries)]
+    (str (ansi/header "Auth providers") "\n"
+         (str/join "\n" (map auth-status-line agent/auth-targets)) "\n"
+         (when (seq mcp) (str (str/join "\n" (map mcp-oauth-line mcp)) "\n"))
+         (ansi/muted "\n  /login <provider>   sign-in help / OAuth    •    /logout <provider>   sign out")
+         "\n"
+         (ansi/muted "  (MCP OAuth servers sign in here or via /mcp <server> auth)"))))
 
 (defn- handle-login-command
-  "/login            → list auth providers and their sign-in status.
-   /login <provider> → show how to sign in (detect-and-instruct).
-   Methods: :api-key (env/.env), :oauth (clj-oauth store), :cli-delegate
-   (e.g. `claude` — credential lives in the CLI's own store).
-   MCP servers are NOT providers — authenticate them with /mcp <server> auth."
+  "/login            → list every auth target and its sign-in status.
+   /login <provider> → static providers (:api-key / :cli-delegate) print
+   detect-and-instruct guidance; an OAuth-configured MCP server runs the real
+   device/auth-code flow (async, like /mcp <server> auth)."
   [args]
   (let [target (some-> args str/trim str/lower-case not-empty)]
     (cond
@@ -899,24 +921,29 @@
            (ansi/success (str "Already signed in to " (name (:id t)) "."))
            (str (ansi/header (str "Sign in — " (:label t))) "\n"
                 (agent/auth-instructions t))))
-        (tui-session/emit! (ansi/warning (str "Unknown auth provider: " target
-                                              "\nRun /login with no args to list providers."
-                                              "\n(For an MCP server, use /mcp " target " auth.)")))))))
+        (if-let [srv (find-mcp-oauth-server target)]
+          (reauth-mcp-async! srv)
+          (tui-session/emit! (ansi/warning (str "Unknown auth provider: " target
+                                                "\nRun /login with no args to list providers."
+                                                "\n(For an MCP server, use /mcp " target " auth.)"))))))))
 
 (defn- handle-logout-command
-  "/logout <provider> → sign out of an auth provider (e.g. anthropic, claude).
-   MCP servers are managed via /mcp <server> stop — not here."
+  "/logout <provider> → sign out. Static providers (anthropic, claude, …) print
+   how to clear the credential; an OAuth MCP server clears its stored token."
   [args]
   (let [target (some-> args str/trim str/lower-case not-empty)]
     (cond
       (nil? target)
-      (tui-session/emit! (ansi/warning "Usage: /logout <provider>   (e.g. anthropic, claude)"))
+      (tui-session/emit! (ansi/warning "Usage: /logout <provider>   (e.g. anthropic, claude, github2)"))
 
       :else
       (if-let [t (agent/auth-find-target target)]
         (tui-session/emit! (ansi/muted (agent/auth-logout! t)))
-        (tui-session/emit! (ansi/warning (str "Unknown auth provider: " target
-                                              "\n(For an MCP server, use /mcp " target " stop.)")))))))
+        (if-let [srv (find-mcp-oauth-server target)]
+          (do (try (agent/mcp-oauth-logout! srv) (catch Exception _ nil))
+              (tui-session/emit! (ansi/success (str "Signed out of MCP server " srv "."))))
+          (tui-session/emit! (ansi/warning (str "Unknown auth provider: " target
+                                                "\n(For an MCP server, use /mcp " target " stop.)"))))))))
 
 ;; ============================================================================
 ;; Continue Command (private)
