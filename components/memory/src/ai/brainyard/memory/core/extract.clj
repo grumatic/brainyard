@@ -173,7 +173,8 @@
   dropped; relations are kept highest-confidence-first, then capped. This is the
   primary guard against node/edge explosion from a large episode."
   [store {:keys [entities relations]} source-entry-id & [limits]]
-  (let [{:keys [max-entities max-relations max-nodes max-edges]} (merge default-graph-limits limits)
+  (let [{:keys [max-entities max-relations max-nodes max-edges prune-orphans?]
+         :or   {prune-orphans? true}} (merge default-graph-limits limits)
         n-ent-in  (count entities)
         n-rel-in  (count relations)
         ;; Confine explosion: cap entities (as-returned) and keep the
@@ -237,9 +238,17 @@
     (let [evicted      (when max-nodes
                          (graph/prune-nodes-to-budget! ds (:user-id store) {:max-nodes max-nodes}))
           evicted-edge (when max-edges
-                         (graph/prune-edges-to-budget! ds (:user-id store) {:max-edges max-edges}))]
+                         (graph/prune-edges-to-budget! ds (:user-id store) {:max-edges max-edges}))
+          ;; 4. Orphan guard: drop nodes left with no valid edge — extracted
+          ;; entities the model never wired into a relation, plus any node
+          ;; orphaned by the budget evictions above. Runs last so it catches
+          ;; both. Gated by :prune-orphans? (config :graph-prune-orphans?).
+          orphaned     (when prune-orphans?
+                         (graph/prune-orphan-nodes! ds (:user-id store)))]
       (mulog/debug ::extraction-applied :nodes (count nodes) :edges (count edges)
                    :evicted (or evicted 0) :evicted-edges (or evicted-edge 0)
+                   :orphaned (or orphaned 0)
                    :source-entry-id source-entry-id)
       {:nodes (count nodes) :edges (count edges)
-       :evicted (or evicted 0) :evicted-edges (or evicted-edge 0)})))
+       :evicted (or evicted 0) :evicted-edges (or evicted-edge 0)
+       :orphaned (or orphaned 0)})))

@@ -369,6 +369,42 @@
                       :evicted (count victims) :total-before total :budget max-nodes)
           (count victims))))))
 
+(defn prune-orphan-nodes!
+  "Hard-delete every ORPHAN node for `user-id` — a node with NO edge row at all
+  (valid OR invalidated) referencing it as `src_id`/`dst_id` — plus its
+  `graph_vec` rows. Keeps the graph edge-connected at build time by dropping
+  extracted entities the model never wired into a relation, and nodes left
+  edgeless by budget eviction (which hard-deletes edge rows).
+
+  Definition is `no edge row`, NOT `no VALID edge` (unlike `degree` in
+  `prune-nodes-to-budget!`): a node whose only edge was superseded still has an
+  invalidated (`t_invalid` set) row and is RETAINED, preserving the
+  supersession invariant (`invalidate` never deletes the node) and its as-of
+  history. Distinct from `prune-nodes-to-budget!`, which only fires over the
+  size cap and merely ranks orphans first; this removes edgeless nodes
+  unconditionally. Orphans have no edges, so no `graph_edges` cleanup is needed.
+  Returns the count deleted."
+  [ds user-id]
+  (let [victims (mapv #(or (:id %) (:graph_nodes/id %))
+                      (jdbc/execute!
+                       ds ["SELECT n.id AS id FROM graph_nodes n
+                            WHERE n.user_id = ?
+                              AND NOT EXISTS (
+                                SELECT 1 FROM graph_edges e
+                                WHERE e.src_id = n.id OR e.dst_id = n.id)"
+                           user-id]))]
+    (when (seq victims)
+      (let [ph (str/join "," (repeat (count victims) "?"))]
+        (when (vec-available? ds)
+          (try (jdbc/execute-one! ds (into [(str "DELETE FROM graph_vec WHERE ref_kind = 'node' "
+                                                 "AND ref_id IN (" ph ")")] victims))
+               (catch Exception _)))
+        (jdbc/execute-one! ds (into [(str "DELETE FROM graph_nodes WHERE user_id = ? "
+                                          "AND id IN (" ph ")")]
+                                    (concat [user-id] victims))))
+      (mulog/info ::graph-orphan-nodes-pruned :pruned (count victims)))
+    (count victims)))
+
 ;; Edge budget / eviction — the total-edge counterpart to
 ;; `prune-nodes-to-budget!`. Per-episode caps (`:max-relations`) bound the
 ;; growth RATE; this bounds the TOTAL valid-edge count. Retention ranking

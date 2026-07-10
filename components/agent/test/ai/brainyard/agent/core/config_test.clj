@@ -155,7 +155,7 @@
              :enable-memory-capture :memory-question-max-chars :memory-answer-max-chars
              :graph-extract-max-input-chars :graph-max-entities-per-episode
              :graph-max-relations-per-episode :graph-max-nodes :graph-max-edges
-             :graph-extract-mode}
+             :graph-extract-mode :graph-prune-orphans?}
            cfg/restart-required-keys))
     (is (cfg/requires-restart-key? :enable-graph-memory))
     (is (cfg/requires-restart-key? :graph-embed-model))

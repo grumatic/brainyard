@@ -200,6 +200,12 @@
                                 :doc "Total-size cap: max nodes retained in the context graph per user (only when :enable-graph-memory). Over budget, the lowest-retention nodes are evicted (ranked by edge-degree, then curated-type over the generic `entity` fallback, then has-summary, then recency) down to 90% of the cap. 0 disables the cap. Baked into the extractor at start-capture! — needs a `by` restart."}
    :graph-max-edges            {:type "integer" :default 200 :requires-restart true
                                 :doc "Total-size cap: max valid (non-invalidated) edges retained in the context graph per user (only when :enable-graph-memory). Over budget, the lowest-retention edges are evicted (ranked by confidence, then recency — lowest-confidence, stalest first) down to 90% of the cap. 0 disables the cap. Baked into the extractor at start-capture! — needs a `by` restart."}
+   :graph-prune-orphans?       {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_GRAPH_PRUNE_ORPHANS")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :requires-restart true
+                                :doc "After each graph extraction, hard-delete orphan nodes — nodes with no edge row at all (only when :enable-graph-memory). Removes extracted entities the model never wired into a relation, plus any node left edgeless by node/edge budget eviction, keeping the graph edge-connected. A node whose only edge was superseded is RETAINED (it keeps an invalidated edge row + as-of history). Trade-off: an unrelated node with a summary still feeds vector (:vec) recall, so pruning drops that semantic signal; set false to keep such nodes (they are then only evicted when :graph-max-nodes is exceeded). Baked into the extractor at start-capture! — needs a `by` restart. Env: BY_GRAPH_PRUNE_ORPHANS."}
    :enable-memory-consolidation {:type "boolean"
                                  :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY_CONSOLIDATION")]
                                             (= "true" v) ::env-unset)

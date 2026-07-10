@@ -78,6 +78,29 @@
       (is (some? (proto/find-node *store* :concept "tabs"))
           "the superseded target node is retained"))))
 
+(deftest process-prunes-unrelated-entities-test
+  (testing "an extracted entity never wired into a relation is pruned by default"
+    (let [result {:entities [{:name "alpha" :type "component"}
+                             {:name "beta" :type "component"}
+                             {:name "loner" :type "entity" :summary "mentioned once"}]
+                  :relations [{:src "alpha" :relation "relates_to" :dst "beta"}]}
+          r (extract/process-extraction! *store* result "ep-orphan")]
+      (is (= 3 (:nodes r)) "all three entities are upserted")
+      (is (= 1 (:orphaned r)) "the unrelated 'loner' is pruned")
+      (is (some? (proto/find-node *store* :component "alpha")))
+      (is (some? (proto/find-node *store* :component "beta")))
+      (is (nil? (proto/find-node *store* :entity "loner"))
+          "edgeless extracted entity removed")))
+  (testing ":prune-orphans? false keeps the unrelated entity"
+    (let [result {:entities [{:name "gamma" :type "component"}
+                             {:name "delta" :type "component"}
+                             {:name "keeper" :type "entity"}]
+                  :relations [{:src "gamma" :relation "relates_to" :dst "delta"}]}
+          r (extract/process-extraction! *store* result "ep-keep" {:prune-orphans? false})]
+      (is (= 0 (:orphaned r)) "pruning disabled")
+      (is (some? (proto/find-node *store* :entity "keeper"))
+          "edgeless entity retained when the flag is off"))))
+
 ;; =====================================================
 ;; Async extractor sidecar
 ;; =====================================================

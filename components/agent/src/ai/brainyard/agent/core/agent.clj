@@ -633,7 +633,8 @@
                               :max-entities    (config/get-config agent :graph-max-entities-per-episode)
                               :max-relations   (config/get-config agent :graph-max-relations-per-episode)
                               :max-nodes       (config/get-config agent :graph-max-nodes)
-                              :max-edges       (config/get-config agent :graph-max-edges)}
+                              :max-edges       (config/get-config agent :graph-max-edges)
+                              :prune-orphans?  (config/get-config agent :graph-prune-orphans?)}
                ;; :at-consolidation mode defers extraction to the consolidation
                ;; hook (batch), so the async per-episode extractor stays off.
                :defer-extraction? (= :at-consolidation

@@ -177,3 +177,31 @@
         (is (not (contains? survivors (:id (nth leaves 2)))) "3rd-weakest evicted")
         (is (contains? survivors (:id (nth leaves 3))) "4th-weakest survives")
         (is (contains? survivors (:id (nth leaves 11))) "strongest survives")))))
+
+(deftest prune-orphan-nodes-test
+  (let [ds  (:ds *store*)
+        uid (:user-id *store*)
+        a   (node! :component "connected-a")
+        b   (node! :component "connected-b")
+        lone (node! :entity "lonely")                 ;; never wired into an edge
+        gone (node! :person "was-connected")]         ;; edge will be invalidated
+    (edge! a b :relates_to)
+    (let [e (edge! gone a :mentions)]
+      (testing "before prune all four nodes present"
+        (is (= 4 (graph/count-nodes ds uid))))
+      (testing "orphan prune removes only the node with no edge row"
+        (let [pruned (graph/prune-orphan-nodes! ds uid)
+              names  (set (map :name (graph/all-nodes ds uid)))]
+          (is (= 1 pruned) "only 'lonely' has no edge row")
+          (is (= 3 (graph/count-nodes ds uid)))
+          (is (contains? names "connected-a"))
+          (is (contains? names "connected-b"))
+          (is (contains? names "was-connected") "has an edge row")
+          (is (not (contains? names "lonely")) "never-connected node deleted")))
+      (testing "a node whose only edge is INVALIDATED is retained (supersession invariant)"
+        (proto/invalidate-edge *store* (:id e) nil)
+        (let [pruned (graph/prune-orphan-nodes! ds uid)
+              names  (set (map :name (graph/all-nodes ds uid)))]
+          (is (= 0 pruned) "invalidated edge row still protects the node")
+          (is (contains? names "was-connected") "superseded target kept for as-of history")
+          (is (= #{"connected-a" "connected-b" "was-connected"} names)))))))
