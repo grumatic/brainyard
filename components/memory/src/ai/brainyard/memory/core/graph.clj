@@ -281,11 +281,12 @@
 ;;       (extractor fallback / auto-created endpoints) only `mention-degree-
 ;;       weight` (0.25). So a node held up by many weak `mentions` edges no
 ;;       longer outranks a sparsely-but-strongly-connected one.
-;;     • TYPE-BONUS (`type-retention-bonus`) — durable-knowledge types
-;;       (concept/config-key/person = 3) outrank structural (component = 2,
-;;       file = 1) which outrank the generic `entity` fallback (0). So a curated
-;;       concept isn't evicted before a same-degree file, while a genuine
-;;       high-degree hub still wins on connectivity.
+;;     • TYPE-BONUS (`type-retention-bonus`) — durable CONCEPTUAL types
+;;       (concept/config-key/person = 3) and architectural units (component = 2)
+;;       get a bonus; `file` and the generic `entity` fallback get 0. Files are
+;;       specific, re-searchable artifacts, so the graph doesn't spend budget on
+;;       them — a genuinely central file still survives on weighted degree, but a
+;;       file kept alive only by weak edges is evicted first.
 ;;   Tiebreaks (equal score): SUMMARY (has-summary richer) → RECENCY (updated_at,
 ;;   stalest first) → ID (ascending; deterministic total order so a same-second
 ;;   batch write doesn't leave ties to SQLite's unspecified order).
@@ -301,12 +302,15 @@
 
 (def ^:private type-retention-bonus
   "Additive retention weight per node type, folded into the eviction score
-  alongside weighted degree (default 0.0). Durable-knowledge types outrank
-  structural types outrank the generic `entity` fallback."
+  alongside weighted degree (default 0.0 for any type not listed). Durable
+  CONCEPTUAL knowledge (concept/config-key/person) and architectural units
+  (component) get a bonus; `file` and the generic `entity` fallback get NONE —
+  files are specific, re-searchable artifacts (found again via search/explore
+  on demand), so the graph should not spend budget on them. A genuinely central
+  file still survives on weighted degree; a file kept alive only by weak edges
+  is evicted first."
   {"concept" 3.0 "config-key" 3.0 "person" 3.0
-   "component" 2.0
-   "file" 1.0
-   "entity" 0.0})
+   "component" 2.0})
 
 (defn- sql-case
   "Render a SQL `CASE <col> WHEN 'k' THEN v … ELSE <default> END` from a

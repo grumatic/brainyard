@@ -254,7 +254,7 @@
           uid (:user-id *store*)
           h   (node! :component "hub")
           f   (node! :entity "filler")          ;; 1 mention → 0.25
-          fl  (node! :file "some-file")         ;; 1 depends → wdeg 1.0 + file 1.0    = 2.0
+          fl  (node! :file "some-file")         ;; 1 depends → wdeg 1.0 + file 0.0    = 1.0
           c   (node! :concept "some-concept")]  ;; 1 depends → wdeg 1.0 + concept 3.0 = 4.0
       (edge! f h :mentions)
       (edge! fl h :depends_on)

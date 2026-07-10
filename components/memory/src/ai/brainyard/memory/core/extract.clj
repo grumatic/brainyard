@@ -62,8 +62,10 @@
 
 (def ^:private summarize-system
   (str "You write a one-sentence summary of a cluster of related entities "
-       "from a developer/agent knowledge graph. Capture what ties the cluster "
-       "together and any durable facts. Be concise and factual — no preamble."))
+       "from a developer/agent knowledge graph. Capture the GLOBAL, conceptual "
+       "through-line that ties the cluster together and any durable, "
+       "generalizable facts — not specific file paths or one-off values. Be "
+       "concise and factual — no preamble."))
 
 (defn make-summarize-fn
   "Build a `summarize-fn` `(fn [text] -> string)` over clj-llm plain-text
