@@ -217,6 +217,21 @@
                          ORDER BY id ASC"
                         session-id (or after-id 0)])))
 
+(defn episodes-after-id-for-user
+  "User episodes across ALL sessions with `id` > `after-id`, OLDEST-first
+  (id ASC), capped at `limit`. The per-user counterpart to `episodes-after-id`,
+  backing incremental (no-`--session`) graph-build: each run extracts only the
+  episodes captured since the last run's max id. Oldest-first so a bounded batch
+  advances the watermark monotonically and repeated runs drain any backlog."
+  [ds user-id after-id limit]
+  (mapv normalize-episode
+        (jdbc/execute! ds
+                       ["SELECT * FROM episodes
+                         WHERE user_id = ? AND id > ?
+                         ORDER BY id ASC
+                         LIMIT ?"
+                        user-id (or after-id 0) (or limit 1000)])))
+
 (defn get-recent-episodes
   "Get most recent episodes for a session.
   Returns episodes ordered by timestamp DESC (newest first)."

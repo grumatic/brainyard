@@ -9,7 +9,9 @@
             [ai.brainyard.memory.core.sqlite :as sqlite]
             [ai.brainyard.memory.core.unified-store :as us]
             [ai.brainyard.memory.core.extract :as extract]
+            [ai.brainyard.memory.core.episodic :as episodic]
             [ai.brainyard.memory.core.capture.extractor :as extractor]
+            [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.memory.interface.protocol :as proto]))
 
 (def ^:dynamic *store* nil)
@@ -150,3 +152,65 @@
 (deftest make-extract-fn-nil-without-lm-test
   (is (nil? (extract/make-extract-fn nil))
       "no lm-config ⇒ no extract-fn ⇒ extraction disabled"))
+
+;; =====================================================
+;; Incremental graph-build watermark (extract-l2-graph!)
+;; =====================================================
+
+(defn- write-l2! [ds sid content]
+  (episodic/append-episode! ds {:session-id sid :user-id "u1"
+                                :episode-type "conversation"
+                                :role "user" :content content}))
+
+(deftest incremental-graph-build-session-test
+  (let [calls (atom 0)
+        stub  (fn [_t] (swap! calls inc) {:entities [{:name "X" :type "concept"}] :relations []})
+        ds    (:ds *store*)
+        mm    {:store *store* :extract-fn stub}]
+    (write-l2! ds "sA" "first episode about GraalVM native-image build tuning, long enough")
+    (write-l2! ds "sA" "second episode about sqlite-vec extension loading paths, long enough")
+    (testing "first run extracts all existing session episodes and records the watermark"
+      (let [r (mem/extract-l2-graph! mm :session-id "sA")]
+        (is (= 2 (:attempted r)))
+        (is (= 2 @calls))
+        (is (:incremental r))
+        (is (pos? (long (:through-id r))))))
+    (testing "re-running with nothing new is a no-op (watermark blocks re-extraction)"
+      (reset! calls 0)
+      (let [r (mem/extract-l2-graph! mm :session-id "sA")]
+        (is (= 0 (:attempted r)))
+        (is (= 0 (:total r)))
+        (is (zero? @calls) "no LLM calls on the second run — the slow path is gone")))
+    (testing "only the newly-appended tail is extracted"
+      (reset! calls 0)
+      (write-l2! ds "sA" "third episode discussing the community reducer summaries, long enough")
+      (let [r (mem/extract-l2-graph! mm :session-id "sA")]
+        (is (= 1 (:attempted r)) "only the new episode")
+        (is (= 1 @calls))))
+    (testing "--rebuild ignores the watermark and re-extracts everything"
+      (reset! calls 0)
+      (let [r (mem/extract-l2-graph! mm :session-id "sA" :rebuild? true)]
+        (is (= 3 (:attempted r)))
+        (is (= 3 @calls))
+        (is (not (:incremental r)))))))
+
+(deftest incremental-graph-build-per-user-test
+  (let [calls (atom 0)
+        stub  (fn [_t] (swap! calls inc) {:entities [] :relations []})
+        ds    (:ds *store*)
+        mm    {:store *store* :extract-fn stub}]
+    (write-l2! ds "s1" "episode one long enough to pass the min-content threshold ok")
+    (write-l2! ds "s2" "episode two long enough to pass the min-content threshold ok")
+    (testing "no --session sweeps across all sessions, then watermarks per-user"
+      (is (= 2 (:attempted (mem/extract-l2-graph! mm))))
+      (is (= 2 @calls))
+      (reset! calls 0)
+      (is (= 0 (:attempted (mem/extract-l2-graph! mm))) "second sweep finds nothing new")
+      (is (zero? @calls)))
+    (testing "per-user and per-session watermarks are independent"
+      ;; sA has its own (unset) mark, so a session run still sees its episodes
+      ;; even though the per-user sweep already extracted them.
+      (reset! calls 0)
+      (write-l2! ds "s3" "a third session episode, again over the min-content length ok")
+      (is (= 1 (:attempted (mem/extract-l2-graph! mm))) "per-user sweep picks up only s3")
+      (is (= 1 @calls)))))

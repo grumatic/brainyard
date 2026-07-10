@@ -175,6 +175,14 @@
    :as "Max relations (edges) a single episode may add during extraction (default: :graph-max-relations-per-episode)"
    :type :int})
 
+(def rebuild-opt
+  ;; graph-build / reduce are INCREMENTAL by default (a persisted per-scope
+  ;; watermark means only episodes newer than the last run are extracted). This
+  ;; forces a full re-extraction — use it after changing the extract model/prompt.
+  {:option "rebuild"
+   :as "Re-extract ALL episodes, ignoring the incremental watermark (use after changing the extract model/prompt). Default: incremental — only episodes newer than the last run."
+   :type :with-flag :default false})
+
 ;; ============================================================================
 ;; Legacy provider:model parsing
 ;; ============================================================================
@@ -1112,6 +1120,7 @@
   (let [json?         (:json opts)
         uid           (helpers/resolve-user-id (:user-id opts))
         sid           (some-> (:session opts) str/trim not-empty)
+        rebuild?      (boolean (:rebuild opts))
         max-entities  (or (:max-entities-per-episode opts)
                           (agent/get-config :graph-max-entities-per-episode))
         max-relations (or (:max-relations-per-episode opts)
@@ -1123,12 +1132,14 @@
                        (apply mem/extract-l2-graph! mm
                               (cond-> [:max-entities max-entities
                                        :max-relations max-relations]
-                                sid (into [:session-id sid])))))]
+                                sid      (into [:session-id sid])
+                                rebuild? (into [:rebuild? true])))))]
         (if json?
-          (print-json! {:success true :user-id uid :session sid :report report})
-          (println (format "Graph-build [%s%s] → attempted=%s/%s%s"
+          (print-json! {:success true :user-id uid :session sid :rebuild rebuild? :report report})
+          (println (format "Graph-build [%s%s] → attempted=%s/%s (%s)%s"
                            uid (if sid (str " / " sid) "")
                            (:attempted report) (:total report)
+                           (if rebuild? "full rebuild" "incremental")
                            (if (:no-extract-fn report)
                              " (no extract model configured — graph tier off)" "")))))
       (catch Exception e
@@ -1158,6 +1169,7 @@
   (let [json?         (:json opts)
         uid           (helpers/resolve-user-id (:user-id opts))
         sid           (some-> (:session opts) str/trim not-empty)
+        rebuild?      (boolean (:rebuild opts))
         ;; CLI flag wins; else fall back to the config default (env/config.edn
         ;; still resolve through get-config).
         max-nodes     (or (:max-nodes opts) (agent/get-config :graph-max-nodes))
@@ -1174,12 +1186,14 @@
       (let [report (with-memory-manager
                      uid
                      (fn [mm]
-                       (progress! "extracting L2 → graph (max-entities=%s max-relations=%s)…"
+                       (progress! "extracting L2 → graph (%s; max-entities=%s max-relations=%s)…"
+                                  (if rebuild? "full rebuild" "incremental")
                                   max-entities max-relations)
                        (let [g (apply mem/extract-l2-graph! mm
                                       (cond-> [:max-entities max-entities
                                                :max-relations max-relations]
-                                        sid (into [:session-id sid])))
+                                        sid      (into [:session-id sid])
+                                        rebuild? (into [:rebuild? true])))
                              _ (progress! "  extracted %s/%s episode(s)"
                                           (:attempted g) (:total g))
                              _ (progress! "pruning graph to budget (max-nodes=%s max-edges=%s)…"
@@ -1197,7 +1211,7 @@
                                           (:produced c) (:consumed c))]
                          {:graph-build g :prune p :consolidate c})))]
         (if json?
-          (print-json! {:success true :user-id uid :session sid :report report})
+          (print-json! {:success true :user-id uid :session sid :rebuild rebuild? :report report})
           (println (format "Reduced [%s%s] → graph-attempted=%s/%s nodes=%s edges=%s (evicted %s/%s) consolidate-produced=%s consumed=%s"
                            uid (if sid (str " / " sid) "")
                            (get-in report [:graph-build :attempted])
@@ -1768,14 +1782,14 @@
                                  :opts        [user-id-opt session-opt reducer-opt json-opt]
                                  :runs        cmd-memory-consolidate}
                                 {:command     "graph-build"
-                                 :description "Synchronously extract L2 episodes into the context-graph (graph tier; precedes --reducer community)"
-                                 :opts        [user-id-opt session-opt
+                                 :description "Synchronously extract L2 episodes into the context-graph (graph tier; precedes --reducer community). Incremental by default; --rebuild re-extracts all"
+                                 :opts        [user-id-opt session-opt rebuild-opt
                                                max-entities-per-episode-opt
                                                max-relations-per-episode-opt json-opt]
                                  :runs        cmd-memory-graph-build}
                                 {:command     "reduce"
-                                 :description "graph-build + consolidate --reducer community in one shot; entrypoint for the detached session-end offload"
-                                 :opts        [user-id-opt session-opt
+                                 :description "graph-build + consolidate --reducer community in one shot; entrypoint for the detached session-end offload. Incremental by default; --rebuild re-extracts all"
+                                 :opts        [user-id-opt session-opt rebuild-opt
                                                max-nodes-opt max-edges-opt
                                                max-entities-per-episode-opt
                                                max-relations-per-episode-opt json-opt]

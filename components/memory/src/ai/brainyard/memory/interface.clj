@@ -32,6 +32,8 @@
             [ai.brainyard.memory.core.embed-static :as embed-static]
             [ai.brainyard.memory.core.extract :as extract]
             [ai.brainyard.memory.core.episodic :as episodic]
+            [ai.brainyard.memory.core.entry :as entry]
+            [ai.brainyard.memory.core.sqlite :as sqlite]
             [ai.brainyard.memory.core.unified-store :as us]
             [ai.brainyard.memory.core.graph :as graph]
             [ai.brainyard.memory.core.l1-store :as l1]
@@ -428,6 +430,17 @@
   [manager & opts]
   (proto/consolidate-layer (:store manager) :l2 (apply hash-map opts)))
 
+(defn- graph-watermark-key
+  "`memory_metadata` key for the incremental graph-extraction high-water mark
+  (max episode id already extracted). Scoped to the query scope so a per-user
+  sweep and a per-session run keep independent marks — episode ids interleave
+  across sessions, so a single global mark would let a session-scoped run skip
+  another session's older, unextracted episodes. The db file is per-user, but
+  the key still carries the user-id defensively."
+  [user-id session-id]
+  (str "graph_extract_after_id:u:" user-id
+       (when session-id (str ":s:" session-id))))
+
 (defn extract-l2-graph!
   "Synchronously extract graph nodes/edges from a user's L2 episodes
   (optionally restricted to one `:session-id`), populating
@@ -435,6 +448,15 @@
   counterpart to the async capture-time extractor, intended for scripted or
   backfill graph builds where the 1s shutdown drain of the async path would
   drop in-flight extractions.
+
+  INCREMENTAL by default: a per-scope high-water mark (max episode id already
+  extracted) is persisted in `memory_metadata`, and each run processes only
+  episodes with a higher id — so repeated `graph-build`/`reduce` (e.g. the
+  detached session-end offload) re-extract only the new tail, not the whole
+  history. Pass `:rebuild? true` to ignore the mark and re-extract everything
+  (after an extract-model/prompt change); the mark is still advanced afterward.
+  `:limit` (default 1000) bounds a single per-user batch — extraction is
+  oldest-first, so a backlog larger than the limit drains over successive runs.
 
   Requires the manager's `:extract-fn` (the context-graph tier — i.e.
   `:enable-graph-memory` + a configured extract model). When absent this is a
@@ -448,17 +470,34 @@
   defaults). Total-graph budgets are enforced separately via
   `prune-graph-to-budget!`.
 
-  Returns `{:attempted <n eligible> :total <n episodes>}`."
-  [manager & {:keys [session-id max-entities max-relations]}]
+  Returns `{:attempted <n eligible> :total <n new episodes> :incremental bool
+  :after-id <mark used> :through-id <new mark>}`."
+  [manager & {:keys [session-id max-entities max-relations rebuild? limit]
+              :or   {limit 1000}}]
   (if-let [extract-fn (:extract-fn manager)]
-    (let [s       (:store manager)
-          entries (proto/read-entries s :l2
-                                      (cond-> {} session-id (assoc :session-id session-id))
-                                      {:limit 1000})
-          limits  (cond-> nil
-                    max-entities  (assoc :max-entities max-entities)
-                    max-relations (assoc :max-relations max-relations))]
-      (capture-extractor/extract-batch! s extract-fn entries :limits limits))
+    (let [s        (:store manager)
+          ds       (:ds s)
+          user-id  (:user-id s)
+          wm-key   (graph-watermark-key user-id session-id)
+          after-id (if rebuild?
+                     0
+                     (or (some-> (sqlite/get-metadata ds wm-key) parse-long) 0))
+          ;; Oldest-first, id-filtered so the watermark advances monotonically.
+          rows     (if session-id
+                     (episodic/episodes-after-id ds session-id after-id)
+                     (episodic/episodes-after-id-for-user ds user-id after-id limit))
+          entries  (mapv entry/episode-row->entry rows)
+          limits   (cond-> nil
+                     max-entities  (assoc :max-entities max-entities)
+                     max-relations (assoc :max-relations max-relations))
+          result   (capture-extractor/extract-batch! s extract-fn entries :limits limits)
+          max-id   (when (seq rows) (reduce max (keep :id rows)))]
+      (when (and max-id (> (long max-id) (long after-id)))
+        (sqlite/set-metadata! ds wm-key (str max-id)))
+      (assoc result
+             :incremental (not (boolean rebuild?))
+             :after-id    after-id
+             :through-id  (or max-id after-id)))
     {:attempted 0 :total 0 :no-extract-fn true}))
 
 (defn prune-graph-to-budget!
