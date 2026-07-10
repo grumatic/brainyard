@@ -122,6 +122,23 @@
        ": " (str/join ", " (map :name members))
        (when (seq edges) (str "; " (count edges) " relationship(s)"))))
 
+(defn- sha256-16
+  "First 16 hex chars of the SHA-256 of `s` — a stable, bounded content key
+  (deterministic across processes, unlike clojure.core/hash)."
+  [s]
+  (let [bs (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                    (.getBytes (str s) "UTF-8"))]
+    (subs (apply str (map #(format "%02x" (bit-and % 0xff)) bs)) 0 16)))
+
+(defn- community-entry-id
+  "Stable L3 entry-id for a community, derived from its content-based `label`
+  (the same key `graph_communities` dedups on via ON CONFLICT(user_id, label))
+  — NOT the volatile per-run `community_id`. Label propagation renumbers cids
+  every run, so a cid-keyed entry-id accumulated a near-duplicate L3 fact each
+  time; keying on the label upserts ONE fact for the cluster across runs."
+  [user-id label]
+  (str "community/" user-id "/" (sha256-16 label)))
+
 (defn- upsert-community! [ds user-id label summary node-count entry-id]
   (jdbc/execute! ds ["INSERT INTO graph_communities (user_id, label, summary, node_count, entry_id, updated_at)
                       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -149,7 +166,7 @@
                 label    (str/join "+" (take 3 (map :name ms)))
                 summary  (or (when summarize-fn (summarize-fn (describe ms es)))
                              (templated-summary ms es))
-                entry-id (str "community/" user-id "/" cid)]
+                entry-id (community-entry-id user-id label)]
             (proto/write-entry store :l3
                                {:kind :summary
                                 :id entry-id

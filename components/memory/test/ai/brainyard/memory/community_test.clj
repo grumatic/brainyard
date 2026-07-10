@@ -115,6 +115,25 @@
                                     ["SELECT COUNT(*) n FROM graph_communities WHERE user_id='u1'"]) :n))
         "communities upserted by (user,label), not duplicated")))
 
+(defn- community-fact-count [store]
+  (-> (jdbc/execute-one! (:ds store)
+                         ["SELECT COUNT(*) n FROM semantic_facts WHERE user_id='u1' AND entry_id LIKE 'community/%'"]) :n))
+
+(deftest community-fact-id-stable-across-cid-churn-test
+  (seed-two-clusters!)
+  (testing "L3 community facts key on the label, so re-numbered community ids don't duplicate them"
+    (community/detect-communities! (:ds *store*) "u1")
+    (community/summarize-communities! *store* nil)
+    (let [n1 (community-fact-count *store*)]
+      (is (pos? n1))
+      ;; Simulate label propagation renumbering the SAME clusters to new cids
+      ;; (the real bug: a cid-keyed entry-id wrote a fresh duplicate each run).
+      (jdbc/execute! (:ds *store*) ["UPDATE graph_nodes SET community_id = community_id + 100
+                                     WHERE user_id='u1' AND community_id IS NOT NULL"])
+      (community/summarize-communities! *store* nil)
+      (is (= n1 (community-fact-count *store*))
+          "cid churn produced NO duplicate community facts (label-keyed entry-id upserts)"))))
+
 (deftest heuristic-reducer-still-default-test
   (testing "without :reducer :community, the heuristic path is unchanged"
     (let [r (proto/consolidate-layer *store* :l2 {})]
