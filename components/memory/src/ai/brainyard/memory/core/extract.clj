@@ -16,13 +16,13 @@
       node summaries.
 
   Curated vocabulary comes from `protocol/node-types` and
-  `protocol/relations` — the LLM is constrained to those via JSON-schema
-  enums, keeping the graph predictable."
+  `protocol/relations` — the LLM is constrained to those via the
+  `GraphExtraction` signature's Malli enums, keeping the graph predictable."
   (:require [clojure.string :as str]
-            [clojure.data.json :as json]
             [ai.brainyard.clj-llm.interface :as llm]
             [ai.brainyard.memory.core.graph :as graph]
             [ai.brainyard.memory.core.embed :as embed]
+            [ai.brainyard.memory.core.signatures :as sig]
             [ai.brainyard.memory.interface.protocol :as proto]
             [ai.brainyard.mulog.interface :as mulog]))
 
@@ -30,79 +30,28 @@
 ;; Extraction call (LLM)
 ;; =====================================================
 
-(def ^:private node-type-names (mapv name (sort proto/node-types)))
-(def ^:private relation-names  (mapv name (sort proto/relations)))
-
-(def extraction-schema
-  "JSON Schema constraining the LLM to the curated entity/relation vocab."
-  {:type "object"
-   :additionalProperties false
-   :properties
-   {:entities
-    {:type "array"
-     :items {:type "object"
-             :additionalProperties false
-             :properties {:name    {:type "string"}
-                          :type    {:type "string" :enum node-type-names}
-                          :summary {:type "string"}
-                          :aliases {:type "array" :items {:type "string"}}}
-             :required ["name" "type"]}}
-    :relations
-    {:type "array"
-     :items {:type "object"
-             :additionalProperties false
-             :properties {:src        {:type "string"}
-                          :relation   {:type "string" :enum relation-names}
-                          :dst        {:type "string"}
-                          :fact       {:type "string"}
-                          :confidence {:type "number"}}
-             :required ["src" "relation" "dst"]}}}
-   :required ["entities" "relations"]})
-
-(def ^:private system-prompt
-  (str "You extract a knowledge graph from developer/agent activity logs.\n"
-       "Identify durable ENTITIES and typed RELATIONSHIPS between them.\n"
-       "Use ONLY these entity types: " (str/join ", " node-type-names) ".\n"
-       "Use ONLY these relations: " (str/join ", " relation-names) ".\n"
-       "Record only durable, reusable knowledge (config keys, components, "
-       "files, people, concepts and how they relate) — skip ephemeral "
-       "chatter, greetings, and one-off values. Each relation's src and dst "
-       "MUST name an entity you also list in entities. Return empty arrays "
-       "when nothing is worth recording."))
-
-(defn- parse-json
-  "Parse the model's JSON, tolerating ```json fences."
-  [s]
-  (-> (str s)
-      str/trim
-      (str/replace (re-pattern "(?s)^```(?:json)?\\s*") "")
-      (str/replace (re-pattern "(?s)\\s*```$") "")
-      str/trim
-      (json/read-str :key-fn keyword)))
-
 (defn make-extract-fn
-  "Build an `extract-fn` over clj-llm structured output, or nil when
-  `lm-config` is absent (extraction disabled). Failures log and yield nil
-  rather than propagating."
+  "Build an `extract-fn` `(fn [text] -> {:entities [...] :relations [...]})`
+  over the `GraphExtraction` signature, or nil when `lm-config` is absent
+  (extraction disabled). `predict` returns Malli-validated `:outputs`, so no
+  JSON hand-parsing. Failures log and yield nil rather than propagating."
   [lm-config & {:keys [model]}]
   (when lm-config
     (let [lm (if model (assoc lm-config :model model) lm-config)]
       (fn [text]
         (try
-          (let [result (-> (llm/chat-completion lm
-                                                [{:role "system" :content system-prompt}
-                                                 {:role "user"   :content (str "Activity:\n" text)}]
-                                                :json-schema extraction-schema)
-                           (llm/extract-content lm)
-                           parse-json)]
+          (let [out (-> (llm/predict sig/GraphExtraction
+                                     {:activity (str text)}
+                                     :lm-config lm)
+                        :outputs)]
             ;; Surface the yield so silent no-extract cases (e.g. a model that
-            ;; ignores the JSON contract) are visible in the app log rather than
+            ;; ignores the contract) are visible in the app log rather than
             ;; looking like "0 nodes = nothing worth recording".
             (mulog/info ::extracted
                         :model (:model lm)
-                        :entities (count (:entities result))
-                        :relations (count (:relations result)))
-            result)
+                        :entities (count (:entities out))
+                        :relations (count (:relations out)))
+            {:entities (vec (:entities out)) :relations (vec (:relations out))})
           (catch Exception e
             (mulog/warn ::extract-call-failed :model (:model lm) :error (ex-message e))
             nil))))))
