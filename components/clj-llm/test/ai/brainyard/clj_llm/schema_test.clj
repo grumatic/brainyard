@@ -4,7 +4,8 @@
 
 (ns ai.brainyard.clj-llm.schema-test
   (:require [clojure.test :refer [deftest is testing]]
-            [ai.brainyard.clj-llm.core.schema :as schema]))
+            [ai.brainyard.clj-llm.core.schema :as schema]
+            [ai.brainyard.clj-llm.core.llm :as llm]))
 
 (deftest malli->json-schema-test
   (testing "converts simple string schema"
@@ -112,3 +113,49 @@
           result (schema/validate-output ms {:answer 42})]
       (is (false? (:valid? result)))
       (is (some? (:errors result))))))
+
+(deftest strict-eligible?-test
+  (testing "all-required object is eligible"
+    (is (schema/strict-eligible?
+         {:type "object" :additionalProperties false
+          :properties {"a" {:type "string"} "b" {:type "string"}} :required ["a" "b"]})))
+  (testing "a property missing from :required (Malli :optional) → ineligible"
+    (is (not (schema/strict-eligible?
+              {:type "object" :additionalProperties false
+               :properties {"a" {:type "string"} "b" {:type "string"}} :required ["a"]}))))
+  (testing "ineligibility is caught inside a nested array item"
+    (is (not (schema/strict-eligible?
+              {:type "object" :additionalProperties false :required ["xs"]
+               :properties {"xs" {:type "array"
+                                  :items {:type "object" :additionalProperties false
+                                          :properties {"name" {:type "string"} "opt" {:type "string"}}
+                                          :required ["name"]}}}}))))
+  (testing "keyword-keyed nested schema (mjs output) is normalized"
+    (is (schema/strict-eligible?
+         {:type "object" :additionalProperties false :required ["m"]
+          :properties {"m" {:type "object" :additionalProperties false
+                            :properties {:x {:type "string"}} :required [:x]}}})))
+  (testing "enum leaves and anyOf-nullable are fine"
+    (is (schema/strict-eligible?
+         {:type "object" :additionalProperties false :required ["k" "e"]
+          :properties {"k" {:anyOf [{:type "string"} {:type "null"}]}
+                       "e" {:type "string" :enum ["a" "b"]}}})))
+  (testing "missing :additionalProperties false → ineligible"
+    (is (not (schema/strict-eligible?
+              {:type "object" :properties {"a" {:type "string"}} :required ["a"]}))))
+  (testing "a real GraphExtraction-shaped schema (optional summary) → ineligible"
+    (is (not (schema/strict-eligible?
+              (schema/fields->json-schema
+               {:entities [:vector [:map [:name :string]
+                                    [:summary {:optional true} :string]]]}))))))
+
+(deftest json-schema-strict?-resolution-test
+  (let [strict-schema {:type "object" :additionalProperties false
+                       :properties {"a" {:type "string"}} :required ["a"]}
+        loose-schema  (assoc strict-schema :required [])]
+    (testing "auto-detect: eligible → strict:true, ineligible → strict:false"
+      (is (true?  (#'llm/json-schema-strict? {} strict-schema)))
+      (is (false? (#'llm/json-schema-strict? {} loose-schema))))
+    (testing "explicit lm-config :json-schema-strict? overrides auto-detect"
+      (is (false? (#'llm/json-schema-strict? {:json-schema-strict? false} strict-schema)))
+      (is (true?  (#'llm/json-schema-strict? {:json-schema-strict? true}  loose-schema))))))

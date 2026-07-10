@@ -60,6 +60,36 @@
   (-> (mjs/transform schema)
       add-additional-properties-false))
 
+(defn strict-eligible?
+  "True when a derived JSON Schema meets OpenAI strict structured-output rules:
+   every object sets `:additionalProperties false` and lists EVERY key in its
+   `:properties` inside `:required` (strict mode forbids optional properties).
+   Recurses through :properties, :items, :anyOf/:allOf and :definitions/:defs.
+
+   A schema carrying any Malli `{:optional true}` field is ineligible — mjs
+   omits it from :required — so callers should fall back to strict:false
+   (schema as guidance + our own Malli output validation) rather than let
+   OpenAI 400 on the request. Property/`:required` keys may be strings
+   (top-level) or keywords (nested mjs output); both are normalized via `name`."
+  [schema]
+  (letfn [(names [xs] (into #{} (map name) (or xs [])))
+          (ok? [s]
+            (cond
+              (not (map? s)) true
+              (= "object" (:type s))
+              (let [props (:properties s)
+                    req   (names (:required s))]
+                (and (false? (:additionalProperties s))
+                     (every? req (names (keys props)))   ;; every property is required
+                     (every? ok? (vals props))))
+              (map? (:items s)) (ok? (:items s))
+              (:anyOf s) (every? ok? (:anyOf s))
+              (:allOf s) (every? ok? (:allOf s))
+              :else true))]
+    (boolean
+     (and (ok? schema)
+          (every? ok? (vals (or (:definitions schema) (:defs schema) {})))))))
+
 (defn parse-malli-field
   "Normalize a field schema definition.
 

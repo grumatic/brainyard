@@ -10,6 +10,7 @@
             [ai.brainyard.clj-llm.core.sse :as sse]
             [ai.brainyard.clj-llm.core.usage :as usage]
             [ai.brainyard.clj-llm.core.providers :as providers]
+            [ai.brainyard.clj-llm.core.schema :as schema]
             [ai.brainyard.clj-llm.core.claude-code :as claude-code]
             [ai.brainyard.clj-llm.core.acp :as acp]
             [ai.brainyard.clj-llm.core.bedrock :as bedrock]
@@ -333,6 +334,18 @@
    params."
   #{:openai :azure})
 
+(defn- json-schema-strict?
+  "Resolve OpenAI's `strict` flag for a json_schema response_format. An explicit
+   lm-config `:json-schema-strict?` wins; otherwise auto-detect — strict only
+   when the derived schema is strict-eligible (all properties required), else
+   strict:false so Malli-`{:optional true}` schemas don't 400. Either way the
+   parsed output is Malli-validated downstream, so strict:false is best-effort
+   generation + hard validation (the same model claude-code/bedrock use)."
+  [lm-config json-schema]
+  (if (contains? lm-config :json-schema-strict?)
+    (boolean (:json-schema-strict? lm-config))
+    (schema/strict-eligible? json-schema)))
+
 (defn- build-openai-body
   "Build the request body for OpenAI-compatible chat completion.
    JSON schema is already in the system prompt (injected by prompt.clj).
@@ -367,7 +380,7 @@
         (assoc :response_format
                {:type        "json_schema"
                 :json_schema {:name   "response"
-                              :strict true
+                              :strict (json-schema-strict? lm-config json-schema)
                               :schema json-schema}})
 
         stream?
