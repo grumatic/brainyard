@@ -440,6 +440,17 @@
   (str "graph_extract_after_id:u:" user-id
        (when session-id (str ":s:" session-id))))
 
+(defn- join-turns
+  "Concatenate turn/episode contents into one extraction input, delimiting each
+  turn with a header so the extractor can attribute entities/relations per turn
+  (the `GraphExtraction` instruction tells it the input is multiple turns). A
+  single-content input still gets a header — harmless and consistent with the
+  batched form."
+  [contents]
+  (->> contents
+       (map-indexed (fn [i c] (str "=== turn " (inc i) " ===\n" c)))
+       (str/join "\n\n")))
+
 (defn- pack-windows
   "Greedily pack episodes (oldest-first) into windows bounded by BOTH `max-eps`
   (episode count) and `max-chars` (joined `:content` length) — whichever binds
@@ -518,7 +529,7 @@
                            (group-by :session_id rows))
           result   (reduce
                     (fn [acc win]
-                      (let [text0 (str/join "\n\n" (keep :content win))
+                      (let [text0 (join-turns (keep :content win))
                             text  (if (> (count text0) max-input-chars)
                                     (subs text0 0 max-input-chars) text0)
                             n     (count win)]
@@ -594,7 +605,7 @@
     (let [store  (:store manager)
           eps    (episodic/episodes-after-id (:ds store) session-id after-id)
           max-id (reduce max after-id (keep :id eps))
-          text0  (str/join "\n\n" (keep :content eps))
+          text0  (join-turns (keep :content eps))
           text   (if (> (count text0) max-input-chars) (subs text0 0 max-input-chars) text0)]
       (if (or (empty? eps) (< (count text) 40))
         {:calls 0 :new-episodes (count eps) :nodes 0 :edges 0 :max-id max-id}

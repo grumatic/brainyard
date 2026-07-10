@@ -24,16 +24,22 @@
   (into [:enum {:desc "Curated relation kind"}] (mapv name (sort proto/relations))))
 
 (defsignature GraphExtraction
-  "You extract a knowledge graph from developer/agent activity logs.
-Identify durable ENTITIES and typed RELATIONSHIPS between them, using ONLY
-the entity types and relations allowed by the output schema.
+  "You extract a knowledge graph from an agent session. The input is one or
+more consecutive TURNS of that session (a turn is a user/assistant exchange
+or tool activity); when batched, several turns are concatenated. Read the
+WHOLE input and extract durable knowledge from EVERY turn — do NOT summarize,
+and do NOT fixate on the most prominent turn while skipping the rest. Each
+turn may add its own entities and relations.
 
-Record only durable, reusable knowledge (config keys, components, files,
-people, concepts and how they relate) — skip ephemeral chatter, greetings,
-and one-off values. Each relation's :src and :dst MUST name an entity you
-also list in :entities. Return EMPTY arrays when nothing is worth recording
-(the common case for operational chatter)."
-  {:inputs  {:activity [:string {:desc "One L2 episode's content (developer/agent activity)"}]}
+Identify durable ENTITIES and typed RELATIONSHIPS between them, using ONLY
+the entity types and relations allowed by the output schema. Record only
+durable, reusable knowledge (config keys, components, files, people,
+concepts and how they relate) — skip ephemeral chatter, greetings, and
+one-off values. Merge repeat mentions of the same thing across turns into a
+single entity. Each relation's :src and :dst MUST name an entity you also
+list in :entities. Return EMPTY arrays when nothing is worth recording (the
+common case for operational chatter)."
+  {:inputs  {:activity [:string {:desc "One or more consecutive turns of an agent session (episodes concatenated when batched; a single episode otherwise)"}]}
    :outputs {:entities
              [:vector {:desc "Durable entities; empty when nothing is worth recording"}
               [:map
