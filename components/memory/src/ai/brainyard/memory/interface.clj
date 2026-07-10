@@ -32,7 +32,6 @@
             [ai.brainyard.memory.core.embed-static :as embed-static]
             [ai.brainyard.memory.core.extract :as extract]
             [ai.brainyard.memory.core.episodic :as episodic]
-            [ai.brainyard.memory.core.entry :as entry]
             [ai.brainyard.memory.core.sqlite :as sqlite]
             [ai.brainyard.memory.core.unified-store :as us]
             [ai.brainyard.memory.core.graph :as graph]
@@ -441,6 +440,26 @@
   (str "graph_extract_after_id:u:" user-id
        (when session-id (str ":s:" session-id))))
 
+(defn- pack-windows
+  "Greedily pack episodes (oldest-first) into windows bounded by BOTH `max-eps`
+  (episode count) and `max-chars` (joined `:content` length) — whichever binds
+  first. Episode-count is the primary control: a small window keeps the model
+  thorough (it dilutes over a big concatenated context). An episode longer than
+  `max-chars` forms its own window (truncated at call time). Never drops an
+  episode. Returns a vector of episode-vectors."
+  [eps max-eps max-chars]
+  (let [{:keys [cur out]}
+        (reduce (fn [{:keys [cur cur-len out]} ep]
+                  (let [c   (count (or (:content ep) ""))
+                        add (+ c (if (seq cur) 2 0))]   ;; 2 = "\n\n" separator
+                    (if (and (seq cur)
+                             (or (>= (count cur) max-eps)
+                                 (> (+ cur-len add) max-chars)))
+                      {:cur [ep] :cur-len c :out (conj out cur)}
+                      {:cur (conj cur ep) :cur-len (+ cur-len add) :out out})))
+                {:cur [] :cur-len 0 :out []} eps)]
+    (cond-> out (seq cur) (conj cur))))
+
 (defn extract-l2-graph!
   "Synchronously extract graph nodes/edges from a user's L2 episodes
   (optionally restricted to one `:session-id`), populating
@@ -449,31 +468,38 @@
   backfill graph builds where the 1s shutdown drain of the async path would
   drop in-flight extractions.
 
+  BATCHED: episodes are grouped by session (so a per-user sweep never mixes
+  sessions into one blob) and char-packed into `:max-input-chars` (default
+  400K ≈ 100K tokens) windows, ONE LLM call per window — not one per episode
+  (~N× fewer calls). Like the `:at-consolidation` batch path, a window spans
+  many episodes so edges carry no single `source-entry-id` (nil provenance).
+
   INCREMENTAL by default: a per-scope high-water mark (max episode id already
   extracted) is persisted in `memory_metadata`, and each run processes only
   episodes with a higher id — so repeated `graph-build`/`reduce` (e.g. the
   detached session-end offload) re-extract only the new tail, not the whole
   history. Pass `:rebuild? true` to ignore the mark and re-extract everything
   (after an extract-model/prompt change); the mark is still advanced afterward.
-  `:limit` (default 1000) bounds a single per-user batch — extraction is
-  oldest-first, so a backlog larger than the limit drains over successive runs.
+  `:limit` (default 1000) bounds a single per-user sweep — oldest-first, so a
+  backlog larger than the limit drains over successive runs.
 
   Requires the manager's `:extract-fn` (the context-graph tier — i.e.
   `:enable-graph-memory` + a configured extract model). When absent this is a
   no-op returning `{:attempted 0 :total 0 :no-extract-fn true}`.
 
-  `:max-entities`/`:max-relations` cap how much a SINGLE episode may add
-  (per-episode explosion guard). Callers supply these from the
-  `:graph-max-entities-per-episode` / `:graph-max-relations-per-episode` config
-  (the memory brick can't read agent config); omitted ⇒ the in-component
-  `extract/default-graph-limits` fallback applies (kept in sync with the config
-  defaults). Total-graph budgets are enforced separately via
+  `:max-entities`/`:max-relations` cap how much a single extraction may add.
+  Callers supply these from the `:graph-max-entities-per-episode` /
+  `:graph-max-relations-per-episode` config (the memory brick can't read agent
+  config); omitted ⇒ the in-component `extract/default-graph-limits` fallback
+  applies. Total-graph budgets are enforced separately via
   `prune-graph-to-budget!`.
 
-  Returns `{:attempted <n eligible> :total <n new episodes> :incremental bool
-  :after-id <mark used> :through-id <new mark>}`."
-  [manager & {:keys [session-id max-entities max-relations rebuild? limit]
-              :or   {limit 1000}}]
+  Returns `{:attempted <n episodes fed> :total <n new episodes> :calls <n LLM
+  calls / windows> :nodes n :edges n :incremental bool :after-id <mark used>
+  :through-id <new mark>}`."
+  [manager & {:keys [session-id max-entities max-relations rebuild? limit
+                     max-input-chars max-episodes-per-window]
+              :or   {limit 1000 max-input-chars 400000 max-episodes-per-window 10}}]
   (if-let [extract-fn (:extract-fn manager)]
     (let [s        (:store manager)
           ds       (:ds s)
@@ -486,15 +512,37 @@
           rows     (if session-id
                      (episodic/episodes-after-id ds session-id after-id)
                      (episodic/episodes-after-id-for-user ds user-id after-id limit))
-          entries  (mapv entry/episode-row->entry rows)
-          limits   (cond-> nil
-                     max-entities  (assoc :max-entities max-entities)
-                     max-relations (assoc :max-relations max-relations))
-          result   (capture-extractor/extract-batch! s extract-fn entries :limits limits)
+          ;; One call per session-scoped window (bounded by episode count, then
+          ;; chars) instead of one per episode.
+          windows  (mapcat (fn [[_sid eps]] (pack-windows eps max-episodes-per-window max-input-chars))
+                           (group-by :session_id rows))
+          result   (reduce
+                    (fn [acc win]
+                      (let [text0 (str/join "\n\n" (keep :content win))
+                            text  (if (> (count text0) max-input-chars)
+                                    (subs text0 0 max-input-chars) text0)
+                            n     (count win)]
+                        (if (< (count text) 40)   ;; skip a trivially-short window
+                          acc
+                          ;; Scale per-episode caps to the window so an N-episode
+                          ;; window keeps N× the single-episode budget (not 1×).
+                          ;; nil source-entry-id: a window spans many episodes.
+                          (let [win-limits (cond-> nil
+                                             max-entities  (assoc :max-entities  (* max-entities n))
+                                             max-relations (assoc :max-relations (* max-relations n)))
+                                applied (some-> (extract-fn text)
+                                                (as-> r (extract/process-extraction! s r nil win-limits)))]
+                            (-> acc
+                                (update :attempted + n)
+                                (update :calls inc)
+                                (update :nodes + (:nodes applied 0))
+                                (update :edges + (:edges applied 0)))))))
+                    {:attempted 0 :calls 0 :nodes 0 :edges 0} windows)
           max-id   (when (seq rows) (reduce max (keep :id rows)))]
       (when (and max-id (> (long max-id) (long after-id)))
         (sqlite/set-metadata! ds wm-key (str max-id)))
       (assoc result
+             :total       (count rows)
              :incremental (not (boolean rebuild?))
              :after-id    after-id
              :through-id  (or max-id after-id)))
@@ -551,14 +599,17 @@
       (if (or (empty? eps) (< (count text) 40))
         {:calls 0 :new-episodes (count eps) :nodes 0 :edges 0 :max-id max-id}
         (let [result  (extract-fn text)
+              n       (count eps)
               ;; Batch extraction spans many episodes, so there is no single
               ;; source-entry-id to attribute (nil ⇒ no per-edge provenance).
+              ;; Scale the per-episode entity/relation caps by the window size so
+              ;; a multi-episode window keeps N× the single-episode budget.
               applied (when result
                         (extract/process-extraction!
                          store result nil
                          (cond-> {}
-                           max-entities  (assoc :max-entities max-entities)
-                           max-relations (assoc :max-relations max-relations)
+                           max-entities  (assoc :max-entities  (* max-entities n))
+                           max-relations (assoc :max-relations (* max-relations n))
                            max-nodes     (assoc :max-nodes max-nodes)
                            max-edges     (assoc :max-edges max-edges))))]
           (mulog/debug ::l2-batch-extracted :session-id session-id

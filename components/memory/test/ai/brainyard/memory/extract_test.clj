@@ -172,7 +172,8 @@
     (testing "first run extracts all existing session episodes and records the watermark"
       (let [r (mem/extract-l2-graph! mm :session-id "sA")]
         (is (= 2 (:attempted r)))
-        (is (= 2 @calls))
+        (is (= 1 @calls) "2 episodes batched into 1 windowed LLM call")
+        (is (= 1 (:calls r)))
         (is (:incremental r))
         (is (pos? (long (:through-id r))))))
     (testing "re-running with nothing new is a no-op (watermark blocks re-extraction)"
@@ -191,8 +192,47 @@
       (reset! calls 0)
       (let [r (mem/extract-l2-graph! mm :session-id "sA" :rebuild? true)]
         (is (= 3 (:attempted r)))
-        (is (= 3 @calls))
+        (is (= 1 @calls) "3 episodes → 1 window → 1 call")
         (is (not (:incremental r)))))))
+
+(deftest windowed-batching-test
+  (let [calls (atom 0)
+        stub  (fn [_t] (swap! calls inc) {:entities [] :relations []})
+        ds    (:ds *store*)
+        mm    {:store *store* :extract-fn stub}]
+    (dotimes [i 5]
+      (write-l2! ds "w" (str "episode " i " with enough content to be extracted here")))
+    (testing "many episodes in a session batch into ONE call by default"
+      (let [r (mem/extract-l2-graph! mm :session-id "w")]
+        (is (= 5 (:attempted r)) "all 5 episodes fed")
+        (is (= 1 (:calls r)) "one window ⇒ one LLM call")
+        (is (= 1 @calls))))
+    (testing ":max-episodes-per-window bounds the window by episode count"
+      (reset! calls 0)
+      (let [r (mem/extract-l2-graph! mm :session-id "w" :rebuild? true :max-episodes-per-window 2)]
+        (is (= 5 (:attempted r)))
+        (is (= 3 (:calls r)) "5 episodes / 2 per window → 3 windows (2+2+1)")))
+    (testing "a tiny char budget forces multiple windows but drops nothing"
+      (reset! calls 0)
+      (let [r (mem/extract-l2-graph! mm :session-id "w" :rebuild? true :max-input-chars 60)]
+        (is (= 5 (:attempted r)) "windowing never drops episodes")
+        (is (> (:calls r) 1) "small budget ⇒ multiple windows")
+        (is (= (:calls r) @calls))))))
+
+(deftest batched-cap-scaling-test
+  (testing "per-episode caps are scaled by the window's episode count"
+    (let [ds       (:ds *store*)
+          captured (atom [])
+          mm       {:store *store* :extract-fn (fn [_t] {:entities [] :relations []})}]
+      (dotimes [i 4] (write-l2! ds "c" (str "episode " i " content long enough to extract ok")))
+      (with-redefs [extract/process-extraction!
+                    (fn [_s _r _sid limits] (swap! captured conj limits) {:nodes 0 :edges 0})]
+        (mem/extract-l2-graph! mm :session-id "c"
+                               :max-entities 12 :max-relations 24 :max-episodes-per-window 10))
+      (is (= 1 (count @captured)) "4 episodes ≤ 10 ⇒ one window")
+      (is (= {:max-entities 48 :max-relations 96}
+             (select-keys (first @captured) [:max-entities :max-relations]))
+          "12/24 per-episode caps scaled by the 4-episode window → 48/96"))))
 
 (deftest incremental-graph-build-per-user-test
   (let [calls (atom 0)
@@ -201,9 +241,9 @@
         mm    {:store *store* :extract-fn stub}]
     (write-l2! ds "s1" "episode one long enough to pass the min-content threshold ok")
     (write-l2! ds "s2" "episode two long enough to pass the min-content threshold ok")
-    (testing "no --session sweeps across all sessions, then watermarks per-user"
+    (testing "no --session sweeps across all sessions (one window per session), then watermarks"
       (is (= 2 (:attempted (mem/extract-l2-graph! mm))))
-      (is (= 2 @calls))
+      (is (= 2 @calls) "s1 and s2 are separate sessions → 2 windows, never mixed into one blob")
       (reset! calls 0)
       (is (= 0 (:attempted (mem/extract-l2-graph! mm))) "second sweep finds nothing new")
       (is (zero? @calls)))

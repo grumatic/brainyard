@@ -1131,14 +1131,16 @@
                      (fn [mm]
                        (apply mem/extract-l2-graph! mm
                               (cond-> [:max-entities max-entities
-                                       :max-relations max-relations]
+                                       :max-relations max-relations
+                                       :max-input-chars (or (agent/get-config :graph-extract-max-input-chars) 400000)
+                                       :max-episodes-per-window (or (agent/get-config :graph-extract-batch-episodes) 10)]
                                 sid      (into [:session-id sid])
                                 rebuild? (into [:rebuild? true])))))]
         (if json?
           (print-json! {:success true :user-id uid :session sid :rebuild rebuild? :report report})
-          (println (format "Graph-build [%s%s] → attempted=%s/%s (%s)%s"
+          (println (format "Graph-build [%s%s] → attempted=%s/%s in %s call(s) (%s)%s"
                            uid (if sid (str " / " sid) "")
-                           (:attempted report) (:total report)
+                           (:attempted report) (:total report) (:calls report 0)
                            (if rebuild? "full rebuild" "incremental")
                            (if (:no-extract-fn report)
                              " (no extract model configured — graph tier off)" "")))))
@@ -1191,11 +1193,13 @@
                                   max-entities max-relations)
                        (let [g (apply mem/extract-l2-graph! mm
                                       (cond-> [:max-entities max-entities
-                                               :max-relations max-relations]
+                                               :max-relations max-relations
+                                               :max-input-chars (or (agent/get-config :graph-extract-max-input-chars) 400000)
+                                               :max-episodes-per-window (or (agent/get-config :graph-extract-batch-episodes) 10)]
                                         sid      (into [:session-id sid])
                                         rebuild? (into [:rebuild? true])))
-                             _ (progress! "  extracted %s/%s episode(s)"
-                                          (:attempted g) (:total g))
+                             _ (progress! "  extracted %s/%s episode(s) in %s call(s)"
+                                          (:attempted g) (:total g) (:calls g 0))
                              _ (progress! "pruning graph to budget (max-nodes=%s max-edges=%s)…"
                                           max-nodes max-edges)
                              p (mem/prune-graph-to-budget! mm :max-nodes max-nodes

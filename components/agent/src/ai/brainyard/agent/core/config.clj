@@ -196,6 +196,8 @@
                                     :doc "Confines graph explosion: max entities a single episode may add to the graph (only when :enable-graph-memory). Extras are dropped (durable ones are listed first). Baked into the extractor at start-capture! — needs a `by` restart."}
    :graph-max-relations-per-episode {:type "integer" :default 24 :requires-restart true
                                      :doc "Confines graph explosion: max relationships (edges) a single episode may add (only when :enable-graph-memory). Kept highest-confidence-first, then capped. Baked into the extractor at start-capture! — needs a `by` restart."}
+   :graph-extract-batch-episodes {:type "integer" :default 10
+                                  :doc "Episodes per LLM call when manual `memory graph-build`/`reduce` batches extraction into windows (only when :enable-graph-memory). Larger ⇒ fewer/cheaper calls but the model dilutes over a bigger context and the graph gets sparser; smaller ⇒ more calls, higher fidelity. The per-episode entity/relation caps are scaled by the window's episode count, so a window keeps N× the single-episode budget. Read fresh at each graph-build/reduce (no restart)."}
    :graph-max-nodes            {:type "integer" :default 100 :requires-restart true
                                 :doc "Total-size cap: max nodes retained in the context graph per user (only when :enable-graph-memory). Over budget, the lowest-retention nodes are evicted (ranked by edge-degree, then curated-type over the generic `entity` fallback, then has-summary, then recency) down to 90% of the cap. 0 disables the cap. Baked into the extractor at start-capture! — needs a `by` restart."}
    :graph-max-edges            {:type "integer" :default 200 :requires-restart true
