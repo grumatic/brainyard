@@ -226,3 +226,44 @@
         (is (= 5 (graph/count-nodes ds uid)))
         (is (= (set (take 5 ids)) (set (remove survivors ids))) "5 lowest ids evicted")
         (is (= (set (drop 5 ids)) survivors) "5 highest ids survive")))))
+
+(deftest prune-nodes-weighted-degree-test
+  (testing "a node held up by weak `mentions` edges evicts before one with fewer STRONG edges"
+    (let [ds   (:ds *store*)
+          uid  (:user-id *store*)
+          hubs (mapv #(node! :concept (str "hub" %)) (range 4)) ;; endpoints, high score → survive
+          f    (node! :entity "filler")        ;; 1 mention  → wdeg 0.25
+          w    (node! :entity "mention-heavy") ;; 4 mentions → wdeg 1.0  (raw degree 4)
+          s    (node! :entity "strong-few")]   ;; 2 depends  → wdeg 2.0  (raw degree 2)
+      (edge! f (nth hubs 0) :mentions)
+      (doseq [h hubs] (edge! w h :mentions))
+      (edge! s (nth hubs 0) :depends_on)
+      (edge! s (nth hubs 1) :depends_on)
+      ;; total 7 nodes; max-nodes 6 → target floor(5.4)=5, evict 2 lowest-score.
+      (let [evicted   (graph/prune-nodes-to-budget! ds uid {:max-nodes 6})
+            survivors (set (map :name (graph/all-nodes ds uid)))]
+        (is (= 2 evicted))
+        (is (not (contains? survivors "mention-heavy"))
+            "high raw-degree but weak (mentions) node is evicted…")
+        (is (contains? survivors "strong-few")
+            "…while the lower raw-degree but strongly-connected node survives")))))
+
+(deftest prune-nodes-type-bonus-test
+  (testing "at equal weighted degree, a lower-value type (file) evicts before a knowledge type (concept)"
+    (let [ds  (:ds *store*)
+          uid (:user-id *store*)
+          h   (node! :component "hub")
+          f   (node! :entity "filler")          ;; 1 mention → 0.25
+          fl  (node! :file "some-file")         ;; 1 depends → wdeg 1.0 + file 1.0    = 2.0
+          c   (node! :concept "some-concept")]  ;; 1 depends → wdeg 1.0 + concept 3.0 = 4.0
+      (edge! f h :mentions)
+      (edge! fl h :depends_on)
+      (edge! c h :depends_on)
+      ;; total 4 nodes; max-nodes 3 → target floor(2.7)=2, evict 2 lowest-score.
+      (let [evicted   (graph/prune-nodes-to-budget! ds uid {:max-nodes 3})
+            survivors (set (map :name (graph/all-nodes ds uid)))]
+        (is (= 2 evicted))
+        (is (not (contains? survivors "some-file"))
+            "file evicted first despite identical weighted degree…")
+        (is (contains? survivors "some-concept")
+            "…knowledge type kept by the type bonus")))))

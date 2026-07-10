@@ -273,19 +273,49 @@
 ;; the lowest-retention nodes down to a low-water mark (hysteresis, so eviction
 ;; runs in batches rather than every episode).
 ;;
-;; Classification — which nodes to KEEP within the limit (kept high → evicted
-;; low), all SQL-computable:
-;;   1. DEGREE (valid-edge count) — a hub wired into many relations is worth far
-;;      more to relational recall than an orphan; degree-0 nodes go first.
-;;   2. TYPE — the generic `entity` fallback (auto-created for unlisted edge
-;;      endpoints / weak extractions) ranks below curated types (component, file,
-;;      config-key, person, concept …).
-;;   3. SUMMARY — a node carrying a summary is richer than a bare name.
-;;   4. RECENCY (updated_at, bumped on every re-mention) — stalest evicted first.
-;;   5. ID (ascending) — a deterministic total-order tiebreak so nodes tied on
-;;      all of the above (common: same-second `updated_at` from a batch write)
-;;      evict oldest-inserted first rather than in SQLite's unspecified order.
-;; Victims are the inverse of that order.
+;; Classification — a retention SCORE per node (kept high → evicted low), all
+;; SQL-computable, then deterministic tiebreaks:
+;;   SCORE = weighted-degree + type-bonus
+;;     • WEIGHTED-DEGREE — SUM over valid edges of the relation weight, NOT a raw
+;;       count: curated relations count 1.0, the generic `mentions` catch-all
+;;       (extractor fallback / auto-created endpoints) only `mention-degree-
+;;       weight` (0.25). So a node held up by many weak `mentions` edges no
+;;       longer outranks a sparsely-but-strongly-connected one.
+;;     • TYPE-BONUS (`type-retention-bonus`) — durable-knowledge types
+;;       (concept/config-key/person = 3) outrank structural (component = 2,
+;;       file = 1) which outrank the generic `entity` fallback (0). So a curated
+;;       concept isn't evicted before a same-degree file, while a genuine
+;;       high-degree hub still wins on connectivity.
+;;   Tiebreaks (equal score): SUMMARY (has-summary richer) → RECENCY (updated_at,
+;;   stalest first) → ID (ascending; deterministic total order so a same-second
+;;   batch write doesn't leave ties to SQLite's unspecified order).
+;; Victims are the lowest-scoring nodes.
+
+(def ^:private relation-degree-weight
+  "Per-relation contribution to a node's WEIGHTED degree (default 1.0 for any
+  relation not listed). `mentions` is the extractor's generic catch-all and the
+  relation auto-created for unlisted edge endpoints, so it inflates degree
+  cheaply — count it low so a node kept alive only by weak `mentions` becomes
+  evictable."
+  {"mentions" 0.25})
+
+(def ^:private type-retention-bonus
+  "Additive retention weight per node type, folded into the eviction score
+  alongside weighted degree (default 0.0). Durable-knowledge types outrank
+  structural types outrank the generic `entity` fallback."
+  {"concept" 3.0 "config-key" 3.0 "person" 3.0
+   "component" 2.0
+   "file" 1.0
+   "entity" 0.0})
+
+(defn- sql-case
+  "Render a SQL `CASE <col> WHEN 'k' THEN v … ELSE <default> END` from a
+  string-keyed number map. Values are inlined (trusted, code-local constants —
+  never user input)."
+  [col m default]
+  (str "CASE " col " "
+       (apply str (map (fn [[k v]] (str "WHEN '" k "' THEN " v " ")) m))
+       "ELSE " default " END"))
 
 (defn count-nodes
   "Total node count for `user-id`."
@@ -340,18 +370,20 @@
         0
         (let [target  (long (Math/floor (* max-nodes (double low-water-ratio))))
               n-evict (max 0 (- total target))
-              ;; Rank ascending by retention → the first n-evict are the victims.
+              ;; Rank ascending by retention score → the first n-evict are the
+              ;; victims. Score = weighted-degree + type-bonus (see comment above).
+              rel-w   (sql-case "relation" relation-degree-weight 1.0)
+              type-b  (sql-case "n.node_type" type-retention-bonus 0.0)
               victims (mapv #(or (:id %) (:graph_nodes/id %))
                             (jdbc/execute!
                              ds [(str "SELECT n.id AS id FROM graph_nodes n "
-                                      "LEFT JOIN (SELECT node, COUNT(*) AS deg FROM ("
-                                      "  SELECT src_id AS node FROM graph_edges WHERE user_id = ? AND t_invalid IS NULL "
+                                      "LEFT JOIN (SELECT node, SUM(w) AS wdeg FROM ("
+                                      "  SELECT src_id AS node, " rel-w " AS w FROM graph_edges WHERE user_id = ? AND t_invalid IS NULL "
                                       "  UNION ALL "
-                                      "  SELECT dst_id AS node FROM graph_edges WHERE user_id = ? AND t_invalid IS NULL) "
+                                      "  SELECT dst_id AS node, " rel-w " AS w FROM graph_edges WHERE user_id = ? AND t_invalid IS NULL) "
                                       "  GROUP BY node) d ON d.node = n.id "
                                       "WHERE n.user_id = ? "
-                                      "ORDER BY COALESCE(d.deg, 0) ASC, "          ;; orphans first
-                                      "         (n.node_type = 'entity') DESC, "    ;; generic fallback first
+                                      "ORDER BY (COALESCE(d.wdeg, 0) + " type-b ") ASC, " ;; retention score (weighted degree + type bonus)
                                       "         (n.summary IS NULL OR n.summary = '') DESC, " ;; no-summary first
                                       "         n.updated_at ASC, "                 ;; stalest first
                                       "         n.id ASC "                          ;; deterministic tiebreak (oldest-inserted first)
