@@ -299,7 +299,7 @@
   ;; vec recall is paused while the index is stale (embed model changed) —
   ;; FTS still serves, never a mixed-space ranking.
   (vec-search      [_ query opts]        (if @!vec-stale [] (graph/vec-search ds user-id embed-fn query opts)))
-  (related         [_ keywords opts]     (graph/related ds user-id keywords opts)))
+  (related         [_ keywords opts]     (graph/related ds user-id (when-not @!vec-stale embed-fn) keywords opts)))
 
 ;; =====================================================
 ;; Factory

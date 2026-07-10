@@ -108,11 +108,12 @@
 
 (defn- read-graph
   "CR-MEM-23 relational candidates: resolve seed nodes from the query
-  keywords and expand the bounded neighborhood via the store's GraphStore
+  (semantically via node embeddings when available, else lexically from
+  keywords) and expand the bounded neighborhood via the store's GraphStore
   surface. Returns relationship entries; [] when the graph is empty."
-  [store _query keywords {:keys [limit]}]
+  [store query keywords {:keys [limit]}]
   (if (satisfies? proto/GraphStore store)
-    (proto/related store keywords {:limit (or limit default-per-layer-limit)})
+    (proto/related store keywords {:limit (or limit default-per-layer-limit) :query query})
     []))
 
 (defn- read-layer

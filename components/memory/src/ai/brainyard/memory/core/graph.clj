@@ -721,13 +721,42 @@
      :confidence (or (:confidence e) 0.85)
      :_graph     {:src (:src_name e) :relation (keyword (:relation e)) :dst (:dst_name e)}}))
 
+(defn search-nodes-semantic
+  "Resolve seed nodes by SEMANTIC similarity: embed `query`, kNN the
+  `ref_kind='node'` vectors in `graph_vec`, and return the matching node maps,
+  nearest-first. Over-fetches from the mixed (node+fact) index, then keeps the
+  top `limit` node hits. Returns [] when unavailable (no embed-fn, blank query,
+  no vec table, or no node hits) — callers fall back to lexical `search-nodes`."
+  [ds user-id embed-fn query {:keys [limit] :or {limit 8}}]
+  (if (or (nil? embed-fn) (not (string? query)) (str/blank? query) (not (vec-available? ds)))
+    []
+    (if-let [qe (embed/embed-one embed-fn query)]
+      (let [hits     (vec-knn ds qe {:limit (max 24 (* 3 limit))})
+            node-ids (->> hits (filter #(= "node" (:ref-kind %)))
+                          (map :ref-id) (remove nil?) (take limit) vec)]
+        (if (empty? node-ids)
+          []
+          (let [ph    (str/join "," (repeat (count node-ids) "?"))
+                rows  (jdbc/execute! ds (into [(str "SELECT * FROM graph_nodes "
+                                                    "WHERE user_id = ? AND id IN (" ph ")")]
+                                              (cons user-id node-ids)))
+                by-id (into {} (map (fn [r] (let [n (row->node r)] [(:id n) n]))) rows)]
+            ;; preserve kNN (ascending-distance) order
+            (->> node-ids (keep by-id) vec))))
+      [])))
+
 (defn related
-  "Relational recall: resolve seed nodes from query `keywords`, expand the
-  bounded neighborhood over valid edges, and return relationship entries —
-  for fusion into the RRF and the '## Related' briefing section. Returns []
-  when nothing matches (the non-regressing fallback)."
-  [ds user-id keywords {:keys [limit max-hops] :or {limit 8 max-hops 2}}]
-  (let [seeds (search-nodes ds user-id keywords {:limit 8})
+  "Relational recall: resolve seed nodes from the query, expand the bounded
+  neighborhood over valid edges, and return relationship entries — for fusion
+  into the RRF and the '## Related' briefing section.
+
+  Seeds are resolved SEMANTICALLY when an `embed-fn` and a `:query` are
+  available (embed → kNN node vectors), falling back to lexical keyword
+  `search-nodes` when the vector index is unavailable or yields no node hits.
+  Returns [] when nothing matches (the non-regressing fallback)."
+  [ds user-id embed-fn keywords {:keys [limit max-hops query] :or {limit 8 max-hops 2}}]
+  (let [seeds (or (seq (search-nodes-semantic ds user-id embed-fn query {:limit 8}))
+                  (search-nodes ds user-id keywords {:limit 8}))
         edges (when (seq seeds)
                 (expand-edges ds user-id (map :id seeds)
                               {:max-hops max-hops :limit (* 2 limit)}))]
