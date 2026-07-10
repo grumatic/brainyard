@@ -282,6 +282,9 @@
 ;;      config-key, person, concept …).
 ;;   3. SUMMARY — a node carrying a summary is richer than a bare name.
 ;;   4. RECENCY (updated_at, bumped on every re-mention) — stalest evicted first.
+;;   5. ID (ascending) — a deterministic total-order tiebreak so nodes tied on
+;;      all of the above (common: same-second `updated_at` from a batch write)
+;;      evict oldest-inserted first rather than in SQLite's unspecified order.
 ;; Victims are the inverse of that order.
 
 (defn count-nodes
@@ -350,7 +353,8 @@
                                       "ORDER BY COALESCE(d.deg, 0) ASC, "          ;; orphans first
                                       "         (n.node_type = 'entity') DESC, "    ;; generic fallback first
                                       "         (n.summary IS NULL OR n.summary = '') DESC, " ;; no-summary first
-                                      "         n.updated_at ASC "                  ;; stalest first
+                                      "         n.updated_at ASC, "                 ;; stalest first
+                                      "         n.id ASC "                          ;; deterministic tiebreak (oldest-inserted first)
                                       "LIMIT ?")
                                  user-id user-id user-id n-evict]))]
           (when (seq victims)

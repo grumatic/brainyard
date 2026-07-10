@@ -5,6 +5,7 @@
 (ns ai.brainyard.memory.graph-test
   "Phase 0 (CR-MEM-20) context-graph storage + traversal."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [next.jdbc :as jdbc]
             [ai.brainyard.memory.core.sqlite :as sqlite]
             [ai.brainyard.memory.core.unified-store :as us]
             [ai.brainyard.memory.core.graph :as graph]
@@ -205,3 +206,23 @@
           (is (= 0 pruned) "invalidated edge row still protects the node")
           (is (contains? names "was-connected") "superseded target kept for as-of history")
           (is (= #{"connected-a" "connected-b" "was-connected"} names)))))))
+
+(deftest prune-nodes-budget-deterministic-tiebreak-test
+  (let [ds    (:ds *store*)
+        uid   (:user-id *store*)
+        ;; 10 nodes identical on every ranking key: same type, no summary, no
+        ;; edges (degree 0). Then force an identical updated_at so ONLY the id
+        ;; tiebreak can order them — this guards the `n.id ASC` tiebreak (without
+        ;; it, SQLite's order for the fully-tied group is unspecified).
+        nodes (mapv #(node! :entity (str "n" %)) (range 10))
+        ids   (sort (map :id nodes))]
+    (jdbc/execute! ds ["UPDATE graph_nodes SET updated_at = '2026-01-01 00:00:00'
+                        WHERE user_id = ?" uid])
+    (testing "fully-tied nodes evict lowest-id first (deterministic)"
+      ;; target = floor(6 * 0.9) = 5; evict 10 - 5 = 5 → the 5 lowest ids go.
+      (let [evicted   (graph/prune-nodes-to-budget! ds uid {:max-nodes 6})
+            survivors (set (map :id (graph/all-nodes ds uid)))]
+        (is (= 5 evicted))
+        (is (= 5 (graph/count-nodes ds uid)))
+        (is (= (set (take 5 ids)) (set (remove survivors ids))) "5 lowest ids evicted")
+        (is (= (set (drop 5 ids)) survivors) "5 highest ids survive")))))
