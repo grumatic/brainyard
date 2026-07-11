@@ -327,7 +327,7 @@
     [:span.id id]
     [:div.spacer]
     [:button {:on {:click [[:brainyard/toggle id]]}} "Config"]
-    [:button {:on {:click [[:graph/toggle id]]}} "Graph Memory"]
+    [:button {:on {:click [[:graph/toggle id]]}} "Graph"]
     [:button {:on {:click [[:memory/toggle id]]}} "Memory"]
     (port-menu (get (:ports state) id))]
    ;; ttyd's own client, proxied same-origin. Stable :replicant/key so the iframe
