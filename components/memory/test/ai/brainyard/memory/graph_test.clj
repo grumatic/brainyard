@@ -267,3 +267,21 @@
             "file evicted first despite identical weighted degree…")
         (is (contains? survivors "some-concept")
             "…knowledge type kept by the type bonus")))))
+
+(deftest prune-orphan-vec-test
+  (let [ds (:ds *store*)]
+    (if-not (graph/vec-available? ds)
+      (is true "sqlite-vec unavailable in this env — prune-orphan-vec! is a no-op (skipped)")
+      (let [live (node! :concept "live-node")
+            emb  (vec (repeat (sqlite/graph-embed-dims) 0.1))
+            cnt  (fn [k r] (:c (jdbc/execute-one!
+                                ds ["SELECT COUNT(*) c FROM graph_vec WHERE ref_kind=? AND ref_id=?" k r])))]
+        (graph/upsert-node-embedding! ds (:id live) emb)
+        (graph/upsert-node-embedding! ds 999999 emb)   ;; orphan node vec (no such node)
+        (graph/upsert-fact-embedding! ds 888888 emb)   ;; orphan fact vec (no such fact)
+        (testing "orphan node+fact embeddings dropped, live node embedding kept, idempotent"
+          (is (= 2 (graph/prune-orphan-vec! ds)) "two orphans pruned")
+          (is (= 1 (cnt "node" (:id live))) "live node embedding kept")
+          (is (= 0 (cnt "node" 999999)) "orphan node embedding gone")
+          (is (= 0 (cnt "fact" 888888)) "orphan fact embedding gone")
+          (is (= 0 (graph/prune-orphan-vec! ds)) "second run is a no-op"))))))

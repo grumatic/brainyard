@@ -17,6 +17,7 @@
   consolidation works with or without an LLM provider."
   (:require [clojure.string :as str]
             [next.jdbc :as jdbc]
+            [ai.brainyard.memory.core.graph :as graph]
             [ai.brainyard.memory.interface.protocol :as proto]
             [ai.brainyard.mulog.interface :as mulog]))
 
@@ -190,8 +191,12 @@
   [store summarize-fn & {:as opts}]
   (let [{:keys [ds user-id]} store
         d (detect-communities! ds user-id)
-        s (apply summarize-communities! store summarize-fn (mapcat identity (or opts {})))]
-    (mulog/info ::graph-consolidated :communities (:communities d) :produced (:summarized s))
+        s (apply summarize-communities! store summarize-fn (mapcat identity (or opts {})))
+        ;; Catch-all: drop graph_vec embeddings orphaned by any hard delete
+        ;; (fact dedup, retention/cascade cleanup) — no DB trigger does this.
+        v (graph/prune-orphan-vec! ds)]
+    (mulog/info ::graph-consolidated :communities (:communities d)
+                :produced (:summarized s) :vec-orphans-pruned v)
     {:from-layer  :l2
      :to-layer    :l3
      :reducer     :community

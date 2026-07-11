@@ -522,6 +522,31 @@
   [ds row-id embedding]
   (upsert-embedding! ds "node" row-id embedding))
 
+(defn prune-orphan-vec!
+  "Delete `graph_vec` embeddings whose `ref_id` no longer joins a live row —
+  `ref_kind='node'` with no `graph_nodes` row, or `ref_kind='fact'` with no
+  `semantic_facts` row. There is NO DB trigger for this (and there can't be —
+  vec0 needs the extension loaded), and only node eviction cleans up inline;
+  any other hard delete (L3-fact dedup, retention/cascade cleanup) orphans its
+  vector. This is the catch-all sweep, run at consolidation. No-op when the vec
+  table is absent. Returns the count deleted."
+  [ds]
+  (if-not (vec-available? ds)
+    0
+    (let [cnt    #(long (or (val1 (jdbc/execute-one! ds ["SELECT COUNT(*) AS c FROM graph_vec"])
+                                  :c :graph_vec/c) 0))
+          before (cnt)]
+      (try
+        (jdbc/execute! ds ["DELETE FROM graph_vec WHERE ref_kind = 'node'
+                            AND ref_id NOT IN (SELECT id FROM graph_nodes)"])
+        (jdbc/execute! ds ["DELETE FROM graph_vec WHERE ref_kind = 'fact'
+                            AND ref_id NOT IN (SELECT id FROM semantic_facts)"])
+        (catch Exception e
+          (mulog/warn ::graph-vec-orphan-prune-failed :error (ex-message e))))
+      (let [deleted (- before (cnt))]
+        (when (pos? deleted) (mulog/info ::graph-vec-orphans-pruned :pruned deleted))
+        deleted))))
+
 ;; =====================================================
 ;; Embed-model fingerprint + rebuild (CR-MEM-21)
 ;; =====================================================
