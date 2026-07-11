@@ -570,6 +570,14 @@
            ;; what prevents stale .class files from shadowing edited
            ;; sources during development.
            (let [dir "projects/agent-tui-app"]
+             ;; ALWAYS start from an empty AOT dir. `compile` reuses an existing
+             ;; .class when it's newer than its .clj, so an incremental rebuild
+             ;; that only touches (say) a protocol namespace leaves dependent
+             ;; records compiled against the OLD protocol object — at runtime
+             ;; `proto/<method>` on the new object finds "No implementation …
+             ;; for class". A clean AOT dir makes every build internally
+             ;; consistent. (See feedback: stale .class shadows .clj.)
+             (shell "rm" "-rf" (str dir "/target/classes"))
              (shell "mkdir" "-p" (str dir "/target/classes"))
              (let [result (shell {:continue true :dir dir}
                                  "clojure" "-M:build" "-e"
