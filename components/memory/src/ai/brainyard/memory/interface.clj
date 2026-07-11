@@ -322,6 +322,21 @@
             (store store-or-manager))]
     (proto/forget s layer entry-id)))
 
+(defn update-entry!
+  "Update mutable fields of an existing L2/L3 entry in place, keyed by its
+  stable `entry-id`. `updates` recognizes {:content :kind :confidence} (the
+  latter L3-only); absent keys are untouched. Returns the updated entry, or nil
+  when no row matched. In-place UPDATE that preserves the entry-id and re-indexes
+  the L3 embedding on a content change — the curation counterpart to `write-entry`
+  (which can't update an existing L3 fact: its stable entry-id collides with the
+  UNIQUE index and the re-insert is dropped)."
+  [store-or-manager layer entry-id updates]
+  (let [s (if (instance? ai.brainyard.memory.core.unified_store.UnifiedStore
+                         store-or-manager)
+            store-or-manager
+            (store store-or-manager))]
+    (proto/update-entry s layer entry-id updates)))
+
 ;; =====================================================
 ;; L1 entry-id helper
 ;; =====================================================

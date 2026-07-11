@@ -97,14 +97,24 @@
        (map (juxt :command :runs))
        (into {})))
 
-(deftest memory-read-verbs-registered
-  (testing "every Phase 1 read verb is wired into the `memory` subcommand tree"
+(deftest memory-verbs-registered
+  (testing "every Phase 1 read + Phase 2 write verb is wired into the `memory` subcommand tree"
     (let [subs (memory-subcommands)]
-      (doseq [[cmd expected] {"list"    #'main/cmd-memory-list
+      (doseq [[cmd expected] {;; Phase 1 — reads
+                              "list"    #'main/cmd-memory-list
                               "get"     #'main/cmd-memory-get
                               "search"  #'main/cmd-memory-search
                               "explain" #'main/cmd-memory-explain
                               "status"  #'main/cmd-memory-status
-                              "graph"   #'main/cmd-memory-graph}]
+                              "graph"   #'main/cmd-memory-graph
+                              ;; Phase 2 — writes
+                              "forget"  #'main/cmd-memory-forget
+                              "edit"    #'main/cmd-memory-edit
+                              "keep"    #'main/cmd-memory-keep
+                              "archive" #'main/cmd-memory-archive
+                              "promote" #'main/cmd-memory-promote
+                              "sweep"   #'main/cmd-memory-sweep
+                              "prune"   #'main/cmd-memory-prune
+                              "reembed" #'main/cmd-memory-reembed}]
         (is (contains? subs cmd) (str "memory " cmd " is registered"))
         (is (= @expected (get subs cmd)) (str "memory " cmd " runs its cmd fn"))))))

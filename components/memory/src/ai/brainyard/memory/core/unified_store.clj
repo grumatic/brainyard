@@ -13,7 +13,8 @@
 
   Cross-store promotion is supported: an entry promoted from :l1 to :l3
   is written to L3 with provenance pointing back to the L1 entry-id."
-  (:require [ai.brainyard.memory.interface.protocol :as proto]
+  (:require [clojure.string :as str]
+            [ai.brainyard.memory.interface.protocol :as proto]
             [ai.brainyard.memory.core.entry :as entry]
             [ai.brainyard.memory.core.l1-store :as l1]
             [ai.brainyard.memory.core.episodic :as episodic]
@@ -260,6 +261,47 @@
         :l3 (l3-forget! ds user-id entry-id)
         (throw (ex-info "UnifiedStore/forget: unknown layer"
                         {:layer layer'})))))
+
+  (update-entry [this layer entry-id updates]
+    (let [layer' (keyword layer)
+          {:keys [table type-col]}
+          (case layer'
+            :l2 {:table "episodes"       :type-col "episode_type"}
+            :l3 {:table "semantic_facts" :type-col "fact_type"}
+            (throw (ex-info "UnifiedStore/update-entry: unsupported layer (l2/l3 only)"
+                            {:layer layer'})))
+          ;; Whitelisted, layer-appropriate column set → [col value] pairs.
+          set-pairs (cond-> []
+                      (contains? updates :content)
+                      (conj ["content" (:content updates)])
+                      (contains? updates :kind)
+                      (conj [type-col (let [k (:kind updates)]
+                                        (if (keyword? k) (name k) (str k)))])
+                      (and (= :l3 layer') (contains? updates :confidence))
+                      (conj ["confidence" (float (:confidence updates))]))]
+      (when (seq set-pairs)
+        (let [set-sql (str/join ", " (map #(str (first %) " = ?") set-pairs))
+              args    (concat (map second set-pairs) [entry-id user-id])
+              r (jdbc/execute-one!
+                 ds (into [(str "UPDATE " table " SET " set-sql
+                                " WHERE entry_id = ? AND user_id = ?")]
+                          args))]
+          (when (pos? (or (:next.jdbc/update-count r) 0))
+            (mulog/debug ::update-entry :layer layer' :entry-id entry-id
+                         :cols (mapv first set-pairs))
+            ;; Re-index the L3 embedding when content changed (unless the
+            ;; vector index is stale — never mix embed-model spaces).
+            (when (and (= :l3 layer') (contains? updates :content)
+                       embed-fn (not @!vec-stale))
+              (when-let [db-id (:id (jdbc/execute-one!
+                                     ds ["SELECT id FROM semantic_facts
+                                          WHERE entry_id = ? AND user_id = ?"
+                                         entry-id user-id]))]
+                (when-let [e (embed/embed-one embed-fn (:content updates))]
+                  (graph/upsert-fact-embedding! ds db-id e))))
+            (first (proto/read-entries this layer' {:id entry-id}
+                                       {:limit 1 :include-archived true
+                                        :include-tombstoned true})))))))
 
   (consolidate-layer [this from-layer policy]
     ;; Dispatch by from-layer. :l2 is the only path that actually

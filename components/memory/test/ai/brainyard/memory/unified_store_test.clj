@@ -202,3 +202,37 @@
     ;; :and — only the doc with both words
     (is (= 1 (count (proto/read-entries *store* :l2
                                         {:text "deploy production" :session-id "s-match" :match :and} {}))))))
+
+;; =====================================================
+;; update-entry — in-place curation (Phase 2 write path)
+;; =====================================================
+
+(deftest update-entry-l3-in-place-test
+  (testing "L3 content/confidence update in place, id preserved, NO duplicate row"
+    (proto/write-entry *store* :l3
+                       {:id "fact/u" :kind :insight :content "old" :confidence 0.5})
+    (let [u (proto/update-entry *store* :l3 "fact/u" {:content "new" :confidence 0.9})]
+      (is (= "new" (:content u)))
+      (is (= "fact/u" (:id u)) "stable entry-id preserved")
+      (is (< 0.89 (:confidence u) 0.91)))
+    ;; persisted, and exactly one row (write-entry would have collided/no-op'd)
+    (let [rows (proto/read-entries *store* :l3 {} {:limit 50})]
+      (is (= 1 (count rows)))
+      (is (= "new" (:content (first rows)))))))
+
+(deftest update-entry-l2-kind-and-content-test
+  (testing "L2 content + kind (episode_type) update in place"
+    (proto/write-entry *store* :l2
+                       {:id "ep/u" :kind :qa :content "old L2" :session-id "s"})
+    (let [u (proto/update-entry *store* :l2 "ep/u" {:content "new L2" :kind :note})]
+      (is (= "new L2" (:content u)))
+      (is (= :note (:kind u)))
+      (is (= "ep/u" (:id u))))))
+
+(deftest update-entry-edge-cases-test
+  (testing "missing id and empty update both return nil; L1 is rejected"
+    (proto/write-entry *store* :l3 {:id "fact/e" :kind :insight :content "x"})
+    (is (nil? (proto/update-entry *store* :l3 "does-not-exist" {:content "y"})))
+    (is (nil? (proto/update-entry *store* :l3 "fact/e" {})) "no recognized fields → no-op nil")
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (proto/update-entry *store* :l1 "a" {:content "y"})))))

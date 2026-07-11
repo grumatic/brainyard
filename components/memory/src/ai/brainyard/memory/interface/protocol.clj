@@ -141,6 +141,18 @@
      than delete the row (audit retention). Returns truthy when the
      entry existed; nil/false otherwise.")
 
+  (update-entry [this layer entry-id updates]
+    "Update mutable fields of an existing L2/L3 entry in place, keyed by
+     its stable `entry-id`. `updates` is a map; recognized keys:
+       :content     — new body text (L2 + L3)
+       :kind        — episode_type (L2) / fact_type (L3)
+       :confidence  — L3 only
+     Absent keys are left untouched. Returns the updated entry, or nil
+     when no row matched. Unlike `write-entry`, this is an in-place UPDATE
+     that preserves the entry-id (write-entry can't update L3 — its stable
+     entry-id hits the UNIQUE index and the insert is dropped). L1 is not
+     supported (session working-set, no stable curation surface).")
+
   (consolidate-layer [this from-layer policy]
     "Run a reduction pass over entries in `from-layer` according to
      `policy`, producing higher-layer entries with provenance back to

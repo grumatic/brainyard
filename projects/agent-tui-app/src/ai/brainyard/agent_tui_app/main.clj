@@ -123,6 +123,16 @@
   [msg]
   (binding [*out* *err*] (println msg)))
 
+(defn- confirm!
+  "Read a y/N confirmation from the console. False (decline) when there is no
+   interactive console."
+  [prompt]
+  (if (some? (System/console))
+    (do (print prompt) (flush)
+        (boolean (#{"y" "Y" "yes"} (some-> (try (read-line) (catch Throwable _ nil))
+                                           str str/trim))))
+    false))
+
 (defn- print-json!
   "Serialize `data` to a single line of JSON on stdout. Keyword keys/values
    become strings; any value data.json can't encode is stringified via str so a
@@ -220,6 +230,43 @@
   {:option "turn"
    :as "Explain a single (per-agent) turn id; omit to explain every turn in the session"
    :type :int})
+
+;; Write-verb knobs for `memory forget/edit/keep/archive/promote/sweep/prune`
+;; (Phase 2 management CLI). Mutations curate the user-scoped store in place.
+(def content-opt
+  {:option "content" :short "c"
+   :as "New body text for `memory edit`"
+   :type :string})
+
+(def confidence-opt
+  {:option "confidence"
+   :as "New confidence (0.0–1.0) for `memory edit` on an L3 fact"
+   :type :string})
+
+(def undo-opt
+  {:option "undo"
+   :as "Reverse the flag: `keep --undo` unpins, `archive --undo` unarchives"
+   :type :with-flag :default false})
+
+(def from-opt
+  {:option "from"
+   :as "Source layer for `memory promote` (l2)"
+   :type :string})
+
+(def to-opt
+  {:option "to"
+   :as "Target layer for `memory promote` (l3)"
+   :type :string})
+
+(def retention-days-opt
+  {:option "retention-days"
+   :as "Tombstone L2 episodes older than N days that are not kept (default 30)"
+   :type :int})
+
+(def yes-opt
+  {:option "yes" :short "y"
+   :as "Skip the interactive confirmation for destructive verbs (forget/sweep/prune)"
+   :type :with-flag :default false})
 
 ;; ============================================================================
 ;; Legacy provider:model parsing
@@ -1357,6 +1404,293 @@
             (emit-err! (str "Error: " (.getMessage e))))
         (System/exit 1)))))
 
+;; ---------------------------------------------------------------------------
+;; Phase 2 write verbs — curate/mutate the user-scoped store (audited)
+;; ---------------------------------------------------------------------------
+
+(defn- mem-audit!
+  "Emit a durable mulog record for every memory mutation issued from the CLI —
+   the audit trail that a raw `sqlite3 UPDATE` never leaves. `info` merges into
+   the event so counts/ids are queryable in the app log."
+  [verb uid info]
+  (mulog/log ::memory-mutation :verb verb :user-id uid :source :cli
+             :info info))
+
+(defn- require-confirm!
+  "Gate a destructive verb: true to proceed. `--json` and `--yes` bypass the
+   prompt (scripting); otherwise ask, and refuse when there's no TTY."
+  [opts prompt]
+  (or (:json opts) (:yes opts) (confirm! prompt)))
+
+(defn cmd-memory-forget
+  "Tombstone an L2/L3 entry by id (excluded from recall; row retained for audit).
+   Prompts for confirmation unless --yes/--json. Exits 1 when the id is unknown."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        layer (parse-layer (:layer opts))
+        id    (some-> (first (:_arguments opts)) str/trim not-empty)]
+    (cond
+      (or (nil? layer) (nil? id))
+      (do (if json? (print-json! {:success false :error "--layer and <entry-id> are required" :user-id uid})
+              (emit-err! "Usage: by memory forget <entry-id> --layer l2|l3 [--yes]"))
+          (System/exit 1))
+      :else
+      (try
+        (let [existing (with-memory-manager
+                         uid (fn [mm]
+                               (first (mem/read-entries mm layer {:id id}
+                                                        {:limit 1 :include-archived true}))))]
+          (cond
+            (nil? existing)
+            (do (if json? (print-json! {:success false :user-id uid :layer layer :id id :error "not found"})
+                    (emit-err! (str "Not found: " id " in " (name layer))))
+                (System/exit 1))
+            (not (require-confirm! opts (format "Tombstone %s in %s? [y/N] " id (name layer))))
+            (do (emit-err! "Aborted.") (System/exit 1))
+            :else
+            (let [ok (with-memory-manager uid (fn [mm] (mem/forget-entry mm layer id)))]
+              (mem-audit! :forget uid {:layer layer :id id :ok (boolean ok)})
+              (if json?
+                (print-json! {:success (boolean ok) :user-id uid :layer layer :id id :forgot (boolean ok)})
+                (println (if ok (format "Tombstoned %s in %s." id (name layer))
+                             (format "No change (%s not found)." id))))
+              (System/exit (if ok 0 1)))))
+        (catch Exception e
+          (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+              (emit-err! (str "Error: " (.getMessage e))))
+          (System/exit 1))))))
+
+(defn cmd-memory-edit
+  "Update an existing L2/L3 entry in place (--content, --kind, --confidence for
+   L3), preserving its id and re-indexing the L3 embedding on a content change.
+   At least one field is required. Exits 1 when the id is unknown."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json?   (:json opts)
+        uid     (helpers/resolve-user-id (:user-id opts))
+        layer   (parse-layer (:layer opts))
+        id      (some-> (first (:_arguments opts)) str/trim not-empty)
+        content (:content opts)
+        kind    (some-> (:kind opts) str/trim not-empty)
+        conf    (some-> (:confidence opts) str/trim not-empty parse-double)
+        updates (cond-> {}
+                  (some? content) (assoc :content content)
+                  kind            (assoc :kind kind)
+                  (some? conf)    (assoc :confidence conf))]
+    (cond
+      (or (nil? layer) (nil? id))
+      (do (if json? (print-json! {:success false :error "--layer and <entry-id> are required" :user-id uid})
+              (emit-err! "Usage: by memory edit <entry-id> --layer l2|l3 --content … [--kind K] [--confidence F]"))
+          (System/exit 1))
+      (= :l1 layer)
+      (do (if json? (print-json! {:success false :error "edit supports l2/l3 only" :user-id uid})
+              (emit-err! "edit supports l2/l3 only (L1 is the session working-set)."))
+          (System/exit 1))
+      (empty? updates)
+      (do (if json? (print-json! {:success false :error "nothing to update (pass --content/--kind/--confidence)" :user-id uid})
+              (emit-err! "Nothing to update — pass --content, --kind, and/or --confidence."))
+          (System/exit 1))
+      :else
+      (try
+        (let [updated (with-memory-manager uid (fn [mm] (mem/update-entry! mm layer id updates)))]
+          (mem-audit! :edit uid {:layer layer :id id :fields (vec (keys updates)) :ok (boolean updated)})
+          (cond
+            (nil? updated)
+            (do (if json? (print-json! {:success false :user-id uid :layer layer :id id :error "not found"})
+                    (emit-err! (str "Not found: " id " in " (name layer))))
+                (System/exit 1))
+            :else
+            (do (if json?
+                  (print-json! {:success true :user-id uid :layer layer :id id
+                                :fields (vec (keys updates)) :entry updated})
+                  (println (format "Updated %s in %s (%s)." id (name layer)
+                                   (str/join ", " (map name (keys updates))))))
+                (System/exit 0))))
+        (catch Exception e
+          (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+              (emit-err! (str "Error: " (.getMessage e))))
+          (System/exit 1))))))
+
+(defn cmd-memory-keep
+  "Pin (or, with --undo, unpin) an L2/L3 entry against the retention sweep."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        layer (parse-layer (:layer opts))
+        id    (some-> (first (:_arguments opts)) str/trim not-empty)
+        undo? (boolean (:undo opts))]
+    (cond
+      (or (nil? layer) (nil? id))
+      (do (if json? (print-json! {:success false :error "--layer and <entry-id> are required" :user-id uid})
+              (emit-err! "Usage: by memory keep <entry-id> --layer l2|l3 [--undo]"))
+          (System/exit 1))
+      :else
+      (try
+        (let [ok (with-memory-manager uid (fn [mm] (if undo? (mem/unkeep! mm layer id)
+                                                       (mem/keep! mm layer id))))]
+          (mem-audit! (if undo? :unkeep :keep) uid {:layer layer :id id :ok (boolean ok)})
+          (if json?
+            (print-json! {:success (boolean ok) :user-id uid :layer layer :id id :undo undo?
+                          :kept (boolean (and ok (not undo?)))})
+            (println (if ok (format "%s %s in %s." (if undo? "Unpinned" "Pinned") id (name layer))
+                         (format "No change (%s not found)." id))))
+          (System/exit (if ok 0 1)))
+        (catch Exception e
+          (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+              (emit-err! (str "Error: " (.getMessage e))))
+          (System/exit 1))))))
+
+(defn cmd-memory-archive
+  "Archive (or, with --undo, unarchive) an L2/L3 entry — excluded from default
+   recall but still retrievable with --include-archived."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        layer (parse-layer (:layer opts))
+        id    (some-> (first (:_arguments opts)) str/trim not-empty)
+        undo? (boolean (:undo opts))]
+    (cond
+      (or (nil? layer) (nil? id))
+      (do (if json? (print-json! {:success false :error "--layer and <entry-id> are required" :user-id uid})
+              (emit-err! "Usage: by memory archive <entry-id> --layer l2|l3 [--undo]"))
+          (System/exit 1))
+      :else
+      (try
+        (let [ok (with-memory-manager uid (fn [mm] (if undo? (mem/unarchive! mm layer id)
+                                                       (mem/archive! mm layer id))))]
+          (mem-audit! (if undo? :unarchive :archive) uid {:layer layer :id id :ok (boolean ok)})
+          (if json?
+            (print-json! {:success (boolean ok) :user-id uid :layer layer :id id :undo undo?
+                          :archived (boolean (and ok (not undo?)))})
+            (println (if ok (format "%s %s in %s." (if undo? "Unarchived" "Archived") id (name layer))
+                         (format "No change (%s not found)." id))))
+          (System/exit (if ok 0 1)))
+        (catch Exception e
+          (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+              (emit-err! (str "Error: " (.getMessage e))))
+          (System/exit 1))))))
+
+(defn cmd-memory-promote
+  "Copy an entry up a layer (default l2 → l3) with a provenance link back to the
+   source. The source entry is left intact (forget it separately if desired)."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        id    (some-> (first (:_arguments opts)) str/trim not-empty)
+        from  (or (parse-layer (:from opts)) :l2)
+        to    (or (parse-layer (:to opts)) :l3)]
+    (cond
+      (nil? id)
+      (do (if json? (print-json! {:success false :error "<entry-id> is required" :user-id uid})
+              (emit-err! "Usage: by memory promote <entry-id> [--from l2] [--to l3]"))
+          (System/exit 1))
+      :else
+      (try
+        (let [result (with-memory-manager
+                       uid (fn [mm]
+                             (when-let [src (first (mem/read-entries mm from {:id id}
+                                                                     {:limit 1 :include-archived true}))]
+                               (mem/promote-entry mm src from to))))]
+          (mem-audit! :promote uid {:from from :to to :id id :ok (boolean result)})
+          (cond
+            (nil? result)
+            (do (if json? (print-json! {:success false :user-id uid :from from :to to :id id
+                                        :error "source not found"})
+                    (emit-err! (str "Not found: " id " in " (name from))))
+                (System/exit 1))
+            :else
+            (do (if json?
+                  (print-json! {:success true :user-id uid :from from :to to
+                                :id id :new-id (:id result) :entry result})
+                  (println (format "Promoted %s (%s → %s) as %s."
+                                   id (name from) (name to) (:id result))))
+                (System/exit 0))))
+        (catch Exception e
+          (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+              (emit-err! (str "Error: " (.getMessage e))))
+          (System/exit 1))))))
+
+(defn cmd-memory-sweep
+  "Run the L2 retention sweep: tombstone episodes older than --retention-days
+   (default 30) that are not pinned. Confirms unless --yes/--json."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        days  (:retention-days opts)]
+    (if-not (require-confirm! opts (format "Tombstone unpinned L2 episodes older than %s days? [y/N] "
+                                           (or days 30)))
+      (do (emit-err! "Aborted.") (System/exit 1))
+      (try
+        (let [n (with-memory-manager
+                  uid (fn [mm] (apply mem/sweep-l2! mm (when days [:retention-days days]))))]
+          (mem-audit! :sweep uid {:retention-days (or days 30) :tombstoned n})
+          (if json?
+            (print-json! {:success true :user-id uid :retention-days (or days 30) :tombstoned n})
+            (println (format "Swept L2[%s]: tombstoned %s episode(s)." uid n)))
+          (System/exit 0))
+        (catch Exception e
+          (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+              (emit-err! (str "Error: " (.getMessage e))))
+          (System/exit 1))))))
+
+(defn cmd-memory-prune
+  "Enforce total-size budgets on the context graph, evicting the lowest-retention
+   nodes/edges over --max-nodes / --max-edges (default: the :graph-max-* config).
+   Confirms unless --yes/--json."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json?     (:json opts)
+        uid       (helpers/resolve-user-id (:user-id opts))
+        max-nodes (or (:max-nodes opts) (agent/get-config :graph-max-nodes))
+        max-edges (or (:max-edges opts) (agent/get-config :graph-max-edges))]
+    (if-not (require-confirm! opts (format "Prune graph to max-nodes=%s max-edges=%s? [y/N] "
+                                           max-nodes max-edges))
+      (do (emit-err! "Aborted.") (System/exit 1))
+      (try
+        (let [report (with-memory-manager
+                       uid (fn [mm] (mem/prune-graph-to-budget! mm :max-nodes max-nodes :max-edges max-edges)))]
+          (mem-audit! :prune uid (assoc report :max-nodes max-nodes :max-edges max-edges))
+          (if json?
+            (print-json! {:success true :user-id uid :report report
+                          :max-nodes max-nodes :max-edges max-edges})
+            (println (format "Pruned graph[%s]: evicted nodes=%s edges=%s → now nodes=%s edges=%s"
+                             uid (:nodes-evicted report) (:edges-evicted report)
+                             (:nodes report) (:edges report))))
+          (System/exit 0))
+        (catch Exception e
+          (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+              (emit-err! (str "Error: " (.getMessage e))))
+          (System/exit 1))))))
+
+(defn cmd-memory-reembed
+  "Rebuild the graph vector index (graph_vec) for the current embedder and resume
+   semantic recall — the guided recovery after an embed-model change flags the
+   index stale. Re-embeds every L3 fact + node summary."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))]
+    (try
+      (let [report (with-memory-manager uid (fn [mm] (mem/reembed-graph-vec! mm)))]
+        (mem-audit! :reembed uid (or report {:no-embedder true}))
+        (if json?
+          (print-json! {:success true :user-id uid :report report})
+          (if report
+            (println (format "Re-embedded[%s]: facts=%s nodes=%s"
+                             uid (:facts report) (:nodes report)))
+            (println "No embedder configured — nothing to re-embed.")))
+        (System/exit 0))
+      (catch Exception e
+        (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+            (emit-err! (str "Error: " (.getMessage e))))
+        (System/exit 1)))))
+
 (defn cmd-memory-graph-build
   "Synchronously extract a user's L2 episodes into the context-graph
    (graph_nodes/graph_edges). Requires the graph tier configured
@@ -1631,16 +1965,6 @@
 
 (defn- known-session? [id]
   (and id (contains? (set (persist/list-sessions)) id)))
-
-(defn- confirm!
-  "Read a y/N confirmation from the console. False (decline) when there is no
-   interactive console."
-  [prompt]
-  (if (some? (System/console))
-    (do (print prompt) (flush)
-        (boolean (#{"y" "Y" "yes"} (some-> (try (read-line) (catch Throwable _ nil))
-                                           str str/trim))))
-    false))
 
 (defn cmd-sessions-list
   "List every persisted agent session (project-scoped). `--tree` renders the
@@ -2072,7 +2396,39 @@
                                 {:command     "graph"
                                  :description "Dump the context-graph (nodes + edges + counts) as JSON; --node <name> scopes to a neighborhood"
                                  :opts        [user-id-opt node-opt limit-opt json-opt]
-                                 :runs        cmd-memory-graph}]}]})
+                                 :runs        cmd-memory-graph}
+                                {:command     "forget"
+                                 :description "Tombstone an entry by id (excluded from recall; row kept for audit)"
+                                 :opts        [user-id-opt layer-opt yes-opt json-opt]
+                                 :runs        cmd-memory-forget}
+                                {:command     "edit"
+                                 :description "Update an entry in place (--content/--kind/--confidence), preserving its id"
+                                 :opts        [user-id-opt layer-opt content-opt kind-opt confidence-opt json-opt]
+                                 :runs        cmd-memory-edit}
+                                {:command     "keep"
+                                 :description "Pin an entry against the retention sweep (--undo to unpin)"
+                                 :opts        [user-id-opt layer-opt undo-opt json-opt]
+                                 :runs        cmd-memory-keep}
+                                {:command     "archive"
+                                 :description "Archive an entry (excluded from default recall; --undo to unarchive)"
+                                 :opts        [user-id-opt layer-opt undo-opt json-opt]
+                                 :runs        cmd-memory-archive}
+                                {:command     "promote"
+                                 :description "Copy an entry up a layer (default l2 → l3) with provenance"
+                                 :opts        [user-id-opt from-opt to-opt json-opt]
+                                 :runs        cmd-memory-promote}
+                                {:command     "sweep"
+                                 :description "Run the L2 retention sweep (tombstone old, unpinned episodes)"
+                                 :opts        [user-id-opt retention-days-opt yes-opt json-opt]
+                                 :runs        cmd-memory-sweep}
+                                {:command     "prune"
+                                 :description "Evict lowest-retention graph nodes/edges over --max-nodes/--max-edges budget"
+                                 :opts        [user-id-opt max-nodes-opt max-edges-opt yes-opt json-opt]
+                                 :runs        cmd-memory-prune}
+                                {:command     "reembed"
+                                 :description "Rebuild the graph vector index for the current embedder (resume semantic recall)"
+                                 :opts        [user-id-opt json-opt]
+                                 :runs        cmd-memory-reembed}]}]})
 
 ;; ============================================================================
 ;; Entry point
