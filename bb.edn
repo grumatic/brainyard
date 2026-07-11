@@ -50,13 +50,26 @@
   playground:run
   {:doc "Run the playground control plane on :8090 (real Docker workspaces unless
   PG_FAKE=1). Workspaces inherit provider creds from .env. Build the UI + image
-  first: bb playground:ui && bb uberjar:ata && bb playground:image."
-   :task (shell "bash" "-c"
-                (str "cd bases/playground-server && "
-                     "PG_WORKSPACE_ENV_FILE=\"$(pwd)/../../.env.playground\" "
-                     "PG_WORKSPACE_PROVIDER=\"${PG_WORKSPACE_PROVIDER:-openai}\" "
-                     "exec clojure -M:run "
-                     (clojure.string/join " " *command-line-args*)))}
+  first: bb playground:ui && bb uberjar:ata && bb playground:image — or pass
+  --rebuild to do the whole chain (compile:ata → uberjar:ata → playground:image
+  → playground:ui) before starting the server. Remaining args pass to -M:run."
+   :task (let [rebuild? (boolean (some #{"--rebuild"} *command-line-args*))
+               run-args (remove #{"--rebuild"} *command-line-args*)]
+           (when rebuild?
+             (println "\n── playground:run --rebuild: binary → image → UI ──\n")
+             (run 'compile:ata)                ; clean AOT compile (wipes target/classes)
+             (run 'uberjar:ata)                ; assemble the uberjar the image bundles
+             ;; playground:image, but with the default tag (its own task reads
+             ;; *command-line-args* for a tag override, which would swallow our
+             ;; server args) — so invoke build.sh directly.
+             (shell "bash" "-c" "exec bash deploy/playground-workspace/build.sh")
+             (run 'playground:ui))            ; shadow-cljs release into the base
+           (shell "bash" "-c"
+                  (str "cd bases/playground-server && "
+                       "PG_WORKSPACE_ENV_FILE=\"$(pwd)/../../.env.playground\" "
+                       "PG_WORKSPACE_PROVIDER=\"${PG_WORKSPACE_PROVIDER:-openai}\" "
+                       "exec clojure -M:run "
+                       (clojure.string/join " " run-args))))}
 
   ;; --------------- ACP-driven TUI ---------------
   tui:acp
