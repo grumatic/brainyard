@@ -81,8 +81,11 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
     server) bundled by `bb model2vec:fetch`; or a **`provider/model`** LM string
     routed through clj-llm's OpenAI-compatible `/embeddings` (e.g.
     `ollama/nomic-embed-text` (768-dim, local), `openai/text-embedding-3-small`).
-    **Unset ⇒ no vector signal** (graph + relational recall still work). Note:
-    Bedrock/Anthropic chat models can't embed — use `static`, Ollama, or OpenAI.
+    **Defaults to `static`** (self-contained, no server) — so the `:vec`
+    recall signal + semantic node-seed resolution work out of the box once
+    `:enable-graph-memory` is on; set it **blank to disable** the vector signal
+    (graph + relational recall still work). Note: Bedrock/Anthropic chat models
+    can't embed — use `static`, Ollama, or OpenAI.
   - **`BY_GRAPH_EXTRACT_MODEL`** — chat LM (`provider/model`, e.g.
     `bedrock/amazon.nova-lite-v1:0`) that extracts entities/relationships from
     episodes and writes community summaries. **Unset ⇒ graph stays storage-only**
