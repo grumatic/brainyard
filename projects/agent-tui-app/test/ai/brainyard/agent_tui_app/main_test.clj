@@ -19,6 +19,7 @@
 (def ^:private inject @#'main/inject-bare-resume-sentinel)
 (def ^:private sentinel @#'main/resume-pick-sentinel)
 (def ^:private latest-session-id @#'main/latest-session-id)
+(def ^:private parse-layer @#'main/parse-layer)
 
 (deftest inject-bare-resume-sentinel-test
   (testing "bare --resume / -r (no value) gets the sentinel spliced in"
@@ -75,3 +76,35 @@
                   (fn [] [{:session-id "x" :last-attached-at 1}])]
       (is (nil? (latest-session-id #{"a"}))
           "x exists on disk but isn't in the live id set → nil"))))
+
+;; --- Phase 1 memory read verbs --------------------------------------------
+
+(deftest parse-layer-test
+  (testing "canonicalises valid layer strings (case/whitespace-insensitive)"
+    (is (= :l1 (parse-layer "l1")))
+    (is (= :l2 (parse-layer "L2")))
+    (is (= :l3 (parse-layer "  l3  "))))
+  (testing "rejects anything else → nil (caller errors with usage)"
+    (is (nil? (parse-layer nil)))
+    (is (nil? (parse-layer "")))
+    (is (nil? (parse-layer "l4")))
+    (is (nil? (parse-layer "graph")))))
+
+(defn- memory-subcommands []
+  (->> (:subcommands main/cli-config)
+       (filter #(= "memory" (:command %)))
+       first :subcommands
+       (map (juxt :command :runs))
+       (into {})))
+
+(deftest memory-read-verbs-registered
+  (testing "every Phase 1 read verb is wired into the `memory` subcommand tree"
+    (let [subs (memory-subcommands)]
+      (doseq [[cmd expected] {"list"    #'main/cmd-memory-list
+                              "get"     #'main/cmd-memory-get
+                              "search"  #'main/cmd-memory-search
+                              "explain" #'main/cmd-memory-explain
+                              "status"  #'main/cmd-memory-status
+                              "graph"   #'main/cmd-memory-graph}]
+        (is (contains? subs cmd) (str "memory " cmd " is registered"))
+        (is (= @expected (get subs cmd)) (str "memory " cmd " runs its cmd fn"))))))

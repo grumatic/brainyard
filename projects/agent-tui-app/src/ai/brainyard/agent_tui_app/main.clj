@@ -118,6 +118,11 @@
   {:option "json" :as "Output machine-readable JSON instead of a table"
    :type :with-flag :default false})
 
+(defn- emit-err!
+  "Print an error/usage line to stderr (so it never pollutes --json stdout)."
+  [msg]
+  (binding [*out* *err*] (println msg)))
+
 (defn- print-json!
   "Serialize `data` to a single line of JSON on stdout. Keyword keys/values
    become strings; any value data.json can't encode is stringified via str so a
@@ -182,6 +187,39 @@
   {:option "rebuild"
    :as "Re-extract ALL episodes, ignoring the incremental watermark (use after changing the extract model/prompt). Default: incremental — only episodes newer than the last run."
    :type :with-flag :default false})
+
+;; Read-verb knobs for `memory list/get/search/explain/graph` (Phase 1
+;; management CLI). These inspect the user-scoped L1/L2/L3/graph store without
+;; a live session — the CLI counterpart to poking the sqlite file by hand.
+(def layer-opt
+  {:option "layer" :short "l"
+   :as "Memory layer to read: l1 (session working-set) | l2 (episodes) | l3 (semantic facts)"
+   :type :string})
+
+(def kind-opt
+  {:option "kind" :short "k"
+   :as "Filter rows by :kind (e.g. qa, summary, system-context)"
+   :type :string})
+
+(def limit-opt
+  {:option "limit" :short "L"
+   :as "Max rows to return (default 20)"
+   :type :int})
+
+(def include-archived-opt
+  {:option "include-archived"
+   :as "Include archived entries (excluded from recall by default)"
+   :type :with-flag :default false})
+
+(def node-opt
+  {:option "node"
+   :as "Seed the graph dump on a node name (returns its bounded neighborhood instead of the whole graph)"
+   :type :string})
+
+(def turn-opt
+  {:option "turn"
+   :as "Explain a single (per-agent) turn id; omit to explain every turn in the session"
+   :type :int})
 
 ;; ============================================================================
 ;; Legacy provider:model parsing
@@ -1086,26 +1124,237 @@
   "Dump a user's context-graph (nodes + valid edges + counts) as JSON for
    visualisation/export. Unscoped full-graph read over
    `~/.brainyard/memory/<user-id>.db`; degrades to empty collections when the
-   graph tier was never populated. `--json` is the only useful format."
+   graph tier was never populated. `--json` is the only useful format.
+
+   With `--node <name>` the dump is scoped to that node's bounded neighborhood
+   (relational recall via `graph-related`) instead of the whole graph — the
+   quick 'what's connected to X' probe that replaces a hand-written JOIN."
   [opts]
   (helpers/suppress-jul-cookie-warnings!)
   (let [json?   (:json opts)
         uid     (helpers/resolve-user-id (:user-id opts))
+        node    (some-> (:node opts) str/trim not-empty)
+        limit   (or (:limit opts) 20)
         enabled (graph-memory-enabled?)]
     (try
-      (let [snap (with-memory-manager uid (fn [mm] (mem/graph-snapshot mm)))
-            out  (assoc snap :success true :user-id uid :enabled? enabled)]
-        (if json?
-          (print-json! out)
-          (println (format "Graph[%s]: nodes=%s edges=%s enabled=%s"
-                           uid (get-in snap [:counts :nodes])
-                           (get-in snap [:counts :edges]) enabled))))
+      (if node
+        ;; Neighborhood probe: relationship entries seeded on the node name.
+        (let [rels (with-memory-manager
+                     uid (fn [mm] (mem/graph-related mm [node] {:limit limit})))
+              out  {:success true :user-id uid :enabled? enabled
+                    :node node :relations (vec rels) :count (count rels)}]
+          (if json?
+            (print-json! out)
+            (do (println (format "Graph[%s] neighborhood of \"%s\" (%s relation(s)):"
+                                 uid node (count rels)))
+                (doseq [r rels] (println "  •" (:content r))))))
+        (let [snap (with-memory-manager uid (fn [mm] (mem/graph-snapshot mm)))
+              out  (assoc snap :success true :user-id uid :enabled? enabled)]
+          (if json?
+            (print-json! out)
+            (println (format "Graph[%s]: nodes=%s edges=%s enabled=%s"
+                             uid (get-in snap [:counts :nodes])
+                             (get-in snap [:counts :edges]) enabled)))))
       (catch Exception e
         (if json?
           (print-json! {:success false :error (.getMessage e)
                         :user-id uid :enabled? enabled
                         :nodes [] :edges [] :counts {:nodes 0 :edges 0}})
           (println "Error:" (.getMessage e)))
+        (System/exit 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 read verbs — inspect the user-scoped L1/L2/L3/graph store
+;; ---------------------------------------------------------------------------
+
+(defn- parse-layer
+  "Coerce a --layer string to :l1/:l2/:l3, or nil when absent/invalid."
+  [s]
+  (some-> s str/trim str/lower-case #{"l1" "l2" "l3"} keyword))
+
+(defn cmd-memory-list
+  "List raw entries from one memory layer (`--layer l1|l2|l3`), the CLI
+   counterpart to a `SELECT … LIMIT` against the store. Filters: `--session`
+   (L1/L2), `--kind`, `--limit` (default 20), `--include-archived`. `--json`
+   emits the row vector verbatim."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json?    (:json opts)
+        uid      (helpers/resolve-user-id (:user-id opts))
+        layer    (parse-layer (:layer opts))
+        sid      (some-> (:session opts) str/trim not-empty)
+        kind     (some-> (:kind opts) str/trim not-empty)
+        limit    (or (:limit opts) 20)
+        archived (boolean (:include-archived opts))]
+    (cond
+      (nil? layer)
+      (do (if json?
+            (print-json! {:success false :user-id uid
+                          :error "--layer is required (l1|l2|l3)"})
+            (emit-err! "Usage: by memory list --layer l1|l2|l3 [--session S] [--kind K] [--limit N]"))
+          (System/exit 1))
+      :else
+      (try
+        (let [query (cond-> {}
+                      sid  (assoc :session-id sid)
+                      kind (assoc :kind (keyword kind)))
+              rows  (with-memory-manager
+                      uid (fn [mm]
+                            (mem/read-entries mm layer query
+                                              {:limit limit :include-archived archived})))]
+          (if json?
+            (print-json! {:success true :user-id uid :layer layer
+                          :count (count rows) :entries (vec rows)})
+            (do (println (format "Memory[%s] %s — %s row(s):" uid (name layer) (count rows)))
+                (doseq [r rows]
+                  (println (format "  %-40s %s"
+                                   (str (:id r))
+                                   (let [c (str (:content r))]
+                                     (if (> (count c) 100) (str (subs c 0 99) "…") c))))))))
+        (catch Exception e
+          (if json?
+            (print-json! {:success false :error (.getMessage e) :user-id uid})
+            (emit-err! (str "Error: " (.getMessage e))))
+          (System/exit 1))))))
+
+(defn cmd-memory-get
+  "Fetch a single entry by its stable entry-id from one layer
+   (`--layer l1|l2|l3`). Exits 1 when not found."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        layer (parse-layer (:layer opts))
+        id    (some-> (first (:_arguments opts)) str/trim not-empty)]
+    (cond
+      (nil? layer)
+      (do (if json? (print-json! {:success false :error "--layer is required (l1|l2|l3)" :user-id uid})
+              (emit-err! "Usage: by memory get <entry-id> --layer l1|l2|l3"))
+          (System/exit 1))
+      (nil? id)
+      (do (if json? (print-json! {:success false :error "entry-id argument is required" :user-id uid})
+              (emit-err! "Usage: by memory get <entry-id> --layer l1|l2|l3"))
+          (System/exit 1))
+      :else
+      (try
+        (let [row (with-memory-manager
+                    uid (fn [mm]
+                          (first (mem/read-entries mm layer {:id id}
+                                                   {:limit 1 :include-archived true}))))]
+          (cond
+            (nil? row)
+            (do (if json? (print-json! {:success false :user-id uid :layer layer
+                                        :id id :error "not found"})
+                    (emit-err! (str "Not found: " id " in " (name layer))))
+                (System/exit 1))
+            :else
+            (do (if json?
+                  (print-json! {:success true :user-id uid :layer layer :id id :entry row})
+                  (println (pr-str row)))
+                (System/exit 0))))
+        (catch Exception e
+          (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+              (emit-err! (str "Error: " (.getMessage e))))
+          (System/exit 1))))))
+
+(defn cmd-memory-search
+  "Cross-layer recall for a natural-language query — the SAME weighted-RRF
+   pipeline used to assemble a turn's memory briefing (L1/L2/L3 + graph/vec
+   signals), so it reproduces what the agent would actually recall. NOT a raw
+   SQL LIKE. `--session` restricts L1/L2; `--limit`/`--total-limit` cap results;
+   `--match or|and|phrase` sets multi-word FTS mode."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        query (some-> (str/join " " (:_arguments opts)) str/trim not-empty)
+        sid   (some-> (:session opts) str/trim not-empty)
+        limit (or (:limit opts) 10)]
+    (cond
+      (nil? query)
+      (do (if json? (print-json! {:success false :error "a query argument is required" :user-id uid})
+              (emit-err! "Usage: by memory search \"<query>\" [--session S] [--limit N]"))
+          (System/exit 1))
+      :else
+      (try
+        (let [rows (with-memory-manager
+                     uid (fn [mm]
+                           (apply mem/contextual-recall mm query
+                                  (cond-> [:limit limit]
+                                    sid (into [:session-id sid])))))]
+          (if json?
+            (print-json! {:success true :user-id uid :query query
+                          :count (count rows) :entries (vec rows)})
+            (do (println (format "Recall[%s] \"%s\" — %s result(s):" uid query (count rows)))
+                (doseq [r rows]
+                  (println (format "  [%s] %s"
+                                   (name (or (:_layer r) :?))
+                                   (let [c (str (:content r))]
+                                     (if (> (count c) 100) (str (subs c 0 99) "…") c))))))))
+        (catch Exception e
+          (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+              (emit-err! (str "Error: " (.getMessage e))))
+          (System/exit 1))))))
+
+(defn cmd-memory-explain
+  "Show which memory entries informed a session's prompt(s) — the recall audit
+   trail. `--session` (required) picks the session; `--turn N` narrows to one
+   (per-agent) turn, else every turn in the session is explained."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))
+        sid   (some-> (:session opts) str/trim not-empty)
+        turn  (:turn opts)]
+    (cond
+      (nil? sid)
+      (do (if json? (print-json! {:success false :error "--session is required" :user-id uid})
+              (emit-err! "Usage: by memory explain --session <session-id> [--turn N]"))
+          (System/exit 1))
+      :else
+      (try
+        (let [result (with-memory-manager
+                       uid (fn [mm]
+                             (if turn
+                               (mem/explain mm sid turn)
+                               (mem/explain-session mm sid))))]
+          (if json?
+            (print-json! {:success true :user-id uid :session sid :turn turn :explain result})
+            (println (pr-str result)))
+          (System/exit 0))
+        (catch Exception e
+          (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+              (emit-err! (str "Error: " (.getMessage e))))
+          (System/exit 1))))))
+
+(defn cmd-memory-status
+  "Health/inventory of the user's memory store: L1/L2/L3 counts plus the graph
+   vector-index staleness (embedding-model fingerprint). Superset of `stats`."
+  [opts]
+  (helpers/suppress-jul-cookie-warnings!)
+  (let [json? (:json opts)
+        uid   (helpers/resolve-user-id (:user-id opts))]
+    (try
+      (let [{:keys [stats vec]}
+            (with-memory-manager
+              uid (fn [mm]
+                    {:stats (mem/get-stats mm)
+                     :vec   (try (mem/graph-vec-status mm) (catch Throwable _ nil))}))]
+        (if json?
+          (print-json! {:success true :user-id uid :stats stats :vec-status vec
+                        :graph-enabled? (graph-memory-enabled?)})
+          (do (println (format "Memory[%s]: episodes=%s semantic-facts=%s schema=%s graph=%s"
+                               uid (:episodes stats) (:semantic-facts stats)
+                               (:schema-version stats) (graph-memory-enabled?)))
+              (when vec
+                (println (format "  vec-index: %s (%s vectors%s)"
+                                 (if (:stale? vec) "STALE — run reembed" "ok")
+                                 (:count vec)
+                                 (if (:stale? vec)
+                                   (format ", %s → %s" (:was vec) (:now vec)) "")))))))
+      (catch Exception e
+        (if json? (print-json! {:success false :error (.getMessage e) :user-id uid})
+            (emit-err! (str "Error: " (.getMessage e))))
         (System/exit 1)))))
 
 (defn cmd-memory-graph-build
@@ -1379,9 +1628,6 @@
 ;; ============================================================================
 ;; Subcommand: sessions — list / prune persisted sessions
 ;; ============================================================================
-
-(defn- emit-err! [msg]
-  (binding [*out* *err*] (println msg)))
 
 (defn- known-session? [id]
   (and id (contains? (set (persist/list-sessions)) id)))
@@ -1802,9 +2048,30 @@
                                  :description "Report L1/L2/L3 counts for a user"
                                  :opts        [user-id-opt json-opt]
                                  :runs        cmd-memory-stats}
-                                {:command     "graph"
-                                 :description "Dump the context-graph (nodes + edges + counts) as JSON for visualisation"
+                                {:command     "status"
+                                 :description "Store health/inventory: L1/L2/L3 counts + graph vector-index staleness"
                                  :opts        [user-id-opt json-opt]
+                                 :runs        cmd-memory-status}
+                                {:command     "list"
+                                 :description "List raw entries from a layer (--layer l1|l2|l3), with --session/--kind/--limit filters"
+                                 :opts        [user-id-opt layer-opt session-opt kind-opt
+                                               limit-opt include-archived-opt json-opt]
+                                 :runs        cmd-memory-list}
+                                {:command     "get"
+                                 :description "Fetch a single entry by id from a layer (--layer l1|l2|l3)"
+                                 :opts        [user-id-opt layer-opt json-opt]
+                                 :runs        cmd-memory-get}
+                                {:command     "search"
+                                 :description "Cross-layer weighted-RRF recall for a query (the real prompt-briefing pipeline, not raw SQL)"
+                                 :opts        [user-id-opt session-opt limit-opt json-opt]
+                                 :runs        cmd-memory-search}
+                                {:command     "explain"
+                                 :description "Recall audit: which entries informed a session's prompt(s) (--session, optional --turn)"
+                                 :opts        [user-id-opt session-opt turn-opt json-opt]
+                                 :runs        cmd-memory-explain}
+                                {:command     "graph"
+                                 :description "Dump the context-graph (nodes + edges + counts) as JSON; --node <name> scopes to a neighborhood"
+                                 :opts        [user-id-opt node-opt limit-opt json-opt]
                                  :runs        cmd-memory-graph}]}]})
 
 ;; ============================================================================
