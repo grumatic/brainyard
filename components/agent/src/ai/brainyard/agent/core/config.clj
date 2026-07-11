@@ -179,9 +179,9 @@
    :graph-embed-model          {:type "string"
                                 :env-fn #(if-some [v (System/getenv "BY_GRAPH_EMBED_MODEL")]
                                            v ::env-unset)
-                                :default nil
+                                :default "static"
                                 :requires-restart true
-                                :doc "Semantic-similarity embedder for the context graph (only when :enable-graph-memory). \"static\" = in-binary Model2Vec, or a \"provider/model\" string (e.g. ollama/nomic-embed-text). nil → no vector signal. The embed-fn is built at memory-manager startup — changing it needs a `by` restart (then run memory$reembed). Env: BY_GRAPH_EMBED_MODEL."}
+                                :doc "Semantic-similarity embedder for the context graph (only when :enable-graph-memory). Default \"static\" = the self-contained in-binary Model2Vec embedder (no server), or a \"provider/model\" string (e.g. ollama/nomic-embed-text). Set to empty/blank to disable the vector signal. The embed-fn is built at memory-manager startup — changing it needs a `by` restart (then run memory$reembed). Env: BY_GRAPH_EMBED_MODEL."}
    :graph-extract-model        {:type "string"
                                 :env-fn #(if-some [v (System/getenv "BY_GRAPH_EXTRACT_MODEL")]
                                            v ::env-unset)
