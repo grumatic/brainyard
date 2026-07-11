@@ -24,13 +24,24 @@
     (cond-> schema
       ;; Handle object type
       (= "object" (:type schema))
-      (-> (assoc :additionalProperties false)
-          (update :properties
+      (-> (update :properties
                   (fn [props]
                     (when props
                       (reduce-kv (fn [m k v]
                                    (assoc m k (add-additional-properties-false v)))
-                                 {} props)))))
+                                 {} props))))
+          ;; A `:map-of` renders (via mjs) as an OPEN object whose values follow a
+          ;; schema: {:type "object", :additionalProperties <value-schema>}.
+          ;; Preserve + recurse into that value schema rather than clobbering it
+          ;; to `false` — closing it would make the object accept NO keys (a
+          ;; `[:map-of :any :any]` would misdescribe an arbitrary map as
+          ;; empty-only). A genuinely closed object (a `:map` with :properties,
+          ;; or a bare object) still gets `additionalProperties false` for OpenAI
+          ;; strict mode. An open-map schema is (correctly) strict-INeligible, so
+          ;; strict callers fall back to guidance + Malli output validation.
+          (as-> s (if (map? (:additionalProperties s))
+                    (update s :additionalProperties add-additional-properties-false)
+                    (assoc s :additionalProperties false))))
 
       ;; Handle array items
       (:items schema)

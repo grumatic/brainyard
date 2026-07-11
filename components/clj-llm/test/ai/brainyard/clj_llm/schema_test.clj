@@ -35,6 +35,20 @@
       (is (false? (:additionalProperties js)))
       (is (false? (get-in js [:properties :user :additionalProperties])))))
 
+  (testing ":map-of renders an OPEN object — additionalProperties is the value schema, not false"
+    (let [js (schema/malli->json-schema [:map-of :any :any])]
+      (is (= "object" (:type js)))
+      (is (map? (:additionalProperties js))
+          "an arbitrary map must not be closed to additionalProperties:false (empty-only)"))
+    (is (= {:type "integer"} (:additionalProperties (schema/malli->json-schema [:map-of :string :int])))
+        "typed values are preserved")
+    (testing "a closed map with a map-of field: outer stays closed, inner stays open"
+      (let [js (schema/malli->json-schema [:map [:a :int] [:bag [:map-of :any :any]]])]
+        (is (false? (:additionalProperties js)))
+        (is (map? (get-in js [:properties :bag :additionalProperties])))))
+    (testing "an open map-of is strict-INeligible (strict callers fall back to guidance+validate)"
+      (is (not (schema/strict-eligible? (schema/malli->json-schema [:map [:m [:map-of :any :any]]]))))))
+
   (testing ":maybe is rendered with :anyOf, not :oneOf (OpenAI strict mode rejects oneOf)"
     (let [js (schema/malli->json-schema [:maybe :int])]
       (is (nil? (:oneOf js)) "no :oneOf key")
