@@ -548,9 +548,20 @@
             (not (config/get-config :enable-scheduler))
             (assoc :note "Scheduler ticker is OFF — set :enable-scheduler true (or BY_ENABLE_SCHEDULER) to run watches unattended; watch$run-now / schedule$run-due work manually."))))))
   :input-schema  [:map
-                  [:probe [:any {:desc "Probe map: {:type :shell :cmd \"…\"} | {:type :file :path \"…\"}"}]]
+                  [:probe
+                   [:map {:desc "External condition to probe each tick"}
+                    [:type {:optional true} [:maybe [:enum {:desc "Probe kind (default :shell): :shell runs :cmd and observes exit+stdout; :file observes :path's mtime"} :shell :file]]]
+                    [:cmd  {:optional true} [:maybe [:string {:desc ":shell — command run via `bash -lc`"}]]]
+                    [:path {:optional true} [:maybe [:string {:desc ":file — path whose mtime is watched"}]]]]]
                   [:emit  [:string {:desc "Event to fire on the predicate (namespaced keyword)"}]]
-                  [:when  {:optional true} [:any {:desc "Predicate {:op :changed|:increased|:matches|:threshold|:zero-exit|:nonzero-exit …}; default :changed"}]]
+                  [:when
+                   {:optional true}
+                   [:map {:desc "Predicate deciding when to fire (default {:op :changed})"}
+                    [:op    [:enum {:desc ":changed = value differs from last; :increased = numeric grew; :matches = stdout matches :re; :threshold = numeric vs :value by :cmp; :zero-exit/:nonzero-exit = shell exit code"}
+                             :changed :increased :matches :threshold :zero-exit :nonzero-exit]]
+                    [:re    {:optional true} [:maybe [:string {:desc ":matches — regex tested against stdout"}]]]
+                    [:cmp   {:optional true} [:maybe [:enum {:desc ":threshold — comparison (default :gt)"} :gt :ge :lt :le :eq]]]
+                    [:value {:optional true} [:maybe [:or {:desc ":threshold — numeric threshold (number or numeric string)"} :int :double :string]]]]]
                   [:every {:optional true} [:int {:desc "Poll interval, ms (mutually exclusive with :cron)"}]]
                   [:cron  {:optional true} [:string {:desc "5-field cron instead of :every"}]]
                   [:title {:optional true} [:string {:desc "Human label (seeds the id)"}]]

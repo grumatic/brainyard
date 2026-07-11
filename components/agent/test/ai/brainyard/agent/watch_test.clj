@@ -9,6 +9,8 @@
   (:require [clojure.test :refer [deftest testing is are use-fixtures]]
             [ai.brainyard.agent.common.schedule :as sched]
             [ai.brainyard.agent.core.hooks :as hooks]
+            [ai.brainyard.agent.core.tool :as tool]
+            [malli.core :as m]
             [clojure.java.io :as io]))
 
 (def ^:dynamic *pdir* nil)
@@ -107,6 +109,34 @@
   (binding [sched/*run-probe* (fn [_] {:value "1" :exit 0})]
     (let [final (sched/run-spec! *pdir* (sched/read-spec *pdir* "w1") 5000 true)]
       (is (= 6000 (:next-fire final)) "next-fire = now + :every"))))
+
+;; ============================================================================
+;; watch$add :probe / :when input schema — precise, not :any
+;; ============================================================================
+
+(deftest add-schema-precision
+  (let [in-sch (get-in (tool/get-tool-defs :id :watch$add) [:meta :input-schema])
+        schema (tool/inputs->malli-map-schema in-sch)
+        decode (fn [args] (m/decode schema args tool/llm-args-transformer))
+        valid? (fn [args] (nil? (m/explain schema (decode args))))
+        base   {:emit "x/y"}]
+    (testing "schema->type builds an LLM JSON schema without throwing"
+      (is (map? (tool/schema->type in-sch)))
+      (is (= [:op] (:required (:when (tool/schema->type in-sch)))) ":op required within :when"))
+    (testing ":probe — string enum coerces, bad type rejected"
+      (is (= {:type :shell :cmd "echo hi"}
+             (:probe (decode (assoc base :probe {:type "shell" :cmd "echo hi"})))))
+      (is (valid? (assoc base :probe {:type :file :path "/tmp/x"})))
+      (is (not (valid? (assoc base :probe {:type "bogus"})))))
+    (testing ":when — op coerces; threshold accepts number or numeric string"
+      (is (= {:op :increased} (:when (decode (assoc base :probe {:type :shell} :when {:op "increased"})))))
+      (is (valid? (assoc base :probe {:type :shell} :when {:op "threshold" :cmp "gt" :value 10})))
+      (is (valid? (assoc base :probe {:type :shell} :when {:op :threshold :value "10"})))
+      (is (valid? (assoc base :probe {:type :shell} :when {:op :matches :re "err"}))))
+    (testing "no :when is valid (defaults to :changed); bad/absent :op rejected"
+      (is (valid? (assoc base :probe {:type :shell})))
+      (is (not (valid? (assoc base :probe {:type :shell} :when {:op "bogus"}))))
+      (is (not (valid? (assoc base :probe {:type :shell} :when {:re "x"})))))))
 
 (deftest schedule-list-excludes-watches
   (write-watch! {})
