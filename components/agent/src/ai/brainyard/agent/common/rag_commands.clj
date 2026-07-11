@@ -59,7 +59,7 @@
             {:error (str "Failed to add document: " (.getMessage e))})))))
   :input-schema  [:map
                   [:text     [:string {:desc "Document text to index"}]]
-                  [:metadata [:any {:desc "Optional metadata map"}]]]
+                  [:metadata {:optional true} [:map-of {:desc "Optional metadata map (arbitrary key/value)"} :any :any]]]
   :output-schema [:map
                   [:success [:boolean]]
                   [:id      [:string]]])

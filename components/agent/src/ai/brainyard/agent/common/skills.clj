@@ -706,8 +706,8 @@
                   [:content    {:optional true} [:string {:desc "For :create — SKILL.md content. For :update — new SKILL.md content (omit to leave unchanged)."}]]
                   [:type       {:optional true} [:string {:desc "brainyard | claude | agents. Defaults to :brainyard for :create/:update; auto-detected for :remove."}]]
                   [:scope      {:optional true} [:string {:desc "Brainyard scope: project | user. :create defaults to project; :update/:remove auto-detect when omitted."}]]
-                  [:scripts    {:optional true} [:any    {:desc "Map of {filename content} for scripts/ subdir (create/update only)"}]]
-                  [:resources  {:optional true} [:any    {:desc "Map of {filename content} for resources/ subdir (create/update only)"}]]]
+                  [:scripts    {:optional true} [:map-of {:desc "Map of {filename content} for scripts/ subdir (create/update only)"} :string :string]]
+                  [:resources  {:optional true} [:map-of {:desc "Map of {filename content} for resources/ subdir (create/update only)"} :string :string]]]
   :output-schema [:map
                   [:name    [:string {:desc "Skill name"}]]
                   [:path    [:string {:desc "Path to skill dir (create/update)"}]]

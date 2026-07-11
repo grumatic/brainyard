@@ -69,8 +69,8 @@ Plotly.newPlot('chart', spec.data, spec.layout, {responsive: true});
        :summary (str "Created " (or title "chart")
                      " with " (count data) " trace(s)")}))
   :input-schema [:map
-                 [:data [:any {:desc "Plotly data array [{type, x, y, ...}]"}]]
-                 [:layout [:any {:desc "Plotly layout object (optional)"}]]
+                 [:data [:vector {:desc "Plotly data array [{type, x, y, ...}]"} [:map-of :any :any]]]
+                 [:layout {:optional true} [:map-of {:desc "Plotly layout object (optional)"} :any :any]]
                  [:title [:string {:desc "Chart title"}]]]
   :output-schema [:map
                   [:artifact-type :keyword]
@@ -97,7 +97,7 @@ Plotly.newPlot('chart', spec.data, spec.layout, {responsive: true});
        :filepath filepath
        :size (count html)}))
   :input-schema [:map
-                 [:chart-spec [:any {:desc "Plotly chart spec {data, layout}"}]]
+                 [:chart-spec [:map-of {:desc "Plotly chart spec {data, layout}"} :any :any]]
                  [:filepath {:optional true} [:string {:desc "Output file path (optional; defaults to <project>/.brainyard/charts/)"}]]]
   :output-schema [:map
                   [:success :boolean]
