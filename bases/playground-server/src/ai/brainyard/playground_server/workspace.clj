@@ -399,3 +399,43 @@
          (cond-> []
            (seq (str session)) (into ["--session" (str session)])
            turn                (into ["--turn" (str turn)]))))
+
+;; --- user-scoped memory DB writes (Phase 4) --------------------------------
+;; Each shells a Phase 2 write verb. `--json` (appended by memory-read) already
+;; bypasses the CLI's interactive confirm, so destructive verbs also carry
+;; `--yes` for good measure — there's no TTY in `docker exec` anyway. The web
+;; confirmation happens in the browser before the request is ever sent.
+
+(defn memory-forget [session-id layer entry-id]
+  (memory-read session-id "forget" entry-id "--layer" (str layer) "--yes"))
+
+(defn memory-edit [session-id layer entry-id {:keys [content kind confidence]}]
+  (apply memory-read session-id "edit" entry-id "--layer" (str layer)
+         (cond-> []
+           (some? content)     (into ["--content" (str content)])
+           (seq (str kind))    (into ["--kind" (str kind)])
+           (some? confidence)  (into ["--confidence" (str confidence)]))))
+
+(defn memory-keep [session-id layer entry-id undo?]
+  (apply memory-read session-id "keep" entry-id "--layer" (str layer)
+         (when undo? ["--undo"])))
+
+(defn memory-archive [session-id layer entry-id undo?]
+  (apply memory-read session-id "archive" entry-id "--layer" (str layer)
+         (when undo? ["--undo"])))
+
+(defn memory-promote [session-id entry-id from to]
+  (memory-read session-id "promote" entry-id "--from" (str from) "--to" (str to)))
+
+(defn memory-sweep [session-id retention-days]
+  (apply memory-read session-id "sweep" "--yes"
+         (when retention-days ["--retention-days" (str retention-days)])))
+
+(defn memory-prune [session-id {:keys [max-nodes max-edges]}]
+  (apply memory-read session-id "prune" "--yes"
+         (cond-> []
+           max-nodes (into ["--max-nodes" (str max-nodes)])
+           max-edges (into ["--max-edges" (str max-edges)]))))
+
+(defn memory-reembed [session-id]
+  (memory-read session-id "reembed"))

@@ -179,6 +179,62 @@
 (defn memory-explain [user-id id opts]
   (memory-guard user-id id #(workspace/memory-explain id opts)))
 
+;; --- user-scoped memory DB writes (Phase 4) --------------------------------
+;; Ownership-guarded, and each mutation is audited host-side. The container-side
+;; CLI already emits a durable `::memory-mutation` mulog line in its app log;
+;; this is the additional server-side record (who/what/where) the design asks
+;; for. playground-server has no logging dep, so it's a structured stderr line.
+
+(defn- audit-mutation! [user-id id verb info]
+  (binding [*out* *err*]
+    (println (pr-str {:event :pg-memory-mutation :user-id user-id
+                      :workspace id :verb verb :info info})))
+  nil)
+
+(defn- memory-write
+  "Guarded write: audit the intent, run `f` (over the running container), and
+   attach the result's success flag to the audit. nil when not owned."
+  [user-id id verb info f]
+  (when-let [rec (owned user-id id)]
+    (if (or (:fake rec) (not (workspace/running? id)))
+      {:success false :error "workspace not running"}
+      (let [r (f)]
+        (audit-mutation! user-id id verb (assoc info :ok (:success r)))
+        r))))
+
+(defn memory-forget [user-id id layer entry-id]
+  (memory-write user-id id :forget {:layer layer :entry-id entry-id}
+                #(workspace/memory-forget id layer entry-id)))
+
+(defn memory-edit [user-id id layer entry-id updates]
+  (memory-write user-id id :edit {:layer layer :entry-id entry-id
+                                  :fields (vec (keys updates))}
+                #(workspace/memory-edit id layer entry-id updates)))
+
+(defn memory-keep [user-id id layer entry-id undo?]
+  (memory-write user-id id (if undo? :unkeep :keep) {:layer layer :entry-id entry-id}
+                #(workspace/memory-keep id layer entry-id undo?)))
+
+(defn memory-archive [user-id id layer entry-id undo?]
+  (memory-write user-id id (if undo? :unarchive :archive) {:layer layer :entry-id entry-id}
+                #(workspace/memory-archive id layer entry-id undo?)))
+
+(defn memory-promote [user-id id entry-id from to]
+  (memory-write user-id id :promote {:entry-id entry-id :from from :to to}
+                #(workspace/memory-promote id entry-id from to)))
+
+(defn memory-sweep [user-id id retention-days]
+  (memory-write user-id id :sweep {:retention-days retention-days}
+                #(workspace/memory-sweep id retention-days)))
+
+(defn memory-prune [user-id id opts]
+  (memory-write user-id id :prune opts
+                #(workspace/memory-prune id opts)))
+
+(defn memory-reembed [user-id id]
+  (memory-write user-id id :reembed {}
+                #(workspace/memory-reembed id)))
+
 (defn mark-down!
   "The container for `id` is gone/unreachable: drop its stale upstream cache and
    mark it suspended so the dashboard shows Resume. No-op if not owned/fake."

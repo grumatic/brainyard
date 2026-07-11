@@ -98,6 +98,25 @@
     :search nil
     nil))
 
+;; Force-reload the active tab (after a mutation, or on the Refresh button).
+(defn- refresh-memory! [id]
+  (let [tab (get-in @state/app-state [:memory id :tab])]
+    (case tab
+      :status       (load-memory-status! id)
+      (:l1 :l2 :l3) (load-memory-list! id tab)
+      :search       (run-memory-search! id)
+      nil)))
+
+;; Run a mutation promise, then reload the active tab. Alerts on failure so a
+;; silent no-op (e.g. entry already gone) is visible.
+(defn- mem-mutate! [id p]
+  (-> p
+      (.then (fn [{:keys [success error]}]
+               (when (false? success)
+                 (js/window.alert (str "Memory operation failed: " (or error "unknown error"))))
+               (refresh-memory! id)))
+      (.catch (fn [_] (js/window.alert "Memory request failed.")))))
+
 ;; Zoom the viewBox by `factor` about SVG point [cx cy] (keeps that point fixed).
 (defn- zoom-view [{:keys [x y w h]} factor cx cy]
   (let [w' (-> (* w factor) (max 60) (min 40000))
@@ -339,14 +358,49 @@
     (let [[id v] args]
       (swap! state/app-state assoc-in [:memory id :search :q] v))
     :memory/search       (run-memory-search! (first args))
-    :memory/refresh
-    (let [id  (first args)
-          tab (get-in @state/app-state [:memory id :tab])]
-      (case tab
-        :status       (load-memory-status! id)
-        (:l1 :l2 :l3) (load-memory-list! id tab)
-        :search       (run-memory-search! id)
-        nil))
+    :memory/refresh      (refresh-memory! (first args))
+
+    ;; entry curation (L2/L3). layer arrives as a keyword tab (:l2/:l3).
+    :memory/forget
+    (let [[id layer eid] args]
+      (when (js/window.confirm
+             (str "Tombstone this entry in " (name layer) "?\n\n" eid
+                  "\n\nIt will be excluded from recall (the row is kept for audit)."))
+        (mem-mutate! id (api/memory-forget! id (name layer) eid))))
+    :memory/keep
+    (let [[id layer eid undo?] args]
+      (mem-mutate! id (api/memory-keep! id (name layer) eid (boolean undo?))))
+    :memory/archive
+    (let [[id layer eid undo?] args]
+      (mem-mutate! id (api/memory-archive! id (name layer) eid (boolean undo?))))
+    :memory/promote
+    (let [[id eid] args]
+      (mem-mutate! id (api/memory-promote! id eid)))
+    :memory/edit-start
+    (let [[id eid content] args]
+      (swap! state/app-state update-in [:memory id] merge {:editing eid :edit-content content}))
+    :memory/edit-input
+    (let [[id v] args] (swap! state/app-state assoc-in [:memory id :edit-content] v))
+    :memory/edit-cancel
+    (swap! state/app-state update-in [:memory (first args)] merge {:editing nil :edit-content nil})
+    :memory/edit-save
+    (let [[id layer eid] args
+          content (get-in @state/app-state [:memory id :edit-content])]
+      (swap! state/app-state update-in [:memory id] merge {:editing nil :edit-content nil})
+      (mem-mutate! id (api/memory-edit! id (name layer) eid {:content content})))
+
+    ;; maintenance (Status tab)
+    :memory/sweep
+    (let [id (first args)]
+      (when (js/window.confirm
+             "Run the L2 retention sweep?\n\nTombstones unpinned episodes older than 30 days.")
+        (mem-mutate! id (api/memory-sweep! id))))
+    :memory/prune
+    (let [id (first args)]
+      (when (js/window.confirm
+             "Prune the context graph to its node/edge budget?\n\nEvicts the lowest-retention nodes and edges over budget.")
+        (mem-mutate! id (api/memory-prune! id))))
+    :memory/reembed (mem-mutate! (first args) (api/memory-reembed! (first args)))
 
     ;; --- escape hatch for imperative event control ------------------------
     :event/prevent-default   (some-> dom-event .preventDefault)

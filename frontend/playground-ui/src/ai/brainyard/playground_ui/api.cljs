@@ -76,6 +76,22 @@
 (defn memory-explain [id opts]
   (get-json (str "/api/sessions/" id "/memory/explain" (query-string opts))))
 
+;; --- user-scoped memory DB writes (curation) -------------------------------
+;; POST with a JSON body (entry-ids contain slashes → can't ride the path).
+;; Each resolves to the CLI's own `{:success bool …}` payload.
+(defn- mem-post [id verb body]
+  (request "POST" (str "/api/sessions/" id "/memory/" verb) body))
+
+(defn memory-forget!  [id layer entry-id] (mem-post id "forget"  {:layer layer :entry-id entry-id}))
+(defn memory-edit!    [id layer entry-id updates]
+  (mem-post id "edit" (merge {:layer layer :entry-id entry-id} updates)))
+(defn memory-keep!    [id layer entry-id undo?] (mem-post id "keep"    {:layer layer :entry-id entry-id :undo undo?}))
+(defn memory-archive! [id layer entry-id undo?] (mem-post id "archive" {:layer layer :entry-id entry-id :undo undo?}))
+(defn memory-promote! [id entry-id]             (mem-post id "promote" {:entry-id entry-id :from "l2" :to "l3"}))
+(defn memory-sweep!   [id]                      (mem-post id "sweep"   {}))
+(defn memory-prune!   [id]                      (mem-post id "prune"   {}))
+(defn memory-reembed! [id]                      (mem-post id "reembed" {}))
+
 ;; BYO env (settings). env is a {name -> value} map.
 (defn get-env         []    (get-json "/api/me/env"))
 (defn put-env         [env] (request "PUT" "/api/me/env" {:env env}))

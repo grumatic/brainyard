@@ -209,24 +209,53 @@
 (defn- mem-preview [s n]
   (let [c (str s)] (if (> (count c) n) (str (subs c 0 n) "…") c)))
 
-(defn- memory-entry-row [{:keys [id _layer kind content confidence]}]
-  [:div.mem-row {:replicant/key (str (or id (hash content)))}
-   [:div.mem-meta
-    (when _layer [:span.mem-badge (name _layer)])
-    (when kind [:span.mem-kind (str kind)])
-    (when confidence [:span.mem-conf (str "conf " confidence)])
-    (when id [:span.mem-id id])]
-   [:div.mem-content (mem-preview content 260)]])
+(defn- memory-entry-row
+  "One entry row. `writable?` (L2/L3 list tabs) reveals curation controls;
+   `tab-layer` is the fixed layer of a list tab (nil in cross-layer search, where
+   the row's own :_layer drives the badge). `editing` is the entry-id under edit."
+  [wid tab-layer writable? editing
+   {:keys [id _layer kind content confidence keep archived] :as row}]
+  (let [layer    (or _layer tab-layer)
+        editing? (and writable? (= editing id))]
+    [:div.mem-row {:replicant/key (str (or id (hash content)))}
+     [:div.mem-meta
+      (when layer [:span.mem-badge (name layer)])
+      (when kind [:span.mem-kind (str kind)])
+      (when confidence [:span.mem-conf (str "conf " confidence)])
+      (when keep [:span.mem-flag "pinned"])
+      (when archived [:span.mem-flag "archived"])
+      (when id [:span.mem-id id])]
+     (if editing?
+       [:div.mem-edit
+        [:textarea.mem-textarea {:replicant/key (str "edit-" id)
+                                 :on {:input [[:memory/edit-input wid :event/target.value]]}}
+         content]
+        [:div.mem-actions
+         [:button {:on {:click [[:memory/edit-save wid tab-layer id]]}} "Save"]
+         [:button {:on {:click [[:memory/edit-cancel wid]]}} "Cancel"]]]
+       [:div
+        [:div.mem-content (mem-preview content 260)]
+        (when writable?
+          [:div.mem-actions
+           [:button {:on {:click [[:memory/edit-start wid id content]]}} "Edit"]
+           [:button {:on {:click [[:memory/keep wid tab-layer id (boolean keep)]]}}
+            (if keep "Unpin" "Pin")]
+           [:button {:on {:click [[:memory/archive wid tab-layer id (boolean archived)]]}}
+            (if archived "Unarchive" "Archive")]
+           (when (= :l2 tab-layer)
+             [:button {:on {:click [[:memory/promote wid id]]}} "→ L3"])
+           [:button.danger {:on {:click [[:memory/forget wid tab-layer id]]}} "Forget"]])])]))
 
-(defn- memory-entries-pane [{:keys [status entries error]}]
+(defn- memory-entries-pane [wid layer writable? editing {:keys [status entries error]}]
   (cond
     (nil? status)       [:p.hint "Select a tab to load."]
     (= :loading status) [:p.hint "Loading…"]
     (= :error status)   [:p.hint.err (str "Error: " error)]
     (empty? entries)    [:p.hint "No entries in this layer."]
-    :else               (into [:div.mem-list] (map memory-entry-row entries))))
+    :else               (into [:div.mem-list]
+                              (map #(memory-entry-row wid layer writable? editing %) entries))))
 
-(defn- memory-status-pane [{:keys [loading? success stats vec-status graph-enabled? error]}]
+(defn- memory-status-pane [wid {:keys [loading? success stats vec-status graph-enabled? error]}]
   (cond
     loading?        [:p.hint "Loading…"]
     (false? success) [:p.hint.err (str "Error: " error)]
@@ -239,7 +268,11 @@
      (when vec-status
        [:div [:b "Vector index: "]
         (if (:stale? vec-status) "STALE — run reembed" "ok")
-        " (" (:count vec-status) " vectors)"])]))
+        " (" (:count vec-status) " vectors)"])
+     [:div.mem-maint
+      [:button {:on {:click [[:memory/reembed wid]]}} "Reembed vectors"]
+      [:button {:on {:click [[:memory/sweep wid]]}} "Sweep L2"]
+      [:button.danger {:on {:click [[:memory/prune wid]]}} "Prune graph"]]]))
 
 (defn- memory-search-pane [id {:keys [q status entries error]}]
   [:div.mem-search
@@ -253,7 +286,9 @@
      (= :error status)   [:p.hint.err (str "Error: " error)]
      (nil? status)       [:p.hint "Enter a query and press Search."]
      (empty? entries)    [:p.hint "No results."]
-     :else               (into [:div.mem-list] (map memory-entry-row entries)))])
+     ;; read-only: recall results span layers; curation lives in the L2/L3 tabs.
+     :else               (into [:div.mem-list]
+                               (map #(memory-entry-row id nil false nil %) entries)))])
 
 (defn- memory-tabs [id active]
   (into [:div.mem-tabs]
@@ -264,10 +299,11 @@
            label])))
 
 (defn memory-modal
-  "Inspect the workspace's user-scoped memory DB: L1/L2/L3 counts, raw layer
-   rows, and cross-layer recall search. Whole-DB / user-scoped, read over
-   `by memory … --json`."
-  [id {:keys [open? tab status lists search]}]
+  "Inspect + curate the workspace's user-scoped memory DB: L1/L2/L3 counts, raw
+   layer rows (with pin/archive/edit/promote/forget on L2/L3), cross-layer recall
+   search, and store maintenance (reembed/sweep/prune). Whole-DB / user-scoped,
+   over `by memory … --json`."
+  [id {:keys [open? tab status lists search editing]}]
   (when open?
     (let [tab (or tab :status)]
       [:div.modal-backdrop {:replicant/key :memory}
@@ -280,9 +316,9 @@
         (memory-tabs id tab)
         [:div.memory-body
          (case tab
-           :status (memory-status-pane status)
+           :status (memory-status-pane id status)
            :search (memory-search-pane id (or search {}))
-           (memory-entries-pane (get lists tab)))]]])))
+           (memory-entries-pane id tab (contains? #{:l2 :l3} tab) editing (get lists tab)))]]])))
 
 (defn workspace-view [state id]
   [:div.workspace {:replicant/key :view/workspace}

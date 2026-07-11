@@ -17,6 +17,8 @@
      GET    /api/sessions/:id/memory/list    -> 200 {:entries …} | 404   ?layer&session&kind&limit
      GET    /api/sessions/:id/memory/search  -> 200 {:entries …} | 404   ?q&session&limit
      GET    /api/sessions/:id/memory/explain -> 200 {:explain …} | 404   ?session&turn
+     POST   /api/sessions/:id/memory/{forget,edit,keep,archive,promote,sweep,prune,reembed}
+                                          -> 200 {:success …} | 404       (JSON body)
      DELETE /api/sessions/:id             -> 204
      POST   /api/sessions/:id/tty-token   -> 200 {:token ...}
      GET    /api/sessions/:id/tty         -> WebSocket (ttyd protocol)
@@ -196,6 +198,64 @@
       (json 200 r)
       (json 404 {:error "not found"}))))
 
+;; --- user-scoped memory DB writes (Phase 4) --------------------------------
+;; POST-with-JSON-body (entry-ids contain slashes → can't ride the path). Each
+;; is wrap-require-auth + ownership-guarded + host-audited in `sessions`; the
+;; browser confirms destructive verbs before the request is ever sent.
+;; `nil` (not owned) → 404; the CLI's own {:success bool …} payload otherwise.
+
+(defn- body [req] (or (json-body req) {}))
+(defn- b-str [m k] (some-> (get m k) str str/trim not-empty))
+
+(defn- with-owned [r] (if r (json 200 r) (json 404 {:error "not found"})))
+
+(defn- memory-forget [req]
+  (let [b (body req)]
+    (with-owned (sessions/memory-forget (user-id req) (-> req :path-params :id)
+                                        (b-str b "layer") (b-str b "entry-id")))))
+
+(defn- memory-edit [req]
+  (let [b       (body req)
+        updates (cond-> {}
+                  (contains? b "content")     (assoc :content (get b "content"))
+                  (b-str b "kind")            (assoc :kind (b-str b "kind"))
+                  (some? (get b "confidence")) (assoc :confidence (get b "confidence")))]
+    (with-owned (sessions/memory-edit (user-id req) (-> req :path-params :id)
+                                      (b-str b "layer") (b-str b "entry-id") updates))))
+
+(defn- memory-keep [req]
+  (let [b (body req)]
+    (with-owned (sessions/memory-keep (user-id req) (-> req :path-params :id)
+                                      (b-str b "layer") (b-str b "entry-id")
+                                      (boolean (get b "undo"))))))
+
+(defn- memory-archive [req]
+  (let [b (body req)]
+    (with-owned (sessions/memory-archive (user-id req) (-> req :path-params :id)
+                                         (b-str b "layer") (b-str b "entry-id")
+                                         (boolean (get b "undo"))))))
+
+(defn- memory-promote [req]
+  (let [b (body req)]
+    (with-owned (sessions/memory-promote (user-id req) (-> req :path-params :id)
+                                         (b-str b "entry-id")
+                                         (or (b-str b "from") "l2")
+                                         (or (b-str b "to") "l3")))))
+
+(defn- memory-sweep [req]
+  (let [b (body req)]
+    (with-owned (sessions/memory-sweep (user-id req) (-> req :path-params :id)
+                                       (get b "retention-days")))))
+
+(defn- memory-prune [req]
+  (let [b (body req)]
+    (with-owned (sessions/memory-prune (user-id req) (-> req :path-params :id)
+                                       {:max-nodes (get b "max-nodes")
+                                        :max-edges (get b "max-edges")}))))
+
+(defn- memory-reembed [req]
+  (with-owned (sessions/memory-reembed (user-id req) (-> req :path-params :id))))
+
 (defn- resume-session [req]
   (if-let [s (sessions/resume! (user-id req) (-> req :path-params :id))]
     (json 200 s)
@@ -277,6 +337,14 @@
      ["/sessions/:id/memory/list"    {:get (wrap-require-auth memory-list)}]
      ["/sessions/:id/memory/search"  {:get (wrap-require-auth memory-search)}]
      ["/sessions/:id/memory/explain" {:get (wrap-require-auth memory-explain)}]
+     ["/sessions/:id/memory/forget"  {:post (wrap-require-auth memory-forget)}]
+     ["/sessions/:id/memory/edit"    {:post (wrap-require-auth memory-edit)}]
+     ["/sessions/:id/memory/keep"    {:post (wrap-require-auth memory-keep)}]
+     ["/sessions/:id/memory/archive" {:post (wrap-require-auth memory-archive)}]
+     ["/sessions/:id/memory/promote" {:post (wrap-require-auth memory-promote)}]
+     ["/sessions/:id/memory/sweep"   {:post (wrap-require-auth memory-sweep)}]
+     ["/sessions/:id/memory/prune"   {:post (wrap-require-auth memory-prune)}]
+     ["/sessions/:id/memory/reembed" {:post (wrap-require-auth memory-reembed)}]
      ["/sessions/:id/brainyard/:sid/config"
       {:get (wrap-require-auth brainyard-session-config)}]
      ;; ttyd's own client, proxied same-origin (workspace iframe)
