@@ -38,6 +38,8 @@
             [ai.brainyard.agent.common.user-agents :as ua]
             [ai.brainyard.agent.common.auto-notify :as auto-notify]
             [ai.brainyard.agent.common.schedule :as schedule]
+            [ai.brainyard.agent.common.events :as events]
+            [ai.brainyard.agent.common.reactor :as reactor]
             [ai.brainyard.agent.common.self-improve-nudge :as self-improve-nudge]
             [ai.brainyard.agent.common.skill-distill :as skill-distill]
             [ai.brainyard.agent.common.skill-refine :as skill-refine]
@@ -1064,6 +1066,19 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
       {:content content :sections sections :order section-order}
       content)))
 
+(defn- format-events
+  "Render passive event-inbox entries for the `## Events` user-context section
+   (docs/design/event-bus-and-reactor.md §3.4): one bullet per entry, tagged with
+   its source event. Persists + rolls off like `## Live Artifacts`."
+  [events]
+  (str/join "\n"
+            (map (fn [{:keys [event text]}]
+                   (str "- "
+                        (when event
+                          (str "[" (if (keyword? event) (subs (str event) 1) event) "] "))
+                        text))
+                 events)))
+
 (defn- coact-user-context
   "Assemble the user-context string from brainyard instructions (loaded via
    config/load-brainyard-instructions), conversation history, and live
@@ -1071,7 +1086,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
 
    When :return-breakdown? is true, returns {:content str :sections {kw text}}
    with one entry per non-blank section."
-  [{:keys [conversation previous-turns live-artifacts turn-info parent-trail]}
+  [{:keys [conversation previous-turns live-artifacts events turn-info parent-trail]}
    & {:keys [return-breakdown?]}]
   ;; P4.6: :project-instructions and :user-instructions moved to
   ;; :system-context (above the cross-turn cache breakpoint). The
@@ -1105,9 +1120,16 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                    (seq live-artifacts)
                    (assoc :live-artifacts
                           (str "## Live Artifacts\n"
-                               (format-live-artifacts live-artifacts))))
+                               (format-live-artifacts live-artifacts)))
+
+                   ;; Passive event inbox — reactions with :as :context land
+                   ;; here (seen next turn, no forced turn). Volatile tail like
+                   ;; :live-artifacts. See event-bus-and-reactor.md §3.4.
+                   (seq events)
+                   (assoc :events
+                          (str "## Events\n" (format-events events))))
         section-order [:turn-info :parent-trail
-                       :conversation-history :previous-turns :live-artifacts]
+                       :conversation-history :previous-turns :live-artifacts :events]
         content (if (seq sections)
                   (str/join "\n\n" (keep #(get sections %) section-order))
                   "")]
@@ -1452,7 +1474,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                :return-breakdown? true)
           usr (coact-user-context
                (select-keys state [:conversation :previous-turns
-                                   :live-artifacts :turn-info :parent-trail])
+                                   :live-artifacts :events :turn-info :parent-trail])
                :return-breakdown? true)]
       (merge (:sections sys) (:sections usr))))
   (system-order [_]
@@ -1463,7 +1485,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
     ;; Per-turn volatile tail (Phase 3b): :previous-turns moved to the
     ;; :history-context zone; the sliding conversation window stays here.
     [:turn-info :parent-trail
-     :conversation-history :live-artifacts])
+     :conversation-history :live-artifacts :events])
   (policies [_] cb/default-section-policies)
   (strategies [_ st-memory] (coact-strategies st-memory)))
 
@@ -1670,6 +1692,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                             artifact-max-chars)
         _ (swap! st-memory assoc :live-artifacts resolved-artifacts)
 
+        ;; Passive event inbox (reactor :as :context) — surfaced in the
+        ;; `## Events` user-context section. Volatile tail like live-artifacts.
+        events-inbox (vec (or (:events-inbox st) []))
+
         ;; Turn identity is read upfront so the per-turn :turn-info section
         ;; can be rendered before the assembler runs.
         turn-id     (:turn-id st)
@@ -1746,6 +1772,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                          :conversation           (:conversation st)
                          :previous-turns         previous-turns
                          :live-artifacts         resolved-artifacts
+                         :events                 events-inbox
                          :turn-info       turn-info-text
                          :parent-trail    parent-trail}
         merged-sections (sa/sections assembler assembler-state)
@@ -1902,6 +1929,15 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
     ;; Scheduler: start the in-process ticker once (no-op unless
     ;; :enable-scheduler is set); fires due jobs while a session is open.
     (schedule/ensure-scheduler! agent)
+    ;; Fold this project's user-defined event defs into the hooks dynamic
+    ;; registry (once per process/project; no-op after). Lets known-event?
+    ;; recognize them and discovery advertise them. See
+    ;; docs/design/event-bus-and-reactor.md §3.1.
+    (events/ensure-events-loaded! agent)
+    ;; Event reactor: install/re-sync this session's event→action rules (no-op
+    ;; unless :enable-reactions + root agent). See
+    ;; docs/design/event-bus-and-reactor.md §3.3.
+    (reactor/ensure-reactions! agent)
 
     (when agent
       (hooks/fire! :agent.context/budgeted

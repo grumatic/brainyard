@@ -20,11 +20,14 @@
 
    The executor is a pluggable seam (`*execute-job*`) so the orchestration
    (store + cron + due-selection + delivery) is fully testable without an LLM."
-  (:require [ai.brainyard.agent.core.config :as config]
+  (:require [ai.brainyard.agent.common.events :as events]
+            [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string :as str])
   (:import [java.io File]
            [java.time Instant ZoneId ZonedDateTime]))
@@ -204,35 +207,119 @@
 ;; ============================================================================
 
 (defn- advance-spec
-  "Compute a spec's post-run state: recompute :next-fire for cron jobs; disable
-   one-shot :fire-at jobs after they run."
+  "Compute a spec's post-run state: recompute :next-fire for cron/`:every`
+   jobs; disable one-shot :fire-at jobs after they run."
   [spec now-ms]
   (cond
     (:cron spec)
     (assoc spec :next-fire (some-> (parse-cron (:cron spec)) (next-fire-after now-ms)))
+    (:every spec)
+    (assoc spec :next-fire (+ now-ms (long (:every spec))))
     (:fire-at spec)
     (assoc spec :enabled false :next-fire nil)
     :else spec))
 
-(defn run-spec!
-  "Execute one spec now, deliver output, persist run state. Returns the updated
-   spec. `claim?` advances :next-fire BEFORE executing (so a concurrent ticker
-   is less likely to double-fire); run-now passes false."
+;; ============================================================================
+;; Watches (:kind :watch) — probe an external condition, fire an event on a
+;; predicate. The autonomous event loop (docs/design/event-bus-and-reactor.md
+;; §3.5): a scheduled job whose action is `probe → emit` instead of
+;; `prompt → file`, so it rides the same store, due-selection, and ticker.
+;; ============================================================================
+
+(defn default-run-probe
+  "Evaluate a watch probe. `:shell` runs `:cmd` via bash and captures exit +
+   stdout; `:file` observes a path's mtime. Returns {:value str-or-nil :exit int}
+   or {:error s}. (`:http`/`:sql` are expressible as a `:shell` curl/psql for now.)"
+  [{:keys [type cmd path] :as _probe}]
+  (try
+    (case (keyword (or type :shell))
+      :shell (let [{:keys [exit out]} (shell/sh "bash" "-lc" (str cmd))]
+               {:value (str/trim (str out)) :exit exit})
+      :file  (let [f (io/file (str path))]
+               (if (.exists f)
+                 {:value (str (.lastModified f)) :exit 0}
+                 {:value nil :exit 1}))
+      {:error (str "unknown probe type: " (pr-str type))})
+    (catch Exception e {:error (.getMessage e)})))
+
+(def ^:dynamic *run-probe*
+  "Probe executor — `(fn [probe] -> {:value :exit} | {:error s})`. Rebind in tests."
+  default-run-probe)
+
+(defn- as-num [v]
+  (when (some? v) (let [s (str v)] (or (parse-long s) (parse-double s)))))
+
+(defn predicate-met?
+  "Decide whether a watch should fire: compare the fresh observation `obs`
+   against the previous `prev`. `:when` is a map `{:op …}`; default {:op :changed}.
+   Ops: :changed :zero-exit :nonzero-exit :matches(:re) :increased
+   :threshold(:cmp :value)."
+  [when-spec prev obs]
+  (let [op (keyword (or (:op when-spec) :changed))
+        v  (:value obs) pv (:value prev)]
+    (case op
+      :changed      (not= v pv)
+      :zero-exit    (zero? (or (:exit obs) 0))
+      :nonzero-exit (not (zero? (or (:exit obs) 0)))
+      :matches      (boolean (and v (:re when-spec)
+                                  (re-find (re-pattern (str (:re when-spec))) v)))
+      :increased    (let [n (as-num v) p (as-num pv)] (boolean (and n p (> n p))))
+      :threshold    (let [n (as-num v) t (as-num (:value when-spec))
+                          c (keyword (or (:cmp when-spec) :gt))]
+                      (boolean (and n t (case c
+                                          :gt (> n t) :ge (>= n t)
+                                          :lt (< n t) :le (<= n t)
+                                          :eq (== n t) false))))
+      false)))
+
+(defn run-watch!
+  "Run one watch spec: probe, evaluate its predicate against the last
+   observation, and fire `:emit` on the hooks bus when met (delivered to every
+   open session's subscribers + reactions). Persists the new observation +
+   next-fire. Returns the updated spec."
   [project-dir spec now-ms claim?]
   (let [claimed (cond-> (assoc spec :last-run now-ms :last-status :running)
                   claim? (advance-spec now-ms))]
     (when claim? (write-spec! project-dir claimed))
-    (let [result (*execute-job* spec)
-          output (or (:answer result) (str "ERROR: " (:error result)))
-          path   (deliver-output! project-dir spec output now-ms)
-          ;; `claimed` already advanced :next-fire iff claim? — run-now
-          ;; (claim?=false) deliberately leaves the schedule untouched.
-          final  (assoc claimed
-                        :last-status (if (:error result) :error :ok)
-                        :last-output path)]
-      (write-spec! project-dir final)
-      (mulog/log ::ran :id (:id spec) :status (:last-status final))
-      final)))
+    (let [obs      (*run-probe* (:probe spec))
+          err      (:error obs)
+          prev     (:last-observation spec)
+          fire?    (and (nil? err) (predicate-met? (:when spec) prev obs))
+          emit-key (some-> (:emit spec) events/->event-key)]
+      (when (and fire? emit-key)
+        (hooks/fire! emit-key
+                     {:event emit-key :source :watch :watch-id (:id spec)
+                      :value (:value obs) :exit (:exit obs)}))
+      (let [final (assoc claimed
+                         :last-observation (when-not err (select-keys obs [:value :exit]))
+                         :last-status (cond err :error fire? :fired :else :ok)
+                         :last-fired (if fire? now-ms (:last-fired spec)))]
+        (write-spec! project-dir final)
+        (mulog/log ::watched :id (:id spec) :status (:last-status final) :fired (boolean fire?))
+        final))))
+
+(defn run-spec!
+  "Execute one spec now, persist run state. Returns the updated spec. Dispatches
+   on `:kind` — a `:watch` probes + may fire an event; a normal job runs its
+   prompt and delivers output. `claim?` advances :next-fire BEFORE executing (so
+   a concurrent ticker is less likely to double-fire); run-now passes false."
+  [project-dir spec now-ms claim?]
+  (if (= :watch (:kind spec))
+    (run-watch! project-dir spec now-ms claim?)
+    (let [claimed (cond-> (assoc spec :last-run now-ms :last-status :running)
+                    claim? (advance-spec now-ms))]
+      (when claim? (write-spec! project-dir claimed))
+      (let [result (*execute-job* spec)
+            output (or (:answer result) (str "ERROR: " (:error result)))
+            path   (deliver-output! project-dir spec output now-ms)
+            ;; `claimed` already advanced :next-fire iff claim? — run-now
+            ;; (claim?=false) deliberately leaves the schedule untouched.
+            final  (assoc claimed
+                          :last-status (if (:error result) :error :ok)
+                          :last-output path)]
+        (write-spec! project-dir final)
+        (mulog/log ::ran :id (:id spec) :status (:last-status final))
+        final))))
 
 (defn due?
   "True when an enabled spec is due at `now-ms`."
@@ -349,9 +436,10 @@
 (defcommand schedule$list
   "List scheduled jobs and their next fire time / last run status."
   (fn [& _]
-    {:schedules (mapv #(select-keys % [:id :title :cron :fire-at :enabled
-                                       :next-fire :last-run :last-status :sink])
-                      (list-specs (config/project-dir)))})
+    {:schedules (->> (list-specs (config/project-dir))
+                     (remove #(= :watch (:kind %)))   ; watches → watch$list
+                     (mapv #(select-keys % [:id :title :cron :fire-at :every :enabled
+                                            :next-fire :last-run :last-status :sink])))})
   :input-schema  [:map]
   :output-schema [:map [:schedules [:vector {:desc "Schedule summaries"} :any]]])
 
@@ -373,7 +461,10 @@
             spec' (cond-> (assoc spec :enabled enabled?)
                     ;; recompute next-fire when (re)enabling a cron job
                     (and enabled? (:cron spec))
-                    (assoc :next-fire (some-> (parse-cron (:cron spec)) (next-fire-after now))))]
+                    (assoc :next-fire (some-> (parse-cron (:cron spec)) (next-fire-after now)))
+                    ;; …or an interval (:every) job / watch
+                    (and enabled? (:every spec))
+                    (assoc :next-fire (+ now (long (:every spec)))))]
         (write-spec! pdir spec')
         {:id id :enabled enabled? :next-fire (:next-fire spec')})
       {:error (str "no schedule '" id "'")})))
@@ -415,7 +506,102 @@
                   [:fired [:vector {:desc "Ids fired"} :string]]
                   [:count [:int {:desc "How many fired"}]]])
 
+;; ============================================================================
+;; Watch commands (docs/design/event-bus-and-reactor.md §3.5)
+;; ============================================================================
+
+(defcommand watch$add
+  "Watch an external condition on a schedule and fire an event when it changes/matches. Args: :probe :emit + (:every | :cron)."
+  (fn [& {:as opts}]
+    (let [probe (:probe opts)
+          pred  (:when opts)
+          every (:every opts)
+          cron  (:cron opts)
+          ek    (events/->event-key (:emit opts))
+          now   (System/currentTimeMillis)]
+      (cond
+        (not (map? probe))
+        {:error ":probe must be a map, e.g. {:type :shell :cmd \"…\"} or {:type :file :path \"…\"}"}
+        (nil? ek)
+        {:error ":emit must name an event to fire (e.g. 'order/shipped')"}
+        (and (nil? every) (str/blank? (str cron)))
+        {:error "provide :every <ms> or :cron \"m h dom mon dow\""}
+        (and (not (str/blank? (str cron))) (nil? (parse-cron cron)))
+        {:error (str "invalid :cron '" cron "' — expected 5 fields")}
+        :else
+        (let [pdir (config/project-dir)
+              id   (let [g (not-empty (str (:id opts)))]
+                     (if (and g (valid-id? g)) g (gen-id (or (:title opts) (name ek)) now)))
+              next (if (not (str/blank? (str cron)))
+                     (next-fire-after (parse-cron cron) now)
+                     (+ now (long every)))
+              spec (cond-> {:id id :kind :watch :probe probe :emit ek
+                            :enabled (if (some? (:enabled opts)) (boolean (:enabled opts)) true)
+                            :next-fire next :created now
+                            :last-run nil :last-status nil :last-observation nil :last-fired nil}
+                     (map? pred)                     (assoc :when pred)
+                     (not (str/blank? (str cron)))   (assoc :cron cron)
+                     (str/blank? (str cron))         (assoc :every (long every))
+                     (not-empty (str (:title opts))) (assoc :title (str (:title opts))))]
+          (write-spec! pdir spec)
+          (cond-> {:id id :emit ek :next-fire next :enabled (:enabled spec)}
+            (not (config/get-config :enable-scheduler))
+            (assoc :note "Scheduler ticker is OFF — set :enable-scheduler true (or BY_ENABLE_SCHEDULER) to run watches unattended; watch$run-now / schedule$run-due work manually."))))))
+  :input-schema  [:map
+                  [:probe [:any {:desc "Probe map: {:type :shell :cmd \"…\"} | {:type :file :path \"…\"}"}]]
+                  [:emit  [:string {:desc "Event to fire on the predicate (namespaced keyword)"}]]
+                  [:when  {:optional true} [:any {:desc "Predicate {:op :changed|:increased|:matches|:threshold|:zero-exit|:nonzero-exit …}; default :changed"}]]
+                  [:every {:optional true} [:int {:desc "Poll interval, ms (mutually exclusive with :cron)"}]]
+                  [:cron  {:optional true} [:string {:desc "5-field cron instead of :every"}]]
+                  [:title {:optional true} [:string {:desc "Human label (seeds the id)"}]]
+                  [:id    {:optional true} [:string {:desc "Explicit watch id (lowercase-kebab)"}]]
+                  [:enabled {:optional true} [:boolean {:desc "Start enabled (default true)"}]]]
+  :output-schema [:map
+                  [:id        {:optional true} [:string]]
+                  [:emit      {:optional true} [:any {:desc "Event key"}]]
+                  [:next-fire {:optional true} [:int]]
+                  [:enabled   {:optional true} [:boolean]]
+                  [:note      {:optional true} [:string]]
+                  [:error     {:optional true} [:string]]])
+
+(defcommand watch$list
+  "List watches (probe → emit) with their last observation and status."
+  (fn [& _]
+    {:watches (->> (list-specs (config/project-dir))
+                   (filter #(= :watch (:kind %)))
+                   (mapv #(select-keys % [:id :title :probe :emit :when :every :cron
+                                          :enabled :next-fire :last-status :last-observation :last-fired])))})
+  :input-schema  [:map]
+  :output-schema [:map [:watches [:vector {:desc "Watch summaries"} :any]]])
+
+(defcommand watch$remove
+  "Remove a watch."
+  (fn [& {:keys [id]}]
+    (if (delete-spec! (config/project-dir) id)
+      {:removed id}
+      {:error (str "no watch '" id "'")}))
+  :input-schema  [:map [:id [:string {:desc "Watch id"}]]]
+  :output-schema [:map [:removed {:optional true} [:string]] [:error {:optional true} [:string]]])
+
+(defcommand watch$run-now
+  "Probe a watch immediately (evaluates + may fire; does not advance next-fire)."
+  (fn [& {:keys [id]}]
+    (let [pdir (config/project-dir)]
+      (if-let [spec (read-spec pdir id)]
+        (if (= :watch (:kind spec))
+          (let [final (run-spec! pdir spec (System/currentTimeMillis) false)]
+            {:id id :status (:last-status final) :observation (:last-observation final)})
+          {:error (str "'" id "' is not a watch")})
+        {:error (str "no watch '" id "'")})))
+  :input-schema  [:map [:id [:string {:desc "Watch id"}]]]
+  :output-schema [:map
+                  [:id          {:optional true} [:string]]
+                  [:status      {:optional true} [:any {:desc ":ok | :fired | :error"}]]
+                  [:observation {:optional true} [:any {:desc "Latest probe observation"}]]
+                  [:error       {:optional true} [:string]]])
+
 (def schedule-commands
-  "Scheduler command family, bound into the common roster."
+  "Scheduler + watch command family, bound into the common roster."
   [#'schedule$add #'schedule$list #'schedule$remove
-   #'schedule$enable #'schedule$disable #'schedule$run-now #'schedule$run-due])
+   #'schedule$enable #'schedule$disable #'schedule$run-now #'schedule$run-due
+   #'watch$add #'watch$list #'watch$remove #'watch$run-now])

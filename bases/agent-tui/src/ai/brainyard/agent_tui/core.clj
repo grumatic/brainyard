@@ -716,92 +716,19 @@
      :model         (:model lm)
      :pid           (.pid (java.lang.ProcessHandle/current))}))
 
-(defn- memory-title+hook
-  "Derive an index pointer's title and one-line hook from injected slug content.
-   Title: YAML frontmatter `title:`, else the first `# Heading`, else a
-   humanized slug. Hook: frontmatter `description:`, else the first non-blank
-   body line that isn't frontmatter/heading (collapsed + capped)."
-  [safe-slug content]
-  (let [lines     (str/split-lines (str content))
-        fm-get    (fn [k]
-                    (some (fn [l]
-                            (let [m (re-matches (re-pattern (str "(?i)\\s*" k ":\\s*(.+?)\\s*")) l)]
-                              (some-> (second m) (str/replace #"^[\"']|[\"']$" "") str/trim not-empty)))
-                          (take-while #(not= (str/trim %) "---")
-                                      (if (= (str/trim (or (first lines) "")) "---")
-                                        (rest lines) lines))))
-        heading   (some (fn [l] (some-> (re-matches #"#+\s+(.+?)\s*" l) second str/trim not-empty))
-                        lines)
-        body-line (some (fn [l]
-                          (let [t (str/trim l)]
-                            (when (and (not-empty t)
-                                       (not= t "---")
-                                       (not (str/starts-with? t "#"))
-                                       (not (re-matches #"(?i)\w+:\s*.+" t)))
-                              t)))
-                        lines)
-        title     (or (fm-get "title") heading
-                      (->> (str/split safe-slug #"-")
-                           (map str/capitalize) (str/join " ")))
-        hook-raw  (or (fm-get "description") body-line "")
-        hook      (let [h (str/replace hook-raw #"\s+" " ")]
-                    (if (> (count h) 100) (str (subs h 0 99) "…") h))]
-    [title hook]))
-
-(defn- upsert-memory-index!
-  "Add or update the `index.md` pointer for `safe-slug`. If a line already links
-   `(<slug>.md)`, its whole line is replaced with the freshly-derived pointer;
-   otherwise the pointer is appended. Format matches the project-memory protocol:
-   `- [Title](<slug>.md) — one-line hook`. Best-effort; never throws."
-  [^java.io.File mem-dir safe-slug content]
-  (let [[title hook] (memory-title+hook safe-slug content)
-        pointer      (str "- [" title "](" safe-slug ".md)"
-                          (when (not-empty hook) (str " — " hook)))
-        idx          (java.io.File. mem-dir "index.md")
-        existing     (when (.isFile idx) (slurp idx))
-        link-token   (str "(" safe-slug ".md)")
-        replaced?    (atom false)
-        new-body     (if (str/blank? existing)
-                       (str "# Project Memory Index\n\n" pointer "\n")
-                       (let [lines  (str/split-lines existing)
-                             lines' (mapv (fn [l]
-                                            (if (str/includes? l link-token)
-                                              (do (reset! replaced? true) pointer)
-                                              l))
-                                          lines)]
-                         (str (str/join "\n" (if @replaced? lines' (conj lines' pointer)))
-                              "\n")))]
-    (spit idx new-body)))
-
 (defn- inject-memory!
   "Write external data into the project's file-based memory as
-   `<project-config-dir>/memory/<slug>.md` and add/update its pointer in
-   `index.md` so the injected item is discoverable in the `## Project Memory`
-   context section (which only surfaces the index). Returns the wire response."
+   `<project-config-dir>/memory/<slug>.md` and add/update its `index.md` pointer
+   so it's discoverable in the `## Project Memory` context section. Delegates to
+   the shared component writer (`agent/write-memory!`) — the same writer the
+   reactor's `:as :memory` action uses. Returns the wire response."
   [ag slug content]
-  (cond
-    (str/blank? (str slug))    {:status :error :error ":slug is required for :as :memory"}
-    (str/blank? (str content)) {:status :error :error ":content is required for :as :memory"}
-    :else
-    (try
-      (let [pcd (some-> (agent/get-config ag :dirs) agent/project-config-dir)]
-        (if (nil? pcd)
-          {:status :error :error "no project config dir (project memory unavailable)"}
-          (let [safe    (-> (str slug) str/trim str/lower-case
-                            (str/replace #"[^a-z0-9]+" "-") (str/replace #"^-+|-+$" ""))
-                mem-dir (java.io.File. ^String pcd "memory")
-                f       (java.io.File. mem-dir (str safe ".md"))]
-            (.mkdirs mem-dir)
-            (spit f content)
-            (let [indexed? (try (upsert-memory-index! mem-dir safe content) true
-                                (catch Throwable e
-                                  (mulog/log ::inject-memory-index-failed
-                                             :slug safe :error (.getMessage e))
-                                  false))]
-              {:status :ok :injected :memory :slug safe
-               :path (.getAbsolutePath f) :indexed indexed?}))))
-      (catch Throwable e
-        {:status :error :error (str "memory write failed: " (.getMessage e))}))))
+  (let [pcd (some-> (agent/get-config ag :dirs) agent/project-config-dir)
+        r   (agent/write-memory! pcd slug content)]
+    (if (:error r)
+      {:status :error :error (:error r)}
+      {:status :ok :injected :memory :slug (:slug r)
+       :path (:path r) :indexed (:indexed r)})))
 
 (defn- handle-inject-op
   "Data-connector verb: push external data INTO the session via one of three
@@ -912,13 +839,31 @@
                :snapshot  (edn-safe (agent/redact-config-snapshot
                                      (agent/get-config-snapshot ag))))))))
 
+(defn- handle-emit-op
+  "Fire a user-defined event onto the hooks bus (external → agent). Validates the
+   payload against the event's registered :payload-schema when declared, stamps
+   this session-id so it's scoped to this session's `:subscribe` streams (and,
+   Phase 2, its reactions). See docs/design/event-bus-and-reactor.md §3.2."
+  [ag {:keys [event payload]}]
+  (if (str/blank? (str event))
+    {:status :error :error ":event is required for :op :emit"}
+    (let [sid  (try (agent/session-id ag) (catch Throwable _ nil))
+          base (cond-> (if (map? payload) payload {})
+                 sid (assoc :session-id sid))
+          r    (agent/emit-event! ag event base)]
+      (if (:error r)
+        {:status :error :error (:error r)}
+        (cond-> {:status :ok :emitted (:fired r) :subscribers (:subscribers r)}
+          (:note r) (assoc :note (:note r)))))))
+
 (defn- ask-handle-fn
   "Op-dispatcher for a session's ask socket. `:ask` injects a question and blocks
    for the answer; `:status` returns a non-blocking snapshot; `:config` returns a
    non-blocking effective-config read; `:inject` pushes external data in (artifact
    / turn / memory); `:cancel` stops the running turn; `:subscribe` streams
-   runtime events until disconnect. Unknown ops get a clear error. See
-   docs/design/session-channel-extensions.md."
+   runtime events until disconnect; `:emit` fires a user-defined event onto the
+   bus. Unknown ops get a clear error. See docs/design/session-channel-extensions.md
+   and docs/design/event-bus-and-reactor.md."
   [ag cap-ms]
   (fn [{:keys [op] :as req}]
     (case op
@@ -928,6 +873,7 @@
       :inject    (handle-inject-op ag cap-ms req)
       :cancel    {:status :ok :cancelled (boolean (input/cancel-ask-for-agent! ag))}
       :subscribe (handle-subscribe-op ag req)
+      :emit      (handle-emit-op ag req)
       {:status :error :error (str "unknown op: " op)})))
 
 (defn start-ask-listener!
@@ -947,7 +893,7 @@
             ;; discovery client (`by sessions list`) can advertise capability
             ;; without connecting. Keep in sync with `ask-handle-fn`'s dispatch.
             (try (persist/save-meta! sid {:ask-socket-path path
-                                          :ops [:ask :status :config :inject :cancel :subscribe]})
+                                          :ops [:ask :status :config :inject :cancel :subscribe :emit]})
                  (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
           (catch clojure.lang.ExceptionInfo e

@@ -196,10 +196,46 @@
   [event-key]
   (boolean (get-in event-catalog [event-key :gates?])))
 
-(defn known-event?
-  "Return true when event-key is in the catalog."
+;; ---------------------------------------------------------------------------
+;; User-defined (dynamic) events — a runtime registry layered OVER the static
+;; catalog. `defonce` so native-image bakes it EMPTY; the first real session
+;; that loads persisted event defs populates it (see
+;; ai.brainyard.agent.common.events / docs/design/event-bus-and-reactor.md §3.1).
+;; Keeps the dependency direction correct: the common-layer event store depends
+;; on this core bus, never the reverse. Declaring an event is optional — the bus
+;; already fires/streams any keyword — registration only silences the
+;; unknown-event warning and lets discovery advertise it.
+;; ---------------------------------------------------------------------------
+
+(defonce ^:private !dynamic-events (atom {}))
+
+(defn register-event!
+  "Declare a user-defined event `event-key` with an optional definition map
+   (`{:desc :payload-schema :llm-injectable?}`). After this `known-event?`
+   recognizes it (no unknown-event warning) and discovery can advertise it.
+   Idempotent; re-registering replaces the prior def. Returns event-key."
+  ([event-key] (register-event! event-key {}))
+  ([event-key def-map]
+   (swap! !dynamic-events assoc event-key (or def-map {}))
+   event-key))
+
+(defn unregister-event!
+  "Remove a user-defined event declaration. Returns true when it was present."
   [event-key]
-  (contains? event-catalog event-key))
+  (let [had? (contains? @!dynamic-events event-key)]
+    (swap! !dynamic-events dissoc event-key)
+    had?))
+
+(defn dynamic-events
+  "Map of user-defined event-key -> def map currently registered."
+  []
+  @!dynamic-events)
+
+(defn known-event?
+  "Return true when event-key is in the static catalog or the dynamic registry."
+  [event-key]
+  (or (contains? event-catalog event-key)
+      (contains? @!dynamic-events event-key)))
 
 ;; ============================================================================
 ;; Registration

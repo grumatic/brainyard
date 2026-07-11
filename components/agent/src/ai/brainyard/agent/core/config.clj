@@ -251,6 +251,16 @@
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :default 60000
                                 :doc "Scheduler ticker interval (ms): lower = finer cron resolution, more wakeups. Env: BY_SCHEDULER_TICK_MS."}
+   :enable-reactions           {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_REACTIONS")]
+                                           (= "true" v) ::env-unset)
+                                :default false
+                                :doc "Event reactor (docs/design/event-bus-and-reactor.md §3.3): install per-session hooks that run an action (:turn/:run/:artifact/:emit) when a matching event fires, from rules under <project>/.brainyard/reactions/. Off by default (can inject turns / spend LLM); reaction$* commands manage rules regardless. Env: BY_ENABLE_REACTIONS."}
+   :max-reaction-fires-per-session {:type "integer"
+                                    :env-fn #(if-some [v (System/getenv "BY_MAX_REACTION_FIRES")]
+                                               (or (parse-long v) ::env-unset) ::env-unset)
+                                    :default 50
+                                    :doc "Per-session backstop on how many reaction actions may fire (bounds a runaway event→reaction cascade). Env: BY_MAX_REACTION_FIRES."}
    :gateway-pair-code-ttl-ms   {:type "integer"
                                 :env-fn #(if-some [v (System/getenv "BY_GATEWAY_PAIR_CODE_TTL_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)

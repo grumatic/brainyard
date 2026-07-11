@@ -209,8 +209,22 @@
                 register-hook! unregister-hook! unregister-source! reset-hooks!
                 list-hooks fire!
                 event-catalog known-event?
+                register-event! unregister-event! dynamic-events
                 match-all match-any match-agent-id match-defagent-type
                 match-root-agent)
+
+;; User-defined event registry + emit path (docs/design/event-bus-and-reactor.md).
+;; `emit-event!` backs both the `event$emit` tool and the ask.sock `:op :emit`
+;; verb; the loader folds persisted defs into the hooks dynamic registry.
+(export-symbols ai.brainyard.agent.common.events
+                emit-event! ->event-key
+                load-project-events! ensure-events-loaded!)
+
+;; Shared project-scoped file-memory writer — the single writer behind the
+;; ask.sock `:op :inject :as :memory` verb and the reactor's `:as :memory`
+;; action (docs/design/event-bus-and-reactor.md).
+(export-symbols ai.brainyard.agent.common.project-memory
+                write-memory!)
 
 ;; Memory-agent consolidation surface (for the TUI's shutdown banner, and the
 ;; app-installed detached session-end consolidation launcher).

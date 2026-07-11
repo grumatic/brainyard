@@ -2090,6 +2090,79 @@
                 (emit-err! (str "Error: " (:error resp)))))
             (System/exit (if ok? 0 1))))))))
 
+(defn- attachable-session-rows
+  "Session index rows whose ask socket is live (path present + file exists)."
+  []
+  (->> (ssum/enriched-summaries)
+       (filter #(let [s (:ask-socket-path %)]
+                  (and (not (str/blank? (str s))) (.exists (io/file ^String s)))))))
+
+(defn cmd-events-emit
+  "Fire a user-defined event INTO a live session over its ask channel
+   (external → agent — the CLI twin of `by ask --attach`). Resolves the
+   session's `:ask-socket-path` from the project-scoped index (honoring `-C`)
+   and sends `{:op :emit …}`. With no `-s` and exactly one live session, targets
+   it. `--payload` takes an EDN map. See docs/design/event-bus-and-reactor.md."
+  [opts]
+  (install-working-dir! opts)
+  (let [json?   (:json opts)
+        event   (or (:event opts) (first (:_arguments opts)))
+        pstr    (:payload opts)
+        payload (when-not (str/blank? (str pstr))
+                  (try (edn/read-string pstr) (catch Exception _ ::bad)))
+        rows    (attachable-session-rows)
+        id      (or (:session-id opts)
+                    (when (= 1 (count rows)) (:session-id (first rows))))]
+    (cond
+      (str/blank? (str event))
+      (do (if json?
+            (print-json! {:success false :error "--event is required"})
+            (emit-err! "Usage: by events emit --event <name> [--payload '{…}'] [-s <session-id>]"))
+          (System/exit 1))
+
+      (= ::bad payload)
+      (do (if json?
+            (print-json! {:success false :error "invalid --payload EDN"})
+            (emit-err! "Error: --payload must be an EDN map, e.g. '{:order-id \"A-91\"}'"))
+          (System/exit 1))
+
+      (str/blank? (str id))
+      (do (if json?
+            (print-json! {:success false :error "no live session (specify -s <session-id>)"})
+            (emit-err! (str "Error: no live session to emit into"
+                            (when (> (count rows) 1) " (multiple live — specify -s <session-id>)")
+                            ".")))
+          (System/exit 1))
+
+      :else
+      (let [row  (first (filter #(= id (:session-id %)) (ssum/enriched-summaries)))
+            sock (:ask-socket-path row)]
+        (if (or (nil? row) (str/blank? (str sock)) (not (.exists (io/file ^String sock))))
+          (do (if json?
+                (print-json! {:success false :session-id id :attachable false
+                              :error (str "session '" id "' is not attachable (no live ask socket)")})
+                (emit-err! (str "Error: session '" id "' is not attachable "
+                                "(not open in a running `by`).")))
+              (System/exit 1))
+          (let [req  (cond-> {:op :emit :event event}
+                       (map? payload) (assoc :payload payload))
+                resp (try (ask-channel/send-op! sock req)
+                          (catch Exception e
+                            {:status :error
+                             :error (str "could not reach session: " (.getMessage e)
+                                         " (is it still running?)")}))
+                ok?  (= :ok (:status resp))]
+            (if json?
+              (print-json! (if ok?
+                             (assoc resp :success true :session-id id)
+                             {:success false :session-id id :error (:error resp)}))
+              (if ok?
+                (println (str "Emitted " (:emitted resp)
+                              " → " (:subscribers resp) " subscriber(s)"
+                              (when (:note resp) (str " — " (:note resp)))))
+                (emit-err! (str "Error: " (:error resp)))))
+            (System/exit (if ok? 0 1))))))))
+
 (defn cmd-sessions-label
   "Set (or clear) a persisted session's label. Usage:
      by sessions label <session-id> <text…>   ; set
@@ -2428,13 +2501,29 @@
                                 {:command     "reembed"
                                  :description "Rebuild the graph vector index for the current embedder (resume semantic recall)"
                                  :opts        [user-id-opt json-opt]
-                                 :runs        cmd-memory-reembed}]}]})
+                                 :runs        cmd-memory-reembed}]}
+                 {:command     "events"
+                  :description "Fire user-defined events into a live session over its ask channel"
+                  :subcommands [{:command     "emit"
+                                 :description "Emit an event into a live session (external → agent)"
+                                 :opts        [{:option "event" :short "e"
+                                                :as "Event name (namespaced keyword, e.g. order/shipped)"
+                                                :type :string}
+                                               {:option "payload" :short "p"
+                                                :as "EDN payload map, e.g. '{:order-id \"A-91\"}'"
+                                                :type :string}
+                                               {:option "session-id" :short "s"
+                                                :as "Target session (default: the sole live session)"
+                                                :type :string}
+                                               working-dir-opt
+                                               json-opt]
+                                 :runs        cmd-events-emit}]}]})
 
 ;; ============================================================================
 ;; Entry point
 ;; ============================================================================
 
-(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "memory"})
+(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "memory" "events"})
 (def ^:private help-flags #{"--help" "-?" "-h"})
 ;; `-v` is taken by `run --verbose`, so the short version flag is capital `-V`.
 (def ^:private version-flags #{"--version" "-V"})
