@@ -53,6 +53,51 @@
                    :selected nil :drag nil}))))
       (.catch (fn [_] (swap! state/app-state assoc-in [:graph id :status] :error)))))
 
+;; --- memory DB panel loaders ----------------------------------------------
+
+(defn- load-memory-status! [id]
+  (swap! state/app-state assoc-in [:memory id :status] {:loading? true})
+  (-> (api/memory-status id)
+      (.then (fn [r] (swap! state/app-state assoc-in [:memory id :status] r)))
+      (.catch (fn [_] (swap! state/app-state assoc-in [:memory id :status]
+                             {:success false :error "request failed"})))))
+
+(defn- load-memory-list! [id layer]
+  (swap! state/app-state assoc-in [:memory id :lists layer] {:status :loading})
+  (-> (api/memory-list id {:layer (name layer) :limit 50})
+      (.then (fn [{:keys [success entries error]}]
+               (swap! state/app-state assoc-in [:memory id :lists layer]
+                      (if (false? success)
+                        {:status :error :error error :entries []}
+                        {:status :ready :entries (vec entries)}))))
+      (.catch (fn [_] (swap! state/app-state assoc-in [:memory id :lists layer]
+                             {:status :error :error "request failed" :entries []})))))
+
+(defn- run-memory-search! [id]
+  (let [q (str/trim (str (get-in @state/app-state [:memory id :search :q])))]
+    (if (str/blank? q)
+      (swap! state/app-state update-in [:memory id :search] merge {:status nil :entries []})
+      (do
+        (swap! state/app-state update-in [:memory id :search] merge {:status :loading})
+        (-> (api/memory-search id q {:limit 20})
+            (.then (fn [{:keys [success entries error]}]
+                     (swap! state/app-state update-in [:memory id :search] merge
+                            (if (false? success)
+                              {:status :error :error error :entries []}
+                              {:status :ready :entries (vec entries)}))))
+            (.catch (fn [_] (swap! state/app-state update-in [:memory id :search] merge
+                                   {:status :error :error "request failed" :entries []}))))))))
+
+;; Load whatever the given tab needs, lazily (skip if already loaded).
+(defn- ensure-memory-tab! [id tab]
+  (case tab
+    :status (when-not (get-in @state/app-state [:memory id :status])
+              (load-memory-status! id))
+    (:l1 :l2 :l3) (when-not (get-in @state/app-state [:memory id :lists tab])
+                    (load-memory-list! id tab))
+    :search nil
+    nil))
+
 ;; Zoom the viewBox by `factor` about SVG point [cx cy] (keeps that point fixed).
 (defn- zoom-view [{:keys [x y w h]} factor cx cy]
   (let [w' (-> (* w factor) (max 60) (min 40000))
@@ -277,6 +322,31 @@
 
     :graph/pointer-up
     (swap! state/app-state assoc-in [:graph (first args) :drag] nil)
+
+    ;; --- memory DB panel (per workspace) ----------------------------------
+    :memory/toggle
+    (let [id    (first args)
+          open? (get-in @state/app-state [:memory id :open?])]
+      (swap! state/app-state update-in [:memory id] merge
+             {:open? (not open?) :tab (or (get-in @state/app-state [:memory id :tab]) :status)})
+      (when-not open?
+        (ensure-memory-tab! id (get-in @state/app-state [:memory id :tab]))))
+    :memory/tab
+    (let [[id tab] args]
+      (swap! state/app-state assoc-in [:memory id :tab] tab)
+      (ensure-memory-tab! id tab))
+    :memory/search-input
+    (let [[id v] args]
+      (swap! state/app-state assoc-in [:memory id :search :q] v))
+    :memory/search       (run-memory-search! (first args))
+    :memory/refresh
+    (let [id  (first args)
+          tab (get-in @state/app-state [:memory id :tab])]
+      (case tab
+        :status       (load-memory-status! id)
+        (:l1 :l2 :l3) (load-memory-list! id tab)
+        :search       (run-memory-search! id)
+        nil))
 
     ;; --- escape hatch for imperative event control ------------------------
     :event/prevent-default   (some-> dom-event .preventDefault)

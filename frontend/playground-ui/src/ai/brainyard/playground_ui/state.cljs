@@ -27,4 +27,14 @@
          ;;    :selected <brainyard-session-id>
          ;;    :config { <sid> -> config-payload | {:loading? true} }
          ;;    :show-snapshot? bool        reveal the full effective config}
-         :brainyard {}}))
+         :brainyard {}
+         ;; :graph — workspace-id -> context-graph canvas state (see dispatch)
+         :graph {}
+         ;; :memory — workspace-id -> memory-DB panel state:
+         ;;   {:open? bool                        modal open
+         ;;    :tab :status|:l1|:l2|:l3|:search   active view
+         ;;    :status {…}                        `by memory status` payload
+         ;;    :lists { <layer-kw> -> {:status :loading|:ready|:error
+         ;;                            :entries [...] :error s} }
+         ;;    :search {:q str :status … :entries [...] :error s}}
+         :memory {}}))

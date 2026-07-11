@@ -349,3 +349,53 @@
     (or (parse-json out)
         {:success false :enabled? false :nodes [] :edges [] :counts {:nodes 0 :edges 0}
          :error (or (not-empty err) (str "docker exec failed (exit " exit ")"))})))
+
+;; --- user-scoped memory DB read verbs (Phase 3) ----------------------------
+;; Each shells a `by memory <verb> … --json` read into the container. The memory
+;; store is HOME-scoped (BY_USER_ID = the workspace session-id), so all reads run
+;; from /workspace and are whole-DB / user-scoped. Args reach `docker exec` as
+;; literal argv (no shell), so client-supplied filters carry no injection risk.
+
+(defn- memory-read
+  "Run `by memory <verb> [args…] --json` in the container and return parsed JSON,
+   or a `{:success false :error …}` map. `--json` is appended by this helper."
+  [session-id verb & args]
+  (let [{:keys [exit out err]}
+        (apply exec-by-tenant session-id workspace-root
+               "by" "memory" verb (concat args ["--json"]))]
+    (or (parse-json out)
+        {:success false :error (or (not-empty err) (str "docker exec failed (exit " exit ")"))})))
+
+(defn memory-status
+  "L1/L2/L3 counts + graph vector-index staleness (`by memory status --json`)."
+  [session-id]
+  (memory-read session-id "status"))
+
+(defn memory-list
+  "Raw entries from one layer (`by memory list`). `opts` — {:layer :session :kind
+   :limit}; :layer is required by the CLI (missing → its usage error map)."
+  [session-id {:keys [layer session kind limit]}]
+  (apply memory-read session-id "list"
+         (cond-> []
+           (seq (str layer))   (into ["--layer" (str layer)])
+           (seq (str session)) (into ["--session" (str session)])
+           (seq (str kind))    (into ["--kind" (str kind)])
+           limit               (into ["--limit" (str limit)]))))
+
+(defn memory-search
+  "Cross-layer weighted-RRF recall for `query` (`by memory search`). `opts` —
+   {:session :limit}. Blank query → the CLI's usage error map."
+  [session-id query {:keys [session limit]}]
+  (apply memory-read session-id "search" (str query)
+         (cond-> []
+           (seq (str session)) (into ["--session" (str session)])
+           limit               (into ["--limit" (str limit)]))))
+
+(defn memory-explain
+  "Recall audit for a brainyard session (`by memory explain`). `opts` —
+   {:session (required) :turn}. Blank session → the CLI's usage error map."
+  [session-id {:keys [session turn]}]
+  (apply memory-read session-id "explain"
+         (cond-> []
+           (seq (str session)) (into ["--session" (str session)])
+           turn                (into ["--turn" (str turn)]))))

@@ -153,6 +153,32 @@
        :error "workspace not running"}
       (workspace/brainyard-graph id))))
 
+;; --- user-scoped memory DB reads (Phase 3) ---------------------------------
+;; Ownership-guarded wrappers over `workspace/memory-*`, mirroring brainyard-graph:
+;; nil when not owned (the tenant boundary → 404); a `{:success false …}` payload
+;; when the workspace container isn't running.
+
+(defn- memory-guard
+  "Run `f` (a 0-arg thunk over the running container) only for the owner; nil when
+   not owned, a not-running error map otherwise."
+  [user-id id f]
+  (when-let [rec (owned user-id id)]
+    (if (or (:fake rec) (not (workspace/running? id)))
+      {:success false :error "workspace not running"}
+      (f))))
+
+(defn memory-status [user-id id]
+  (memory-guard user-id id #(workspace/memory-status id)))
+
+(defn memory-list [user-id id opts]
+  (memory-guard user-id id #(workspace/memory-list id opts)))
+
+(defn memory-search [user-id id query opts]
+  (memory-guard user-id id #(workspace/memory-search id query opts)))
+
+(defn memory-explain [user-id id opts]
+  (memory-guard user-id id #(workspace/memory-explain id opts)))
+
 (defn mark-down!
   "The container for `id` is gone/unreachable: drop its stale upstream cache and
    mark it suspended so the dashboard shows Resume. No-op if not owned/fake."

@@ -155,6 +155,39 @@
         text-transform: uppercase; letter-spacing: .04em; }
       .graph-detail .summary { font-size: .82rem; margin: 0 0 .3rem; }
       .graph-detail .aliases { font-size: .78rem; color: #8b949e; margin: 0; }
+      /* Memory-DB inspector modal (L1/L2/L3 rows + recall search) */
+      .modal.memory-modal { width: min(900px, 94vw); height: 85vh;
+        display: flex; flex-direction: column; }
+      .memory-modal > header { display: flex; align-items: center; gap: .5rem;
+        margin-bottom: .5rem; flex: 0 0 auto; }
+      .mem-tabs { display: flex; gap: .35rem; flex: 0 0 auto; margin-bottom: .5rem; }
+      .mem-tabs button { background: #161b22; border: 1px solid #30363d;
+        border-radius: 6px; padding: .3rem .7rem; cursor: pointer; color: #c9d1d9; }
+      .mem-tabs button:hover { border-color: #388bfd; }
+      .mem-tabs button.active { border-color: #2563eb; background: #1c2333; }
+      .memory-body { flex: 1 1 auto; min-height: 0; overflow-y: auto;
+        padding-right: .25rem; }
+      .mem-status > div { padding: .15rem 0; font-size: .9rem; }
+      .mem-list { display: flex; flex-direction: column; gap: .4rem; }
+      .mem-row { background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+        padding: .45rem .6rem; }
+      .mem-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem;
+        margin-bottom: .25rem; }
+      .mem-badge { background: #1c2333; border: 1px solid #2563eb; color: #79c0ff;
+        border-radius: 999px; padding: 0 .45rem; font-size: .7rem;
+        text-transform: uppercase; letter-spacing: .03em; }
+      .mem-kind { color: #8b949e; font-size: .75rem; }
+      .mem-conf { color: #8b949e; font-size: .72rem; }
+      .mem-id { margin-left: auto; font-family: ui-monospace, monospace;
+        font-size: .72rem; color: #6e7681; word-break: break-all; }
+      .mem-content { font-size: .84rem; color: #c9d1d9; white-space: pre-wrap;
+        word-break: break-word; }
+      .mem-search-bar { display: flex; gap: .4rem; margin-bottom: .6rem; }
+      .mem-search-bar input { flex: 1 1 auto; background: #0d1117;
+        border: 1px solid #30363d; border-radius: 6px; padding: .35rem .5rem;
+        color: #c9d1d9; }
+      .mem-search-bar button { background: #1c2333; border: 1px solid #2563eb;
+        border-radius: 6px; padding: .35rem .8rem; cursor: pointer; color: #79c0ff; }
     </style>
   </head>
   <body>

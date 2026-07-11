@@ -13,6 +13,10 @@
      GET    /api/sessions/:id/brainyard   -> 200 {:sessions [...]} | 404
      GET    /api/sessions/:id/brainyard/:sid/config -> 200 {config} | 404
      GET    /api/sessions/:id/graph       -> 200 {:nodes :edges :counts} | 404
+     GET    /api/sessions/:id/memory         -> 200 {:stats :vec-status} | 404
+     GET    /api/sessions/:id/memory/list    -> 200 {:entries …} | 404   ?layer&session&kind&limit
+     GET    /api/sessions/:id/memory/search  -> 200 {:entries …} | 404   ?q&session&limit
+     GET    /api/sessions/:id/memory/explain -> 200 {:explain …} | 404   ?session&turn
      DELETE /api/sessions/:id             -> 204
      POST   /api/sessions/:id/tty-token   -> 200 {:token ...}
      GET    /api/sessions/:id/tty         -> WebSocket (ttyd protocol)
@@ -152,6 +156,46 @@
       (json 200 g)
       (json 404 {:error "not found"}))))
 
+;; --- user-scoped memory DB reads (Phase 3) ---------------------------------
+;; Each shells a `by memory <verb> … --json` read into the owned workspace.
+;; `nil` (not owned) → 404; a running-but-empty/off store returns 200 with the
+;; CLI's own JSON payload (the SPA reads :success / :error from it).
+
+(defn- qp [req k] (some-> (get-in req [:query-params k]) str/trim not-empty))
+
+(defn- qp-int [req k]
+  (when-let [s (qp req k)] (parse-long s)))
+
+(defn- memory-status [req]
+  (let [uid (user-id req) id (-> req :path-params :id)]
+    (if-let [r (sessions/memory-status uid id)]
+      (json 200 r)
+      (json 404 {:error "not found"}))))
+
+(defn- memory-list [req]
+  (let [uid (user-id req) id (-> req :path-params :id)]
+    (if-let [r (sessions/memory-list uid id {:layer   (qp req "layer")
+                                             :session (qp req "session")
+                                             :kind    (qp req "kind")
+                                             :limit   (qp-int req "limit")})]
+      (json 200 r)
+      (json 404 {:error "not found"}))))
+
+(defn- memory-search [req]
+  (let [uid (user-id req) id (-> req :path-params :id)]
+    (if-let [r (sessions/memory-search uid id (or (qp req "q") "")
+                                       {:session (qp req "session")
+                                        :limit   (qp-int req "limit")})]
+      (json 200 r)
+      (json 404 {:error "not found"}))))
+
+(defn- memory-explain [req]
+  (let [uid (user-id req) id (-> req :path-params :id)]
+    (if-let [r (sessions/memory-explain uid id {:session (qp req "session")
+                                                :turn    (qp-int req "turn")})]
+      (json 200 r)
+      (json 404 {:error "not found"}))))
+
 (defn- resume-session [req]
   (if-let [s (sessions/resume! (user-id req) (-> req :path-params :id))]
     (json 200 s)
@@ -229,6 +273,10 @@
      ["/sessions/:id/ports"      {:get (wrap-require-auth session-ports)}]
      ["/sessions/:id/brainyard"  {:get (wrap-require-auth brainyard-sessions)}]
      ["/sessions/:id/graph"      {:get (wrap-require-auth brainyard-graph)}]
+     ["/sessions/:id/memory"         {:get (wrap-require-auth memory-status)}]
+     ["/sessions/:id/memory/list"    {:get (wrap-require-auth memory-list)}]
+     ["/sessions/:id/memory/search"  {:get (wrap-require-auth memory-search)}]
+     ["/sessions/:id/memory/explain" {:get (wrap-require-auth memory-explain)}]
      ["/sessions/:id/brainyard/:sid/config"
       {:get (wrap-require-auth brainyard-session-config)}]
      ;; ttyd's own client, proxied same-origin (workspace iframe)

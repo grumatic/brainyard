@@ -204,6 +204,86 @@
        [:button {:on {:click [[:graph/toggle id]]}} "Close"]]
       (graph/panel id g)]]))
 
+;; --- memory DB panel -------------------------------------------------------
+
+(defn- mem-preview [s n]
+  (let [c (str s)] (if (> (count c) n) (str (subs c 0 n) "…") c)))
+
+(defn- memory-entry-row [{:keys [id _layer kind content confidence]}]
+  [:div.mem-row {:replicant/key (str (or id (hash content)))}
+   [:div.mem-meta
+    (when _layer [:span.mem-badge (name _layer)])
+    (when kind [:span.mem-kind (str kind)])
+    (when confidence [:span.mem-conf (str "conf " confidence)])
+    (when id [:span.mem-id id])]
+   [:div.mem-content (mem-preview content 260)]])
+
+(defn- memory-entries-pane [{:keys [status entries error]}]
+  (cond
+    (nil? status)       [:p.hint "Select a tab to load."]
+    (= :loading status) [:p.hint "Loading…"]
+    (= :error status)   [:p.hint.err (str "Error: " error)]
+    (empty? entries)    [:p.hint "No entries in this layer."]
+    :else               (into [:div.mem-list] (map memory-entry-row entries))))
+
+(defn- memory-status-pane [{:keys [loading? success stats vec-status graph-enabled? error]}]
+  (cond
+    loading?        [:p.hint "Loading…"]
+    (false? success) [:p.hint.err (str "Error: " error)]
+    :else
+    [:div.mem-status
+     [:div [:b "Episodes (L2): "] (:episodes stats)]
+     [:div [:b "Semantic facts (L3): "] (:semantic-facts stats)]
+     [:div [:b "Schema: "] (:schema-version stats)]
+     [:div [:b "Graph tier: "] (if graph-enabled? "on" "off")]
+     (when vec-status
+       [:div [:b "Vector index: "]
+        (if (:stale? vec-status) "STALE — run reembed" "ok")
+        " (" (:count vec-status) " vectors)"])]))
+
+(defn- memory-search-pane [id {:keys [q status entries error]}]
+  [:div.mem-search
+   [:form.mem-search-bar {:on {:submit [[:event/prevent-default] [:memory/search id]]}}
+    [:input {:type "text" :placeholder "Recall query (weighted RRF across L1/L2/L3)…"
+             :value (or q "")
+             :on {:input [[:memory/search-input id :event/target.value]]}}]
+    [:button {:type "submit"} "Search"]]
+   (cond
+     (= :loading status) [:p.hint "Searching…"]
+     (= :error status)   [:p.hint.err (str "Error: " error)]
+     (nil? status)       [:p.hint "Enter a query and press Search."]
+     (empty? entries)    [:p.hint "No results."]
+     :else               (into [:div.mem-list] (map memory-entry-row entries)))])
+
+(defn- memory-tabs [id active]
+  (into [:div.mem-tabs]
+        (for [[tab label] [[:status "Status"] [:l1 "L1"] [:l2 "L2"] [:l3 "L3"] [:search "Search"]]]
+          [:button {:replicant/key tab
+                    :class (when (= tab active) "active")
+                    :on {:click [[:memory/tab id tab]]}}
+           label])))
+
+(defn memory-modal
+  "Inspect the workspace's user-scoped memory DB: L1/L2/L3 counts, raw layer
+   rows, and cross-layer recall search. Whole-DB / user-scoped, read over
+   `by memory … --json`."
+  [id {:keys [open? tab status lists search]}]
+  (when open?
+    (let [tab (or tab :status)]
+      [:div.modal-backdrop {:replicant/key :memory}
+       [:div.modal.memory-modal
+        [:header
+         [:h2 "Memory DB"]
+         [:div.spacer]
+         [:button {:on {:click [[:memory/refresh id]]}} "Refresh"]
+         [:button {:on {:click [[:memory/toggle id]]}} "Close"]]
+        (memory-tabs id tab)
+        [:div.memory-body
+         (case tab
+           :status (memory-status-pane status)
+           :search (memory-search-pane id (or search {}))
+           (memory-entries-pane (get lists tab)))]]])))
+
 (defn workspace-view [state id]
   [:div.workspace {:replicant/key :view/workspace}
    [:header
@@ -212,6 +292,7 @@
     [:div.spacer]
     [:button {:on {:click [[:brainyard/toggle id]]}} "Config"]
     [:button {:on {:click [[:graph/toggle id]]}} "Graph Memory"]
+    [:button {:on {:click [[:memory/toggle id]]}} "Memory"]
     (port-menu (get (:ports state) id))]
    ;; ttyd's own client, proxied same-origin. Stable :replicant/key so the iframe
    ;; (and its live ttyd session) survives header re-renders.
@@ -221,7 +302,8 @@
                   :allow "clipboard-read; clipboard-write"
                   :src (str "/api/sessions/" id "/term/")}]
    (brainyard-config-modal id (get (:brainyard state) id))
-   (graph-memory-modal id (get (:graph state) id))])
+   (graph-memory-modal id (get (:graph state) id))
+   (memory-modal id (get (:memory state) id))])
 
 ;; ~time the 0→95% ramp targets; real readiness snaps it to ready/dismiss.
 (def ^:private provision-expected-ms 15000)

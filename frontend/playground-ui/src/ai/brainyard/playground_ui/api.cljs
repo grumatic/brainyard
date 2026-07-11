@@ -4,7 +4,8 @@
   "Thin wrappers over the playground-server control-plane REST API. Every call
    sends the httpOnly session cookie (`:credentials \"include\"`) and returns a
    JS Promise resolving to keywordized Clojure data (or rejecting with
-   {:status n}).")
+   {:status n})."
+  (:require [clojure.string :as str]))
 
 (defn- ->clj [x]
   (js->clj x :keywordize-keys true))
@@ -49,6 +50,31 @@
 ;; Context-graph memory dump for a workspace (nodes + edges + counts).
 ;; -> {:success :enabled? :nodes [...] :edges [...] :counts {:nodes :edges}}
 (defn graph [id] (get-json (str "/api/sessions/" id "/graph")))
+
+;; --- user-scoped memory DB reads (L1/L2/L3) --------------------------------
+(defn- query-string
+  "Encode a {k v} map as `?k=v&…`, dropping blank/nil values. → \"\" when empty."
+  [params]
+  (let [pairs (for [[k v] params
+                    :when (and (some? v) (not= "" (str v)))]
+                (str (name k) "=" (js/encodeURIComponent (str v))))]
+    (if (seq pairs) (str "?" (str/join "&" pairs)) "")))
+
+;; -> {:success :stats {:episodes :semantic-facts …} :vec-status {…} :graph-enabled?}
+(defn memory-status [id] (get-json (str "/api/sessions/" id "/memory")))
+
+;; opts {:layer :session :kind :limit} -> {:success :layer :count :entries [...]}
+(defn memory-list [id opts]
+  (get-json (str "/api/sessions/" id "/memory/list" (query-string opts))))
+
+;; -> {:success :query :count :entries [{:_layer :content …} …]}
+(defn memory-search [id q opts]
+  (get-json (str "/api/sessions/" id "/memory/search"
+                 (query-string (assoc opts :q q)))))
+
+;; opts {:session :turn} -> {:success :explain {…}}
+(defn memory-explain [id opts]
+  (get-json (str "/api/sessions/" id "/memory/explain" (query-string opts))))
 
 ;; BYO env (settings). env is a {name -> value} map.
 (defn get-env         []    (get-json "/api/me/env"))
