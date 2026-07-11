@@ -13,6 +13,8 @@
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
+            [ai.brainyard.agent.core.tool :as tool]
+            [malli.core :as m]
             [clojure.java.io :as io]))
 
 (def ^:dynamic *pdir* nil)
@@ -170,6 +172,35 @@
         (let [h (make-handler :AG "sid-b" *pdir* :order/shipped)]
           (dotimes [_ 10] (h {:session-id "sid-b"})))))
     (is (= 3 @fired) "per-session budget stops a runaway cascade")))
+
+;; ============================================================================
+;; reaction$add :do input schema — precise, not :any
+;; ============================================================================
+
+(deftest do-schema-precision
+  (let [in-sch   (get-in (tool/get-tool-defs :id :reaction$add) [:meta :input-schema])
+        schema   (tool/inputs->malli-map-schema in-sch)
+        decode   (fn [args] (m/decode schema args tool/llm-args-transformer))
+        valid?   (fn [args] (nil? (m/explain schema (decode args))))]
+    (testing "schema->type builds an LLM JSON schema without throwing"
+      (is (map? (tool/schema->type in-sch)))
+      (is (= [:as] (:required (:do (tool/schema->type in-sch)))) ":as is required"))
+    (testing "string-form :as/:event coerce to keywords (JSON tool-call path)"
+      (is (= {:as :emit :event :downstream/pong :payload {"v" 1}}
+             (:do (decode {:on "x" :do {:as "emit" :event "downstream/pong" :payload {:v 1}}}))))
+      (is (valid? {:on "x" :do {:as "context" :text "hi"}})))
+    (testing "keyword-form passes through (code-fence path)"
+      (is (valid? {:on "x" :do {:as :turn :text "hi"}}))
+      (is (valid? {:on "x" :do {:as :artifact :name "db" :path "/tmp/x" :pin? true}})))
+    (testing "invalid / missing :as is rejected"
+      (is (not (valid? {:on "x" :do {:as "bogus" :text "x"}})))
+      (is (not (valid? {:on "x" :do {:text "x"}}))))
+    (testing "non-map :do is rejected"
+      (is (not (valid? {:on "x" :do "notmap"}))))
+    (testing "explicit nil on a nested optional is tolerated"
+      (is (valid? {:on "x" :do {:as :context :text "x" :path nil}})))
+    (testing ":match accepts a filter map"
+      (is (valid? {:on "x" :do {:as :turn :text "x"} :match {:region "us"}})))))
 
 (deftest handler-respects-match-filter
   (reactor/write-spec! *pdir* {:id "us-only" :on :order/shipped :match {:region "us"}

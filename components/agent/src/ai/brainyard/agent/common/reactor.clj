@@ -378,8 +378,20 @@
             (assoc :note "Reactions are OFF — set :enable-reactions true (or BY_ENABLE_REACTIONS) to install them; rules are stored regardless."))))))
   :input-schema  [:map
                   [:on        [:string {:desc "Event to react to (namespaced keyword, e.g. 'order/shipped')"}]]
-                  [:do        [:any {:desc "Action map: {:as :turn|:run|:artifact|:emit …}; string fields interpolate {{payload-key}}"}]]
-                  [:match     {:optional true} [:any {:desc "Payload subset filter, e.g. {:region \"us\"}"}]]
+                  [:do
+                   [:map {:desc "Action to run when the event fires; string fields interpolate {{payload-key}} from the event payload"}
+                    [:as      [:enum {:desc "Sink — :turn/:run force a turn now; :context appends to the ## Events section (next turn, no interrupt); :memory writes a project-memory slug; :artifact upserts a live artifact; :emit fires another event"}
+                               :turn :run :context :memory :artifact :emit]]
+                    [:text    {:optional true} [:maybe [:string {:desc "Body text for :turn/:run/:context/:memory"}]]]
+                    [:content {:optional true} [:maybe [:string {:desc "Alt to :text; :artifact/:memory content"}]]]
+                    [:await?  {:optional true} [:maybe [:boolean {:desc ":turn — block for the answer (default false)"}]]]
+                    [:name    {:optional true} [:maybe [:string {:desc ":artifact — name"}]]]
+                    [:path    {:optional true} [:maybe [:string {:desc ":artifact — file path to load fresh each turn"}]]]
+                    [:pin?    {:optional true} [:maybe [:boolean {:desc ":artifact — pin against context trimming"}]]]
+                    [:slug    {:optional true} [:maybe [:string {:desc ":memory — memory slug"}]]]
+                    [:event   {:optional true} [:maybe [:keyword {:desc ":emit — event to fire (namespaced keyword)"}]]]
+                    [:payload {:optional true} [:maybe [:map-of {:desc ":emit — payload for the fired event (defaults to the triggering payload)"} :any :any]]]]]
+                  [:match     {:optional true} [:map-of {:desc "Payload subset filter, e.g. {:region \"us\"}; every pair must equal the event payload"} :any :any]]
                   [:id        {:optional true} [:string {:desc "Explicit rule id (lowercase-kebab)"}]]
                   [:title     {:optional true} [:string {:desc "Human label (seeds the id)"}]]
                   [:max-fires {:optional true} [:int {:desc "Lifetime cap on how many times this rule may fire"}]]
