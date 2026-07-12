@@ -132,3 +132,48 @@
     (is (nil? (fsm/step! ag *pdir* (fsm/read-machine *pdir* "gate2") "s2" :done {}))
         "no transition when the guard fails"))
   (is (= :running (:state (fsm/current-runtime *pdir* machine "s2"))) "state unchanged when blocked"))
+
+;; ============================================================================
+;; Phase 2 — timed & eventless transitions
+;; ============================================================================
+
+(def ^:private eventless @#'fsm/eventless-transitions)
+
+(deftest elapsed-guard
+  (let [now 1000000]
+    (is (true?  (fsm/guard-pass? {:elapsed/gte 500}  {:entered-at (- now 1000) :now now})))
+    (is (false? (fsm/guard-pass? {:elapsed/gte 2000} {:entered-at (- now 1000) :now now})))
+    (is (false? (fsm/guard-pass? {:elapsed/gte 500}  {:now now}))
+        "no :entered-at → never elapsed")))
+
+(deftest eventless-expansion
+  (let [ts (eventless {:always [{:target :a}] :after [{:after 500 :target :b}]})]
+    (is (= 2 (count ts)))
+    (is (= :a (:target (first ts))))
+    (is (= {:elapsed/gte 500} (:guard (second ts))) ":after gains an elapsed guard")
+    (is (= :b (:target (second ts))))))
+
+(def ^:private timer-machine
+  {:id "timer" :initial :waiting :context {:ready false}
+   :states {:waiting {:always [{:guard {:context/all [:ready]} :target :go}]
+                      :after   [{:after 100 :target :timeout}]}
+            :go {:type :final} :timeout {:type :final}}})
+
+(deftest tick-eventless-and-timed
+  (fsm/write-machine! *pdir* timer-machine)
+  (let [m   (fsm/read-machine *pdir* "timer")
+        now (System/currentTimeMillis)]
+    (with-redefs [config/project-dir (fn ([] *pdir*) ([_] *pdir*))]
+      (testing "not ready + not elapsed → no eventless transition"
+        (fsm/write-runtime! *pdir* "timer" "s1"
+                            {:machine "timer" :state :waiting :context {:ready false} :entered-at now :history []})
+        (is (nil? (fsm/tick! ag *pdir* m "s1"))))
+      (testing ":always fires when its context guard passes"
+        (fsm/write-runtime! *pdir* "timer" "s1"
+                            {:machine "timer" :state :waiting :context {:ready true} :entered-at now :history []})
+        (is (= :go (fsm/tick! ag *pdir* m "s1"))))
+      (testing ":after fires once the elapsed guard passes"
+        (fsm/write-runtime! *pdir* "timer" "s2"
+                            {:machine "timer" :state :waiting :context {:ready false}
+                             :entered-at (- (System/currentTimeMillis) 200) :history []})
+        (is (= :timeout (fsm/tick! ag *pdir* m "s2")))))))

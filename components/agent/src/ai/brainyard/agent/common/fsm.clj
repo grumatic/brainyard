@@ -119,11 +119,21 @@
 
 (defn- initial-runtime [machine]
   {:machine (:id machine) :state (:initial machine)
-   :context (or (:context machine) {}) :history []})
+   :context (or (:context machine) {}) :history []
+   :entered-at (System/currentTimeMillis)})
 
-(defn current-runtime [project-dir machine sid]
+(defn current-runtime
+  "Read-only view of a machine's runtime state (initial if never run)."
+  [project-dir machine sid]
   (or (read-edn (runtime-file project-dir (:id machine) sid))
       (initial-runtime machine)))
+
+(defn- ensure-runtime!
+  "Like current-runtime, but persists the initial runtime the first time a
+   machine is touched so `:entered-at` (the timed-transition clock) is stable."
+  [project-dir machine sid]
+  (or (read-edn (runtime-file project-dir (:id machine) sid))
+      (write-runtime! project-dir (:id machine) sid (initial-runtime machine))))
 
 ;; ============================================================================
 ;; Guards (declarative)
@@ -135,7 +145,7 @@
 
 (defn- as-num [v] (when (some? v) (let [s (str v)] (or (parse-long s) (parse-double s)))))
 
-(defn- clause-pass? [k v {:keys [event context agent]}]
+(defn- clause-pass? [k v {:keys [event context agent entered-at now]}]
   (case (keyword k)
     :event/match    (submap? v event)
     :context/=      (every? (fn [[ck cv]] (= cv (get context ck))) v)
@@ -145,6 +155,8 @@
     :context/any    (boolean (some #(get context %) v))
     :agent/idle?    (= (boolean v) (not (agent-running? agent)))
     :agent/running? (= (boolean v) (boolean (agent-running? agent)))
+    ;; timed: milliseconds elapsed in the current state ≥ v
+    :elapsed/gte    (boolean (and entered-at now (>= (- now entered-at) (or (as-num v) 0))))
     (do (mulog/warn ::unknown-guard-clause :clause k) true)))
 
 (defn guard-pass?
@@ -199,43 +211,83 @@
                            {:context-event (keyword "fsm" machine-id) :source :fsm}))))
 
 ;; ============================================================================
-;; step! — the transition engine
+;; step! / tick! — the transition engine
 ;; ============================================================================
+
+(defn- apply-transition!
+  "Run transition `t` from state `s` of `machine` for `sid`: exit → :do → entry
+   actions (+ :assign), persist the new state (resetting :entered-at on a real
+   state change), and fire the :fsm lifecycle events. Returns the new state."
+  [agent project-dir machine sid rt s t event-kw payload]
+  (let [ctx     (atom (or (:context rt) {}))
+        target  (or (some-> (:target t) kw) s)
+        src-def (get-in machine [:states s])
+        tgt-def (get-in machine [:states target])
+        now     (System/currentTimeMillis)]
+    (run-actions! agent (:exit src-def) ctx payload (:id machine))
+    (run-actions! agent (:do t)         ctx payload (:id machine))
+    (when (not= target s)
+      (run-actions! agent (:entry tgt-def) ctx payload (:id machine)))
+    (let [rt' (cond-> (assoc rt :state target :context @ctx)
+                (not= target s) (assoc :entered-at now)
+                :always (update :history
+                                (fn [h] (->> (conj (vec h) {:from s :to target :event event-kw :ts now})
+                                             (take-last history-cap) vec))))]
+      (write-runtime! project-dir (:id machine) sid rt')
+      (hooks/fire! :fsm/transition {:machine (:id machine) :from s :to target
+                                    :event event-kw :context @ctx})
+      (hooks/fire! :fsm/entered {:machine (:id machine) :state target :context @ctx})
+      (when (= :final (get-in machine [:states target :type]))
+        (hooks/fire! :fsm/final {:machine (:id machine) :state target}))
+      (mulog/info ::stepped :machine (:id machine) :from s :to target :event event-kw)
+      target)))
+
+(defn- pick-transition [transes rt payload agent]
+  (let [gctx {:event payload :context (:context rt) :agent agent
+              :entered-at (:entered-at rt) :now (System/currentTimeMillis)}]
+    (first (filter #(guard-pass? (:guard %) gctx) transes))))
 
 (defn step!
   "Advance `machine` for `sid` on `event-kw`: pick the first current-state
-   transition whose guard passes, run exit/:do/entry actions (+ :assign), persist
-   the new state, and fire the :fsm lifecycle events. Returns the new state or nil
-   when no transition matched."
+   `:on`-transition whose guard passes and apply it. Returns the new state or nil."
   [agent project-dir machine sid event-kw payload]
-  (let [rt      (current-runtime project-dir machine sid)
-        s       (:state rt)
-        transes (get-in machine [:states s :on event-kw])
-        ctx     (atom (or (:context rt) {}))
-        gctx    {:event payload :context @ctx :agent agent}
-        t       (first (filter #(guard-pass? (:guard %) gctx) transes))]
-    (when t
-      (let [target  (or (some-> (:target t) kw) s)
-            src-def (get-in machine [:states s])
-            tgt-def (get-in machine [:states target])]
-        (run-actions! agent (:exit src-def) ctx payload (:id machine))
-        (run-actions! agent (:do t)         ctx payload (:id machine))
-        (when (not= target s)
-          (run-actions! agent (:entry tgt-def) ctx payload (:id machine)))
-        (let [rt' (-> rt
-                      (assoc :state target :context @ctx)
-                      (update :history
-                              (fn [h] (->> (conj (vec h) {:from s :to target :event event-kw
-                                                          :ts (System/currentTimeMillis)})
-                                           (take-last history-cap) vec))))]
-          (write-runtime! project-dir (:id machine) sid rt')
-          (hooks/fire! :fsm/transition {:machine (:id machine) :from s :to target
-                                        :event event-kw :context @ctx})
-          (hooks/fire! :fsm/entered {:machine (:id machine) :state target :context @ctx})
-          (when (= :final (get-in machine [:states target :type]))
-            (hooks/fire! :fsm/final {:machine (:id machine) :state target}))
-          (mulog/info ::stepped :machine (:id machine) :from s :to target :event event-kw)
-          target)))))
+  (let [rt (ensure-runtime! project-dir machine sid)
+        s  (:state rt)]
+    (when-let [t (pick-transition (get-in machine [:states s :on event-kw]) rt payload agent)]
+      (apply-transition! agent project-dir machine sid rt s t event-kw payload))))
+
+(defn- eventless-transitions
+  "The current state's eventless transitions: explicit `:always` plus `:after`
+   entries (each `{:after <ms> :target …}` gains an `:elapsed/gte <ms>` guard)."
+  [state-def]
+  (concat (:always state-def)
+          (for [a (:after state-def)
+                :let [ms (:after a)]]
+            (-> (dissoc a :after)
+                (assoc :guard (let [g (:guard a)]
+                                (if g [g {:elapsed/gte ms}] {:elapsed/gte ms})))))))
+
+(defn tick!
+  "Evaluate `machine`'s eventless / timed transitions for `sid` once: apply the
+   first current-state `:always`/`:after` transition whose guard passes. Returns
+   the new state or nil. Driven by the scheduler tick."
+  [agent project-dir machine sid]
+  (let [rt (ensure-runtime! project-dir machine sid)
+        s  (:state rt)]
+    (when-let [t (pick-transition (eventless-transitions (get-in machine [:states s])) rt nil agent)]
+      (apply-transition! agent project-dir machine sid rt s t :fsm/tick nil))))
+
+(defn tick-machines!
+  "Tick every machine for `sid`, chaining eventless transitions until they settle
+   (bounded, so a mistaken `:always` loop can't spin)."
+  [agent project-dir sid]
+  (doseq [machine (list-machines project-dir)]
+    (loop [n 0]
+      (when (and (< n max-depth)
+                 (try (tick! agent project-dir machine sid)
+                      (catch Throwable e
+                        (mulog/warn ::fsm-tick-failed :machine (:id machine) :exception e) nil)))
+        (recur (inc n))))))
 
 ;; ============================================================================
 ;; Bus handler + per-session install (mirrors reactor/ensure-reactions!)
@@ -266,6 +318,14 @@
                   ev (keys (:on sdef))]
               ev)))
 
+(defn- any-eventless?
+  "True when any machine has `:always`/`:after` transitions — i.e. it needs the
+   scheduler tick to advance timed / eventless transitions."
+  [project-dir]
+  (boolean (some (fn [m] (some (fn [[_ sd]] (or (seq (:always sd)) (seq (:after sd))))
+                               (:states m)))
+                 (list-machines project-dir))))
+
 (defn- fsm-source [sid] (keyword "fsm-src" (str/replace (str sid) #"[^a-zA-Z0-9]+" "_")))
 (defn- fsm-hid [sid ev]
   (keyword "fsm" (str (str/replace (str sid) #"[^a-zA-Z0-9]+" "_") "__" (name ev))))
@@ -293,15 +353,24 @@
         (when (contains? @!installed sid) (teardown-session! sid))
         (let [pdir    (str (config/project-dir agent))
               want    (desired-events pdir)
+              tick?   (any-eventless? pdir)
               current (get @!installed sid)]
           (ensure-cleanup-hook!)
-          (when (or (not= (:agent current) agent) (not= (:events current) want))
+          (when (or (not= (:agent current) agent) (not= (:events current) want)
+                    (not= (:tick? current) tick?))
             (hooks/unregister-source! (fsm-source sid))
             (doseq [ev want]
               (hooks/register-hook! ev (fsm-hid sid ev) (make-handler agent sid pdir ev)
                                     :source (fsm-source sid)))
-            (swap! !installed assoc sid {:agent agent :events want})
-            (mulog/info ::fsm-synced :session sid :events (vec want)))))))
+            ;; Timed / eventless transitions advance on the scheduler tick (needs
+            ;; :enable-scheduler for the ticker). See state-machine-design.md §6.
+            (when tick?
+              (hooks/register-hook!
+               :scheduler/tick (fsm-hid sid :scheduler-tick)
+               (fn [_] (when (< (hooks/current-depth) max-depth) (tick-machines! agent pdir sid)))
+               :source (fsm-source sid)))
+            (swap! !installed assoc sid {:agent agent :events want :tick? tick?})
+            (mulog/info ::fsm-synced :session sid :events (vec want) :tick tick?))))))
   nil)
 
 (defn reset-state!

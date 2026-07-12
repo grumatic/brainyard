@@ -189,7 +189,14 @@
    :task/created                {:keys #{:task}}
    :task/completed              {:keys #{:task}}
    :todo/updated                {:keys #{:agent :todo-list :active-slug}}
-   :agent/exception             {:keys #{:agent :phase :exception}}})
+   :agent/exception             {:keys #{:agent :phase :exception}}
+   ;; Per-tick pulse fired by the scheduler daemon (schedule.clj) each pass;
+   ;; drives FSM timed/eventless transitions and any tick-driven listener.
+   :scheduler/tick              {:keys #{:now}}
+   ;; State-machine lifecycle (ai.brainyard.agent.common.fsm).
+   :fsm/transition              {:keys #{:machine :from :to :event :context}}
+   :fsm/entered                 {:keys #{:machine :state :context}}
+   :fsm/final                   {:keys #{:machine :state}}})
 
 (defn gated-event?
   "True when the event's handlers produce decisions consumed by the caller."

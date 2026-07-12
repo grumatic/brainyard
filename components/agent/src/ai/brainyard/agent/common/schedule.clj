@@ -361,6 +361,9 @@
                       (try
                         (Thread/sleep tick)
                         (run-due! pdir (System/currentTimeMillis))
+                        ;; General per-tick pulse: FSM timed/eventless transitions
+                        ;; (and any other tick-driven listener) ride this.
+                        (hooks/fire! :scheduler/tick {:now (System/currentTimeMillis)})
                         (catch InterruptedException _ nil)
                         (catch Throwable e
                           (mulog/warn ::ticker-error :exception e)))
