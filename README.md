@@ -1,8 +1,8 @@
 # Brainyard
 
-> **v0.3.3 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.3.3) · [changelog](CHANGELOG.md)) — **OAuth for MCP servers**: Brainyard now signs in to OAuth-protected MCP servers (e.g. Notion's hosted endpoint) end to end — device flow, a native `127.0.0.1` loopback redirect, dynamic client registration, and automatic issuer discovery from a `401` challenge — with tokens kept in a hardened on-disk store; authenticate one with `/mcp <server> auth`. The long-running `/mcp <server> start | stop | auth | status` commands now run off the command thread behind a live braille spinner so the input bar stays responsive, and two latent `clj-http-native` bugs that broke the OAuth handshake are fixed. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries to follow.
+> **v0.4.0 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.4.0) · [changelog](CHANGELOG.md)) — a large release. **User-defined events, reactions & a watch loop**: define and emit named events (`event$emit`, `by events emit`, or externally over `ask.sock`), turn them into effects with persisted `event → action` rules (`reaction$*`), and probe external conditions on a schedule (`watch$*`) — a pub/sub layer over the agent's hooks bus. **Context-graph memory**: an opt-in typed entity/relationship graph plus a semantic vector index over long-term memory, with a self-contained in-binary embedder. **A multi-zone prompt cache** with cross-turn breakpoints and an opt-in 1-hour TTL trims cross-turn cost ~60–75%. Plus always-alive subagents (`agent-registry$*`), permission-gated MCP tool calls, and a `by memory` maintenance CLI. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries via the uberjar.
 
-Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 22 available agents across 6 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
+Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 22 available agents across 8 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`, `memory`, `events`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
 
 <!-- TODO: replace with a real asciinema cast / GIF once recorded -->
 <!-- ![Brainyard TUI demo](docs/img/demo.gif) -->
@@ -23,7 +23,7 @@ On **macOS arm64** this installs the native binary under `~/.local/bin`:
 
 On other platforms (Linux, Intel macOS) — where a native binary isn't published yet — the installer automatically falls back to the **JVM uberjar**, installing a `by` launcher that runs `java -jar` (requires a JDK 21+ on `PATH`).
 
-Pin a specific version with `BY_VERSION=v0.3.3` before piping to bash. See [`docs/install.md`](docs/install.md) for manual install, checksum verification, and troubleshooting.
+Pin a specific version with `BY_VERSION=v0.4.0` before piping to bash. See [`docs/install.md`](docs/install.md) for manual install, checksum verification, and troubleshooting.
 
 ### Java users — uberjar
 
