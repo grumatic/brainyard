@@ -196,3 +196,39 @@
                             {:machine "timer" :state :waiting :context {:ready false}
                              :entered-at (- (System/currentTimeMillis) 200) :history []})
         (is (= :timeout (fsm/tick! ag *pdir* m "s2")))))))
+
+;; ============================================================================
+;; Phase 4 — SCI code-guards / code-actions (opt-in, fail-closed)
+;; ============================================================================
+
+(deftest code-eval-sandbox
+  (is (= 3 (fsm/eval-code-safe "(+ 1 2)" {})))
+  (is (= 5 (fsm/eval-code-safe "(-> ctx :context :n)" {:context {:n 5}})))
+  (is (nil? (fsm/eval-code-safe "(/ 1 0)" {})) "eval error → nil, never throws")
+  (is (nil? (fsm/eval-code-safe "(System/getenv \"HOME\")" {}))
+      "Java interop is blocked by the restricted sandbox"))
+
+(deftest code-guards
+  (testing "guard-code / guard-fn over the pure-data code-ctx"
+    (is (true?  (fsm/guard-pass? {:guard-code "(> (-> ctx :context :n) 3)"}
+                                 {:allow-code? true :code-ctx {:context {:n 5}}})))
+    (is (false? (fsm/guard-pass? {:guard-code "(> (-> ctx :context :n) 3)"}
+                                 {:allow-code? true :code-ctx {:context {:n 1}}})))
+    (is (true?  (fsm/guard-pass? {:guard-fn "(fn [c] (:idle? c))"}
+                                 {:allow-code? true :code-ctx {:idle? true}}))))
+  (testing "fail-closed when :fsm-allow-code is off"
+    (is (false? (fsm/guard-pass? {:guard-code "true"} {:allow-code? false :code-ctx {}})))))
+
+(deftest code-action-eval
+  (let [run-actions @#'fsm/run-actions!]
+    (testing ":as :eval merges a returned map into context when allowed"
+      (with-redefs [config/get-config (fn [& args] (= :fsm-allow-code (last args)))]
+        (let [ctx (atom {:n 3})]
+          (run-actions ag [{:as :eval :code "{:doubled (* 2 (-> ctx :context :n))}"}] ctx {} "m")
+          (is (= 6 (:doubled @ctx))))))
+    (testing "no-op when disabled"
+      (with-redefs [config/get-config (fn [& _] false)]
+        (let [ctx (atom {:n 3})]
+          (run-actions ag [{:as :eval :code "{:doubled 99}"}] ctx {} "m")
+          (is (nil? (:doubled @ctx))))))
+    (is (= {:as :eval :code "(+ 1 1)"} (norm [:eval "(+ 1 1)"])))))

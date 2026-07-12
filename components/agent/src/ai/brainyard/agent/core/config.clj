@@ -266,6 +266,11 @@
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "User-defined state machines (docs/design/state-machine-design.md): install per-session bus handlers that advance machines under <project>/.brainyard/fsm/ on matching events. Off by default (can inject turns / fire events); fsm$* commands manage definitions regardless. Env: BY_ENABLE_FSM."}
+   :fsm-allow-code             {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_FSM_ALLOW_CODE")]
+                                           (= "true" v) ::env-unset)
+                                :default false
+                                :doc "Allow SCI code-guards (:guard-code / :guard-fn) and code-actions (:as :eval) in state machines, evaluated in a restricted sandbox (state-machine-design.md §4). Off by default (fail-closed): code-guards deny and code-actions no-op until enabled. Env: BY_FSM_ALLOW_CODE."}
    :gateway-pair-code-ttl-ms   {:type "integer"
                                 :env-fn #(if-some [v (System/getenv "BY_GATEWAY_PAIR_CODE_TTL_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)

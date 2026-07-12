@@ -19,6 +19,7 @@
    code-guard escape hatch is Phase 4. Off by default (`:enable-fsm`)."
   (:require [ai.brainyard.agent.common.events :as events]
             [ai.brainyard.agent.common.reactor :as reactor]
+            [ai.brainyard.clj-sandbox.interface :as sandbox]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
@@ -164,7 +165,39 @@
 
 (defn- as-num [v] (when (some? v) (let [s (str v)] (or (parse-long s) (parse-double s)))))
 
-(defn- clause-pass? [k v {:keys [event context agent entered-at now]}]
+;; ---------------------------------------------------------------------------
+;; SCI code-guards / code-actions (Phase 4). Opt-in via :fsm-allow-code. A single
+;; restricted (no System/Runtime/interop) sandbox is created lazily and reused;
+;; evals are serialized (shared `ctx` var) and time-bounded. `defonce` so
+;; native-image bakes it nil and the first opt-in eval creates it.
+;; ---------------------------------------------------------------------------
+
+(defonce ^:private !sandbox (atom nil))
+
+(defn- get-sandbox []
+  (or @!sandbox
+      (locking !sandbox
+        (or @!sandbox (reset! !sandbox (sandbox/create-sandbox {:interop :restricted}))))))
+
+(defn eval-code-safe
+  "Evaluate `code` (a Clojure expression string) in the FSM sandbox with `ctx-data`
+   bound as `ctx`. Returns the result value, or nil on error/timeout (logged).
+   Serialized + 1s-bounded; never throws."
+  [code ctx-data]
+  (locking !sandbox
+    (try
+      (let [sb (get-sandbox)]
+        (sandbox/set-var! sb 'ctx ctx-data)
+        (let [r (sandbox/eval-code sb code {:timeout-ms 1000})]
+          (sandbox/clear-history! sb)
+          (if (:error r)
+            (do (mulog/warn ::fsm-code-error :error (:error r)) nil)
+            (:result r))))
+      (catch Throwable e (mulog/warn ::fsm-code-failed :exception e) nil))))
+
+(defn reset-sandbox! [] (reset! !sandbox nil))
+
+(defn- clause-pass? [k v {:keys [event context agent entered-at now allow-code? code-ctx]}]
   (case (keyword k)
     :event/match    (submap? v event)
     :context/=      (every? (fn [[ck cv]] (= cv (get context ck))) v)
@@ -176,6 +209,13 @@
     :agent/running? (= (boolean v) (boolean (agent-running? agent)))
     ;; timed: milliseconds elapsed in the current state ≥ v
     :elapsed/gte    (boolean (and entered-at now (>= (- now entered-at) (or (as-num v) 0))))
+    ;; SCI code-guards (opt-in). `v` references `ctx` = {:event :context :idle?
+    ;; :running? :elapsed}. :guard-code is an expression; :guard-fn is a fn applied
+    ;; to ctx. Fail-closed when :fsm-allow-code is off.
+    :guard-code     (if allow-code? (boolean (eval-code-safe (str v) code-ctx))
+                        (do (mulog/warn ::code-guard-disabled) false))
+    :guard-fn       (if allow-code? (boolean (eval-code-safe (str "(" v "\n ctx)") code-ctx))
+                        (do (mulog/warn ::code-guard-disabled) false))
     (do (mulog/warn ::unknown-guard-clause :clause k) true)))
 
 (defn guard-pass?
@@ -215,6 +255,7 @@
                     :emit      {:as :emit :event arg}
                     :fire-hook {:as :fire-hook :event arg}
                     :assign    {:as :assign :assign arg}
+                    :eval      {:as :eval :code arg}
                     (:turn :run :context) (merge {:as as} (if (string? arg) {:text arg} (or arg {})))
                     (:artifact :memory)   (merge {:as as} (or arg {}))
                     {:as as}))
@@ -223,8 +264,14 @@
 (defn- run-actions! [agent actions ctx-atom event-payload machine-id]
   (doseq [raw actions
           :let [action (normalize-action raw)]]
-    (if (= :assign (keyword (:as action)))
-      (swap! ctx-atom apply-assign (:assign action) event-payload)
+    (case (keyword (:as action))
+      :assign (swap! ctx-atom apply-assign (:assign action) event-payload)
+      ;; SCI code-action (opt-in): eval :code with `ctx` = {:context :event}; if it
+      ;; returns a map, merge it into the machine context (a pure transform).
+      :eval   (when (try (config/get-config agent :fsm-allow-code) (catch Throwable _ false))
+                (let [r (eval-code-safe (str (:code action))
+                                        {:context @ctx-atom :event event-payload})]
+                  (when (map? r) (swap! ctx-atom merge r))))
       (reactor/run-action! agent action
                            (merge @ctx-atom (when (map? event-payload) event-payload))
                            {:context-event (keyword "fsm" machine-id) :source :fsm}))))
@@ -261,9 +308,21 @@
       (mulog/info ::stepped :machine (:id machine) :from s :to target :event event-kw)
       target)))
 
+(defn- guard-context
+  "The context a guard is evaluated against. Adds `:allow-code?` and a pure-data
+   `:code-ctx` (no live agent) for SCI code-guards."
+  [agent rt payload]
+  (let [now      (System/currentTimeMillis)
+        running? (agent-running? agent)]
+    {:event payload :context (:context rt) :agent agent
+     :entered-at (:entered-at rt) :now now
+     :allow-code? (boolean (try (config/get-config agent :fsm-allow-code) (catch Throwable _ false)))
+     :code-ctx {:event payload :context (:context rt)
+                :idle? (not running?) :running? running?
+                :elapsed (when (:entered-at rt) (- now (:entered-at rt)))}}))
+
 (defn- pick-transition [transes rt payload agent]
-  (let [gctx {:event payload :context (:context rt) :agent agent
-              :entered-at (:entered-at rt) :now (System/currentTimeMillis)}]
+  (let [gctx (guard-context agent rt payload)]
     (first (filter #(guard-pass? (:guard %) gctx) transes))))
 
 (defn step!
