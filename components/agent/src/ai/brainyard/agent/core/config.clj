@@ -244,8 +244,8 @@
    :enable-scheduler           {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_SCHEDULER")]
                                            (= "true" v) ::env-unset)
-                                :default false
-                                :doc "First-class scheduler (R2): a daemon ticker fires due jobs from <project>/.brainyard/schedule/ in-process each session. Off by default (runs LLM prompts unattended); schedule$run-now/run-due work manually regardless. Env: BY_ENABLE_SCHEDULER."}
+                                :default true
+                                :doc "First-class scheduler (R2): a daemon ticker fires due jobs from <project>/.brainyard/schedule/ in-process each session, and drives FSM timed/eventless transitions. On by default (no-op with no schedules/watches); set false to stop the ticker. schedule$run-now/run-due work manually regardless. Env: BY_ENABLE_SCHEDULER."}
    :scheduler-tick-ms          {:type "integer"
                                 :env-fn #(if-some [v (System/getenv "BY_SCHEDULER_TICK_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
@@ -254,8 +254,8 @@
    :enable-reactions           {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_REACTIONS")]
                                            (= "true" v) ::env-unset)
-                                :default false
-                                :doc "Event reactor (docs/design/event-bus-and-reactor.md §3.3): install per-session hooks that run an action (:turn/:run/:artifact/:emit) when a matching event fires, from rules under <project>/.brainyard/reactions/. Off by default (can inject turns / spend LLM); reaction$* commands manage rules regardless. Env: BY_ENABLE_REACTIONS."}
+                                :default true
+                                :doc "Event reactor (docs/design/event-bus-and-reactor.md §3.3): install per-session hooks that run an action (:turn/:run/:artifact/:emit) when a matching event fires, from rules under <project>/.brainyard/reactions/. On by default (no-op with no rules; a matching rule can inject turns / spend LLM); set false to disable. reaction$* commands manage rules regardless. Env: BY_ENABLE_REACTIONS."}
    :max-reaction-fires-per-session {:type "integer"
                                     :env-fn #(if-some [v (System/getenv "BY_MAX_REACTION_FIRES")]
                                                (or (parse-long v) ::env-unset) ::env-unset)
@@ -264,8 +264,8 @@
    :enable-fsm                 {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_FSM")]
                                            (= "true" v) ::env-unset)
-                                :default false
-                                :doc "User-defined state machines (docs/design/state-machine-design.md): install per-session bus handlers that advance machines under <project>/.brainyard/fsm/ on matching events. Off by default (can inject turns / fire events); fsm$* commands manage definitions regardless. Env: BY_ENABLE_FSM."}
+                                :default true
+                                :doc "User-defined state machines (docs/design/state-machine-design.md): install per-session bus handlers that advance machines under <project>/.brainyard/fsm/ on matching events. On by default (no-op with no machines; a transition can inject turns / fire events); set false to disable. fsm$* commands manage definitions regardless. Env: BY_ENABLE_FSM."}
    :fsm-allow-code             {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_FSM_ALLOW_CODE")]
                                            (= "true" v) ::env-unset)
