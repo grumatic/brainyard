@@ -523,16 +523,36 @@
                   [:error   {:optional true} [:string]]])
 
 (defcommand fsm$send
-  "Send an event to the machines (fires it on the bus; a matching transition advances). Sugar over event$emit, scoped to this session."
+  "Send an event to this session's machines and report which advanced. Installs FSM handlers on demand (so enabling :enable-fsm and sending in the same turn works). Sugar over event$emit."
   (fn [& {:keys [event payload]}]
-    (let [sid  (proto/get-current-session-id)
-          base (cond-> (if (map? payload) payload {}) sid (assoc :session-id sid))
-          r    (events/emit-event! event base)]
-      (if (:error r) r {:sent (:fired r)})))
+    (let [ag   proto/*current-agent*
+          sid  (proto/get-current-session-id)
+          pdir (config/project-dir)]
+      ;; ensure-fsm! normally runs only at turn setup, so enabling :enable-fsm
+      ;; mid-turn wouldn't install handlers until the next turn. Re-sync here so
+      ;; an interactive "enable then send" advances immediately.
+      (when ag (try (ensure-fsm! ag) (catch Throwable _ nil)))
+      (let [snap   (fn [] (when sid (into {} (map (juxt :id :state)) (session-states pdir sid))))
+            before (snap)
+            base   (cond-> (if (map? payload) payload {}) sid (assoc :session-id sid))
+            r      (events/emit-event! event base)]
+        (if (:error r)
+          r
+          (let [advanced (vec (for [[id st] (snap) :when (not= st (get before id))]
+                                {:machine id :from (get before id) :to st}))]
+            (cond-> {:sent (:fired r) :advanced advanced}
+              (not (config/get-config :enable-fsm))
+              (assoc :note "State machines are OFF — set :enable-fsm true (or BY_ENABLE_FSM); nothing advances until enabled.")
+              (and (config/get-config :enable-fsm) (empty? advanced))
+              (assoc :note "No machine advanced — no current state has an :on transition for this event. Check the event name and each machine's state via fsm$status.")))))))
   :input-schema  [:map
                   [:event   [:string {:desc "Event to fire (namespaced keyword)"}]]
                   [:payload {:optional true} [:map-of {:desc "Event payload"} :any :any]]]
-  :output-schema [:map [:sent {:optional true} [:any]] [:error {:optional true} [:string]]])
+  :output-schema [:map
+                  [:sent     {:optional true} [:any {:desc "Fired event key"}]]
+                  [:advanced {:optional true} [:vector {:desc "Machines that transitioned: {:machine :from :to}"} :any]]
+                  [:note     {:optional true} [:string {:desc "Advisory when nothing advanced"}]]
+                  [:error    {:optional true} [:string]]])
 
 (defcommand fsm$reset
   "Reset a machine's runtime state to its :initial state for this session."
