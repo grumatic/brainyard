@@ -280,6 +280,31 @@ A LLM that hits the inline fast-eval deadline is nudged to switch to
 
 ---
 
+## Event bus, reactions, and watches as tools
+
+A user-defined **event bus / reactor / watch** subsystem registers three command
+families that let an agent (or an external `by events emit`) wire event-driven
+behavior without leaving the tool registry:
+
+- **Events** (`common/events.clj`) — `event$define` declares a user event type
+  (name + optional payload schema); `event$emit` fires one; `event$list` /
+  `event$remove` manage the declarations. Subscribers and reactions receive
+  emitted events.
+- **Reactions** (`common/reactor.clj`) — `reaction$add` binds a rule that runs an
+  action when an event fires (`:on <event> :do {:as :turn | :run | :artifact |
+  :emit …}`); `reaction$list` / `reaction$remove` / `reaction$enable` /
+  `reaction$disable` manage them. Reactions install per-turn when
+  `:enable-reactions` is on.
+- **Watches** (`common/schedule.clj`) — `watch$add` polls an external condition on
+  a schedule (`:probe` + `:emit` + `:every` | `:cron`) and fires an event when it
+  changes/matches; `watch$list` / `watch$remove` / `watch$run-now` manage and
+  probe them.
+
+Together they form the external-trigger loop: a watch (or `by events emit`)
+fires an event, and a reaction turns it into a turn/run/artifact.
+
+---
+
 ## File map
 
 | File | Purpose |
@@ -289,6 +314,9 @@ A LLM that hits the inline fast-eval deadline is nudged to switch to
 | `common/skills.clj` | Unified skill management (brainyard + claude + agent skills) |
 | `common/tools.clj` | Shared tool-roster utilities |
 | `common/delegation_use.clj` | Delegation / team-dispatch helpers |
+| `common/events.clj` | User-defined event types (`event$define` / `emit` / `list` / `remove`) |
+| `common/reactor.clj` | Event→action reaction rules (`reaction$add` / `list` / `remove` / `enable` / `disable`) |
+| `common/schedule.clj` | Scheduled watches (`watch$add` / `list` / `remove` / `run-now`) |
 | `common/loop_guard_hook.clj` | Default loop-guard via `:agent.tool-use/pre` |
 | `mcp/integration.clj` | MCP config, server lifecycle, dynamic tool registration |
 | `mcp/client.clj` | stdio / HTTP MCP client |

@@ -94,21 +94,28 @@ is routed into the per-agent override slot at startup.
  :lm-config         {:type "object"  :default-fn #(clj-llm/get-default-lm)}
  :dirs              {:type "object"  :default-fn #(resolve-dirs)}
  :allowed-dirs      {:type "array"   :default-fn #(default-allowed-dirs)}
- :permission-mode   {:type "keyword" :default :ask-each-time}
+ :permission-mode   {:type "keyword" :default :auto}       ;; :auto | :auto-approve | :ask-each-time | :deny-by-default
  :clj-backend       {:type "keyword" :default :sandbox}     ;; :sandbox | :nrepl (per-agent code-eval backend)
  :acp-backend       {:type "keyword" :default :stub}
- :nrepl-enabled?    {:type "boolean" :default-fn #(env BY_NREPL_ENABLED)}
- :nrepl-port        {:type "integer" :default-fn #(env BY_NREPL_PORT)}    ;; 0 = ephemeral
- :sandbox-interop   {:type "keyword" :default-fn #(env BY_SANDBOX_INTEROP)} ;; :restricted (default) | :full | :auto
+ :nrepl-enabled?    {:type "boolean" :env-fn #(env BY_NREPL_ENABLED)}
+ :nrepl-port        {:type "integer" :env-fn #(env BY_NREPL_PORT)}    ;; 0 = ephemeral
+ :nrepl-host        {:type "string"  :env-fn #(env BY_NREPL_HOST)}    ;; :nrepl backend endpoint host
+ :sandbox-interop   {:type "keyword" :env-fn #(env BY_SANDBOX_INTEROP) :default :auto} ;; :restricted | :full | :auto (default)
  ...}
 ```
+
+Both `:permission-mode` and `:sandbox-interop` **default to `:auto`**, which is
+resolved against `env-detect` at use time: `resolve-permission-mode` yields
+`:auto-approve` inside a container (prompting is pointless in a disposable env)
+else `:ask-each-time`; `resolve-sandbox-interop` yields `:full` inside a
+container else `:restricted`. A bare host is therefore never silently relaxed.
 
 The `:clj-backend` key selects the per-agent code-execution backend (see
 [reasoning.md](reasoning.md)); it replaced the older `:default-clj-backend`
 name. The `:nrepl-*` keys were promoted from raw `BY_NREPL_*` env
 vars into the schema so they can be read through `get-config` and persisted
 under `[:agent :config]`, while still honouring the env var as the lazy
-default. (nREPL is the full-trust backend — the deny-list is the only
+default (`:env-fn`). (nREPL is the full-trust backend — the deny-list is the only
 eval gate, so there is no `:nrepl-grant` schema key.)
 
 Adding a new key is a one-liner: declare the entry, then read it via

@@ -40,8 +40,8 @@ gap; it's flagged so the stub default isn't read as a defect.
 
 The per-agent override layer (`st-memory-init :config`) is how
 per-instance settings like `set-allowed-dirs!` land without touching
-`config.edn` — a contract relied on by the `:nrepl` backend's per-agent
-grants ([reasoning](reasoning.md) CR-RSN-14).
+`config.edn` ([reasoning](reasoning.md) CR-RSN-14). (nREPL no longer has a
+grant/scope layer — the deny-list is the only eval gate.)
 
 ---
 
@@ -60,11 +60,13 @@ grants ([reasoning](reasoning.md) CR-RSN-14).
 | ID | Contract | Status | Source |
 |---|---|---|---|
 | CR-CFG-09 | Directory resolution MUST consider `user.home` (user-dir), `user.dir` (working-dir), `BY_PROJECT_DIR` and a git-root walk (project-dir). The three scopes are orthogonal and each report truth — no env var conflates them. | Implemented | `config.clj` (`resolve-dirs`) |
-| CR-CFG-10 | `.brainyard` subdirectories MUST honor `subdir-scope-policy`: memory/sessions/logs are user-only, tasks/charts are project-only, config.edn/skills are both. | Implemented | `config.clj` (`brainyard-subdir`, `subdir-scope-policy`) |
+| CR-CFG-10 | `.brainyard` subdirectories MUST honor `subdir-scope-policy`: `logs` is user-only; `sessions`/`charts` (and unlisted `*-agent` dirs) are project-only; `memory`/`config.edn`/`skills`/`BRAINYARD.md` are dual-scope (both). | Implemented | `config.clj` (`brainyard-subdir`, `subdir-scope-policy`) |
 
 The scope policy is load-bearing for several other specs: sessions are
-user-scoped ([tui](tui.md) CR-TUI-12), tasks are project-scoped
-([task-manager](task-manager.md) CR-TASK-08).
+project-scoped ([tui](tui.md) CR-TUI-12), tasks are project-scoped
+([task-manager](task-manager.md) CR-TASK-08). Note `memory` is dual-scope —
+the L1/L2/L3 SQLite store is user-scoped (`~/.brainyard/memory/<user-id>.db`)
+while file-based project memory (`index.md` + topic files) is project-scoped.
 
 ---
 

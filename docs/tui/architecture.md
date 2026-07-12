@@ -353,17 +353,19 @@ in-stream prompt), and 7 (the `/activity show` is a friendly no-op).
 ## 8. Boot integration with `agent-tui-app`
 
 `projects/agent-tui-app/src/ai/brainyard/agent_tui_app/main.clj`
-exposes six subcommands (`known-subcommands`,
+exposes eight subcommands (`known-subcommands`,
 [build-and-deploy.md](../build-and-deploy.md)):
 
 | Subcommand | Purpose |
 |---|---|
 | `run` *(default)* | Start the interactive TUI session. Calls `mode/probe` + `agent-tui.core/run!`. |
-| `ask` | One-shot, non-interactive question. |
+| `ask` | One-shot, non-interactive question (`--attach` targets a running session). |
 | `agents` | List registered agents. |
 | `models` | List available providers / models. |
 | `config` | Interactive environment bootstrap wizard. |
-| `sessions list` / `show` / `label` / `prune` | Inspect / relabel / clean up persisted agent sessions under `<project>/.brainyard/sessions/`. All four accept `-C` / `--working-dir` to target a specific project. |
+| `sessions list` / `show` / `config` / `label` / `prune` | Inspect / relabel / clean up persisted agent sessions under `<project>/.brainyard/sessions/`. All accept `-C` / `--working-dir` to target a specific project. |
+| `memory` | Maintenance + inspection of the user-scoped L1/L2/L3 store and context graph. |
+| `events` | Emit user-defined events into a live session over its ask channel. |
 
 `run` adds session-management flags:
 
@@ -414,9 +416,8 @@ These artifacts of the two-process design are gone from trunk:
   client owns detach (`prefix d`) and re-attach. While detached,
   `by` keeps running and tmux keeps the pane buffer; on re-attach
   the buffer is restored. *We do not try to survive `by` itself
-  crashing or being SIGHUP'd while detached.* Long-running agents
-  that need crash survival should run via `agent-web-app`, not the
-  TUI.
+  crashing or being SIGHUP'd while detached.* Long-running agents that
+  need crash survival belong to a server-hosted runtime, not the TUI.
 
 What stays:
 

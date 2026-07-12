@@ -390,8 +390,10 @@ original proposal but both are now load-bearing.
 The store is embedding-provider-agnostic: it takes an injected `embed-fn` (the
 agent builds it from `:graph-embed-model`). Three ways to supply one:
 
-1. **`static` — self-contained, in-binary (the default-worth-shipping).** A
-   pure-JVM **Model2Vec** static embedder (`embed_static.clj`): a `token→vector`
+1. **`static` — self-contained, in-binary (now the shipped default).** As-built,
+   the `:graph-embed-model` schema key **defaults to `"static"`** (set it blank to
+   disable the `:vec` signal); the "None / unset" option below is no longer the
+   default. A pure-JVM **Model2Vec** static embedder (`embed_static.clj`): a `token→vector`
    lookup table + mean-pool, *no transformer inference*, so no server, no JNI, no
    native-image risk — the opposite of bundling ONNX/llama.cpp. Bundled model is
    `potion-base-8M` (256-dim) via `bb model2vec:fetch`. Reproduces the reference

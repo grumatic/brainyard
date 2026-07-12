@@ -147,9 +147,10 @@ Every `.brainyard/<name>` entry is allowed at one or both scopes per
 | Path | User (`~/.brainyard/`) | Project (`<repo>/.brainyard/`) |
 |---|:-:|:-:|
 | `config.edn`, `BRAINYARD.md`, `skills/` | ✓ | ✓ |
-| `config-agent/`, `init-agent/` (mirror the file they edit) | ✓ | ✓ |
-| `memory/` (SQLite DBs), `sessions/` (TUI state), `logs/` (mulog file publishers + crash dumps) | ✓ | — |
-| `charts/` (Plotly HTML exports), `temp/clj-sandbox/` (truncation + file-backed display caches), `temp/coact-agent/scratch/` (code-block + verbatim scratch) | — | ✓ |
+| `agents/config-agent/`, `agents/init-agent/` (mirror the file they edit) | ✓ | ✓ |
+| `memory/` (user-scoped L1/L2/L3 SQLite DB **and** project-scoped file memory — dual) | ✓ | ✓ |
+| `logs/` (mulog file publishers + crash dumps) | ✓ | — |
+| `sessions/` (TUI state), `charts/` (Plotly HTML exports), `temp/clj-sandbox/` (truncation + file-backed display caches), `temp/coact-agent/scratch/` (code-block + verbatim scratch) | — | ✓ |
 | Other `*-agent/` (`explore-agent`, `plan-agent`, `todo-agent`, `workflow-agent`, `research-agent`, `edit-agent`, `eval-agent`, `exec-agent`, …) | — | ✓ |
 
 Use `(brainyard-subdir dirs name scope)` to resolve a path that honors

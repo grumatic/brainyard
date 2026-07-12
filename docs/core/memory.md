@@ -394,6 +394,33 @@ wrap the store for the agent runtime: `recall`, `remember`, and
 
 ---
 
+## LLM-facing commands (`memory$*`)
+
+Beyond `memory$remember` / `memory$recall`, the agent exposes a broader curation
+and maintenance surface as registered commands (defined across
+`agent/common/commands.clj` and `agent/common/memory_agent/commands.clj`). These
+are also what the `memory-agent` specialist and the `by memory` CLI drive:
+
+| Command | Purpose |
+|---|---|
+| `memory$remember` | Store one entry; `:layer` picks lifetime (l1 session-only / l2 timeline / l3 durable). |
+| `memory$recall` | Cross-layer weighted-RRF search for durable knowledge. |
+| `memory$read` | Fetch raw entries from a layer by id/filter. |
+| `memory$status` | Per-layer counts, schema version, capture-pipeline state, audit summary. |
+| `memory$stats` | Cheap composite stats (db size, layer counts) — no FTS scan. |
+| `memory$explain` | Audit trail: which entries informed past prompts. |
+| `memory$forget` | Soft-delete (tombstone) an entry; never hard-deletes (audit retention). |
+| `memory$keep!` | Toggle `keep_flag` on an L2/L3 entry (pin against the TTL sweep). |
+| `memory$archive!` | Toggle `archived_flag` (exclude from default recall). |
+| `memory$promote` | Copy an entry across layers, stamping `:sources` for provenance. |
+| `memory$sweep-l2` | TTL sweep on L2 (tombstone non-kept episodes past `:retention-days`). |
+| `memory$reembed` | Rebuild the semantic vector index for the current embedding model. |
+
+The registry (`(get-tool-defs :type :command)`) is the source of truth; the
+graph-tier commands only carry signal when `BY_ENABLE_GRAPH_MEMORY` is on.
+
+---
+
 ## File map
 
 | File | Purpose |

@@ -449,13 +449,13 @@ script are POSIX-only and need a separate MSVC toolchain pass.
 
 ### Versioning
 
-- Semantic versioning, tags shaped `vMAJOR.MINOR.PATCH` (e.g. `v0.1.0`).
-- Pre-releases use `vX.Y.Z-rc.N`; the workflow auto-flags the GitHub
-  Release as prerelease when the tag contains a hyphen.
-- The release workflow asserts that the stripped-`v` tag matches
-  `app-version` in
-  `projects/agent-tui-app/src/ai/brainyard/agent_tui_app/main.clj`.
-  Mismatches abort the release rather than ship a confused version.
+- Semantic versioning, tags shaped `vMAJOR.MINOR.PATCH` (e.g. `v0.3.3`).
+- Pre-releases use `vX.Y.Z-rc.N`; a hyphenated tag flags the GitHub
+  Release as a prerelease.
+- The tag **is** the version: `bb version:ata` stamps `build-version.edn`
+  from `git describe`, so the binary's `--version` always reflects the tag
+  at HEAD. `bin/release-stage.sh` refuses to stage a `-dirty`, post-tag, or
+  `dev` describe — a confused version can't ship.
 
 ### Install UX (consumers)
 
@@ -515,83 +515,46 @@ Secrets: only the default `GITHUB_TOKEN` with `contents: write`. No
 LLM API keys are exercised during the release build — only AOT compile
 and `native-image`.
 
-### Sync from this dev repo
+### This repo is the source of truth
 
-The public repo mirrors a **Polylith subset** transitively required by
-`projects/agent-tui-app`, preserving relative paths so the `:local/root`
-graph stays intact and the existing `bb …:ata` tasks work unchanged.
-Other projects (`agent-web-app`, `fulcro-rad-app`, `electric-app`,
-`replicant-app`, `acp-stub-agent`) and their unique components stay
-private.
+There is **no upstream sync**. Earlier `v0.1.x` releases were published from a
+thin sync-wrapper model (`bin/sync-from-dev.sh`, `SYNCED-FROM.txt`,
+`bin/.brick-set`); that model has been **retired** and its scripts deleted.
+Develop here directly. The checked-in Polylith subset — `projects/agent-tui-app/`,
+`bases/agent-tui/`, and the 21 `components/` — is everything the `by` binary
+needs; `acp` / `acp-client` plus the `acp-stub-agent` base/project support
+protocol-level testing. See [`../CLAUDE.md`](../CLAUDE.md) for the authoritative
+build/release pipeline and tagging discipline.
 
-Sync is **manual and gated**, performed by running
-`bin/sync-from-dev.sh` in the public repo:
+### Versioning: baked from `git describe`
 
-1. Resolves upstream commit SHA (in `~/MyDev/brainyard` by default;
-   overridable via `BY_DEV_REPO`).
-2. Computes the publishable brick set by walking `:local/root` edges
-   from `projects/agent-tui-app` to a fixed point (currently 1 base
-   + 12 components, but re-derived on every run because upstream may
-   add components).
-3. `rsync`s the resolved subset into the public repo:
-   `projects/agent-tui-app/`, `bases/agent-tui/`, each transitive
-   `components/<brick>/`, `bb.edn`, `deps.edn`, `workspace.edn`,
-   `.clj-kondo/`, `.sdkmanrc`.
-4. Writes `SYNCED-FROM.txt` (upstream SHA + branch + timestamp + brick
-   list) at the public repo root for provenance.
-5. Runs `bb compile:ata` as a validation step — a successful compile
-   proves the mirrored subset is closed (no `:local/root` reference
-   points outside the mirror).
-6. Refuses to push. The operator commits and pushes explicitly.
-
-Why manual sync rather than git subtree / submodule: the dev repo is
-private and contains other subprojects and internal discussion that
-must not be exposed, even via shared history. A copy-with-recorded-SHA
-gives provenance without leaking history.
+The binary's `--version` is **stamped at build time from `git describe` of this
+repo** — the tag *is* the release version. `bb version:ata` runs first inside
+`bb build:ata`, writing `projects/agent-tui-app/resources/build-version.edn`
+(gitignored) from `git describe --tags --always --dirty`. There is no
+hand-maintained `app-version` constant to bump.
 
 ### Release process (maintainer flow)
 
-1. **In this (dev) repo**: bump `app-version` in
-   `projects/agent-tui-app/src/ai/brainyard/agent_tui_app/main.clj`,
-   finish the change, run `bb build:ata` locally to verify, commit, push.
-2. **In the public repo**: run `bin/sync-from-dev.sh`. Review
-   `git status` / `git diff`; confirm the validation `bb compile:ata`
-   ran cleanly.
-3. Update `CHANGELOG.md` with a section matching the new `app-version`.
-   Extract that section into `CHANGELOG-latest.md` (used as release notes).
-4. Commit: `chore: sync from upstream @ <sha>`.
-5. Tag: `git tag v0.1.0 && git push origin main v0.1.0`. The
-   stripped-`v` tag must equal `app-version` or the workflow aborts.
-6. Watch `release.yml`. Artifacts appear on the Releases page.
-7. Verify by running the `curl | bash` installer on a clean machine (or
-   in a container) and exercising a quick-start command — e.g.
-   `by ask -m haiku 'What is 2+2?'`.
+Per [`../CLAUDE.md`](../CLAUDE.md):
 
-`bin/release.sh` in the public repo wraps steps 4–5 with sanity checks
-(`SYNCED-FROM.txt` SHA matches upstream HEAD, tag doesn't already exist,
-tag version matches `app-version`, `CHANGELOG-latest.md` is non-empty).
+1. Update `CHANGELOG.md` and `CHANGELOG-latest.md` (the latter is the release
+   notes body); commit.
+2. `git tag vX.Y.Z` at HEAD.
+3. `bb build:ata` — `bb version:ata` stamps `build-version.edn` from
+   `git describe`, then compile → uberjar → native binary.
+4. `bin/release-stage.sh` — packages `target/` outputs into `release/` with the
+   asset names `bin/install.sh` expects, plus `SHA256SUMS` and `BUILD-INFO.txt`
+   (records this repo's commit). It **refuses to stage** if `git describe` is
+   `-dirty`, shows commits past the tag (`-N-gabc123`), or is `dev` — so a
+   misleading version never ships.
+5. `gh release create vX.Y.Z release/* --notes-file CHANGELOG-latest.md`.
+6. Verify with the `curl | bash` installer on a clean machine (or container) and
+   a quick-start command — e.g. `by ask -m haiku 'What is 2+2?'`.
 
-### Open questions (per public-repo design v0.2)
-
-Pending decisions before v1 ships — none block the design, all live in
-`grumatic/brainyard:docs/deploy-design.md §9`:
-
-- **License** — MIT, copyright Grumatic, Inc.
-- **Brick-set freezing** — commit a resolved brick list
-  (`bin/.brick-set`) so accidental brick additions in upstream are
-  caught at sync time.
-- **Source distribution policy** — publicly mirroring 12 components
-  exposes LLM-provider wiring, sandbox policy, persistence schema, etc.
-  Dry-run the sync first, decide per-brick whether to redact or stub.
-- **Windows native build** — deferred for v1; revisit after demand
-  surfaces.
-- **Telemetry / update check** — default position is **no**; `mulog`'s
-  local writes to `~/.brainyard/logs/agent-tui-app.log` should remain
-  the ceiling.
-
-Rollout milestones (M0 skeleton → M0.5 brick-set review → M1 first
-manual release → M2 CI for jar → M3 native binary matrix → M4 polish)
-are tracked in §10 of the design doc.
+Committing after tagging puts the repo into post-tag state (`vX.Y.Z-1-g…`),
+which `release-stage.sh` rejects. To re-release after a doc fix, move the tag
+(`git tag -f vX.Y.Z`) and rebuild.
 
 ---
 
@@ -629,16 +592,17 @@ full policy.
   `init-agent/` (whose artifacts mirror the scope of the file they edit).
 
 - **User** — `~/.brainyard/`. Per-account state:
-  - Memory DB (`memory/<user>.db`) — SQLite, BM25 FTS5.
-  - Persisted TUI sessions (`sessions/<id>/`) — scrollback, queues,
-    input history, lock file.
-  - Application logs (`logs/agent-tui-app.log`,
-    `logs/agent-web-app.log`, `logs/by-crash.log`,
+  - Memory DB (`memory/<user-id>.db`) — SQLite, BM25 FTS5.
+  - Application logs (`logs/agent-tui-app.log`, `logs/by-crash.log`,
     `logs/by-input-crash.log`) — mulog file publishers + crash dumps.
   - The user's cross-project `config.edn` / `BRAINYARD.md` / `skills/`.
 
-  **`memory/`, `sessions/`, `logs/` are user-only by policy** — they
-  hold per-account state that must not travel with a repo.
+  **Scope policy** (`subdir-scope-policy`): `logs/` is **user-only**;
+  the L1/L2/L3 `memory/` **DB** is user-scoped while file-based project
+  memory under `memory/` is project-scoped (dual); **`sessions/` is
+  project-only** — persisted TUI sessions (`<project>/.brainyard/sessions/<id>/`:
+  scrollback, queues, input history, lock file) travel with the repo they
+  describe, not the user account.
 
 Project-dir resolution: `BY_PROJECT_DIR` env → nearest `.git`
 ancestor of cwd → **cwd itself** (fallback). The fallback means
