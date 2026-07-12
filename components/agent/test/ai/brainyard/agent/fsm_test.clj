@@ -159,6 +159,25 @@
                       :after   [{:after 100 :target :timeout}]}
             :go {:type :final} :timeout {:type :final}}})
 
+;; ============================================================================
+;; Phase 3 — observability snapshot
+;; ============================================================================
+
+(deftest session-states-snapshot
+  (fsm/write-machine! *pdir* {:id "m1" :initial :a :states {:a {:on {:go [{:target :b}]}} :b {}}})
+  (fsm/write-machine! *pdir* {:id "m2" :initial :x :states {:x {}}})
+  (fsm/write-runtime! *pdir* "m1" "s" {:machine "m1" :state :b :context {:k 1}
+                                       :history [{:from :a :to :b :event :go :ts 1}]})
+  (let [ss (fsm/session-states *pdir* "s")
+        m1 (first (filter #(= "m1" (:id %)) ss))
+        m2 (first (filter #(= "m2" (:id %)) ss))]
+    (is (= 2 (count ss)) "every defined machine appears")
+    (is (= :b (:state m1)))
+    (is (= {:k 1} (:context m1)))
+    (is (= {:from :a :to :b :event :go} (select-keys (:last m1) [:from :to :event])))
+    (is (= :x (:state m2)) "never-run machine shows its initial state")
+    (is (nil? (:last m2)))))
+
 (deftest tick-eventless-and-timed
   (fsm/write-machine! *pdir* timer-machine)
   (let [m   (fsm/read-machine *pdir* "timer")

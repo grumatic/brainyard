@@ -856,24 +856,34 @@
         (cond-> {:status :ok :emitted (:fired r) :subscribers (:subscribers r)}
           (:note r) (assoc :note (:note r)))))))
 
+(defn- handle-fsm-status-op
+  "Non-blocking snapshot of this session's state machines — current state +
+   context + last transition per machine. See docs/design/state-machine-design.md §7."
+  [ag]
+  {:status :ok :machines (edn-safe (vec (or (try (agent/session-states-for ag)
+                                                 (catch Throwable _ nil))
+                                            [])))})
+
 (defn- ask-handle-fn
   "Op-dispatcher for a session's ask socket. `:ask` injects a question and blocks
    for the answer; `:status` returns a non-blocking snapshot; `:config` returns a
    non-blocking effective-config read; `:inject` pushes external data in (artifact
    / turn / memory); `:cancel` stops the running turn; `:subscribe` streams
    runtime events until disconnect; `:emit` fires a user-defined event onto the
-   bus. Unknown ops get a clear error. See docs/design/session-channel-extensions.md
-   and docs/design/event-bus-and-reactor.md."
+   bus; `:fsm-status` snapshots this session's state machines. Unknown ops get a
+   clear error. See docs/design/session-channel-extensions.md,
+   event-bus-and-reactor.md, and state-machine-design.md."
   [ag cap-ms]
   (fn [{:keys [op] :as req}]
     (case op
       :ask    (handle-ask-op ag cap-ms req)
       :status (handle-status-op ag)
       :config (handle-config-op ag req)
-      :inject    (handle-inject-op ag cap-ms req)
-      :cancel    {:status :ok :cancelled (boolean (input/cancel-ask-for-agent! ag))}
-      :subscribe (handle-subscribe-op ag req)
-      :emit      (handle-emit-op ag req)
+      :inject     (handle-inject-op ag cap-ms req)
+      :cancel     {:status :ok :cancelled (boolean (input/cancel-ask-for-agent! ag))}
+      :subscribe  (handle-subscribe-op ag req)
+      :emit       (handle-emit-op ag req)
+      :fsm-status (handle-fsm-status-op ag)
       {:status :error :error (str "unknown op: " op)})))
 
 (defn start-ask-listener!
@@ -893,7 +903,7 @@
             ;; discovery client (`by sessions list`) can advertise capability
             ;; without connecting. Keep in sync with `ask-handle-fn`'s dispatch.
             (try (persist/save-meta! sid {:ask-socket-path path
-                                          :ops [:ask :status :config :inject :cancel :subscribe :emit]})
+                                          :ops [:ask :status :config :inject :cancel :subscribe :emit :fsm-status]})
                  (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
           (catch clojure.lang.ExceptionInfo e

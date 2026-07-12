@@ -226,6 +226,11 @@
 (export-symbols ai.brainyard.agent.common.project-memory
                 write-memory!)
 
+;; State-machine snapshot — backs the `## State Machines` context section and
+;; the ask.sock `:op :fsm-status` verb (docs/design/state-machine-design.md).
+(export-symbols ai.brainyard.agent.common.fsm
+                session-states session-states-for)
+
 ;; Memory-agent consolidation surface (for the TUI's shutdown banner, and the
 ;; app-installed detached session-end consolidation launcher).
 (export-symbols ai.brainyard.agent.common.memory-agent.hooks

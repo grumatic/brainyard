@@ -135,6 +135,25 @@
   (or (read-edn (runtime-file project-dir (:id machine) sid))
       (write-runtime! project-dir (:id machine) sid (initial-runtime machine))))
 
+(defn session-states
+  "Snapshot of every defined machine's current state for `sid`: a vector of
+   `{:id :state :context :last}` (`:last` = the most recent transition, or nil).
+   Backs the `## State Machines` context section and `ask.sock :op :fsm-status`."
+  [project-dir sid]
+  (mapv (fn [m]
+          (let [rt (current-runtime project-dir m sid)]
+            {:id (:id m) :state (:state rt) :context (:context rt)
+             :last (last (:history rt))}))
+        (list-machines project-dir)))
+
+(defn session-states-for
+  "`session-states` for `agent` — derives project-dir + session-id. nil when no
+   session is resolvable."
+  [agent]
+  (let [pdir (config/project-dir agent)
+        sid  (try (proto/session-id agent) (catch Throwable _ nil))]
+    (when sid (session-states pdir sid))))
+
 ;; ============================================================================
 ;; Guards (declarative)
 ;; ============================================================================

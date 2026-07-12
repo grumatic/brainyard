@@ -1080,6 +1080,20 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                         text))
                  events)))
 
+(defn- format-state-machines
+  "Render each machine's current state for the `## State Machines` user-context
+   section (docs/design/state-machine-design.md §7): one line per machine —
+   `- <id>: <state>[ · <ctx>][ · last <from>→<to> on <event>]`."
+  [machines]
+  (letfn [(nm [k] (cond (keyword? k) (subs (str k) 1) (nil? k) "" :else (str k)))]
+    (str/join "\n"
+              (map (fn [{:keys [id state context last]}]
+                     (str "- " id ": " (nm state)
+                          (when (seq context) (str " · " (pr-str context)))
+                          (when last (str " · last " (nm (:from last)) "→" (nm (:to last))
+                                          " on " (nm (:event last))))))
+                   machines))))
+
 (defn- coact-user-context
   "Assemble the user-context string from brainyard instructions (loaded via
    config/load-brainyard-instructions), conversation history, and live
@@ -1087,7 +1101,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
 
    When :return-breakdown? is true, returns {:content str :sections {kw text}}
    with one entry per non-blank section."
-  [{:keys [conversation previous-turns live-artifacts events turn-info parent-trail]}
+  [{:keys [conversation previous-turns live-artifacts events state-machines turn-info parent-trail]}
    & {:keys [return-breakdown?]}]
   ;; P4.6: :project-instructions and :user-instructions moved to
   ;; :system-context (above the cross-turn cache breakpoint). The
@@ -1128,9 +1142,15 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                    ;; :live-artifacts. See event-bus-and-reactor.md §3.4.
                    (seq events)
                    (assoc :events
-                          (str "## Events\n" (format-events events))))
+                          (str "## Events\n" (format-events events)))
+
+                   ;; Live state-machine snapshot — current state + context of
+                   ;; each machine this session (state-machine-design.md §7).
+                   (seq state-machines)
+                   (assoc :state-machines
+                          (str "## State Machines\n" (format-state-machines state-machines))))
         section-order [:turn-info :parent-trail
-                       :conversation-history :previous-turns :live-artifacts :events]
+                       :conversation-history :previous-turns :live-artifacts :events :state-machines]
         content (if (seq sections)
                   (str/join "\n\n" (keep #(get sections %) section-order))
                   "")]
@@ -1475,7 +1495,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                :return-breakdown? true)
           usr (coact-user-context
                (select-keys state [:conversation :previous-turns
-                                   :live-artifacts :events :turn-info :parent-trail])
+                                   :live-artifacts :events :state-machines :turn-info :parent-trail])
                :return-breakdown? true)]
       (merge (:sections sys) (:sections usr))))
   (system-order [_]
@@ -1486,7 +1506,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
     ;; Per-turn volatile tail (Phase 3b): :previous-turns moved to the
     ;; :history-context zone; the sliding conversation window stays here.
     [:turn-info :parent-trail
-     :conversation-history :live-artifacts :events])
+     :conversation-history :live-artifacts :events :state-machines])
   (policies [_] cb/default-section-policies)
   (strategies [_ st-memory] (coact-strategies st-memory)))
 
@@ -1697,6 +1717,11 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; `## Events` user-context section. Volatile tail like live-artifacts.
         events-inbox (vec (or (:events-inbox st) []))
 
+        ;; Live state-machine snapshot for the `## State Machines` section
+        ;; (only when the FSM overlay is enabled). Volatile tail.
+        machine-states (when (get cfg-snap :enable-fsm)
+                         (try (fsm/session-states-for agent) (catch Throwable _ nil)))
+
         ;; Turn identity is read upfront so the per-turn :turn-info section
         ;; can be rendered before the assembler runs.
         turn-id     (:turn-id st)
@@ -1774,6 +1799,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                          :previous-turns         previous-turns
                          :live-artifacts         resolved-artifacts
                          :events                 events-inbox
+                         :state-machines         machine-states
                          :turn-info       turn-info-text
                          :parent-trail    parent-trail}
         merged-sections (sa/sections assembler assembler-state)
