@@ -8,11 +8,19 @@
 
 ## 0. Status
 
-Design / proposal. Nothing built yet. Everything is additive and off-by-default, and — like the
-event/reactor rollout — it **reuses** the existing bus, reactor action-sinks, scheduler, and
-persistence rather than introducing a parallel subsystem. **v1 guards/actions are
-declarative-only** (safe, inspectable, native-image-clean); an SCI code-guard/action escape hatch
-is deferred to Phase 4.
+Additive and off-by-default; like the event/reactor rollout it **reuses** the existing bus,
+reactor action-sinks, scheduler, and persistence rather than introducing a parallel subsystem.
+**v1 guards/actions are declarative-only** (safe, inspectable, native-image-clean); an SCI
+code-guard/action escape hatch is deferred to Phase 4.
+
+- ✅ **Phase 1 (shipped)** — core flat FSM: `common/fsm.clj` (def store + per-session runtime
+  state, `step!`, declarative guards, actions via the reactor's shared `run-action!` + `:assign`,
+  lifecycle events, per-session `ensure-fsm!` gated by `:enable-fsm`), `fsm$define/list/status/
+  send/reset/remove`. Tests: `agent/fsm_test.clj`.
+- ✅ **Phase 2 (shipped)** — timed & eventless transitions: the scheduler daemon fires a
+  `:scheduler/tick` pulse; the FSM evaluates each state's `:always` (eventless) and `:after <ms>`
+  (timed, via a new `:elapsed/gte` guard over a persisted `:entered-at`) transitions on tick.
+- ⬜ Phases 3–5 (context section / SCI guards / statechart extensions) — not yet built.
 
 ## 1. The unifying observation — an FSM is a *stateful reactor*
 
