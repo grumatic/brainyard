@@ -20,7 +20,10 @@ code-guard/action escape hatch is deferred to Phase 4.
 - ✅ **Phase 2 (shipped)** — timed & eventless transitions: the scheduler daemon fires a
   `:scheduler/tick` pulse; the FSM evaluates each state's `:always` (eventless) and `:after <ms>`
   (timed, via a new `:elapsed/gte` guard over a persisted `:entered-at`) transitions on tick.
-- ⬜ Phases 3–5 (context section / SCI guards / statechart extensions) — not yet built.
+- ✅ **Phase 3 (shipped)** — observability: a `## State Machines` user-context section (current
+  state + context + last transition per machine, gated by `:enable-fsm`) via `fsm/session-states`,
+  plus an `ask.sock :op :fsm-status` verb for external readers.
+- ⬜ Phases 4–5 (SCI guards / statechart extensions) — not yet built.
 
 ## 1. The unifying observation — an FSM is a *stateful reactor*
 
