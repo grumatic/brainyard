@@ -31,6 +31,7 @@
             [ai.brainyard.agent.common.schedule :as schedule]
             [ai.brainyard.agent.common.events :as events]
             [ai.brainyard.agent.common.reactor :as reactor]
+            [ai.brainyard.agent.common.fsm :as fsm]
             [ai.brainyard.agent.common.todo :as todo]
             [ai.brainyard.agent.common.trajectory-export :as traj-export]
             [ai.brainyard.clj-llm.interface :as clj-llm]
@@ -1043,6 +1044,7 @@ results are intentionally kept out of semantic recall so it stays focused on kno
                schedule/schedule-commands
                events/events-commands
                reactor/reaction-commands
+               fsm/fsm-commands
                gateway/gateway-commands
                gateway-telegram/telegram-commands
                ;; Todo checklist reconcile seam — the read half of the base

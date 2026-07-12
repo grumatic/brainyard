@@ -261,6 +261,11 @@
                                                (or (parse-long v) ::env-unset) ::env-unset)
                                     :default 50
                                     :doc "Per-session backstop on how many reaction actions may fire (bounds a runaway event→reaction cascade). Env: BY_MAX_REACTION_FIRES."}
+   :enable-fsm                 {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_FSM")]
+                                           (= "true" v) ::env-unset)
+                                :default false
+                                :doc "User-defined state machines (docs/design/state-machine-design.md): install per-session bus handlers that advance machines under <project>/.brainyard/fsm/ on matching events. Off by default (can inject turns / fire events); fsm$* commands manage definitions regardless. Env: BY_ENABLE_FSM."}
    :gateway-pair-code-ttl-ms   {:type "integer"
                                 :env-fn #(if-some [v (System/getenv "BY_GATEWAY_PAIR_CODE_TTL_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)

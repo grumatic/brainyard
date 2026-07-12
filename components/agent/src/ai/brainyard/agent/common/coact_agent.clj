@@ -40,6 +40,7 @@
             [ai.brainyard.agent.common.schedule :as schedule]
             [ai.brainyard.agent.common.events :as events]
             [ai.brainyard.agent.common.reactor :as reactor]
+            [ai.brainyard.agent.common.fsm :as fsm]
             [ai.brainyard.agent.common.self-improve-nudge :as self-improve-nudge]
             [ai.brainyard.agent.common.skill-distill :as skill-distill]
             [ai.brainyard.agent.common.skill-refine :as skill-refine]
@@ -1938,6 +1939,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
     ;; unless :enable-reactions + root agent). See
     ;; docs/design/event-bus-and-reactor.md §3.3.
     (reactor/ensure-reactions! agent)
+    ;; User-defined state machines: install/re-sync this session's FSM handlers
+    ;; (no-op unless :enable-fsm + root agent). See
+    ;; docs/design/state-machine-design.md.
+    (fsm/ensure-fsm! agent)
 
     (when agent
       (hooks/fire! :agent.context/budgeted

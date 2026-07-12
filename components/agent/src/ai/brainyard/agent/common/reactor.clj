@@ -194,17 +194,19 @@
                         (take-last max-inbox)
                         vec)))))
 
-(defn- execute-action!
-  "Run one rule's `:do` action against `agent`, interpolating strings from the
-   triggering `payload`. Returns a short keyword describing what ran."
-  [agent rule payload]
-  (let [d  (interp-do (:do rule) payload)
+(defn run-action!
+  "Execute ONE action map against `agent`, interpolating its string fields from
+   `payload`. Opts: `:context-event` tags the source event for the `:context`
+   inbox sink; `:source` labels an injected turn. Shared by the reactor (per-rule
+   `:do`) and the FSM engine (per-transition actions — see
+   docs/design/state-machine-design.md). Returns a short keyword outcome."
+  [agent action payload {:keys [context-event source] :or {source :action}}]
+  (let [d  (interp-do action payload)
         as (keyword (:as d))]
     (case as
       (:turn :run)
       (if (interactive-host?)
-        (do (@!submit-turn agent (action-text d)
-                           {:source :reaction :reaction-id (:id rule)})
+        (do (@!submit-turn agent (action-text d) {:source source})
             :turn)
         :skipped-headless)
 
@@ -220,19 +222,29 @@
                               (or (:payload d) payload))
           :emit)
 
+      :fire-hook
+      (do (hooks/fire! (events/->event-key (:event d)) (or (:payload d) {}))
+          :fire-hook)
+
       :memory
       (let [pcd (config/project-config-dir (config/get-config agent :dirs))
             r   (project-memory/write-memory! pcd (:slug d) (action-text d))]
         (when (:error r)
-          (mulog/warn ::memory-action-failed :rule (:id rule) :error (:error r)))
+          (mulog/warn ::action-memory-failed :error (:error r)))
         :memory)
 
       :context
-      (do (record-context-event! agent (:on rule) (action-text d))
+      (do (record-context-event! agent context-event (action-text d))
           :context)
 
-      (do (mulog/warn ::unknown-reaction-action :as as :rule (:id rule))
+      (do (mulog/warn ::unknown-action :as as)
           :unknown))))
+
+(defn- execute-action!
+  "Reactor per-rule action: run the rule's `:do` against `agent`, tagging a
+   `:context` sink with the rule's `:on` trigger event."
+  [agent rule payload]
+  (run-action! agent (:do rule) payload {:context-event (:on rule) :source :reaction}))
 
 ;; ============================================================================
 ;; Bus handler
