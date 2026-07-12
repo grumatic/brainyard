@@ -451,6 +451,17 @@
             (mulog/info ::fsm-synced :session sid :events (vec want) :tick tick?))))))
   nil)
 
+(defn ensure-session-handlers!
+  "Install / re-sync this session's reaction AND state-machine bus handlers for
+   `agent`. Both otherwise install only at turn setup, so the interactive emit
+   commands call this so enabling :enable-reactions / :enable-fsm and firing in
+   the same turn self-heals."
+  [agent]
+  (when agent
+    (try (reactor/ensure-reactions! agent) (catch Throwable _ nil))
+    (try (ensure-fsm! agent) (catch Throwable _ nil)))
+  nil)
+
 (defn reset-state!
   "Clear engine state + handlers. For tests."
   []
@@ -528,10 +539,10 @@
     (let [ag   proto/*current-agent*
           sid  (proto/get-current-session-id)
           pdir (config/project-dir)]
-      ;; ensure-fsm! normally runs only at turn setup, so enabling :enable-fsm
-      ;; mid-turn wouldn't install handlers until the next turn. Re-sync here so
-      ;; an interactive "enable then send" advances immediately.
-      (when ag (try (ensure-fsm! ag) (catch Throwable _ nil)))
+      ;; Handlers normally install only at turn setup, so enabling :enable-fsm /
+      ;; :enable-reactions mid-turn wouldn't install them until the next turn.
+      ;; Re-sync here so an interactive "enable then send" advances immediately.
+      (when ag (ensure-session-handlers! ag))
       (let [snap   (fn [] (when sid (into {} (map (juxt :id :state)) (session-states pdir sid))))
             before (snap)
             base   (cond-> (if (map? payload) payload {}) sid (assoc :session-id sid))

@@ -28,6 +28,7 @@
    deliberately just the registry + emit."
   (:require [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
+            [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :refer [defcommand]]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.edn :as edn]
@@ -243,6 +244,11 @@
                   [:removed {:optional true} [:any {:desc "Removed event key"}]]
                   [:error   {:optional true} [:string {:desc "Error if absent"}]]])
 
+;; Lazy handle to the shared reaction+FSM installer (fsm requires events, so we
+;; can't require it statically — resolve at first use to avoid the load cycle).
+(def ^:private !ensure-handlers
+  (delay (requiring-resolve 'ai.brainyard.agent.common.fsm/ensure-session-handlers!)))
+
 (defcommand event$emit
   "Emit (fire) a user-defined event with an optional payload; subscribers and reactions receive it."
   (fn [& {:keys [event payload]}]
@@ -251,7 +257,14 @@
       (cond
         (nil? ek)                        {:error (str "invalid :event " (pr-str event))}
         (not (llm-injectable? pdir ek))  {:error (str "event " ek " is declared :llm-injectable? false")}
-        :else                            (emit-event! ek payload))))
+        :else
+        (do
+          ;; Self-heal: install this session's reaction/FSM handlers so enabling
+          ;; :enable-reactions / :enable-fsm and emitting in the same turn works
+          ;; (they otherwise install only at turn setup).
+          (when-let [ag proto/*current-agent*]
+            (when-let [f @!ensure-handlers] (try (f ag) (catch Throwable _ nil))))
+          (emit-event! ek payload)))))
   :input-schema  [:map
                   [:event   [:string {:desc "Event name to fire (namespaced keyword)"}]]
                   [:payload {:optional true} [:map-of {:desc "Event payload map delivered to subscribers"} :any :any]]]
