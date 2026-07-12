@@ -23,18 +23,15 @@ architecture. Three building blocks matter here:
   of components into a deployable artifact. They own the `deps.edn`
   that decides which versions and alias sets ship together.
 
-The workspace config at `workspace.edn` registers all projects with
+This public repo is a **curated subset** of the upstream Brainyard workspace —
+only the bricks needed to build `agent-tui-app` plus the ACP-stub harness are
+checked in. The workspace config at `workspace.edn` registers two projects with
 short aliases:
 
-| Project | Alias |
-|---|---|
-| `agent-tui-app` | `ata` |
-| `agent-web-app` | `awa` |
-| `fulcro-rad-app` | `fra` |
-| `electric-app` | `ea` |
-| `replicant-app` | `ra` |
-| `acp-stub-agent` | `asa` |
-| `development` | `dev` |
+| Project | Alias | Notes |
+|---|---|---|
+| `agent-tui-app` | `ata` | The flagship `by` binary. `:necessary ["analytics" "web-share" "os-sandbox"]` — soft deps kept in the build even if not directly referenced from `main`. |
+| `acp-stub-agent` | `asa` | In-tree ACP backend for protocol-level testing. |
 
 `bb poly:check` validates inter-brick dependencies; `bb poly:info`
 prints the graph.
@@ -56,48 +53,56 @@ projects/agent-tui-app/
     ├── :local/root "../../components/agent-tui-persist"
     ├── :local/root "../../components/agent-tui-tmux"
     ├── :local/root "../../components/analytics"
+    ├── :local/root "../../components/ask-channel"
     ├── :local/root "../../components/behavior-tree"
+    ├── :local/root "../../components/clj-http-native"
     ├── :local/root "../../components/clj-llm"
+    ├── :local/root "../../components/clj-nrepl"
+    ├── :local/root "../../components/clj-oauth"
     ├── :local/root "../../components/clj-sandbox"
     ├── :local/root "../../components/display-block"
     ├── :local/root "../../components/env-detect"
     ├── :local/root "../../components/memory"
     ├── :local/root "../../components/mulog"
+    ├── :local/root "../../components/os-sandbox"
     ├── :local/root "../../components/util"
-    └── :deps   cli-matic 0.5.4
+    ├── :local/root "../../components/web-share"
+    └── :deps   cli-matic
 ```
 
 Only the listed components are reachable from the native binary; this
 is what keeps the image small relative to the full development REPL.
+(`acp` / `acp-client` ship in the `acp-stub-agent` project, not here.)
 
 ### Aliases
 
-- `:dev` — includes `agent-tui-dev` and `agent-tui-test` for local
-  iteration.
-- `:nrepl` — nREPL 1.3.0 + CIDER 0.50.2 for IDE connections
-  (`bb repl:ata`).
+- `:dev` — includes dev/test source for local iteration.
+- `:nrepl` — nREPL + CIDER for IDE connections (`bb repl:ata`).
 - `:uberdeps` — uberjar packaging, driven by `bb uberjar:ata`.
 
 ### Workspace alias
 
 In `workspace.edn` the project is registered as `:alias "ata"` with
-`:necessary ["analytics"]` (analytics is a soft dependency that stays
-in the build even if not directly referenced from `main`).
+`:necessary ["analytics" "web-share" "os-sandbox"]` — soft dependencies
+kept in the build even when not directly referenced from `main`.
 
 ---
 
 ## The `by` binary: entry point
 
 `projects/agent-tui-app/src/ai/brainyard/agent_tui_app/main.clj` is a
-`cli-matic` driver with five subcommands:
+`cli-matic` driver with eight subcommands:
 
 | Subcommand | Purpose |
 |---|---|
 | `run` *(default)* | Start the interactive TUI session. |
-| `ask` | One-shot, non-interactive question. Prints the answer and exits. |
+| `ask` | One-shot, non-interactive question (`--attach` targets a running session). |
 | `agents` | List registered agents (`get-tool-defs :type :agent`) as a text table. |
+| `models` | List known `provider/model` pairs. |
 | `config` | Interactive environment-bootstrap wizard (API keys, providers, defaults). |
-| `sessions` | `list` / `prune` persisted agent sessions. |
+| `sessions` | `list` / `show` / `config` / `label` / `prune` persisted agent sessions. |
+| `memory` | Maintenance + inspection of the user-scoped L1/L2/L3 store and context graph. |
+| `events` | Emit user-defined events into a live session over its ask channel. |
 
 `-main` normalises args so that bare flags or a bare agent-id reuse
 the `run` path (preserving the legacy `bb tui coact-agent` and
@@ -113,10 +118,11 @@ the `run` path (preserving the legacy `bb tui coact-agent` and
 | `--new` | Deprecated no-op (sessions start fresh by default) — still accepted. |
 
 `main.clj` loads `ai.brainyard.agent.interface`, which `:require`s every
-built-in defagent namespace statically (coact, react, plan, todo, exec,
-eval, update, explore, research, workflow, search, skill, mcp, rlm, acp)
-so GraalVM AOT captures them; otherwise they would never be reachable
-from `-main`'s transitive class graph and would be dead-stripped.
+built-in defagent namespace statically (coact, react, main, plan, todo, exec,
+eval, edit, explore, research, workflow, skill, mcp, rlm, acp, memory, config,
+init, tool, hook, meta, debug) so GraalVM AOT captures them; otherwise they
+would never be reachable from `-main`'s transitive class graph and would be
+dead-stripped.
 
 ### Configuration precedence
 
@@ -191,9 +197,10 @@ location, even outside a git repo (they land under `<cwd>/.brainyard/`).
 │ │ core/     — Agent record, protocols, BT, runtime, hooks, tool   │   │
 │ │             registry, memory recall/remember, context, config,  │   │
 │ │             session, queue                                       │   │
-│ │ common/   — every defagent (coact, react, plan, todo, exec,     │   │
-│ │             eval, update, explore, research, workflow, search,  │   │
-│ │             skill, mcp, rlm, acp) + DSPy signatures + sandbox   │   │
+│ │ common/   — every defagent (coact, react, main, plan, todo,    │   │
+│ │             exec, eval, edit, explore, research, workflow,      │   │
+│ │             skill, mcp, rlm, acp, memory, config, init, tool,   │   │
+│ │             hook, meta, debug) + DSPy signatures + sandbox      │   │
 │ │             bindings + compaction + trajectory + evaluation     │   │
 │ │ mcp/      — MCP client & integration, tool registration         │   │
 │ │ stdio/    — stdio JSON-RPC adapters                             │   │

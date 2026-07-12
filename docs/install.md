@@ -1,8 +1,8 @@
 # Installing Brainyard
 
-> **Status:** pre-release. Commands here describe the planned UX. They start working once `v0.1.0` is published — see [`deploy-design.md`](deploy-design.md) §10 for the rollout schedule.
+> **Status:** shipping. `by` publishes tagged GitHub Releases (currently on the v0.3.x line). The install paths below are live.
 
-This page covers the three supported install paths in v1, manual install for air-gapped or unusual environments, checksum verification, and troubleshooting. For a one-liner, see the [README](../README.md).
+This page covers the supported install paths, manual install for air-gapped or unusual environments, checksum verification, and troubleshooting. For a one-liner, see the [README](../README.md).
 
 ---
 
@@ -43,7 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/grumatic/brainyard/main/bin/install
 
 | Variable / flag | Purpose |
 |---|---|
-| `BY_VERSION=v0.1.0` | Pin to a specific release. Default: latest. |
+| `BY_VERSION=v0.3.3` | Pin to a specific release. Default: latest. |
 | `--prefix=/usr/local` | Install to a different directory. Prompts for `sudo` if needed. |
 | `--with-jar` | Also download and install `by.jar` (≈49 MB). Enables `BY_JAR=1 by …` JVM-mode fallback for debugging native-image issues. |
 | `--no-verify` | Skip SHA-256 verification. Not recommended; use only if `shasum`/`sha256sum` is unavailable. |
@@ -71,7 +71,7 @@ java -jar by.jar --help
 
 - Requires JDK 21+.
 - Stable URL: `/latest/download/by.jar` always points to the latest release.
-- Versioned URL: `https://github.com/grumatic/brainyard/releases/download/v0.1.0/by-0.1.0.jar`.
+- Versioned URL: `https://github.com/grumatic/brainyard/releases/download/v0.3.3/by-0.3.3.jar`.
 
 The uberjar exposes the same CLI as the native binary. Differences from native:
 
@@ -90,7 +90,7 @@ For air-gapped environments, custom install locations, or when you don't trust `
 open https://github.com/grumatic/brainyard/releases
 
 # 2. Download (replace VERSION and ASSET as appropriate)
-VERSION=v0.1.0
+VERSION=v0.3.3
 ASSET=macos-arm64   # or linux-amd64, linux-arm64, macos-amd64
 curl -LO https://github.com/grumatic/brainyard/releases/download/${VERSION}/by-${VERSION#v}-${ASSET}
 curl -LO https://github.com/grumatic/brainyard/releases/download/${VERSION}/by-wrapper.sh
@@ -116,12 +116,12 @@ codesign --force --sign - ~/.local/bin/by-bin
 Every release ships a `SHA256SUMS` file covering all artifacts (native binaries, jar, wrapper). The recommended verification flow:
 
 ```bash
-curl -LO https://github.com/grumatic/brainyard/releases/download/v0.1.0/SHA256SUMS
-curl -LO https://github.com/grumatic/brainyard/releases/download/v0.1.0/by-0.1.0-macos-arm64
+curl -LO https://github.com/grumatic/brainyard/releases/download/v0.3.3/SHA256SUMS
+curl -LO https://github.com/grumatic/brainyard/releases/download/v0.3.3/by-0.3.3-macos-arm64
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
-Look for `by-0.1.0-macos-arm64: OK`. If it says `FAILED`, do not install — open an issue with the platform you're on and which mirror you downloaded from.
+Look for `by-0.3.3-macos-arm64: OK`. If it says `FAILED`, do not install — open an issue with the platform you're on and which mirror you downloaded from.
 
 ---
 
@@ -141,18 +141,22 @@ bb native:ata                 # build target/by via native-image
 bb build:ata                  # compile → uberjar → native
 
 bb install:ata                # copy by + by-bin + by.jar to ~/.local/bin
-# or, to stage a release for upload (writes release/BUILD-INFO.txt with upstream SHA):
+# or, to stage a release for upload (writes release/BUILD-INFO.txt with this repo's commit):
 bin/release-stage.sh
 ```
 
 Prerequisites:
 
-- Access to the private upstream dev repo (`BY_DEV_REPO` env var, default `~/Projects/MyDev/brainyard`).
-- **GraalVM 25** (matches `.sdkmanrc`). The build is also verified against GraalVM 21.0.9.
+- **GraalVM 25** (25.0.3+, matches `.sdkmanrc`) on `PATH` (or via SDKMAN).
 - **Babashka** for the `bb` task runner.
 - **Clojure CLI tools** (`clj`).
 
-Working-tree layout after sync (see [`deploy-design.md`](deploy-design.md) §2): the Polylith subset transitively required by `agent-tui-app` lands at `projects/agent-tui-app/`, `bases/agent-tui/`, and 12+ components under `components/` — all gitignored. The bundled `native-image` config lives at `projects/agent-tui-app/resources/META-INF/native-image/ai.brainyard/agent-tui-app/`.
+This repo is the source of truth — no private upstream sync is involved (the
+earlier sync-wrapper model was retired; see [`../CLAUDE.md`](../CLAUDE.md)). The
+Polylith bricks required by `agent-tui-app` are committed here under
+`projects/agent-tui-app/`, `bases/agent-tui/`, and `components/` (21 bricks). The
+bundled `native-image` config lives at
+`projects/agent-tui-app/resources/META-INF/native-image/ai.brainyard/agent-tui-app/`.
 
 To validate the committed `native-image` config:
 

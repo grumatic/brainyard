@@ -1,17 +1,19 @@
 # Using Brainyard (`by`)
 
-> Flags & subcommands described here match `agent-tui-app` as of v0.2.0.
+> Flags & subcommands described here track `agent-tui-app` on the v0.3.x line.
 
-`by` is the agent-driven terminal UI binary. It has six subcommands:
+`by` is the agent-driven terminal UI binary. It has eight subcommands:
 
 | Subcommand | Purpose |
 |---|---|
 | `run` *(default)* | Launch the interactive TUI. |
-| `ask` | Run a one-shot question, print the answer, exit. Non-interactive. |
+| `ask` | Run a one-shot question, print the answer, exit. Non-interactive. `--attach` instead asks a running session over its channel. |
 | `agents` | List available agents and exit. |
 | `models` | List available LLM models (provider/model) and exit. |
 | `config` | Bootstrap pipeline (detect → ladder → handoff) for provider + runtime settings. |
-| `sessions` | List or prune persisted agent sessions (`by sessions list` / `by sessions prune`). |
+| `sessions` | Inspect and manage persisted agent sessions (`list` / `show` / `config` / `label` / `prune`). |
+| `memory` | Maintenance and inspection of the user-scoped L1/L2/L3 memory store and context graph. |
+| `events` | Fire user-defined events into a live session over its ask channel. |
 
 If no subcommand is given, `run` is implied.
 
@@ -23,6 +25,7 @@ by agents           # list agents and exit
 by models           # list provider/model combinations
 by config           # bootstrap pipeline
 by sessions list    # list persisted sessions
+by memory status    # memory store health + inventory
 by --help           # full help
 ```
 
@@ -159,7 +162,7 @@ $ by agents
   …
 ```
 
-The full set (v0.2.7 ships 21) spans routing (`main-agent`), reasoning (`coact-agent`, `react-agent`), research/exploration, planning/execution (`plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`), editing (`edit-agent`), memory, MCP, skills, debugging, user-defined tools/hooks (`tool-agent`, `hook-agent`), and more. The set is determined at build time — adding a new one requires a new release.
+The full set spans routing (`main-agent`), reasoning (`coact-agent`, `react-agent`), research/exploration, planning/execution (`plan-agent`, `todo-agent`, `exec-agent`, `eval-agent`), editing (`edit-agent`), memory, MCP, skills, debugging, user-defined tools/hooks (`tool-agent`, `hook-agent`), and more. The set is determined at build time — adding a new one requires a new release. Run `by agents` for the exact roster your binary ships.
 
 ---
 
@@ -200,11 +203,64 @@ Re-run `by config` any time to refresh settings or switch providers.
 ## `by sessions` — manage persisted sessions
 
 ```bash
-by sessions list     # list all persisted sessions (id, label, agent, size, last-attached)
-by sessions prune    # delete a persisted session
+by sessions list                 # list all persisted sessions (id, label, agent, last-attached)
+by sessions show -s <id>         # full detail for one session
+by sessions config -s <id> -q .  # read a *live* session's effective config over its ask channel
+by sessions label -s <id> "…"    # set (or, with no text, clear) a session's label
+by sessions prune -s <id>        # delete persisted session(s)
 ```
 
-Sessions are persisted to SQLite under `~/.brainyard/`. Resume one with `by run --resume <id>`.
+Sessions are **project-scoped**: they live under `<project>/.brainyard/sessions/<id>/`, so
+`by sessions list` and `by run --resume` only surface the current project's sessions. Resume one
+with `by run --resume <id>` (bare `--resume` opens a picker).
+
+---
+
+## `by memory` — inspect & maintain the memory store
+
+Memory is **user-scoped** (partitioned by `BY_USER_ID`) and lives under
+`~/.brainyard/memory/<user-id>.db`. This subcommand family is the maintenance and audit surface
+over the layered L1/L2/L3 store and the optional context graph.
+
+```bash
+by memory status                 # store health: L1/L2/L3 counts + graph vector-index staleness
+by memory stats                  # L1/L2/L3 counts for the user
+by memory search 'query'         # cross-layer weighted-RRF recall (the real briefing pipeline)
+by memory list --layer l2        # raw entries from a layer (--session/--kind/--limit filters)
+by memory get --layer l3 <id>    # one entry by id
+by memory explain --session <id> # recall audit: which entries informed a session's prompts
+by memory graph --node <name>    # dump the context graph (nodes+edges), optionally scoped
+```
+
+Curation verbs edit the store in place: `forget` (tombstone), `edit`, `keep` (pin against the
+sweep), `archive`, and `promote` (copy an entry up a layer with provenance).
+
+Consolidation and graph maintenance:
+
+```bash
+by memory consolidate            # L2→L3 consolidation (heuristic; --reducer community for graph summaries)
+by memory graph-build            # extract L2 episodes into the context graph (--rebuild re-extracts all)
+by memory reduce                 # graph-build + community consolidation in one shot (session-end offload)
+by memory sweep                  # L2 retention sweep (tombstone old, unpinned episodes)
+by memory prune                  # evict lowest-retention graph nodes/edges over budget
+by memory reembed                # rebuild the graph vector index for the current embedder
+```
+
+The graph tier (`graph-build`, `graph`, `prune`, `reembed`, community summaries) only carries
+signal when graph memory is enabled — see [`sandboxing.md`](sandboxing.md)'s sibling design note and
+the memory section of [`../CLAUDE.md`](../CLAUDE.md) (`BY_ENABLE_GRAPH_MEMORY`, `BY_GRAPH_*`).
+
+---
+
+## `by events` — drive a live session externally
+
+```bash
+by events emit -e <event> -p '<payload>' -s <session-id>   # external → agent event injection
+```
+
+`events emit` fires a user-defined event into a running session over its ask channel, feeding the
+in-agent event bus / reactor / watch loop (`event$emit`, `reaction$add`, `watch$add`). Use it to
+wire external triggers into an agent without attaching interactively.
 
 ---
 
@@ -224,9 +280,9 @@ Variables prefixed with `BY_` are read by the **wrapper** (`by` shell script) or
 | `BY_DOWNLOAD_BASE` | install.sh | Override the release download base URL (mirrors). |
 | `BY_PROJECT_DIR` | binary | Hint at the project root when `.env`/cwd discovery isn't enough. |
 | `BY_SESSION_ID` | binary | Use a deterministic session id (useful for tests/automation). |
-| `BY_NREPL_ENABLED` | binary | Enable the embedded (security-gated) nREPL server. |
-| `BY_NREPL_PORT` | binary | Port for the embedded nREPL server. |
-| `BY_NREPL_GRANT` | binary | Pre-grant nREPL eval permission (skip the interactive confirm). |
+| `BY_NREPL_ENABLED` | binary | Enable the in-process nREPL server backing `code$eval :backend :nrepl` (full-trust; off by default — use the SCI sandbox for isolated eval). |
+| `BY_NREPL_PORT` | binary | Port for the in-process nREPL server (`0` = ephemeral). |
+| `BY_NREPL_HOST` | binary | nREPL endpoint host for the `:nrepl` Clojure backend (default loopback; set to a trusted remote for off-laptop execution). |
 
 LLM provider credentials are read from the environment by their conventional names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AWS_PROFILE`, `AWS_REGION`, …), typically placed in a project-local `.env` that the wrapper sources.
 

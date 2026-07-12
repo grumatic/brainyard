@@ -210,19 +210,18 @@ A note on what the original framing assumed:
   `BY_NREPL_PORT=7890`). Pinning a known port is convenient for a
   driver, but reading the port file is the robust approach because it
   always reflects the actual bound port.
-- The **grant only matters for Path B** (the gated client). A raw Path A
-  attach does not consult it. If you intend to delegate to `debug-agent`
-  (or use `code$eval :backend :nrepl` from inside the app), set a grant;
-  for read-only inspection use `read-only:15m`, and for hot-patching use
-  `mutate:5m`.
+- There is **no grant/scope layer anymore** (see the banner at the top).
+  Reaching the loopback nREPL gives full `eval`, gated only by a deny-list of
+  catastrophic substrings; `debug-agent` and `code$eval :backend :nrepl` need
+  nothing beyond `BY_NREPL_ENABLED=true`. For *isolated* evaluation use the SCI
+  sandbox backend (`:backend :sandbox`) instead.
 
 ### Minimal launch for a debugging session
 
 ```bash
-# Pin a known port + start with a mutate grant so debug-agent can hot-patch.
+# Pin a known port; enabling the server is all that's required.
 BY_NREPL_ENABLED=true \
 BY_NREPL_PORT=7890 \
-BY_NREPL_GRANT=mutate:5m \
 bb tui
 ```
 
@@ -300,8 +299,7 @@ an *external* driver just issues the raw `tmux` commands.)
 #    picker (the picker only appears with a bare --resume). `--new` is
 #    kept here as a harmless no-op for back-compat.
 tmux new-session -d -s by-debug -x 200 -y 50 \
-  "BY_NREPL_ENABLED=true BY_NREPL_PORT=7890 \
-   BY_NREPL_GRANT=mutate:5m bb tui run --new"
+  "BY_NREPL_ENABLED=true BY_NREPL_PORT=7890 bb tui run --new"
 
 # 2. Send input (a slash command, a prompt, or a keystroke). Note that
 #    `agents` is a `bb tui` subcommand — *not* an in-TUI slash command.

@@ -116,13 +116,16 @@ bb tui sessions prune -s <id>
 bb tui:acp
 bb tui:acp -i
 
+# Memory / context-graph playground UI
+bb playground:ui        # build the browser UI
+bb playground:run       # run the playground server
+
 # Build the native `by` binary
-bb build:ata            # compile → uberjar → native-image
-bb install:ata          # copy to /usr/local/bin/by
+bb build:ata            # version → compile → uberjar → native-image
+bb install:ata          # copy `by` onto your PATH
 ```
 
-The binary lands at `projects/agent-tui-app/target/by` (~115 MB arm64,
-~0.5 s cold start).
+The binary lands at `projects/agent-tui-app/target/by` (sub-second cold start).
 
 ---
 
@@ -132,64 +135,47 @@ The binary lands at `projects/agent-tui-app/target/by` (~115 MB arm64,
 brainyard/
 ├── bases/              # Runnable entry points (apps, CLIs)
 │   ├── agent-tui/      # Single-process renderer (`by` binary) — see tui/
-│   ├── agent-web/      # Web server for agent (http-kit + WebSocket)
-│   ├── agent-next/     # Next-gen agent entry point
-│   ├── fulcro-rad/     # Fulcro RAD application
-│   ├── electric-app/   # Electric Clojure SPA
-│   ├── replicant/      # Replicant framework app
+│   ├── playground-server/ # HTTP server backing the memory/graph playground UI
 │   └── acp-stub-agent/ # ACP stub agent for protocol-level testing
-├── components/         # 47 shared bricks with interfaces
+├── components/         # 21 shared bricks with interfaces
 ├── projects/           # Deployable artifacts
-│   ├── agent-tui-app/  # Terminal agent (`by`)
-│   ├── agent-web-app/  # Web agent
-│   ├── fulcro-rad-app/ # Fulcro RAD web app
-│   ├── electric-app/   # Electric web app
-│   ├── replicant-app/  # Replicant web app
-│   └── acp-stub-agent/ # ACP stub
-├── development/        # Dev environment, REPL workspace
+│   ├── agent-tui-app/  # Terminal agent (`by`) — the flagship binary
+│   ├── acp-stub-agent/ # ACP stub
+│   └── brainyard-playground-test-app/ # Playground harness project
 ├── docs/               # Architecture & design docs (you are here)
 │   ├── core/           # Subsystem reference (agent, bt, reasoning, tool, memory, task)
 │   ├── design/         # Specialist-agent design notes + observability + sandbox + RLM
-│   ├── tui/            # Tmux-based TUI substrate
+│   ├── tui/            # TUI substrate + renderer internals
+│   ├── specs/          # Subsystem specifications
 │   └── reference/      # Historical / migration notes
 ├── bb.edn              # Babashka tasks
 ├── deps.edn            # Root deps with :dev, :test, :poly aliases
 └── workspace.edn       # Polylith config (top-namespace: ai.brainyard)
 ```
 
-See [architecture.md](architecture.md) for the full Polylith layout and
-how `agent-tui-app` assembles bases and components.
+This public repo is a **curated subset** of the upstream Brainyard workspace —
+the bricks needed to build `agent-tui-app`, plus the playground and ACP-stub
+harnesses. See [architecture.md](architecture.md) for the full Polylith layout
+and how `agent-tui-app` assembles bases and components.
 
 ---
 
-## Components at a glance (47 bricks)
+## Components at a glance (21 bricks)
 
-Grouped by category; full list in the repo root `CLAUDE.md`.
+Grouped by category; the authoritative list is `components/` itself.
 
 **Agent & AI infrastructure.** `agent`, `clj-llm`, `behavior-tree`,
-`memory`, `clj-sandbox`, `analytics`, `clj-dspy`.
+`memory`, `clj-sandbox`, `analytics`.
 
 **TUI substrate.** `agent-tui-tmux`, `agent-tui-persist`,
-`display-block`, `env-detect`.
+`display-block`, `env-detect`, `ask-channel`.
 
 **ACP (Agentic Context Protocol).** `acp`, `acp-client`.
 
-**Data & database.** `datomic`, `sql`, `migrat`.
+**Runtime, eval & sharing.** `clj-nrepl`, `os-sandbox`, `web-share`,
+`clj-http-native`, `clj-oauth`.
 
-**Web & API.** `pathom`, `server`, `websocket`, `ring-handler`,
-`electric`, `config`.
-
-**Messaging & events.** `nats`, `event`, `slack`, `email`.
-
-**External services & storage.** `blob-store`, `minio`, `aws-client`,
-`aws-api`, `keycloak`, `redis`.
-
-**Monitoring & logging.** `mulog`, `prometheus`.
-
-**ML & data processing.** `ml`, `djl`, `origami`, `emmy`, `d2l`,
-`javacv`, `gstreamer`, `mlflow`, `label-studio`.
-
-**Utilities.** `util`.
+**Infrastructure & logging.** `aws-client`, `mulog`, `util`.
 
 ---
 
@@ -216,7 +202,7 @@ Grouped by category; full list in the repo root `CLAUDE.md`.
 
 ## Built-in agents
 
-Twenty-one `defagent`s ship in `components/agent`:
+Twenty-two `defagent`s ship in `components/agent` (run `by agents` for the live roster):
 
 | Agent | Purpose |
 |---|---|
