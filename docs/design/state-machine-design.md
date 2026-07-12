@@ -23,7 +23,11 @@ code-guard/action escape hatch is deferred to Phase 4.
 - ✅ **Phase 3 (shipped)** — observability: a `## State Machines` user-context section (current
   state + context + last transition per machine, gated by `:enable-fsm`) via `fsm/session-states`,
   plus an `ask.sock :op :fsm-status` verb for external readers.
-- ⬜ Phases 4–5 (SCI guards / statechart extensions) — not yet built.
+- ✅ **Phase 4 (shipped)** — SCI code-guards (`:guard-code` / `:guard-fn`) and code-actions
+  (`:as :eval`, merges a returned map into context), evaluated in a restricted, serialized,
+  1s-bounded clj-sandbox over a pure-data `code-ctx`. Opt-in + fail-closed via `:fsm-allow-code`
+  (`BY_FSM_ALLOW_CODE`).
+- ⬜ Phase 5 (statechart extensions: nested/parallel/history states) — not yet built.
 
 ## 1. The unifying observation — an FSM is a *stateful reactor*
 
