@@ -162,6 +162,33 @@ LIFECYCLE & EXTERNAL
                    default model to …', 'snapshot current config',
                    'revert last config change'.
 
+- schedule-agent → time-triggered prompt jobs (schedule$*). Use for
+                   'every weekday at 9am summarize commits', 'remind me
+                   in two hours', 'what's scheduled?', 'pause the nightly
+                   job', 'my 3am job never ran'. It owns TIME triggers that
+                   run a prompt; a CONDITION trigger ('when the orders table
+                   grows, …') is a watch → event-agent, and the
+                   :enable-scheduler gate is → config-agent.
+
+- event-agent    → event subsystem CRUD (event$*/reaction$*/watch$*). Use
+                   for 'when an order ships, remind me to …' (reaction),
+                   'every minute check X and fire event Y' (watch),
+                   'what's set up to fire?', 'my reaction never fires'
+                   (diagnose). It owns CONDITION/event triggers that fire an
+                   event or a reaction; a fixed-CLOCK prompt job is
+                   schedule-agent, an FSM is state-machine-agent, and the
+                   :enable-reactions/:enable-scheduler gates are config-agent.
+
+- state-machine-agent → user-defined FSM CRUD (fsm$*). Use for a STATEFUL
+                   multi-state workflow — 'model a deploy gate: idle → CI
+                   passes → wait for approval → deploying → done', 'add a
+                   rollback state', 'send ci/passed to the gate', 'where is
+                   the gate now?', 'I sent the event but nothing moved'
+                   (diagnose). It owns the states/transitions GRAPH + its
+                   per-session runtime; a flat one-shot 'when X do Y' rule
+                   is event-agent, and the :enable-fsm/:fsm-allow-code gates
+                   are config-agent.
+
 - acp-agent      → Agentic Context Protocol backend bridge. Use when
                    the user explicitly names an external ACP agent.
 
@@ -294,17 +321,36 @@ P. INIT            → init-agent
 Q. CONFIG          → config-agent
    Shapes: 'update default model', 'snapshot config', 'revert config'.
 
-R. ACP             → acp-agent
+R. SCHEDULE        → schedule-agent
+   Shapes: 'every weekday at 9am summarize commits', 'remind me in two
+           hours', 'what's scheduled?', 'move the standup to 8am', 'my
+           3am job never ran'. TIME triggers that run a prompt. A CONDITION
+           trigger ('when X changes, …') is a watch → EVENT (event-agent).
+
+S. EVENT           → event-agent
+   Shapes: 'when an order ships, remind me to …' (reaction), 'every minute
+           check X and fire event Y' (watch), 'what's set up to fire?', 'my
+           reaction never fires' (diagnose). CONDITION/event triggers that
+           fire an event or reaction. A fixed-CLOCK prompt job is SCHEDULE.
+
+T. STATE-MACHINE   → state-machine-agent
+   Shapes: 'model a deploy gate: idle → CI passes → wait for approval →
+           deploying → done', 'add a rollback state', 'send ci/passed to
+           the gate', 'where is the gate now?', 'I sent the event but
+           nothing moved' (diagnose). A STATEFUL states/transitions GRAPH.
+           A flat one-shot 'when X do Y' rule is EVENT (event-agent).
+
+U. ACP             → acp-agent
    Shapes: 'use ACP backend X', 'forward this to my <named external>
            agent'.
 
-S. META-RESUME     (answer channel — no specialist call)
+V. META-RESUME     (answer channel — no specialist call)
    Shapes: 'what was that artifact path again?', 'what did we decide
            about X?', continuation of a prior session arc.
    Example: After a plan/todo/exec arc completed: 'Where's the verdict
             stored?' → read routing.log + pointers.md, answer directly.
 
-T. CLARIFY         (answer channel)
+W. CLARIFY         (answer channel)
    Shapes: the question is too underspecified to route. Ask 1–2
            targeted questions BEFORE picking a move. The loop exits;
            user replies; you resume next turn.
@@ -493,6 +539,9 @@ instruction §6 (DECISION TABLE) for the full per-agent rule. Headline:
 - memory-agent     → long-term memory read/write.
 - init-agent       → project bootstrap.
 - config-agent     → .brainyard/config tuning.
+- schedule-agent   → time-triggered prompt jobs (schedule$*).
+- event-agent      → event subsystem CRUD (event$*/reaction$*/watch$*).
+- state-machine-agent → user-defined FSM CRUD + runtime (fsm$*).
 - acp-agent        → ACP external-backend bridge.
 - coact-agent      → bare-substrate fallback (rarely used).
 - react-agent      → classic ReAct fallback (rarely used).

@@ -65,6 +65,9 @@
             [ai.brainyard.agent.common.memory-agent]
             [ai.brainyard.agent.common.workflow-agent]
             [ai.brainyard.agent.common.config-agent]
+            [ai.brainyard.agent.common.schedule-agent]
+            [ai.brainyard.agent.common.event-agent]
+            [ai.brainyard.agent.common.state-machine-agent]
             [ai.brainyard.agent.common.init-agent]
             ;; ACP-driven agent. Soft-coupled to ai.brainyard/acp-client via
             ;; requiring-resolve — consumers must add the dep at runtime if
