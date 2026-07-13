@@ -255,6 +255,44 @@ helper `manager/remove-task-and-artifacts!` exists for immediate cleanup
 **not** the default path and is not wired into `/task del`. See the retention
 note in `components/agent/src/ai/brainyard/agent/task/persist.clj`.
 
+### Conversational front-door agents over the event subsystem
+
+Three specialists give the event subsystem a chat CRUD surface, each a thin
+`coact/run-coact-derived` `defagent` with **zero new commands** — they only
+orchestrate command families that already ship. Same minimal-diff pattern as
+`config-agent`/`mcp-agent`. The clean boundaries (a request routes to exactly
+one, and they compose by calling each other by name):
+
+- **`schedule-agent`** (`common/schedule_agent.clj`) — **time**-triggered prompt
+  jobs (`schedule$*`): "every weekday at 9am, summarize commits." Watches are
+  excluded (they're event-agent's).
+- **`event-agent`** (`common/event_agent.clj`) — the flat **event** vocabulary
+  (`event$*` / `reaction$*` / `watch$*`): declare events, wire `trigger → action`
+  reactions, author autonomous watch pollers, diagnose a dead rule.
+- **`state-machine-agent`** (`common/state_machine_agent.clj`) — user-defined
+  **FSMs** (`fsm$*`): the stateful states/transitions graph plus its per-session
+  runtime, two lifecycles (definition vs runtime) kept distinct.
+
+Shared conventions worth knowing:
+
+- **Gates are read here, written by `config-agent`.** Each agent reads
+  `:enable-scheduler` / `:enable-reactions` / `:enable-fsm` / `:fsm-allow-code`
+  via `agent-runtime$config` but never writes them — a gate change is a config
+  write, handed to `config-agent` by name. They also hand flat reactions ↔
+  stateful graphs to each other at the seam.
+- **Dossier is a hard contract.** Every write-producing turn must write a
+  markdown dossier under `.brainyard/agents/<agent>/dossiers/<ts>-<slug>.md` +
+  prepend to `INDEX.md`, enforced by a `FINAL-STEP CHECKLIST` in each
+  instruction ("a write that ends without a dossier is an INCOMPLETE turn").
+  This was added after a live run skipped the (previously advisory) dossier.
+- **Registration:** add the ns to the side-effecting require list in
+  `components/agent/src/ai/brainyard/agent/interface.clj` (single source of
+  truth for built-in `defagent`s) and wire the agent into `common/main_agent.clj`'s
+  router in three places (directory, lettered decision table, summary list).
+
+Designs: `docs/design/{schedule,event,state-machine}-agent-design.md`. Each has
+a structural + hermetic-pass-through test suite under `components/agent/test/`.
+
 ## bb task naming convention
 
 Tasks for the shipping project end in `:ata` (agent-tui-app): `compile:ata`, `uberjar:ata`, `native:ata`, `build:ata`, `install:ata`, `version:ata`, `check:ata` (native-image config drift gate), `size:ata`, `repl:ata`, `tracing:ata`, `docker:ata`. Workspace-wide tasks (`test`, `poly`) have no suffix.
