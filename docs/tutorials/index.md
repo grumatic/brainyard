@@ -546,7 +546,7 @@ agent can run on free or self-hosted models — here, a
 [freellmapi](https://github.com/tashfeenahmed/freellmapi) proxy that
 consolidates free-tier access across many providers behind one `auto` model.
 
-**Setup.** Export `FREELLM_BASE_URL` (e.g. `http://localhost:3001/v1`) and
+**Setup.** Export `FREELLM_BASE_URL` (e.g. `http://localhost:13001/v1`) and
 `FREELLM_API_KEY` — in your shell or a `.env` that `by` discovers. The model
 name `auto` is a curated entry that routes to `:free-llm`; the proxy's router
 then picks an available backend model per request.

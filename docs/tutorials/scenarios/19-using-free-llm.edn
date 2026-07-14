@@ -6,7 +6,7 @@
 ;; work (a greeting + a tool-channel call) at $0.0000 cost.
 ;;
 ;; RECORDING REQUIREMENTS: the recorder must export FREELLM_BASE_URL (the
-;; OpenAI-compatible /v1 base — e.g. http://localhost:3001/v1 for the freellmapi
+;; OpenAI-compatible /v1 base — e.g. http://localhost:13001/v1 for the freellmapi
 ;; proxy at https://github.com/tashfeenahmed/freellmapi) and, if the endpoint
 ;; requires it, FREELLM_API_KEY (a `freellmapi-…` token, sent as a Bearer
 ;; header). `/model auto` resolves "auto" → :free-llm via the curated
@@ -28,7 +28,7 @@
   [freellmapi](https://github.com/tashfeenahmed/freellmapi) proxy that
   consolidates free-tier access across many providers behind one `auto` model.
 
-  **Setup.** Export `FREELLM_BASE_URL` (e.g. `http://localhost:3001/v1`) and
+  **Setup.** Export `FREELLM_BASE_URL` (e.g. `http://localhost:13001/v1`) and
   `FREELLM_API_KEY` — in your shell or a `.env` that `by` discovers. The model
   name `auto` is a curated entry that routes to `:free-llm`; the proxy's router
   then picks an available backend model per request.
