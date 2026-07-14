@@ -211,3 +211,34 @@
         meta (#'skills/parse-skill-md content "my-skill")]
     (is (= "My Skill" (:title meta)))
     (is (= "This skill does things." (:description meta)))))
+
+;; ============================================================================
+;; skills$import — arg mapping (regression: create-skill is
+;; [dirs skill-name content & opts]; import must pass :scope as a keyword arg,
+;; NOT positionally. The old bug shifted args so the SKILL dir was named after
+;; the scope keyword ("project") and its body was the literal skill name.)
+;; ============================================================================
+
+(deftest test-import-maps-args-correctly
+  (with-redefs [skills/current-dirs (fn [] (test-dirs))]
+    (let [src (io/file *test-dir* "src")
+          _   (.mkdirs src)
+          md  (io/file src "SKILL.md")
+          _   (spit md (str "---\nname: readme-linter\n"
+                            "description: Lint README files for common issues.\n---\n"
+                            "\n# readme-linter\n\nReal body content that must survive import.\n"))
+          result (skills/skills$import :path (.getPath md) :scope "project")
+          linter-md  (io/file *test-dir* ".brainyard/skills/readme-linter/SKILL.md")
+          scope-dir  (io/file *test-dir* ".brainyard/skills/project")]
+      (testing "skill lands under its NAME, scoped to :project"
+        (is (nil? (:error result)))
+        (is (= "readme-linter" (:name result)))
+        (is (= :project (:scope result)))
+        (is (.exists linter-md)))
+      (testing "the scope keyword never becomes a skill dir"
+        (is (not (.exists scope-dir))
+            "a dir named after the scope keyword means args were shifted"))
+      (testing "the real SKILL.md body is preserved, not replaced by the skill name"
+        (let [body (slurp linter-md)]
+          (is (str/includes? body "Real body content that must survive import."))
+          (is (not= "readme-linter" (str/trim body))))))))

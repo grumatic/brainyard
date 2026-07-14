@@ -756,9 +756,8 @@
               (str/blank? (:description parsed))
               {:error "SKILL.md has no description — the open standard requires name + description"}
               :else
-              (create-skill (current-dirs)
-                            (if (str/blank? scope) :project (keyword scope))
-                            skill-name content {})))))))
+              (create-skill (current-dirs) skill-name content
+                            :scope (if (str/blank? scope) :project (keyword scope)))))))))
   :input-schema  [:map
                   [:path  [:string {:desc "Path to a SKILL.md file or a directory containing one"}]]
                   [:name  {:optional true} [:string {:desc "Override the imported skill name (else front-matter `name` / dir name)"}]]
