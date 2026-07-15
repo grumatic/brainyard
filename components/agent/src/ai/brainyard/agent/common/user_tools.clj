@@ -104,13 +104,15 @@
                       {:name name :body body-str})))
     r))
 
-(defn- bind-into-live-sandbox!
-  "Bind the just-registered tool as `user$tool$<name>` into the CURRENT agent's
-   live code-eval sandbox, so a create-then-call in the SAME turn resolves the
-   symbol instead of failing until the next turn (the turn-start binding snapshot
-   in coact-agent predates this registration). Best-effort: no current agent, no
-   live sandbox, or a binding failure is a silent no-op — the tool is still live
-   via the registry (JSON tool-call channel) and rebinds normally next turn.
+(defn bind-into-live-sandbox!
+  "Bind the just-registered tool/agent as its `user$tool$<name>` /
+   `user$agent$<name>` symbol into the CURRENT agent's live code-eval sandbox, so
+   a create-then-call in the SAME turn resolves the symbol instead of failing
+   until the next turn (the turn-start binding snapshot in coact-agent predates
+   this registration). Generic over any `!tool-defs` entry — user-agents/register-agent!
+   reuses it for `:type :agent` defs. Best-effort: no current agent, no live
+   sandbox, or a binding failure is a silent no-op — the def is still live via the
+   registry (JSON tool-call channel) and rebinds normally next turn.
 
    Runtime-resolved (protocol/*current-agent* + sandbox-bindings/bind-one-tool)
    to avoid a static require cycle — sandbox-bindings requires this ns for

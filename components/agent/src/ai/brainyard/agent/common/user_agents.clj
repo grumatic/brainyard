@@ -154,27 +154,34 @@
                           :tool-context        tool-context
                           :_deftool$id         id
                           :_deftool$description desc}
-                         opts)))]
-    (swap! tool/!tool-defs assoc id
-           {:id   id
-            :type :agent
-            :fn   invoke
-            :meta {:id            id
-                   :type          :agent
-                   :description   desc
-                   ;; Carried so direct-resolution entry points (setup-agent-by-id)
-                   ;; pick up the CoAct BT + the persona's prose. The full coact
-                   ;; palette is merged by run-coact-derived on the :fn path.
-                   :bt-factory    coact-bt-factory
-                   :instruction   instruction
-                   :tool-context  tool-context
-                   :tool-use-control {}
-                   :input-schema  [:map
-                                   [:question [:string {:desc "Request for this agent"}]]
-                                   [:agent-context {:optional true} [:string {:desc "Extra context"}]]]
-                   :output-schema [:map [:answer [:string {:desc "Agent's answer"}]]]
-                   :category      :user
-                   :user-defined  true}})
+                         opts)))
+        tool-def {:id   id
+                  :type :agent
+                  :fn   invoke
+                  :meta {:id            id
+                         :type          :agent
+                         :description   desc
+                         ;; Carried so direct-resolution entry points (setup-agent-by-id)
+                         ;; pick up the CoAct BT + the persona's prose. The full coact
+                         ;; palette is merged by run-coact-derived on the :fn path.
+                         :bt-factory    coact-bt-factory
+                         :instruction   instruction
+                         :tool-context  tool-context
+                         :tool-use-control {}
+                         :input-schema  [:map
+                                         [:question [:string {:desc "Request for this agent"}]]
+                                         [:agent-context {:optional true} [:string {:desc "Extra context"}]]]
+                         :output-schema [:map [:answer [:string {:desc "Agent's answer"}]]]
+                         :category      :user
+                         :user-defined  true}}]
+    (swap! tool/!tool-defs assoc id tool-def)
+    ;; Same-turn callability from the LLM's clojure code blocks: bind the new
+    ;; `user$agent$<name>` symbol into the current agent's live sandbox now,
+    ;; instead of waiting for next turn's auto-tool-bindings rebuild. Reuses the
+    ;; generic helper user-tools/register! uses (runtime-resolved to avoid a
+    ;; static require cycle — sandbox-bindings requires user-tools).
+    ((requiring-resolve 'ai.brainyard.agent.common.user-tools/bind-into-live-sandbox!)
+     tool-def)
     id))
 
 ;; ============================================================================
@@ -359,7 +366,7 @@
    you NEVER bind tools; you shape it entirely through :instruction (who it is /
    how it works) and :tool-context (which inherited tools to reach for). It
    survives restarts, registers as `user$agent$<name>`, and is callable as a
-   first-class agent on the next turn."
+   first-class agent in the SAME turn it is created."
   (fn [& {:as args}]
     (try
       (define-agent :name (:name args)

@@ -26,7 +26,8 @@
 author, refine, and remove PERSISTENT user-defined agents. An authored agent is
 a CoAct-derived specialist saved under <project>/.brainyard/agents/user$agent/
 <name>/ (agent.edn + instruction.md + tool-context.md), registered as
-user$agent$<name>, and callable as a first-class agent on the very next turn. It
+user$agent$<name>, and callable as a first-class agent in the SAME turn it is
+created (both as user$agent$<name> in a clojure block and via the tool-call channel). It
 inherits the full CoAct loop and tool palette — you NEVER bind tools to it; you
 shape it entirely through its INSTRUCTION and its TOOL-CONTEXT. Authored agents
 live with the CURRENT PROJECT (project scope) — say so plainly.
