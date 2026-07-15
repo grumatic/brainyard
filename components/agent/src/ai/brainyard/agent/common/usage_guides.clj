@@ -240,7 +240,7 @@ Execution rules:
 Sandbox variables (`def`'d values) survive across continuation — the sandbox is NOT reset.
 But your LLM context is reset — you don't remember what you computed. On the FIRST iteration:
 1. Check what you already have: `(keys (ns-publics 'user))` — shows all def'd variables from prior iterations
-2. Review what was done: `(context-get [:previous-turns])` — prior turn summaries show questions asked and answers given
+2. Review what was done: read the `## Previous Turns` prompt section — prior turn summaries show questions asked and answers given (use `(trajectory$search …)` for older operational detail)
 3. `(list-plans :status :in-progress)` — find the active plan slug
 4. `(plan-status slug)` — see which steps are done vs pending
 5. Resume from the next pending step — do NOT restart from step 1, do NOT re-fetch data that's already in variables")

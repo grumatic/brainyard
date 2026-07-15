@@ -282,19 +282,25 @@ There is NO `context` variable. Context is available ONLY through these accessor
 ```
 
 ### Previous turns & memory
-Use `context-get` (path must be a vector) to retrieve previous turns and memory:
-- `(context-get [:previous-turns])` — prior turn data (question + iterations + answer)
+Prior turns and recalled memory are delivered as prompt sections (`## Previous Turns`,
+`## Recalled Memory`) in your messages — read them there. They are **not** in the sandbox
+context, so `(context-get [:previous-turns])` / `[:recalled-memory]` return nothing.
+Older turns' operational detail (tool calls, code + outputs) is reachable via
+`(trajectory$search \"keyword\")`.
+
+`context-get` fetches the sandbox context — agent state and your saved vars:
+- `(context-get [:agent-state …])` — live agent state (iteration, runtime keys)
+- `(context-get [:user-vars])` — inventory of your own `def`s
 - `(context-search \"keyword\")` — search ALL context values recursively
-- `(context-get [:recalled-memory])` — recalled memory (may be nil)
 
 **CRITICAL — context accessor results contain quotes**: These return Clojure data with embedded strings.
 NEVER put the result directly into a FINAL string literal. Assign to a variable first:
 ```clojure
 ;; BAD — will cause EOF parse error:
-(FINAL (str \"Previous: \" (context-get [:previous-turns])))
+(FINAL (str \"State: \" (context-get [:agent-state])))
 ;; OK — assign to variable, format for display:
-(def prev (context-get [:previous-turns]))
-(FINAL (str \"Q: \" (:question (first prev)) \"\\nA: \" (:answer (first prev))))
+(def st (context-get [:agent-state]))
+(FINAL (str \"iteration: \" (:iteration st)))
 ```")
 
 ;; ============================================================================
@@ -326,7 +332,7 @@ NEVER put the result directly into a FINAL string literal. Assign to a variable 
   "## Context & Functions
 The **Function Directory** below lists all sandbox functions grouped by category (signatures).
 Your first user message contains a **Context Briefing** with:
-- **Data Directory** — what's accessible via `context-get` (conversation, previous turns, memory, agent state)
+- **Data Directory** — what's accessible via `context-get` (agent state, your saved vars). Previous turns & recalled memory arrive as their own prompt sections, not `context-get`.
 - **Active State** — tool/skill/MCP counts, in-progress plans, pending todos
 - **Instructions** — project and user instructions
 
@@ -356,7 +362,7 @@ Start working from the function directory and briefing. Call `(usage$guide :topi
     "## Workflow
 1. On `[CONTINUATION]`: sandbox variables alive — `(keys (ns-publics 'user))`, `(list-plans :status :in-progress)`, resume.
 2. Briefing is pre-loaded — start working directly. Use `context-get`/`context-search` only when you need details beyond the briefing.
-3. If previous-turns-count > 0: `(context-get [:previous-turns])` for earlier turn data.
+3. Earlier-turn data lives in the `## Previous Turns` prompt section (and `(trajectory$search …)` for older operational detail) — not `context-get`.
 4. **Reuse previous findings**: When a question relates to a previous turn, use the data from Conversation History — don't re-search or re-fetch.
 5. `(pprint result)` on tool results before processing.
 6. Call FINAL as soon as you have the answer.

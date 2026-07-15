@@ -11,9 +11,10 @@
    - :minimal — question + short answer                        (oldest)
 
    The LLM reads the chain via the rendered `[Turn N · depth]` entries in
-   the Previous Turns prompt section, or programmatically through the
-   sandbox context accessors — `(context-index)` for sizes,
-   `(context-get [:previous-turns])` for the (compressed) records.
+   the Previous Turns prompt section. This chain is NOT exposed through the
+   sandbox context accessors — it is rendered into the prompt (:user-context)
+   only, so `(context-get [:previous-turns])` returns nothing (see the
+   sandbox-context construction in coact-init).
    Iterations survive only at :full depth; older turns' operational
    detail (tool calls, code evals + outputs) stays reachable via the
    `trajectory$search` command over the session's trajectory records."

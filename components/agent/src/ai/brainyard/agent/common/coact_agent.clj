@@ -763,8 +763,12 @@ The sandbox is your state memory. There is **no `context` variable** — always 
 
 | Layer | What | Owner | Lifetime | Access |
 |---|---|---|---|---|
-| **L1 inputs** | recalled memory, previous turns, agent state | agent (read-only) | per-turn | `(context-get [:recalled-memory])`, `[:previous-turns]`, `[:agent-state …]` |
+| **L1 inputs** | agent state (+ restored vars) | agent (read-only) | per-turn | `(context-get [:agent-state …])`, `[:restored-vars]` |
 | **L2 working `def`s** | anything you `(def x …)` in a clojure fence | you | across iterations + turns (in-session) | direct symbol; `(context-get [:user-vars])` for an inventory |
+
+Recalled memory and previous turns are **not** in the sandbox context — they arrive as
+prompt sections (`## Recalled Memory`, `## Previous Turns`) in your messages; read them
+there, not via `context-get`. Older turns' operational detail is reachable via `(trajectory$search …)`.
 
 ### Accessors (call `(context-index)` FIRST every turn — top-level keys + sizes)
 - `(context-keys [:path])` — keys/indices at a level. `(context-keys [])` = top-level catalog.
@@ -779,8 +783,8 @@ The sandbox is your state memory. There is **no `context` variable** — always 
 **CRITICAL — accessor results contain embedded strings.** Never embed a raw accessor result
 inside another string literal (causes EOF parse errors). `def` it first, then read fields:
 ```clojure
-(def prev (context-get [:previous-turns]))
-(println (str \"Q: \" (:question (first prev))))
+(def st (context-get [:agent-state]))
+(println (str \"iteration: \" (:iteration st)))
 ```
 
 Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :agent-state)`.")
