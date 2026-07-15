@@ -1668,6 +1668,14 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                    :synthetic-keys synthetic-keys
                    :interop        (config/resolve-sandbox-interop agent)))
 
+        ;; Publish the live sandbox into !state at turn START (not only at turn
+        ;; end, see the finalize action). This lets a tool call that runs
+        ;; mid-turn reach the very sandbox executing the LLM's code blocks — in
+        ;; particular tool-agent$create's register! binds the new
+        ;; `user$tool$<name>` symbol here so a create-then-call in the SAME turn
+        ;; resolves instead of failing until the next turn.
+        _ (when agent (swap! (:!state agent) assoc :sandbox sandbox))
+
         ;; Load brainyard instructions once per turn
         agent-dirs (sb-bind/get-dirs agent)
         brainyard-instructions (when agent-dirs

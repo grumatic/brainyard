@@ -104,12 +104,35 @@
                       {:name name :body body-str})))
     r))
 
+(defn- bind-into-live-sandbox!
+  "Bind the just-registered tool as `user$tool$<name>` into the CURRENT agent's
+   live code-eval sandbox, so a create-then-call in the SAME turn resolves the
+   symbol instead of failing until the next turn (the turn-start binding snapshot
+   in coact-agent predates this registration). Best-effort: no current agent, no
+   live sandbox, or a binding failure is a silent no-op — the tool is still live
+   via the registry (JSON tool-call channel) and rebinds normally next turn.
+
+   Runtime-resolved (protocol/*current-agent* + sandbox-bindings/bind-one-tool)
+   to avoid a static require cycle — sandbox-bindings requires this ns for
+   registration (see current-extra-bindings)."
+  [tool-def]
+  (try
+    (when-let [agent (some-> (requiring-resolve 'ai.brainyard.agent.core.protocol/*current-agent*)
+                             deref)]
+      (when-let [sbx (get-in @(:!state agent) [:sandbox])]
+        (let [bind-one (requiring-resolve 'ai.brainyard.agent.common.sandbox-bindings/bind-one-tool)
+              [sym f]  (bind-one tool-def agent)]
+          (when sym (sb/update-bindings! sbx {sym f})))))
+    (catch Exception e
+      (mulog/warn ::bind-into-live-sandbox-failed :error (ex-message e)))))
+
 (defn- register!
   "Register (or replace) the tool in the shared !tool-defs registry AND bind its
    direct `user$tool$<name>` symbol in the tools sandbox so other user tool bodies can
    compose it by symbol after registration. The registry :fn rehydrates by
    forking the tools sandbox and calling `__ut_<name>` with the args map bound as
-   `args`."
+   `args`. Also binds the symbol into the current agent's live code-eval sandbox
+   so a create-then-call in the same turn resolves (see bind-into-live-sandbox!)."
   [{:keys [name description input-schema]}]
   (let [id     (tool-id name)
         schema (or input-schema [:map])
@@ -121,18 +144,18 @@
                        fork  (sb/fork-sandbox (tools-sandbox))]
                    (sb/set-var! fork 'args clean)
                    (let [r (sb/eval-code fork (str "(__ut_" name " args)"))]
-                     (if-let [err (:error r)] {:error err} (:result r)))))]
-    (swap! tool/!tool-defs assoc id
-           {:id   id
-            :type :tool
-            :fn   invoke
-            :meta {:id            id
-                   :type          :tool
-                   :description   description
-                   :input-schema  schema
-                   :output-schema [:map]
-                   :category      :user
-                   :user-defined  true}})
+                     (if-let [err (:error r)] {:error err} (:result r)))))
+        tool-def {:id   id
+                  :type :tool
+                  :fn   invoke
+                  :meta {:id            id
+                         :type          :tool
+                         :description   description
+                         :input-schema  schema
+                         :output-schema [:map]
+                         :category      :user
+                         :user-defined  true}}]
+    (swap! tool/!tool-defs assoc id tool-def)
     ;; Direct symbol for body-to-body composition. Routes through the registry
     ;; (tool/call-tool) so it still gets Malli coercion + hook/permission/depth
     ;; guards — not through the hidden call-tool helper.
@@ -141,6 +164,8 @@
                  (fn [args]
                    (let [r (tool/call-tool id (or args {}))]
                      (if (:error-message r) {:error (:error-message r)} r))))
+    ;; Same-turn callability from the LLM's clojure code blocks.
+    (bind-into-live-sandbox! tool-def)
     id))
 
 (defn define-tool
@@ -320,8 +345,8 @@
   "Author a reusable, PERSISTENT tool from Clojure source. :body is a string
    `(fn [args] ...)` taking one map; :input-schema is a Malli [:map ...] passed
    as an EDN string. The tool survives restarts, registers as `user$tool$<name>`
-   (callable directly as a tool on the next turn), and its body may compose
-   other tools by their direct symbol, e.g. (bash {…}) or (user$tool$other {…})."
+   (callable directly as a tool in the SAME turn it is created), and its body may
+   compose other tools by their direct symbol, e.g. (bash {…}) or (user$tool$other {…})."
   (fn [& {:as args}]
     (try
       (let [extra (current-extra-bindings)]

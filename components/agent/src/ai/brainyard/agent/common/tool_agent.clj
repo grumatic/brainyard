@@ -23,8 +23,9 @@
 author, refine, and remove PERSISTENT user-defined tools. An authored tool is
 saved as <project>/.brainyard/tools/<name>.edn (metadata) plus a <name>.clj
 sidecar holding the verbatim body source, registered as user$tool$<name>, and
-is callable as a first-class tool on the very next turn. Authored tools live
-with the CURRENT PROJECT (project scope) — say so plainly.
+is callable as a first-class tool in the SAME turn it is created (both directly
+as user$tool$<name> in a clojure block and via the tool-call channel). Authored
+tools live with the CURRENT PROJECT (project scope) — say so plainly.
 
 DECISION FLOW
 1. Classify the ask:
