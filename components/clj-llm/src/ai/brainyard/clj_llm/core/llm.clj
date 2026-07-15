@@ -301,6 +301,38 @@
       ;; the prior default rather than retrying a possibly-deterministic failure.
       :else                              {:class :malformed :reason (first-line text)})))
 
+(def ^:private http-message-formats
+  "message-formats whose request URL is built by concatenating :base-url with a
+   path (\"/chat/completions\", \"/messages\", \"/embeddings\"). The non-HTTP
+   formats (:claude-code, :acp, :bedrock) resolve their endpoint elsewhere and
+   legitimately carry a nil :base-url."
+  #{:openai :anthropic})
+
+(defn- require-http-base-url!
+  "Fail fast with an actionable message when an HTTP provider reaches a call with
+   no resolved :base-url. Without this, `(str nil \"/chat/completions\")` yields
+   the scheme-less URI \"/chat/completions\" and the HTTP client throws the
+   opaque `IllegalArgumentException: URI with undefined scheme` — the turn dies
+   at 0 tokens with no hint that, e.g., FREELLM_BASE_URL is simply unset. The
+   phrasing (\"not supported\") keeps `classify-error` returning :fatal so the
+   agent aborts cleanly instead of burning retries on a deterministic failure."
+  [lm-config]
+  (when (and (contains? http-message-formats (:message-format lm-config))
+             (str/blank? (str (:base-url lm-config))))
+    (let [provider (:provider lm-config)
+          env-var  (get-in providers/providers [provider :base-url-env])]
+      (throw (ex-info (str "No base URL resolved for provider " provider
+                           " (model " (:model lm-config) "): request not supported "
+                           "without an endpoint. "
+                           (if env-var
+                             (str "Set " env-var " to the endpoint's /v1 base URL, "
+                                  "or pass :base-url to create-lm.")
+                             "Pass :base-url to create-lm or configure the provider endpoint."))
+                      {:provider          provider
+                       :model             (:model lm-config)
+                       :base-url-missing? true
+                       :base-url-env      env-var})))))
+
 ;; ============================================================================
 ;; OpenAI-Compatible API
 ;; ============================================================================
@@ -738,6 +770,7 @@
                                 input-token-breakdown] :as opts}]
   (when-not lm-config
     (throw (ex-info "No LM configuration provided. Call create-lm first." {})))
+  (require-http-base-url! lm-config)
   (when-not (or (:api-key lm-config) (= :oauth (:auth-type lm-config))
                 (= :aws-sigv4 (:auth-type lm-config)))
     (when-not (#{:ollama :claude-code :acp :apple-fm :bedrock :free-llm} (:provider lm-config))
@@ -928,6 +961,7 @@
      :usage-tracker - Atom from create-usage-tracker (optional)"
   [lm-config text & {:keys [model return-usage? usage-tracker]
                      :or   {model "text-embedding-ada-002"}}]
+  (require-http-base-url! lm-config)
   (let [url     (str (:base-url lm-config) "/embeddings")
         headers (build-openai-headers lm-config)
         body    {:model model :input text}
@@ -968,6 +1002,7 @@
      :usage-tracker - Atom from create-usage-tracker (optional)"
   [lm-config texts & {:keys [model return-usage? usage-tracker]
                       :or   {model "text-embedding-ada-002"}}]
+  (require-http-base-url! lm-config)
   (let [url     (str (:base-url lm-config) "/embeddings")
         headers (build-openai-headers lm-config)
         body    {:model model :input texts}

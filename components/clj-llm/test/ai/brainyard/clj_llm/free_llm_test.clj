@@ -4,7 +4,9 @@
 
 (ns ai.brainyard.clj-llm.free-llm-test
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [ai.brainyard.clj-llm.core.providers :as providers]))
+            [clojure.string :as str]
+            [ai.brainyard.clj-llm.core.providers :as providers]
+            [ai.brainyard.clj-llm.core.llm :as llm]))
 
 ;; The :free-llm provider resolves its base URL from FREELLM_BASE_URL (and an
 ;; optional FREELLM_API_KEY). System/getProperty is the documented fallback for
@@ -52,6 +54,29 @@
     (let [lm (providers/create-lm {:model "auto" :provider :free-llm
                                    :base-url "http://explicit/v1"})]
       (is (= "http://explicit/v1" (:base-url lm))))))
+
+(deftest free-llm-unresolved-base-url-fails-fast-test
+  ;; When FREELLM_BASE_URL is unset, base-url stays nil. Historically the call
+  ;; then built the scheme-less URI "/chat/completions" and the HTTP client threw
+  ;; the opaque `IllegalArgumentException: URI with undefined scheme`, so the turn
+  ;; died at 0 tokens with no hint. chat-completion now fails fast with an
+  ;; actionable message naming the missing env var. base-url is nil'd directly so
+  ;; the test is deterministic regardless of a dev's real FREELLM_BASE_URL env.
+  (testing "chat-completion throws an actionable error, not the opaque URI error"
+    (let [lm (assoc (providers/create-lm {:model "auto" :provider :free-llm})
+                    :base-url nil)
+          ex (is (thrown? clojure.lang.ExceptionInfo
+                          (llm/chat-completion lm [{:role "user" :content "hi"}])))]
+      (is (true? (:base-url-missing? (ex-data ex))))
+      (is (= "FREELLM_BASE_URL" (:base-url-env (ex-data ex))))
+      (is (str/includes? (ex-message ex) "FREELLM_BASE_URL"))
+      (is (not (str/includes? (ex-message ex) "undefined scheme")))))
+  (testing "the error classifies as :fatal — the agent aborts, no wasted retries"
+    (let [lm (assoc (providers/create-lm {:model "auto" :provider :free-llm})
+                    :base-url nil)
+          ex (try (llm/chat-completion lm [{:role "user" :content "hi"}])
+                  (catch Exception e e))]
+      (is (= :fatal (:class (llm/classify-error ex)))))))
 
 (deftest free-llm-initialized-test
   (testing "lm-initialized? is true when base-url is present, even without a key"
