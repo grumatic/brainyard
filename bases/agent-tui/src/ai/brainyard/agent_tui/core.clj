@@ -864,15 +864,75 @@
                                                  (catch Throwable _ nil))
                                             [])))})
 
+(defn- handle-new-session-op
+  "Spawn an additional LIVE session inside THIS process and return its identity —
+   the process-level counterpart to the interactive `/session new`. Lets an
+   external driver host many sessions in one JVM instead of one process each:
+   the new session gets its own agent (per-request `:agent-id`), ownership lock,
+   and ask socket, so it's reachable over its own `ask-socket-path` exactly like
+   a standalone session. Does NOT switch the active tab (headless callers don't
+   want the local terminal's focus to move). `:agent-id` is a defagent type
+   string (e.g. \"mcp-agent\"); omitted → the active session's defagent, else
+   coact-agent. `:label` is optional. Returns {:status :ok :session-id … :ask-socket-path …}."
+  [{:keys [agent-id label] :as _req}]
+  (try
+    (let [agent-kw (cond
+                     (keyword? agent-id) agent-id
+                     (and (string? agent-id) (seq agent-id)) (keyword agent-id)
+                     :else nil)
+          lbl      (or (when (and (string? label) (seq label)) label)
+                       (sessions/next-root-tab-label!))
+          idx      (sessions/create-session!
+                    (cond-> {:label lbl}
+                      agent-kw (assoc :agent-id agent-kw)))
+          sess     (sessions/get-session idx)
+          sid      (:agent-session-id sess)
+          sock     (when sid (.getAbsolutePath ^java.io.File (persist/file-of sid :ask-sock)))]
+      (if sid
+        {:status :ok :session-id (str sid) :ask-socket-path sock
+         :defagent-id (some-> (:defagent-id sess) name) :label lbl :index idx}
+        {:status :error :error "session created but no session-id was assigned"}))
+    (catch Throwable e
+      {:status :error :error (str "new-session failed: " (.getMessage e))})))
+
+(defn- handle-close-session-op
+  "Gracefully close ONE co-hosted session by its `:session-id` (the on-disk
+   agent-session-id) — the counterpart to `/session close`. Closes that session's
+   agent + ask socket + tab without killing the host process (which may hold other
+   sessions). Refuses to close the process's last remaining chat session so the
+   host never ends up with zero sessions. Returns {:status :ok :closed …}."
+  [{:keys [session-id] :as _req}]
+  (try
+    (if (str/blank? (str session-id))
+      {:status :error :error "close-session requires :session-id"}
+      (let [target (str session-id)
+            sessions* (sessions/session-list)
+            match (some (fn [s] (when (= target (str (:agent-session-id s))) s)) sessions*)
+            chat-count (count (remove #(= :output (:session-type %)) sessions*))]
+        (cond
+          (nil? match)
+          {:status :error :error (str "no live session with id " target)}
+          (and (not= :output (:session-type match)) (<= chat-count 1))
+          {:status :error :error "refusing to close the host's last session"}
+          :else
+          (do (sessions/close-session! (:id match))
+              {:status :ok :closed target}))))
+    (catch Throwable e
+      {:status :error :error (str "close-session failed: " (.getMessage e))})))
+
 (defn- ask-handle-fn
   "Op-dispatcher for a session's ask socket. `:ask` injects a question and blocks
    for the answer; `:status` returns a non-blocking snapshot; `:config` returns a
    non-blocking effective-config read; `:inject` pushes external data in (artifact
    / turn / memory); `:cancel` stops the running turn; `:subscribe` streams
    runtime events until disconnect; `:emit` fires a user-defined event onto the
-   bus; `:fsm-status` snapshots this session's state machines. Unknown ops get a
-   clear error. See docs/design/session-channel-extensions.md,
-   event-bus-and-reactor.md, and state-machine-design.md."
+   bus; `:fsm-status` snapshots this session's state machines. `:new-session`
+   spawns another session in THIS process (returns its id + socket); `:close-session`
+   closes one co-hosted session by id. The last two are process-level (they don't
+   use `ag`) — any live session's socket can service them, so an external driver
+   can host many sessions in one JVM. Unknown ops get a clear error. See
+   docs/design/session-channel-extensions.md, event-bus-and-reactor.md, and
+   state-machine-design.md."
   [ag cap-ms]
   (fn [{:keys [op] :as req}]
     (case op
@@ -884,6 +944,8 @@
       :subscribe  (handle-subscribe-op ag req)
       :emit       (handle-emit-op ag req)
       :fsm-status (handle-fsm-status-op ag)
+      :new-session   (handle-new-session-op req)
+      :close-session (handle-close-session-op req)
       {:status :error :error (str "unknown op: " op)})))
 
 (defn start-ask-listener!
@@ -903,7 +965,8 @@
             ;; discovery client (`by sessions list`) can advertise capability
             ;; without connecting. Keep in sync with `ask-handle-fn`'s dispatch.
             (try (persist/save-meta! sid {:ask-socket-path path
-                                          :ops [:ask :status :config :inject :cancel :subscribe :emit :fsm-status]})
+                                          :ops [:ask :status :config :inject :cancel :subscribe :emit :fsm-status
+                                                :new-session :close-session]})
                  (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
           (catch clojure.lang.ExceptionInfo e
