@@ -100,3 +100,42 @@
 
       (testing "invalid event name errors"
         (is (some? (:error (events/emit-event! "  " {}))))))))
+
+;; ============================================================================
+;; Payload-schema key coercion
+;;
+;; The `event$emit` tool crosses a JSON/marshalling boundary that stringifies
+;; top-level payload keys. A naturally keyword-keyed schema like
+;; [:map [:order-id :string]] must still validate such a payload, and the
+;; delivered event map must carry KEYWORD keys so the reactor's keyword-based
+;; {{key}} interpolation (`(get payload :order-id)`) resolves rather than
+;; rendering blank. See docs/design/event-bus-and-reactor.md.
+;; ============================================================================
+
+(deftest emit-coerces-string-keys-to-keyword
+  (with-redefs [config/project-dir (fn ([] *pdir*) ([_] *pdir*))]
+    (events/write-def! *pdir* {:name :order/shipped
+                               :payload-schema [:map [:order-id :string] [:carrier :string]]
+                               :created 1})
+    (let [seen (atom nil)]
+      (hooks/register-hook! :order/shipped ::probe (fn [m] (reset! seen m)) :source ::test)
+
+      (testing "keyword schema validates a string-keyed payload and delivers keyword keys"
+        (let [r (events/emit-event! :order/shipped {"order-id" "A-100" "carrier" "UPS"})]
+          (is (= :order/shipped (:fired r)))
+          (is (nil? (:error r)) "string-keyed payload must not be rejected")
+          (is (= "A-100" (:order-id @seen)) "delivered map carries keyword keys (interpolation-ready)")
+          (is (= "UPS" (:carrier @seen)))
+          (is (not (contains? @seen "order-id")) "stringified keys are coerced away, not duplicated")))
+
+      (testing "already-keyword payload is unchanged (idempotent)"
+        (reset! seen nil)
+        (let [r (events/emit-event! :order/shipped {:order-id "B-200" :carrier "Fedex"})]
+          (is (= :order/shipped (:fired r)))
+          (is (= "B-200" (:order-id @seen)))))
+
+      (testing "coercion still catches a genuinely wrong value type"
+        (reset! seen nil)
+        (let [r (events/emit-event! :order/shipped {"order-id" 42 "carrier" "UPS"})]
+          (is (some? (:error r)))
+          (is (nil? @seen)))))))

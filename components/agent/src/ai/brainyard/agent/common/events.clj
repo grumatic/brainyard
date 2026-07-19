@@ -34,7 +34,8 @@
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [malli.core :as m])
+            [malli.core :as m]
+            [malli.transform :as mt])
   (:import [java.io File]))
 
 ;; ============================================================================
@@ -148,6 +149,28 @@
 ;; Emit path
 ;; ============================================================================
 
+(def ^:private payload-transformer
+  "Keywordize the payload's string map keys on the way in. The `event$emit` tool
+   crosses a JSON/marshalling boundary that stringifies top-level payload keys
+   (`{\"order-id\" …}`), so a naturally keyword-keyed schema like
+   `[:map [:order-id :string]]` would never validate and the reactor's
+   keyword-based `{{key}}` interpolation (`(get payload :order-id)`) would render
+   blank. Coercing keys once here lets authors write idiomatic keyword schemas
+   and keeps validation + interpolation aligned. Value types are left untouched
+   (no string-transformer) to avoid surprising coercions."
+  (mt/key-transformer {:decode keyword}))
+
+(defn- coerce-payload
+  "Coerce `payload` against the event's malli `schema` before validation and
+   fire, keywordizing its string map keys. A malformed schema or a non-map
+   payload passes through untouched — coercion is a convenience, not a gate
+   (mirrors `valid-payload?`)."
+  [schema payload]
+  (if (and (some? schema) (map? payload))
+    (try (m/decode schema payload payload-transformer)
+         (catch Throwable _ payload))
+    payload))
+
 (defn- valid-payload?
   "Validate `payload` against a malli data `schema`. A malformed schema does NOT
    block the emit (returns true) — validation is a guard, not a gate."
@@ -173,8 +196,9 @@
          ek   (->event-key event-key)]
      (if (nil? ek)
        {:error (str "invalid event name: " (pr-str event-key))}
-       (let [def'   (read-def pdir ek)
-             schema (:payload-schema def')]
+       (let [def'    (read-def pdir ek)
+             schema  (:payload-schema def')
+             payload (coerce-payload schema payload)]
          (if (and (some? schema) (not (valid-payload? schema payload)))
            {:error (str "payload does not match :payload-schema — " (explain-payload schema payload))}
            (do
