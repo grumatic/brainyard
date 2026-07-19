@@ -139,16 +139,35 @@
       (and (map? payload)
            (every? (fn [[k v]] (= v (get payload k))) match))))
 
+(defn- payload-get
+  "Resolve template key `k` in `payload`, tolerant of key form: a `{{order-id}}`
+   token matches either `:order-id` or `\"order-id\"`. Payloads arriving without a
+   `:payload-schema` keep the string keys the emit boundary produced (schema'd
+   events are keyword-coerced upstream in `events/emit-event!`), so interpolation
+   must accept both."
+  [payload k]
+  (let [kw (keyword k)]
+    (cond
+      (and (map? payload) (contains? payload kw)) (get payload kw)
+      (and (map? payload) (contains? payload k))  (get payload k)
+      :else nil)))
+
 (defn- interpolate
-  "Replace `{{key}}` tokens in a string with `(get payload (keyword key))`."
-  [s payload]
-  (if (string? s)
-    (str/replace s #"\{\{([^}]+)\}\}"
-                 (fn [[_ k]] (str (get payload (keyword (str/trim k)) ""))))
-    s))
+  "Replace `{{key}}` tokens in string `x` with the payload value (keyword- or
+   string-keyed). Recurses into maps and vectors so structured `:do` values —
+   e.g. an `:emit` sink's nested `:payload {\"order-id\" \"{{order-id}}\"}` — get
+   substituted too, not just top-level strings."
+  [x payload]
+  (cond
+    (string? x) (str/replace x #"\{\{([^}]+)\}\}"
+                             (fn [[_ k]] (str (payload-get payload (str/trim k)))))
+    (map? x)    (reduce-kv (fn [m k v] (assoc m k (interpolate v payload))) {} x)
+    (vector? x) (mapv #(interpolate % payload) x)
+    :else       x))
 
 (defn- interp-do
-  "Interpolate every string value of the `:do` action map from `payload`."
+  "Interpolate every value of the `:do` action map from `payload` (strings, and
+   recursively nested maps/vectors such as an `:emit` sink's `:payload`)."
   [do-map payload]
   (reduce-kv (fn [m k v] (assoc m k (interpolate v payload))) {} do-map))
 

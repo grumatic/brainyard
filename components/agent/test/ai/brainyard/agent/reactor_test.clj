@@ -80,6 +80,21 @@
   (is (= {:as :turn :await? false} (interp-do {:as :turn :await? false} {}))
       "non-string values pass through untouched"))
 
+(deftest interpolation-key-form-agnostic
+  (testing "a {{token}} resolves against a string-keyed payload (no-schema events)"
+    (is (= "Order B-100 via Fedex"
+           (interp "Order {{order-id}} via {{carrier}}"
+                   {"order-id" "B-100" "carrier" "Fedex"})))
+    (is (= "Order A-100"
+           (interp "Order {{order-id}}" {:order-id "A-100"}))
+        "keyword-keyed payload still works"))
+  (testing "interpolation recurses into an :emit sink's nested :payload map"
+    (is (= {:as :emit :event :app/notify-needed :payload {"order-id" "B-100"}}
+           (interp-do {:as :emit :event :app/notify-needed
+                       :payload {"order-id" "{{order-id}}"}}
+                      {"order-id" "B-100"}))
+        "nested template value is substituted, not passed through literally")))
+
 ;; ============================================================================
 ;; rules-for / desired-events (disk-backed)
 ;; ============================================================================
