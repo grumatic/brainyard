@@ -106,12 +106,19 @@
              :meta       {:kind :thought}}}))
 
 (defmethod dispatch-update "plan"
+  ;; Normalize ACP `PlanEntry` fields (`content`/`status`) into the native
+  ;; todo-item shape the TUI renderers consume (`:description`/`:done` — see
+  ;; render/todo-block and tui.format/format-todo-list). Without this the rows
+  ;; render blank (no `:description`) and never tick (no `:done`). `:status` /
+  ;; `:priority` are preserved so nothing downstream regresses.
   [{:keys [entries sessionId]}]
   {:event event-todo-updated
    :data  {:todo-list  (mapv (fn [e]
-                               {:content (:content e)
-                                :status  (or (:status e) "pending")
-                                :priority (:priority e)})
+                               (let [status (or (:status e) "pending")]
+                                 {:description (:content e)
+                                  :done        (= "completed" status)
+                                  :status      status
+                                  :priority    (:priority e)}))
                              entries)
            :session-id sessionId}})
 

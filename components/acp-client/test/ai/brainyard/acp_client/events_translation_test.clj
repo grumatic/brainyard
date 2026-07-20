@@ -74,19 +74,27 @@
       (is (= :thought (-> data :meta :kind))))))
 
 (deftest plan-test
-  (testing "plan → :todo/updated with normalized entries"
+  (testing "plan → :todo/updated with entries normalized to the native todo shape"
     (let [{:keys [event data]}
           (events/translate-update
            {:sessionId "s1"
             :sessionUpdate "plan"
             :entries [{:content "step 1" :status "in_progress"}
-                      {:content "step 2"}]})]
+                      {:content "step 2"}
+                      {:content "step 3" :status "completed"}]})]
       (is (= :todo/updated event))
-      (is (= 2 (count (:todo-list data))))
-      (is (= "step 1" (-> data :todo-list first :content)))
+      (is (= 3 (count (:todo-list data))))
+      ;; ACP `content` is mapped to `:description` so render/todo-block and
+      ;; tui.format/format-todo-list (which read `:description`/`:done`) show text.
+      (is (= "step 1" (-> data :todo-list first :description)))
       (is (= "in_progress" (-> data :todo-list first :status)))
+      (is (false? (-> data :todo-list first :done)))
       (is (= "pending" (-> data :todo-list second :status))
-          "default status is pending"))))
+          "default status is pending")
+      (is (false? (-> data :todo-list second :done)))
+      ;; `completed` status drives the `:done` flag the renderer ticks on.
+      (is (true? (-> data :todo-list last :done)))
+      (is (= "completed" (-> data :todo-list last :status))))))
 
 (deftest tool-call-test
   (testing "tool_call → :agent.tool-use/pre (observer)"
