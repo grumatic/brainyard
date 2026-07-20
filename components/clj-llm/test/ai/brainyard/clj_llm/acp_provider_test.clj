@@ -35,7 +35,19 @@
       (is (= :acp (:provider lm)))
       (is (= :acp (:message-format lm)))
       (is (= "stub-1" (:model lm)))
-      (is (nil? (:api-key lm))))))
+      (is (nil? (:api-key lm)))))
+  (testing ":acp-client-fs defaults true and is threaded onto the lm-config"
+    (let [lm (providers/create-lm {:model "stub-1" :provider :acp})]
+      (is (true? (:acp-client-fs lm)) "default is true")))
+  (testing ":acp-client-fs false is preserved"
+    (let [lm (providers/create-lm {:model "stub-1" :provider :acp :acp-client-fs false})]
+      (is (false? (:acp-client-fs lm)))))
+  (testing ":backend is threaded onto the :acp lm-config when supplied"
+    (let [lm (providers/create-lm {:model "opus" :provider :acp :backend :claude-code})]
+      (is (= :claude-code (:backend lm)))))
+  (testing "non-:acp providers do not gain :acp-client-fs"
+    (let [lm (providers/create-lm {:model "gpt-4o-mini" :provider :openai})]
+      (is (not (contains? lm :acp-client-fs))))))
 
 ;; =============================================================================
 ;; Direct provider call (bypasses dispatch)

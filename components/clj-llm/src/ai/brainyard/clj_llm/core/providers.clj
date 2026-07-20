@@ -526,9 +526,15 @@
      :aws-profile  - (Bedrock) Named AWS profile from ~/.aws/credentials.
                      Falls back to AWS_PROFILE then AWS_DEFAULT_PROFILE env vars.
      :credentials-provider - (Bedrock) Custom cognitect aws-api credentials
-                             provider; overrides profile/env-based detection."
+                             provider; overrides profile/env-based detection.
+     :backend      - (ACP) ACP backend keyword (:stub/:claude-code/:gemini/…);
+                     kept on the lm-config for the :acp provider.
+     :acp-client-fs - (ACP) advertise the client filesystem capability
+                     (default true; BY_ACP_CLIENT_FS overrides when unset).
+                     false → the backend does its own direct disk I/O."
   [{:keys [model api-key temperature max-tokens base-url provider prompt-cache cache-ttl
-           prompt-cache-key drop-params region aws-profile credentials-provider]}]
+           prompt-cache-key drop-params region aws-profile credentials-provider
+           backend acp-client-fs]}]
   (let [;; `:provider` is a keyword internally, but callers at the boundary may
         ;; pass a string (e.g. the CLI's `-p`/legacy `provider:model` opt).
         ;; Keywordize defensively — `keyword` is idempotent on a keyword and nil-safe
@@ -588,7 +594,17 @@
                               (:base-url provider-config)
                               (when-let [env-var (:base-url-env provider-config)]
                                 (or (System/getenv env-var)
-                                    (System/getProperty env-var))))]
+                                    (System/getProperty env-var))))
+        acp?              (= :acp detected-provider)
+        ;; ACP client fs capability (headless path): explicit arg →
+        ;; BY_ACP_CLIENT_FS env → default true. Mirrors the agent component's
+        ;; :acp-client-fs config so the same env var toggles both paths; the
+        ;; :acp provider (core/acp.clj) reads it off the lm-config.
+        resolved-acp-fs   (when acp?
+                            (if (some? acp-client-fs)
+                              (boolean acp-client-fs)
+                              (if-some [v (System/getenv "BY_ACP_CLIENT_FS")]
+                                (= "true" v) true)))]
     (cond-> {:model       resolved-model
              :provider    detected-provider
              :api-key     resolved-api-key
@@ -606,7 +622,9 @@
       bedrock?        (assoc :auth-type :aws-sigv4
                              :region    resolved-region)
       (and bedrock? resolved-profile)     (assoc :aws-profile resolved-profile)
-      (and bedrock? credentials-provider) (assoc :credentials-provider credentials-provider))))
+      (and bedrock? credentials-provider) (assoc :credentials-provider credentials-provider)
+      acp?            (assoc :acp-client-fs resolved-acp-fs)
+      (and acp? backend) (assoc :backend backend))))
 
 (defn- detect-default-lm
   "Default LM: claude-code:opus — most capable Claude via the CLI.

@@ -153,6 +153,7 @@
   (let [!state (:!state agent)]
     (or (get @!state cache-key)
         (let [!on-event (atom (fn [_msg] nil))
+              fs?       (config/get-config agent :acp-client-fs)
               c (spawn!* backend
                          {:on-event     (fn [msg]
                                           (when-let [f @!on-event]
@@ -161,7 +162,8 @@
                                          (make-permission-callback agent)}
                           :backend-opts backend-opts})
               cached {:client c :on-event-atom !on-event}]
-          (initialize!* c)
+          (initialize!* c {:client-capabilities
+                           {:fs {:readTextFile fs? :writeTextFile fs?}}})
           (swap! !state assoc cache-key cached)
           cached))))
 

@@ -342,6 +342,11 @@
                                  :doc "Per-hit char cap when rendering a recalled memory into the prompt."}
    :acp-backend                {:type "keyword" :default :stub
                                 :doc "ACP (agent-client-protocol) backend implementation; :stub by default."}
+   :acp-client-fs              {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ACP_CLIENT_FS")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Advertise the client filesystem capability to ACP backends. When true (default), backends route file reads/writes back through brainyard (mediated writes + diff rendering in the TUI). When false, the backend does its own direct disk I/O (no diffs). Does NOT affect the permission prompt (session/request_permission is gated either way) or OS sandboxing (--sandbox contains the subprocess regardless) — only who performs the write and whether diffs render. Env: BY_ACP_CLIENT_FS."}
    :acp-backend-opts           {:type "object"  :default {}
                                 :doc "Options map for the ACP backend. Launch keys (:command/:working-dir/:env/:forward-env) go to the registry factory; :model (e.g. \"sonnet\"/\"opus\"/\"haiku\" for :claude-code) is resolved against the agent's advertised models and set per session via session/set_model."}
    :acp-timeout-ms             {:type "integer" :default 600000

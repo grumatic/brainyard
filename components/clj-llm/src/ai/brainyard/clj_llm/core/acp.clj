@@ -159,6 +159,10 @@
   [lm-config messages opts on-chunk]
   (let [backend       (or (:backend lm-config) :stub)
         backend-opts  (select-keys lm-config [:chunk-delay-ms])
+        ;; Client fs capability — mirrors the :acp-client-fs agent config
+        ;; (default true). Threaded via lm-config since clj-llm is soft-coupled
+        ;; to acp-client and can't read agent config directly.
+        fs?           (get lm-config :acp-client-fs true)
         text-prompt   (flatten-messages messages)
         accumulator   (StringBuilder.)
         on-event      (make-on-event accumulator on-chunk)
@@ -172,7 +176,8 @@
                :model    (:model lm-config)
                :stream   true)
     (try
-      (initialize!* client)
+      (initialize!* client {:client-capabilities
+                            {:fs {:readTextFile fs? :writeTextFile fs?}}})
       (let [sess        (new-session!* client)
             timeout-ms  (or (:timeout-ms opts) 600000)
             result      (prompt!* sess
