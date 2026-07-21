@@ -52,13 +52,19 @@ RUN npm install -g @anthropic-ai/claude-code \
 # PLAYWRIGHT_BROWSERS_PATH puts the browser in a world-readable system dir.
 # agent-browser is pointed at the shell via AGENT_BROWSER_EXECUTABLE_PATH; we
 # symlink it to a stable path because the versioned dir name (…-1228) changes
-# across Playwright releases. `next` is intentionally NOT global — tenants bring
-# it via their project's node_modules / `npx next`.
+# across Playwright releases. We ALSO symlink the default Chrome channel path
+# (/opt/google/chrome/chrome) to the headless shell, so callers that probe the
+# stock `chrome` channel path (Playwright `channel: "chrome"`, Puppeteer, and
+# other CDP drivers that hardcode it) resolve instead of failing to find a
+# browser. `next` is intentionally NOT global — tenants bring it via their
+# project's node_modules / `npx next`.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npm install -g agent-browser playwright \
  && playwright install --with-deps chromium-headless-shell \
  && ln -sf "$(find /ms-playwright/chromium_headless_shell-* -name headless_shell -type f | head -1)" \
       /usr/local/bin/chromium-headless-shell \
+ && mkdir -p /opt/google/chrome \
+ && ln -sf /usr/local/bin/chromium-headless-shell /opt/google/chrome/chrome \
  && chmod -R a+rX /ms-playwright \
  && rm -rf /var/lib/apt/lists/* \
  && agent-browser --version
