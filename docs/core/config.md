@@ -35,20 +35,28 @@ configuration chain** — what `get-config` actually walks.
 
 ## The precedence chain
 
-`get-config` resolves a single key through four layers, lowest → highest:
+`get-config` resolves a single key through five layers, lowest → highest:
 
 ```
    schema default (`:default` or lazy `:default-fn`)
-     < !global-config (`.brainyard/config.edn`)
+     < !global-config (`.brainyard/config.edn` merged over static defaults)
        < session-config (`(:config @!session)`)
          < per-agent override (`(:config @st-memory-init)`)
+           < environment variable (the key's `:env-fn`)
 ```
 
-Boolean `false` overrides are honored — the implementation uses `contains?`
+A **set environment variable wins over every persisted layer** — so
+`BY_SANDBOX_INTEROP=full` beats a `.brainyard/config.edn` entry, and unsetting
+it hands control back to the file. Only schema keys that declare an `:env-fn`
+participate in that layer.
+
+Boolean `false` overrides are honored — the env layer uses a sentinel to
+distinguish "set to false" from "unset", and the lower layers use `contains?`
 rather than `or` so an explicit `false` shadows a higher-precedence `true`.
+Each resolution is mulog-tracked once per (key, source) via `::config-resolved`.
 
 ```clojure
-(config/get-config :max-iterations)         ;; global view; skips agent/session
+(config/get-config :max-iterations)         ;; global view; skips agent/session (env still honored)
 (config/get-config agent :max-iterations)   ;; full chain, agent-aware
 (config/get-config-snapshot agent)          ;; merged map of the full chain
 ```

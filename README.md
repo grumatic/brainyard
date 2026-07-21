@@ -2,7 +2,25 @@
 
 > **v0.4.0 is live** ([release notes](https://github.com/grumatic/brainyard/releases/tag/v0.4.0) · [changelog](CHANGELOG.md)) — a large release. **User-defined events, reactions & a watch loop**: define and emit named events (`event$emit`, `by events emit`, or externally over `ask.sock`), turn them into effects with persisted `event → action` rules (`reaction$*`), and probe external conditions on a schedule (`watch$*`) — a pub/sub layer over the agent's hooks bus. **Context-graph memory**: an opt-in typed entity/relationship graph plus a semantic vector index over long-term memory, with a self-contained in-binary embedder. **A multi-zone prompt cache** with cross-turn breakpoints and an opt-in 1-hour TTL trims cross-turn cost ~60–75%. Plus always-alive subagents (`agent-registry$*`), permission-gated MCP tool calls, and a `by memory` maintenance CLI. Opus remains the default model (`claude-code:opus` out of the box). Platform coverage: **macOS arm64** native binary plus a portable **JDK 21+ uberjar**; Linux and macOS amd64 binaries via the uberjar.
 
-Brainyard is an agent-driven terminal UI for working with LLMs from the command line. The shipping binary is named `by` — it can run interactive TUI sessions, ask one-shot questions, list 22 available agents across 8 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`, `memory`, `events`), and bootstrap configuration without leaving the terminal. Providers wired up at v0.1.0: `claude-code` (default), `anthropic`, `openai`, `bedrock`, `ollama`, `apple-fm`.
+Brainyard is an **agent runtime** that happens to wear a terminal UI — not a chat box in front of a provider API. The shipping binary is `by`: it runs interactive TUI sessions, answers one-shot questions, and drives **25 built-in agents** across 8 subcommands (`run`, `ask`, `agents`, `models`, `config`, `sessions`, `memory`, `events`). Providers: `claude-code` (the default — drives the local Claude CLI, no API key), `anthropic`, `openai`, `bedrock`, `google`, `groq`, `ollama`, `apple-fm`, plus OpenAI-compatible endpoints (`openrouter`, `together`, `fireworks`, `deepseek`, `mistral`, `azure`).
+
+## Why
+
+In most terminal LLM tools the interesting parts — how the agent decided, what it remembered, what it was allowed to touch — are opaque, and they evaporate when the process exits. Brainyard treats them as substrate you can inspect, persist, and recompose:
+
+- **Reasoning is data.** Every agent is a [behavior tree](docs/core/bt.md) whose leaves call typed DSPy signatures, registered tools, sandbox evaluations, or human prompts. ReAct and CoAct aren't modes bolted on — they're subtrees over one substrate, so switching styles is a config change rather than a rewrite.
+- **Code is the action space.** The default loop can respond with executable Clojure (or bash / python / js) instead of a JSON tool call, collapsing filter-compose-retry sequences that would otherwise cost a round trip each into a single iteration.
+- **Memory is layered, not a transcript.** A working set per turn, a session layer, a SQLite chronicle (~30 days), and distilled long-term facts — populated automatically from lifecycle hooks and recalled by rank fusion over full-text search, with an opt-in entity/relationship graph and vector index over the top.
+- **Composition is bounded.** Agents delegate to sub-agents over a shared session, but call depth is capped and cycles are rejected outright, so "agents calling agents" stays a tree with a known cost ceiling instead of an open-ended fan-out.
+- **Privileged actions are gated, not sealed off.** File writes, shell, network, and tool calls route through a permission layer with human-in-the-loop approval as an ordinary node in the tree.
+
+## How it works
+
+A turn runs the default **CoAct** loop: one LLM call per iteration that emits exactly one of three channels — *tool calls*, *code blocks*, or a final *answer* (which terminates the loop). Code runs in an in-process [SCI sandbox](docs/core/reasoning.md): interpreted, so it can't load classes or escape the host; whitelisted, so it sees only the bindings passed in; and stateful, so `def`s persist across iterations. Every registered tool is auto-bound as a callable function there, which is why a skill loaded mid-session is reachable from the next code block without rebuilding anything. Blocks that outlive their timeout [detach into background tasks](docs/core/task.md) and fold their results back in when they finish.
+
+Tools, commands, skills, and agents all live in [one registry](docs/core/tool.md) sharing storage and dispatch — including MCP servers, whose tools register as ordinary namespaced tools (with OAuth, so hosted remote servers work headless). Sessions, plans, dossiers, authored tools, and agents persist under `.brainyard/` in your project, so a session is resumable and the artifacts outlive the process. Configuration resolves through a documented [precedence chain](docs/core/config.md) from environment variables down to schema defaults.
+
+Start with [`docs/core/agent.md`](docs/core/agent.md) for the architecture, or [`docs/design/`](docs/design/) for the design notes behind each subsystem.
 
 <!-- TODO: replace with a real asciinema cast / GIF once recorded -->
 <!-- ![Brainyard TUI demo](docs/img/demo.gif) -->

@@ -95,7 +95,7 @@ safety (see [tool.md](tool.md)).
 
 ## Built-in agents
 
-Twenty-two `defagent`s ship with the component, all registered through the
+Twenty-five `defagent`s ship with the component, all registered through the
 unified tool registry (see [tool.md](tool.md)):
 
 | Agent | File | Purpose |
@@ -122,11 +122,30 @@ unified tool registry (see [tool.md](tool.md)):
 | `tool-agent` | `common/tool_agent.clj` | Author user-defined tools — `tool-agent$create`/`validate`/`list`/`read`/`delete`, persisted to `.brainyard/tools/` |
 | `hook-agent` | `common/hook_agent.clj` | Author persistent runtime hooks — `hook-agent$events`/`create`/`validate`/`list`/`read`/`delete`, persisted to `.brainyard/hooks/` |
 | `meta-agent` | `common/meta_agent.clj` | Author persistent user-defined agents (CoAct personas) — `meta-agent$create`/`validate`/`list`/`read`/`delete`, persisted to `.brainyard/agents/user$agent/` |
+| `schedule-agent` | `common/schedule_agent.clj` | Front door for **time**-triggered prompt jobs (`schedule$*`) — plain-language intent → a validated cron/one-shot spec, previewed as plain words plus a concrete next-fire. Watches are excluded (event-agent owns them) |
+| `event-agent` | `common/event_agent.clj` | Front door for the flat **event** vocabulary (`event$*` / `reaction$*` / `watch$*`) — declares events, wires `trigger → action` reactions, authors autonomous watch pollers, validates the wiring (payload schema, `{{key}}` vars, `:match` keys) before persisting, and diagnoses a dead rule |
+| `state-machine-agent` | `common/state_machine_agent.clj` | Front door for user-defined **FSMs** — definition CRUD (`fsm$define`/`remove`/`list`) plus the per-session runtime (`fsm$send`/`status`/`reset`), two lifecycles kept distinct. Validates the states/transitions graph (initial+targets defined, reachability, guard DSL, event coercion) before it lands |
 
 `coact-agent` and `react-agent` are the reasoning primitives. The rest are
 specialist BT configurations built from the same primitives
 ([reasoning.md](reasoning.md)) — most of the specialists run a CoAct-derived
 tree (`coact/run-coact-derived`).
+
+The last three — schedule-agent, event-agent, state-machine-agent — give the
+event subsystem a conversational CRUD surface and introduce **zero new
+commands**: each only orchestrates command families that already ship. The
+boundaries are drawn so a request routes to exactly one (time-triggered jobs
+vs. the flat event vocabulary vs. stateful FSMs), and they compose by calling
+each other by name at the seams. All three *read* their gate flags
+(`:enable-scheduler`, `:enable-reactions`, `:enable-fsm`, `:fsm-allow-code`)
+via `agent-runtime$config` but never write them — a gate change is a config
+write, handed to `config-agent`. Each also treats its markdown dossier under
+`.brainyard/agents/<agent>/dossiers/` as a hard contract: a write-producing
+turn that ends without one is an incomplete turn, enforced by a FINAL-STEP
+checklist in the instruction. Designs:
+[schedule](../design/schedule-agent-design.md) ·
+[event](../design/event-agent-design.md) ·
+[state-machine](../design/state-machine-agent-design.md).
 
 ---
 
@@ -282,11 +301,12 @@ uniform surface for frontends:
 
 `core/config.clj` defines a typed **runtime-config schema** covering loop
 control, memory, safety, LM selection, analytics, and UI. Reads and writes
-flow through a single API (`get-config` / `set-config!`) over a four-layer
-precedence chain — schema defaults → global `!global-config` → session
-config → per-agent override. The same namespace resolves `.brainyard/`
-directory layout (plans, worktrees, memory DB) with project vs. user
-scoping.
+flow through a single API (`get-config` / `set-config!`) over a five-layer
+precedence chain — schema defaults → global `!global-config`
+(`.brainyard/config.edn`) → session config → per-agent override →
+environment variable (a key's `:env-fn`, which wins over every persisted
+layer). The same namespace resolves `.brainyard/` directory layout (plans,
+worktrees, memory DB) with project vs. user scoping.
 
 See [config.md](config.md) for the schema reference, state-slot layout,
 persisted-EDN shape, and directory resolution details.
