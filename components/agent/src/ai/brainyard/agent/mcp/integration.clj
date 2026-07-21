@@ -838,17 +838,30 @@
     :enabled false
     :auto-register-tools true}
 
+   ;; linear — native :http OAuth, same shape as notion2. The old seed pointed
+   ;; `mcp-remote` at https://mcp.linear.app/sse, which now 404s (Linear retired
+   ;; the SSE endpoint for streamable HTTP at /mcp) — that seed could never
+   ;; connect. /mcp answers 401 with a `WWW-Authenticate: Bearer ...
+   ;; resource_metadata=...` challenge, and discovery advertises a
+   ;; `registration_endpoint` (DCR) plus S256 PKCE but NO
+   ;; `device_authorization_endpoint` — so loopback is the native path, exactly
+   ;; as for notion2. LOCAL ONLY (needs a browser on this machine).
    "linear"
-   {:transport :stdio
-    :config {:command "npx"
-             :args ["-y" "mcp-remote" "https://mcp.linear.app/sse"]}
+   {:transport :http
+    :config {:url  "https://mcp.linear.app/mcp"
+             :auth {:type   :oauth
+                    :issuer "https://mcp.linear.app"
+                    :scopes ["read" "write"]
+                    :flow   :loopback}
+             :connect-timeout-ms 180000}
     :enabled false
     :auto-register-tools true}
 
    ;; gmail / google-calendar use Google's official hosted remote MCP servers
-   ;; (HTTP + OAuth 2.0). brainyard's native :http transport can't run the OAuth
-   ;; handshake (same reason as notion/linear above), so bridge through
-   ;; mcp-remote (stdio) — it runs the browser consent flow on first start.
+   ;; (HTTP + OAuth 2.0). These are bridged through mcp-remote (stdio) — it runs
+   ;; the browser consent flow on first start. Note this is a per-server
+   ;; workaround, NOT a limit of the :http transport: see notion2/linear above,
+   ;; which do run the OAuth handshake natively.
    ;; ── Google: Gmail + Calendar ──────────────────────────────────────────────
    ;; PRIMARY: taylorwilsdon/google_workspace_mcp (`uvx workspace-mcp`) — a local
    ;; stdio server that runs its OWN OAuth loopback callback
