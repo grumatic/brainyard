@@ -51,7 +51,7 @@
   (let [captured (atom nil)
         f (tmp-skill-file "---\nname: deploy-flow\ndescription: Ship the app.\n---\n# Deploy\n1. build")]
     (try
-      (with-redefs [skills/create-skill (fn [_dirs scope sname content _opts]
+      (with-redefs [skills/create-skill (fn [_dirs sname content & {:keys [scope] :as _opts}]
                                           (reset! captured {:scope scope :name sname :content content})
                                           {:name sname :scope scope :path "/skills/deploy-flow" :created "now"})]
         (let [res (skills/skills$import :path (.getPath f) :scope "user")]
@@ -64,7 +64,7 @@
     (let [captured (atom nil)
           f (tmp-skill-file "---\nname: original\ndescription: d\n---\n# x")]
       (try
-        (with-redefs [skills/create-skill (fn [_d _s sname _c _o] (reset! captured sname) {:name sname})]
+        (with-redefs [skills/create-skill (fn [_d sname _c & _o] (reset! captured sname) {:name sname})]
           (skills/skills$import :path (.getPath f) :name "override-name")
           (is (= "override-name" @captured)))
         (finally (io/delete-file f true))))))
