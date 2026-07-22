@@ -269,6 +269,97 @@
      :errors (me/humanize (m/explain malli-schema data))
      :data   data}))
 
+(defn- coerce-value
+  "Best-effort coercion of a single value toward a Malli schema's top-level type.
+   Only well-defined, low-ambiguity conversions are attempted; anything unclear
+   (enums, :maybe, unknown types) is returned unchanged so downstream validation
+   can still reject it.
+
+   Handles the shapes LLMs actually emit when they echo a schema skeleton instead
+   of instantiating it — e.g. `goal-achieved: \"false\"`/null (string/null, not a
+   boolean) or `tool-calls: \"$PLACEHOLDER\"`/`{...}` (string/object, not an
+   array). Used by `coerce-output-types`."
+  [malli-schema v]
+  (let [resolved (try (m/schema malli-schema) (catch Exception _ nil))
+        t        (when resolved (m/type resolved))]
+    (case t
+      :boolean (cond
+                 (boolean? v) v
+                 (nil? v)     false
+                 (string? v)  (case (str/lower-case (str/trim v))
+                                ("true" "yes" "1" "on")     true
+                                ("false" "no" "0" "off" "") false
+                                v)                    ;; ambiguous string → leave
+                 (number? v)  (not (zero? v))
+                 :else        v)
+
+      (:vector :sequential) (cond
+                              (vector? v)     v
+                              (nil? v)        []
+                              (sequential? v) (vec v)
+                              (map? v)        [v]   ;; single unwrapped element
+                              :else           []) ;; scalar/placeholder → empty
+
+      :set (cond
+             (set? v)        v
+             (nil? v)        #{}
+             (sequential? v) (set v)
+             :else           v)
+
+      :string (cond
+                (string? v)                                v
+                (nil? v)                                   ""
+                (or (number? v) (boolean? v) (keyword? v)) (str v)
+                :else                                      v)
+
+      :int (cond
+             (int? v)                                           v
+             (and (string? v) (re-matches #"\s*[-+]?\d+\s*" v)) (parse-long (str/trim v))
+             (number? v)                                        (long v)
+             :else                                              v)
+
+      :double (cond
+                (double? v)                                              v
+                (and (string? v) (re-matches #"\s*[-+]?\d*\.?\d+\s*" v)) (parse-double (str/trim v))
+                (number? v)                                              (double v)
+                :else                                                    v)
+
+      v)))
+
+(defn coerce-output-types
+  "Repair present-but-wrong-typed output fields before validation.
+
+   For each field of `signature`'s `:outputs` that is present in `outputs` but
+   fails its own schema, attempt a type-directed coercion (`coerce-value`) and
+   keep the result ONLY when it then validates. Absent fields, already-valid
+   fields, and fields with no safe coercion are left untouched.
+
+   Invariants:
+     - Never turns a valid value invalid (valid values are skipped entirely).
+     - Never keeps a coercion that doesn't itself validate — genuinely
+       unrecoverable output still fails validation and reaches the caller's
+       repair / re-prompt path.
+
+   Complements `fill-output-defaults` (predict/chain-of-thought), which only
+   fills MISSING keys: this rescues keys that are present but mistyped, the
+   failure mode behind schema errors like
+   `{:tool-calls [\"invalid type\"], :goal-achieved [\"should be a boolean\"]}`."
+  [outputs signature]
+  (reduce-kv
+   (fn [acc k raw-schema]
+     (if-not (contains? acc k)
+       acc
+       (let [{:keys [schema]} (parse-malli-field raw-schema)
+             v                (get acc k)]
+         (if (m/validate schema v)
+           acc
+           (let [cv (coerce-value schema v)]
+             (if (and (not= cv v) (m/validate schema cv))
+               (assoc acc k cv)
+               acc))))))
+   outputs
+   (:outputs signature)))
+
 (defn expand-with-props
   "Recursively expand Malli schema references using a registry.
    Resolves all :ref types to their underlying schemas."

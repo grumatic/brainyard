@@ -173,3 +173,90 @@
     (testing "explicit lm-config :json-schema-strict? overrides auto-detect"
       (is (false? (#'llm/json-schema-strict? {:json-schema-strict? false} strict-schema)))
       (is (true?  (#'llm/json-schema-strict? {:json-schema-strict? true}  loose-schema))))))
+
+;; ---------------------------------------------------------------------------
+;; coerce-output-types — repair present-but-wrong-typed output fields
+;; ---------------------------------------------------------------------------
+
+(def ^:private coact-like-sig
+  "A signature shaped like CoAct's: two non-string fields (:tool-calls vector,
+   :goal-achieved boolean) plus string channels."
+  {:outputs {:tool-calls       [:vector {:desc "x"} [:map [:tool-name :string]]]
+             :code-blocks      [:string {:desc "x"}]
+             :answer           [:string {:desc "x"}]
+             :goal-achieved    [:boolean {:desc "x"}]
+             :next-user-prompt [:string {:desc "x"}]}})
+
+(defn- valid-outputs?
+  "Does `outputs` validate against the signature's Malli output schema?"
+  [outputs signature]
+  (:valid? (schema/validate-output
+            (schema/fields->malli-schema (:outputs signature))
+            outputs)))
+
+(deftest coerce-output-types-reported-failure-test
+  (testing "the exact turn-6 failure: placeholder :tool-calls + string :goal-achieved"
+    (let [raw   {:tool-calls "$PARAMETER_NAME" :code-blocks "" :answer ""
+                 :goal-achieved "false" :next-user-prompt ""}
+          fixed (schema/coerce-output-types raw coact-like-sig)]
+      (is (not (valid-outputs? raw coact-like-sig)) "raw skeleton is invalid")
+      (is (= [] (:tool-calls fixed)))
+      (is (= false (:goal-achieved fixed)))
+      (is (valid-outputs? fixed coact-like-sig) "coerced output validates"))))
+
+(deftest coerce-output-types-boolean-test
+  (let [coerce (fn [v] (:goal-achieved
+                        (schema/coerce-output-types
+                         {:goal-achieved v} {:outputs {:goal-achieved :boolean}})))]
+    (testing "truthy strings → true"
+      (is (true? (coerce "true"))) (is (true? (coerce "True")))
+      (is (true? (coerce "yes")))  (is (true? (coerce "1")))
+      (is (true? (coerce " on "))))
+    (testing "falsey strings + nil → false"
+      (is (false? (coerce "false"))) (is (false? (coerce "no")))
+      (is (false? (coerce "0")))     (is (false? (coerce "off")))
+      (is (false? (coerce "")))      (is (false? (coerce nil))))
+    (testing "numbers → boolean"
+      (is (true? (coerce 1))) (is (false? (coerce 0))))
+    (testing "already-boolean is untouched"
+      (is (true? (coerce true))) (is (false? (coerce false))))
+    (testing "ambiguous string is left unchanged (stays invalid → repair path)"
+      (is (= "maybe" (coerce "maybe"))))))
+
+(deftest coerce-output-types-vector-test
+  (let [sig    {:outputs {:tool-calls [:vector [:map [:tool-name :string]]]}}
+        coerce (fn [v] (:tool-calls (schema/coerce-output-types {:tool-calls v} sig)))]
+    (testing "nil / scalar / placeholder → empty vector"
+      (is (= [] (coerce nil)))
+      (is (= [] (coerce "$PLACEHOLDER")))
+      (is (= [] (coerce 7))))
+    (testing "single unwrapped valid element → wrapped in a vector"
+      (is (= [{:tool-name "grep"}] (coerce {:tool-name "grep"}))))
+    (testing "already a valid vector is untouched"
+      (is (= [{:tool-name "grep"}] (coerce [{:tool-name "grep"}]))))))
+
+(deftest coerce-output-types-scalar-coercions-test
+  (testing ":int from numeric string; :string from number/bool"
+    (is (= 42  (:n (schema/coerce-output-types {:n "42"}   {:outputs {:n :int}}))))
+    (is (= "7" (:s (schema/coerce-output-types {:s 7}      {:outputs {:s :string}}))))
+    (is (= ""  (:s (schema/coerce-output-types {:s nil}    {:outputs {:s :string}})))))
+  (testing ":int from a non-numeric string is left unchanged"
+    (is (= "x" (:n (schema/coerce-output-types {:n "x"} {:outputs {:n :int}}))))))
+
+(deftest coerce-output-types-invariants-test
+  (testing "already-valid outputs pass through byte-identical (idempotent)"
+    (let [good {:tool-calls [{:tool-name "bash"}] :code-blocks "" :answer "hi"
+                :goal-achieved true :next-user-prompt ""}]
+      (is (= good (schema/coerce-output-types good coact-like-sig)))
+      (is (= good (schema/coerce-output-types
+                   (schema/coerce-output-types good coact-like-sig) coact-like-sig)))))
+  (testing "unrecoverable value is NOT force-kept — field stays invalid for the repair path"
+    (let [bad   {:tool-calls {:wrong "shape"} :code-blocks "" :answer ""
+                 :goal-achieved true :next-user-prompt ""}
+          fixed (schema/coerce-output-types bad coact-like-sig)]
+      ;; [{:wrong "shape"}] does not satisfy [:map [:tool-name :string]] → original kept
+      (is (= {:wrong "shape"} (:tool-calls fixed)))
+      (is (not (valid-outputs? fixed coact-like-sig)))))
+  (testing "absent fields are neither added nor coerced"
+    (is (= {:goal-achieved false}
+           (schema/coerce-output-types {:goal-achieved "false"} coact-like-sig)))))

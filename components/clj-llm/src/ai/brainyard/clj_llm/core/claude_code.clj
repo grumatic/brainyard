@@ -100,13 +100,16 @@
 (defn- build-cli-args
   "Build the CLI argument vector for `claude` command.
    When opts has :json-schema, pass --json-schema so the CLI exposes a synthetic
-   StructuredOutput tool and the model is forced to emit schema-conformant JSON
-   as a tool_use input. With --max-turns 1 the CLI exits with code 1 after the
-   tool call (terminal_reason=max_turns), but the JSON is already in the events
-   — extract-structured-output reads it from the assistant.message.content tool_use
-   block. This is cheaper than --max-turns 2 (which adds a redundant trailing
-   acknowledgment turn) and far more reliable than prompt-only JSON instruction
-   for long structured prompts like CoAct."
+   StructuredOutput tool and asks the model to emit schema-conformant JSON as a
+   tool_use input. --max-turns 1 keeps it to a single LLM turn. On CLI ≥ 2.1 a
+   clean structured-output call now completes with exit 0 / subtype \"success\" /
+   terminal_reason \"completed\", surfacing the parsed payload on the result
+   event's :structured_output field (see structured-output-from-result). Older
+   CLIs instead exited 1 (terminal_reason=max_turns) with the JSON only in the
+   tool_use block — both are handled: a nonzero exit is treated as a real signal,
+   not the expected terminal state, but recoverable output is still salvaged.
+   This is far more reliable than prompt-only JSON instruction for long structured
+   prompts like CoAct."
   [lm-config opts {:keys [system-prompt-flag system-prompt-value]}]
   (let [{:keys [model max-tokens]} lm-config
         json-schema (:json-schema opts)]
@@ -247,6 +250,41 @@
         (catch Exception _ nil))
       json-str))
 
+(defn- structured-output-from-result
+  "Return the JSON string for the `result` event's first-class `:structured_output`
+   field (Claude CLI ≥ 2.1: the parsed StructuredOutput tool input, surfaced
+   directly on the result event alongside a `terminal_reason` of \"completed\").
+   This is the authoritative structured payload — preferred over digging the
+   tool_use block out of assistant events or trusting the free-text `:result`
+   string, both of which predate this field and are less reliable.
+
+   Returns nil when the field is absent (older CLI, or a non-structured call).
+   Reuses `unwrap-structured-input` so a `{:value \"<json>\"}` envelope collapses
+   to its inner JSON, mirroring the tool_use extraction path."
+  [result-event]
+  (let [so (:structured_output result-event)]
+    (when (or (map? so) (sequential? so))
+      (unwrap-structured-input so))))
+
+(defn- classify-stream-outcome
+  "Decide how to treat a claude-code stream from the authoritative signals: the
+   process `exit-code`, the parsed `result-event` (its `:is_error`), and whether
+   we recovered any usable `result-text`.
+
+   On CLI ≥ 2.1 a clean structured-output call exits 0 with `is_error` false — so
+   a nonzero exit OR `:is_error` is a real error signal, not the old
+   `--max-turns 1` terminal state. But an error that still yielded a usable
+   payload is recoverable; only an error with nothing recovered is fatal.
+
+   Returns {:cli-error? bool :recovered? bool :fatal? bool}. `:fatal?` ⇒ throw;
+   a blank result with no CLI error stays a soft empty-result the caller retries."
+  [exit-code result-event result-text]
+  (let [cli-error? (or (not= 0 exit-code) (true? (:is_error result-event)))
+        recovered? (not (str/blank? result-text))]
+    {:cli-error? cli-error?
+     :recovered? recovered?
+     :fatal?     (and cli-error? (not recovered?))}))
+
 (defn- extract-structured-output
   "Extract structured output from CLI events when the LLM uses the StructuredOutput tool.
    Returns the tool input as a JSON string, or nil if not found."
@@ -299,14 +337,18 @@
 (defn- normalize-response
   "Normalize CLI NDJSON response to Anthropic-like format.
    CLI outputs multiple JSON lines; the 'result' event contains the answer.
-   When --json-schema is used, the JSON is in a StructuredOutput tool_use block
-   and the :result field is unreliable (often a max_turns error string or a
-   trailing natural-language acknowledgment) — prefer the tool_use input.
+   When --json-schema is used, prefer the result event's first-class
+   :structured_output field (CLI ≥ 2.1), then the StructuredOutput tool_use block
+   (older CLIs): the free-text :result field is unreliable (often a max_turns
+   error string or a trailing natural-language acknowledgment).
    We produce: {:content [{:type \"text\" :text \"...\"}] :model m :usage {...}}"
   [cli-result model]
   (let [stdout (:stdout cli-result)
         parsed (parse-ndjson-result stdout)
-        structured (extract-structured-output stdout)
+        ;; Prefer the result event's first-class :structured_output field
+        ;; (CLI ≥ 2.1); fall back to digging the tool_use block for older CLIs.
+        structured (or (structured-output-from-result parsed)
+                       (extract-structured-output stdout))
         result-text (or structured
                         (let [r (:result parsed)]
                           (when-not (str/blank? r) r))
@@ -352,13 +394,16 @@
       (let [start-ns (System/nanoTime)
             result (execute-process args prompt timeout)]
         (when (not= 0 (:exit result))
-          ;; Try to recover a useful response from a partial response. Two cases:
-          ;;   (a) --json-schema + max-turns 1: model emits a StructuredOutput
-          ;;       tool_use and CLI exits with terminal_reason=max_turns. The JSON
-          ;;       is in the tool_use input — extract-structured-output recovers it.
-          ;;   (b) LLM produced text but a follow-up tool call failed under
-          ;;       --max-turns 1. extract-assistant-text salvages the text blocks.
-          (if-let [salvaged-text (or (extract-structured-output (:stdout result))
+          ;; On CLI ≥ 2.1 a clean structured-output call exits 0, so a nonzero exit
+          ;; is a genuine problem — but recoverable output may still be present.
+          ;; Salvage, in order of reliability:
+          ;;   (a) the result event's first-class :structured_output field;
+          ;;   (b) the StructuredOutput tool_use input (older CLIs / max_turns);
+          ;;   (c) plain assistant text blocks (tool call failed, prose remains).
+          ;; Only a nonzero exit with NOTHING recoverable is a hard failure.
+          (if-let [salvaged-text (or (structured-output-from-result
+                                      (parse-ndjson-result (:stdout result)))
+                                     (extract-structured-output (:stdout result))
                                      (extract-assistant-text (:stdout result)))]
             (mulog/warn ::claude-cli-error-recovered
                         :exit (:exit result) :recovered-chars (count salvaged-text))
@@ -489,90 +534,112 @@
               (.destroyForcibly proc)
               (throw (ex-info "Claude CLI stream timed out"
                               {:timeout-ms (or (:timeout-ms opts) default-timeout-ms) :args args}))))
-          (let [exit-code (.exitValue proc)
+          (let [exit-code      (.exitValue proc)
                 nonzero-stderr (when (not= 0 exit-code)
-                                 (try (slurp (.getErrorStream proc)) (catch Exception _ "")))]
-            (when (not= 0 exit-code)
-              (let [acc-len (.length accumulated)
-                    has-rate-limit (some #(= "rate_limit_event" (:type %)) @all-events)]
-                ;; Downgrade to debug when we have accumulated text (rate-limit with partial response)
-                (if (and (pos? acc-len) has-rate-limit)
-                  (mulog/debug ::claude-code-stream-rate-limited
-                               :exit exit-code
-                               :accumulated-length acc-len)
-                  (mulog/warn ::claude-code-stream-nonzero-exit
-                              :exit exit-code :stderr nonzero-stderr
-                              :event-types (mapv :type @all-events)
-                              :accumulated-length acc-len
-                              :tool-json-length (.length tool-json)))))
-            (let [tool-json-str (str tool-json)
-                  structured-output (when (str/blank? tool-json-str)
-                                      (some (fn [event]
-                                              (when (= "assistant" (:type event))
-                                                (some (fn [block]
-                                                        (when (and (= "tool_use" (:type block))
-                                                                   (= "StructuredOutput" (:name block)))
-                                                          (json/write-str (:input block))))
-                                                      (get-in event [:message :content]))))
-                                            @all-events))
-                  result-text (let [fr @final-result
-                                    fr-result (when fr
-                                                (let [r (:result fr)]
-                                                  (when-not (str/blank? r) r)))]
-                                ;; Any of these candidates may be the
-                                ;; `{"value":"<json>"}` StructuredOutput envelope
-                                ;; (observed with claude-code:sonnet); unwrap it so
-                                ;; the downstream JSON parser sees the real fields.
-                                ;; Non-envelope text passes through untouched.
-                                (unwrap-structured-json
-                                 (or fr-result
-                                     (when-not (str/blank? tool-json-str) tool-json-str)
-                                     structured-output
-                                     (str accumulated))))
-                  model (:model lm-config)
-                  duration-ms (quot (- (System/nanoTime) start-ns) 1000000)]
-              (when (str/blank? result-text)
-                (mulog/warn ::claude-code-stream-empty-result
-                            :event-count (count @all-events)
+                                 (try (slurp (.getErrorStream proc)) (catch Exception _ "")))
+                tool-json-str  (str tool-json)
+                structured-output (when (str/blank? tool-json-str)
+                                    (some (fn [event]
+                                            (when (= "assistant" (:type event))
+                                              (some (fn [block]
+                                                      (when (and (= "tool_use" (:type block))
+                                                                 (= "StructuredOutput" (:name block)))
+                                                        (json/write-str (:input block))))
+                                                    (get-in event [:message :content]))))
+                                          @all-events))
+                fr             @final-result
+                ;; CLI ≥ 2.1 surfaces the parsed tool input on the result event's
+                ;; :structured_output field — the authoritative payload, preferred
+                ;; over the free-text :result string and the raw partial_json /
+                ;; tool_use candidates. Any candidate may be the `{"value":"<json>"}`
+                ;; envelope (claude-code:sonnet) — unwrap it so the downstream JSON
+                ;; parser sees the real fields; non-envelope text passes through.
+                fr-structured  (structured-output-from-result fr)
+                result-text    (unwrap-structured-json
+                                (or fr-structured
+                                    (when-let [r (:result fr)] (when-not (str/blank? r) r))
+                                    (when-not (str/blank? tool-json-str) tool-json-str)
+                                    structured-output
+                                    (str accumulated)))
+                ;; The result event — not the process exit code — is authoritative
+                ;; (see classify-stream-outcome): on CLI ≥ 2.1 a clean call exits 0,
+                ;; so a nonzero exit / :is_error is a real signal, not the old
+                ;; `--max-turns 1` terminal state.
+                {:keys [cli-error? recovered? fatal?]}
+                (classify-stream-outcome exit-code fr result-text)
+                has-rate-limit (some #(= "rate_limit_event" (:type %)) @all-events)
+                model          (:model lm-config)
+                duration-ms    (quot (- (System/nanoTime) start-ns) 1000000)]
+            ;; Log a CLI error only when it actually cost us output. A nonzero exit
+            ;; / :is_error that still yielded a usable payload (recovered structured
+            ;; output or text) is downgraded to debug — expected on the older
+            ;; max_turns CLIs and harmless on any.
+            (when cli-error?
+              (cond
+                recovered?
+                (mulog/debug ::claude-code-stream-recovered
+                             :exit exit-code :is-error (:is_error fr)
+                             :terminal-reason (:terminal_reason fr)
+                             :recovered-chars (count result-text))
+
+                (and has-rate-limit (pos? (.length accumulated)))
+                (mulog/debug ::claude-code-stream-rate-limited
+                             :exit exit-code :accumulated-length (.length accumulated))
+
+                :else
+                (mulog/warn ::claude-code-stream-nonzero-exit
+                            :exit exit-code :stderr nonzero-stderr
+                            :is-error (:is_error fr) :subtype (:subtype fr)
+                            :terminal-reason (:terminal_reason fr)
                             :event-types (mapv :type @all-events)
                             :accumulated-length (.length accumulated)
-                            :tool-json-length (.length tool-json)
-                            :final-result-keys (when @final-result (keys @final-result))
-                            :final-result-result (:result @final-result)
-                            :assistant-events (filterv #(= "assistant" (:type %)) @all-events)))
-              ;; A nonzero exit that yielded NO recoverable text is a hard failure:
-              ;; throw a clean, classifiable error instead of returning an empty
-              ;; answer that silently corrupts the turn (mirrors chat-completion,
-              ;; which throws on an unrecoverable nonzero exit). The salvageable
-              ;; cases — StructuredOutput tool_use / accumulated text under
-              ;; --max-turns 1 — already produced non-blank result-text above.
-              (when (and (not= 0 exit-code) (str/blank? result-text))
-                (throw (ex-info (str "Claude CLI stream exited with code " exit-code
-                                     " and produced no output")
+                            :tool-json-length (.length tool-json))))
+            ;; No usable output AND the CLI signalled an error → hard failure: throw
+            ;; a classifiable error instead of returning an empty answer that
+            ;; silently corrupts the turn (mirrors the buffered chat-completion). An
+            ;; exit-0 blank with no error stays a soft empty-result the caller
+            ;; retries — we don't manufacture a failure the CLI never reported.
+            (when (str/blank? result-text)
+              (mulog/warn ::claude-code-stream-empty-result
+                          :exit exit-code :is-error (:is_error fr)
+                          :terminal-reason (:terminal_reason fr)
+                          :event-count (count @all-events)
+                          :event-types (mapv :type @all-events)
+                          :accumulated-length (.length accumulated)
+                          :tool-json-length (.length tool-json)
+                          :final-result-result (:result fr))
+              (when fatal?
+                (throw (ex-info (str "Claude CLI stream produced no usable output (exit "
+                                     exit-code
+                                     (when (:is_error fr)
+                                       (str ", is_error, terminal_reason=" (:terminal_reason fr)))
+                                     ")")
                                 {:exit exit-code :stderr nonzero-stderr
-                                 :event-types (mapv :type @all-events)})))
-              (when on-chunk
-                (on-chunk {:type :done :usage {}}))
-              (let [response {:content [{:type "text" :text result-text}]
-                              :model   model
-                              :usage   {:input_tokens                (or (get-in @final-result [:usage :input_tokens]) 0)
-                                        :output_tokens               (or (get-in @final-result [:usage :output_tokens]) 0)
-                                        :cache_read_input_tokens     (or (get-in @final-result [:usage :cache_read_input_tokens]) 0)
-                                        :cache_creation_input_tokens (or (get-in @final-result [:usage :cache_creation_input_tokens]) 0)}
-                              ::cli-cost    (:total_cost_usd @final-result)
-                              ::duration-ms (:duration_ms @final-result)
-                              ::num-turns   (:num_turns @final-result)}]
-                (mulog/log ::cli-call-result
-                           :provider :claude-code
-                           :model model
-                           :stream true
-                           :duration-ms duration-ms
-                           :input-tokens (get-in response [:usage :input_tokens])
-                           :output-tokens (get-in response [:usage :output_tokens])
-                           :cli-cost (::cli-cost response)
-                           :num-turns (::num-turns response)
-                           :response response)
-                response))))
+                                 :is-error (:is_error fr)
+                                 :terminal-reason (:terminal_reason fr)
+                                 :event-types (mapv :type @all-events)}))))
+            (when on-chunk
+              (on-chunk {:type :done :usage {}}))
+            (let [response {:content [{:type "text" :text result-text}]
+                            :model   model
+                            :usage   {:input_tokens                (or (get-in @final-result [:usage :input_tokens]) 0)
+                                      :output_tokens               (or (get-in @final-result [:usage :output_tokens]) 0)
+                                      :cache_read_input_tokens     (or (get-in @final-result [:usage :cache_read_input_tokens]) 0)
+                                      :cache_creation_input_tokens (or (get-in @final-result [:usage :cache_creation_input_tokens]) 0)}
+                            ::cli-cost    (:total_cost_usd @final-result)
+                            ::duration-ms (:duration_ms @final-result)
+                            ::num-turns   (:num_turns @final-result)}]
+              (mulog/log ::cli-call-result
+                         :provider :claude-code
+                         :model model
+                         :stream true
+                         :duration-ms duration-ms
+                         :input-tokens (get-in response [:usage :input_tokens])
+                         :output-tokens (get-in response [:usage :output_tokens])
+                         :cli-cost (::cli-cost response)
+                         :num-turns (::num-turns response)
+                         :response response)
+              response)))
         (catch Throwable e
           ;; Throwable, not Exception: a StackOverflowError / OutOfMemoryError
           ;; from the read/parse path is an Error, not an Exception — catching

@@ -97,10 +97,15 @@
                                   (contains? opts :stream?) (assoc :stream? stream?)
                                   (seq cache-zones) (assoc :cache-zones cache-zones)
                                   user-cache-prefix (assoc :user-cache-prefix user-cache-prefix))))
-        ;; Parse response, fill defaults for missing keys
+        ;; Parse response, fill defaults for missing keys, then coerce
+        ;; present-but-wrong-typed values toward their schema (a skeleton-echo
+        ;; such as a scalar for a :vector field or "false"/null for a :boolean is
+        ;; repaired, not rejected). Coercion only keeps a value that then
+        ;; validates, so it never masks genuinely unrecoverable output.
         raw-text (llm/extract-content response lm)
         parsed   (-> (llm/parse-json-response raw-text)
-                     (fill-output-defaults signature))
+                     (fill-output-defaults signature)
+                     (schema/coerce-output-types signature))
         ;; Validate against output schema
         malli-schema (schema/fields->malli-schema (:outputs signature))
         validation   (schema/validate-output malli-schema parsed)

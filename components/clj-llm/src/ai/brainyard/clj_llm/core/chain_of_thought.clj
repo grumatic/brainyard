@@ -114,10 +114,15 @@
         ;; Parse response
         raw-text  (llm/extract-content response lm)
         parsed    (llm/parse-json-response raw-text)
-        ;; Separate reasoning from outputs, fill defaults for missing keys
+        ;; Separate reasoning from outputs, fill defaults for missing keys,
+        ;; then coerce present-but-wrong-typed values toward their schema so a
+        ;; skeleton-echo (e.g. a scalar for a :vector field, "false"/null for a
+        ;; :boolean) is repaired instead of rejected. Coercion only keeps a value
+        ;; that then validates, so it never masks genuinely unrecoverable output.
         reasoning (:reasoning parsed)
         outputs   (-> (dissoc parsed :reasoning)
-                      (fill-output-defaults signature))
+                      (fill-output-defaults signature)
+                      (schema/coerce-output-types signature))
         ;; Validate outputs against original schema
         malli-schema (schema/fields->malli-schema (:outputs signature))
         validation   (schema/validate-output malli-schema outputs)
