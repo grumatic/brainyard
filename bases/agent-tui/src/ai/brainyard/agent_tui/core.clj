@@ -920,6 +920,29 @@
     (catch Throwable e
       {:status :error :error (str "close-session failed: " (.getMessage e))})))
 
+(defn- handle-rename-session-op
+  "Rename THIS session's live TUI tab to `:label` — the process-level counterpart
+   to the interactive `/session rename`. Lets `by sessions label <id> <text>`
+   (a separate process) propagate to a running `by` so the tab strip updates
+   without a restart. A blank/omitted `:label` clears back to a default `mainN`.
+   The persisted label is written by the CLI caller (and again by
+   `rename-session!`); this op syncs the in-memory tab. Returns {:status :ok
+   :label …}."
+  [ag {:keys [label] :as _req}]
+  (try
+    (let [sid (try (agent/session-id ag) (catch Throwable _ nil))]
+      (if (str/blank? (str sid))
+        {:status :error :error "session has no resolvable session-id"}
+        (let [lbl     (if (str/blank? (str label))
+                        (sessions/next-root-tab-label!)
+                        (str/trim label))
+              applied (sessions/rename-by-agent-session-id! (str sid) lbl)]
+          (if applied
+            {:status :ok :label applied}
+            {:status :error :error (str "no live tab for session " sid)}))))
+    (catch Throwable e
+      {:status :error :error (str "rename-session failed: " (.getMessage e))})))
+
 (defn- ask-handle-fn
   "Op-dispatcher for a session's ask socket. `:ask` injects a question and blocks
    for the answer; `:status` returns a non-blocking snapshot; `:config` returns a
@@ -944,8 +967,9 @@
       :subscribe  (handle-subscribe-op ag req)
       :emit       (handle-emit-op ag req)
       :fsm-status (handle-fsm-status-op ag)
-      :new-session   (handle-new-session-op req)
-      :close-session (handle-close-session-op req)
+      :new-session    (handle-new-session-op req)
+      :close-session  (handle-close-session-op req)
+      :rename-session (handle-rename-session-op ag req)
       {:status :error :error (str "unknown op: " op)})))
 
 (defn start-ask-listener!
@@ -966,7 +990,7 @@
             ;; without connecting. Keep in sync with `ask-handle-fn`'s dispatch.
             (try (persist/save-meta! sid {:ask-socket-path path
                                           :ops [:ask :status :config :inject :cancel :subscribe :emit :fsm-status
-                                                :new-session :close-session]})
+                                                :new-session :close-session :rename-session]})
                  (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
           (catch clojure.lang.ExceptionInfo e

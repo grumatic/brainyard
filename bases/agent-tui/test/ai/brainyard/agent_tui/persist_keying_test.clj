@@ -77,3 +77,29 @@
       (let [da (persist/session-dir (:agent-session-id (sessions/get-session 0)))
             db (persist/session-dir (:agent-session-id (sessions/get-session 1)))]
         (is (not= (.getAbsolutePath da) (.getAbsolutePath db)))))))
+
+(deftest rename-by-agent-session-id-targets-the-matching-tab
+  (testing "the :rename-session ask-op path renames a live tab by its agent-session-id"
+    (sessions/reset-sessions!)
+    (let [mk (fn [sid]
+               (reify
+                 ai.brainyard.agent.core.protocol/IAgent
+                 (session-id [_] sid)
+                 java.io.Closeable
+                 (close [_] nil)))
+          a  (mk "agt-alpha")
+          b  (mk "agt-beta")]
+      (sessions/create-session! {:id 0 :label "main0" :agent a :agent-id :a
+                                 :agent-instances [a] :skip-agent-creation true})
+      (sessions/create-session! {:id 1 :label "main1" :agent b :agent-id :b
+                                 :agent-instances [b] :skip-agent-creation true})
+      (testing "returns the applied label and relabels ONLY the matching tab"
+        (is (= "renamed" (sessions/rename-by-agent-session-id! "agt-beta" "renamed")))
+        (is (= "renamed" (:label (sessions/get-session 1))))
+        (is (= "main0"   (:label (sessions/get-session 0))) "sibling tab untouched"))
+      (testing "the new label persists to that session's meta (restored on resume)"
+        (is (= "renamed" (:label (persist/read-meta "agt-beta")))))
+      (testing "unknown agent-session-id ⇒ nil, no tab mutated"
+        (is (nil? (sessions/rename-by-agent-session-id! "agt-nope" "x")))
+        (is (= "renamed" (:label (sessions/get-session 1))))
+        (is (= "main0"   (:label (sessions/get-session 0))))))))

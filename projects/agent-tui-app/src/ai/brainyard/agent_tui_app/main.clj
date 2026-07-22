@@ -2184,9 +2184,21 @@
 
       :else
       (do (persist/set-session-label! id label)
-          (println (if label
-                     (str "Labeled " id ": " label)
-                     (str "Cleared label on " id)))))))
+          ;; If the session is open in a running `by`, push the rename over its
+          ;; ask socket so the live tab strip updates without a restart.
+          ;; Best-effort: a closed/stale socket degrades to persist-only.
+          (let [row  (first (filter #(= id (:session-id %)) (ssum/enriched-summaries)))
+                sock (:ask-socket-path row)
+                live? (and (not (str/blank? (str sock)))
+                           (.exists (io/file ^String sock))
+                           (= :ok (:status
+                                   (try (ask-channel/send-op! sock {:op :rename-session :label label})
+                                        (catch Exception _ nil)))))]
+            (println (cond
+                       (and label live?)  (str "Labeled " id ": " label " (live tab renamed)")
+                       label              (str "Labeled " id ": " label)
+                       live?              (str "Cleared label on " id " (live tab reset)")
+                       :else              (str "Cleared label on " id))))))))
 
 (defn- pick-session-to-prune!
   "Show a numbered list of persisted sessions (newest first) and prompt the

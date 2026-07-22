@@ -299,6 +299,18 @@
    (redraw-tab-strip!)
    new-label))
 
+(defn rename-by-agent-session-id!
+  "Rename the live tab whose `:agent-session-id` matches `sid` to `new-label`,
+   persisting + redrawing via `rename-session!`. Used by the `:rename-session`
+   ask-socket op so `by sessions label <id> <text>` (a separate process) can
+   update a running `by`'s tab strip without a restart. Returns the applied
+   label, or nil when no tab matches (session not open in this process)."
+  [sid new-label]
+  (when-let [idx (some (fn [[idx s]]
+                         (when (= (str sid) (str (:agent-session-id s))) idx))
+                       (:sessions @!sessions))]
+    (rename-session! idx new-label)))
+
 (defn close-session!
   "Close a session: close its agent, remove watches, remove from sessions map.
    If closing the active session, picks an adjacent session, loads its display
