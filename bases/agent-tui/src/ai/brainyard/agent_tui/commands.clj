@@ -1681,6 +1681,10 @@
                        backend (assoc :acp-backend (keyword backend))
                        model   (assoc :acp-backend-opts {:model model})))]
             (sessions/switch-to! idx)
+            ;; Refresh the status bar so it reflects the NEW session's agent —
+            ;; switch-to! swaps the active tab but leaves the chrome showing the
+            ;; previous session's agent until repainted (mirrors `/session N`).
+            (tui-session/update-status-bar!)
             (tui-session/emit! (ansi/success (str "Created session " idx " [" label "]"))))
           (catch Exception e
             (tui-session/emit! (ansi/failure (str "Failed to create session: " (.getMessage e)))))))
