@@ -10,7 +10,15 @@
             [ai.brainyard.clj-llm.core.usage :as usage]
             [ai.brainyard.clj-llm.core.providers :as providers]
             [ai.brainyard.mulog.interface :as mulog]
+            [clojure.string :as str]
             [malli.core :as m]))
+
+(def ^:private placeholder-stall-note
+  "Synthetic reasoning stamped when a model returns a bare placeholder emission
+   (e.g. `{\"tool-name\":\"noop\"}`) with no real reasoning. Making reasoning
+   non-blank lets the caller classify the turn as a deliberate no-action (nudge)
+   instead of an empty/truncated CLI response (expensive retry loop)."
+  "(No action: the model emitted a placeholder/no-op instead of a real channel.)")
 
 (defn augment-schema-with-reasoning
   "Add a 'reasoning' property as the first field in a JSON Schema object."
@@ -123,7 +131,15 @@
         ;; :vector field, "false"/null for a :boolean) is repaired instead of
         ;; rejected. Coercion only keeps a value that then validates, so it never
         ;; masks genuinely unrecoverable output.
-        reasoning (:reasoning parsed)
+        ;; A bare placeholder emission ({"tool-name":"noop"} with no reasoning)
+        ;; would read as an empty response and trigger the caller's costly
+        ;; empty-result retry loop. Stamp a synthetic reasoning so it is
+        ;; classified as a deliberate no-action (nudge) instead.
+        reasoning (let [r (:reasoning parsed)]
+                    (if (and (str/blank? (str r))
+                             (schema/placeholder-emission? parsed))
+                      placeholder-stall-note
+                      r))
         outputs   (-> (dissoc parsed :reasoning)
                       (schema/lift-flattened-collection signature)
                       (fill-output-defaults signature)

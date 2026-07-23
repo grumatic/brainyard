@@ -337,3 +337,15 @@
   (testing "answer turn without inner keys is untouched"
     (is (= {:goal-achieved true}
            (schema/lift-flattened-collection {:goal-achieved true} ref-sig)))))
+
+(deftest placeholder-emission?-test
+  (testing "bare placeholder tool-name / reasoning → true (route to no-action)"
+    (is (schema/placeholder-emission? {:tool-args "[]" :tool-name "noop"}))
+    (is (schema/placeholder-emission? {:tool-name "none"}))
+    (is (schema/placeholder-emission? {:tool-name "__none__"}))
+    (is (schema/placeholder-emission? {:reasoning "placeholder"})))
+  (testing "genuine empty / real content → false (preserve empty-result retry)"
+    (is (not (schema/placeholder-emission? {})))
+    (is (not (schema/placeholder-emission? nil)))
+    (is (not (schema/placeholder-emission? {:tool-name "hook-agent$list"})))
+    (is (not (schema/placeholder-emission? {:reasoning "I will list the hooks now."})))))

@@ -451,12 +451,29 @@
    vector — a lifted `noop` becomes a doomed dispatch to an unbound tool. Let
    them fall through to defaults so the turn reads as a (well-handled)
    no-action instead."
-  #{"noop" "no-op" "none" "null" "nil" "n/a" "na" "placeholder" "__code__" "todo"})
+  #{"noop" "no-op" "none" "__none__" "null" "nil" "n/a" "na" "placeholder"
+    "__code__" "final" "todo"})
 
 (defn- placeholder-ident?
   "True when `s` is one of the known stall/skeleton identifier values."
   [s]
   (contains? placeholder-idents (str/lower-case (str/trim (str s)))))
+
+(defn placeholder-emission?
+  "True when `parsed` is a bare stall/placeholder emission — it names a
+   placeholder identifier in a `tool-name`/`name` field (e.g. `tool-name`
+   \"noop\") or its `reasoning` is literally a placeholder token — the shape a
+   model produces when it fabricates a no-op to satisfy an always-act contract.
+
+   Lets a caller distinguish a DELIBERATE model stall (which should be routed to
+   a no-action nudge) from a genuine empty/truncated response (which should be
+   retried). nil-safe."
+  [parsed]
+  (boolean
+   (when (map? parsed)
+     (or (placeholder-ident? (:reasoning parsed))
+         (placeholder-ident? (:tool-name parsed))
+         (placeholder-ident? (:name parsed))))))
 
 (defn lift-flattened-collection
   "Repair the 'flattened single element' failure mode: a model that should emit
