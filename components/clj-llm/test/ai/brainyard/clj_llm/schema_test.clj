@@ -235,6 +235,32 @@
     (testing "already a valid vector is untouched"
       (is (= [{:tool-name "grep"}] (coerce [{:tool-name "grep"}]))))))
 
+(deftest coerce-output-types-tool-args-json-test
+  (let [args   [:vector [:map [:name :string] [:value :string]]]
+        asig   {:outputs {:tool-args args}}
+        tcsig  {:outputs {:tool-calls [:vector [:map [:tool-name :string] [:tool-args args]]]}}
+        js     "[{\"name\":\"q\",\"value\":\"foo\"}]"
+        a-args (fn [v] (:tool-args (schema/coerce-output-types {:tool-args v} asig)))]
+    (testing "JSON-STRING array with real content is reparsed, not dropped to []"
+      (is (= [{:name "q" :value "foo"}] (a-args js))))
+    (testing "JSON-string empty array → []"
+      (is (= [] (a-args "[]"))))
+    (testing "plain arg object → adapted to the {:name :value} pair list"
+      (is (= [{:name "q" :value "foo"}] (a-args {:q "foo"}))))
+    (testing "JSON-string object → parsed then adapted to pair list"
+      (is (= [{:name "q" :value "foo"}] (a-args "{\"q\":\"foo\"}"))))
+    (testing "non-JSON placeholder string still → []"
+      (is (= [] (a-args "$PLACEHOLDER"))))
+    (testing "NESTED string tool-args inside a valid tool-calls vector is repaired (not the whole call dropped)"
+      (let [fixed (schema/coerce-output-types
+                   {:tool-calls [{:tool-name "grep" :tool-args js}]} tcsig)]
+        (is (= [{:tool-name "grep" :tool-args [{:name "q" :value "foo"}]}]
+               (:tool-calls fixed)))
+        (is (valid-outputs? fixed tcsig))))
+    (testing "already-valid pair list passes through byte-identical"
+      (let [g [{:name "a" :value "b"}]]
+        (is (= g (a-args g)))))))
+
 (deftest coerce-output-types-scalar-coercions-test
   (testing ":int from numeric string; :string from number/bool"
     (is (= 42  (:n (schema/coerce-output-types {:n "42"}   {:outputs {:n :int}}))))
@@ -260,3 +286,49 @@
   (testing "absent fields are neither added nor coerced"
     (is (= {:goal-achieved false}
            (schema/coerce-output-types {:goal-achieved "false"} coact-like-sig)))))
+
+;; ---------------------------------------------------------------------------
+;; Registry-ref fields — the real CoAct signature defines every output as a
+;; registry ref (::tool-calls, ::goal-achieved …). Before deref-all, `m/type`
+;; on a ref returns :malli.core/schema, so both coerce-output-types and
+;; the default-fill saw an unknown type and no-op'd — making the whole layer
+;; inert on the actual signature while the inline-schema tests above passed.
+;; ---------------------------------------------------------------------------
+
+(def ^:private ref-sig
+  "Signature whose fields are registry refs, mirroring the real CoAct shape."
+  {:outputs
+   {:tool-calls [:schema {:registry {::tc [:vector [:map
+                                                    [:tool-name :string]
+                                                    [:tool-args [:vector [:map [:name :string] [:value :string]]]]]]}} ::tc]
+    :goal-achieved [:schema {:registry {::b :boolean}} ::b]}})
+
+(deftest coerce-output-types-resolves-registry-refs-test
+  (testing "ref-typed :boolean field coerces (regression: deref-all before m/type)"
+    (is (= false (:goal-achieved
+                  (schema/coerce-output-types {:goal-achieved "false"} ref-sig)))))
+  (testing "ref-typed :vector field coerces a placeholder to []"
+    (is (= [] (:tool-calls
+               (schema/coerce-output-types {:tool-calls "$PLACEHOLDER"} ref-sig))))))
+
+;; ---------------------------------------------------------------------------
+;; lift-flattened-collection — a model that splices a tool-call's inner keys
+;; (tool-name/tool-args) to the TOP level instead of emitting tool-calls[].
+;; ---------------------------------------------------------------------------
+
+(deftest lift-flattened-collection-test
+  (testing "flattened top-level tool-name/tool-args → single-element tool-calls (inner coerced)"
+    (is (= {:tool-calls [{:tool-name "hook-agent$list" :tool-args []}]}
+           (schema/lift-flattened-collection {:tool-name "hook-agent$list" :tool-args "[]"} ref-sig))))
+  (testing "no identifying key (only tool-args) → left untouched for defaults, no junk call"
+    (is (= {:tool-args "[]"}
+           (schema/lift-flattened-collection {:tool-args "[]"} ref-sig))))
+  (testing "blank identifying key → not lifted"
+    (is (= {:tool-name "" :tool-args "[]"}
+           (schema/lift-flattened-collection {:tool-name "" :tool-args "[]"} ref-sig))))
+  (testing "already-populated vector field is never overwritten"
+    (let [present {:tool-calls [{:tool-name "x" :tool-args []}] :tool-name "y"}]
+      (is (= present (schema/lift-flattened-collection present ref-sig)))))
+  (testing "answer turn without inner keys is untouched"
+    (is (= {:goal-achieved true}
+           (schema/lift-flattened-collection {:goal-achieved true} ref-sig)))))

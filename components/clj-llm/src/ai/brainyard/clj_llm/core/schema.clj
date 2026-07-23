@@ -4,7 +4,8 @@
 
 (ns ai.brainyard.clj-llm.core.schema
   "Malli schema utilities and JSON Schema conversion for LLM structured output."
-  (:require [clojure.string :as str]
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             [malli.core :as m]
             [malli.json-schema :as mjs]
             [malli.error :as me]))
@@ -269,19 +270,61 @@
      :errors (me/humanize (m/explain malli-schema data))
      :data   data}))
 
+(defn- try-parse-json
+  "Parse `s` as JSON with keyword keys, returning the value ONLY when it is a
+   container (map/sequential); nil on any parse failure or non-container result.
+   Recovers a `tool-args` (etc.) that a model emitted as a JSON *string* —
+   `\"[{\\\"name\\\":\\\"q\\\",\\\"value\\\":\\\"foo\\\"}]\"` — instead of a real array."
+  [s]
+  (try
+    (let [parsed (json/read-str s :key-fn keyword)]
+      (when (or (map? parsed) (sequential? parsed)) parsed))
+    (catch Exception _ nil)))
+
+(def ^:private container-types #{:vector :sequential :set :map :map-of})
+
+(defn- name-value-elem?
+  "True when `elem-schema` resolves to a :map keyed exactly {:name :value} — the
+   CoAct tool-args pair shape. Lets a plain arg object be adapted to the pair
+   list the schema wants."
+  [elem-schema]
+  (boolean
+   (try
+     (let [s (m/deref-all elem-schema)]
+       (and (= :map (m/type s))
+            (= #{:name :value} (set (map first (m/children s))))))
+     (catch Exception _ false))))
+
+(defn- ->pair-list
+  "Adapt a plain arg object {k v …} to the [{:name k :value v} …] pair shape."
+  [m]
+  (mapv (fn [[k v]] {:name (if (keyword? k) (name k) (str k)) :value (str v)}) m))
+
 (defn- coerce-value
-  "Best-effort coercion of a single value toward a Malli schema's top-level type.
-   Only well-defined, low-ambiguity conversions are attempted; anything unclear
+  "Best-effort coercion of a value toward a Malli schema's type. Only
+   well-defined, low-ambiguity conversions are attempted; anything unclear
    (enums, :maybe, unknown types) is returned unchanged so downstream validation
    can still reject it.
 
-   Handles the shapes LLMs actually emit when they echo a schema skeleton instead
-   of instantiating it — e.g. `goal-achieved: \"false\"`/null (string/null, not a
-   boolean) or `tool-calls: \"$PLACEHOLDER\"`/`{...}` (string/object, not an
-   array). Used by `coerce-output-types`."
+   Handles the shapes LLMs actually emit when they echo a schema skeleton
+   instead of instantiating it:
+     - `goal-achieved: \"false\"`/null            (string/null, not boolean)
+     - `tool-calls: \"$PLACEHOLDER\"`/`{...}`      (string/object, not array)
+     - `tool-args: \"[{...}]\"`                    (JSON *string*, not array)
+     - `tool-args: {\"q\":\"v\"}`                  (plain object, not pair list)
+     - nested mistypes, e.g. a string `tool-args` INSIDE a valid `tool-calls`
+       vector — coercion recurses into vector elements and map fields.
+
+   Used by `coerce-output-types`; kept only when the result then validates."
   [malli-schema v]
-  (let [resolved (try (m/schema malli-schema) (catch Exception _ nil))
-        t        (when resolved (m/type resolved))]
+  ;; `deref-all` unwraps registry refs (e.g. ::goal-achieved) — without it
+  ;; `m/type` returns :malli.core/schema and coercion no-ops on every ref field.
+  (let [resolved (try (m/deref-all (m/schema malli-schema)) (catch Exception _ nil))
+        t        (when resolved (m/type resolved))
+        ;; A JSON-string standing in for a container → reparse before coercing.
+        v        (if (and (string? v) (contains? container-types t))
+                   (or (try-parse-json v) v)
+                   v)]
     (case t
       :boolean (cond
                  (boolean? v) v
@@ -293,12 +336,25 @@
                  (number? v)  (not (zero? v))
                  :else        v)
 
-      (:vector :sequential) (cond
-                              (vector? v)     v
-                              (nil? v)        []
-                              (sequential? v) (vec v)
-                              (map? v)        [v]   ;; single unwrapped element
-                              :else           []) ;; scalar/placeholder → empty
+      (:vector :sequential)
+      (let [elem (first (m/children resolved))]
+        (cond
+          (nil? v)        []
+          ;; Recurse into each element so a nested mistype is repaired.
+          (sequential? v) (mapv #(coerce-value elem %) v)
+          ;; Plain arg object where the schema wants {:name :value} pairs.
+          (and (map? v) (name-value-elem? elem)) (->pair-list v)
+          ;; Any other single unwrapped map → wrap and recurse.
+          (map? v)        [(coerce-value elem v)]
+          :else           []))              ;; scalar/placeholder → empty
+
+      :map
+      (if (map? v)
+        ;; Coerce each known field against its own schema (recursive descent).
+        (reduce (fn [m [k _ child]]
+                  (if (contains? m k) (update m k #(coerce-value child %)) m))
+                v (m/children resolved))
+        v)
 
       :set (cond
              (set? v)        v
@@ -357,6 +413,83 @@
              (if (and (not= cv v) (m/validate schema cv))
                (assoc acc k cv)
                acc))))))
+   outputs
+   (:outputs signature)))
+
+(defn- resolved-vector-of-map
+  "If output field `raw-schema` resolves to `[:vector <:map>]`, return the
+   resolved inner `:map` schema; else nil. Fully derefs registry refs (e.g.
+   ::tool-call) via the default registry. Defensive: any malli walking error
+   yields nil so this never breaks the parse path."
+  [raw-schema]
+  (try
+    (let [{:keys [schema]} (parse-malli-field raw-schema)
+          s (m/deref-all (m/schema schema))]
+      (when (= :vector (m/type s))
+        (let [elem (m/deref-all (first (m/children s)))]
+          (when (= :map (m/type elem)) elem))))
+    (catch Exception _ nil)))
+
+(defn- map-entry-info
+  "For a resolved `:map` schema, return
+   {:child-schemas {k child-schema} :ident <first required string key, or nil>}.
+   The identifying key is what distinguishes a real element from a bare skeleton
+   (e.g. :tool-name for a tool-call); optional keys never qualify."
+  [map-schema]
+  (let [children (m/children map-schema)] ; [[k props child] ...]
+    {:child-schemas (into {} (map (fn [[k _ child]] [k child])) children)
+     :ident (some (fn [[k props child]]
+                    (when (and (not (:optional props))
+                               (= :string (m/type (m/deref-all child))))
+                      k))
+                  children)}))
+
+(defn lift-flattened-collection
+  "Repair the 'flattened single element' failure mode: a model that should emit
+   a vector-of-maps output field (e.g. `tool-calls: [{:tool-name .. :tool-args ..}]`)
+   instead splices the inner map's keys to the TOP level as sibling outputs
+   (`tool-name` / `tool-args`). This is the Claude-Code-backend tool-use idiom
+   leaking through the DSPy output schema — it hard-fails validation because the
+   real vector field is missing.
+
+   For each output field whose schema is `[:vector <:map>]`, when the field is
+   absent-or-empty AND the top level carries the inner map's identifying key
+   (first required string field, e.g. :tool-name) non-blank, lift the stray inner
+   keys into a single-element vector and remove them from the top level. Inner
+   values are type-coerced against their inner schemas, so a stringified `\"[]\"`
+   becomes `[]`.
+
+   No-ops when there is nothing identifying to lift, so a genuinely content-free
+   turn (e.g. only `tool-args:\"[]\"` + reasoning, the max-turns cutoff case) still
+   falls through to `fill-output-defaults` as an empty turn rather than
+   manufacturing a junk call. Runs BEFORE `fill-output-defaults` /
+   `coerce-output-types`.
+
+   Invariant: never overwrites a field that is already present and non-empty."
+  [outputs signature]
+  (reduce-kv
+   (fn [acc field raw-schema]
+     (let [current (get acc field)
+           empty*  (or (not (contains? acc field))
+                       (nil? current)
+                       (and (sequential? current) (empty? current)))]
+       (if-not empty*
+         acc
+         (if-let [inner (resolved-vector-of-map raw-schema)]
+           (let [{:keys [child-schemas ident]} (map-entry-info inner)
+                 idval (get acc ident)]
+             (if (and ident (string? idval) (not (str/blank? idval))
+                      (some #(contains? acc %) (keys child-schemas)))
+               (let [element (reduce-kv
+                              (fn [m k child]
+                                (if (contains? acc k)
+                                  (assoc m k (coerce-value child (get acc k)))
+                                  m))
+                              {} child-schemas)]
+                 (-> (apply dissoc acc (keys child-schemas))
+                     (assoc field [element])))
+               acc))
+           acc))))
    outputs
    (:outputs signature)))
 

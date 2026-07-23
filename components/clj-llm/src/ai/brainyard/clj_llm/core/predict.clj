@@ -14,9 +14,11 @@
 
 (defn- schema-default
   "Return a type-appropriate default value for a Malli schema.
-   Resolves schema references via the global registry before inspecting the type."
+   Resolves schema references via the global registry before inspecting the type.
+   `deref-all` unwraps registry refs (e.g. ::tool-calls) — without it `m/type`
+   returns :malli.core/schema and every ref field falls to the \"\" fallback."
   [malli-schema]
-  (let [resolved (try (m/schema malli-schema) (catch Exception _ nil))
+  (let [resolved (try (m/deref-all (m/schema malli-schema)) (catch Exception _ nil))
         schema-type (when resolved (m/type resolved))]
     (case schema-type
       :string  ""
@@ -104,6 +106,7 @@
         ;; validates, so it never masks genuinely unrecoverable output.
         raw-text (llm/extract-content response lm)
         parsed   (-> (llm/parse-json-response raw-text)
+                     (schema/lift-flattened-collection signature)
                      (fill-output-defaults signature)
                      (schema/coerce-output-types signature))
         ;; Validate against output schema

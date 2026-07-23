@@ -2684,7 +2684,11 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
           (swap! st-memory assoc
                  :last-tool-results clean
                  :last-code-results []
-                 :last-channel :tool)
+                 :last-channel :tool
+                 ;; Non-answer channel: goal-achieved is answer-only. Force false
+                 ;; so a model that mistakenly set it true on a tool turn can't
+                 ;; leak a bogus completion signal into the result / TUI.
+                 :goal-achieved false)
           (mulog/log ::tool-dispatch
                      :iteration (:iteration-count @st-memory)
                      :count (count clean)))))
@@ -3597,7 +3601,11 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
     (swap! st-memory assoc
            :last-code-results entries
            :last-tool-results []
-           :last-channel      :code)
+           :last-channel      :code
+           ;; Non-answer channel: goal-achieved is answer-only. Force false so a
+           ;; model that mistakenly set it true on a code turn can't leak a bogus
+           ;; completion signal into the result / TUI.
+           :goal-achieved     false)
     ;; Auto-detached blocks (:status :pending): arm runtime auto-notify so the
     ;; agent is auto-resumed on completion instead of relying on the LLM to poll
     ;; or call task$wakeup. No-op on headless / sub-agent / disabled.
