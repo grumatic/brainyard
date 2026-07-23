@@ -444,6 +444,20 @@
                       k))
                   children)}))
 
+(def ^:private placeholder-idents
+  "Skeleton / no-op values a model emits for an identifying field when it is
+   STALLING rather than naming a real element (e.g. inventing a `noop` tool to
+   satisfy an always-act contract). Never lift these into a single-element
+   vector — a lifted `noop` becomes a doomed dispatch to an unbound tool. Let
+   them fall through to defaults so the turn reads as a (well-handled)
+   no-action instead."
+  #{"noop" "no-op" "none" "null" "nil" "n/a" "na" "placeholder" "__code__" "todo"})
+
+(defn- placeholder-ident?
+  "True when `s` is one of the known stall/skeleton identifier values."
+  [s]
+  (contains? placeholder-idents (str/lower-case (str/trim (str s)))))
+
 (defn lift-flattened-collection
   "Repair the 'flattened single element' failure mode: a model that should emit
    a vector-of-maps output field (e.g. `tool-calls: [{:tool-name .. :tool-args ..}]`)
@@ -479,6 +493,7 @@
            (let [{:keys [child-schemas ident]} (map-entry-info inner)
                  idval (get acc ident)]
              (if (and ident (string? idval) (not (str/blank? idval))
+                      (not (placeholder-ident? idval))
                       (some #(contains? acc %) (keys child-schemas)))
                (let [element (reduce-kv
                               (fn [m k child]

@@ -326,6 +326,11 @@
   (testing "blank identifying key → not lifted"
     (is (= {:tool-name "" :tool-args "[]"}
            (schema/lift-flattened-collection {:tool-name "" :tool-args "[]"} ref-sig))))
+  (testing "placeholder/no-op tool name → NOT lifted (no doomed dispatch)"
+    (is (= {:tool-name "noop" :tool-args "[]"}
+           (schema/lift-flattened-collection {:tool-name "noop" :tool-args "[]"} ref-sig)))
+    (is (= {:tool-name "none" :tool-args "[]"}
+           (schema/lift-flattened-collection {:tool-name "none" :tool-args "[]"} ref-sig))))
   (testing "already-populated vector field is never overwritten"
     (let [present {:tool-calls [{:tool-name "x" :tool-args []}] :tool-name "y"}]
       (is (= present (schema/lift-flattened-collection present ref-sig)))))

@@ -228,6 +228,20 @@
          type (into {} (filter #(= type (:type (val %))) @!tool-defs))
          :else @!tool-defs)))
 
+(defn tool-bound?
+  "True when `tool-id` resolves to a real callable tool — i.e. `call-tool` would
+   dispatch it rather than return a `not bound as a tool` error. Mirrors
+   call-tool's resolution: a bound entry in `tools` (with a fn in tools-fn-map)
+   OR a registry entry. Used to reject hallucinated tool names (e.g. `noop`)
+   before dispatch. Pass the bound `tools` vector; tools-fn-map is optional."
+  ([tool-id tools] (tool-bound? tool-id tools nil))
+  ([tool-id tools tools-fn-map]
+   (let [nm (util/kw->str tool-id)]
+     (boolean
+      (or (when-let [entry (some #(when (= (:name %) nm) %) tools)]
+            (if tools-fn-map (some? (get tools-fn-map nm)) (some? entry)))
+          (some? (get-tool-defs :id (keyword nm))))))))
+
 ;; ============================================================================
 ;; Dispatcher Function
 ;; ============================================================================

@@ -165,6 +165,15 @@ then emit exactly ONE of three things:
 The iteration loop terminates when `answer` is non-blank. You signal completion
 by writing the final markdown answer.
 
+NEVER invent a placeholder tool (e.g. `noop`, `none`) to fill a turn. Only call
+tools that actually exist — discover real ones with `(search \"keyword\")` via a
+code block. A `tool-calls` entry naming an unbound tool does NOT count as an
+action; it is treated as a wasted no-action iteration.
+
+REASON-ONLY STEP: if you are not yet ready to act (still planning), that is
+fine — leave `tool-calls`, `code-blocks`, AND `answer` all empty and put your
+plan in your reasoning. Do NOT fabricate an action just to populate a channel.
+
 IF you cannot finish (missing info, dead-end, need user clarification), still
 populate `answer` — explain what you learned, what is missing, and what you
 need from the user. That becomes the final response.
@@ -2618,6 +2627,27 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
   [raw]
   (and (map? raw) (true? (:hook-blocked raw))))
 
+(defn coact-strip-unbound-tool-calls-action
+  "BT action: before the router runs, drop any `tool-calls` entry naming a tool
+   that is not bound (a hallucinated / placeholder tool like `noop`). Real calls
+   keep their order. When this empties `:tool-calls`, the router's tool path is
+   skipped and the iteration falls through to the no-action repair path — so a
+   fabricated tool-call is handled uniformly with the flattened case (which the
+   clj-llm lift already refuses to lift), and cannot masquerade as a real
+   action."
+  [{:keys [st-memory]}]
+  (let [{:keys [tool-calls tools tools-fn-map]} @st-memory]
+    (when (seq tool-calls)
+      (let [grouped (group-by #(boolean (tool/tool-bound? (:tool-name %) tools tools-fn-map))
+                              tool-calls)
+            unbound (get grouped false [])]
+        (when (seq unbound)
+          (mulog/warn ::dropped-unbound-tool-calls
+                      :iteration (:iteration-count @st-memory)
+                      :dropped (mapv :tool-name unbound))
+          (swap! st-memory assoc :tool-calls (get grouped true []))))))
+  bt/success)
+
 (defn coact-tool-dispatch-action
   "BT action: dispatch tool-calls in parallel via pmap + call-tool-with-fast-eval.
    Per-tool hooks (tool-use/pre, tool-use/post) fire inside call-tool.
@@ -3948,8 +3978,13 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                                     :result ""
                                     :output ""
                                     :error (str "You emitted no action this iteration — none of "
-                                                "`tool-calls`, `code-blocks`, `answer` was populated. "
-                                                "Populate exactly one next iteration.")
+                                                "`tool-calls`, `code-blocks`, `answer` was populated "
+                                                "(a `tool-calls` entry naming a tool that is not bound "
+                                                "does not count). Do NOT invent a placeholder tool such "
+                                                "as `noop`/`none` to fill the turn. A reason-only step is "
+                                                "allowed: leave all three channels empty and act next "
+                                                "iteration — or, if ready, populate exactly one real "
+                                                "channel now (use `(search \"keyword\")` to find a real tool).")
                                     :parallel? false}])
         (mulog/log ::repair
                    :iteration (:iteration-count @st-memory)
@@ -4625,6 +4660,12 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         coact-repair-action]]
 
       [:action {:id (kw :action/display-think)} coact-display-think-action]
+
+      ;; Drop hallucinated / unbound tool-calls (e.g. `noop`) BEFORE routing, so
+      ;; an all-unbound turn skips the tool path and falls through to the
+      ;; no-action repair (Path D) instead of dispatching a doomed call.
+      [:action {:id (kw :action/strip-unbound-tools)}
+       coact-strip-unbound-tool-calls-action]
 
       ;; Router — precedence: answer > code > tool > repair
       [:fallback {:id (kw :fallback/router)}
