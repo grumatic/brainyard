@@ -267,24 +267,36 @@
   (let [backend (config/get-config agent :acp-backend)
         sess    (new-session!* client {:cwd (config/project-dir agent)})
         model   (:model backend-opts)
+        avail   (get-in sess [:models :availableModels])
+        current (get-in sess [:models :currentModelId])
         model-id
         (when model
-          (let [avail (get-in sess [:models :availableModels])
-                mid   (resolve-model-id* avail model)]
+          (let [mid (resolve-model-id* avail model)]
             (if mid
               (do (set-model!* sess mid)
                   (mulog/info ::acp-model-selected :requested model :model-id mid)
                   mid)
               (do (mulog/warn ::acp-model-unmatched :requested model
                               :available (mapv :modelId avail))
-                  nil))))]
+                  nil))))
+        ;; What the session will ACTUALLY serve: the matched id, else the
+        ;; backend's own default (unmatched requests keep it — see below).
+        effective (or model-id current)
+        ;; nil = no model requested; true = requested & matched; false =
+        ;; requested but unmatched (running on the backend default instead).
+        matched?  (cond (nil? model) nil
+                        (some? model-id) true
+                        :else false)]
     (stamp-descriptor! agent
-                       {:backend      backend
-                        :backend-opts backend-opts
-                        :model-label  model
-                        :model-id     model-id
-                        :session-id   (:session-id sess)
-                        :spawned-at   (System/currentTimeMillis)})
+                       {:backend          backend
+                        :backend-opts     backend-opts
+                        :model-label      model            ;; requested (may be nil)
+                        :model-id         model-id         ;; resolved match, or nil
+                        :effective-model  effective        ;; what actually serves
+                        :model-matched?   matched?
+                        :available-models (mapv :modelId avail)
+                        :session-id       (:session-id sess)
+                        :spawned-at       (System/currentTimeMillis)})
     sess))
 
 (defn- get-or-open-session!

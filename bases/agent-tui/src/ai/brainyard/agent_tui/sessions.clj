@@ -567,16 +567,60 @@
 ;; Formatting
 ;; ============================================================================
 
+(defn acp-model-part
+  "Model portion of an ACP agent's `provider/model` display, sourced from the
+   connection descriptor (see `agent/descriptor`). The ACP backend resolves the
+   requested `-m` model against the ids it advertises, which may rename it
+   (`opus`→`default`) or reject it (`nope`→ the backend default). Rules:
+
+     matched, requested = served  → served            (e.g. `sonnet`)
+     matched, requested ≠ served  → `requested→served` (e.g. `opus→default`)
+     unmatched                    → served            (the dropped request is
+                                                        surfaced by the one-time
+                                                        unmatched-model notice)
+     pre-connect (no descriptor)  → requested          (all we know yet)
+
+   Shared by the status-bar indicator and the ACP transcript block header so
+   they always agree."
+  [agent]
+  (let [desc      (try (agent/descriptor agent) (catch Exception _ nil))
+        requested (or (:model-label desc)
+                      (:model (try (agent/get-config agent :acp-backend-opts)
+                                   (catch Exception _ nil))))
+        served    (:effective-model desc)]
+    (cond
+      (and served (true? (:model-matched? desc)) requested (not= requested served))
+      (str requested "→" served)
+      served served
+      :else  requested)))
+
+(defn- session-provider-model-label
+  "The `provider/model` label for `agent`, sourced per agent type. ACP agents
+   have no clj-llm `:lm-config` — their identity is the ACP backend + the model
+   the session actually serves (see `acp-model-part`) — so reading `:lm-config`
+   there yields a stale claude-code default (e.g. always `opus`, ignoring `-m`).
+   Adapt the source to the agent type: ACP → backend + `acp-model-part`; else →
+   `:lm-config`."
+  [agent]
+  (let [aid  (:agent-id agent)
+        acp? (and (keyword? aid) (= "acp-agent" (namespace aid)))]
+    (if acp?
+      (let [desc    (try (agent/descriptor agent) (catch Exception _ nil))
+            backend (or (:backend desc)
+                        (try (agent/get-config agent :acp-backend) (catch Exception _ nil)))]
+        (clj-llm/format-lm-label backend (acp-model-part agent)))
+      (let [lm (try (agent/get-config agent :lm-config) (catch Exception _ nil))]
+        (clj-llm/format-lm-label (:provider lm) (:model lm))))))
+
 (defn format-session-indicator
   "Format the active-session indicator for the status bar as
-   `agent-id [provider/model]`. Tabs themselves live in the dedicated tab
-   row (see `format-tab-strip`). Returns nil when no sessions exist."
+   `agent-id [provider/model]`, where `provider/model` is sourced per agent
+   type (see `session-provider-model-label`). Tabs themselves live in the
+   dedicated tab row (see `format-tab-strip`). Returns nil when no sessions exist."
   []
   (when (pos? (session-count))
-    (let [current (get-active-session)
-          lm (try (agent/get-config (:agent current) :lm-config)
-                  (catch Exception _ nil))
-          label (clj-llm/format-lm-label (:provider lm) (:model lm))
+    (let [current  (get-active-session)
+          label    (session-provider-model-label (:agent current))
           agent-id (or (some-> (:defagent-id current) name)
                        (:agent-id current))]
       (ansi/muted (str (when agent-id (str agent-id " "))

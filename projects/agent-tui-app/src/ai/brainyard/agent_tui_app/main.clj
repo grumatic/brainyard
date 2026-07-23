@@ -575,10 +575,16 @@
         ;; resolves BY_USER_ID / user.name once at session creation.
         user-id (some-> (:user-id opts) str/trim not-empty)
 
-        run-args (cond-> [:agent-id agent-id
-                          :lm-provider provider
-                          :mode (:mode probe)]
-                   model      (into [:lm-model model])
+        base-args (if (= agent-id :acp-agent)
+                    (cond-> [:agent-id agent-id
+                             :acp-backend provider
+                             :mode (:mode probe)]
+                      model (into [:acp-backend-opts {:model model}]))
+                    (cond-> [:agent-id agent-id
+                             :lm-provider provider
+                             :mode (:mode probe)]
+                      model (into [:lm-model model])))
+        run-args (cond-> base-args
                    inline?    (into [:inline true])
                    verbose?   (into [:display-format :verbose])
                    max-iter   (into [:max-iterations max-iter])

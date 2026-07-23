@@ -346,6 +346,15 @@
                 reload-skills!)
 
 ;; ============================================================================
+;; ACP agent — connection descriptor (backend, requested/effective model, match
+;; status) so entry points (e.g. the TUI status bar) can reflect the ACP
+;; session's real served model without a hard dep on the acp-agent ns.
+;; ============================================================================
+
+(export-symbols ai.brainyard.agent.common.acp-agent
+                descriptor)
+
+;; ============================================================================
 ;; Auth methods — the /login /logout registry (api-key | oauth | cli-delegate)
 ;; ============================================================================
 

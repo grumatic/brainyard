@@ -3619,6 +3619,32 @@
   (let [aid (:agent-id agent)]
     (and (keyword? aid) (= "acp-agent" (namespace aid)))))
 
+;; Agent-ids already warned about an unmatched `-m` model, so the notice fires
+;; once per agent (not every turn).
+(defonce ^:private !acp-model-notified (atom #{}))
+
+(defn- maybe-notify-unmatched-model!
+  "When the ACP session resolved the requested `-m` model to something else
+   because it didn't match any advertised model, surface a one-time visible
+   notice naming the served model and the available ids — the resolution is
+   otherwise only a silent log warning (`::acp-model-unmatched`) and the flag
+   would appear to have taken. Reads the descriptor, which exists only once the
+   session has connected (first turn opens it lazily), so this fires from the
+   turn AFTER the first — the status bar already shows the served model meanwhile."
+  [agent aid]
+  (let [desc (try (agent/descriptor agent) (catch Exception _ nil))]
+    (when (and (false? (:model-matched? desc))
+               (not (contains? @!acp-model-notified aid)))
+      (swap! !acp-model-notified conj aid)
+      (let [avail (seq (:available-models desc))]
+        (layout/write-output!
+         (str (ansi/muted
+               (str "⚠ acp: model '" (:model-label desc) "' unavailable — serving '"
+                    (:effective-model desc) "'"
+                    (when avail (str " (available: " (clojure.string/join ", " avail) ")"))
+                    "."))
+              "\n"))))))
+
 (defn- acp-create-block!
   "Handler for :agent.iteration/pre on an acp instance — creates the ACP
    transcript block for this turn and starts the ticker."
@@ -3627,6 +3653,7 @@
         rid     (str (or repeat-id "_"))
         sidx    (:id (find-session-for-agent agent))
         backend (or (agent/get-config agent :acp-backend) :acp)]
+    (maybe-notify-unmatched-model! agent aid)
     (stamp-think-activity! agent (str (clojure.core/name backend) " …"))
     (iter-stamp-current! agent rid iteration)
     (swap! !acp-blocks assoc [aid rid iteration]
@@ -3634,7 +3661,11 @@
             :repeat-id         rid
             :iteration         iteration
             :backend           backend
-            :model-label       (:model (agent/get-config agent :acp-backend-opts))
+            ;; Same arrow-aware served-model display as the status bar (shared
+            ;; `sessions/acp-model-part`), so the header and bar always agree:
+            ;; `opus→default` when a matched request was renamed, plain served id
+            ;; otherwise, requested string before the session connects.
+            :model-label       (sessions/acp-model-part agent)
             :show-thoughts?    (not= false (agent/get-config agent :acp-show-thoughts))
             :message-max-lines (or (agent/get-config agent :acp-message-max-lines) 100)
             :stage             :running

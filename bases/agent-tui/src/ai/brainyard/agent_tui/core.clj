@@ -1060,6 +1060,10 @@
    Shared by start! (session 0) and sessions/create-session! (new sessions).
    Uses invoke-tool with :setup-only? true to follow the same dispatch path
    as any defagent invocation, with a generated instance-id.
+   Options:
+     :acp-backend      - ACP backend (e.g., :claude-code)
+     :acp-backend-opts - Options map for the ACP backend
+
    Returns the agent instance with permission-fn, user-feedback-fn, and dirs configured."
   [agent-id & {:keys [user-id session-id max-iterations instance-id display-format
                       acp-backend acp-backend-opts]}]
@@ -1197,6 +1201,8 @@
      :display-format      - :quiet | :normal | :verbose (default: :normal)
      :lm-provider    - :claude-code | :anthropic | :openai | :ollama (auto-setup LM)
      :lm-model       - Override model name for LM
+     :acp-backend    - ACP backend (e.g., :claude-code). When set, overrides :lm-provider.
+     :acp-backend-opts - Options map for the ACP backend (e.g., {:model \"opus\"})
      :inline         - Force inline mode (no alt screen). Useful for scripted testing.
      :mode           - :A or :B from `mode/probe`. Defaults to :A. Stored in
                        !tui-state so later phases (popups, side panes) can
@@ -1209,7 +1215,8 @@
 
    Returns: :ok"
   [& {:keys [agent-id user-id session-id max-iterations display-format
-             lm-provider lm-model inline mode resume? skip-banner]
+             lm-provider lm-model inline mode resume? skip-banner
+             acp-backend acp-backend-opts]
       :or {agent-id :coact-agent
            display-format :normal
            inline false
@@ -1242,7 +1249,7 @@
   ;;    the banner by `write-startup-notice!` — create-tui-agent! runs before the
   ;;    alt-screen is initialized, which would wipe an early emit before the user
   ;;    could read it. See helpers/no-provider-message.
-  (when lm-provider
+  (when (and lm-provider (not acp-backend))
     (if (helpers/missing-provider-key lm-provider)
       (swap! tui-session/!tui-state assoc :startup-notice
              (ansi/warning (helpers/no-provider-message lm-provider)))
@@ -1413,7 +1420,9 @@
                               :user-id user-id
                               :session-id agt-sess-id
                               :max-iterations max-iter
-                              :display-format display-format)
+                              :display-format display-format
+                              :acp-backend acp-backend
+                              :acp-backend-opts acp-backend-opts)
         ;; Resume hydration step: replay the persisted usage-tracker snap
         ;; into the freshly-minted tracker atom inside ag's session config
         ;; (the agent's init created an empty one — we overwrite from disk).
