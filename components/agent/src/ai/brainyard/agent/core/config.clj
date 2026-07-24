@@ -120,6 +120,8 @@
                                 :doc "Model for sub-LLM queries (llm-query / rlm-query in the sandbox). nil → use the agent's :lm-config."}
    :llm-query-max-depth        {:type "integer" :default 1
                                 :doc "Max recursion depth for nested llm-query / sub-LLM calls."}
+   :claude-code-max-turns      {:type "integer" :default 1
+                                :doc "clj-llm Claude Code provider: the CLI `--max-turns` value (the agentic-loop turn cap for a single chat-completion). Default 1 = one LLM turn, no agentic loop. clj-llm reads this via soft-resolve; when the agent config component is unavailable (e.g. standalone clj-llm / native image without it) it falls back to 1."}
    :auto-background-timeout-ms {:type "integer" :default 180000
                                 :doc "Auto-background deadline (ms) for an LLM-emitted code block: if a foreground task exceeds it, await-task detaches into background mode and returns a :pending snapshot; a later iteration harvests the result."}
    :fast-eval-timeout-ms       {:type "integer" :default 30000
