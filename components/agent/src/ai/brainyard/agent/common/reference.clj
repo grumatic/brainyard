@@ -364,8 +364,16 @@
 ;; ============================================================================
 
 (defn- validate-write-path
-  "Validate that a path is within an allowed write directory.
-   Allowed: /tmp, /private/tmp, <base-dir>/.brainyard/
+  "Validate that a path is within an ALWAYS-allowed write directory — one that
+   bypasses permission-fn regardless of permission-mode. These are the agent's
+   own scratch/artifact roots: /tmp, /private/tmp, the JVM system temp dir
+   (java.io.tmpdir — /var/folders/.../T on macOS, canonicalized so the
+   /var→/private/var symlink resolves), and <base-dir>/.brainyard/.
+
+   The rest of the project working tree is deliberately NOT always-allowed here:
+   project-source writes fall through to `write-project-file`'s permission-fn so
+   they are GATED ON PERMISSION-MODE (:auto-approve → silent allow,
+   :ask-each-time → prompt, :deny-by-default → deny). See get-permission-fn.
    Returns canonical File or {:error str}."
   [base-dir path]
   (let [;; Resolve path — relative paths resolve against base-dir
@@ -374,10 +382,15 @@
                    (java.io.File. (str base-dir) (str path)))
         f (.getCanonicalFile raw-file)
         p (.getPath f)
-        brainyard-dir (.getPath (.getCanonicalFile (java.io.File. (str base-dir) ".brainyard")))]
+        brainyard-dir (.getPath (.getCanonicalFile (java.io.File. (str base-dir) ".brainyard")))
+        ;; System temp dir (where File/createTempFile lands). Canonicalized so
+        ;; the target `p` (also canonical) matches through the macOS symlink.
+        sys-tmp (.getPath (.getCanonicalFile (java.io.File. (System/getProperty "java.io.tmpdir"))))]
     (cond
       (or (str/starts-with? p "/tmp")
-          (str/starts-with? p "/private/tmp"))
+          (str/starts-with? p "/private/tmp")
+          (str/starts-with? p (str sys-tmp "/"))
+          (= p sys-tmp))
       f
 
       (str/starts-with? p (str brainyard-dir "/"))
@@ -386,13 +399,18 @@
       (= p brainyard-dir)
       {:error "Cannot write to .brainyard/ directory itself — specify a file within it"}
 
+      ;; NOT always-allowed → caller routes to permission-fn (mode-gated).
       :else
-      {:error (str "File write denied: only /tmp and .brainyard/ paths allowed, got: " p)})))
+      {:error (str "File write denied: only /tmp, the system temp dir, and .brainyard/ paths allowed, got: " p)})))
 
 (defn write-project-file
   "Write a file to an allowed project directory.
-   Allowed targets: /tmp/*, <base-dir>/.brainyard/*
-   For other paths, permission-fn is called if provided.
+   Always-allowed (bypass permission-fn): /tmp/*, the system temp dir
+   (java.io.tmpdir) /*, and <base-dir>/.brainyard/*.
+   For any other path — INCLUDING project source outside .brainyard/ —
+   permission-fn is called if provided, so those writes are gated on
+   permission-mode (:auto-approve allows, :ask-each-time prompts,
+   :deny-by-default denies).
    Content is written via spit. Parent directories are auto-created.
    Returns: {:path str :chars int} or {:error str}"
   [base-dir path content & {:keys [append? permission-fn]}]

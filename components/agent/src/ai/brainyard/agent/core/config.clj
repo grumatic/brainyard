@@ -385,7 +385,7 @@
    ;; snapshots/displays. See agent.common.tools/get-tavily-api-key.
    :allowed-dirs               {:type "array"
                                 :default-fn #(default-allowed-dirs)
-                                :doc "Allow-list of directories for filesystem-touching tools (bash/read/write/grep/task$run). Lazy default: /tmp + project-dir + user-config-dir."}
+                                :doc "Allow-list of directories for filesystem-touching tools (bash/read/write/grep/task$run). Lazy default: /tmp + system temp dir (java.io.tmpdir, e.g. /var/folders/.../T on macOS) + project-dir + user-config-dir."}
    :permission-mode            {:type "keyword" :default :auto
                                 :doc "Permission-prompt policy for sensitive tool ops: :auto-approve | :ask-each-time | :deny-by-default | :auto (default; :auto-approve when a container is detected via env-detect, else :ask-each-time — so a bare host still prompts). Resolved by resolve-permission-mode. Persisted as [:permissions :mode]."}
    :display-format             {:type "keyword"
@@ -509,15 +509,20 @@
 
 (defn default-allowed-dirs
   "Default allow-list for filesystem operations.
-   Returns a vector containing /tmp plus the resolved :project-dir and
-   user-config-dir (~/.brainyard), with nils dropped and duplicates removed.
+   Returns a vector containing /tmp, the JVM system temp dir
+   (`java.io.tmpdir` — `/var/folders/.../T` on macOS, `/tmp` on Linux; this is
+   where `File/createTempFile` lands, so temp files are readable/writable by
+   default), plus the resolved :project-dir and user-config-dir (~/.brainyard),
+   with nils dropped and duplicates removed. Consumers canonicalize entries, so
+   the macOS `/var`→`/private/var` symlink resolves correctly.
 
    Arity-0 resolves dirs at call time via `resolve-dirs`.
    Arity-1 accepts a dirs map (e.g. from a live session) so the caller
    avoids re-resolving."
   ([] (default-allowed-dirs (resolve-dirs)))
   ([dirs]
-   (->> ["/tmp" (:project-dir dirs) (user-config-dir dirs)]
+   (->> ["/tmp" (System/getProperty "java.io.tmpdir")
+         (:project-dir dirs) (user-config-dir dirs)]
         (remove nil?)
         distinct
         vec)))
@@ -1558,8 +1563,10 @@
 (def ^:private deny-all-permission-fn
   "A permission-fn that refuses every request without prompting — the effective
    gate when `resolve-permission-mode` is `:deny-by-default`. Non-whitelisted
-   file/bash paths are denied; the always-allowed `/tmp` and `.brainyard/` paths
-   never reach the permission-fn, so the agent can still manage its own artifacts."
+   file/bash paths are denied; the always-allowed `/tmp`, the system temp dir
+   (`java.io.tmpdir`), and `.brainyard/` paths never reach the permission-fn, so
+   the agent can still manage its own artifacts (project source outside
+   `.brainyard/` DOES reach here, so it is denied under this mode)."
   (constantly {:denied true :reason "permission mode is :deny-by-default"}))
 
 (defn- session-permission-fn
