@@ -61,6 +61,7 @@ Area codes:
 | `MEM` | [Memory & context](memory-and-context.md) |
 | `TASK` | [Task manager](task-manager.md) |
 | `CFG` | [Configuration](configuration.md) |
+| `PERM` | [Permissions](permission.md) |
 | `TUI` | [Terminal UI](tui.md) |
 
 ---
@@ -115,7 +116,11 @@ and is meant to be reviewed before anything is committed to a tracker.
    async model, ring-buffered output, on-disk persistence, scheduling.
 7. [Configuration](configuration.md) — the config schema, the precedence
    chain, persisted-EDN shape, directory resolution.
-8. [Terminal UI](tui.md) — run modes, the hook-driven render/session
+8. [Permissions](permission.md) — permission modes, the read allow-list
+   and write always-allowed set, the interactive prompt + grant caches,
+   `/allow-path`, bash/`task$run` path validation, the tool-level and
+   MCP fail-closed gates.
+9. [Terminal UI](tui.md) — run modes, the hook-driven render/session
    loop, slash commands, permissions/HITL, session persistence, the
    tmux substrate, display-blocks, environment detection.
 
