@@ -483,6 +483,23 @@
        :reason (str "MCP tool call (" display ") denied (non-interactive mode). "
                     "Allowlist it via :mcp-allow-tools or set [:permissions :mode] :auto-approve.")})))
 
+(defn- within-allowed-dir?
+  "True when every path in `paths` canonicalizes to a location inside some entry
+   of `allowed-dirs` (also canonicalized, so the macOS /var→/private/var symlink
+   resolves). Mirrors reference/resolve-allowed-path — used to let a persisted
+   allowed-dir silence the write prompt the same way it already silences reads."
+  [allowed-dirs paths]
+  (let [canon (fn [p] (try (.getPath (.getCanonicalFile (io/file (str p))))
+                           (catch Exception _ nil)))
+        dirs  (keep canon allowed-dirs)]
+    (and (seq paths)
+         (seq dirs)
+         (every? (fn [p]
+                   (when-let [tp (canon p)]
+                     (some (fn [d] (or (= tp d) (str/starts-with? tp (str d "/"))))
+                           dirs)))
+                 paths))))
+
 (defn make-permission-fn
   "Create a permission callback bound to a session as `:permission-fn`. A thin
    adapter over `feedback-fn`: keeps path normalization + a per-session approved
@@ -519,10 +536,20 @@
             {:allowed true}
 
             ;; A directory was denied with :never earlier this session — deny
-            ;; without re-prompting (symmetric to the :always allow cache).
+            ;; without re-prompting (symmetric to the :always allow cache). A
+            ;; recent explicit :never wins over the persisted allow-list below.
             (and (seq parent-dirs)
                  (some #(contains? @!session-denied %) parent-dirs))
             {:denied true :reason "User denied file access (won't ask again this session)"}
+
+            ;; Within a persisted allowed-dir (config [:permissions :allowed-dirs],
+            ;; which includes the default project-dir and any /allow-path
+            ;; additions) — allow WITHOUT prompting, mirroring the read gate.
+            ;; Permission-mode still governs: :deny-by-default / :auto-approve use
+            ;; their own fns (deny-all / allow-all) and never reach this branch.
+            (within-allowed-dir? (try (agent/allowed-dirs) (catch Throwable _ nil))
+                                 all-paths)
+            {:allowed true}
 
             ;; Interactive — raw in-stream OR tmux popup. Delegate the prompt to
             ;; the unified feedback primitive as a :confirm request.

@@ -65,7 +65,7 @@
                                     {:status :submitted
                                      :answers {:feedback {:value :yes}}})]
           (let [pf (permission-fn)
-                r  (pf {:tool "Read" :path "/tmp/foo"})]
+                r  (pf {:tool "Read" :path "/opt/foo"})]
             (is (= {:allowed true} r)))))))
 
   (testing ":no from popup ⇒ {:denied true …}"
@@ -75,7 +75,7 @@
                                     {:status :submitted
                                      :answers {:feedback {:value :no}}})]
           (let [pf (permission-fn)
-                r  (pf {:tool "Read" :path "/tmp/foo"})]
+                r  (pf {:tool "Read" :path "/opt/foo"})]
             (is (true? (:denied r)))
             (is (string? (:reason r))))))))
 
@@ -86,11 +86,11 @@
           (with-redefs [popup/show! (fn [_t _q _opts]
                                       {:status :submitted
                                        :answers {:feedback {:value :always}}})]
-            (is (= {:allowed true} (pf {:tool "Read" :path "/tmp/foo/a"}))))
+            (is (= {:allowed true} (pf {:tool "Read" :path "/opt/foo/a"}))))
           ;; Subsequent call inside the same parent dir bypasses the popup.
           (with-redefs [popup/show! (fn [& _]
                                       (throw (ex-info "popup must not be invoked" {})))]
-            (is (= {:allowed true} (pf {:tool "Read" :path "/tmp/foo/b"}))))))))
+            (is (= {:allowed true} (pf {:tool "Read" :path "/opt/foo/b"}))))))))
 
   (testing ":never from popup denies and remembers the parent dir"
     (with-mode-b-installed
@@ -99,11 +99,11 @@
           (with-redefs [popup/show! (fn [_t _q _opts]
                                       {:status :submitted
                                        :answers {:feedback {:value :never}}})]
-            (is (true? (:denied (pf {:tool "Write" :path "/tmp/secret/a"})))))
+            (is (true? (:denied (pf {:tool "Write" :path "/opt/secret/a"})))))
           ;; Subsequent call inside the same parent dir is auto-denied — no popup.
           (with-redefs [popup/show! (fn [& _]
                                       (throw (ex-info "popup must not be invoked" {})))]
-            (let [r (pf {:tool "Write" :path "/tmp/secret/b"})]
+            (let [r (pf {:tool "Write" :path "/opt/secret/b"})]
               (is (true? (:denied r)))
               (is (re-find #"won't ask again" (:reason r)))))))))
 
@@ -116,6 +116,21 @@
                 r  (pf {:tool "Write" :path "/etc/passwd"})]
             (is (true? (:denied r)))
             (is (string? (:reason r)))))))))
+
+(deftest allowed-dir-silences-write-prompt
+  ;; A path inside a persisted allowed-dir (config [:permissions :allowed-dirs],
+  ;; which includes the default project-dir, /tmp, the system temp dir, and any
+  ;; /allow-path additions) is auto-allowed WITHOUT a popup — mirroring the read
+  ;; gate. (:deny-by-default / :auto-approve use their own fns and never build
+  ;; this interactive permission-fn, so mode-gating is preserved.)
+  (testing "path within allowed-dirs ⇒ {:allowed true}, popup never invoked"
+    (with-mode-b-installed
+      (fn [_stub]
+        (with-redefs [popup/show! (fn [& _]
+                                    (throw (ex-info "popup must not be invoked" {})))]
+          (let [pf (permission-fn)]
+            ;; /tmp is a default allowed-dir; a write under it must not prompt.
+            (is (= {:allowed true} (pf {:tool "Write" :path "/tmp/deep/nested/x"})))))))))
 
 (deftest mode-a-permission-uses-in-stream-path
   (testing "When mode is :A, popup is bypassed even if a side channel exists"
@@ -130,7 +145,7 @@
         (let [pf (permission-fn)
               ;; Non-raw mode (no input reader thread) → falls through to
               ;; auto-deny path with a hint, which doesn't call popup/show!.
-              r  (pf {:tool "Read" :path "/tmp/x"})]
+              r  (pf {:tool "Read" :path "/opt/x"})]
           (is (true? (:denied r)))
           (is (re-find #"non-interactive mode" (:reason r))))))))
 
