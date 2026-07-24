@@ -481,8 +481,12 @@
 
 (deftool update-file
   "Find/replace a pattern in a file and return a diff. Literal + first-match by default; see :regex?/:all? inputs. Pass :expect-count N to refuse (no write) on a match-count mismatch — the cheap over/under-match guard."
-  (fn [{:keys [path pattern replacement regex? all? expect-count]}]
-    (let [base-dir      (get-base-dir)
+  (fn [{:keys [path pattern replacement regex? all? expect-count] :as args}]
+    ;; Alias net (SCI direct-call path): LLMs trained on other edit tools often
+    ;; pass old-string/new-string instead of :pattern/:replacement — accept both.
+    (let [pattern       (or pattern (:old-string args) (:old_string args))
+          replacement   (or replacement (:new-string args) (:new_string args))
+          base-dir      (get-base-dir)
           allowed-dirs  (get-allowed-dirs)
           permission-fn (get-permission-fn)
           read-result   (ref/read-file-content base-dir path

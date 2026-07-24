@@ -760,8 +760,13 @@
                  regex? false
                  dirty-ok? false
                  lint-ok-to-fail? false
-                 run-tests? false}}]
-    (let [mode-kw   (cond
+                 run-tests? false}
+          :as   kw-args}]
+    ;; Alias net: accept old-string/new-string (the common cross-tool convention)
+    ;; as synonyms for :pattern/:replacement so a well-formed edit is not rejected.
+    (let [pattern     (or pattern (:old-string kw-args) (:old_string kw-args))
+          replacement (or replacement (:new-string kw-args) (:new_string kw-args))
+          mode-kw   (cond
                       (keyword? mode) mode
                       (string? mode)  (keyword mode)
                       :else           :pattern)

@@ -187,6 +187,8 @@
   ;; deep inside (e.g. `update-file` with wrong param names → nil :pattern →
   ;; `Pattern/quote(nil)` NPE "Cannot invoke String.indexOf because s is null").
   ;; Both dispatch paths must now reject before the body runs.
+  ;; NOTE: uses genuinely-unknown keys (NOT old_string/new_string — those are
+  ;; recognized aliases folded onto :pattern/:replacement; see the alias test).
   (let [tool-id  (keyword (str "test-json-required-" (System/nanoTime)))
         reached? (atom false)
         tool-def {:meta {:name        (name tool-id)
@@ -206,7 +208,7 @@
       (swap! tool/!tool-defs assoc tool-id tool-def)
       (testing "wrong param names (missing required) are rejected, body not reached"
         (let [result (tool/call-tool tool-id
-                                     {"old_string" "a" "new_string" "b"}
+                                     {"wrongkey" "a" "otherkey" "b"}
                                      :tools bound-tools :tools-fn-map bound-fn-map)]
           (is (re-find #"Invalid tool args" (str (:error-message result))))
           (is (re-find #"pattern" (str (:error-message result))))
@@ -219,6 +221,48 @@
           (is (not (contains? result :error-message))
               (str "valid args should dispatch; got: " (pr-str result)))
           (is (true? @reached?) "bound fn runs when args are valid")))
+      (finally
+        (swap! tool/!tool-defs dissoc tool-id)))))
+
+(deftest call-tool-folds-find-replace-arg-aliases
+  ;; LLMs trained on other edit tools emit old_string/new_string for
+  ;; update-file / edit$apply, whose canonical args are :pattern/:replacement.
+  ;; `apply-arg-aliases` (in the shared arg funnel) folds the aliases onto the
+  ;; canonical names BEFORE schema validation, so a well-formed edit is not
+  ;; rejected over a naming mismatch — but an explicit canonical value wins.
+  (let [tool-id      (keyword (str "test-alias-" (System/nanoTime)))
+        seen         (atom nil)
+        tool-def     {:meta {:name        (name tool-id)
+                             :description "alias test fixture"
+                             :type        :tool
+                             :input-schema  [:map
+                                             [:pattern     :string]
+                                             [:replacement :string]]
+                             :output-schema [:map]}
+                      :fn   (fn [& _] {:ok? true})
+                      :type :tool}
+        bound-tools  [{:name (name tool-id)}]
+        bound-fn-map {(name tool-id) (fn [args] (reset! seen args) {:ok? true})}]
+    (testing "apply-arg-aliases maps aliases, keyword- and string-keyed"
+      (is (= {"pattern" "a" "replacement" "b"}
+             (#'tool/apply-arg-aliases {"old_string" "a" "new_string" "b"})))
+      (is (= {:pattern "a" :replacement "b"}
+             (#'tool/apply-arg-aliases {:old-string "a" :new-string "b"})))
+      (is (= {"pattern" "P" "old_string" "IGNORED"}
+             (#'tool/apply-arg-aliases {"pattern" "P" "old_string" "IGNORED"}))
+          "explicit canonical value wins; the alias is left as an inert extra key"))
+    (try
+      (swap! tool/!tool-defs assoc tool-id tool-def)
+      (testing "old_string/new_string pass validation and reach the body as :pattern/:replacement"
+        (let [result (tool/call-tool tool-id
+                                     {"old_string" "a" "new_string" "b"}
+                                     :tools bound-tools :tools-fn-map bound-fn-map)]
+          (is (not (contains? result :error-message))
+              (str "aliased args should dispatch; got: " (pr-str result)))
+          ;; the :json bound-fn path hands the body string-keyed args
+          ;; (update-keys decoded name), so assert on the string form.
+          (is (= "a" (get @seen "pattern")))
+          (is (= "b" (get @seen "replacement")))))
       (finally
         (swap! tool/!tool-defs dissoc tool-id)))))
 

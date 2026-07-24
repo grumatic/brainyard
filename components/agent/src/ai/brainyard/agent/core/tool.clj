@@ -452,6 +452,34 @@
       (mulog/error ::tool-call-error :tool-name tool-name :message (ex-message e))
       {:error-message (ex-message e)})))
 
+(def ^:private arg-alias->canonical
+  "Tolerance net for find/replace args. LLMs trained on other edit tools
+   (Claude Code's Edit, Aider, Cursor, …) reflexively emit old_string /
+   new_string for `update-file` / `edit$apply`, whose canonical args are
+   :pattern / :replacement. Map the aliases onto the canonical names in the
+   shared arg funnel — BEFORE schema validation — so a well-formed edit is not
+   rejected over a mere naming mismatch. Only fills a canonical key the caller
+   did NOT already supply, so an explicit :pattern always wins."
+  {"old-string" "pattern"   "old_string" "pattern"   "oldstring" "pattern"
+   "new-string" "replacement" "new_string" "replacement" "newstring" "replacement"})
+
+(defn- apply-arg-aliases
+  "Rename known alias keys in a flat arg map to their canonical name, keeping
+   any canonical value the caller already supplied. Key-type agnostic (string
+   or keyword keys); emits the canonical key in the alias key's own type."
+  [m]
+  (if-not (map? m)
+    m
+    (let [present (into #{} (map #(if (keyword? %) (name %) (str %))) (keys m))]
+      (reduce-kv
+       (fn [acc k v]
+         (let [ks    (if (keyword? k) (name k) (str k))
+               canon (get arg-alias->canonical ks)]
+           (if (and canon (not (contains? present canon)))
+             (assoc acc (if (keyword? k) (keyword canon) canon) v)
+             (assoc acc k v))))
+       {} m))))
+
 (defn- normalize-tool-args
   "Normalize raw tool-args into a flat map (no coercion).
    Accepts:
@@ -459,21 +487,23 @@
      - Standard LLM vector: [{:name k :value v} ...]  → {(name k) v}
      - Compact LLM vector:  [{k v} ...]               → {(name k) v}
      - Anything else                                  → {}
+   Alias keys (see `arg-alias->canonical`) are folded onto their canonical name.
    Returns a flat map. Coercion is applied separately by the caller using
    `coerce-tool-args` when type info is available."
   [tool-args]
-  (cond
-    (map? tool-args) tool-args
+  (apply-arg-aliases
+   (cond
+     (map? tool-args) tool-args
 
-    (vector? tool-args)
-    (let [valid (filterv #(and (:name %) (contains? % :value)) tool-args)]
-      (if (seq valid)
-        (reduce #(assoc %1 (:name %2) (:value %2)) {} valid)
-        (reduce (fn [acc m]
-                  (reduce-kv (fn [a k v] (assoc a (name k) v)) acc m))
-                {} tool-args)))
+     (vector? tool-args)
+     (let [valid (filterv #(and (:name %) (contains? % :value)) tool-args)]
+       (if (seq valid)
+         (reduce #(assoc %1 (:name %2) (:value %2)) {} valid)
+         (reduce (fn [acc m]
+                   (reduce-kv (fn [a k v] (assoc a (name k) v)) acc m))
+                 {} tool-args)))
 
-    :else {}))
+     :else {})))
 
 (defn inputs->malli-map-schema
   "Normalize an :input-schema (Malli [:map ...]) for validation. Optional
@@ -659,9 +689,9 @@
   (cond
     (nil? type-str) value
     (= "string" type-str) (cond
-                             (string? value) value
-                             (keyword? value) (util/kw->str value)
-                             :else (str value))
+                            (string? value) value
+                            (keyword? value) (util/kw->str value)
+                            :else (str value))
     (not (string? value)) value
     :else
     (try
