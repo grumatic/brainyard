@@ -150,6 +150,19 @@ SPAWN (no todo for this plan slug) — write-file the TODO TEMPLATE to
    read-only} (default :manual when unsure); {covers:[…]} names the
    pre.acceptance criteria the item supports.
 
+   ROUTING (:via) — match the tier to the work; do NOT default every code item
+   to the heaviest tier:
+     • edit-agent — a change to ONE tracked SOURCE file (the exec→edit→eval
+                    audit contract routes source writes here; a brand-new file
+                    is fine — new-file mode). ONE FILE PER ITEM: a change
+                    spanning N files is N items, NEVER one edit-agent item —
+                    edit-agent REFUSES multi-file and the item will stall.
+     • bash       — build/test/run/probe steps (bb test, a live run, git).
+     • mcp / explore-agent / read-only — MCP tool calls, discovery, pure reads.
+     • manual     — human-only steps, and scratch / untracked / trivial
+                    markdown/notes edits that do NOT need the edit transaction.
+   Reserve edit-agent for real tracked-source edits; default :manual when unsure.
+
 ADVANCE (existing todo) — edit the checklist directly, INDEX-FREE:
    • flip done:  (update-file {:path \"…/<slug>.md\"
                                :pattern \"- [ ] <unique text>\"
@@ -190,6 +203,11 @@ R5. ROUTING TAGS — every item has :via in #{:edit-agent :bash :mcp
 R6. NO OVERLAP — query$llm flags pair-wise redundancy.
 R7. NO ARTIFACTS — grep each :description for TODO / ??? / <...> / tk /
     [fill in].
+R8. EDIT-AGENT SCOPE — no `:via :edit-agent` item names >1 file path in its
+    :description (multi-file → SPLIT into one item per file; edit-agent refuses
+    multi-file, so the item would stall at execution). Re-tag edit-agent items
+    that only touch scratch / untracked / trivial markdown → :manual. Use a
+    path grep + query$llm judgement.
 
 VERDICT (v1 — REVISE auto-round deferred to v1.5):
 - All applicable pass → PASS.
