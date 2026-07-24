@@ -125,13 +125,18 @@
             bb tui config                              # bootstrap wizard
             bb tui -- claude-code:sonnet               # legacy provider:model syntax"
    :requires ([clojure.string :as str])
-   :task (let [args *command-line-args*
+   :task (let [aot? (or (= "1" (System/getenv "BY_AOT"))
+                        (some #{"--aot"} *command-line-args*))
+               args (remove #{"--aot"} *command-line-args*)
                quote-arg (fn [a] (str "'" (str/replace a "'" "'\"'\"'") "'"))
-               quoted-args (str/join " " (map quote-arg args))]
+               quoted-args (str/join " " (map quote-arg args))
+               aot-ok (when aot?
+                        (zero? (:exit (shell {:continue true} "bb" "aot:ensure"))))
+               m-flag (if aot-ok "-M:aot-dev" "-M")]
            (shell "bash" "-c"
                   (str "set -a && source .env && "
                        "cd projects/agent-tui-app && "
-                       "exec clojure -J--enable-native-access=ALL-UNNAMED -M -m ai.brainyard.agent-tui-app.main "
+                       "exec clojure -J--enable-native-access=ALL-UNNAMED " m-flag " -m ai.brainyard.agent-tui-app.main "
                        quoted-args)))}
 
   tui:attach-ask
@@ -599,6 +604,58 @@
                  (println "AOT compilation failed")
                  (System/exit 1))
                (println "AOT compilation complete."))))}
+
+  aot:ensure
+  {:doc "OPT-IN dev-time AOT freshness gate. NO-OP unless BY_AOT=1 (or --aot).
+  When engaged it computes a SHA-256 stamp over all .clj/.cljc/.cljs sources
+  under components/, bases/, and projects/, plus every deps.edn and
+  workspace.edn, and compares it to
+  projects/agent-tui-app/target/classes/.aot-stamp. On mismatch (or a missing
+  stamp) it runs `compile:ata` and writes the fresh stamp; on match it does
+  nothing. When BY_AOT is unset it returns immediately (prints nothing, exits
+  0) so the day-to-day `bb tui` / `bb repl:ata` loop pays zero cost and incurs
+  no 40-60s recompile."
+   :requires ([clojure.string :as str]
+              [clojure.java.io :as io]
+              [babashka.fs :as fs])
+   :task
+   (when (or (= "1" (System/getenv "BY_AOT"))
+             (some #{"--aot"} *command-line-args*))
+     (let [stamp-path "projects/agent-tui-app/target/classes/.aot-stamp"
+           roots      ["components" "bases" "projects"]
+           exclude?   (fn [p] (let [n (str p)]
+                                (or (str/includes? n "/target/")
+                                    (str/includes? n "/.git/"))))
+           src?       (fn [p] (let [n (str p)]
+                                (or (str/ends-with? n ".clj")
+                                    (str/ends-with? n ".cljc")
+                                    (str/ends-with? n ".cljs"))))
+           meta?      (fn [p] (let [n (fs/file-name p)]
+                                (or (= n "deps.edn") (= n "workspace.edn"))))
+           tree       (->> roots
+                           (filter fs/exists?)
+                           (mapcat (fn [r] (fs/glob r "**")))
+                           (map str)
+                           (remove exclude?))
+           files      (->> (concat tree ["deps.edn" "workspace.edn"])
+                           (filter fs/exists?)
+                           (filter (fn [p] (or (src? p) (meta? p))))
+                           distinct
+                           sort)
+           md         (java.security.MessageDigest/getInstance "SHA-256")
+           _          (doseq [f files]
+                        (.update md (.getBytes (str f "\n") "UTF-8"))
+                        (.update md (fs/read-all-bytes f)))
+           stamp      (apply str (map (fn [b] (format "%02x" (bit-and (int b) 0xff)))
+                                      (.digest md)))
+           prev       (when (fs/exists? stamp-path) (str/trim (slurp stamp-path)))]
+       (if (= stamp prev)
+         (println "AOT up to date; no recompile needed.")
+         (do
+           (run 'compile:ata)
+           (io/make-parents stamp-path)
+           (spit stamp-path (str stamp "\n"))
+           (println (str "AOT stamp updated → " stamp-path))))))}
 
   uberjar:ata
   {:doc "Build uberjar for agent-tui-app + verify native-image META-INF survived"

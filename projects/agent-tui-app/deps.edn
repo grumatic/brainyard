@@ -67,6 +67,11 @@
            ;; stale .class files (which the JVM prefers over .clj sources).
            :build {:extra-paths ["target/classes"]}
 
+           ;; Opt-in dev-time AOT (BY_AOT=1): prepend the AOT-compiled classes
+           ;; dir onto the dev JVM path used by `bb tui`. Distinct from :build
+           ;; so the build-chain semantics stay untouched.
+           :aot-dev {:extra-paths ["target/classes"]}
+
            :uberdeps {:replace-deps {uberdeps/uberdeps {:mvn/version "1.4.0"}}
                       :replace-paths []
                       :main-opts ["-m" "uberdeps.uberjar"]}}}
