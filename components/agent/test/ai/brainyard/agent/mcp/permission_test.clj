@@ -13,20 +13,18 @@
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.tool :as tool]))
 
-(def ^:private saved-global (atom ::unset))
-
 (use-fixtures :each
   (fn [t]
-    (reset! saved-global @config/!global-config)
-    ;; The default :permission-mode is now :auto (container ⇒ auto-approve).
-    ;; Pin container detection OFF so these gate tests are hermetic: :auto
-    ;; resolves to :ask-each-time (prompt / fail-closed) regardless of where the
-    ;; suite runs — e.g. CI inside Docker. Tests that need the container branch
-    ;; redef it back on locally.
-    (with-redefs [config/container-detected? (constantly false)]
-      (t))
-    (reset! config/!global-config @saved-global)))
-
+    ;; Save current global config and reset to schema defaults for hermetic tests
+    (let [saved @config/!global-config]
+      (reset! config/!global-config config/default-config)
+      ;; Pin container detection OFF so these gate tests are hermetic: :auto
+      ;; resolves to :ask-each-time (prompt / fail-closed) regardless of where the
+      ;; suite runs -- e.g. CI inside Docker. Tests that need the container branch
+      ;; redef it back on locally.
+      (with-redefs [config/container-detected? (constantly false)]
+        (t))
+      (reset! config/!global-config saved))))
 (defn- gate [tool-name args & {:keys [agent]}]
   (mp/mcp-permission-gate {:agent agent :tool-name tool-name :args args}))
 

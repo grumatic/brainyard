@@ -652,13 +652,18 @@
         value)))
 
 (defn coerce-value
-  "Coerce a string value to the type indicated by type-str.
-   Falls back to the original value on parse failure."
+  "Coerce a value to the type indicated by type-str.
+   Falls back to the original value on parse failure.
+   When type-str is string (schema :string), non-string values are converted via (str); keywords use util/kw->str without the leading colon."
   [value type-str]
-  (if (or (not (string? value))
-          (nil? type-str)
-          (= "string" type-str))
-    value
+  (cond
+    (nil? type-str) value
+    (= "string" type-str) (cond
+                             (string? value) value
+                             (keyword? value) (util/kw->str value)
+                             :else (str value))
+    (not (string? value)) value
+    :else
     (try
       (case type-str
         "integer" (or (parse-long value) value)
