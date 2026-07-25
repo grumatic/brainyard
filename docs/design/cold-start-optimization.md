@@ -1,26 +1,24 @@
 # Cold-Start Optimization — `bb tui` JVM startup (design / research record)
 
-> **Status:** Design-of-record + measured research log. Two levers landed
-> (`961a0f0` AOT opt-in + `d0f9400` agent-split + `667fd52` memory-split);
-> require-main went **7.18s → 6.30s → 5.02s (−30%)**. The honest bottom line:
-> **<1.0s is unreachable on the JVM path** — the remaining ~5s is the
-> irreducible framework core (TUI + agent runtime + clj-llm + SCI) needed to
-> reach the first prompt. AOT floors at ~2.3s (opt-in via `BY_AOT=1`); the
-> native `by` binary is **0.015s** and is the real answer for instant start.
+> **Status:** Research record + cautionary tale. Two lazy-load levers were
+> attempted and **reverted** (`c33aeb9`) because they **broke `bb tui`** and
+> their measured "wins" were a **measurement artifact**. The one real,
+> correctness-preserving lever is **opt-in AOT** (`961a0f0`, `BY_AOT=1`, ~2.3s).
+> Honest bottom line: **JVM cold-start floor is ~7s from source / ~2.3s with
+> AOT; instant start is the native `by` binary (0.015s).**
 >
-> Derived bottom-up by the research-agent (threads
-> `research-bb-tui-cold-start-2-5s-get-under-1-0s` and
-> `profile-lazy-load-memory-subsystem`), code is ground truth. This doc is the
-> durable summary; the per-iteration dossiers hold the raw trace.
+> The load-bearing lesson: **measure a *booted TUI*, not `require main` /
+> `--help`.** The headless metric doesn't create an agent, so it silently
+> measured a configuration that can't actually run. Derived by the research-agent
+> (threads `research-bb-tui-cold-start-2-5s-get-under-1-0s`,
+> `profile-lazy-load-memory-subsystem`); code is ground truth.
 
 ---
 
 ## 1. The premise was wrong: it's ~7.1s, not ~2.5s
 
-The investigation opened on a reported "~2.5s" cold-start. Measuring first
-(`clojure -M -e "(time (require 'ai.brainyard.agent-tui-app.main))"`, median-of-5
-over the ~0.32s JVM-boot floor) put the real figure at **7.10s**, and localized
-it precisely:
+The investigation opened on a reported "~2.5s". Measuring first put it at
+**7.10s** and localized it precisely:
 
 | Phase | Time | Share |
 |---|---|---|
@@ -30,168 +28,137 @@ it precisely:
 | **require of `agent-tui-app.main`** | **~7.18s** | **~97%** |
 | native `by --version` (floor) | 0.015s | — |
 
-Neither babashka, the `clojure` CLI, nor tools.deps is implicated. Cold-start is
-**almost entirely namespace loading / source compilation** on the require path.
-Measure-first killed a false premise before any code changed — the discipline
-this whole effort rests on.
+Cold-start is almost entirely **namespace loading / source compilation** on the
+require path — not babashka, the CLI, or tools.deps.
 
-## 2. The reusable mechanism: force-include + soft-resolve
+## 2. The load-bearing lesson: measure the booted product
 
-Every lever below is the same move, and it exists because of one hard constraint:
+`require main` and `-m main --help` were used as the metric. **They never create
+an agent**, so they never load the agent roster — and with the roster absent, the
+framework files that transitively pull the memory subsystem
+(`common/tools.clj`, `common/commands.clj`, `common/context_actions.clj`) also
+don't load. The metric therefore measured a configuration that **cannot boot a
+TUI**. Every "win" below was really "how fast does main compile when you *don't*
+load the things a session needs" — which is not the question.
 
-- The **native `by` image** must keep the full subsystem baked in (GraalVM does
-  static reachability analysis at build time — a dropped `:require` strips the
-  code from the binary).
-- The **JVM dev path** (`bb tui` from source) pays the compile cost of every
-  eager `:require` on the chain, whether or not the current invocation uses it.
+**This was only caught by booting `bb tui` in tmux.** Do that for any
+startup-path change; the headless number lies.
 
-So we split the two paths:
+## 3. Attempted lever A — split the eager agent roster (reverted)
 
-1. **Native force-include** — a static `:require` in
-   `projects/agent-tui-app/src-native/.../native_main.clj` (the native-only entry
-   that delegates to the JVM `-main`). This keeps the subsystem reachable for the
-   GraalVM analyzer *without* putting it on the JVM require path.
-2. **JVM lazy resolve** — drop the eager `:require` from the cold-start
-   namespaces; resolve the symbols on first use via a cached `requiring-resolve`:
+`ai.brainyard.agent.interface` eager-`:require`d all 26 defagent namespaces
+(~5.2s isolated, 73% of the load). The `magenta-fish-5213` plan moved them to
+`agents_eager.clj`, force-included from a new native-only `native_main.clj`, and
+**step 5 was to drop the requires "in favour of a lazy registry manifest."**
 
-   ```clojure
-   (def ^:private resolve-mem
-     (memoize
-      (fn [sym-name]
-        (requiring-resolve
-         (symbol "ai.brainyard.memory.interface" (name sym-name))))))
-   ;; call site: (mem/get-stats mm)  →  ((resolve-mem 'get-stats) mm)
-   ```
-
-   This mirrors the pre-existing `analytics/core.persistence` `resolve-mem-fn`
-   and `clj-llm`'s `bedrock/safe-require-resolve` (the AWS soft-dep). The compile
-   moves from the require phase to first dispatch — off cold-start, onto a path
-   that already pays LLM/DB latency.
-
-## 3. Landed lever A — split the eager agent roster (`d0f9400`)
-
-`ai.brainyard.agent.interface` used to side-effect-`:require` **all 26 defagent
-namespaces** ("single source of truth: add a new agent here when it ships"),
-which measured **~5.2s in isolation** — 73% of the load. Those requires moved to
-`components/agent/src/ai/brainyard/agent/agents_eager.clj`, force-included from
-`native_main.clj`; `interface.clj` keeps only the framework API.
-
-**Result: 7.18s → 6.30s.** The projected ~5.2s saving **did not materialize** —
-the real cut was **<1s**.
-
-> **Lesson (the central one): isolated require cost is an UPPER BOUND, not the
-> marginal saving.** The 26 agents share almost all their transitive deps
-> (clj-llm, the agent core, SCI, the tool registry) with the rest of the app,
-> which loads them anyway. Removing the agents' *own* code saved little; the
-> shared chain dominated. This falsified the headline lever and reframed the
-> whole problem.
-
-## 4. Landed lever B — lazy-load the memory subsystem (`667fd52`)
-
-`ai.brainyard.memory.interface` (graph.clj + embed.clj **compilation**, not eager
-I/O — no SQLite conn/pragma/Model2Vec at require) measured **2.70s isolated**.
-
-**The seam was not obvious.** The plan targeted the eager `:require` at
-`main.clj:23`; removing it alone left memory still loaded (`:memory-loaded? true`,
-require-main unchanged). The true chain was:
+**The drop landed; the manifest never did.** There is no lazy-agent-ns resolution
+in the code — so on the JVM path **no defagent registered**, and creating the root
+coact-agent crashed:
 
 ```
-main → agent.interface  (export-symbols ai.brainyard.agent.common.memory-agent.hooks)
-     → memory-agent.hooks + memory-agent.commands  → eager (:require memory.interface)
+Could not create TUI agent for 'coact-agent': coact-agent tool is not registered!
 ```
 
-`export-symbols` requires the ns it re-exports, so the memory-agent hooks (wired
-for the write-guard + consolidation cadence) transitively pulled memory in. The
-fix lazified **all three** sites — `main.clj` (29 `mem/` sites),
-`memory_agent/hooks.clj` (4), `memory_agent/commands.clj` (13) — plus the agent
-core (`core/{agent,context,memory}.clj`, `interface.clj`), with a
-`memory.interface` force-include added to `native_main.clj`.
+The native `by` binary was fine (force-include), which is exactly why the
+headless measurement missed a total breakage of the interactive TUI.
 
-**Result: 6.18s → 5.02s (−1.16s, ~19%).** Memory is off the cold-start chain
-(`:mem false`), resolving on first `by memory` / recall/remember. Non-regression:
-`by memory stats` reads the live store (639 episodes via SQLite-FTS5), `clj-kondo
-errors:0`, `bb test` green.
+## 4. Attempted lever B — lazy-load the memory subsystem (reverted)
 
-> **Same lesson, again:** isolated 2.70s → marginal **1.16s**. Shared deps
-> (sqlite-jdbc, next.jdbc, clj-llm, sci) were already on the chain.
+`ai.brainyard.memory.interface` (graph.clj + embed.clj compilation) measured
+2.70s isolated. It was reached on cold-start via `agent.interface`'s
+`export-symbols` of the memory-agent hooks. Lever B lazified `main.clj` +
+`memory_agent/{hooks,commands}.clj` + the agent core behind a `resolve-mem`
+cached `requiring-resolve`, and force-included memory in `native_main.clj`.
 
-## 5. AOT: a 3× win that still doesn't reach 1.0s — hence opt-in (`961a0f0`)
+Measured 6.18s → 5.02s require-main — **but only because lever A had already
+removed the roster** (so the memory-pulling framework files weren't loading
+either). Layered on a broken config, it "measured" a second artifact.
 
-| Lever | require-main (median) | e2e `-m main --help` |
+## 5. Why the wins evaporate on a working TUI
+
+| Config | require-main | roster loads | memory loads | `bb tui` boots |
+|---|---:|---|---|---|
+| Original (pre-split) | ~7.18s | yes | yes | ✅ |
+| + agent-split (`d0f9400`) | 6.30s | **no** | no | ❌ crash |
+| + memory-split (`667fd52`) | 5.02s | **no** | no | ❌ crash |
+| roster re-loaded (either fix, or **revert**) | **~6.9–7.3s** | yes | yes | ✅ |
+
+A *working* TUI must load the agent roster (main-agent routes to every
+specialist) and, through the framework, the memory subsystem. Loading them puts
+require-main back at ~7s. The "−30%" was removed functionality, not deferred work.
+
+## 6. The pattern is sound — but incomplete without a lazy registry
+
+The two-path split itself is a legitimate technique:
+
+- **Native force-include** — a static `:require` in `native_main.clj` keeps the
+  subsystem reachable for the GraalVM analyzer.
+- **JVM lazy resolve** — drop the eager `:require`; resolve on first use via a
+  cached `requiring-resolve` (mirroring `analytics/core.persistence`
+  `resolve-mem-fn` and `clj-llm/bedrock` `safe-require-resolve`).
+
+But it is only *correct* if the deferred thing has a **lazy loader on the use
+path**. For agents that means a `{agent-id → ns}` registry that
+`setup-agent-by-id` / `call-tool` resolves on demand — the manifest step 5
+promised and never delivered. Without it, "lazy" is just "absent."
+
+And even done correctly, the payoff is small: the 26 agents' *marginal* cost was
+<1s (their transitive deps are shared with the rest of the app), and a booted
+session's root + routed specialists load most of them anyway. **Isolated require
+cost is an upper bound, not the marginal saving** — the central measurement error
+this whole effort illustrates, twice.
+
+## 7. The one real lever: opt-in AOT (`961a0f0`)
+
+AOT compiles whatever loads — roster, memory, framework — so it is a *correct*
+speedup, not a functionality-removal:
+
+| Lever | require-main | e2e `--help` |
 |---|---|---|
-| baseline (source load) | ~7.10s | ~7.20s |
+| baseline (source) | ~7.10s | ~7.20s |
 | **AOT (`-M:aot-dev`)** | **~2.30s** | **~2.35s** |
-| `-XX:TieredStopAtLevel=1`, no AOT | ~10.6s | — |
-| AOT + tiered1 | ~2.35s | ~2.39s |
+| `-XX:TieredStopAtLevel=1` | ~10.6s | — (harmful, +48%) |
 
-- **AOT is the single biggest lever (−67%)** but stops at ~2.3s ≫ 1.0s.
-- **`TieredStopAtLevel=1` is actively harmful (+48%)** — Clojure's load path
-  needs C2. Do not ship it.
+AOT can't be the dev default (the JVM prefers stale `.class` over fresh `.clj`;
+default-on would run stale code + force 40–60s recompiles). So it's opt-in:
 
-AOT can't be the dev default: `target/classes` already holds ~20k `.class`
-files, and the JVM prefers stale `.class` over fresh `.clj`, so a default-on AOT
-would silently run stale code after every edit — and force a 40–60s recompile on
-the common edit-run loop. So AOT is **opt-in** (owner decision, Jake Na):
+- `BY_AOT=1` (or `--aot`) → `bb tui` uses `-M:aot-dev`; unset → source load.
+- `bb aot:ensure` — a **freshness gate** (NO-OP unless `BY_AOT=1`) comparing a
+  source fingerprint to `target/classes/.aot-stamp`, recompiling on mismatch.
+- `scripts/bench-cold-start.sh` — the measurement harness.
 
-- `BY_AOT=1` (or `--aot`) flips `bb tui` to `-M:aot-dev`; unset → source load, no AOT.
-- `bb aot:ensure` — a **freshness gate** (NO-OP unless `BY_AOT=1`) that compares a
-  source fingerprint against `target/classes/.aot-stamp` and recompiles on
-  mismatch, so opt-in AOT can never run stale.
-- `scripts/bench-cold-start.sh` — the repeatable measurement harness.
+## 8. GraalVM native constraints (gate every lever)
 
-## 6. What's left is the irreducible framework core
-
-Post-memory-split isolated requires (median-3): `agent-tui.core` **4.66s**,
-`agent.interface` 3.77s, `core.agent` 2.11s, `clj-llm.interface` 1.22s — and they
-**overlap heavily**: `agent-tui.core` alone ≈ the whole 5.02s chain, because it
-transitively pulls the agent framework + clj-llm + core.agent. The peripheral
-eager-load levers (agents, memory) are **exhausted**; the remaining ~5s is the
-TUI + agent runtime + clj-llm + SCI that the interactive session genuinely needs
-to render the first prompt and run the first turn — not lazy-deferrable without
-breaking the TUI.
-
-The one remaining JVM candidate is **lazy-loading `clj-llm`** (~1.2s isolated,
-realistically ~0.5–1s marginal) — higher risk, since `create-lm` is wired into
-agent setup. Not yet attempted.
-
-## 7. GraalVM native constraints (gate every lever)
-
-- `defonce` **bakes build-time state** into the image — never hold cold-start
-  state in a `defonce` that a lever touches.
+- `defonce` **bakes build-time state** into the image.
 - Eager value-copy `(def x alias/x)` **freezes an unbound fn** under native-image;
-  use `#'alias/x` (see `reference_native_image_value_copy_unbound`).
+  use `#'alias/x` (`reference_native_image_value_copy_unbound`).
 - `proxy` / `defrecord` need reflect-config.
 - Any dropped `:require` must be re-added to `native_main.clj` or the subsystem is
-  stripped from `by`. Verify with a native force-include grep (a native build was
-  not re-run per lever — the force-include mirrors the proven `agents_eager`
-  pattern).
+  stripped from `by` — **and** paired with a JVM-side lazy loader, or the JVM path
+  breaks (§3).
 
-## 8. Conclusion & recommendation
+## 9. Conclusion & recommendation
 
-- **Measured progress:** 7.18s → 6.30s → 5.02s require-main across two landed
-  levers, plus opt-in AOT to ~2.3s.
-- **`<1.0s` is not achievable on the JVM path.** The honest target is "~5.0s from
-  source, ~2.3s with `BY_AOT=1`, and use the native `by` (0.015s) when you need
-  instant." Chasing sub-second on the JVM fights the framework core the TUI can't
-  run without.
-- **If pushing further:** profile/attempt the `clj-llm`-lazy lever, but expect
-  diminishing returns (~0.5–1s) against rising risk. The high-leverage
-  investment is keeping the native `by` fast and easy to reach, not shaving the
-  dev JVM path toward a target AOT itself can't hit.
+- **Two lazy-load levers reverted** (`c33aeb9`); they broke `bb tui` for artifact
+  wins. `bb tui` boots again at the ~7.18s working baseline (verified in tmux).
+- **AOT (`961a0f0`) kept** — the real lever (~2.3s), correctness-preserving.
+- **`<1.0s` is not achievable on the JVM.** The honest target: "~7s from source,
+  ~2.3s with `BY_AOT=1`, and the native `by` (0.015s) for instant."
+- **If pushing further:** the only correct next step is a genuine lazy-agent
+  registry (§6) *plus* lazifying the memory-pulling framework files — for a
+  realistic <1s time-to-first-prompt, at meaningful complexity and risk. The
+  high-leverage investment is keeping the native `by` fast and reachable, not
+  shaving the dev JVM path toward a target AOT itself can't hit.
 
-## 9. References
+## 10. References
 
-- Commits: `961a0f0` (AOT opt-in + freshness gate + bench), `d0f9400` (agent
-  split, `magenta-fish-5213`), `667fd52` (memory split, `maroon-eagle-5703`).
-- Build: `bb.edn` (the `tui` task's `BY_AOT` branch L128–135, `aot:ensure`
-  L608+), `projects/agent-tui-app/deps.edn` (`:aot-dev`), `scripts/bench-cold-start.sh`.
-- Native entry: `projects/agent-tui-app/src-native/.../native_main.clj`
-  (force-include site), `.../main.clj` (JVM entry).
-- Split targets: `components/agent/src/ai/brainyard/agent/agents_eager.clj`,
-  `.../agent/interface.clj`, `.../agent/core/{agent,context,memory}.clj`,
-  `.../agent/common/memory_agent/{hooks,commands}.clj`.
+- Commits: `961a0f0` (AOT opt-in + freshness gate + bench — kept), `d0f9400`
+  (agent split — reverted), `667fd52` (memory split — reverted), `c33aeb9`
+  (the revert of both).
+- Build: `bb.edn` (`tui` task `BY_AOT` branch, `aot:ensure`),
+  `projects/agent-tui-app/deps.edn` (`:aot-dev`), `scripts/bench-cold-start.sh`.
 - Pattern precedents: `components/analytics/.../core/persistence.clj`
   (`resolve-mem-fn`), `components/clj-llm/.../core/bedrock.clj`
   (`safe-require-resolve`).
-- Native-image rules: `docs/…` GraalVM notes;
-  `reference_native_image_value_copy_unbound`.
+- Native-image rules: `reference_native_image_value_copy_unbound` and the GraalVM
+  coding notes.
