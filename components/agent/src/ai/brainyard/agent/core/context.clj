@@ -21,18 +21,9 @@
    prompt fragment per field."
   (:require [clojure.string :as str]
             [ai.brainyard.agent.core.protocol :as proto]
+            [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.memory.interface.protocol :as mem-proto]
             [ai.brainyard.mulog.interface :as mulog]))
-
-;; ----------------------------------------------------------------------------
-;; Lazy memory-subsystem resolver
-;; ----------------------------------------------------------------------------
-;; Defer the ~2.7s require of ai.brainyard.memory.interface (graph.clj +
-;; embed.clj compilation) off the JVM cold-start path; resolve on first
-;; recall/remember dispatch. The protocol ns (mem-proto) is lightweight and
-;; stays eager.
-(def ^:private resolve-mem
-  (memoize (fn [n] (requiring-resolve (symbol "ai.brainyard.memory.interface" (name n))))))
 
 ;; ============================================================================
 ;; Context Building
@@ -154,7 +145,7 @@
   (let [st-mem   (when agent (proto/get-bt-st-memory agent))
         base     (when st-mem (get @st-mem field))
         mm       (when agent (:memory-manager @(:!state agent)))
-        store    (when mm ((resolve-mem 'store) mm))
+        store    (when mm (mem/store mm))
         sid      (when agent (proto/session-id agent))
         entries  (when (and store sid)
                    (mem-proto/read-entries

@@ -17,6 +17,7 @@
             [ai.brainyard.agent.core.protocol :as protocol]
             [ai.brainyard.agent.core.session :as session]
             [ai.brainyard.agent.core.memory :as agent-mem]
+            [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.protocol :as task-proto]
             ;; Side-effecting load: registers the default loop-guard hook
@@ -34,20 +35,56 @@
             ;; despite the file existing — the dormant-ns bug flagged
             ;; during Phase 1.3.
             [ai.brainyard.agent.common.aws-commands]
-            ;; The 26 eager `defagent`-registering requires were MOVED to
-            ;; ai.brainyard.agent.agents-eager, off the JVM require path so
-            ;; `bb tui` no longer pays ~5.2s of eager agent registration.
-            ;; The GraalVM native entry point statically requires that ns so
-            ;; the image still bakes the FULL 26-agent roster; on the JVM path
-            ;; agents load lazily on first dispatch. Two roster namespaces
-            ;; stay EAGER here because they are ALSO re-exported below via
-            ;; export-symbols (which itself requires the source ns):
-            ;; acp-agent and skills.
+            ;; Side-effecting loads: register every built-in defagent in the
+            ;; unified tool registry. Anyone requiring this interface ns
+            ;; automatically gets the full agent roster — no project-level
+            ;; static chain or base-level try-require! fallback needed.
+            ;; Single source of truth: add a new agent here when it ships.
+            [ai.brainyard.agent.common.react-agent]
+            [ai.brainyard.agent.common.coact-agent]
+            [ai.brainyard.agent.common.skill-agent]
+            [ai.brainyard.agent.common.rlm-agent]
+            [ai.brainyard.agent.common.explore-agent]
+            ;; Live-runtime debug specialist. Requires the clj-nrepl
+            ;; server to be running on the host (BY_NREPL_ENABLED on
+            ;; agent-tui / agent-web, or clj-nrepl$start-server on
+            ;; demand). Without it, the agent loads fine but its first
+            ;; code-eval surfaces the gate error. Full-trust: the
+            ;; deny-list is the only eval gate (no grant machinery).
+            [ai.brainyard.agent.common.debug-agent]
+            [ai.brainyard.agent.common.edit-agent]
+            [ai.brainyard.agent.common.plan-agent]
+            [ai.brainyard.agent.common.todo-agent]
+            [ai.brainyard.agent.common.exec-agent]
+            [ai.brainyard.agent.common.eval-agent]
+            [ai.brainyard.agent.common.mcp-agent]
+            [ai.brainyard.agent.common.tool-agent]
+            [ai.brainyard.agent.common.hook-agent]
+            [ai.brainyard.agent.common.meta-agent]
+            [ai.brainyard.agent.common.research-agent]
+            [ai.brainyard.agent.common.memory-agent]
+            [ai.brainyard.agent.common.workflow-agent]
+            [ai.brainyard.agent.common.config-agent]
+            [ai.brainyard.agent.common.schedule-agent]
+            [ai.brainyard.agent.common.event-agent]
+            [ai.brainyard.agent.common.state-machine-agent]
+            [ai.brainyard.agent.common.init-agent]
             ;; ACP-driven agent. Soft-coupled to ai.brainyard/acp-client via
             ;; requiring-resolve — consumers must add the dep at runtime if
             ;; they want this agent to be invokable. Loading the ns is safe
             ;; either way (the resolve is lazy at first invocation).
             [ai.brainyard.agent.common.acp-agent]
+            ;; The acp$* CRUD/ask family for managing ACP connections. Rides
+            ;; default-agent-roster; required here so the defcommands register
+            ;; even if the roster ns hasn't been loaded yet.
+            [ai.brainyard.agent.common.acp-commands]
+            ;; Front-door router. Loads main-agent AND its three lifecycle
+            ;; hooks (:agent.session/created bootstrap, :agent.tool-use/post
+            ;; capture-saved-artifacts, :agent.session/closed INDEX summary).
+            ;; Apps may opt out via (hooks/unregister-source!
+            ;; :ai.brainyard.agent.common.main-agent-hooks/main-agent).
+            [ai.brainyard.agent.common.main-agent]
+            [ai.brainyard.agent.common.main-agent-hooks]
             ;; Dynamic skill registry. `reload-skills!` is re-exported below
             ;; so entry points (e.g. the TUI's `start!`) can register skills at
             ;; runtime startup instead of via a namespace-load `defonce` — which
@@ -431,22 +468,6 @@
 ;; Memory — context-graph vector index (CR-MEM-21)
 ;; ============================================================================
 
-;; Cached lazy resolver for the memory subsystem — keeps the ~2.7s require of
-;; `ai.brainyard.memory.interface` (graph.clj + embed.clj compilation) off the
-;; JVM cold-start path, resolving it on first dispatch (mirrors core/memory.clj).
-(def ^:private resolve-mem
-  (memoize (fn [n] (requiring-resolve (symbol "ai.brainyard.memory.interface" (name n))))))
-
-(def ^:private resolve-mem
-  "Resolve a fn from `ai.brainyard.memory.interface` by its bare name on first
-   dispatch, caching the `requiring-resolve`. Mirrors analytics `resolve-mem-fn`
-   and the loader landed in core/memory.clj — keeps the ~2.7s memory require off
-   the JVM cold-start path."
-  (memoize
-   (fn [sym-name]
-     (requiring-resolve
-      (symbol "ai.brainyard.memory.interface" (name sym-name))))))
-
 (defn graph-vec-stale-notice
   "A one-line, user-facing notice when `agent`'s vector memory index is stale
    (the embedding model changed since it was built), or nil. Surfaced at TUI
@@ -454,6 +475,6 @@
    agent's memory manager via `get-memory-manager`."
   [agent]
   (try
-    (some-> agent protocol/get-memory-manager ((resolve-mem 'graph-vec-stale-notice)))
+    (some-> agent protocol/get-memory-manager mem/graph-vec-stale-notice)
     (catch Exception _ nil)))
 

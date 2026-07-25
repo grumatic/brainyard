@@ -28,19 +28,8 @@
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
+            [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.mulog.interface :as mulog]))
-
-;; ----------------------------------------------------------------------------
-;; Lazy memory-subsystem loader (cold-start lever — maroon-eagle-5703).
-;; ai.brainyard.memory.interface (~2.7s compile) reaches the bb tui cold-start
-;; chain via agent.interface's export of the memory-agent hooks. Resolve its
-;; fns lazily on first memory-agent dispatch so the compile stays off startup;
-;; the native `by` image bakes it via native_main.clj's force-include.
-(def ^:private resolve-mem
-  (memoize
-   (fn [sym-name]
-     (requiring-resolve
-      (symbol "ai.brainyard.memory.interface" (name sym-name))))))
 
 (def ^:const memory-agent-type
   "The defagent-type keyword used by `memory-agent`. Comparing
@@ -189,10 +178,10 @@
     ;; write is still in flight — flush pending writes so the triggering turn's
     ;; episode is visible before we read L2 (else it slips to the next window,
     ;; or is lost entirely at session-end).
-    ((resolve-mem 'capture-quiesce!) mm 5000)
+    (mem/capture-quiesce! mm 5000)
     (let [skey  (str sid)
           after (get @!extract-marker skey 0)
-          r ((resolve-mem 'extract-l2-batch!)
+          r (mem/extract-l2-batch!
              mm :session-id sid :after-id after
              :max-input-chars (config/get-config agent :graph-extract-max-input-chars)
              :max-entities    (config/get-config agent :graph-max-entities-per-episode)
@@ -213,8 +202,8 @@
     (let [sid (some-> agent proto/session-id)]
       (if (config/get-config agent :enable-graph-memory)
         (do (batch-extract-if-deferred! agent mm sid)
-            ((resolve-mem 'consolidate-graph!) mm :session-id sid))
-        ((resolve-mem 'consolidate-l2!)    mm :session-id sid)))))
+            (mem/consolidate-graph! mm :session-id sid))
+        (mem/consolidate-l2!    mm :session-id sid)))))
 
 (defn consolidation-cadence-handler
   "`:agent.ask/post` handler. Increments the session turn counter and, on

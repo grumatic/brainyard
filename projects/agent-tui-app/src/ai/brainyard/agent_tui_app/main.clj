@@ -20,32 +20,33 @@
    [ai.brainyard.agent-tui.config-wizard :as config-wizard]
    [ai.brainyard.agent-tui-app.dotenv :as dotenv]
    [ai.brainyard.agent.interface :as agent]
+   [ai.brainyard.memory.interface :as mem]
    [ai.brainyard.agent-tui-persist.interface :as persist]
    [ai.brainyard.ask-channel.interface :as ask-channel]
    [ai.brainyard.web-share.interface :as web-share]
    [ai.brainyard.os-sandbox.interface :as os-sandbox]
    [ai.brainyard.clj-llm.interface :as clj-llm]
+   ;; Force-include cognitect.aws + aws-client for the GraalVM native-image
+   ;; static analyzer. clj-llm's bedrock.clj uses requiring-resolve to keep
+   ;; AWS optional for non-Bedrock builds, but native-image then strips the
+   ;; classes — the runtime resolve fails with "Could not locate". Importing
+   ;; here (the project that ships `by`) guarantees inclusion without
+   ;; forcing static deps on other clj-llm consumers.
+   ;;
+   ;; cognitect aws-api also dynaloads HTTP backend + per-protocol impl at
+   ;; first use (cognitect.aws.dynaload/load-ns). Pre-require those too —
+   ;; bedrock-runtime is rest-json. java HTTP client is selected on JDK 11+.
+   [cognitect.aws.client.api]
+   [cognitect.aws.http.default]
+   [cognitect.aws.http.java]
+   [cognitect.aws.protocols.rest-json]
+   [ai.brainyard.aws-client.interface]
    [ai.brainyard.mulog.interface :as mulog]
    [cli-matic.core :as cli]
    [clojure.data.json :as json]
    [clojure.edn :as edn]
    [clojure.java.io :as io]
    [clojure.string :as str]))
-
-;; ----------------------------------------------------------------------------
-;; Lazy memory-subsystem loader (cold-start lever — maroon-eagle-5703)
-;; ----------------------------------------------------------------------------
-;; ai.brainyard.memory.interface costs ~2.7s to require (graph.clj + embed.clj
-;; COMPILATION). It is used ONLY by the `by memory …` CLI handlers below, never
-;; by run-tui!/startup — so resolve its fns lazily on first `by memory` use
-;; instead of eager-requiring it, keeping the ~2.7s off every JVM cold-start.
-;; The native `by` image bakes the full subsystem via native_main.clj's
-;; force-include. Mirrors the agent-core resolve-mem / analytics resolve-mem-fn.
-(def ^:private resolve-mem
-  (memoize
-   (fn [sym-name]
-     (requiring-resolve
-      (symbol "ai.brainyard.memory.interface" (name sym-name))))))
 
 ;; ============================================================================
 ;; Shared option definitions
@@ -1107,10 +1108,10 @@
   (setup-app-log!)
   (let [mm (agent/create-memory-manager user-id)]
     (try
-      ((resolve-mem 'initialize) mm)
+      (mem/initialize mm)
       (f mm)
       (finally
-        ((resolve-mem 'shutdown) mm)
+        (mem/shutdown mm)
         (teardown-app-log!)))))
 
 (defn cmd-memory-consolidate
@@ -1127,7 +1128,7 @@
       (let [report (with-memory-manager
                      uid
                      (fn [mm]
-                       (apply (resolve-mem 'consolidate-l2!) mm
+                       (apply mem/consolidate-l2! mm
                               (cond-> [:reducer reducer]
                                 sid (into [:session-id sid])))))]
         (if json?
@@ -1150,7 +1151,7 @@
   (let [json? (:json opts)
         uid   (helpers/resolve-user-id (:user-id opts))]
     (try
-      (let [stats (with-memory-manager uid (fn [mm] ((resolve-mem 'get-stats) mm)))]
+      (let [stats (with-memory-manager uid (fn [mm] (mem/get-stats mm)))]
         (if json?
           (print-json! (assoc stats :success true :user-id uid))
           (println (format "Memory[%s]: episodes=%s semantic-facts=%s schema=%s"
@@ -1192,7 +1193,7 @@
       (if node
         ;; Neighborhood probe: relationship entries seeded on the node name.
         (let [rels (with-memory-manager
-                     uid (fn [mm] ((resolve-mem 'graph-related) mm [node] {:limit limit})))
+                     uid (fn [mm] (mem/graph-related mm [node] {:limit limit})))
               out  {:success true :user-id uid :enabled? enabled
                     :node node :relations (vec rels) :count (count rels)}]
           (if json?
@@ -1200,7 +1201,7 @@
             (do (println (format "Graph[%s] neighborhood of \"%s\" (%s relation(s)):"
                                  uid node (count rels)))
                 (doseq [r rels] (println "  •" (:content r))))))
-        (let [snap (with-memory-manager uid (fn [mm] ((resolve-mem 'graph-snapshot) mm)))
+        (let [snap (with-memory-manager uid (fn [mm] (mem/graph-snapshot mm)))
               out  (assoc snap :success true :user-id uid :enabled? enabled)]
           (if json?
             (print-json! out)
@@ -1252,7 +1253,7 @@
                       kind (assoc :kind (keyword kind)))
               rows  (with-memory-manager
                       uid (fn [mm]
-                            ((resolve-mem 'read-entries) mm layer query
+                            (mem/read-entries mm layer query
                                               {:limit limit :include-archived archived})))]
           (if json?
             (print-json! {:success true :user-id uid :layer layer
@@ -1291,7 +1292,7 @@
       (try
         (let [row (with-memory-manager
                     uid (fn [mm]
-                          (first ((resolve-mem 'read-entries) mm layer {:id id}
+                          (first (mem/read-entries mm layer {:id id}
                                                    {:limit 1 :include-archived true}))))]
           (cond
             (nil? row)
@@ -1331,7 +1332,7 @@
       (try
         (let [rows (with-memory-manager
                      uid (fn [mm]
-                           (apply (resolve-mem 'contextual-recall) mm query
+                           (apply mem/contextual-recall mm query
                                   (cond-> [:limit limit]
                                     sid (into [:session-id sid])))))]
           (if json?
@@ -1368,8 +1369,8 @@
         (let [result (with-memory-manager
                        uid (fn [mm]
                              (if turn
-                               ((resolve-mem 'explain) mm sid turn)
-                               ((resolve-mem 'explain-session) mm sid))))]
+                               (mem/explain mm sid turn)
+                               (mem/explain-session mm sid))))]
           (if json?
             (print-json! {:success true :user-id uid :session sid :turn turn :explain result})
             (println (pr-str result)))
@@ -1390,8 +1391,8 @@
       (let [{:keys [stats vec]}
             (with-memory-manager
               uid (fn [mm]
-                    {:stats ((resolve-mem 'get-stats) mm)
-                     :vec   (try ((resolve-mem 'graph-vec-status) mm) (catch Throwable _ nil))}))]
+                    {:stats (mem/get-stats mm)
+                     :vec   (try (mem/graph-vec-status mm) (catch Throwable _ nil))}))]
         (if json?
           (print-json! {:success true :user-id uid :stats stats :vec-status vec
                         :graph-enabled? (graph-memory-enabled?)})
@@ -1445,7 +1446,7 @@
       (try
         (let [existing (with-memory-manager
                          uid (fn [mm]
-                               (first ((resolve-mem 'read-entries) mm layer {:id id}
+                               (first (mem/read-entries mm layer {:id id}
                                                         {:limit 1 :include-archived true}))))]
           (cond
             (nil? existing)
@@ -1455,7 +1456,7 @@
             (not (require-confirm! opts (format "Tombstone %s in %s? [y/N] " id (name layer))))
             (do (emit-err! "Aborted.") (System/exit 1))
             :else
-            (let [ok (with-memory-manager uid (fn [mm] ((resolve-mem 'forget-entry) mm layer id)))]
+            (let [ok (with-memory-manager uid (fn [mm] (mem/forget-entry mm layer id)))]
               (mem-audit! :forget uid {:layer layer :id id :ok (boolean ok)})
               (if json?
                 (print-json! {:success (boolean ok) :user-id uid :layer layer :id id :forgot (boolean ok)})
@@ -1499,7 +1500,7 @@
           (System/exit 1))
       :else
       (try
-        (let [updated (with-memory-manager uid (fn [mm] ((resolve-mem 'update-entry!) mm layer id updates)))]
+        (let [updated (with-memory-manager uid (fn [mm] (mem/update-entry! mm layer id updates)))]
           (mem-audit! :edit uid {:layer layer :id id :fields (vec (keys updates)) :ok (boolean updated)})
           (cond
             (nil? updated)
@@ -1534,8 +1535,8 @@
           (System/exit 1))
       :else
       (try
-        (let [ok (with-memory-manager uid (fn [mm] (if undo? ((resolve-mem 'unkeep!) mm layer id)
-                                                       ((resolve-mem 'keep!) mm layer id))))]
+        (let [ok (with-memory-manager uid (fn [mm] (if undo? (mem/unkeep! mm layer id)
+                                                       (mem/keep! mm layer id))))]
           (mem-audit! (if undo? :unkeep :keep) uid {:layer layer :id id :ok (boolean ok)})
           (if json?
             (print-json! {:success (boolean ok) :user-id uid :layer layer :id id :undo undo?
@@ -1565,8 +1566,8 @@
           (System/exit 1))
       :else
       (try
-        (let [ok (with-memory-manager uid (fn [mm] (if undo? ((resolve-mem 'unarchive!) mm layer id)
-                                                       ((resolve-mem 'archive!) mm layer id))))]
+        (let [ok (with-memory-manager uid (fn [mm] (if undo? (mem/unarchive! mm layer id)
+                                                       (mem/archive! mm layer id))))]
           (mem-audit! (if undo? :unarchive :archive) uid {:layer layer :id id :ok (boolean ok)})
           (if json?
             (print-json! {:success (boolean ok) :user-id uid :layer layer :id id :undo undo?
@@ -1598,9 +1599,9 @@
       (try
         (let [result (with-memory-manager
                        uid (fn [mm]
-                             (when-let [src (first ((resolve-mem 'read-entries) mm from {:id id}
+                             (when-let [src (first (mem/read-entries mm from {:id id}
                                                                      {:limit 1 :include-archived true}))]
-                               ((resolve-mem 'promote-entry) mm src from to))))]
+                               (mem/promote-entry mm src from to))))]
           (mem-audit! :promote uid {:from from :to to :id id :ok (boolean result)})
           (cond
             (nil? result)
@@ -1633,7 +1634,7 @@
       (do (emit-err! "Aborted.") (System/exit 1))
       (try
         (let [n (with-memory-manager
-                  uid (fn [mm] (apply (resolve-mem 'sweep-l2!) mm (when days [:retention-days days]))))]
+                  uid (fn [mm] (apply mem/sweep-l2! mm (when days [:retention-days days]))))]
           (mem-audit! :sweep uid {:retention-days (or days 30) :tombstoned n})
           (if json?
             (print-json! {:success true :user-id uid :retention-days (or days 30) :tombstoned n})
@@ -1659,7 +1660,7 @@
       (do (emit-err! "Aborted.") (System/exit 1))
       (try
         (let [report (with-memory-manager
-                       uid (fn [mm] ((resolve-mem 'prune-graph-to-budget!) mm :max-nodes max-nodes :max-edges max-edges)))]
+                       uid (fn [mm] (mem/prune-graph-to-budget! mm :max-nodes max-nodes :max-edges max-edges)))]
           (mem-audit! :prune uid (assoc report :max-nodes max-nodes :max-edges max-edges))
           (if json?
             (print-json! {:success true :user-id uid :report report
@@ -1682,7 +1683,7 @@
   (let [json? (:json opts)
         uid   (helpers/resolve-user-id (:user-id opts))]
     (try
-      (let [report (with-memory-manager uid (fn [mm] ((resolve-mem 'reembed-graph-vec!) mm)))]
+      (let [report (with-memory-manager uid (fn [mm] (mem/reembed-graph-vec! mm)))]
         (mem-audit! :reembed uid (or report {:no-embedder true}))
         (if json?
           (print-json! {:success true :user-id uid :report report})
@@ -1717,7 +1718,7 @@
       (let [report (with-memory-manager
                      uid
                      (fn [mm]
-                       (apply (resolve-mem 'extract-l2-graph!) mm
+                       (apply mem/extract-l2-graph! mm
                               (cond-> [:max-entities max-entities
                                        :max-relations max-relations
                                        :max-input-chars (or (agent/get-config :graph-extract-max-input-chars) 400000)
@@ -1779,7 +1780,7 @@
                        (progress! "extracting L2 → graph (%s; max-entities=%s max-relations=%s)…"
                                   (if rebuild? "full rebuild" "incremental")
                                   max-entities max-relations)
-                       (let [g (apply (resolve-mem 'extract-l2-graph!) mm
+                       (let [g (apply mem/extract-l2-graph! mm
                                       (cond-> [:max-entities max-entities
                                                :max-relations max-relations
                                                :max-input-chars (or (agent/get-config :graph-extract-max-input-chars) 400000)
@@ -1790,13 +1791,13 @@
                                           (:attempted g) (:total g) (:calls g 0))
                              _ (progress! "pruning graph to budget (max-nodes=%s max-edges=%s)…"
                                           max-nodes max-edges)
-                             p ((resolve-mem 'prune-graph-to-budget!) mm :max-nodes max-nodes
+                             p (mem/prune-graph-to-budget! mm :max-nodes max-nodes
                                                            :max-edges max-edges)
                              _ (progress! "  graph now %s node(s) / %s edge(s) (evicted %s node(s), %s edge(s))"
                                           (:nodes p) (:edges p)
                                           (:nodes-evicted p) (:edges-evicted p))
                              _ (progress! "consolidating L2 → L3 (community reducer)…")
-                             c (apply (resolve-mem 'consolidate-l2!) mm
+                             c (apply mem/consolidate-l2! mm
                                       (cond-> [:reducer :community]
                                         sid (into [:session-id sid])))
                              _ (progress! "  produced %s summary/summaries, consumed %s episode(s)"

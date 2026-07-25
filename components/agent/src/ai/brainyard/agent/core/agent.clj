@@ -38,12 +38,8 @@
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.clj-llm.interface :as llm]
+            [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.util.interface :as util]))
-
-;; Lazy-load the memory subsystem (mirrors resolve-mem in core/memory.clj):
-;; resolve ai.brainyard.memory.interface on first dispatch, not at ns load.
-(def ^:private resolve-mem
-  (memoize (fn [n] (requiring-resolve (symbol "ai.brainyard.memory.interface" (name n))))))
 
 ;; ============================================================================
 ;; Agent Registry (flat, keyed by globally-unique agent-id)
@@ -497,11 +493,11 @@
       ;; Stop the memory capture pipeline only when this was the last
       ;; agent referencing the manager. proto/stop-agent already
       ;; unregistered us, so list-agents reflects the post-close state.
-      (when (and mm ((resolve-mem 'capture-running?) mm))
+      (when (and mm (mem/capture-running? mm))
         (let [siblings (filter #(identical? mm (proto/get-memory-manager %))
                                (vals @!agent-registry))]
           (when (empty? siblings)
-            (try ((resolve-mem 'stop-capture!) mm)
+            (try (mem/stop-capture! mm)
                  (catch Exception e
                    (mulog/warn ::capture-stop-failed
                                :agent-id agent-id
@@ -624,7 +620,7 @@
               ;; Thread the configured L2 storage-truncation caps into the
               ;; capture parser (start-capture! is idempotent, so the FIRST
               ;; agent on a shared manager fixes the caps for the session).
-              ((resolve-mem 'start-capture!)
+              (mem/start-capture!
                mm
                ;; Capture only ROOT-agent turns; a subagent's ask/post is
                ;; operational, not the essential cross-session Q&A.
