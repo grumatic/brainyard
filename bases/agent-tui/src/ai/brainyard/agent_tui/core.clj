@@ -1691,11 +1691,16 @@
    When stdin is a real terminal, enables raw mode for Page Up/Down scrolling.
    Falls back to BufferedReader.readLine() for piped input (scripted tests).
    Accepts same options as start! (including :mode :A | :B from `mode/probe`).
-   Extra option:
-     :inline - Force inline mode (no alt screen/raw mode)."
+   Extra options:
+     :inline - Force inline mode (no alt screen/raw mode).
+     :serve  - Headless daemon: skip the interactive input loop, keep the
+               session alive to serve the ask channel (`by ask -s <id>`) until
+               SIGTERM/SIGINT, then stop! gracefully. Implies inline (silent)."
   [& opts]
   (let [opts-map (apply hash-map opts)
-        force-inline? (:inline opts-map)]
+        serve?   (:serve opts-map)
+        ;; Serve/daemon mode is headless — never enter the alt-screen.
+        force-inline? (or (:inline opts-map) serve?)]
     ;; Buffer OAuth device prompts fired by boot-time MCP connects until the
     ;; alt-screen live loop is up (flushed below), so they aren't lost to the
     ;; primary buffer. Must arm before start! runs init-mcp-from-config!.
@@ -1813,6 +1818,17 @@
         (try
           (when use-raw? (terminal/set-raw-mode!))
           (when use-raw? (input/start-input-reader! System/in))
+          ;; Headless serve/daemon mode: no interactive input loop. Install a
+          ;; SIGTERM/SIGINT shutdown handler, keep the session alive to serve the
+          ;; ask channel (`by ask -s <id>`), park until signalled, then stop!.
+          (if serve?
+            (let [!shutdown (java.util.concurrent.CountDownLatch. 1)]
+              (terminal/install-serve-shutdown-handler! !shutdown)
+              (mulog/info ::serve-mode-parked
+                          :ask-channel-enabled? (agent/get-config :ask-channel-enabled?))
+              (.await ^java.util.concurrent.CountDownLatch !shutdown)
+              (stop!))
+            (do))
           (terminal/install-sigint-handler!)
           (terminal/install-sigwinch-handler!)
           ;; Alternate the idle placeholder between a live agent suggestion and

@@ -498,6 +498,7 @@
         ;; mid-turn). See helpers/missing-provider-key.
 
         inline? (:inline opts)
+        serve? (:serve opts)
         verbose? (:verbose opts)
         max-iter (:max-iterations opts)
 
@@ -586,6 +587,7 @@
                       model (into [:lm-model model])))
         run-args (cond-> base-args
                    inline?    (into [:inline true])
+                   serve?     (into [:serve true])
                    verbose?   (into [:display-format :verbose])
                    max-iter   (into [:max-iterations max-iter])
                    session-id (into [:session-id session-id])
@@ -2294,6 +2296,9 @@
                                  :type :with-flag :default false}
                                 {:option "with-tmux"
                                  :as "Require tmux side panes / popups (exit 1 if not in a tmux session)"
+                                 :type :with-flag :default false}
+                                {:option "serve"
+                                 :as "Headless daemon: no interactive input; keep the session alive to serve `by ask -s <id>` over its ask socket until SIGTERM/SIGINT (pair with -s <id>)"
                                  :type :with-flag :default false}
                                 max-iter-opt
                                 {:option "resume" :short "r"

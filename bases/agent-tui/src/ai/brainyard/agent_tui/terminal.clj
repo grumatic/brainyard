@@ -469,6 +469,21 @@
       (reset! !old-sigint-handler (sun.misc.Signal/handle signal handler)))
     (catch Exception _ nil)))
 
+(defn install-serve-shutdown-handler!
+  "Headless serve/daemon mode: install SIGTERM + SIGINT handlers that count down
+   `latch` so the parked main thread can run a graceful `stop!` and exit.
+   Overrides the default SIGTERM (JVM-halt) and the interactive Ctrl-C handler —
+   in serve mode both signals mean \"shut the daemon down cleanly\". Best-effort
+   (sun.misc.Signal; no-op if unavailable)."
+  [^java.util.concurrent.CountDownLatch latch]
+  (doseq [sig ["TERM" "INT"]]
+    (try
+      (sun.misc.Signal/handle
+       (sun.misc.Signal. sig)
+       (proxy [sun.misc.SignalHandler] []
+         (handle [_sig] (.countDown latch))))
+      (catch Throwable _ nil))))
+
 (defn remove-sigint-handler!
   "Restore the previous SIGINT handler."
   []
