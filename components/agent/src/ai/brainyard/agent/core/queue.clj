@@ -70,15 +70,24 @@
                  (assoc :processing-id nil))))))
 
 (defn- run-processing-loop!
-  "Start a processing loop in a future. Processes items sequentially."
+  "Start a processing loop in a future. Processes items sequentially.
+
+   Self-healing: EVERY per-item side effect — including `notify-fn :processing`,
+   which the notify-fn may implement with terminal/layout code that is not yet
+   ready on a freshly-launched TUI — runs inside a per-item `try` that catches
+   `Throwable`, and `remove-item!` runs in a per-item `finally` so a poison item
+   can never strand the queue. The outer `finally` ALWAYS clears `:worker-future`
+   so `ensure-worker!` can respawn. Without this, a single unexpected throw would
+   kill the future while leaving `:worker-future` pointing at the dead future,
+   permanently wedging the queue (asks enqueue forever but never drain)."
   [!queue]
   (future
     (try
       (loop []
         (when-let [item (pop-next-item! !queue)]
           (let [{:keys [process-fn notify-fn]} @!queue]
-            (notify-fn :processing item (get-queue-info !queue))
             (try
+              (notify-fn :processing item (get-queue-info !queue))
               ;; opts forwarded as an optional 2nd arg ONLY when present, so
               ;; 1-arity process-fns (e.g. agent-web) are unaffected.
               (if-some [o (:opts item)]
@@ -87,23 +96,34 @@
               (notify-fn :completed item (get-queue-info !queue))
               (catch InterruptedException _
                 (notify-fn :cancelled item (get-queue-info !queue)))
-              (catch Exception e
-                (notify-fn :error item (assoc (get-queue-info !queue) :error e))))
-            (remove-item! !queue (:id item))
-            ;; Continue if more items
-            (recur))))
+              (catch Throwable e
+                ;; Report the failure, but never let a notify-fn throw of its own
+                ;; escape and kill the worker.
+                (try (notify-fn :error item (assoc (get-queue-info !queue) :error e))
+                     (catch Throwable _ nil)))
+              (finally
+                (remove-item! !queue (:id item)))))
+          ;; Continue if more items
+          (recur)))
+      ;; Normal drain: queue emptied.
       (let [{:keys [notify-fn]} @!queue]
-        (swap! !queue assoc :worker-future nil)
-        (notify-fn :queue-empty nil (get-queue-info !queue)))
-      (catch InterruptedException _
+        (try (notify-fn :queue-empty nil (get-queue-info !queue))
+             (catch Throwable _ nil)))
+      (catch InterruptedException _ nil)
+      (finally
+        ;; ALWAYS clear so `ensure-worker!` can respawn the worker — this, plus
+        ;; the per-item Throwable guard above, is the crux of the self-heal.
         (swap! !queue assoc :worker-future nil)))))
 
 (defn- ensure-worker!
-  "Start the worker future if not already running."
+  "Start the worker future if not running. Also respawns when the previous
+   worker future has died/completed (`future-done?`) — a bare `(nil? …)` guard
+   would never restart a crashed worker, so any worker death (see the self-heal
+   note on `run-processing-loop!`) would permanently wedge the queue."
   [!queue]
-  (when (nil? (:worker-future @!queue))
-    (let [f (run-processing-loop! !queue)]
-      (swap! !queue assoc :worker-future f))))
+  (let [f (:worker-future @!queue)]
+    (when (or (nil? f) (future-done? f))
+      (swap! !queue assoc :worker-future (run-processing-loop! !queue)))))
 
 (defn enqueue!
   "Add an input to the queue. Returns {:id uuid :position N} on success,
