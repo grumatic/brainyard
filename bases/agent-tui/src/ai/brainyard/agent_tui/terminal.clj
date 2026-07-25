@@ -65,6 +65,21 @@
       (zero? exit))
     (catch Exception _ false)))
 
+(defn stdout-terminal?
+  "Check if stdout (fd 1) is a real terminal — i.e. it is safe to emit
+   alt-screen / mouse control sequences to it. Unlike `stdin-terminal?`
+   (which probes the controlling terminal via /dev/tty), this inherits the
+   JVM's fd 1 into the probe so a daemon whose stdout is redirected to a
+   file/pipe is correctly detected as NOT a terminal. Fails closed (false)."
+  []
+  (try
+    (let [pb (ProcessBuilder. ^"[Ljava.lang.String;"
+              (into-array String ["/bin/sh" "-c" "test -t 1"]))]
+      ;; Inherit fd 1 so `test -t 1` checks the JVM's real stdout, not a pipe.
+      (.redirectOutput pb java.lang.ProcessBuilder$Redirect/INHERIT)
+      (zero? (.waitFor (.start pb))))
+    (catch Exception _ false)))
+
 (defn read-key!
   "Read a single keystroke in raw mode.
    When the input reader thread is active, reads from the input queue.

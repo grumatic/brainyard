@@ -1638,7 +1638,10 @@
   (reset! tui-session/!root-output-sessions {})
   (sessions/reset-sessions!)
   (layout/teardown!)
-  (tui-session/emit! (str "\n" (ansi/muted "TUI session ended.")))
+  ;; Teardown courtesy line only for a real terminal — a daemon / no-TTY run
+  ;; stays fully silent on stdout.
+  (when (terminal/stdout-terminal?)
+    (tui-session/emit! (str "\n" (ansi/muted "TUI session ended."))))
   :ok)
 
 ;; ============================================================================
@@ -1699,73 +1702,82 @@
     (oauth-render/arm-deferral!)
     (apply start! (concat opts [:skip-banner true]))
     ;; Initialize fullscreen layout
-    (let [fullscreen-ok? (and (not force-inline?) (layout/init-fullscreen!))]
-      ;; Emit the banner once — either into the fullscreen alt-screen
-      ;; (with resume-tail replay) or inline. `start!` was told to skip
-      ;; its own banner; `run!` owns it to avoid duplicates (teardown
-      ;; replays alt-screen scrollback to the primary buffer).
-      (let [{:keys [defagent-id agent-id resumed?]} @tui-session/!tui-state
-            ag (tui-session/get-active-agent)
-            sess-id (when ag (try (agent/session-id ag) (catch Throwable _ nil)))
-            sess    (when ag (try @(:!session ag) (catch Throwable _ nil)))
-            lm (try (clj-llm/get-default-lm) (catch Exception _ nil))]
+    ;; Only enter the alt-screen when stdout is a real terminal. A daemon /
+    ;; no-TTY run (stdout redirected to a file/pipe) must NOT emit alt-screen +
+    ;; mouse control sequences — refresh-terminal-size! falls back to [24 80]
+    ;; there, which would otherwise fool init-fullscreen!'s rows>=12 gate.
+    (let [tty?           (terminal/stdout-terminal?)
+          fullscreen-ok? (and (not force-inline?)
+                              tty?
+                              (layout/init-fullscreen!))]
+      ;; Emit the banner + notices ONLY when writing to a real terminal. A
+      ;; daemon / no-TTY run (stdout piped/redirected) stays fully silent — no
+      ;; banner ANSI, no MCP summary, no separators. `start!` was told to skip
+      ;; its own banner; `run!` owns it (teardown replays alt-screen scrollback).
+      (when tty?
+        (let [{:keys [defagent-id agent-id resumed?]} @tui-session/!tui-state
+              ag (tui-session/get-active-agent)
+              sess-id (when ag (try (agent/session-id ag) (catch Throwable _ nil)))
+              sess    (when ag (try @(:!session ag) (catch Throwable _ nil)))
+              lm (try (clj-llm/get-default-lm) (catch Exception _ nil))]
         ;; Replay the persisted scrollback tail before the banner so prior
         ;; conversation appears above it. Mode-independent: fires once for
         ;; ANY resume launch (fullscreen, primary-buffer fallback, etc.) —
         ;; `layout/write-output!` targets the active surface in both cases.
         ;; The inline-direct `start!` path (step 12) covers REPL/inline-only
         ;; callers that never reach `run!`.
-        (when resumed?
-          (when-let [tail (:resume-tail @tui-session/!tui-state)]
-            (when (not= "" tail)
-              (try (layout/write-output! tail)
-                   (catch Throwable _ nil))))
-          (swap! tui-session/!tui-state dissoc :resume-tail))
+          (when resumed?
+            (when-let [tail (:resume-tail @tui-session/!tui-state)]
+              (when (not= "" tail)
+                (try (layout/write-output! tail)
+                     (catch Throwable _ nil))))
+            (swap! tui-session/!tui-state dissoc :resume-tail))
         ;; Banner / resume notice via layout/write-output! (not
         ;; tui-session/emit!) so the bytes don't tee into the on-disk
         ;; scrollback file.
-        (if resumed?
-          (layout/write-output!
-           (format-resume-notice
-            {:session-id    sess-id
-             :agent-id      (or defagent-id agent-id)
-             :total-turns   (:total-turns sess)
-             :updated-at    (:updated-at sess)
-             :lm-provider   (:provider lm)
-             :lm-model      (:model lm)
-             :restored-cost (:resume-restored-cost @tui-session/!tui-state)
-             :restored-defs (:resume-restored-defs @tui-session/!tui-state)
-             :lost-defs     (:resume-lost-defs @tui-session/!tui-state)}))
-          (let [agents (->> (agent/get-tool-defs :type :agent)
-                            vals
-                            (mapv #(select-keys % [:id]))
-                            (sort-by (comp name :id)))]
+          (if resumed?
             (layout/write-output!
-             (fmt/format-welcome-banner
-              {:agent-id    (or defagent-id agent-id :unknown)
-               :session-id  (or sess-id "unknown")
-               :lm-provider (:provider lm)
-               :lm-model    (:model lm)
-               :agents      agents}))))
+             (format-resume-notice
+              {:session-id    sess-id
+               :agent-id      (or defagent-id agent-id)
+               :total-turns   (:total-turns sess)
+               :updated-at    (:updated-at sess)
+               :lm-provider   (:provider lm)
+               :lm-model      (:model lm)
+               :restored-cost (:resume-restored-cost @tui-session/!tui-state)
+               :restored-defs (:resume-restored-defs @tui-session/!tui-state)
+               :lost-defs     (:resume-lost-defs @tui-session/!tui-state)}))
+            (let [agents (->> (agent/get-tool-defs :type :agent)
+                              vals
+                              (mapv #(select-keys % [:id]))
+                              (sort-by (comp name :id)))]
+              (layout/write-output!
+               (fmt/format-welcome-banner
+                {:agent-id    (or defagent-id agent-id :unknown)
+                 :session-id  (or sess-id "unknown")
+                 :lm-provider (:provider lm)
+                 :lm-model    (:model lm)
+                 :agents      agents}))))
         ;; One-line MCP connecting/lazy summary, under the banner. The async
         ;; ✓/✗ per-server emits land in the live loop below as connects settle.
-        (when-let [s (format-mcp-summary (:mcp-summary @tui-session/!tui-state))]
-          (layout/write-output! (str s "\n")))
+          (when-let [s (format-mcp-summary (:mcp-summary @tui-session/!tui-state))]
+            (layout/write-output! (str s "\n")))
         ;; CR-MEM-21: embed-model-change notice (semantic recall paused until
         ;; `memory$reembed`) — under the banner, both inline and fullscreen.
-        (when-let [notice (agent/graph-vec-stale-notice ag)]
-          (layout/write-output! (str notice "\n")))
+          (when-let [notice (agent/graph-vec-stale-notice ag)]
+            (layout/write-output! (str notice "\n")))
         ;; Deferred startup notice (e.g. no provider key) — after the banner so
         ;; the alt-screen init doesn't wipe it before the user can read it.
-        (write-startup-notice!)
-        (when fullscreen-ok?
-          (layout/draw-separator!)
-          (layout/draw-bottom-separator!)
-          (tui-session/update-status-bar! :idle))
+          (write-startup-notice!)
+          (when fullscreen-ok?
+            (layout/draw-separator!)
+            (layout/draw-bottom-separator!)
+            (tui-session/update-status-bar! :idle))
         ;; Live loop is up: replay any OAuth device prompt buffered during boot,
         ;; and let later prompts emit straight through.
-        (oauth-render/flush-deferred!)))
-    (let [use-raw? (and (not force-inline?) (layout/fullscreen?) (terminal/stdin-terminal?))
+          (oauth-render/flush-deferred!))))
+    (let [tty?     (terminal/stdout-terminal?)
+          use-raw? (and (not force-inline?) (layout/fullscreen?) (terminal/stdin-terminal?))
           reader   (when-not use-raw?
                      (BufferedReader. (InputStreamReader. System/in)))]
       (let [cleanup-hook (Thread. ^Runnable (fn []
@@ -1807,12 +1819,16 @@
           ;; rotating static help tips (daemon; self-guards to empty idle prompt).
           (tui-session/start-idle-tip-ticker!)
           (loop []
-            (layout/set-input-active! true)
-            ;; Rotate the static help tip once per fresh idle prompt so
-            ;; successive prompts surface different hints (a live agent
-            ;; suggestion still takes priority over the static set).
-            (help-tips/rotate-static!)
-            (commands/draw-prompt!)
+            ;; Draw the input prompt + rotating tips only for a real terminal.
+            ;; A daemon / no-TTY run reads input (or EOF) silently — no prompt
+            ;; chrome to stdout.
+            (when tty?
+              (layout/set-input-active! true)
+              ;; Rotate the static help tip once per fresh idle prompt so
+              ;; successive prompts surface different hints (a live agent
+              ;; suggestion still takes priority over the static set).
+              (help-tips/rotate-static!)
+              (commands/draw-prompt!))
             (let [line (if use-raw?
                          (autocomplete/read-line-raw! System/in)
                          (.readLine ^BufferedReader reader))]

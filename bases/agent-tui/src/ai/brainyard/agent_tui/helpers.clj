@@ -5,6 +5,7 @@
 (ns ai.brainyard.agent-tui.helpers
   "Helper functions extracted from core: LM setup, usage tracking, JUL suppression."
   (:require [ai.brainyard.agent-tui.session :as tui-session]
+            [ai.brainyard.agent-tui.terminal :as terminal]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.clj-llm.interface :as clj-llm]
@@ -132,7 +133,10 @@
                                   resolved-key (assoc :api-key resolved-key)
                                   cache-ttl    (assoc :cache-ttl cache-ttl)))]
       (clj-llm/configure-default-lm! lm)
-      (tui-session/emit! (str (ansi/muted (str "LM configured: " (name provider) " / " resolved-model))))
+      ;; Suppress the startup "LM configured" line for a daemon / no-TTY run so
+      ;; stdout stays silent (mirrors run!'s banner gate).
+      (when (terminal/stdout-terminal?)
+        (tui-session/emit! (str (ansi/muted (str "LM configured: " (name provider) " / " resolved-model)))))
       lm)))
 
 (defn get-usage
