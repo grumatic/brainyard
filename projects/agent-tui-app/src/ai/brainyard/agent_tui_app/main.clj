@@ -26,21 +26,6 @@
    [ai.brainyard.web-share.interface :as web-share]
    [ai.brainyard.os-sandbox.interface :as os-sandbox]
    [ai.brainyard.clj-llm.interface :as clj-llm]
-   ;; Force-include cognitect.aws + aws-client for the GraalVM native-image
-   ;; static analyzer. clj-llm's bedrock.clj uses requiring-resolve to keep
-   ;; AWS optional for non-Bedrock builds, but native-image then strips the
-   ;; classes — the runtime resolve fails with "Could not locate". Importing
-   ;; here (the project that ships `by`) guarantees inclusion without
-   ;; forcing static deps on other clj-llm consumers.
-   ;;
-   ;; cognitect aws-api also dynaloads HTTP backend + per-protocol impl at
-   ;; first use (cognitect.aws.dynaload/load-ns). Pre-require those too —
-   ;; bedrock-runtime is rest-json. java HTTP client is selected on JDK 11+.
-   [cognitect.aws.client.api]
-   [cognitect.aws.http.default]
-   [cognitect.aws.http.java]
-   [cognitect.aws.protocols.rest-json]
-   [ai.brainyard.aws-client.interface]
    [ai.brainyard.mulog.interface :as mulog]
    [cli-matic.core :as cli]
    [clojure.data.json :as json]

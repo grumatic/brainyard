@@ -599,7 +599,7 @@
              (shell "mkdir" "-p" (str dir "/target/classes"))
              (let [result (shell {:continue true :dir dir}
                                  "clojure" "-M:build" "-e"
-                                 "(binding [*warn-on-reflection* true *compile-path* \"target/classes\"] (compile 'ai.brainyard.agent-tui-app.main))")]
+                                 "(binding [*warn-on-reflection* true *compile-path* \"target/classes\"] (compile 'ai.brainyard.agent-tui-app.native-main))")]
                (when-not (zero? (:exit result))
                  (println "AOT compilation failed")
                  (System/exit 1))
@@ -673,7 +673,7 @@
                  result (shell {:continue true :dir dir}
                                "clojure" "-M:uberdeps"
                                "--aliases" ":build"
-                               "--main-class" "ai.brainyard.agent_tui_app.main"
+                               "--main-class" "ai.brainyard.agent_tui_app.native_main"
                                "--target" "target/agent-tui-app.jar")]
              (when-not (zero? (:exit result))
                (println "Uberjar build failed")

@@ -65,7 +65,7 @@
            ;; AOT output dir. Only activated for compile/uberjar/native build
            ;; tasks so that day-to-day `bb tui` / `bb repl:ata` never load
            ;; stale .class files (which the JVM prefers over .clj sources).
-           :build {:extra-paths ["target/classes"]}
+           :build {:extra-paths ["src-native" "target/classes"]}
 
            ;; Opt-in dev-time AOT (BY_AOT=1): prepend the AOT-compiled classes
            ;; dir onto the dev JVM path used by `bb tui`. Distinct from :build
