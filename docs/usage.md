@@ -52,6 +52,7 @@ by --help           # full help
 | `-v` | `--[no-]verbose` | off | Verbose output (debug logs to stderr). |
 | `-r` | `--resume [ID]` | — | Resume a persisted session. Bare `--resume` = pick from an interactive menu; `--resume <id>` = that session. |
 |  | `--[no-]with-tmux` | off | Require tmux side panes / popups (exit 1 if not in a tmux session). |
+|  | `--[no-]serve` | off | Headless daemon: no interactive input; keep the session alive to serve `by ask --attach <id>` until `SIGTERM`/`SIGINT`. Pair with `-s <id>`. See [session-channel.md](session-channel.md). |
 |  | `--[no-]new` | — | Deprecated no-op — sessions start fresh by default. |
 |  | `--[no-]web` | off | Share this session over the web via [ttyd](https://github.com/tsl0922/ttyd). See [web-sharing.md](web-sharing.md). |
 |  | `--[no-]web-tmux` | off | Share via a private tmux session; the launching terminal stays a dashboard (drive locally from another terminal or the browser). |
@@ -132,6 +133,25 @@ but writes are confined to `~/.brainyard`, the project/cwd subtree, `$TMPDIR` an
 `/tmp` — so an agent can't clobber `~/.ssh`, `~/.aws/credentials`, `/etc`, or
 other repos. macOS-only; mutually exclusive with `--web`. Full guide:
 **[sandboxing.md](sandboxing.md)**.
+
+---
+
+## `by run --serve` — headless daemon
+
+```bash
+by run --serve -s deploy-bot < /dev/null &          # start a headless session
+by ask --attach deploy-bot "status of the rollout?" # drive it from anywhere in the project
+kill -TERM %1                                        # stop it gracefully
+```
+
+`--serve` runs a session with **no terminal**: it skips the interactive keyboard
+loop, opens its ask socket, and **parks** — staying alive to serve `by ask
+--attach <id>` (and the full session-channel wire protocol) instead of exiting on
+stdin EOF like a plain `by run`. Startup is silent (no alt-screen/banner; stdout
+stays clean, diagnostics go to stderr), and `SIGTERM`/`SIGINT` triggers a
+graceful shutdown (session close + memory consolidation + socket unlink). Pair it
+with an explicit `-s <id>` for a deterministic id to attach to. Full guide:
+**[session-channel.md](session-channel.md)**.
 
 ---
 

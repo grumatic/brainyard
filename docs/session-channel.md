@@ -48,6 +48,45 @@ To find a session id, see [Discovery](#discovering-live-sessions).
 
 ---
 
+## Running a headless daemon (`by run --serve`)
+
+`--attach` needs a **live** session. Interactively that's a `by run` TUI holding
+a terminal open — but a background service (a systemd unit, a container
+entrypoint, a CI step) has no terminal. `by run --serve` is that same session
+with no TTY:
+
+```bash
+by run --serve -s deploy-bot -p claude-code -m opus < /dev/null &
+```
+
+- **No interactive input** — it skips the keyboard loop entirely; stdin is unused
+  (`/dev/null` is fine).
+- **Stays alive** — instead of exiting on stdin EOF (which a plain `by run`
+  does), it opens its ask socket and **parks**, serving `by ask --attach
+  deploy-bot` (and the full wire protocol below) until told to stop.
+- **Silent startup** — no alt-screen, banner, or prompt chrome. A non-TTY run
+  writes nothing to stdout at startup; diagnostics (`[dotenv]`, JVM warnings)
+  still go to stderr.
+- **Clean shutdown** — `SIGTERM` or `SIGINT` triggers a graceful `stop!` (closes
+  sessions, runs session-end memory consolidation, unlinks the socket), then
+  exits.
+
+Pass an explicit `-s <id>` so the id is deterministic — it's what you hand to
+`--attach`. A `--serve` session persists like any other; resume it after a
+restart with `--resume <id>`.
+
+```bash
+by run --serve -s deploy-bot < /dev/null &         # start the daemon
+by ask --attach deploy-bot "status of the rollout?" # drive it from anywhere in the project
+kill -TERM %1                                        # stop it (or pkill -TERM -f 'run --serve -s deploy-bot')
+```
+
+> **Note:** the *served* turn still renders to the daemon's own stdout (the answer
+> is returned over the socket regardless). Redirect the daemon's stdout to a log
+> or `/dev/null` if you want it fully quiet.
+
+---
+
 ## Discovering live sessions
 
 Sessions are project-scoped. List the ones in the current project:
