@@ -17,7 +17,6 @@
             [ai.brainyard.agent.core.protocol :as protocol]
             [ai.brainyard.agent.core.session :as session]
             [ai.brainyard.agent.core.memory :as agent-mem]
-            [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.protocol :as task-proto]
             ;; Side-effecting load: registers the default loop-guard hook
@@ -432,6 +431,22 @@
 ;; Memory — context-graph vector index (CR-MEM-21)
 ;; ============================================================================
 
+;; Cached lazy resolver for the memory subsystem — keeps the ~2.7s require of
+;; `ai.brainyard.memory.interface` (graph.clj + embed.clj compilation) off the
+;; JVM cold-start path, resolving it on first dispatch (mirrors core/memory.clj).
+(def ^:private resolve-mem
+  (memoize (fn [n] (requiring-resolve (symbol "ai.brainyard.memory.interface" (name n))))))
+
+(def ^:private resolve-mem
+  "Resolve a fn from `ai.brainyard.memory.interface` by its bare name on first
+   dispatch, caching the `requiring-resolve`. Mirrors analytics `resolve-mem-fn`
+   and the loader landed in core/memory.clj — keeps the ~2.7s memory require off
+   the JVM cold-start path."
+  (memoize
+   (fn [sym-name]
+     (requiring-resolve
+      (symbol "ai.brainyard.memory.interface" (name sym-name))))))
+
 (defn graph-vec-stale-notice
   "A one-line, user-facing notice when `agent`'s vector memory index is stale
    (the embedding model changed since it was built), or nil. Surfaced at TUI
@@ -439,6 +454,6 @@
    agent's memory manager via `get-memory-manager`."
   [agent]
   (try
-    (some-> agent protocol/get-memory-manager mem/graph-vec-stale-notice)
+    (some-> agent protocol/get-memory-manager ((resolve-mem 'graph-vec-stale-notice)))
     (catch Exception _ nil)))
 

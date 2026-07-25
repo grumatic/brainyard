@@ -24,6 +24,12 @@
    ;; plus the two roster ns' it re-exports via export-symbols: acp-agent
    ;; and skills.)
    [ai.brainyard.agent.agents-eager]
+   ;; Force-include the memory subsystem (ai.brainyard.memory.interface —
+   ;; graph.clj + embed.clj, ~2.7s to compile). The JVM main.clj no longer
+   ;; eager-requires it (resolved lazily on first `by memory` / recall/remember
+   ;; so it stays off cold-start); statically require it HERE so the native
+   ;; `by` image still bakes the full L1/L2/L3 + graph/vec subsystem.
+   [ai.brainyard.memory.interface]
    ;; Force-include cognitect.aws + aws-client for the GraalVM native-image
    ;; static analyzer. clj-llm's bedrock.clj uses requiring-resolve to keep
    ;; AWS optional for non-Bedrock builds, but native-image then strips the

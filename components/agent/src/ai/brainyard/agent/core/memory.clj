@@ -15,7 +15,6 @@
    Depends on the memory component (ai.brainyard.memory.interface)."
   (:require [clojure.string :as str]
             [ai.brainyard.mulog.interface :as mulog]
-            [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.clj-llm.interface :as llm]
             [ai.brainyard.agent.core.config :as config]))
 
@@ -45,6 +44,27 @@
     :else
     (throw (ex-info "remember: per-layer value must be a map or seq of maps"
                     {:value v}))))
+
+;; ============================================================================
+;; Lazy memory-subsystem loader
+;; ============================================================================
+;;
+;; The memory component (ai.brainyard.memory.interface) costs ~2.7s to
+;; require — graph.clj + embed.clj COMPILATION, not eager I/O — so we do NOT
+;; require it at namespace load: that would tax every JVM cold-start (bb tui).
+;; Instead we resolve interface fns lazily on first recall/remember dispatch
+;; via a cached requiring-resolve, mirroring analytics/core.persistence's
+;; `resolve-mem-fn`. The native image bakes the full subsystem in via its
+;; force-include, so it is unaffected.
+
+(def ^:private resolve-mem
+  "Resolve a fn from `ai.brainyard.memory.interface` by its bare name on first
+   dispatch, caching the `requiring-resolve` so the ~2.7s memory require stays
+   off the JVM cold-start path. Mirrors analytics `resolve-mem-fn`."
+  (memoize
+   (fn [sym-name]
+     (requiring-resolve
+      (symbol "ai.brainyard.memory.interface" (name sym-name))))))
 
 ;; ============================================================================
 ;; Recall — per-layer reads
@@ -93,7 +113,7 @@
             (fn [layer m]
               (let [[q rd-opts] (split-read-opts m)]
                 (try
-                  (vec (mem/read-entries memory-manager layer q rd-opts))
+                  (vec ((resolve-mem 'read-entries) memory-manager layer q rd-opts))
                   (catch Exception e
                     (mulog/warn ::layer-read-failed
                                 :layer layer
@@ -108,7 +128,7 @@
                      :counts (into {} (map (fn [[k v]] [k (count v)])) results))
         results)
       (let [cr-opts (dissoc opts :query)
-            result  (apply mem/contextual-recall memory-manager query
+            result  (apply (resolve-mem 'contextual-recall) memory-manager query
                            (mapcat identity cr-opts))]
         (mulog/debug ::memory-recall-completed
                      :mode :contextual
@@ -149,7 +169,7 @@
     (let [write-layer
           (fn [layer entries]
             (try
-              (mapv #(mem/write-entry memory-manager layer %)
+              (mapv #((resolve-mem 'write-entry) memory-manager layer %)
                     (->entries entries))
               (catch Exception e
                 (mulog/warn ::layer-write-failed
@@ -208,20 +228,20 @@
           ;; string resolved through clj-llm's /embeddings.
           static?    (= "static" (some-> embed-model str/trim str/lower-case))
           embed-lm   (when-not static? (resolve-graph-lm embed-model))
-          static-ef  (when static? (mem/static-embed-fn))
+          static-ef  (when static? ((resolve-mem 'static-embed-fn)))
           extract-lm (resolve-graph-lm (config/get-config :graph-extract-model))]
       (cond-> {}
         static-ef  (assoc :embed-fn       static-ef
-                          :embed-dims     (mem/static-embed-dims)
+                          :embed-dims     ((resolve-mem 'static-embed-dims))
                           :embed-model-id "static")
-        embed-lm   (assoc :embed-fn       (mem/make-embed-fn embed-lm :model (:model embed-lm))
+        embed-lm   (assoc :embed-fn       ((resolve-mem 'make-embed-fn) embed-lm :model (:model embed-lm))
                           ;; fingerprint by the configured model string so a
                           ;; model swap (CR-MEM-21) pauses vec recall until rebuild
                           :embed-model-id (some-> embed-model str/trim))
-        extract-lm (assoc :extract-fn   (mem/make-extract-fn extract-lm)
+        extract-lm (assoc :extract-fn   ((resolve-mem 'make-extract-fn) extract-lm)
                           ;; reuse the extraction chat model for community
                           ;; summaries (CR-MEM-24) — same capability class
-                          :summarize-fn (mem/make-summarize-fn extract-lm))))))
+                          :summarize-fn ((resolve-mem 'make-summarize-fn) extract-lm))))))
 
 (defn create-memory-manager
   "Create a memory manager for an agent, if the memory component is available.
@@ -243,7 +263,7 @@
 
    Returns: MemoryManager instance or nil if memory component unavailable"
   [user-id & {:keys [in-memory base-path db-path]}]
-  (apply mem/create-memory-manager user-id
+  (apply (resolve-mem 'create-memory-manager) user-id
          :in-memory (boolean in-memory)
          :base-path (or base-path (default-memory-base-path))
          :db-path db-path

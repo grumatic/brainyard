@@ -45,11 +45,22 @@
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :refer [defcommand]]
             [ai.brainyard.clj-llm.interface :as clj-llm]
-            [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [next.jdbc :as jdbc]))
+
+;; ----------------------------------------------------------------------------
+;; Lazy memory-subsystem loader (cold-start lever — maroon-eagle-5703).
+;; ai.brainyard.memory.interface (~2.7s compile) reaches the bb tui cold-start
+;; chain via agent.interface's export of the memory-agent hooks. Resolve its
+;; fns lazily on first memory-agent dispatch so the compile stays off startup;
+;; the native `by` image bakes it via native_main.clj's force-include.
+(def ^:private resolve-mem
+  (memoize
+   (fn [sym-name]
+     (requiring-resolve
+      (symbol "ai.brainyard.memory.interface" (name sym-name))))))
 
 ;; ============================================================================
 ;; Helpers
@@ -121,7 +132,7 @@
             qry   (or query {})
             opts  (cond-> {:limit (or limit 20)}
                     include-archived (assoc :include-archived true))
-            xs    (mem/read-entries mm lyr qry opts)]
+            xs    ((resolve-mem 'read-entries) mm lyr qry opts)]
         {:layer (name lyr) :count (count xs) :entries (vec xs)})
       (catch Exception e
         (mulog/warn ::memory$read-failed :exception e)
@@ -257,7 +268,7 @@
           :orphan             nil
           :archived           (count-where ds "SELECT COUNT(*) AS cnt FROM semantic_facts WHERE user_id = ? AND archived_flag = 1" [user-id])
           :tombstoned         (count-where ds "SELECT COUNT(*) AS cnt FROM semantic_facts WHERE user_id = ? AND tombstoned_flag = 1" [user-id])}
-     :capture {:running? (boolean (mem/capture-running? manager))
+     :capture {:running? (boolean ((resolve-mem 'capture-running?) manager))
                :backlog  nil
                :critical? nil
                :reducer  :heuristic}
@@ -287,7 +298,7 @@
   (fn [& {:keys [text]}]
     (if (str/blank? text)
       {:error ":text is required"}
-      (try {:keywords (vec (mem/extract-keywords text))}
+      (try {:keywords (vec ((resolve-mem 'extract-keywords) text))}
            (catch Exception e {:error (ex-message e)}))))
   :input-schema  [:map
                   [:text [:string {:desc "Source text"}]]]
@@ -324,13 +335,13 @@
             ent   (->entry entry lyr)]
         (if-let [v (guard/content-violation (pr-str ent))]
           v
-          (let [saved (or (mem/write-entry mm lyr ent)
+          (let [saved (or ((resolve-mem 'write-entry) mm lyr ent)
                           ;; Unique-constraint duplicate path — the underlying
                           ;; store returns nil rather than upserting. Look the
                           ;; existing row up by our minted :id so the caller
                           ;; gets a stable id and an idempotent result.
                           (when (and (:id ent) (contains? #{:l2 :l3} lyr))
-                            (first (mem/read-entries mm lyr {:id (:id ent)} {}))))]
+                            (first ((resolve-mem 'read-entries) mm lyr {:id (:id ent)} {}))))]
             (if saved
               {:entry-id (:id saved)
                :layer    (name lyr)
@@ -355,7 +366,7 @@
       (let [mm    (require-mm)
             from' (->layer from)
             to'   (->layer to)
-            saved (mem/promote-entry mm entry from' to')]
+            saved ((resolve-mem 'promote-entry) mm entry from' to')]
         {:entry-id (:id saved)
          :from     (name from')
          :to       (name to')
@@ -380,7 +391,7 @@
     (try
       (let [mm   (require-mm)
             lyr  (->layer layer)
-            ok?  (mem/forget-entry mm lyr entry-id)]
+            ok?  ((resolve-mem 'forget-entry) mm lyr entry-id)]
         (mulog/info ::memory$forget :layer lyr :entry-id entry-id :reason reason)
         {:ok      (boolean ok?)
          :layer   (name lyr)
@@ -405,8 +416,8 @@
       (let [mm   (require-mm)
             lyr  (->layer layer)
             ok?  (if value
-                   (mem/keep! mm lyr entry-id)
-                   (mem/unkeep! mm lyr entry-id))]
+                   ((resolve-mem 'keep!) mm lyr entry-id)
+                   ((resolve-mem 'unkeep!) mm lyr entry-id))]
         {:ok      (boolean ok?)
          :layer   (name lyr)
          :entry-id entry-id
@@ -432,8 +443,8 @@
       (let [mm   (require-mm)
             lyr  (->layer layer)
             ok?  (if value
-                   (mem/archive! mm lyr entry-id)
-                   (mem/unarchive! mm lyr entry-id))]
+                   ((resolve-mem 'archive!) mm lyr entry-id)
+                   ((resolve-mem 'unarchive!) mm lyr entry-id))]
         {:ok      (boolean ok?)
          :layer   (name lyr)
          :entry-id entry-id
@@ -463,7 +474,7 @@
                    window-ms (into [:window-ms window-ms])
                    min-batch (into [:min-batch min-batch])
                    reducer   (into [:reducer (keyword reducer)]))
-            r (apply mem/consolidate-l2! mm opts)]
+            r (apply (resolve-mem 'consolidate-l2!) mm opts)]
         {:report r})
       (catch Exception e
         (mulog/warn ::memory$consolidate-failed :exception e)
@@ -483,7 +494,7 @@
     (try
       (let [mm (require-mm)
             opts (cond-> [] retention-days (into [:retention-days retention-days]))
-            n  (apply mem/sweep-l2! mm opts)]
+            n  (apply (resolve-mem 'sweep-l2!) mm opts)]
         {:tombstoned n
          :retention-days (or retention-days 30)})
       (catch Exception e
