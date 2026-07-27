@@ -208,8 +208,7 @@ Invoke each by direct kebab-case dispatch from a clojure fence:
 
 OR via the tool channel (JSON):
     [{\"tool-name\": \"<agent-name>\",
-      \"tool-args\": [{\"name\": \"question\",      \"value\": \"...\"},
-                      {\"name\": \"agent-context\", \"value\": \"...\"}]}]
+      \"tool-args\": {\"question\": \"...\", \"agent-context\": \"...\"}}]
 
 DO NOT wrap a specialist call in `task$run` / `task$status` / async polling.
 Specialists return promptly (seconds to a minute); polling for their result

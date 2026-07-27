@@ -14,6 +14,8 @@
             [clojure.set]
             [clojure.string :as str]
             [ai.brainyard.agent.common.coact-agent :as rca]
+            [ai.brainyard.agent.common.schema :as acs]
+            [malli.core :as m]
             [ai.brainyard.agent.common.react-agent]
             [ai.brainyard.agent.common.agent-roster :as agent-roster]
             [ai.brainyard.agent.core.config :as config]
@@ -179,6 +181,19 @@
       ;; folded in — populated only when `answer` is non-blank).
       (is (= #{:tool-calls :code-blocks :answer :goal-achieved :next-user-prompt}
              (set output-keys))))))
+
+(deftest tool-args-map-shape-test
+  ;; Option 4: `::acs/tool-args` is a plain JSON object (MCP-style map), not a
+  ;; name/value pair-list. The coact signature reuses `::acs/tool-calls` rather
+  ;; than a local copy, so validating the shared schema covers both agents.
+  (testing "tool-calls with a MAP tool-args validates"
+    (is (m/validate ::acs/tool-calls [{:tool-name "grep" :tool-args {"q" "foo" "n" 3}}]))
+    (is (m/validate ::acs/tool-calls [{:tool-name "x" :tool-args {}}])))
+  (testing "the old name/value pair-list no longer satisfies the schema"
+    ;; (dispatch still accepts it via normalize-tool-args back-compat; the
+    ;; emitted shape the LLM is asked for is now a plain object)
+    (is (not (m/validate ::acs/tool-calls
+                         [{:tool-name "x" :tool-args [{:name "q" :value "foo"}]}])))))
 
 (deftest stable-keys-wiring-test
   (testing "ThinkActCode BT node declares :system-context and :user-context as stable-keys"

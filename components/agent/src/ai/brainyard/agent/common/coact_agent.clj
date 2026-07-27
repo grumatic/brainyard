@@ -93,15 +93,10 @@
    ;; ── LLM outputs ─────────────────────────────────────────────────────────
    ::thought [:string {:desc "Reasoning for this iteration (1-3 sentences)"}]
 
-   ::tool-call [:map {:desc "One tool invocation"}
-                [:tool-name [:string {:desc "tool id"}]]
-                [:tool-args [:vector {:desc "argument list"}
-                             [:map
-                              [:name [:string {:desc "arg name"}]]
-                              [:value [:string {:desc "arg value"}]]]]]]
-
-   ::tool-calls [:vector {:desc "Tool invocations. Empty when using code-blocks or answer."}
-                 ::tool-call]
+   ;; `::tool-call` / `::tool-calls` are the shared canonical schemas in
+   ;; `common/schema.clj` (aliased `acs`) — the signature :outputs references
+   ;; `::acs/tool-calls` directly rather than redefining them here. `tool-args`
+   ;; is a plain JSON object (map), not a name/value pair-list.
 
    ::code-blocks [:string {:desc "Markdown text containing fenced code blocks with language tags (clojure, bash, python, javascript). Blocks separated by a line containing only `<!-- ParallelBlock -->` run concurrently in forked sandboxes. Otherwise blocks run sequentially in source order. Four-backtick fences tagged markdown/text/html are verbatim content blocks: saved to a file (path returned), not executed. Empty when using tool-calls or answer."}]
 
@@ -193,7 +188,7 @@ TOOL CHANNEL — use when:
 
   Output shape:
     tool-calls: [{\"tool-name\": \"...\",
-                  \"tool-args\": [{\"name\": \"...\", \"value\": \"...\"}]}]
+                  \"tool-args\": {\"<arg>\": \"<val>\"}}]
     code-blocks: \"\"   answer: \"\"
 
 CODE CHANNEL — populate `code-blocks` with markdown-fenced blocks. Supported
@@ -321,7 +316,7 @@ can continue. A LATER iteration receives the resolved result as an
              :context-briefing ::context-briefing
              :recalled-memory  ::acs/recalled-memory
              :iterations       ::iterations}
-   :outputs {:tool-calls       ::tool-calls
+   :outputs {:tool-calls       ::acs/tool-calls
              :code-blocks      ::code-blocks
              :answer           ::acs/answer
              :goal-achieved    ::goal-achieved
@@ -376,8 +371,9 @@ tool > answer.")
 (def ^:private coact-tool-call-format
   "## tool-calls Format (JSON array)
 Populate `tool-calls` as a JSON array to invoke one or more tools in a single iteration:
-   [{\"tool-name\": \"<id>\", \"tool-args\": [{\"name\": \"<arg>\", \"value\": \"<val>\"}]}]
-- For agent tools, pass `{\"name\": \"question\", \"value\": \"<your question>\"}`.
+   [{\"tool-name\": \"<id>\", \"tool-args\": {\"<arg>\": \"<val>\"}}]
+- `tool-args` is a JSON object (arg name → value). Use `{}` for no arguments.
+- For agent tools, pass `{\"question\": \"<your question>\"}`.
 - The runtime dispatches each entry and appends results to the iteration record under `tool-results`.
 
 ### Bootstrap Tools (always bound)
@@ -530,7 +526,7 @@ Marker format, chunk modes, and worked recipes: `(usage$guide :topic :truncation
 **A) JSON `tool-calls` channel** (one-shot RPC, ReAct-style):
 ```
 [{\"tool-name\": \"<id>\",
-  \"tool-args\": [{\"name\": \"<arg>\", \"value\": \"<val>\"}]}]
+  \"tool-args\": {\"<arg>\": \"<val>\"}}]
 ```
 
 **B) ```clojure code-block** (composable, can chain across iterations and feed
@@ -551,7 +547,7 @@ For MCP tools that aren't registered locally, use `call-tool` with `:server-name
   "Every tool below is invoked via the JSON `tool-calls` channel (one-shot RPC, ReAct-style):
 ```
 [{\"tool-name\": \"<id>\",
-  \"tool-args\": [{\"name\": \"<arg>\", \"value\": \"<val>\"}]}]
+  \"tool-args\": {\"<arg>\": \"<val>\"}}]
 ```
 There is no code-blocks channel for this agent — to reach a tool not bound below, discover it with
 `list-tools` / `get-tool-info` and call it through `tool-calls`.")

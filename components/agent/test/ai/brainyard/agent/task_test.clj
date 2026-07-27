@@ -14,7 +14,8 @@
             [ai.brainyard.agent.task.commands :as cmds]
             [ai.brainyard.agent.task.format :as task-fmt]
             [ai.brainyard.agent.core.tool :as tool]
-            [ai.brainyard.agent.common.tools :as ctools]))
+            [ai.brainyard.agent.common.tools :as ctools]
+            [malli.core :as m]))
 
 ;; ============================================================================
 ;; Test Fixtures
@@ -618,3 +619,18 @@
         ;; Generous bound: 500ms timeout + 500ms poll tick + 2s grace + invoke-tool overhead.
         (is (< elapsed 5000)
             (str "returned without waiting full 5s sleep (actual " elapsed "ms)"))))))
+
+(deftest task-run-tool-args-accepts-string-and-map-test
+  ;; task$run's :tool-args is [:or [:string] [:map]] so BOTH invocation channels
+  ;; validate: the tool-calls channel delivers a JSON object *string*, the
+  ;; code-block channel delivers a native Clojure *map*. run-tool-job's
+  ;; parse-tool-args-input normalizes both to an arg map.
+  (let [schema  (get-in (tool/get-tool-defs :id :task$run) [:meta :input-schema])
+        ta-elem (some (fn [e] (when (and (vector? e) (= :tool-args (first e))) (last e)))
+                      (rest schema))]
+    (testing ":tool-args validates a JSON object string (tool-calls channel)"
+      (is (m/validate ta-elem "{\"foo\":\"bar\"}")))
+    (testing ":tool-args validates a native map (code-block channel)"
+      (is (m/validate ta-elem {:foo "bar"})))
+    (testing "a vector is rejected (neither string nor map)"
+      (is (not (m/validate ta-elem [1 2]))))))

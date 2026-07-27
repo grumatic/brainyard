@@ -237,6 +237,26 @@
                         :status "running"}}))))
     {:error "Task manager not initialized"}))
 
+(defn- parse-tool-args-input
+  "Normalize the polymorphic :tool-args input into a plain arg map, or an
+   {::error msg} marker. Accepts:
+     - nil / blank string      → {}
+     - a map (code-block path) → used as-is
+     - a JSON object string    → parsed via json (tool-calls path)
+   The `::error` sentinel is namespaced so a legitimate tool-arg map that itself
+   contains an `:error` key isn't misread as a parse failure."
+  [tool-args]
+  (cond
+    (map? tool-args)                             tool-args
+    (or (nil? tool-args) (str/blank? tool-args)) {}
+    (string? tool-args)
+    (try
+      (let [parsed (json/read-str tool-args :key-fn keyword)]
+        (if (map? parsed) parsed {::error "tool-args must be a JSON object"}))
+      (catch Exception e
+        {::error (str "Invalid JSON in tool-args: " (ex-message e))}))
+    :else {::error "tool-args must be a JSON object string or a map"}))
+
 (defn- run-tool-job
   "Create + start a :tool task. Returns {:result {...}} or {:error ...}."
   [{:keys [tool-id tool-args name timeout sync?]}]
@@ -245,17 +265,9 @@
       {:error "tool-id is required"}
       (let [tool-id-kw (keyword tool-id)
             timeout-ms (executor-timeout-ms timeout sync?)
-            args-or-err (if-not (str/blank? tool-args)
-                          (try
-                            (let [parsed (json/read-str tool-args :key-fn keyword)]
-                              (if (map? parsed)
-                                parsed
-                                {:error "tool-args must be a JSON object"}))
-                            (catch Exception e
-                              {:error (str "Invalid JSON in tool-args: " (ex-message e))}))
-                          {})]
-        (if (:error args-or-err)
-          args-or-err
+            args-or-err (parse-tool-args-input tool-args)]
+        (if-let [err (::error args-or-err)]
+          {:error err}
           (let [task-name (or (when-not (str/blank? name) name)
                               (str "tool: " (clojure.core/name tool-id-kw)))
                 task (tp/create-task mgr task-name :tool
@@ -365,8 +377,9 @@
   "Start a task. Pick the job type via `:job-type`.
 
    :bash — required: :command. Optional: :name, :timeout (ms; default 120000).
-   :tool — required: :tool-id (keyword string). Optional: :tool-args (JSON
-           object string), :name, :timeout (ms; default 120000; best-effort
+   :tool — required: :tool-id (keyword string). Optional: :tool-args (a JSON
+           object string OR a map when called from a code block), :name,
+           :timeout (ms; default 120000; best-effort
            interrupt — tools that don't respect Thread interrupts may keep
            running in the background until they return on their own).
 
@@ -424,7 +437,10 @@
                   [:command    {:optional true} [:string {:desc "For :bash — the shell command"}]]
                   [:timeout    {:optional true} [:string {:desc "Deadline in ms (default = agent :task-timeout-ms, typically 120000). In sync mode this is the waiter's deadline only — the underlying executor is bounded by the agent global cap, so detach-mode work can keep running after the waiter returns :pending. In async mode this is the executor's own kill deadline. :tool uses best-effort interrupt."}]]
                   [:tool-id    {:optional true} [:string {:desc "For :tool — registered tool ID (e.g. my-tool)"}]]
-                  [:tool-args  {:optional true} [:string {:desc "For :tool — JSON object of tool arguments"}]]
+                  [:tool-args  {:optional true}
+                   [:or {:desc "For :tool — the target tool's arguments, as EITHER a JSON object string (tool-calls channel) OR a map (code-block channel)."}
+                    [:string {:desc "JSON object of tool arguments (tool-calls channel)"}]
+                    [:map    {:desc "Map of tool arguments (code-block / Clojure channel)"}]]]
                   [:name       {:optional true} [:string {:desc "Optional task name"}]]
                   [:sync       {:optional true :default false} [:boolean {:desc "If true, block until terminal/timeout/detached. External code can flip false to detach (true→false only). Default false (async)."}]]
                   [:on-timeout {:optional true :default "detach"} [:enum {:desc "Sync-mode deadline policy. \"detach\" (default) = return :status \"pending\" and let the task keep running, harvest later via task$detail. \"kill\" = cancel the task and return :status \"timeout\". No effect when :sync is false."} "detach" "kill"]]]

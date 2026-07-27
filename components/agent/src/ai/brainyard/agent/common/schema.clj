@@ -36,15 +36,20 @@
 
    ::tool-name [:string {:desc "tool name"}]
 
-   ::tool-args [:vector {:desc "tool arguments. Use empty [] for no arguments."}
-                [:map
-                 [:name [:string {:desc "argument name"}]]
-                 [:value [:string {:desc "argument value"}]]]]
+   ;; A plain JSON object (MCP-style), NOT a name/value pair-list. The pair-list
+   ;; shape induced malformed LLM emissions; a bare object is what models emit
+   ;; naturally and matches the code-block channel's native Clojure map. `:any`
+   ;; keys mirror MCP's `[:map-of :any :any]` and decouple this from the DSPy
+   ;; parser's key-fn — `call-tool` keywordizes top-level keys downstream.
+   ::tool-args [:map-of {:desc "Tool arguments as a JSON object, e.g. {\"url\": \"…\", \"n\": 3}. Use {} for no arguments."}
+                :any :any]
 
-   ::tool-calls [:vector {:desc "tools to call"}
-                 [:map
-                  [:tool-name ::tool-name]
-                  [:tool-args ::tool-args]]]
+   ::tool-call [:map {:desc "One tool invocation"}
+                [:tool-name ::tool-name]
+                [:tool-args ::tool-args]]
+
+   ::tool-calls [:vector {:desc "Tool invocations to run this iteration. Empty when not calling tools (using another channel or answering)."}
+                 ::tool-call]
 
    ::issues-identified [:vector {:desc "Issues identified from the past tool use"}
                         [:map
