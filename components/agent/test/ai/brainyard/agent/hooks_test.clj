@@ -9,33 +9,49 @@
             [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.mcp.commands]
             [ai.brainyard.agent.common.user-hooks]
+            [ai.brainyard.agent.common.user-tools]
             [malli.core :as m]))
 
 (use-fixtures :each (fn [f] (hooks/reset-hooks!) (f) (hooks/reset-hooks!)))
 
-(deftest object-arg-alias-accepts-map-and-string
-  ;; Shared ::acs/object-arg = [:or [:string] [:map]] — a structured arg the LLM
-  ;; may pass as a native map (code channel) OR a JSON/EDN object string
-  ;; (tool-calls channel). Used by mcp$tools :arguments and hook-agent :match.
-  (testing "the alias itself"
-    (is (m/validate ::acs/object-arg {:a 1}))
-    (is (m/validate ::acs/object-arg "{\"a\":1}"))
-    (is (not (m/validate ::acs/object-arg [1 2]))))
-  (testing "fields using the alias validate both shapes, and keep a description"
+(defn- field-schema [tid fk]
+  (some (fn [e] (when (and (vector? e) (= fk (first e))) (last e)))
+        (rest (get-in (tool/get-tool-defs :id tid) [:meta :input-schema]))))
+
+(deftest structured-arg-aliases
+  ;; Shared aliases for a structured arg the LLM may pass as native Clojure data
+  ;; (code channel) OR as a JSON/EDN string (tool-calls channel):
+  ;;   ::map-object-arg    = [:or [:string] [:map]]
+  ;;   ::vector-object-arg = [:or [:string] [:vector]]
+  (testing "the aliases themselves"
+    (is (m/validate ::acs/map-object-arg {:a 1}))
+    (is (m/validate ::acs/map-object-arg "{\"a\":1}"))
+    (is (not (m/validate ::acs/map-object-arg [1 2])))
+    (is (m/validate ::acs/vector-object-arg [:map [:x :int]]))
+    (is (m/validate ::acs/vector-object-arg "[:map [:x :int]]"))
+    (is (not (m/validate ::acs/vector-object-arg {:a 1}))))
+  (testing "map-object-arg fields accept a map or a JSON string (not a vector)"
     (doseq [[tid fk] [[:mcp$tools :arguments]
                       [:hook-agent$create :match]
                       [:hook-agent$validate :match]]]
-      (let [sch (get-in (tool/get-tool-defs :id tid) [:meta :input-schema])
-            fe  (some (fn [e] (when (and (vector? e) (= fk (first e))) (last e)))
-                      (rest sch))]
+      (let [fe (field-schema tid fk)]
         (is (some? fe) (str tid " has a " fk " field"))
         (is (m/validate fe {:x 1}) (str tid "/" fk " accepts a map"))
         (is (m/validate fe "{\"x\":1}") (str tid "/" fk " accepts a JSON string"))
-        (is (not (m/validate fe [1 2])) (str tid "/" fk " rejects a vector"))
-        ;; description survives the :schema-wrapper reference to the shared alias
-        (let [prop (get-in (tool/def->tool tid) [:parameters :properties fk])]
-          (is (pos? (count (str (:desc prop))))
-              (str tid "/" fk " keeps a field description")))))))
+        (is (not (m/validate fe [1 2])) (str tid "/" fk " rejects a vector")))))
+  (testing "vector-object-arg fields accept a vector or an EDN string (not a map)"
+    (doseq [tid [:tool-agent$create :tool-agent$validate]]
+      (let [fe (field-schema tid :input-schema)]
+        (is (some? fe) (str tid " has an :input-schema field"))
+        (is (m/validate fe [:map [:x :int]]) (str tid " accepts a native schema vector"))
+        (is (m/validate fe "[:map [:x :int]]") (str tid " accepts an EDN string"))
+        (is (not (m/validate fe {:x 1})) (str tid " rejects a bare map")))))
+  (testing "the :schema wrapper preserves each field's own description"
+    (doseq [[tid fk] [[:mcp$tools :arguments] [:hook-agent$create :match]
+                      [:tool-agent$create :input-schema]]]
+      (let [prop (get-in (tool/def->tool tid) [:parameters :properties fk])]
+        (is (pos? (count (str (:desc prop))))
+            (str tid "/" fk " keeps a field description"))))))
 
 (deftest register-and-fire
   (testing "register-hook! + fire! invokes the handler with the event map"

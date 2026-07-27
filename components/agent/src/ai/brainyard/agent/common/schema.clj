@@ -51,13 +51,16 @@
    ::tool-calls [:vector {:desc "Tool invocations to run this iteration. Empty when not calling tools (using another channel or answering)."}
                  ::tool-call]
 
-   ;; Shared "object argument" type for a field the LLM may supply EITHER as a
-   ;; native map (code-block / Clojure channel) OR as a JSON/EDN object string
-   ;; (tool-calls channel) — the tool self-parses the string. Same tension the
-   ;; task$run :tool-args [:or …] resolves. Reference it WITH a field-specific
-   ;; description via a :schema wrapper so the arg's own doc survives:
-   ;;   [:my-arg {:optional true} [:schema {:desc "…"} ::object-arg]]
-   ::object-arg [:or [:string] [:map]]
+   ;; Shared "structured argument" types for a field the LLM may supply EITHER
+   ;; as native Clojure data (code-block / Clojure channel) OR as a JSON/EDN
+   ;; string (tool-calls channel) — the tool self-parses the string. Same
+   ;; tension the task$run :tool-args [:or …] resolves. Split by native shape so
+   ;; validation stays precise (an object arg is not a vector, and vice versa).
+   ;; Reference WITH a field-specific description via a :schema wrapper so the
+   ;; arg's own doc survives:
+   ;;   [:my-arg {:optional true} [:schema {:desc "…"} ::map-object-arg]]
+   ::map-object-arg    [:or [:string] [:map]]      ;; JSON/EDN object string | native map
+   ::vector-object-arg [:or [:string] [:vector :any]]   ;; JSON array / EDN schema string | native vector
 
    ::issues-identified [:vector {:desc "Issues identified from the past tool use"}
                         [:map
