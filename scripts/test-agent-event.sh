@@ -16,18 +16,31 @@
 #   [3] EMIT an INVALID payload (order-id = 42) → the payload schema rejects it
 #       (informational — depends on the model surfacing the tool error)
 #
-# By default it sweeps BOTH backends and prints a per-backend matrix:
+# Run standalone it sweeps BOTH backends and prints a per-backend matrix:
 #   claude-code:opus  and  free-llm:auto
+# Under test-agent-matrix.sh it behaves like every other harness in the family:
+# the matrix pins PROVIDER/MODEL per cell, so a single backend runs.
 #
-# Usage:   scripts/test-event-agent.sh [--keep]
-# Env:     BACKENDS="p1:m1 p2:m2"   override the swept backends
+# Usage:   scripts/test-agent-event.sh [--keep]
+# Env:     BACKENDS="p1:m1 p2:m2"   explicit sweep (highest precedence)
+#          PROVIDER / MODEL         single backend — how test-agent-matrix.sh drives it
 #          BY_BIN                   native binary (else `bb tui` from source)
 #          any provider creds are sourced from the repo .env automatically
 # Exit:    0 all backends passed · 1 a backend failed · 2 nothing could run
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-BACKENDS="${BACKENDS:-claude-code:opus free-llm:auto}"
+# Backend selection, highest precedence first:
+#   1. BACKENDS          — explicit sweep
+#   2. PROVIDER/MODEL    — one cell; the family convention test-agent-matrix.sh uses
+#   3. the default sweep — both backends, for a standalone run
+if [[ -z "${BACKENDS:-}" ]]; then
+    if [[ -n "${PROVIDER:-}" || -n "${MODEL:-}" ]]; then
+        BACKENDS="${PROVIDER:-claude-code}:${MODEL:-haiku}"
+    else
+        BACKENDS="claude-code:opus free-llm:auto"
+    fi
+fi
 
 # ============================================================================
 # CHILD MODE — one isolated single-backend run (re-exec of self per backend).

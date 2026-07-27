@@ -5,6 +5,9 @@
 #
 # Each cell runs one harness against one provider:model. The harness owns its
 # own isolation (throwaway user + throwaway project), so cells are independent.
+# A cell pins PROVIDER/MODEL in the harness's environment — every harness in the
+# list must honour that (test-agent-event.sh, which otherwise sweeps its own
+# backends, treats a pinned PROVIDER/MODEL as a single-backend run).
 #
 # Override the axes with $HARNESSES / $PROVIDERS:
 #   HARNESSES='test-agent-edit.sh test-agent-plan.sh' \
@@ -19,7 +22,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-HARNESSES="${HARNESSES:-test-agent-coact.sh test-agent-react.sh test-agent-edit.sh test-agent-plan.sh test-agent-todo.sh test-agent-exec.sh test-agent-explore.sh test-agent-eval.sh test-agent-main.sh}"
+HARNESSES="${HARNESSES:-test-agent-coact.sh test-agent-react.sh test-agent-edit.sh test-agent-plan.sh test-agent-todo.sh test-agent-exec.sh test-agent-explore.sh test-agent-eval.sh test-agent-main.sh test-agent-event.sh}"
 PROVIDERS="${PROVIDERS:-claude-code:haiku}"
 
 declare -a CELLS=()
