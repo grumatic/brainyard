@@ -334,7 +334,7 @@
                                                     [:tool-args {:optional true} [:maybe [:map-of :any :any]]]]]]
                   [:resource-uri {:optional true} [:string {:desc "For :read-resource — the resource URI"}]]
                   [:prompt-name  {:optional true} [:string {:desc "For :get-prompt — the prompt name"}]]
-                  [:arguments    {:optional true} [:schema {:desc "For :get-prompt — arguments map: a native map (code channel) or a JSON object string (tool-calls channel)"} ::acs/map-object-arg]]
+                  [:arguments    {:optional true :desc "For :get-prompt — arguments map: a native map (code channel) or a JSON object string (tool-calls channel)"} ::acs/map-object-arg]
                   [:refresh      {:optional true} [:boolean {:desc "For :list — force a live tools/list re-fetch instead of the connect-time cache"}]]]
   :output-schema [:map
                   [:result [:string {:desc "Operation result. Shape depends on :op"}]]

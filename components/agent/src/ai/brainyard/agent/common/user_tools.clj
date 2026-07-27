@@ -364,7 +364,7 @@
                   [:name        [:string {:desc "lowercase-kebab tool name (no user$tool$ prefix)"}]]
                   [:body        [:string {:desc "Clojure source: a `(fn [args] ...)` of one map"}]]
                   [:description {:optional true} [:string {:desc "one-line description"}]]
-                  [:input-schema {:optional true} [:schema {:desc "Malli arg schema: a native vector (code channel) or an EDN string (tool-calls channel), e.g. [:map [:x :int]] (default [:map])"} ::acs/vector-object-arg]]]
+                  [:input-schema {:optional true :desc "Malli arg schema: a native vector (code channel) or an EDN string (tool-calls channel), e.g. [:map [:x :int]] (default [:map])"} ::acs/vector-object-arg]]
   :output-schema [:map
                   [:id        [:string {:desc "Registered tool id, e.g. user$tool$shout"}]]
                   [:name      [:string {:desc "Tool name"}]]
@@ -448,7 +448,7 @@
   :input-schema  [:map
                   [:body         [:string {:desc "Clojure source: a `(fn [args] ...)` of one map"}]]
                   [:name         {:optional true} [:string {:desc "Proposed name; enables name + collision check"}]]
-                  [:input-schema {:optional true} [:schema {:desc "Malli arg schema to validate: a native vector (code channel) or an EDN string (tool-calls channel), e.g. [:map [:x :int]]"} ::acs/vector-object-arg]]
+                  [:input-schema {:optional true :desc "Malli arg schema to validate: a native vector (code channel) or an EDN string (tool-calls channel), e.g. [:map [:x :int]]"} ::acs/vector-object-arg]
                   [:sample       {:optional true} [:map {:desc "Example args map; if given, body is run once on it"}]]]
   :output-schema [:map
                   [:valid         [:boolean {:desc "True iff all checks passed"}]]

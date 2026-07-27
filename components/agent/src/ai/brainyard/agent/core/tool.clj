@@ -55,6 +55,28 @@
     (nth entry 2)
     (second entry)))
 
+(defn malli-entry-field
+  "Normalized field info for one [:map ...] entry. Merges annotations from the
+   value schema's own props with the entry-level props map:
+     - :desc    — value-schema prop WINS (backward compatible with
+                  `[:f [:string {:desc …}]]`); the entry-level `:desc` is a
+                  FALLBACK so a BARE registry ref — `[:f {:optional true
+                  :desc \"…\"} ::some/ref]` — still carries a description (a bare
+                  keyword ref has no props slot of its own to hold one).
+     - :default — value-schema prop only (unchanged).
+     - :optional — entry-level only (Malli's own convention).
+   Returns {:key :schema :desc :default :optional}. Single source of truth for
+   how every field-rendering site (tool params, sandbox docstrings, TUI help)
+   resolves a field's description."
+  [entry]
+  (let [entry-props (malli-map-entry-props entry)
+        {:keys [schema desc default]} (clj-llm/parse-malli-field (malli-map-entry-schema entry))]
+    {:key      (malli-map-entry-key entry)
+     :schema   schema
+     :desc     (or desc (:desc entry-props))
+     :default  default
+     :optional (boolean (:optional entry-props))}))
+
 ;; ============================================================================
 ;; Schema Type Conversion
 ;; ============================================================================
@@ -72,16 +94,12 @@
   [input-schema]
   (reduce
    (fn [acc entry]
-     (let [k           (malli-map-entry-key entry)
-           entry-props (malli-map-entry-props entry)
-           raw-schema  (malli-map-entry-schema entry)
-           {:keys [schema desc default]} (clj-llm/parse-malli-field raw-schema)
-           optional    (:optional entry-props)
+     (let [{:keys [key schema desc default optional]} (malli-entry-field entry)
            json-schema (clj-llm/malli->json-schema schema)]
-       (assoc acc k (cond-> json-schema
-                      desc     (assoc :desc desc)
-                      default  (assoc :default default)
-                      optional (assoc :optional optional)))))
+       (assoc acc key (cond-> json-schema
+                        desc     (assoc :desc desc)
+                        default  (assoc :default default)
+                        optional (assoc :optional optional)))))
    {}
    (malli-map-entries input-schema)))
 

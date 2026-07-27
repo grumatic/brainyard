@@ -201,7 +201,7 @@
                 def->tool bind-tools reset-tool-registry!
                 inputs->malli-map-schema
                 malli-map-entries malli-map-entry-key
-                malli-map-entry-props malli-map-entry-schema
+                malli-map-entry-props malli-map-entry-schema malli-entry-field
                 !tool-defs schema->type coerce-value)
 
 ;; ============================================================================

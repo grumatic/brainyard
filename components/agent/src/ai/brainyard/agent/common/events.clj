@@ -241,7 +241,7 @@
   :input-schema  [:map
                   [:name           [:string {:desc "Event name, a namespaced keyword e.g. 'order/shipped'"}]]
                   [:desc           {:optional true} [:string {:desc "One-line description"}]]
-                  [:payload-schema {:optional true} [:schema {:desc "Optional Malli schema the payload must match: a native vector (code channel) or an EDN string (tool-calls channel), e.g. [:map [:order-id :string]]"} ::acs/vector-object-arg]]
+                  [:payload-schema {:optional true :desc "Optional Malli schema the payload must match: a native vector (code channel) or an EDN string (tool-calls channel), e.g. [:map [:order-id :string]]"} ::acs/vector-object-arg]
                   [:llm-injectable {:optional true} [:boolean {:desc "May the agent emit this via event$emit? (default true)"}]]]
   :output-schema [:map
                   [:defined {:optional true} [:any {:desc "Registered event key"}]]

@@ -51,15 +51,14 @@
 
 (defn- parse-input
   "Parse one [:map ...] entry vector into a normalized map.
-   Entry may be [k schema] or [k {:optional true} schema]."
+   Entry may be [k schema] or [k {:optional true} schema]. Delegates to
+   `tool/malli-entry-field` so a bare registry ref with an entry-level `:desc`
+   still carries its description into the sandbox docstring."
   [entry]
-  (let [k           (tool/malli-map-entry-key entry)
-        entry-props (tool/malli-map-entry-props entry)
-        raw-schema  (tool/malli-map-entry-schema entry)
-        {:keys [desc default]} (clj-llm/parse-malli-field raw-schema)]
-    {:key k
-     :sym (symbol (name k))
-     :optional (boolean (:optional entry-props))
+  (let [{:keys [key desc default optional]} (tool/malli-entry-field entry)]
+    {:key key
+     :sym (symbol (name key))
+     :optional optional
      :desc desc
      :default default}))
 

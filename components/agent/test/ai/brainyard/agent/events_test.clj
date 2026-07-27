@@ -156,6 +156,6 @@
     (testing "rejects non-schema junk the old [:any] silently accepted"
       (is (not (m/validate fe 42)))
       (is (not (m/validate fe {:a 1}))))
-    (testing "the :schema wrapper preserves the field description"
+    (testing "the field keeps its entry-level description (bare registry ref)"
       (let [prop (get-in (tool/def->tool :event$define) [:parameters :properties :payload-schema])]
         (is (pos? (count (str (:desc prop)))))))))

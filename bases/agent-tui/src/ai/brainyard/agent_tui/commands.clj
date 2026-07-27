@@ -1916,14 +1916,10 @@
   (str/join
    "\n"
    (for [entry (agent/malli-map-entries input-schema)
-         :let [k           (agent/malli-map-entry-key entry)
-               entry-props (agent/malli-map-entry-props entry)
-               raw-schema  (agent/malli-map-entry-schema entry)
-               props       (when (and (vector? raw-schema) (map? (second raw-schema)))
-                             (second raw-schema))]]
-     (str "  :" (name k)
-          (when (:desc props) (str "  — " (:desc props)))
-          (when (:optional entry-props) "  (optional)")))))
+         :let [{:keys [key desc optional]} (agent/malli-entry-field entry)]]
+     (str "  :" (name key)
+          (when desc (str "  — " desc))
+          (when optional "  (optional)")))))
 
 (defn- no-required-inputs?
   "True when an :input-schema has no required entries — empty [:map], or every

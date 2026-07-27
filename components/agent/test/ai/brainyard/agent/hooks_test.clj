@@ -46,7 +46,7 @@
         (is (m/validate fe [:map [:x :int]]) (str tid " accepts a native schema vector"))
         (is (m/validate fe "[:map [:x :int]]") (str tid " accepts an EDN string"))
         (is (not (m/validate fe {:x 1})) (str tid " rejects a bare map")))))
-  (testing "the :schema wrapper preserves each field's own description"
+  (testing "each field keeps its own entry-level description (bare registry ref)"
     (doseq [[tid fk] [[:mcp$tools :arguments] [:hook-agent$create :match]
                       [:tool-agent$create :input-schema]]]
       (let [prop (get-in (tool/def->tool tid) [:parameters :properties fk])]
