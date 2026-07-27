@@ -97,7 +97,47 @@ New ns: `ai.brainyard.agent.common.skill-distill`.
    `skills$write :op :create`; `reject` removes the staging dir.
 5. **Config keys** (`core/config.clj`): `:enable-skill-distillation`
    (bool, false, env `BY_ENABLE_SKILL_DISTILLATION`), `:skill-distill-threshold`
-   (double, 0.7).
+   (double, 0.7), `:skill-distill-mode` (`:at-cadence` | `:per-turn`) and
+   `:skill-distill-every-n-turns` (12) — see §4a.
+
+## 4a. Batched scoring — `:at-cadence` (default)
+
+Scoring every qualifying turn on its own was one sub-LM call per turn, and it
+could only ever see one turn at a time. Both are fixed by batching, modelled on
+`:graph-extract-mode`:
+
+- **Accumulate, don't score.** The free pre-filter still runs inline every turn;
+  a qualifying turn's NUMBER is recorded (`!candidates`, keyed by session) and
+  nothing else happens. Only turn numbers are held — the window is re-read from
+  `trajectory.edn` at batch time, so the atom stays small however long a session
+  runs and a crash costs a window, not memory.
+- **Fire on the cadence.** Every `:skill-distill-every-n-turns` turns, the
+  accumulated window is judged in ONE call via `SkillDistillationBatch`. The
+  counter advances on every turn, not just qualifying ones, so batch timing is
+  predictable; a boundary reached with no candidates is skipped with no LLM
+  call at all.
+- **Flush at session end.** `:agent.instance/closed` batches whatever is
+  pending, so a session that ends mid-window — or one shorter than the window,
+  which would otherwise *never* distill anything — still gets judged. The window
+  is taken from the accumulator before submission, so turns are never scored
+  twice, and per-session state is cleared on close so nothing leaks across a
+  resume.
+- **One proposal per window.** `SkillDistillationBatch` returns the single best
+  candidate, not a list: the review gate is a human, and burying them in five
+  proposals per window is worse than handing them the strongest one. The staged
+  proposal records `:turns` — every turn that fed the judgment.
+
+The reach matters as much as the cost. A reusable procedure often spans turns
+(investigate → change → verify); judged one turn at a time each looks like a
+fragment, and the batch view is the only one that sees it whole.
+
+`:per-turn` keeps the original behaviour for anyone who wants a proposal the
+moment a turn qualifies.
+
+**Ordering note:** the session-end flush submits a task, so the TUI's `stop!`
+runs `await-self-improve!` + `task-shutdown` *after* the session-close block —
+shutting the manager down first would leave that submission with no pool to run
+on and nothing to drain it.
 
 Tests: pre-filter units; stubbed scorer; hook eligibility (root-only,
 config-gated, off-on-specialists); staging round-trip; accept → `skills$write`.

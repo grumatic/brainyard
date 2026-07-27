@@ -8,8 +8,11 @@
    and hook eligibility. No LLM calls — the scorer is stubbed."
   (:require [clojure.test :refer [deftest testing is are use-fixtures]]
             [ai.brainyard.agent.common.skill-distill :as sd]
+            [ai.brainyard.agent.common.skill-distill.background :as bg]
             [ai.brainyard.agent.common.skill-distill.proposals :as proposals]
+            [ai.brainyard.agent.common.trajectory :as traj]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool]
             [clojure.java.io :as io]))
 
@@ -122,6 +125,57 @@
                  (assoc multi-step-record :iterations
                         [{:n 1 :channel "code" :code ["git status --porcelain"]}
                          {:n 2 :channel "none" :thought "answer"}]))))))
+
+;; ============================================================================
+;; Batching (:at-cadence mode)
+;; ============================================================================
+
+(def ^:private window-records
+  [(assoc multi-step-record :turn 1 :question "step one")
+   (assoc multi-step-record :turn 2 :question "step two")
+   (assoc multi-step-record :turn 3 :question "step three")])
+
+(deftest batch-window-render
+  (testing "each turn is headed by its number and question"
+    (let [txt (sd/batch->text window-records)]
+      (is (re-find #"=== turn 1 — step one ===" txt))
+      (is (re-find #"=== turn 3 — step three ===" txt))
+      (is (re-find #"iteration 1 \[tool\]" txt))))
+
+  (testing "the window stays bounded however many turns accumulate"
+    (let [fat  (assoc multi-step-record
+                      :turn 1
+                      :iterations [{:n 1 :channel "code"
+                                    :code [(apply str (repeat 50000 "x"))]}])
+          txt  (sd/batch->text (repeat 20 fat))]
+      (is (<= (count txt) (+ sd/max-batch-chars
+                             ;; per-turn floor dominates once the window is wide
+                             (* 20 (+ sd/min-batch-turn-chars 200)))))
+      (is (re-find #"\[turn truncated\]" txt))))
+
+  (testing "a single-turn window still renders"
+    (is (re-find #"=== turn 1 —" (sd/batch->text [(first window-records)])))))
+
+(deftest batch-staging-provenance
+  (testing "a staged batch proposal records every turn that fed it"
+    (with-redefs [sd/score-batch (fn [_ _] {:reusable true :score 0.9
+                                            :proposed-name "windowed-flow"
+                                            :rationale "spans turns 1-3"
+                                            :skill-md sample-skill-md})
+                  sd/window-records (fn [_ _] window-records)]
+      (is (= :staged (sd/run-batch! nil "sess-1" *project-dir* 0.7 [1 2 3])))
+      (let [p (proposals/read-proposal *project-dir* "windowed-flow")]
+        (is (= [1 2 3] (:turns (:meta p))) "provenance names the whole window")
+        (is (= 3 (:turn (:meta p))) "and the window's last turn")
+        (is (re-find #"batch of 3 turns" (:source-question (:meta p))))
+        (is (= :distillation (:kind (:meta p)))))))
+
+  (testing "an empty window is skipped without scoring"
+    (let [scored? (atom false)]
+      (with-redefs [sd/score-batch (fn [_ _] (reset! scored? true) nil)
+                    sd/window-records (fn [_ _] [])]
+        (is (= :no-window (sd/run-batch! nil "sess-1" *project-dir* 0.7 [9])))
+        (is (false? @scored?) "no sub-LM call for a window that read back empty")))))
 
 (deftest trajectory-text-render
   (testing "renders iteration markers and stays bounded"
@@ -259,3 +313,103 @@
 
   (testing "nil agent → not eligible"
     (is (not (sd/distill-eligible? nil)))))
+
+;; ============================================================================
+;; Cadence — when a batch actually fires
+;; ============================================================================
+
+(defn- cadence-config
+  "config/get-config stub for :at-cadence mode with a window of `n` turns."
+  [n]
+  (fn [_ k]
+    (case k
+      :enable-skill-distillation   true
+      :skill-distill-mode          :at-cadence
+      :skill-distill-every-n-turns n
+      :skill-distill-threshold     0.7
+      nil)))
+
+;; The accumulator atoms are process-wide `defonce`s keyed by session, so every
+;; run needs its OWN session id — otherwise one case's leftover candidates and
+;; turn tally bleed into the next and shift where the window boundary lands.
+(def ^:private !sid-seq (atom 0))
+
+(defn- run-turns!
+  "Fire `distill-handler` `n` times against a stub agent in a fresh session.
+   `worth?` decides whether each turn passes the pre-filter. Returns the labels
+   of any submitted batches — no LLM call, no task manager involved."
+  [n every worth?]
+  (let [submitted (atom [])
+        turn      (atom 0)
+        sid       (str "sess-cadence-" (swap! !sid-seq inc))]
+    (with-redefs [config/get-config       (cadence-config every)
+                  proto/session-id        (fn [_] sid)
+                  config/project-dir      (fn [_] *project-dir*)
+                  traj/latest-trajectory  (fn [_] (assoc multi-step-record :turn (swap! turn inc)))
+                  sd/worth-scoring?       (fn [_] worth?)
+                  bg/run-off-turn!        (fn [& {:keys [label]}]
+                                            (swap! submitted conj label)
+                                            :submitted)]
+      (dotimes [_ n] (sd/distill-handler {:agent (stub-agent {:parent nil})}))
+      @submitted)))
+
+(deftest cadence-batches-instead-of-scoring-every-turn
+  (testing "no batch before the window closes"
+    (is (empty? (run-turns! 3 4 true))))
+
+  (testing "one batch per window, not one call per turn"
+    (let [subs (run-turns! 8 4 true)]
+      (is (= 2 (count subs)) "8 qualifying turns → 2 sub-LM calls, not 8")
+      (is (every? #(re-find #"cadence, 4 turns" %) subs))))
+
+  (testing "a window with no qualifying turns costs nothing"
+    (is (empty? (run-turns! 8 4 false))
+        "the counter still advances, but an empty window is never submitted")))
+
+(deftest session-end-flushes-the-tail
+  (let [submitted (atom [])
+        turn      (atom 0)
+        ag        (stub-agent {:parent nil})]
+    (with-redefs [config/get-config      (cadence-config 12)
+                  proto/session-id       (fn [_] "sess-tail")
+                  config/project-dir     (fn [_] *project-dir*)
+                  traj/latest-trajectory (fn [_] (assoc multi-step-record :turn (swap! turn inc)))
+                  sd/worth-scoring?      (fn [_] true)
+                  bg/run-off-turn!       (fn [& {:keys [label]}]
+                                           (swap! submitted conj label)
+                                           :submitted)]
+      (dotimes [_ 3] (sd/distill-handler {:agent ag}))
+      (is (empty? @submitted) "3 turns is short of the 12-turn window")
+      (is (= [1 2 3] (sd/candidate-turns "sess-tail")))
+
+      (sd/session-end-flush-handler {:agent ag})
+      (is (= 1 (count @submitted)) "a short session still distills on close")
+      (is (re-find #"session-end, 3 turns" (first @submitted)))
+
+      (testing "state is cleared so nothing leaks across a resume"
+        (is (empty? (sd/candidate-turns "sess-tail"))))
+
+      (testing "a second close is a no-op"
+        (sd/session-end-flush-handler {:agent ag})
+        (is (= 1 (count @submitted)))))))
+
+(deftest per-turn-mode-still-scores-each-turn
+  (let [submitted (atom [])
+        turn      (atom 0)]
+    (with-redefs [config/get-config      (fn [_ k]
+                                           (case k
+                                             :enable-skill-distillation true
+                                             :skill-distill-mode        :per-turn
+                                             :skill-distill-threshold   0.7
+                                             nil))
+                  proto/session-id       (fn [_] "sess-per-turn")
+                  config/project-dir     (fn [_] *project-dir*)
+                  traj/latest-trajectory (fn [_] (assoc multi-step-record :turn (swap! turn inc)))
+                  sd/worth-scoring?      (fn [_] true)
+                  bg/run-off-turn!       (fn [& {:keys [label]}]
+                                           (swap! submitted conj label)
+                                           :submitted)]
+      (dotimes [_ 3] (sd/distill-handler {:agent (stub-agent {:parent nil})}))
+      (is (= 3 (count @submitted)) "opt-in mode keeps the old one-call-per-turn shape")
+      (is (every? #(not (re-find #"batch" %)) @submitted))
+      (is (empty? (sd/candidate-turns "sess-per-turn")) "and accumulates nothing"))))

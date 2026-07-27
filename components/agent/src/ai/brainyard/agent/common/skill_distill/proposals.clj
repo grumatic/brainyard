@@ -74,7 +74,7 @@
     :else
     (try
       (let [^File dir (proposal-dir project-dir name)
-            meta (-> (select-keys m [:score :rationale :session :turn
+            meta (-> (select-keys m [:score :rationale :session :turn :turns
                                      :source-question :kind :evidence])
                      (assoc :name name
                             :kind (or (:kind m) :distillation)

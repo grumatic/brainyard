@@ -228,6 +228,16 @@
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "Self-improvement: an ask/post hook scores each finished turn for a novel reusable procedure and, past :skill-distill-threshold, stages a SKILL.md proposal under .brainyard/skills/proposals/ (never writes a live skill). Root agents; off by default. Env: BY_ENABLE_SKILL_DISTILLATION."}
+   :skill-distill-mode         {:type "keyword"
+                                :env-fn #(if-let [v (not-empty (System/getenv "BY_SKILL_DISTILL_MODE"))]
+                                           (keyword v) ::env-unset)
+                                :default :at-cadence
+                                :doc "When skill distillation scores turns (only when :enable-skill-distillation). :at-cadence (default) — the free pre-filter runs every turn but qualifying turns are ACCUMULATED, and every :skill-distill-every-n-turns turns (plus a session-end flush) the whole window is judged in ONE sub-LM call; a procedure spanning several turns is visible, and cost is per-window not per-turn. :per-turn — score each qualifying turn on its own as it finishes (one sub-LM call per qualifying turn; a cross-turn procedure is never seen whole). Env: BY_SKILL_DISTILL_MODE."}
+   :skill-distill-every-n-turns {:type "integer"
+                                 :env-fn #(if-some [v (System/getenv "BY_SKILL_DISTILL_EVERY_N_TURNS")]
+                                            (or (parse-long v) ::env-unset) ::env-unset)
+                                 :default 12
+                                 :doc "Turns between skill-distillation batches when :skill-distill-mode is :at-cadence. Counts every turn (not just qualifying ones) so batch timing is predictable; a batch with no accumulated candidates is skipped without an LLM call. Deliberately separate from :memory-consolidate-every-n-turns — distillation must keep working when memory consolidation is disabled, and the two cadences are worth tuning independently. Env: BY_SKILL_DISTILL_EVERY_N_TURNS."}
    :skill-distill-threshold    {:type "number"
                                 :env-fn #(if-some [v (System/getenv "BY_SKILL_DISTILL_THRESHOLD")]
                                            (or (parse-double v) ::env-unset) ::env-unset)

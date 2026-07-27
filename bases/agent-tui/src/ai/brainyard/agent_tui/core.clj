@@ -1595,13 +1595,13 @@
   ;; thread; it's an independent OS process that survives JVM exit unless we
   ;; explicitly kill it here. Best-effort. The double-Ctrl-C / SIGTERM paths
   ;; bypass `stop!` and get the same teardown from the JVM shutdown hook below.
-  ;; Before that shutdown cancels running tasks, give in-flight self-improvement
-  ;; jobs (skill distillation / refinement) a brief grace period: their sub-LM
-  ;; call is already paid for, so cancelling one at the finish line throws away
-  ;; a result we spent tokens on. Bounded, and only on this (/quit) path — the
-  ;; JVM shutdown hook below is a hard-kill route that must not linger.
-  (try (agent/await-self-improve! 3000) (catch Throwable _))
-  (try (agent/task-shutdown) (catch Throwable _))
+  ;; NOTE: both the shutdown and the self-improvement drain happen AFTER the
+  ;; session-close block below, not before it. Closing a session fires
+  ;; `:agent.instance/closed`, which is where skill distillation flushes its
+  ;; accumulated tail — submitting a task. Shutting the manager down first
+  ;; would leave that submission with no pool to run on and nothing to drain
+  ;; it. Tasks stay alive across close, which is simply their normal state.
+  ;;
   ;; Session-end memory consolidation fires inside close-session! below (via the
   ;; :agent.instance/closed flush hook). In graph mode it is handed to a DETACHED
   ;; `by memory reduce` child — /quit no longer blocks; we report the spawned
@@ -1627,6 +1627,15 @@
     (try
       (.close ag)
       (catch Exception _)))
+  ;; Every close that could emit self-improvement work has now happened. Give
+  ;; in-flight jobs (skill distillation / refinement, including the session-end
+  ;; batch just queued above) a brief grace period before the shutdown cancels
+  ;; them: their sub-LM call is already paid for, so cancelling one at the
+  ;; finish line throws away a result we spent tokens on. Bounded, and only on
+  ;; this (/quit) path — the JVM shutdown hook is a hard-kill route that must
+  ;; not linger.
+  (try (agent/await-self-improve! 3000) (catch Throwable _))
+  (try (agent/task-shutdown) (catch Throwable _))
   (tui-session/stop-tui-publisher!)
   (tui-session/stop-memory-activity-publisher!)
   ;; Stop file publisher

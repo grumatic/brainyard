@@ -15,8 +15,14 @@
         agents (sub-agents share the session — the root handles it).
      2. PRE-FILTER (free) — `worth-scoring?` drops trivial turns (failed,
         single-step, pure Q&A) before any LLM call.
-     3. LLM SCORER — `SkillDistillation` over the turn's trajectory; past
-        `:skill-distill-threshold` it returns a drafted SKILL.md.
+     3. LLM SCORER — one call, in one of two modes (`:skill-distill-mode`):
+        `:at-cadence` (default) accumulates qualifying turns and judges the
+        whole window with `SkillDistillationBatch` every
+        `:skill-distill-every-n-turns` turns, plus a flush when the session
+        closes — one call per window instead of per turn, and a procedure
+        spanning several turns is visible as one procedure. `:per-turn` scores
+        each qualifying turn on its own with `SkillDistillation`.
+        Past `:skill-distill-threshold` either returns a drafted SKILL.md.
      4. STAGE — `proposals/write-proposal!` stages the draft under
         `.brainyard/skills/proposals/`. It NEVER writes a live skill; a human
         promotes it via `skill-proposal$accept`.
@@ -198,6 +204,53 @@
       (mulog/warn ::score-turn-failed :exception e)
       nil)))
 
+(def ^:const max-batch-chars
+  "Total budget for a rendered batch window. Split evenly across the window's
+   turns (with a floor), so one sprawling turn can't crowd out the rest."
+  24000)
+
+(def ^:const min-batch-turn-chars 1500)
+
+(defn batch->text
+  "Render candidate turn records into one window block for
+   `SkillDistillationBatch`: each turn headed by its number and question, then
+   its compacted trace. Per-turn budget is the total split across the window,
+   so the prompt stays bounded however many turns accumulated."
+  [records]
+  (let [n   (max 1 (count records))
+        per (max min-batch-turn-chars (long (/ max-batch-chars n)))]
+    (->> records
+         (map (fn [r]
+                (let [q    (str (:question r))
+                      head (str "=== turn " (:turn r) " — "
+                                (if (> (count q) 200) (str (subs q 0 200) "…") q)
+                                " ===")
+                      body (trajectory->text r)]
+                  (str head "\n"
+                       (if (> (count body) per)
+                         (str (subs body 0 per) "\n…[turn truncated]")
+                         body)))))
+         (str/join "\n\n"))))
+
+(defn score-batch
+  "Run SkillDistillationBatch over several turn records in ONE sub-LM call.
+   Returns the signature's `:outputs` map (same shape as `score-turn`), or nil
+   on failure."
+  [agent records]
+  (try
+    (:outputs
+     (clj-llm/chain-of-thought
+      sig/SkillDistillationBatch
+      {:turn-window     (batch->text records)
+       :turn-count      (str (count records))
+       :existing-skills (existing-skills-text agent)
+       :project-context ""}
+      :lm-config     (config/resolve-sub-lm agent)
+      :usage-tracker (resolve-usage-tracker agent)))
+    (catch Exception e
+      (mulog/warn ::score-batch-failed :exception e)
+      nil)))
+
 ;; ============================================================================
 ;; Eligibility
 ;; ============================================================================
@@ -226,10 +279,14 @@
 ;; ============================================================================
 
 (defn stage-proposal!
-  "Given a `scored` SkillDistillation result for `record`, stage a proposal
-   under `project-dir` when it qualifies. Returns a keyword outcome:
+  "Given a `scored` SkillDistillation result, stage a proposal under
+   `project-dir` when it qualifies. Returns a keyword outcome:
    :staged | :not-reusable | :below-threshold | :invalid-name | :empty-skill-md
-   | :no-score. Side effect (the proposal write) happens only on :staged."
+   | :no-score. Side effect (the proposal write) happens only on :staged.
+
+   `record` is a PROVENANCE map, read for `:turn`, `:question` and (batch mode)
+   `:turns`. A trajectory turn record satisfies it directly; the batch path
+   passes a synthesized descriptor for the window."
   [project-dir record scored threshold session]
   (let [{:keys [reusable score proposed-name rationale skill-md]} scored]
     (cond
@@ -247,52 +304,177 @@
             :rationale       rationale
             :session         (str session)
             :turn            (:turn record)
+            :turns           (:turns record)
             :source-question (:question record)
             :kind            :distillation})
           :staged))))
 
 ;; ============================================================================
-;; Handler
+;; Per-session batching state (:at-cadence mode)
+;; ============================================================================
+;;
+;; Only turn NUMBERS are held, never records: `trajectory.edn` already has the
+;; turns, so a window is re-read at batch time. Keeps the atom tiny however
+;; long a session runs, and a crash costs a window rather than memory.
+
+(defonce ^:private !candidates (atom {}))     ;; {session-id #{turn-number}}
+(defonce ^:private !turn-counters (atom {}))  ;; {session-id turns-since-start}
+
+(defn candidate-turns
+  "Turn numbers accumulated for `sid`, ascending."
+  [sid]
+  (vec (sort (get @!candidates (str sid) #{}))))
+
+(defn- record-candidate! [sid turn]
+  (when turn
+    (swap! !candidates update (str sid) (fnil conj #{}) turn)))
+
+(defn- clear-session-state! [sid]
+  (swap! !candidates dissoc (str sid))
+  (swap! !turn-counters dissoc (str sid)))
+
+(defn window-records
+  "Re-read `sid`'s trajectory and return the records for `turns`, ascending.
+   Missing turns are simply absent — a pruned or rewritten trajectory degrades
+   to a smaller window rather than failing the batch."
+  [sid turns]
+  (let [wanted (set turns)]
+    (try
+      (->> (traj/read-trajectories sid)
+           (filter #(contains? wanted (:turn %)))
+           (sort-by :turn)
+           vec)
+      (catch Exception e
+        (mulog/warn ::window-read-failed :session (str sid) :exception e)
+        []))))
+
+(defn- batch-provenance
+  "Synthesize the provenance map `stage-proposal!` reads for a window."
+  [records]
+  {:turn     (:turn (last records))
+   :turns    (mapv :turn records)
+   :question (str "batch of " (count records) " turns: "
+                  (str/join " | " (map #(str "[" (:turn %) "] " (:question %)) records)))})
+
+(defn run-batch!
+  "Score `sid`'s accumulated candidate window in ONE sub-LM call and stage the
+   best proposal. Clears the window first so a failure can't make the same
+   turns re-score forever. Returns the staging outcome, or :no-candidates /
+   :no-window when there is nothing to judge."
+  [agent sid project-dir threshold turns]
+  (let [records (window-records sid turns)]
+    (if (empty? records)
+      (do (mulog/log ::batch-skip-no-window :session (str sid) :turns turns)
+          :no-window)
+      (let [scored  (score-batch agent records)
+            prov    (batch-provenance records)
+            outcome (stage-proposal! project-dir prov scored threshold sid)]
+        (mulog/log ::distill-outcome :session (str sid) :outcome outcome
+                   :mode :at-cadence :window (count records)
+                   :score (:score scored) :name (:proposed-name scored))
+        outcome))))
+
+(defn- submit-batch!
+  "Hand `turns` to a background scoring task. The window is taken from the
+   accumulator BEFORE submission so turns are never scored twice."
+  [agent sid project-dir threshold turns reason]
+  (swap! !candidates dissoc (str sid))
+  (bg/run-off-turn!
+   :kind  :distill
+   :key   sid
+   :label (str "skill-distill batch " sid " (" reason ", " (count turns) " turns)")
+   :thunk (fn []
+            (try
+              (run-batch! agent sid project-dir threshold turns)
+              (catch Exception e
+                (mulog/warn ::distill-handler-failed :session (str sid) :exception e)
+                nil)))))
+
+;; ============================================================================
+;; Handlers
 ;; ============================================================================
 
 (defn distill-handler
-  "`:agent.ask/post` handler. Runs the free pre-filter inline, then hands any
-   turn that survives it to a background task for scoring. Never blocks the
-   caller and never propagates exceptions.
+  "`:agent.ask/post` handler. Runs the free pre-filter inline, then either
+   accumulates the turn for the next batch (`:at-cadence`, default) or scores
+   it on its own (`:per-turn`). Never blocks the caller and never propagates
+   exceptions.
 
    The pre-filter runs on the turn thread deliberately: it is deterministic,
    LLM-free and sub-millisecond (one trajectory read — measured 0.55 ms on a
-   5-turn session), and keeping it here means a skipped turn never creates a
-   background task at all. Only turns that will actually cost a sub-LM call
-   get one. The trajectory record for the just-finished turn is already on
-   disk — `coact-store-results-action` writes it inside the behavior tree,
-   before `ask` returns and this hook fires."
+   5-turn session), and keeping it here means a turn that will never be judged
+   costs nothing beyond that read. The trajectory record for the just-finished
+   turn is already on disk — `coact-store-results-action` writes it inside the
+   behavior tree, before `ask` returns and this hook fires.
+
+   In `:at-cadence` mode the counter advances on EVERY turn, not just
+   qualifying ones, so batch timing is predictable; a boundary reached with no
+   accumulated candidates is skipped without an LLM call."
   [{:keys [agent]}]
   (when (distill-eligible? agent)
     (let [sid         (proto/session-id agent)
           project-dir (config/project-dir agent)
           threshold   (or (config/get-config agent :skill-distill-threshold) 0.7)
+          per-turn?   (= :per-turn (config/get-config agent :skill-distill-mode))
           record      (try (traj/latest-trajectory sid)
                            (catch Exception e
                              (mulog/warn ::trajectory-read-failed
                                          :session (str sid) :exception e)
-                             nil))]
-      (if-not (worth-scoring? record)
-        (mulog/log ::pre-filter-skip :session (str sid))
-        (bg/run-off-turn!
-         :kind  :distill
-         :key   sid
-         :label (str "skill-distill " sid)
-         :thunk (fn []
-                  (try
-                    (let [scored  (score-turn agent record)
-                          outcome (stage-proposal! project-dir record scored threshold sid)]
-                      (mulog/log ::distill-outcome :session (str sid) :outcome outcome
-                                 :score (:score scored) :name (:proposed-name scored))
-                      outcome)
-                    (catch Exception e
-                      (mulog/warn ::distill-handler-failed :session (str sid) :exception e)
-                      nil)))))))
+                             nil))
+          worth?      (worth-scoring? record)]
+      (when-not worth?
+        (mulog/log ::pre-filter-skip :session (str sid)))
+      (if per-turn?
+        (when worth?
+          (bg/run-off-turn!
+           :kind  :distill
+           :key   sid
+           :label (str "skill-distill " sid)
+           :thunk (fn []
+                    (try
+                      (let [scored  (score-turn agent record)
+                            outcome (stage-proposal! project-dir record scored threshold sid)]
+                        (mulog/log ::distill-outcome :session (str sid) :outcome outcome
+                                   :mode :per-turn
+                                   :score (:score scored) :name (:proposed-name scored))
+                        outcome)
+                      (catch Exception e
+                        (mulog/warn ::distill-handler-failed :session (str sid) :exception e)
+                        nil)))))
+        ;; :at-cadence — accumulate, and fire a batch on every Nth turn.
+        (let [n     (long (or (config/get-config agent :skill-distill-every-n-turns) 12))
+              tally (get (swap! !turn-counters update (str sid) (fnil inc 0)) (str sid))]
+          (when worth? (record-candidate! sid (:turn record)))
+          (when (and (pos? n) (zero? (mod tally n)))
+            (let [turns (candidate-turns sid)]
+              (if (empty? turns)
+                (mulog/log ::batch-skip-no-candidates :session (str sid) :turn tally)
+                (submit-batch! agent sid project-dir threshold turns "cadence"))))))))
+  nil)
+
+(defn session-end-flush-handler
+  "`:agent.instance/closed` handler. A session that ends between cadence
+   boundaries would otherwise drop its accumulated tail — and a session shorter
+   than `:skill-distill-every-n-turns` would never distill anything at all — so
+   flush whatever is pending when a root agent closes.
+
+   Per-session state is cleared regardless, so nothing leaks across a resume.
+   Returns nil and never throws."
+  [{:keys [agent]}]
+  (when (distill-eligible? agent)
+    (let [sid   (proto/session-id agent)
+          turns (candidate-turns sid)]
+      (try
+        (when (and (not= :per-turn (config/get-config agent :skill-distill-mode))
+                   (seq turns))
+          (submit-batch! agent sid
+                         (config/project-dir agent)
+                         (or (config/get-config agent :skill-distill-threshold) 0.7)
+                         turns "session-end"))
+        (catch Exception e
+          (mulog/warn ::session-end-flush-failed :session (str sid) :exception e))
+        (finally
+          (clear-session-state! sid)))))
   nil)
 
 ;; ============================================================================
@@ -302,12 +484,19 @@
 (defonce ^:private !installed (atom false))
 
 (defn ensure-global-hooks!
-  "Install the `:agent.ask/post` distillation observer once per process at
-   RUNTIME (guarded by a runtime atom so native-image bakes `false` and the
-   first real turn installs). Safe to call every turn. Tagged
-   `:source :skill-distill` for bulk teardown."
+  "Install the distillation observers once per process at RUNTIME (guarded by a
+   runtime atom so native-image bakes `false` and the first real turn
+   installs). Safe to call every turn. Tagged `:source :skill-distill` for bulk
+   teardown.
+
+   Two hooks: the per-turn `:agent.ask/post` observer, and the
+   `:agent.instance/closed` flush that batches a session's accumulated tail
+   (a no-op in `:per-turn` mode)."
   []
   (when (compare-and-set! !installed false true)
+    (hooks/register-hook! :agent.instance/closed ::skill-distill-flush
+                          session-end-flush-handler
+                          :source :skill-distill :priority 40)
     (hooks/register-hook! :agent.ask/post ::skill-distill distill-handler
                           :source :skill-distill :priority 40)
     (mulog/info ::global-hooks-installed))
