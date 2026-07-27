@@ -15,7 +15,8 @@
             [clojure.string :as str]
             [ai.brainyard.agent.common.user-tools :as ut]
             [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
-            [ai.brainyard.agent.core.tool :as tool]))
+            [ai.brainyard.agent.core.tool :as tool]
+            [malli.core :as m]))
 
 (def ^:private test-dirs
   {:project-dir (str (System/getProperty "java.io.tmpdir") "/by-user-tools-test")})
@@ -299,3 +300,35 @@
         (is (str/includes? (slurp clj) "clojure.string/split"))
         ;; body round-trips verbatim through read-user-tool
         (is (= body (:body (ut/read-user-tool test-dirs "wc-test"))))))))
+
+(deftest tool-agent-input-schema-vector-object-arg
+  ;; :input-schema is ::vector-object-arg — a Malli schema the LLM supplies as an
+  ;; EDN string (tool-calls channel, since JSON can't express keywords) OR a
+  ;; native vector (code channel). Full dispatch through tool/call-tool exercises
+  ;; the m/decode + m/explain gate, then coerce-input-schema + the [:map ...] check.
+  (let [validate (fn [input-schema]
+                   (tool/call-tool :tool-agent$validate
+                                   {:body "(fn [args] (:x args))"
+                                    :name "probe-tool"
+                                    :input-schema input-schema}))
+        rejected? (fn [r] (boolean (re-find #"Invalid tool args" (str (:error-message r)))))]
+    (testing "EDN-string form \"[:map [:x :int]]\" (tool-calls channel)"
+      (let [r (validate "[:map [:x :int]]")]
+        (is (not (rejected? r)) "not rejected by the arg schema")
+        (is (true? (:schema-ok r)) "parses to a [:map ...] schema")))
+    (testing "native vector form [:map [:x :int]] (code-block channel)"
+      (let [r (validate [:map [:x :int]])]
+        (is (not (rejected? r)))
+        (is (true? (:schema-ok r)))))
+    (testing "the EDN string round-trips to a USABLE malli schema"
+      (let [parsed (#'ut/coerce-input-schema "[:map [:x :int]]")]
+        (is (= [:map [:x :int]] parsed))
+        (is (some? (m/schema parsed)) "is a valid malli schema")
+        (is (m/validate parsed {:x 1}))))
+    (testing "pitfall: a JSON array of STRINGS (keywordless) is caught, not corrupted"
+      ;; passes the [:vector :any] shape but is not a real Malli schema — the
+      ;; downstream (= :map (first schema)) check rejects it with a clear error
+      (let [r (validate ["map" ["x" "int"]])]
+        (is (not (rejected? r)) "the arg schema still accepts any vector")
+        (is (false? (:schema-ok r)) "but it is not a valid [:map ...] schema")
+        (is (some #(re-find #"\[:map" %) (:errors r)) "with a clear error")))))
