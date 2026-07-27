@@ -84,7 +84,8 @@ New ns: `ai.brainyard.agent.common.skill-distill`.
    `essence-capture-handler`; that handler was retired 2026-06-28 — the
    structurally identical `consolidation-cadence-handler` is now the live
    reference): `root-agent?` + not-a-specialist + gated on `:enable-skill-distillation`;
-   fire-and-forget `future`; read latest `trajectory.edn`; pre-filter → scorer;
+   reads latest `trajectory.edn` and pre-filters INLINE (free, sub-ms), then
+   hands scoring to a background task (see §7); scorer;
    if `score ≥ :skill-distill-threshold` (default 0.7), call skill-agent to draft
    `SKILL.md`, then **stage** (do not persist as live). Self-install via
    `install-skill-distillation!`, idempotent, `:source :skill-distill`, runtime
@@ -118,7 +119,7 @@ return `{:error-message … :skill <name>}` on failure. The refine hook:
    "outcome ≠ documented steps" signal; it gates the LLM judge so non-skill /
    successful calls cost nothing. (LLM-judged *non-error* divergence is
    deferred.)
-3. Fire-and-forget `future`: fetch the current SKILL.md (`skills$read`), run the
+3. Background task (see §7): fetch the current SKILL.md (`skills$read`), run the
    **`SkillRefinement`** signature (`{:should-revise :revised-md :rationale}` —
    note `should-revise`, no `?`, per the Anthropic tool-schema key rule). The
    judge only revises when the *document* is at fault (missing step, wrong
@@ -179,6 +180,26 @@ suppress-while-pending, self-heal-after-accept, drain-once, root/config gating.
 
 - **No new substrate** — hook handlers + one DSPy signature + a small command
   family + config keys.
+- **Off-turn execution runs on the task manager**, not a bare `future`
+  (`skill_distill/background.clj`, `run-off-turn!` → a `:fn` job). Scoring is a
+  tens-of-seconds sub-LM call that must never touch the turn thread, but a
+  `future` per job was unbounded (one call per eligible turn, no damper),
+  invisible, and killed on a daemon thread at exit *after* the tokens were
+  spent. As `:fn` tasks the jobs are **bounded** by the manager's fixed pool,
+  **single-flight** per (kind, key) — session-id for distillation, skill name
+  for refinement, which also removes the race where two scorers staging the
+  same proposal name interleave `SKILL.md` and `proposal.edn` — **visible** in
+  `/task` with a per-task `output.log` recording the decision, and **drained**
+  for a bounded grace period at `/quit` (`agent/await-self-improve!`, before
+  `task-shutdown` cancels). Two deliberate omissions: no
+  `:coact/pending-from-iter` metadata, so the jobs never reach the model's
+  in-flight surfaces or hold a turn; and `:display-mode :background`, so they
+  render no TUI block. Submission uses `get-default-manager` (which lazily
+  auto-initializes) — peeking instead would fall back to a `future` in any
+  session that had not already run a task; the reads (`in-flight-tasks`,
+  `await-quiet!`) do peek, so the exit drain never resurrects a manager just to
+  find it empty. A `future` fallback remains for the case where the task layer
+  itself faults.
 - **Native-image** — self-install behind a `compare-and-set!` runtime atom (the
   `usage_nudge` `!installed` idiom) so baking can't freeze `true`.
 - **Polylith** — all in `components/agent`; new commands exposed via the

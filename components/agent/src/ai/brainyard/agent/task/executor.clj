@@ -19,7 +19,7 @@
             [clojure.string :as str])
   (:import [java.io InputStreamReader]
            [java.lang Process ProcessHandle]
-           [java.util.concurrent CancellationException]))
+           [java.util.concurrent CancellationException ExecutionException]))
 
 (defn destroy-process-tree!
   "Force-kill the proc and every descendant. Snapshot the descendant list
@@ -179,6 +179,65 @@
 
   (cancel-job [_ _task] false)
   (job-type [_] :tool))
+
+;; ============================================================================
+;; FnJobExecutor
+;; ============================================================================
+;;
+;; Runs an in-process thunk supplied by the caller — the generic seam for
+;; internal background work that is neither a shell command nor a registered
+;; tool (skill distillation / refinement, see
+;; `agent.common.skill-distill.background`). Callers get the task manager's
+;; bounded pool, cancellation and on-disk `output.log` instead of hand-rolling
+;; a `future` per job.
+;;
+;; Shape mirrors ToolJobExecutor: the thunk runs in an inner future so
+;; `:timeout-ms` can bound it, and the pool thread is held for the job's
+;; duration — which is what makes the fixed pool an actual concurrency bound.
+
+(defrecord FnJobExecutor []
+  tp/IJobExecutor
+  (execute-job [_ task on-output]
+    (let [{:keys [f label timeout-ms] :or {timeout-ms 300000}} (:job-config task)]
+      (if-not (fn? f)
+        (let [msg "job-config :f must be a function"]
+          (on-output msg)
+          {:error msg})
+        (let [start-ms (System/currentTimeMillis)
+              job-future (future
+                           (binding [proto/*current-task* (atom (:id task))]
+                             (f)))]
+          (on-output (str "Running: " (or label (name (:id task)))))
+          (try
+            (let [r (deref job-future timeout-ms ::timeout)]
+              (if (= r ::timeout)
+                (do (future-cancel job-future)
+                    (mulog/info ::fn-job-timed-out
+                                :task-id (:id task) :label label :timeout-ms timeout-ms)
+                    (on-output (str "Timed out after " timeout-ms "ms"))
+                    {:error (str "Job timed out after " timeout-ms "ms")
+                     :timed-out true
+                     :timeout-ms timeout-ms})
+                (do (on-output (str "Completed in " (- (System/currentTimeMillis) start-ms) "ms"))
+                    (on-output (str "Result: "
+                                    (binding [*print-level* 12 *print-length* 200]
+                                      (pr-str r))))
+                    {:result r})))
+            ;; Throwable, not Exception — same reasoning as ToolJobExecutor: an
+            ;; Error escaping here would surface as an ExecutionException.
+            (catch Throwable e
+              (future-cancel job-future)
+              ;; deref re-throws the thunk's exception wrapped in an
+              ;; ExecutionException, whose message is the stringified cause
+              ;; ("clojure.lang.ExceptionInfo: boom {}"). Unwrap so output.log
+              ;; and the task result carry the real message.
+              (let [root (if (instance? ExecutionException e) (or (ex-cause e) e) e)
+                    msg  (or (ex-message root) (.. root getClass getName))]
+                (on-output (str "Failed after " (- (System/currentTimeMillis) start-ms) "ms: " msg))
+                {:error msg})))))))
+
+  (cancel-job [_ _task] false)
+  (job-type [_] :fn))
 
 ;; ============================================================================
 ;; CliClientJobExecutor

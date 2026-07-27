@@ -20,6 +20,7 @@
             [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.protocol :as task-proto]
+            [ai.brainyard.agent.common.skill-distill.background :as self-improve-bg]
             ;; Side-effecting load: registers the default loop-guard hook
             ;; on :agent.tool-use/pre. Apps may opt out via
             ;; (hooks/unregister-source! :default-loop-guard).
@@ -452,6 +453,18 @@
   (if-let [mgr (task-mgr/get-default-manager)]
     (task-proto/get-task mgr task-id)
     (throw (ex-info "Task manager not initialized" {}))))
+
+(defn await-self-improve!
+  "Give in-flight self-improvement jobs (skill distillation / refinement) a
+   bounded grace period to finish before `task-shutdown` cancels them — by
+   that point the sub-LM call is already paid for, so losing the result at the
+   finish line is pure waste. Returns the number still running when the wait
+   ended (0 = fully drained). Never throws; `/quit` stays responsive because
+   the wait is capped."
+  ([] (await-self-improve! 3000))
+  ([timeout-ms]
+   (try (self-improve-bg/await-quiet! timeout-ms)
+        (catch Throwable _ 0))))
 
 (defn task-shutdown
   "Shutdown the task manager, cancelling all running tasks (which drives each

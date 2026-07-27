@@ -15,10 +15,13 @@
    `.brainyard/skills/proposals/` for review; `skill-proposal$accept` then runs
    `skills$write :op :update`.
 
-   Same shape as `skill-distill` (Phase 1): config-gated, fire-and-forget in a
-   `future`, a cheap pre-filter before any LLM call, runtime-only install via a
-   `compare-and-set!` atom. Lower volume — only fires on failed skill runs."
-  (:require [ai.brainyard.agent.common.skill-distill.proposals :as proposals]
+   Same shape as `skill-distill` (Phase 1): config-gated, a cheap pre-filter
+   before any LLM call, scoring handed to a background `:fn` task via
+   `skill-distill.background` (single-flight per skill name, so a skill failing
+   repeatedly queues one judge, not one per failure), runtime-only install via
+   a `compare-and-set!` atom. Lower volume — only fires on failed skill runs."
+  (:require [ai.brainyard.agent.common.skill-distill.background :as bg]
+            [ai.brainyard.agent.common.skill-distill.proposals :as proposals]
             [ai.brainyard.agent.common.skill-distill.signatures :as sig]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
@@ -143,17 +146,23 @@
           project-dir (config/project-dir agent)
           sid         (proto/session-id agent)
           evidence    (error-text result)]
-      (future
-        (try
-          (if-let [md (current-skill-md skill-name)]
-            (let [scored  (score-refinement agent skill-name md args evidence)
-                  outcome (stage-refinement! project-dir skill-name scored evidence sid)]
-              (mulog/log ::refine-outcome :skill skill-name :outcome outcome
-                         :should-revise (:should-revise scored)))
-            (mulog/log ::refine-skip-no-content :skill skill-name))
-          (catch Exception e
-            (mulog/warn ::refine-handler-failed :skill skill-name :exception e)
-            nil)))))
+      (bg/run-off-turn!
+       :kind  :refine
+       :key   skill-name
+       :label (str "skill-refine " skill-name)
+       :thunk (fn []
+                (try
+                  (if-let [md (current-skill-md skill-name)]
+                    (let [scored  (score-refinement agent skill-name md args evidence)
+                          outcome (stage-refinement! project-dir skill-name scored evidence sid)]
+                      (mulog/log ::refine-outcome :skill skill-name :outcome outcome
+                                 :should-revise (:should-revise scored))
+                      outcome)
+                    (do (mulog/log ::refine-skip-no-content :skill skill-name)
+                        :no-content))
+                  (catch Exception e
+                    (mulog/warn ::refine-handler-failed :skill skill-name :exception e)
+                    nil))))))
   nil)
 
 ;; ============================================================================

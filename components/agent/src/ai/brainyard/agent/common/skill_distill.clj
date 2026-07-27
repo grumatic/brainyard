@@ -21,14 +21,17 @@
         `.brainyard/skills/proposals/`. It NEVER writes a live skill; a human
         promotes it via `skill-proposal$accept`.
 
-   All work runs fire-and-forget in a `future` (cloning the memory-agent
-   essence-capture handler) so the user's next turn never waits on scoring, and
-   a scorer failure never tanks the parent ask.
+   Steps 1–2 run inline on the turn thread (both are free); step 3 onward runs
+   as a background `:fn` task via `skill-distill.background` — bounded by the
+   task pool, single-flight per session, visible in `/task`, and given a grace
+   period at exit. The user's next turn never waits on scoring, and a scorer
+   failure never tanks the parent ask.
 
    Hooks are installed at RUNTIME via `ensure-global-hooks!` (a
    `compare-and-set!` atom, called from coact-init) so native-image bakes
    `false` and the first real turn installs — never a build-time registration."
-  (:require [ai.brainyard.agent.common.skill-distill.proposals :as proposals]
+  (:require [ai.brainyard.agent.common.skill-distill.background :as bg]
+            [ai.brainyard.agent.common.skill-distill.proposals :as proposals]
             [ai.brainyard.agent.common.skill-distill.signatures :as sig]
             [ai.brainyard.agent.common.trajectory :as traj]
             [ai.brainyard.agent.core.config :as config]
@@ -253,26 +256,43 @@
 ;; ============================================================================
 
 (defn distill-handler
-  "`:agent.ask/post` handler. Fire-and-forget: scores the just-finished turn
-   and stages a skill proposal when it clears the threshold. Never blocks the
-   caller and never propagates exceptions."
+  "`:agent.ask/post` handler. Runs the free pre-filter inline, then hands any
+   turn that survives it to a background task for scoring. Never blocks the
+   caller and never propagates exceptions.
+
+   The pre-filter runs on the turn thread deliberately: it is deterministic,
+   LLM-free and sub-millisecond (one trajectory read — measured 0.55 ms on a
+   5-turn session), and keeping it here means a skipped turn never creates a
+   background task at all. Only turns that will actually cost a sub-LM call
+   get one. The trajectory record for the just-finished turn is already on
+   disk — `coact-store-results-action` writes it inside the behavior tree,
+   before `ask` returns and this hook fires."
   [{:keys [agent]}]
   (when (distill-eligible? agent)
     (let [sid         (proto/session-id agent)
           project-dir (config/project-dir agent)
-          threshold   (or (config/get-config agent :skill-distill-threshold) 0.7)]
-      (future
-        (try
-          (let [record (traj/latest-trajectory sid)]
-            (if-not (worth-scoring? record)
-              (mulog/log ::pre-filter-skip :session (str sid))
-              (let [scored  (score-turn agent record)
-                    outcome (stage-proposal! project-dir record scored threshold sid)]
-                (mulog/log ::distill-outcome :session (str sid) :outcome outcome
-                           :score (:score scored) :name (:proposed-name scored)))))
-          (catch Exception e
-            (mulog/warn ::distill-handler-failed :session (str sid) :exception e)
-            nil)))))
+          threshold   (or (config/get-config agent :skill-distill-threshold) 0.7)
+          record      (try (traj/latest-trajectory sid)
+                           (catch Exception e
+                             (mulog/warn ::trajectory-read-failed
+                                         :session (str sid) :exception e)
+                             nil))]
+      (if-not (worth-scoring? record)
+        (mulog/log ::pre-filter-skip :session (str sid))
+        (bg/run-off-turn!
+         :kind  :distill
+         :key   sid
+         :label (str "skill-distill " sid)
+         :thunk (fn []
+                  (try
+                    (let [scored  (score-turn agent record)
+                          outcome (stage-proposal! project-dir record scored threshold sid)]
+                      (mulog/log ::distill-outcome :session (str sid) :outcome outcome
+                                 :score (:score scored) :name (:proposed-name scored))
+                      outcome)
+                    (catch Exception e
+                      (mulog/warn ::distill-handler-failed :session (str sid) :exception e)
+                      nil)))))))
   nil)
 
 ;; ============================================================================

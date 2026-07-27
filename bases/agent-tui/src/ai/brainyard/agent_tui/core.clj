@@ -1595,6 +1595,12 @@
   ;; thread; it's an independent OS process that survives JVM exit unless we
   ;; explicitly kill it here. Best-effort. The double-Ctrl-C / SIGTERM paths
   ;; bypass `stop!` and get the same teardown from the JVM shutdown hook below.
+  ;; Before that shutdown cancels running tasks, give in-flight self-improvement
+  ;; jobs (skill distillation / refinement) a brief grace period: their sub-LM
+  ;; call is already paid for, so cancelling one at the finish line throws away
+  ;; a result we spent tokens on. Bounded, and only on this (/quit) path — the
+  ;; JVM shutdown hook below is a hard-kill route that must not linger.
+  (try (agent/await-self-improve! 3000) (catch Throwable _))
   (try (agent/task-shutdown) (catch Throwable _))
   ;; Session-end memory consolidation fires inside close-session! below (via the
   ;; :agent.instance/closed flush hook). In graph mode it is handed to a DETACHED
