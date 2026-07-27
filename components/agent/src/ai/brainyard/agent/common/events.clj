@@ -27,6 +27,7 @@
    Reactions (event → action) and the watch loop are Phases 2 & 4 — this file is
    deliberately just the registry + emit."
   (:require [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :refer [defcommand]]
@@ -240,7 +241,7 @@
   :input-schema  [:map
                   [:name           [:string {:desc "Event name, a namespaced keyword e.g. 'order/shipped'"}]]
                   [:desc           {:optional true} [:string {:desc "One-line description"}]]
-                  [:payload-schema {:optional true} [:any {:desc "Optional malli schema the payload must match, e.g. [:map [:order-id :string]] — a schema is arbitrary EDN (usually a vector), so this stays :any, not a map type"}]]
+                  [:payload-schema {:optional true} [:schema {:desc "Optional Malli schema the payload must match: a native vector (code channel) or an EDN string (tool-calls channel), e.g. [:map [:order-id :string]]"} ::acs/vector-object-arg]]
                   [:llm-injectable {:optional true} [:boolean {:desc "May the agent emit this via event$emit? (default true)"}]]]
   :output-schema [:map
                   [:defined {:optional true} [:any {:desc "Registered event key"}]]

@@ -10,6 +10,8 @@
             [ai.brainyard.agent.common.events :as events]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
+            [ai.brainyard.agent.core.tool :as tool]
+            [malli.core :as m]
             [clojure.java.io :as io]))
 
 (def ^:dynamic *pdir* nil)
@@ -139,3 +141,21 @@
         (let [r (events/emit-event! :order/shipped {"order-id" 42 "carrier" "UPS"})]
           (is (some? (:error r)))
           (is (nil? @seen)))))))
+
+(deftest payload-schema-vector-object-arg
+  ;; event$define :payload-schema is ::vector-object-arg — a Malli schema the LLM
+  ;; supplies as a native vector (code channel) or an EDN string (tool-calls
+  ;; channel, since JSON can't express keywords). Aligned with tool-agent
+  ;; :input-schema; tighter than the former [:any] (rejects non-schema junk).
+  (let [fe (some (fn [e] (when (and (vector? e) (= :payload-schema (first e))) (last e)))
+                 (rest (get-in (tool/get-tool-defs :id :event$define) [:meta :input-schema])))]
+    (is (some? fe) "event$define has a :payload-schema field")
+    (testing "accepts a native schema vector and an EDN string"
+      (is (m/validate fe [:map [:order-id :string]]))
+      (is (m/validate fe "[:map [:order-id :string]]")))
+    (testing "rejects non-schema junk the old [:any] silently accepted"
+      (is (not (m/validate fe 42)))
+      (is (not (m/validate fe {:a 1}))))
+    (testing "the :schema wrapper preserves the field description"
+      (let [prop (get-in (tool/def->tool :event$define) [:parameters :properties :payload-schema])]
+        (is (pos? (count (str (:desc prop)))))))))
