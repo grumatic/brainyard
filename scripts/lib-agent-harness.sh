@@ -126,12 +126,17 @@ by_ask_in() {
         exit 2
     fi
     local answer; answer="$(jq -r '.answer // ""' <<<"$json")"
-    # Provider quota/rate-limit exhaustion comes back as a "successful" run whose
-    # answer IS the limit notice (e.g. claude-code: "You've hit your session
-    # limit · resets …"). That is a CANNOT-RUN condition, not an agent failure —
-    # classify it as exit 2 so it never masquerades as a failed assertion.
-    if grep -qiE 'hit your session limit|session limit · resets|rate.?limit(ed)?|quota exceeded|429 too many' <<<"$answer"; then
-        echo "FATAL: provider limit reached (cannot run): $(head -1 <<<"$answer")" >&2
+    # Two backend CANNOT-RUN conditions come back as a "successful" run whose
+    # answer IS the failure notice — neither is an agent failure, so classify
+    # them as exit 2 rather than let them masquerade as a failed assertion:
+    #   (a) provider quota/rate-limit exhaustion (e.g. claude-code:
+    #       "You've hit your session limit · resets …").
+    #   (b) a backend transport failure where the LM produced nothing — the
+    #       coact loop wraps the terminal reason as `Agent stopped: …` (e.g.
+    #       "Claude CLI stream produced no usable output (exit 1)" when the
+    #       claude-code ACP subprocess errors / is unauthenticated).
+    if grep -qiE 'hit your session limit|session limit · resets|rate.?limit(ed)?|quota exceeded|429 too many|produced no usable output|Claude CLI stream' <<<"$answer"; then
+        echo "FATAL: provider unavailable or limit reached (cannot run): $(head -1 <<<"$answer")" >&2
         exit 2
     fi
     printf '%s' "$answer"
