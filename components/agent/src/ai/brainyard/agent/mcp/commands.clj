@@ -12,6 +12,7 @@
                        (list, call, read-resource, get-prompt)
    - `mcp$lifecycle` — start / stop / restart a server"
   (:require [ai.brainyard.agent.core.tool :refer [defcommand]]
+            [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.mcp.integration :as mcp-int]
             ;; Side-effect load: installs the fail-closed MCP permission gate
             ;; (`:agent.tool-use/pre`) so every side-effecting MCP call — native
@@ -333,7 +334,7 @@
                                                     [:tool-args {:optional true} [:maybe [:map-of :any :any]]]]]]
                   [:resource-uri {:optional true} [:string {:desc "For :read-resource — the resource URI"}]]
                   [:prompt-name  {:optional true} [:string {:desc "For :get-prompt — the prompt name"}]]
-                  [:arguments    {:optional true} [:string {:desc "For :get-prompt — arguments map (object literal or JSON string)"}]]
+                  [:arguments    {:optional true} [:schema {:desc "For :get-prompt — arguments map: a native map (code channel) or a JSON object string (tool-calls channel)"} ::acs/object-arg]]
                   [:refresh      {:optional true} [:boolean {:desc "For :list — force a live tools/list re-fetch instead of the connect-time cache"}]]]
   :output-schema [:map
                   [:result [:string {:desc "Operation result. Shape depends on :op"}]]

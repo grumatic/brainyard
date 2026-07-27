@@ -51,6 +51,14 @@
    ::tool-calls [:vector {:desc "Tool invocations to run this iteration. Empty when not calling tools (using another channel or answering)."}
                  ::tool-call]
 
+   ;; Shared "object argument" type for a field the LLM may supply EITHER as a
+   ;; native map (code-block / Clojure channel) OR as a JSON/EDN object string
+   ;; (tool-calls channel) — the tool self-parses the string. Same tension the
+   ;; task$run :tool-args [:or …] resolves. Reference it WITH a field-specific
+   ;; description via a :schema wrapper so the arg's own doc survives:
+   ;;   [:my-arg {:optional true} [:schema {:desc "…"} ::object-arg]]
+   ::object-arg [:or [:string] [:map]]
+
    ::issues-identified [:vector {:desc "Issues identified from the past tool use"}
                         [:map
                          [:issue [:string {:desc "the description of issue"}]]
