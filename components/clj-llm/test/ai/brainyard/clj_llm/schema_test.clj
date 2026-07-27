@@ -5,7 +5,8 @@
 (ns ai.brainyard.clj-llm.schema-test
   (:require [clojure.test :refer [deftest is testing]]
             [ai.brainyard.clj-llm.core.schema :as schema]
-            [ai.brainyard.clj-llm.core.llm :as llm]))
+            [ai.brainyard.clj-llm.core.llm :as llm]
+            [clojure.data.json :as json]))
 
 (deftest malli->json-schema-test
   (testing "converts simple string schema"
@@ -47,7 +48,20 @@
         (is (false? (:additionalProperties js)))
         (is (map? (get-in js [:properties :bag :additionalProperties])))))
     (testing "an open map-of is strict-INeligible (strict callers fall back to guidance+validate)"
-      (is (not (schema/strict-eligible? (schema/malli->json-schema [:map [:m [:map-of :any :any]]]))))))
+      (is (not (schema/strict-eligible? (schema/malli->json-schema [:map [:m [:map-of :any :any]]])))))
+    (testing "a map-of must NOT gain a null :properties key (invalid JSON Schema)"
+      ;; Regression: `(update :properties …)` on an object with no :properties
+      ;; injected `\"properties\": null`, which the Claude CLI rejects outright
+      ;; (`--json-schema is not a valid JSON Schema: …/properties must be
+      ;; object`) — it broke every claude-code structured call once ::tool-args
+      ;; became a [:map-of :any :any].
+      (let [js (schema/malli->json-schema [:map-of :any :any])]
+        (is (not (contains? js :properties))
+            "no :properties key at all — not a nil one")
+        (is (not (re-find #"\"properties\":null" (json/write-str js)))))
+      (let [js (schema/malli->json-schema [:map [:bag [:map-of :any :any]]])]
+        (is (not (contains? (get-in js [:properties :bag]) :properties))
+            "nested map-of is equally free of a null :properties"))))
 
   (testing ":maybe is rendered with :anyOf, not :oneOf (OpenAI strict mode rejects oneOf)"
     (let [js (schema/malli->json-schema [:maybe :int])]

@@ -101,7 +101,7 @@
 ;; --max-turns is soft-coupled to the agent config. clj-llm must NOT hard-depend
 ;; on the agent component, so read :claude-code-max-turns via a native-image-safe
 ;; resolve (mirrors bedrock/safe-require-resolve); when that component is
-;; unavailable (standalone clj-llm) fall back to 1 = a single LLM turn.
+;; unavailable (standalone clj-llm) fall back to `default-max-turns`.
 ;; ----------------------------------------------------------------------------
 
 (defn- safe-require-resolve
@@ -113,24 +113,39 @@
         (do (try (require ns-sym) (catch Throwable _ nil))
             (resolve sym)))))
 
+(def ^:private default-max-turns
+  "Fallback `--max-turns` when the agent config component is unavailable.
+
+   MUST be > 1. On Claude CLI 2.x the model spends its FIRST assistant turn on a
+   text block and only calls the synthetic `StructuredOutput` tool on the SECOND,
+   so `--max-turns 1` ends at `terminal_reason=max_turns` with no tool_use and no
+   `structured_output` to salvage — a hard 'produced no usable output' failure.
+   Observed identically on claude-opus-5 and claude-opus-4-8, so this is CLI
+   behaviour, not a model regression. A clean structured call completes at
+   num_turns=3; 4 leaves one turn of margin. Bounded: `--tools \"\"` means
+   `StructuredOutput` is the only callable tool. Keep in sync with the
+   `:claude-code-max-turns` schema default in agent.core.config."
+  4)
+
 (defn- resolve-max-turns
   "The CLI `--max-turns` value: `:claude-code-max-turns` from the agent config
-   when that component is available, else 1 (single LLM turn, no agentic loop) —
-   also the fallback on any resolution failure or a nil/non-positive value."
+   when that component is available, else `default-max-turns` — also the
+   fallback on any resolution failure or a nil/non-positive value."
   []
   (or (try
         (when-let [gc (safe-require-resolve 'ai.brainyard.agent.core.config/get-config)]
           (let [v (gc :claude-code-max-turns)]
             (when (and (integer? v) (pos? v)) v)))
         (catch Throwable _ nil))
-      1))
+      default-max-turns))
 
 (defn- build-cli-args
   "Build the CLI argument vector for `claude` command.
    When opts has :json-schema, pass --json-schema so the CLI exposes a synthetic
    StructuredOutput tool and asks the model to emit schema-conformant JSON as a
    tool_use input. `--max-turns` (configurable via `:claude-code-max-turns`,
-   default 1) caps the agentic loop — 1 keeps it to a single LLM turn. On CLI ≥ 2.1 a
+   see `default-max-turns`) caps the agentic loop; it MUST be > 1 because the
+   model emits a text turn BEFORE the StructuredOutput tool call. On CLI ≥ 2.1 a
    clean structured-output call now completes with exit 0 / subtype \"success\" /
    terminal_reason \"completed\", surfacing the parsed payload on the result
    event's :structured_output field (see structured-output-from-result). Older
@@ -149,7 +164,7 @@
              "--setting-sources" ""      ;; No project CLAUDE.md / MCP / plugins
              "--strict-mcp-config"       ;; No MCP servers (no --mcp-config = zero servers)
              "--disable-slash-commands"   ;; No skills/commands context
-             "--max-turns" (str (resolve-max-turns))]  ;; :claude-code-max-turns (default 1 = single LLM turn)
+             "--max-turns" (str (resolve-max-turns))]  ;; :claude-code-max-turns — must be >1 (text turn precedes the tool call)
       model               (into ["--model" model])
       max-tokens          (into ["--max-tokens" (str max-tokens)])
       system-prompt-value (into [system-prompt-flag system-prompt-value])

@@ -25,9 +25,17 @@
     (cond-> schema
       ;; Handle object type
       (= "object" (:type schema))
-      (-> (update :properties
-                  (fn [props]
-                    (when props
+      ;; Recurse into :properties ONLY when the object actually has them. A bare
+      ;; `(update :properties …)` would INJECT `:properties nil` on an object
+      ;; that has none — notably a `:map-of`, which mjs renders as
+      ;; {:type "object" :additionalProperties <value-schema>} with no
+      ;; :properties. `"properties": null` is invalid JSON Schema: the Claude
+      ;; CLI rejects the whole request (`--json-schema is not a valid JSON
+      ;; Schema: …/properties must be object`), which killed every structured
+      ;; call once `::tool-args` became a `[:map-of :any :any]`.
+      (-> (cond-> (map? (:properties schema))
+            (update :properties
+                    (fn [props]
                       (reduce-kv (fn [m k v]
                                    (assoc m k (add-additional-properties-false v)))
                                  {} props))))

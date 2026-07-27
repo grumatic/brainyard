@@ -120,8 +120,8 @@
                                 :doc "Model for sub-LLM queries (llm-query / rlm-query in the sandbox). nil → use the agent's :lm-config."}
    :llm-query-max-depth        {:type "integer" :default 1
                                 :doc "Max recursion depth for nested llm-query / sub-LLM calls."}
-   :claude-code-max-turns      {:type "integer" :default 1
-                                :doc "clj-llm Claude Code provider: the CLI `--max-turns` value (the agentic-loop turn cap for a single chat-completion). Default 1 = one LLM turn, no agentic loop. clj-llm reads this via soft-resolve; when the agent config component is unavailable (e.g. standalone clj-llm / native image without it) it falls back to 1."}
+   :claude-code-max-turns      {:type "integer" :default 4
+                                :doc "clj-llm Claude Code provider: the CLI `--max-turns` value (the agentic-loop turn cap for a single chat-completion). Must be >1 for structured output: on Claude CLI 2.x the model spends its FIRST assistant turn on a text block and only calls the synthetic `StructuredOutput` tool on the SECOND, so `--max-turns 1` terminates with `terminal_reason=max_turns` before any tool_use exists to salvage (observed identically on claude-opus-5 AND claude-opus-4-8). A clean structured call completes at num_turns=3; the default 4 leaves one turn of margin. Extra turns are bounded — the provider passes `--tools \"\"`, so `StructuredOutput` is the only callable tool. clj-llm reads this via soft-resolve; when the agent config component is unavailable (e.g. standalone clj-llm / native image without it) it falls back to the same value."}
    :auto-background-timeout-ms {:type "integer" :default 180000
                                 :doc "Auto-background deadline (ms) for an LLM-emitted code block: if a foreground task exceeds it, await-task detaches into background mode and returns a :pending snapshot; a later iteration harvests the result."}
    :fast-eval-timeout-ms       {:type "integer" :default 30000
