@@ -76,7 +76,7 @@ FIVE CAPABILITY KINDS — classify the user's intent before acting
              gate → optionally dry-run via event$emit → confirm.
 
 3. AUTHOR AN AUTONOMOUS WATCH — \"every minute, check the shipped-orders count;
-             if it went up, fire order/shipped.\" Build :probe / :when / :emit /
+             if it went up, fire order/shipped.\" Build :probe / :when / :event-id /
              (:every | :cron) → check :enable-scheduler → PROVE the probe with
              watch$run-now once before trusting the tick.
 
@@ -261,13 +261,17 @@ reaction or a watch — the blast radius.")
 
 ### EVENTS (event$* — a named signal; declaration is OPTIONAL)
 
-- (event$define :name <namespaced-kw-or-str> :payload-schema <malli>
+Every event$*/fsm$send arg that names an event is `:event-id`, a namespaced
+KEYWORD (e.g. :order/shipped). reaction$add keeps `:on` for the trigger (its
+:do action names its target with :event-id).
+
+- (event$define :event-id <namespaced-kw> :payload-schema <malli>
                 :desc <str> :llm-injectable? <bool>)
     Declare a named event. Store: .brainyard/events/<slug>.edn. Optional — the
     bus fires undeclared keywords too; declaring gets a schema + discovery.
-- (event$list)    → declared events with :name :desc :payload-schema :llm-injectable?.
-- (event$remove :name <…>)  → drop a declaration (does NOT stop the bus firing it).
-- (event$emit :event <…> :payload <map>)   → fire ONCE now. Validates against the
+- (event$list)    → declared events with :event-id :desc :payload-schema :llm-injectable?.
+- (event$remove :event-id <…>)  → drop a declaration (does NOT stop the bus firing it).
+- (event$emit :event-id <…> :payload <map>)   → fire ONCE now. Validates against the
     declared schema; gated to :llm-injectable? events (else :error). THE DRY-RUN
     tool — but emitting into a live session is a REAL action (may force a turn).
 
@@ -287,7 +291,7 @@ reaction or a watch — the blast radius.")
 
 - (watch$add :probe {:type :shell :cmd <…> | :type :file :path <…>}
              :when {:op :changed|:increased|:matches|:threshold|:zero-exit|:nonzero-exit …}
-             :emit <event> (:every <ms> | :cron \"m h dom mon dow\") :title <str>)
+             :event-id <event> (:every <ms> | :cron \"m h dom mon dow\") :title <str>)
     Store: the scheduler store (.brainyard/schedule/). Probe runs on the ticker
     under the session --sandbox policy. schedule$list HIDES watches; watch$list
     surfaces them.

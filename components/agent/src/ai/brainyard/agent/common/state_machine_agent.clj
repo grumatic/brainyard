@@ -297,7 +297,7 @@ forced-turn entry — the blast radius.")
 
 - (fsm$status :id <id>)  → {:id :state :context :history} — current state +
     recent transitions for THIS session.
-- (fsm$send :event <namespaced-kw> :payload <map>)
+- (fsm$send :event-id <namespaced-kw> :payload <map>)
     → {:sent :advanced [{:machine :from :to}] :note}. Fire a trigger event; report
     which machines advanced. Sugar over event$emit; installs FSM handlers on
     demand (so \"enable :enable-fsm then send\" works in ONE turn). THE DRY-RUN —

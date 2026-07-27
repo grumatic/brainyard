@@ -119,7 +119,7 @@
         schema (tool/inputs->malli-map-schema in-sch)
         decode (fn [args] (m/decode schema args tool/llm-args-transformer))
         valid? (fn [args] (nil? (m/explain schema (decode args))))
-        base   {:emit "x/y"}]
+        base   {:event-id :x/y}]
     (testing "schema->type builds an LLM JSON schema without throwing"
       (is (map? (tool/schema->type in-sch)))
       (is (= [:op] (:required (:when (tool/schema->type in-sch)))) ":op required within :when"))

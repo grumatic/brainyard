@@ -211,7 +211,7 @@ and `schedule/schedule-commands` into `all-common-commands`):
 | `reaction$list` | — | List rules with `:enabled`, `:on`, `:do`, fire counts. |
 | `reaction$remove` | `.brainyard/reactions/<id>.edn` | Delete a rule. |
 | `reaction$enable` / `reaction$disable` | `.brainyard/reactions/<id>.edn` | Toggle a rule without deleting it. |
-| `watch$add` | scheduler store (`.brainyard/schedule/`) | Autonomous poller: `:probe {:type :shell\|:file …}`, `:when {:op :changed\|:increased\|…}`, `:emit <event>`, `:every <ms>` or `:cron`. |
+| `watch$add` | scheduler store (`.brainyard/schedule/`) | Autonomous poller: `:probe {:type :shell\|:file …}`, `:when {:op :changed\|:increased\|…}`, `:event-id <event>`, `:every <ms>` or `:cron`. |
 | `watch$list` | — | List watches (`schedule$list` hides them; `watch$list` surfaces them). |
 | `watch$remove` | scheduler store | Delete a watch. |
 | `watch$run-now` | — | Run a watch's probe once immediately (proves the probe + predicate without waiting for the tick). |
@@ -304,14 +304,14 @@ next-steps: []
 - gates → :enable-reactions true, :enable-scheduler true
 
 ## What I created
-1. event$define :name order/shipped :payload-schema [:map [:order-id :string]]
+1. event$define :event-id order/shipped :payload-schema [:map [:order-id :string]]
 2. reaction$add :on order/shipped :do {:as :context :text "Order {{order-id}} shipped — dashboard may be stale."}
 
 ## Gate status
 - :enable-reactions ON (default) → the reaction fires live; appends to ## Events next turn.
 
 ## Dry-run
-- event$emit :event order/shipped :payload {:order-id "A-91"} → {:fired :order/shipped :subscribers 1}
+- event$emit :event-id order/shipped :payload {:order-id "A-91"} → {:fired :order/shipped :subscribers 1}
 ```
 
 ---
@@ -328,11 +328,11 @@ sequence and the shape of the final answer.
 1. `event$list` → `[]`; `reaction$list` → `[]`; `agent-runtime$config` → `:enable-reactions
    true` (default).
 2. Recognise: new event + a passive reminder (no forced turn) → `:as :context`.
-3. `event$define :name "order/shipped" :payload-schema [:map [:order-id :string]]` →
+3. `event$define :event-id "order/shipped" :payload-schema [:map [:order-id :string]]` →
    `{:defined :order/shipped}`.
 4. Propose the rule inline and confirm:
    `reaction$add :on "order/shipped" :do {:as :context :text "Order {{order-id}} shipped — dashboard may be stale."}`.
-5. `event$emit :event "order/shipped" :payload {:order-id "A-91"}` → dry-run;
+5. `event$emit :event-id "order/shipped" :payload {:order-id "A-91"}` → dry-run;
    `{:fired :order/shipped :subscribers 1}`.
 6. Answer:
    > Created event `order/shipped` and reaction `on-ship-refresh` (appends a `## Events`

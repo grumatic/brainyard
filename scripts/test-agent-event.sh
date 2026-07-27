@@ -62,22 +62,22 @@ if [[ -n "${BY_EVENT_BACKEND:-}" ]]; then
     # unavailable / limit). `exit` inside command substitution only leaves the
     # subshell, so propagate it explicitly — otherwise a cannot-run degrades into
     # a false FAIL when the assertions run against an empty answer.
-    def_ans="$(by_ask "Define a user event named \"$EVENT\" whose payload must match \
+    def_ans="$(by_ask "Define a user event identified by :$EVENT whose payload must match \
 the Malli schema [:map [:order-id :string] [:carrier :string]]. Use event\$define \
-with :name \"$EVENT\" and :payload-schema set to that schema. Confirm once it is defined.")" || exit $?
+with :event-id :$EVENT and :payload-schema set to that schema. Confirm once it is defined.")" || exit $?
     assert_file_exists   "[1] event def persisted (.brainyard/events/*.edn)" "$EVENTS_GLOB"
     assert_file_contains "[1] payload-schema stored"    "payload-schema" "$EVENTS_GLOB"
     assert_file_contains "[1] schema carries order-id"  "order-id"       "$EVENTS_GLOB"
 
     # [2] EMIT with a VALID payload — same session, so the def is on disk.
-    emit_ans="$(by_ask "Now emit the \"$EVENT\" event with the payload \
-{:order-id \"ORD-1\" :carrier \"UPS\"} using event\$emit, then report whether it fired.")" || exit $?
+    emit_ans="$(by_ask "Now emit the :$EVENT event with the payload \
+{:order-id \"ORD-1\" :carrier \"UPS\"} using event\$emit (:event-id :$EVENT), then report whether it fired.")" || exit $?
     assert_contains     "[2] emit turn references the event" "$EVENT" "$emit_ans"
     assert_not_contains "[2] valid payload was NOT rejected" "does not match" "$emit_ans"
 
     # [3] BONUS — emit an INVALID payload; the :payload-schema must reject it.
     #     Informational: it depends on the model faithfully surfacing the error.
-    bad_ans="$(by_ask "Try to emit \"$EVENT\" once more, but with an INVALID payload where \
+    bad_ans="$(by_ask "Try to emit :$EVENT once more, but with an INVALID payload where \
 order-id is the number 42 instead of a string (carrier \"UPS\"). Report exactly what happens.")" || exit $?
     if grep -qiE 'not match|payload-schema|reject|invalid|should be a string|:string|error' <<<"$bad_ans"
     then bad_ok=true; else bad_ok=false; fi

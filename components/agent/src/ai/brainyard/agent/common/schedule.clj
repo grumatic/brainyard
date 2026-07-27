@@ -28,6 +28,7 @@
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.java.shell :as shell]
+            [clojure.set :as set]
             [clojure.string :as str])
   (:import [java.io File]
            [java.time Instant ZoneId ZonedDateTime]))
@@ -514,19 +515,22 @@
 ;; ============================================================================
 
 (defcommand watch$add
-  "Watch an external condition on a schedule and fire an event when it changes/matches. Args: :probe :emit + (:every | :cron)."
+  "Watch an external condition on a schedule and fire an event when it changes/matches. Args: :probe :event-id + (:every | :cron)."
   (fn [& {:as opts}]
     (let [probe (:probe opts)
           pred  (:when opts)
           every (:every opts)
           cron  (:cron opts)
-          ek    (events/->event-key (:emit opts))
+          ;; Authored as :event-id; :emit is still read because watches written
+          ;; before the rename are PERSISTED with that key (the spec below also
+          ;; keeps storing :emit, which the ticker reads).
+          ek    (events/->event-key (or (:event-id opts) (:emit opts)))
           now   (System/currentTimeMillis)]
       (cond
         (not (map? probe))
         {:error ":probe must be a map, e.g. {:type :shell :cmd \"…\"} or {:type :file :path \"…\"}"}
         (nil? ek)
-        {:error ":emit must name an event to fire (e.g. 'order/shipped')"}
+        {:error ":event-id must name an event to fire (e.g. :order/shipped)"}
         (and (nil? every) (str/blank? (str cron)))
         {:error "provide :every <ms> or :cron \"m h dom mon dow\""}
         (and (not (str/blank? (str cron))) (nil? (parse-cron cron)))
@@ -547,7 +551,7 @@
                      (str/blank? (str cron))         (assoc :every (long every))
                      (not-empty (str (:title opts))) (assoc :title (str (:title opts))))]
           (write-spec! pdir spec)
-          (cond-> {:id id :emit ek :next-fire next :enabled (:enabled spec)}
+          (cond-> {:id id :event-id ek :next-fire next :enabled (:enabled spec)}
             (not (config/get-config :enable-scheduler))
             (assoc :note "Scheduler ticker is OFF — set :enable-scheduler true (or BY_ENABLE_SCHEDULER) to run watches unattended; watch$run-now / schedule$run-due work manually."))))))
   :input-schema  [:map
@@ -556,7 +560,7 @@
                     [:type {:optional true} [:maybe [:enum {:desc "Probe kind (default :shell): :shell runs :cmd and observes exit+stdout; :file observes :path's mtime"} :shell :file]]]
                     [:cmd  {:optional true} [:maybe [:string {:desc ":shell — command run via `bash -lc`"}]]]
                     [:path {:optional true} [:maybe [:string {:desc ":file — path whose mtime is watched"}]]]]]
-                  [:emit  [:string {:desc "Event to fire on the predicate (namespaced keyword)"}]]
+                  [:event-id [:keyword {:desc "Event identifier to fire on the predicate, a namespaced keyword e.g. :order/shipped"}]]
                   [:when
                    {:optional true}
                    [:map {:desc "Predicate deciding when to fire (default {:op :changed})"}
@@ -572,7 +576,7 @@
                   [:enabled {:optional true} [:boolean {:desc "Start enabled (default true)"}]]]
   :output-schema [:map
                   [:id        {:optional true} [:string]]
-                  [:emit      {:optional true} [:any {:desc "Event key"}]]
+                  [:event-id  {:optional true} [:any {:desc "Event identifier that will fire"}]]
                   [:next-fire {:optional true} [:int]]
                   [:enabled   {:optional true} [:boolean]]
                   [:note      {:optional true} [:string]]
@@ -581,10 +585,13 @@
 (defcommand watch$list
   "List watches (probe → emit) with their last observation and status."
   (fn [& _]
+    ;; Specs store the fired event under :emit (see watch$add); the LLM-facing
+    ;; vocabulary is :event-id, so project it rather than migrating stored specs.
     {:watches (->> (list-specs (config/project-dir))
                    (filter #(= :watch (:kind %)))
-                   (mapv #(select-keys % [:id :title :probe :emit :when :every :cron
-                                          :enabled :next-fire :last-status :last-observation :last-fired])))})
+                   (mapv #(-> (select-keys % [:id :title :probe :emit :when :every :cron
+                                              :enabled :next-fire :last-status :last-observation :last-fired])
+                              (set/rename-keys {:emit :event-id}))))})
   :input-schema  [:map]
   :output-schema [:map [:watches [:vector {:desc "Watch summaries"} :any]]])
 

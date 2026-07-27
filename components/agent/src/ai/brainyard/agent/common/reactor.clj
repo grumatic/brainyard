@@ -198,6 +198,13 @@
 
 (defn- action-text [d] (or (:text d) (:content d) ""))
 
+(defn- action-event-key
+  "Event key for an `:emit` / `:fire-hook` action. The authored field is
+   `:event-id`; `:event` is still read because rules written before the rename
+   are PERSISTED under `.brainyard/reactions/*.edn` and must keep firing."
+  [d]
+  (events/->event-key (or (:event-id d) (:event d))))
+
 (def ^:private max-inbox
   "Cap on retained passive event-inbox entries per session (renders as
    `## Events`; rolls off oldest-first, like the sibling `## Live Artifacts`)."
@@ -237,12 +244,12 @@
           :artifact)
 
       :emit
-      (do (events/emit-event! agent (events/->event-key (:event d))
+      (do (events/emit-event! agent (action-event-key d)
                               (or (:payload d) payload))
           :emit)
 
       :fire-hook
-      (do (hooks/fire! (events/->event-key (:event d)) (or (:payload d) {}))
+      (do (hooks/fire! (action-event-key d) (or (:payload d) {}))
           :fire-hook)
 
       :memory
@@ -408,7 +415,7 @@
             (not (config/get-config :enable-reactions))
             (assoc :note "Reactions are OFF — set :enable-reactions true (or BY_ENABLE_REACTIONS) to install them; rules are stored regardless."))))))
   :input-schema  [:map
-                  [:on        [:string {:desc "Event to react to (namespaced keyword, e.g. 'order/shipped')"}]]
+                  [:on        [:keyword {:desc "Event identifier to react to, a namespaced keyword e.g. :order/shipped"}]]
                   [:do
                    [:map {:desc "Action to run when the event fires; string fields interpolate {{payload-key}} from the event payload"}
                     [:as      [:enum {:desc "Sink — :turn/:run force a turn now; :context appends to the ## Events section (next turn, no interrupt); :memory writes a project-memory slug; :artifact upserts a live artifact; :emit fires another event"}
@@ -420,7 +427,7 @@
                     [:path    {:optional true} [:maybe [:string {:desc ":artifact — file path to load fresh each turn"}]]]
                     [:pin?    {:optional true} [:maybe [:boolean {:desc ":artifact — pin against context trimming"}]]]
                     [:slug    {:optional true} [:maybe [:string {:desc ":memory — memory slug"}]]]
-                    [:event   {:optional true} [:maybe [:keyword {:desc ":emit — event to fire (namespaced keyword)"}]]]
+                    [:event-id {:optional true} [:maybe [:keyword {:desc ":emit / :fire-hook — event identifier to fire, a namespaced keyword e.g. :order/shipped"}]]]
                     [:payload {:optional true} [:maybe [:map-of {:desc ":emit — payload for the fired event (defaults to the triggering payload)"} :any :any]]]]]
                   [:match     {:optional true} [:map-of {:desc "Payload subset filter, e.g. {:region \"us\"}; every pair must equal the event payload"} :any :any]]
                   [:id        {:optional true} [:string {:desc "Explicit rule id (lowercase-kebab)"}]]

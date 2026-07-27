@@ -192,6 +192,16 @@
 ;; reaction$add :do input schema — precise, not :any
 ;; ============================================================================
 
+(deftest action-event-key-reads-legacy-event-field
+  ;; The authored field is :event-id, but reaction rules written before the
+  ;; rename are PERSISTED under .brainyard/reactions/*.edn with :event — those
+  ;; must keep firing, so the action reader accepts both (new key wins).
+  (let [read-key #'reactor/action-event-key]
+    (is (= :a/b (read-key {:event-id :a/b})))
+    (is (= :a/b (read-key {:event "a/b"})) "legacy persisted :event still resolves")
+    (is (= :a/b (read-key {:event-id :a/b :event :other/x})) ":event-id wins")
+    (is (nil? (read-key {})))))
+
 (deftest do-schema-precision
   (let [in-sch   (get-in (tool/get-tool-defs :id :reaction$add) [:meta :input-schema])
         schema   (tool/inputs->malli-map-schema in-sch)
@@ -200,9 +210,9 @@
     (testing "schema->type builds an LLM JSON schema without throwing"
       (is (map? (tool/schema->type in-sch)))
       (is (= [:as] (:required (:do (tool/schema->type in-sch)))) ":as is required"))
-    (testing "string-form :as/:event coerce to keywords (JSON tool-call path)"
-      (is (= {:as :emit :event :downstream/pong :payload {"v" 1}}
-             (:do (decode {:on "x" :do {:as "emit" :event "downstream/pong" :payload {:v 1}}}))))
+    (testing "string-form :as/:event-id coerce to keywords (JSON tool-call path)"
+      (is (= {:as :emit :event-id :downstream/pong :payload {"v" 1}}
+             (:do (decode {:on "x" :do {:as "emit" :event-id "downstream/pong" :payload {:v 1}}}))))
       (is (valid? {:on "x" :do {:as "context" :text "hi"}})))
     (testing "keyword-form passes through (code-fence path)"
       (is (valid? {:on "x" :do {:as :turn :text "hi"}}))

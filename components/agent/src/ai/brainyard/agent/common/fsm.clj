@@ -535,7 +535,7 @@
 
 (defcommand fsm$send
   "Send an event to this session's machines and report which advanced. Installs FSM handlers on demand (so enabling :enable-fsm and sending in the same turn works). Sugar over event$emit."
-  (fn [& {:keys [event payload]}]
+  (fn [& {:keys [event-id payload]}]
     (let [ag   proto/*current-agent*
           sid  (proto/get-current-session-id)
           pdir (config/project-dir)]
@@ -546,7 +546,7 @@
       (let [snap   (fn [] (when sid (into {} (map (juxt :id :state)) (session-states pdir sid))))
             before (snap)
             base   (cond-> (if (map? payload) payload {}) sid (assoc :session-id sid))
-            r      (events/emit-event! event base)]
+            r      (events/emit-event! event-id base)]
         (if (:error r)
           r
           (let [advanced (vec (for [[id st] (snap) :when (not= st (get before id))]
@@ -557,8 +557,8 @@
               (and (config/get-config :enable-fsm) (empty? advanced))
               (assoc :note "No machine advanced — no current state has an :on transition for this event. Check the event name and each machine's state via fsm$status.")))))))
   :input-schema  [:map
-                  [:event   [:string {:desc "Event to fire (namespaced keyword)"}]]
-                  [:payload {:optional true} [:map-of {:desc "Event payload"} :any :any]]]
+                  [:event-id [:keyword {:desc "Event identifier to fire, a namespaced keyword e.g. :order/shipped"}]]
+                  [:payload  {:optional true} [:map-of {:desc "Event payload"} :any :any]]]
   :output-schema [:map
                   [:sent     {:optional true} [:any {:desc "Fired event key"}]]
                   [:advanced {:optional true} [:vector {:desc "Machines that transitioned: {:machine :from :to}"} :any]]

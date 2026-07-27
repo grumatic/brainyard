@@ -344,7 +344,7 @@ deploy-gate (initial :idle)
 - No :always/:after → :enable-scheduler not exercised. No code guards → :fsm-allow-code not required.
 
 ## Dry-run
-- fsm$send :event ci/passed → advanced deploy-gate idle → awaiting-approval ✓
+- fsm$send :event-id ci/passed → advanced deploy-gate idle → awaiting-approval ✓
 ```
 
 ---
@@ -377,7 +377,7 @@ and the shape of the final answer.
                                :deploy/failed [{:target :idle :do [[:emit :notify/deploy-failed]]}]}}
               :done {:type :final}}
    ```
-4. `fsm$send :event "ci/passed"` → dry-run; `{:sent :ci/passed :advanced [{:machine "deploy-gate" :from :idle :to :awaiting-approval}]}`.
+4. `fsm$send :event-id "ci/passed"` → dry-run; `{:sent :ci/passed :advanced [{:machine "deploy-gate" :from :idle :to :awaiting-approval}]}`.
 5. Answer:
    > Defined `deploy-gate` (states: idle · awaiting-approval · deploying · done). Validated:
    > all targets reachable, initial state defined. It's **live now** — `:enable-fsm` is on by
@@ -423,7 +423,7 @@ and the shape of the final answer.
 1. `fsm$status :id "deploy-gate"` → current `:state :idle`; `:enable-fsm true`.
 2. Note the blast radius before sending: the resulting `awaiting-approval` entry **forces a
    turn**. Confirm.
-3. `fsm$send :event "ci/passed"` → `{:advanced [{:machine "deploy-gate" :from :idle :to :awaiting-approval}]}`.
+3. `fsm$send :event-id "ci/passed"` → `{:advanced [{:machine "deploy-gate" :from :idle :to :awaiting-approval}]}`.
 4. Answer: "Advanced `deploy-gate` idle → awaiting-approval. It just injected the approval
    prompt turn."
 

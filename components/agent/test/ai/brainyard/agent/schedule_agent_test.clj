@@ -193,7 +193,7 @@
   (with-scratch-scheduler
     (sched/schedule$add :prompt "run a report" :cron "0 * * * *" :title "hourly")
     (sched/watch$add :probe {:type :shell :cmd "echo 1"}
-                     :emit "orders/grew" :every 60000 :title "orders-watch")
+                     :event-id :orders/grew :every 60000 :title "orders-watch")
     (let [job-ids   (set (map :id (:schedules (sched/schedule$list))))
           watch-ids (set (map :id (:watches (sched/watch$list))))]
       (is (= 1 (count job-ids)) "schedule$list shows only the time-job")

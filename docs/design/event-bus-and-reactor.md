@@ -83,11 +83,11 @@ reaction$add  :on "order/shipped" :match {:region "us"}
 ;;                 | :artifact | :run | :emit (chain another event)
 
 ;; ── fire it, three ways ──
-event$emit    :event "order/shipped" :payload {:order-id "A-91"}      ; from the agent (LLM tool)
+event$emit    :event-id "order/shipped" :payload {:order-id "A-91"}      ; from the agent (LLM tool)
 ;; external shell / cron:
 by events emit --event order/shipped --payload '{:order-id "A-91"}'   ; into the live session
 watch$add     :probe {:type :shell :cmd "…count shipped…"}            ; autonomous, on the ticker
-              :when {:op :increased} :emit "order/shipped" :every 60000
+              :when {:op :increased} :event-id :order/shipped :every 60000
 
 ;; ── observe from outside (streams until disconnect) ──
 ;;   echo '{:op :subscribe :events [:order/shipped]}' | nc -U <session>/ask.sock

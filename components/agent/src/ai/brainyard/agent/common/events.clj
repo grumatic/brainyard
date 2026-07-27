@@ -33,6 +33,7 @@
             [ai.brainyard.agent.core.tool :refer [defcommand]]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.edn :as edn]
+            [clojure.set :as set]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [malli.core :as m]
@@ -222,15 +223,20 @@
 
 (defcommand event$define
   "Declare a user-defined event type (name + optional payload schema) so it can be emitted, subscribed to, and reacted to."
-  (fn [& {:keys [name desc payload-schema llm-injectable]}]
-    (let [ek (->event-key name)]
+  (fn [& {:keys [event-id desc payload-schema llm-injectable]}]
+    (let [ek (->event-key event-id)]
       (if (nil? ek)
-        {:error (str "invalid :name " (pr-str name) " — use a namespaced keyword like 'order/shipped'")}
+        {:error (str "invalid :event-id " (pr-str event-id) " — use a namespaced keyword like :order/shipped")}
         (let [pdir   (config/project-dir)
               now    (System/currentTimeMillis)
               schema (if (string? payload-schema)
                        (try (edn/read-string payload-schema) (catch Exception _ nil))
                        payload-schema)
+              ;; DELIBERATE: the on-disk key stays :name while the LLM-facing
+              ;; arg is :event-id — renaming the stored key would invalidate
+              ;; every existing .brainyard/events/*.edn. read-def / list-defs /
+              ;; event$list bridge the two (event$list projects :name →
+              ;; :event-id so the model reads back what it writes).
               def'   (cond-> {:name ek :created now}
                        (not (str/blank? (str desc))) (assoc :desc (str desc))
                        (some? schema)                (assoc :payload-schema schema)
@@ -239,7 +245,7 @@
           (hooks/register-event! ek (dissoc def' :name :created))
           {:defined ek :path (.getAbsolutePath ^File (def-file pdir ek))}))))
   :input-schema  [:map
-                  [:name           [:string {:desc "Event name, a namespaced keyword e.g. 'order/shipped'"}]]
+                  [:event-id       [:keyword {:desc "Event identifier, a namespaced keyword e.g. :order/shipped"}]]
                   [:desc           {:optional true} [:string {:desc "One-line description"}]]
                   [:payload-schema {:optional true :desc "Optional Malli schema the payload must match: a native vector (code channel) or an EDN string (tool-calls channel), e.g. [:map [:order-id :string]]"} ::acs/vector-object-arg]
                   [:llm-injectable {:optional true} [:boolean {:desc "May the agent emit this via event$emit? (default true)"}]]]
@@ -251,20 +257,24 @@
 (defcommand event$list
   "List the user-defined event types declared in this project."
   (fn [& _]
-    {:events (mapv #(select-keys % [:name :desc :payload-schema :llm-injectable?])
+    ;; On disk the identifier is stored under :name (see write-def!); the
+    ;; LLM-facing vocabulary is :event-id everywhere, so project it here rather
+    ;; than migrating existing .brainyard/events/*.edn files.
+    {:events (mapv #(-> (select-keys % [:name :desc :payload-schema :llm-injectable?])
+                        (set/rename-keys {:name :event-id}))
                    (list-defs (config/project-dir)))})
   :input-schema  [:map]
   :output-schema [:map [:events [:vector {:desc "Event definitions"} :any]]])
 
 (defcommand event$remove
   "Remove a user-defined event type declaration."
-  (fn [& {:keys [name]}]
-    (let [ek   (->event-key name)
+  (fn [& {:keys [event-id]}]
+    (let [ek   (->event-key event-id)
           pdir (config/project-dir)]
       (if (and ek (delete-def! pdir ek))
         (do (hooks/unregister-event! ek) {:removed ek})
-        {:error (str "no event '" (pr-str name) "'")})))
-  :input-schema  [:map [:name [:string {:desc "Event name (namespaced keyword)"}]]]
+        {:error (str "no event '" (pr-str event-id) "'")})))
+  :input-schema  [:map [:event-id [:keyword {:desc "Event identifier, a namespaced keyword e.g. :order/shipped"}]]]
   :output-schema [:map
                   [:removed {:optional true} [:any {:desc "Removed event key"}]]
                   [:error   {:optional true} [:string {:desc "Error if absent"}]]])
@@ -276,11 +286,11 @@
 
 (defcommand event$emit
   "Emit (fire) a user-defined event with an optional payload; subscribers and reactions receive it."
-  (fn [& {:keys [event payload]}]
-    (let [ek   (->event-key event)
+  (fn [& {:keys [event-id payload]}]
+    (let [ek   (->event-key event-id)
           pdir (config/project-dir)]
       (cond
-        (nil? ek)                        {:error (str "invalid :event " (pr-str event))}
+        (nil? ek)                        {:error (str "invalid :event-id " (pr-str event-id))}
         (not (llm-injectable? pdir ek))  {:error (str "event " ek " is declared :llm-injectable? false")}
         :else
         (do
@@ -291,7 +301,7 @@
             (when-let [f @!ensure-handlers] (try (f ag) (catch Throwable _ nil))))
           (emit-event! ek payload)))))
   :input-schema  [:map
-                  [:event   [:string {:desc "Event name to fire (namespaced keyword)"}]]
+                  [:event-id [:keyword {:desc "Event identifier to fire, a namespaced keyword e.g. :order/shipped"}]]
                   [:payload {:optional true} [:map-of {:desc "Event payload map delivered to subscribers"} :any :any]]]
   :output-schema [:map
                   [:fired       {:optional true} [:any {:desc "Fired event key"}]]

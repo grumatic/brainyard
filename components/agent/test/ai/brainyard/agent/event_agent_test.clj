@@ -182,15 +182,16 @@
 (deftest event-define-list-round-trip
   (with-scratch
     (testing "event$define declares a named event, event$list reads it back"
-      (let [res (events/event$define :name "order/shipped"
+      (let [res (events/event$define :event-id :order/shipped
                                      :payload-schema [:map [:order-id :string]]
                                      :desc "an order shipped")]
         (is (= :order/shipped (:defined res)))
         (let [declared (:events (events/event$list))
-              names    (set (map :name declared))]
+              ;; event$list projects the on-disk :name to the LLM-facing :event-id
+              names    (set (map :event-id declared))]
           (is (contains? names :order/shipped)))
         (testing "event$remove drops the declaration"
-          (is (= :order/shipped (:removed (events/event$remove :name "order/shipped"))))
+          (is (= :order/shipped (:removed (events/event$remove :event-id :order/shipped))))
           (is (empty? (:events (events/event$list)))))))))
 
 (deftest reaction-add-persists-even-with-gate-off
@@ -219,7 +220,7 @@
   (with-scratch
     (let [res (schedule/watch$add :probe {:type :shell :cmd "echo 1"}
                                   :when {:op :increased}
-                                  :emit "order/shipped" :every 60000
+                                  :event-id :order/shipped :every 60000
                                   :title "orders-watch")
           wid (:id res)
           watch-ids (set (map :id (:watches (schedule/watch$list))))
