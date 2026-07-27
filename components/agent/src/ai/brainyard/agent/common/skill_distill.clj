@@ -44,9 +44,10 @@
 ;; ============================================================================
 
 (def ^:const min-action-steps
-  "A turn must take at least this many action steps (tool/code iterations) to
-   count as a multi-step procedure worth scoring. Pure Q&A and single edits
-   fall below it and are skipped without an LLM call."
+  "A turn must take at least this many action steps — tool calls, or distinct
+   top-level statements inside a code block — to count as a multi-step
+   procedure worth scoring. Pure Q&A and single edits fall below it and are
+   skipped without an LLM call."
   2)
 
 (defn- action-iteration?
@@ -54,6 +55,56 @@
    a tool or ran code — as opposed to pure reasoning."
   [{:keys [channel tools code]}]
   (boolean (or (= "tool" channel) (seq tools) (seq code))))
+
+(def ^:private comment-line-re
+  "Leading comment marker across the languages a code block can carry (shell /
+   Clojure / C-family / SQL)."
+  #"^\s*(?:#|;|//|--)")
+
+(def ^:private closing-line-re
+  "A line that only CLOSES or continues a block rather than starting a new
+   statement: a run of closing delimiters, or a shell block keyword."
+  #"^[)\}\]\s;,]*$|^(?:fi|done|esac|end|else|elif\b.*|;;)\s*$")
+
+(defn- statement-line?
+  "True when a code line starts a new top-level statement. Statements begin at
+   column 0 — shell commands, Clojure top-level forms and Python/JS top-level
+   statements all share that convention, while continuations and block bodies
+   are indented. Comments and bare block-closers start nothing."
+  [line]
+  (boolean (and (re-find #"^\S" line)
+                (not (re-find comment-line-re line))
+                (not (re-find closing-line-re line)))))
+
+(defn code-steps
+  "Number of distinct top-level statements in ONE code block. A non-blank block
+   always counts as at least one step, so an unparseable or single-expression
+   block is never counted as zero."
+  [code]
+  (let [s (str code)]
+    (if (str/blank? s)
+      0
+      (max 1 (count (filter statement-line? (str/split-lines s)))))))
+
+(defn iteration-steps
+  "Action steps taken in ONE trajectory iteration: every tool call is a step,
+   and a code block contributes one step per top-level statement.
+
+   Counting INSIDE the block is the point. A capable model batches a multi-step
+   shell procedure into a single code block — exactly the turn most worth
+   distilling — and an iteration-level count scores that as 1, silently dropping
+   it. Count what the turn DID, not how many iterations it took to do it.
+
+   Pure-reasoning iterations score 0; an action iteration always scores ≥ 1."
+  [{:keys [tools code] :as iteration}]
+  (if (action-iteration? iteration)
+    (max 1 (+ (count tools) (reduce + 0 (map code-steps code))))
+    0))
+
+(defn turn-steps
+  "Total action steps across a turn record's iterations."
+  [record]
+  (reduce + 0 (map iteration-steps (:iterations record))))
 
 (defn worth-scoring?
   "Deterministic pre-filter over a trajectory turn record. True only for a
@@ -64,8 +115,7 @@
    (and (map? record)
         (:success record)
         (not (str/blank? (str (:answer record))))
-        (>= (count (filter action-iteration? (:iterations record)))
-            min-action-steps))))
+        (>= (turn-steps record) min-action-steps))))
 
 ;; ============================================================================
 ;; Trajectory → scorer inputs

@@ -70,6 +70,59 @@
              [{:n 1 :channel "none" :thought "think"}
               {:n 2 :channel "none" :thought "answer"}]))))
 
+;; A model capable enough to batch a whole procedure into ONE code block used to
+;; be dropped by an iteration-level count — the most skill-worthy shape scoring
+;; as a single step. Steps are counted INSIDE the block.
+
+(def batched-record
+  (assoc multi-step-record
+         :iterations
+         [{:n 1 :channel "code"
+           :code ["root=$(git rev-parse --show-toplevel)\ncd \"$root\"\necho '=== (1) describe'\ngit describe --tags\necho '=== (2) tree'\ngit status --porcelain"]
+           :output ["v0.4.0"]}
+          {:n 2 :channel "none" :thought "answer"}]))
+
+(deftest code-steps-counting
+  (testing "one step per top-level statement"
+    (is (= 3 (sd/code-steps "cd /tmp\nls -la\nwc -l *.clj"))))
+
+  (testing "indented continuations and bodies are not separate steps"
+    (is (= 1 (sd/code-steps "(let [x 1]\n  (inc x))")))
+    (is (= 1 (sd/code-steps "for f in *.clj; do\n  wc -l \"$f\"\ndone"))))
+
+  (testing "blank lines, comments and bare closers do not count"
+    (is (= 2 (sd/code-steps "# audit\ncd /tmp\n\n;; note\nls\n)")))
+    (is (= 0 (sd/code-steps "   ")))
+    (is (= 0 (sd/code-steps nil))))
+
+  (testing "a non-blank block is always at least one step"
+    (is (= 1 (sd/code-steps "  (+ 1 2)")))))
+
+(deftest iteration-and-turn-steps
+  (testing "every tool call is a step"
+    (is (= 2 (sd/iteration-steps {:channel "tool"
+                                  :tools [{:name "read"} {:name "bash"}]}))))
+
+  (testing "an action iteration never scores zero"
+    (is (= 1 (sd/iteration-steps {:channel "tool" :tools [] :code []}))))
+
+  (testing "pure reasoning scores zero"
+    (is (= 0 (sd/iteration-steps {:channel "none" :thought "think"}))))
+
+  (testing "turn steps sum across iterations"
+    (is (= 2 (sd/turn-steps multi-step-record)))
+    (is (= 6 (sd/turn-steps batched-record)))))
+
+(deftest worth-scoring-counts-steps-within-an-iteration
+  (testing "a procedure batched into ONE code block still qualifies"
+    (is (true? (sd/worth-scoring? batched-record))))
+
+  (testing "a single-command block is still filtered out"
+    (is (false? (sd/worth-scoring?
+                 (assoc multi-step-record :iterations
+                        [{:n 1 :channel "code" :code ["git status --porcelain"]}
+                         {:n 2 :channel "none" :thought "answer"}]))))))
+
 (deftest trajectory-text-render
   (testing "renders iteration markers and stays bounded"
     (let [txt (sd/trajectory->text multi-step-record)]

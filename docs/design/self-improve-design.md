@@ -71,7 +71,15 @@ New ns: `ai.brainyard.agent.common.skill-distill`.
    property names forbid `?`.)
    Sub-LM default `claude-code:sonnet`.
 2. **Deterministic pre-filter** — skip trivial turns (single tool call, pure Q&A,
-   errored) before any LLM call.
+   errored) before any LLM call. It counts **action steps, not iterations**:
+   every tool call is a step, and a code block contributes one step per
+   top-level statement. Counting inside the block matters — a capable model
+   batches a whole multi-step shell procedure into ONE code block (exactly the
+   turn most worth distilling), and an iteration-level count scored that as 1
+   and dropped it silently. Verified against real trajectories: a 3-part
+   release-readiness audit written as a single 27-statement script now scores
+   27 and reaches the scorer, while a turn that genuinely ran one command still
+   scores 1 and is skipped.
 3. **`:agent.ask/post` observer** (cloned from the then-current
    `essence-capture-handler`; that handler was retired 2026-06-28 — the
    structurally identical `consolidation-cadence-handler` is now the live
