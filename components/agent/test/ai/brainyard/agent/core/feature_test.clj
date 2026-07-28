@@ -185,13 +185,32 @@
 ;; Lifecycle ↔ :requires-restart (P3 replaces the per-key flag with this)
 ;; ============================================================================
 
-(deftest startup-features-match-restart-keys
-  (testing "restart-ness derived from :lifecycle :startup agrees with config-schema's per-key flag"
-    (is (= cfg/restart-required-keys feat/restart-required-keys)
-        (str "only-in-schema: "
-             (sort (set/difference cfg/restart-required-keys feat/restart-required-keys))
-             " | only-in-registry: "
-             (sort (set/difference feat/restart-required-keys cfg/restart-required-keys))))))
+(deftest startup-features-are-the-restart-keys
+  (testing "restart-ness is derived from :lifecycle :startup, not a per-key flag"
+    ;; This exact set was asserted against config-schema's :requires-restart
+    ;; flag before the flag was deleted; keeping it verbatim is what proves the
+    ;; derivation reproduces the old behaviour rather than redefining it.
+    (is (= #{:enable-graph-memory :graph-embed-model :graph-extract-model
+             :enable-memory-capture :memory-question-max-chars :memory-answer-max-chars
+             :graph-extract-max-input-chars :graph-max-entities-per-episode
+             :graph-max-relations-per-episode :graph-max-nodes :graph-max-edges
+             :graph-extract-mode :graph-prune-orphans?}
+           feat/restart-required-keys))
+    (is (feat/requires-restart-key? :enable-graph-memory))
+    (is (feat/requires-restart-key? :graph-embed-model))
+    (testing "live-read keys are NOT flagged"
+      (is (not (feat/requires-restart-key? :enable-memory-consolidation)))
+      (is (not (feat/requires-restart-key? :enable-mid-turn-recall)))
+      (is (not (feat/requires-restart-key? :max-iterations)))))
+  (testing "and config-schema no longer carries the flag at all"
+    (is (empty? (filter :requires-restart (vals cfg/config-schema)))
+        "a stray :requires-restart in the schema is now dead metadata")))
+
+(deftest annotate-hit-adds-requires-restart
+  (testing "the annotation moved here from search-config-keys"
+    (is (true? (:requires-restart (feat/annotate-hit {:key "graph-extract-model"}))))
+    (is (not (contains? (feat/annotate-hit {:key "enable-mid-turn-recall"}) :requires-restart)))
+    (is (not (contains? (feat/annotate-hit {:key "max-iterations"}) :requires-restart)))))
 
 (deftest graph-batch-episodes-is-exempt-from-restart
   (testing ":graph-extract-batch-episodes is on a :startup feature but re-read per graph-build"

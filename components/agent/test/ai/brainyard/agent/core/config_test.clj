@@ -149,27 +149,11 @@
   (is (cfg/read-only-key? :lm-config))
   (is (not (cfg/read-only-key? :max-iterations))))
 
-(deftest restart-required-keys-derived-from-schema
-  (testing "the startup-baked memory/graph keys are flagged :requires-restart"
-    (is (= #{:enable-graph-memory :graph-embed-model :graph-extract-model
-             :enable-memory-capture :memory-question-max-chars :memory-answer-max-chars
-             :graph-extract-max-input-chars :graph-max-entities-per-episode
-             :graph-max-relations-per-episode :graph-max-nodes :graph-max-edges
-             :graph-extract-mode :graph-prune-orphans?}
-           cfg/restart-required-keys))
-    (is (cfg/requires-restart-key? :enable-graph-memory))
-    (is (cfg/requires-restart-key? :graph-embed-model))
-    (testing "live-read keys are NOT flagged"
-      (is (not (cfg/requires-restart-key? :enable-memory-consolidation)))
-      (is (not (cfg/requires-restart-key? :enable-mid-turn-recall)))
-      (is (not (cfg/requires-restart-key? :max-iterations))))))
-
-(deftest search-config-keys-marks-requires-restart
-  (let [by-key (into {} (map (juxt :key identity)) (cfg/search-config-keys nil "graph-extract"))]
-    (is (true? (:requires-restart (get by-key "graph-extract-model"))))
-    (testing "a live key omits the flag"
-      (let [hit (first (cfg/search-config-keys nil "enable-mid-turn-recall"))]
-        (is (not (contains? hit :requires-restart)))))))
+; `restart-required-keys` / `requires-restart-key?` and the :requires-restart
+;; annotation on search hits moved to core.feature: restart-ness is derived from
+;; :lifecycle :startup rather than a per-key schema flag. See
+;; feature_test/startup-features-are-the-restart-keys and
+;; annotate-hit-adds-requires-restart.
 
 (deftest redact-config-value-masks-secrets
   (testing "api-key leaf inside a config object is masked"

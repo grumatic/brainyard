@@ -346,7 +346,7 @@
               :else
               (let [coerced (config/coerce-config-value k v-str)]
                 (config/set-config! agent k coerced)
-                (merge {:result (if (config/requires-restart-key? k)
+                (merge {:result (if (feature/requires-restart-key? k)
                                   (format "Config '%s' set to %s and persisted to .brainyard/config.edn, but it is read once at startup — RESTART `by` for the change to take effect (the memory manager / capture pipeline is built at boot)."
                                           (name k) coerced)
                                   (format "Config '%s' set to %s. Effective immediately; persisted to .brainyard/config.edn."

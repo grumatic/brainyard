@@ -125,7 +125,7 @@
    :auto-background-timeout-ms {:type "integer" :default 180000
                                 :doc "Auto-background deadline (ms) for an LLM-emitted code block: if a foreground task exceeds it, await-task detaches into background mode and returns a :pending snapshot; a later iteration harvests the result."}
    :fast-eval-timeout-ms       {:type "integer" :default 30000
-                                :doc "Fast-eval threshold (ms): Clojure code runs inline first and is promoted to a tracked task only if it exceeds this (0 = always create a task; not applied to bash)."}
+                                :doc "Fast-eval threshold (ms) for BOTH tool calls and Clojure code: the work runs inline first and is promoted to a tracked background task only if it exceeds this (0 = always create a task; not applied to bash). Applies to every tool call — including a subagent invoked as a tool — via tool/call-tool-with-fast-eval, so it stays live even with :code-channel? false."}
    :enable-iteration-hold       {:type "boolean" :default false
                                  :doc "When true the BT loop blocks up to :hold-max-wait-ms waiting for in-flight tasks; when false (default) pending tasks flow to the next iteration and the LLM polls via task$wait."}
    :hold-max-wait-ms            {:type "integer" :default 300000
@@ -169,46 +169,41 @@
    :analytics-shs-weights      {:type "object" :default nil
                                 :doc "Override map for the composite Session Health Score weights (e.g. {:pqs 0.2 :tce 0.2 …}; must sum to 1.0 or it falls back). nil → built-in defaults."}
    :enable-memory-capture      {:type "boolean" :default true
-                                :requires-restart true
                                 :doc "Auto-start the L2 memory-capture pipeline on agent creation (subscribes to ask/tool-use/code-eval/exception hooks, feeds the S1 parser into L2); auto-stops when the last sharing agent closes. Read once at agent start — changing it mid-session takes effect only after restarting `by`."}
    ;; Context-graph memory overlay (CR-MEM-20, docs/design/context-graph-memory-design.md).
    :enable-graph-memory        {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_GRAPH_MEMORY")]
                                            (= "true" v) ::env-unset)
                                 :default false
-                                :requires-restart true
                                 :doc "Context-graph memory overlay: maintain a typed entity/relationship graph (graph_nodes/graph_edges) as an extra RRF recall signal over the L1/L2/L3 FTS store. Off by default; non-regressing (empty graph ⇒ recall == pure FTS). Read once when the memory manager is built — changing it mid-session takes effect only after restarting `by`. Env: BY_ENABLE_GRAPH_MEMORY."}
    :graph-embed-model          {:type "string"
                                 :env-fn #(if-some [v (System/getenv "BY_GRAPH_EMBED_MODEL")]
                                            v ::env-unset)
                                 :default "static"
-                                :requires-restart true
                                 :doc "Semantic-similarity embedder for the context graph (only when :enable-graph-memory). Default \"static\" = the self-contained in-binary Model2Vec embedder (no server), or a \"provider/model\" string (e.g. ollama/nomic-embed-text). Set to empty/blank to disable the vector signal. The embed-fn is built at memory-manager startup — changing it needs a `by` restart (then run memory$reembed). Env: BY_GRAPH_EMBED_MODEL."}
    :graph-extract-model        {:type "string"
                                 :env-fn #(if-some [v (System/getenv "BY_GRAPH_EXTRACT_MODEL")]
                                            v ::env-unset)
                                 :default nil
-                                :requires-restart true
                                 :doc "Chat LM that extracts entities/relationships from episodes and writes community summaries for the context graph. nil → graph stays storage-only (manual edge API). The extract-fn is built at memory-manager startup — changing it needs a `by` restart. Env: BY_GRAPH_EXTRACT_MODEL."}
-   :graph-extract-mode         {:type "keyword" :default :at-consolidation :requires-restart true
+   :graph-extract-mode         {:type "keyword" :default :at-consolidation
                                 :doc "When graph extraction runs (only when :enable-graph-memory). :at-consolidation (default) — batch-extract the episodes captured since the last consolidation in ONE LLM call at each consolidation (fewer calls; graph is stale between consolidations). :per-episode — the async extractor runs one extraction per captured L2 turn (fresher graph, one LLM call per turn). Baked at start-capture! — needs a `by` restart."}
-   :graph-extract-max-input-chars {:type "integer" :default 400000 :requires-restart true
+   :graph-extract-max-input-chars {:type "integer" :default 400000
                                    :doc "Max chars fed to a single graph-extraction call before truncation (only when :enable-graph-memory). ~400K chars ≈ 100K tokens, enough to batch a whole consolidation window in one call (:at-consolidation), or cap one large episode (:per-episode). Baked into the extractor at start-capture! — needs a `by` restart."}
-   :graph-max-entities-per-episode {:type "integer" :default 12 :requires-restart true
+   :graph-max-entities-per-episode {:type "integer" :default 12
                                     :doc "Confines graph explosion: max entities a single episode may add to the graph (only when :enable-graph-memory). Extras are dropped (durable ones are listed first). Baked into the extractor at start-capture! — needs a `by` restart."}
-   :graph-max-relations-per-episode {:type "integer" :default 24 :requires-restart true
+   :graph-max-relations-per-episode {:type "integer" :default 24
                                      :doc "Confines graph explosion: max relationships (edges) a single episode may add (only when :enable-graph-memory). Kept highest-confidence-first, then capped. Baked into the extractor at start-capture! — needs a `by` restart."}
    :graph-extract-batch-episodes {:type "integer" :default 10
                                   :doc "Episodes per LLM call when manual `memory graph-build`/`reduce` batches extraction into windows (only when :enable-graph-memory). Larger ⇒ fewer/cheaper calls but the model dilutes over a bigger context and the graph gets sparser; smaller ⇒ more calls, higher fidelity. The per-episode entity/relation caps are scaled by the window's episode count, so a window keeps N× the single-episode budget. Read fresh at each graph-build/reduce (no restart)."}
-   :graph-max-nodes            {:type "integer" :default 100 :requires-restart true
+   :graph-max-nodes            {:type "integer" :default 100
                                 :doc "Total-size cap: max nodes retained in the context graph per user (only when :enable-graph-memory). Over budget, the lowest-retention nodes are evicted (ranked by edge-degree, then curated-type over the generic `entity` fallback, then has-summary, then recency) down to 90% of the cap. 0 disables the cap. Baked into the extractor at start-capture! — needs a `by` restart."}
-   :graph-max-edges            {:type "integer" :default 200 :requires-restart true
+   :graph-max-edges            {:type "integer" :default 200
                                 :doc "Total-size cap: max valid (non-invalidated) edges retained in the context graph per user (only when :enable-graph-memory). Over budget, the lowest-retention edges are evicted (ranked by confidence, then recency — lowest-confidence, stalest first) down to 90% of the cap. 0 disables the cap. Baked into the extractor at start-capture! — needs a `by` restart."}
    :graph-prune-orphans?       {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_GRAPH_PRUNE_ORPHANS")]
                                            (= "true" v) ::env-unset)
                                 :default true
-                                :requires-restart true
                                 :doc "After each graph extraction, hard-delete orphan nodes — nodes with no edge row at all (only when :enable-graph-memory). Removes extracted entities the model never wired into a relation, plus any node left edgeless by node/edge budget eviction, keeping the graph edge-connected. A node whose only edge was superseded is RETAINED (it keeps an invalidated edge row + as-of history). Trade-off: an unrelated node with a summary still feeds vector (:vec) recall, so pruning drops that semantic signal; set false to keep such nodes (they are then only evicted when :graph-max-nodes is exceeded). Baked into the extractor at start-capture! — needs a `by` restart. Env: BY_GRAPH_PRUNE_ORPHANS."}
    :enable-memory-consolidation {:type "boolean"
                                  :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY_CONSOLIDATION")]
@@ -407,10 +402,8 @@
    :recall-limit               {:type "integer" :default 10
                                 :doc "Max recalled memory hits injected into a turn's context."}
    :memory-question-max-chars  {:type "integer" :default 8000
-                                :requires-restart true
                                 :doc "L2 storage cap (chars) for a captured Q&A episode's question — what FTS can match (decoupled from the recall-render snippet; storage cost is DB/FTS bytes, not prompt tokens). Baked into the capture parser at start-capture! — changing it needs a `by` restart."}
    :memory-answer-max-chars    {:type "integer" :default 16000
-                                :requires-restart true
                                 :doc "L2 storage cap (chars) for a captured Q&A episode's answer (decoupled from the recall-render snippet). Baked into the capture parser at start-capture! — changing it needs a `by` restart."}
    :memory-recall-snippet-chars {:type "integer" :default 600
                                  :doc "Per-hit char cap when rendering a recalled memory into the prompt."}
@@ -536,22 +529,6 @@
   "True if `k` is a read-only config key (see `read-only-keys`)."
   [k]
   (contains? read-only-keys k))
-
-(def restart-required-keys
-  "Schema keys flagged `:requires-restart` — read ONCE at startup (the memory
-   manager's graph provider fns at `create-memory-manager`; the capture pipeline
-   at `start-capture!`), so changing them via `agent-runtime$config` persists to
-   config.edn but does NOT take effect until `by` is restarted. Surfaced in
-   search results and called out in the set-confirmation message so the LLM is
-   not misled by an 'effective immediately' reply. Single source of truth: the
-   `:requires-restart` flag on each schema entry."
-  (set (keep (fn [[k entry]] (when (:requires-restart entry) k)) config-schema)))
-
-(defn requires-restart-key?
-  "True if changing `k` only takes effect after restarting `by`
-   (see `restart-required-keys`)."
-  [k]
-  (contains? restart-required-keys k))
 
 (defn redact-config-value
   "Mask a config value for LLM-facing display. Flat secrets are intentionally
@@ -1297,8 +1274,15 @@
   ([dirs]
    (let [raw       (read-edn-config dirs :auto)
          migrated  (:config (migrate-legacy-edn-shape raw))
-         persisted (-> (get-in migrated [:agent :config] {})
-                       (select-keys config-keys))
+         declared  (get-in migrated [:agent :config] {})
+         persisted (select-keys declared config-keys)
+         ;; `select-keys` silently drops anything not in the schema, which is
+         ;; how a retired key goes on sitting in config.edn looking effective.
+         ;; This repo's own file still carries four: :enable-analytics,
+         ;; :enable-memory-essence, :enable-finalize-answer and :nrepl-grant.
+         ;; Someone who set those believes they took effect; nothing told them
+         ;; otherwise until now.
+         unknown   (sort (remove config-keys (keys declared)))
          bridged   (bridge-permissions-section migrated)
          ;; `:feature-profile` is itself config, so resolve it from the same
          ;; two sources that can be known this early: BY_PROFILE, else the
@@ -1320,6 +1304,11 @@
                    :profile profile
                    :valid (vec (sort (keys feature-profiles)))
                    :effect "ignored — schema defaults apply"))
+     (when (seq unknown)
+       (mulog/warn ::unknown-config-keys
+                   :keys (vec unknown)
+                   :path (str (project-config-dir dirs) "/config.edn")
+                   :effect "ignored — not in config-schema (retired or misspelled)"))
      (reset! !global-config merged)
      merged)))
 
@@ -1510,8 +1499,7 @@
                             :value   (redact-config-value k (get-config agent-or-st k))
                             :default (:default spec)}
                      (:doc spec)              (assoc :doc (:doc spec))
-                     (:read-only spec)        (assoc :read-only true)
-                     (:requires-restart spec) (assoc :requires-restart true)))))
+                     (:read-only spec)        (assoc :read-only true)))))
          (sort-by :key)
          vec)
     []))

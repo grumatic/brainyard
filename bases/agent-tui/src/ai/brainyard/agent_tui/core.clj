@@ -831,7 +831,11 @@
               :provider   (some-> (:provider lm) name)
               :model      (:model lm)}]
     (if-not (str/blank? (str query))
-      (assoc base :query query :matches (edn-safe (agent/search-config-keys ag query)))
+      ;; annotate-hits adds :feature/:family and the derived :requires-restart —
+      ;; the latter moved out of search-config-keys when restart-ness stopped
+      ;; being a per-key schema flag, so a bare search no longer carries it.
+      (assoc base :query query
+             :matches (edn-safe (agent/annotate-hits (agent/search-config-keys ag query))))
       (let [ov (agent/config-overview ag)]
         (assoc base
                :total     (:total ov)

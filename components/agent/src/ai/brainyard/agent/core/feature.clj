@@ -903,6 +903,17 @@
 ;; Query helpers
 ;; ============================================================================
 
+(defn requires-restart-key?
+  "True when `k` is read once at boot and a change needs a restart.
+
+   Derived from `:lifecycle :startup` minus each feature's `:live-keys`, which
+   is the honest statement: restart-ness is not a property of a key, it is a
+   property of WHEN its feature is read. A key added to a startup feature now
+   inherits the warning automatically, instead of relying on someone
+   remembering a per-key flag."
+  [k]
+  (contains? restart-required-keys k))
+
 (defn feature-doc
   "Registry entry for `fid`, or nil."
   [fid]
@@ -930,9 +941,16 @@
    keywordizes before the index lookup. Ambient and unclassified keys get no
    `:feature` — absence is meaningful, not an oversight."
   [{:keys [key] :as hit}]
-  (if-let [fid (feature-of-key (keyword key))]
-    (assoc hit :feature (str (symbol fid)) :family (name (family-of fid)))
-    hit))
+  (let [k (keyword key)]
+    (cond-> hit
+      (feature-of-key k)
+      (assoc :feature (str (symbol (feature-of-key k)))
+             :family  (name (family-of (feature-of-key k))))
+      ;; Moved here from `search-config-keys` along with the derivation itself:
+      ;; config-schema no longer carries a per-key :requires-restart flag, and
+      ;; config.clj cannot ask the registry without closing a cycle.
+      (requires-restart-key? k)
+      (assoc :requires-restart true))))
 
 (defn annotate-hits
   "Map `annotate-hit` over search results.

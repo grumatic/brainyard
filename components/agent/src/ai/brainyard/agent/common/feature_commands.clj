@@ -176,7 +176,7 @@
             (seq (:degraded st))
             (assoc :degraded (into {} (for [[k v] (:degraded st)] [(fid->str k) v])))
 
-            (and gate (config/requires-restart-key? gate))
+            (and gate (feature/requires-restart-key? gate))
             (assoc :requires-restart true
                    :restart-note "read once at startup — RESTART by for a change to take effect")))
         {:error (format "Unknown feature '%s'. Use feature$list to see families, then <family>/<name> (e.g. memory/graph)."
@@ -251,7 +251,7 @@
               (seq (:degraded r))
               (assoc :degraded (into {} (for [[k v] (:degraded r)] [(fid->str k) v])))
 
-              (config/requires-restart-key? (keyword (:gate r)))
+              (feature/requires-restart-key? (keyword (:gate r)))
               (assoc :requires-restart true
                      :restart-note "read once at startup — RESTART by for this to take effect")))))))
   :input-schema  [:map

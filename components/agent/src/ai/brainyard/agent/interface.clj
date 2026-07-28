@@ -287,7 +287,7 @@
                 !global-config load-global-config! invalidate-global-config!
                 get-config get-config-snapshot set-config!
                 config-overview search-config-keys redact-config-snapshot
-                config-source requires-restart-key? restart-required-keys
+                config-source
                 resolve-sub-lm resolve-sandbox-interop)
 
 ;; ============================================================================
@@ -303,7 +303,10 @@
                 feature-registry ambient-keys families family->features
                 feature-of-key feature-doc family-view family-summary
                 annotate-hits presentation-key? resolve-feature gate-of
-                family-gates family-gate-keys set-feature! set-family!)
+                family-gates family-gate-keys set-feature! set-family!
+                ;; Restart-ness is derived from :lifecycle :startup now, not a
+                ;; per-key schema flag — so it lives with the registry.
+                requires-restart-key? restart-required-keys)
 
 ;; Renamed on export: `on?` / `off-reason` / `feature-state` are too generic to
 ;; sit unqualified in this interface, and export-symbols cannot rename. Thin
