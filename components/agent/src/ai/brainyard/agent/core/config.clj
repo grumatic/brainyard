@@ -106,8 +106,6 @@
                                 :doc "Persist the SCI sandbox state (defs/bindings) across turns so --resume can restore it."}
    :enable-trajectory-recording {:type "boolean" :default true
                                  :doc "Append one EDN record per turn (all iterations + final answer) to <project>/.brainyard/sessions/<id>/trajectory.edn; master data switch for session analytics."}
-   :enable-budget-monitoring   {:type "boolean" :default false
-                                :doc "Emit token-budget monitoring diagnostics."}
    :compaction-target-ratio    {:type "number"  :default 0.2
                                 :doc "Cross-turn auto-compaction target: shrink carryover to this fraction × :max-context-tokens (gated by :enable-context-budget)."}
    :max-iterations             {:type "integer" :default 100

@@ -16,7 +16,7 @@
      knob         86  tunes a capability; meaningless when its gate is off
      presentation 16  TUI rendering (the `:ui` family)
      ambient      10  always in effect, belongs to no capability
-     unclassified  1  `:enable-budget-monitoring` — zero readers, see below
+     unclassified  0  parking spot for keys nothing reads, see below
 
    A **feature** is {gate, knobs, lifecycle, requires, implies}. A **family**
    is a namespace of features. Ambient keys live in an explicit set — named,
@@ -508,14 +508,20 @@
     :compact-agent-tools :inline-usage-guides :feature-profile})
 
 (def unclassified-keys
-  "Schema keys claimed by no feature because nothing reads them.
+  "Schema keys claimed by no feature because nothing reads them. Currently
+   empty, and the mechanism is kept deliberately.
 
-   `:enable-budget-monitoring` is in the schema, settable and documented, and
-   has zero read sites in the workspace. Quarantined here BY NAME so it reads
-   as a standing to-do: P3 either wires it to the clj-sandbox
-   `:budget-opts {:enable …}` path it was presumably meant for, or deletes it.
-   A silently-tolerated gap is how the `;; ---` section comments rotted."
-  #{:enable-budget-monitoring})
+   It held `:enable-budget-monitoring`: in the schema, settable, documented,
+   and with zero read sites anywhere in the workspace. P3 resolved it by
+   DELETING it rather than wiring it. The `:budget-opts {:enable …}` path it
+   was presumably meant for lives in `clj-sandbox`'s own `core/chat.clj`
+   completion loop, which nothing in this workspace calls — wiring a
+   user-facing config key to unreachable code would have been worse than the
+   dead key it replaced.
+
+   The next key that loses its last reader gets parked here by name, so it
+   reads as a standing to-do rather than a silent gap."
+  #{})
 
 ;; ============================================================================
 ;; Derived indexes

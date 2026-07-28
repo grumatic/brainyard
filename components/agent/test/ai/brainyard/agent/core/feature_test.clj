@@ -44,7 +44,7 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "24 feature gates + 9 family gates + 86 knobs + 16 presentation + 11 ambient + 1 unclassified = 147"
+  (testing "24 feature gates + 9 family gates + 86 knobs + 16 presentation + 11 ambient = 146"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
@@ -55,8 +55,9 @@
       (is (= 86 knobs))
       (is (= 16 pres))
       (is (= 11 (count feat/ambient-keys)))
-      (is (= 1 (count feat/unclassified-keys)))
-      (is (= 147 (count cfg/config-keys))))))
+      (is (= 0 (count feat/unclassified-keys))
+          ":enable-budget-monitoring was deleted, not wired — nothing read it")
+      (is (= 146 (count cfg/config-keys))))))
 
 ;; ============================================================================
 ;; Family master switches
@@ -230,7 +231,8 @@
   (is (= :ui/display (feat/feature-of-key :show-memory-activity))
       "a display knob, despite reading as memory")
   (is (nil? (feat/feature-of-key :permission-mode)) "ambient keys have no feature")
-  (is (nil? (feat/feature-of-key :enable-budget-monitoring)) "quarantined, unowned"))
+  (is (nil? (feat/feature-of-key :feature-profile))
+      "ambient — configures the feature system, belongs to no feature"))
 
 (deftest gate-keys-are-reachable-through-the-index
   (testing "a gate is owned by its own feature"
@@ -266,7 +268,7 @@
     (is (= 100 (:value hit)) "existing hit fields survive"))
   (testing "ambient and quarantined keys get no :feature — absence is meaningful"
     (is (nil? (:feature (feat/annotate-hit {:key "permission-mode"}))))
-    (is (nil? (:feature (feat/annotate-hit {:key "enable-budget-monitoring"}))))))
+    (is (nil? (:feature (feat/annotate-hit {:key "feature-profile"}))))))
 
 (deftest annotate-hits-maps-over-results
   (let [hits (feat/annotate-hits [{:key "recall-limit"} {:key "lm-config"}])]
