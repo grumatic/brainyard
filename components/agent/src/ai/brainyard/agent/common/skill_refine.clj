@@ -20,7 +20,7 @@
    `skill-distill.background` (single-flight per skill name, so a skill failing
    repeatedly queues one judge, not one per failure), runtime-only install via
    a `compare-and-set!` atom. Lower volume — only fires on failed skill runs."
-  (:require [ai.brainyard.agent.common.skill-distill.background :as bg]
+  (:require [ai.brainyard.agent.common.background :as bg]
             [ai.brainyard.agent.common.skill-distill.proposals :as proposals]
             [ai.brainyard.agent.common.skill-distill.signatures :as sig]
             [ai.brainyard.agent.core.config :as config]

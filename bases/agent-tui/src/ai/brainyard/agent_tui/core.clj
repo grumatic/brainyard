@@ -1627,14 +1627,14 @@
     (try
       (.close ag)
       (catch Exception _)))
-  ;; Every close that could emit self-improvement work has now happened. Give
-  ;; in-flight jobs (skill distillation / refinement, including the session-end
-  ;; batch just queued above) a brief grace period before the shutdown cancels
-  ;; them: their sub-LM call is already paid for, so cancelling one at the
-  ;; finish line throws away a result we spent tokens on. Bounded, and only on
-  ;; this (/quit) path — the JVM shutdown hook is a hard-kill route that must
-  ;; not linger.
-  (try (agent/await-self-improve! 3000) (catch Throwable _))
+  ;; Every close that could emit background work has now happened. Give
+  ;; in-flight jobs (skill distillation / refinement, the memory consolidation
+  ;; cadence, including the session-end distill batch just queued above) a brief
+  ;; grace period before the shutdown cancels them: their LLM call is already
+  ;; paid for, so cancelling one at the finish line throws away a result we
+  ;; spent tokens on. Bounded, and only on this (/quit) path — the JVM shutdown
+  ;; hook is a hard-kill route that must not linger.
+  (try (agent/await-background-jobs! 3000) (catch Throwable _))
   (try (agent/task-shutdown) (catch Throwable _))
   (tui-session/stop-tui-publisher!)
   (tui-session/stop-memory-activity-publisher!)

@@ -8,7 +8,7 @@
    and hook eligibility. No LLM calls — the scorer is stubbed."
   (:require [clojure.test :refer [deftest testing is are use-fixtures]]
             [ai.brainyard.agent.common.skill-distill :as sd]
-            [ai.brainyard.agent.common.skill-distill.background :as bg]
+            [ai.brainyard.agent.common.background :as bg]
             [ai.brainyard.agent.common.skill-distill.proposals :as proposals]
             [ai.brainyard.agent.common.trajectory :as traj]
             [ai.brainyard.agent.core.config :as config]

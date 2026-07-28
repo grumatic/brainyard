@@ -2,62 +2,65 @@
 ;; SPDX-License-Identifier: MIT
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
-(ns ai.brainyard.agent.common.skill-distill.background
-  "Off-turn execution for the self-improvement loop (R1 —
-   docs/design/self-improve-design.md).
+(ns ai.brainyard.agent.common.background
+  "Off-turn execution for the agent's post-turn background work.
 
-   Skill distillation and refinement both score a finished turn with an LLM
-   call that takes tens of seconds. That must never run on the turn thread —
-   but a bare `future` per job was the wrong off-ramp: unbounded (one sub-LM
-   call per eligible turn, with no damper), invisible (no queue, no record),
-   and killed on a daemon thread at JVM exit AFTER the tokens were spent.
+   Several hooks kick off work at turn end that is far too slow for the turn
+   thread — skill distillation and refinement (an LLM scoring call, R1,
+   docs/design/self-improve-design.md) and the memory consolidation cadence
+   (an L2→L3 reduce that in graph mode does batch extraction plus per-community
+   LLM summaries, docs/design/memory-agent-design.md §10.0). Each used a bare
+   `future`, which was the wrong off-ramp: unbounded, invisible (no queue, no
+   record), and killed on a daemon thread at JVM exit AFTER the cost was paid.
 
    These jobs are submitted to the TASK MANAGER instead, as `:fn` tasks:
 
-     bounded    — the manager's fixed pool caps how many scorers run at once
+     bounded    — the manager's fixed pool caps how many run at once
      visible    — `/task`, `task$detail`, and a per-task `output.log` under
-                  `.brainyard/tasks/<id>/`, GC'd by the retention sweep, so a
-                  scoring decision is auditable after the fact
+                  `.brainyard/tasks/<id>/`, GC'd by the retention sweep, so
+                  what a job decided is auditable after the fact
      drainable  — `await-quiet!` gives in-flight jobs a grace period at exit
                   before `task-shutdown` cancels them
      single-flight — one job per (kind, key); a duplicate is dropped rather
-                  than racing. Two concurrent scorers staging the SAME
-                  proposal name would interleave `SKILL.md` and
-                  `proposal.edn` from different runs.
+                  than racing. Two scorers staging the SAME proposal name would
+                  interleave `SKILL.md` and `proposal.edn` from different runs;
+                  two consolidations would reduce one session's L2→L3
+                  concurrently.
 
    Deliberately NOT tagged `:coact/pending-from-iter`: that key is what puts a
    task on the model's in-flight surfaces (`coact-agent/in-flight-coact-tasks`,
-   `harvest-pending-tasks!` and the iteration hold). Self-improvement is
-   infrastructure — it must never enter the LLM's context or hold a turn.
-   `:display-mode :background` likewise keeps it out of the TUI's per-task
-   block.
+   `harvest-pending-tasks!` and the iteration hold). This is infrastructure —
+   it must never enter the LLM's context or hold a turn. `:display-mode
+   :background` likewise keeps it out of the TUI's per-task block.
 
    Fallback: if the manager can't be obtained or the submission fails, the job
    runs in a plain `future` — the pre-existing behaviour, kept as a safety net
-   so a task-layer fault can never silently drop self-improvement work."
+   so a task-layer fault can never silently drop the work."
   (:require [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.protocol :as tp]
             [ai.brainyard.mulog.interface :as mulog]))
 
 (def ^:const kind-key
-  "Metadata key marking a task as self-improvement work (`:distill` / `:refine`)."
-  :self-improve/kind)
+  "Metadata key marking a task as agent background work: `:distill`,
+   `:refine`, or `:consolidate`."
+  :background/kind)
 
 (def ^:const flight-key
   "Metadata key carrying the single-flight identity within a kind — the
-   session-id for distillation, the skill name for refinement."
-  :self-improve/key)
+   session-id for distillation and consolidation, the skill name for
+   refinement."
+  :background/key)
 
 (def ^:private terminal-statuses #{:completed :failed :cancelled})
 
 (def ^:const default-timeout-ms
-  "Ceiling on one scoring job. Generous — a sub-LM drafting a full SKILL.md
-   routinely runs a minute or more; this exists to reclaim a wedged job, not
-   to bound normal work."
+  "Ceiling on one background job. Generous — a sub-LM drafting a full SKILL.md,
+   or a graph consolidation summarizing communities, routinely runs a minute or
+   more; this exists to reclaim a wedged job, not to bound normal work."
   300000)
 
 (defn in-flight-tasks
-  "Non-terminal self-improvement tasks. With `kind` / `k`, narrows to that
+  "Non-terminal agent background tasks. With `kind` / `k`, narrows to that
    single-flight identity (nil matches any). Returns [] when no manager exists
    — `peek-default-manager`, so a read never spins one up."
   ([] (in-flight-tasks nil nil))
@@ -78,7 +81,8 @@
   "Submit `thunk` as a background `:fn` task and return immediately.
 
    Options:
-     :kind       — `:distill` | `:refine` (single-flight namespace)
+     :kind       — `:distill` | `:refine` | `:consolidate` (single-flight
+                   namespace)
      :key        — identity within the kind (session-id / skill name)
      :label      — human-readable task name (shown in `/task`)
      :thunk      — 0-arg fn; its return value becomes the task result
@@ -120,11 +124,11 @@
         :error))))
 
 (defn await-quiet!
-  "Block up to `timeout-ms` for in-flight self-improvement jobs to finish.
-   Returns the number still running when the wait ended (0 = fully drained).
+  "Block up to `timeout-ms` for in-flight background jobs to finish. Returns
+   the number still running when the wait ended (0 = fully drained).
 
    Called from the TUI's `stop!` before `task-shutdown`, which CANCELS running
-   tasks: the sub-LM spend is already incurred by then, so losing the result at
+   tasks: by then the LLM spend is already incurred, so losing the result at
    the finish line is pure waste. Bounded — `/quit` must stay responsive, so a
    job that outruns the grace period is still cancelled."
   [timeout-ms]

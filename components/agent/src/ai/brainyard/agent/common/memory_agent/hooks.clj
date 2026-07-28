@@ -23,7 +23,8 @@
      between cadence boundaries still reduces its tail of episodes into
      L3. Same gate as the cadence; bounded by a timeout so it can't
      wedge shutdown."
-  (:require [ai.brainyard.agent.common.memory-agent.commands :as cmds]
+  (:require [ai.brainyard.agent.common.background :as bg]
+            [ai.brainyard.agent.common.memory-agent.commands :as cmds]
             [clojure.string :as str]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
@@ -206,22 +207,39 @@
         (mem/consolidate-l2!    mm :session-id sid)))))
 
 (defn consolidation-cadence-handler
-  "`:agent.ask/post` handler. Increments the session turn counter and, on
-   every Nth turn, fire-and-forget runs `run-consolidation!`. Returns nil and
-   never throws — consolidation is a best-effort lift, not a critical path."
+  "`:agent.ask/post` handler. Increments the session turn counter and, on every
+   Nth turn, runs `run-consolidation!` off the turn thread. Returns nil and
+   never throws — consolidation is a best-effort lift, not a critical path.
+
+   Submitted as a background `:fn` task (`common.background`) rather than a
+   bare `future`. Beyond the shared wins — a bounded pool, an `output.log`
+   recording what the reduce did, and a grace period at `/quit` instead of a
+   daemon thread killed mid-reduce — the single-flight key matters here on its
+   own: a graph-mode consolidation (batch extraction + per-community LLM
+   summaries) can outlast the next cadence boundary, and two overlapping
+   reduces over ONE session's L2→L3 is a race this drops rather than runs.
+
+   NOTE: the session-end flush below deliberately does NOT use this path. It
+   blocks close (bounded, mode-aware) or hands off to a detached child — that
+   is load-bearing behaviour, not an oversight."
   [{:keys [agent]}]
   (when (consolidation-eligible? agent)
     (let [sid (str (some-> agent proto/session-id))
           n   (long (or (config/get-config agent :memory-consolidate-every-n-turns) 12))
           tally (get (swap! !turn-counters update sid (fnil inc 0)) sid)]
       (when (and (pos? n) (zero? (mod tally n)))
-        (future
-          (try
-            (let [r (run-consolidation! agent)]
-              (mulog/info ::consolidation-ran :session-id sid :turn tally :report r))
-            (catch Exception e
-              (mulog/warn ::consolidation-failed :session-id sid :exception e)
-              nil))))))
+        (bg/run-off-turn!
+         :kind  :consolidate
+         :key   sid
+         :label (str "memory-consolidate " sid " (turn " tally ")")
+         :thunk (fn []
+                  (try
+                    (let [r (run-consolidation! agent)]
+                      (mulog/info ::consolidation-ran :session-id sid :turn tally :report r)
+                      r)
+                    (catch Exception e
+                      (mulog/warn ::consolidation-failed :session-id sid :exception e)
+                      nil)))))))
   nil)
 
 (defn install-consolidation-cadence!

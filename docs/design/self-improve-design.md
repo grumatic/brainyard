@@ -27,7 +27,7 @@ gate**.
 | Machinery | Location | Role here |
 |---|---|---|
 | Hook pub/sub (`fire!`, `fire-decision!`) | `components/agent/src/.../core/hooks.clj` | `:agent.ask/post`, `:agent.tool-use/post`, `:agent.session/closed`; self-install-at-load idiom |
-| **Post-turn trigger template** | `.../common/memory_agent/hooks.clj` `consolidation-cadence-handler` (and `skill_distill.clj` `distill-handler`) | `:agent.ask/post` observer, root-only, config-gated, fires `future`. Phase 1 cloned this pattern. *(Originally cloned from `essence-capture-handler`, retired 2026-06-28; the cadence handler is the current live example of the same shape.)* |
+| **Post-turn trigger template** | `.../common/memory_agent/hooks.clj` `consolidation-cadence-handler` (and `skill_distill.clj` `distill-handler`) | `:agent.ask/post` observer, root-only, config-gated. Phase 1 cloned this pattern (both now submit to the shared background-task path, §7). *(Originally cloned from `essence-capture-handler`, retired 2026-06-28; the cadence handler is the current live example of the same shape.)* |
 | Review-gated authoring | `.../common/meta_agent.clj` | `meta-agent$validate` (dry-run) → `meta-agent$create` (persist). Our proposal→accept split mirrors it. |
 | Skill drafting / write | `.../common/skill_agent.clj`, `skills.clj` `skills$write :op :create/:update` | Drafts and persists `SKILL.md`. |
 | Memory revision ops | `.../common/memory_agent.clj` `:op :essence/:consolidate/:verify-fact/:correct` | Reused by Phase 2 conceptually. |
@@ -135,7 +135,7 @@ fragment, and the batch view is the only one that sees it whole.
 moment a turn qualifies.
 
 **Ordering note:** the session-end flush submits a task, so the TUI's `stop!`
-runs `await-self-improve!` + `task-shutdown` *after* the session-close block —
+runs `await-background-jobs!` + `task-shutdown` *after* the session-close block —
 shutting the manager down first would leave that submission with no pool to run
 on and nothing to drain it.
 
@@ -220,8 +220,8 @@ suppress-while-pending, self-heal-after-accept, drain-once, root/config gating.
 
 - **No new substrate** — hook handlers + one DSPy signature + a small command
   family + config keys.
-- **Off-turn execution runs on the task manager**, not a bare `future`
-  (`skill_distill/background.clj`, `run-off-turn!` → a `:fn` job). Scoring is a
+- **Off-turn execution runs on the task manager**, not a bare `future` — shared with the memory consolidation cadence (`:kind :consolidate`), which had the same problem
+  (`common/background.clj`, `run-off-turn!` → a `:fn` job). Scoring is a
   tens-of-seconds sub-LM call that must never touch the turn thread, but a
   `future` per job was unbounded (one call per eligible turn, no damper),
   invisible, and killed on a daemon thread at exit *after* the tokens were
@@ -230,7 +230,7 @@ suppress-while-pending, self-heal-after-accept, drain-once, root/config gating.
   for refinement, which also removes the race where two scorers staging the
   same proposal name interleave `SKILL.md` and `proposal.edn` — **visible** in
   `/task` with a per-task `output.log` recording the decision, and **drained**
-  for a bounded grace period at `/quit` (`agent/await-self-improve!`, before
+  for a bounded grace period at `/quit` (`agent/await-background-jobs!`, before
   `task-shutdown` cancels). Two deliberate omissions: no
   `:coact/pending-from-iter` metadata, so the jobs never reach the model's
   in-flight surfaces or hold a turn; and `:display-mode :background`, so they

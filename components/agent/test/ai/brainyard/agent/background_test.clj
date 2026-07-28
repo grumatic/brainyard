@@ -2,13 +2,13 @@
 ;; SPDX-License-Identifier: MIT
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
-(ns ai.brainyard.agent.skill-distill-background-test
+(ns ai.brainyard.agent.background-test
   "Tests for off-turn execution of the self-improvement loop (R1): the `:fn`
    job executor and the background submission helper — single-flight, the
    no-manager fallback, LLM-surface invisibility, and the exit drain.
    No LLM calls; thunks are plain functions."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [ai.brainyard.agent.common.skill-distill.background :as bg]
+            [ai.brainyard.agent.common.background :as bg]
             [ai.brainyard.agent.task.executor :as executor]
             [ai.brainyard.agent.task.manager :as manager]
             [ai.brainyard.agent.task.protocol :as tp]))

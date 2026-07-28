@@ -16,6 +16,7 @@
      and the every-Nth-turn cadence."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
+            [ai.brainyard.agent.common.background :as bg]
             [ai.brainyard.agent.common.memory-agent.commands :as ma-cmds]
             [ai.brainyard.agent.common.memory-agent.hooks :as ma-hooks]
             [ai.brainyard.agent.common.memory-agent.signatures :as ma-sig]
@@ -196,11 +197,47 @@
                            :config {:enable-memory-consolidation true
                                     :memory-consolidate-every-n-turns 3})]
       (with-redefs [ma-hooks/run-consolidation! (fn [_] (swap! fires inc) {:produced 0})]
-        ;; 6 completed turns at N=3 → fire on turn 3 and turn 6.
+        ;; 6 completed turns at N=3 → fire on turn 3 and turn 6. Consolidations
+        ;; are single-flight per session, so let each one land before the next
+        ;; boundary — see `consolidation-cadence-single-flight-test` for what
+        ;; happens when one is still running.
         (dotimes [_ 6]
-          (ma-hooks/consolidation-cadence-handler {:agent root}))
-        (Thread/sleep 150))
+          (ma-hooks/consolidation-cadence-handler {:agent root})
+          (bg/await-quiet! 5000)))
       (is (= 2 @fires) "reducer ran exactly twice across 6 turns at N=3"))))
+
+(deftest consolidation-cadence-single-flight-test
+  (testing "a boundary reached while a consolidation is still running is dropped"
+    (reset-counters!)
+    (let [fires (atom 0)
+          gate  (promise)
+          root  (make-stub :coact-agent/root
+                           :session-id "s-single-flight"
+                           :config {:enable-memory-consolidation true
+                                    ;; every turn is a boundary
+                                    :memory-consolidate-every-n-turns 1})]
+      (with-redefs [ma-hooks/run-consolidation!
+                    (fn [_] (swap! fires inc) (deref gate 5000 nil) {:produced 0})]
+        (ma-hooks/consolidation-cadence-handler {:agent root})
+        ;; wait for the first reduce to actually be running
+        (let [deadline (+ (System/currentTimeMillis) 5000)]
+          (while (and (zero? @fires) (< (System/currentTimeMillis) deadline))
+            (Thread/sleep 25)))
+        (is (= 1 @fires))
+
+        ;; three more boundaries while it is still inside the reducer
+        (dotimes [_ 3] (ma-hooks/consolidation-cadence-handler {:agent root}))
+        (is (= 1 @fires)
+            "two overlapping reduces over ONE session's L2→L3 is a race, so the extra boundaries are dropped")
+        (deliver gate :go)
+        (bg/await-quiet! 5000))
+
+      (testing "and the next boundary runs normally once it is quiet"
+        (with-redefs [ma-hooks/run-consolidation! (fn [_] (swap! fires inc) {:produced 0})]
+          (ma-hooks/consolidation-cadence-handler {:agent root})
+          (bg/await-quiet! 5000))
+        (is (= 2 @fires)
+            "nothing is lost by a dropped boundary — the next reduce covers the accumulated episodes")))))
 
 (deftest consolidation-cadence-elides-when-off-test
   (testing "flag off → counter untouched, reducer never runs"

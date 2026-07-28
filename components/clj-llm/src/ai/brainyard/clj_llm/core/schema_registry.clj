@@ -13,7 +13,16 @@
   (:require [malli.core :as m]
             [malli.registry :as mr]))
 
-(def registry* (atom (m/default-schemas)))
+;; `defonce`, not `def`: a plain `def` made reloading THIS namespace destructive
+;; — it swapped in a fresh atom holding only malli's defaults, silently dropping
+;; every schema any `defschemas` had registered process-wide. The next
+;; `defsignature` referencing one then failed to macroexpand with
+;; `:malli.core/invalid-schema`, pointing at the innocent signature rather than
+;; at the reload. With `defonce` the registrations survive, so reloading this ns
+;; RE-ASSERTS the default registry (see the bottom of the file) and repairs the
+;; mapping instead of breaking it — which is what you want after something has
+;; reloaded `malli.registry` and reset malli's own registry atom.
+(defonce registry* (atom (m/default-schemas)))
 
 (defn register!
   "Register schemas into the shared mutable registry."

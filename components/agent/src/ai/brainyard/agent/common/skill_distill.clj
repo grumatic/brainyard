@@ -28,7 +28,7 @@
         promotes it via `skill-proposal$accept`.
 
    Steps 1–2 run inline on the turn thread (both are free); step 3 onward runs
-   as a background `:fn` task via `skill-distill.background` — bounded by the
+   as a background `:fn` task via `common.background` — bounded by the
    task pool, single-flight per session, visible in `/task`, and given a grace
    period at exit. The user's next turn never waits on scoring, and a scorer
    failure never tanks the parent ask.
@@ -36,7 +36,7 @@
    Hooks are installed at RUNTIME via `ensure-global-hooks!` (a
    `compare-and-set!` atom, called from coact-init) so native-image bakes
    `false` and the first real turn installs — never a build-time registration."
-  (:require [ai.brainyard.agent.common.skill-distill.background :as bg]
+  (:require [ai.brainyard.agent.common.background :as bg]
             [ai.brainyard.agent.common.skill-distill.proposals :as proposals]
             [ai.brainyard.agent.common.skill-distill.signatures :as sig]
             [ai.brainyard.agent.common.trajectory :as traj]
