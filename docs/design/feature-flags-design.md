@@ -4,9 +4,11 @@
 > `components/agent/src/ai/brainyard/agent/core/feature.clj` +
 > `components/agent/test/ai/brainyard/agent/core/feature_test.clj` (27 tests,
 > 403 assertions) and the `:feature` surface on `agent-runtime$config`.
-> P1 shipped the `on?` / `on?*` / `off-reason` chokepoint, migrated 20 call
-> sites, and closed the §1.5 graph-memory split by routing the memory hooks on
-> the manager's stamped `:graph-enabled?` rather than on config (§10.6).
+> P1 shipped the `on?` / `on?*` / `off-reason` chokepoint, migrated every gate
+> read (20 sites, then the 21 the design's table had missed), and closed the
+> §1.5 graph-memory split by routing the memory hooks on the manager's stamped
+> `:graph-enabled?` rather than on config (§10.6). P2 shipped the surfaces —
+> `feature$*` and `/feature`; its config-layer items are outstanding (§10.7).
 > `bb test` (456 namespaces) and `bb poly check` green. Amendments the
 > implementation forced are in §10; §9 Q1/Q3 are resolved there.
 >
@@ -783,6 +785,33 @@ changed.
   **or** refinement" and §5.2 promises support without specifying a shape. A
   `:requires` element that is itself a set means *any-of*:
   `#{#{:self-improve/distillation :self-improve/refinement}}`.
+
+### 10.7 P2 status: surfaces shipped, config-layer items outstanding
+
+Shipped: `feature$list` / `feature$explain` / `feature$set`, the `/feature` TUI
+command (registered in `tui/format` `command-registry`, so it reaches both
+`/help` and autocomplete), `config/config-source` (which precedence layer
+supplied a key), and `core.feature/set-feature!` holding the write plus its
+guards so the LLM and TUI surfaces cannot drift.
+
+Not yet done, and grouped here because they are one class of change — they all
+touch config storage or precedence, unlike the purely additive surfaces above:
+
+- **Family gates (§9 Q1).** Blocked on a concrete schema detail, not a
+  decision: `valid-config-value?` maps `"boolean"` to `boolean?`, which
+  **rejects nil**. A tri-state family key (`nil` = no family opinion) therefore
+  needs a new schema type — say `"tristate"`, accepting `nil` or a boolean —
+  added to both `valid-config-value?` and `coerce-config-value`. Worth noting
+  while implementing: with the AND semantics the resolution uses, `true` and
+  `nil` are behaviourally identical (only `false` forces members off), so the
+  third state earns its keep only in *reporting* ("explicitly enabled" vs "no
+  opinion"). If that distinction is not wanted, a plain boolean defaulting true
+  is the same mechanism with one less type.
+- **Generated env vars + `BY_FEATURES`.** `BY_FEATURE_MEMORY_GRAPH` derived
+  mechanically, existing `BY_ENABLE_*` names kept as aliases and checked first.
+- **Profiles.** `BY_PROFILE` / `:feature-profile`, slotting in below
+  `config.edn` — the only precedence change this design permits (§2.6, §8).
+- **config-agent instruction + wizard Features step.**
 
 ### 10.6 P1: the graph-memory seal is blocked on a semantics decision
 
