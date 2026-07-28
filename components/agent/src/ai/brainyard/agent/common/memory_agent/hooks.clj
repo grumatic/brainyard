@@ -30,7 +30,8 @@
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.memory.interface :as mem]
-            [ai.brainyard.mulog.interface :as mulog]))
+            [ai.brainyard.mulog.interface :as mulog])
+  (:import [java.lang ProcessHandle]))
 
 (def ^:const memory-agent-type
   "The defagent-type keyword used by `memory-agent`. Comparing
@@ -84,6 +85,47 @@
    :source   :memory-agent
    :priority 200))
 
+(defonce ^{:doc
+           "Optional detached-consolidation launcher, installed by the app layer via
+   `set-offload-fn!`. A fn of `{:user-id :session-id :reducer}` that spawns a
+   DETACHED `by memory reduce` child and returns a truthy handle (the pid) on a
+   successful spawn, or nil to fall back to running the reduce in-process.
+
+   Used by BOTH consolidation paths: the session-end flush (so /quit isn't
+   blocked) and, in graph mode, the cadence itself (so a multi-minute reduce
+   outlives the session instead of being cancelled at shutdown).
+
+   The seam is a function slot rather than a hardcoded subprocess call because
+   components/agent can't resolve the `by` binary path or honor BY_JAR — that's
+   a project concern. nil when unset (tests / non-TUI entrypoints), so behavior
+   is byte-identical to the in-process reduce until the app installs it."}
+  !offload-fn
+  (atom nil))
+
+(defn set-offload-fn!
+  "Install (or clear, with nil) the detached consolidation launcher.
+   See `!offload-fn`. Called once by the app layer at TUI startup."
+  [f]
+  (reset! !offload-fn f))
+
+;; session-id → pid of a detached CADENCE consolidation believed to still be
+;; running. The task-manager single-flight guard cannot see a child process, so
+;; without this a later boundary would spawn a second child racing the first
+;; over the same session's L2→L3 — the very race the in-process guard prevents.
+(defonce ^:private !detached-cadence-pids (atom {}))
+
+(defn- detached-cadence-running?
+  "True when this session's last detached cadence child is still alive. Treats
+   an unknown/errored handle as not-running: re-reducing is recoverable, a
+   permanently wedged cadence is not."
+  [sid]
+  (boolean
+   (when-let [pid (get @!detached-cadence-pids (str sid))]
+     (try
+       (let [oh (ProcessHandle/of (long pid))]
+         (and (.isPresent oh) (.isAlive (.get oh))))
+       (catch Throwable _ false)))))
+
 ;; ============================================================================
 ;; Batch consolidation cadence — :agent.ask/post
 ;; ============================================================================
@@ -108,11 +150,6 @@
 ;; is deterministic and independent of which agent instance handled a turn.
 ;; A `defonce` empty map is native-image-safe (only mutated at runtime).
 (defonce ^:private !turn-counters (atom {}))
-
-;; session-id → max L2 episode id already batch-extracted into the graph
-;; (`:at-consolidation` mode). Lets each consolidation extract only the episodes
-;; captured since the last one, so edges aren't re-inserted.
-(defonce ^:private !extract-marker (atom {}))
 
 ;; Session-end flushes that were handed to a detached `by memory reduce` child,
 ;; as {:session-id :pid}. Populated only by the session-end flush (the cadence
@@ -180,17 +217,19 @@
     ;; episode is visible before we read L2 (else it slips to the next window,
     ;; or is lost entirely at session-end).
     (mem/capture-quiesce! mm 5000)
-    (let [skey  (str sid)
-          after (get @!extract-marker skey 0)
-          r (mem/extract-l2-batch!
-             mm :session-id sid :after-id after
-             :max-input-chars (config/get-config agent :graph-extract-max-input-chars)
-             :max-entities    (config/get-config agent :graph-max-entities-per-episode)
-             :max-relations   (config/get-config agent :graph-max-relations-per-episode)
-             :max-nodes       (config/get-config agent :graph-max-nodes)
-             :max-edges       (config/get-config agent :graph-max-edges))]
-      (swap! !extract-marker assoc skey (:max-id r))
-      r)))
+    ;; No `:after-id` — `extract-l2-batch!` reads and advances the PERSISTED
+    ;; watermark. This used to be an in-process atom, which meant a detached
+    ;; `by memory reduce` child (which has always used the persisted mark) and
+    ;; the live session tracked independent positions and re-extracted each
+    ;; other's episodes. One mark, so any process picks up where the last left
+    ;; off — the prerequisite for offloading this work to a child at all.
+    (mem/extract-l2-batch!
+     mm :session-id sid
+     :max-input-chars (config/get-config agent :graph-extract-max-input-chars)
+     :max-entities    (config/get-config agent :graph-max-entities-per-episode)
+     :max-relations   (config/get-config agent :graph-max-relations-per-episode)
+     :max-nodes       (config/get-config agent :graph-max-nodes)
+     :max-edges       (config/get-config agent :graph-max-edges))))
 
 (defn- run-consolidation!
   "Run one batch L2→L3 reduction over the agent's current session. Community
@@ -229,45 +268,92 @@
     cadence-timeout-graph-ms
     cadence-timeout-ms))
 
+(defn- submit-cadence-job!
+  "Run this boundary's consolidation in-process, as a background `:fn` task.
+
+   Bounded by the pool, single-flight per session, recorded in an `output.log`,
+   and given a grace period at `/quit`. The job carries its own mode-aware
+   `:timeout-ms` — the background layer's generic default is sized for a
+   scoring call, not for a graph reduce."
+  [agent sid tally]
+  (bg/run-off-turn!
+   :kind       :consolidate
+   :key        sid
+   :label      (str "memory-consolidate " sid " (turn " tally ")")
+   :timeout-ms (cadence-job-timeout-ms agent)
+   :thunk (fn []
+            (try
+              (let [r (run-consolidation! agent)]
+                (mulog/info ::consolidation-ran :session-id sid :turn tally :report r)
+                r)
+              (catch Exception e
+                (mulog/warn ::consolidation-failed :session-id sid :exception e)
+                nil)))))
+
+(defn- offload-cadence-job!
+  "Hand this boundary's consolidation to a detached `by memory reduce` child.
+   Returns the pid on a successful spawn, nil when the launcher declines or
+   throws (caller falls back in-process)."
+  [agent sid tally]
+  (try
+    (when-let [pid (@!offload-fn {:user-id    (some-> agent proto/user-id)
+                                  :session-id sid
+                                  :reducer    :community})]
+      (swap! !detached-cadence-pids assoc (str sid) pid)
+      (mulog/info ::consolidation-cadence-detached
+                  :session-id sid :turn tally :pid pid)
+      pid)
+    (catch Exception e
+      (mulog/warn ::cadence-detach-failed :session-id sid :exception e)
+      nil)))
+
 (defn consolidation-cadence-handler
   "`:agent.ask/post` handler. Increments the session turn counter and, on every
-   Nth turn, runs `run-consolidation!` off the turn thread. Returns nil and
-   never throws — consolidation is a best-effort lift, not a critical path.
+   Nth turn, consolidates off the turn thread. Returns nil and never throws —
+   consolidation is a best-effort lift, not a critical path.
 
-   Submitted as a background `:fn` task (`common.background`) rather than a
-   bare `future`. Beyond the shared wins — a bounded pool, an `output.log`
-   recording what the reduce did, and a grace period at `/quit` instead of a
-   daemon thread killed mid-reduce — the single-flight key matters here on its
-   own: a graph-mode consolidation (batch extraction + per-community LLM
-   summaries) can outlast the next cadence boundary, and two overlapping
-   reduces over ONE session's L2→L3 is a race this drops rather than runs.
+   Two ways off the turn thread, and which one runs matters:
 
-   The job carries its own mode-aware `:timeout-ms` (see
-   `cadence-job-timeout-ms`) — the background layer's generic default is sized
-   for a scoring call, not for a graph reduce.
+   - GRAPH mode with a launcher installed → a DETACHED `by memory reduce`
+     child. A graph reduce (batch extraction + per-community LLM summaries)
+     measured 261s on a two-turn window; an in-process job that long is
+     cancelled outright if the user quits, throwing away LLM spend already
+     paid. A child outlives the session. This is the same seam the session-end
+     flush uses, and it is safe to share only because the extraction watermark
+     is PERSISTED — an in-process marker would have had parent and child
+     re-extracting each other's episodes.
+   - otherwise (heuristic reducer, or no launcher — tests, non-TUI) → an
+     in-process background task via `submit-cadence-job!`. The heuristic path
+     is LLM-free and returns in milliseconds, so there is nothing to outlive.
 
-   NOTE: the session-end flush below deliberately does NOT use this path. It
-   blocks close (bounded, mode-aware) or hands off to a detached child — that
-   is load-bearing behaviour, not an oversight."
+   Single-flight either way: the task-manager guard covers the in-process path,
+   `detached-cadence-running?` covers the detached one. Two overlapping reduces
+   over ONE session's L2→L3 would race the watermark and re-insert edges, so a
+   boundary reached while one is still running is dropped — the next boundary
+   reduces whatever accumulated.
+
+   NOTE: the session-end flush still does NOT route through here. It blocks
+   close (bounded, mode-aware) or offloads directly — load-bearing behaviour,
+   not an oversight."
   [{:keys [agent]}]
   (when (consolidation-eligible? agent)
     (let [sid (str (some-> agent proto/session-id))
           n   (long (or (config/get-config agent :memory-consolidate-every-n-turns) 12))
           tally (get (swap! !turn-counters update sid (fnil inc 0)) sid)]
       (when (and (pos? n) (zero? (mod tally n)))
-        (bg/run-off-turn!
-         :kind       :consolidate
-         :key        sid
-         :label      (str "memory-consolidate " sid " (turn " tally ")")
-         :timeout-ms (cadence-job-timeout-ms agent)
-         :thunk (fn []
-                  (try
-                    (let [r (run-consolidation! agent)]
-                      (mulog/info ::consolidation-ran :session-id sid :turn tally :report r)
-                      r)
-                    (catch Exception e
-                      (mulog/warn ::consolidation-failed :session-id sid :exception e)
-                      nil)))))))
+        (let [offload? (and (config/get-config agent :enable-graph-memory)
+                            (some? @!offload-fn))]
+          (cond
+            (and offload? (detached-cadence-running? sid))
+            (mulog/log ::cadence-detach-skipped-in-flight :session-id sid :turn tally)
+
+            offload?
+            (or (offload-cadence-job! agent sid tally)
+                ;; launcher declined / failed — still consolidate, in-process
+                (submit-cadence-job! agent sid tally))
+
+            :else
+            (submit-cadence-job! agent sid tally))))))
   nil)
 
 (defn install-consolidation-cadence!
@@ -312,26 +398,6 @@
     session-end-flush-timeout-graph-ms
     session-end-flush-timeout-ms))
 
-(defonce ^{:doc
-           "Optional detached-consolidation launcher, installed by the app layer via
-   `set-offload-fn!`. A fn of `{:user-id :session-id :reducer}` that spawns a
-   DETACHED `by memory reduce` child and returns a truthy handle (the pid) on a
-   successful spawn, or nil to make the session-end flush fall back to the
-   bounded in-process reduce.
-
-   The seam is a function slot rather than a hardcoded subprocess call because
-   components/agent can't resolve the `by` binary path or honor BY_JAR — that's
-   a project concern. nil when unset (tests / non-TUI entrypoints), so behavior
-   is byte-identical to the old in-process flush until the app installs it."}
-  !offload-fn
-  (atom nil))
-
-(defn set-offload-fn!
-  "Install (or clear, with nil) the detached session-end consolidation launcher.
-   See `!offload-fn`. Called once by the app layer at TUI startup."
-  [f]
-  (reset! !offload-fn f))
-
 (defn- run-flush-blocking!
   "Run the final consolidation in-process, bounded by `flush-timeout-ms`. Used
    for the LLM-free heuristic path, and as the fallback when no detached-offload
@@ -358,10 +424,13 @@
   (when (consolidation-eligible? agent)
     (let [sid   (str (some-> agent proto/session-id))
           tally (get @!turn-counters sid 0)]
-      ;; Clear the per-session tally + extraction marker regardless so they
-      ;; never leak across a resume; only do real work when the session actually
-      ;; had turns.
+      ;; Clear the per-session tally and any detached-cadence pid regardless, so
+      ;; neither leaks across a resume; only do real work when the session
+      ;; actually had turns. (The extraction watermark is deliberately NOT
+      ;; cleared — it lives in the db precisely so a resume, or a child, picks
+      ;; up where this process left off.)
       (swap! !turn-counters dissoc sid)
+      (swap! !detached-cadence-pids dissoc sid)
       (when (pos? (long tally))
         (if (str/blank? sid)
           ;; A blank session-id would make BOTH paths unscoped: the detached child
@@ -382,10 +451,11 @@
               (if pid
                 ;; Detached: the child extracts this session's L2 tail into the
                 ;; graph and runs the community reducer AFTER we exit. Scoped to
-                ;; `-s sid`, so it re-reads only this session's episodes from the
-                ;; db (not the whole user history) even though the in-process
-                ;; !extract-marker doesn't cross the process boundary. Record the
-                ;; spawn so the TUI can report the PID after close.
+                ;; `-s sid`, so it re-reads only this session's episodes from
+                ;; the db (not the whole user history), resuming from the
+                ;; PERSISTED extraction watermark this process has been
+                ;; advancing all along. Record the spawn so the TUI can report
+                ;; the PID after close.
                 (do
                   (swap! !detached-consolidations conj {:session-id sid :pid pid})
                   (mulog/info ::session-end-flush-detached
@@ -394,10 +464,7 @@
                 (run-flush-blocking! agent sid tally)))
             (catch Exception e
               (mulog/warn ::session-end-flush-failed :session-id sid :exception e)
-              nil))))
-      ;; Clear the extraction marker AFTER any in-process flush (which read it to
-      ;; extract the tail) so a resumed session with the same id restarts clean.
-      (swap! !extract-marker dissoc sid)))
+              nil))))))
   nil)
 
 (defn install-session-end-flush!

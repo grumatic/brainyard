@@ -280,6 +280,85 @@
       (is (> graph 261000)
           "and comfortably exceeds the 261s a real graph reduce actually took"))))
 
+;; ============================================================================
+;; Cadence offload — detached child vs in-process task
+;; ============================================================================
+
+(defn- cadence-routing
+  "Fire one boundary and report where the work went: {:detached args-or-nil
+   :in-process bool}. `offload` is the launcher (nil = none installed)."
+  [{:keys [graph? offload session-id]}]
+  (reset-counters!)
+  (let [detached   (atom nil)
+        in-process (atom false)
+        root (make-stub :coact-agent/root
+                        :session-id (or session-id "s-offload")
+                        :config {:enable-memory-consolidation true
+                                 :enable-graph-memory graph?
+                                 :memory-consolidate-every-n-turns 1})]
+    (ma-hooks/set-offload-fn! (when offload
+                                (fn [args] (reset! detached args) (offload args))))
+    (try
+      (with-redefs [bg/run-off-turn! (fn [& _] (reset! in-process true) :submitted)]
+        (ma-hooks/consolidation-cadence-handler {:agent root}))
+      {:detached @detached :in-process @in-process}
+      (finally (ma-hooks/set-offload-fn! nil)))))
+
+(deftest cadence-offloads-graph-reduces-to-a-detached-child-test
+  (testing "graph mode + a launcher → detached child, not an in-process job"
+    ;; A graph reduce measured 261s; in-process it is cancelled outright if the
+    ;; user quits, throwing away LLM spend already paid.
+    (let [r (cadence-routing {:graph? true :offload (constantly 4242)})]
+      (is (some? (:detached r)) "the launcher was invoked")
+      (is (= :community (:reducer (:detached r))) "scoped to the community reducer")
+      (is (= "s-offload" (:session-id (:detached r))) "and to THIS session")
+      (is (false? (:in-process r)) "no in-process job was submitted as well")))
+
+  (testing "heuristic mode → in-process, even with a launcher installed"
+    ;; LLM-free and returns in milliseconds — nothing to outlive the session.
+    (let [r (cadence-routing {:graph? false :offload (constantly 4242)})]
+      (is (nil? (:detached r)))
+      (is (true? (:in-process r)))))
+
+  (testing "no launcher installed (tests / non-TUI) → in-process"
+    (let [r (cadence-routing {:graph? true :offload nil})]
+      (is (nil? (:detached r)))
+      (is (true? (:in-process r)))))
+
+  (testing "a launcher that declines falls back to consolidating in-process"
+    (let [r (cadence-routing {:graph? true :offload (constantly nil)})]
+      (is (some? (:detached r)) "it was asked")
+      (is (true? (:in-process r)) "and the work still happened")))
+
+  (testing "a launcher that throws never escapes the hook"
+    (let [r (cadence-routing {:graph? true
+                              :offload (fn [_] (throw (ex-info "spawn failed" {})))})]
+      (is (true? (:in-process r)) "the reduce still ran in-process"))))
+
+(deftest cadence-detached-single-flight-test
+  (testing "a boundary is dropped while this session's detached child is alive"
+    ;; The task-manager guard cannot see a child process, so without a separate
+    ;; check two children would race the watermark over one session's L2→L3.
+    (reset-counters!)
+    (let [spawns (atom 0)
+          in-process (atom 0)
+          ;; our own pid is guaranteed alive
+          live-pid (.pid (java.lang.ProcessHandle/current))
+          root (make-stub :coact-agent/root
+                          :session-id "s-detach-sf"
+                          :config {:enable-memory-consolidation true
+                                   :enable-graph-memory true
+                                   :memory-consolidate-every-n-turns 1})]
+      (ma-hooks/set-offload-fn! (fn [_] (swap! spawns inc) live-pid))
+      (try
+        (with-redefs [bg/run-off-turn! (fn [& _] (swap! in-process inc) :submitted)]
+          (ma-hooks/consolidation-cadence-handler {:agent root})
+          (is (= 1 @spawns) "first boundary spawns a child")
+          (dotimes [_ 3] (ma-hooks/consolidation-cadence-handler {:agent root}))
+          (is (= 1 @spawns) "later boundaries are dropped while it is alive")
+          (is (zero? @in-process) "and are NOT quietly rerouted in-process"))
+        (finally (ma-hooks/set-offload-fn! nil))))))
+
 (deftest consolidation-cadence-handler-registered-test
   (testing "consolidation-cadence hook is registered on :agent.ask/post at namespace load"
     ;; Re-install in case other tests reset the registry.
