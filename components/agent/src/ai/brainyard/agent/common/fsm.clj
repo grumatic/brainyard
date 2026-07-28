@@ -21,6 +21,7 @@
             [ai.brainyard.agent.common.reactor :as reactor]
             [ai.brainyard.clj-sandbox.interface :as sandbox]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :refer [defcommand]]
@@ -427,7 +428,7 @@
   [agent]
   (let [sid (try (proto/session-id agent) (catch Throwable _ nil))]
     (when (and agent sid (root-agent? agent))
-      (if-not (config/get-config agent :enable-fsm)
+      (if-not (feature/on? agent :automation/fsm)
         (when (contains? @!installed sid) (teardown-session! sid))
         (let [pdir    (str (config/project-dir agent))
               want    (desired-events pdir)
@@ -442,7 +443,15 @@
                                     :source (fsm-source sid)))
             ;; Timed / eventless transitions advance on the scheduler tick (needs
             ;; :enable-scheduler for the ticker). See state-machine-design.md §6.
+            ;; The handler is registered either way — it is the TICKER that goes
+            ;; missing when the scheduler is off, not this hook. That is a
+            ;; :requires-partial relation in the feature registry (the FSM still
+            ;; works event-driven), so surface it instead of failing silently:
+            ;; a machine with :always/:after transitions simply never advances.
             (when tick?
+              (doseq [[_ msg] (:degraded (feature/feature-state agent :automation/fsm))]
+                (mulog/warn ::fsm-degraded-no-scheduler
+                            :session-id sid :consequence msg))
               (hooks/register-hook!
                :scheduler/tick (fsm-hid sid :scheduler-tick)
                (fn [_] (when (< (hooks/current-depth) max-depth) (tick-machines! agent pdir sid)))

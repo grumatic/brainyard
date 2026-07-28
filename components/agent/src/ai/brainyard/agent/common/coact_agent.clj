@@ -53,6 +53,7 @@
             [ai.brainyard.agent.mcp.commands :as mcp-cmds]
             [ai.brainyard.agent.core.agent :as agent]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.exec-backend :as exec-backend]
             [ai.brainyard.agent.core.context :as context]
             [ai.brainyard.agent.core.context-budget :as cb]
@@ -1603,7 +1604,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
 
         ;; Runtime config + sandbox-reuse/restore inputs
         cfg-snap (config/get-config-snapshot agent)
-        enable-sandbox-persistence (:enable-sandbox-persistence cfg-snap)
+        enable-sandbox-persistence (feature/on?* cfg-snap :exec/sandbox-persistence)
         ;; sandbox (live SCI context) lives in !state; sandbox-state (extracted
         ;; user vars) lives in !session so it persists with the session and
         ;; supports restoration across agent instances.
@@ -1695,7 +1696,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; turn so on-disk edits (including the LLM's own writes last turn)
         ;; show live. nil disables the `## Project Memory` section entirely.
         project-memory-input
-        (when (and agent-dirs (get cfg-snap :enable-project-memory true))
+        (when (and agent-dirs (feature/on?* cfg-snap :memory/project))
           (try (-> (config/load-project-memory-index agent-dirs)
                    (assoc :max-chars (get cfg-snap :project-memory-max-chars 4000)))
                (catch Exception _ nil)))
@@ -1736,7 +1737,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
 
         ;; Live state-machine snapshot for the `## State Machines` section
         ;; (only when the FSM overlay is enabled). Volatile tail.
-        machine-states (when (get cfg-snap :enable-fsm)
+        machine-states (when (feature/on?* cfg-snap :automation/fsm)
                          (try (fsm/session-states-for agent) (catch Throwable _ nil)))
 
         ;; Turn identity is read upfront so the per-turn :turn-info section
@@ -1807,11 +1808,11 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                          :execution-model (execution-model-for agent)
                          ;; Tool-only agents (react-agent pins :code-channel? false)
                          ;; drop the code-blocks prompt sections. Default true.
-                         :code-channel? (boolean (get cfg-snap :code-channel? true))
+                         :code-channel? (feature/on?* cfg-snap :exec/code-channel)
                          ;; Gate the agent-lifecycle substrate: no point teaching
                          ;; the agent-registry$* subagent management when subagent
                          ;; dispatch is disabled for this agent.
-                         :enable-subagent-calls (boolean (get cfg-snap :enable-subagent-calls true))
+                         :enable-subagent-calls (feature/on?* cfg-snap :agents/subagents)
                          :conversation           (:conversation st)
                          :previous-turns         previous-turns
                          :live-artifacts         resolved-artifacts
@@ -1828,7 +1829,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; Strategies (from the assembler) trim the underlying state in
         ;; st-memory and re-render the affected section. They run
         ;; lowest-priority first.
-        budget-enabled? (get cfg-snap :enable-context-budget true)
+        budget-enabled? (feature/on?* cfg-snap :context/budget)
         budget-input
         {:max-context-tokens (or (get cfg-snap :max-context-tokens) 128000)
          :max-output-tokens  (or (get-in opts [:lm-config :max-tokens])
@@ -1905,7 +1906,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
              :user-context     user-context
              ;; Tool-only guard: when false, coact-has-code-blocks? ignores any
              ;; emitted code so the router never routes to code-eval (react-agent).
-             :code-channel?    (boolean (get cfg-snap :code-channel? true))
+             :code-channel?    (feature/on?* cfg-snap :exec/code-channel)
              :prompt-token-breakdown prompt-token-breakdown
              :context-briefing briefing
              :iterations       []
@@ -4514,8 +4515,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         total-iterations (count traj-iterations)
         previous-turns (or (:previous-turns st) [])
         cfg-snap (config/get-config-snapshot agent)
-        enable-sandbox-persistence (:enable-sandbox-persistence cfg-snap)
-        enable-trajectory-recording (get cfg-snap :enable-trajectory-recording true)
+        enable-sandbox-persistence (feature/on?* cfg-snap :exec/sandbox-persistence)
+        enable-trajectory-recording (feature/on?* cfg-snap :analytics/trajectory)
         lm-config (or (get-in context [:opts :lm-config])
                       (config/get-config agent :lm-config))
         usage-tracker (or (get-in context [:opts :usage-tracker])

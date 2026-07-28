@@ -38,6 +38,7 @@
   (:require [ai.brainyard.agent.core.tool :refer [defcommand]]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.agent :as agent-core]
             [ai.brainyard.agent.core.runtime :as runtime]
             [ai.brainyard.agent.common.acp-agent :as acp]
@@ -125,20 +126,21 @@
    the ask fence (sibling-root / owned-subagent); acp$update/close use the manage
    fence (same-session, subagent → only what it dispatched)."
   [caller target op]
-  (cond
-    (nil? caller) nil ;; programmatic / TUI colon-command (dispatched AS the root)
+  (let [subagents-off (when caller (feature/off-reason caller :agents/subagents))]
+    (cond
+      (nil? caller) nil ;; programmatic / TUI colon-command (dispatched AS the root)
 
-    (not (config/get-config caller :enable-subagent-calls))
-    {:error "ACP management is disabled (enable-subagent-calls=false)."}
+      subagents-off
+      {:error (str "ACP management is disabled (" subagents-off ").")}
 
-    (and (= op :ask) (= (:agent-id caller) (:agent-id target)))
-    {:error "You cannot ask yourself."}
+      (and (= op :ask) (= (:agent-id caller) (:agent-id target)))
+      {:error "You cannot ask yourself."}
 
-    (= op :ask)
-    (reach-ask-acp caller target)
+      (= op :ask)
+      (reach-ask-acp caller target)
 
-    :else ;; :update / :close
-    (reach-manage-acp caller target)))
+      :else ;; :update / :close
+      (reach-manage-acp caller target))))
 
 (defn- acp-row
   "One summary row for acp$list."
@@ -177,13 +179,14 @@
           backend (->kw (:backend args))
           model   (:model args)
           purpose (:purpose args)
-          extra   (:backend-opts args)]
+          extra   (:backend-opts args)
+          subagents-off (when caller (feature/off-reason caller :agents/subagents))]
       (cond
         (nil? caller)
         {:error "acp$create needs an active session (no caller agent is bound)."}
 
-        (not (config/get-config caller :enable-subagent-calls))
-        {:error "ACP management is disabled (enable-subagent-calls=false)."}
+        subagents-off
+        {:error (str "ACP management is disabled (" subagents-off ").")}
 
         (nil? backend)
         {:error ":backend is required (e.g. :claude-code, :gemini, :codex, :stub)."}

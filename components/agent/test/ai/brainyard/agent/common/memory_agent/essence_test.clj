@@ -433,3 +433,69 @@
     (let [entries (hooks/list-hooks :agent.instance/closed)
           ids     (set (map :id entries))]
       (is (contains? ids :ai.brainyard.agent.common.memory-agent.hooks/session-end-flush)))))
+
+;; ============================================================================
+;; Reducer routing follows the MANAGER, not the live config
+;; ============================================================================
+;;
+;; `:enable-graph-memory` is read once, at `create-memory-manager`, from the
+;; 0-arity global — the manager never sees agent config. These five hook sites
+;; used to re-read it live every turn, so a mid-session change flipped them into
+;; graph mode while the manager held no graph fns, and the community reducer ran
+;; against a storage-only graph. They now read `:graph-enabled?` off the manager,
+;; which makes that disagreement unreachable.
+
+(defn- with-manager
+  "Attach a memory manager to a stub agent. A plain map suffices — `graph-mode?`
+   only reads `:graph-enabled?`, and the real MemoryManager record carries it as
+   an assoc'd field."
+  [ag graph-enabled?]
+  (swap! (:!state ag) assoc :memory-manager {:graph-enabled? graph-enabled?})
+  ag)
+
+(deftest graph-mode-follows-the-manager-not-the-config-test
+  (let [graph-mode? @#'ma-hooks/graph-mode?]
+
+    (testing "manager built WITHOUT graph wins over a config that now says true"
+      (let [ag (with-manager (make-stub :coact-agent/root
+                                        :config {:enable-graph-memory true})
+                             false)]
+        (is (false? (graph-mode? ag))
+            "this is the §1.5 bug: the live flag must not flip the reducer path
+             when the manager has no :extract-fn/:embed-fn")))
+
+    (testing "manager built WITH graph wins over a config that now says false"
+      (let [ag (with-manager (make-stub :coact-agent/root
+                                        :config {:enable-graph-memory false})
+                             true)]
+        (is (true? (graph-mode? ag)))))
+
+    (testing "no manager bound → the configured feature is the only truth"
+      (is (false? (graph-mode? (make-stub :coact-agent/root
+                                          :config {:enable-graph-memory false}))))
+      (is (true? (graph-mode? (make-stub :coact-agent/root
+                                         :config {:enable-graph-memory true})))))))
+
+(deftest job-timeout-follows-the-manager-test
+  (testing "the mode-aware ceiling is chosen by the manager, not the live flag"
+    (let [timeout-of (fn [mgr-graph? cfg-graph?]
+                       (reset-counters!)
+                       (let [captured (atom nil)
+                             root (with-manager
+                                    (make-stub :coact-agent/root
+                                               :session-id (str "s-mgr-" mgr-graph? "-" cfg-graph?)
+                                               :config {:enable-memory-consolidation true
+                                                        :enable-graph-memory cfg-graph?
+                                                        :memory-consolidate-every-n-turns 1})
+                                    mgr-graph?)]
+                         (with-redefs [bg/run-off-turn! (fn [& {:keys [timeout-ms]}]
+                                                          (reset! captured timeout-ms)
+                                                          :submitted)]
+                           (ma-hooks/consolidation-cadence-handler {:agent root}))
+                         @captured))]
+      (is (= (timeout-of true true) (timeout-of true false))
+          "manager graph=true → graph ceiling regardless of the live flag")
+      (is (= (timeout-of false true) (timeout-of false false))
+          "manager graph=false → heuristic ceiling regardless of the live flag")
+      (is (> (timeout-of true false) (timeout-of false true))
+          "and the two ceilings still differ by mode"))))

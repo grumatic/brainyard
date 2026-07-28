@@ -198,9 +198,14 @@
    LM string resolved via `parse-lm-str`; an unresolvable / capability-
    lacking model simply yields no fn, leaving the graph storage-only. The
    fns are lazy — they cost nothing until the extractor/recall invokes them.
-   Resolution never throws (parse-lm-str returns nil on failure)."
-  []
-  (if-not (config/get-config :enable-graph-memory)
+   Resolution never throws (parse-lm-str returns nil on failure).
+
+   `graph?` is passed in rather than read here so that `create-memory-manager`
+   makes exactly ONE `:enable-graph-memory` read and stamps the same value onto
+   the manager as `:graph-enabled?`. Consumers then ask the manager what it is
+   instead of re-reading config — see the `:graph-enabled?` note below."
+  [graph?]
+  (if-not graph?
     {}
     (let [embed-model (config/get-config :graph-embed-model)
           ;; "static" selects the self-contained, in-binary Model2Vec
@@ -241,10 +246,24 @@
                   `~/.brainyard/memory/`)
      :db-path   - Custom database path
 
+   The returned manager carries **`:graph-enabled?`** — the value of
+   `:enable-graph-memory` at the instant the manager was built.
+
+   Why stamp it rather than let consumers re-read the config: this function
+   receives no agent, so it reads the 0-arity GLOBAL value, and whether the
+   manager gets `:extract-fn` / `:embed-fn` is fixed from here on. Consumers
+   that re-read the key live (the memory-agent hooks did, at five sites) could
+   flip into graph mode against a manager built without graph fns — the flag's
+   own restart contract violated by its own consumers. Asking the manager makes
+   that disagreement impossible instead of relying on everyone reading the same
+   layer of the precedence chain.
+
    Returns: MemoryManager instance or nil if memory component unavailable"
   [user-id & {:keys [in-memory base-path db-path]}]
-  (apply mem/create-memory-manager user-id
-         :in-memory (boolean in-memory)
-         :base-path (or base-path (default-memory-base-path))
-         :db-path db-path
-         (mapcat identity (graph-provider-opts))))
+  (let [graph? (boolean (config/get-config :enable-graph-memory))]
+    (some-> (apply mem/create-memory-manager user-id
+                   :in-memory (boolean in-memory)
+                   :base-path (or base-path (default-memory-base-path))
+                   :db-path db-path
+                   (mapcat identity (graph-provider-opts graph?)))
+            (assoc :graph-enabled? graph?))))

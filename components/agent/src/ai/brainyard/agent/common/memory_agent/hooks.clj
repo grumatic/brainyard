@@ -27,6 +27,7 @@
             [ai.brainyard.agent.common.memory-agent.commands :as cmds]
             [clojure.string :as str]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.memory.interface :as mem]
@@ -180,18 +181,43 @@
   [agent]
   (try (some-> agent :!state deref :memory-manager) (catch Exception _ nil)))
 
+(defn- graph-mode?
+  "Does this agent's memory manager actually do graph work?
+
+   Asks the MANAGER, not the config. `:enable-graph-memory` is read once, at
+   `create-memory-manager`, from the 0-arity global — the manager never sees
+   agent config — and whether it holds `:extract-fn` / `:embed-fn` is fixed
+   from that instant. These five call sites used to re-read the key live every
+   turn, so a mid-session change flipped them into graph mode while the manager
+   had no graph fns and the community reducer ran against a storage-only graph
+   (the flag's restart contract broken by its own consumers). Reading
+   `:graph-enabled?` off the manager makes that state unreachable rather than
+   keeping two readers in agreement by convention.
+
+   With no manager bound there is no baked artifact to disagree with, so the
+   configured feature is the only truth available — that is the REPL/test path,
+   and it is also what `consolidation-eligible?` uses for the separate question
+   of whether consolidation is wanted at all."
+  [agent]
+  (if-let [mm (agent-memory-manager agent)]
+    (boolean (:graph-enabled? mm))
+    (feature/on? agent :memory/graph)))
+
 (defn consolidation-eligible?
   "True when the just-finished agent should drive batch consolidation:
      1. Not memory-agent itself (would consolidate its own bookkeeping).
      2. Is a root agent (sub-agents share a session — root handles it).
-     3. `:enable-memory-consolidation` is true, OR `:enable-graph-memory` is on.
+     3. The `:memory/consolidation` feature resolves on.
 
-   The graph coupling: when graph memory is enabled the async extractor is
+   The graph coupling used to live here as `(or :enable-memory-consolidation
+   :enable-graph-memory)`: when graph memory is enabled the async extractor is
    already populating the entity graph, and `run-consolidation!` routes to the
-   community reducer (which harvests those communities into L3). Turning graph
-   memory on without consolidation would build a graph nobody harvests, so we
-   imply consolidation from it — derived at this read site rather than baking a
-   second default that would drift."
+   community reducer (which harvests those communities into L3), so turning
+   graph memory on without consolidation would build a graph nobody harvests.
+   That implication is a fact about the two features, not about this call site,
+   so it is now registry data — `:memory/graph :implies :memory/consolidation`
+   — and `feature/on?` applies it. Resolution also enforces the requirement
+   both features have on `:memory/capture`, which the old `or` did not."
   [agent]
   (when agent
     (try
@@ -200,9 +226,7 @@
         (cond
           (= "memory-agent" ag-type) false
           (not (root-agent? agent))  false
-          :else
-          (boolean (or (config/get-config agent :enable-memory-consolidation)
-                       (config/get-config agent :enable-graph-memory)))))
+          :else (feature/on? agent :memory/consolidation)))
       (catch Exception _ false))))
 
 (defn- batch-extract-if-deferred!
@@ -240,7 +264,7 @@
   [agent]
   (when-let [mm (agent-memory-manager agent)]
     (let [sid (some-> agent proto/session-id)]
-      (if (config/get-config agent :enable-graph-memory)
+      (if (graph-mode? agent)
         (do (batch-extract-if-deferred! agent mm sid)
             (mem/consolidate-graph! mm :session-id sid))
         (mem/consolidate-l2!    mm :session-id sid)))))
@@ -264,7 +288,7 @@
   "How long one cadence consolidation job may run before the task layer
    reclaims it, given the agent's reducer path."
   [agent]
-  (if (config/get-config agent :enable-graph-memory)
+  (if (graph-mode? agent)
     cadence-timeout-graph-ms
     cadence-timeout-ms))
 
@@ -341,7 +365,7 @@
           n   (long (or (config/get-config agent :memory-consolidate-every-n-turns) 12))
           tally (get (swap! !turn-counters update sid (fnil inc 0)) sid)]
       (when (and (pos? n) (zero? (mod tally n)))
-        (let [offload? (and (config/get-config agent :enable-graph-memory)
+        (let [offload? (and (graph-mode? agent)
                             (some? @!offload-fn))]
           (cond
             (and offload? (detached-cadence-running? sid))
@@ -394,7 +418,7 @@
   "How long the session-end flush may block on the final consolidation, given the
    agent's reducer path. Graph mode does real LLM work; the heuristic does not."
   [agent]
-  (if (config/get-config agent :enable-graph-memory)
+  (if (graph-mode? agent)
     session-end-flush-timeout-graph-ms
     session-end-flush-timeout-ms))
 
@@ -442,7 +466,7 @@
           ;; than trigger an accidental expensive full reduce.
           (mulog/warn ::session-end-flush-skipped-no-session :turns tally)
           (try
-            (let [graph?  (config/get-config agent :enable-graph-memory)
+            (let [graph?  (graph-mode? agent)
                   offload (and graph? @!offload-fn)
                   pid     (when offload
                             (offload {:user-id    (some-> agent proto/user-id)

@@ -291,6 +291,10 @@
 
 ;; Lazy-resolved refs for deps that would create circular requires
 (def ^:private !get-config (delay (requiring-resolve 'ai.brainyard.agent.core.config/get-config)))
+;; requiring-resolve, not :require — core.config requires THIS ns, so a direct
+;; require of core.feature (which requires core.config) would close the cycle.
+;; Same reason as !get-config above.
+(def ^:private !off-reason (delay (requiring-resolve 'ai.brainyard.agent.core.feature/off-reason)))
 (def ^:private !generate-instance-id
   (delay (requiring-resolve 'ai.brainyard.agent.core.agent/generate-instance-id)))
 (def ^:private !evict-subagents-to-cap!
@@ -300,7 +304,8 @@
   "Dispatch a registered :agent-type tool with subagent guards.
 
    Guards, in order:
-     1. kill switch — `enable-subagent-calls` in the caller's st-memory-init
+     1. kill switch — the `:agents/subagents` feature (gate
+        `enable-subagent-calls`, plus any declared requirements)
      2. depth limit — `proto/*call-depth*` vs `get-max-agent-call-depth`
      3. circular detection — target defagent-type must not already be in `proto/*call-chain*`
 
@@ -312,10 +317,11 @@
   [agent tool-id tool-name parsed-args]
   (let [max-depth (@!get-config agent :max-agent-call-depth)
         target-id tool-id
-        current-agent-id (when agent (proto/agent-id agent))]
+        current-agent-id (when agent (proto/agent-id agent))
+        subagents-off (@!off-reason agent :agents/subagents)]
     (cond
-      (not (@!get-config agent :enable-subagent-calls))
-      {:error-message "Subagent calls are disabled (enable-subagent-calls=false)"}
+      subagents-off
+      {:error-message (str "Subagent calls are disabled (" subagents-off ")")}
 
       (>= proto/*call-depth* max-depth)
       {:error-message (format "Agent call depth limit reached (%d/%d). Cannot call '%s'."

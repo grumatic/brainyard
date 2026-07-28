@@ -18,6 +18,7 @@
   (:require [ai.brainyard.agent.core.tool :refer [defcommand]]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.agent :as agent-core]
             [ai.brainyard.agent.core.memory :as agent-mem]
             [ai.brainyard.agent.core.runtime :as runtime]
@@ -171,10 +172,11 @@
   (let [caller-id    (some-> caller proto/agent-id)
         caller-root? (or (nil? caller)
                          (nil? (runtime/get-parent-agent (:!state caller))))
-        owner        (:owner (agent-core/lifecycle target))]
+        owner        (:owner (agent-core/lifecycle target))
+        subagents-off (when caller (feature/off-reason caller :agents/subagents))]
     (cond
-      (and caller (not (config/get-config caller :enable-subagent-calls)))
-      {:error "Subagent management is disabled (enable-subagent-calls=false)."}
+      subagents-off
+      {:error (str "Subagent management is disabled (" subagents-off ").")}
 
       (and caller (not= (proto/session-id target) (proto/session-id caller)))
       {:error "Instance belongs to a different session; you can only manage instances in your own session."}
@@ -196,14 +198,15 @@
      asking upward could loop, so it is fenced to its own children.
    - nil caller (programmatic/test; a TUI colon-command dispatches AS the active
      root, so this is not a live LLM path) — unrestricted.
-   Kill-switch (enable-subagent-calls) and self-ask are also enforced here."
+   Kill-switch (the :agents/subagents feature) and self-ask are also enforced here."
   [caller target]
-  (let [caller-id (some-> caller proto/agent-id)]
+  (let [caller-id (some-> caller proto/agent-id)
+        subagents-off (when caller (feature/off-reason caller :agents/subagents))]
     (cond
       (nil? caller) nil
 
-      (not (config/get-config caller :enable-subagent-calls))
-      {:error "Agent-to-agent asks are disabled (enable-subagent-calls=false)."}
+      subagents-off
+      {:error (str "Agent-to-agent asks are disabled (" subagents-off ").")}
 
       :else
       (let [caller-root?  (nil? (runtime/get-parent-agent (:!state caller)))
@@ -289,22 +292,33 @@
 ;; ============================================================================
 
 (defcommand agent-runtime$config
-  "Read a curated config overview (no args: keys that differ from defaults + how to drill in), search keys by substring (:query), or set one entry (pair :key + :value). Pass :all true to dump the full effective snapshot. Valid keys: see agent.core.config/config-schema.
+  "Read a curated config overview (no args: keys that differ from defaults + how to drill in), browse one feature family (:feature, e.g. 'memory'), search keys by substring (:query), or set one entry (pair :key + :value). Pass :all true to dump the full effective snapshot. Valid keys: see agent.core.config/config-schema.
    Setting writes both the per-agent override (effective immediately) and the persisted global config in .brainyard/config.edn."
   (fn [& {:as args}]
     (if-let [agent proto/*current-agent*]
       (let [k-raw    (:key args)
             v-str    (:value args)
             q-raw    (:query args)
+            f-raw    (:feature args)
             all?     (contains? #{true "true"} (:all args))
             has-key? (not (str/blank? (str k-raw)))
             has-val? (not (str/blank? (str v-str)))
-            has-q?   (not (str/blank? (str q-raw)))]
+            has-q?   (not (str/blank? (str q-raw)))
+            has-f?   (not (str/blank? (str f-raw)))]
         (cond
+          ;; Feature mode: read one family — its features, gates, deps and every
+          ;; member key with value + default. Answers "what does the memory
+          ;; feature consist of?" in one call instead of grepping 137 keys.
+          has-f?
+          (or (feature/family-view agent f-raw)
+              {:error-message (format "Unknown feature family '%s'. Valid: %s"
+                                      f-raw
+                                      (str/join ", " (map name feature/families)))})
+
           ;; Discovery mode: read-only substring search over key name + :doc.
           ;; Takes precedence so the LLM can find a key before reading/setting it.
           has-q?
-          (let [matches (config/search-config-keys agent q-raw)]
+          (let [matches (feature/annotate-hits (config/search-config-keys agent q-raw))]
             {:matches matches :count (count matches)})
 
           ;; Read mode: curated overview by default (non-default settings + hint),
@@ -339,6 +353,7 @@
                        (config/config-overview agent)))))))
       {:error-message "current agent is not running"}))
   :input-schema  [:map
+                  [:feature {:optional true} [:string {:desc "Feature family to browse: memory, self-improve, automation, context, exec, agents, reasoning, tools, analytics, ui. Read-only; returns each feature's gate, deps and member keys."}]]
                   [:query {:optional true} [:string {:desc "Substring to find matching config keys (searches key name + description); read-only discovery. Omit :key/:value when searching."}]]
                   [:key {:optional true} [:string {:desc "Config key to set (omit :key/:value/:query to read the overview; see agent.core.config/config-schema)"}]]
                   [:value {:optional true} [:string {:desc "Config value to set, e.g. 'true', 'false', '3' (required with :key)"}]]
@@ -347,8 +362,10 @@
                   [:total {:optional true} [:int {:desc "Total number of config keys (overview/set responses)"}]]
                   [:overrides {:optional true} [:string {:desc "Overview: map of keys whose effective value differs from the schema default (secrets redacted)"}]]
                   [:hint {:optional true} [:string {:desc "Overview: how to search (:query), set (:key/:value), or get the full snapshot (:all true)"}]]
-                  [:matches {:optional true} [:string {:desc "Search results (from :query): vector of {:key :type :value :default :doc} (plus :read-only / :requires-restart flags where applicable) for keys whose name/description match"}]]
+                  [:matches {:optional true} [:string {:desc "Search results (from :query): vector of {:key :type :value :default :doc} (plus :feature/:family and :read-only / :requires-restart flags where applicable) for keys whose name/description match"}]]
                   [:count {:optional true} [:int {:desc "Number of search matches (with :query)"}]]
+                  [:family {:optional true} [:string {:desc "Feature family name (from :feature)"}]]
+                  [:features {:optional true} [:string {:desc "From :feature: vector of {:feature :title :gate :gate-value :lifecycle :keys} per feature in the family, plus :requires/:implies/:requires-partial where declared"}]]
                   [:result {:optional true} [:string {:desc "Confirmation when a value was set"}]]
                   [:config {:optional true} [:string {:desc "Full effective config snapshot (only when :all true), secrets redacted"}]]
                   [:error-message {:optional true} [:string {:desc "Error if invalid key, partial args, or agent not running"}]]])
