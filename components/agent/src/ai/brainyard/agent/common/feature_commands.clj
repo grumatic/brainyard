@@ -194,39 +194,60 @@
 ;; ============================================================================
 
 (defcommand feature$set
-  "Turn one feature on or off by writing its gate key through the normal config path."
+  "Turn a feature (or a whole family) on or off by writing its gate key through the normal config path."
   (fn [& {:keys [feature state]}]
     (let [agent proto/*current-agent*
           on?   (contains? #{"on" "true" "yes" "enable" "enabled" true} state)
           off?  (contains? #{"off" "false" "no" "disable" "disabled" false} state)]
-      (if-let [fid (feature/resolve-feature feature)]
-        (if-not (or on? off?)
-          {:error "state must be on or off"}
-          ;; Guards and the write live in core.feature/set-feature! so this
-          ;; command and the TUI's /feature cannot drift on what is settable.
-          (let [r (feature/set-feature! agent fid on?)]
-            (if (:error r)
-              r
-              (cond-> (assoc (dissoc r :unmet :degraded)
-                             :result (format "%s set to %s and persisted to .brainyard/config.edn."
-                                             (:gate r) (:set r)))
-                ;; The written value and the RESOLVED state can differ — that
-                ;; is the whole point of declared dependencies, so say so
-                ;; rather than letting the caller assume the write took.
-                (and on? (not (:on? r)))
-                (assoc :warning
-                       (format "Still off: %s" (or (feature/off-reason agent fid) "unmet requirements"))
-                       :unmet (unmet->strs (:unmet r)))
+      (cond
+        (not (or on? off?))
+        {:error "state must be on or off"}
 
-                (seq (:degraded r))
-                (assoc :degraded (into {} (for [[k v] (:degraded r)] [(fid->str k) v])))
+        ;; A bare family name sets the family master switch — non-destructive,
+        ;; so the member gates keep whatever they were set to individually.
+        (and (not (feature/resolve-feature feature))
+             (contains? feature/family-gates (keyword (str/lower-case (str feature)))))
+        (let [fam (keyword (str/lower-case (str feature)))
+              r   (feature/set-family! agent fam on?)]
+          (if (:error r)
+            r
+            (assoc r :result
+                   (format "%s set to %s — %d of %d features in %s are now on."
+                           (:gate r) (:set r)
+                           (count (filter :on? (:features r)))
+                           (count (:features r))
+                           (:family r)))))
 
-                (config/requires-restart-key? (keyword (:gate r)))
-                (assoc :requires-restart true
-                       :restart-note "read once at startup — RESTART by for this to take effect")))))
-        {:error (format "Unknown feature '%s'. Use feature$list to see families." feature)})))
+        (nil? (feature/resolve-feature feature))
+        {:error (format "Unknown feature or family '%s'. Use feature$list to see families, then <family>/<name> (e.g. memory/graph)."
+                        feature)}
+
+        :else
+        ;; Guards and the write live in core.feature/set-feature! so this
+        ;; command and the TUI's /feature cannot drift on what is settable.
+        (let [fid (feature/resolve-feature feature)
+              r   (feature/set-feature! agent fid on?)]
+          (if (:error r)
+            r
+            (cond-> (assoc (dissoc r :unmet :degraded)
+                           :result (format "%s set to %s and persisted to .brainyard/config.edn."
+                                           (:gate r) (:set r)))
+              ;; The written value and the RESOLVED state can differ — that is
+              ;; the whole point of declared dependencies, so say so rather
+              ;; than letting the caller assume the write took.
+              (and on? (not (:on? r)))
+              (assoc :warning
+                     (format "Still off: %s" (or (feature/off-reason agent fid) "unmet requirements"))
+                     :unmet (unmet->strs (:unmet r)))
+
+              (seq (:degraded r))
+              (assoc :degraded (into {} (for [[k v] (:degraded r)] [(fid->str k) v])))
+
+              (config/requires-restart-key? (keyword (:gate r)))
+              (assoc :requires-restart true
+                     :restart-note "read once at startup — RESTART by for this to take effect")))))))
   :input-schema  [:map
-                  [:feature [:string {:desc "Feature id, e.g. memory/graph"}]]
+                  [:feature [:string {:desc "Feature id (memory/graph) or a bare family name (memory) to set the family master switch"}]]
                   [:state   [:string {:desc "on or off"}]]]
   :output-schema [:map
                   [:feature {:optional true} [:string]]
@@ -238,6 +259,8 @@
                   [:unmet   {:optional true} [:string]]
                   [:degraded {:optional true} [:string]]
                   [:requires-restart {:optional true} [:boolean]]
+                  [:family  {:optional true} [:string {:desc "Family name, when a family master switch was set"}]]
+                  [:features {:optional true} [:string {:desc "Per-member resolved state, when a family switch was set"}]]
                   [:error   {:optional true} [:string]]])
 
 (def feature-commands

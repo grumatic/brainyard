@@ -565,10 +565,24 @@
                            (ansi/warning "Read once at startup — restart by for this to take effect.")))
                         (emit-feature-detail! ag fid))))))))
 
-          ;; a family name
+          ;; a family name, optionally with a state for its master switch
           (some #(= (str/lower-case target) (name %)) agent/families)
-          (emit-feature-family! ag (first (filter #(= (str/lower-case target) (name %))
-                                                  agent/families)))
+          (let [fam (first (filter #(= (str/lower-case target) (name %)) agent/families))]
+            (if (str/blank? state)
+              (emit-feature-family! ag fam)
+              (let [on?  (contains? #{"on" "true" "yes" "enable"} state)
+                    off? (contains? #{"off" "false" "no" "disable"} state)]
+                (if-not (or on? off?)
+                  (tui-session/emit! (ansi/warning "Usage: /feature <family> on|off"))
+                  ;; Non-destructive: this writes only the master switch, so the
+                  ;; member gates keep whatever each was set to individually and
+                  ;; turning the family back on restores them.
+                  (let [r (agent/set-family! ag fam on?)]
+                    (if-let [e (:error r)]
+                      (tui-session/emit! (ansi/failure e))
+                      (do (tui-session/emit!
+                           (ansi/success (format "%s set to %s and persisted." (:gate r) (:set r))))
+                          (emit-feature-family! ag fam))))))))
 
           :else
           (tui-session/emit!

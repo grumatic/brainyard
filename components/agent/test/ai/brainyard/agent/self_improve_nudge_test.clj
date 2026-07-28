@@ -125,7 +125,8 @@
         ;; :self-improve/nudges requires distillation OR refinement. Enabling
         ;; the nudge flag alone leaves it with nothing to announce.
         (with-redefs [config/get-config (fn [_ k]
-                                          (contains? #{:enable-self-improve-nudges
+                                          (contains? #{:enable-self-improve        ; family master switch
+                                                       :enable-self-improve-nudges
                                                        :enable-skill-distillation}
                                                      k))
                       config/project-dir (fn [_] *project-dir*)

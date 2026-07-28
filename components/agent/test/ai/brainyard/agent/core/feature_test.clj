@@ -22,6 +22,7 @@
 (deftest every-schema-key-is-classified
   (testing "config-schema partitions into features + ambient + quarantine"
     (let [claimed (set/union feat/claimed-keys
+                             feat/family-gate-keys
                              feat/ambient-keys
                              feat/unclassified-keys)]
       (is (= cfg/config-keys claimed)
@@ -43,18 +44,37 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "24 gates + 86 knobs + 16 presentation + 10 ambient + 1 unclassified = 137"
+  (testing "24 feature gates + 9 family gates + 86 knobs + 16 presentation + 10 ambient + 1 unclassified = 146"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
                      count)
           pres  (->> feat/all-features (filter :presentation) (mapcat :keys) count)]
       (is (= 24 (count feat/gate-keys)))
+      (is (= 9 (count feat/family-gate-keys)) "one per capability family; :ui has none")
       (is (= 86 knobs))
       (is (= 16 pres))
       (is (= 10 (count feat/ambient-keys)))
       (is (= 1 (count feat/unclassified-keys)))
-      (is (= 137 (count cfg/config-keys))))))
+      (is (= 146 (count cfg/config-keys))))))
+
+;; ============================================================================
+;; Family master switches
+;; ============================================================================
+
+(deftest family-gates-cover-every-capability-family
+  (is (= (disj (set feat/families) :ui) (set (keys feat/family-gates)))
+      "every family except :ui has a master switch")
+  (doseq [[fam k] feat/family-gates]
+    (is (contains? cfg/config-keys k) (str fam " gate " k " must be a schema key"))
+    (is (= "boolean" (get-in cfg/config-schema [k :type])))
+    (is (true? (get-in cfg/config-schema [k :default]))
+        (str k " must default true — a family switch is a kill-switch, not an opt-in"))))
+
+(deftest family-gates-are-not-feature-keys
+  (is (empty? (set/intersection feat/family-gate-keys feat/claimed-keys))
+      "a family switch belongs to the family, not to any one feature")
+  (is (empty? (set/intersection feat/family-gate-keys feat/ambient-keys))))
 
 ;; ============================================================================
 ;; Gates
@@ -415,3 +435,70 @@
                                                      :enable-skill-refinement false) k d)))]
     (is (= "requires self-improve/distillation or self-improve/refinement"
            (feat/off-reason nil :self-improve/nudges)))))
+
+;; ---------------------------------------------------------------------------
+;; Family switch semantics (AND, and only over GATED features)
+;; ---------------------------------------------------------------------------
+
+(deftest family-off-forces-gated-members-off
+  (let [s (snap :enable-memory false)]
+    (doseq [fid [:memory/capture :memory/consolidation :memory/graph :memory/project]]
+      (is (not (feat/on?* s fid)) (str fid " must follow its family switch")))))
+
+(deftest family-off-does-not-reach-ungated-groupings
+  (testing "a family switch is a master over the family's SWITCHES, not its knobs"
+    (is (feat/on?* (snap :enable-reasoning false) :reasoning/loop)
+        "/feature reasoning off must not claim to have disabled the agent loop")
+    (is (feat/on?* (snap :enable-exec false) :exec/tasks))
+    (is (feat/on?* (snap :enable-tools false) :tools/mcp)))
+  (testing "an ungated member CAN still go off transitively, via :requires"
+    (let [s (snap :enable-analytics-family false)]
+      (is (not (feat/on?* s :analytics/trajectory)) "gated — the switch reaches it")
+      (is (not (feat/on?* s :analytics/scoring))
+          "ungated, so the switch does not reach it directly — but it requires
+           trajectory, which the switch did reach")
+      (is (= #{:analytics/trajectory} (:unmet (feat/feature-state* s :analytics/scoring)))
+          "and the reported cause is the requirement, not the family switch")))
+  (testing "but the gated members of those families do follow it"
+    (is (not (feat/on?* (snap :enable-reasoning false :max-refinements 3) :reasoning/refinement)))
+    (is (not (feat/on?* (snap :enable-exec false) :exec/code-channel)))
+    (is (not (feat/on?* (snap :enable-tools false :tool-cache-ttl 60) :tools/cache)))
+    (is (not (feat/on?* (snap :enable-analytics-family false) :analytics/trajectory)))))
+
+(deftest family-on-defers-to-each-feature-gate
+  (testing "true is not an override — it does not force a member on"
+    (let [s (snap :enable-memory true :enable-mid-turn-recall false)]
+      (is (feat/on?* s :memory/capture))
+      (is (not (feat/on?* s :memory/mid-turn-recall))
+          "the family switch must not resurrect a feature the user turned off"))))
+
+(deftest family-switch-is-non-destructive
+  (testing "off then on restores per-feature settings, because member gates are untouched"
+    (let [members {:enable-memory-capture true
+                   :enable-mid-turn-recall false
+                   :enable-graph-memory true}
+          off  (merge (snap) members {:enable-memory false})
+          back (merge (snap) members {:enable-memory true})]
+      (is (not (feat/on?* off :memory/capture)))
+      (is (feat/on?* back :memory/capture) "restored")
+      (is (not (feat/on?* back :memory/mid-turn-recall))
+          "and still off, because that is how the user left it"))))
+
+(deftest family-off-suppresses-implication
+  (testing "graph cannot imply consolidation when the family switch is off"
+    (let [s (snap :enable-memory false
+                  :enable-graph-memory true
+                  :enable-memory-consolidation false)]
+      (is (not (feat/on?* s :memory/consolidation))))))
+
+(deftest ui-has-no-family-switch
+  (is (nil? (feat/family-gates :ui)))
+  (is (feat/on?* (snap) :ui/display)))
+
+(deftest family-switch-only-kills-on-explicit-false
+  (testing "a nil read defers — a partial config view must not silently disable a family"
+    (is (feat/on?* (snap :enable-memory nil) :memory/capture))
+    (is (feat/on?* {:enable-memory-capture true} :memory/capture)
+        "a snapshot that never heard of the family key resolves on"))
+  (testing "but an explicit false still kills"
+    (is (not (feat/on?* (snap :enable-memory false) :memory/capture)))))

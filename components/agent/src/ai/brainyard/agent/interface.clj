@@ -303,7 +303,7 @@
                 feature-registry ambient-keys families family->features
                 feature-of-key feature-doc family-view family-summary
                 annotate-hits presentation-key? resolve-feature gate-of
-                set-feature!)
+                family-gates family-gate-keys set-feature! set-family!)
 
 ;; Renamed on export: `on?` / `off-reason` / `feature-state` are too generic to
 ;; sit unqualified in this interface, and export-symbols cannot rename. Thin

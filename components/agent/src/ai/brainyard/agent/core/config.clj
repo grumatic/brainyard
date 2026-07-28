@@ -253,6 +253,62 @@
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "Self-improvement (R1 Phase 2): a tool-use/post hook watches skill$<name> failures and, when the SKILL.md is at fault, stages a :refinement proposal (updated SKILL.md) for review. Off by default. Env: BY_ENABLE_SKILL_REFINEMENT."}
+   ;; --- Feature-family master switches (core.feature/family-gates) ---
+   ;; One per capability family. ANDed into every GATED feature in that family
+   ;; by `core.feature`: false forces them off, true defers to each feature's
+   ;; own gate. Ungated groupings (knobs-only, e.g. exec/tasks) are unaffected
+   ;; — the family switch is a master over the family's switches, not a way to
+   ;; turn off a group of knobs. Deliberately NOT tri-state: under AND
+   ;; semantics `true` and "unset" do the same thing, so a third state would
+   ;; buy only the ability to report "explicitly enabled", at the cost of a new
+   ;; schema type. `ui` has no family switch — turning off "the UI" is not a
+   ;; coherent operation. See docs/design/feature-flags-design.md §9 Q1.
+   :enable-memory              {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Master switch for the memory family (capture, recall, consolidation, graph, project memory). Set false to disable all of them at once without losing their individual settings. Env: BY_ENABLE_MEMORY."}
+   :enable-self-improve        {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_SELF_IMPROVE")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Master switch for the self-improve family (skill distillation, refinement, nudges). Set false to disable all of them at once. Env: BY_ENABLE_SELF_IMPROVE."}
+   :enable-automation          {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_AUTOMATION")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Master switch for the automation family (scheduler, reactions, FSM, user hooks, gateway). Set false to stop everything that can act without a user turn. Env: BY_ENABLE_AUTOMATION."}
+   :enable-context             {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_CONTEXT")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Master switch for the context family (budgeting, compaction, live artifacts, console activity). Env: BY_ENABLE_CONTEXT."}
+   :enable-exec                {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_EXEC")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Master switch for the exec family (code channel, sandbox persistence, nREPL, task notification, iteration hold, artifact GC). Env: BY_ENABLE_EXEC."}
+   :enable-agents              {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_AGENTS")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Master switch for the agents family (subagent calls, ACP backends). Set false for a single-agent posture. Env: BY_ENABLE_AGENTS."}
+   :enable-reasoning           {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_REASONING")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Master switch for the reasoning family's gated features (the answer-refinement pass). The agent loop itself is an ungated grouping and is unaffected. Env: BY_ENABLE_REASONING."}
+   :enable-tools               {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_TOOLS")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Master switch for the tools family's gated features (tool result cache, ask channel). MCP and OAuth are ungated groupings and are unaffected. Env: BY_ENABLE_TOOLS."}
+   :enable-analytics-family    {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_ANALYTICS_FAMILY")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Master switch for the analytics family (trajectory recording; scoring follows it). Named -family because a bare :enable-analytics was a real key until the async analytics path was retired, and reviving the name would silently resurrect dead config. Env: BY_ENABLE_ANALYTICS_FAMILY."}
+
    :enable-scheduler           {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_SCHEDULER")]
                                            (= "true" v) ::env-unset)

@@ -583,6 +583,41 @@
               (mapcat #(remove (:live-keys % #{}) (feature-keys %))))
         all-features))
 
+(def family-gates
+  "family → master switch key in `config-schema` (§9 Q1).
+
+   ANDed into every **gated** feature in the family: false forces them off,
+   true defers to each feature's own gate. Ungated groupings are unaffected —
+   the family switch is a master over the family's switches, not a way to turn
+   off a group of knobs, and `/feature reasoning off` should not claim to have
+   disabled the agent loop.
+
+   A plain boolean defaulting true, not a tri-state: under AND semantics
+   `true` and \"never set\" do the same thing, so a third state would buy only
+   the ability to report \"explicitly enabled\" — at the cost of a schema type
+   that `valid-config-value?` and `coerce-config-value` would both have to
+   learn. Non-destructiveness (turn a family off, then on, and per-feature
+   settings come back) comes from the key being SEPARATE from the member
+   gates, which both designs give.
+
+   `:ui` has no entry: it is `:presentation`, and turning off \"the UI\" is not
+   a coherent operation."
+  {:memory       :enable-memory
+   :self-improve :enable-self-improve
+   :automation   :enable-automation
+   :context      :enable-context
+   :exec         :enable-exec
+   :agents       :enable-agents
+   :reasoning    :enable-reasoning
+   :tools        :enable-tools
+   :analytics    :enable-analytics-family})
+
+(def family-gate-keys
+  "The master-switch keys. Classified separately from feature keys — a family
+   gate belongs to a family, not to any one feature — so the partition test
+   unions this in alongside `claimed-keys` and `ambient-keys`."
+  (set (vals family-gates)))
+
 (def ^:private implied-by-index
   "feature id → set of features that `:implies` it. Reverse of `:implies`, so
    resolution can ask \"who turns this on?\" without sweeping the registry."
@@ -593,6 +628,21 @@
 ;; ============================================================================
 ;; Resolution
 ;; ============================================================================
+
+(defn- family-on?
+  "The family's master switch. True when the family has none (`:ui`).
+
+   Only an explicit `false` disables: a nil read means the key resolved to
+   nothing, and the schema default is true, so nil defers rather than kills.
+   This is what makes the switch a kill-switch rather than an opt-in — and it
+   means a caller reading config through a partial view (a test stub, a
+   snapshot missing the key) is not silently switched off by a key it never
+   heard of."
+  [read-fn fam]
+  (if-let [k (family-gates fam)]
+    (let [v (read-fn k)]
+      (if (nil? v) true (boolean v)))
+    true))
 
 (defn- gate-passes?
   "Apply a feature's gate predicate to a raw config value. A `:gate-pred`
@@ -615,10 +665,15 @@
    Snapshotting here instead would have made the boot value outrank per-agent
    overrides for every startup gate. See feature-flags-design.md §10.6."
   [read-fn f]
-  (let [g (gate-of f)]
-    (if (nil? g)
-      true
-      (gate-passes? (read-fn g) (:gate-pred f)))))
+  (if (nil? (:gate f))
+    ;; Ungated grouping: no switch of its own, and the family master switch
+    ;; deliberately does not reach it (see `family-gates`).
+    true
+    (and (family-on? read-fn (:family f))
+         (let [g (gate-of f)]
+           ;; `gate-of` is nil for a :proposed feature — its own gate is not a
+           ;; schema key yet, so only the family switch can turn it off.
+           (if g (gate-passes? (read-fn g) (:gate-pred f)) true)))))
 
 (declare ^:private final-on?)
 
@@ -874,6 +929,35 @@
              :unmet    (:unmet st)
              :degraded (:degraded st)}))))
     {:error (format "Unknown feature '%s'." (pr-str fid))}))
+
+(defn set-family!
+  "Turn a whole family on or off by writing its master switch.
+
+   Non-destructive by construction: the member gates are untouched, so
+   `off` then `on` restores whatever each feature was set to individually,
+   rather than flattening them to a single value.
+
+   Returns `{:family :gate :set :features}` where `:features` reports each
+   member's RESOLVED state afterwards, or `{:error …}` for an unknown family
+   or one with no master switch (`:ui`)."
+  [agent fam on?]
+  (let [fam (if (keyword? fam) fam (keyword (str fam)))]
+    (cond
+      (not (contains? family->features fam))
+      {:error (format "Unknown family '%s'." (name fam))}
+
+      (nil? (family-gates fam))
+      {:error (format "%s has no master switch — it is presentation-only." (name fam))}
+
+      :else
+      (let [k (family-gates fam)]
+        (config/set-config! agent k (boolean on?))
+        {:family   (name fam)
+         :gate     (name k)
+         :set      (boolean on?)
+         :features (vec (for [fid (family->features fam)]
+                          {:feature (str (symbol fid))
+                           :on?     (:on? (feature-state agent fid))}))}))))
 
 (defn resolve-feature
   "Accept a feature as a keyword or string in either `family/name` or

@@ -797,16 +797,24 @@ guards so the LLM and TUI surfaces cannot drift.
 Not yet done, and grouped here because they are one class of change — they all
 touch config storage or precedence, unlike the purely additive surfaces above:
 
-- **Family gates (§9 Q1).** Blocked on a concrete schema detail, not a
-  decision: `valid-config-value?` maps `"boolean"` to `boolean?`, which
-  **rejects nil**. A tri-state family key (`nil` = no family opinion) therefore
-  needs a new schema type — say `"tristate"`, accepting `nil` or a boolean —
-  added to both `valid-config-value?` and `coerce-config-value`. Worth noting
-  while implementing: with the AND semantics the resolution uses, `true` and
-  `nil` are behaviourally identical (only `false` forces members off), so the
-  third state earns its keep only in *reporting* ("explicitly enabled" vs "no
-  opinion"). If that distinction is not wanted, a plain boolean defaulting true
-  is the same mechanism with one less type.
+- ~~Family gates~~ **— done (2026-07-28), as plain booleans.** Tri-state was
+  dropped: under AND semantics `true` and "unset" do the same thing, so the
+  third state would have bought only the ability to report "explicitly
+  enabled", at the price of a new `"tristate"` schema type in both
+  `valid-config-value?` and `coerce-config-value`. Non-destructiveness — turn a
+  family off, then on, and per-feature settings come back — comes from the key
+  being *separate* from the member gates, which both designs give. Nine keys
+  (`core.feature/family-gates`), one per capability family; `:ui` has none.
+  Two semantics worth knowing: the switch reaches only **gated** features (an
+  ungated grouping has no switch to master, so `/feature reasoning off` does
+  not claim to have disabled the agent loop — though an ungated member can
+  still go off transitively via `:requires`, as `analytics/scoring` does); and
+  only an explicit **`false`** disables, so a partial config view cannot
+  silently switch a family off with a key it never heard of. The analytics key
+  is `:enable-analytics-family`, not `:enable-analytics` — the latter was a
+  real key until the async analytics path was retired and is still sitting
+  inert in this repo's `config.edn`, so reviving the name would resurrect dead
+  config.
 - **Generated env vars + `BY_FEATURES`.** `BY_FEATURE_MEMORY_GRAPH` derived
   mechanically, existing `BY_ENABLE_*` names kept as aliases and checked first.
 - **Profiles.** `BY_PROFILE` / `:feature-profile`, slotting in below

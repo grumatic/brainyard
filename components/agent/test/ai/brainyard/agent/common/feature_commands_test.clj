@@ -207,3 +207,39 @@
     (require 'ai.brainyard.agent.common.commands)
     (let [all (set @(resolve 'ai.brainyard.agent.common.commands/all-common-commands))]
       (is (every? all fc/feature-commands)))))
+
+;; ============================================================================
+;; feature$set on a family (the master switch)
+;; ============================================================================
+
+(deftest set-family-writes-only-the-master-switch
+  (let [[r writes] (capture-set {} #(fc/feature$set :feature "memory" :state "off"))]
+    (is (= [[:enable-memory false]] writes)
+        "non-destructive: member gates are untouched, so off→on restores them")
+    (is (= "memory" (:family r)))
+    (is (= "enable-memory" (:gate r)))
+    (is (re-find #"features in memory are now on" (:result r)))))
+
+(deftest set-family-reports-member-states
+  (let [[r _] (capture-set {:enable-memory false}
+                           #(fc/feature$set :feature "memory" :state "off"))]
+    (is (= 6 (count (:features r))))
+    (is (every? #(false? (:on? %)) (:features r))
+        "with the switch off every gated member reports off")))
+
+(deftest set-family-refuses-ui
+  (let [[r writes] (capture-set {} #(fc/feature$set :feature "ui" :state "off"))]
+    (is (re-find #"Unknown feature or family" (:error r))
+        "ui has no master switch, and is not a feature id either")
+    (is (empty? writes))))
+
+(deftest set-still-rejects-a-bad-state-for-a-family
+  (let [[r writes] (capture-set {} #(fc/feature$set :feature "memory" :state "sideways"))]
+    (is (:error r))
+    (is (empty? writes))))
+
+(deftest explain-reflects-the-family-switch
+  (with-gates {:enable-memory false}
+    (fn []
+      (let [r (fc/feature$explain :feature "memory/graph")]
+        (is (false? (:on? r)) "the family switch reaches gated members")))))
