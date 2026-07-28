@@ -502,3 +502,39 @@
         "a snapshot that never heard of the family key resolves on"))
   (testing "but an explicit false still kills"
     (is (not (feat/on?* (snap :enable-memory false) :memory/capture)))))
+
+;; ---------------------------------------------------------------------------
+;; BY_FEATURES
+;; ---------------------------------------------------------------------------
+
+(deftest by-features-parses-signs-and-separators
+  (let [parse @#'feat/parse-features-spec]
+    (is (= {:memory/graph false :automation/reactions true}
+           (parse "-memory.graph,+automation.reactions")))
+    (is (= {:memory/graph true} (parse "memory.graph")) "a bare token means on")
+    (is (= {:memory/graph true} (parse "  memory/graph  ")) "slash form and padding")
+    (is (nil? (parse nil)))
+    (is (nil? (parse "   ")))
+    (testing "an unresolvable token is dropped, not thrown — a typo in a
+              container env var must not stop the binary"
+      (is (= {:memory/graph false} (parse "-memory.graph,-bogus.thing")))
+      (is (= {} (parse "nonsense"))))))
+
+(deftest by-features-overrides-the-persisted-gate
+  (with-redefs [feat/features-env-overrides (fn [] {:memory/graph false})]
+    (is (not (feat/on?* (snap :enable-graph-memory true) :memory/graph)))
+    (is (feat/on?* (snap :enable-scheduler true) :automation/scheduler)
+        "features not named are untouched")))
+
+(deftest specific-env-var-beats-the-bulk-list
+  (testing "BY_ENABLE_GRAPH_MEMORY set → BY_FEATURES does not apply to it"
+    (with-redefs [feat/features-env-overrides (fn [] {:memory/graph false})
+                  cfg/schema-env-value        (fn [k] (if (= k :enable-graph-memory)
+                                                        true cfg/env-unset))]
+      (is (feat/on?* (snap :enable-graph-memory true) :memory/graph)))))
+
+(deftest by-features-cannot-defeat-a-requirement
+  (testing "turning a feature on via env still respects :requires — fail-safe"
+    (with-redefs [feat/features-env-overrides (fn [] {:memory/graph true})]
+      (is (not (feat/on?* (snap :enable-memory-capture false :enable-graph-memory false)
+                          :memory/graph))))))

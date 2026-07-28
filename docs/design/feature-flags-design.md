@@ -815,10 +815,34 @@ touch config storage or precedence, unlike the purely additive surfaces above:
   real key until the async analytics path was retired and is still sitting
   inert in this repo's `config.edn`, so reviving the name would resurrect dead
   config.
-- **Generated env vars + `BY_FEATURES`.** `BY_FEATURE_MEMORY_GRAPH` derived
-  mechanically, existing `BY_ENABLE_*` names kept as aliases and checked first.
-- **Profiles.** `BY_PROFILE` / `:feature-profile`, slotting in below
-  `config.edn` — the only precedence change this design permits (§2.6, §8).
+- ~~Env vars~~ **— done, but only `BY_FEATURES`.** The per-feature generated
+  names (`BY_FEATURE_MEMORY_GRAPH`) were dropped: §6.3 wanted 33 new variable
+  names *plus* an alias-precedence rule against the existing `BY_ENABLE_*`
+  spellings, to solve a problem `BY_FEATURES` solves in one variable. What was
+  actually missing was env coverage for the **14 gates that have no `:env-fn`
+  at all** — `BY_FEATURES="+memory.graph,-automation.reactions"` covers every
+  gate including those, and the nine family switches each got a normal
+  `BY_ENABLE_*` of their own. Precedence: a specific `BY_ENABLE_*` beats the
+  bulk list (it is the older, more explicit spelling); unresolvable tokens are
+  dropped rather than thrown, since a typo in a container env var should not
+  stop the binary; and the list cannot defeat a `:requires`, so turning a
+  feature on via env is still fail-safe. Note this is resolved in
+  `core.feature`, not as a gate `:env-fn` — §6.3 assumed the latter, but
+  `config.clj` cannot know feature names without depending on `core.feature`
+  and closing a cycle.
+- **Profiles — blocked on a real obstacle, not a preference.** §6.3 says a
+  profile "sets the **base** for gates the user has not explicitly set", below
+  `config.edn`. That cannot be implemented today: `load-global-config!` does
+  `(merge default-config persisted bridged)` and retains **only the merged
+  map**, discarding `persisted`. So nothing downstream can tell "the user wrote
+  this in config.edn" from "this is the schema default" — `config-source`
+  reports `:global` for both, verified across all 134 static-default keys. A
+  profile layer inserted below `config.edn` would therefore either override
+  values the user did write, or be shadowed by defaults the user never chose.
+  The fix is small but touches the most sensitive function in the system: keep
+  the raw `persisted` map in its own atom, then give `resolve-config` the layer
+  it currently cannot express — env > agent > session > **persisted** >
+  profile > default. Worth doing deliberately.
 - **config-agent instruction + wizard Features step.**
 
 ### 10.6 P1: the graph-memory seal is blocked on a semantics decision

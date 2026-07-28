@@ -629,6 +629,59 @@
 ;; Resolution
 ;; ============================================================================
 
+;; ============================================================================
+;; BY_FEATURES — one-line bulk override for containers and CI
+;; ============================================================================
+
+;; Defined below with the other id/name parsers; needed here by the BY_FEATURES
+;; parser, which resolution calls.
+(declare resolve-feature)
+
+(defonce ^:private !features-env-cache
+  ;; [raw-string parsed-map]. A defonce atom holding nil is native-image-safe:
+  ;; the env var is never read at namespace load, so the BUILD machine's
+  ;; environment cannot be baked into the binary.
+  (atom nil))
+
+(defn- parse-features-spec
+  "\"+memory.graph,-automation.reactions\" → {:memory/graph true
+                                              :automation/reactions false}
+   A bare token is treated as `+`. Unresolvable tokens are dropped rather than
+   throwing — a typo in a container env var should not stop the binary."
+  [raw]
+  (when-let [raw (some-> raw str/trim not-empty)]
+    (into {}
+          (keep (fn [tok]
+                  (let [tok (str/trim tok)]
+                    (when (seq tok)
+                      (let [on? (not= \- (first tok))
+                            nm  (if (contains? #{\+ \-} (first tok)) (subs tok 1) tok)]
+                        (when-let [fid (resolve-feature nm)]
+                          [fid on?]))))))
+          (str/split raw #","))))
+
+(defn features-env-overrides
+  "Parsed `BY_FEATURES`, or nil. Re-read each call (a JVM env lookup is cheap)
+   and memoized by the raw string so the parse happens once per distinct value.
+
+   Families are deliberately not accepted here: every family master switch has
+   its own `BY_ENABLE_*` variable already, so this covers what those cannot."
+  []
+  (let [raw (System/getenv "BY_FEATURES")
+        [cached parsed] @!features-env-cache]
+    (if (and (some? @!features-env-cache) (= raw cached))
+      parsed
+      (let [p (parse-features-spec raw)]
+        (reset! !features-env-cache [raw p])
+        p))))
+
+(defn- gate-env-set?
+  "True when the gate key's own `:env-fn` variable is set (e.g.
+   BY_ENABLE_GRAPH_MEMORY). Those names predate the registry and stay
+   authoritative: a specific per-key variable beats the bulk BY_FEATURES list."
+  [g]
+  (not= config/env-unset (config/schema-env-value g)))
+
 (defn- family-on?
   "The family's master switch. True when the family has none (`:ui`).
 
@@ -664,7 +717,7 @@
    `:graph-enabled?` on the manager and the memory-agent hooks read that.
    Snapshotting here instead would have made the boot value outrank per-agent
    overrides for every startup gate. See feature-flags-design.md §10.6."
-  [read-fn f]
+  [read-fn fid f]
   (if (nil? (:gate f))
     ;; Ungated grouping: no switch of its own, and the family master switch
     ;; deliberately does not reach it (see `family-gates`).
@@ -673,7 +726,14 @@
          (let [g (gate-of f)]
            ;; `gate-of` is nil for a :proposed feature — its own gate is not a
            ;; schema key yet, so only the family switch can turn it off.
-           (if g (gate-passes? (read-fn g) (:gate-pred f)) true)))))
+           (cond
+             (nil? g) true
+             ;; A specific BY_ENABLE_* beats the bulk BY_FEATURES list.
+             (gate-env-set? g) (gate-passes? (read-fn g) (:gate-pred f))
+             :else
+             (if-some [ov (get (features-env-overrides) fid)]
+               ov
+               (gate-passes? (read-fn g) (:gate-pred f))))))))
 
 (declare ^:private final-on?)
 
@@ -696,7 +756,7 @@
   (memo! !memo :closed fid
          (fn []
            (let [f (feature-registry fid)]
-             (or (base-on? read-fn f)
+             (or (base-on? read-fn fid f)
                  (boolean (some #(closed-on? read-fn !memo %)
                                 (implied-by-index fid))))))))
 
@@ -739,7 +799,7 @@
   (when-let [f (feature-registry fid)]
     (let [!memo   (volatile! {})
           on      (final-on? read-fn !memo fid)
-          base    (base-on? read-fn f)
+          base    (base-on? read-fn fid f)
           impliers (into #{} (filter #(closed-on? read-fn !memo %))
                          (implied-by-index fid))]
       {:feature    fid
