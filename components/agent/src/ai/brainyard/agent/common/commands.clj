@@ -25,6 +25,7 @@
             [ai.brainyard.agent.task.commands :as task-cmds]
             [ai.brainyard.agent.common.analytics-commands :as analytics-cmds]
             [ai.brainyard.agent.common.artifacts :as artifacts]
+            [ai.brainyard.agent.common.feature-commands :as feature-cmds]
             [ai.brainyard.agent.common.gateway :as gateway]
             [ai.brainyard.agent.common.gateway.telegram :as gateway-telegram]
             [ai.brainyard.agent.common.log :as log]
@@ -1062,6 +1063,7 @@ results are intentionally kept out of semantic recall so it stays focused on kno
                events/events-commands
                reactor/reaction-commands
                fsm/fsm-commands
+               feature-cmds/feature-commands
                gateway/gateway-commands
                gateway-telegram/telegram-commands
                ;; Todo checklist reconcile seam — the read half of the base

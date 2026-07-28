@@ -637,6 +637,7 @@
     {:completions [["low"    "No finalize, no refinements"]
                    ["medium" "Finalize answer, no refinements"]
                    ["high"   "Finalize answer + 2 refinements"]]}]
+   ["/feature"          " [name [on|off]]"        "Show/set capabilities — config grouped by feature"]
    ["/help"             ""                        "Show this help"]
    ["/history"          ""                        "Show conversation history"]
    ["/init"             " [prompt|show|reseed|revert|list-snapshots]"

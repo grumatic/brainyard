@@ -287,6 +287,7 @@
                 !global-config load-global-config! invalidate-global-config!
                 get-config get-config-snapshot set-config!
                 config-overview search-config-keys redact-config-snapshot
+                config-source requires-restart-key? restart-required-keys
                 resolve-sub-lm resolve-sandbox-interop)
 
 ;; ============================================================================
@@ -301,7 +302,8 @@
 (export-symbols ai.brainyard.agent.core.feature
                 feature-registry ambient-keys families family->features
                 feature-of-key feature-doc family-view family-summary
-                annotate-hits presentation-key?)
+                annotate-hits presentation-key? resolve-feature gate-of
+                set-feature!)
 
 ;; Renamed on export: `on?` / `off-reason` / `feature-state` are too generic to
 ;; sit unqualified in this interface, and export-symbols cannot rename. Thin

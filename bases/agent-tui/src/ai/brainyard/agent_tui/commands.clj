@@ -437,6 +437,144 @@
                 (tui-session/emit!
                  (ansi/success (str (name k) " = " coerced)))))))))))
 
+;; ============================================================================
+;; /feature — the capability view over config
+;; ============================================================================
+;; `/config` with no args prints all 137 schema keys alphabetically. That is a
+;; storage dump, not a mental model: it cannot say which keys belong to graph
+;; memory, nor that four of them are inert because their gate is off. This is
+;; the same data grouped by capability — ~10 rows at the first level.
+
+(defn- feature-dot [on?] (if on? (ansi/success "●") (ansi/muted "○")))
+
+(defn- emit-feature-line!
+  "One indented feature row: state dot, short name, then the annotations that
+   explain a surprising state (implied-by / unmet / degraded / restart)."
+  [fid st]
+  (let [f    (agent/feature-doc fid)
+        gate (agent/gate-of f)]
+    (tui-session/emit!
+     (str "  " (feature-dot (:on? st))
+          " " (ansi/style (format "%-20s" (name fid)) ansi/bold)
+          (ansi/muted (format "%-9s" (name (:lifecycle f))))
+          (cond
+            (:proposed f)       (ansi/muted "not gateable yet")
+            (nil? gate)         (ansi/muted "ungated")
+            (seq (:unmet st))   (ansi/warning
+                                 (str "needs " (str/join ", "
+                                                         (map (fn [r] (if (set? r)
+                                                                        (str/join "|" (map #(str (symbol %)) (sort r)))
+                                                                        (str (symbol r))))
+                                                              (:unmet st)))))
+            (= :implied-by (:source st))
+            (ansi/muted (str "← implied by " (str/join ", " (map #(str (symbol %)) (sort (:implied-by st))))))
+            :else               "")
+          (when (seq (:degraded st))
+            (ansi/warning (str "  ⚠ " (str/join "; " (vals (:degraded st))))))
+          (when (and gate (not (:proposed f)) (agent/requires-restart-key? gate))
+            (ansi/muted "  · restart"))))))
+
+(defn- emit-feature-family! [ag fam]
+  (let [fids   (agent/family->features fam)
+        states (into {} (for [fid fids] [fid (agent/feature-state ag fid)]))
+        on     (count (filter :on? (vals states)))]
+    (tui-session/emit!
+     (str (ansi/style (format "%-18s" (name fam)) ansi/bold ansi/bright-white)
+          (feature-dot (pos? on))
+          (ansi/muted (format "  (%d/%d)" on (count fids)))))
+    (doseq [fid fids] (emit-feature-line! fid (get states fid)))))
+
+(defn- emit-feature-detail!
+  "One feature in full: why it is on or off, plus its knobs with values."
+  [ag fid]
+  (let [f  (agent/feature-doc fid)
+        st (agent/feature-state ag fid)
+        gate (agent/gate-of f)]
+    (tui-session/emit! (str (ansi/header (str (symbol fid))) "  " (feature-dot (:on? st))
+                            " " (if (:on? st) "on" "off")))
+    (tui-session/emit! (str "  " (ansi/muted (:title f))))
+    (when gate
+      (tui-session/emit!
+       (str "  gate      " (ansi/style (name gate) ansi/bold)
+            " = " (ansi/style (str (agent/get-config ag gate)) ansi/bright-cyan)
+            (if (:proposed f)
+              (ansi/muted "   (planned — not a config key yet)")
+              (ansi/muted (str "   (from " (name (agent/config-source ag gate)) ")"))))))
+    (when-let [r (and (not (:on? st)) (agent/feature-off-reason ag fid))]
+      (tui-session/emit! (str "  " (ansi/warning (str "off: " r)))))
+    (doseq [[k msg] (:degraded st)]
+      (tui-session/emit! (str "  " (ansi/warning (str "degraded (" (symbol k) "): " msg)))))
+    (when (seq (:keys f))
+      (tui-session/emit! (str "  " (ansi/muted "knobs")))
+      (doseq [k (:keys f)]
+        (let [v (agent/get-config ag k)
+              d (get-in agent/config-schema [k :default])]
+          (tui-session/emit!
+           (str "    " (ansi/style (format "%-34s" (name k)) ansi/bold)
+                (ansi/style (str v) (if (not= v d) ansi/bright-cyan ansi/dim))
+                ;; A nil default is common (`:default-fn`-only keys, and knobs
+                ;; like :graph-extract-model that default to unset) — printing
+                ;; "(default )" reads as a rendering bug.
+                (when (not= v d)
+                  (ansi/muted (str "   (default " (if (nil? d) "unset" d) ")"))))))))))
+
+(defn- handle-feature-command
+  "Handle /feature — capability view over config.
+     /feature                      all families
+     /feature <family>             expand one family
+     /feature <family>/<name>      one feature in detail
+     /feature <family>/<name> on|off"
+  [args]
+  (let [ag (tui-session/get-active-agent)]
+    (if-not ag
+      (tui-session/emit! (ansi/warning "No TUI agent running."))
+      (let [parts (when-not (str/blank? args) (str/split (str/trim args) #"\s+" 2))
+            target (first parts)
+            state  (some-> (second parts) str/trim str/lower-case)]
+        (cond
+          (nil? target)
+          (do (tui-session/emit! (ansi/header "Features"))
+              (doseq [fam agent/families] (emit-feature-family! ag fam))
+              (tui-session/emit!
+               (ansi/muted "  /feature <family> · /feature <family>/<name> [on|off]")))
+
+          ;; a feature id, with or without a state to set
+          (agent/resolve-feature target)
+          (let [fid (agent/resolve-feature target)]
+            (if (str/blank? state)
+              (emit-feature-detail! ag fid)
+              (let [on? (contains? #{"on" "true" "yes" "enable"} state)
+                    off? (contains? #{"off" "false" "no" "disable"} state)]
+                (if-not (or on? off?)
+                  (tui-session/emit! (ansi/warning "Usage: /feature <family>/<name> on|off"))
+                  ;; Shares core.feature/set-feature! with feature$set, so the
+                  ;; guards and the persistence path are identical.
+                  (let [r (agent/set-feature! ag fid on?)]
+                    (if-let [e (:error r)]
+                      (tui-session/emit! (ansi/failure e))
+                      (do
+                        (tui-session/emit!
+                         (ansi/success (format "%s set to %s and persisted." (:gate r) (:set r))))
+                        (when (and on? (not (:on? r)))
+                          (tui-session/emit!
+                           (ansi/warning (str "Still off: "
+                                              (or (agent/feature-off-reason ag fid)
+                                                  "unmet requirements")))))
+                        (when (agent/requires-restart-key? (keyword (:gate r)))
+                          (tui-session/emit!
+                           (ansi/warning "Read once at startup — restart by for this to take effect.")))
+                        (emit-feature-detail! ag fid))))))))
+
+          ;; a family name
+          (some #(= (str/lower-case target) (name %)) agent/families)
+          (emit-feature-family! ag (first (filter #(= (str/lower-case target) (name %))
+                                                  agent/families)))
+
+          :else
+          (tui-session/emit!
+           (ansi/warning (str "Unknown feature or family: " target
+                              ". Families: " (str/join ", " (map name agent/families))))))))))
+
 (def ^:private effort-presets
   ;; Effort now maps purely to the in-loop refinement budget. The old
   ;; finalize-answer polish pass was merged into ThinkActCode's answer channel
@@ -2128,6 +2266,7 @@
         "/display-format" (do (emit-command-header! input) (handle-display-format-command args) :continue)
         "/model"        (do (emit-command-header! input) (handle-model-command args reader) :continue)
         "/config"       (do (emit-command-header! input) (handle-config-command args) :continue)
+        "/feature"      (do (emit-command-header! input) (handle-feature-command args) :continue)
         "/init"         (do (emit-command-header! input) (handle-init-command args) :continue)
         "/effort"       (do (emit-command-header! input) (handle-effort-command args) :continue)
         "/help"         (do (emit-command-header! input) (tui-session/emit! (fmt/format-help)) :continue)

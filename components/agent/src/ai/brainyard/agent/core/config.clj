@@ -1308,6 +1308,18 @@
      (track-config! k source v)
      v)))
 
+(defn config-source
+  "Which precedence layer supplies `k`: `:env`, `:agent`, `:session`,
+   `:global` (.brainyard/config.edn merged over static defaults) or
+   `:default`.
+
+   Same resolution as `get-config`, minus the value and the mulog tracking.
+   Exists so a caller can answer \"why is this set the way it is?\" — the
+   winning layer was previously observable only as a `::config-resolved` log
+   line, which is no use to a command that has to explain itself now."
+  ([k] (second (resolve-config nil k)))
+  ([agent-or-st k] (second (resolve-config (resolve-agent agent-or-st) k))))
+
 (defn- env-overlay
   "Map of `{k env-value}` for every schema key whose `:env-fn` resolves (its
    variable is set). The highest-precedence layer — merged last in snapshots

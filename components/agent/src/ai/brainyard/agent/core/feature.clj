@@ -830,6 +830,67 @@
   (let [s (-> x str (str/replace #"^:" "") (str/split #"[./]") first str/lower-case)]
     (first (filter #(= s (name %)) families))))
 
+(defn set-feature!
+  "Turn feature `fid` on or off by writing its gate key through
+   `config/set-config!` — same persistence, allowlist and dossier behaviour as
+   any other config write. No new storage.
+
+   Returns `{:feature :gate :set :on? :unmet :degraded}` on success, or
+   `{:error …}` when the feature has no settable gate. `:set` is the value
+   written; `:on?` is the RESOLVED state afterwards, and the two can differ —
+   that is exactly what declared requirements do, so callers should report
+   `:on?` rather than assuming the write took.
+
+   The guards live here rather than in the command so the TUI and the LLM
+   surface cannot drift apart on what is settable."
+  [agent fid on?]
+  (if-let [f (feature-registry fid)]
+    (let [gate (:gate f)]
+      (cond
+        (nil? gate)
+        {:error (format "%s is an ungated grouping — it has no on/off switch. Its knobs are set with agent-runtime$config."
+                        (str (symbol fid)))}
+
+        (:proposed f)
+        {:error (format "%s is not gateable yet — %s is planned but not in config-schema."
+                        (str (symbol fid)) (name gate))}
+
+        (:presentation f)
+        {:error (format "%s is presentation-only and is not a capability gate; set its keys directly with agent-runtime$config."
+                        (str (symbol fid)))}
+
+        (:gate-pred f)
+        {:error (format "%s is gated by the numeric key %s (0 = off) — set a value with agent-runtime$config rather than on/off."
+                        (str (symbol fid)) (name gate))}
+
+        :else
+        (do
+          (config/set-config! agent gate (boolean on?))
+          (let [st (feature-state agent fid)]
+            {:feature  (str (symbol fid))
+             :gate     (name gate)
+             :set      (boolean on?)
+             :on?      (:on? st)
+             :unmet    (:unmet st)
+             :degraded (:degraded st)}))))
+    {:error (format "Unknown feature '%s'." (pr-str fid))}))
+
+(defn resolve-feature
+  "Accept a feature as a keyword or string in either `family/name` or
+   `family.name` form, case-insensitively, and return the registry id — or nil
+   if it names no feature.
+
+   Both separators are accepted because the two surfaces disagree by nature:
+   the registry and EDN callers use `:memory/graph`, while a command line and
+   the env-var spelling (`BY_FEATURES=+memory.graph`) read better dotted."
+  [x]
+  (when (some? x)
+    (let [s     (-> x str (str/replace #"^:" "") str/lower-case)
+          parts (str/split s #"[./]" 2)]
+      (when (= 2 (count parts))
+        (let [want (str/join "/" parts)]
+          (first (filter #(= want (str (symbol %))) (keys feature-registry))))))))
+
 (defn family-view
   "Everything about one family: each feature with its gate, lifecycle, deps,
    and every member key with its resolved value and schema default.
