@@ -62,7 +62,10 @@
         (if (str/blank? task-id-str)
           {:error "task-id is required"}
           (let [task-id     (keyword task-id-str)
-                last-n      (some-> (:last-n args) parse-long)]
+                last-n      (let [v (:last-n args)]
+                              (cond (number? v) (long v)
+                                    (string? v) (parse-long v)
+                                    :else       nil))]
             (if-let [task (tp/get-task mgr task-id)]
               (let [cached      @(:output-lines task)
                     cached-cnt  (count cached)
@@ -111,7 +114,7 @@
       {:error "Task manager not initialized"}))
   :input-schema  [:map
                   [:task-id [:string {:desc "Task ID (e.g. task-1)"}]]
-                  [:last-n  {:optional true} [:string {:desc "When set, include :lines = last N lines from the in-memory tail cache. Omit for metadata-only."}]]]
+                  [:last-n  {:optional true} [:int {:desc "When set, include :lines = last N lines from the in-memory tail cache. Omit for metadata-only."}]]]
   :output-schema [:map
                   [:id           [:string  {:desc "Task ID"}]]
                   [:name         [:string  {:desc "Task name"}]]
