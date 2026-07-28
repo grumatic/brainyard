@@ -253,6 +253,12 @@
                                            (= "true" v) ::env-unset)
                                 :default false
                                 :doc "Self-improvement (R1 Phase 2): a tool-use/post hook watches skill$<name> failures and, when the SKILL.md is at fault, stages a :refinement proposal (updated SKILL.md) for review. Off by default. Env: BY_ENABLE_SKILL_REFINEMENT."}
+   :feature-profile            {:type "keyword"
+                                :env-fn #(if-some [v (System/getenv "BY_PROFILE")]
+                                           (keyword v) ::env-unset)
+                                :default :standard
+                                :doc "Baseline posture for feature gates: minimal (capture+recall only; no background LLM work), standard (the schema defaults), full (graph memory, self-improvement and mid-turn recall on). Applied BELOW .brainyard/config.edn, so it can never override a value you set explicitly. See core.config/feature-profiles. Env: BY_PROFILE."}
+
    ;; --- Feature-family master switches (core.feature/family-gates) ---
    ;; One per capability family. ANDed into every GATED feature in that family
    ;; by `core.feature`: false forces them off, true defers to each feature's
@@ -605,6 +611,54 @@
                  m))
              {}
              config-schema))
+
+(def feature-profiles
+  "profile → {config-key value} baseline, selected by `:feature-profile`.
+
+   Applied in `load-global-config!` BETWEEN `default-config` and the persisted
+   `.brainyard/config.edn` subtree, so a profile raises or lowers the baseline
+   for keys the user has not set and can never override one they have. That
+   position is the whole point: §6.3 of the feature-flags design allows exactly
+   one new precedence layer, and only below config.edn.
+
+   Deliberately plain config keys, not feature ids: this namespace is the leaf
+   of the config/feature pair and must not depend on `core.feature`. The
+   registry knowledge lives in the invariant instead — `feature_test`
+   asserts every key here is a real gate, so a profile cannot drift into
+   naming something that is not a switch.
+
+   `:standard` is empty on purpose: it means \"the schema defaults\", so the
+   default profile changes nothing and the whole mechanism is inert until
+   someone opts in."
+  {:standard {}
+
+   ;; Fast and cheap: nothing that spends an LLM call or runs work off-turn.
+   ;; Capture and recall stay on — memory with nothing in it is not minimal,
+   ;; it is broken.
+   :minimal  {:enable-memory-consolidation false
+              :enable-graph-memory         false
+              :enable-mid-turn-recall      false
+              :enable-skill-distillation   false
+              :enable-skill-refinement     false
+              :enable-self-improve-nudges  false
+              :enable-scheduler            false
+              :enable-reactions            false
+              :enable-fsm                  false
+              :enable-user-hooks           false
+              :enable-console-activity     false
+              :enable-trajectory-recording false
+              :max-refinements             0}
+
+   ;; Everything that improves answers at the cost of latency and tokens.
+   ;; :enable-graph-memory is :requires-restart, so a switch to :full needs a
+   ;; restart before the graph tier actually exists.
+   :full     {:enable-graph-memory         true
+              :enable-memory-consolidation true
+              :enable-mid-turn-recall      true
+              :enable-skill-distillation   true
+              :enable-skill-refinement     true
+              :enable-self-improve-nudges  true
+              :max-refinements             2}})
 
 ;; ============================================================================
 ;; Coercion
@@ -1246,7 +1300,26 @@
          persisted (-> (get-in migrated [:agent :config] {})
                        (select-keys config-keys))
          bridged   (bridge-permissions-section migrated)
-         merged    (merge default-config persisted bridged)]
+         ;; `:feature-profile` is itself config, so resolve it from the same
+         ;; two sources that can be known this early: BY_PROFILE, else the
+         ;; persisted value, else the schema default. Read getenv directly —
+         ;; `schema-env-value` is defined further down this file.
+         profile   (or (some-> (System/getenv "BY_PROFILE") str/trim not-empty keyword)
+                       (some-> (:feature-profile persisted) name keyword)
+                       (:feature-profile default-config))
+         ;; BETWEEN defaults and persisted: a profile raises or lowers the
+         ;; baseline for keys the user has not set, and can never override one
+         ;; they have. An unknown profile name contributes nothing rather than
+         ;; throwing — a bad BY_PROFILE should not stop the binary.
+         profile-map (get feature-profiles profile {})
+         merged    (merge default-config profile-map persisted bridged)]
+     ;; A typo silently contributing nothing is worse than a bad profile: the
+     ;; name is echoed back by `get-config`, so it LOOKS applied. Say so.
+     (when-not (contains? feature-profiles profile)
+       (mulog/warn ::unknown-feature-profile
+                   :profile profile
+                   :valid (vec (sort (keys feature-profiles)))
+                   :effect "ignored — schema defaults apply"))
      (reset! !global-config merged)
      merged)))
 

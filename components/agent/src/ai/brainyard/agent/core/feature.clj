@@ -498,10 +498,14 @@
 
    `:allowed-dirs` and `:permission-mode` must never become gateable: they are
    the security floor, and the config-agent's hard rules already treat them as
-   human-approval-only."
+   human-approval-only.
+
+   `:feature-profile` is ambient for a different reason: it configures the
+   feature system rather than any capability within it, and gating it with a
+   feature would be circular."
   #{:lm-config :dirs :allowed-dirs :permission-mode :max-output-tokens
     :max-output-chars :claude-code-max-turns :include-function-directory
-    :compact-agent-tools :inline-usage-guides})
+    :compact-agent-tools :inline-usage-guides :feature-profile})
 
 (def unclassified-keys
   "Schema keys claimed by no feature because nothing reads them.

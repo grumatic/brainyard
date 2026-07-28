@@ -243,3 +243,24 @@
     (fn []
       (let [r (fc/feature$explain :feature "memory/graph")]
         (is (false? (:on? r)) "the family switch reaches gated members")))))
+
+;; ============================================================================
+;; Active profile reporting
+;; ============================================================================
+
+(deftest list-reports-the-active-profile
+  (with-redefs [config/get-config    (stub-cfg (assoc all-gates-on :feature-profile :minimal))
+                config/config-source (fn ([_] :global) ([_ _] :global))]
+    (let [p (:profile (fc/feature$list))]
+      (is (= "minimal" (:name p)))
+      (is (true? (:known p)))
+      (is (nil? (:warning p))))))
+
+(deftest list-warns-on-an-unknown-profile
+  (testing "an unrecognised name is echoed back by get-config, so it LOOKS applied"
+    (with-redefs [config/get-config    (stub-cfg (assoc all-gates-on :feature-profile :nonsense))
+                  config/config-source (fn ([_] :global) ([_ _] :global))]
+      (let [p (:profile (fc/feature$list))]
+        (is (= "nonsense" (:name p)))
+        (is (false? (:known p)))
+        (is (re-find #"Unknown profile" (:warning p)))))))

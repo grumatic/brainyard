@@ -44,7 +44,7 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "24 feature gates + 9 family gates + 86 knobs + 16 presentation + 10 ambient + 1 unclassified = 146"
+  (testing "24 feature gates + 9 family gates + 86 knobs + 16 presentation + 11 ambient + 1 unclassified = 147"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
@@ -54,9 +54,9 @@
       (is (= 9 (count feat/family-gate-keys)) "one per capability family; :ui has none")
       (is (= 86 knobs))
       (is (= 16 pres))
-      (is (= 10 (count feat/ambient-keys)))
+      (is (= 11 (count feat/ambient-keys)))
       (is (= 1 (count feat/unclassified-keys)))
-      (is (= 146 (count cfg/config-keys))))))
+      (is (= 147 (count cfg/config-keys))))))
 
 ;; ============================================================================
 ;; Family master switches
@@ -538,3 +538,44 @@
     (with-redefs [feat/features-env-overrides (fn [] {:memory/graph true})]
       (is (not (feat/on?* (snap :enable-memory-capture false :enable-graph-memory false)
                           :memory/graph))))))
+
+;; ---------------------------------------------------------------------------
+;; Feature profiles
+;; ---------------------------------------------------------------------------
+
+(deftest profiles-only-name-real-gates
+  (testing "a profile must not drift into naming something that is not a switch"
+    (doseq [[profile overrides] cfg/feature-profiles
+            [k v] overrides]
+      (is (contains? cfg/config-keys k)
+          (str profile " names " k ", which is not a config key"))
+      (is (or (contains? feat/gate-keys k) (contains? feat/family-gate-keys k))
+          (str profile " names " k ", which is not a gate — profiles set the
+               baseline for GATES, not arbitrary knobs"))
+      (is (some? v) (str profile "/" k " must declare a value")))))
+
+(deftest profile-values-match-their-gate-type
+  (doseq [[profile overrides] cfg/feature-profiles
+          [k v] overrides]
+    (is (cfg/valid-config-value? k v)
+        (str profile "/" k " value " (pr-str v) " does not match the schema type"))))
+
+(deftest standard-profile-is-inert
+  (is (= {} (:standard cfg/feature-profiles))
+      "the default profile must change nothing, so the mechanism is opt-in"))
+
+(deftest profiles-are-known-names
+  (is (= #{:minimal :standard :full} (set (keys cfg/feature-profiles))))
+  (is (= :standard (get-in cfg/config-schema [:feature-profile :default]))))
+
+(deftest minimal-turns-off-background-work
+  (let [m (:minimal cfg/feature-profiles)]
+    (testing "nothing that spends an LLM call or runs off-turn survives"
+      (doseq [k [:enable-memory-consolidation :enable-graph-memory
+                 :enable-skill-distillation :enable-skill-refinement
+                 :enable-scheduler :enable-reactions]]
+        (is (false? (get m k)) (str k " should be off under :minimal"))))
+    (testing "but capture and recall are NOT disabled — memory with nothing in
+              it is not minimal, it is broken"
+      (is (not (contains? m :enable-memory-capture)))
+      (is (not (contains? m :enable-memory-recall))))))

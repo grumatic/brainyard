@@ -830,19 +830,31 @@ touch config storage or precedence, unlike the purely additive surfaces above:
   `core.feature`, not as a gate `:env-fn` — §6.3 assumed the latter, but
   `config.clj` cannot know feature names without depending on `core.feature`
   and closing a cycle.
-- **Profiles — blocked on a real obstacle, not a preference.** §6.3 says a
-  profile "sets the **base** for gates the user has not explicitly set", below
-  `config.edn`. That cannot be implemented today: `load-global-config!` does
-  `(merge default-config persisted bridged)` and retains **only the merged
-  map**, discarding `persisted`. So nothing downstream can tell "the user wrote
-  this in config.edn" from "this is the schema default" — `config-source`
-  reports `:global` for both, verified across all 134 static-default keys. A
-  profile layer inserted below `config.edn` would therefore either override
-  values the user did write, or be shadowed by defaults the user never chose.
-  The fix is small but touches the most sensitive function in the system: keep
-  the raw `persisted` map in its own atom, then give `resolve-config` the layer
-  it currently cannot express — env > agent > session > **persisted** >
-  profile > default. Worth doing deliberately.
+- ~~Profiles~~ **— done, and the obstacle turned out to be avoidable.** The
+  earlier finding stands (`load-global-config!` keeps only
+  `(merge default-config persisted bridged)`, so nothing downstream can tell a
+  user-written value from a schema default — `config-source` reports `:global`
+  for all 134 static-default keys). But the conclusion drawn from it — that
+  `resolve-config` needed a new layer, and the raw persisted map had to be
+  retained — was wrong. The layer only has to exist at the point where the
+  merge is *built*: inserting the profile between `default-config` and
+  `persisted` in that one expression puts it exactly where §6.3 asks, and both
+  `get-config` and `get-config-snapshot` inherit it because both read
+  `!global-config`. `resolve-config` is untouched. Verified against real
+  config files: with `:feature-profile :minimal` and `:enable-scheduler true`
+  written in `config.edn`, the scheduler stays **on** while reactions and FSM
+  follow the profile.
+
+  `core.config/feature-profiles` holds plain config keys rather than feature
+  ids, because this namespace is the leaf of the config/feature pair and must
+  not depend on `core.feature`. The registry knowledge lives in the invariant
+  instead: `feature_test` asserts every profile key is a real gate and every
+  value matches its schema type, so a profile cannot drift into naming
+  something that is not a switch. `:standard` is empty on purpose — the
+  default profile changes nothing, so the mechanism is inert until opted into.
+  An unknown `BY_PROFILE` contributes nothing rather than throwing, but is
+  logged (`::unknown-feature-profile`) and flagged by `feature$list`, since
+  `get-config` echoes the bad name back and it would otherwise look applied.
 - **config-agent instruction + wizard Features step.**
 
 ### 10.6 P1: the graph-memory seal is blocked on a semantics decision

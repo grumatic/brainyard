@@ -104,6 +104,13 @@
                          :of (count fids)}
                   (some (comp seq :degraded) states)
                   (assoc :degraded true))))
+         :profile (let [p (config/get-config agent :feature-profile)]
+                    (cond-> {:name (str (some-> p name))
+                             :known (contains? config/feature-profiles p)}
+                      (not (contains? config/feature-profiles p))
+                      (assoc :warning
+                             (format "Unknown profile — ignored, schema defaults apply. Valid: %s"
+                                     (str/join ", " (map name (sort (keys config/feature-profiles))))))))
          :hint "feature$list :family \"memory\" expands one family; feature$explain <feature> says why a feature is on or off."}
         (if-let [view (feature/family-view agent family)]
           view
@@ -116,6 +123,7 @@
                   [:families {:optional true} [:string {:desc "Summary rows: {:family :on :of} plus :degraded when any member is degraded"}]]
                   [:family   {:optional true} [:string {:desc "Family name (when :family was given)"}]]
                   [:features {:optional true} [:string {:desc "Per-feature detail for the expanded family"}]]
+                  [:profile  {:optional true} [:string {:desc "Active :feature-profile — {:name :known} plus :warning when the name is unrecognised"}]]
                   [:hint     {:optional true} [:string {:desc "How to drill in"}]]
                   [:error    {:optional true} [:string {:desc "Unknown family"}]]])
 
