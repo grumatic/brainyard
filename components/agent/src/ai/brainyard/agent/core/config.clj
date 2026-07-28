@@ -320,11 +320,11 @@
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Recall prior episodes into the prompt (FTS, plus the graph/vector signals when :enable-graph-memory is on). Set false to keep capturing memory but stop injecting it. Env: BY_ENABLE_MEMORY_RECALL."}
-   :enable-cross-turn-compaction {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_CROSS_TURN_COMPACTION")]
+   :enable-compaction          {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_COMPACTION")]
                                            (= "true" v) ::env-unset)
                                 :default true
-                                :doc "Compact conversation history across turns when the context budget tightens, at :compaction-target-ratio. Previously rode :enable-context-budget; now separately controllable. Named cross-turn rather than the obvious :enable-compaction because that spelling was, at the time, a clj-sandbox internal local plus two dead TUI renderers — a grep hazard. Both have since been cleaned up, so the name is now historical rather than defensive. Env: BY_ENABLE_CROSS_TURN_COMPACTION."}
+                                :doc "Compact conversation history across turns when the context budget tightens, at :compaction-target-ratio. Requires :enable-context-budget, which it used to ride entirely. Applies to the automatic compactor only — an explicit /compact always runs. Env: BY_ENABLE_COMPACTION."}
    :enable-live-artifacts      {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_LIVE_ARTIFACTS")]
                                            (= "true" v) ::env-unset)

@@ -916,6 +916,14 @@ annotation point that already existed — which incidentally closed a P0 gap,
 since the TUI's `/config` query path called `search-config-keys` bare and had
 never received `:feature`/`:family` either.
 
+The gate shipped as `:enable-cross-turn-compaction` to dodge a collision with
+`:enable-compaction`, which was then a `clj-sandbox` internal local plus two
+dead TUI renderers. Both were cleaned up shortly after (§10.10 and the renderer
+removal), and since the gate had never left this branch there was no persisted
+value anywhere to orphan — so it was renamed to plain **`:enable-compaction`**
+(env `BY_ENABLE_COMPACTION`). §4.4 and §5.1 still show the longer name; they
+record the proposal, not the shipped key.
+
 Item 3 (splitting `context/compaction` out of `:enable-context-budget`) came
 free with item 1: the auto-compactor now checks `:context/compaction`, which
 `:requires :context/budget`, so budget-off still disables it and behaviour is

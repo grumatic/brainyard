@@ -114,7 +114,7 @@
    {:title     "Memory consolidation (L2→L3)"
     :family    :memory
     :gate      :enable-memory-consolidation
-:root-only true
+    :root-only true
     :keys      [:memory-consolidate-every-n-turns]
     :requires  #{:memory/capture}
     :lifecycle :live
@@ -151,7 +151,7 @@
    {:title     "Skill distillation"
     :family    :self-improve
     :gate      :enable-skill-distillation
-:root-only true
+    :root-only true
     :keys      [:skill-distill-mode :skill-distill-every-n-turns
                 :skill-distill-threshold]
     :lifecycle :live
@@ -169,7 +169,7 @@
    {:title     "Self-improvement nudges"
     :family    :self-improve
     :gate      :enable-self-improve-nudges
-:root-only true
+    :root-only true
     :keys      []
     ;; nested set = \"any of\": the nudge surfaces pending proposals, so it can
     ;; never fire unless at least one producer is on. Today that is silent.
@@ -190,7 +190,7 @@
    {:title     "Event reactions"
     :family    :automation
     :gate      :enable-reactions
-:root-only true
+    :root-only true
     :keys      [:max-reaction-fires-per-session]
     :lifecycle :session
     :doc       "trigger → action rules over the event bus."}
@@ -199,7 +199,7 @@
    {:title            "User-defined state machines"
     :family           :automation
     :gate             :enable-fsm
-:root-only        true
+    :root-only        true
     :keys             [:fsm-allow-code]
     ;; NOT a hard :requires — an FSM still works event-driven without the
     ;; ticker, it just cannot advance eventless transitions. Silence is what
@@ -238,12 +238,7 @@
    :context/compaction
    {:title     "Cross-turn auto-compaction"
     :family    :context
-    ;; named cross-turn rather than the obvious :enable-compaction: at the time
-    ;; that spelling was a clj-sandbox internal local plus two dead TUI
-    ;; renderers. Both are gone now (§10.10 and the renderer removal), so the
-    ;; name is historical rather than defensive — renaming it would orphan any
-    ;; persisted value, which is not worth the tidiness.
-    :gate      :enable-cross-turn-compaction
+    :gate      :enable-compaction
     :keys      [:compaction-target-ratio]
     :requires  #{:context/budget}
     :lifecycle :live
@@ -319,7 +314,7 @@
    {:title     "Auto task notification"
     :family    :exec
     :gate      :enable-auto-task-notify
-:root-only true
+    :root-only true
     :keys      [:auto-park-after-polls]
     :lifecycle :live
     :doc       "Wakes the agent when a background task completes."}
@@ -509,19 +504,15 @@
     :compact-agent-tools :inline-usage-guides :feature-profile})
 
 (def unclassified-keys
-  "Schema keys claimed by no feature because nothing reads them. Currently
-   empty, and the mechanism is kept deliberately.
+  "Schema keys claimed by no feature because nothing reads them. Empty, and the
+   mechanism is kept deliberately.
 
-   It held `:enable-budget-monitoring`: in the schema, settable, documented,
-   and with zero read sites anywhere in the workspace. P3 resolved it by
-   DELETING it rather than wiring it. The `:budget-opts {:enable …}` path it
-   was presumably meant for lives in `clj-sandbox`'s own `core/chat.clj`
-   completion loop, which nothing in this workspace calls — wiring a
-   user-facing config key to unreachable code would have been worse than the
-   dead key it replaced.
-
-   The next key that loses its last reader gets parked here by name, so it
-   reads as a standing to-do rather than a silent gap."
+   A key that loses its last reader gets parked here BY NAME rather than
+   quietly excluded from the partition test, so it reads as a standing to-do.
+   The resolution is then either to wire it or to delete it — and wiring only
+   counts if the code it would drive is actually reachable; pointing a settable
+   key at unreachable code is worse than the dead key, because it invites
+   belief that it does something."
   #{})
 
 ;; ============================================================================
@@ -917,15 +908,15 @@
       ;; An unmet dependency is the more specific answer and takes precedence:
       ;; reporting `enable-x=false` when the user DID set it true, and the real
       ;; cause is a missing requirement, is exactly the confusion §1.4 is about.
-      (or (when-let [u (seq unmet)]
-            (str "requires "
-                 (str/join " and "
-                           (for [r u]
-                             (if (set? r)
-                               (str/join " or " (map #(str (symbol %)) (sort r)))
-                               (str (symbol r)))))))
-          (gate-label agent fid)
-          "unavailable")))))
+        (or (when-let [u (seq unmet)]
+              (str "requires "
+                   (str/join " and "
+                             (for [r u]
+                               (if (set? r)
+                                 (str/join " or " (map #(str (symbol %)) (sort r)))
+                                 (str (symbol r)))))))
+            (gate-label agent fid)
+            "unavailable")))))
 
 ;; ============================================================================
 ;; Query helpers

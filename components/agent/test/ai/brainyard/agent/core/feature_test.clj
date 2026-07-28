@@ -56,7 +56,7 @@
       (is (= 16 pres))
       (is (= 11 (count feat/ambient-keys)))
       (is (= 0 (count feat/unclassified-keys))
-          ":enable-budget-monitoring was deleted, not wired — nothing read it")
+          "no schema key is currently unreadable")
       (is (= 148 (count cfg/config-keys))))))
 
 ;; ============================================================================
@@ -92,7 +92,7 @@
   (testing "P3 created all six planned gates; :proposed is now unused"
     (is (empty? (filter :proposed feat/all-features))
         "a :proposed feature means a gate that is not yet a schema key")
-    (doseq [k [:enable-memory-recall :enable-cross-turn-compaction
+    (doseq [k [:enable-memory-recall :enable-compaction
                :enable-live-artifacts :enable-artifact-gc :enable-acp
                :enable-gateway]]
       (is (contains? cfg/config-keys k) (str k " should now be a schema key"))
