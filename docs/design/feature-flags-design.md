@@ -8,7 +8,8 @@
 > read (20 sites, then the 21 the design's table had missed), and closed the
 > §1.5 graph-memory split by routing the memory hooks on the manager's stamped
 > `:graph-enabled?` rather than on config (§10.6). P2 shipped the surfaces —
-> `feature$*` and `/feature`; its config-layer items are outstanding (§10.7).
+> `feature$*`, `/feature`, family master switches, `BY_FEATURES`, profiles,
+> and the config-agent + wizard surfaces (§10.7). P3 is outstanding.
 > `bb test` (456 namespaces) and `bb poly check` green. Amendments the
 > implementation forced are in §10; §9 Q1/Q3 are resolved there.
 >
@@ -855,7 +856,29 @@ touch config storage or precedence, unlike the purely additive surfaces above:
   An unknown `BY_PROFILE` contributes nothing rather than throwing, but is
   logged (`::unknown-feature-profile`) and flagged by `feature$list`, since
   `get-config` echoes the bad name back and it would otherwise look applied.
-- **config-agent instruction + wizard Features step.**
+- ~~config-agent instruction + wizard Features step~~ **— done.** The
+  instruction gains a `(4b) CAPABILITIES ARE A VIEW OVER THOSE KEYS` section:
+  the family map, when to reach for `feature$*` versus `agent-runtime$config`
+  (capability vs knob — `:max-refinements` and `:tool-cache-ttl` gate at 0 but
+  carry a *value*, so those stay `agent-runtime$config`), and the three things
+  that make the feature surface more than a nicety — declared dependencies
+  mean a gate set true can still resolve off, family switches are
+  non-destructive, and "make it cheaper" is usually `:feature-profile :minimal`
+  rather than a dozen writes. `feature-commands` had to be added to
+  config-agent's **curated** roster at the same time; without it the
+  instruction named tools the agent could not call.
+
+  The wizard step went somewhere other than §6.4 assumed. That section says the
+  wizard "today exposes ~5 of 137 settings" and should gain a Features step
+  beside them — but those `step-*` fns are **dead code**, preserved from a
+  prior wizard and called by nothing; `run!` goes detect → bootstrap ladder →
+  `fill-non-llm-defaults` → write → handoff. The new step is wired into that
+  live path instead, between the ladder and the summary, writing
+  `[:agent :config :feature-profile]`. It asks for the profile only: nine
+  family prompts in a bootstrap screen would be worse than one question plus a
+  pointer to `/feature`, which is what the step's own text gives.
+
+**P2 is complete.**
 
 ### 10.6 P1: the graph-memory seal is blocked on a semantics decision
 

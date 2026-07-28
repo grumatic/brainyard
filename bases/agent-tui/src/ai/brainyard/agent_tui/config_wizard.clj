@@ -179,6 +179,33 @@
     {:default-agent  selected-agent
      :max-iterations max-iter}))
 
+(defn- step-feature-profile
+  "Choose the feature baseline (`:feature-profile`).
+
+   Unlike the `step-*` fns above this one IS reachable — it is called from
+   `run!`. A bootstrap screen is a better place to ask \"how much should this
+   thing do?\" than to ask for an iteration cap, and one question covers what
+   would otherwise be nine family prompts. Finer control is `/feature` and
+   `feature$set`, which the footer points at rather than re-asking here.
+
+   Honours `--auto` through `prompt-select`, which returns the default without
+   reading stdin."
+  [existing-config opts]
+  (section-header "Features")
+  (println (ansi/muted "  How much should Brainyard do on its own? Change later with /feature."))
+  (let [current (or (get-in existing-config [:agent :config :feature-profile]) :standard)
+        options [{:label "standard" :value :standard
+                  :description "the shipped defaults"}
+                 {:label "minimal" :value :minimal
+                  :description "fastest and cheapest — no background LLM work, no schedulers or reactions (memory capture and recall stay on)"}
+                 {:label "full" :value :full
+                  :description "best answers — graph memory, self-improvement and mid-turn recall on; slower and more tokens"}]
+        idx     (or (some (fn [[i opt]] (when (= (:value opt) current) (inc i)))
+                          (map-indexed vector options))
+                    1)]
+    (:value (prompt-select "Feature profile:" options
+                           :default idx :auto? (:auto opts)))))
+
 (defn- step-mcp-servers [existing-config opts]
   (section-header "MCP Servers")
   (let [current-servers (get-in existing-config [:mcp :servers] {})]
@@ -905,7 +932,13 @@
                                   "; trying next rung")))
                    (recur (conj excluded failed-rung) (inc attempts))))))
 
-         filled (fill-non-llm-defaults delta-config dirs)]
+         filled (fill-non-llm-defaults delta-config dirs)
+         ;; Asked before the summary so the choice shows up in it, and written
+         ;; to [:agent :config] — the subtree load-global-config! reads. Not
+         ;; folded into fill-non-llm-defaults because that is deterministic;
+         ;; this one asks.
+         filled (assoc-in filled [:agent :config :feature-profile]
+                          (step-feature-profile existing opts))]
 
      (print-summary filled dirs)
      (write-bootstrap-log!

@@ -26,6 +26,7 @@
   (:require [ai.brainyard.agent.common.coact-agent :as coact]
             [ai.brainyard.agent.common.commands :as common-cmds]
             [ai.brainyard.agent.common.config :as config-helpers]
+            [ai.brainyard.agent.common.feature-commands :as feature-cmds]
             [ai.brainyard.agent.common.tools :as common-tools]
             [ai.brainyard.agent.core.tool :refer [defagent]]
             [ai.brainyard.agent.mcp.commands :as mcp-cmds]
@@ -163,6 +164,53 @@ FIVE GUIDANCES (apply in order, every turn)
          or other sections of `config.edn`.
     There is no separate \"session-only vs persisted\" distinction — every
     write goes through both paths automatically.
+
+(4b) CAPABILITIES ARE A VIEW OVER THOSE KEYS — USE IT.
+    The ~147 keys group into 10 families / 42 features. Reach for feature$*
+    when the user talks about CAPABILITIES (\"turn off X\", \"why isn't X
+    working?\", \"make it cheaper\") and agent-runtime$config when they name
+    a KNOB or want a numeric value.
+
+      feature$list                     families + how many features are on
+      feature$list :family \"memory\"    one family, its gates and knobs
+      feature$explain <f>              WHY on/off: the gate, which config
+                                       layer won, what implied it, what
+                                       requirement is unmet, restart owed
+      feature$set <f> on|off           writes the gate (same persistence path)
+
+    The families:
+      memory        capture, recall, mid-turn-recall, consolidation, graph,
+                    project
+      self-improve  distillation, refinement, nudges
+      automation    scheduler, reactions, fsm, hooks, gateway
+      context       budget, compaction, live-artifacts, console-activity,
+                    conversation
+      exec          code-channel, sandbox-persistence, nrepl, tasks,
+                    task-notify, iteration-hold, gc
+      agents        subagents, acp, explore, workflow
+      reasoning     loop, refinement, sub-llm, recovery
+      tools         cache, mcp, ask-channel, oauth
+      analytics     trajectory, scoring
+      ui            display, blocks   (presentation only — never a gate)
+
+    Three things that make feature$* the right tool rather than a nicety:
+      - Features DECLARE dependencies. memory/graph implies consolidation and
+        requires capture; self-improve/nudges requires distillation OR
+        refinement. Setting a gate true can still resolve OFF — feature$set
+        reports :on? separately from :set, and says why.
+      - `feature$set <family> on|off` flips a whole family via its master
+        switch, non-destructively: member gates are untouched, so turning it
+        back on restores what each was set to.
+      - `:feature-profile` (minimal | standard | full) is the baseline. It
+        applies BELOW config.edn, so it never overrides anything explicitly
+        set. \"Make it cheaper / stop background LLM work\" is usually
+        `:feature-profile :minimal`, not a dozen individual writes.
+
+    Do NOT reach for feature$set to change a NUMBER. :max-refinements and
+    :tool-cache-ttl gate their features at 0 but carry a value; set those with
+    agent-runtime$config. Same for every knob (:recall-limit,
+    :graph-max-nodes, …) — feature$explain lists a feature's knobs with their
+    current values and which layer supplied each.
 
 (5) HAND OFF TO SIBLINGS.
     Don't reimplement other specialists' work:
@@ -390,6 +438,10 @@ For a new server: call mcp-agent first; take its resulting entry; wrap in
                           ;; MCP lifecycle (existing commands; mcp-agent owns the per-server shape)
                           mcp-cmds/all-mcp-commands
                           ;; The new config$* surface + env-detect$rescan + bootstrap$re-run-rung
-                          config-helpers/config-helpers)))}
+                          config-helpers/config-helpers
+                          ;; The capability view over those same keys — see (4b).
+                          ;; Curated roster, so the instruction would otherwise
+                          ;; name tools this agent cannot call.
+                          feature-cmds/feature-commands)))}
   :instruction instruction
   :tool-context tool-context)
