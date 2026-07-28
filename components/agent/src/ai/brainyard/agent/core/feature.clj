@@ -620,7 +620,7 @@
    :agents       :enable-agents
    :reasoning    :enable-reasoning
    :tools        :enable-tools
-   :analytics    :enable-analytics-family})
+   :analytics    :enable-analytics})
 
 (def family-gate-keys
   "The master-switch keys. Classified separately from feature keys — a family

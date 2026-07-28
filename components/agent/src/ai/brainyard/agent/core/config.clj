@@ -302,11 +302,11 @@
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Master switch for the tools family's gated features (tool result cache, ask channel). MCP and OAuth are ungated groupings and are unaffected. Env: BY_ENABLE_TOOLS."}
-   :enable-analytics-family    {:type "boolean"
-                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_ANALYTICS_FAMILY")]
+   :enable-analytics           {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_ANALYTICS")]
                                            (= "true" v) ::env-unset)
                                 :default true
-                                :doc "Master switch for the analytics family (trajectory recording; scoring follows it). Named -family because a bare :enable-analytics was a real key until the async analytics path was retired, and reviving the name would silently resurrect dead config. Env: BY_ENABLE_ANALYTICS_FAMILY."}
+                                :doc "Master switch for the analytics family (trajectory recording; scoring follows it via :requires). NOTE: this name was a live key once before, retired with the async analytics path — a config.edn still carrying `:enable-analytics false` from that era will now disable the analytics family. The intent maps closely (both mean less analytics), but it is a resurrection, not a fresh key. Env: BY_ENABLE_ANALYTICS."}
 
    ;; --- Gates promoted from :proposed (feature-flags design P3) ---
    ;; Every one defaults TRUE. Each names a capability that runs unconditionally

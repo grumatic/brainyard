@@ -812,10 +812,14 @@ touch config storage or precedence, unlike the purely additive surfaces above:
   still go off transitively via `:requires`, as `analytics/scoring` does); and
   only an explicit **`false`** disables, so a partial config view cannot
   silently switch a family off with a key it never heard of. The analytics key
-  is `:enable-analytics-family`, not `:enable-analytics` — the latter was a
-  real key until the async analytics path was retired and is still sitting
-  inert in this repo's `config.edn`, so reviving the name would resurrect dead
-  config.
+  shipped as `:enable-analytics-family` to avoid reviving a retired name, then
+  was renamed to plain **`:enable-analytics`** (2026-07-28) for consistency
+  with the other eight. That does resurrect the old name: a `config.edn` still
+  carrying `:enable-analytics false` from the async-analytics era will now
+  disable the analytics family. Accepted because the intent maps closely —
+  both spellings mean "less analytics" — but it is a resurrection, and the
+  schema `:doc` says so. It also means the key stops being reported by
+  `::unknown-config-keys`, which had been flagging it as inert.
 - ~~Env vars~~ **— done, but only `BY_FEATURES`.** The per-feature generated
   names (`BY_FEATURE_MEMORY_GRAPH`) were dropped: §6.3 wanted 33 new variable
   names *plus* an alias-precedence rule against the existing `BY_ENABLE_*`

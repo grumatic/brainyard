@@ -466,7 +466,7 @@
     (is (feat/on?* (snap :enable-exec false) :exec/tasks))
     (is (feat/on?* (snap :enable-tools false) :tools/mcp)))
   (testing "an ungated member CAN still go off transitively, via :requires"
-    (let [s (snap :enable-analytics-family false)]
+    (let [s (snap :enable-analytics false)]
       (is (not (feat/on?* s :analytics/trajectory)) "gated — the switch reaches it")
       (is (not (feat/on?* s :analytics/scoring))
           "ungated, so the switch does not reach it directly — but it requires
@@ -477,7 +477,7 @@
     (is (not (feat/on?* (snap :enable-reasoning false :max-refinements 3) :reasoning/refinement)))
     (is (not (feat/on?* (snap :enable-exec false) :exec/code-channel)))
     (is (not (feat/on?* (snap :enable-tools false :tool-cache-ttl 60) :tools/cache)))
-    (is (not (feat/on?* (snap :enable-analytics-family false) :analytics/trajectory)))))
+    (is (not (feat/on?* (snap :enable-analytics false) :analytics/trajectory)))))
 
 (deftest family-on-defers-to-each-feature-gate
   (testing "true is not an override — it does not force a member on"
