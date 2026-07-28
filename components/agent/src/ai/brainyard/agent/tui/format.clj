@@ -1801,18 +1801,6 @@
                         (when-let [it (:input-tokens event)] (str " in=" it))
                         (when-let [ot (:output-tokens event)] (str " out=" ot)))
 
-                   ;; RLM context management events
-                   "rlm-turn-start"
-                   (str "rlm-start turns=" (:conversation-turns event)
-                        " prev-turns=" (:previous-turns-count event)
-                        " compaction=" (:enable-compaction event)
-                        " budget=" (:enable-budget event))
-
-                   "rlm-turn-complete"
-                   (str "rlm-done terminated=" (:terminated-by event)
-                        " iters=" (:total-iterations event)
-                        " compactions=" (:compaction-count event))
-
                    ;; Agent trace/conversation (already displayed via watch, skip)
                    ("agent-trace" "agent-conversation") nil
 
@@ -1903,26 +1891,6 @@
                                 :url (:url event)}
                          (:stream event) (assoc :stream true))
                :request-body (:request-body event)}
-
-              "rlm-turn-start"
-              {:category "rlm"
-               :summary (str "rlm-start turns=" (:conversation-turns event)
-                             " prev-turns=" (:previous-turns-count event)
-                             " compaction=" (:enable-compaction event)
-                             " budget=" (:enable-budget event))
-               :detail {:turns (:conversation-turns event)
-                        :prev-turns (:previous-turns-count event)
-                        :compaction (:enable-compaction event)
-                        :budget (:enable-budget event)}}
-
-              "rlm-turn-complete"
-              {:category "rlm"
-               :summary (str "rlm-done terminated=" (:terminated-by event)
-                             " iters=" (:total-iterations event)
-                             " compactions=" (:compaction-count event))
-               :detail {:terminated-by (:terminated-by event)
-                        :iterations (:total-iterations event)
-                        :compactions (:compaction-count event)}}
 
               ("agent-trace" "agent-conversation") nil
 

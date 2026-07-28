@@ -324,7 +324,7 @@
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_CROSS_TURN_COMPACTION")]
                                            (= "true" v) ::env-unset)
                                 :default true
-                                :doc "Compact conversation history across turns when the context budget tightens, at :compaction-target-ratio. Previously rode :enable-context-budget; now separately controllable. Deliberately NOT named :enable-compaction — that keyword is a clj-sandbox internal local and reusing it would be a grep hazard. Env: BY_ENABLE_CROSS_TURN_COMPACTION."}
+                                :doc "Compact conversation history across turns when the context budget tightens, at :compaction-target-ratio. Previously rode :enable-context-budget; now separately controllable. Named cross-turn rather than the obvious :enable-compaction because that spelling was, at the time, a clj-sandbox internal local plus two dead TUI renderers — a grep hazard. Both have since been cleaned up, so the name is now historical rather than defensive. Env: BY_ENABLE_CROSS_TURN_COMPACTION."}
    :enable-live-artifacts      {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_LIVE_ARTIFACTS")]
                                            (= "true" v) ::env-unset)

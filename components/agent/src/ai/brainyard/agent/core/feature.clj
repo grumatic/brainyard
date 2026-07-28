@@ -238,9 +238,11 @@
    :context/compaction
    {:title     "Cross-turn auto-compaction"
     :family    :context
-    ;; deliberately NOT :enable-compaction — that keyword already exists as a
-    ;; clj-sandbox internal local that leaks into TUI event rendering, and
-    ;; reusing it would turn a grep hazard into a real ambiguity.
+    ;; named cross-turn rather than the obvious :enable-compaction: at the time
+    ;; that spelling was a clj-sandbox internal local plus two dead TUI
+    ;; renderers. Both are gone now (§10.10 and the renderer removal), so the
+    ;; name is historical rather than defensive — renaming it would orphan any
+    ;; persisted value, which is not worth the tidiness.
     :gate      :enable-cross-turn-compaction
     :keys      [:compaction-target-ratio]
     :requires  #{:context/budget}
