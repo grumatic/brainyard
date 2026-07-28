@@ -95,7 +95,6 @@
    {:title     "Memory recall"
     :family    :memory
     :gate      :enable-memory-recall
-    :proposed  true
     :keys      [:recall-limit :memory-recall-snippet-chars]
     :requires  #{:memory/capture}
     :lifecycle :live
@@ -217,7 +216,6 @@
    {:title     "Pairing gateway"
     :family    :automation
     :gate      :enable-gateway
-    :proposed  true
     :keys      [:gateway-pair-code-ttl-ms]
     :lifecycle :session
     :doc       "Device-pairing gateway."}
@@ -239,7 +237,6 @@
     ;; clj-sandbox internal local that leaks into TUI event rendering, and
     ;; reusing it would turn a grep hazard into a real ambiguity.
     :gate      :enable-cross-turn-compaction
-    :proposed  true
     :keys      [:compaction-target-ratio]
     :requires  #{:context/budget}
     :lifecycle :live
@@ -249,7 +246,6 @@
    {:title     "Live artifacts"
     :family    :context
     :gate      :enable-live-artifacts
-    :proposed  true
     :keys      [:reference-artifact-paths :live-artifact-max-chars]
     :lifecycle :live
     :doc       "Reference files + dynamic artifacts injected into the prompt."}
@@ -332,7 +328,6 @@
    {:title     "Artifact GC"
     :family    :exec
     :gate      :enable-artifact-gc
-    :proposed  true
     :keys      [:task-retention-count :task-retention-days
                 :coact-scratch-max-age-hours :sandbox-cache-max-files
                 :sandbox-cache-max-bytes :sandbox-cache-max-age-days]
@@ -352,7 +347,6 @@
    {:title     "ACP backends"
     :family    :agents
     :gate      :enable-acp
-    :proposed  true
     :keys      [:acp-backend :acp-backend-opts :acp-client-fs :acp-timeout-ms
                 :acp-permission-timeout-ms :max-acp-agents-per-session]
     :requires  #{:agents/subagents}

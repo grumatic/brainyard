@@ -373,7 +373,13 @@
    this fn just decides whether to trigger."
   [ag]
   (try
-    (when (agent/feature-on? ag :context/budget)
+    ;; Split out of :enable-context-budget (design §4.4): that key was a master
+    ;; switch over three separate mechanisms — turn-init budget, per-iteration
+    ;; rebudget, and this cross-turn compactor. :context/compaction REQUIRES
+    ;; :context/budget, so budget-off still disables it and today's behaviour is
+    ;; unchanged; it is now separately controllable. Manual /compact stays
+    ;; ungated — a user asking for it explicitly should always get it.
+    (when (agent/feature-on? ag :context/compaction)
       (let [max-tokens (agent/get-config ag :max-context-tokens)
             estimated  (agent/estimate-context-tokens ag)]
         (when (> estimated max-tokens)

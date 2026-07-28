@@ -44,20 +44,20 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "24 feature gates + 9 family gates + 86 knobs + 16 presentation + 11 ambient = 146"
+  (testing "30 feature gates + 9 family gates + 86 knobs + 16 presentation + 11 ambient = 152"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
                      count)
           pres  (->> feat/all-features (filter :presentation) (mapcat :keys) count)]
-      (is (= 24 (count feat/gate-keys)))
+      (is (= 30 (count feat/gate-keys)) "24 shipping + the 6 promoted in P3")
       (is (= 9 (count feat/family-gate-keys)) "one per capability family; :ui has none")
       (is (= 86 knobs))
       (is (= 16 pres))
       (is (= 11 (count feat/ambient-keys)))
       (is (= 0 (count feat/unclassified-keys))
           ":enable-budget-monitoring was deleted, not wired — nothing read it")
-      (is (= 146 (count cfg/config-keys))))))
+      (is (= 152 (count cfg/config-keys))))))
 
 ;; ============================================================================
 ;; Family master switches
@@ -88,25 +88,18 @@
       (is (contains? cfg/config-keys (:gate f))
           (str fid " gate " (:gate f) " is not a config-schema key")))))
 
-(deftest proposed-gates-are-not-schema-keys-yet
-  (testing ":proposed marks a gate that does NOT exist yet — if it does, drop the marker (P3)"
-    (doseq [[fid f] feat/feature-registry
-            :when   (:proposed f)]
-      (is (not (contains? cfg/config-keys (:gate f)))
-          (str fid " is marked :proposed but " (:gate f)
-               " now exists in config-schema — remove :proposed")))
-    (is (= 6 (count (filter :proposed feat/all-features)))
-        "six gates are planned for P3")))
-
-(deftest proposed-features-still-claim-their-knobs
-  (testing ":proposed excludes only the gate, never the feature's real knobs"
-    (doseq [[fid f] feat/feature-registry
-            :when   (:proposed f)
-            k       (:keys f)]
-      (is (contains? cfg/config-keys k)
-          (str fid " knob " k " should be a real schema key"))
-      (is (contains? feat/claimed-keys k)
-          (str fid " knob " k " must still be claimed despite :proposed gate")))))
+(deftest no-proposed-features-remain
+  (testing "P3 created all six planned gates; :proposed is now unused"
+    (is (empty? (filter :proposed feat/all-features))
+        "a :proposed feature means a gate that is not yet a schema key")
+    (doseq [k [:enable-memory-recall :enable-cross-turn-compaction
+               :enable-live-artifacts :enable-artifact-gc :enable-acp
+               :enable-gateway]]
+      (is (contains? cfg/config-keys k) (str k " should now be a schema key"))
+      (is (contains? feat/gate-keys k) (str k " should now be a live gate"))
+      (is (true? (get-in cfg/config-schema [k :default]))
+          (str k " must default true — it gates behaviour that runs today, so
+               a false default would silently disable it on upgrade")))))
 
 (deftest gates-are-boolean-or-have-a-pred
   (testing "a non-boolean gate must declare :gate-pred"
@@ -255,7 +248,7 @@
       (is (= 9 (count (disj (set feat/families) :ui))))
       (is (= 40 (count capability)))
       (is (= 30 (count (filter :gate capability)))
-          "24 gates shipping today + 6 :proposed for P3")
+          "every gated feature now has a real schema key")
       (is (= 10 (count (remove :gate capability)))
           "an ungated grouping exists so its knobs have a discoverable home")))
   (testing "ui is modelled as sub-features, not one flat 16-key bucket"
@@ -273,8 +266,7 @@
 (deftest annotate-hits-maps-over-results
   (let [hits (feat/annotate-hits [{:key "recall-limit"} {:key "lm-config"}])]
     (is (= 2 (count hits)))
-    (is (= "memory/recall" (:feature (first hits)))
-        "a :proposed feature still annotates its real knobs")
+    (is (= "memory/recall" (:feature (first hits))))
     (is (nil? (:feature (second hits))))))
 
 (deftest family-view-resolves-names-and-lists-members
@@ -292,11 +284,12 @@
     (is (= 10 (count (:keys graph))))
     (is (every? #(contains? % :default) (:keys graph)))))
 
-(deftest family-view-marks-proposed-and-partial
+(deftest family-view-marks-gate-and-partial
   (let [recall (->> (feat/family-view nil :memory) :features
                     (filter #(= "memory/recall" (:feature %))) first)]
-    (is (true? (:proposed recall)))
-    (is (nil? (:gate-value recall)) "a gate that does not exist yet has no value"))
+    (is (nil? (:proposed recall)) "promoted in P3 — no longer proposed")
+    (is (= "enable-memory-recall" (:gate recall)))
+    (is (some? (:gate-value recall)) "a real schema key resolves to a value"))
   (let [fsm (->> (feat/family-view nil :automation) :features
                  (filter #(= "automation/fsm" (:feature %))) first)]
     (is (= {"automation/scheduler"

@@ -23,6 +23,7 @@
   (:require [ai.brainyard.behavior-tree.interface :as bt]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.feature :as feature]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.memory :as agent-mem]
@@ -312,7 +313,11 @@
         turn-id     (:turn-id @st-memory)
         total-turns (:total-turns @st-memory)
         limit       (config/get-config agent :recall-limit)
-        hits        (when (and mm (string? question) (not (str/blank? question)))
+        ;; :memory/recall gates injection, not capture — off means keep
+        ;; recording episodes but stop putting them in the prompt. It requires
+        ;; :memory/capture, so recall also goes quiet when capture is off.
+        recall?     (feature/on? agent :memory/recall)
+        hits        (when (and recall? mm (string? question) (not (str/blank? question)))
                       (try
                         (agent-mem/recall mm
                                           :query question

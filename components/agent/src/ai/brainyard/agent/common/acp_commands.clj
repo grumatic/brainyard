@@ -180,13 +180,17 @@
           model   (:model args)
           purpose (:purpose args)
           extra   (:backend-opts args)
-          subagents-off (when caller (feature/off-reason caller :agents/subagents))]
+          subagents-off (when caller (feature/off-reason caller :agents/subagents))
+          acp-off       (when caller (feature/off-reason caller :agents/acp))]
       (cond
         (nil? caller)
         {:error "acp$create needs an active session (no caller agent is bound)."}
 
         subagents-off
         {:error (str "ACP management is disabled (" subagents-off ").")}
+
+        acp-off
+        {:error (str "ACP is disabled (" acp-off ").")}
 
         (nil? backend)
         {:error ":backend is required (e.g. :claude-code, :gemini, :codex, :stub)."}

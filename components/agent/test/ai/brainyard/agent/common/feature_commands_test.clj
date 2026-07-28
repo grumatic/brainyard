@@ -117,7 +117,7 @@
                 "timed/eventless (:always/:after) transitions never advance"}
                (:degraded r)))))))
 
-(deftest explain-handles-gateless-and-proposed
+(deftest explain-handles-gateless-and-promoted
   (with-gates {}
     (fn []
       (testing "ungated grouping — must not try to name a gate that does not exist"
@@ -125,11 +125,11 @@
           (is (true? (:on? r)))
           (is (nil? (:gate r)))
           (is (re-find #"ungated grouping" (:why r)))))
-      (testing "proposed gate"
+      (testing "promoted gate — memory/recall was :proposed until P3"
         (let [r (fc/feature$explain :feature "memory/recall")]
-          (is (true? (:proposed r)))
-          (is (nil? (:gate-source r)) "a gate that is not a schema key has no layer")
-          (is (re-find #"[Nn]ot gateable yet" (:why r)))))
+          (is (nil? (:proposed r)))
+          (is (= "enable-memory-recall" (:gate r)))
+          (is (some? (:gate-source r)) "a real schema key resolves through a layer")))
       (testing "presentation"
         (is (true? (:presentation (fc/feature$explain :feature "ui/display"))))))))
 
@@ -171,7 +171,6 @@
 
 (deftest set-refuses-non-gates-without-writing
   (doseq [[f pat] [["context/conversation" #"ungated"]
-                   ["memory/recall"        #"not gateable yet"]
                    ["tools/cache"          #"numeric key"]
                    ["bogus/thing"          #"Unknown feature"]]]
     (let [[r writes] (capture-set {} #(fc/feature$set :feature f :state "on"))]

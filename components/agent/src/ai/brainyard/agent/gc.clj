@@ -22,6 +22,7 @@
    the live skip. Sandbox-cache entries are file-only (no liveness signal)
    so they sort purely by mtime."
   (:require [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.task.persist :as task-persist]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.edn]
@@ -237,14 +238,22 @@
   "Run every sweep. Returns a vector of per-class result maps. Each sweep is
    independent — one failure doesn't skip the others. `:dry-run?` propagates."
   [dirs & {:keys [dry-run?]}]
-  (let [run (fn [sweep-fn class]
+  ;; One gate at the single entry rather than three inside the sweeps: the
+  ;; individual sweep-* fns stay callable for a deliberate one-off (and for
+  ;; tests), while :exec/gc governs the automatic reclamation as a whole.
+  ;; A dry run is a read, so it is never gated.
+  (if-not (or dry-run? (feature/on? nil :exec/gc))
+    [(assoc (empty-result :tasks dry-run?)         :skipped :disabled)
+     (assoc (empty-result :coact-scratch dry-run?) :skipped :disabled)
+     (assoc (empty-result :sandbox-cache dry-run?) :skipped :disabled)]
+    (let [run (fn [sweep-fn class]
               (try (sweep-fn dirs :dry-run? dry-run?)
                    (catch Exception e
                      (mulog/warn ::sweep-failed :class class :exception e)
                      (assoc (empty-result class dry-run?) :error (.getMessage e)))))]
-    [(run sweep-tasks!         :tasks)
-     (run sweep-coact-scratch! :coact-scratch)
-     (run sweep-sandbox-cache! :sandbox-cache)]))
+      [(run sweep-tasks!         :tasks)
+       (run sweep-coact-scratch! :coact-scratch)
+       (run sweep-sandbox-cache! :sandbox-cache)])))
 
 ;; ============================================================================
 ;; Session-edge hook

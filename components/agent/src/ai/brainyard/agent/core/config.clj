@@ -308,6 +308,44 @@
                                 :default true
                                 :doc "Master switch for the analytics family (trajectory recording; scoring follows it). Named -family because a bare :enable-analytics was a real key until the async analytics path was retired, and reviving the name would silently resurrect dead config. Env: BY_ENABLE_ANALYTICS_FAMILY."}
 
+   ;; --- Gates promoted from :proposed (feature-flags design P3) ---
+   ;; Every one defaults TRUE. Each names a capability that runs unconditionally
+   ;; today, so the gate is a kill-switch, not a new opt-in — a default of false
+   ;; would silently disable working behaviour on upgrade. (The design sketched
+   ;; :enable-gateway as off; but `gateway/start-gateway!` is already an
+   ;; explicit call, so gating it off by default would refuse someone who starts
+   ;; it today. It is a kill-switch like the rest.)
+   :enable-memory-recall       {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_MEMORY_RECALL")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Recall prior episodes into the prompt (FTS, plus the graph/vector signals when :enable-graph-memory is on). Set false to keep capturing memory but stop injecting it. Env: BY_ENABLE_MEMORY_RECALL."}
+   :enable-cross-turn-compaction {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_CROSS_TURN_COMPACTION")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Compact conversation history across turns when the context budget tightens, at :compaction-target-ratio. Previously rode :enable-context-budget; now separately controllable. Deliberately NOT named :enable-compaction — that keyword is a clj-sandbox internal local and reusing it would be a grep hazard. Env: BY_ENABLE_CROSS_TURN_COMPACTION."}
+   :enable-live-artifacts      {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_LIVE_ARTIFACTS")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Inject the `## Live Artifacts` prompt section: reference files from :reference-artifact-paths plus the dynamic artifact$* registry. Set false to drop the section entirely. Env: BY_ENABLE_LIVE_ARTIFACTS."}
+   :enable-artifact-gc         {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_ARTIFACT_GC")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Allow the retention sweeps over task output, coact scratch and the sandbox cache (task$sweep and friends). Set false to keep every artifact on disk. Env: BY_ENABLE_ARTIFACT_GC."}
+   :enable-acp                 {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_ACP")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Allow external agents driven over the Agent Client Protocol (acp$* commands, acp-agent). Requires :enable-subagent-calls. Env: BY_ENABLE_ACP."}
+   :enable-gateway             {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_GATEWAY")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Allow the messaging gateway (gateway$* commands and start-gateway!) to serve inbound platform messages. Starting it is still an explicit action; this is the kill-switch. Env: BY_ENABLE_GATEWAY."}
+
    :enable-scheduler           {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_SCHEDULER")]
                                            (= "true" v) ::env-unset)

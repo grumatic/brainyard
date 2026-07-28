@@ -1710,8 +1710,12 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; and drops missing files; the result is written back to the
         ;; per-turn st-memory so the :drop-live-artifacts budget strategy can
         ;; re-render from it.
-        dynamic-artifacts (or (:live-artifacts st) [])
-        system-artifacts  (if agent-dirs
+        ;; :context/live-artifacts gates the whole `## Live Artifacts` section —
+        ;; both halves, the system-seeded reference files and the dynamic
+        ;; artifact$* registry. Off means the section is not rendered at all.
+        live-artifacts?   (feature/on?* cfg-snap :context/live-artifacts)
+        dynamic-artifacts (if live-artifacts? (or (:live-artifacts st) []) [])
+        system-artifacts  (if (and live-artifacts? agent-dirs)
                             (try (config/reference-artifact-descriptors
                                   agent-dirs
                                   (or (get cfg-snap :reference-artifact-paths)

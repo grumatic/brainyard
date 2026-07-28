@@ -1,6 +1,6 @@
 # Feature-Based Configuration — Design Proposal
 
-> Status: **P0 implemented** (2026-07-28), P1–P3 proposed. P0 shipped
+> Status: **P0–P3 implemented** (2026-07-28). P0 shipped
 > `components/agent/src/ai/brainyard/agent/core/feature.clj` +
 > `components/agent/test/ai/brainyard/agent/core/feature_test.clj` (27 tests,
 > 403 assertions) and the `:feature` surface on `agent-runtime$config`.
@@ -9,7 +9,7 @@
 > §1.5 graph-memory split by routing the memory hooks on the manager's stamped
 > `:graph-enabled?` rather than on config (§10.6). P2 shipped the surfaces —
 > `feature$*`, `/feature`, family master switches, `BY_FEATURES`, profiles,
-> and the config-agent + wizard surfaces (§10.7). P3 is outstanding.
+> and the config-agent + wizard surfaces (§10.7). P3 is complete (§10.8).
 > `bb test` (456 namespaces) and `bb poly check` green. Amendments the
 > implementation forced are in §10; §9 Q1/Q3 are resolved there.
 >
@@ -879,6 +879,47 @@ touch config storage or precedence, unlike the purely additive surfaces above:
   pointer to `/feature`, which is what the step's own text gives.
 
 **P2 is complete.**
+
+### 10.8 P3 complete — with three departures from the plan
+
+All six items done. Three are worth recording because the plan said otherwise.
+
+**`:enable-budget-monitoring` was deleted, not wired.** §7 offered either. The
+`:budget-opts {:enable …}` path it was presumably meant for turned out to be
+unreachable from this workspace: nothing anywhere passes `:budget-opts`, and
+the budget locals live in `clj-sandbox/core/chat.clj`, whose only public entries
+(`completion`, `create-rlm-query-fn`) are called from neither the agent brick,
+the `agent-tui` base, nor the projects. Wiring would have connected a settable,
+user-facing key to code that never runs — worse than the dead key, because a
+key that *looks* wired invites belief that it does something.
+`unclassified-keys` stays as an empty set: it is the parking spot for the next
+key that loses its last reader.
+
+**The six promoted gates all default `true`, including `:enable-gateway`.** §4.3
+proposed gateway as `[off]`. But `gateway/start-gateway!` is already an explicit
+call, so a gate defaulting off would refuse someone who starts it today. Every
+one of the six names behaviour that currently runs unconditionally, so each is a
+**kill-switch**, not a new opt-in — a `false` default would silently disable
+working features on upgrade. A test enforces the `true` default with that
+reasoning attached.
+
+**Restart-ness moved layer, not just source.** §7 says "derive
+`restart-required-keys` from `:lifecycle` and drop the per-key flag". Doing so
+also required moving the `:requires-restart` annotation off search hits:
+`search-config-keys` lives in `config.clj`, which cannot ask the registry
+without closing a cycle. It now happens in `feature/annotate-hit`, the
+annotation point that already existed — which incidentally closed a P0 gap,
+since the TUI's `/config` query path called `search-config-keys` bare and had
+never received `:feature`/`:family` either.
+
+Item 3 (splitting `context/compaction` out of `:enable-context-budget`) came
+free with item 1: the auto-compactor now checks `:context/compaction`, which
+`:requires :context/budget`, so budget-off still disables it and behaviour is
+unchanged while the two become separately controllable. Manual `/compact` stays
+ungated — a user asking for it explicitly should always get it.
+
+Final shape: **152 keys** = 30 feature gates + 9 family gates + 86 knobs + 16
+presentation + 11 ambient. No `:proposed` features, no quarantined keys.
 
 ### 10.6 P1: the graph-memory seal is blocked on a semantics decision
 

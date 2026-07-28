@@ -23,6 +23,8 @@
    `invoke-tool` with a per-user session for continuity), mirroring the
    scheduler's executor — so routing is fully testable without an LLM."
   (:require [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
+            [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.edn :as edn]
@@ -246,15 +248,18 @@
 (defcommand gateway$pair-code
   "Mint a one-time pairing code a remote user sends to the gateway bot to connect."
   (fn [& {:keys [user-id project-root ttl-ms]}]
-    (generate-code! (config/project-dir)
-                    {:user-id user-id :project-root project-root
-                     :ttl-ms (or ttl-ms (config/get-config :gateway-pair-code-ttl-ms))}))
+    (if-let [r (feature/off-reason proto/*current-agent* :automation/gateway)]
+      {:error (str "Gateway is disabled (" r ").")}
+      (generate-code! (config/project-dir)
+                      {:user-id user-id :project-root project-root
+                       :ttl-ms (or ttl-ms (config/get-config :gateway-pair-code-ttl-ms))})))
   :input-schema  [:map
                   [:user-id      {:optional true} [:string {:desc "Identity to grant the paired user (default: current user)"}]]
                   [:project-root {:optional true} [:string {:desc "Project root the paired user operates in (default: current project)"}]]
                   [:ttl-ms       {:optional true} [:int {:desc "Code lifetime in ms (default from config)"}]]]
   :output-schema [:map
-                  [:code       [:string {:desc "The pairing code to share"}]]
+                  [:error      {:optional true} [:string {:desc "Gateway disabled"}]]
+                  [:code       {:optional true} [:string {:desc "The pairing code to share"}]]
                   [:expires-at [:int {:desc "Expiry, epoch-ms"}]]])
 
 (defcommand gateway$pairings
