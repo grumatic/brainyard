@@ -460,14 +460,6 @@
                                 :doc "Per-session cap on live ACP agent instances (each backs an external subprocess + one model-pinned session). Counts ALL acp-agent instances in the session — TUI roots and acp$create-provisioned alike. acp$create refuses at the cap (a paid external session is never silently LRU-evicted); close one with acp$close first."}
    :parent-trail-k             {:type "integer" :default 3
                                 :doc "Depth of the parent-handoff trail surfaced to a subagent (how many ancestor turns of context)."}
-   :react-loop-mode            {:type "string"  :default "single"
-                                :doc "ReAct loop mode: \"single\" (one action per iteration) or \"multi\"."}
-   :react-keep-thoughts-n      {:type "integer" :default 3
-                                :doc "ReAct section-budget compaction floor: thoughts retained."}
-   :react-keep-observations-n  {:type "integer" :default 3
-                                :doc "ReAct section-budget compaction floor: observations retained."}
-   :react-keep-iterations-n    {:type "integer" :default 3
-                                :doc "ReAct section-budget compaction floor: full iterations retained."}
    ;; NOTE: working-dir is intentionally NOT a config key. It is resolved
    ;; purely at runtime by `resolve-working-dir` (flag / `BY_WORKING_DIR` env /
    ;; `user.dir`) and surfaced via the `:dirs` map below + `(config/working-dir)`.

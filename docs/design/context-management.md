@@ -348,10 +348,14 @@ lands in the **user message every iteration**.
 > - runs `cb/enforce` at init and re-runs it per-iteration via
 >   `react-rebudget-action` (gated by `:enable-context-budget`), firing
 >   `:agent.context/budgeted` like CoAct;
-> - trims `:thoughts` / `:observations` / `:iterations` with **deterministic**
->   `keep-last-n` strategies (floors `:react-keep-thoughts-n` /
->   `:react-keep-observations-n` / `:react-keep-iterations-n`, default 3
->   each) — no extra LLM call.
+> - ~~trims `:thoughts` / `:observations` / `:iterations` with **deterministic**
+>   `keep-last-n` strategies~~ — **this half was never built.** The
+>   `:keep-last-n-thoughts` / `:keep-last-n-observations` policies are declared
+>   in `core/context_budget.clj`, but a `:compact` entry only names a strategy
+>   the CALLER must supply in `:strategies`, and no caller ever supplied these
+>   (only `coact_agent` passes a strategies map, and not those). The three
+>   `:react-keep-*-n` config keys that would have parameterised them had no
+>   reader either and were removed 2026-07-28.
 >
 > The LLM-driven `common/compaction.clj` and `common/compaction_action.clj`
 > are **deleted**; the `:enable-context-compaction` /

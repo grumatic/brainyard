@@ -244,8 +244,10 @@ Both are registered agents in the same tool registry (`!tool-defs`):
   registers `react-agent` as a `defagent`. Its BT is built from DSPy
   action nodes (`ThinkAndSelectTools`, `ObserveAndEvaluate`,
   `ThinkActAndEvaluate`, `FinalizeAnswer`) plus `tool-calls-action`.
-  Loop mode is controlled by `:react-loop-mode "single" | "multi"`
-  (default `"single"`).
+  Single-mode (`ThinkActAndEvaluate`) is the only mode — the multi-call
+  variant was removed once M2/M3 lifted stable context into the system
+  message. The `:react-loop-mode` config key that selected between them is
+  gone too; see `docs/core/reasoning.md`.
 - **CoAct** — `components/agent/src/ai/brainyard/agent/common/coact_agent.clj`
   registers `coact-agent` (the default). One DSPy signature
   (`ThinkActCode`) with six inputs and four outputs: a single LLM call

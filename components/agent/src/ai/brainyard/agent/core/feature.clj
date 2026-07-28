@@ -381,8 +381,7 @@
    {:title     "Agent loop"
     :family    :reasoning
     :gate      nil
-    :keys      [:max-iterations :react-loop-mode :react-keep-thoughts-n
-                :react-keep-observations-n :react-keep-iterations-n]
+    :keys      [:max-iterations]
     :lifecycle :live
     :doc       "Iteration ceiling and per-loop retention windows."}
 

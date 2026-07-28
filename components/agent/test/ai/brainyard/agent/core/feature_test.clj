@@ -44,7 +44,7 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "30 feature gates + 9 family gates + 86 knobs + 16 presentation + 11 ambient = 152"
+  (testing "30 feature gates + 9 family gates + 82 knobs + 16 presentation + 11 ambient = 148"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
@@ -52,12 +52,12 @@
           pres  (->> feat/all-features (filter :presentation) (mapcat :keys) count)]
       (is (= 30 (count feat/gate-keys)) "24 shipping + the 6 promoted in P3")
       (is (= 9 (count feat/family-gate-keys)) "one per capability family; :ui has none")
-      (is (= 86 knobs))
+      (is (= 82 knobs))
       (is (= 16 pres))
       (is (= 11 (count feat/ambient-keys)))
       (is (= 0 (count feat/unclassified-keys))
           ":enable-budget-monitoring was deleted, not wired — nothing read it")
-      (is (= 152 (count cfg/config-keys))))))
+      (is (= 148 (count cfg/config-keys))))))
 
 ;; ============================================================================
 ;; Family master switches

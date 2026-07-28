@@ -61,9 +61,9 @@ variant (`ThinkAndSelectTools` → `ObserveAndEvaluate` → `FinalizeAnswer`,
 2N+1 calls) was **removed** once M2/M3 lifted the stable context into the
 system message — folding observation/synthesis back into one call no
 longer cost prompt quality. Single-mode (`ThinkActAndEvaluate`) is now
-the only mode (`react_agent.clj`). The `:react-loop-mode` config key
-(default `"single"`) survives as a vestige; there is no `:multi` path to
-switch to.
+the only mode (`react_agent.clj`). The `:react-loop-mode` config key that
+selected between them was **removed** (2026-07-28) — it had no reader and
+there was no `:multi` path to switch to.
 
 ### DSPy signature
 
