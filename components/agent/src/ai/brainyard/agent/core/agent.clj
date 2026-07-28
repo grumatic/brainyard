@@ -36,6 +36,7 @@
             [ai.brainyard.agent.core.context :as context]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.clj-llm.interface :as llm]
             [ai.brainyard.memory.interface :as mem]
@@ -615,7 +616,7 @@
         ;; session, or global override sets it false. start-capture! is
         ;; idempotent per-manager, so calling it for every agent that shares
         ;; the same manager is safe.
-        _ (when (and mm (config/get-config agent :enable-memory-capture))
+        _ (when (and mm (feature/on? agent :memory/capture))
             (try
               ;; Thread the configured L2 storage-truncation caps into the
               ;; capture parser (start-capture! is idempotent, so the FIRST

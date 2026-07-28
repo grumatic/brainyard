@@ -497,7 +497,7 @@
                         (map? (:context opts)) (assoc :context (:context opts)))]
           (write-machine! (config/project-dir) (normalize-machine machine))
           (cond-> {:defined id :initial (kw initial) :states (mapv kw (keys states))}
-            (not (config/get-config :enable-fsm))
+            (not (feature/on? nil :automation/fsm))
             (assoc :note "State machines are OFF — set :enable-fsm true (or BY_ENABLE_FSM) to run them; the definition is stored regardless."))))))
   :input-schema  [:map
                   [:id      [:string {:desc "Machine id (lowercase-kebab)"}]]
@@ -561,9 +561,9 @@
           (let [advanced (vec (for [[id st] (snap) :when (not= st (get before id))]
                                 {:machine id :from (get before id) :to st}))]
             (cond-> {:sent (:fired r) :advanced advanced}
-              (not (config/get-config :enable-fsm))
+              (not (feature/on? nil :automation/fsm))
               (assoc :note "State machines are OFF — set :enable-fsm true (or BY_ENABLE_FSM); nothing advances until enabled.")
-              (and (config/get-config :enable-fsm) (empty? advanced))
+              (and (feature/on? nil :automation/fsm) (empty? advanced))
               (assoc :note "No machine advanced — no current state has an :on transition for this event. Check the event name and each machine's state via fsm$status.")))))))
   :input-schema  [:map
                   [:event-id [:keyword {:desc "Event identifier to fire, a namespaced keyword e.g. :order/shipped"}]]

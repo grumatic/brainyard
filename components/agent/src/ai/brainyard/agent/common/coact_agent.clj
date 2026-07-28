@@ -2374,7 +2374,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
    :task/completed. When all pending tasks resolve, rewrites the :pending
    entries in :iterations with the completed results."
   [{:keys [st-memory agent]}]
-  (if-not (config/get-config agent :enable-iteration-hold)
+  (if-not (feature/on? agent :exec/iteration-hold)
     bt/success
     (let [pending (in-flight-coact-tasks agent)]
       (if (empty? pending)
@@ -2432,7 +2432,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
   (let [st @st-memory
         rebudget-n (config/get-config agent :rebudget-every-n-iter)
         iter-count (:iteration-count st 0)
-        budget-enabled? (config/get-config agent :enable-context-budget)
+        budget-enabled? (feature/on? agent :context/budget)
         cached-sections (:cached-sections st)
         zone-orders (:system-zone-orders st)
         usr-order (:usr-order st)

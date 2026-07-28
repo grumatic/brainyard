@@ -22,6 +22,7 @@
      into :recalled-memory. Self-installs at namespace load."
   (:require [ai.brainyard.behavior-tree.interface :as bt]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.memory :as agent-mem]
@@ -393,7 +394,7 @@
       (let [st-atom (some-> agent :!state deref
                             (get-in [:behavior-tree :context :st-memory]))
             st (some-> st-atom deref)
-            enabled? (config/get-config agent :enable-mid-turn-recall)
+            enabled? (feature/on? agent :memory/mid-turn-recall)
             mm (some-> agent proto/get-memory-manager)
             result-text (cond
                           (nil? result) nil

@@ -22,6 +22,7 @@
    (store + cron + due-selection + delivery) is fully testable without an LLM."
   (:require [ai.brainyard.agent.common.events :as events]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
             [ai.brainyard.mulog.interface :as mulog]
@@ -351,7 +352,7 @@
    `:enable-scheduler`). Captures the project-dir from `agent` so the thread
    doesn't depend on a bound current-agent. Safe to call every turn."
   [agent]
-  (when (and agent (config/get-config agent :enable-scheduler))
+  (when (and agent (feature/on? agent :automation/scheduler))
     (when (compare-and-set! !ticker nil :starting)
       (let [pdir (config/project-dir agent)
             tick (long (or (config/get-config agent :scheduler-tick-ms) 60000))
@@ -418,7 +419,7 @@
                      (not-empty (str provider)) (assoc :provider provider))]
           (write-spec! pdir spec)
           (cond-> {:id id :next-fire next :enabled (:enabled spec)}
-            (not (config/get-config :enable-scheduler))
+            (not (feature/on? nil :automation/scheduler))
             (assoc :note "Scheduler ticker is OFF — set :enable-scheduler true to fire unattended, or call (schedule$run-due) / (schedule$run-now :id …)."))))))
   :input-schema  [:map
                   [:prompt   [:string {:desc "The prompt to run at fire time"}]]
@@ -552,7 +553,7 @@
                      (not-empty (str (:title opts))) (assoc :title (str (:title opts))))]
           (write-spec! pdir spec)
           (cond-> {:id id :event-id ek :next-fire next :enabled (:enabled spec)}
-            (not (config/get-config :enable-scheduler))
+            (not (feature/on? nil :automation/scheduler))
             (assoc :note "Scheduler ticker is OFF — set :enable-scheduler true (or BY_ENABLE_SCHEDULER) to run watches unattended; watch$run-now / schedule$run-due work manually."))))))
   :input-schema  [:map
                   [:probe

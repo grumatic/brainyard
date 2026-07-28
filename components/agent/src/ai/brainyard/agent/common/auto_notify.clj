@@ -37,6 +37,7 @@
    `:agent.tool-use/pre`, flush on `:agent.ask/post`) are installed once via
    `ensure-global-hooks!` (idempotent, runtime-only — never at build time)."
   (:require [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.task.manager :as task-mgr]
@@ -73,7 +74,7 @@
        (nil? (@!get-parent-agent (:!state agent)))))
 
 (defn- enabled? [agent]
-  (config/get-config agent :enable-auto-task-notify))
+  (feature/on? agent :exec/task-notify))
 
 (defn- session-key [agent]
   (or (try (proto/session-id agent) (catch Throwable _ nil))

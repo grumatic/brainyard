@@ -15,6 +15,7 @@
    - Context building from memory + conversation"
   (:require [ai.brainyard.util.interface.macros :refer [export-symbols]]
             [ai.brainyard.agent.core.protocol :as protocol]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.session :as session]
             [ai.brainyard.agent.core.memory :as agent-mem]
             [ai.brainyard.memory.interface :as mem]
@@ -287,6 +288,51 @@
                 get-config get-config-snapshot set-config!
                 config-overview search-config-keys redact-config-snapshot
                 resolve-sub-lm resolve-sandbox-interop)
+
+;; ============================================================================
+;; Feature Registry
+;; ============================================================================
+;; The classification over config-schema: which capability a key belongs to,
+;; and whether that capability is on once :implies / :requires are applied.
+;; Prefer `feature-on?` over `(get-config … :enable-x)` for a GATE — the raw
+;; read skips the declared dependencies. Reading a knob's VALUE stays
+;; get-config. See docs/design/feature-flags-design.md.
+
+(export-symbols ai.brainyard.agent.core.feature
+                feature-registry ambient-keys families family->features
+                feature-of-key feature-doc family-view family-summary
+                annotate-hits presentation-key?)
+
+;; Renamed on export: `on?` / `off-reason` / `feature-state` are too generic to
+;; sit unqualified in this interface, and export-symbols cannot rename. Thin
+;; wrappers rather than a re-export, for the same reason the dynamic var and
+;; macros below are manual.
+
+(defn feature-on?
+  "True when feature `fid` (e.g. :memory/graph) resolves on for `agent`,
+   accounting for :implies and :requires. An unmet hard requirement resolves
+   to off. `agent` may be nil for a global read."
+  [agent fid]
+  (feature/on? agent fid))
+
+(defn feature-on?*
+  "`feature-on?` against a `get-config-snapshot` map instead of live config."
+  [cfg-snap fid]
+  (feature/on?* cfg-snap fid))
+
+(defn feature-off-reason
+  "Short reason fragment for why `fid` is off, or nil when it is on. Callers
+   supply their own subject and error shape:
+     (when-let [r (feature-off-reason a :agents/subagents)]
+       {:error (str \"Subagent management is disabled (\" r \").\")})"
+  [agent fid]
+  (feature/off-reason agent fid))
+
+(defn feature-state
+  "Full resolution for `fid`: {:on? :source :implied-by :unmet :degraded
+   :lifecycle}."
+  [agent fid]
+  (feature/feature-state agent fid))
 
 ;; ============================================================================
 ;; Async Runtime

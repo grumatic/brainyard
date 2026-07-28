@@ -72,6 +72,9 @@
     (let [root (tmp-root) sid "agt-cfg-1"]
       (persist/with-root root
         (with-redefs [agent/session-id (fn [_] sid)
+                      ;; :ask-channel-enabled? is a GATE — read via the feature
+                      ;; registry now, so stub both: the gate here, the knob below.
+                      agent/feature-on? (fn [_ _] true)
                       agent/get-config (fn [k] (case k
                                                  :ask-channel-enabled? true
                                                  :ask-timeout-ms 5000 nil))
@@ -101,6 +104,7 @@
     (let [root (tmp-root) sid "agt-off-1"]
       (persist/with-root root
         (with-redefs [agent/session-id (fn [_] sid)
+                      agent/feature-on? (fn [_ _] false)
                       agent/get-config (fn [_] false)]
           (core/start-ask-listener! fake-ag)
           (is (not (contains? @@#'core/!ask-listeners sid)))
@@ -111,6 +115,9 @@
     (let [root (tmp-root) sid "agt-slow-1"]
       (persist/with-root root
         (with-redefs [agent/session-id (fn [_] sid)
+                      ;; :ask-channel-enabled? is a GATE — read via the feature
+                      ;; registry now, so stub both: the gate here, the knob below.
+                      agent/feature-on? (fn [_ _] true)
                       agent/get-config (fn [k] (case k
                                                  :ask-channel-enabled? true
                                                  :ask-timeout-ms 5000 nil))

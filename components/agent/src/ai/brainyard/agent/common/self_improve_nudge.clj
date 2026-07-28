@@ -28,6 +28,7 @@
    while a still-pending one never re-nags."
   (:require [ai.brainyard.agent.common.skill-distill.proposals :as proposals]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.set :as set]
@@ -93,7 +94,7 @@
   (try
     (when (and agent
                (root-agent? agent)
-               (config/get-config agent :enable-self-improve-nudges))
+               (feature/on? agent :self-improve/nudges))
       (compute-and-queue! (config/project-dir agent)
                           (proto/get-st-memory-init agent)
                           st-memory))

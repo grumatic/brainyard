@@ -1993,7 +1993,7 @@
    No-op when there is no active agent or :enable-console-activity is off; never
    throws into the dispatch path."
   [active-agent tool-id args result ok?]
-  (when (and active-agent (agent/get-config active-agent :enable-console-activity))
+  (when (and active-agent (agent/feature-on? active-agent :context/console-activity))
     (try
       (agent/record-console-activity!
        active-agent

@@ -121,11 +121,27 @@
   (let [init (atom {})]
     (testing "root + config on → queues"
       (let [st (atom {})]
-        (with-redefs [config/get-config (fn [_ k] (= k :enable-self-improve-nudges))
+        ;; The nudge SURFACES pending proposals, so it also needs a producer:
+        ;; :self-improve/nudges requires distillation OR refinement. Enabling
+        ;; the nudge flag alone leaves it with nothing to announce.
+        (with-redefs [config/get-config (fn [_ k]
+                                          (contains? #{:enable-self-improve-nudges
+                                                       :enable-skill-distillation}
+                                                     k))
                       config/project-dir (fn [_] *project-dir*)
                       proto/get-st-memory-init (fn [_] init)]
           (is (= :queued (nudge/maybe-queue! (stub-agent {:parent nil}) st)))
           (is (re-find #"deploy-flow" (:pending-self-improve-notice @st))))))
+
+    (testing "nudge on but NO producer → no-op (nil)"
+      ;; Previously silent: the nudge would queue a notice it could never fill.
+      ;; Now a declared :requires disjunction, so it resolves off instead.
+      (let [st (atom {})]
+        (with-redefs [config/get-config (fn [_ k] (= k :enable-self-improve-nudges))
+                      config/project-dir (fn [_] *project-dir*)
+                      proto/get-st-memory-init (fn [_] (atom {}))]
+          (is (nil? (nudge/maybe-queue! (stub-agent {:parent nil}) st)))
+          (is (nil? (:pending-self-improve-notice @st))))))
 
     (testing "config off → no-op (nil)"
       (let [st (atom {})]

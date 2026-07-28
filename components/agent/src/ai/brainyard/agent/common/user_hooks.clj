@@ -165,10 +165,10 @@
   "Global kill-switch: read `enable-user-hooks` (default true) from the event's
    agent config. Runtime-resolved to avoid a static require cycle."
   [event-map]
-  (let [get-config (requiring-resolve 'ai.brainyard.agent.core.config/get-config)
-        agent      (or (:agent event-map) (:stage-agent event-map))]
-    (if get-config
-      (boolean (get-config agent :enable-user-hooks))
+  (let [on? (requiring-resolve 'ai.brainyard.agent.core.feature/on?)
+        agent (or (:agent event-map) (:stage-agent event-map))]
+    (if on?
+      (on? agent :automation/hooks)
       true)))
 
 ;; ============================================================================

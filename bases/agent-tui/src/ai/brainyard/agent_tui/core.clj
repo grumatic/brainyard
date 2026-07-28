@@ -150,7 +150,7 @@
    Writes the bound port to ~/.brainyard/nrepl-port (0600) for external
    CIDER attach. Failures are non-fatal — the TUI continues without it."
   []
-  (when (and (agent/get-config :nrepl-enabled?) (not @!nrepl-server))
+  (when (and (agent/feature-on? nil :exec/nrepl) (not @!nrepl-server))
     (try
       (let [port      (agent/get-config :nrepl-port)
             _         (clj-nrepl/cleanup-stale-ports!)
@@ -373,7 +373,7 @@
    this fn just decides whether to trigger."
   [ag]
   (try
-    (when (agent/get-config ag :enable-context-budget)
+    (when (agent/feature-on? ag :context/budget)
       (let [max-tokens (agent/get-config ag :max-context-tokens)
             estimated  (agent/estimate-context-tokens ag)]
         (when (> estimated max-tokens)
@@ -977,7 +977,7 @@
    Idempotent per session-id; persists :ask-socket-path into meta.edn. Failures
    are non-fatal — the session runs fine without an attach socket."
   [ag]
-  (when (agent/get-config :ask-channel-enabled?)
+  (when (agent/feature-on? nil :tools/ask-channel)
     (let [sid (try (agent/session-id ag) (catch Throwable _ nil))]
       (when (and sid (not (contains? @!ask-listeners sid)))
         (try
@@ -1840,7 +1840,7 @@
             (let [!shutdown (java.util.concurrent.CountDownLatch. 1)]
               (terminal/install-serve-shutdown-handler! !shutdown)
               (mulog/info ::serve-mode-parked
-                          :ask-channel-enabled? (agent/get-config :ask-channel-enabled?))
+                          :ask-channel-enabled? (agent/feature-on? nil :tools/ask-channel))
               (.await ^java.util.concurrent.CountDownLatch !shutdown)
               (stop!))
             (do))

@@ -37,6 +37,7 @@
             [ai.brainyard.agent.common.events :as events]
             [ai.brainyard.agent.common.project-memory :as project-memory]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :refer [defcommand]]
@@ -352,7 +353,7 @@
   [agent]
   (let [sid (try (proto/session-id agent) (catch Throwable _ nil))]
     (when (and agent sid (root-agent? agent))
-      (if-not (config/get-config agent :enable-reactions)
+      (if-not (feature/on? agent :automation/reactions)
         (when (contains? @!installed sid) (teardown-session! sid))
         (let [pdir    (str (config/project-dir agent))
               want    (desired-events pdir)
@@ -412,7 +413,7 @@
                      (not-empty (str (:title opts)))  (assoc :title (str (:title opts))))]
           (write-spec! pdir spec)
           (cond-> {:id rid :on ek :enabled (:enabled spec)}
-            (not (config/get-config :enable-reactions))
+            (not (feature/on? nil :automation/reactions))
             (assoc :note "Reactions are OFF — set :enable-reactions true (or BY_ENABLE_REACTIONS) to install them; rules are stored regardless."))))))
   :input-schema  [:map
                   [:on        [:keyword {:desc "Event identifier to react to, a namespaced keyword e.g. :order/shipped"}]]

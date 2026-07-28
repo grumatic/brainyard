@@ -41,6 +41,7 @@
             [ai.brainyard.agent.common.skill-distill.signatures :as sig]
             [ai.brainyard.agent.common.trajectory :as traj]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool]
@@ -271,7 +272,7 @@
   (when agent
     (try
       (and (root-agent? agent)
-           (boolean (config/get-config agent :enable-skill-distillation)))
+           (feature/on? agent :self-improve/distillation))
       (catch Exception _ false))))
 
 ;; ============================================================================
