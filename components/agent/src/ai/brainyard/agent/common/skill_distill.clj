@@ -271,8 +271,9 @@
   [agent]
   (when agent
     (try
-      (and (root-agent? agent)
-           (feature/on? agent :self-improve/distillation))
+      ;; :self-improve/distillation is :root-only — the registry withholds it
+      ;; from sub-agents, so no local root check is needed.
+      (feature/on? agent :self-improve/distillation)
       (catch Exception _ false))))
 
 ;; ============================================================================

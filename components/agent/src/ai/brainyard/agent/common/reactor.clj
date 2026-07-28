@@ -352,6 +352,11 @@
    session's handlers down."
   [agent]
   (let [sid (try (proto/session-id agent) (catch Throwable _ nil))]
+    ;; The root check STAYS despite :automation/reactions being :root-only. It guards
+    ;; which agent may MANAGE this session's handlers, not whether the
+    ;; feature is on: without it a sub-agent would resolve the feature off
+    ;; (root-only) and fall into the teardown branch below, ripping down the
+    ;; ROOT's handlers. Eligibility moved to the registry; lifecycle did not.
     (when (and agent sid (root-agent? agent))
       (if-not (feature/on? agent :automation/reactions)
         (when (contains? @!installed sid) (teardown-session! sid))

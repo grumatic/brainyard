@@ -684,7 +684,7 @@ knob that in fact gates every tool call (§4.5).
    only job is to gate other keys. Leaning: family key, `nil` = "no family opinion",
    so it is a true tri-state and turning a family off then on restores per-feature
    settings rather than flattening them.
-2. **Should `ui` be a family at all,** or just a second ambient bucket? Argument for
+2. *(resolved 2026-07-28 — yes, a family; see §10.9)* **Should `ui` be a family at all,** or just a second ambient bucket? Argument for
    keeping it: `:enable-tmux-popup` and `:enable-input-suggestions` are
    `:enable-*`-shaped and users will look for them under a feature view.
 3. *(resolved 2026-07-28 — fail-safe, as proposed; see §10.4)* **`:requires` fail-safe vs fail-loud.** §5.2 resolves an unmet-requirement
@@ -693,7 +693,7 @@ knob that in fact gates every tool call (§4.5).
    empty store), but it means a user who sets `:enable-graph-memory true` sees it
    report off — which is only acceptable if `feature$explain` and the startup banner
    are genuinely good.
-4. **Per-agent feature overrides.** Features resolve through `get-config`, which
+4. *(resolved 2026-07-28 — `:root-only`, but only for eligibility; see §10.9)* **Per-agent feature overrides.** Features resolve through `get-config`, which
    already honours per-agent overrides seeded from `defagent :config-extra`. Should a
    subagent be able to enable a feature its parent disabled? Current root-agent
    predicates (`AND`ed at six read sites today) suggest no — but that coupling should
@@ -920,6 +920,53 @@ ungated — a user asking for it explicitly should always get it.
 
 Final shape: **152 keys** = 30 feature gates + 9 family gates + 86 knobs + 16
 presentation + 11 ambient. No `:proposed` features, no quarantined keys.
+
+### 10.9 §9 Q2 and Q4 resolved
+
+**Q2 — `ui` stays a family.** A second ambient bucket would make its 16 keys
+invisible to `/feature` and `feature$list`, and two of them
+(`:enable-tmux-popup`, `:enable-input-suggestions`) are `:enable-*`-shaped —
+precisely the keys someone goes looking for in a capability view. `/feature ui
+off` was already refused correctly, since `:ui` has no family master switch.
+
+Checking the decision surfaced a defect: the `:presentation` guard in
+`set-feature!` was **unreachable**. Every presentation feature is also ungated,
+so the `(nil? gate)` branch fired first and `feature$set ui/display on` reported
+the vaguer "ungated grouping". The presentation check now comes first, so the
+refusal explains what the thing is.
+
+**Q4 — `:root-only` in the registry, but it replaces only the eligibility
+checks.** Six features carried hand-written `root-agent?` checks:
+`memory/consolidation`, `automation/reactions`, `automation/fsm`,
+`self-improve/distillation`, `self-improve/nudges`, `exec/task-notify`. They are
+marked `:root-only true` and enforced once, in `feature-state` — not in the
+resolver, because `:root-only` is the one input that is not config, and the
+resolver stays a pure function of (registry, read-fn). `off-reason` and
+`feature$explain` report it.
+
+§9 Q4 says the coupling "should move into the registry as `:root-only true`
+rather than staying implicit at each call site". That is right for four of the
+six. It is **wrong** for `fsm.clj` and `reactor.clj`, which are shaped:
+
+```clojure
+(when (and agent sid (root-agent? agent))
+  (if-not (feature/on? agent :automation/fsm)
+    (teardown-session! sid)          ; ← "off" means TEAR DOWN
+    …install…))
+```
+
+Remove the outer guard there and a sub-agent resolves the feature off
+(root-only) and falls into the teardown branch, ripping down the **root's**
+handlers. Those guards are lifecycle — *which agent may manage this session's
+handlers* — not eligibility. They stay, annotated.
+
+Two smaller calls. A nil or unreadable agent counts as **root**: this decides
+whether to WITHHOLD a capability, so an unknown shape must not silently disable
+one. And `on?*` cannot apply `:root-only` at all, since a snapshot carries no
+agent — a test pins that any call site *driving* a root-only feature must use
+the agent arity.
+
+Remaining open: §9 Q5 (aligning `clj-sandbox`'s `:enable-*` option vocabulary).
 
 ### 10.6 P1: the graph-memory seal is blocked on a semantics decision
 

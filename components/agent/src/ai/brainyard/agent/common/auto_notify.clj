@@ -165,7 +165,7 @@
    live loop's harvest owns surfacing (and `mark-surfaced!` keeps the inbox in
    sync)."
   [agent]
-  (when (and agent (enabled? agent) (interactive-host?) (root-agent? agent))
+  (when (and agent (enabled? agent) (interactive-host?))
     (let [sk (session-key agent)
           ids (get @!inbox sk)]
       (when (and (seq ids)
@@ -220,7 +220,6 @@
   (when (and agent task-id
              (enabled? agent)
              (interactive-host?)
-             (root-agent? agent)
              (budget-left? agent))
     (swap! !armed-tasks conj task-id)
     (let [hid (watch-handler-id task-id)]
@@ -287,7 +286,6 @@
   (let [tid-str (some-> (arg-task-id args) str)]
     (if-not (and agent
                  (enabled? agent)
-                 (root-agent? agent)
                  (contains? poll-tools (str tool-name))
                  (not (str/blank? tid-str))
                  (armed? (keyword tid-str)))

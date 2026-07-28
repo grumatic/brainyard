@@ -171,6 +171,7 @@
 
 (deftest set-refuses-non-gates-without-writing
   (doseq [[f pat] [["context/conversation" #"ungated"]
+                   ["ui/display"           #"presentation-only"]
                    ["tools/cache"          #"numeric key"]
                    ["bogus/thing"          #"Unknown feature"]]]
     (let [[r writes] (capture-set {} #(fc/feature$set :feature f :state "on"))]

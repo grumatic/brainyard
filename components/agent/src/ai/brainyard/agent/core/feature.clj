@@ -114,6 +114,7 @@
    {:title     "Memory consolidation (L2→L3)"
     :family    :memory
     :gate      :enable-memory-consolidation
+:root-only true
     :keys      [:memory-consolidate-every-n-turns]
     :requires  #{:memory/capture}
     :lifecycle :live
@@ -150,6 +151,7 @@
    {:title     "Skill distillation"
     :family    :self-improve
     :gate      :enable-skill-distillation
+:root-only true
     :keys      [:skill-distill-mode :skill-distill-every-n-turns
                 :skill-distill-threshold]
     :lifecycle :live
@@ -167,6 +169,7 @@
    {:title     "Self-improvement nudges"
     :family    :self-improve
     :gate      :enable-self-improve-nudges
+:root-only true
     :keys      []
     ;; nested set = \"any of\": the nudge surfaces pending proposals, so it can
     ;; never fire unless at least one producer is on. Today that is silent.
@@ -187,6 +190,7 @@
    {:title     "Event reactions"
     :family    :automation
     :gate      :enable-reactions
+:root-only true
     :keys      [:max-reaction-fires-per-session]
     :lifecycle :session
     :doc       "trigger → action rules over the event bus."}
@@ -195,6 +199,7 @@
    {:title            "User-defined state machines"
     :family           :automation
     :gate             :enable-fsm
+:root-only        true
     :keys             [:fsm-allow-code]
     ;; NOT a hard :requires — an FSM still works event-driven without the
     ;; ticker, it just cannot advance eventless transitions. Silence is what
@@ -312,6 +317,7 @@
    {:title     "Auto task notification"
     :family    :exec
     :gate      :enable-auto-task-notify
+:root-only true
     :keys      [:auto-park-after-polls]
     :lifecycle :live
     :doc       "Wakes the agent when a background task completes."}
@@ -824,6 +830,17 @@
     (get cfg-snap k)
     (get-in config/config-schema [k :default])))
 
+(defn- root-agent?
+  "True when `agent` has no parent. A nil agent — the global/programmatic
+   context — counts as root, and anything unreadable does too: this decides
+   whether to WITHHOLD a capability, so an unknown shape must not silently
+   disable one."
+  [agent]
+  (if (nil? agent)
+    true
+    (try (nil? (get-in @(:!state agent) [:runtime :parent-agent]))
+         (catch Throwable _ true))))
+
 (defn feature-state
   "Full resolution for one feature against live config.
 
@@ -834,7 +851,15 @@
    sweep — so this is cheap enough for per-turn use. Returns nil for an
    unknown feature."
   [agent fid]
-  (state* #(config/get-config agent %) fid))
+  (let [st (state* #(config/get-config agent %) fid)]
+    ;; :root-only is applied HERE rather than in `state*` because it is the one
+    ;; input that is not config — it needs the agent, and the resolver is
+    ;; deliberately a pure function of (registry, read-fn). Sub-agents share
+    ;; their root's session, so a feature the root drives must not also be
+    ;; driven by each child.
+    (if (and st (:root-only (feature-registry fid)) (not (root-agent? agent)))
+      (assoc st :on? false :source :off :root-only-blocked true)
+      st)))
 
 (defn feature-state*
   "`feature-state` against a `config/get-config-snapshot` map instead of live
@@ -884,8 +909,10 @@
      (when-let [r (off-reason agent :agents/subagents)]
        {:error (str \"Subagent management is disabled (\" r \").\")})"
   [agent fid]
-  (let [{:keys [on? unmet]} (feature-state agent fid)]
+  (let [{:keys [on? unmet root-only-blocked]} (feature-state agent fid)]
     (when-not on?
+      (if root-only-blocked
+        "root-only — this agent has a parent, and its root drives the feature"
       ;; An unmet dependency is the more specific answer and takes precedence:
       ;; reporting `enable-x=false` when the user DID set it true, and the real
       ;; cause is a missing requirement, is exactly the confusion §1.4 is about.
@@ -897,7 +924,7 @@
                                (str/join " or " (map #(str (symbol %)) (sort r)))
                                (str (symbol r)))))))
           (gate-label agent fid)
-          "unavailable"))))
+          "unavailable")))))
 
 ;; ============================================================================
 ;; Query helpers
@@ -984,6 +1011,14 @@
   (if-let [f (feature-registry fid)]
     (let [gate (:gate f)]
       (cond
+        ;; BEFORE the gateless check: every presentation feature is also
+        ;; ungated, so the generic message would win and say the less useful
+        ;; thing. §9 Q2 kept `ui` as a family precisely so these keys are
+        ;; discoverable — the refusal should then explain what they are.
+        (:presentation f)
+        {:error (format "%s is presentation-only — rendering, never a capability gate. Set its keys directly with agent-runtime$config."
+                        (str (symbol fid)))}
+
         (nil? gate)
         {:error (format "%s is an ungated grouping — it has no on/off switch. Its knobs are set with agent-runtime$config."
                         (str (symbol fid)))}
@@ -991,10 +1026,6 @@
         (:proposed f)
         {:error (format "%s is not gateable yet — %s is planned but not in config-schema."
                         (str (symbol fid)) (name gate))}
-
-        (:presentation f)
-        {:error (format "%s is presentation-only and is not a capability gate; set its keys directly with agent-runtime$config."
-                        (str (symbol fid)))}
 
         (:gate-pred f)
         {:error (format "%s is gated by the numeric key %s (0 = off) — set a value with agent-runtime$config rather than on/off."

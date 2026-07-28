@@ -225,7 +225,7 @@
             ag-type (and (keyword? aid) (namespace aid))]
         (cond
           (= "memory-agent" ag-type) false
-          (not (root-agent? agent))  false
+          ;; root-ness is :root-only on the feature now, not a check here
           :else (feature/on? agent :memory/consolidation)))
       (catch Exception _ false))))
 

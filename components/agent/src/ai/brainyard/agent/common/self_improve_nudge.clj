@@ -92,9 +92,8 @@
    to `compute-and-queue!`. Never throws."
   [agent st-memory]
   (try
-    (when (and agent
-               (root-agent? agent)
-               (feature/on? agent :self-improve/nudges))
+    ;; :root-only on the feature covers the sub-agent case.
+    (when (and agent (feature/on? agent :self-improve/nudges))
       (compute-and-queue! (config/project-dir agent)
                           (proto/get-st-memory-init agent)
                           st-memory))

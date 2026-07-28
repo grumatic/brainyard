@@ -593,3 +593,62 @@
               it is not minimal, it is broken"
       (is (not (contains? m :enable-memory-capture)))
       (is (not (contains? m :enable-memory-recall))))))
+
+;; ---------------------------------------------------------------------------
+;; :root-only (§9 Q4) — declared once, enforced in the agent-aware path
+;; ---------------------------------------------------------------------------
+
+(defn- stub-agent
+  "Minimal agent shape: only the parent slot matters to root detection."
+  [parent]
+  {:!state (atom {:runtime {:parent-agent parent}})})
+
+(defn- stub-cfg
+  "get-config stand-in over `all-on`, covering the arities resolution uses."
+  [overrides]
+  (fn ([k]     (get overrides k (get-in cfg/config-schema [k :default])))
+    ([_ k]   (get overrides k (get-in cfg/config-schema [k :default])))
+    ([_ k d] (get overrides k d))))
+
+(def ^:private root-only-features
+  #{:memory/consolidation :automation/reactions :automation/fsm
+    :self-improve/distillation :self-improve/nudges :exec/task-notify})
+
+(deftest root-only-marks-exactly-the-root-driven-features
+  (is (= root-only-features
+         (into #{} (keep (fn [[fid f]] (when (:root-only f) fid))) feat/feature-registry))
+      "these are the features whose call sites checked root-agent? by hand"))
+
+(deftest root-only-withholds-from-a-sub-agent
+  (with-redefs [cfg/get-config (stub-cfg all-on)]
+    (doseq [fid root-only-features]
+      (testing (str fid)
+        (is (feat/on? (stub-agent nil) fid) "root drives it")
+        (is (not (feat/on? (stub-agent {:agent-id :root/x}) fid))
+            "a sub-agent shares the root's session and must not also drive it")
+        (let [st (feat/feature-state (stub-agent {:agent-id :root/x}) fid)]
+          (is (true? (:root-only-blocked st)))
+          (is (= :off (:source st))))))))
+
+(deftest root-only-does-not-affect-other-features
+  (with-redefs [cfg/get-config (stub-cfg all-on)]
+    (doseq [fid [:memory/capture :memory/graph :context/budget :exec/code-channel]]
+      (is (feat/on? (stub-agent {:agent-id :root/x}) fid)
+          (str fid " is not root-only and must stay on for a sub-agent")))))
+
+(deftest root-only-explains-itself
+  (with-redefs [cfg/get-config (stub-cfg all-on)]
+    (is (re-find #"root-only" (feat/off-reason (stub-agent {:agent-id :root/x})
+                                               :memory/consolidation)))
+    (is (nil? (feat/off-reason (stub-agent nil) :memory/consolidation)))))
+
+(deftest nil-and-unreadable-agents-count-as-root
+  (testing "withholding a capability on an unknown agent shape would be the wrong default"
+    (with-redefs [cfg/get-config (stub-cfg all-on)]
+      (is (feat/on? nil :memory/consolidation))
+      (is (feat/on? {:not-an-agent true} :memory/consolidation)))))
+
+(deftest snapshot-arity-does-not-apply-root-only
+  (testing "on?* carries no agent, so :root-only cannot be evaluated there —
+            call sites that DRIVE a root-only feature must use the agent arity"
+    (is (feat/on?* (snap) :memory/consolidation))))
