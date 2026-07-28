@@ -678,7 +678,7 @@ knob that in fact gates every tool call (§4.5).
 
 ## 9. Open questions
 
-1. *(resolved 2026-07-28 — family key, tri-state `nil`; see §10.4)* **Family-level gate storage.** `/feature memory off` — does it write six gate
+1. *(resolved 2026-07-28 — a separate family key, as chosen; shipped as a plain boolean rather than tri-state, see §10.7)* **Family-level gate storage.** `/feature memory off` — does it write six gate
    keys, or one new `:enable-memory` family key that the resolver ANDs in? The
    second is cleaner to reason about and to revert, but adds ten schema keys whose
    only job is to gate other keys. Leaning: family key, `nil` = "no family opinion",
@@ -699,7 +699,7 @@ knob that in fact gates every tool call (§4.5).
    predicates (`AND`ed at six read sites today) suggest no — but that coupling should
    move into the registry as `:root-only true` rather than staying implicit at each
    call site.
-5. **Does `clj-sandbox`'s option-map vocabulary get aligned?** Only
+5. *(resolved 2026-07-28 — the three internal names renamed; see §10.10)* **Does `clj-sandbox`'s option-map vocabulary get aligned?** Only
    `:enable-parallel` is caller-facing (`chat.clj:367`); `:enable-compaction`,
    `:enable-budget` and `:enable-structure-aware` are internal locals derived from
    differently-named caller opts (`:compaction-opts {:enable}`, `:budget-opts
@@ -967,6 +967,43 @@ agent — a test pins that any call site *driving* a root-only feature must use
 the agent arity.
 
 Remaining open: §9 Q5 (aligning `clj-sandbox`'s `:enable-*` option vocabulary).
+
+### 10.10 §9 Q5 resolved — and its premise was half wrong
+
+`clj-sandbox/core/chat.clj`'s three internal names are renamed:
+`enable-compaction` → `compaction?`, `enable-structure-aware` →
+`structure-aware?`, `enable-budget` → `budget?` (both the bindings and the keys
+in the private `compaction-cfg` / `eval-cfg` maps they feed). Caller-facing
+vocabulary is unchanged — `:compaction-opts {:enable}`,
+`:feedback-opts {:structure-aware}`, `:budget-opts {:enable}` all still read the
+same keys. `:enable-parallel` is left alone: §9 is right that it is a real API
+change.
+
+**The stated reason for the risk does not exist.** §1.6 and Q5 both say these
+"leak into TUI event rendering as event fields (`tui/format.clj:1807-1808`)",
+which would have made this a cross-boundary rename needing lockstep changes. It
+is not:
+
+- `rlm-turn-start` and `rlm-turn-complete` appear **only in `format.clj`, as
+  consumers**. Nothing in the workspace emits either.
+- `chat.clj` never logs those event names — its mulog calls are
+  `::rlm-iteration`, `::mid-turn-compaction`, `::rlm-loop-iteration` and friends.
+- The only producer of `:enable-compaction` anywhere was `chat.clj`'s private
+  `compaction-cfg` map, which is passed between private fns and never reaches an
+  event.
+
+So the grep confusion §1.6 describes is real, but the coupling it attributes
+that confusion to never existed. That is what makes the rename genuinely
+near-zero-risk rather than merely asserted to be.
+
+The dead renderers in `format.clj` are deliberately **left in place**. That
+namespace formats mulog events for the log side-pane, which can include events
+from older sessions or older binaries; deleting branches for event names this
+version no longer emits would break rendering of historical logs. Whether those
+event names are legacy or were never emitted at all is a separate question, and
+not one to settle inside a vocabulary cleanup.
+
+**Every §9 question is now resolved.**
 
 ### 10.6 P1: the graph-memory seal is blocked on a semantics decision
 

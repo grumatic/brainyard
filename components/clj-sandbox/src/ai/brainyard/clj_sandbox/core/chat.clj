@@ -142,10 +142,10 @@
 
 (defn- maybe-compact-messages!
   "Check and perform mid-turn message compaction if thresholds are met."
-  [loop-state iteration {:keys [enable-compaction compaction-trigger
+  [loop-state iteration {:keys [compaction? compaction-trigger
                                 compaction-keep-recent compaction-max-summary
                                 budget-atom]}]
-  (when (and enable-compaction
+  (when (and compaction?
              (> iteration compaction-trigger)
              (mc/needs-compaction? @(:messages loop-state) (:max-context-tokens loop-state)))
     (let [{:keys [messages compaction-count on-iteration]} loop-state
@@ -249,8 +249,8 @@
    When :parallel-results is provided (from eval-code-blocks-parallel),
    uses those results directly instead of evaluating sequentially."
   [loop-state iteration response-text code-blocks eval-timeout-ms
-   {:keys [enable-structure-aware feedback-max-chars dropped-count
-           enable-budget budget-atom parallel-results]}]
+   {:keys [structure-aware? feedback-max-chars dropped-count
+           budget? budget-atom parallel-results]}]
   (let [{:keys [messages sb compaction-count]} loop-state
         ;; When parallel-results are provided, skip sequential eval.
         ;; Parallel blocks never terminate (FINAL is disallowed).
@@ -279,7 +279,7 @@
                                   :terminated-by (:type termination-result)
                                   :total-iterations iteration})})
       ;; Continue — feed results back
-      (let [feedback-msg (if enable-structure-aware
+      (let [feedback-msg (if structure-aware?
                            (feedback/build-feedback-message eval-results
                                                             :structure-aware true
                                                             :max-chars-per-block feedback-max-chars
@@ -298,7 +298,7 @@
                                    "The FINAL call was deferred so you can verify the results above. "
                                    "Call (FINAL ...) in your next response.")
 
-                           (and enable-budget budget-atom)
+                           (and budget? budget-atom)
                            (update :content str "\n\n" (budget/budget-status-string budget-atom)))
             assistant-msg {:role "assistant" :content response-text}]
         (swap! messages conj assistant-msg feedback-msg)
@@ -409,17 +409,27 @@
                                                                 :max-iterations max-iterations)
                                     "\n\n" prompt/context-access-prompt)})
         user-msg (prompt/build-initial-user-message query)
+        ;; These three are `?`-suffixed on purpose. They were :enable-compaction,
+        ;; :enable-structure-aware and :enable-budget — names that read like
+        ;; config-schema keys in a grep but never were: each is derived from a
+        ;; DIFFERENTLY named caller opt just below, and none is resolved through
+        ;; agent config. The agent brick has real :enable-* schema keys, so the
+        ;; old spelling cost a false hit every time someone searched for one.
+        ;; The caller-facing vocabulary (:compaction-opts {:enable},
+        ;; :feedback-opts {:structure-aware}, :budget-opts {:enable}) is
+        ;; unchanged — only these internal bindings and the private cfg maps
+        ;; they feed were renamed. See feature-flags-design.md §9 Q5.
         ;; Compaction config
-        enable-compaction (get compaction-opts :enable false)
+        compaction? (get compaction-opts :enable false)
         compaction-trigger (get compaction-opts :trigger-iteration 5)
         compaction-keep-recent (get compaction-opts :keep-recent 3)
         compaction-max-summary (get compaction-opts :max-summary-chars 3000)
         ;; Feedback config
-        enable-structure-aware (get feedback-opts :structure-aware false)
+        structure-aware? (get feedback-opts :structure-aware false)
         feedback-max-chars (get feedback-opts :max-chars-per-block 10000)
         ;; Budget monitoring
-        enable-budget (get budget-opts :enable false)
-        budget-atom (when enable-budget
+        budget? (get budget-opts :enable false)
+        budget-atom (when budget?
                       (budget/create-budget-monitor max-context-tokens max-iterations))
         ;; Shared loop state passed to all handlers
         loop-state {:messages (atom (or initial-messages [system-msg user-msg]))
@@ -429,14 +439,14 @@
                     :on-iteration on-iteration
                     :max-context-tokens max-context-tokens
                     :sb sb}
-        compaction-cfg {:enable-compaction enable-compaction
+        compaction-cfg {:compaction? compaction?
                         :compaction-trigger compaction-trigger
                         :compaction-keep-recent compaction-keep-recent
                         :compaction-max-summary compaction-max-summary
                         :budget-atom budget-atom}
-        eval-cfg {:enable-structure-aware enable-structure-aware
+        eval-cfg {:structure-aware? structure-aware?
                   :feedback-max-chars feedback-max-chars
-                  :enable-budget enable-budget
+                  :budget? budget?
                   :budget-atom budget-atom}]
     (loop [iteration 1]
       (cond
