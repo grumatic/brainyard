@@ -610,16 +610,34 @@
   caps fall back to `extract/default-graph-limits` (kept in sync with the
   config defaults).
 
-  Incremental: pass the previous run's `:max-id` back as `:after-id` so each run
-  only extracts episodes captured since. Returns
-  `{:calls 0|1 :new-episodes n :nodes n :edges n :max-id id}`; `:no-extract-fn
-  true` when the graph tier is off."
+  Incremental via the SAME persisted high-water mark `extract-l2-graph!` uses
+  (`graph_extract_after_id:u:<uid>:s:<sid>` in `memory_metadata`): omit
+  `:after-id` and the mark is read from the db and advanced on the way out.
+  Persisted rather than caller-held so the mark survives the process — an
+  in-process marker meant a detached `by memory reduce` child and the live
+  session kept independent positions and each re-extracted the other's
+  episodes, paying for the LLM call twice. Pass `:after-id 0` explicitly to
+  force a full re-extract; any explicit value overrides the stored mark.
+
+  Returns `{:calls 0|1 :new-episodes n :nodes n :edges n :max-id id}`;
+  `:no-extract-fn true` when the graph tier is off."
   [manager & {:keys [session-id after-id max-input-chars max-entities max-relations max-nodes max-edges]
-              :or   {after-id 0 max-input-chars 400000}}]
+              :or   {max-input-chars 400000}}]
   (if-let [extract-fn (:extract-fn manager)]
-    (let [store  (:store manager)
-          eps    (episodic/episodes-after-id (:ds store) session-id after-id)
-          max-id (reduce max after-id (keep :id eps))
+    (let [store   (:store manager)
+          ds      (:ds store)
+          wm-key  (graph-watermark-key (:user-id store) session-id)
+          after   (or after-id
+                      (some-> (sqlite/get-metadata ds wm-key) parse-long)
+                      0)
+          eps    (episodic/episodes-after-id ds session-id after)
+          max-id (reduce max after (keep :id eps))
+          ;; Advance the mark whenever episodes were seen — including the
+          ;; too-short-to-extract branch below, which is what the in-process
+          ;; marker did. Not advancing there would re-read the same skipped
+          ;; episodes on every future run.
+          _      (when (> (long max-id) (long after))
+                   (sqlite/set-metadata! ds wm-key (str max-id)))
           text0  (join-turns (keep :content eps))
           text   (if (> (count text0) max-input-chars) (subs text0 0 max-input-chars) text0)]
       (if (or (empty? eps) (< (count text) 40))
@@ -642,7 +660,7 @@
                        :new-episodes (count eps) :nodes (:nodes applied 0) :edges (:edges applied 0))
           {:calls 1 :new-episodes (count eps)
            :nodes (:nodes applied 0) :edges (:edges applied 0) :max-id max-id})))
-    {:calls 0 :no-extract-fn true :max-id after-id}))
+    {:calls 0 :no-extract-fn true :max-id (or after-id 0)}))
 
 ;; =====================================================
 ;; Retention & Archive (P4)
