@@ -255,6 +255,31 @@
       (is (= 0 @fires))
       (is (nil? (get @@#'ma-hooks/!turn-counters "s-off"))))))
 
+(deftest consolidation-cadence-job-timeout-is-mode-aware-test
+  (testing "the graph reducer gets a far larger ceiling than the heuristic one"
+    ;; A live graph reduce over an 88-episode window took 261s — 87% of the
+    ;; background layer's generic 300s default. Inheriting that default would
+    ;; cancel a longer session's reduce mid-flight.
+    (let [timeout-of (fn [graph?]
+                       (reset-counters!)
+                       (let [captured (atom nil)
+                             root (make-stub :coact-agent/root
+                                             :session-id (str "s-timeout-" graph?)
+                                             :config {:enable-memory-consolidation true
+                                                      :enable-graph-memory graph?
+                                                      :memory-consolidate-every-n-turns 1})]
+                         (with-redefs [bg/run-off-turn! (fn [& {:keys [timeout-ms]}]
+                                                          (reset! captured timeout-ms)
+                                                          :submitted)]
+                           (ma-hooks/consolidation-cadence-handler {:agent root}))
+                         @captured))
+          heuristic (timeout-of false)
+          graph     (timeout-of true)]
+      (is (some? heuristic) "the handler passes an explicit ceiling, never inherits the default")
+      (is (> graph heuristic) "graph mode gets the larger ceiling")
+      (is (> graph 261000)
+          "and comfortably exceeds the 261s a real graph reduce actually took"))))
+
 (deftest consolidation-cadence-handler-registered-test
   (testing "consolidation-cadence hook is registered on :agent.ask/post at namespace load"
     ;; Re-install in case other tests reset the registry.

@@ -54,9 +54,15 @@
 (def ^:private terminal-statuses #{:completed :failed :cancelled})
 
 (def ^:const default-timeout-ms
-  "Ceiling on one background job. Generous — a sub-LM drafting a full SKILL.md,
-   or a graph consolidation summarizing communities, routinely runs a minute or
-   more; this exists to reclaim a wedged job, not to bound normal work."
+  "Default ceiling on one background job, sized for a SCORING call — a sub-LM
+   drafting a full SKILL.md routinely runs a minute or more. It exists to
+   reclaim a wedged job, not to bound normal work.
+
+   Jobs whose runtime is a different order of magnitude MUST pass their own
+   `:timeout-ms` rather than inherit this. Graph consolidation does: a live run
+   over an 88-episode window took 261s, 87% of this default, and a longer
+   session would be cancelled mid-reduce — see
+   `memory-agent.hooks/cadence-job-timeout-ms`."
   300000)
 
 (defn in-flight-tasks

@@ -206,6 +206,29 @@
             (mem/consolidate-graph! mm :session-id sid))
         (mem/consolidate-l2!    mm :session-id sid)))))
 
+;; Ceiling on ONE cadence job, mode-aware for the same reason `flush-timeout-ms`
+;; below is: the two reducers differ by orders of magnitude. The heuristic path
+;; is LLM-free and returns in milliseconds (measured: 6ms). The graph path does
+;; batch extraction plus a per-community LLM summary — a live run over a
+;; 2-turn window (88 episodes → 12 communities) took **261s**, i.e. 87% of the
+;; background layer's generic 300s default. That default was written for a
+;; sub-LM drafting a SKILL.md and is far too tight here: on a longer session
+;; the job would be cancelled mid-reduce, plausibly after the extract-marker
+;; advanced but before the communities were summarized.
+;;
+;; These bounds exist to reclaim a WEDGED job, not to bound normal work, so the
+;; graph value is deliberately generous relative to the 261s observation.
+(def ^:private ^:const cadence-timeout-ms 300000)         ; heuristic (LLM-free)
+(def ^:private ^:const cadence-timeout-graph-ms 1800000)  ; graph (LLM extract + summaries)
+
+(defn- cadence-job-timeout-ms
+  "How long one cadence consolidation job may run before the task layer
+   reclaims it, given the agent's reducer path."
+  [agent]
+  (if (config/get-config agent :enable-graph-memory)
+    cadence-timeout-graph-ms
+    cadence-timeout-ms))
+
 (defn consolidation-cadence-handler
   "`:agent.ask/post` handler. Increments the session turn counter and, on every
    Nth turn, runs `run-consolidation!` off the turn thread. Returns nil and
@@ -219,6 +242,10 @@
    summaries) can outlast the next cadence boundary, and two overlapping
    reduces over ONE session's L2→L3 is a race this drops rather than runs.
 
+   The job carries its own mode-aware `:timeout-ms` (see
+   `cadence-job-timeout-ms`) — the background layer's generic default is sized
+   for a scoring call, not for a graph reduce.
+
    NOTE: the session-end flush below deliberately does NOT use this path. It
    blocks close (bounded, mode-aware) or hands off to a detached child — that
    is load-bearing behaviour, not an oversight."
@@ -229,9 +256,10 @@
           tally (get (swap! !turn-counters update sid (fnil inc 0)) sid)]
       (when (and (pos? n) (zero? (mod tally n)))
         (bg/run-off-turn!
-         :kind  :consolidate
-         :key   sid
-         :label (str "memory-consolidate " sid " (turn " tally ")")
+         :kind       :consolidate
+         :key        sid
+         :label      (str "memory-consolidate " sid " (turn " tally ")")
+         :timeout-ms (cadence-job-timeout-ms agent)
          :thunk (fn []
                   (try
                     (let [r (run-consolidation! agent)]
