@@ -365,13 +365,36 @@
   {:got path})
 
 (deftest positional-defn-binding-receives-its-arg
-  (testing "a raw fn bound via :functions is applied positionally — the lookup
-            keys off :properties, which fn->tool keys by keyword"
+  (testing "a raw fn bound via :functions is applied positionally"
     (let [[tools fn-map] (tool/bind-tools :functions [#'tool-test-positional])]
       (is (= {:got "a.clj"}
              (tool/call-tool :tool-test-positional {:path "a.clj"}
                              :tools tools :tools-fn-map fn-map))
           "a nil :got means the positional lookup missed the arg map"))))
+
+;; Nine params on purpose: `fn->tool` builds :properties with `into {}`, which
+;; stays an insertion-ordered PersistentArrayMap through 8 pairs and becomes a
+;; PersistentHashMap at 9. Deriving positional order from that map applied a
+;; 9-arg fn's arguments in hash order — silently, with every value landing in
+;; the wrong parameter. Order must come from the fn's own arglists.
+(defn ^{:desc "Test-only 9-param positional fn."} tool-test-nine
+  [^{:type "string"} a ^{:type "string"} b ^{:type "string"} c
+   ^{:type "string"} d ^{:type "string"} e ^{:type "string"} f
+   ^{:type "string"} g ^{:type "string"} h ^{:type "string"} i]
+  {:a a :b b :c c :d d :e e :f f :g g :h h :i i})
+
+(deftest positional-defn-binding-preserves-declaration-order-past-8-args
+  (let [[tools fn-map] (tool/bind-tools :functions [#'tool-test-nine])
+        ;; each value is its own param name, so a mismatch is self-describing
+        args (into {} (map (fn [k] [k (name k)])) [:a :b :c :d :e :f :g :h :i])]
+    (testing "the :properties map really has lost declaration order at 9 entries
+              — i.e. this test would have failed before the fix"
+      (let [props (:properties (:parameters (first tools)))]
+        (is (instance? clojure.lang.PersistentHashMap props))
+        (is (not= [:a :b :c :d :e :f :g :h :i] (vec (keys props))))))
+    (testing "arguments still land in their declared parameters"
+      (is (= args (tool/call-tool :tool-test-nine args
+                                  :tools tools :tools-fn-map fn-map))))))
 
 ;; Drop the throwaway tool AFTER the tests run, so a sibling test that
 ;; enumerates the registry doesn't see it. (At load time this would remove it

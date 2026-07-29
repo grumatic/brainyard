@@ -929,12 +929,26 @@
                     visible-tools (into (->tools visible-tools def->tool)))
         tools-fn-map (reduce
                       (fn [acc tool]
-                        (let [{:keys [tool-fn tool-fn-type parameters]} tool
-                              ;; Keyword arg names — `fn->tool` keys :properties by
-                              ;; keyword, and `call-tool` hands every path a
-                              ;; keyword-keyed arg map, so the positional :defn
-                              ;; lookup below indexes with keywords too.
-                              arglists (keys (:properties parameters))]
+                        (let [{:keys [tool-fn tool-fn-type]} tool
+                              ;; Positional arg order for the :defn branch, read
+                              ;; from the fn's own arglists — the same source
+                              ;; `fn->tool` used to build :properties, and the only
+                              ;; one that preserves declaration order.
+                              ;;
+                              ;; It must NOT be `(keys (:properties parameters))`:
+                              ;; `fn->tool` builds that map with `into {}`, which
+                              ;; stays an insertion-ordered PersistentArrayMap
+                              ;; through 8 pairs and tips into a PersistentHashMap
+                              ;; at 9 — so a 9-arg fn had its arguments applied in
+                              ;; hash order, silently landing every value in the
+                              ;; wrong parameter.
+                              ;;
+                              ;; Keys are keywords: `fn->tool` keys :properties by
+                              ;; keyword and `call-tool` hands every path a
+                              ;; keyword-keyed arg map.
+                              arg-order (when-not (#{:tool :command :skill :agent}
+                                                   tool-fn-type)
+                                          (mapv keyword (first (:arglists (meta tool-fn)))))]
                           (conj acc [(:name tool) #(apply tool-fn
                                                           (let [agent-session {:user-id (proto/get-current-user-id)
                                                                                :session-id (proto/get-current-session-id)}]
@@ -945,7 +959,7 @@
                                                                       :agent-session agent-session
                                                                       :parent-agent proto/*current-agent*)]
                                                               ;; default case - positional arguments for :defn or nil
-                                                              (map (fn [arg] (get % arg)) arglists))))])))
+                                                              (map (fn [arg] (get % arg)) arg-order))))])))
                       {}
                       tool-list)]
     [(mapv #(dissoc % :tool-fn) tool-list) tools-fn-map]))
