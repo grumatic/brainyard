@@ -15,8 +15,9 @@
 
    Coercion is now done by `llm-args-transformer` (a Malli transformer) so it
    walks the declared schema and coerces leaves at any depth."
-  (:require [ai.brainyard.agent.core.tool :as tool]
-            [clojure.test :refer [deftest is testing]]
+  (:require [ai.brainyard.agent.core.hooks :as hooks]
+            [ai.brainyard.agent.core.tool :as tool]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [malli.core :as m]))
 
 ;; ----------------------------------------------------------------------------
@@ -259,10 +260,12 @@
                                      :tools bound-tools :tools-fn-map bound-fn-map)]
           (is (not (contains? result :error-message))
               (str "aliased args should dispatch; got: " (pr-str result)))
-          ;; the :json bound-fn path hands the body string-keyed args
-          ;; (update-keys decoded name), so assert on the string form.
-          (is (= "a" (get @seen "pattern")))
-          (is (= "b" (get @seen "replacement")))))
+          ;; The :json bound-fn path hands the body KEYWORD-keyed args, same as
+          ;; the :malli registry path. (It used to re-stringify them here — see
+          ;; the arg-key note on `do-call-tool--bound-fn`.)
+          (is (= "a" (:pattern @seen)))
+          (is (= "b" (:replacement @seen)))
+          (is (every? keyword? (keys @seen)))))
       (finally
         (swap! tool/!tool-defs dissoc tool-id)))))
 
@@ -291,3 +294,89 @@
     (is (= "not-a-map" (tool/coerce-value "not-a-map" "object"))))
   (testing "a value that is already a map/vector (not a string) passes through untouched"
     (is (= {:model "opus"} (tool/coerce-value {:model "opus"} "object")))))
+
+;; ----------------------------------------------------------------------------
+;; Hook arg keys are keywords on BOTH dispatch paths.
+;;
+;; `call-tool` resolves a tool one of two ways — the `:json` bound-fn path (how
+;; every LLM tool-call arrives, via `bind-tools`) or the `:malli` registry path
+;; (a plain Clojure caller). The `:json` path used to re-stringify arg keys for
+;; the bound wrapper, so the `:agent.tool-use/pre` payload depended on how the
+;; tool happened to resolve. Every gate reading an arg by keyword silently saw
+;; nil for a bound tool: `eval-bash-guard` failed OPEN on `(:command args)`, and
+;; `mcp-permission-gate`'s `:match` never fired on `(:op args)`, skipping the
+;; approval gate for proxied MCP calls.
+;; ----------------------------------------------------------------------------
+
+(tool/deftool tool-test$probe
+  "Test-only tool; echoes its args."
+  (fn [& {:as args}] {:got args})
+  :input-schema [:map
+                 [:command [:string {:desc "a command"}]]
+                 [:n {:optional true} [:int {:desc "a number"}]]])
+
+(defn- capture-pre-args
+  "Run `f` with a `:agent.tool-use/pre` observer installed; return the `:args`
+   the hook saw."
+  [f]
+  (let [seen (atom ::none)]
+    (try
+      (hooks/register-hook! :agent.tool-use/pre ::arg-key-probe
+                            (fn [ev] (reset! seen (:args ev)) nil))
+      (f)
+      @seen
+      (finally
+        (hooks/unregister-hook! :agent.tool-use/pre ::arg-key-probe)))))
+
+(deftest hook-args-are-keyword-keyed-on-both-dispatch-paths
+  (let [[tools fn-map] (tool/bind-tools :tools [:tool-test$probe])
+        bound    (capture-pre-args
+                  #(tool/call-tool :tool-test$probe {:command "ls" :n 3}
+                                   :tools tools :tools-fn-map fn-map))
+        registry (capture-pre-args
+                  #(tool/call-tool :tool-test$probe {:command "ls" :n 3}))]
+    (testing "the bound (:json) path — what an LLM tool-call takes"
+      (is (= {:command "ls" :n 3} bound))
+      (is (every? keyword? (keys bound)))
+      (is (= "ls" (:command bound))
+          "a guard reading (:command args) must not see nil"))
+    (testing "the registry (:malli) path"
+      (is (= {:command "ls" :n 3} registry)))
+    (testing "the two paths agree — the payload must not depend on resolution"
+      (is (= bound registry)))))
+
+(deftest bound-path-still-coerces-and-validates
+  (testing "wire-string values still decode against the input schema"
+    (let [[tools fn-map] (tool/bind-tools :tools [:tool-test$probe])
+          args (capture-pre-args
+                #(tool/call-tool :tool-test$probe {:command "ls" :n "3"}
+                                 :tools tools :tools-fn-map fn-map))]
+      (is (= 3 (:n args)) "\"3\" decodes to an int before the hook sees it")))
+
+  (testing "a malformed call is still rejected before dispatch"
+    (let [[tools fn-map] (tool/bind-tools :tools [:tool-test$probe])
+          result (tool/call-tool :tool-test$probe {:n 3}
+                                 :tools tools :tools-fn-map fn-map)]
+      (is (string? (:error-message result))
+          "missing required :command is rejected, not passed through as nil"))))
+
+(defn ^{:desc "Test-only positional fn."} tool-test-positional
+  [^{:type "string" :desc "a path"} path]
+  {:got path})
+
+(deftest positional-defn-binding-receives-its-arg
+  (testing "a raw fn bound via :functions is applied positionally — the lookup
+            keys off :properties, which fn->tool keys by keyword"
+    (let [[tools fn-map] (tool/bind-tools :functions [#'tool-test-positional])]
+      (is (= {:got "a.clj"}
+             (tool/call-tool :tool-test-positional {:path "a.clj"}
+                             :tools tools :tools-fn-map fn-map))
+          "a nil :got means the positional lookup missed the arg map"))))
+
+;; Drop the throwaway tool AFTER the tests run, so a sibling test that
+;; enumerates the registry doesn't see it. (At load time this would remove it
+;; before the deftests above ever bind it.)
+(use-fixtures :once
+  (fn [f]
+    (try (f)
+         (finally (swap! tool/!tool-defs dissoc :tool-test$probe)))))

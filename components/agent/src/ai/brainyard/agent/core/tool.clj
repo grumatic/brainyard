@@ -460,7 +460,16 @@
    args inside `run-fn`, AFTER the hook has seen them — hooks see only the
    user-meaningful args, not agent bookkeeping. Catches exceptions and
    returns an `{:error-message ...}` map. Resolves async
-   `clojure.lang.Agent` refs."
+   `clojure.lang.Agent` refs.
+
+   ARG KEYS ARE KEYWORDS, same as the `:malli` registry path. This path used
+   to re-stringify them, which made the hook payload depend on how a tool
+   happened to be resolved: every gate reading `(:command args)` /
+   `(:op args)` silently saw nil for a bound tool. `eval-bash-guard` failed
+   OPEN that way, and `mcp-permission-gate`'s `:match` never fired, skipping
+   the approval gate for proxied MCP calls. `bind-tools`' own wrappers had to
+   undo the stringification (`update-keys % keyword`) before calling any tool
+   body, so nothing downstream wanted it either."
   [agent tool-fn args tool-name]
   (try
     (dispatch-with-hooks
@@ -626,21 +635,20 @@
                 ;; and decode with llm-args-transformer so :keyword fields convert
                 ;; string→keyword correctly. Otherwise fall back to coerce-tool-args
                 ;; (plain fn->tool path without registry entry).
-                ;; bind-tools' fn wrappers receive {string-key value} maps; preserve
-                ;; string keys after coercion.
+                ;; Args stay KEYWORD-keyed, matching the :malli registry path — see
+                ;; the arg-key note on `do-call-tool--bound-fn`.
                 (= schema-format :json)
                 (let [tool-id (keyword tool-name)
                       registry-def (get-tool-defs :id tool-id)
                       input-schema (get-in registry-def [:meta :input-schema])]
                   (if (and input-schema (seq (malli-map-entries input-schema)))
                     ;; Malli decode + validate path: keywordize, decode, reject
-                    ;; malformed args, then back to string keys for the bound fn.
+                    ;; malformed args, then dispatch.
                     (let [kw-args (update-keys normalized-args keyword)
                           inputs-schema (inputs->malli-map-schema input-schema)
                           decoded (m/decode inputs-schema kw-args llm-args-transformer)]
                       (or (reject-invalid-args inputs-schema decoded agent tool-name)
-                          (do-call-tool--bound-fn agent bound-fn
-                                                  (update-keys decoded name) tool-name)))
+                          (do-call-tool--bound-fn agent bound-fn decoded tool-name)))
                     ;; JSON coerce path: for plain fn->tool without registry entry
                     ;; (no schema to validate against).
                     (let [props (get-in bound-entry [:parameters :properties])]
@@ -922,7 +930,11 @@
         tools-fn-map (reduce
                       (fn [acc tool]
                         (let [{:keys [tool-fn tool-fn-type parameters]} tool
-                              arglists (map #(name %) (keys (:properties parameters)))]
+                              ;; Keyword arg names — `fn->tool` keys :properties by
+                              ;; keyword, and `call-tool` hands every path a
+                              ;; keyword-keyed arg map, so the positional :defn
+                              ;; lookup below indexes with keywords too.
+                              arglists (keys (:properties parameters))]
                           (conj acc [(:name tool) #(apply tool-fn
                                                           (let [agent-session {:user-id (proto/get-current-user-id)
                                                                                :session-id (proto/get-current-session-id)}]
