@@ -58,7 +58,19 @@
 (defn divergence?
   "Cheap deterministic pre-filter: a failed dynamic-skill invocation. This is
    the clearest 'outcome diverged from documented steps' signal and gates the
-   LLM judge so non-skill / successful calls cost nothing."
+   LLM judge so non-skill / successful calls cost nothing.
+
+   SCOPE (narrowed): `skill$<name>` now LOADS a skill into the calling agent's
+   context by default rather than running it, so on that path a failure means
+   only that SKILL.md could not be read — never that its steps were wrong. This
+   trigger is therefore meaningful mainly for skills declaring `dispatch: agent`
+   in their frontmatter, which still execute in a sub-agent and can fail
+   mid-procedure.
+
+   Recovering the signal for loaded skills needs a turn-level trigger (an
+   unsuccessful turn that loaded skill X), not a tool-level one — the judge
+   itself (`score-refinement` / `stage-refinement!`) would be reused unchanged.
+   Deliberately not done here; see docs/design/skills.md § Dispatch."
   [tool-name result]
   (and (skill-invocation? tool-name) (result-error? result)))
 

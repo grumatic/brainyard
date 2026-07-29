@@ -1414,6 +1414,24 @@
       (is (str/includes? txt "### Short\ntiny"))
       (is (not (str/includes? txt "/abs/short.md")))))
 
+  (testing "format-live-artifacts renders a :full? file artifact whole (the skill-load path)"
+    (let [fmt (deref #'rca/format-live-artifacts)
+          long-body (apply str (repeat 500 "x"))
+          txt (fmt [{:name "skill: big" :source :file :path "/abs/SKILL.md"
+                     :content long-body :full? true :max-chars 12000}])]
+      ;; a loaded skill is followed verbatim — a preview + pointer cannot serve
+      (is (str/includes? txt long-body))
+      (is (not (str/includes? txt "read-file")))
+      (is (not (str/includes? txt "truncated")))))
+
+  (testing "a :full? artifact still respects its own :max-chars"
+    (let [fmt (deref #'rca/format-live-artifacts)
+          long-body (apply str (repeat 500 "x"))
+          txt (fmt [{:name "skill: capped" :source :file :path "/abs/SKILL.md"
+                     :content long-body :full? true :max-chars 100}])]
+      (is (str/includes? txt (str (apply str (repeat 100 "x")) "…")))
+      (is (not (str/includes? txt (apply str (repeat 101 "x")))))))
+
   (testing "resolve-artifacts loads :file fresh, drops missing, passes inline, stamps max-chars"
     (let [resolve* (deref #'rca/resolve-artifacts)
           f (java.io.File/createTempFile "art" ".md")

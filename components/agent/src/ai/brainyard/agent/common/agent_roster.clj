@@ -119,7 +119,12 @@ evidence dossier that eval-agent consumes.")
    `default-agent-roster` (skills$find/read/list/reload). USE is read-only;
    lifecycle (create/update/install) stays skill-agent's. Cousin of the Project
    Memory protocol — both are 'consult the store before reinventing' (skills =
-   procedures, memory = facts). Modeled on `project-memory-protocol`."
+   procedures, memory = facts). Modeled on `project-memory-protocol`.
+
+   The LOAD step is the substrate's centre: `:skill$<name>` hands the SKILL.md
+   to the CALLING agent (and pins it as a live artifact) rather than running it
+   in a sub-agent, so the agent holding the task context is the one following
+   the procedure. See `skills/make-dynamic-skill-fn`."
   "## Using a skill (skill substrate)
 Skills are reusable, named procedures (a SKILL.md of imperative steps, sometimes
 with helper scripts). Before reinventing a multi-step procedure, check for one:
@@ -130,11 +135,18 @@ with helper scripts). Before reinventing a multi-step procedure, check for one:
    proceed. Also `(skills$list)` to browse. Skills span backends: :brainyard
    (local), :claude, :agents; when one name exists in several, the most local
    wins and `:also-in` names the others.
-2. READ — `(skills$read {:skill-name \"<name>\"})` for the SKILL.md + its path.
+2. LOAD — call the skill by name (`:skill$<name>`). It returns the SKILL.md
+   procedure to YOU and pins it into `## Live Artifacts`, so it stays available
+   on later turns and reloads if the file changes. This is the normal way to
+   pick up a skill you intend to use. (A skill whose frontmatter says
+   `dispatch: agent` instead runs in its own sub-agent and returns an answer —
+   pass it a `:question`.)
+   Use `(skills$read {:skill-name \"<name>\"})` only to PEEK at a skill you are
+   not committing to — loading is what puts it in front of you to follow.
 3. FOLLOW — do what the SKILL.md says, in your own iterations: run its
    `scripts/<…>` via bash, read its `resources/<…>`, follow its imperative steps.
-   If the skill is registered as a callable tool (`:skill$<name>`), you may
-   instead invoke it by name and let it drive — its SKILL.md rides in as context.
+   The procedure is yours to execute — you have the tools and the task context;
+   nothing runs it for you.
 
 RULES:
 - Prefer an existing skill over hand-rolling the same steps — but only when a

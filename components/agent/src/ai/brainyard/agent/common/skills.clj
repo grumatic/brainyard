@@ -36,7 +36,8 @@
    reads SKILL.md fresh on every invocation and asks the agent's LM to follow
    it against the user's question. Stale dynamic skills (no longer on disk)
    are dropped on each reload. Mirrors `mcp/integration/register-mcp-tools-for-server!`."
-  (:require [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
+  (:require [ai.brainyard.agent.common.artifacts :as artifacts]
+            [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.java.io :as io]
@@ -176,6 +177,10 @@
       (assoc :tags (mapv str/trim (str/split (:tags frontmatter) #",")))
       (:version frontmatter)
       (assoc :version (:version frontmatter))
+      ;; `dispatch: agent` opts a skill out of the default load-into-context
+      ;; path and back into skill-agent delegation (see make-dynamic-skill-fn).
+      (:dispatch frontmatter)
+      (assoc :dispatch (str/lower-case (str/trim (:dispatch frontmatter))))
       ;; Surface the raw front-matter `name` (open-standard) so import can
       ;; derive the canonical skill name from it.
       (:name frontmatter)
@@ -1006,49 +1011,123 @@
       :else
       (assoc base :answer (str output)))))
 
-(defn- make-dynamic-skill-fn
-  "Build the :fn body for a dynamically-registered skill. Reads SKILL.md
-   fresh on each call so edits propagate without another reload. Dispatches
-   the question to the registered `:skill-agent` defagent (via invoke-tool),
-   passing the SKILL.md content as :agent-context.
+(defn- skill-md-path
+  "Absolute path of a skill's SKILL.md. `read-skill` returns the skill's
+   DIRECTORY as :path, so the document itself has to be derived."
+  [skill]
+  (some-> (:path skill) (io/file "SKILL.md") .getPath))
 
-   Returns `{:answer ... :skill ... :type ... :usage?}` on success or
-   `{:error-message ... :skill ...}` on failure."
+(defn- skill-artifact-cap
+  "Config `:skill-artifact-max-chars` for the running agent, else the schema
+   default. Reached via requiring-resolve to match `current-dirs` below — this
+   ns deliberately never statically requires core.config, because it loads
+   ahead of the core config/dirs namespaces on some cold-start paths."
+  []
+  (or (try
+        (when-let [agent proto/*current-agent*]
+          ((requiring-resolve 'ai.brainyard.agent.core.config/get-config)
+           agent :skill-artifact-max-chars))
+        (catch Exception _ nil))
+      12000))
+
+(defn- load-skill-into-context
+  "DEFAULT dispatch: hand the skill's procedure to the agent that asked for it.
+
+   Two deliveries, because one alone is not enough:
+   - the SKILL.md body is RETURNED as the tool result, so it is usable on the
+     CURRENT turn (a live artifact added mid-turn only reaches the prompt next
+     turn — `add-artifact!` writes the cross-turn store);
+   - it is REGISTERED as a `:full?` file artifact, so later turns keep it in
+     `## Live Artifacts`, reloaded fresh from disk each turn.
+
+   Registration is best-effort: with no running agent (a bare `invoke-tool`, a
+   test) the content is still returned. Degrade, never fail."
+  [skill-name skill]
+  (let [md-path  (skill-md-path skill)
+        agent    proto/*current-agent*
+        added    (when (and agent md-path)
+                   (try
+                     (artifacts/add-artifact!
+                      agent
+                      {:path      md-path
+                       :name      (str "skill: " skill-name)
+                       :full      true
+                       :max-chars (skill-artifact-cap)})
+                     (catch Exception e
+                       (mulog/warn ::skill-artifact-register-failed
+                                   :skill skill-name :error (ex-message e))
+                       nil)))]
+    (cond-> {:skill   skill-name
+             :type    (name (or (:type skill) :unknown))
+             :path    md-path
+             :content (:content skill)
+             :loaded  true}
+      (:id added)    (assoc :artifact-id (:id added))
+      (:error added) (assoc :artifact-note (str "not added to Live Artifacts: "
+                                                (:error added))))))
+
+(defn- delegate-to-skill-agent
+  "OPT-OUT dispatch (`dispatch: agent` in SKILL.md frontmatter): run the skill
+   in a fresh skill-agent sub-agent and return its answer. Kept for skills whose
+   procedure is better executed in an isolated context than followed inline."
+  [skill-name skill question]
+  (if (nil? (tool/get-tool-defs :id :skill-agent))
+    {:error-message "skill-agent not registered — load ai.brainyard.agent.common.skill-agent"
+     :skill skill-name}
+    (try
+      (let [parent proto/*current-agent*
+            sess   (when parent
+                     {:user-id    (proto/user-id parent)
+                      :session-id (proto/session-id parent)})
+            ctx    (skill-system-prompt skill-name (:content skill))
+            raw    (tool/invoke-tool :skill-agent
+                                     :question      question
+                                     :agent-context ctx
+                                     :parent-agent  parent
+                                     :agent-session sess
+                                     :auto-close?   true)
+            output (tool/resolve-agent-ref raw)]
+        (format-skill-output output skill-name (:type skill)))
+      (catch Exception e
+        (mulog/error ::dynamic-skill-call-failed
+                     :skill skill-name :error (ex-message e))
+        {:error-message (str "Skill `" skill-name "` failed: " (ex-message e))
+         :skill skill-name}))))
+
+(defn- make-dynamic-skill-fn
+  "Build the :fn body for a dynamically-registered skill. Reads SKILL.md fresh
+   on each call so edits propagate without another reload.
+
+   By DEFAULT the skill is loaded into the CALLING agent's own context
+   (`load-skill-into-context`) — the agent that wanted the procedure gets the
+   procedure, and follows it with its own tools. A skill can opt back into
+   sub-agent execution with `dispatch: agent` in its frontmatter
+   (`delegate-to-skill-agent`).
+
+   `dispatch` is read from the FRESH read, not the registration snapshot, so
+   flipping the frontmatter takes effect without `skills$reload`.
+
+   Returns `{:content … :path … :artifact-id … :loaded true}` on the load path,
+   `{:answer … :skill … :type …}` on the delegate path, or
+   `{:error-message … :skill …}` on failure."
   [skill-name skill-type skill-scope]
   (fn [& {:keys [question]}]
-    (let [q (or question "")]
+    (let [skill (read-skill (current-dirs) skill-name
+                            :type skill-type :scope skill-scope)]
       (cond
-        (str/blank? q)
-        {:error-message "question is required" :skill skill-name}
+        (:error skill)
+        {:error-message (:error skill) :skill skill-name}
 
-        (nil? (tool/get-tool-defs :id :skill-agent))
-        {:error-message "skill-agent not registered — load ai.brainyard.agent.common.skill-agent"
-         :skill skill-name}
+        (= "agent" (:dispatch skill))
+        (let [q (or question "")]
+          (if (str/blank? q)
+            {:error-message (str "skill `" skill-name "` declares `dispatch: agent`, "
+                                 "so it needs a :question to run")
+             :skill skill-name}
+            (delegate-to-skill-agent skill-name skill q)))
 
         :else
-        (let [skill (read-skill (current-dirs) skill-name
-                                :type skill-type :scope skill-scope)]
-          (if (:error skill)
-            {:error-message (:error skill) :skill skill-name}
-            (try
-              (let [parent proto/*current-agent*
-                    sess   (when parent
-                             {:user-id    (proto/user-id parent)
-                              :session-id (proto/session-id parent)})
-                    ctx    (skill-system-prompt skill-name (:content skill))
-                    raw    (tool/invoke-tool :skill-agent
-                                             :question      q
-                                             :agent-context ctx
-                                             :parent-agent  parent
-                                             :agent-session sess
-                                             :auto-close?   true)
-                    output (tool/resolve-agent-ref raw)]
-                (format-skill-output output skill-name (:type skill)))
-              (catch Exception e
-                (mulog/error ::dynamic-skill-call-failed
-                             :skill skill-name :error (ex-message e))
-                {:error-message (str "Skill `" skill-name "` failed: " (ex-message e))
-                 :skill skill-name}))))))))
+        (load-skill-into-context skill-name skill)))))
 
 (defn- dynamic-skill-id [skill-name]
   (keyword (str "skill$" skill-name)))
@@ -1096,15 +1175,20 @@
                       src (str "skill: `" name "` [" (clojure.core/name (or type :unknown))
                                (when scope (str "/" (clojure.core/name scope))) "]")]
                   (if (str/blank? d)
-                    (str "Run the `" name "` skill against the user question. (" src ")")
-                    (str d " (" src ")")))
+                    (str "Load the `" name "` skill procedure into your context, then follow it. (" src ")")
+                    (str d " — loads this skill's procedure into your context to follow. (" src ")")))
    :input-schema [:map
-                  [:question [:string {:desc "The user question to answer using this skill"}]]]
+                  [:question {:optional true}
+                   [:string {:desc "What you intend to use the skill for. Optional on the default load path; required only for a skill declaring `dispatch: agent`."}]]]
    :output-schema [:map
-                   [:answer        [:string {:desc "Skill answer produced by the LM"}]]
-                   [:skill         [:string {:desc "Skill name that produced the answer"}]]
+                   [:content       [:string {:desc "The SKILL.md procedure — follow these steps yourself (default load path)"}]]
+                   [:path          [:string {:desc "Absolute path to the SKILL.md"}]]
+                   [:loaded        [:boolean {:desc "True when the skill was loaded into context"}]]
+                   [:artifact-id   [:string {:desc "Live-artifact id — the skill stays in `## Live Artifacts` on later turns"}]]
+                   [:answer        [:string {:desc "Answer from skill-agent (only for a skill declaring `dispatch: agent`)"}]]
+                   [:skill         [:string {:desc "Skill name"}]]
                    [:type          [:string {:desc "Skill source type (brainyard | claude | agents)"}]]
-                   [:error-message [:string {:desc "Error message if the skill failed"}]]]
+                   [:error-message [:string {:desc "Error message if the skill could not be read or run"}]]]
    :skill-source type
    :skill-scope  scope})
 

@@ -820,20 +820,26 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
    File-backed artifacts (:source :file) render only a `file-artifact-preview-chars`
    preview; when longer, the body is cut and a `(read-file {:path …})` pointer is
    appended (the file reloads fresh each turn, so the full bytes need not ride
-   the prompt). Inline/legacy artifacts render their content up to :max-chars."
+   the prompt). Inline/legacy artifacts render their content up to :max-chars.
+
+   A file artifact marked `:full?` opts out of the preview and renders its whole
+   body up to :max-chars. That is how a SKILL.md loaded by `skill$<name>` gets
+   into context: the point of loading a skill is that the model follows the
+   procedure verbatim, which a 400-char preview plus a read-file pointer cannot
+   support. It still reloads fresh from disk each turn like any file artifact."
   [artifacts]
   (when (seq artifacts)
     (->> artifacts
-         (map (fn [{:keys [name content origin pinned? max-chars source path]}]
+         (map (fn [{:keys [name content origin pinned? max-chars source path full?]}]
                 (let [s     (str content)
-                      body  (if (= source :file)
+                      cap   (or max-chars default-artifact-max-chars)
+                      body  (if (and (= source :file) (not full?))
                               (if (> (count s) file-artifact-preview-chars)
                                 (str (subs s 0 file-artifact-preview-chars)
                                      "…\n[truncated — `(read-file {:path \"" path
                                      "\"})` for the full content]")
                                 s)
-                              (let [cap (or max-chars default-artifact-max-chars)]
-                                (if (> (count s) cap) (str (subs s 0 cap) "…") s)))
+                              (if (> (count s) cap) (str (subs s 0 cap) "…") s))
                       badge (str/join " " (cond-> []
                                             (= origin :system)  (conj "system")
                                             (= origin :console) (conj "🔎 you inspected")

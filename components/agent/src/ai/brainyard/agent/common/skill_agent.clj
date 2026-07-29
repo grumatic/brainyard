@@ -69,7 +69,14 @@ DECISION FLOW
 CONTENT HANDLING
 - SKILL.md must have a clear title (H1 or frontmatter `title:`) and a one-line
   description so future discovery works.
-- Optional frontmatter fields: `title`, `description`, `tags`, `version`.
+- Optional frontmatter fields: `title`, `description`, `tags`, `version`,
+  `dispatch`.
+- `dispatch: agent` opts a skill out of the default behaviour. By DEFAULT
+  calling :skill$<name> hands the SKILL.md to the CALLING agent (returned as the
+  tool result, and pinned into its Live Artifacts) so that agent follows the
+  steps itself. With `dispatch: agent` the skill instead runs in a fresh
+  skill-agent and returns an answer. Default suits almost everything; reserve
+  the opt-out for procedures better run in an isolated context.
 - When generating SKILL.md from the user's request, write instructions in the
   imperative voice (\"Run X\", \"Open Y\") so agents can follow them directly.
 

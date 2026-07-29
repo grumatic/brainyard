@@ -82,31 +82,43 @@
 (defn- build-descriptor
   "Build a live-artifact descriptor from {:path|:content :name :pinned}, or
    return {:error …} when neither source is given / the :path file is missing.
-   Shared by the artifact$add tool and the explicit-agent `add-artifact!`."
-  [{:keys [path content name pinned]}]
-  (cond
-    (not (str/blank? (str path)))
-    (let [f (File. ^String path)]
-      (if-not (.isFile f)
-        {:error (str "file not found: " path " (use an absolute path)")}
-        (let [abs (.getCanonicalPath f)]
-          {:id      (str "file:" abs)
-           :name    (or (not-empty name) (.getName f))
-           :source  :file
-           :path    abs
-           :origin  :llm
-           :pinned? (boolean pinned)})))
+   Shared by the artifact$add tool and the explicit-agent `add-artifact!`.
 
-    (not (str/blank? (str content)))
-    (let [nm (or (not-empty name) "note")]
-      {:id      (str "note:" (slug nm))
-       :name    nm
-       :source  :inline
-       :content content
-       :origin  :llm
-       :pinned? (boolean pinned)})
+   Two optional knobs, used by the skill loader (`skills/make-dynamic-skill-fn`):
+   `:full` marks a file artifact to render its whole body rather than the
+   renderer's short preview, and `:max-chars` overrides the per-artifact cap
+   (the resolver keeps a descriptor's own cap — see coact `resolve-artifacts`).
+   Both are omitted from the descriptor unless supplied, so ordinary artifacts
+   keep exactly their previous shape."
+  [{:keys [path content name pinned full max-chars]}]
+  (let [extras (cond-> {}
+                 full      (assoc :full? true)
+                 max-chars (assoc :max-chars max-chars))]
+    (cond
+      (not (str/blank? (str path)))
+      (let [f (File. ^String path)]
+        (if-not (.isFile f)
+          {:error (str "file not found: " path " (use an absolute path)")}
+          (let [abs (.getCanonicalPath f)]
+            (merge {:id      (str "file:" abs)
+                    :name    (or (not-empty name) (.getName f))
+                    :source  :file
+                    :path    abs
+                    :origin  :llm
+                    :pinned? (boolean pinned)}
+                   extras))))
 
-    :else {:error "provide :path or :content"}))
+      (not (str/blank? (str content)))
+      (let [nm (or (not-empty name) "note")]
+        (merge {:id      (str "note:" (slug nm))
+                :name    nm
+                :source  :inline
+                :content content
+                :origin  :llm
+                :pinned? (boolean pinned)}
+               extras))
+
+      :else {:error "provide :path or :content"})))
 
 (defn add-artifact!
   "Programmatic, explicit-agent live-artifact insert — for callers OFF the BT

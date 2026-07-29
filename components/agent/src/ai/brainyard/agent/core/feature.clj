@@ -248,7 +248,8 @@
    {:title     "Live artifacts"
     :family    :context
     :gate      :enable-live-artifacts
-    :keys      [:reference-artifact-paths :live-artifact-max-chars]
+    :keys      [:reference-artifact-paths :live-artifact-max-chars
+                :skill-artifact-max-chars]
     :lifecycle :live
     :doc       "Reference files + dynamic artifacts injected into the prompt."}
 

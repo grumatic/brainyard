@@ -175,14 +175,24 @@ Memory protocol.
 Skills are reusable, named procedures (a SKILL.md of imperative steps, sometimes
 with helper scripts). Before reinventing a multi-step procedure, check for one:
 
-1. DISCOVER — (skills$find {:query "<key nouns of the task>"}). Also
-   (skills$list) to browse. Skills span backends: :brainyard (local), :claude,
-   :agents.
-2. READ — (skills$read {:skill-name "<name>"}) for the SKILL.md + its path.
+1. DISCOVER — (skills$find {:query "<key nouns of the task>"}). Ranked,
+   local and instant (no network): {:result [...] :count n}, best match first,
+   each with a :score. An empty :result means you have no such skill — just
+   proceed. Also (skills$list) to browse. Skills span backends: :brainyard
+   (local), :claude, :agents; when one name exists in several, the most local
+   wins and :also-in names the others.
+2. LOAD — call the skill by name (:skill$<name>). It returns the SKILL.md
+   procedure to YOU and pins it into ## Live Artifacts, so it stays available
+   on later turns and reloads if the file changes. This is the normal way to
+   pick up a skill you intend to use. (A skill whose frontmatter says
+   `dispatch: agent` instead runs in its own sub-agent and returns an answer —
+   pass it a :question.)
+   Use (skills$read {:skill-name "<name>"}) only to PEEK at a skill you are
+   not committing to — loading is what puts it in front of you to follow.
 3. FOLLOW — do what the SKILL.md says, in your own iterations: run its
    scripts/<…> via bash, read its resources/<…>, follow its imperative steps.
-   If the skill is registered as a callable tool (:skill$<name>), you may
-   instead invoke it by name and let it drive — its SKILL.md rides in as context.
+   The procedure is yours to execute — you have the tools and the task context;
+   nothing runs it for you.
 
 RULES:
 - Prefer an existing skill over hand-rolling the same steps — but only when a
@@ -236,13 +246,16 @@ ambient.
 ### 6.5 Relationship to dynamically-registered skill-tools
 
 Skills are also auto-registered as callable tools: `skills$reload` registers each
-available skill as `:skill$<name>` in `tool/!tool-defs`; the registered fn reads
-its SKILL.md fresh on every call and dispatches the question to `skill-agent`
-with the SKILL.md as `:agent-context`. The substrate accommodates both modes:
-**invoke the registered skill-tool by name** when one exists, or **read + follow
-inline** otherwise. `skills$find` surfaces both; the model picks. The substrate
-makes the *discovery + follow* habit ambient regardless of which mode a given
-skill uses.
+available skill as `:skill$<name>` in `tool/!tool-defs`. Calling one reads its
+SKILL.md fresh, **registers it as a `:full?` live artifact on the calling agent**,
+and **returns the body as the tool result** — so the substrate's LOAD and FOLLOW
+steps are one call plus the agent's own iterations. There is no second mode to
+pick between: loading and reading-then-following converge on the same place, the
+procedure sitting in the caller's own context.
+
+The exception is a skill declaring `dispatch: agent` in its frontmatter, which
+keeps the original behaviour (run in a fresh skill-agent, return an answer). See
+`docs/design/skills.md` § "Dispatch".
 
 (Registration is an explicit *runtime* call — each entry point calls
 `reload-skills!` once after config/dirs init. It is deliberately NOT a
