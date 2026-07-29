@@ -47,7 +47,8 @@ DECISION FLOW
    - remove         → bash `rm -r .brainyard/skills/<name>/` (confirm first) +
                       (skills$reload). :brainyard scope only. (skills$write
                       :op :remove still works and enforces the scope guard.)
-   - install        → skills$install with a package id ('owner/repo' or
+   - install        → skills$search to find a package (marketplace lookup), then
+                      skills$install with a package id ('owner/repo' or
                       'owner/repo@skill'). Default :type is :agents.
    - sync / update  → skills$sync for CLI backends (:claude / :agents / both).
    - review drafts  → skill-proposal$list / read / accept / reject. The
@@ -58,13 +59,24 @@ DECISION FLOW
 2. Before creating a skill, always skills$find / skills$list first to avoid
    duplicating an existing skill. If a near-match exists, prefer
    (skills$write :op :update).
+   skills$find searches only what is INSTALLED — it is ranked, local and
+   instant, and an empty :result genuinely means \"you do not have this\".
+   To find something to INSTALL, use skills$search (marketplace, slow, network);
+   never read a skills$find miss as \"no such skill exists anywhere\".
 3. Prefer :project scope for brainyard skills tied to the current codebase;
    reserve :user scope for personal/global skills.
 
 CONTENT HANDLING
 - SKILL.md must have a clear title (H1 or frontmatter `title:`) and a one-line
   description so future discovery works.
-- Optional frontmatter fields: `title`, `description`, `tags`, `version`.
+- Optional frontmatter fields: `title`, `description`, `tags`, `version`,
+  `dispatch`.
+- `dispatch: agent` opts a skill out of the default behaviour. By DEFAULT
+  calling :skill$<name> hands the SKILL.md to the CALLING agent (returned as the
+  tool result, and pinned into its Live Artifacts) so that agent follows the
+  steps itself. With `dispatch: agent` the skill instead runs in a fresh
+  skill-agent and returns an answer. Default suits almost everything; reserve
+  the opt-out for procedures better run in an isolated context.
 - When generating SKILL.md from the user's request, write instructions in the
   imperative voice (\"Run X\", \"Open Y\") so agents can follow them directly.
 
@@ -89,11 +101,19 @@ SAFETY
 MANAGEMENT (skills$*)
 - skills$list    -- List skills across types. Args: type (brainyard|claude|agents, optional),
                     scope (project|user, brainyard only, optional).
-- skills$find    -- Search skills by query. Args: query, type (optional).
+- skills$find    -- Search INSTALLED skills; ranked, local, instant. Args: query,
+                    type (optional), limit (optional, default 20). Returns
+                    {:result [...] :count n}, best first, each with :score.
+                    Empty :result = not installed (NOT \"does not exist\").
+- skills$search  -- Search the MARKETPLACE for installable packages. Slow
+                    (subprocess + network) — use only for an install decision.
+                    Args: query, type (claude|agents, optional).
 - skills$read    -- Read SKILL.md + metadata for one skill. Args: skill-name,
                     type (optional — auto-detects), scope (brainyard only, optional).
 - skills$reload  -- Refresh dynamic :skill$<name> tool registrations after a
                     file-level create/update/remove. Call after authoring.
+                    (A post-write hook also reloads at end of turn, but call it
+                    explicitly when you need the skill callable THIS turn.)
 - skills$install -- Install a CLI skill package via `npx skills add -g`.
                     Args: package ('owner/repo' or 'owner/repo@skill'),
                     type (claude|agents, default agents).
@@ -128,6 +148,8 @@ TYPICAL FLOWS
 - \"Show me the <name> skill\"                  → skills$read :skill-name <name>
 - \"Create a skill that does X\"                → skills$find dup-check, then
                                                   write-file SKILL.md (+ scripts) + skills$reload
+- \"Is there a skill for <topic> I could get?\" → skills$find (installed?) then
+                                                  skills$search :query <topic>
 - \"Install skill <owner/repo>\"                → skills$install :package <owner/repo>
 - \"Update my installed skills\"                → skills$sync
 - \"Remove the <name> skill\"                   → rm -r the dir + skills$reload")

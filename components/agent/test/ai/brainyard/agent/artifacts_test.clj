@@ -252,3 +252,47 @@
       (is (some? (:error (art/artifact$add :content "x"))))
       (is (some? (:error (art/artifact$remove :id "a"))))
       (is (some? (:error (art/artifact$pin :id "a" :pinned true)))))))
+
+;; ============================================================================
+;; :full / :max-chars — the knobs the skill loader uses so a SKILL.md renders
+;; its whole body instead of the renderer's 400-char file preview.
+;; ============================================================================
+
+(defn- temp-file!
+  [content]
+  (let [f (File/createTempFile "artifact-test" ".md")]
+    (.deleteOnExit f)
+    (spit f content)
+    f))
+
+(deftest full-and-max-chars-reach-the-descriptor-test
+  (let [f    (temp-file! "# Skill\nSteps.")
+        init (atom {})
+        ag   (mock-agent init (atom {}))]
+    (testing ":full and :max-chars land on the stored descriptor"
+      (art/add-artifact! ag {:path (.getPath f) :name "skill: demo"
+                             :full true :max-chars 12000})
+      (let [d (first (:live-artifacts @init))]
+        (is (true? (:full? d)))
+        (is (= 12000 (:max-chars d)))
+        (is (= :file (:source d)))
+        (is (= "skill: demo" (:name d)))))))
+
+(deftest ordinary-artifacts-keep-their-shape-test
+  (testing "without the knobs the descriptor is unchanged — no stray keys"
+    (let [f    (temp-file! "# Doc")
+          init (atom {})
+          ag   (mock-agent init (atom {}))]
+      (art/add-artifact! ag {:path (.getPath f)})
+      (let [d (first (:live-artifacts @init))]
+        (is (not (contains? d :full?)))
+        (is (not (contains? d :max-chars)))))))
+
+(deftest full-flag-works-for-inline-artifacts-test
+  (testing ":full/:max-chars also ride an inline descriptor"
+    (let [init (atom {})
+          ag   (mock-agent init (atom {}))]
+      (art/add-artifact! ag {:content "body" :name "note" :max-chars 99})
+      (let [d (first (:live-artifacts @init))]
+        (is (= :inline (:source d)))
+        (is (= 99 (:max-chars d)))))))

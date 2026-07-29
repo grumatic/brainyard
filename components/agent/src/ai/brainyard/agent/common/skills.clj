@@ -18,19 +18,26 @@
 
    Public API is split in two layers:
    - Plain functions (list-skills, read-skill, create-skill, update-skill,
-     remove-skill, find-skills, install-skill, sync-skills) — used from
-     sandbox bindings and other Clojure callers.
+     remove-skill, find-skills, search-marketplace, install-skill, sync-skills)
+     — used from sandbox bindings and other Clojure callers.
    - defcommand forms — read paths (skills$list, skills$find, skills$read),
      polymorphic mutation (skills$write with :op :create|:update|:remove),
-     and package management (skills$install, skills$sync, skills$reload) —
-     used from the tool registry so the LLM can call them as tools.
+     and package management (skills$install, skills$search, skills$sync,
+     skills$reload) — used from the tool registry so the LLM can call them as
+     tools.
+
+   Discovery vs. marketplace: `find-skills` / `skills$find` search only what is
+   INSTALLED — ranked, local, offline. Searching the `npx skills` marketplace is
+   `search-marketplace` / `skills$search`, a separate command kept off the base
+   agent roster because it spawns a subprocess per backend.
 
    Dynamic skill registration: `skills$reload` walks every available skill and
    registers each as `:skill$<name>` in `tool/!tool-defs`. The registered fn
    reads SKILL.md fresh on every invocation and asks the agent's LM to follow
    it against the user's question. Stale dynamic skills (no longer on disk)
    are dropped on each reload. Mirrors `mcp/integration/register-mcp-tools-for-server!`."
-  (:require [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
+  (:require [ai.brainyard.agent.common.artifacts :as artifacts]
+            [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.java.io :as io]
@@ -170,6 +177,10 @@
       (assoc :tags (mapv str/trim (str/split (:tags frontmatter) #",")))
       (:version frontmatter)
       (assoc :version (:version frontmatter))
+      ;; `dispatch: agent` opts a skill out of the default load-into-context
+      ;; path and back into skill-agent delegation (see make-dynamic-skill-fn).
+      (:dispatch frontmatter)
+      (assoc :dispatch (str/lower-case (str/trim (:dispatch frontmatter))))
       ;; Surface the raw front-matter `name` (open-standard) so import can
       ;; derive the canonical skill name from it.
       (:name frontmatter)
@@ -362,9 +373,9 @@
                                             meta (if (.exists md)
                                                    (parse-skill-md (slurp md) n)
                                                    {:name n :title n :description ""})
-                                            t (cond (str/ends-with? (.getPath skill-dir) "/.claude/skills/") :claude
-                                                    (str/includes? (.getPath skill-dir) "/.claude/skills/") :claude
-                                                    :else :agents)]
+                                            t (if (str/includes? (.getPath skill-dir) "/.claude/skills/")
+                                                :claude
+                                                :agents)]
                                         (assoc meta
                                                :type t
                                                :path (.getPath skill-dir))))))))))
@@ -457,31 +468,173 @@
                    (or (cli-list-from-fs :claude) [])
                    (or (cli-list-from-fs :agents) []))))))
 
+;; ============================================================================
+;; Local relevance ranking
+;;
+;; Discovery is the substrate's hot path — `skill-substrate-protocol` tells every
+;; coact/react-derived agent to check for a skill before any multi-step
+;; procedure. So it must be LOCAL-ONLY and offline: no subprocess, no network.
+;; Marketplace search is a separate, explicit concern (see `search-marketplace`).
+;; ============================================================================
+
+(def ^:const min-token-length
+  "Query tokens shorter than this are dropped. Two-letter fragments occur inside
+   unrelated words — \"no\" sits in \"autonomous\", \"id\" in \"video\" — and with
+   substring matching they flood the ranking with coincidences."
+  3)
+
+(defn- query-tokens
+  "Lower-cased, de-duplicated word tokens of a query. Any non-alphanumeric run
+   is a separator, so \"lint markdown!\" and \"lint-markdown\" tokenize alike.
+   Tokens below `min-token-length` are discarded as noise."
+  [query]
+  (->> (str/split (str/lower-case (str query)) #"[^a-z0-9]+")
+       (remove #(< (count %) min-token-length))
+       distinct
+       vec))
+
+(defn- word-start-match?
+  "True when `token` starts a word within `haystack`. Plain substring matching
+   is too loose for prose: it makes \"lint\" match \"glint\" and \"cli\" match
+   \"client\". Anchoring to a word boundary keeps partial-word typing useful
+   (\"mark\" still finds \"markdown\") without the false hits."
+  [haystack token]
+  (boolean (re-find (re-pattern (str "\\b" (java.util.regex.Pattern/quote token)))
+                    haystack)))
+
+(def ^:private backend-rank
+  "Precedence when the same skill name exists in several backends. Skills the
+   user authored locally outrank CLI-installed ones, and project outranks user —
+   most specific wins. Drives both find ordering and which backend keeps the
+   bare `:skill$<name>` id (see `resolve-registrations`)."
+  {[:brainyard :project] 0
+   [:brainyard :user]    1
+   [:claude    nil]      2
+   [:agents    nil]      3})
+
+(defn skill-rank
+  "Backend precedence of a skill map — lower is more local. Unknown backends
+   sort last."
+  [{:keys [type scope]}]
+  (or (backend-rank [type scope])
+      (case type :brainyard 1, :claude 2, :agents 3, 4)))
+
+(defn- backend-label
+  "Human-readable backend of a skill — \"brainyard/project\", \"claude\", …"
+  [{:keys [type scope]}]
+  (str (name (or type :unknown)) (when scope (str "/" (name scope)))))
+
+(defn- field-score
+  "Score one token against one field: exact match beats field-prefix beats a
+   word-start hit anywhere in the field."
+  [haystack token exact-pts starts-pts contains-pts]
+  (let [h (str/lower-case (str haystack))]
+    (cond
+      (str/blank? h)               0
+      (= h token)                  exact-pts
+      (str/starts-with? h token)   starts-pts
+      (word-start-match? h token)  contains-pts
+      :else                        0)))
+
+(defn score-skill
+  "Deterministic relevance score for a skill map against query tokens; 0 means
+   no field matched any token. Name dominates, then tags, then title, then
+   description — so a query of \"pdf\" ranks the `pdf` skill above one that only
+   mentions PDFs in its prose."
+  [{:keys [name title description tags]} tokens]
+  (reduce
+   (fn [acc token]
+     (+ acc
+        (field-score name token 100 40 25)
+        (reduce + 0 (map #(field-score % token 20 12 8) tags))
+        (field-score title token 30 15 10)
+        (if (word-start-match? (str/lower-case (str description)) token) 6 0)))
+   0
+   tokens))
+
+(def ^:const min-match-score
+  "Floor a skill must clear to count as a match. One description mention scores
+   6, so the floor keeps single prose coincidences out while any name, title or
+   tag hit — or two independent description hits — qualifies."
+  10)
+
+(def ^:const default-find-limit
+  "Default cap on `find-skills` matches. A machine with several CLI backends
+   installed can carry 50+ skills; an unbounded dump is unreadable to the model
+   and crowds the turn."
+  20)
+
+(defn- collapse-duplicate-names
+  "Collapse same-named matches to one row — the most local backend — recording
+   the others under `:also-in`.
+
+   The same skill is routinely installed to both `~/.claude/skills` and
+   `~/.agents/skills`, which surfaced as two identical rows with nothing to
+   choose between them. One row plus its provenance is what the caller can act
+   on, and it mirrors registration precedence (`resolve-registrations`), where
+   the most local backend likewise wins."
+  [ranked]
+  (->> (group-by :name ranked)
+       (map (fn [[_ dupes]]
+              (let [[winner & others] (sort-by skill-rank dupes)]
+                (cond-> winner
+                  (seq others) (assoc :also-in (mapv backend-label others))))))
+       (sort-by (juxt (comp - :score) skill-rank :name))
+       vec))
+
+(defn rank-skills
+  "Score, filter and order skill maps for `query`: matches only, best first,
+   each carrying the `:score` that ranked it. Same-named skills from several
+   backends collapse to the most local one (`:also-in` names the rest). Ties
+   break toward the more local backend, then name, so ordering is stable."
+  [skills query & {:keys [limit] :or {limit default-find-limit}}]
+  (let [tokens (query-tokens query)]
+    (if (empty? tokens)
+      []
+      (->> skills
+           (filter map?)
+           (keep (fn [s]
+                   (let [sc (score-skill s tokens)]
+                     (when (>= sc min-match-score) (assoc s :score sc)))))
+           ;; collapse-duplicate-names does the ordering — it has to re-sort
+           ;; after picking a winner per name anyway.
+           collapse-duplicate-names
+           (take limit)
+           vec))))
+
 (defn find-skills
-  "Search skills by query string across types.
-   Searches local filesystem first (name, description, tags), then falls back
-   to marketplace CLI search for :claude/:agents when no local match is found.
-   Options: :type (as list-skills)."
-  [dirs query & {:keys [type]}]
-  (let [t (coerce-type type)
-        q (str/lower-case (str query))
-        match-local (fn [s]
-                      (or (str/includes? (str/lower-case (str (:name s))) q)
-                          (str/includes? (str/lower-case (str (:description s))) q)
-                          (some #(str/includes? (str/lower-case (str %)) q)
-                                (:tags s))))
-        find-cli (fn [cli-type]
-                   (let [local (filterv match-local (cli-list-from-fs cli-type))]
-                     (if (seq local)
-                       local
-                       (cli-find cli-type query))))]
+  "Search INSTALLED skills by query across backends. Local-only and offline —
+   no subprocess, no network — because every agent runs this via the skill
+   substrate before multi-step work.
+
+   Returns a ranked vector of skill maps (best first), each carrying its
+   `:type`, `:scope` and the `:score` that ranked it. No match returns `[]`.
+
+   Options:
+   - :type  — restrict to :brainyard | :claude | :agents (nil = all)
+   - :limit — max matches (default `default-find-limit`)
+
+   To search the marketplace for skills NOT installed, call `search-marketplace`
+   explicitly — it shells out to `npx` and returns install candidates, which is
+   a different question from 'what can I use right now'."
+  [dirs query & {:keys [type limit]}]
+  (rank-skills (list-skills dirs :type (coerce-type type))
+               query
+               :limit (or limit default-find-limit)))
+
+(defn search-marketplace
+  "Search the `npx skills` MARKETPLACE for installable packages. Deliberately
+   separate from `find-skills`: this spawns a subprocess per backend (~5 s round
+   trip) and answers 'what could I install', not 'what do I have'.
+
+   Options: :type — :claude | :agents (nil = both)."
+  [query & {:keys [type]}]
+  (let [t (coerce-type type)]
     (case t
-      :brainyard (filterv match-local (brainyard-list dirs nil))
-      :claude    (find-cli :claude)
-      :agents    (find-cli :agents)
-      {:brainyard (filterv match-local (brainyard-list dirs nil))
-       :claude    (find-cli :claude)
-       :agents    (find-cli :agents)})))
+      :claude {:claude (cli-find :claude query)}
+      :agents {:agents (cli-find :agents query)}
+      {:claude (cli-find :claude query)
+       :agents (cli-find :agents query)})))
 
 (defn read-skill
   "Read a skill's SKILL.md + metadata.
@@ -608,27 +761,49 @@
 (defcommand skills$list
   "List skills across types. Optional :type (brainyard|claude|agents) and :scope (brainyard only)."
   (fn [& {:as args}]
-    (list-skills (current-dirs)
-                 :type (:type args)
-                 :scope (:scope args)))
+    (let [r (list-skills (current-dirs)
+                         :type (:type args)
+                         :scope (:scope args))]
+      (if (map? r)
+        r                                    ; an {:error …} from a backend
+        {:result (vec r) :count (count r)})))
   :input-schema  [:map
                   [:type  {:optional true} [:string {:desc "brainyard | claude | agents (omit for all)"}]]
                   [:scope {:optional true} [:string {:desc "brainyard scope: project | user (omit for both)"}]]]
   :output-schema [:map
-                  [:result [:any {:desc "Vector of skill summaries (single type) or map by type"}]]
+                  [:result [:any    {:desc "Vector of skill summaries (name/title/description/type/scope/path)"}]]
+                  [:count  [:int    {:desc "Number of skills listed"}]]
                   [:error  [:string {:desc "Error message if failed"}]]])
 
 (defcommand skills$find
-  "Search skills by query. Optional :type."
+  "Search INSTALLED skills by query; ranked, local-only, no network. Optional :type and :limit."
   (fn [& {:as args}]
     (if (str/blank? (:query args))
       {:error "query is required"}
-      (find-skills (current-dirs) (:query args) :type (:type args))))
+      (let [r (find-skills (current-dirs) (:query args)
+                           :type  (:type args)
+                           :limit (:limit args))]
+        {:result r :count (count r)})))
   :input-schema  [:map
                   [:query [:string {:desc "Search query"}]]
-                  [:type  {:optional true} [:string {:desc "brainyard | claude | agents (omit for all)"}]]]
+                  [:type  {:optional true} [:string {:desc "brainyard | claude | agents (omit for all)"}]]
+                  [:limit {:optional true} [:int {:desc "Max matches (default 20)"}]]]
   :output-schema [:map
-                  [:result [:any {:desc "Matches (structure depends on :type)"}]]
+                  [:result [:any    {:desc "Ranked vector of matching skills, best first; each has :name :type :scope :description :score, plus :also-in when the same name is installed in other backends. Empty when nothing matches."}]]
+                  [:count  [:int    {:desc "Number of matches returned"}]]
+                  [:error  [:string {:desc "Error message if failed"}]]])
+
+(defcommand skills$search
+  "Search the npx skills MARKETPLACE for installable packages (slow, network). Use skills$find for skills you already have."
+  (fn [& {:as args}]
+    (if (str/blank? (:query args))
+      {:error "query is required"}
+      {:result (search-marketplace (:query args) :type (:type args))}))
+  :input-schema  [:map
+                  [:query [:string {:desc "Search query"}]]
+                  [:type  {:optional true} [:string {:desc "claude | agents (omit for both)"}]]]
+  :output-schema [:map
+                  [:result [:any    {:desc "Marketplace results by backend — install candidates, NOT installed skills"}]]
                   [:error  [:string {:desc "Error message if failed"}]]])
 
 (defcommand skills$read
@@ -836,74 +1011,192 @@
       :else
       (assoc base :answer (str output)))))
 
-(defn- make-dynamic-skill-fn
-  "Build the :fn body for a dynamically-registered skill. Reads SKILL.md
-   fresh on each call so edits propagate without another reload. Dispatches
-   the question to the registered `:skill-agent` defagent (via invoke-tool),
-   passing the SKILL.md content as :agent-context.
+(defn- skill-md-path
+  "Absolute path of a skill's SKILL.md. `read-skill` returns the skill's
+   DIRECTORY as :path, so the document itself has to be derived."
+  [skill]
+  (some-> (:path skill) (io/file "SKILL.md") .getPath))
 
-   Returns `{:answer ... :skill ... :type ... :usage?}` on success or
-   `{:error-message ... :skill ...}` on failure."
+(defn- skill-artifact-cap
+  "Config `:skill-artifact-max-chars` for the running agent, else the schema
+   default. Reached via requiring-resolve to match `current-dirs` below — this
+   ns deliberately never statically requires core.config, because it loads
+   ahead of the core config/dirs namespaces on some cold-start paths."
+  []
+  (or (try
+        (when-let [agent proto/*current-agent*]
+          ((requiring-resolve 'ai.brainyard.agent.core.config/get-config)
+           agent :skill-artifact-max-chars))
+        (catch Exception _ nil))
+      12000))
+
+(defn- load-skill-into-context
+  "DEFAULT dispatch: hand the skill's procedure to the agent that asked for it.
+
+   Two deliveries, because one alone is not enough:
+   - the SKILL.md body is RETURNED as the tool result, so it is usable on the
+     CURRENT turn (a live artifact added mid-turn only reaches the prompt next
+     turn — `add-artifact!` writes the cross-turn store);
+   - it is REGISTERED as a `:full?` file artifact, so later turns keep it in
+     `## Live Artifacts`, reloaded fresh from disk each turn.
+
+   Registration is best-effort: with no running agent (a bare `invoke-tool`, a
+   test) the content is still returned. Degrade, never fail."
+  [skill-name skill]
+  (let [md-path  (skill-md-path skill)
+        agent    proto/*current-agent*
+        added    (when (and agent md-path)
+                   (try
+                     (artifacts/add-artifact!
+                      agent
+                      {:path      md-path
+                       :name      (str "skill: " skill-name)
+                       :full      true
+                       :max-chars (skill-artifact-cap)})
+                     (catch Exception e
+                       (mulog/warn ::skill-artifact-register-failed
+                                   :skill skill-name :error (ex-message e))
+                       nil)))]
+    (cond-> {:skill   skill-name
+             :type    (name (or (:type skill) :unknown))
+             :path    md-path
+             :content (:content skill)
+             :loaded  true}
+      (:id added)    (assoc :artifact-id (:id added))
+      (:error added) (assoc :artifact-note (str "not added to Live Artifacts: "
+                                                (:error added))))))
+
+(defn- delegate-to-skill-agent
+  "OPT-OUT dispatch (`dispatch: agent` in SKILL.md frontmatter): run the skill
+   in a fresh skill-agent sub-agent and return its answer. Kept for skills whose
+   procedure is better executed in an isolated context than followed inline."
+  [skill-name skill question]
+  (if (nil? (tool/get-tool-defs :id :skill-agent))
+    {:error-message "skill-agent not registered — load ai.brainyard.agent.common.skill-agent"
+     :skill skill-name}
+    (try
+      (let [parent proto/*current-agent*
+            sess   (when parent
+                     {:user-id    (proto/user-id parent)
+                      :session-id (proto/session-id parent)})
+            ctx    (skill-system-prompt skill-name (:content skill))
+            raw    (tool/invoke-tool :skill-agent
+                                     :question      question
+                                     :agent-context ctx
+                                     :parent-agent  parent
+                                     :agent-session sess
+                                     :auto-close?   true)
+            output (tool/resolve-agent-ref raw)]
+        (format-skill-output output skill-name (:type skill)))
+      (catch Exception e
+        (mulog/error ::dynamic-skill-call-failed
+                     :skill skill-name :error (ex-message e))
+        {:error-message (str "Skill `" skill-name "` failed: " (ex-message e))
+         :skill skill-name}))))
+
+(defn- make-dynamic-skill-fn
+  "Build the :fn body for a dynamically-registered skill. Reads SKILL.md fresh
+   on each call so edits propagate without another reload.
+
+   By DEFAULT the skill is loaded into the CALLING agent's own context
+   (`load-skill-into-context`) — the agent that wanted the procedure gets the
+   procedure, and follows it with its own tools. A skill can opt back into
+   sub-agent execution with `dispatch: agent` in its frontmatter
+   (`delegate-to-skill-agent`).
+
+   `dispatch` is read from the FRESH read, not the registration snapshot, so
+   flipping the frontmatter takes effect without `skills$reload`.
+
+   Returns `{:content … :path … :artifact-id … :loaded true}` on the load path,
+   `{:answer … :skill … :type …}` on the delegate path, or
+   `{:error-message … :skill …}` on failure."
   [skill-name skill-type skill-scope]
   (fn [& {:keys [question]}]
-    (let [q (or question "")]
+    (let [skill (read-skill (current-dirs) skill-name
+                            :type skill-type :scope skill-scope)]
       (cond
-        (str/blank? q)
-        {:error-message "question is required" :skill skill-name}
+        (:error skill)
+        {:error-message (:error skill) :skill skill-name}
 
-        (nil? (tool/get-tool-defs :id :skill-agent))
-        {:error-message "skill-agent not registered — load ai.brainyard.agent.common.skill-agent"
-         :skill skill-name}
+        (= "agent" (:dispatch skill))
+        (let [q (or question "")]
+          (if (str/blank? q)
+            {:error-message (str "skill `" skill-name "` declares `dispatch: agent`, "
+                                 "so it needs a :question to run")
+             :skill skill-name}
+            (delegate-to-skill-agent skill-name skill q)))
 
         :else
-        (let [skill (read-skill (current-dirs) skill-name
-                                :type skill-type :scope skill-scope)]
-          (if (:error skill)
-            {:error-message (:error skill) :skill skill-name}
-            (try
-              (let [parent proto/*current-agent*
-                    sess   (when parent
-                             {:user-id    (proto/user-id parent)
-                              :session-id (proto/session-id parent)})
-                    ctx    (skill-system-prompt skill-name (:content skill))
-                    raw    (tool/invoke-tool :skill-agent
-                                             :question      q
-                                             :agent-context ctx
-                                             :parent-agent  parent
-                                             :agent-session sess
-                                             :auto-close?   true)
-                    output (tool/resolve-agent-ref raw)]
-                (format-skill-output output skill-name (:type skill)))
-              (catch Exception e
-                (mulog/error ::dynamic-skill-call-failed
-                             :skill skill-name :error (ex-message e))
-                {:error-message (str "Skill `" skill-name "` failed: " (ex-message e))
-                 :skill skill-name}))))))))
+        (load-skill-into-context skill-name skill)))))
 
 (defn- dynamic-skill-id [skill-name]
   (keyword (str "skill$" skill-name)))
+
+(defn- qualified-skill-id
+  "Backend-qualified id (`:skill$<backend>$<name>`) for a skill that lost the
+   bare `:skill$<name>` id to a more local backend."
+  [skill]
+  (keyword (str "skill$" (name (or (:type skill) :unknown)) "$" (:name skill))))
+
+(defn resolve-registrations
+  "Decide the id each discovered skill registers under.
+
+   Skill names are NOT unique across backends — `~/.claude/skills/pdf` and
+   `~/.agents/skills/pdf` are different skills with the same name, and a project
+   skill can collide with either. Registering them all as `:skill$<name>` meant
+   the last one written to `!tool-defs` silently won, in discovery order — so
+   CLI-installed skills shadowed the user's own, which is backwards.
+
+   The most LOCAL backend (`skill-rank`: brainyard/project > brainyard/user >
+   claude > agents) keeps the bare `:skill$<name>` id; every other skill sharing
+   that name registers under `:skill$<backend>$<name>` so it stays invocable
+   instead of disappearing.
+
+   Returns `[registrations shadowed]` — registrations are skill maps with `:id`
+   assoc'd; shadowed are the losing skill maps (for logging)."
+  [skills]
+  (reduce (fn [[regs shadowed] [_ group]]
+            (let [[winner & losers] (sort-by (juxt skill-rank backend-label) group)]
+              [(into (conj regs (assoc winner :id (dynamic-skill-id (:name winner))))
+                     (map #(assoc % :id (qualified-skill-id %)) losers))
+               (into shadowed losers)]))
+          [[] []]
+          (group-by :name (filter #(and (map? %) (:name %)) skills))))
 
 (defn- dynamic-skill-meta
   [id {:keys [name description type scope]}]
   {:id id
    :type :skill
-   :description (let [d (or description "")]
+   ;; Name the backend: with name-shadowing resolved by qualified ids, two
+   ;; distinct skills can share a name (`:skill$pdf` vs `:skill$agents$pdf`),
+   ;; and the description is how the model tells them apart.
+   :description (let [d   (or description "")
+                      ;; `name` is shadowed by the destructured skill name here.
+                      src (str "skill: `" name "` [" (clojure.core/name (or type :unknown))
+                               (when scope (str "/" (clojure.core/name scope))) "]")]
                   (if (str/blank? d)
-                    (str "Run the `" name "` skill against the user question.")
-                    (str d " (skill: `" name "`)")))
+                    (str "Load the `" name "` skill procedure into your context, then follow it. (" src ")")
+                    (str d " — loads this skill's procedure into your context to follow. (" src ")")))
    :input-schema [:map
-                  [:question [:string {:desc "The user question to answer using this skill"}]]]
+                  [:question {:optional true}
+                   [:string {:desc "What you intend to use the skill for. Optional on the default load path; required only for a skill declaring `dispatch: agent`."}]]]
    :output-schema [:map
-                   [:answer        [:string {:desc "Skill answer produced by the LM"}]]
-                   [:skill         [:string {:desc "Skill name that produced the answer"}]]
+                   [:content       [:string {:desc "The SKILL.md procedure — follow these steps yourself (default load path)"}]]
+                   [:path          [:string {:desc "Absolute path to the SKILL.md"}]]
+                   [:loaded        [:boolean {:desc "True when the skill was loaded into context"}]]
+                   [:artifact-id   [:string {:desc "Live-artifact id — the skill stays in `## Live Artifacts` on later turns"}]]
+                   [:answer        [:string {:desc "Answer from skill-agent (only for a skill declaring `dispatch: agent`)"}]]
+                   [:skill         [:string {:desc "Skill name"}]]
                    [:type          [:string {:desc "Skill source type (brainyard | claude | agents)"}]]
-                   [:error-message [:string {:desc "Error message if the skill failed"}]]]
+                   [:error-message [:string {:desc "Error message if the skill could not be read or run"}]]]
    :skill-source type
    :skill-scope  scope})
 
 (defn- register-dynamic-skill!
   "Register a single skill in tool/!tool-defs. Returns the id on success,
-   nil if skipped (bad name)."
+   nil if skipped (bad name). Honours a precomputed `:id` (from
+   `resolve-registrations`) so a name-shadowed skill lands on its qualified id;
+   falls back to the bare id for direct callers."
   [{:keys [name type scope] :as skill}]
   (cond
     (not (safe-skill-symbol-name? name))
@@ -913,7 +1206,7 @@
 
     :else
     (try
-      (let [id      (dynamic-skill-id name)
+      (let [id      (or (:id skill) (dynamic-skill-id name))
             meta    (dynamic-skill-meta id skill)
             fn-impl (make-dynamic-skill-fn name type scope)
             v       (intern-dynamic-skill-var id meta fn-impl)]
@@ -942,18 +1235,29 @@
   []
   (let [raw      (list-skills (current-dirs))
         skills   (if (sequential? raw) raw [])
+        [regs shadowed] (resolve-registrations skills)
         prior    @!registered-dynamic-skill-ids
         registered (into #{}
                          (keep register-dynamic-skill!)
-                         skills)
+                         regs)
         stale    (set/difference prior registered)]
     (doseq [id stale] (unregister-dynamic-skill! id))
+    (doseq [s shadowed]
+      (mulog/warn ::dynamic-skill-name-shadowed
+                  :skill        (:name s)
+                  :backend      (backend-label s)
+                  :qualified-id (qualified-skill-id s)))
     (when (seq registered)
       (mulog/info ::dynamic-skills-reloaded
                   :registered (count registered)
-                  :unregistered (count stale)))
+                  :unregistered (count stale)
+                  :shadowed (count shadowed)))
     {:registered   (mapv name (sort registered))
      :unregistered (mapv name (sort stale))
+     :shadowed     (mapv (fn [s] {:name (:name s)
+                                  :backend (backend-label s)
+                                  :id (name (qualified-skill-id s))})
+                         shadowed)
      :total        (count registered)}))
 
 (defcommand skills$reload
@@ -967,6 +1271,7 @@
   :output-schema [:map
                   [:registered   [:any    {:desc "Names of skills now registered as :skill$<name>"}]]
                   [:unregistered [:any    {:desc "Names dropped because the skill is no longer available"}]]
+                  [:shadowed     [:any    {:desc "Skills whose name was taken by a more local backend; each registered under the backend-qualified :id instead"}]]
                   [:total        [:int    {:desc "Total registered dynamic skills"}]]
                   [:error        [:string {:desc "Error message if reload failed"}]]])
 
@@ -985,14 +1290,21 @@
 
 (def skills-commands
   "All skill management commands. `skills$write` is the polymorphic mutation
-   surface (`:op :create|:update|:remove`)."
+   surface (`:op :create|:update|:remove`); `skills$search` is the marketplace
+   lookup that pairs with `skills$install`."
   [#'skills$list #'skills$find #'skills$read #'skills$write
-   #'skills$install #'skills$import #'skills$sync #'skills$reload])
+   #'skills$install #'skills$import #'skills$sync #'skills$reload
+   #'skills$search])
 
 (def skills-read-subset
   "The USE half of the skill lifecycle — discover + read + registry refresh.
    Added to `default-agent-roster` so every coact/react-derived agent can use
    skills (the skill substrate, docs/design/skill-agent-design.md
    §6). The WRITE half (skills$write / install / import / sync + the proposal
-   commands) stays on skill-agent only — use is universal, management is not."
+   commands) stays on skill-agent only — use is universal, management is not.
+
+   `skills$search` is deliberately NOT here: it shells out to `npx` per backend
+   (~5 s) and answers 'what could I install', which is an install-flow question,
+   not a use-a-skill-now question. Keeping it off the base roster is what makes
+   the substrate's discovery step reliably fast and offline."
   [#'skills$find #'skills$read #'skills$list #'skills$reload])

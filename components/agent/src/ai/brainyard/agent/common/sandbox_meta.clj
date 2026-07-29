@@ -34,7 +34,7 @@
    {:name "doc$delete"             :category :doc     :description "Delete a todo or plan by slug"     :args "<kind> <slug>"     :code-template "(doc$delete {:kind \"%s\" :slug \"<slug>\"})"}
    ;; Skill management
    {:name "skills$list"            :category :skill   :description "List skills"                       :args :none :code-template "(skills$list {})"}
-   {:name "skills$find"            :category :skill   :description "Search skills by query"            :args "<query>" :code-template "(skills$find {:query \"%s\"})"}
+   {:name "skills$find"            :category :skill   :description "Search installed skills (ranked, local)" :args "<query>" :code-template "(skills$find {:query \"%s\"})"}
    {:name "skills$read"            :category :skill   :description "Read skill SKILL.md + metadata"    :args "<name>" :code-template "(skills$read {:skill-name \"%s\"})"}
    {:name "skills$write"           :category :skill   :description "Mutate a skill (op: create | update | remove)" :args "<op> <name>" :code-template "(skills$write {:op \"%s\" :skill-name \"<name>\"})"}
    {:name "inspect"                :category :inspect :description "Pretty-print data structure"       :args "<value>" :code-template "(inspect %s)"}

@@ -70,6 +70,8 @@
                                 :doc "Reference files auto-seeded each turn into the `## Live Artifacts` section (resolved against project-dir then working-dir; missing files skipped; seeded entries are pinned)."}
    :live-artifact-max-chars    {:type "integer" :default 4000
                                 :doc "Per-artifact truncation cap (chars) for the Live Artifacts renderer when a descriptor declares no :max-chars."}
+   :skill-artifact-max-chars   {:type "integer" :default 12000
+                                :doc "Truncation cap (chars) for a SKILL.md loaded into Live Artifacts by skill$<name>. Larger than :live-artifact-max-chars because a skill is a full procedure the model follows verbatim, not a reference note."}
    :enable-console-activity       {:type "boolean" :default true
                                    :doc "Record each TUI colon-command (`:tool …`) as an inline console live-artifact so the next turn sees what the user just inspected."}
    :console-activity-max-entries  {:type "integer" :default 10

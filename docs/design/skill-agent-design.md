@@ -175,14 +175,24 @@ Memory protocol.
 Skills are reusable, named procedures (a SKILL.md of imperative steps, sometimes
 with helper scripts). Before reinventing a multi-step procedure, check for one:
 
-1. DISCOVER — (skills$find {:query "<key nouns of the task>"}). Also
-   (skills$list) to browse. Skills span backends: :brainyard (local), :claude,
-   :agents.
-2. READ — (skills$read {:skill-name "<name>"}) for the SKILL.md + its path.
+1. DISCOVER — (skills$find {:query "<key nouns of the task>"}). Ranked,
+   local and instant (no network): {:result [...] :count n}, best match first,
+   each with a :score. An empty :result means you have no such skill — just
+   proceed. Also (skills$list) to browse. Skills span backends: :brainyard
+   (local), :claude, :agents; when one name exists in several, the most local
+   wins and :also-in names the others.
+2. LOAD — call the skill by name (:skill$<name>). It returns the SKILL.md
+   procedure to YOU and pins it into ## Live Artifacts, so it stays available
+   on later turns and reloads if the file changes. This is the normal way to
+   pick up a skill you intend to use. (A skill whose frontmatter says
+   `dispatch: agent` instead runs in its own sub-agent and returns an answer —
+   pass it a :question.)
+   Use (skills$read {:skill-name "<name>"}) only to PEEK at a skill you are
+   not committing to — loading is what puts it in front of you to follow.
 3. FOLLOW — do what the SKILL.md says, in your own iterations: run its
    scripts/<…> via bash, read its resources/<…>, follow its imperative steps.
-   If the skill is registered as a callable tool (:skill$<name>), you may
-   instead invoke it by name and let it drive — its SKILL.md rides in as context.
+   The procedure is yours to execute — you have the tools and the task context;
+   nothing runs it for you.
 
 RULES:
 - Prefer an existing skill over hand-rolling the same steps — but only when a
@@ -236,13 +246,16 @@ ambient.
 ### 6.5 Relationship to dynamically-registered skill-tools
 
 Skills are also auto-registered as callable tools: `skills$reload` registers each
-available skill as `:skill$<name>` in `tool/!tool-defs`; the registered fn reads
-its SKILL.md fresh on every call and dispatches the question to `skill-agent`
-with the SKILL.md as `:agent-context`. The substrate accommodates both modes:
-**invoke the registered skill-tool by name** when one exists, or **read + follow
-inline** otherwise. `skills$find` surfaces both; the model picks. The substrate
-makes the *discovery + follow* habit ambient regardless of which mode a given
-skill uses.
+available skill as `:skill$<name>` in `tool/!tool-defs`. Calling one reads its
+SKILL.md fresh, **registers it as a `:full?` live artifact on the calling agent**,
+and **returns the body as the tool result** — so the substrate's LOAD and FOLLOW
+steps are one call plus the agent's own iterations. There is no second mode to
+pick between: loading and reading-then-following converge on the same place, the
+procedure sitting in the caller's own context.
+
+The exception is a skill declaring `dispatch: agent` in its frontmatter, which
+keeps the original behaviour (run in a fresh skill-agent, return an answer). See
+`docs/design/skills.md` § "Dispatch".
 
 (Registration is an explicit *runtime* call — each entry point calls
 `reload-skills!` once after config/dirs init. It is deliberately NOT a
@@ -317,10 +330,16 @@ add.
   bound **explicitly** in `:agent-tools` (not via the `default-agent-roster`
   merge) so the file-inherent CRUD path works on the direct `bb tui -a skill-agent`
   entry too.
-- **explore-agent**: still binds `skills$list/find/read/reload` **explicitly**
-  (it predates the base roster add). It now inherits the read subset from the
-  base too, so the explicit bindings are redundant — the §10 "drop them" cleanup
-  was deferred, not done. Harmless (de-duped at roster build).
+- **explore-agent**: binds `skills$list/find/read/reload` **explicitly**. This
+  was previously described as redundant-and-deferred; it is **neither** — the
+  bindings are load-bearing and must stay. `default-agent-roster` reaches a
+  derived agent through `run-coact-derived`'s `merge-derived-tools`, which runs
+  at **dispatch**. The direct-launch path `setup-agent-by-id`
+  (`core/agent.clj` — `bb tui -a explore-agent`, `bb tui ask`) uses the bare
+  `(:meta def-entry)` and performs **no merge**, so dropping the explicit
+  bindings would remove skill discovery from that entry point entirely. Same
+  reason skill-agent binds its file/shell tools explicitly. The duplication is
+  intentional; it is de-duped at roster build.
 
 ## 11. Migration — Complete
 
@@ -364,16 +383,23 @@ add.
 | `components/agent/src/ai/brainyard/agent/common/agent_roster.clj` | `default-agent-roster` (merges `skills-read-subset`) + `skill-substrate-protocol` string. |
 | `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` | Installs `:skill-substrate` into `coact-system-context`. |
 | `components/agent/src/ai/brainyard/agent/common/react_agent.clj` | Installs `:skill-substrate` into `react-system-context`. |
+| `components/agent/src/ai/brainyard/agent/common/skill_watch.clj` | Registry-coherence observers — flag on a skills-path write, one coalesced `reload-skills!` per turn (closes open question #2). |
 | `components/agent/test/ai/brainyard/agent/skills_test.clj` | Skill CRUD + discovery + registration tests. |
+| `docs/design/skill-improvement-audit.md` | Discovery-path audit: the findings behind the ranking, marketplace-split and collision changes. |
 
 ## 15. Open questions
 
 1. **Read subset on `default-agent-roster` vs. only the base coact/react
    rosters?** Shipped on `default-agent-roster` (reaches user-defined / meta-agent
    personas too).
-2. **Auto-reload after a `.brainyard/skills/` write** (file-watch or post-write
-   hook) vs. explicit `skills$reload`? Explicit `skills$reload` shipped; a hook is
-   the smoother follow-up.
+2. ~~**Auto-reload after a `.brainyard/skills/` write** (file-watch or post-write
+   hook) vs. explicit `skills$reload`?~~ **Closed** — `common/skill_watch.clj`
+   ships the hook. An `:agent.tool-use/post` observer flags the session when a
+   call's *arguments* name a `.brainyard/skills/` path (args, not results, so
+   `skills$read`/`list`/`find` never trip it; known mutation commands match by
+   name), and an `:agent.ask/post` handler runs one coalesced `reload-skills!`
+   at end of turn. Explicit `skills$reload` is still required to make a skill
+   callable **within the same turn** — the hook is a net, not a replacement.
 3. **Combine the skill substrate with Project Memory** into one "Consult before
    acting" base section (procedures + facts), or keep separate? Kept separate but
    adjacent for now.

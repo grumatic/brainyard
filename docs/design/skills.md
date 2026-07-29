@@ -10,11 +10,11 @@ execution models:
   image, called directly.
 - **Dynamic skills** — `SKILL.md` documents discovered on disk at runtime.
   Each is surfaced as a `:skill$<name>` tool whose body is *not* code but a
-  thin wrapper that hands the document to the **skill-agent** to interpret.
+  loader that hands the document to the **calling agent** to follow.
 
-This document explains both paths and — the part that surprises people — why a
-dynamically-registered skill routes through the skill-agent instead of calling
-a function directly.
+This document explains both paths and — the part that surprises people — what
+calling a dynamic skill actually does, given there is no executable body to
+call.
 
 ## The unified tool registry
 
@@ -92,13 +92,30 @@ set of previously-registered dynamic ids and reconciles:
 
 ```clojure
 (defn reload-skills! []
-  (let [skills     (list-skills (current-dirs))
-        prior      @!registered-dynamic-skill-ids
-        registered (into #{} (keep register-dynamic-skill!) skills)
-        stale      (set/difference prior registered)]
+  (let [skills          (list-skills (current-dirs))
+        [regs shadowed] (resolve-registrations skills)   ; assigns each an :id
+        prior           @!registered-dynamic-skill-ids
+        registered      (into #{} (keep register-dynamic-skill!) regs)
+        stale           (set/difference prior registered)]
     (doseq [id stale] (unregister-dynamic-skill! id))
-    {:registered ... :unregistered ... :total ...}))
+    {:registered ... :unregistered ... :shadowed ... :total ...}))
 ```
+
+### Name collisions across backends
+
+Skill names are **not** unique across backends: the same skill is routinely
+installed to both `~/.claude/skills` and `~/.agents/skills`, and a project skill
+can collide with either. Registering them all as `:skill$<name>` meant the last
+one written to `!tool-defs` silently won — in discovery order, which put
+CLI-installed skills *above* the user's own.
+
+`resolve-registrations` fixes the precedence and preserves reachability. The
+most local backend — brainyard/project > brainyard/user > claude > agents —
+keeps the bare `:skill$<name>` id; every other skill sharing that name registers
+under `:skill$<backend>$<name>` instead of disappearing. Shadowed entries are
+logged (`::dynamic-skill-name-shadowed`) and reported in `skills$reload`'s
+`:shadowed`. The same precedence orders `skills$find`, where duplicates collapse
+to one row carrying `:also-in`.
 
 `register-dynamic-skill!` validates the name, synthesizes a `:fn` (see below),
 interns a var, and adds the `:skill$<name>` entry to `!tool-defs`. The
@@ -117,61 +134,64 @@ the snapshot into the image heap — the user's own `~/.brainyard`, `~/.claude`,
 `reload-skills!` explicitly once after config/dirs init (e.g. the TUI's
 `start!`).
 
-## Dispatch — why dynamic skills go through the skill-agent
+## Dispatch — a dynamic skill loads into the caller's context
 
 This is the crux. The `:fn` that `register-dynamic-skill!` installs is built by
 `make-dynamic-skill-fn`. It does **not** contain the skill's logic — it cannot,
-because the skill is a markdown document. Instead, on every call it:
+because the skill is a markdown document. What it does is **hand that document
+to the agent that asked for it**:
 
 1. Re-reads `SKILL.md` **fresh** from disk (so edits propagate without reload).
-2. Wraps the content into a system prompt via `skill-system-prompt`.
-3. Dispatches the user's `question` to the **`:skill-agent`** via
-   `tool/invoke-tool`, passing the SKILL.md as `:agent-context`.
-4. Resolves the sub-agent result and formats the answer.
+2. Registers it as a **live artifact** on the **calling** agent — `:source :file`,
+   `:full? true`, capped by `:skill-artifact-max-chars` — so later turns keep the
+   procedure in `## Live Artifacts`, reloaded from disk each turn.
+3. **Returns the SKILL.md body as the tool result**, so it is usable on the
+   current turn.
 
 ```clojure
 (defn- make-dynamic-skill-fn [skill-name skill-type skill-scope]
   (fn [& {:keys [question]}]
-    (let [q (or question "")]
+    (let [skill (read-skill (current-dirs) skill-name :type skill-type :scope skill-scope)]
       (cond
-        (str/blank? q)                        {:error-message "question is required" ...}
-        (nil? (tool/get-tool-defs :id :skill-agent))
-                                              {:error-message "skill-agent not registered ..." ...}
-        :else
-        (let [skill (read-skill (current-dirs) skill-name :type skill-type :scope skill-scope)
-              ctx   (skill-system-prompt skill-name (:content skill))
-              raw   (tool/invoke-tool :skill-agent
-                                      :question q :agent-context ctx
-                                      :parent-agent  proto/*current-agent*
-                                      :auto-close?   true)]
-          (format-skill-output (tool/resolve-agent-ref raw) skill-name (:type skill)))))))
+        (:error skill)                 {:error-message (:error skill) :skill skill-name}
+        (= "agent" (:dispatch skill))  (delegate-to-skill-agent skill-name skill question)
+        :else                          (load-skill-into-context skill-name skill)))))
 ```
 
-So the honest framing is: **for a dynamic skill there is no "direct skill
-function" to bypass.** The `:fn` *is* the skill-agent dispatch. The skill body
-is prose meant to be interpreted, and the skill-agent is the interpreter
-harness.
+**Why both deliveries.** They cover different turns and neither is redundant.
+`add-artifact!` writes the cross-turn store (`st-memory-init`), so an artifact
+registered mid-turn only reaches the prompt on the *next* turn — the tool result
+is what makes the skill usable on the turn it was requested. Conversely the tool
+result is transient, so the artifact is what keeps the procedure available
+afterwards.
 
-This indirection buys three things:
+**Why the caller, not a sub-agent.** The agent that decided it needed the skill
+is the one holding the task context and the relevant tools. Routing the work to
+a fresh `skill-agent` meant that agent never saw the procedure — it received a
+second-hand answer produced elsewhere, and paid a sub-agent round trip plus the
+depth/cycle guards to get it.
 
-- **Live editing** — `SKILL.md` is re-read on every invocation; no reload step
-  between an edit and the next call.
-- **Tool composition** — the skill-agent carries `skills$*`, bash, read-file,
-  etc., so a markdown skill can orchestrate real work without shipping code.
-- **Native-image correctness** — because registration is runtime and the body
-  is a document, the binary reads the *user's* skills at runtime rather than a
-  build-time snapshot.
+### The `dispatch: agent` opt-out
+
+A skill whose frontmatter declares `dispatch: agent` keeps the old behaviour:
+run in a fresh `skill-agent` with the SKILL.md as `:agent-context`, return its
+answer. Use it for procedures better executed in an isolated context than
+followed inline. That path requires a `:question`; the load path does not
+(`:question` is advisory there).
+
+`dispatch` is read from the **fresh** read, not the registration snapshot, so
+flipping the frontmatter takes effect without `skills$reload`.
 
 Contrast across all three registry flavors:
 
 | Flavor          | `:fn` body                         | Invocation             |
 |-----------------|------------------------------------|------------------------|
 | `defskill`      | real Clojure fn (`use-fn`)         | **direct** call        |
-| dynamic skill   | wrapper around a markdown document | routed via **skill-agent** |
+| dynamic skill   | loader for a markdown document     | **direct** call — returns the procedure to the caller (`dispatch: agent` routes via **skill-agent** instead) |
 | MCP tool        | RPC proxy to the MCP server        | **direct** call        |
 
-`defskill` is the only "skill" with a directly callable body. A dynamic skill
-has none — by design.
+A dynamic skill still has no executable body — but calling it now yields the
+procedure itself rather than someone else's summary of having run it.
 
 ## The skill-agent
 
@@ -185,28 +205,52 @@ skills and also handles skill *lifecycle* requests:
   :bt-factory   (fn [{:keys [max-iterations]}] (coact/coact-behavior-tree max-iterations))
   :input-schema  [:map [:question ...] [:agent-context {:optional true} ...]]
   :output-schema [:map [:answer ...]]
-  :agent-tools  {:tools skills/skills-commands}   ; skills$list/find/read/write/install/sync/reload
-  :instruction  instruction)
+  :agent-tools  {:tools (concat skills/skills-commands          ; skills$*
+                                proposals/skill-proposal-commands ; the proposal loop
+                                common-tools/file-tools           ; file-inherent CRUD
+                                common-tools/shell-tools)}
+  :instruction  instruction
+  :tool-context tool-context)
 ```
 
-The `skills$*` set is `list / find / read / write / install / sync / reload`
-(`skills/skills-commands`). Create / update / remove are not separate commands —
-they are the polymorphic `skills$write` mutation surface (`:op
-:create | :update | :remove`).
+The `skills$*` set is `list / find / search / read / write / install / import /
+sync / reload` (`skills/skills-commands`). Create / update / remove are not
+separate commands — they are the polymorphic `skills$write` mutation surface
+(`:op :create | :update | :remove`), and since the file-inherent CRUD change the
+*preferred* path is writing the skill's directory directly with `write-file`
+(see `skill-agent-design.md` §5); `skills$write` remains for back-compat.
+
+The file and shell tools are bound **explicitly** rather than inherited from
+`default-agent-roster`, because `setup-agent-by-id` — the direct-launch path
+(`bb tui -a skill-agent`) — reads the bare `(:meta def-entry)` and performs no
+roster merge. The merge only happens at dispatch, inside `run-coact-derived`.
+
+### Discovery is installed-only
+
+`skills$find` searches what is **installed**, ranked by relevance, with no
+subprocess and no network — it is on the base agent roster and therefore runs on
+the substrate's hot path. Searching the `npx skills` marketplace for something
+to *install* is the separate `skills$search`, which is deliberately kept **off**
+the base roster (it spawns a subprocess per backend). An empty `skills$find`
+result means "not installed", never "does not exist".
 
 It runs the CoAct behavior tree (a ReAct-style thought/action loop). It is
 invoked two ways:
 
 1. **Directly** — when a user/agent wants to *manage* skills ("list my skills",
    "install skill X", "create a skill for Y"). It uses the `skills$*` commands.
-2. **Indirectly** — as the execution engine for every dynamic `:skill$<name>`
-   tool, with the SKILL.md supplied as `:agent-context`.
+   This is now its main role.
+2. **Indirectly** — as the execution engine for a dynamic `:skill$<name>` whose
+   frontmatter declares `dispatch: agent`, with the SKILL.md supplied as
+   `:agent-context`. This used to be *every* dynamic skill; it is now the
+   opt-out, since by default a skill loads into the calling agent instead.
 
-### Sub-agent guards
+### Sub-agent guards (`dispatch: agent` only)
 
-Because dynamic-skill dispatch spawns a sub-agent, it is subject to the same
-guards as any agent-typed tool call (`do-call-tool--agent` in
-`agent/core/tool.clj`):
+The load path spawns nothing, so none of these apply to it — that is part of
+what makes it cheap. A skill that opts into `dispatch: agent` spawns a sub-agent
+and is subject to the same guards as any agent-typed tool call
+(`do-call-tool--agent` in `agent/core/tool.clj`):
 
 - **Kill switch** — `enable-subagent-calls` must be on.
 - **Depth limit** — `max-agent-call-depth` bounds recursion.
@@ -231,8 +275,8 @@ keeps the visible entries, and for each derives a sandbox-callable wrapper from
 its `:input-schema` (required fields → positional args, optional → trailing
 kwargs), supporting both positional-first and pure-kwargs calling styles. A
 dynamic skill therefore becomes callable from a `clojure` fence exactly like
-any other tool — and calling it triggers the skill-agent dispatch described
-above.
+any other tool — and calling it loads the procedure as described above, with
+the SKILL.md body arriving as the eval result.
 
 ## Choosing static vs dynamic
 
@@ -241,12 +285,9 @@ above.
 | Deterministic logic, speed, unit tests  | `defskill`     |
 | Prose instructions, live editing, no compile, tool orchestration by an LLM | `SKILL.md` (dynamic) |
 
-There is currently **no** path for a dynamic (`SKILL.md`) skill to run without
-the skill-agent. If a markdown skill turns out to need a deterministic, no-LLM
-body, port it to `defskill`. (A future option would be to fast-path
-`make-dynamic-skill-fn` for skills whose frontmatter declares a pure/code body,
-calling a bound fn directly instead of `invoke-tool :skill-agent` — not
-implemented today.)
+A dynamic skill has no executable body: calling it yields the procedure, and the
+LLM that received it does the work. If a markdown skill turns out to need
+deterministic, no-LLM behaviour, port it to `defskill`.
 
 ## Key files
 

@@ -44,6 +44,7 @@
             [ai.brainyard.agent.common.self-improve-nudge :as self-improve-nudge]
             [ai.brainyard.agent.common.skill-distill :as skill-distill]
             [ai.brainyard.agent.common.skill-refine :as skill-refine]
+            [ai.brainyard.agent.common.skill-watch :as skill-watch]
             [ai.brainyard.agent.common.usage-nudge :as usage-nudge]
             [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.common.trace :as trace]
@@ -820,20 +821,26 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
    File-backed artifacts (:source :file) render only a `file-artifact-preview-chars`
    preview; when longer, the body is cut and a `(read-file {:path …})` pointer is
    appended (the file reloads fresh each turn, so the full bytes need not ride
-   the prompt). Inline/legacy artifacts render their content up to :max-chars."
+   the prompt). Inline/legacy artifacts render their content up to :max-chars.
+
+   A file artifact marked `:full?` opts out of the preview and renders its whole
+   body up to :max-chars. That is how a SKILL.md loaded by `skill$<name>` gets
+   into context: the point of loading a skill is that the model follows the
+   procedure verbatim, which a 400-char preview plus a read-file pointer cannot
+   support. It still reloads fresh from disk each turn like any file artifact."
   [artifacts]
   (when (seq artifacts)
     (->> artifacts
-         (map (fn [{:keys [name content origin pinned? max-chars source path]}]
+         (map (fn [{:keys [name content origin pinned? max-chars source path full?]}]
                 (let [s     (str content)
-                      body  (if (= source :file)
+                      cap   (or max-chars default-artifact-max-chars)
+                      body  (if (and (= source :file) (not full?))
                               (if (> (count s) file-artifact-preview-chars)
                                 (str (subs s 0 file-artifact-preview-chars)
                                      "…\n[truncated — `(read-file {:path \"" path
                                      "\"})` for the full content]")
                                 s)
-                              (let [cap (or max-chars default-artifact-max-chars)]
-                                (if (> (count s) cap) (str (subs s 0 cap) "…") s)))
+                              (if (> (count s) cap) (str (subs s 0 cap) "…") s))
                       badge (str/join " " (cond-> []
                                             (= origin :system)  (conj "system")
                                             (= origin :console) (conj "🔎 you inspected")
@@ -1973,6 +1980,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
     ;; Self-improvement loop: skill-refinement observer (idempotent,
     ;; runtime-only; no-op unless :enable-skill-refinement is set).
     (skill-refine/ensure-global-hooks!)
+    ;; Skill-registry coherence: auto-reload once per turn that wrote under a
+    ;; .brainyard/skills/ path, so a file-authored skill registers without
+    ;; relying on the model to remember skills$reload (idempotent, runtime-only).
+    (skill-watch/ensure-global-hooks!)
     ;; Self-improvement loop: queue a one-line nudge when skill proposals are
     ;; staged (no-op unless :enable-self-improve-nudges is set + root agent).
     (self-improve-nudge/maybe-queue! agent st-memory)
