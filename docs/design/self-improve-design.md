@@ -150,15 +150,39 @@ config-gated, off-on-specialists); staging round-trip; accept → `skills$write`
 
 New ns: `ai.brainyard.agent.common.skill-refine`.
 
-Dynamic SKILL.md skills register as `:skill$<name>` tools (skills.clj) and
-return `{:error-message … :skill <name>}` on failure. The refine hook:
+Dynamic SKILL.md skills register as `:skill$<name>` tools (skills.clj). There
+are **two triggers**, because the two dispatch paths fail differently:
+
+**(a) Delegated skills** (`dispatch: agent` frontmatter) run in a sub-agent and
+return `{:error-message … :skill <name>}` on failure:
 
 1. `:agent.tool-use/post` observer, config-gated (`:enable-skill-refinement`).
 2. **Divergence pre-filter** (free, deterministic): `divergence?` = the call is
    a `skill$*` tool AND the result is an error. A failed run is the clearest
    "outcome ≠ documented steps" signal; it gates the LLM judge so non-skill /
-   successful calls cost nothing. (LLM-judged *non-error* divergence is
-   deferred.)
+   successful calls cost nothing.
+
+**(b) Loaded skills** (the default since skills began loading into the calling
+agent — see `docs/design/skills.md` § Dispatch) never fail at the tool boundary:
+`skill$<name>` hands over the SKILL.md and succeeds. A wrong procedure surfaces
+one level up, as a turn that never reached its goal. So:
+
+1. `track-load-handler` (`:agent.tool-use/post`) records which skills a turn
+   loaded — `skill-loaded?` = a `skill$*` result carrying `:loaded true`.
+2. `turn-refine-handler` (`:agent.ask/post`) reads the turn's trajectory record;
+   when it reports failure (`turn-failed?` — a *missing* record is not a
+   failure), each loaded skill is judged. Evidence is how the turn ended plus a
+   bounded trace (`turn-evidence`, reusing `skill-distill/trajectory->text`).
+3. **Root-only**, via a local check rather than `:root-only` on the feature:
+   sub-agents share the session id, so a sub-agent's ask would otherwise consume
+   and clear the root turn's loaded set. Trigger (a) stays available to
+   sub-agents, where a failed delegated call is attributable to whoever called it.
+4. The loaded set is cleared **every** turn regardless of outcome, so a skill is
+   judged against the turn that loaded it and never a later unrelated failure;
+   `session-end-clear-handler` drops it if a session ends mid-turn.
+
+Both triggers feed the same judge and the same single-flight key (`:kind
+:refine`, keyed by skill name), so a skill failing repeatedly queues one judge.
 3. Background task (see §7): fetch the current SKILL.md (`skills$read`), run the
    **`SkillRefinement`** signature (`{:should-revise :revised-md :rationale}` —
    note `should-revise`, no `?`, per the Anthropic tool-schema key rule). The
@@ -174,7 +198,11 @@ return `{:error-message … :skill <name>}` on failure. The refine hook:
 
 Tests: skill-invocation / error / divergence detection; `stage-refinement!`
 matrix; accept refinement → `:update` (no forced scope) and distillation →
-`:create` (project scope).
+`:create` (project scope). For the turn-level trigger: `skill-loaded?` /
+`turn-failed?` / `turn-evidence` predicates, plus handler wiring — a failed turn
+queues one judge per loaded skill, a successful turn queues none, a sub-agent ask
+leaves the root set intact, and the set is cleared on every path including a
+missing trajectory.
 
 ## 6. Phase 3 — Surface nudges in the TUI
 
