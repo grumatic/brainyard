@@ -427,7 +427,14 @@ The results/ path you wrote is what you emit on the
                                        ;; C. MCP — read-mostly per Hard Rule 2
                                        mcp-cmds/all-mcp-commands
 
-                                       ;; D. SKILLS — read-only subset; authoring lives in skill-agent
+                                       ;; D. SKILLS — read-only subset; authoring lives in skill-agent.
+                                       ;; These LOOK redundant now that `skills-read-subset` rides
+                                       ;; `default-agent-roster` — they are not. `run-coact-derived`
+                                       ;; merges that roster at DISPATCH, but `setup-agent-by-id`
+                                       ;; (the `bb tui -a explore-agent` / `bb tui ask` direct-launch
+                                       ;; path) uses the bare `(:meta def-entry)` and does NOT merge.
+                                       ;; Drop these and skill discovery disappears on that entry.
+                                       ;; Same reason skill-agent binds its file/shell tools explicitly.
                                        [#'skills/skills$list
                                         #'skills/skills$find
                                         #'skills/skills$read

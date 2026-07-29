@@ -317,10 +317,16 @@ add.
   bound **explicitly** in `:agent-tools` (not via the `default-agent-roster`
   merge) so the file-inherent CRUD path works on the direct `bb tui -a skill-agent`
   entry too.
-- **explore-agent**: still binds `skills$list/find/read/reload` **explicitly**
-  (it predates the base roster add). It now inherits the read subset from the
-  base too, so the explicit bindings are redundant — the §10 "drop them" cleanup
-  was deferred, not done. Harmless (de-duped at roster build).
+- **explore-agent**: binds `skills$list/find/read/reload` **explicitly**. This
+  was previously described as redundant-and-deferred; it is **neither** — the
+  bindings are load-bearing and must stay. `default-agent-roster` reaches a
+  derived agent through `run-coact-derived`'s `merge-derived-tools`, which runs
+  at **dispatch**. The direct-launch path `setup-agent-by-id`
+  (`core/agent.clj` — `bb tui -a explore-agent`, `bb tui ask`) uses the bare
+  `(:meta def-entry)` and performs **no merge**, so dropping the explicit
+  bindings would remove skill discovery from that entry point entirely. Same
+  reason skill-agent binds its file/shell tools explicitly. The duplication is
+  intentional; it is de-duped at roster build.
 
 ## 11. Migration — Complete
 
@@ -364,16 +370,23 @@ add.
 | `components/agent/src/ai/brainyard/agent/common/agent_roster.clj` | `default-agent-roster` (merges `skills-read-subset`) + `skill-substrate-protocol` string. |
 | `components/agent/src/ai/brainyard/agent/common/coact_agent.clj` | Installs `:skill-substrate` into `coact-system-context`. |
 | `components/agent/src/ai/brainyard/agent/common/react_agent.clj` | Installs `:skill-substrate` into `react-system-context`. |
+| `components/agent/src/ai/brainyard/agent/common/skill_watch.clj` | Registry-coherence observers — flag on a skills-path write, one coalesced `reload-skills!` per turn (closes open question #2). |
 | `components/agent/test/ai/brainyard/agent/skills_test.clj` | Skill CRUD + discovery + registration tests. |
+| `docs/design/skill-improvement-audit.md` | Discovery-path audit: the findings behind the ranking, marketplace-split and collision changes. |
 
 ## 15. Open questions
 
 1. **Read subset on `default-agent-roster` vs. only the base coact/react
    rosters?** Shipped on `default-agent-roster` (reaches user-defined / meta-agent
    personas too).
-2. **Auto-reload after a `.brainyard/skills/` write** (file-watch or post-write
-   hook) vs. explicit `skills$reload`? Explicit `skills$reload` shipped; a hook is
-   the smoother follow-up.
+2. ~~**Auto-reload after a `.brainyard/skills/` write** (file-watch or post-write
+   hook) vs. explicit `skills$reload`?~~ **Closed** — `common/skill_watch.clj`
+   ships the hook. An `:agent.tool-use/post` observer flags the session when a
+   call's *arguments* name a `.brainyard/skills/` path (args, not results, so
+   `skills$read`/`list`/`find` never trip it; known mutation commands match by
+   name), and an `:agent.ask/post` handler runs one coalesced `reload-skills!`
+   at end of turn. Explicit `skills$reload` is still required to make a skill
+   callable **within the same turn** — the hook is a net, not a replacement.
 3. **Combine the skill substrate with Project Memory** into one "Consult before
    acting" base section (procedures + facts), or keep separate? Kept separate but
    adjacent for now.

@@ -189,6 +189,114 @@
       (is (= "kube-deploy" (:name (first hits)))))))
 
 ;; ============================================================================
+;; Discovery ranking — `skills$find` is on the base agent roster, so every agent
+;; runs it before multi-step work. It must be local, fast, ordered and quiet.
+;; ============================================================================
+
+(defn- ranked-names [hits] (mapv :name hits))
+
+(deftest test-find-is-ranked-by-field-weight
+  (let [dirs (test-dirs)]
+    (skills/create-skill dirs "markdown-lint"
+                         "---\ntitle: Markdown Lint\ndescription: Lint markdown\ntags: markdown, lint\n---\n# Markdown Lint")
+    ;; mentions markdown only in prose — must rank below, if it qualifies at all
+    (skills/create-skill dirs "deploy-helper"
+                         "# Deploy Helper\nDeploys the site and its markdown docs.")
+    (let [hits (skills/find-skills dirs "markdown" :type :brainyard)]
+      (is (= "markdown-lint" (:name (first hits)))
+          "a name/tag/title hit must outrank a description-only mention")
+      (is (every? pos? (map :score hits)))
+      (is (apply >= (map :score hits)) "results must be ordered best-first"))))
+
+(deftest test-find-miss-returns-empty-not-marketplace
+  (let [dirs (test-dirs)]
+    (skills/create-skill dirs "kube-deploy" "# Kube Deploy\nKubernetes helper.")
+    (testing "a genuine miss is an empty vector — never a marketplace catalog"
+      (let [hits (skills/find-skills dirs "wombat teleportation" :type :brainyard)]
+        (is (vector? hits))
+        (is (empty? hits))))))
+
+(deftest test-find-drops-noise-tokens
+  (let [dirs (test-dirs)]
+    (skills/create-skill dirs "autonomous-runner" "# Autonomous Runner\nRuns autonomously.")
+    (testing "sub-3-char tokens are dropped rather than substring-matched"
+      ;; "no" sits inside "autonomous" — a raw substring match would hit
+      (is (empty? (skills/find-skills dirs "no" :type :brainyard))))
+    (testing "word-start anchoring: a token inside a word is not a match"
+      (is (empty? (skills/find-skills dirs "tonomous" :type :brainyard))))
+    (testing "a genuine word-start prefix still matches"
+      (is (= ["autonomous-runner"]
+             (ranked-names (skills/find-skills dirs "auto" :type :brainyard)))))))
+
+(deftest test-find-respects-limit
+  (let [dirs (test-dirs)]
+    (doseq [i (range 5)]
+      (skills/create-skill dirs (str "report-" i) (str "# Report " i "\nA report tool.")))
+    (is (= 2 (count (skills/find-skills dirs "report" :type :brainyard :limit 2))))))
+
+(deftest test-find-collapses-duplicate-names-across-backends
+  (let [sample [{:name "pdf" :type :agents}
+                {:name "pdf" :type :claude}
+                {:name "pdf" :type :brainyard :scope :user}
+                {:name "solo" :type :claude}]
+        hits   (skills/rank-skills sample "pdf")]
+    (testing "one row per name, won by the most local backend"
+      (is (= 1 (count hits)))
+      (is (= :brainyard (:type (first hits))))
+      (is (= :user (:scope (first hits)))))
+    (testing "the shadowed backends stay visible as :also-in"
+      (is (= ["claude" "agents"] (:also-in (first hits)))))))
+
+;; ============================================================================
+;; Dynamic registration — skill names are NOT unique across backends. Every
+;; discovered skill must remain reachable under some id.
+;; ============================================================================
+
+(deftest test-resolve-registrations-no-silent-overwrite
+  (let [sample [{:name "pdf" :type :agents}
+                {:name "pdf" :type :claude}
+                {:name "pdf" :type :brainyard :scope :project}
+                {:name "solo" :type :claude}]
+        [regs shadowed] (skills/resolve-registrations sample)]
+    (testing "every discovered skill gets a registration"
+      (is (= 4 (count regs))))
+    (testing "ids are unique — nothing is silently overwritten"
+      (is (= 4 (count (distinct (map :id regs))))))
+    (testing "the most local backend keeps the bare :skill$<name> id"
+      (let [bare (first (filter #(= :skill$pdf (:id %)) regs))]
+        (is (= :brainyard (:type bare)))
+        (is (= :project (:scope bare)))))
+    (testing "shadowed skills get backend-qualified ids"
+      (is (= #{:skill$claude$pdf :skill$agents$pdf}
+             (set (map :id (filter #(not= :skill$pdf (:id %))
+                                   (filter #(= "pdf" (:name %)) regs)))))))
+    (testing "an uncontested name is untouched"
+      (is (= :skill$solo (:id (first (filter #(= "solo" (:name %)) regs))))))
+    (testing "losers are reported for logging"
+      (is (= 2 (count shadowed)))
+      (is (every? #(= "pdf" (:name %)) shadowed)))))
+
+;; ============================================================================
+;; Command output shapes must match their declared :output-schema — the schema
+;; is what the LLM is told to expect.
+;; ============================================================================
+
+(deftest test-command-output-matches-declared-schema
+  (with-redefs [skills/current-dirs (fn [] (test-dirs))]
+    (skills/create-skill (test-dirs) "shape-check" "# Shape Check\nVerifies output shape.")
+    (testing "skills$list returns {:result [...] :count n}"
+      (let [r (skills/skills$list :type "brainyard")]
+        (is (vector? (:result r)))
+        (is (= (count (:result r)) (:count r)))))
+    (testing "skills$find returns {:result [...] :count n}"
+      (let [r (skills/skills$find :query "shape" :type "brainyard")]
+        (is (vector? (:result r)))
+        (is (= (count (:result r)) (:count r)))
+        (is (= "shape-check" (:name (first (:result r)))))))
+    (testing "a blank query is still rejected"
+      (is (contains? (skills/skills$find :query "") :error)))))
+
+;; ============================================================================
 ;; SKILL.md Parsing with Frontmatter
 ;; ============================================================================
 

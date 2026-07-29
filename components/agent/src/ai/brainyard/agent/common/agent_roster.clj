@@ -124,9 +124,12 @@ evidence dossier that eval-agent consumes.")
 Skills are reusable, named procedures (a SKILL.md of imperative steps, sometimes
 with helper scripts). Before reinventing a multi-step procedure, check for one:
 
-1. DISCOVER — `(skills$find {:query \"<key nouns of the task>\"})`. Also
-   `(skills$list)` to browse. Skills span backends: :brainyard (local), :claude,
-   :agents.
+1. DISCOVER — `(skills$find {:query \"<key nouns of the task>\"})`. Ranked,
+   local and instant (no network): `{:result [...] :count n}`, best match first,
+   each with a `:score`. An empty `:result` means you have no such skill — just
+   proceed. Also `(skills$list)` to browse. Skills span backends: :brainyard
+   (local), :claude, :agents; when one name exists in several, the most local
+   wins and `:also-in` names the others.
 2. READ — `(skills$read {:skill-name \"<name>\"})` for the SKILL.md + its path.
 3. FOLLOW — do what the SKILL.md says, in your own iterations: run its
    `scripts/<…>` via bash, read its `resources/<…>`, follow its imperative steps.

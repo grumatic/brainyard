@@ -167,8 +167,11 @@
    hint, not a correctness requirement."
   [_agent]
   (try
+    ;; `skills$list` returns {:result [<skill maps>] :count n} — matching its
+    ;; declared output-schema. The bare-sequential fallback covers a direct
+    ;; `list-skills` caller.
     (let [res    (tool/invoke-tool :skills$list)
-          skills (or (:skills res) (:brainyard res) (when (sequential? res) res) [])]
+          skills (or (:result res) (when (sequential? res) res) [])]
       (->> skills
            (keep (fn [s]
                    (when (map? s)

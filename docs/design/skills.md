@@ -92,13 +92,30 @@ set of previously-registered dynamic ids and reconciles:
 
 ```clojure
 (defn reload-skills! []
-  (let [skills     (list-skills (current-dirs))
-        prior      @!registered-dynamic-skill-ids
-        registered (into #{} (keep register-dynamic-skill!) skills)
-        stale      (set/difference prior registered)]
+  (let [skills          (list-skills (current-dirs))
+        [regs shadowed] (resolve-registrations skills)   ; assigns each an :id
+        prior           @!registered-dynamic-skill-ids
+        registered      (into #{} (keep register-dynamic-skill!) regs)
+        stale           (set/difference prior registered)]
     (doseq [id stale] (unregister-dynamic-skill! id))
-    {:registered ... :unregistered ... :total ...}))
+    {:registered ... :unregistered ... :shadowed ... :total ...}))
 ```
+
+### Name collisions across backends
+
+Skill names are **not** unique across backends: the same skill is routinely
+installed to both `~/.claude/skills` and `~/.agents/skills`, and a project skill
+can collide with either. Registering them all as `:skill$<name>` meant the last
+one written to `!tool-defs` silently won — in discovery order, which put
+CLI-installed skills *above* the user's own.
+
+`resolve-registrations` fixes the precedence and preserves reachability. The
+most local backend — brainyard/project > brainyard/user > claude > agents —
+keeps the bare `:skill$<name>` id; every other skill sharing that name registers
+under `:skill$<backend>$<name>` instead of disappearing. Shadowed entries are
+logged (`::dynamic-skill-name-shadowed`) and reported in `skills$reload`'s
+`:shadowed`. The same precedence orders `skills$find`, where duplicates collapse
+to one row carrying `:also-in`.
 
 `register-dynamic-skill!` validates the name, synthesizes a `:fn` (see below),
 interns a var, and adds the `:skill$<name>` entry to `!tool-defs`. The
@@ -185,14 +202,34 @@ skills and also handles skill *lifecycle* requests:
   :bt-factory   (fn [{:keys [max-iterations]}] (coact/coact-behavior-tree max-iterations))
   :input-schema  [:map [:question ...] [:agent-context {:optional true} ...]]
   :output-schema [:map [:answer ...]]
-  :agent-tools  {:tools skills/skills-commands}   ; skills$list/find/read/write/install/sync/reload
-  :instruction  instruction)
+  :agent-tools  {:tools (concat skills/skills-commands          ; skills$*
+                                proposals/skill-proposal-commands ; the proposal loop
+                                common-tools/file-tools           ; file-inherent CRUD
+                                common-tools/shell-tools)}
+  :instruction  instruction
+  :tool-context tool-context)
 ```
 
-The `skills$*` set is `list / find / read / write / install / sync / reload`
-(`skills/skills-commands`). Create / update / remove are not separate commands —
-they are the polymorphic `skills$write` mutation surface (`:op
-:create | :update | :remove`).
+The `skills$*` set is `list / find / search / read / write / install / import /
+sync / reload` (`skills/skills-commands`). Create / update / remove are not
+separate commands — they are the polymorphic `skills$write` mutation surface
+(`:op :create | :update | :remove`), and since the file-inherent CRUD change the
+*preferred* path is writing the skill's directory directly with `write-file`
+(see `skill-agent-design.md` §5); `skills$write` remains for back-compat.
+
+The file and shell tools are bound **explicitly** rather than inherited from
+`default-agent-roster`, because `setup-agent-by-id` — the direct-launch path
+(`bb tui -a skill-agent`) — reads the bare `(:meta def-entry)` and performs no
+roster merge. The merge only happens at dispatch, inside `run-coact-derived`.
+
+### Discovery is installed-only
+
+`skills$find` searches what is **installed**, ranked by relevance, with no
+subprocess and no network — it is on the base agent roster and therefore runs on
+the substrate's hot path. Searching the `npx skills` marketplace for something
+to *install* is the separate `skills$search`, which is deliberately kept **off**
+the base roster (it spawns a subprocess per backend). An empty `skills$find`
+result means "not installed", never "does not exist".
 
 It runs the CoAct behavior tree (a ReAct-style thought/action loop). It is
 invoked two ways:

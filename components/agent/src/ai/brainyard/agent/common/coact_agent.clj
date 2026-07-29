@@ -44,6 +44,7 @@
             [ai.brainyard.agent.common.self-improve-nudge :as self-improve-nudge]
             [ai.brainyard.agent.common.skill-distill :as skill-distill]
             [ai.brainyard.agent.common.skill-refine :as skill-refine]
+            [ai.brainyard.agent.common.skill-watch :as skill-watch]
             [ai.brainyard.agent.common.usage-nudge :as usage-nudge]
             [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.common.trace :as trace]
@@ -1972,6 +1973,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
     ;; Self-improvement loop: skill-refinement observer (idempotent,
     ;; runtime-only; no-op unless :enable-skill-refinement is set).
     (skill-refine/ensure-global-hooks!)
+    ;; Skill-registry coherence: auto-reload once per turn that wrote under a
+    ;; .brainyard/skills/ path, so a file-authored skill registers without
+    ;; relying on the model to remember skills$reload (idempotent, runtime-only).
+    (skill-watch/ensure-global-hooks!)
     ;; Self-improvement loop: queue a one-line nudge when skill proposals are
     ;; staged (no-op unless :enable-self-improve-nudges is set + root agent).
     (self-improve-nudge/maybe-queue! agent st-memory)
