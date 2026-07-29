@@ -1943,6 +1943,35 @@
         (is (= ["boom"] (:error out)))
         (is (not (contains? out :result)))))))
 
+(deftest compact-iteration-record-tool-channel-edn-args-test
+  (testing "a map-shaped tool-args survives compaction as EDN"
+    ;; Regression: `tool-call-pseudo-code` used to walk tool-args as the legacy
+    ;; [{:name … :value …}] pair-list. Mapped over a map that destructuring sees
+    ;; MapEntries, whose keyword lookups are nil — so every compacted tool call
+    ;; reached the briefing as `tool(=nil, =nil)`, dropping the args from the
+    ;; model's own conversation history.
+    (let [out (@#'rca/compact-iteration-record
+               {:iteration 2
+                :channel "tool"
+                :tool-results [{:tool-name "read-file"
+                                :tool-args {:file_path "/x" :offset 3}
+                                :tool-result "contents"}]})]
+      (is (= ["read-file {:file_path \"/x\", :offset 3}"] (:code out)))
+      (is (= ["contents"] (:result out)))))
+
+  (testing "empty args, and a legacy pair-list folded onto the same shape"
+    ;; `util/args->display-map` — shared with the three TUI renderers — folds
+    ;; the pre-Option-4 [{:name … :value …}] recording of an older session.
+    (let [out (@#'rca/compact-iteration-record
+               {:iteration 3
+                :channel "tool"
+                :tool-results [{:tool-name "list-agents" :tool-args {}}
+                               {:tool-name "search"
+                                :tool-args [{:name "q" :value "foo"}]}]})]
+      (is (= ["list-agents {}"
+              "search {:q \"foo\"}"]
+             (:code out))))))
+
 (deftest async-completion-end-to-end-via-coact-inc-iter-test
   (testing "pending task → harvest → :iterations carries :from-iteration on the entry"
     ;; Post-Step-F dispatch routes through the task manager. The pending task

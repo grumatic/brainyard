@@ -8,6 +8,7 @@
   (:require [ai.brainyard.agent.tui.ansi :as ansi]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.display-block.interface :as block]
+            [ai.brainyard.util.interface :as util]
             [clojure.string :as str]))
 
 ;; ============================================================================
@@ -853,7 +854,8 @@
 (defn format-tool-calls
   "Format tool call entries with word wrapping.
    Input: [{:tool-name :tool-args}]
-   Returns multi-line string with arrow-prefixed calls."
+   Returns multi-line string with arrow-prefixed calls; args render as an EDN
+   map (`tool-name {:arg val}`), matching `:coact/code` and the trace line."
   [tool-calls]
   (when (seq tool-calls)
     (let [cols     (- (terminal-columns) right-pad)
@@ -862,18 +864,8 @@
       (->> tool-calls
            (map (fn [{:keys [tool-name tool-args]}]
                   (let [name-str (ansi/tool-name (str tool-name))
-                        args-str (when (seq tool-args)
-                                   (let [pairs (if (sequential? tool-args)
-                                                 (->> tool-args
-                                                      (map (fn [a]
-                                                             (str (:name a) "="
-                                                                  (pr-str (:value a))))))
-                                                 (->> tool-args
-                                                      (map (fn [[k v]]
-                                                             (str (name k) "="
-                                                                  (pr-str v))))))]
-                                     (str "(" (str/join ", " pairs) ")")))]
-                    (->> (ansi-aware-word-wrap (str name-str (or args-str "()"))
+                        args-str (pr-str (util/args->display-map tool-args))]
+                    (->> (ansi-aware-word-wrap (str name-str " " args-str)
                                                (- cols prefix-w))
                          (map-indexed (fn [i line]
                                         (if (zero? i)

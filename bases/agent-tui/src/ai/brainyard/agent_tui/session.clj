@@ -22,6 +22,7 @@
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.mulog.interface :as mulog]
             [ai.brainyard.clj-llm.interface :as clj-llm]
+            [ai.brainyard.util.interface :as util]
             [clojure.string :as str]))
 
 (declare update-status-bar!)
@@ -1254,12 +1255,18 @@
     (str "i" (Long/toString h 36))))
 
 (defn- format-iter-args
-  "Compact pr-str of args, truncated to 120 chars. Kept in lockstep with
-   `render-iter-tool-line`'s boxing trigger: args within this budget render
-   inline, longer args move into a boxed `Call` section, so the inline path
-   never actually truncates in practice."
+  "Compact pr-str of args as an EDN map, truncated to 120 chars. Kept in
+   lockstep with `render-iter-tool-line`'s boxing trigger: args within this
+   budget render inline, longer args move into a boxed `Call` section, so the
+   inline path never actually truncates in practice.
+
+   `util/args->display-map` — shared with the other three tool-call renderers —
+   keywordizes the keys, which matters here because the `:json` bound-fn
+   dispatch path re-stringifies them for the bound wrapper before the
+   `:agent.tool-use/pre` hook (and so this line) ever sees them."
   [args]
-  (let [s (try (pr-str args) (catch Exception _ "<unprintable>"))]
+  (let [s (try (pr-str (util/args->display-map args))
+               (catch Exception _ "<unprintable>"))]
     (if (> (count s) 120)
       (str (subs s 0 117) "...")
       s)))
@@ -1365,7 +1372,7 @@
 
 (defn- render-iter-tool-line
   "Lines for one tool call. Normally a single compact line:
-     '  → name(args): called [→ done|error, Ns, Mchars]'.
+     '  → name {:arg val}: called [→ done|error, Ns, Mchars]'.
 
    When the args are code-like — a multi-line string (bash script /
    heredoc) or longer than the 60-char inline limit — the args move into a
@@ -1399,7 +1406,8 @@
         ;; pr-str length is the established "one-line limit" (`format-iter-args`
         ;; truncates past 120); a code-like multi-line arg always boxes.
         boxed?      (or (args-multiline? args)
-                        (> (count (try (pr-str args) (catch Exception _ ""))) 120))
+                        (> (count (try (pr-str (util/args->display-map args))
+                                       (catch Exception _ ""))) 120))
         ;; Head line(s): the compact `→ name(args): called → done/error`
         ;; summary, with the args in a boxed `Call` section when they're
         ;; code-like / overflow the inline budget.
@@ -1409,7 +1417,7 @@
                         (if (str/blank? (str body))
                           [head]
                           (into [head] (fmt/format-tool-call-block body :id (tool-call-box-id call-id)))))
-                      [(str "  " bullet " " styled-name "(" (format-iter-args args) "): called" outcome)])
+                      [(str "  " bullet " " styled-name " " (format-iter-args args) ": called" outcome)])
         ;; Result body in a boxed, collapsible section — the same treatment
         ;; as the code-eval `Result` section. A failed call (:error status —
         ;; a thrown exception or a returned error map) renders a red `Error`

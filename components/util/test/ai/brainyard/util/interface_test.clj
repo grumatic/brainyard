@@ -203,3 +203,38 @@
   (testing "accepts custom config"
     (let [result (util/configure-logging! {:min-level :info})]
       (is (map? result)))))
+
+;; ============================================================================
+;; Display Normalization Tests (core/display.clj)
+;; ============================================================================
+
+(deftest args->display-map-test
+  (testing "keyword-keyed args (the :malli registry dispatch path) pass through"
+    (is (= {:path "a.clj"} (util/args->display-map {:path "a.clj"}))))
+
+  (testing "string keys become keywords — call-tool's :json bound-fn path
+            re-stringifies args for the bound wrapper before any renderer sees
+            them, which is why one call used to print two different ways"
+    (is (= {:pattern "(?i)aws"} (util/args->display-map {"pattern" "(?i)aws"})))
+    (is (= "{:pattern \"(?i)aws\"}"
+           (pr-str (util/args->display-map {"pattern" "(?i)aws"})))))
+
+  (testing "a mixed map normalizes without losing a key"
+    (is (= {:a 1 :b 2} (util/args->display-map {"a" 1 :b 2}))))
+
+  (testing "the legacy [{:name … :value …}] pair-list folds onto the same shape"
+    (is (= {:q "foo" :n 3}
+           (util/args->display-map [{:name "q" :value "foo"}
+                                    {:name "n" :value 3}]))))
+
+  (testing "nil (a call with no args) is an empty map, so callers can pr-str
+            unconditionally"
+    (is (= {} (util/args->display-map nil)))
+    (is (= {} (util/args->display-map {}))))
+
+  (testing "anything else passes through untouched rather than reporting
+            empty args"
+    (is (= "raw" (util/args->display-map "raw")))
+    (is (= [1 2 3] (util/args->display-map [1 2 3])))
+    (is (= [{:name "q"}] (util/args->display-map [{:name "q"}]))
+        "not a pair-list — a :value-less element is not folded")))

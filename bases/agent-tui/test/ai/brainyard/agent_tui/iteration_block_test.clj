@@ -99,14 +99,35 @@
     (is (str/includes? text "[+] Iteration 2 / 10") "header has iteration label")
     (is (not (str/includes? text "[Tools]"))
         "no [Tools] header — tool lines appear directly")
-    (is (str/includes? text "→ search({:q \"x\"}): called → done")
+    (is (str/includes? text "→ search {:q \"x\"}: called → done")
         "bullet prefix is '→' followed by tool name")
     (is (str/includes? text "1.2s"))
     (is (str/includes? text "350 chars"))
-    (is (str/includes? text "→ fetch({:url \"u\"}): called → error"))
+    (is (str/includes? text "→ fetch {:url \"u\"}: called → error"))
     (is (str/includes? text "Connection refused"))
-    (is (str/includes? text "→ slow({}): called")
+    (is (str/includes? text "→ slow {}: called")
         "in-flight tool shows just 'called'")))
+
+(deftest render-tool-line-shows-string-keyed-args-as-edn
+  (testing "the :json bound-fn dispatch path re-stringifies arg keys for the
+            bound wrapper, so the hook — and this line — see {\"pattern\" …};
+            the inline call renders as an EDN map either way"
+    (let [state {:iteration 1
+                 :max-iterations 100
+                 :stage :tools
+                 :tool-batch [{:call-id 1 :name "list-tools"
+                               :args {"pattern" "(?i)aws"}
+                               :status :done :start-ms 0 :end-ms 8
+                               :result-chars 4300}
+                              ;; a registry (:malli) tool already arrives keyworded
+                              {:call-id 2 :name "read" :args {:path "a.clj"}
+                               :status :done :start-ms 0 :end-ms 3}]}
+          text (joined (#'s/render-iteration-block-lines state "⠋"))]
+      (is (str/includes? text "→ list-tools {:pattern \"(?i)aws\"}: called → done"))
+      (is (not (str/includes? text "\"pattern\""))
+          "no string key survives into the rendered line")
+      (is (str/includes? text "→ read {:path \"a.clj\"}: called → done")
+          "the already-keyworded path is unchanged"))))
 
 (deftest render-quiet-display-format-shows-only-bulleted-think
   (testing ":quiet display-format renders only the think text with a '●' bullet —
@@ -201,7 +222,7 @@
                  :tool-batch [{:call-id 11 :name "read" :args {:path "a.clj"}
                                :status :done :start-ms 0 :end-ms 50}]}
           text (joined (#'s/render-iteration-block-lines state "⠋"))]
-      (is (str/includes? text "→ read({:path \"a.clj\"}): called → done"))
+      (is (str/includes? text "→ read {:path \"a.clj\"}: called → done"))
       (is (not (str/includes? text "• Call:"))))))
 
 (deftest render-tools-section-boxes-result
@@ -213,7 +234,7 @@
                                :result-chars 34
                                :result-body "hit-1: foo.clj:12\nhit-2: bar.clj:88"}]}
           text (joined (#'s/render-iteration-block-lines state "⠋"))]
-      (is (str/includes? text "→ search({:q \"x\"}): called → done"))
+      (is (str/includes? text "→ search {:q \"x\"}: called → done"))
       (is (str/includes? text "• Result:") "boxed Result section header present")
       (is (str/includes? text "┌─"))
       (is (str/includes? text "hit-1: foo.clj:12") "result body content shown")
@@ -236,7 +257,7 @@
                  :tool-batch [{:call-id 23 :name "noop" :args {} :status :done
                                :start-ms 0 :end-ms 10 :result-chars 3}]}
           text (joined (#'s/render-iteration-block-lines state "⠋"))]
-      (is (str/includes? text "→ noop({}): called → done"))
+      (is (str/includes? text "→ noop {}: called → done"))
       (is (not (str/includes? text "• Result:")) "no empty Result box"))))
 
 (deftest render-splices-eval-section-lines

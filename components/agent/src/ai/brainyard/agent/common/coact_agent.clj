@@ -70,6 +70,7 @@
             [ai.brainyard.agent.task.protocol :as tp]
             [ai.brainyard.agent.tui.ansi :as ansi]
             [ai.brainyard.mulog.interface :as mulog]
+            [ai.brainyard.util.interface :as util]
             [clojure.string :as str]))
 
 ;; Forward declarations: coact-inc-iter-action harvests pending evals at
@@ -4417,14 +4418,18 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
 (defn- tool-call-pseudo-code
   "Synthesize a compact pseudo-code string for a tool invocation — used when
    compacting tool-channel iterations so `build-context-briefing` (which reads
-   `:code` from previous-turns) shows the call site meaningfully."
+   `:code` from previous-turns) shows the call site meaningfully.
+
+   `tool-args` is a plain arg map (`::acs/tool-args`), so it prints as EDN in the
+   same `<tool-name> {:arg val}` shape `:coact/code` records for tool tasks.
+   It must NOT be walked as a `[{:name … :value …}] `pair-list: mapping that
+   destructuring over a map yields MapEntries, whose keyword lookups are all nil,
+   so every compacted tool call reached the briefing as `tool(=nil, =nil)` —
+   silently dropping the args from the model's own conversation history.
+   `util/args->display-map` (shared with the three TUI renderers) folds a legacy
+   pair-list onto the same shape."
   [{:keys [tool-name tool-args]}]
-  (let [args-str (when (seq tool-args)
-                   (->> tool-args
-                        (map (fn [{:keys [name value]}]
-                               (str name "=" (pr-str value))))
-                        (str/join ", ")))]
-    (str tool-name "(" (or args-str "") ")")))
+  (str tool-name " " (pr-str (util/args->display-map tool-args))))
 
 (defn- compact-async-completion-record
   "Project a synthesized async-completion record (`:async-completion? true`)

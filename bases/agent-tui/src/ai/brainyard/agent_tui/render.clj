@@ -16,6 +16,7 @@
                every write overwrites the row in place; this gives the user
                a true 'status bar' rather than a spam of appended lines."
   (:require [ai.brainyard.clj-llm.interface :as clj-llm]
+            [ai.brainyard.util.interface :as util]
             [clojure.string :as str]))
 
 ;; -- minimal ANSI helpers ----------------------------------------------------
@@ -180,33 +181,43 @@
             (recur rest-reopened (conj result first-closed))))))))
 
 (defn- short-args
-  "Compact, readable one-line view of a tool's args map.  Drops noisy keys
-   like :agent / :session-store and quotes long string values."
+  "Compact, readable one-line EDN view of a tool's args map.  Drops noisy keys
+   like :agent / :session-store and clamps long string / collection values.
+
+   `util/args->display-map` (shared with the other three tool-call renderers)
+   runs first, so the keys are keywords whichever dispatch path produced them —
+   the `:json` bound-fn path re-stringifies them before the
+   `:agent.tool-use/pre` hook fires, which used to defeat the omit set as well
+   as the EDN look."
   [args]
-  (cond
-    (nil? args)             ""
-    (not (map? args))       (str args)
-    (empty? args)           ""
-    :else
-    (let [omit?    #{:agent :session-store :st-memory :tool-defs :user-feedback-fn
-                     :permission-fn :memory-manager :bt-config :_meta
-                     ;; Suppress :input / :question keys: when a (sub-)agent
-                     ;; tool call carries the user-typed text under either
-                     ;; key, the daemon's :agent.ask/pre or :agent.tool-use/pre handler
-                     ;; already emitted a `❯ <text>` line.  Re-emitting the
-                     ;; same text here as `input=<text>` would duplicate it.
-                     :input :question}
-          interesting (into (sorted-map)
-                            (remove (fn [[k _]] (omit? k)) args))
-          fmt-v    (fn [v]
-                     (cond
-                       (string? v)             (clamp (collapse-ws v) 150)
-                       (or (vector? v) (seq? v)) (clamp (pr-str (vec v)) 60)
-                       (map? v) (str "{…" (count v) "k}")
-                       :else    (pr-str v)))]
-      (->> interesting
-           (map (fn [[k v]] (str (name k) "=" (fmt-v v))))
-           (str/join " ")))))
+  (let [args (util/args->display-map args)]
+    (cond
+      (not (map? args))       (pr-str args)
+      (empty? args)           ""
+      :else
+      (let [omit?    #{:agent :session-store :st-memory :tool-defs :user-feedback-fn
+                       :permission-fn :memory-manager :bt-config :_meta
+                       ;; Suppress :input / :question keys: when a (sub-)agent
+                       ;; tool call carries the user-typed text under either
+                       ;; key, the daemon's :agent.ask/pre or :agent.tool-use/pre handler
+                       ;; already emitted a `❯ <text>` line.  Re-emitting the
+                       ;; same text here would duplicate it.
+                       :input :question}
+            interesting (into (sorted-map)
+                              (remove (fn [[k _]] (omit? k)))
+                              args)
+            fmt-v    (fn [v]
+                       (cond
+                         (string? v)             (pr-str (clamp (collapse-ws v) 150))
+                         (or (vector? v) (seq? v)) (clamp (pr-str (vec v)) 60)
+                         (map? v) (str "{…" (count v) "k}")
+                         :else    (pr-str v)))]
+        (if (empty? interesting)
+          ""
+          (str "{" (->> interesting
+                        (map (fn [[k v]] (str k " " (fmt-v v))))
+                        (str/join ", "))
+               "}"))))))
 
 ;; -- stream pane --------------------------------------------------------------
 

@@ -91,16 +91,35 @@
                                                :args {:command "ls -la"}}))]
     (is (str/includes? out "⮕"))
     (is (str/includes? out "bash.run"))
-    (is (str/includes? out "command=ls -la"))))
+    (is (str/includes? out "{:command \"ls -la\"}")
+        "args render as an EDN map, not bare key=value")))
+
+(deftest tool-pre-line-renders-string-keyed-args-as-edn
+  (testing "the :json bound-fn dispatch path hands the hook string keys"
+    (let [out (strip-ansi (render/tool-pre-line {:tool-name :bash.run
+                                                 :args {"command" "ls -la"}}))]
+      (is (str/includes? out "{:command \"ls -la\"}")
+          "string keys are shown as keywords so the line stays EDN-shaped"))))
 
 (deftest tool-pre-line-omits-noisy-keys
   (let [out (strip-ansi
              (render/tool-pre-line
               {:tool-name :foo
                :args {:agent ::big-thing :session-store ::also-big :ok 1}}))]
-    (is (str/includes? out "ok=1"))
-    (is (not (str/includes? out "agent=")))
-    (is (not (str/includes? out "session-store=")))))
+    (is (str/includes? out "{:ok 1}"))
+    (is (not (str/includes? out ":agent")))
+    (is (not (str/includes? out ":session-store")))))
+
+(deftest tool-pre-line-omits-noisy-string-keys
+  (testing "the omit set matches by name, so string-keyed args are filtered too"
+    (let [out (strip-ansi
+               (render/tool-pre-line
+                {:tool-name :foo
+                 :args {"agent" ::big-thing "question" "who am i?" "ok" 1}}))]
+      (is (str/includes? out "{:ok 1}"))
+      (is (not (str/includes? out "agent")))
+      (is (not (str/includes? out "who am i?"))
+          "the user-typed text is already echoed by the ask/pre handler"))))
 
 (deftest tool-post-line-glyph-on-error
   (let [ok  (strip-ansi (render/tool-post-line {:tool-name :foo :result "fine"}))
@@ -947,7 +966,7 @@
                :tool-result "total 12\nfoo bar"}))]
     (is (str/includes? out "✓"))
     (is (str/includes? out "bash.run"))
-    (is (str/includes? out "command=ls -la"))
+    (is (str/includes? out "{:command \"ls -la\"}"))
     (is (str/includes? out "→ total 12 foo bar"))))
 
 (deftest tool-activity-line-error-uses-cross
