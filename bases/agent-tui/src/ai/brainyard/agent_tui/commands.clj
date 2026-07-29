@@ -447,32 +447,71 @@
 
 (defn- feature-dot [on?] (if on? (ansi/success "●") (ansi/muted "○")))
 
+(def ^:private feature-line-width
+  "Target width for a `/feature` list row. The doc gets whatever is left after
+   the fixed columns and any state annotation, and is dropped rather than
+   squeezed below `feature-doc-min`."
+  100)
+
+(def ^:private feature-doc-min 24)
+
+(defn- feature-annotation
+  "The one state annotation worth showing inline, as [plain styled], or nil.
+   Only surprising states qualify — a feature that is simply on says nothing."
+  [f gate st]
+  (cond
+    (:proposed f) ["not gateable yet" (ansi/muted "not gateable yet")]
+    (nil? gate)   ["ungated" (ansi/muted "ungated")]
+    (seq (:unmet st))
+    (let [t (str "needs " (str/join ", "
+                                    (map (fn [r] (if (set? r)
+                                                   (str/join "|" (map #(str (symbol %)) (sort r)))
+                                                   (str (symbol r))))
+                                         (:unmet st))))]
+      [t (ansi/warning t)])
+    (= :implied-by (:source st))
+    (let [t (str "\u2190 implied by " (str/join ", " (map #(str (symbol %)) (sort (:implied-by st)))))]
+      [t (ansi/muted t)])
+    :else nil))
+
 (defn- emit-feature-line!
-  "One indented feature row: state dot, short name, then the annotations that
-   explain a surprising state (implied-by / unmet / degraded / restart)."
+  "One indented feature row: state dot, short name, lifecycle, any annotation
+   that explains a surprising state (implied-by / unmet / degraded / restart),
+   then the feature's `:doc` in whatever width remains.
+
+   The doc is what makes the list readable — `capture`, `graph`, `gc`, `tasks`
+   are terse enough that a name alone does not say what you would be turning
+   off. It yields to the annotation, which is the load-bearing signal."
   [fid st]
-  (let [f    (agent/feature-doc fid)
-        gate (agent/gate-of f)]
+  (let [f        (agent/feature-doc fid)
+        gate     (agent/gate-of f)
+        [a-plain a-styled] (feature-annotation f gate st)
+        deg      (when (seq (:degraded st))
+                   (str "\u26a0 " (str/join "; " (vals (:degraded st)))))
+        restart  (when (and gate (not (:proposed f)) (agent/requires-restart-key? gate))
+                   "\u00b7 restart")
+        right-plain  (str/join "  " (remove nil? [a-plain deg restart]))
+        right-styled (str/join "  " (remove nil? [a-styled
+                                                  (some-> deg ansi/warning)
+                                                  (some-> restart ansi/muted)]))
+        ;; 2 indent + 1 dot + 1 space + 20 name + 11 lifecycle. The lifecycle
+        ;; column is 11 because :per-action is 10 wide and %-9s ran straight
+        ;; into the doc with no separating space.
+        used     (+ 35 (count right-plain) (if (seq right-plain) 2 0))
+        room     (- feature-line-width used)
+        doc      (some-> (:doc f) (str/replace #"\s+" " ") str/trim not-empty)
+        doc*     (when (and doc (>= room feature-doc-min))
+                   (if (> (count doc) room)
+                     (str (subs doc 0 (dec room)) "\u2026")
+                     doc))]
     (tui-session/emit!
      (str "  " (feature-dot (:on? st))
           " " (ansi/style (format "%-20s" (name fid)) ansi/bold)
-          (ansi/muted (format "%-9s" (name (:lifecycle f))))
-          (cond
-            (:proposed f)       (ansi/muted "not gateable yet")
-            (nil? gate)         (ansi/muted "ungated")
-            (seq (:unmet st))   (ansi/warning
-                                 (str "needs " (str/join ", "
-                                                         (map (fn [r] (if (set? r)
-                                                                        (str/join "|" (map #(str (symbol %)) (sort r)))
-                                                                        (str (symbol r))))
-                                                              (:unmet st)))))
-            (= :implied-by (:source st))
-            (ansi/muted (str "← implied by " (str/join ", " (map #(str (symbol %)) (sort (:implied-by st))))))
-            :else               "")
-          (when (seq (:degraded st))
-            (ansi/warning (str "  ⚠ " (str/join "; " (vals (:degraded st))))))
-          (when (and gate (not (:proposed f)) (agent/requires-restart-key? gate))
-            (ansi/muted "  · restart"))))))
+          (ansi/muted (format "%-11s" (name (:lifecycle f))))
+          ;; the separator belongs to the doc, not the annotation — otherwise a
+          ;; row whose doc was dropped for width ends in trailing spaces
+          (when (seq right-plain) (str right-styled (when doc* "  ")))
+          (when doc* (ansi/muted doc*))))))
 
 (defn- emit-feature-family! [ag fam]
   (let [fids   (agent/family->features fam)
