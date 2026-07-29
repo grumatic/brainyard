@@ -239,6 +239,29 @@
         (finally
           (refine/session-end-clear-handler {:agent root}))))))
 
+(deftest sub-agent-close-must-not-clear-the-root-loaded-set
+  ;; Regression, found in live verification: sub-agents share the root's session
+  ;; id and are auto-closed when their call returns, so an unguarded close
+  ;; handler let the FIRST dispatched sub-agent wipe the set before the turn
+  ;; ended. Any turn that loaded a skill and then delegated anything — the
+  ;; common case — silently lost the refinement signal.
+  (with-redefs [config/get-config refinement-on
+                proto/session-id  (fn [_] "sess-subclose")]
+    (let [root (stub-agent {:parent nil})
+          sub  (stub-agent {:parent {:agent-id :root/x}})]
+      (try
+        (refine/track-load-handler {:agent root :tool-name :skill$deploy
+                                    :result {:loaded true :skill "deploy"}})
+        (is (= #{"deploy"} (refine/loaded-skills "sess-subclose")))
+        (refine/session-end-clear-handler {:agent sub})
+        (is (= #{"deploy"} (refine/loaded-skills "sess-subclose"))
+            "a sub-agent closing must leave the root turn's loaded set intact")
+        (testing "the root closing still clears it"
+          (refine/session-end-clear-handler {:agent root})
+          (is (empty? (refine/loaded-skills "sess-subclose"))))
+        (finally
+          (refine/session-end-clear-handler {:agent root}))))))
+
 (deftest turn-handler-tolerates-a-missing-trajectory
   (with-redefs [config/get-config  refinement-on
                 config/project-dir (fn [_] "/tmp/proj")

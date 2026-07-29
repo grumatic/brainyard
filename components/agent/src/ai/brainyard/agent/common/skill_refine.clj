@@ -297,9 +297,16 @@
 
 (defn session-end-clear-handler
   "`:agent.instance/closed` handler — drop a session's loaded set so a session
-   ending mid-turn cannot leak an entry. Never throws."
+   ending mid-turn cannot leak an entry. Never throws.
+
+   ROOT-ONLY, for the same reason as `turn-refine-handler` and found the hard
+   way: sub-agents share the root's session id, and every dispatched sub-agent
+   is auto-closed when its call returns. Without this guard the FIRST sub-agent
+   a turn dispatched would wipe the loaded set before the turn ended — so any
+   turn that loaded a skill and then delegated anything (the common case) would
+   silently lose the refinement signal."
   [{:keys [agent]}]
-  (when agent
+  (when (and agent (root-agent? agent))
     (try (clear-loaded! (proto/session-id agent))
          (catch Exception _ nil)))
   nil)
