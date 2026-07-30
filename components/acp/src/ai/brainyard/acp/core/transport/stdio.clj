@@ -180,7 +180,15 @@
     (let [^OutputStreamWriter stdin @!stdin]
       (when-not stdin
         (throw (ex-info "transport not open" {:msg msg})))
-      (let [line (jsonrpc/encode msg)]
+      ;; ^String is load-bearing under native-image, not decoration. Writer
+      ;; declares BOTH write(String) and write(char[]) at arity 1, so an
+      ;; unhinted arg leaves the call unresolved (reflection warning here) and
+      ;; the overload gets picked at runtime. On the JVM the Reflector picks
+      ;; write(String) from the actual argument type; in a native image it
+      ;; binds write(char[]), and every ACP turn dies on the first outbound
+      ;; message with "java.lang.String cannot be cast to char[]". The literal
+      ;; "\n" below was always fine — it is typed at the call site.
+      (let [^String line (jsonrpc/encode msg)]
         (locking write-lock
           (.write stdin line)
           (.write stdin "\n")
