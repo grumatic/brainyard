@@ -96,10 +96,17 @@
     :family    :memory
     :gate      :enable-memory-recall
     :keys      [:recall-limit :memory-recall-snippet-chars]
-    :requires  #{:memory/capture}
+    ;; Deliberately does NOT require :memory/capture. The store is USER-scoped
+    ;; (~/.brainyard/memory/<user-id>.db) and long-lived, so a session can
+    ;; usefully read a corpus it does not write to — the one-shot `by ask`
+    ;; session is exactly that: it should answer with the benefit of prior
+    ;; memory without adding its own throwaway Q&A. Nothing mechanical couples
+    ;; them either: the memory manager is created unconditionally in
+    ;; core.agent/create-agent ("always created"), and only `start-capture!`
+    ;; is gated on :memory/capture.
     :lifecycle :live
     :doc       "FTS (+ optional graph/vector) recall of prior episodes into
-                the prompt."}
+                the prompt. Read-only: works with capture off."}
 
    :memory/mid-turn-recall
    {:title     "Mid-turn recall"
@@ -277,6 +284,14 @@
     :keys      [:clj-backend :exec-backend :sandbox-interop]
     :lifecycle :session
     :doc       "The in-process code-eval channel and its backends."}
+
+   :exec/tool-channel
+   {:title     "Tool channel"
+    :family    :exec
+    :gate      :tool-channel?
+    :keys      []
+    :lifecycle :session
+    :doc       "The JSON tool-calls emission channel. Off ⇒ code-only; tools stay reachable as sandbox callables."}
 
    :exec/sandbox-persistence
    {:title     "Sandbox persistence"
@@ -501,7 +516,8 @@
    feature system rather than any capability within it, and gating it with a
    feature would be circular."
   #{:lm-config :dirs :allowed-dirs :permission-mode :max-output-tokens
-    :max-output-chars :claude-code-max-turns :include-function-directory
+    :max-output-chars :max-thought-chars :claude-code-max-turns
+    :include-function-directory
     :compact-agent-tools :inline-usage-guides :feature-profile})
 
 (def unclassified-keys

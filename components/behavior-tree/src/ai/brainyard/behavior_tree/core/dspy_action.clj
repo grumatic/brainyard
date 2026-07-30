@@ -57,10 +57,34 @@
               :st-memory-atom st-memory
               :node-id node-id})))
 
+(def from-st-memory
+  "Sentinel for a node's `:signature` opt: resolve the signature from
+   `(:signature @st-memory)` at call time instead of pinning one at BT
+   construction.
+
+   For an agent whose output schema depends on runtime config (e.g. CoAct
+   dropping `tool-calls` when the tool channel is off), the signature must come
+   from the SAME resolution that built the system prompt, or the prompt and the
+   schema can disagree. Writing it to st-memory once per turn and reading it
+   here gives every call site — the main node and both retry paths — one value."
+  ::from-st-memory)
+
 (defn- resolve-signature
-  "Resolve a signature — if it's a var, deref it; otherwise use as-is."
-  [signature]
-  (if (var? signature) @signature signature))
+  "Resolve a signature: the `from-st-memory` sentinel reads it out of
+   st-memory, a var is deref'd, anything else is used as-is.
+
+   Throws on a sentinel with nothing in st-memory rather than silently falling
+   back to a default schema — a wrong-but-plausible signature would corrupt the
+   turn's output contract invisibly."
+  [signature context]
+  (cond
+    (= from-st-memory signature)
+    (or (some-> (:st-memory context) deref :signature)
+        (throw (ex-info "dspy node :signature is ::from-st-memory but st-memory has no :signature"
+                        {:node-id (get-in context [:opts :id])})))
+
+    (var? signature) @signature
+    :else signature))
 
 (defn- resolve-lm-config
   "Resolve lm-config with precedence:
@@ -172,10 +196,17 @@
                             zones))))
 
 (defn extract-signature-metadata
-  "Extract input and output keys from a signature (var or compiled map)."
-  [signature]
-  (let [sig (resolve-signature signature)]
-    (clj-llm/extract-signature-metadata sig)))
+  "Extract input and output keys from a signature (var, compiled map, or the
+   `from-st-memory` sentinel).
+
+   The 1-arity covers vars and literal maps — every caller that pins its
+   signature at BT construction. Only the `from-st-memory` sentinel needs
+   `context` (it reads st-memory), and it throws a clear error without one
+   rather than guessing a schema."
+  ([signature] (extract-signature-metadata signature nil))
+  ([signature context]
+   (let [sig (resolve-signature signature context)]
+     (clj-llm/extract-signature-metadata sig))))
 
 (defmulti execute-dspy-operation
   "Execute DSPy operation using clj-llm.
@@ -208,7 +239,7 @@
 
 (defmethod execute-dspy-operation :predict
   [_ signature context inputs]
-  (let [sig (resolve-signature signature)
+  (let [sig (resolve-signature signature context)
         lm-config (resolve-lm-config context)
         max-out (get-in inputs [:state :runtime-config :max-output-tokens] 0)
         lm-config (if (and lm-config (pos? max-out))
@@ -228,7 +259,7 @@
 
 (defmethod execute-dspy-operation :chain-of-thought
   [_ signature context inputs]
-  (let [sig (resolve-signature signature)
+  (let [sig (resolve-signature signature context)
         lm-config (resolve-lm-config context)
         max-out (get-in inputs [:state :runtime-config :max-output-tokens] 0)
         lm-config (if (and lm-config (pos? max-out))
@@ -278,7 +309,7 @@
   [{{:keys [id signature operation stable-keys]} :opts
     :keys [st-memory agent]
     :as context}]
-  (let [{:keys [input-keys]} (extract-signature-metadata signature)
+  (let [{:keys [input-keys]} (extract-signature-metadata signature context)
         stable-keys (normalize-stable-keys
                      (if (some? stable-keys) stable-keys default-stable-keys))
         fire!       (when agent (force !fire-hook))

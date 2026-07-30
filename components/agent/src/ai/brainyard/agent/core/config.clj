@@ -96,10 +96,14 @@
                                 :doc "CoAct system-context: render the `### Agent Tools` roster compactly (one line per tool) instead of full per-tool specs. ReAct ignores this (its roster is its menu)."}
    :code-channel?              {:type "boolean" :default true
                                 :doc "CoAct: expose the code-blocks channel (SCI/bash/python/javascript sandbox). When false the agent is tool-only — the code-blocks prompt sections are dropped and the BT never routes code (react-agent pins this false). Default true keeps every other agent unchanged."}
+   :tool-channel?              {:type "boolean" :default true
+                                :doc "CoAct: expose the JSON tool-calls channel. When false the agent is code-only — the tool-call-format prompt section is dropped and the BT never routes tool-calls. NOTE this does NOT remove tool access: every visible tool stays callable as a sandbox function from a clojure code block (see auto-tool-bindings), so this only drops the redundant JSON emission path. Mirror of :code-channel?; at least one of the two always survives (tool wins if both are off). Default true keeps every existing agent unchanged."}
    :max-context-tokens         {:type "integer" :default 128000
                                 :doc "RLM context-window size (tokens); the after-turn auto-compaction valve fires when estimated context exceeds this."}
    :max-output-chars           {:type "integer" :default 32000
                                 :doc "Inline cap (chars, ~8k tokens) for a single LLM-facing result before truncation to a recoverable temp file (head 70% + tail 20%); unified coact/react iteration-field truncation knob."}
+   :max-thought-chars          {:type "integer" :default 2000
+                                :doc "Inline cap (chars) for an iteration record's `:thought` — the LLM's own reasoning, replayed into every later iteration via the `iterations` input. Separate from (and far tighter than) :max-output-chars, which sizes tool/eval payloads: reasoning is disposable narration, so it is clipped in place with a marker, never spilled to a recoverable temp file. Enforced backstop for the prompt-side brevity contract (clj-llm reasoning-field-desc)."}
    :max-collapsed-lines        {:type "integer" :default 20
                                 :doc "TUI display-only: lines shown in a collapsed display block (Enter expands)."}
    :max-expanded-lines         {:type "integer" :default 200

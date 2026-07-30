@@ -314,8 +314,11 @@
         total-turns (:total-turns @st-memory)
         limit       (config/get-config agent :recall-limit)
         ;; :memory/recall gates injection, not capture — off means keep
-        ;; recording episodes but stop putting them in the prompt. It requires
-        ;; :memory/capture, so recall also goes quiet when capture is off.
+        ;; recording episodes but stop putting them in the prompt. The converse
+        ;; also holds: recall does NOT require capture (the store is user-scoped
+        ;; and the manager is created unconditionally), so a write-free session
+        ;; like a one-shot `by ask` still answers with prior memory. Only `mm`
+        ;; being absent silences it.
         recall?     (feature/on? agent :memory/recall)
         hits        (when (and recall? mm (string? question) (not (str/blank? question)))
                       (try

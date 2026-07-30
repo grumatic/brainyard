@@ -44,20 +44,20 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "30 feature gates + 9 family gates + 83 knobs + 16 presentation + 11 ambient = 149"
+  (testing "31 feature gates + 9 family gates + 83 knobs + 16 presentation + 12 ambient = 151"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
                      count)
           pres  (->> feat/all-features (filter :presentation) (mapcat :keys) count)]
-      (is (= 30 (count feat/gate-keys)) "24 shipping + the 6 promoted in P3")
+      (is (= 31 (count feat/gate-keys)) "24 shipping + the 6 promoted in P3 + :tool-channel?")
       (is (= 9 (count feat/family-gate-keys)) "one per capability family; :ui has none")
       (is (= 83 knobs) "+1: :skill-artifact-max-chars (context/live-artifacts)")
       (is (= 16 pres))
-      (is (= 11 (count feat/ambient-keys)))
+      (is (= 12 (count feat/ambient-keys)) "+1: :max-thought-chars, alongside :max-output-chars")
       (is (= 0 (count feat/unclassified-keys))
           "no schema key is currently unreadable")
-      (is (= 149 (count cfg/config-keys))))))
+      (is (= 151 (count cfg/config-keys))))))
 
 ;; ============================================================================
 ;; Family master switches
@@ -243,11 +243,11 @@
   (is (= (set feat/families) (set (map :family feat/all-features))))
   (is (= (count feat/feature-registry)
          (reduce + (map (comp count feat/family->features) feat/families))))
-  (testing "nine capability families hold 40 features — 30 gated, 10 ungated groupings"
+  (testing "nine capability families hold 41 features — 31 gated, 10 ungated groupings"
     (let [capability (remove :presentation feat/all-features)]
       (is (= 9 (count (disj (set feat/families) :ui))))
-      (is (= 40 (count capability)))
-      (is (= 30 (count (filter :gate capability)))
+      (is (= 41 (count capability)))
+      (is (= 31 (count (filter :gate capability)))
           "every gated feature now has a real schema key")
       (is (= 10 (count (remove :gate capability)))
           "an ungated grouping exists so its knobs have a discoverable home")))
@@ -371,11 +371,27 @@
       (is (not (feat/on?* s :memory/consolidation))
           "graph is off for want of capture, so it implies nothing"))))
 
-(deftest requires-is-transitive
-  (testing "mid-turn-recall -> recall -> capture"
+(deftest requires-pruning-reaches-dependents
+  ;; This used to walk `mid-turn-recall -> recall -> capture`. Dropping
+  ;; `:memory/recall :requires :memory/capture` (read-only memory is valid —
+  ;; see `recall-does-not-require-capture`) removed the registry's ONLY 2-level
+  ;; :requires chain, so there is no longer a pure transitive case to exercise.
+  ;; What remains, and is the harder path anyway, is pruning applied OVER the
+  ;; implication closure — `final-on?` after `closed-on?`.
+  (testing "a dependent is pruned when its requirement's own gate goes off"
     (is (feat/on?* all-on :memory/mid-turn-recall))
-    (is (not (feat/on?* (snap :enable-memory-capture false) :memory/mid-turn-recall))
-        "capture off must prune the whole chain, not just its direct dependent")))
+    (is (not (feat/on?* (snap :enable-memory-recall false) :memory/mid-turn-recall))
+        "mid-turn re-recall cannot outlive plain recall"))
+
+  (testing "pruning beats implication: an implied feature still needs its requirements"
+    ;; graph :implies consolidation, but consolidation :requires capture. The
+    ;; closure turns consolidation on, then pruning must take it back off —
+    ;; the case a single interleaved fixpoint would oscillate on.
+    (let [s (snap :enable-memory-capture false :enable-graph-memory true)]
+      (is (not (feat/on?* s :memory/consolidation))
+          "implied-on must not survive an unmet requirement")
+      (is (feat/on?* s :memory/recall)
+          "and the pruning must not overreach into features with no such requirement"))))
 
 (deftest disjunctive-requires-needs-only-one
   (let [both-off (snap :enable-skill-distillation false :enable-skill-refinement false)
@@ -400,6 +416,30 @@
   (is (feat/on?* all-on :exec/sandbox-persistence))
   (is (not (feat/on?* (snap :code-channel? false) :exec/sandbox-persistence))
       "nothing to persist with no code channel"))
+
+(deftest recall-does-not-require-capture
+  ;; The memory store is USER-scoped and long-lived, so a session can read a
+  ;; corpus it never writes to. `by ask` relies on this: a throwaway one-shot
+  ;; turns capture off (its "what is 2+2?" Q&A is noise) but must still answer
+  ;; with the benefit of prior memory. Nothing mechanical couples them either —
+  ;; core.agent/create-agent creates the manager unconditionally and only
+  ;; `start-capture!` is gated.
+  (is (feat/on?* (snap :enable-memory-capture false) :memory/recall)
+      "recall must survive capture being off — read-only memory is valid")
+  (is (not (feat/on?* (snap :enable-memory-capture false) :memory/capture)))
+
+  (testing "the WRITE-side features do still require capture"
+    (doseq [fid [:memory/consolidation :memory/graph]]
+      (is (not (feat/on?* (snap :enable-memory-capture false
+                                :enable-graph-memory true
+                                :enable-memory-consolidation true)
+                          fid))
+          (str fid " has nothing to write without capture"))))
+
+  (testing "recall's own gate still turns it off"
+    (is (not (feat/on?* (snap :enable-memory-capture false
+                              :enable-memory-recall false)
+                        :memory/recall)))))
 
 (deftest unknown-feature-resolves-to-nil-not-a-throw
   (is (nil? (feat/feature-state* all-on :nope/nope)))

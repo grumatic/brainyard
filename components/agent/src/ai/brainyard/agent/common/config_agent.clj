@@ -185,8 +185,8 @@ FIVE GUIDANCES (apply in order, every turn)
       automation    scheduler, reactions, fsm, hooks, gateway
       context       budget, compaction, live-artifacts, console-activity,
                     conversation
-      exec          code-channel, sandbox-persistence, nrepl, tasks,
-                    task-notify, iteration-hold, gc
+      exec          code-channel, tool-channel, sandbox-persistence, nrepl,
+                    tasks, task-notify, iteration-hold, gc
       agents        subagents, acp, explore, workflow
       reasoning     loop, refinement, sub-llm, recovery
       tools         cache, mcp, ask-channel, oauth

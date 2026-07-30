@@ -1,6 +1,11 @@
 {:paths ["src" "resources"]
  :deps {org.clojure/data.json {:mvn/version "2.5.1"}
         org.clojure/core.async {:mvn/version "1.7.701"}
+        ;; Selmer — renders the ThinkActCode instruction template per channel
+        ;; config (see coact-instructions-template). String templates only
+        ;; (`selmer.parser/render`), never `render-file`: resource/classloader
+        ;; lookup is the part that breaks under native-image.
+        selmer/selmer {:mvn/version "1.12.62"}
         ai.brainyard/clj-http-native {:local/root "../clj-http-native"}
         ;; Component dependencies (Polylith local refs)
         ai.brainyard/memory {:local/root "../memory"}

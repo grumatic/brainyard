@@ -65,3 +65,9 @@
   "DSPy action function for behavior trees.
    Use as an action-fn with opts: {:id :node-id :signature sig :operation :predict}"
   dspy-action/dspy)
+
+(def signature-from-st-memory
+  "Value for a dspy node's `:signature` opt meaning \"read the compiled
+   signature from `(:signature @st-memory)` at call time\" — for agents whose
+   output schema depends on runtime config. See dspy-action/from-st-memory."
+  dspy-action/from-st-memory)
