@@ -13,12 +13,27 @@
    like `:claude-code`, `:gemini`, `:codex` are `acp-client/registry`
    entries.
 
-   ## Soft coupling
+   ## Coupling — a static require, deliberately
 
-   acp-client is reached via `requiring-resolve` so this namespace
-   loads even if the consumer hasn't put `ai.brainyard/acp-client` on
-   their classpath. Calling the agent in that case raises a clear
-   error pointing at the missing dep.
+   acp-client was reached via `requiring-resolve`, so that a consumer
+   without `ai.brainyard/acp-client` on the classpath could still load
+   this namespace. That optionality was fictional — `components/agent`
+   has hard-declared acp-client in deps.edn since the v0.2.0 import —
+   and it broke the shipping binary.
+
+   Clojure's AOT compiler only follows a static `:require`, so a
+   namespace reached solely by `requiring-resolve` is never compiled.
+   The uberjar carried acp-client as `.clj` source with zero `.class`
+   entries, and a GraalVM native image has no runtime Clojure compiler
+   to load source with — so the resolve could never succeed in `by`.
+   Every `acp-agent` session died on first use with a message claiming
+   acp-client was missing from a classpath it was already on. It had
+   never worked in a shipped binary; all live verification ran through
+   `bb tui:acp` on the JVM, where runtime source loading works.
+
+   Requiring statically is what puts acp-client's classes in the image.
+   `clj-llm/core/acp.clj` keeps its own soft-resolve on purpose (see the
+   boundary note there) and rides on the classes this require bakes in.
 
    ## Hook bridge
 
@@ -28,7 +43,8 @@
    `:agent.tool-use/post`) and fired through the standard hooks
    registry. The TUI's existing handlers (in `bases/agent-tui`)
    render these without any new code."
-  (:require [ai.brainyard.agent.common.auth :as auth]
+  (:require [ai.brainyard.acp-client.interface :as acp-client]
+            [ai.brainyard.agent.common.auth :as auth]
             [ai.brainyard.agent.common.schema :as acs]
             [ai.brainyard.agent.core.agent :as agent]
             [ai.brainyard.agent.core.config :as config]
@@ -41,31 +57,28 @@
             [clojure.string :as str]))
 
 ;; =============================================================================
-;; Soft-resolve into ai.brainyard.acp-client.interface
+;; acp-client entry points
+;;
+;; These `*`-suffixed wrappers are what the rest of the namespace calls. They
+;; are kept (rather than inlining `acp-client/spawn!` at each of the ~30 call
+;; sites) so this fix stays a one-block diff; each now dispatches straight to
+;; the statically-required var instead of resolving it at call time.
+;;
+;; Deliberately thin `defn-`s, NOT `(def spawn!* acp-client/spawn!)`: an eager
+;; value-copy def can freeze as an unbound fn under native-image. Calling
+;; through the var at runtime is the shape that survives the image build.
 ;; =============================================================================
 
-(def ^:private acp-client-ns 'ai.brainyard.acp-client.interface)
-
-(defn- acp-client-fn [sym-name]
-  (let [v (try (requiring-resolve (symbol (name acp-client-ns) (name sym-name)))
-               (catch Exception _ nil))]
-    (when-not v
-      (throw (ex-info
-              (str "acp-agent needs ai.brainyard/acp-client on the classpath; "
-                   "could not resolve " acp-client-ns "/" sym-name ".")
-              {:agent :acp-agent :missing (str acp-client-ns "/" sym-name)})))
-    v))
-
-(defn- spawn!*           [& args] (apply (acp-client-fn 'spawn!) args))
-(defn- initialize!*      [& args] (apply (acp-client-fn 'initialize!) args))
-(defn- open?*            [& args] (apply (acp-client-fn 'open?) args))
-(defn- new-session!*     [& args] (apply (acp-client-fn 'new-session!) args))
-(defn- set-model!*       [& args] (apply (acp-client-fn 'set-model!) args))
-(defn- resolve-model-id* [& args] (apply (acp-client-fn 'resolve-model-id) args))
-(defn- prompt!*          [& args] (apply (acp-client-fn 'prompt!) args))
-(defn- close!*           [& args] (apply (acp-client-fn 'close!) args))
-(defn- translate-update* [& args] (apply (acp-client-fn 'translate-update) args))
-(defn- pick-option-id*   [& args] (apply (acp-client-fn 'pick-option-id) args))
+(defn- spawn!*           [& args] (apply acp-client/spawn! args))
+(defn- initialize!*      [& args] (apply acp-client/initialize! args))
+(defn- open?*            [& args] (apply acp-client/open? args))
+(defn- new-session!*     [& args] (apply acp-client/new-session! args))
+(defn- set-model!*       [& args] (apply acp-client/set-model! args))
+(defn- resolve-model-id* [& args] (apply acp-client/resolve-model-id args))
+(defn- prompt!*          [& args] (apply acp-client/prompt! args))
+(defn- close!*           [& args] (apply acp-client/close! args))
+(defn- translate-update* [& args] (apply acp-client/translate-update args))
+(defn- pick-option-id*   [& args] (apply acp-client/pick-option-id args))
 
 ;; =============================================================================
 ;; Permission bridge — ACP session/request_permission → TUI user-feedback

@@ -20,6 +20,12 @@
 
         ;; Components
         ai.brainyard/agent {:local/root "../../components/agent"}
+        ;; ACP — reached transitively via `agent` before, which was enough for the
+        ;; classpath but not for the image: acp_agent.clj now requires acp-client
+        ;; statically so AOT emits its classes (see the coupling note there), and
+        ;; `poly check` correctly demands the project declare it.
+        ai.brainyard/acp-client {:local/root "../../components/acp-client"}
+        ai.brainyard/acp {:local/root "../../components/acp"}
         ai.brainyard/analytics {:local/root "../../components/analytics"}
         ai.brainyard/behavior-tree {:local/root "../../components/behavior-tree"}
         ai.brainyard/clj-llm {:local/root "../../components/clj-llm"}

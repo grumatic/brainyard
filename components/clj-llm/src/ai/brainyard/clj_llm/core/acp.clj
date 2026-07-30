@@ -24,6 +24,16 @@
    call time. Callers who pick `:acp` provider are responsible for
    ensuring `ai.brainyard/acp-client` is on the classpath at runtime.
 
+   Under **native-image** the classpath is not sufficient: AOT only
+   follows a static `:require`, so a namespace reached solely through
+   `requiring-resolve` has no compiled classes in the image, and there
+   is no runtime compiler to load its source. This resolve therefore
+   works in `by` only because `agent/common/acp_agent.clj` requires
+   acp-client statically and bakes its classes in. Keep this soft —
+   hard-depending here would pollute every clj-llm consumer — but know
+   that a consumer shipping a native image with the `:acp` provider and
+   *without* the agent component must require acp-client itself.
+
    ## Backends
 
    `:backend` on the lm-config selects the ACP agent subprocess:
