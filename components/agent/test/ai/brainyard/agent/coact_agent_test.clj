@@ -11,6 +11,7 @@
    End-to-end scenarios (full LLM loop) are out of scope here — see design
    docs/CoAct.md §9 Phase 5 for the benchmark harness plan."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [clojure.java.io :as io]
             [clojure.set]
             [clojure.string :as str]
             [ai.brainyard.agent.common.coact-agent :as rca]
@@ -550,7 +551,12 @@
   ;; signature — a retry carrying a different output contract than the call it
   ;; replaces would corrupt the turn invisibly.
   (testing "all dspy call sites use the st-memory sentinel, none pin the var"
-    (let [src (slurp "src/ai/brainyard/agent/common/coact_agent.clj")
+    ;; Read through the classpath, not a cwd-relative path: Polylith runs
+    ;; `bb test` from the workspace root, where "src/…" doesn't resolve, so a
+    ;; relative slurp here passes only when cwd happens to be components/agent.
+    (let [res (io/resource "ai/brainyard/agent/common/coact_agent.clj")
+          _   (is (some? res) "coact_agent.clj must be reachable on the classpath")
+          src (slurp res)
           sentinel-sites (count (re-seq #":signature\s+bt/signature-from-st-memory" src))
           pinned-sites   (count (re-seq #":signature\s+#'ThinkActCode" src))]
       (is (= 3 sentinel-sites)
