@@ -1,0 +1,52 @@
+;; Accepted first-party reflection warnings — the `bb reflect:check`
+;; ratchet fails the build on anything NOT in here.
+;; Regenerate with `bb reflect:baseline` after a deliberate change.
+;; Shrinking this file is progress; growing it should be argued for.
+{"ai/brainyard/agent/common/context_actions.clj - call to method format can't be resolved (target class is unknown)."
+ 4,
+ "ai/brainyard/agent/common/debug_agent.clj - reference to field delete can't be resolved."
+ 1,
+ "ai/brainyard/agent/common/debug_agent.clj - reference to field exists can't be resolved."
+ 1,
+ "ai/brainyard/agent/common/explore.clj - reference to field toEpochMilli can't be resolved."
+ 1,
+ "ai/brainyard/agent/common/memory_agent/hooks.clj - reference to field isAlive on java.lang.Object can't be resolved."
+ 1,
+ "ai/brainyard/agent/core/config.clj - call to static method readAttributes on java.nio.file.Files can't be resolved (argument types: java.nio.file.Path, java.lang.Class, unknown)."
+ 1,
+ "ai/brainyard/agent/core/config.clj - reference to field fileKey can't be resolved."
+ 1,
+ "ai/brainyard/agent/core/tool.clj - reference to field getClass can't be resolved."
+ 1,
+ "ai/brainyard/agent/core/tool.clj - reference to field getName can't be resolved."
+ 1,
+ "ai/brainyard/agent/task/executor.clj - reference to field toString can't be resolved."
+ 3,
+ "ai/brainyard/agent_tui/commands.clj - reference to field getMessage can't be resolved."
+ 4,
+ "ai/brainyard/agent_tui/permissions.clj - call to static method equiv on clojure.lang.Util can't be resolved (argument types: unknown, char)."
+ 1,
+ "ai/brainyard/agent_tui_app/main.clj - call to java.lang.ProcessBuilder ctor can't be resolved."
+ 1,
+ "ai/brainyard/ask_channel/core/server.clj - call to static method readAttributes on java.nio.file.Files can't be resolved (argument types: java.nio.file.Path, java.lang.Class, unknown)."
+ 1,
+ "ai/brainyard/ask_channel/core/server.clj - reference to field fileKey can't be resolved."
+ 1,
+ "ai/brainyard/clj_nrepl/core/client.clj - reference to field close can't be resolved."
+ 1,
+ "ai/brainyard/clj_nrepl/core/server.clj - reference to field delete can't be resolved."
+ 1,
+ "ai/brainyard/clj_nrepl/core/server.clj - reference to field delete on java.lang.Object can't be resolved."
+ 1,
+ "ai/brainyard/clj_nrepl/core/server.clj - reference to field getName can't be resolved."
+ 4,
+ "ai/brainyard/clj_nrepl/core/server.clj - reference to field getName on java.lang.Object can't be resolved."
+ 4,
+ "ai/brainyard/clj_nrepl/core/session.clj - reference to field close can't be resolved."
+ 1,
+ "ai/brainyard/web_share/core.clj - reference to field destroy on java.lang.Object can't be resolved."
+ 1,
+ "ai/brainyard/web_share/core.clj - reference to field destroyForcibly on java.lang.Object can't be resolved."
+ 1,
+ "ai/brainyard/web_share/core.clj - reference to field isAlive on java.lang.Object can't be resolved."
+ 2}
