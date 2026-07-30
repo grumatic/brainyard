@@ -4,6 +4,21 @@ All notable changes to Brainyard's public distribution are documented here. Vers
 
 ## [Unreleased]
 
+## [v0.5.2] — 2026-07-30
+
+### Changed
+
+- **The ACP backend now defaults to `:claude-code` with `:acp-backend-opts {:model "haiku"}`** (previously `:stub` and `{}`). `:stub` was never a sensible default for a shipped binary — it is a test fixture, not a fallback. It shells out to `clj -M -m ai.brainyard.acp-stub-agent.core` under `<workspace>/projects/acp-stub-agent`, located by walking up for `workspace.edn`, so it runs only inside a Brainyard source checkout and throws `workspace.edn not found above start-dir` anywhere else. An unconfigured `acp-agent` could not work for anyone who installed `by`. `:claude-code` drives the local Claude CLI and needs no API key — the same reason it is already the default LM provider — and `haiku` is the cheapest of its aliases, so an unconfigured ACP session doesn't silently run the most expensive model. An unmatched model name warns and keeps the backend's own default rather than failing. Note that `:acp-backend-opts` **replaces** rather than merges: now that it carries default content, writing `{:command [...]}` in `config.edn` drops the default `:model` too.
+
+### Fixed
+
+- **`by ask -a acp-agent -p <backend>` crashed for every backend except `claude-code`.** An `acp-agent` has no LM of its own — the external backend owns the loop — so `-p` names a *backend* and `-m` a backend model. `run` has always routed them that way; `ask` did not, and got both halves wrong at once. `-p` never reached the backend (it was handed to the LM setup and otherwise dropped, so `ask -p stub` silently ran whatever `:acp-backend` `config.edn` happened to hold), and the LM setup then defaulted the model from a table of *LM providers* that knows nothing of ACP backends — leaving it `nil` for everything but `:claude-code` and throwing a `NullPointerException` in `create-lm`. `-p claude-code` survived only because it collides with an LM provider name, which is why this went unnoticed. An `acp-agent` now skips LM setup and the LM credential pre-flight entirely, and `-p`/`-m` route to `:acp-backend`/`:acp-backend-opts`. A configured backend still wins when no flag is given.
+
+### Internal
+
+- **The build now smoke-tests the native binary, including a real ACP turn.** v0.5.0 shipped an `acp-agent` that was advertised in `by agents` and fatal on first use, and nothing in the pipeline could have caught it: both defects were native-image-only, so the JVM test suite was green, and the existing checks (`--help`, `agents`, `sessions list`) never spawn a subprocess or write a byte to one. `bin/smoke-native.sh` uses `cat` as the ACP backend — the transport spawns it, writes the `initialize` request, and `cat` echoes it back, so the client parses its own request and answers `method not found: initialize`. That proves the full round trip (resolve → spawn → write → read → parse) with no LLM, no network, and no npx, in about a second.
+- **A reflection ratchet gates new reflective Java interop.** The v0.5.1 `Writer.write` defect announced itself as a compiler warning in every build log for months — `compile:ata` has always set `*warn-on-reflection*`, and its own docstring called the output "a TODO list". Printing a warning nobody reads is not a gate. Compilation output is now captured and compared against a committed baseline (39 first-party warnings across 24 keys), failing only on warnings that are *new*. Scoped to `ai/brainyard/` so a dependency bump can't train people to regenerate the baseline blindly.
+
 ## [v0.5.1] — 2026-07-30
 
 ### Fixed
