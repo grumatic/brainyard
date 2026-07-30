@@ -1003,7 +1003,33 @@
                               (some-> (get-in file-config [:llm :default-provider]) name)
                               cli-provider))
         model (or (:model opts) (get-in file-config [:llm :default-model]))
-        max-iter (:max-iterations opts)]
+        max-iter (:max-iterations opts)
+        ;; An acp-agent has no LM of its own — the external ACP backend owns
+        ;; the loop — so for it `-p` names a BACKEND (:stub, :claude-code,
+        ;; :gemini, :codex) and `-m` a backend model. `run` has always routed
+        ;; them that way (see the :acp-agent branch of base-args); `ask` did
+        ;; not, and got both halves wrong at once:
+        ;;
+        ;;   * `-p` never reached the backend. It was passed to setup-lm! as
+        ;;     an LM provider and otherwise dropped, so `ask -p stub` silently
+        ;;     ran whatever :acp-backend config.edn happened to hold.
+        ;;   * setup-lm! then defaulted the model off an LM table that knows
+        ;;     nothing of ACP backends, leaving it nil for every backend but
+        ;;     :claude-code — and create-lm NPEs on a nil model. So
+        ;;     `ask -a acp-agent -p stub` crashed, while `-p claude-code`
+        ;;     survived purely because it collides with an LM provider name.
+        ;;
+        ;; Explicit-`-p` detection reuses the sentinel convention already used
+        ;; for agent-id and provider above: provider-opt carries :default
+        ;; "claude-code", so a bare `-p claude-code` is indistinguishable from
+        ;; passing nothing. Treating the sentinel as unset means a configured
+        ;; :acp-backend keeps winning when no flag is given, rather than being
+        ;; clobbered by a CLI default the user never typed.
+        acp?     (= agent-id :acp-agent)
+        acp-backend (when-not (= cli-provider "claude-code") cli-provider)
+        ;; Raw :model, NOT `model` above — that one folds in the LLM
+        ;; :default-model, which is not a backend model.
+        acp-model   (:model opts)]
     (when (or (nil? question) (str/blank? question))
       (if json?
         (print-json! {:success false :error "question argument is required"})
@@ -1015,7 +1041,10 @@
     ;; surfaced as JSON below (the catch around `run`); in plain mode, notify
     ;; with actionable guidance and exit cleanly rather than letting setup-lm!
     ;; throw a raw stack trace up to cli-matic.
-    (when (and (not json?) (helpers/missing-provider-key provider))
+    ;; Skipped for an acp-agent: `provider` is a backend name there, so asking
+    ;; whether it has an LM API key is a category error (and would refuse
+    ;; `-p gemini` for want of a GEMINI key it never uses).
+    (when (and (not json?) (not acp?) (helpers/missing-provider-key provider))
       (binding [*out* *err*]
         (println (str "⚠  " (helpers/no-provider-message provider))))
       (System/exit 1))
@@ -1057,7 +1086,10 @@
                       (println (or answer ""))))))))
           run (fn []
                 (helpers/suppress-jul-cookie-warnings!)
-                (helpers/setup-lm! provider :model model)
+                ;; No LM for an acp-agent — the backend owns the loop, and
+                ;; setting one up is what produced the nil-model NPE.
+                (when-not acp?
+                  (helpers/setup-lm! provider :model model))
                 (mulog/setup-slf4j-bridge!)
                 (setup-app-log!)
                 ;; Hand the graph-mode session-end consolidation to a detached
@@ -1104,7 +1136,15 @@
                            ;; never force it true, or a user's own
                            ;; `:enable-memory-capture false` would be overridden.
                            (when-not explicit-session?
-                             [:enable-memory-capture false])))]
+                             [:enable-memory-capture false])
+                           ;; Route -p/-m to the ACP backend, mirroring `run`.
+                           ;; Only when actually supplied, so a configured
+                           ;; :acp-backend / :acp-backend-opts still applies
+                           ;; when the flag is absent.
+                           (when acp?
+                             (cond-> []
+                               acp-backend (into [:acp-backend (keyword acp-backend)])
+                               acp-model   (into [:acp-backend-opts {:model acp-model}])))))]
                   (try
                     (let [result (agent/ask ag question)
                           lm     (clj-llm/get-default-lm)
