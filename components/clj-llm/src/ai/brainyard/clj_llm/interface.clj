@@ -68,6 +68,15 @@
    Returns {:input-keys [...] :output-keys [...]}."
   signature/extract-signature-metadata)
 
+(def compile-signature
+  "Compile a signature definition into a normalized signature map — the
+   function `defsignature` expands to. Exposed for callers that must build a
+   signature at RUNTIME rather than load time (e.g. an agent whose output
+   fields depend on config). Same return shape as a `defsignature` var.
+
+   `(compile-signature name instructions inputs outputs & [input-order])`"
+  signature/compile-signature)
+
 ;; ============================================================================
 ;; Operations (Multimethod)
 ;; ============================================================================

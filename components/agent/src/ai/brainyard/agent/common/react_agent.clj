@@ -21,7 +21,13 @@
    channel — see docs/design/react-coact-unification-plan.md.
 
    `:code-channel?` defaults true, so every other coact-derived agent is
-   unchanged."
+   unchanged.
+
+   `:tool-channel?` is its mirror: false yields a code-only agent (no JSON
+   tool-calls channel). That one sheds no capability — tools stay callable as
+   sandbox functions — so it has no canonical agent here; set it via
+   `:config-extra` on any coact-derived agent. At least one of the two channels
+   always survives; see `resolve-action-channels`."
   (:require [ai.brainyard.agent.core.tool :refer [defagent]]
             [ai.brainyard.agent.common.coact-agent :as coact]
             [ai.brainyard.agent.common.agent-roster :as agent-roster]))

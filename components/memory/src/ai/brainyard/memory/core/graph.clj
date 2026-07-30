@@ -130,8 +130,12 @@
 ;; =====================================================
 
 (defn upsert-edge
-  "Insert a typed, temporally-scoped edge. Idempotent on
-  (user-id, src, dst, relation, t-valid). Returns the persisted edge."
+  "Insert a typed, temporally-scoped edge. Idempotent on the LIVE
+  (user-id, src, dst, relation) — re-asserting refreshes fact/confidence/
+  provenance on the existing live row and preserves its original `t_valid`
+  (was: keyed on t-valid too, which duplicated instead of updating whenever the
+  clock had ticked). Supersede a fact via `invalidate-edge` first; that frees
+  the natural key so a new live row can be inserted. Returns the persisted edge."
   [ds user-id {:keys [src-id dst-id relation fact confidence t-valid source-entry-ids]}]
   (when-not (and src-id dst-id relation)
     (throw (ex-info "upsert-edge requires :src-id :dst-id :relation"
@@ -140,30 +144,52 @@
         conf (or confidence 0.85)
         sids (->json source-entry-ids)
         ;; ON CONFLICT keeps the edge idempotent and refreshes fact/conf/
-        ;; provenance. t_valid is part of the conflict key; when omitted
-        ;; the DB default (now) is used, so re-asserting "now" makes a new
-        ;; row only if the clock ticked — acceptable for Phase 0.
+        ;; provenance. The target is `idx_edges_live_unique` (sqlite 2.3.0) —
+        ;; the partial index on LIVE rows — NOT the table's
+        ;; UNIQUE(..., t_valid). That older key could not dedupe: t_valid
+        ;; defaults to now, so re-asserting a relation seconds later simply
+        ;; inserted a second live row (and the no-t_valid branch below had no
+        ;; ON CONFLICT at all). Re-extraction is routine — a per-session
+        ;; watermark run and a later per-user sweep overlap by design — so this
+        ;; has to collapse rather than accumulate.
+        ;;
+        ;; The `WHERE t_invalid IS NULL` predicate is REQUIRED to name a partial
+        ;; index as a conflict target; without it sqlite matches no index and
+        ;; the insert throws. Keep in sync with `sqlite/live-edge-unique-index`.
+        ;;
+        ;; t_valid is deliberately NOT updated on conflict: the fact has been
+        ;; valid since the original assertion. Superseding a fact goes through
+        ;; `invalidate-edge` first, which takes the row out of this partial
+        ;; index and lets a new live row be inserted — so bi-temporal history
+        ;; still works.
+        on-conflict "ON CONFLICT(user_id, src_id, dst_id, relation) WHERE t_invalid IS NULL
+                     DO UPDATE SET fact = excluded.fact,
+                                   confidence = excluded.confidence,
+                                   source_entry_ids = excluded.source_entry_ids"
         r (if t-valid
             (jdbc/execute-one!
-             ds ["INSERT INTO graph_edges
-                  (user_id, src_id, dst_id, relation, fact, confidence, t_valid, source_entry_ids)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                  ON CONFLICT(user_id, src_id, dst_id, relation, t_valid)
-                  DO UPDATE SET fact = excluded.fact,
-                                confidence = excluded.confidence,
-                                source_entry_ids = excluded.source_entry_ids,
-                                t_invalid = NULL"
+             ds [(str "INSERT INTO graph_edges
+                       (user_id, src_id, dst_id, relation, fact, confidence, t_valid, source_entry_ids)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?) " on-conflict)
                  user-id src-id dst-id rel fact conf t-valid sids]
              {:return-keys true})
             (jdbc/execute-one!
-             ds ["INSERT INTO graph_edges
-                  (user_id, src_id, dst_id, relation, fact, confidence, source_entry_ids)
-                  VALUES (?, ?, ?, ?, ?, ?, ?)"
+             ds [(str "INSERT INTO graph_edges
+                       (user_id, src_id, dst_id, relation, fact, confidence, source_entry_ids)
+                       VALUES (?, ?, ?, ?, ?, ?, ?) " on-conflict)
                  user-id src-id dst-id rel fact conf sids]
              {:return-keys true}))
-        new-id (or (:graph_edges/id r) (:last_insert_rowid r) (val (first r)))]
+        _ r]
     (mulog/debug ::graph-edge-upserted :src src-id :dst dst-id :relation rel)
-    (row->edge (jdbc/execute-one! ds ["SELECT * FROM graph_edges WHERE id = ?" new-id]))))
+    ;; Read back by NATURAL KEY, not by last_insert_rowid: sqlite leaves
+    ;; last_insert_rowid untouched when ON CONFLICT takes the DO UPDATE branch,
+    ;; so on an update it would name some earlier insert's row (or nothing).
+    ;; `idx_edges_live_unique` makes this lookup single-row by construction.
+    (row->edge (jdbc/execute-one!
+                ds ["SELECT * FROM graph_edges
+                      WHERE user_id = ? AND src_id = ? AND dst_id = ? AND relation = ?
+                        AND t_invalid IS NULL"
+                    user-id src-id dst-id rel]))))
 
 (defn invalidate-edge
   "Set `t_invalid` on an edge (bi-temporal supersession). Returns true

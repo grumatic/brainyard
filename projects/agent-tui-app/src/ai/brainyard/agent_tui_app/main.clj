@@ -1025,38 +1025,105 @@
     ;; configured", any agent emit!) lands on stderr and stdout stays pure JSON.
     ;; (In one-shot mode emit!/write-output! resolve to *out*, so this captures
     ;; them; JUL/SQLite warnings already go to System.err.)
-    (let [run (fn []
+    (let [;; Emit the answer EXACTLY ONCE, and — on the normal path — before the
+          ;; agent is closed (see `run` below). Session close fires the
+          ;; memory-agent's `:agent.instance/closed` flush, which in graph mode
+          ;; can take minutes; printing after it left stdout empty that whole
+          ;; time even though the answer was ready in seconds.
+          ;; The atom guards the one double-print window: `run`'s `finally`
+          ;; (teardown / close) throwing AFTER a successful emit, which would
+          ;; otherwise fall into the --json catch below and print again.
+          !emitted (atom false)
+          emit-result!
+          (fn [{:keys [result sess-id] rprov :provider rmodel :model}]
+            (when (compare-and-set! !emitted false true)
+              (let [err    (:error result)
+                    answer (or (:answer result) (:result result))]
+                (if json?
+                  ;; stdout stays pure JSON even though `run` executes under
+                  ;; *out*→*err* in --json mode.
+                  (binding [*out* real-out]
+                    (print-json! (cond-> {:success (not (boolean err))
+                                          :answer (when-not err (or answer ""))
+                                          :provider rprov
+                                          :model rmodel
+                                          :agent (name agent-id)
+                                          :session-id sess-id}
+                                   (:usage result) (assoc :usage (:usage result))
+                                   err             (assoc :error err))))
+                  (binding [*out* real-out]
+                    (if err
+                      (println (str "Error: " err))
+                      (println (or answer ""))))))))
+          run (fn []
                 (helpers/suppress-jul-cookie-warnings!)
                 (helpers/setup-lm! provider :model model)
                 (mulog/setup-slf4j-bridge!)
                 (setup-app-log!)
-                (let [sess-id (or (some-> (:session opts) str/trim not-empty)
+                ;; Hand the graph-mode session-end consolidation to a detached
+                ;; `by memory reduce` child, exactly as the TUI does. Without
+                ;; this the `:agent.instance/closed` flush has no launcher and
+                ;; falls back to the bounded IN-PROCESS path, which in graph
+                ;; mode blocks `by ask` for the full
+                ;; `session-end-flush-timeout-graph-ms` (5 min) and then
+                ;; discards the work.
+                (install-consolidation-offload!)
+                (let [named-session (some-> (:session opts) str/trim not-empty)
+                      ;; `--session` presence IS the durability signal: naming a
+                      ;; session says "this one matters". An auto-generated
+                      ;; `ask-<millis>` is a throwaway (smoke test, script, CI).
+                      explicit-session? (some? named-session)
+                      sess-id (or named-session
                                   (str "ask-" (System/currentTimeMillis)))
                       max-iterations (or max-iter
                                          (:max-iterations (:meta (agent/get-tool-defs :id agent-id)))
                                          (get agent/default-config :max-iterations 20))
-                      ag (agent/setup-agent-by-id agent-id
-                                                  :agent-session {:user-id (helpers/resolve-user-id (:user-id opts))
-                                                                  :session-id sess-id}
-                                                  :max-iterations max-iterations
-                                                  ;; The one-shot `ask-<millis>` session is ephemeral — don't
-                                                  ;; leave a `.brainyard/sessions/ask-*/trajectory.edn` behind.
-                                                  ;; A top-level schema key flows into the per-agent override
-                                                  ;; (st-memory-init :config), NOT .brainyard/config.edn, so it
-                                                  ;; scopes to this run only and never affects TUI sessions.
-                                                  :enable-trajectory-recording false)]
+                      ag (apply
+                          agent/setup-agent-by-id agent-id
+                          (concat
+                           [:agent-session {:user-id (helpers/resolve-user-id (:user-id opts))
+                                            :session-id sess-id}
+                            :max-iterations max-iterations
+                            ;; The one-shot `ask-<millis>` session is ephemeral — don't
+                            ;; leave a `.brainyard/sessions/ask-*/trajectory.edn` behind.
+                            ;; A top-level schema key flows into the per-agent override
+                            ;; (st-memory-init :config), NOT .brainyard/config.edn, so it
+                            ;; scopes to this run only and never affects TUI sessions.
+                            :enable-trajectory-recording false]
+                           ;; An UNNAMED ask is a throwaway: its Q&A ("what is 2+2?")
+                           ;; is noise in a user-scoped, long-lived recall corpus. Turn
+                           ;; capture off, which also prunes graph extraction and the
+                           ;; session-end consolidation (both :require it) — so no
+                           ;; detached `by memory reduce` child spawns either.
+                           ;; RECALL deliberately survives: the store is user-scoped, so
+                           ;; the turn still answers with the benefit of prior memory
+                           ;; (see :memory/recall in core.feature — it intentionally has
+                           ;; no :requires on capture).
+                           ;; Naming a session (`ask -s foo`) is the opt-in to full
+                           ;; memory behaviour; only set the key in the throwaway case,
+                           ;; never force it true, or a user's own
+                           ;; `:enable-memory-capture false` would be overridden.
+                           (when-not explicit-session?
+                             [:enable-memory-capture false])))]
                   (try
                     (let [result (agent/ask ag question)
-                          lm     (clj-llm/get-default-lm)]
-                      {:result result :sess-id sess-id
-                       :provider (some-> (:provider lm) name) :model (:model lm)})
+                          lm     (clj-llm/get-default-lm)
+                          out    {:result result :sess-id sess-id
+                                  :provider (some-> (:provider lm) name) :model (:model lm)}]
+                      ;; Print here, INSIDE the try — the `finally` below closes
+                      ;; the agent, and that close can block on the session-end
+                      ;; memory flush.
+                      (emit-result! out)
+                      out)
                     (catch Exception e
-                      {:result {:error (.getMessage e)} :sess-id sess-id
-                       :provider (name provider) :model model})
+                      (let [out {:result {:error (.getMessage e)} :sess-id sess-id
+                                 :provider (name provider) :model model}]
+                        (emit-result! out)
+                        out))
                     (finally
                       (teardown-app-log!)
                       (.close ^java.io.Closeable ag)))))
-          {:keys [result sess-id] rprov :provider rmodel :model}
+          {:keys [result]}
           (if json?
             ;; In --json mode a setup failure (e.g. missing API key, thrown by
             ;; setup-lm! before the inner try) must still surface as JSON, not a
@@ -1065,24 +1132,16 @@
             (binding [*out* *err*]
               (try (run)
                    (catch Exception e
-                     {:result {:error (.getMessage e)} :provider (name provider) :model model})))
-            (run))
-          err    (:error result)
-          answer (or (:answer result) (:result result))]
-      (if json?
-        (binding [*out* real-out]
-          (print-json! (cond-> {:success (not (boolean err))
-                                :answer (when-not err (or answer ""))
-                                :provider rprov
-                                :model rmodel
-                                :agent (name agent-id)
-                                :session-id sess-id}
-                         (:usage result) (assoc :usage (:usage result))
-                         err             (assoc :error err))))
-        (if err
-          (println (str "Error: " err))
-          (println (or answer ""))))
-      (System/exit (if err 1 0)))))
+                     ;; `run` never got far enough to emit (or its finally threw
+                     ;; after emitting — the atom makes that a no-op).
+                     (let [out {:result {:error (.getMessage e)}
+                                :provider (name provider) :model model}]
+                       (emit-result! out)
+                       out))))
+            (run))]
+      ;; The answer is already on stdout — `emit-result!` printed it before the
+      ;; agent was closed. Only the exit code is left.
+      (System/exit (if (:error result) 1 0)))))
 
 ;; ============================================================================
 ;; Subcommand: memory — maintenance on the user-scoped L1/L2/L3 store

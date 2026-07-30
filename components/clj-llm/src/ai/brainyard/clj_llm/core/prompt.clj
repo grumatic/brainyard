@@ -69,6 +69,30 @@
                          field-pairs)))
 
 ;; ============================================================================
+;; Chain-of-Thought Reasoning Field
+;; ============================================================================
+
+(def reasoning-field-desc
+  "Description for the CoT `reasoning` output field — the single source of
+   truth, used by the CoT system message here and by the augmented JSON
+   schema in chain-of-thought.clj (so the model reads the same contract in
+   both places).
+
+   Deliberately prescriptive about LENGTH. DSPy's structural position alone
+   forces reasoning-first, but not brevity, and unbounded reasoning is paid
+   for twice in the agent loop: once as output tokens, then again every
+   subsequent iteration, because `:last-reasoning` becomes the iteration
+   record's `:thought` and is replayed in the prompt UNTRUNCATED."
+  (str "Brief reasoning leading to the answer: at most 3 short sentences (~60 words). "
+       "Plain prose only; no headings, no bullet lists, no code blocks. "
+       "State the decision and why; do not restate the inputs, narrate what you "
+       "are about to do, or explain the output format."))
+
+(def ^:private reasoning-field
+  "The CoT reasoning field as a [key schema] pair, prepended to the outputs."
+  [:reasoning [:string {:desc reasoning-field-desc}]])
+
+;; ============================================================================
 ;; JSON Schema Instruction
 ;; ============================================================================
 
@@ -119,12 +143,12 @@
   "Build the system message for chain-of-thought.
    Prepends reasoning as the first output field (DSPy convention:
    structural position alone forces reasoning-first, no explicit
-   'think step by step' instruction needed).
+   'think step by step' instruction needed) — with a length budget, which
+   position alone does not impose (see reasoning-field-desc).
    Includes augmented JSON schema with reasoning field."
   [signature json-schema]
   (let [{:keys [instructions inputs outputs]} signature
-        cot-outputs (into [[:reasoning [:string {:desc "Step-by-step reasoning before producing the answer"}]]]
-                          outputs)
+        cot-outputs (into [reasoning-field] outputs)
         parts (cond-> []
                 (seq inputs)   (conj (str "Your input fields are:\n" (indexed-fields inputs)))
                 true           (conj (str "Your output fields are:\n" (indexed-fields-raw cot-outputs)))
@@ -198,8 +222,7 @@
   [signature json-schema chain-of-thought?]
   (let [{:keys [instructions inputs outputs]} signature]
     (if chain-of-thought?
-      (let [cot-outputs (into [[:reasoning [:string {:desc "Step-by-step reasoning before producing the answer"}]]]
-                              outputs)]
+      (let [cot-outputs (into [reasoning-field] outputs)]
         (cond-> []
           (seq inputs)   (conj [:input-fields (str "Your input fields are:\n" (indexed-fields inputs))])
           true           (conj [:output-fields (str "Your output fields are:\n" (indexed-fields-raw cot-outputs))])

@@ -387,13 +387,25 @@
      t_valid DATETIME DEFAULT CURRENT_TIMESTAMP,
      t_invalid DATETIME,
      ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-     source_entry_ids TEXT,
-     UNIQUE(user_id, src_id, dst_id, relation, t_valid)
+     source_entry_ids TEXT
+     /* No UNIQUE(..., t_valid) here — uniqueness is `idx_edges_live_unique`,
+        the partial index on live rows (see below). The old table-level key was
+        both too weak and too strong: t_valid defaults to now(), so it failed to
+        stop duplicate live edges, while still rejecting a legitimate
+        re-assertion made in the same second as that triple's own superseded
+        row — which broke bi-temporal supersession. Existing databases are
+        rebuilt by `rebuild-graph-edges!`. */
    )"
 
    "CREATE INDEX IF NOT EXISTS idx_graph_nodes_user ON graph_nodes(user_id, node_type, name)"
-   "CREATE INDEX IF NOT EXISTS idx_graph_nodes_comm ON graph_nodes(user_id, community_id)"
-   "CREATE INDEX IF NOT EXISTS idx_edges_src ON graph_edges(user_id, src_id) WHERE t_invalid IS NULL"
+   "CREATE INDEX IF NOT EXISTS idx_graph_nodes_comm ON graph_nodes(user_id, community_id)"])
+
+(def ^:private graph-edge-indexes
+  "Indexes owned by `graph_edges`, kept separate from `graph-schema` because
+   `rebuild-graph-edges!` DROPs the table — which drops its indexes with it —
+   and so must recreate them afterwards. Referencing one vector from both places
+   keeps the rebuild from silently leaving the neighbor lookups unindexed."
+  ["CREATE INDEX IF NOT EXISTS idx_edges_src ON graph_edges(user_id, src_id) WHERE t_invalid IS NULL"
    "CREATE INDEX IF NOT EXISTS idx_edges_dst ON graph_edges(user_id, dst_id) WHERE t_invalid IS NULL"])
 
 (defn- vec-schema
@@ -467,6 +479,136 @@
           (mulog/error ::ddl-execution-failed :statement stmt :error msg)))
       false)))
 
+(def ^:private live-edge-unique-index
+  "At most ONE live edge per (user, src, dst, relation).
+
+   The table's `UNIQUE(user_id, src_id, dst_id, relation, t_valid)` cannot
+   enforce this: `t_valid` defaults to CURRENT_TIMESTAMP, so re-asserting the
+   same relation a second later inserted a duplicate LIVE row (the Phase-0
+   caveat noted in `graph/upsert-edge!`). Re-extraction is expected here — a
+   per-session watermark run and a later per-user sweep deliberately overlap
+   rather than risk skipping episodes — so the write path has to be idempotent.
+
+   Partial on `t_invalid IS NULL` so bi-temporal history still works:
+   invalidate-then-reassert keeps the superseded rows and adds one new live row.
+   `graph/upsert-edge!` targets this index in its ON CONFLICT clause; the two
+   must stay in sync or inserts throw instead of upserting."
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_live_unique
+     ON graph_edges(user_id, src_id, dst_id, relation) WHERE t_invalid IS NULL")
+
+(defn- rebuild-graph-edges!
+  "Drop the obsolete table-level `UNIQUE(user_id, src_id, dst_id, relation,
+   t_valid)` from an existing `graph_edges`. SQLite cannot ALTER a constraint
+   away, so this is the standard create-copy-drop-rename rebuild.
+
+   Why it must go rather than merely be superseded: it does NOT exclude
+   invalidated rows, so re-asserting a relation in the same second that its own
+   previous version was superseded raises SQLITE_CONSTRAINT_UNIQUE. `ON CONFLICT`
+   cannot cover it — sqlite permits a single conflict target per INSERT, and
+   that target is the live-rows partial index. Leaving the old key in place
+   breaks bi-temporal supersession outright.
+
+   Guarded: a no-op unless the old constraint is actually present, so it runs at
+   most once per database. Nothing references `graph_edges` (no inbound FKs,
+   triggers or views), so the rename is safe. Indexes are recreated by the
+   IF NOT EXISTS DDL / `live-edge-unique-index` that follow."
+  [ds]
+  (try
+    (let [ddl (some-> (jdbc/execute-one!
+                       ds ["SELECT sql FROM sqlite_master WHERE type='table' AND name='graph_edges'"])
+                      first val str)]
+      (when (str/includes? (str/replace ddl #"\s+" " ") "UNIQUE(user_id, src_id, dst_id, relation, t_valid)")
+        (jdbc/with-transaction [tx ds]
+          (jdbc/execute! tx ["CREATE TABLE graph_edges_rebuild (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                user_id TEXT NOT NULL,
+                                src_id INTEGER NOT NULL REFERENCES graph_nodes(id),
+                                dst_id INTEGER NOT NULL REFERENCES graph_nodes(id),
+                                relation TEXT NOT NULL,
+                                fact TEXT,
+                                confidence REAL DEFAULT 0.85,
+                                t_valid DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                t_invalid DATETIME,
+                                ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                source_entry_ids TEXT)"])
+          ;; Explicit column list — never SELECT *, so a future column added to
+          ;; the live table can't silently shift into the wrong slot here.
+          (jdbc/execute! tx ["INSERT INTO graph_edges_rebuild
+                                (id, user_id, src_id, dst_id, relation, fact, confidence,
+                                 t_valid, t_invalid, ingested_at, source_entry_ids)
+                              SELECT id, user_id, src_id, dst_id, relation, fact, confidence,
+                                     t_valid, t_invalid, ingested_at, source_entry_ids
+                                FROM graph_edges"])
+          (jdbc/execute! tx ["DROP TABLE graph_edges"])
+          (jdbc/execute! tx ["ALTER TABLE graph_edges_rebuild RENAME TO graph_edges"]))
+        (mulog/info ::rebuilt-graph-edges :dropped "UNIQUE(user_id,src_id,dst_id,relation,t_valid)")))
+    (catch Exception e
+      (mulog/warn ::rebuild-graph-edges-failed :error (ex-message e)))))
+
+(defn- dedupe-live-edges!
+  "Collapse pre-existing duplicate LIVE edges so `live-edge-unique-index` can be
+   created. Must run BEFORE it — the index cannot be built over a table that
+   already violates it, and `execute-ddl!` only logs that failure.
+
+   Keeps one row per (user, src, dst, relation): a populated `fact` wins over a
+   blank one (observed duplicates included degraded blank-fact copies), then the
+   earliest `t_valid` (the original assertion), then the lowest id for
+   determinism. Provenance is adopted from a discarded row when the keeper has
+   none — verbatim, never concatenated, since `source_entry_ids` is JSON.
+
+   Only touches live rows; invalidated history is never deleted. Idempotent: a
+   no-op once no duplicates remain."
+  [ds]
+  (try
+    (let [;; `val (first …)` rather than a keyword lookup: an aggregate over a
+          ;; subquery has no table to namespace the key with, so the builder's
+          ;; key name is not worth depending on.
+          dups (some-> (jdbc/execute-one!
+                        ds ["SELECT COUNT(*) AS n FROM (
+                              SELECT 1 FROM graph_edges WHERE t_invalid IS NULL
+                              GROUP BY user_id, src_id, dst_id, relation
+                              HAVING COUNT(*) > 1)"])
+                       first val)]
+      (when (pos? (long (or dups 0)))
+        ;; Rank once; both statements below reuse the same keeper choice.
+        (let [ranked "SELECT id, user_id, src_id, dst_id, relation, source_entry_ids,
+                             ROW_NUMBER() OVER (
+                               PARTITION BY user_id, src_id, dst_id, relation
+                               ORDER BY (CASE WHEN COALESCE(TRIM(fact),'') = '' THEN 1 ELSE 0 END),
+                                        t_valid, id) AS rn
+                      FROM graph_edges WHERE t_invalid IS NULL"]
+          ;; 1. Don't lose provenance the keeper lacks.
+          (jdbc/execute!
+           ds [(str "UPDATE graph_edges SET source_entry_ids = (
+                       SELECT d.source_entry_ids FROM (" ranked ") d
+                        WHERE d.user_id = graph_edges.user_id
+                          AND d.src_id = graph_edges.src_id
+                          AND d.dst_id = graph_edges.dst_id
+                          AND d.relation = graph_edges.relation
+                          AND d.rn > 1
+                          AND COALESCE(TRIM(d.source_entry_ids),'') <> ''
+                        LIMIT 1)
+                     WHERE t_invalid IS NULL
+                       AND COALESCE(TRIM(source_entry_ids),'') = ''
+                       AND id IN (SELECT id FROM (" ranked ") WHERE rn = 1)
+                       AND EXISTS (SELECT 1 FROM (" ranked ") d2
+                                    WHERE d2.user_id = graph_edges.user_id
+                                      AND d2.src_id = graph_edges.src_id
+                                      AND d2.dst_id = graph_edges.dst_id
+                                      AND d2.relation = graph_edges.relation
+                                      AND d2.rn > 1
+                                      AND COALESCE(TRIM(d2.source_entry_ids),'') <> '')")])
+          ;; 2. Drop the redundant live copies.
+          (let [r (jdbc/execute-one!
+                   ds [(str "DELETE FROM graph_edges
+                              WHERE t_invalid IS NULL
+                                AND id IN (SELECT id FROM (" ranked ") WHERE rn > 1)")])]
+            (mulog/info ::deduped-live-edges :duplicate-groups dups :rows-deleted (or (:next.jdbc/update-count r) 0))))))
+    (catch Exception e
+      ;; Never block schema init on this; the index creation below then logs
+      ;; its own failure and the DB keeps working with the old constraint.
+      (mulog/warn ::dedupe-live-edges-failed :error (ex-message e)))))
+
 (defn- column-exists?
   "True when `table` has a column named `col`."
   [ds table col]
@@ -492,6 +634,7 @@
                             semantic-schema
                             audit-schema
                             graph-schema
+                            graph-edge-indexes
                             ;; The vector index only exists when sqlite-vec
                             ;; loaded; otherwise recall falls back to FTS.
                             (when (resolve-vec-extension)
@@ -506,17 +649,39 @@
     (when-not (column-exists? ds "graph_nodes" "community_id")
       (execute-ddl! ds "ALTER TABLE graph_nodes ADD COLUMN community_id INTEGER"))
 
+    ;; 2.3.0: exactly one LIVE edge per (user, src, dst, relation).
+    ;; ORDER MATTERS, all three steps:
+    ;;   1. drop the obsolete UNIQUE(..., t_valid) — it rejects legitimate
+    ;;      re-assertion after supersession, and ON CONFLICT cannot cover both
+    ;;      it and the partial index;
+    ;;   2. collapse duplicate live rows — the unique index cannot be built over
+    ;;      a table that already violates it, and execute-ddl! only LOGS that;
+    ;;   3. create the index.
+    ;; Deliberately after the `all-schemas` doseq, which only runs IF NOT EXISTS
+    ;; DDL and would otherwise attempt the index before the data is clean.
+    (rebuild-graph-edges! ds)
+    ;; The rebuild DROPped the table, taking idx_edges_src/idx_edges_dst with
+    ;; it — the doseq above already ran, so recreate them or neighbor lookups
+    ;; silently lose their index.
+    (doseq [stmt graph-edge-indexes]
+      (execute-ddl! ds stmt))
+    (dedupe-live-edges! ds)
+    (execute-ddl! ds live-edge-unique-index)
+
     ;; Store schema version. 2.0.0 introduced unified-memory columns
     ;; (tags, sources, entry_id, keep_flag, archived_flag, tombstoned_flag)
     ;; on episodes and semantic_facts. 2.1.0 added the context-graph overlay
     ;; (graph_nodes, graph_edges — CR-MEM-20). 2.2.0 adds communities
-    ;; (graph_communities + graph_nodes.community_id — CR-MEM-24). All DDL is
-    ;; IF NOT EXISTS (plus the guarded ALTER above), so existing databases
-    ;; migrate transparently on open; no data migration is required.
+    ;; (graph_communities + graph_nodes.community_id — CR-MEM-24). 2.3.0 adds
+    ;; `idx_edges_live_unique` so edge re-assertion is idempotent, and is the
+    ;; first version carrying a real DATA migration (`dedupe-live-edges!`)
+    ;; rather than DDL alone — it collapses duplicate LIVE edges minted before
+    ;; the index existed. Everything else is IF NOT EXISTS (plus the guarded
+    ;; ALTER above), so existing databases still migrate transparently on open.
     (try
       (jdbc/execute! ds
                      ["INSERT OR REPLACE INTO memory_metadata (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)"
-                      "schema_version" "2.2.0"])
+                      "schema_version" "2.3.0"])
       (catch Exception e
         (mulog/warn ::schema-version-store-failed :error (ex-message e)))))
 

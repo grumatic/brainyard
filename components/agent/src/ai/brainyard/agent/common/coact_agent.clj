@@ -47,6 +47,7 @@
             [ai.brainyard.agent.common.skill-watch :as skill-watch]
             [ai.brainyard.agent.common.usage-nudge :as usage-nudge]
             [ai.brainyard.agent.common.schema :as acs]
+            [selmer.parser :as selmer]
             [ai.brainyard.agent.common.trace :as trace]
             [ai.brainyard.agent.common.trajectory :as trajectory]
             [ai.brainyard.agent.common.commands :as common-cmds]
@@ -152,24 +153,41 @@
 ;; DSPy Signature
 ;; ============================================================================
 
-(defsignature ThinkActCode
-  "You are a CoAct agent. Each iteration, reason briefly about the next step,
-then emit exactly ONE of three things:
+(def coact-instructions-template
+  "Selmer template for ThinkActCode's `:instructions`, specialized per action
+   channel — the prose counterpart to the dynamic output schema in
+   `think-act-code-signature`.
 
-  1. TOOL CALL       — populate `tool-calls`, leave `code-blocks`/`answer` empty
-  2. CODE BLOCK(S)   — populate `code-blocks`, leave `tool-calls`/`answer` empty
-  3. FINAL ANSWER    — populate `answer`, leave both action fields empty
+   Without this, a code-only agent still read a 7.8k instruction block whose
+   TOOL CHANNEL section, output shapes and decision heuristics all describe a
+   channel it does not have — the same prompt/contract contradiction the
+   dynamic signature removed, just in prose.
+
+   Rendered with `{:tool-channel bool :code-channel bool}`. Rendering with both
+   true is byte-identical to the original static text (pinned by test), so the
+   default path is unchanged. String template only — never `render-file`,
+   whose resource lookup is the native-image-hostile part of Selmer.
+
+   NB the instruction text contains no `{{`, `{%` or `{#` sequences, so it
+   needs no `{% verbatim %}` guards; a test pins that too, since a future edit
+   adding one would be silently eaten by the renderer."
+  "You are a CoAct agent. Each iteration, reason briefly about the next step,
+then emit exactly ONE of {{channel-count|safe}} things:
+{% if tool-channel %}
+  {{n-tool}}. TOOL CALL       — populate `tool-calls`, leave {% if code-channel %}`code-blocks`/{% endif %}`answer` empty{% endif %}{% if code-channel %}
+  {{n-code}}. CODE BLOCK(S)   — populate `code-blocks`, leave {% if tool-channel %}`tool-calls`/{% endif %}`answer` empty{% endif %}
+  {{n-answer}}. FINAL ANSWER    — populate `answer`, leave {{action-fields|safe}} empty
 
 The iteration loop terminates when `answer` is non-blank. You signal completion
 by writing the final markdown answer.
-
+{% if tool-channel %}
 NEVER invent a placeholder tool (e.g. `noop`, `none`) to fill a turn. Only call
-tools that actually exist — discover real ones with `(search \"keyword\")` via a
-code block. A `tool-calls` entry naming an unbound tool does NOT count as an
+tools that actually exist — discover real ones with `(search \"keyword\"){% if code-channel %}` via a
+code block{% else %}`{% endif %}. A `tool-calls` entry naming an unbound tool does NOT count as an
 action; it is treated as a wasted no-action iteration.
-
+{% endif %}
 REASON-ONLY STEP: if you are not yet ready to act (still planning), that is
-fine — leave `tool-calls`, `code-blocks`, AND `answer` all empty and put your
+fine — leave {{empty-list|safe}} all empty and put your
 plan in your reasoning. Do NOT fabricate an action just to populate a channel.
 
 IF you cannot finish (missing info, dead-end, need user clarification), still
@@ -180,7 +198,7 @@ need from the user. That becomes the final response.
 ACTION CHANNELS — WHEN TO USE EACH
 ---------------------------------------------------------------------------
 
-TOOL CHANNEL — use when:
+{% if tool-channel %}TOOL CHANNEL — use when:
   - A registered tool directly satisfies the sub-goal.
   - No post-processing of the result is needed before the next step.
   - You want to launch a fire-and-forget background task (task$run (:job-type :tool|:bash))
@@ -192,9 +210,9 @@ TOOL CHANNEL — use when:
   Output shape:
     tool-calls: [{\"tool-name\": \"...\",
                   \"tool-args\": {\"<arg>\": \"<val>\"}}]
-    code-blocks: \"\"   answer: \"\"
+    {% if code-channel %}code-blocks: \"\"   {% endif %}answer: \"\"
 
-CODE CHANNEL — populate `code-blocks` with markdown-fenced blocks. Supported
+{% endif %}{% if code-channel %}CODE CHANNEL — populate `code-blocks` with markdown-fenced blocks. Supported
 languages: `clojure` (evaluated in the shared SCI sandbox), `bash` (written to
 a temp file and executed), `python` (temp file + python3), `javascript`
 (temp file + node). Use when:
@@ -239,9 +257,9 @@ a temp file and executed), `python` (temp file + python3), `javascript`
 
   Output shape:
     code-blocks: \"```clojure\\n...\\n```\\n<!-- ParallelBlock -->\\n```bash\\n...\\n```\\n\"
-    tool-calls: []   answer: \"\"
+    {% if tool-channel %}tool-calls: []   {% endif %}answer: \"\"
 
-ANSWER CHANNEL — use when:
+{% endif %}ANSWER CHANNEL — use when:
   - You have enough evidence to answer, OR
   - You cannot make further progress (include the reason), OR
   - You need user clarification (ask in the answer).
@@ -253,7 +271,7 @@ ANSWER CHANNEL — use when:
     - `next-user-prompt`: one concise line (~12 words max) the USER could send
       next to build on this answer, phrased as the user's own imperative request
       (NOT a question back to them). Empty string when no useful follow-up.
-  Leave both at their defaults (false / \"\") on tool-calls and code-blocks turns.
+  Leave both at their defaults (false / \"\") on {{action-turns|safe}} turns.
 
   If a prior `[evaluation]` record in `iterations` shows your previous answer was
   REJECTED, read its feedback, FIX the issue (re-run tools/code if data is
@@ -262,7 +280,7 @@ ANSWER CHANNEL — use when:
   Output shape:
     answer: \"## Markdown answer\\n- bullet\\n- caveat: ...\"
     goal-achieved: true   next-user-prompt: \"add error handling to the script\"
-    tool-calls: []   code-blocks: \"\"
+    {% if tool-channel %}tool-calls: []   {% endif %}{% if code-channel %}code-blocks: \"\"{% endif %}
 
 ---------------------------------------------------------------------------
 EACH ITERATION — FOLLOW THESE STEPS
@@ -283,22 +301,22 @@ Populate exactly ONE channel per the rules above.
 ---------------------------------------------------------------------------
 CHANNEL DECISION HEURISTICS
 ---------------------------------------------------------------------------
-1. One registered tool, no post-processing                    → TOOL
+{% if tool-channel %}1. One registered tool, no post-processing                    → TOOL
 2. Background/long-running task                               → TOOL
-3. Compose, filter, transform, pprint                         → CODE (clojure)
-4. Parallel independent sub-queries                           → CODE (<!-- ParallelBlock -->)
-5. Raw shell/Python with nested quotes or regex backslashes   → CODE (bash/python fence)
-6. Need cross-iteration `def` state                           → CODE (clojure)
-7. Ready to answer (or cannot proceed, or need clarification) → ANSWER
+{% endif %}{% if code-channel %}{{h-compose}}. Compose, filter, transform, pprint                         → CODE (clojure)
+{{h-parallel}}. Parallel independent sub-queries                           → CODE (<!-- ParallelBlock -->)
+{{h-raw}}. Raw shell/Python with nested quotes or regex backslashes   → CODE (bash/python fence)
+{{h-def}}. Need cross-iteration `def` state                           → CODE (clojure)
+{% endif %}{{h-answer}}. Ready to answer (or cannot proceed, or need clarification) → ANSWER
 
 ---------------------------------------------------------------------------
 FIELD-CONSISTENCY RULES (enforced by the BT router)
 ---------------------------------------------------------------------------
-- answer non-blank         ⇒ tool-calls=[],  code-blocks=\"\".
-- tool-calls non-empty     ⇒ code-blocks=\"\", answer=\"\".
-- code-blocks non-blank    ⇒ tool-calls=[],  answer=\"\".
-- Populating NEITHER a channel NOR an answer triggers a repair iteration.
-
+- answer non-blank         ⇒ {{answer-clears|safe}}.
+{% if tool-channel %}- tool-calls non-empty     ⇒ {% if code-channel %}code-blocks=\"\", {% endif %}answer=\"\".
+{% endif %}{% if code-channel %}- code-blocks non-blank    ⇒ {% if tool-channel %}tool-calls=[],  {% endif %}answer=\"\".
+{% endif %}- Populating NEITHER a channel NOR an answer triggers a repair iteration.
+{% if code-channel %}
 ---------------------------------------------------------------------------
 CODE-BLOCK LIFECYCLE — AUTO-BACKGROUND DETACH
 ---------------------------------------------------------------------------
@@ -311,7 +329,56 @@ can continue. A LATER iteration receives the resolved result as an
 `[↺ async-completion]` record. You may also poll any time with
 `task$detail` (add `:last-n N` for the output tail) or stop with
 `task$cancel`. No per-iteration timeout knob is needed.
-"
+{% endif %}")
+
+(def render-instructions
+  "Render `coact-instructions-template` for a pair of channel flags.
+
+   List numbering (the `1./2./3.` channel enumeration and the decision-heuristic
+   rows) is computed HERE and passed in as vars rather than expressed as nested
+   `{% if %}` arithmetic in the template — the template stays readable prose,
+   and renumbering can't silently skip an index.
+
+   Memoized for the same reason as `think-act-code-signature`: this text is the
+   tail of the DSPy system message, so it must be byte-stable within a session."
+  (memoize
+   (fn [code-channel? tool-channel?]
+     (let [n     (fn [& preds] (inc (count (filter true? preds))))
+           ;; Heuristic rows: 2 tool rows (if tool), 4 code rows (if code).
+           h0    (if tool-channel? 2 0)]
+       (selmer/render
+        coact-instructions-template
+        {:tool-channel   tool-channel?
+         :code-channel   code-channel?
+         :channel-count  (if (and code-channel? tool-channel?) "three" "two")
+         :n-tool         1
+         :n-code         (n tool-channel?)
+         :n-answer       (n tool-channel? code-channel?)
+         :action-fields  (if (and code-channel? tool-channel?)
+                           "both action fields" "the action field")
+         :action-turns   (cond (and code-channel? tool-channel?) "tool-calls and code-blocks"
+                               tool-channel? "tool-calls"
+                               :else "code-blocks")
+         ;; Oxford-comma list; with one action channel the both-mode
+         ;; "`a`, `b`, AND `answer`" would leave a dangling comma.
+         :empty-list     (cond (and code-channel? tool-channel?)
+                               "`tool-calls`, `code-blocks`, AND `answer`"
+                               tool-channel? "`tool-calls` AND `answer`"
+                               :else "`code-blocks` AND `answer`")
+         ;; Same dangling-separator problem in the consistency rules; the
+         ;; both-mode spacing ("[],  code") is load-bearing for byte-identity.
+         :answer-clears  (cond (and code-channel? tool-channel?)
+                               "tool-calls=[],  code-blocks=\"\""
+                               tool-channel? "tool-calls=[]"
+                               :else "code-blocks=\"\"")
+         :h-compose      (+ h0 1)
+         :h-parallel     (+ h0 2)
+         :h-raw          (+ h0 3)
+         :h-def          (+ h0 4)
+         :h-answer       (+ h0 (if code-channel? 5 1))})))))
+
+(defsignature ThinkActCode
+  (render-instructions true true)
   ;; `:system-context` and `:user-context` are embedded in the system prompt
   ;; by the BT dspy action via :stable-keys — they do NOT need to be signature
   ;; inputs (build-system-prompt reads them from st-memory directly).
@@ -347,6 +414,17 @@ Your reasoning is captured automatically by the chain-of-thought layer — no se
 field is required. There is NO code-blocks channel for this agent — never emit fenced code to
 execute; reach for a registered tool instead. Pick exactly one of (1), (2); the router prefers
 tool > answer.")
+
+(def ^:private coact-role-code-only
+  "You are an AI agent that answers questions by choosing ONE of two output channels per turn:
+(1) **code-blocks** — write markdown fenced code (clojure / bash / python / javascript)
+    that runs in a persistent SCI sandbox (CoAct-style).
+(2) **answer** — finalize with a rich markdown answer. Non-blank `answer` TERMINATES the loop.
+Your reasoning is captured automatically by the chain-of-thought layer — no separate `thought`
+field is required. There is NO JSON tool-calls channel for this agent — never populate
+`tool-calls`. This costs you nothing: every tool is callable as an ordinary sandbox function
+from a `clojure` block, e.g. `(some-tool :arg \"val\")`. Pick exactly one of (1), (2); the
+router prefers code > answer.")
 
 (def ^:private coact-channel-routing
   "## When to Use Which Channel
@@ -555,6 +633,16 @@ For MCP tools that aren't registered locally, use `call-tool` with `:server-name
 There is no code-blocks channel for this agent — to reach a tool not bound below, discover it with
 `list-tools` / `get-tool-info` and call it through `tool-calls`.")
 
+(def ^:private coact-tools-overview-code-only
+  "Every tool below is called as an ordinary function inside a `clojure` code block — there is
+no JSON `tool-calls` channel for this agent:
+```clojure
+(some-tool :arg \"val\")
+```
+Nothing is out of reach: the sandbox binding set covers the same tools the JSON channel would
+expose, and composing them in one block (filter → map → reduce) beats one round-trip per call.
+To reach a tool not bound below, discover it with `(search \"keyword\")` / `(get-tool-info \"id\")`.")
+
 (def ^:private coact-tools-hotpath
   "These are the primitives to reach for unprompted — the rest of the registry is
 on-demand (see `### Sandbox Categories` and `### Discovery`).
@@ -642,8 +730,8 @@ anything outside the per-turn `### Agent Tools` block:
                            The static rules / format / hot-path / discovery blocks
                            are never disabled."
   [{:keys [sandbox-bindings agent-tools tool-context-overlay include-directory?
-           disabled-tiers code-channel?]
-    :or {code-channel? true}}]
+           disabled-tiers code-channel? tool-channel?]
+    :or {code-channel? true tool-channel? true}}]
   (let [disabled (or disabled-tiers #{})
         ;; Tool-only agents have no code channel, so the sandbox function
         ;; directory/index is irrelevant — suppress it regardless of bindings.
@@ -673,11 +761,22 @@ anything outside the per-turn `### Agent Tools` block:
                   tool-context-overlay)]
     (when (or function-directory function-index agent-tools-block overlay)
       (str/join "\n\n"
-                (cond-> (if code-channel?
+                (cond-> (cond
+                          ;; Code-only: tools are sandbox callables, so the
+                          ;; hot-path primitives still apply — only the JSON
+                          ;; channel's overview is wrong.
+                          (and code-channel? (not tool-channel?))
+                          ["## Tools" coact-tools-overview-code-only
+                           "### Hot-path primitives (reach for these first)"
+                           coact-tools-hotpath]
+
+                          code-channel?
                           ["## Tools" coact-tools-overview
                            "### Hot-path primitives (reach for these first)"
                            coact-tools-hotpath]
+
                           ;; Tool-only: JSON tool-calls overview, no sandbox hot-path.
+                          :else
                           ["## Tools" coact-tools-overview-tool-only])
                   (and function-directory (not (str/blank? function-directory)))
                   (conj "### Function Directory (sandbox callables, by category)"
@@ -968,8 +1067,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
   [{:keys [sandbox-bindings instruction agent-context tool-context agent-tools
            include-function-directory? system-info tools-disabled-tiers
            brainyard-instructions project-memory execution-model code-channel?
-           enable-subagent-calls]
-    :or {code-channel? true enable-subagent-calls true}}
+           tool-channel? enable-subagent-calls]
+    :or {code-channel? true tool-channel? true enable-subagent-calls true}}
    & {:keys [return-breakdown?]}]
   (let [tools-section (build-tools-section
                        {:sandbox-bindings     sandbox-bindings
@@ -977,7 +1076,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                         :tool-context-overlay tool-context
                         :include-directory?   include-function-directory?
                         :disabled-tiers       tools-disabled-tiers
-                        :code-channel?        code-channel?})
+                        :code-channel?        code-channel?
+                        :tool-channel?        tool-channel?})
         {:keys [user-instructions project-instructions]} brainyard-instructions
         ;; :execution-model is pre-resolved by execution-model-for (keyed
         ;; off the agent's :clj-backend config). Caller may still pass nil
@@ -985,20 +1085,31 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; sandbox text in that case.
         exec-model (or execution-model execution-model-sandbox)
         sections
-        (cond-> {:role                         (if code-channel? coact-role coact-role-tool-only)
-                 :tool-call-format             coact-tool-call-format
+        (cond-> {:role                         (cond
+                                                 (not tool-channel?) coact-role-code-only
+                                                 code-channel?       coact-role
+                                                 :else               coact-role-tool-only)
                  :critical-rules               coact-critical-rules
                  :large-results-playbook       coact-large-results-playbook}
 
+          ;; The JSON tool-calls envelope — meaningless for a code-only agent,
+          ;; whose tools are sandbox callables instead.
+          tool-channel?
+          (assoc :tool-call-format coact-tool-call-format)
+
           ;; Code-channel-only sections — dropped for a tool-only agent
           ;; (react-agent). When present (default) they describe the SCI/bash/
-          ;; python/js sandbox, the three-channel routing, and the code-blocks
-          ;; envelope; none of that applies without a code channel.
+          ;; python/js sandbox and the code-blocks envelope; none of that
+          ;; applies without a code channel.
           code-channel?
           (assoc :execution-model          exec-model
-                 :channel-routing          coact-channel-routing
                  :code-blocks-format       coact-code-blocks-format
                  :sandbox-context-accessor sandbox-context-accessor)
+
+          ;; "When to use which channel" only earns its tokens when there IS a
+          ;; choice — drop it in either single-action-channel mode.
+          (and code-channel? tool-channel?)
+          (assoc :channel-routing coact-channel-routing)
 
           (and system-info (not (str/blank? system-info)))
           (assoc :system-info system-info)
@@ -1508,7 +1619,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                                    :include-function-directory? :system-info
                                    :tools-disabled-tiers
                                    :brainyard-instructions :project-memory
-                                   :execution-model :code-channel?
+                                   :execution-model :code-channel? :tool-channel?
                                    :enable-subagent-calls])
                :return-breakdown? true)
           usr (coact-user-context
@@ -1554,6 +1665,92 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                 :else (pr-str s))]
     (clj-sandbox/truncate-to-file s (config/get-config :max-output-chars) class
                                   :label class)))
+
+(defn- resolve-action-channels
+  "Resolve the two action-channel gates from a config snapshot, enforcing the
+   invariant that AT LEAST ONE survives.
+
+   Both off would leave an agent that can only `answer` — it could never act,
+   so every turn would be a one-shot guess. Tool wins the tie-break because it
+   needs no sandbox, so it is the channel that always works.
+
+   This also preserves the pre-existing meaning of the `:exec` family master:
+   `:enable-exec false` drops both features, and the tie-break lands back on
+   tool-only — exactly the behaviour before :tool-channel? existed.
+
+   Returns {:code-channel? bool :tool-channel? bool}."
+  [cfg-snap]
+  (let [code? (feature/on?* cfg-snap :exec/code-channel)
+        tool? (feature/on?* cfg-snap :exec/tool-channel)]
+    (if (or code? tool?)
+      {:code-channel? code? :tool-channel? tool?}
+      (do (mulog/warn ::no-action-channel
+                      :detail "both :code-channel? and :tool-channel? resolved false; forcing tool-channel on")
+          {:code-channel? false :tool-channel? true}))))
+
+(def ^:private channel-output-key
+  "Which ThinkActCode output field each action channel owns."
+  {:code-channel? :code-blocks
+   :tool-channel? :tool-calls})
+
+(def think-act-code-signature
+  "Compile the ThinkActCode signature for a given pair of channel flags,
+   dropping the output field of each disabled channel.
+
+   Why bother: the output JSON schema is embedded verbatim in the DSPy system
+   message, so a field the agent can never use is paid for every turn AND
+   contradicts the prompt — react-agent has long been told 'there is no
+   code-blocks channel' while its schema still demanded `code_blocks`. Dropping
+   the field makes the contract structural: providers with native structured
+   output refuse the dead channel at the API level, the rest see a schema that
+   simply lacks it.
+
+   Memoized on [code? tool?] (3 reachable combos — `resolve-action-channels`
+   rules out both-false). Memoization is not just for speed: the compiled
+   schema string sits at the head of the system message, the most
+   cache-sensitive position, so it must be byte-stable across a session.
+
+   Note the `:instructions` docstring still describes all three channels; the
+   role/prompt sections in `build-system-context` are what narrow it. Only the
+   output CONTRACT is specialized here."
+  (memoize
+   (fn [code-channel? tool-channel?]
+     (let [drop-keys (keep (fn [[flag k]] (when-not (get {:code-channel? code-channel?
+                                                          :tool-channel? tool-channel?}
+                                                         flag)
+                                            k))
+                           channel-output-key)]
+       (if (empty? drop-keys)
+         ThinkActCode
+         (clj-llm/compile-signature
+          (:name ThinkActCode)
+          ;; Instructions are re-rendered for these flags too — dropping the
+          ;; output field without dropping the prose that describes it would
+          ;; leave the same contradiction one layer up.
+          (render-instructions code-channel? tool-channel?)
+          (:inputs ThinkActCode)
+          (apply dissoc (:outputs ThinkActCode) drop-keys)
+          (:input-order ThinkActCode)))))))
+
+(defn- truncate-thought
+  "Cap an iteration record's `:thought` — the LLM's own reasoning, which is
+   replayed into every subsequent iteration of the turn via the `iterations`
+   input, so an unbounded one is paid for on each later call.
+
+   Deliberately NOT `truncate-iter-field`: that spills the overflow to a temp
+   file and appends a recovery hint, both wrong here. Reasoning is disposable
+   narration, not recoverable data — inviting the model to read its own prior
+   reasoning back in would defeat the cap, and a spill file per iteration is
+   litter. A plain clip with a marker is enough.
+
+   This is the enforced backstop for the prompt-side brevity contract
+   (`clj-llm` `prompt/reasoning-field-desc`), which a model may ignore."
+  [s]
+  (let [s (str (or s ""))
+        n (or (config/get-config :max-thought-chars) 2000)]
+    (if (> (count s) n)
+      (str (subs s 0 n) "…[reasoning truncated, " (- (count s) n) " chars]")
+      s)))
 
 ;; ============================================================================
 ;; BT Actions — CoAct-native
@@ -1781,6 +1978,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         (if (get cfg-snap :compact-agent-tools true)
           #{:agent-tools-details}
           #{})
+        ;; Resolved once (the invariant warns on a both-off config, so a
+        ;; second call would double-log) and reused by the prompt sections
+        ;; below and the st-memory stamp further down.
+        action-channels (resolve-action-channels cfg-snap)
         tools-section-config
         {:sandbox-bindings     bindings
          :agent-tools          (:tools st)
@@ -1819,8 +2020,11 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                          ;; separate :execution-model knob.
                          :execution-model (execution-model-for agent)
                          ;; Tool-only agents (react-agent pins :code-channel? false)
-                         ;; drop the code-blocks prompt sections. Default true.
-                         :code-channel? (feature/on?* cfg-snap :exec/code-channel)
+                         ;; drop the code-blocks prompt sections; code-only
+                         ;; agents (:tool-channel? false) drop the JSON
+                         ;; tool-call envelope. Both default true.
+                         :code-channel? (:code-channel? action-channels)
+                         :tool-channel? (:tool-channel? action-channels)
                          ;; Gate the agent-lifecycle substrate: no point teaching
                          ;; the agent-registry$* subagent management when subagent
                          ;; dispatch is disabled for this agent.
@@ -1918,7 +2122,18 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
              :user-context     user-context
              ;; Tool-only guard: when false, coact-has-code-blocks? ignores any
              ;; emitted code so the router never routes to code-eval (react-agent).
-             :code-channel?    (feature/on?* cfg-snap :exec/code-channel)
+             :code-channel?    (:code-channel? action-channels)
+             ;; Code-only guard: the mirror image — when false,
+             ;; coact-has-tool-calls? ignores any emitted tool-calls.
+             :tool-channel?    (:tool-channel? action-channels)
+             ;; The turn's output contract, compiled from the SAME
+             ;; action-channels that shaped the prompt above — so the schema
+             ;; can never advertise a channel the prompt disowns. Read back by
+             ;; every dspy node via bt/signature-from-st-memory (the main
+             ;; ThinkActCode call and both retry paths), so all three agree.
+             :signature        (think-act-code-signature
+                                (:code-channel? action-channels)
+                                (:tool-channel? action-channels))
              :prompt-token-breakdown prompt-token-breakdown
              :context-briefing briefing
              :iterations       []
@@ -2577,9 +2792,17 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
          (boolean (seq (clj-sandbox/extract-all-code-blocks-multi cb))))))
 
 (defn coact-has-tool-calls?
-  "Condition-fn: true iff :tool-calls is non-empty."
+  "Condition-fn: true iff :tool-calls is non-empty.
+
+   Mirrors `coact-has-code-blocks?`: a code-only agent (:tool-channel? false)
+   never routes to tool-dispatch, even if the model emits tool-calls anyway —
+   it falls through to code/answer/repair. Guarding here (rather than in the
+   BT) also covers `any-channel-populated?` and the repair path's
+   `coact-dispatch-channel!`, which both reuse this predicate."
   [{:keys [st-memory]}]
-  (boolean (seq (:tool-calls @st-memory))))
+  (let [m @st-memory]
+    (and (get m :tool-channel? true)
+         (boolean (seq (:tool-calls m))))))
 
 ;; ---- Channel stamp helper ----
 
@@ -3925,7 +4148,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                :dspy-raw-text nil :dspy-no-json-envelope? nil)
         (bt/dspy (assoc context :opts
                         {:id          :coact.action/repair-retry-transient
-                         :signature   #'ThinkActCode
+                         :signature   bt/signature-from-st-memory
                          :operation   :chain-of-thought
                          :stable-keys [:agent-core :session-context :history-context :user-context]
                  ;; :user-context is the volatile tail — rendered in the
@@ -4075,7 +4298,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
               (retry-sleep! delay-ms)
               (bt/dspy (assoc context :opts
                               {:id         :coact.action/repair-retry-think
-                               :signature  #'ThinkActCode
+                               :signature  bt/signature-from-st-memory
                                :operation  :chain-of-thought
                                :stable-keys [:agent-core :session-context :history-context :user-context]
                  ;; :user-context is the volatile tail — rendered in the
@@ -4119,11 +4342,13 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
    / :last-reasoning, append to :iterations, cap to the last N records.
    The record's `:thought` is sourced from :last-reasoning (written by the
    DSPy chain-of-thought layer) — we do NOT ask the LLM for a separate
-   thought output."
+   thought output. It is capped here, not where :last-reasoning is written,
+   so the TUI still displays the full reasoning while only the
+   prompt-replayed copy is bounded."
   [{:keys [st-memory]}]
   (let [{:keys [iteration-count last-reasoning last-channel
                 last-tool-results last-code-results]} @st-memory
-        thought (or last-reasoning "")
+        thought (truncate-thought last-reasoning)
         record (case last-channel
                  :tool {:iteration iteration-count
                         :thought thought
@@ -4301,7 +4526,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         rejected (str (or (:pending-answer m) (:answer m) ""))
         record   {:iteration       n
                   :channel         "evaluation"
-                  :thought         (or (:last-reasoning m) "")
+                  :thought         (truncate-thought (:last-reasoning m))
                   :rejected-answer rejected
                   :verdict         (str verdict)
                   :feedback        (str feedback)
@@ -4656,7 +4881,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
       ;; (it reads :dspy-error); on success the router below dispatches.
       [:fallback {:id (kw :fallback/llm-guard)}
        [:action {:id (kw :action/think-act-code)
-                 :signature #'ThinkActCode
+                 :signature bt/signature-from-st-memory
                  :operation :chain-of-thought
                  ;; The three cache zones ride the system message in
                  ;; ascending-volatility order: static agent core,

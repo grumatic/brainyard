@@ -326,6 +326,254 @@
           "tool-only mode drops the sandbox hot-path table"))))
 
 ;; ============================================================================
+;; 3d. Tool channel flag (:tool-channel?) — the code-only mirror of 3c
+;; ============================================================================
+
+(deftest tool-channel-flag-test
+  (testing ":tool-channel? defaults true (every existing agent unchanged)"
+    (is (true? (get config/default-config :tool-channel?))))
+
+  (let [sysctx    (resolve 'ai.brainyard.agent.common.coact-agent/coact-system-context)
+        both      (sysctx {:agent-tools [] :code-channel? true :tool-channel? true}
+                          :return-breakdown? true)
+        code-only (sysctx {:agent-tools [] :code-channel? true :tool-channel? false}
+                          :return-breakdown? true)]
+
+    (testing "tool-channel? false drops the JSON tool-call envelope"
+      (is (contains? (:sections both) :tool-call-format))
+      (is (not (contains? (:sections code-only) :tool-call-format))
+          "the JSON envelope is meaningless without a tool-calls channel"))
+
+    (testing "tool-channel? false keeps every code-blocks section"
+      (doseq [k [:execution-model :code-blocks-format :sandbox-context-accessor]]
+        (is (contains? (:sections code-only) k)
+            (str "code-only must keep " k))))
+
+    (testing "channel-routing only ships when there is an actual choice"
+      (is (contains? (:sections both) :channel-routing))
+      (is (not (contains? (:sections code-only) :channel-routing))
+          "a single-action-channel agent has nothing to route between"))
+
+    (testing "code-only role advertises two channels and points tools at the sandbox"
+      (let [role (get-in code-only [:sections :role])]
+        (is (str/includes? role "two output channels"))
+        (is (str/includes? role "sandbox function")
+            "must tell the model tools are still reachable, just not via JSON"))))
+
+  (testing "build-tools-section keeps the sandbox hot-path when code-only"
+    (let [build     (resolve 'ai.brainyard.agent.common.coact-agent/build-tools-section)
+          tools     [{:name "test-coact-echo" :description "Echo." :tool-fn-type :command
+                      :parameters {:properties {"text" {:type "string" :desc "t"}} :required ["text"]}}]
+          code-only (build {:agent-tools tools :code-channel? true :tool-channel? false})]
+      (is (str/includes? code-only "test-coact-echo")
+          "the agent-tools roster is still rendered — tools remain callable")
+      (is (str/includes? code-only "Hot-path primitives")
+          "unlike tool-only, code-only keeps the sandbox hot-path table")
+      (is (not (str/includes? code-only "\"tool-name\""))
+          "the JSON tool-calls envelope is not advertised"))))
+
+(deftest tool-channel-router-guard-test
+  (testing "coact-has-tool-calls? ignores emitted tool-calls when :tool-channel? false"
+    (let [has? (resolve 'ai.brainyard.agent.common.coact-agent/coact-has-tool-calls?)
+          calls [{:tool-name "test-coact-echo" :tool-args {:text "hi"}}]]
+      (is (true? (has? {:st-memory (atom {:tool-calls calls})}))
+          "default (no flag) still routes — every existing agent unchanged")
+      (is (true? (has? {:st-memory (atom {:tool-calls calls :tool-channel? true})})))
+      (is (false? (has? {:st-memory (atom {:tool-calls calls :tool-channel? false})}))
+          "code-only agents never route to tool-dispatch"))))
+
+(deftest code-only-roster-is-fully-callable-test
+  ;; The claim that justifies :tool-channel? false — dropping the JSON channel
+  ;; costs no capability — holds only if every tool the prompt advertises is
+  ;; reachable as a sandbox callable. bind-one-tool binds under `(symbol (name
+  ;; id))`, so a rostered id with no matching binding would be advertised but
+  ;; uninvokable in code-only mode (the JSON channel would otherwise cover it).
+  (testing "every tool in the rendered roster is a sandbox callable"
+    (let [roster   (assoc agent-roster/default-agent-roster :agent-id :coact-agent)
+          bound    (first (tool/bind-tools roster))
+          callable (set (map (comp str first) (sb-bind/auto-tool-bindings nil)))
+          orphans  (remove callable (map :name bound))]
+      (is (seq bound) "sanity: the roster actually bound something")
+      (is (empty? orphans)
+          (str "rostered but not callable from a code block: " (vec orphans)))))
+
+  (testing "the roster still renders in code-only mode"
+    (let [build    (resolve 'ai.brainyard.agent.common.coact-agent/build-tools-section)
+          roster   (assoc agent-roster/default-agent-roster :agent-id :coact-agent)
+          bound    (first (tool/bind-tools roster))
+          sandbox  (sb-bind/auto-tool-bindings nil)
+          code-only (build {:sandbox-bindings sandbox :agent-tools bound
+                            :code-channel? true :tool-channel? false})]
+      (is (str/includes? code-only "### Agent Tools"))
+      (is (every? #(str/includes? code-only (str "`" % "`")) (map :name bound))
+          "every bound tool id reaches the code-only prompt")
+      (is (not (str/includes? code-only "\"tool-name\""))
+          "but the JSON envelope is not taught"))))
+
+(deftest channel-flags-survive-the-assembler-test
+  ;; Regression: CoActAssembler.sections passes agent state through a
+  ;; select-keys ALLOWLIST. :tool-channel? was missing from it, so the flag was
+  ;; filtered out and coact-system-context fell back to its `:or` default — the
+  ;; live agent stamped :tool-channel? false on the router but still rendered
+  ;; the full three-channel prompt. Caught by an nrepl-verify run, not by the
+  ;; tests above, which call coact-system-context directly and bypass this hop.
+  (testing "both channel flags reach the section builder through the assembler"
+    (let [assembler @(resolve 'ai.brainyard.agent.common.coact-agent/coact-assembler)
+          sections  (sa/sections assembler {:agent-tools []
+                                            :code-channel? true
+                                            :tool-channel? false})]
+      (is (not (contains? sections :tool-call-format))
+          ":tool-channel? false must survive select-keys and drop the JSON envelope")
+      (is (not (contains? sections :channel-routing)))
+      (is (contains? sections :code-blocks-format)
+          "the code channel is still live"))
+
+    ;; The pre-existing flag must keep working through the same hop.
+    (let [assembler @(resolve 'ai.brainyard.agent.common.coact-agent/coact-assembler)
+          sections  (sa/sections assembler {:agent-tools []
+                                            :code-channel? false
+                                            :tool-channel? true})]
+      (is (contains? sections :tool-call-format))
+      (is (not (contains? sections :code-blocks-format))
+          ":code-channel? false must still drop the code sections"))))
+
+(deftest dynamic-signature-test
+  (let [sigf (resolve 'ai.brainyard.agent.common.coact-agent/think-act-code-signature)
+        full @(resolve 'ai.brainyard.agent.common.coact-agent/ThinkActCode)
+        ks   (fn [s] (set (keys (:outputs s))))]
+
+    (testing "both channels live → the untouched ThinkActCode var (zero-cost default)"
+      (is (identical? full (sigf true true))
+          "the default path must not pay for a recompile"))
+
+    (testing "a disabled channel drops exactly its own output field"
+      (is (= (disj (ks full) :tool-calls)  (ks (sigf true false))))
+      (is (= (disj (ks full) :code-blocks) (ks (sigf false true))))
+      (is (contains? (ks (sigf true false)) :answer)
+          "the answer channel is never dropped"))
+
+    (testing "answer-channel self-assessment fields always survive"
+      (doseq [flags [[true true] [true false] [false true]]]
+        (let [o (ks (apply sigf flags))]
+          (is (contains? o :goal-achieved) (str flags))
+          (is (contains? o :next-user-prompt) (str flags)))))
+
+    (testing "the JSON schema actually shrinks — it rides the system message verbatim"
+      (let [chars #(count (str (:output-json-schema %)))]
+        (is (< (chars (sigf true false)) (chars full))
+            "code-only must cost fewer schema chars than the full contract")))
+
+    (testing "inputs are untouched — only the output contract is specialized"
+      (doseq [flags [[true false] [false true]]]
+        (let [s (apply sigf flags)]
+          (is (= (:inputs full) (:inputs s)) (str flags))
+          (is (= (:input-order full) (:input-order s))
+              "input-order is cache-significant and must not drift"))))
+
+    (testing "memoized: repeated calls return the identical object"
+      ;; The compiled schema sits at the head of the system message, so it must
+      ;; be byte-stable across a session or every turn busts the prompt cache.
+      (is (identical? (sigf true false) (sigf true false))))))
+
+(deftest instructions-template-test
+  (let [ri       (resolve 'ai.brainyard.agent.common.coact-agent/render-instructions)
+        tmpl     @(resolve 'ai.brainyard.agent.common.coact-agent/coact-instructions-template)
+        both     (ri true true)
+        code-only (ri true false)
+        tool-only (ri false true)]
+
+    (testing "no Selmer markup survives rendering in any mode"
+      ;; A stray/unbalanced tag renders as literal text instead of erroring,
+      ;; so the model would read `{% if ... %}` as instructions.
+      (doseq [[label t] [["both" both] ["code-only" code-only] ["tool-only" tool-only]]]
+        (is (not (str/includes? t "{%")) (str label " leaked a Selmer tag"))
+        (is (not (str/includes? t "{{")) (str label " leaked a Selmer var"))))
+
+    (testing "Selmer's default HTML-escaping never reaches the prompt"
+      ;; {{ var }} escapes by default — an unfiltered var containing a quote
+      ;; renders `code-blocks=&quot;&quot;`. Every string var must carry |safe.
+      (doseq [[label t] [["both" both] ["code-only" code-only] ["tool-only" tool-only]]]
+        (is (not (str/includes? t "&quot;")) (str label " HTML-escaped a quote"))
+        (is (not (str/includes? t "&amp;")) (str label " HTML-escaped an ampersand"))))
+
+    (testing "a disabled channel's prose disappears entirely"
+      (is (not (str/includes? code-only "TOOL CHANNEL")))
+      (is (not (str/includes? code-only "tool-name"))
+          "the JSON output shape must not survive into a code-only agent")
+      (is (not (str/includes? tool-only "CODE CHANNEL")))
+      (is (not (str/includes? tool-only "ParallelBlock")))
+      (is (not (str/includes? tool-only "AUTO-BACKGROUND DETACH"))
+          "code-block lifecycle is meaningless without a code channel"))
+
+    (testing "the surviving channel's prose is kept"
+      (is (str/includes? code-only "CODE CHANNEL"))
+      (is (str/includes? tool-only "TOOL CHANNEL"))
+      (doseq [t [both code-only tool-only]]
+        (is (str/includes? t "ANSWER CHANNEL") "the answer channel is never dropped")))
+
+    (testing "list numbering is contiguous from 1 in every mode"
+      ;; Numbering is computed in Clojure, so an off-by-one would silently
+      ;; produce e.g. `1. … 3. …` in the decision-heuristics table.
+      (doseq [[label t] [["both" both] ["code-only" code-only] ["tool-only" tool-only]]]
+        (let [rows (->> (str/split-lines t)
+                        (drop-while #(not (str/includes? % "CHANNEL DECISION HEURISTICS")))
+                        (keep #(second (re-find #"^(\d+)\. " %)))
+                        (mapv parse-long))]
+          (is (seq rows) (str label " has no heuristic rows"))
+          (is (= rows (vec (range 1 (inc (count rows)))))
+              (str label " heuristic numbering is not contiguous: " rows)))))
+
+    (testing "single-channel prose has no dangling separators"
+      (doseq [[label t] [["code-only" code-only] ["tool-only" tool-only]]]
+        (is (not (re-find #",\s+\." t)) (str label " left a dangling comma"))
+        (is (not (str/includes? t ", AND")) (str label " left an Oxford comma with one item"))))
+
+    (testing "the template itself needs no verbatim guards"
+      ;; The prose contains code fences and Clojure maps; if a future edit
+      ;; introduces a literal {{ or {# outside a tag, Selmer would eat it.
+      (is (not (str/includes? tmpl "{#")) "a literal {# would be read as a comment"))))
+
+(deftest instructions-both-channels-unchanged-test
+  (testing "rendering with both channels reproduces the signature's instructions"
+    ;; The default path must be byte-identical to the pre-template text: it is
+    ;; the head of every CoAct system message, so any drift both changes the
+    ;; contract for every shipped agent and busts the prompt cache.
+    (let [ri   (resolve 'ai.brainyard.agent.common.coact-agent/render-instructions)
+          full @(resolve 'ai.brainyard.agent.common.coact-agent/ThinkActCode)]
+      (is (= (ri true true) (:instructions full)))
+      (is (str/includes? (:instructions full) "exactly ONE of three things"))
+      (is (> (count (:instructions full)) (count (ri true false)))
+          "specializing must shrink, not grow, the instruction block"))))
+
+(deftest signature-reaches-every-dspy-call-site-test
+  ;; The main ThinkActCode node and BOTH retry paths must resolve the same
+  ;; signature — a retry carrying a different output contract than the call it
+  ;; replaces would corrupt the turn invisibly.
+  (testing "all dspy call sites use the st-memory sentinel, none pin the var"
+    (let [src (slurp "src/ai/brainyard/agent/common/coact_agent.clj")
+          sentinel-sites (count (re-seq #":signature\s+bt/signature-from-st-memory" src))
+          pinned-sites   (count (re-seq #":signature\s+#'ThinkActCode" src))]
+      (is (= 3 sentinel-sites)
+          "expected the main node + 2 retry paths to read from st-memory")
+      (is (zero? pinned-sites)
+          "no call site may pin #'ThinkActCode — it would ignore the channel config"))))
+
+(deftest action-channel-invariant-test
+  (testing "both channels off resolves to tool-only, never an inert answer-only agent"
+    (let [resolve-ch (resolve 'ai.brainyard.agent.common.coact-agent/resolve-action-channels)]
+      (is (= {:code-channel? false :tool-channel? true}
+             (resolve-ch {:code-channel? false :tool-channel? false}))
+          "tool wins the tie-break — it needs no sandbox")
+      ;; The :exec family master drops both features; the tie-break must land
+      ;; back on tool-only, i.e. exactly the pre-:tool-channel? behaviour.
+      (is (= {:code-channel? false :tool-channel? true}
+             (resolve-ch {:enable-exec false}))
+          ":enable-exec false stays tool-only")
+      (is (= {:code-channel? true :tool-channel? true}
+             (resolve-ch {}))
+          "defaults leave both channels live"))))
+
+;; ============================================================================
 ;; 4. Critical Rules & Prompt Content
 ;; ============================================================================
 
@@ -846,6 +1094,39 @@
           (is (= "tool" (:channel rec)))
           (is (= 1 (count (:tool-results rec))))
           (is (empty? (:code-results rec))))))))
+
+(deftest accumulate-thought-capped-test
+  (testing "an oversized :thought is clipped to :max-thought-chars with a marker"
+    ;; The record's :thought is replayed into every later iteration via the
+    ;; `iterations` input, so a runaway reasoning is paid for on each call.
+    (let [cap  (config/get-config :max-thought-chars)
+          long (apply str (repeat (* 2 cap) "x"))
+          st   (fresh-st-memory
+                :iteration-count 1
+                :last-reasoning long
+                :last-channel :tool
+                :last-tool-results [{:tool-name "t" :tool-args {} :tool-result "r"}])]
+      (rca/coact-accumulate-iteration-action {:st-memory st})
+      (let [thought (:thought (first (:iterations @st)))]
+        (is (< (count thought) (count long))
+            "clipped well below the raw reasoning length")
+        (is (str/starts-with? thought (subs long 0 cap))
+            "keeps the leading `cap` chars verbatim")
+        (is (str/includes? thought "reasoning truncated")
+            "marks the clip so the model knows text was dropped")
+        (is (not (str/includes? thought "read-file"))
+            "no temp-file recovery hint — reasoning is disposable, not recoverable")))))
+
+(deftest accumulate-thought-under-cap-untouched-test
+  (testing "a brief :thought passes through byte-identical"
+    (let [st (fresh-st-memory
+              :iteration-count 1
+              :last-reasoning "Grep first; the symbol is likely in one brick."
+              :last-channel :tool
+              :last-tool-results [{:tool-name "t" :tool-args {} :tool-result "r"}])]
+      (rca/coact-accumulate-iteration-action {:st-memory st})
+      (is (= "Grep first; the symbol is likely in one brick."
+             (:thought (first (:iterations @st))))))))
 
 (deftest accumulate-code-channel-test
   (testing "accumulate records a code-channel iteration"

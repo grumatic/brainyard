@@ -21,10 +21,12 @@
   "(No action: the model emitted a placeholder/no-op instead of a real channel.)")
 
 (defn augment-schema-with-reasoning
-  "Add a 'reasoning' property as the first field in a JSON Schema object."
+  "Add a 'reasoning' property as the first field in a JSON Schema object.
+   Shares prompt/reasoning-field-desc with the CoT system message so the
+   model reads the same brevity contract in both places."
   [json-schema]
   (let [reasoning-prop {"reasoning" {:type "string"
-                                     :description "Step-by-step reasoning before producing the answer"}}]
+                                     :description prompt/reasoning-field-desc}}]
     (-> json-schema
         (update :properties #(merge reasoning-prop %))
         (update :required #(into ["reasoning"] %)))))

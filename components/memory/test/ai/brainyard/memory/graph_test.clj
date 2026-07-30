@@ -90,6 +90,52 @@
         (is (false? (proto/invalidate-edge *store* (:id e) nil))
             "already-invalidated edge is a no-op")))))
 
+(deftest edge-reassert-is-idempotent-test
+  ;; Re-extraction is routine: a per-session watermark run and a later per-user
+  ;; sweep overlap on purpose (skipping episodes would be worse), so asserting
+  ;; the same relation twice must NOT accumulate rows. Before
+  ;; `idx_edges_live_unique` the uniqueness key included `t_valid` (default
+  ;; now()), so a second assertion a clock-tick later inserted a duplicate LIVE
+  ;; edge — and the no-t_valid branch had no ON CONFLICT at all.
+  (let [a (node! :config-key "BY_ENABLE_GRAPH_MEMORY")
+        b (node! :component "memory")
+        live-count (fn []
+                     (-> (jdbc/execute-one!
+                          (:ds *store*)
+                          ["SELECT COUNT(*) AS n FROM graph_edges
+                             WHERE src_id = ? AND dst_id = ? AND t_invalid IS NULL"
+                           (:id a) (:id b)])
+                         first val))]
+    (testing "re-asserting a live edge updates in place"
+      (let [e1 (edge! a b :configures :fact "first" :confidence 0.5)
+            e2 (edge! a b :configures :fact "second" :confidence 0.9)]
+        (is (= 1 (live-count)) "one live row, not two")
+        (is (= (:id e1) (:id e2)) "same row returned, not a fresh insert")
+        (is (= "second" (:fact e2)) "fact refreshed")
+        (is (= 0.9 (:confidence e2)) "confidence refreshed")))
+
+    (testing "the returned edge is read back by natural key, not last_insert_rowid"
+      ;; sqlite leaves last_insert_rowid untouched on the DO UPDATE branch, so a
+      ;; rowid-based read-back would return a stale/nil row on re-assertion.
+      (let [e (edge! a b :configures :fact "third")]
+        (is (some? (:id e)))
+        (is (= "third" (:fact e)))
+        (is (= :configures (:relation e)))))
+
+    (testing "supersession still allows a new live row (bi-temporal history kept)"
+      (let [before (:id (edge! a b :configures :fact "pre"))]
+        (is (true? (proto/invalidate-edge *store* before nil)))
+        (is (zero? (live-count)) "no live row while superseded")
+        (let [after (edge! a b :configures :fact "post")]
+          (is (= 1 (live-count)) "a fresh live row is allowed once invalidated")
+          (is (not= before (:id after)) "history row was not overwritten")
+          (is (= 2 (-> (jdbc/execute-one!
+                        (:ds *store*)
+                        ["SELECT COUNT(*) AS n FROM graph_edges
+                           WHERE src_id = ? AND dst_id = ?" (:id a) (:id b)])
+                       first val))
+              "invalidated row retained alongside the new live one"))))))
+
 ;; =====================================================
 ;; Multi-hop expansion
 ;; =====================================================

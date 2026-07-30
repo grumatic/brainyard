@@ -33,7 +33,7 @@
      :agent.instance/created   {:agent}
      :agent.instance/closed    {:agent}
      :agent.ask/pre            {:agent :input}
-     :agent.ask/post           {:agent :input :result}
+     :agent.ask/post           {:agent :input :result :terminated-by}
      :agent.iteration/pre      {:agent :iteration :max-iterations :repeat-id}
      :agent.iteration/post     {:agent :iteration :max-iterations :repeat-id :result
                                 :observation :goal-achieved}
@@ -114,7 +114,7 @@
    :agent.instance/created      {:keys #{:agent}}
    :agent.instance/closed       {:keys #{:agent}}
    :agent.ask/pre               {:keys #{:agent :input}}
-   :agent.ask/post              {:keys #{:agent :input :result}}
+   :agent.ask/post              {:keys #{:agent :input :result :terminated-by}}
    ;; Gated. Fires after the result is built, BEFORE :agent.ask/post and the
    ;; session message. A handler may return a :replace decision whose
    ;; :replacement is the new result map — used to inject an auto-persist
