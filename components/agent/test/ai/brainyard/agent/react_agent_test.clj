@@ -29,7 +29,12 @@
             makes it tool-only (no code-blocks channel)"
     (let [d (get (tool/get-tool-defs :type :agent) :react-agent)]
       (is (false? (get-in d [:meta :config-extra :code-channel?]))
-          "react-agent must disable the code channel via :config-extra"))))
+          "react-agent must disable the code channel via :config-extra")
+      ;; Stated, not inherited: a per-agent override outranks session and
+      ;; config.edn, so a global :tool-channel? false cannot leave the
+      ;; tool-only agent with no action channel at all.
+      (is (true? (get-in d [:meta :config-extra :tool-channel?]))
+          "react-agent must assert the channel it keeps, not rely on the default"))))
 
 (deftest shared-roster-test
   (testing "react-agent advertises the single shared roster (identical to coact —

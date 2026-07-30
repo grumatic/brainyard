@@ -25,9 +25,11 @@
 
    `:tool-channel?` is its mirror: false yields a code-only agent (no JSON
    tool-calls channel). That one sheds no capability — tools stay callable as
-   sandbox functions — so it has no canonical agent here; set it via
-   `:config-extra` on any coact-derived agent. At least one of the two channels
-   always survives; see `resolve-action-channels`."
+   sandbox functions — so no agent here ships it false; set it via
+   `:config-extra` on any coact-derived agent that wants code-only. react-agent
+   pins it TRUE, stating the channel it keeps rather than inheriting the
+   default. At least one of the two channels always survives regardless; see
+   `resolve-action-channels`."
   (:require [ai.brainyard.agent.core.tool :refer [defagent]]
             [ai.brainyard.agent.common.coact-agent :as coact]
             [ai.brainyard.agent.common.agent-roster :as agent-roster]))
@@ -64,7 +66,15 @@ execute. To reach a tool beyond the bound set, discover it with `list-tools` /
   :agent-tools agent-roster/default-agent-roster
   ;; The unification knob: disable the code-blocks channel. Drops the code
   ;; system-context sections and makes the BT route tool/answer only.
-  :config-extra {:code-channel? false}
+  ;; `:tool-channel? true` is stated rather than left to its default so the
+  ;; surviving channel is asserted at the definition site: react-agent's whole
+  ;; identity is "tool + answer", and a per-agent override outranks session and
+  ;; config.edn, so a user who sets `:tool-channel? false` globally (wanting
+  ;; code-only agents) cannot accidentally leave THIS agent with no action
+  ;; channel at all. That case would otherwise fall to the tie-break in
+  ;; `resolve-action-channels`, which lands on the same answer — but by
+  ;; inference rather than by contract.
+  :config-extra {:code-channel? false :tool-channel? true}
   :instruction react-instruction)
   ;; :tool-context intentionally omitted — inherits coact's
   ;; operational-recall-guidance via run-coact-derived.
