@@ -82,8 +82,9 @@ as "bugs":
   L1/L2 model is exposed via `(context-get [..])`. The retired "L3
   agent notes" entry corresponded to removed `remember-note` /
   `get-note` / `forget-note` bindings.
-- `:acp-backend` defaults to `:stub` — real ACP agent is soft-coupled
-  (`CR-CFG-03`).
+- `:acp-backend` defaults to `:claude-code` (`CR-CFG-03`). It defaulted to
+  `:stub` until v0.5.2; that fixture only runs inside a source checkout, so an
+  unconfigured `acp-agent` could never work from an installed binary.
 - `code$eval` `:sandbox` arm is non-functional as a direct tool call by
   design (`reasoning.md` note).
 - Inline thinking indicator is a static spinner, no live streaming

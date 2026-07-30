@@ -23,11 +23,27 @@ Status legend and contract-ID conventions: see [README](README.md).
 |---|---|---|---|
 | CR-CFG-01 | The set of valid config keys MUST be defined by `config-schema`, a flat map of `key → {:type … :default│:default-fn …}`; `config-keys` MUST be `(set (keys config-schema))`. | Implemented | `agent/core/config.clj` (`config-schema`, `config-keys`) |
 | CR-CFG-02 | `:clj-backend` MUST default to `:sandbox`. | Implemented | `config.clj` |
-| CR-CFG-03 | `:acp-backend` MUST default to `:stub`. | Implemented (stub by design) | `config.clj` |
+| CR-CFG-03 | `:acp-backend` MUST default to `:claude-code`. | Implemented | `config.clj` |
 
-CR-CFG-03 records that the ACP backend defaults to a stub — the real ACP
-agent is soft-coupled via `requiring-resolve`. This is intentional, not a
-gap; it's flagged so the stub default isn't read as a defect.
+CR-CFG-03 previously required a `:stub` default. That was wrong for a shipped
+binary: `:stub` is a test fixture, not a fallback. It shells out to
+`clj -M -m ai.brainyard.acp-stub-agent.core` under
+`<workspace>/projects/acp-stub-agent`, found by walking up for `workspace.edn`
+— so it runs only inside a brainyard source checkout and throws
+`workspace.edn not found above start-dir` anywhere else. An unconfigured
+`acp-agent` therefore could not work for anyone who installed `by`. The
+default is now `:claude-code`, which drives the local Claude CLI and needs no
+API key. `:stub` remains available and is what the test suites inject
+explicitly.
+
+Note that `acp-client` is **no longer** soft-coupled from `acp-agent`. It was
+reached via `requiring-resolve`, which is exactly why the shipped binary could
+not run an ACP session at all: AOT follows only a static `:require`, so the
+namespace was never compiled into the image and a native image has no runtime
+compiler to load its source. `agent/common/acp_agent.clj` requires it
+statically as of v0.5.1. The `clj-llm` `:acp` provider keeps its own
+soft-resolve deliberately — hard-depending there would pollute every clj-llm
+consumer — and relies on the classes that static require bakes in.
 
 ---
 
@@ -74,7 +90,7 @@ while file-based project memory (`index.md` + topic files) is project-scoped.
 
 None. The configuration code carries no `TODO`/`FIXME`/stub markers and
 every contract is Implemented. The only item worth noting is the one
-intentional default recorded above: `:acp-backend :stub` (CR-CFG-03). It
-is not a gap. (Context compaction across all scales is governed by the
+intentional default recorded above: `:acp-backend :claude-code`
+(CR-CFG-03). It is not a gap. (Context compaction across all scales is governed by the
 single `:enable-context-budget` knob, default true — see
 [memory-and-context](memory-and-context.md).)

@@ -128,7 +128,8 @@ primes" prompt.
   `{:status "completed" :content [{:type "content" :content {:type "text" :text "…"}}]}`.
 - Tool names arrive both bare (`Glob`) and MCP-prefixed (`mcp__acp__Read`) in the
   same session (see "Tool naming" above).
-- In this repo's dev environment the default config routes `acp-agent` to
-  `:claude-code` (effective model `default` = Opus 4.6), **not** the schema's
-  `:stub` default — check `(config/get-config ag :acp-backend)` rather than
-  assuming stub.
+- The schema default is now `:claude-code` with `:acp-backend-opts {:model
+  "haiku"}` (it was `:stub` until v0.5.2), matching what this repo's
+  `config.edn` already set. Still check `(config/get-config ag :acp-backend)`
+  rather than assuming a backend — `config.edn`, a session, a per-agent
+  override, or `-p` can each change it.

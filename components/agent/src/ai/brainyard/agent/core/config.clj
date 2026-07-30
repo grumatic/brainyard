@@ -449,15 +449,15 @@
                                 :doc "L2 storage cap (chars) for a captured Q&A episode's answer (decoupled from the recall-render snippet). Baked into the capture parser at start-capture! — changing it needs a `by` restart."}
    :memory-recall-snippet-chars {:type "integer" :default 600
                                  :doc "Per-hit char cap when rendering a recalled memory into the prompt."}
-   :acp-backend                {:type "keyword" :default :stub
-                                :doc "ACP (agent-client-protocol) backend implementation; :stub by default."}
+   :acp-backend                {:type "keyword" :default :claude-code
+                                :doc "ACP (agent-client-protocol) backend implementation. Defaults to :claude-code, which drives the local Claude CLI via npx @zed-industries/claude-code-acp and needs no API key. :stub is a TEST FIXTURE, not a fallback — it shells out to `clj -M -m ai.brainyard.acp-stub-agent.core` under <workspace>/projects/acp-stub-agent, located by walking up for workspace.edn, so it only runs inside a brainyard source checkout and throws \"workspace.edn not found\" anywhere else. Also :gemini, :codex."}
    :acp-client-fs              {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ACP_CLIENT_FS")]
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Advertise the client filesystem capability to ACP backends. When true (default), backends route file reads/writes back through brainyard (mediated writes + diff rendering in the TUI). When false, the backend does its own direct disk I/O (no diffs). Does NOT affect the permission prompt (session/request_permission is gated either way) or OS sandboxing (--sandbox contains the subprocess regardless) — only who performs the write and whether diffs render. Env: BY_ACP_CLIENT_FS."}
-   :acp-backend-opts           {:type "object"  :default {}
-                                :doc "Options map for the ACP backend. Launch keys (:command/:working-dir/:env/:forward-env) go to the registry factory; :model (e.g. \"sonnet\"/\"opus\"/\"haiku\" for :claude-code) is resolved against the agent's advertised models and set per session via session/set_model."}
+   :acp-backend-opts           {:type "object"  :default {:model "haiku"}
+                                :doc "Options map for the ACP backend. Launch keys (:command/:working-dir/:env/:forward-env) go to the registry factory; :model (e.g. \"sonnet\"/\"opus\"/\"haiku\" for :claude-code) is resolved against the agent's advertised models and set per session via session/set_model. Defaults to \"haiku\" — the cheapest of the claude-code aliases, so an unconfigured acp-agent doesn't silently run the most expensive model. An unmatched name warns and keeps the backend's own default rather than failing. NOTE this map REPLACES the default wholesale, it does not merge into it: writing {:command [...]} drops the default :model too, so carry :model along if you still want it."}
    :acp-timeout-ms             {:type "integer" :default 600000
                                 :doc "ACP request timeout (ms)."}
    :acp-permission-timeout-ms  {:type "integer" :default 120000

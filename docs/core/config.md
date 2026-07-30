@@ -104,7 +104,7 @@ is routed into the per-agent override slot at startup.
  :allowed-dirs      {:type "array"   :default-fn #(default-allowed-dirs)}
  :permission-mode   {:type "keyword" :default :auto}       ;; :auto | :auto-approve | :ask-each-time | :deny-by-default
  :clj-backend       {:type "keyword" :default :sandbox}     ;; :sandbox | :nrepl (per-agent code-eval backend)
- :acp-backend       {:type "keyword" :default :stub}
+ :acp-backend       {:type "keyword" :default :claude-code} ;; :claude-code | :gemini | :codex | :stub (source-tree-only test fixture)
  :nrepl-enabled?    {:type "boolean" :env-fn #(env BY_NREPL_ENABLED)}
  :nrepl-port        {:type "integer" :env-fn #(env BY_NREPL_PORT)}    ;; 0 = ephemeral
  :nrepl-host        {:type "string"  :env-fn #(env BY_NREPL_HOST)}    ;; :nrepl backend endpoint host
