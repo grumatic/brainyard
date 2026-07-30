@@ -4,6 +4,17 @@ All notable changes to Brainyard's public distribution are documented here. Vers
 
 ## [Unreleased]
 
+## [v0.5.1] — 2026-07-30
+
+### Fixed
+
+- **`acp-agent` failed on first use in every shipped binary.** Starting an ACP session (`/session new acp-agent claude-code sonnet`, or `by ask -a acp-agent`) exited immediately with `acp-agent needs ai.brainyard/acp-client on the classpath; could not resolve ai.brainyard.acp-client.interface/spawn!` — naming a dependency that was already declared and present. The classpath was never the problem. `acp_agent.clj` reached `acp-client` only through `requiring-resolve`, and Clojure's AOT compiler follows a static `:require` and nothing else, so the namespace was never compiled: the uberjar carried it as `.clj` source with **zero** `.class` entries, against 36 for a statically-required component. A GraalVM native image has no runtime Clojure compiler and so cannot load a namespace from source. Requiring it statically emits the classes (0 → 124) and fixes both the native binary and the `:acp` clj-llm provider, which shares the image. The soft-resolve had also hidden the dependency from static analysis — with the require made static, `poly check` immediately demanded that `agent-tui-app` declare `acp-client` and `acp`, so both are now project dependencies. As a side effect their six test namespaces now run in that project too (230 → 236 workspace-wide).
+- **Every ACP turn then died on its first outbound message** with `java.lang.String cannot be cast to char[]`. `Writer` declares both `write(String)` and `write(char[])` at arity 1, so hinting the receiver as `^OutputStreamWriter` does not disambiguate — the argument type does, and the JSON-RPC encoder's return value was unhinted, leaving the call to compile to reflection. On the JVM the reflector picks `write(String)` from the actual argument, which is why this stayed invisible for the life of the code including live multi-turn ACP verification; in a native image the same call binds `write(char[])` and throws on the cast. Fixed with a `^String` hint; `acp` and `acp-client` are now both reflection-warning clean.
+
+### Notes
+
+- Both defects were **native-image-only**, which is why ACP had passed repeated live end-to-end verification while never once working in a binary users install: that verification ran through `bb tui:acp` on the JVM, where runtime source loading and reflective overload resolution both behave differently. `acp-agent` has been advertised in `by agents` since v0.2.0 and has never functioned in a shipped release until now.
+
 ## [v0.5.0] — 2026-07-30
 
 ### Added
