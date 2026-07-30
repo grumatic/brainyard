@@ -747,8 +747,18 @@
             (swap! !session session/add-message
                    (session/assistant-message answer (:agent-id agent) :turn-answer)))
 
-        ;; Post-ask hook: after process, before status :idle
-          (hooks/fire! :agent.ask/post {:agent agent :input input :result result})
+        ;; Post-ask hook: after process, before status :idle.
+        ;; :terminated-by rides along so handlers can tell a real answer from an
+        ;; aborted turn — the result map carries only :answer/:result, and an
+        ;; abort stamps its reason into :answer ("Agent stopped: …"), which is
+        ;; indistinguishable from content by inspection. Read from BT state, the
+        ;; authoritative source (same reason as the suggestion hook below).
+        ;; L2 capture uses it to skip content-free aborts.
+          (hooks/fire! :agent.ask/post
+                       {:agent agent :input input :result result
+                        :terminated-by
+                        (some-> ^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent
+                                .get-bt-st-memory deref :terminated-by)})
 
         ;; Suggestion hook (observer): surface the agent's self-reported
         ;; next-user-prompt so apps can offer it as an input-bar tip. Read

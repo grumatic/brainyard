@@ -27,6 +27,36 @@
       (testing "carries a content-addressable id for dedup"
         (is (str/starts-with? (:id out) "qa/s/"))))))
 
+(deftest ask-post-skips-content-free-abort-test
+  ;; An aborted turn stamps its reason INTO :answer ("Agent stopped: …"), so by
+  ;; inspection it is indistinguishable from a real answer — which is how
+  ;; `Q: hi  A: Agent stopped: request rejected (HTTP 401)` ended up in the
+  ;; recall corpus. `:terminated-by` from the hook is the structural signal.
+  (testing ":llm-error aborts are not captured"
+    (is (nil? (parser/parse (base-event {:event-key :agent.ask/post
+                                         :input "hi"
+                                         :result {:answer "Agent stopped: request rejected (HTTP 401)"}
+                                         :terminated-by :llm-error})))
+        "transport failure says nothing about the domain"))
+
+  (testing "terminators that carry real progress ARE still captured"
+    ;; These stamp a best-effort summary of what the agent managed to do —
+    ;; worth remembering, unlike a bare transport abort.
+    (doseq [tb [:max-iterations-exhausted :none-channel-loop-guard]]
+      (is (some? (:content (parser/parse (base-event {:event-key :agent.ask/post
+                                                      :input "big task"
+                                                      :result {:answer "Progress so far: …"}
+                                                      :terminated-by tb}))))
+          (str tb " must still be captured"))))
+
+  (testing "a normal turn is unaffected, with or without :terminated-by"
+    (is (some? (:content (parser/parse (base-event {:event-key :agent.ask/post
+                                                    :input "q" :result {:answer "a"}
+                                                    :terminated-by :answer-channel})))))
+    (is (some? (:content (parser/parse (base-event {:event-key :agent.ask/post
+                                                    :input "q" :result {:answer "a"}}))))
+        "absent :terminated-by (non-BT agents) must not suppress capture")))
+
 (deftest ask-post-string-result-test
   (testing ":agent.ask/post handles a plain string :result"
     (let [out (parser/parse (base-event {:event-key :agent.ask/post :input "x" :result "y"}))]

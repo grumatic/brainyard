@@ -120,8 +120,23 @@
 ;; longer captured on its own (it self-recalled and doubled episode count);
 ;; it is folded into the Q&A episode below at turn end (see dispatcher).
 
-(defmethod event->partial-entry :agent.ask/post
-  [{:keys [input result session-id]} limits]
+(def ^:private content-free-terminators
+  "Turn terminators whose `:answer` is a status line, not knowledge — capturing
+   them poisons recall with things like
+   `Q: hi  A: Agent stopped: request rejected (HTTP 401)`.
+
+   Only `:llm-error` qualifies. The other failure terminators
+   (`:max-iterations-exhausted`, `:none-channel-loop-guard`) stamp a
+   best-effort PROGRESS summary of what the agent actually did, which is worth
+   remembering — so they are deliberately still captured. Mirrors the
+   errors-only policy of `:agent.tool-use/post` below, inverted: a tool failure
+   describes the user's environment, whereas an aborted LLM call is transient
+   transport noise that says nothing about the domain."
+  #{:llm-error})
+
+(defn- ask-post-entry
+  "Build the Q&A episode for a turn that produced a real answer."
+  [input result session-id limits]
   (let [q   (truncate (safe-content input) (:question limits))
         out (safe-content
              (cond
@@ -141,6 +156,12 @@
      :content (str "Q: " q "\nA: " a)
      :tags    (into #{"role:conversation" "event:qa" "kind:qa"}
                     (concat (keyword-tags q) (keyword-tags a)))}))
+
+(defmethod event->partial-entry :agent.ask/post
+  [{:keys [input result session-id terminated-by]} limits]
+  ;; nil ⇒ the sidecar writes no episode (see `parse`).
+  (when-not (contains? content-free-terminators terminated-by)
+    (ask-post-entry input result session-id limits)))
 
 (defmethod event->partial-entry :agent.tool-use/post
   [{:keys [tool-name args result]} limits]
