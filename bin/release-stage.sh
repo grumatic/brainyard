@@ -113,6 +113,22 @@ main() {
   [[ -f "${bin_src}" ]]     || die "Missing ${bin_src} — run 'bb native:ata' first"
   [[ -f "${WRAPPER_SRC}" ]] || die "Missing ${WRAPPER_SRC}"
 
+  # Stage into a CLEAN directory.
+  #
+  # Nothing here is precious — every file below is rebuilt from target/ a few
+  # lines down — but a PREVIOUS release's artifacts are actively dangerous if
+  # left behind. They carry that release's version in their names, so they are
+  # not overwritten by this run and are not covered by the SHA256SUMS
+  # regenerated below; the publish step then globs release/* and uploads the
+  # stale binaries into the new release alongside the real ones. Observed
+  # cutting v0.5.0, where release/ still held the full v0.4.0 asset set.
+  #
+  # Guard the rm: RELEASE_DIR is derived from BASH_SOURCE and cannot normally
+  # be surprising, but an `rm -rf` in a shipped script should assert its target
+  # rather than trust it.
+  [[ -n "${RELEASE_DIR}" && "${RELEASE_DIR}" == */release ]] \
+    || die "Refusing to clear unexpected RELEASE_DIR: '${RELEASE_DIR}'"
+  rm -rf "${RELEASE_DIR}"
   mkdir -p "${RELEASE_DIR}"
 
   local jar_dst="${RELEASE_DIR}/by-${version}.jar"
