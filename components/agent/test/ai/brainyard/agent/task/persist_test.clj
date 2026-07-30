@@ -153,16 +153,20 @@
         (finally
           (persist/close-appender! (:id task) task))))))
 
-(deftest max-existing-task-id-scans-directory
-  (testing "max-existing-task-id returns the largest task-N seen on disk"
+(deftest task-dir-exists?-probes-without-creating
+  (testing "task-dir-exists? reports on-disk claims and never materializes one"
     (let [root (make-tmp-dirs)
           dirs (dirs-for root)]
-      ;; Empty / no tasks dir yet.
-      (is (zero? (persist/max-existing-task-id dirs))
-          "no tasks dir → 0")
-      ;; Seed some task dirs.
-      (doseq [n [1 3 7 42] junk ["junk" "task-abc" "task-" ".hidden"]]
-        (.mkdirs (io/file (persist/task-dir dirs (keyword (str "task-" n)))))
-        (.mkdirs (io/file root ".brainyard" "tasks" junk)))
-      (is (= 42 (persist/max-existing-task-id dirs))
-          "ignores non-matching names; picks max of task-N"))))
+      ;; No tasks dir at all yet — probe must not create it.
+      (is (false? (persist/task-dir-exists? dirs :task-mkq8f3x2a1b))
+          "unresolvable / missing tasks dir → false")
+      (is (not (.exists (io/file root ".brainyard" "tasks")))
+          "probing must not materialize .brainyard/tasks/")
+      ;; Claim one, then probe both it and a sibling.
+      (.mkdirs (persist/task-dir dirs :task-mkq8f3x2a1b))
+      (is (true? (persist/task-dir-exists? dirs :task-mkq8f3x2a1b))
+          "existing dir → true")
+      (is (false? (persist/task-dir-exists? dirs :task-mkq8f3x2zzz))
+          "sibling id → false")
+      (is (not (.exists (io/file root ".brainyard" "tasks" "task-mkq8f3x2zzz")))
+          "a negative probe leaves no directory behind"))))

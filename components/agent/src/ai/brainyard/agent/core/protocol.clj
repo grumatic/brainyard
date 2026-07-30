@@ -25,7 +25,7 @@
 (def ^:dynamic *current-task*
   "Dynamic binding holding an atom that wraps the current task-id keyword.
    nil when not inside a task context. When bound, deref the atom to get the
-   task-id (e.g. :task-5). Fast-eval paths start with a sentinel
+   task-id (e.g. :task-mkq8f3x2a1b). Fast-eval paths start with a sentinel
    (:inline-code-eval, :inline-tool-eval) and get reset! to the real task-id
    on adoption. Child threads spawned via future/pmap inherit the binding
    and share the same atom reference."

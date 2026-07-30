@@ -62,7 +62,7 @@ User Input (TUI)
 ;; Status lifecycle: :pending → :running → :completed | :failed | :cancelled
 
 (defrecord Task
-  [id              ;; keyword, e.g. :task-1 — monotonically generated
+  [id              ;; keyword, e.g. :task-mkq8f3x2a1b — time-ordered, process-unique
    name            ;; string, human-readable description
    job-type        ;; :bash | :tool | :cli-client
    job-config      ;; map, job-type-specific (see below)
@@ -150,7 +150,9 @@ User Input (TUI)
 
 ;; ── Global State ─────────────────────────────────────────
 (defonce !tasks (atom {}))           ;; {task-id → Task}
-(defonce !task-counter (atom 0))     ;; monotonic ID: :task-1, :task-2, ...
+;; ID: task-<8 base36 millis><3 base36 random> — time-ordered, and unique
+;; across concurrent `by` processes on one project. See next-task-id.
+(defonce ^:private !last-id-millis (AtomicLong. 0))
 (defonce ^:private !default-manager (atom nil))
 (defonce ^:private !executor-service (atom nil))
 

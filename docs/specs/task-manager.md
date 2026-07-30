@@ -37,7 +37,7 @@ Status legend and contract-ID conventions: see [README](README.md).
 |---|---|---|---|
 | CR-TASK-08 | Each task MUST persist to `<project>/.brainyard/tasks/<task-id>/` as `meta.edn` (atomic-rename writes) and `output.log`. | Implemented | `agent/task/persist.clj` |
 | CR-TASK-09 | Output reads MUST support a bounded tail (`read-tail`, ~16KiB backward scan). | Implemented | `persist.clj` (`read-tail`) |
-| CR-TASK-10 | The task-id counter MUST ratchet across JVM restarts via `max-existing-task-id` so ids don't collide after a restart. | Implemented | `persist.clj` |
+| CR-TASK-10 | Task ids MUST be time-ordered and unique across JVM restarts **and across concurrently running processes on the same project** — no id derived from a global on-disk maximum. | Implemented | `manager.clj` (`next-task-id`) |
 
 ---
 

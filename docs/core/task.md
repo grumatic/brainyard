@@ -32,7 +32,7 @@ hard-coded constant.
 `task/protocol.clj` defines the `Task` record:
 
 ```clojure
-{:id               :task-7              ;; keyword :task-N — monotonic, seeded past on-disk dirs
+{:id               :task-mkq8f3x2a1b    ;; keyword — time-ordered, process-unique (see below)
  :name             "bash: make build"   ;; human-readable
  :job-type         :bash                ;; :bash | :tool | :cli-client | :clj-sandbox-eval | :clj-nrepl-eval
  :job-config       {…}                  ;; job-type-specific config map
@@ -67,7 +67,7 @@ Plus two protocols:
 
 `TaskManager` (`task/manager.clj`) is a `defrecord` holding an `executors`
 map keyed by job-type. State lives in JVM-global atoms — `!tasks`,
-`!task-counter`, `!default-manager`, `!executor-service`,
+`!default-manager`, `!executor-service`,
 `!detached-handlers`, `!watcher-future` — so a single registry is shared
 across the TUI, daemon, and sandbox tools. `get-default-manager` lazily
 auto-initializes via lock-free CAS; `set-default-manager!` lets tests
@@ -326,9 +326,23 @@ Layout (project-scoped):
   compares disk `line-count` against the cache size and sets `:truncated?`.
 - Job-config / result values that can't roundtrip through EDN (the
   `:agent` defrecord, futures, atoms) are stripped before writing `meta.edn`.
-- Counter seeding: `max-existing-task-id` scans `tasks/task-N/` at manager
-  startup so freshly-issued ids don't collide with artifacts from a prior
-  session (or this JVM's prior `shutdown`, which resets the counter to 0).
+- Id allocation: `manager/next-task-id` issues
+  `task-<8 base36 chars of epoch-ms><3 base36 random chars>`. The millis
+  prefix is fixed-width, so lexicographic sort of ids *is* creation order,
+  and it is drawn from a strictly-increasing per-process ratchet
+  (`!last-id-millis`), which makes ids unique within a process even for a
+  same-millisecond burst across pool threads. The random tail separates
+  *concurrent processes*, and `persist/task-dir-exists?` is the final probe
+  against an id already claimed on disk.
+
+  This replaced a monotonic counter seeded once at startup from the largest
+  `task-N` dir on disk. Two `by` sessions open on the same project seeded
+  from the same scan and then both issued `task-<n+1>`, `task-<n+2>`, … —
+  duplicate ids pointing at one `tasks/<id>/` dir, so the sessions
+  interleaved into each other's `output.log` and clobbered each other's
+  `meta.edn`. A GC sweep that reclaimed the newest dirs could also lower the
+  seed and hand a fresh session ids already live elsewhere. Legacy `task-N`
+  dirs on disk still scan and sweep normally.
 
 ### Retention / GC
 

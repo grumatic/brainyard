@@ -113,7 +113,7 @@
               {:error (str "Task not found: " task-id-str)}))))
       {:error "Task manager not initialized"}))
   :input-schema  [:map
-                  [:task-id [:string {:desc "Task ID (e.g. task-1)"}]]
+                  [:task-id [:string {:desc "Task ID (e.g. task-mkq8f3x2a1b)"}]]
                   [:last-n  {:optional true} [:int {:desc "When set, include :lines = last N lines from the in-memory tail cache. Omit for metadata-only."}]]]
   :output-schema [:map
                   [:id           [:string  {:desc "Task ID"}]]
@@ -148,7 +148,7 @@
               {:error (str "Could not cancel: " task-id-str)}))))
       {:error "Task manager not initialized"}))
   :input-schema  [:map
-                  [:task-id [:string {:desc "Task ID to cancel (e.g. task-1)"}]]]
+                  [:task-id [:string {:desc "Task ID to cancel (e.g. task-mkq8f3x2a1b)"}]]]
   :output-schema [:map
                   [:result [:string {:desc "Cancellation confirmation"}]]
                   [:error  [:string {:desc "Error message if failed"}]]])

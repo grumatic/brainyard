@@ -257,28 +257,6 @@
       (mulog/log ::read-meta-failed :task-id task-id :exception e)
       nil)))
 
-(defn max-existing-task-id
-  "Scan <project>/.brainyard/tasks/ for `task-N` subdirectories and return
-   the largest N seen, or 0 when none exist. Used at TaskManager startup to
-   seed the counter so freshly-issued IDs don't collide with — and silently
-   truncate — on-disk artifacts from a prior session (or from this JVM's
-   prior `shutdown`, which resets the counter to 0)."
-  [dirs]
-  (try
-    (let [dirs (resolve-dirs dirs)]
-      (if-let [base (config/brainyard-subdir! dirs "tasks" :project)]
-        (let [^File f (io/file base)]
-          (if (.exists f)
-            (->> (.list f)
-                 (keep #(when-let [[_ n] (re-matches #"task-(\d+)" %)]
-                          (parse-long n)))
-                 (reduce max 0))
-            0))
-        0))
-    (catch Exception e
-      (mulog/log ::scan-max-task-id-failed :exception e)
-      0)))
-
 ;; ============================================================================
 ;; Disk artifact lifecycle — delete + scan
 ;; ============================================================================
@@ -308,6 +286,19 @@
       (let [f (io/file pcd "tasks")]
         (when (.exists f) f)))))
 
+(defn task-dir-exists?
+  "True when `<project>/.brainyard/tasks/<task-id>/` already exists on disk.
+   Does NOT create anything (unlike `task-dir`) — this is the collision probe
+   `manager/next-task-id` uses to reject an ID whose artifacts are already
+   claimed, including by a *concurrently running* `by` process against the
+   same project. Returns false when the project scope can't be resolved."
+  [dirs task-id]
+  (try
+    (boolean
+     (when-let [^File base (project-tasks-base dirs)]
+       (.exists (io/file base (task-id->name task-id)))))
+    (catch Exception _ false)))
+
 (defn delete-task-dir!
   "Remove the per-task directory `<project>/.brainyard/tasks/<task-id>/` and
    all artifacts (output.log, meta.edn, meta.edn.tmp). Closes a stale
@@ -333,18 +324,22 @@
       false)))
 
 (defn list-task-dirs
-  "Return a vector of `{:id :dir :mtime}` for every `task-N` directory under
+  "Return a vector of `{:id :dir :mtime}` for every `task-*` directory under
    `<project>/.brainyard/tasks/`. Sorted by `:mtime` ascending (oldest
    first). Empty when project scope is unresolvable or the dir is missing.
 
-   `:id` is the keyword `:task-N`; `:dir` is the File; `:mtime` is epoch ms.
-   Tasks with malformed names are skipped silently."
+   `:id` is the keyword `:task-<suffix>`; `:dir` is the File; `:mtime` is
+   epoch ms. Tasks with malformed names are skipped silently.
+
+   The suffix pattern is deliberately permissive (`[0-9a-z]+`) so it matches
+   both the current time-ordered IDs (`task-mkq8f3x2a1b`) and the legacy
+   sequential ones (`task-42`) left on disk by pre-2026-07-30 sessions."
   [dirs]
   (if-let [^File base (project-tasks-base dirs)]
     (->> (.listFiles base)
          (keep (fn [^File f]
                  (when (.isDirectory f)
-                   (when-let [[_ n] (re-matches #"task-(\d+)" (.getName f))]
+                   (when-let [[_ n] (re-matches #"task-([0-9a-z]+)" (.getName f))]
                      {:id    (keyword (str "task-" n))
                       :dir   f
                       :mtime (.lastModified f)}))))

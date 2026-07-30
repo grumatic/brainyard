@@ -420,8 +420,8 @@ lean into it (probe → bind a var → reuse it in the next block).
    ;; Run / inspect / cancel background tasks
    (t/call-tool :task$run    {:job-type :bash :command \"ls -la .brainyard\"})
    (t/call-tool :task$list   {})
-   (t/call-tool :task$detail {:task-id \"task-1\" :last-n \"50\"})
-   (t/call-tool :task$cancel {:task-id \"task-1\"})
+   (t/call-tool :task$detail {:task-id \"task-mkq8f3x2a1b\" :last-n \"50\"})
+   (t/call-tool :task$cancel {:task-id \"task-mkq8f3x2a1b\"})
 
    ;; Memory / session tools read *current-agent* — pass :agent (see below)
    (t/call-tool :memory$recall {:query \"recent commits\" :limit 5} :agent dbg)

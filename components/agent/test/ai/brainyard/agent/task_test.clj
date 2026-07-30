@@ -23,16 +23,51 @@
 
 (defn reset-task-state [f]
   (reset! manager/!tasks {})
-  (reset! manager/!task-counter 0)
   (f)
   ;; Cleanup
   (when-let [mgr (manager/get-default-manager)]
     (try (tp/shutdown mgr) (catch Exception _)))
   (manager/set-default-manager! nil)
-  (reset! manager/!tasks {})
-  (reset! manager/!task-counter 0))
+  (reset! manager/!tasks {}))
 
 (use-fixtures :each reset-task-state)
+
+;; ============================================================================
+;; Task ID allocation
+;; ============================================================================
+
+(deftest next-task-id-shape-and-uniqueness
+  (testing "IDs are task-<8 base36 millis><3 base36 random>"
+    (let [id (manager/next-task-id)]
+      (is (keyword? id))
+      (is (re-matches #"task-[0-9a-z]{8}[0-9a-z]{3}" (name id))
+          (str "unexpected shape: " id))))
+  (testing "a burst of IDs is collision-free"
+    (let [ids (repeatedly 2000 manager/next-task-id)]
+      (is (= 2000 (count (set ids)))
+          "duplicate ID issued within one process")))
+  (testing "IDs sort lexicographically into creation order"
+    ;; The millis prefix is fixed-width AND strictly increasing per process,
+    ;; so plain string sort == creation order even for a same-millisecond
+    ;; burst (the random tail never gets to decide ordering).
+    (let [ids (vec (repeatedly 200 #(name (manager/next-task-id))))]
+      (is (= ids (vec (sort ids)))
+          "lexicographic order diverged from creation order")))
+  (testing "concurrent allocation across threads stays unique"
+    (let [ids (->> (repeatedly 8 #(future (doall (repeatedly 250 manager/next-task-id))))
+                   (mapv deref)
+                   (apply concat))]
+      (is (= 2000 (count (set ids)))
+          "duplicate ID issued across threads"))))
+
+(deftest next-task-id-avoids-ids-live-in-this-jvm
+  (testing "an ID already in !tasks is never reissued"
+    (let [taken (manager/next-task-id)]
+      (swap! manager/!tasks assoc taken {:id taken})
+      (is (every? #(not= taken %) (repeatedly 500 manager/next-task-id))
+          "a live ID was reissued")))
+  (testing "a zero attempt budget still terminates with a well-formed ID"
+    (is (re-matches #"task-[0-9a-z]{8}[0-9a-z]+" (name (manager/next-task-id 0))))))
 
 ;; ============================================================================
 ;; Default-manager auto-initialization
@@ -162,9 +197,10 @@
       (let [task (tp/create-task tm "echo test" :bash {:command "echo hi"})
             tid  (:id task)]
         (is (= :pending (:status task)))
-        ;; The task-id counter is seeded from on-disk artifacts via
-        ;; persist/max-existing-task-id, so we can't assume :task-1.
+        ;; IDs are clock-derived (manager/next-task-id), never sequential —
+        ;; so assert the shape, not a specific value.
         (is (keyword? tid))
+        (is (re-matches #"task-[0-9a-z]{11}" (name tid)))
         (tp/start-task tm tid)
         ;; Wait for completion
         (Thread/sleep 500)

@@ -4,7 +4,7 @@
 
 (ns ai.brainyard.agent.task.manager
   "TaskManager record implementing ITaskManager.
-   Global atoms: !tasks, !task-counter, !executor-service, !default-manager.
+   Global atoms: !tasks, !executor-service, !default-manager.
    Ring-buffer on-output callback. ExecutorService submit pattern."
   (:require [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.hooks :as hooks]
@@ -12,7 +12,8 @@
             [ai.brainyard.agent.task.executor :as executor]
             [ai.brainyard.agent.task.persist :as persist]
             [ai.brainyard.mulog.interface :as mulog])
-  (:import [java.util.concurrent Executors ExecutorService ThreadFactory]
+  (:import [java.util.concurrent Executors ExecutorService ThreadFactory
+            ThreadLocalRandom]
            [java.util.concurrent.atomic AtomicLong]))
 
 ;; ============================================================================
@@ -20,7 +21,6 @@
 ;; ============================================================================
 
 (defonce !tasks (atom {}))
-(defonce !task-counter (atom 0))
 (defonce ^:private !default-manager (atom nil))
 (defonce ^:private !executor-service (atom nil))
 
@@ -42,6 +42,101 @@
 (defonce ^:private !task-progress (atom {}))
 
 (declare create-task-manager start-detach-watcher!)
+
+;; ============================================================================
+;; Task ID allocation
+;; ============================================================================
+
+;; IDs are `task-<8 base36 chars of epoch-ms><3 base36 random chars>`, e.g.
+;; :task-mkq8f3x2a1b. Two properties matter:
+;;
+;;   time-ordered — the timestamp is the high-order prefix, zero-padded to a
+;;     fixed 8 chars (base36 epoch-ms stays 8 wide until ~2059), so plain
+;;     lexicographic sort of IDs *is* creation order. `ls .brainyard/tasks/`
+;;     reads chronologically and the log/dossier trail stays scannable.
+;;   collision-free across processes — the old scheme was a monotonic counter
+;;     seeded once at startup from the largest `task-N` directory on disk.
+;;     Two `by` sessions open on the same project both seed from the same
+;;     scan and then both issue `task-<n+1>`, `task-<n+2>`, … — duplicate IDs
+;;     pointing at ONE `.brainyard/tasks/<id>/` dir, so the two sessions
+;;     interleave into each other's output.log and clobber each other's
+;;     meta.edn. A GC sweep that reclaimed the newest dirs could also lower
+;;     the seed and hand a fresh session IDs already live elsewhere. Nothing
+;;     is derived from a global disk maximum any more.
+;;
+;; The two halves divide the work: the millis prefix is drawn from a
+;; strictly-increasing per-process ratchet, so it alone makes IDs unique
+;; *within* a process (randomness would only be probabilistic there — and an
+;; ID isn't in !tasks until after make-task returns, so two pool threads
+;; allocating in the same millisecond can't see each other). The random tail
+;; then separates *concurrent processes*, which share no state. `id-taken?`
+;; is the belt-and-braces probe over both.
+
+(def ^:private ^String base36-digits "0123456789abcdefghijklmnopqrstuvwxyz")
+
+;; Highest millis value stamped into an ID by this process. Only ever moves
+;; forward: a same-millisecond (or backwards-clock) allocation takes prev+1
+;; instead. A dense burst therefore runs slightly ahead of the wall clock —
+;; 1ms per task beyond the first in any millisecond, so 2000 back-to-back
+;; tasks stamp at most ~2s into the future — and re-converges as soon as the
+;; clock catches up. Bounded drift is the price of never colliding.
+(defonce ^:private ^AtomicLong !last-id-millis (AtomicLong. 0))
+
+(defn- next-id-millis
+  "Epoch millis, forced strictly increasing across this process."
+  ^long []
+  (loop []
+    (let [prev (.get !last-id-millis)
+          now  (System/currentTimeMillis)
+          v    (if (> now prev) now (inc prev))]
+      (if (.compareAndSet !last-id-millis prev v)
+        v
+        (recur)))))
+
+(defn- rand-base36
+  "n random base-36 chars. ThreadLocalRandom (not Math/rand) so concurrent
+   task creation on the pool threads doesn't contend on one seed."
+  ^String [n]
+  (let [r  (ThreadLocalRandom/current)
+        ^StringBuilder sb (StringBuilder. (int n))]
+    (dotimes [_ n]
+      (.append sb (.charAt base36-digits (.nextInt r 36))))
+    (.toString sb)))
+
+(defn- base36-millis
+  "Epoch millis as base-36, left-zero-padded to 8 chars so the encoding is
+   fixed-width and therefore lexicographically time-ordered."
+  ^String [^long ms]
+  (let [s (Long/toString ms 36)
+        n (.length s)]
+    (if (< n 8)
+      (str (subs "00000000" n) s)
+      s)))
+
+(defn- id-taken?
+  "True when `id` is already live in this JVM or already has artifacts on
+   disk (this project, any session — including a concurrently running one)."
+  [id]
+  (or (contains? @!tasks id)
+      (persist/task-dir-exists? nil id)))
+
+(defn next-task-id
+  "Allocate a fresh, time-ordered, process-unique task ID keyword.
+
+   Retries on the (vanishingly rare) case where the probe says the ID is
+   already claimed — another process stamped the same millisecond AND drew
+   the same 3-char tail. After `max-attempts` misses it widens the random
+   tail instead of looping forever, so this always terminates."
+  ([] (next-task-id 8))
+  ([max-attempts]
+   (loop [attempt 0]
+     (let [id (keyword (str "task-" (base36-millis (next-id-millis))
+                            (rand-base36 3)))]
+       (cond
+         (not (id-taken? id)) id
+         (< attempt max-attempts) (recur (inc attempt))
+         :else (keyword (str "task-" (base36-millis (next-id-millis))
+                             (rand-base36 8))))))))
 
 (defn get-default-manager
   "Return the default task manager.
@@ -192,7 +287,7 @@
    at the log file."
   [task-name job-type job-config {:keys [schedule metadata max-output-lines]
                                   :or {max-output-lines 500}}]
-  (let [id (keyword (str "task-" (swap! !task-counter inc)))
+  (let [id (next-task-id)
         meta (merge {:display-mode :foreground}
                     (or metadata {}))]
     (tp/->Task id
@@ -499,8 +594,7 @@
     (when-let [es @!executor-service]
       (.shutdownNow ^ExecutorService es)
       (reset! !executor-service nil))
-    (reset! !tasks {})
-    (reset! !task-counter 0)))
+    (reset! !tasks {})))
 
 (defn remove-task-and-artifacts!
   "Remove the in-memory registry entry AND the on-disk
@@ -640,11 +734,11 @@
     (reset! !executor-service
             (Executors/newFixedThreadPool (int pool-size)
                                           (daemon-thread-factory))))
-  ;; Ratchet the counter past any on-disk task dirs so freshly-issued IDs
-  ;; don't overwrite artifacts from a prior session (JVM restart) or from
-  ;; this JVM's prior `shutdown` (which resets the counter to 0). `max` —
-  ;; never decrease a counter that's already ahead of disk.
-  (swap! !task-counter max (persist/max-existing-task-id nil))
+  ;; No ID-counter seeding here any more: `next-task-id` derives each ID from
+  ;; the clock plus randomness and probes disk per allocation, so a restart —
+  ;; or a second `by` process on the same project — can't reissue an existing
+  ;; ID. The old startup ratchet over `max-existing-task-id` was exactly the
+  ;; thing that made two concurrent sessions collide.
   (start-detach-watcher!)
   (install-progress-hooks!)
   (->TaskManager {:bash             (executor/->BashJobExecutor)
