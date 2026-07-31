@@ -32,6 +32,16 @@
   #'ai.brainyard.agent.common.coact-agent/agent-clj-backend)
 (def ^:private eval-capable?
   #'ai.brainyard.agent.common.debug-agent/eval-capable?)
+(def ^:private source-origin
+  #'ai.brainyard.agent.common.debug-agent/source-origin)
+(def ^:private extract-jar-sources!
+  #'ai.brainyard.agent.common.debug-agent/extract-jar-sources!)
+
+(defn- rm-rf [^java.io.File f]
+  (when (.exists f)
+    (when (.isDirectory f)
+      (doseq [c (.listFiles f)] (rm-rf c)))
+    (.delete f)))
 
 (defn- reset-globals! []
   (when-let [mgr (task-mgr/peek-default-manager)]
@@ -430,6 +440,95 @@
         (is (= 1 (count (:skipped r))))
         (is (str/includes? (first (:skipped r)) "not a directory")))
       (finally (.delete f)))))
+
+;; ============================================================================
+;; materialize-sources — self-debugging without a checkout
+;; ============================================================================
+
+(defn- write-fake-jar!
+  "A jar shaped like the shipped uberjar: brainyard .clj sources, a compiled
+   class beside them, and an unrelated dependency source that must NOT be
+   extracted."
+  [^java.io.File jar]
+  (io/make-parents jar)
+  (with-open [out (java.util.zip.ZipOutputStream. (io/output-stream jar))]
+    (doseq [[n content] [["ai/brainyard/agent/core/config.clj" "(ns ai.brainyard.agent.core.config)"]
+                         ["ai/brainyard/util/interface.cljc" "(ns ai.brainyard.util.interface)"]
+                         ["ai/brainyard/agent/core/config.class" "NOT-SOURCE"]
+                         ["clojure/core.clj" "(ns clojure.core)"]]]
+      (.putNextEntry out (java.util.zip.ZipEntry. ^String n))
+      (.write out (.getBytes ^String content "UTF-8"))
+      (.closeEntry out)))
+  jar)
+
+(deftest materialize-sources-registered-gated-and-bound
+  (let [td (tool/get-tool-defs :id :clj-nrepl$materialize-sources)]
+    (is (some? td))
+    (is (tool/tool-visible? td :debug-agent))
+    (is (not (tool/tool-visible? td :coact-agent)) "gated to debug-*"))
+  (is (contains? (set (:tools (get-in (tool/get-tool-defs :id :debug-agent)
+                                      [:meta :agent-tools])))
+                 :clj-nrepl$materialize-sources)))
+
+(deftest source-origin-detects-this-checkout
+  ;; These tests run from source, so the probe resource must resolve to a
+  ;; directory root — the branch that tells the agent no extraction is needed.
+  (let [o (source-origin)]
+    (is (= :directory (:kind o)))
+    (is (str/ends-with? (:root o) "components/agent/src")
+        (str "expected a classpath root, got " (:root o)))
+    (is (.isDirectory (io/file (:root o) "ai" "brainyard")))))
+
+(deftest materialize-sources-reports-checkout-instead-of-extracting
+  (let [r (tool/invoke-tool :clj-nrepl$materialize-sources)]
+    (is (= "directory" (:kind r)))
+    (is (pos? (:files r)))
+    (is (str/includes? (:message r) "already editable"))))
+
+(deftest extract-jar-sources-takes-only-matching-sources
+  (let [tmp  (io/file (System/getProperty "java.io.tmpdir") (str "by-mat-" (System/nanoTime)))
+        jar  (write-fake-jar! (io/file tmp "fake.jar"))
+        dest (io/file tmp "out")]
+    (try
+      (let [n (extract-jar-sources! (.getPath jar) "ai/brainyard/" dest)]
+        (is (= 2 n) ".clj and .cljc under the prefix, nothing else")
+        (is (.isFile (io/file dest "ai/brainyard/agent/core/config.clj")))
+        (is (.isFile (io/file dest "ai/brainyard/util/interface.cljc")))
+        (is (not (.exists (io/file dest "ai/brainyard/agent/core/config.class")))
+            "compiled classes are not sources")
+        (is (not (.exists (io/file dest "clojure/core.clj")))
+            "dependency sources are out of scope — only brainyard's own")
+        (is (= "(ns ai.brainyard.agent.core.config)"
+               (slurp (io/file dest "ai/brainyard/agent/core/config.clj")))
+            "content is copied verbatim, not truncated"))
+      (finally (rm-rf tmp)))))
+
+(deftest materialize-sources-does-not-clobber-existing-edits
+  ;; The destructive failure mode: re-running the command over a tree the agent
+  ;; has already edited. It must refuse and say so, and :force must be the only
+  ;; way to overwrite.
+  (let [tmp  (io/file (System/getProperty "java.io.tmpdir") (str "by-mat2-" (System/nanoTime)))
+        jar  (write-fake-jar! (io/file tmp "fake.jar"))
+        dest (io/file tmp "out")
+        edited (io/file dest "ai/brainyard/agent/core/config.clj")]
+    (try
+      (with-redefs [ai.brainyard.agent.common.debug-agent/source-origin
+                    (constantly {:kind :jar :jar (.getPath jar)})]
+        (let [first-run (tool/invoke-tool :clj-nrepl$materialize-sources {:dest (.getPath dest)})]
+          (is (= "jar" (:kind first-run)))
+          (is (= 2 (:files first-run)))
+          (is (false? (:already-materialized first-run))))
+        (spit edited ";; MY EDIT")
+        (let [second-run (tool/invoke-tool :clj-nrepl$materialize-sources {:dest (.getPath dest)})]
+          (is (true? (:already-materialized second-run)))
+          (is (str/includes? (:message second-run) "force"))
+          (is (= ";; MY EDIT" (slurp edited)) "the edit must survive a re-run"))
+        (let [forced (tool/invoke-tool :clj-nrepl$materialize-sources
+                                       {:dest (.getPath dest) :force true})]
+          (is (false? (:already-materialized forced)))
+          (is (= "(ns ai.brainyard.agent.core.config)" (slurp edited))
+              ":force re-extracts, discarding the edit as documented")))
+      (finally (rm-rf tmp)))))
 
 (deftest nrepl-stop-then-restart-cycle
   (let [stopped (tool/invoke-tool :clj-nrepl$stop-server)]

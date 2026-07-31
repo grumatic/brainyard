@@ -209,15 +209,28 @@ channel; the hook's start is scoped to debug-agent instances.
 
 ## 5. nREPL server lifecycle tools
 
-Three commands let debug-agent manage the embedded server **on demand, without a
+Five commands let debug-agent manage the live channel **on demand, without a
 process restart**. They are gated to `debug-*` via `:tool-use-control {:allow
 ["debug-*"]}` and bound on the agent's `:agent-tools`:
 
 | Tool | Behavior |
 |---|---|
-| `clj-nrepl$start-server` | Idempotent start (no-op if already up). Writes a per-instance port file `~/.brainyard/nrepl-ports/by-<pid>.port` so external CIDER tooling can attach to the **same** live image. Returns `{:running :port :port-file :already-running}`. |
+| `clj-nrepl$start-server` | Idempotent start (no-op if already up). Refuses under a GraalVM native image (no runtime compiler ⇒ no form can ever eval) and when `:nrepl-enabled?` is off, each with its remedy. Writes a per-instance port file `~/.brainyard/nrepl-ports/by-<pid>.port` so external CIDER tooling can attach to the **same** live image. Returns `{:running :port :port-file :already-running :message}`. |
 | `clj-nrepl$stop-server` | Stops the server and removes the port file. Returns `:stopped false` when nothing was running. |
 | `clj-nrepl$status` | `{:running :port :port-files}` — the live-runtime channel's state plus the inventory of known per-instance port files. |
+| `clj-nrepl$add-classpath` | Adds roots to the **live** classpath so `require` / `:reload` resolve project namespaces that were not on it. Defaults to `<project-dir>/src`, or the project dir when there is no `src/`. Adds to the **outermost** `DynamicClassLoader`, not `RT/baseLoader`: nREPL pushes a fresh loader per *evaluation*, so a URL added to `baseLoader` dies with that eval. Classpath is session-scoped, so the response reports `:session`. |
+| `clj-nrepl$materialize-sources` | Extracts brainyard's own `.clj`/`.cljc` out of the running artifact (the uberjar ships them beside the AOT classes — 315 files under `ai/brainyard/`) into `~/.brainyard/src/<version>`, giving an editable tree with **no git checkout**. Idempotent: a populated destination is left alone unless `:force`, since it may hold edits. From a source checkout it extracts nothing and reports where the editable files already are. |
+
+**Reload edits from a materialized tree with `load-file`, never `require`/`:reload`.**
+Classloader delegation is parent-first (verified), so the jar — already on the
+classpath ahead of any directory added later — wins for a namespace it ships:
+`require` would re-read the jar's frozen copy while appearing to reload. This is
+also why `materialize-sources` deliberately does **not** add its tree to the
+classpath. `add-classpath` remains correct for the user's *own* namespaces,
+which the jar does not contain.
+
+Nothing here rebuilds the running artifact: a fix validated this way lives in
+the live image and the extracted tree, so the deliverable is a **patch**.
 
 **These MUST be called through the TOOL channel, never from a ` ```clojure `
 block** — the code block is evaluated *by* the very server it would be trying to

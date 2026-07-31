@@ -59,6 +59,8 @@
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.feature :as feature]
             [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [clojure.string :as str]
             [ai.brainyard.clj-nrepl.interface :as clj-nrepl]
             [ai.brainyard.mulog.interface :as mulog]))
 
@@ -293,6 +295,136 @@
                   [:skipped [:any {:desc "Paths not added, each with the reason (e.g. not a directory)."}]]
                   [:session {:optional true} [:any {:desc "nREPL session the paths were added to — the classloader is per-session, so only this session sees them."}]]
                   [:error {:optional true} [:string {:desc "Present when nothing could be added."}]]]
+  :tool-use-control {:allow ["debug-*"]})
+
+;; ============================================================================
+;; Materializing brainyard's own sources (self-debugging without a checkout)
+;;
+;; The uberjar ships brainyard's .clj files next to the AOT classes, so a
+;; binary install already carries its own source — it is just not editable
+;; where it sits. Extracting it gives the read → live-patch → edit → reload
+;; loop against brainyard itself on a machine with no git checkout. The fix
+;; then travels as a PATCH: the running artifact is not rebuilt by any of this.
+;; ============================================================================
+
+(def ^:private source-probe
+  "A resource that exists in every packaging of brainyard — this very file.
+   Its URL tells us how the running process was packaged."
+  "ai/brainyard/agent/common/debug_agent.clj")
+
+(defn- source-origin
+  "Where THIS process's own `ai.brainyard` sources live:
+     {:kind :jar :jar \"/path/to.jar\"}   — packaged run (uberjar / BY_JAR=1)
+     {:kind :directory :root \"/…/src\"}  — source checkout, already editable
+     {:kind :unknown :url …}             — neither shape
+   nil when the probe resource is missing entirely."
+  []
+  (when-let [u (io/resource source-probe)]
+    (case (.getProtocol u)
+      "jar"  {:kind :jar
+              ;; jar:file:/path/to.jar!/ai/brainyard/… → /path/to.jar
+              :jar (-> (.getPath u)
+                       (str/replace #"^file:" "")
+                       (str/split #"!/")
+                       first)}
+      "file" (let [p (.getPath u)]
+               {:kind :directory
+                ;; strip the ns path back to the classpath root
+                :root (subs p 0 (max 0 (- (count p) (count source-probe) 1)))})
+      {:kind :unknown :url (str u)})))
+
+(defn- clj-file-count
+  [^java.io.File dir]
+  (if (.isDirectory dir)
+    (count (filter #(and (.isFile ^java.io.File %)
+                         (str/ends-with? (.getName ^java.io.File %) ".clj"))
+                   (file-seq dir)))
+    0))
+
+(defn- extract-jar-sources!
+  "Copy every `prefix`-matching .clj/.cljc entry out of `jar-path` into `dest`,
+   preserving the entry paths so the tree mirrors the classpath layout.
+   Returns the number of files written."
+  [jar-path prefix ^java.io.File dest]
+  (with-open [zf (java.util.zip.ZipFile. (io/file jar-path))]
+    (let [entries (->> (enumeration-seq (.entries zf))
+                       (remove #(.isDirectory ^java.util.zip.ZipEntry %))
+                       (filter (fn [^java.util.zip.ZipEntry e]
+                                 (let [n (.getName e)]
+                                   (and (str/starts-with? n prefix)
+                                        (or (str/ends-with? n ".clj")
+                                            (str/ends-with? n ".cljc")))))))]
+      (doseq [^java.util.zip.ZipEntry e entries]
+        (let [out (io/file dest (.getName e))]
+          (io/make-parents out)
+          (with-open [in (.getInputStream zf e)]
+            (io/copy in out))))
+      (count entries))))
+
+(defn- default-source-dest
+  "~/.brainyard/src/<build-version> — versioned so two installs never share a
+   tree, and so an upgrade materializes fresh rather than mixing vintages."
+  []
+  (let [v (or (some-> (io/resource "build-version.edn") slurp edn/read-string :version)
+              "unknown")]
+    (io/file (System/getProperty "user.home") ".brainyard" "src"
+             (str/replace (str v) #"[^A-Za-z0-9._-]" "_"))))
+
+(defcommand clj-nrepl$materialize-sources
+  "Extract brainyard's OWN .clj sources out of the running artifact into a
+   writable directory, so you can read and edit them with no git checkout — the
+   uberjar ships its sources alongside the compiled classes. Idempotent: an
+   already-populated destination is left alone (it may hold your edits) unless
+   :force is set. A source-checkout runtime needs no extraction and just
+   reports where the editable sources already are.
+
+   Reload an edited file with (load-file \"<root>/<path>.clj\") — NOT
+   require/:reload. The jar sits ahead of any added directory in the classloader
+   chain, so require would silently re-read the jar's frozen copy while looking
+   like it worked; load-file reads the path directly and bypasses that.
+
+   The running binary is NOT rebuilt: edits live in the extracted tree, so the
+   deliverable is a patch to carry upstream."
+  (fn [{:keys [prefix dest force]}]
+    (let [origin (source-origin)
+          prefix (or prefix "ai/brainyard/")]
+      (case (:kind origin)
+        :directory
+        {:kind "directory" :root (:root origin) :files (clj-file-count (io/file (:root origin)))
+         :message (str "Running from a source checkout — these files are already editable in place at "
+                       (:root origin) ". No extraction needed; edit and reload as usual.")}
+
+        :jar
+        (let [d        (io/file (or dest (default-source-dest)))
+              existing (clj-file-count d)]
+          (if (and (pos? existing) (not force))
+            {:kind "jar" :root (.getPath d) :files existing :jar (:jar origin)
+             :already-materialized true
+             :message (str "Already materialized at " (.getPath d)
+                           " (" existing " files). Left untouched — it may hold your edits. "
+                           "Pass :force true to re-extract, which DISCARDS them.")}
+            (let [n (extract-jar-sources! (:jar origin) prefix d)]
+              {:kind "jar" :root (.getPath d) :files n :jar (:jar origin)
+               :already-materialized false
+               :message (str "Extracted " n " files from " (:jar origin) " into " (.getPath d)
+                             ". Edit there, then reload with (load-file \"" (.getPath d)
+                             "/ai/brainyard/…/<ns>.clj\") — not require/:reload. "
+                             "The running artifact is unchanged; report your fix as a patch.")})))
+
+        {:kind "unknown" :root nil :files 0
+         :message (str "Could not locate brainyard's own sources from this runtime: "
+                       (pr-str origin))})))
+  :input-schema  [:map
+                  [:prefix {:optional true} [:string {:desc "Entry-path prefix to extract. Default \"ai/brainyard/\" (brainyard's own code, not its dependencies)."}]]
+                  [:dest {:optional true} [:string {:desc "Destination dir. Default ~/.brainyard/src/<build-version>."}]]
+                  [:force {:optional true} [:boolean {:desc "Re-extract over a populated destination, DISCARDING any edits there. Default false."}]]]
+  :output-schema [:map
+                  [:kind [:string {:desc "jar (extracted) | directory (source checkout) | unknown."}]]
+                  [:root [:any {:desc "Directory holding the editable sources, or nil when unknown."}]]
+                  [:files [:any {:desc "Number of .clj files extracted, or already present."}]]
+                  [:jar {:optional true} [:string {:desc "Artifact the sources came from."}]]
+                  [:already-materialized {:optional true} [:boolean {:desc "True when a populated destination was left untouched."}]]
+                  [:message [:string {:desc "What happened, and how to reload edits."}]]]
   :tool-use-control {:allow ["debug-*"]})
 
 (defcommand clj-nrepl$status
@@ -618,6 +750,35 @@ lean into it (probe → bind a var → reuse it in the next block).
       an absolute path is the right tool — it re-reads the file from disk every
       time, so it doubles as the reload.
 
+   ## Debugging brainyard itself with no source checkout
+
+   When the fault is in brainyard and there is no git checkout to edit, you are
+   NOT stuck: the packaged artifact ships brainyard's own `.clj` files next to
+   its compiled classes. Call `clj-nrepl$materialize-sources` (TOOL channel) to
+   extract them to a writable tree (default `~/.brainyard/src/<version>`); it
+   reports the root and leaves an existing tree alone so it cannot eat edits
+   you already made. Running from a source checkout, it just tells you where
+   the editable files already are.
+
+   Then edit the extracted file and reload it with an ABSOLUTE `load-file`:
+
+   ```clojure
+   (load-file \"/Users/you/.brainyard/src/v0.5.2/ai/brainyard/agent/core/config.clj\")
+   ```
+
+   Do **not** use `require` / `:reload` for a namespace that came from the jar,
+   and do not bother adding the extracted tree with `clj-nrepl$add-classpath`:
+   the jar sits ahead of any directory you add in the classloader chain
+   (delegation is parent-first), so `require` re-reads the jar's FROZEN copy and
+   your edit appears to reload while changing nothing. `load-file` reads the
+   path directly and is unaffected. (`add-classpath` is still the right tool for
+   the user's OWN project namespaces, which are not in the jar.)
+
+   Finally, be honest about what you produced: the running binary is not
+   rebuilt by any of this. Your fix lives in the extracted tree and in the live
+   image, so REPORT IT AS A PATCH — the file path, the change, and how you
+   verified it after reload — for someone to apply upstream and rebuild.
+
    ## Making a fix permanent (edit source + reload)
    You own the whole cycle — validate the fix live, then write it to source
    and reload, all in this one agent. You have the file tools bound directly
@@ -817,7 +978,8 @@ lean into it (probe → bind a var → reuse it in the next block).
                         :clj-nrepl$start-server
                         :clj-nrepl$stop-server
                         :clj-nrepl$status
-                        :clj-nrepl$add-classpath]}
+                        :clj-nrepl$add-classpath
+                        :clj-nrepl$materialize-sources]}
   :instruction debug-instruction
   :tool-context debug-tool-context
   :max-iterations 30)
