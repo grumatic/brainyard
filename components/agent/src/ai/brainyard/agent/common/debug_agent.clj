@@ -58,6 +58,7 @@
             [ai.brainyard.agent.common.code-eval]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.feature :as feature]
+            [clojure.edn :as edn]
             [ai.brainyard.clj-nrepl.interface :as clj-nrepl]
             [ai.brainyard.mulog.interface :as mulog]))
 
@@ -74,10 +75,34 @@
 ;; bound on debug-agent's :agent-tools.
 ;; ============================================================================
 
+(defn- eval-capable?
+  "False under a GraalVM native image, where this agent cannot work at all.
+
+   Clojure compiles every form to JVM bytecode through a `DynamicClassLoader`;
+   native-image has no runtime compiler, so nREPL eval fails there for even
+   `(+ 1 2)` — not just for `defn` or `require`. A native `by` can still START
+   a server (the socket and the port file are ordinary I/O), which is the trap:
+   without this check debug-agent comes up looking healthy and every fence dies
+   at eval time.
+
+   Detected via `org.graalvm.nativeimage.imagecode`, the property the image
+   sets to \"runtime\" in generated code — read as a string rather than through
+   the GraalVM SDK's `ImageInfo`, which is not on the classpath in JVM runs.
+   Deliberately NOT a `(instance? DynamicClassLoader (RT/baseLoader))` probe:
+   that answers false on the main thread of a plain `java -jar` run — the very
+   uberjar runtime this check tells people to switch to — because the dynamic
+   loader is pushed per nREPL session, not process-wide."
+  []
+  (not= "runtime" (System/getProperty "org.graalvm.nativeimage.imagecode")))
+
+(def ^:private native-image-remedy
+  "Re-run on the JVM — the uberjar works and ships brainyard's own .clj sources: BY_JAR=1 by … (or `bb tui` in a source checkout).")
+
 (defn- ensure-server!
-  "Idempotent loopback nREPL start, gated on `:nrepl-enabled?`. Returns
-   `{:port :already-running}`, or `{:disabled? true :reason …}` when the gate
-   is off — in which case NO start is attempted.
+  "Idempotent loopback nREPL start, gated on runtime eval support and
+   `:nrepl-enabled?`. Returns `{:port :already-running}`, or
+   `{:disabled? true :reason … :remedy …}` when either check refuses — in
+   which case NO start is attempted.
 
    The SINGLE start path — shared by `clj-nrepl$start-server` and the
    instance-created hook, so the agent's implicit start takes exactly the path
@@ -94,21 +119,32 @@
    Resolution needs the agent — a nil `agent` sees only env/global/default,
    which is the correct answer for a caller outside any agent.
 
-   An already-running server short-circuits BEFORE the gate: the gate governs
-   starting, and reporting \"disabled\" while a live server is reachable would
-   be a lie.
+   The native check comes FIRST, ahead of the already-running short-circuit:
+   a reachable server in a native image is worse than no server, not better,
+   so \"one is already up\" must not silence it.
+
+   An already-running server then short-circuits BEFORE the gate: the gate
+   governs starting, and reporting \"disabled\" while a live and usable server
+   is reachable would be a lie.
 
    `start-server!` THROWS when a server is already running, so a concurrent
    starter losing the race re-checks `running?` and reports the winner's port
    rather than surfacing a spurious failure."
   [agent port]
   (cond
+    (not (eval-capable?))
+    {:disabled? true
+     :reason "this is a GraalVM native image, where Clojure cannot compile at runtime — nREPL eval fails here for every form"
+     :remedy native-image-remedy}
+
     (clj-nrepl/running?)
     {:port (clj-nrepl/server-port) :already-running true}
 
     (not (feature/on? agent :exec/nrepl))
     {:disabled? true
-     :reason (or (feature/off-reason agent :exec/nrepl) "unavailable")}
+     :reason (str "the nREPL channel is disabled ("
+                  (or (feature/off-reason agent :exec/nrepl) "unavailable") ")")
+     :remedy "Enable it with BY_NREPL_ENABLED=true or :agent {:config {:nrepl-enabled? true}} in .brainyard/config.edn."}
 
     :else
     (do
@@ -134,17 +170,14 @@
    eval (the only eval-path check is the deny-list); isolation is the SCI
    sandbox backend's job."
   (fn [{:keys [port]}]
-    (let [{:keys [port already-running disabled? reason]}
+    (let [{:keys [port already-running disabled? reason remedy]}
           (ensure-server! proto/*current-agent* port)]
       (if disabled?
         {:running false
          :port nil
          :port-file (str (clj-nrepl/instance-port-file "by"))
          :already-running false
-         :message (str "nREPL server not started — it is disabled (" reason "). "
-                       "Enable it with BY_NREPL_ENABLED=true or "
-                       ":agent {:config {:nrepl-enabled? true}} in "
-                       ".brainyard/config.edn.")}
+         :message (str "nREPL server not started — " reason ". " remedy)}
         {:running true
          :port port
          :port-file (str (clj-nrepl/instance-port-file "by"))
@@ -177,6 +210,89 @@
                   [:stopped [:boolean {:desc "True when a running server was stopped."}]]
                   [:was-port {:optional true} [:int {:desc "Port the stopped server had been bound to."}]]
                   [:message {:optional true} [:string {:desc "Present when there was nothing to stop."}]]]
+  :tool-use-control {:allow ["debug-*"]})
+
+(def ^:private add-classpath-form
+  "Source evaluated INSIDE the live session — `%s` is a vector of path strings.
+
+   Runs on the nREPL thread, not the tool thread: the extensible loader lives
+   in the session, so a URL added from anywhere else is invisible to the very
+   fences that need it. Hence code through `eval-string` rather than in-process.
+
+   It adds to the OUTERMOST `DynamicClassLoader` in the parent chain, not to
+   `RT/baseLoader` directly. nREPL pushes a fresh DynamicClassLoader per
+   EVALUATION, so baseLoader here is a throwaway child that is discarded when
+   this eval returns — the paths would appear to be added and then be gone by
+   the next fence. (`development/src/dev/repl_test.clj` uses baseLoader and is
+   correct for its own usage, because it adds and `require`s inside ONE eval.)
+   Walking to the topmost DynamicClassLoader — the same thing Pomegranate does
+   — lands the URL on the loader those per-eval children inherit from.
+
+   Re-adding a URL is a harmless no-op."
+  "(let [top (loop [cl (clojure.lang.RT/baseLoader) found nil]
+               (if cl
+                 (recur (.getParent cl)
+                        (if (instance? clojure.lang.DynamicClassLoader cl) cl found))
+                 found))
+         cl  top]
+     (if-not cl
+       {:error (str \"live classpath is not extensible here — no DynamicClassLoader in the chain from \"
+                    (.getName (class (clojure.lang.RT/baseLoader))))}
+       (reduce (fn [acc p]
+                 (let [f (.getCanonicalFile (java.io.File. (str p)))]
+                   (if (.isDirectory f)
+                     (do (.addURL cl (.toURL (.toURI f)))
+                         (update acc :added conj (.getPath f)))
+                     (update acc :skipped conj (str (.getPath f) \" (not a directory)\")))))
+               {:added [] :skipped []}
+               %s)))")
+
+(defn- default-classpath-roots
+  "Where a project's namespaces most likely live: `<project-dir>/src` when it
+   exists, else the project dir itself — scratch and single-file projects keep
+   sources at the root, and `<project>/src` would silently add nothing."
+  [agent]
+  (when-let [pd (:project-dir (config/get-config agent :dirs))]
+    (let [src (java.io.File. pd "src")]
+      [(.getPath (if (.isDirectory src) src (java.io.File. ^String pd)))])))
+
+(defcommand clj-nrepl$add-classpath
+  "Add director(ies) to the LIVE classpath so `require` / `:reload` can resolve
+   namespaces from them. Without this, only files already on the classpath are
+   requirable and everything else must be `load-file`d by absolute path — so a
+   file you just wrote into the project is NOT requirable until you add its
+   root here. Defaults to <project-dir>/src (or the project dir when there is
+   no src/). Adding the same path twice is a no-op."
+  (fn [{:keys [paths]}]
+    (let [agent proto/*current-agent*
+          roots (cond
+                  (string? paths)     [paths]
+                  (sequential? paths) (vec paths)
+                  :else               (default-classpath-roots agent))]
+      (cond
+        (not (clj-nrepl/running?))
+        {:added [] :skipped [] :error "clj-nrepl server is not running"}
+
+        (empty? roots)
+        {:added [] :skipped [] :error "no paths given and no project dir to default to"}
+
+        :else
+        (let [sid (config/get-config agent :nrepl-session-id)
+              r   (clj-nrepl/eval-string (format add-classpath-form (pr-str roots))
+                                         :session sid :timeout-ms 15000)
+              parsed (try (edn/read-string (:result r)) (catch Throwable _ nil))]
+          (if (map? parsed)
+            (merge {:added [] :skipped [] :session sid} parsed)
+            {:added [] :skipped [] :session sid
+             :error (or (not-empty (str (:error r))) (:result r) "add-classpath failed")})))))
+  :input-schema  [:map
+                  [:paths {:optional true}
+                   [:any {:desc "Directory path, or vector of them. Omit to use <project-dir>/src (or the project dir)."}]]]
+  :output-schema [:map
+                  [:added [:any {:desc "Canonical paths now on the live classpath."}]]
+                  [:skipped [:any {:desc "Paths not added, each with the reason (e.g. not a directory)."}]]
+                  [:session {:optional true} [:any {:desc "nREPL session the paths were added to — the classloader is per-session, so only this session sees them."}]]
+                  [:error {:optional true} [:string {:desc "Present when nothing could be added."}]]]
   :tool-use-control {:allow ["debug-*"]})
 
 (defcommand clj-nrepl$status
@@ -238,20 +354,25 @@
     ;; like it is working while answering from an image it cannot see. This
     ;; write is last and unconditional, so it cannot be merged away.
     (write-config! agent :clj-backend :nrepl)
-    (when-not (clj-nrepl/running?)
-      (try
-        (let [{:keys [port disabled? reason]} (ensure-server! agent nil)]
-          (if disabled?
-            (mulog/warn ::debug-agent-nrepl-disabled
-                        :agent-id (proto/agent-id agent)
-                        :reason   reason)
-            (mulog/info ::debug-agent-server-autostarted
-                        :agent-id (proto/agent-id agent)
-                        :port     port)))
-        (catch Throwable t
-          (mulog/warn ::debug-agent-server-autostart-failed
-                      :agent-id (proto/agent-id agent)
-                      :error    (.getMessage t)))))
+    ;; Always consult ensure-server!, even when a server is already up — it
+    ;; owns the already-running short-circuit AND the native-image check, and
+    ;; a reachable-but-unusable server (native) must still be reported.
+    (try
+      (let [{:keys [port disabled? reason remedy already-running]}
+            (ensure-server! agent nil)]
+        (cond
+          disabled?       (mulog/warn ::debug-agent-nrepl-disabled
+                                      :agent-id (proto/agent-id agent)
+                                      :reason   reason
+                                      :remedy   remedy)
+          already-running nil
+          :else           (mulog/info ::debug-agent-server-autostarted
+                                      :agent-id (proto/agent-id agent)
+                                      :port     port)))
+      (catch Throwable t
+        (mulog/warn ::debug-agent-server-autostart-failed
+                    :agent-id (proto/agent-id agent)
+                    :error    (.getMessage t))))
     (if (clj-nrepl/running?)
       (try
         (let [sid (clj-nrepl/new-session)]
@@ -376,7 +497,17 @@
      - clj-nrepl$start-server  — start it (idempotent)
      - clj-nrepl$stop-server   — stop it
    Only AFTER status confirms the server is running do ```clojure blocks
-   evaluate against the live image; use the code channel for everything else.")
+   evaluate against the live image; use the code channel for everything else.
+
+   `clj-nrepl$add-classpath` is a TOOL-channel call for the same reason: it
+   makes project directories requirable in the live image (see \"Paths and the
+   classpath\" below). Reach for it the moment you want
+   `(require 'some.ns :reload)` on code that is not already on the classpath.
+
+   If a start ever comes back saying this is a GraalVM native image, stop —
+   the native binary has no runtime compiler, so NO form will ever evaluate
+   here, and nothing you can call will change that. Report that the session
+   must be re-run on the JVM (BY_JAR=1, or `bb tui` in a source checkout).")
 
 ;; The `:nrepl` usage guide — the SINGLE SOURCE for live-runtime methodology,
 ;; colocated with debug-agent (the registry's intended colocation pattern). It
@@ -455,6 +586,37 @@ lean into it (probe → bind a var → reuse it in the next block).
    ;; locate the source on disk for the var you're about to fix:
    (select-keys (meta #'ai.brainyard.agent.core.config/get-config) [:file :line])
    ```
+
+   ## Paths and the classpath — read this BEFORE your first load-file
+
+   Two different roots are in play, and mixing them up is the most common way
+   to waste an iteration here:
+
+   - **The file tools** (read-file / write-file / update-file / grep) resolve
+     relative paths against the agent's **working directory**.
+   - **Your ```clojure code** runs in the nREPL JVM, whose **cwd is wherever
+     that process was started** — usually NOT the working directory. So a
+     relative `(load-file \"lab/greet.clj\")` looks in the wrong place and
+     throws FileNotFoundException even though the file you just wrote is there.
+
+   Rules that follow:
+
+   1. **Always pass load-file an ABSOLUTE path.** Build it from the working
+      directory reported in your system context, not from a bare relative path.
+   2. **`require` only works for namespaces on the classpath.** A file you just
+      wrote into the project is not on it, so `(require 'lab.greet)` throws
+      FileNotFoundException while `load-file` of the same file succeeds. That is
+      a classpath fact, not a bug.
+   3. **To make `require` / `:reload` work for project code, add its root
+      first** — call `clj-nrepl$add-classpath` on the TOOL channel (no args
+      defaults to `<project-dir>/src`, or the project dir when there is no
+      `src/`; pass `:paths` for anything else). After that,
+      `(require 'lab.greet :reload)` resolves and the whole reload discipline
+      below applies. Namespace-to-path still has to line up: `lab.greet` must
+      live at `<root>/lab/greet.clj`.
+   4. For a one-off file that is not worth a classpath entry, `load-file` with
+      an absolute path is the right tool — it re-reads the file from disk every
+      time, so it doubles as the reload.
 
    ## Making a fix permanent (edit source + reload)
    You own the whole cycle — validate the fix live, then write it to source
@@ -654,7 +816,8 @@ lean into it (probe → bind a var → reuse it in the next block).
                         :task$cancel
                         :clj-nrepl$start-server
                         :clj-nrepl$stop-server
-                        :clj-nrepl$status]}
+                        :clj-nrepl$status
+                        :clj-nrepl$add-classpath]}
   :instruction debug-instruction
   :tool-context debug-tool-context
   :max-iterations 30)

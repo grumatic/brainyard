@@ -13,6 +13,7 @@
    SCI sandbox backend's job."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
+            [clojure.java.io :as io]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.core.usage :as usage]
             [ai.brainyard.agent.core.agent :as ag]
@@ -29,6 +30,8 @@
   #'ai.brainyard.agent.common.coact-agent/run-single-block)
 (def ^:private agent-clj-backend
   #'ai.brainyard.agent.common.coact-agent/agent-clj-backend)
+(def ^:private eval-capable?
+  #'ai.brainyard.agent.common.debug-agent/eval-capable?)
 
 (defn- reset-globals! []
   (when-let [mgr (task-mgr/peek-default-manager)]
@@ -349,6 +352,84 @@
                 "the gate must block the actual start, not just the report"))
           (finally
             (.close ^java.io.Closeable agent)))))))
+
+(deftest nrepl-start-server-refuses-under-native-image
+  ;; A native image can open a socket and write a port file, so a started
+  ;; server there LOOKS healthy while every eval fails — Clojure has no runtime
+  ;; compiler under native-image. The refusal must name the remedy, and must
+  ;; win even when a server is already reachable (that is the trap: reachable
+  ;; but unusable).
+  (with-redefs [ai.brainyard.agent.common.debug-agent/eval-capable? (constantly false)]
+    (let [refused (tool/invoke-tool :clj-nrepl$start-server)]
+      (is (false? (:running refused)))
+      (is (string? (:message refused)))
+      (is (str/includes? (:message refused) "native image"))
+      (is (str/includes? (:message refused) "BY_JAR=1")
+          "the refusal must tell the operator which runtime to switch to")))
+  (testing "the real runtime (a JVM test run) is of course eval-capable"
+    (is (true? (eval-capable?)))))
+
+(deftest add-classpath-registered-gated-and-defaults-to-project-src
+  (let [td (tool/get-tool-defs :id :clj-nrepl$add-classpath)]
+    (is (some? td) "clj-nrepl$add-classpath must be registered")
+    (is (tool/tool-visible? td :debug-agent))
+    (is (not (tool/tool-visible? td :coact-agent)) "gated to debug-*"))
+  (is (contains? (set (:tools (get-in (tool/get-tool-defs :id :debug-agent)
+                                      [:meta :agent-tools])))
+                 :clj-nrepl$add-classpath)
+      "and be bound on debug-agent"))
+
+(deftest add-classpath-makes-an-off-classpath-ns-requirable
+  ;; The end-to-end property: a namespace written into a directory that is NOT
+  ;; on the classpath is not requirable, and becomes requirable after the root
+  ;; is added. This is what lets debug-agent use `require … :reload` on project
+  ;; code instead of load-file-by-absolute-path only.
+  ;;
+  ;; Both the add and the require go through the agent's PINNED session on
+  ;; purpose: nREPL pushes a DynamicClassLoader per session, so a URL added in
+  ;; one session is not visible from another (nor from this test thread). The
+  ;; command adds to the pinned session precisely so the agent's own fences —
+  ;; which run in that same session — can see it.
+  (let [root (io/file (System/getProperty "java.io.tmpdir")
+                      (str "by-cp-test-" (System/nanoTime)))
+        nsd  (io/file root "labcp")
+        f    (io/file nsd "probe.clj")
+        agent (ag/setup-agent-by-id
+               :debug-agent
+               :agent-session {:user-id "test" :session-id "debug-cp"})
+        sid   (:nrepl-session-id (instance-config agent))
+        eval* (fn [code] (clj-nrepl/eval-string code :session sid :timeout-ms 15000))]
+    (try
+      (.mkdirs nsd)
+      (spit f "(ns labcp.probe)\n(defn answer [] :from-added-classpath)\n")
+      (is (string? sid) "precondition: the instance pinned a session")
+      (is (str/includes? (str (:error (eval* "(require 'labcp.probe)")))
+                         "FileNotFoundException")
+          "precondition: not requirable in that session before the root is added")
+      (let [r (binding [proto/*current-agent* agent]
+                (tool/invoke-tool :clj-nrepl$add-classpath {:paths [(.getPath root)]}))]
+        (is (nil? (:error r)) (str "add-classpath errored: " (:error r)))
+        (is (= 1 (count (:added r))))
+        (is (empty? (:skipped r)))
+        (is (= sid (:session r)) "must add to the agent's pinned session"))
+      (is (empty? (str (:error (eval* "(require 'labcp.probe)"))))
+          "requirable once the root is on that session's classpath")
+      (is (= ":from-added-classpath" (:result (eval* "(labcp.probe/answer)")))
+          "and the namespace really resolves from the newly added root")
+      (finally
+        (.close ^java.io.Closeable agent)
+        (.delete f) (.delete nsd) (.delete root)))))
+
+(deftest add-classpath-reports-a-non-directory-instead-of-adding-it
+  (let [f (io/file (System/getProperty "java.io.tmpdir")
+                   (str "by-cp-file-" (System/nanoTime) ".clj"))]
+    (try
+      (spit f "(ns nope)")
+      (let [r (tool/invoke-tool :clj-nrepl$add-classpath {:paths [(.getPath f)]})]
+        (is (empty? (:added r)))
+        (is (= 1 (count (:skipped r))))
+        (is (str/includes? (first (:skipped r)) "not a directory")))
+      (finally (.delete f)))))
 
 (deftest nrepl-stop-then-restart-cycle
   (let [stopped (tool/invoke-tool :clj-nrepl$stop-server)]
