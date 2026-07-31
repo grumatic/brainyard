@@ -553,24 +553,43 @@
 
   ;; --------------- GraalVM Native Build (agent-tui-app → 'by') ---------------
   version:ata
-  {:doc "Stamp `projects/agent-tui-app/resources/build-version.edn` from
-  `git describe --tags --always --dirty`. Read at namespace init by
-  `app-version` in main.clj, so AOT compile + native-image bake the
-  value into the artifact. Falls back to {:version \"dev\"} when git
-  is unavailable (clean tarball, no .git). Idempotent — runs as a
-  prereq of `compile:ata` and `uberjar:ata` so a fresh build always
-  reflects the current HEAD."
+  {:doc "Stamp `projects/agent-tui-app/resources/build-version.edn` with this
+  build's full git provenance: :version (`git describe --tags --always
+  --dirty`), :sha / :sha-short (the commit the artifact was built from),
+  :branch, :commit-time, :dirty? and :built-at. Read at namespace init by
+  `build-info` / `app-version` in main.clj, so AOT compile + native-image
+  bake the values into the artifact and `by --version` can name the exact
+  commit. Falls back to {:version \"dev\"} + \"unknown\" fields when git is
+  unavailable (clean tarball, no .git).
+
+  CONTRACT: :version stays the FIRST key and the map stays on ONE line —
+  bin/release-stage.sh awk-parses `:version \"…\"` out of this file.
+
+  Idempotent — runs as a prereq of `compile:ata` and `uberjar:ata` so a
+  fresh build always reflects the current HEAD."
    :requires ([clojure.string :as str]
               [clojure.java.io :as io])
-   :task (let [path "projects/agent-tui-app/resources/build-version.edn"
-               git  (shell {:continue true :out :string :err :string}
-                           "git" "describe" "--tags" "--always" "--dirty")
-               ver  (if (zero? (:exit git))
-                      (str/trim (:out git))
-                      "dev")]
+   :task (let [path  "projects/agent-tui-app/resources/build-version.edn"
+               g     (fn [& args]
+                       (let [r (apply shell {:continue true :out :string :err :string}
+                                      "git" args)]
+                         (when (zero? (:exit r)) (str/trim (:out r)))))
+               ver   (or (g "describe" "--tags" "--always" "--dirty") "dev")
+               sha   (g "rev-parse" "HEAD")
+               short (if sha (subs sha 0 (min 7 (count sha))) "unknown")
+               ;; array-map (7 entries, below the 8-entry promotion threshold)
+               ;; keeps :version first so the release-stage.sh parser holds.
+               stamp (array-map
+                      :version     ver
+                      :sha         (or sha "unknown")
+                      :sha-short   short
+                      :branch      (or (g "rev-parse" "--abbrev-ref" "HEAD") "unknown")
+                      :commit-time (or (g "show" "-s" "--format=%cI" "HEAD") "unknown")
+                      :dirty?      (boolean (seq (or (g "status" "--porcelain") "")))
+                      :built-at    (str (java.time.Instant/now)))]
            (io/make-parents path)
-           (spit path (str (pr-str {:version ver}) "\n"))
-           (println (str "Stamped " path " → " ver)))}
+           (spit path (str (pr-str stamp) "\n"))
+           (println (str "Stamped " path " → " ver " (" short ")")))}
 
   compile:ata
   {:doc "AOT compile agent-tui-app main namespace. Sets

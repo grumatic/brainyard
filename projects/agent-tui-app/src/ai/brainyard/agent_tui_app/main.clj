@@ -52,21 +52,45 @@
 ;; Shared option definitions
 ;; ============================================================================
 
+(def build-info
+  "Full git provenance for this build, baked in at build time by
+   `bb version:ata` (see bb.edn), which writes `resources/build-version.edn`
+   before `compile:ata` runs — so AOT compile + native-image carry it into
+   the shipped artifact and any binary can be traced back to a commit.
+
+   Keys: `:version` `:sha` `:sha-short` `:branch` `:commit-time` `:dirty?`
+   `:built-at`.  Falls back to `{:version \"dev\"}` when the resource is
+   missing — e.g. running from a fresh REPL before any build, or from a
+   clean source tarball with no `.git/`."
+  (or (some-> (io/resource "build-version.edn")
+              slurp
+              edn/read-string)
+      {:version "dev"}))
+
 (def app-version
   "Single source of truth for the build's version string.  Surfaced both in
    the cli-matic config (`:version`) and in the daemon's status snapshot
    (chrome row of the status pane).
 
-   Value is baked at build time from `git describe --tags --always --dirty`
-   by `bb version:ata` (see bb.edn), which writes `resources/build-version.edn`
-   before `compile:ata` runs. Falls back to `\"dev\"` when the resource is
-   missing — e.g. running from a fresh REPL before any build, or from a
-   clean source tarball with no `.git/`."
-  (or (some-> (io/resource "build-version.edn")
-              slurp
-              edn/read-string
-              :version)
-      "dev"))
+   Value is baked at build time from `git describe --tags --always --dirty`;
+   see `build-info` for the full provenance map (SHA, branch, build time)."
+  (or (:version build-info) "dev"))
+
+(def app-version-long
+  "`app-version` plus the git SHA build stamp, e.g.
+   `\"v0.5.2 (f6d60fc, main, 2026-07-31T18:07:02+09:00)\"`.  Printed by
+   `by --version` so a shipped uberjar/native binary always names the exact
+   commit it was built from.  Degrades to plain `app-version` when the build
+   had no git metadata."
+  (let [{:keys [sha-short branch commit-time dirty?]} build-info
+        known? (fn [s] (and (string? s) (seq s) (not= "unknown" s)))
+        parts  (cond-> []
+                 (known? sha-short)   (conj (str sha-short (when dirty? "-dirty")))
+                 (known? branch)      (conj branch)
+                 (known? commit-time) (conj commit-time))]
+    (if (seq parts)
+      (str app-version " (" (str/join ", " parts) ")")
+      app-version)))
 
 (defn- app-log-path
   "Mulog file-publisher path. Delegates to tui-log/default-log-path
@@ -2676,7 +2700,7 @@
   ;; subcommand dispatch so it prints just the version (no `[dotenv]` noise) and
   ;; never gets rerouted into the default `run` subcommand.
   (if (contains? version-flags (first args))
-    (println (str "by " app-version))
+    (println (str "by " app-version-long))
     (-dispatch args)))
 
 (defn- -dispatch [args]
