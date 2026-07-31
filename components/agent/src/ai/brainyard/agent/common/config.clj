@@ -198,18 +198,17 @@
 ;; Base directory resolution
 ;; ============================================================================
 
-(defn resolve-dirs
-  "Resolve the dirs map, honoring an optional :project-dir override (for tests).
-   When override is supplied, returns a synthetic dirs map rooted at it; the
-   `.brainyard/` subdir is ensured."
-  ([]              (resolve-dirs nil))
-  ([project-dir]
-   (if project-dir
-     (let [d {:user-dir    (System/getProperty "user.home")
-              :project-dir project-dir
-              :working-dir project-dir}]
-       (core-config/ensure-config-dirs! d))
-     (core-config/init-dirs!))))
+(def ^{:arglists '([] [project-dir])}
+  resolve-dirs
+  "Resolve the dirs map, honoring an optional :project-dir override (for
+   tests). When an override is supplied, returns a synthetic dirs map rooted
+   at it; the `.brainyard/` subdir is ensured either way.
+
+   Var-capture delegate to the canonical `core-config/init-dirs!` (arity-0 /
+   arity-1) — deduplicated from the byte-identical copy that used to live in
+   the sibling namespace. Capturing the VAR (not the fn value) keeps
+   `with-redefs` on the canonical var effective here."
+  #'core-config/init-dirs!)
 
 (defn config-agent-base-dir
   "Resolve the .brainyard/agents/config-agent/ owner directory.

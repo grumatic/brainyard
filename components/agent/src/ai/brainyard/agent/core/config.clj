@@ -828,9 +828,23 @@
   dirs)
 
 (defn init-dirs!
-  "Resolve directories and ensure .brainyard/ dirs exist."
-  []
-  (ensure-config-dirs! (resolve-dirs)))
+  "Resolve directories and ensure .brainyard/ dirs exist.
+
+   Arity-0 resolves normally (working-dir -> git-root -> project-dir).
+   Arity-1 honors an explicit `project-dir` override (used by tests and by
+   the config-agent / init-agent helpers): returns a synthetic dirs map
+   rooted at it. A nil override behaves exactly like arity-0. Either way
+   the `.brainyard/` subdirs are ensured.
+
+   This is the single canonical override-aware resolver; `common.config`
+   and `common.init` both delegate to it as `resolve-dirs`."
+  ([] (ensure-config-dirs! (resolve-dirs)))
+  ([project-dir]
+   (if project-dir
+     (ensure-config-dirs! {:user-dir    (System/getProperty "user.home")
+                           :project-dir project-dir
+                           :working-dir project-dir})
+     (init-dirs!))))
 
 ;; ============================================================================
 ;; Config File Helpers (.brainyard/ reads & writes)
