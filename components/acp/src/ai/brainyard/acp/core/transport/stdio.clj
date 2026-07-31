@@ -111,6 +111,25 @@
     t))
 
 ;; =============================================================================
+;; Environment normalization
+;; =============================================================================
+
+(defn- normalize-env-key
+  "Coerce an env-var key to the plain string form the OS expects.
+
+   Callers frequently build `:env` maps with keyword (or symbol) keys —
+   `{:ANTHROPIC_MODEL \"claude-opus-5\"}`. A bare `(str :ANTHROPIC_MODEL)`
+   yields \":ANTHROPIC_MODEL\" (leading colon), so the subprocess never sees
+   the intended name. Keywords/symbols therefore contribute only their
+   `name`; strings pass through trimmed."
+  [k]
+  (let [s (cond
+            (keyword? k) (name k)
+            (symbol? k)  (name k)
+            :else        (str k))]
+    (.trim ^String s)))
+
+;; =============================================================================
 ;; StdioTransport
 ;; =============================================================================
 
@@ -136,8 +155,10 @@
         (.directory pb (io/file working-dir)))
       (when env
         (let [env-map (.environment pb)]
-          (doseq [[k v] env]
-            (.put env-map (str k) (str v)))))
+          (doseq [[k v] env
+                  :let [ek (normalize-env-key k)]
+                  :when (and (seq ek) (some? v))]
+            (.put env-map ek (str v)))))
       (let [proc (.start pb)
             stdin (OutputStreamWriter. (.getOutputStream proc))
             stdout (BufferedReader. (InputStreamReader. (.getInputStream proc)))
