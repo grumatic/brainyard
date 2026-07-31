@@ -909,7 +909,10 @@
            (run 'reflect:check)      ; new reflection sites are native-image risks
            (run 'uberjar:ata)
            (run 'native:ata)
-           (run 'smoke:ata)          ; exercise what only breaks in an image
+           ;; bind args off: build:ata's own *command-line-args* must not
+           ;; be mistaken for a binary path by smoke:ata.
+           (binding [*command-line-args* nil]
+             (run 'smoke:ata))       ; exercise what only breaks in an image
            (println "Build complete! Native binary at: projects/agent-tui-app/target/by"))}
 
   smoke:ata
@@ -923,8 +926,13 @@
   Added after v0.5.0 shipped an acp-agent that was listed in `by agents` and
   fatal on first use. Both of its defects were invisible to `bb test` (they
   were native-image-only) and to the previous smoke checks (--help / agents /
-  sessions list never spawn a subprocess). Exit 1 fails the build."
-   :task (shell "bin/smoke-native.sh")}
+  sessions list never spawn a subprocess). Exit 1 fails the build.
+
+  Takes an optional path to the binary under test:
+    bb smoke:ata                        ; default: projects/agent-tui-app/target/by
+    bb smoke:ata ~/.local/bin/by-bin    ; smoke the installed native binary
+    bb smoke:ata ~/.local/bin/by        ; smoke the wrapper"
+   :task (apply shell "bin/smoke-native.sh" *command-line-args*)}
 
   reflect:check
   {:doc "Ratchet on reflective Java interop in first-party code.
