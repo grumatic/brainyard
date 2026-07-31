@@ -43,6 +43,10 @@
     (let [s (render-with-config {:max-iterations 42
                                  :permission-mode :auto-approve
                                  :clj-backend :nrepl
+                                 ;; :nrepl is only effective with the channel
+                                 ;; enabled — resolve-clj-backend demotes it to
+                                 ;; :sandbox otherwise (see the next test).
+                                 :nrepl-enabled? true
                                  :exec-backend :local}
                                 :restricted)]
       (is (str/includes? s "### Runtime"))
@@ -55,6 +59,16 @@
         (is (< (str/index-of s "### LLM")
                (str/index-of s "### Runtime")
                (str/index-of s "### Session")))))))
+
+(deftest runtime-code-eval-reports-effective-backend-not-requested
+  ;; The line must describe what will actually run. `:clj-backend :nrepl`
+  ;; without `:nrepl-enabled?` resolves to the SCI sandbox, so reporting
+  ;; "nrepl backend" would tell the agent it is in the live JVM when its
+  ;; fences are being interpreted by SCI.
+  (let [s (render-with-config {:clj-backend :nrepl :nrepl-enabled? false}
+                              :restricted)]
+    (is (str/includes? s "- Code eval: sandbox backend, restricted interop"))
+    (is (not (str/includes? s "nrepl backend")))))
 
 (deftest runtime-interop-reflects-resolved-value
   (testing ":sandbox-interop :auto resolving to :full is what gets rendered"

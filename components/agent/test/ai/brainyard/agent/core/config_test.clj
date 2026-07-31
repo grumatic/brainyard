@@ -774,6 +774,46 @@
   (is (cfg/subdir-scope-allowed? "memory" :user)))
 
 ;; ============================================================================
+;; resolve-clj-backend — :nrepl requires the nREPL channel to be enabled
+;; ============================================================================
+
+(deftest resolve-clj-backend-demotes-nrepl-without-the-gate
+  ;; The failure this guards: `:clj-backend :nrepl` set at the GLOBAL layer.
+  ;; No agent but debug-agent overrides :clj-backend, so that one line would
+  ;; put every coact-derived agent on the full-trust backend — no SCI
+  ;; isolation, and a hard "server is not running" per fence when nothing
+  ;; started one (the eval path has no sandbox fallback).
+  (testing ":nrepl with the gate off demotes to :sandbox"
+    (is (= :sandbox (cfg/resolve-clj-backend
+                     (fake-agent {:clj-backend :nrepl :nrepl-enabled? false}))))
+    (testing "…and an unset gate is not an opt-in either"
+      (is (= :sandbox (cfg/resolve-clj-backend
+                       (fake-agent {:clj-backend :nrepl}))))))
+  (testing ":nrepl is honored when the same agent enables the channel
+            (this is debug-agent's shape: both keys on its own layer)"
+    (is (= :nrepl (cfg/resolve-clj-backend
+                   (fake-agent {:clj-backend :nrepl :nrepl-enabled? true})))))
+  (testing ":sandbox and unknown values resolve to :sandbox"
+    (is (= :sandbox (cfg/resolve-clj-backend (fake-agent {:clj-backend :sandbox}))))
+    (is (= :sandbox (cfg/resolve-clj-backend
+                     (fake-agent {:clj-backend :bogus :nrepl-enabled? true}))))
+    (is (= :sandbox (cfg/resolve-clj-backend (fake-agent {}))))))
+
+(deftest resolve-clj-backend-per-agent-gate-beats-global-backend
+  ;; Precedence check with the real chain rather than redefs: a global
+  ;; :clj-backend :nrepl does NOT reach an agent, but an agent carrying both
+  ;; keys keeps :nrepl.
+  (seed-project-config! {:agent {:config {:clj-backend :nrepl}}})
+  (cfg/invalidate-global-config!)
+  (let [orig cfg/schema-env-value]
+    (with-redefs [cfg/schema-env-value
+                  (fn [k] (if (= k :nrepl-enabled?) cfg/env-unset (orig k)))]
+      (is (= :sandbox (cfg/resolve-clj-backend (fake-agent {})))
+          "global :nrepl alone must not switch an ordinary agent")
+      (is (= :nrepl (cfg/resolve-clj-backend (fake-agent {:nrepl-enabled? true})))
+          "an agent that enables the channel keeps the global :nrepl route"))))
+
+;; ============================================================================
 ;; resolve-sandbox-interop
 ;; ============================================================================
 

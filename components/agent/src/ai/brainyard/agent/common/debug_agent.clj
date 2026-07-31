@@ -9,12 +9,18 @@
    clj-nrepl. Sibling to explore-agent and exec-agent; CoAct-derived, so
    the BT loop, hooks, and channel discipline come for free.
 
+   Per-instance config:
+   - `:clj-backend :nrepl` (every clojure fence routes to the live
+     runtime) and `:nrepl-enabled?` come from the defagent's
+     `:config-extra`, so they are set while the record is built.
+     `:clj-backend` is re-asserted by the created-hook as a backstop.
+
    Per-instance lifecycle:
-   - On :agent.instance/created — if the in-process nREPL server is up,
-     open a server-issued session and pin it on this instance's
-     per-agent config (`:nrepl-session-id`). Also write
-     `:clj-backend :nrepl` so every clojure fence routes to the live
-     runtime. CoAct's run-clj-nrepl-block reads both from the agent
+   - On :agent.instance/created — ENSURE the in-process nREPL server is
+     up (starting it if it isn't — same idempotent path as
+     `clj-nrepl$start-server`), then open a server-issued session and pin
+     it on this instance's per-agent config (`:nrepl-session-id`).
+     CoAct's run-clj-nrepl-block reads backend + session from the agent
      config; there is no per-fence override (the fence accepts only the
      language token).
    - On :agent.instance/closed — close the session.
@@ -29,10 +35,18 @@
    edit-agent. For ISOLATED evaluation, the SCI sandbox backend is the
    tool, not this agent.
 
-   Operator pre-requisite — enable the server, in this precedence:
+   Server pre-requisite — this agent is USELESS without a live channel, so
+   creating an instance IS the opt-in: the created-hook starts the loopback
+   server itself when one isn't already up. Nothing is bypassed — the agent
+   already owns `clj-nrepl$start-server` (gated to `debug-*`), which starts
+   unconditionally; the hook just takes that same path deterministically
+   instead of depending on the LLM to run the lifecycle step before its first
+   fence. Pre-enabling still works and makes the hook a no-op:
    - .brainyard/config.edn (durable): `:agent {:config {:nrepl-enabled? true}}`.
    - BY_NREPL_ENABLED env var (transient env-fallback of the same key),
-     or the `clj-nrepl$start-server` command on demand."
+     or the `clj-nrepl$start-server` command on demand.
+   Bootstrap enablement (`:nrepl-enabled?`) still governs whether NON-debug
+   agents get a live channel — the hook's start is scoped to debug-agent."
   (:require [ai.brainyard.agent.core.tool :refer [defagent defcommand]]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.hooks :as hooks]
@@ -42,47 +56,108 @@
             ;; whenever debug-agent is on the classpath — the defagent's
             ;; :agent-tools vector references it.
             [ai.brainyard.agent.common.code-eval]
+            [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.clj-nrepl.interface :as clj-nrepl]
             [ai.brainyard.mulog.interface :as mulog]))
 
 ;; ============================================================================
 ;; nREPL server lifecycle — start / stop / status (debug-agent only)
 ;;
-;; The embedded loopback nREPL server is normally started at bootstrap via
-;; BY_NREPL_ENABLED=true. These commands let the debug-agent manage it on
-;; demand without a process restart. nREPL is full-trust: reaching the server
+;; The embedded loopback nREPL server is started either at bootstrap via
+;; BY_NREPL_ENABLED=true or — for this agent — by its own instance-created
+;; hook (`ensure-server!` below). These commands let the debug-agent manage it
+;; on demand without a process restart: status/restart, and the recovery path
+;; when the automatic start failed. nREPL is full-trust: reaching the server
 ;; gives full eval (the only eval-path check is the deny-list); for isolation
 ;; use the SCI sandbox backend. Gated to debug-* via :tool-use-control AND
 ;; bound on debug-agent's :agent-tools.
 ;; ============================================================================
 
+(defn- ensure-server!
+  "Idempotent loopback nREPL start, gated on `:nrepl-enabled?`. Returns
+   `{:port :already-running}`, or `{:disabled? true :reason …}` when the gate
+   is off — in which case NO start is attempted.
+
+   The SINGLE start path — shared by `clj-nrepl$start-server` and the
+   instance-created hook, so the agent's implicit start takes exactly the path
+   the tool takes, gate included. `port` nil falls back to the configured
+   `:nrepl-port` (BY_NREPL_PORT / config.edn), then 0 = ephemeral — matching
+   what the base's bootstrap start would have bound.
+
+   The gate is read through the `:exec/nrepl` feature rather than a raw
+   `get-config`, so an unmet requirement (`:exec/code-channel`) also resolves
+   off, and `off-reason` can say WHY. debug-agent ships
+   `:config-extra {:nrepl-enabled? true}`, so its instances resolve on from
+   the per-agent layer; `BY_NREPL_ENABLED=false` still outranks that (env is
+   the top of the precedence chain) and remains the operator kill-switch.
+   Resolution needs the agent — a nil `agent` sees only env/global/default,
+   which is the correct answer for a caller outside any agent.
+
+   An already-running server short-circuits BEFORE the gate: the gate governs
+   starting, and reporting \"disabled\" while a live server is reachable would
+   be a lie.
+
+   `start-server!` THROWS when a server is already running, so a concurrent
+   starter losing the race re-checks `running?` and reports the winner's port
+   rather than surfacing a spurious failure."
+  [agent port]
+  (cond
+    (clj-nrepl/running?)
+    {:port (clj-nrepl/server-port) :already-running true}
+
+    (not (feature/on? agent :exec/nrepl))
+    {:disabled? true
+     :reason (or (feature/off-reason agent :exec/nrepl) "unavailable")}
+
+    :else
+    (do
+      (clj-nrepl/cleanup-stale-ports!)
+      (try
+        {:port (:port (clj-nrepl/start-server!
+                       :bind "127.0.0.1"
+                       :port (or port (config/get-config agent :nrepl-port) 0)
+                       :port-file (clj-nrepl/instance-port-file "by")))
+         :already-running false}
+        (catch Throwable t
+          (if (clj-nrepl/running?)
+            {:port (clj-nrepl/server-port) :already-running true}
+            (throw t)))))))
+
 (defcommand clj-nrepl$start-server
   "Start the embedded loopback-only nREPL server (idempotent — a no-op when one
-   is already running). Writes a per-instance port file
+   is already running; debug-agent's created-hook has usually started it for you
+   already). Requires the :nrepl-enabled? gate — returns :running false with a
+   :message when it is off. Writes a per-instance port file
    (~/.brainyard/nrepl-ports/by-<pid>.port) so external CIDER tooling can attach
    to the SAME live image. nREPL is full-trust: reaching the server gives full
    eval (the only eval-path check is the deny-list); isolation is the SCI
    sandbox backend's job."
   (fn [{:keys [port]}]
-    (let [already? (clj-nrepl/running?)
-          srv-port (if already?
-                     (clj-nrepl/server-port)
-                     (do (clj-nrepl/cleanup-stale-ports!)
-                         (:port (clj-nrepl/start-server!
-                                 :port (or port 0)
-                                 :port-file (clj-nrepl/instance-port-file "by")))))]
-      {:running true
-       :port srv-port
-       :port-file (str (clj-nrepl/instance-port-file "by"))
-       :already-running already?}))
+    (let [{:keys [port already-running disabled? reason]}
+          (ensure-server! proto/*current-agent* port)]
+      (if disabled?
+        {:running false
+         :port nil
+         :port-file (str (clj-nrepl/instance-port-file "by"))
+         :already-running false
+         :message (str "nREPL server not started — it is disabled (" reason "). "
+                       "Enable it with BY_NREPL_ENABLED=true or "
+                       ":agent {:config {:nrepl-enabled? true}} in "
+                       ".brainyard/config.edn.")}
+        {:running true
+         :port port
+         :port-file (str (clj-nrepl/instance-port-file "by"))
+         :already-running already-running})))
   :input-schema  [:map
                   [:port {:optional true}
                    [:int {:desc "Fixed loopback port to bind. Default 0 = ephemeral."}]]]
   :output-schema [:map
-                  [:running [:boolean {:desc "True once the server is up."}]]
-                  [:port [:int {:desc "Bound loopback port."}]]
+                  [:running [:boolean {:desc "True once the server is up; false when the :nrepl-enabled? gate blocked the start."}]]
+                  [:port [:any {:desc "Bound loopback port (int), or nil when the server was not started."}]]
                   [:port-file [:string {:desc "Per-instance port file path for external attach."}]]
-                  [:already-running [:boolean {:desc "True when a server was already running (start was a no-op)."}]]]
+                  [:already-running [:boolean {:desc "True when a server was already running (start was a no-op)."}]]
+                  [:message {:optional true} [:string {:desc "Present when the start was refused — why, and how to enable."}]]]
   :tool-use-control {:allow ["debug-*"]})
 
 (defcommand clj-nrepl$stop-server
@@ -142,13 +217,41 @@
     (swap! smi assoc-in [:config k] v)))
 
 (defn- on-instance-created
-  "Pin a server-issued nREPL session id + the :clj-backend route on the
-   new debug-agent instance. When the server isn't running, the agent
-   still starts — first code-eval call will surface the gate error so
-   the LLM can report it."
+  "Ensure the live channel exists, then pin a server-issued nREPL session id
+   + the :clj-backend route on the new debug-agent instance.
+
+   Every ```clojure fence from this agent routes to :nrepl, so a missing
+   server makes the instance inert. Rather than leaving the fix to the LLM
+   remembering the `clj-nrepl$status` → `clj-nrepl$start-server` lifecycle
+   step before its first fence (a documented failure mode), start it here.
+   A start failure is non-fatal: the agent still comes up and the first
+   code-eval surfaces the gate error so the LLM can report it."
   [{:keys [agent]}]
   (when (debug-agent? agent)
+    ;; Backstop, not the primary write — the defagent already declares
+    ;; :clj-backend :nrepl in :config-extra, which lands in this same slot
+    ;; earlier (during setup-agent, before this hook fires). Re-asserting it
+    ;; here costs one swap! and closes the one hole in that route:
+    ;; `setup-agent-by-id` merges caller options over defagent meta SHALLOWLY,
+    ;; so a caller passing its own :config-extra map replaces the author's
+    ;; wholesale — and a debug-agent silently demoted to the SCI sandbox looks
+    ;; like it is working while answering from an image it cannot see. This
+    ;; write is last and unconditional, so it cannot be merged away.
     (write-config! agent :clj-backend :nrepl)
+    (when-not (clj-nrepl/running?)
+      (try
+        (let [{:keys [port disabled? reason]} (ensure-server! agent nil)]
+          (if disabled?
+            (mulog/warn ::debug-agent-nrepl-disabled
+                        :agent-id (proto/agent-id agent)
+                        :reason   reason)
+            (mulog/info ::debug-agent-server-autostarted
+                        :agent-id (proto/agent-id agent)
+                        :port     port)))
+        (catch Throwable t
+          (mulog/warn ::debug-agent-server-autostart-failed
+                      :agent-id (proto/agent-id agent)
+                      :error    (.getMessage t)))))
     (if (clj-nrepl/running?)
       (try
         (let [sid (clj-nrepl/new-session)]
@@ -255,6 +358,12 @@
 ;; general nREPL knowledge, so they live here, not in the shared guide.
 (def ^:private debug-lifecycle-preamble
   "## nREPL lifecycle tools (start / stop / status) — TOOL channel ONLY
+
+   The server is normally ALREADY RUNNING: it is started for you when this
+   agent instance is created, so you can go straight to a ```clojure block —
+   no status/start dance needed first. The tools below are the recovery path
+   for the rare case where that automatic start failed (a ```clojure block
+   comes back with \"clj-nrepl server is not running\").
 
    `clj-nrepl$start-server`, `clj-nrepl$stop-server`, and `clj-nrepl$status`
    MUST be invoked through the TOOL channel (a tool-call), NEVER from inside
@@ -502,6 +611,25 @@ lean into it (probe → bind a var → reuse it in the next block).
   ;; through run-coact-derived. See explore-agent for the pattern.
   :bt-factory (fn [{:keys [max-iterations]}]
                 (coact/coact-behavior-tree max-iterations))
+  ;; The live channel IS this agent — every ```clojure fence routes to :nrepl.
+  ;; Both keys are schema keys, so `setup-agent` splits them out of
+  ;; :config-extra into the per-agent override layer (st-memory-init :config)
+  ;; while the record is being built — i.e. BEFORE the instance-created hook
+  ;; runs, so nothing can observe a half-configured instance.
+  ;;
+  ;;   :nrepl-enabled? — the instance's own opt-in, so no operator pre-enable
+  ;;     step is needed. `ensure-server!`'s :exec/nrepl gate reads exactly this,
+  ;;     which is what makes the autostart gated rather than unconditional.
+  ;;     Precedence keeps the operator in charge: BY_NREPL_ENABLED=false (env,
+  ;;     the top layer) still wins and blocks the start; a persisted
+  ;;     `.brainyard/config.edn` false does NOT, since it sits below the
+  ;;     per-agent layer — that key governs the base's bootstrap start
+  ;;     (whether NON-debug agents get a live channel).
+  ;;   :clj-backend — the code-eval route. Declared here so it is correct from
+  ;;     construction and discoverable in the registry meta; the hook re-asserts
+  ;;     it afterwards as a backstop (see on-instance-created for the
+  ;;     shallow-merge hole that backstop covers).
+  :config-extra {:nrepl-enabled? true :clj-backend :nrepl}
   :tool-use-control {}
   :input-schema  [:map
                   [:question [:string {:desc "What to investigate: a bug/stack-trace/wedged-component, OR a question about how brainyard works (config, tools, wiring, where a function lives) that should be answered by reading the live image."}]]

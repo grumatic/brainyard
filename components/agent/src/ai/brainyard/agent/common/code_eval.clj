@@ -68,7 +68,7 @@
     ;; agent (e.g. debug-agent) hits the live runtime instead of erroring with
     ;; a sandbox-only pointer. Sandbox agents (schema default) are unchanged.
     (let [backend (or backend
-                      (config/get-config proto/*current-agent* :clj-backend)
+                      (config/resolve-clj-backend proto/*current-agent*)
                       :sandbox)]
       (mulog/info ::code-eval
                   :backend  backend

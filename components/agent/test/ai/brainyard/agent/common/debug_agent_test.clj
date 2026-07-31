@@ -16,6 +16,8 @@
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.core.usage :as usage]
             [ai.brainyard.agent.core.agent :as ag]
+            [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.protocol :as tp]
             [ai.brainyard.agent.common.debug-agent :as debug-agent] ;; trigger registration
@@ -49,6 +51,18 @@
       (try (clj-nrepl/stop-server!) (catch Exception _)))))
 
 (use-fixtures :each with-server)
+
+(defn- with-nrepl-env-unset
+  "Run `f` with BY_NREPL_ENABLED neutralized so `:nrepl-enabled?` resolves from
+   the config layers alone. The env layer outranks everything (that is the
+   point of the operator kill-switch), so a developer running these tests with
+   BY_NREPL_ENABLED set would otherwise flip the gate assertions. Only that one
+   key is redirected — every other key keeps its real env resolution."
+  [f]
+  (let [orig config/schema-env-value]
+    (with-redefs [config/schema-env-value
+                  (fn [k] (if (= k :nrepl-enabled?) config/env-unset (orig k)))]
+      (f))))
 
 ;; ============================================================================
 ;; Registration
@@ -156,6 +170,78 @@
       (finally
         (.close ^java.io.Closeable agent)))))
 
+(deftest debug-agent-carries-its-own-nrepl-opt-in
+  ;; The agent supplies :nrepl-enabled? on the per-agent config layer, which is
+  ;; what gates its autostart — so no operator pre-enable step is needed, and
+  ;; the start is still gated rather than unconditional.
+  (let [d (tool/get-tool-defs :id :debug-agent)]
+    (is (true? (get-in d [:meta :config-extra :nrepl-enabled?]))
+        "debug-agent must ship :config-extra {:nrepl-enabled? true}")
+    (is (= :nrepl (get-in d [:meta :config-extra :clj-backend]))
+        "…and declare the :nrepl code-eval route there too"))
+  (with-nrepl-env-unset
+    (fn []
+      (let [agent (ag/setup-agent-by-id
+                   :debug-agent
+                   :agent-session {:user-id "test" :session-id "debug-gate"})]
+        (try
+          (is (true? (config/get-config agent :nrepl-enabled?))
+              "instance resolves the gate on")
+          ;; Assert the LAYER, not the value: a project .brainyard/config.edn
+          ;; may itself set :nrepl-enabled? true, which would mask a missing
+          ;; :config-extra and make a value-only assertion pass for the wrong
+          ;; reason. :agent means it came from the instance's own override.
+          (is (= :agent (config/config-source agent :nrepl-enabled?))
+              "…and it must come from the per-agent layer (its :config-extra)")
+          ;; The pair matters: resolve-clj-backend demotes :nrepl to :sandbox
+          ;; for any agent without the gate, so debug-agent shipping both keys
+          ;; together is what keeps it on the live backend.
+          (is (= :nrepl (config/resolve-clj-backend agent))
+              "debug-agent must survive the :clj-backend demotion guard")
+          (finally
+            (.close ^java.io.Closeable agent)))))))
+
+(deftest clj-backend-survives-caller-config-extra-clobber
+  ;; Why the created-hook still re-asserts :clj-backend even though the defagent
+  ;; declares it: `setup-agent-by-id` merges caller options over defagent meta
+  ;; SHALLOWLY, so a caller passing ANY :config-extra replaces the author's map
+  ;; wholesale — silently dropping the :nrepl route. A debug-agent demoted to
+  ;; the SCI sandbox does not error; it answers confidently from an image it
+  ;; cannot see. The hook's write runs last and unconditionally, so it can't be
+  ;; merged away.
+  (let [agent (ag/setup-agent-by-id
+               :debug-agent
+               :agent-session {:user-id "test" :session-id "debug-clobber"}
+               ;; a caller map that does NOT mention :clj-backend
+               :config-extra {:max-refinements 0})]
+    (try
+      (is (= :nrepl (:clj-backend (instance-config agent)))
+          "hook backstop must restore the route the shallow merge dropped")
+      (is (= :nrepl (agent-clj-backend agent))
+          "…and CoAct's block router must see it")
+      (finally
+        (.close ^java.io.Closeable agent)))))
+
+(deftest instance-created-autostarts-server-when-down
+  ;; debug-agent is inert without a live channel — every ```clojure fence
+  ;; routes to :nrepl. The created-hook must ENSURE the server rather than
+  ;; leaving it to the LLM remembering the clj-nrepl$start-server lifecycle
+  ;; step before its first fence.
+  (tool/invoke-tool :clj-nrepl$stop-server)
+  (is (false? (clj-nrepl/running?)) "precondition: no server running")
+  (with-nrepl-env-unset
+    (fn []
+      (let [agent (ag/setup-agent-by-id
+                   :debug-agent
+                   :agent-session {:user-id "test" :session-id "debug-autostart"})]
+        (try
+          (is (true? (clj-nrepl/running?))
+              "created-hook should have started the loopback server")
+          (is (string? (:nrepl-session-id (instance-config agent)))
+              "and pinned a server-issued session on the freshly started server")
+          (finally
+            (.close ^java.io.Closeable agent)))))))
+
 (deftest instance-closed-closes-session
   (let [agent (ag/setup-agent-by-id
                :debug-agent
@@ -231,18 +317,64 @@
     (is (string? (:port-file r)))
     (is (not (contains? r :grant-active)) "no grant seeding anymore")))
 
+(deftest nrepl-start-server-honors-the-enabled-gate
+  ;; :nrepl-enabled? governs STARTING: gate off ⇒ the command refuses and
+  ;; explains, and the created-hook does not autostart either. Never bring up a
+  ;; full-trust eval channel the config says is off.
+  ;;
+  ;; The gate is driven from the PER-AGENT layer (caller :config-extra beats the
+  ;; defagent's) rather than by leaning on the schema default — a project
+  ;; .brainyard/config.edn that sets :nrepl-enabled? true would otherwise
+  ;; legitimately turn the gate on and fail this test for environment reasons.
+  (tool/invoke-tool :clj-nrepl$stop-server)
+  (with-nrepl-env-unset
+    (fn []
+      (let [agent (ag/setup-agent-by-id
+                   :debug-agent
+                   :agent-session {:user-id "test" :session-id "debug-gate-off"}
+                   :config-extra {:nrepl-enabled? false})]
+        (try
+          (is (false? (config/get-config agent :nrepl-enabled?))
+              "precondition: the instance resolves the gate off")
+          (is (false? (clj-nrepl/running?))
+              "gate off ⇒ the created-hook must NOT autostart a server")
+          (let [refused (binding [proto/*current-agent* agent]
+                          (tool/invoke-tool :clj-nrepl$start-server))]
+            (is (false? (:running refused)))
+            (is (nil? (:port refused)))
+            (is (string? (:message refused)))
+            (is (str/includes? (:message refused) "nrepl-enabled?")
+                "the refusal must name the key that has to change")
+            (is (false? (clj-nrepl/running?))
+                "the gate must block the actual start, not just the report"))
+          (finally
+            (.close ^java.io.Closeable agent)))))))
+
 (deftest nrepl-stop-then-restart-cycle
   (let [stopped (tool/invoke-tool :clj-nrepl$stop-server)]
     (is (true? (:stopped stopped)))
     (is (integer? (:was-port stopped)))
     (is (false? (:running (tool/invoke-tool :clj-nrepl$status))))
-    (let [started (tool/invoke-tool :clj-nrepl$start-server)]
-      (try
-        (is (true? (:running started)))
-        (is (false? (:already-running started)))
-        (is (integer? (:port started)))
-        (is (true? (:running (tool/invoke-tool :clj-nrepl$status))))
-        (finally
-          (tool/invoke-tool :clj-nrepl$stop-server)))))
+    ;; The restart runs under a debug-agent, whose :config-extra supplies the
+    ;; :nrepl-enabled? opt-in the command now requires. (Creating the instance
+    ;; already autostarts a server, so stop it again first to exercise the
+    ;; tool's own start path.)
+    (with-nrepl-env-unset
+      (fn []
+        (let [agent (ag/setup-agent-by-id
+                     :debug-agent
+                     :agent-session {:user-id "test" :session-id "debug-restart"})]
+          (try
+            (tool/invoke-tool :clj-nrepl$stop-server)
+            (is (false? (clj-nrepl/running?)))
+            (let [started (binding [proto/*current-agent* agent]
+                            (tool/invoke-tool :clj-nrepl$start-server))]
+              (is (true? (:running started)))
+              (is (false? (:already-running started)))
+              (is (integer? (:port started)))
+              (is (true? (:running (tool/invoke-tool :clj-nrepl$status)))))
+            (finally
+              (.close ^java.io.Closeable agent)
+              (tool/invoke-tool :clj-nrepl$stop-server)))))))
   (let [noop (tool/invoke-tool :clj-nrepl$stop-server)]
     (is (false? (:stopped noop)))))

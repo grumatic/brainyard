@@ -129,7 +129,9 @@
   (let [max-iter   (config/get-config agent :max-iterations)
         ;; resolve :auto → :auto-approve|:ask-each-time so the line reflects reality
         perm-mode  (config/resolve-permission-mode agent)
-        clj-be     (config/get-config agent :clj-backend)
+        ;; resolve so the line reports the backend that will actually run —
+        ;; :nrepl demotes to :sandbox when the nREPL channel is off
+        clj-be     (config/resolve-clj-backend agent)
         ;; resolve :auto → :restricted|:full so the line reflects reality
         interop    (config/resolve-sandbox-interop agent)
         exec-be    (config/get-config agent :exec-backend)]

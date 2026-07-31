@@ -176,6 +176,24 @@ durable form (`.brainyard/config.edn`) and an env-var fallback:
 
 (There is no grant key any more — reaching the server is full access.)
 
+**Exception — debug-agent supplies its own opt-in.** These keys govern the
+*bootstrap* start, i.e. whether a live channel exists for everything else.
+A **debug-agent** instance ships `:config-extra {:nrepl-enabled? true}`, which
+lands on the per-agent config layer, so its `:agent.instance/created` hook
+starts the loopback server itself when one isn't already up (same gated,
+idempotent path as `clj-nrepl$start-server` below) — that agent routes every
+` ```clojure ` fence to `:nrepl` and is inert without it. `:nrepl-port` is
+honored either way.
+
+The start is still **gated**, not unconditional: `clj-nrepl$start-server` and
+the hook both resolve `:nrepl-enabled?` (through the `:exec/nrepl` feature, so
+an unmet `:exec/code-channel` also blocks it) and refuse with an explanation
+when it is off. Precedence decides who wins: `BY_NREPL_ENABLED=false` is an env
+var, the top layer, so it overrides the agent and remains the operator
+kill-switch; a `false` persisted in `.brainyard/config.edn` sits *below* the
+per-agent layer and so does not stop debug-agent — it governs the bootstrap
+start for everything else.
+
 **Runtime control (no restart).** The server can also be managed on demand by
 the **debug-agent** via three commands, so you don't have to set
 `BY_NREPL_ENABLED` at bootstrap:
@@ -268,18 +286,23 @@ know to look for it.
 - **Don't collide on the tmux session name.** Pick a name no other
   session is using; this doc uses `by-debug` specifically to keep the
   harness separate from any user-facing session named `by`.
-- **Project `.brainyard/config.edn` silently overrides
-  `BY_NREPL_*` env vars.** Per the precedence chain — schema
-  default (env-var is only the default-fn) ← `!global-config` (the
-  file's `[:agent :config]` subtree) ← session ← per-agent — any
-  `:nrepl-enabled?` / `:nrepl-port` / `:nrepl-grant` already persisted
-  in the project's `.brainyard/config.edn` *wins* over the env-var
-  fallback. So
-  `BY_NREPL_PORT=7891 bb tui run --new` will still bind whatever
-  port the file says — the env var is silently ignored, with no
-  warning. Before debugging "wrong port" or "Address already in use"
-  symptoms, `grep nrepl .brainyard/config.edn` and either remove the
-  pinned keys or change the port there.
+- **A set `BY_NREPL_*` env var overrides `.brainyard/config.edn`** —
+  and, being the top layer, it also overrides the per-agent opt-in
+  debug-agent carries. Precedence runs env → per-agent → session →
+  `!global-config` (the file's `[:agent :config]` subtree) → schema
+  default, so `BY_NREPL_PORT=7891 bb tui run --new` binds 7891 even
+  when the file pins another port, and `BY_NREPL_ENABLED=false` keeps
+  the server down even for a debug-agent instance.
+  (This reversed in the config-precedence change — env vars used to be
+  the *lowest* layer, read inside each key's `:default-fn`, so a
+  persisted value silently beat them. Docs written before that change
+  say the opposite.)
+  A set variable wins *silently*, with no warning, so when debugging
+  "wrong port" / "Address already in use" / "server won't start",
+  check `env | grep BY_NREPL` **first**, then
+  `grep nrepl .brainyard/config.edn`. Each resolution is logged once per
+  (key, source) as `::config-resolved` if you need the winning layer
+  from the log.
 
 ---
 
@@ -740,10 +763,19 @@ Concretely, the following are still manual or unbuilt:
    multi-component failures end-to-end is the next milestone.
 ### Validation evidence
 
+> **Historical record — describes the grant model, which no longer
+> exists.** The `:nrepl-grant` config key, `BY_NREPL_GRANT`, the
+> read-only/`:mutate` scopes, and the drift markers/chip below were all
+> removed when nREPL became the full-trust backend (the deny-list is now
+> the only eval-path check). The routing, session-pinning, and
+> cross-session-visibility rows still hold; the grant and drift rows are
+> kept only as a record of what that run exercised at the time. The
+> precedence note it cites has since reversed — env vars now win.
+
 Run 2026-05-23 against a freshly-launched harness (`bb tui` in detached
-tmux, nREPL on port 7890, `:mutate` grant from this project's pinned
+tmux, nREPL on port 7890, `:mutate` grant from this project's then-pinned
 `.brainyard/config.edn` `:nrepl-grant "mutate:24h"` — `BY_NREPL_*`
-env vars were ignored per the precedence note in §3 "Pre-flight";
+env vars were ignored, which was the precedence rule at the time;
 debug-agent instance auto-created via `/agent new debug-agent`). Single
 prompt:
 

@@ -1312,8 +1312,9 @@
          persisted (select-keys declared config-keys)
          ;; `select-keys` silently drops anything not in the schema, which is
          ;; how a retired key goes on sitting in config.edn looking effective.
-         ;; This repo's own file still carries four: :enable-analytics,
-         ;; :enable-memory-essence, :enable-finalize-answer and :nrepl-grant.
+         ;; This repo's own file still carries three: :enable-analytics,
+         ;; :enable-memory-essence and :enable-finalize-answer. (:nrepl-grant
+         ;; was a fourth until it was deleted from that file.)
          ;; Someone who set those believes they took effect; nothing told them
          ;; otherwise until now.
          unknown   (sort (remove config-keys (keys declared)))
@@ -1617,6 +1618,52 @@
        :full       :full
        :restricted :restricted
        :restricted))))
+
+(defonce ^:private !clj-backend-demoted
+  ;; agent-ids already warned about, so the demotion is reported once per
+  ;; agent rather than on every fence.
+  (atom #{}))
+
+(defn resolve-clj-backend
+  "Resolve the configured `:clj-backend` to the backend that will actually run
+   ```clojure blocks (`:sandbox` | `:nrepl`).
+
+   `:nrepl` is honored ONLY when the same agent also resolves `:nrepl-enabled?`
+   true; otherwise it demotes to `:sandbox`. The two are independent config
+   leaves, so nothing otherwise stops `:clj-backend :nrepl` being set at the
+   GLOBAL layer while the nREPL channel is off — and since no agent but
+   debug-agent overrides `:clj-backend`, that one line would switch every
+   coact-derived agent onto the full-trust backend at once: no SCI isolation,
+   and (with no server up) a hard `clj-nrepl server is not running` on every
+   fence, since the eval path has no sandbox fallback. Selecting the
+   full-trust backend now requires opting into the channel that provides it.
+
+   debug-agent is unaffected: it carries `:nrepl-enabled? true` on its own
+   per-agent layer alongside `:clj-backend :nrepl`.
+
+   Anything other than a permitted `:nrepl` resolves to `:sandbox` — the safe
+   default, matching how the call sites already `case` on this value. Accepts
+   the same agent-or-st forms as `get-config` (1-arity uses the global/schema
+   layers only)."
+  ([] (resolve-clj-backend nil))
+  ([agent-or-st]
+   (let [read (fn [k] (if agent-or-st (get-config agent-or-st k) (get-config k)))]
+     (if (= :nrepl (read :clj-backend))
+       (if (read :nrepl-enabled?)
+         :nrepl
+         ;; Keyword access, not `proto/agent-id` — this runs on whatever the
+         ;; caller passed, which is not always a full Agent record (st-memory
+         ;; maps, test doubles), and a warning path must not throw.
+         (let [aid (some-> agent-or-st resolve-agent :agent-id)]
+           (when-not (contains? @!clj-backend-demoted aid)
+             (swap! !clj-backend-demoted conj aid)
+             (mulog/warn ::clj-backend-demoted
+                         :agent-id aid
+                         :requested :nrepl
+                         :effective :sandbox
+                         :reason "nrepl-enabled? is false — the :nrepl backend needs the live channel enabled"))
+           :sandbox))
+       :sandbox))))
 
 (defn resolve-permission-mode
   "Resolve the configured `:permission-mode` to a concrete policy

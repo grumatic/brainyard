@@ -141,14 +141,36 @@ artifact.
 `debug_agent.clj` registers two hooks on the shared `hooks` registry, both
 filtered by `(= :debug-agent (proto/defagent-type agent))`:
 
+**Declared config.** `defagent` ships
+`:config-extra {:nrepl-enabled? true :clj-backend :nrepl}`. Both are schema
+keys, so `setup-agent` splits them into the per-agent override layer
+(`st-memory-init :config`) **while the record is built** — before any hook
+fires, so no reader sees a half-configured instance.
+
 **`:agent.instance/created`** (`on-instance-created`):
-1. Write `:clj-backend :nrepl` to the instance's per-agent config.
-2. If `clj-nrepl/running?`, open a server-issued session via
+1. Re-assert `:clj-backend :nrepl` on the instance's per-agent config. This is
+   a backstop, not the primary write: `setup-agent-by-id` merges caller options
+   over defagent meta *shallowly* (`agent.clj:1028`), so a caller passing its
+   own `:config-extra` replaces the author's map wholesale and drops the route.
+   A debug-agent silently demoted to the SCI sandbox does not error — it
+   answers from an image it cannot see. The hook's write is last and
+   unconditional, so it cannot be merged away.
+2. If the server is **not** running, start it — `ensure-server!`, the same
+   gated idempotent path `clj-nrepl$start-server` takes (§5):
+   `cleanup-stale-ports!` then `start-server!` on loopback at `:nrepl-port`
+   (`0` = ephemeral), writing the per-instance port file. mulog
+   `::debug-agent-server-autostarted`. The start is **gated on
+   `:nrepl-enabled?`** (via the `:exec/nrepl` feature) — the agent passes its
+   own gate because `defagent` ships `:config-extra {:nrepl-enabled? true}`,
+   which lands on the per-agent config layer. Gate off ⇒ no start attempt,
+   mulog `::debug-agent-nrepl-disabled`. A failure is non-fatal: mulog
+   `::debug-agent-server-autostart-failed` and continue.
+3. If `clj-nrepl/running?` (normally now true), open a server-issued session via
    `clj-nrepl/new-session` and write the id to `:nrepl-session-id`; mulog
    `::debug-agent-session-opened`.
-3. If the server is **not** running, mulog `::debug-agent-no-server` and
-   continue — the first code-eval will surface the gate error so the LLM can
-   report it (or start the server itself via `clj-nrepl$start-server`, §5).
+4. If the server is still not running (step 2 failed), mulog
+   `::debug-agent-no-server` and continue — the first code-eval will surface
+   the gate error so the LLM can report it (or retry `clj-nrepl$start-server`).
 
 **`:agent.instance/closed`** (`on-instance-closed`):
 1. Read `:nrepl-session-id`; `clj-nrepl/close-session` it (exceptions
@@ -167,11 +189,21 @@ leak instance-scoped state into global config. This mirrors the
 — no debug-agent-specific code in CoAct; any future specialist can reuse the
 same override mechanism.
 
-**Server prerequisite.** The embedded nREPL server is enabled, in precedence
-order, by: `.brainyard/config.edn` `:agent {:config {:nrepl-enabled? true}}`
-(durable) · `BY_NREPL_ENABLED=true` (transient env-fallback of the same
-`:nrepl-enabled?` key) · or `clj-nrepl$start-server` on demand (§5). The config
-keys are just `:nrepl-enabled?` and `:nrepl-port` (`0` = ephemeral).
+**Server prerequisite — satisfied by the agent itself.** Creating a debug-agent
+instance *is* the opt-in: the created-hook starts the loopback server when one
+isn't up (above). This bypasses nothing — `clj-nrepl$start-server` is bound on
+this agent and starts unconditionally, so the hook only removes the dependency
+on the LLM running that lifecycle step before its first fence.
+
+Pre-enabling still works and makes the hook a no-op, in precedence order:
+`.brainyard/config.edn` `:agent {:config {:nrepl-enabled? true}}` (durable) ·
+`BY_NREPL_ENABLED=true` (transient env-fallback of the same `:nrepl-enabled?`
+key) · or `clj-nrepl$start-server` on demand (§5). The config keys are just
+`:nrepl-enabled?` and `:nrepl-port` (`0` = ephemeral) — `:nrepl-port` is
+honored by the hook's start too, so an operator-pinned port is respected either
+way. `:nrepl-enabled?` still governs the **base bootstrap** start
+(`start-nrepl-server-if-enabled!`), i.e. whether NON-debug agents get a live
+channel; the hook's start is scoped to debug-agent instances.
 
 ---
 
@@ -557,9 +589,12 @@ that project's `src` is on the eval classpath.)
 
 ### 13c. What to watch for
 
-- **Server up first.** If a ` ```clojure ` block returns "clj-nrepl server is
-  not running", the agent skipped the lifecycle step — nudge it to
-  `clj-nrepl$status` / `clj-nrepl$start-server` (TOOL channel).
+- **Server up first.** The created-hook starts it, so this should not happen.
+  If a ` ```clojure ` block still returns "clj-nrepl server is not running",
+  the automatic start FAILED — check the log for
+  `::debug-agent-server-autostart-failed` (port already bound? loopback
+  refused?), then nudge the agent to `clj-nrepl$status` /
+  `clj-nrepl$start-server` (TOOL channel) as the recovery path.
 - **Deny-list.** Probes touching `System/exit` / `Runtime` / credential
   namespaces are rejected by design (§11) — expected, not a bug.
 - **Reload scope.** Confirm the agent uses single-namespace `:reload`, never

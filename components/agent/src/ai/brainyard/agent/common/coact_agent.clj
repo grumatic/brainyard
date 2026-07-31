@@ -860,7 +860,7 @@ reflection, every loaded namespace, and arbitrary interop are all reachable.
    `:clj-backend` config. Defaults to the SCI-sandbox text when nil or
    unknown — same as historical behavior for non-overriding agents."
   [agent]
-  (case (when agent (config/get-config agent :clj-backend))
+  (case (when agent (config/resolve-clj-backend agent))
     :nrepl   execution-model-nrepl
     (execution-model-sandbox (config/resolve-sandbox-interop agent))))
 
@@ -3564,13 +3564,15 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
    the session.
 
    Reads `:clj-backend` via the unified config chain (per-agent override →
-   session → global → schema default :sandbox). Specialist defagents like
-   debug-agent set the per-agent override via a lifecycle hook. Possible
-   values:
+   session → global → schema default :sandbox), through
+   `config/resolve-clj-backend` — which demotes `:nrepl` to `:sandbox` unless
+   the agent also has `:nrepl-enabled?` true, so a global `:clj-backend :nrepl`
+   cannot silently opt every agent out of SCI isolation. Specialist defagents
+   like debug-agent carry both keys on their per-agent layer. Possible values:
      :sandbox — SCI sandbox (default for coact/react/etc.)
      :nrepl   — live brainyard JVM via clj-nrepl (debug-agent)"
   [agent]
-  (config/get-config agent :clj-backend))
+  (config/resolve-clj-backend agent))
 
 (defn- agent-nrepl-session-id
   "Read the pinned nREPL session id from the agent's per-instance

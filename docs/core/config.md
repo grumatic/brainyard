@@ -118,7 +118,11 @@ resolved against `env-detect` at use time: `resolve-permission-mode` yields
 else `:ask-each-time`; `resolve-sandbox-interop` yields `:full` inside a
 container else `:restricted`. A bare host is therefore never silently relaxed.
 
-The `:clj-backend` key selects the per-agent code-execution backend (see
+The `:clj-backend` key is read through `resolve-clj-backend`, which honors
+`:nrepl` only when the same agent also resolves `:nrepl-enabled?` true and
+otherwise demotes to `:sandbox` — so a global `:clj-backend :nrepl` cannot take
+every agent off the SCI sandbox on its own. It selects the per-agent
+code-execution backend (see
 [reasoning.md](reasoning.md)); it replaced the older `:default-clj-backend`
 name. The `:nrepl-*` keys were promoted from raw `BY_NREPL_*` env
 vars into the schema so they can be read through `get-config` and persisted

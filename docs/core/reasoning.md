@@ -235,12 +235,23 @@ Code-block evaluation is fronted by a single `code$eval` command
 | `:nrepl` | live brainyard JVM (`components/clj-nrepl`) | full | persists in the live runtime | full-trust — a deny-list of catastrophic substrings is the only eval-path check; isolation is the SCI sandbox's job |
 
 The backend is **fixed per-agent** via the `:clj-backend` config key
-(schema default `:sandbox`; `debug-agent`'s lifecycle hook overrides it
-to `:nrepl`). There is **no per-fence override** — ` ```clojure :nrepl `
-and ` ```clojure :sandbox ` are *fence errors* that surface to the LLM as
-`:error` entries, not routing hints; the fence accepts only the language
-token. The `:nrepl` backend is gated only by `:nrepl-enabled?` (env
-`BY_NREPL_ENABLED`); once the loopback nREPL server is up it is
+(schema default `:sandbox`; `debug-agent` declares `:nrepl` in its
+`:config-extra` and re-asserts it from its lifecycle hook). There is **no
+per-fence override** — ` ```clojure :nrepl ` and ` ```clojure :sandbox `
+are *fence errors* that surface to the LLM as `:error` entries, not
+routing hints; the fence accepts only the language token.
+
+**`:nrepl` requires `:nrepl-enabled?` on the same agent.** Reads go through
+`config/resolve-clj-backend`, which demotes `:nrepl` to `:sandbox` when the
+agent does not also resolve the gate true (logged once per agent as
+`::clj-backend-demoted`). The two are independent config leaves and only
+debug-agent overrides `:clj-backend`, so without this a single global
+`:clj-backend :nrepl` would move **every** coact-derived agent onto the
+full-trust backend — dropping SCI isolation, and erroring on every fence
+when no server is running, since the eval path has no sandbox fallback.
+Selecting the backend now requires opting into the channel that provides it.
+
+Once the loopback nREPL server is up the backend is
 **full-trust** — the only eval-path check is a deny-list of catastrophic
 substrings (`clj-nrepl.core.classifier`). There is no read-only/mutate
 grant, no audit, and no drift machinery; isolation is delegated to the SCI
