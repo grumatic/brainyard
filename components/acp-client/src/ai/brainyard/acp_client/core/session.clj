@@ -76,15 +76,24 @@
    the matched `:modelId`, or nil if nothing matches."
   [available-models model]
   (when (and (seq available-models) (some? model))
-    (let [m (str/lower-case (str model))]
-      (some (fn [{:keys [modelId name description]}]
-              (let [id (str modelId)]
-                (when (or (= id (str model))
-                          (str/includes? (str/lower-case id) m)
-                          (str/includes? (str/lower-case (str name)) m)
-                          (str/includes? (str/lower-case (str description)) m))
-                  id)))
-            available-models))))
+    (let [m   (str/lower-case (str model))
+          ids (mapv (fn [x] (str (:modelId x))) available-models)
+          hit (fn [pred coll] (some (fn [x] (when (pred x) x)) coll))]
+      (or
+       ;; tier 1: exact modelId
+       (hit (fn [id] (= id (str model))) ids)
+       ;; tier 2: case-insensitive exact modelId
+       (hit (fn [id] (= (str/lower-case id) m)) ids)
+       ;; tier 3: substring of modelId
+       (hit (fn [id] (str/includes? (str/lower-case id) m)) ids)
+       ;; tier 4: substring of name
+       (some (fn [x] (when (str/includes? (str/lower-case (str (:name x))) m)
+                       (str (:modelId x))))
+             available-models)
+       ;; tier 5: substring of description (last resort)
+       (some (fn [x] (when (str/includes? (str/lower-case (str (:description x))) m)
+                       (str (:modelId x))))
+             available-models)))))
 
 ;; =============================================================================
 ;; prompt!

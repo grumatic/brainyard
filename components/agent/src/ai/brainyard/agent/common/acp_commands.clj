@@ -203,7 +203,7 @@
           (if (>= live cap)
             {:error (format "ACP cap reached (%d/%d) for this session. Close one with acp$close before creating another."
                             live cap)}
-            (let [backend-opts (cond-> (or extra {})
+            (let [backend-opts (cond-> (merge (or (config/get-config :acp-backend-opts) {}) (or extra {}))
                                  (and model (not (str/blank? (str model)))) (assoc :model model))
                   ag (agent-core/setup-agent-by-id
                       :acp-agent

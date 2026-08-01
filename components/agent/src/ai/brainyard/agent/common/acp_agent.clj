@@ -224,6 +224,14 @@
     :claude-code (if (auth/claude-logged-in?) :signed-in :not-signed-in)
     nil))
 
+;; Global-first :acp-backend-opts — the GLOBAL config is the base (1-arity
+;; read skips stale per-agent/session layers); this instance's own override
+;; wins per key. Mirrors acp$create's precedence: global -> instance -> :model.
+(defn- effective-backend-opts
+  [agent]
+  (merge (or (config/get-config :acp-backend-opts) {})
+         (or (config/get-config agent :acp-backend-opts) {})))
+
 (defn descriptor
   "Return the acp connection descriptor for this instance, or nil if it was
    never connected. `:purpose` falls back to a derived `<backend>/<model>`
@@ -333,7 +341,7 @@
    missing-classpath error if ai.brainyard/acp-client is absent."
   [agent]
   (let [backend      (config/get-config agent :acp-backend)
-        backend-opts (config/get-config agent :acp-backend-opts)
+        backend-opts (effective-backend-opts agent)
         {:keys [client]} (get-or-spawn-client! agent backend backend-opts)]
     (get-or-open-session! agent client backend-opts)
     (descriptor agent)))
@@ -346,7 +354,7 @@
    opens keep it. Returns the updated descriptor."
   [agent new-model]
   (let [backend      (config/get-config agent :acp-backend)
-        backend-opts (assoc (config/get-config agent :acp-backend-opts) :model new-model)
+        backend-opts (assoc (effective-backend-opts agent) :model new-model)
         {:keys [client]} (get-or-spawn-client! agent backend backend-opts)]
     ;; Per-agent override only — never write the global default model.
     (when-let [smi (some-> agent :!state deref :st-memory-init)]
@@ -410,7 +418,7 @@
    `:goal-achieved` to false in st-memory; otherwise true."
   [{:keys [st-memory agent]}]
   (let [backend      (config/get-config agent :acp-backend)
-        backend-opts (config/get-config agent :acp-backend-opts)
+        backend-opts (effective-backend-opts agent)
         question (:question @st-memory)
         accumulator (StringBuilder.)
         {:keys [client on-event-atom]} (get-or-spawn-client! agent backend backend-opts)]
