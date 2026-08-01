@@ -4,7 +4,8 @@
 
 (ns ai.brainyard.clj-llm.core.providers
   "Multi-provider LM configuration, model catalogs, and provider detection."
-  (:require [ai.brainyard.clj-llm.core.usage :as usage]))
+  (:require [ai.brainyard.clj-llm.core.usage :as usage]
+            [clojure.string :as str]))
 
 ;; ============================================================================
 ;; Provider Registry
@@ -293,12 +294,13 @@
    substring for the Claude families that reject sampling params (Opus 4.7+,
    Fable, Mythos) on the Anthropic API and on Bedrock under every prefix
    (anthropic., us.anthropic., global.anthropic., …)."
-  [^String model]
-  (or (contains? drop-temperature-exact model)
-      (.contains model "claude-opus-4-8")
-      (.contains model "claude-opus-4-7")
-      (.contains model "claude-fable")
-      (.contains model "claude-mythos")))
+  [model]
+  (boolean
+   (when (string? model)
+     (or (contains? drop-temperature-exact model)
+         (some #(str/includes? model %)
+               ["claude-opus-4-8" "claude-opus-4-7"
+                "claude-fable" "claude-mythos"])))))
 
 (defn- bedrock-supports-prompt-cache?
   "True for Bedrock model ids that accept the Converse cachePoint block.
@@ -354,26 +356,34 @@
 (defn get-provider-from-model
   "Determine the provider for a given model string.
    Checks explicit prefixes first, then a Bedrock region/vendor regex,
-   then model catalogs."
+   then model catalogs.
+
+   Returns nil (never throws) for a nil, blank, or non-string model. The
+   String interop below previously ran unguarded, so a nil model raised
+   `NullPointerException: Cannot invoke \"String.startsWith(String)\"` and a
+   keyword/number raised ClassCastException — opaque failures surfacing from
+   deep inside `create-lm`. Callers decide what an undetectable id means;
+   `create-lm` turns it into an actionable ex-info."
   [model]
-  (or
-   ;; Check explicit provider prefixes
-   (some (fn [[prefix provider]]
-           (when (.startsWith ^String model prefix)
-             provider))
-         provider-prefixes)
-   ;; Bedrock cross-region inference profile (us./eu./apac./global. prefix)
-   (when (re-matches bedrock-region-profile-re model) :bedrock)
-   ;; Catalog lookup (reverse index)
-   (model->provider model)
-   ;; Fallbacks for ids not in the catalog
-   (cond
-     ;; Mistral on Bedrock IDs look like "mistral.mistral-..." (prefix-matched
-     ;; above), but raw "mistral.X" without "/" still hints Bedrock.
-     (.startsWith ^String model "mistral.") :bedrock
-     ;; Default: if contains "claude" -> anthropic, else openai
-     (.contains ^String model "claude") :anthropic
-     :else :openai)))
+  (when-not (str/blank? (when (string? model) model))
+    (or
+     ;; Check explicit provider prefixes
+     (some (fn [[prefix provider]]
+             (when (str/starts-with? model prefix)
+               provider))
+           provider-prefixes)
+     ;; Bedrock cross-region inference profile (us./eu./apac./global. prefix)
+     (when (re-matches bedrock-region-profile-re model) :bedrock)
+     ;; Catalog lookup (reverse index)
+     (model->provider model)
+     ;; Fallbacks for ids not in the catalog
+     (cond
+       ;; Mistral on Bedrock IDs look like "mistral.mistral-..." (prefix-matched
+       ;; above), but raw "mistral.X" without "/" still hints Bedrock.
+       (str/starts-with? model "mistral.") :bedrock
+       ;; Default: if contains "claude" -> anthropic, else openai
+       (str/includes? model "claude") :anthropic
+       :else :openai))))
 
 ;; ============================================================================
 ;; AWS Auto-Detection
@@ -451,14 +461,18 @@
    Splitting on the first separator keeps model ids that themselves contain `:`
    intact (e.g. the bedrock id `amazon.nova-lite-v1:0` after a `bedrock/`
    provider). With no separator at all, returns `[lm-str nil]`."
-  [^String lm-str]
-  (let [slash (.indexOf lm-str "/")]
-    (if (>= slash 0)
-      [(subs lm-str 0 slash) (subs lm-str (inc slash))]
-      (let [colon (.indexOf lm-str ":")]
-        (if (>= colon 0)
-          [(subs lm-str 0 colon) (subs lm-str (inc colon))]
-          [lm-str nil])))))
+  [lm-str]
+  (if-not (string? lm-str)
+    ;; nil / keyword / number: no separator to find, and .indexOf would NPE.
+    [nil nil]
+    (let [^String s lm-str
+          slash (.indexOf s "/")]
+      (if (>= slash 0)
+        [(subs s 0 slash) (subs s (inc slash))]
+        (let [colon (.indexOf s ":")]
+          (if (>= colon 0)
+            [(subs s 0 colon) (subs s (inc colon))]
+            [s nil]))))))
 
 (defn- resolve-model-spec
   "When `model` is a provider-qualified spec — `provider/model` (preferred) or
@@ -545,8 +559,36 @@
         ;; the bare model id flows downstream; an explicit `:provider` still wins.
         [spec-provider spec-model] (resolve-model-spec model)
         model             (or spec-model model)
+        ;; Fail fast on a missing/garbage :model. Previously this fell through
+        ;; to unguarded String interop and died with an opaque
+        ;; `NullPointerException: Cannot invoke "String.startsWith(String)"`.
+        ;; Also catches `(create-lm "openai/gpt-4o")` — a string arg destructures
+        ;; to all-nil options.
+        _                 (when (str/blank? (when (string? model) model))
+                            (throw (ex-info
+                                    (str "create-lm: :model must be a non-blank string, got "
+                                         (pr-str model)
+                                         ". Pass an options map, e.g. "
+                                         "(create-lm {:model \"openai/gpt-4o\"}).")
+                                    {:error    :invalid-model
+                                     :model    model
+                                     :provider provider})))
         detected-provider (or provider spec-provider (get-provider-from-model model))
         provider-config   (get providers detected-provider)
+        ;; An unregistered provider yields a nil provider-config, which used to
+        ;; produce a silently degenerate lm-config ({:base-url nil :auth-header
+        ;; nil :message-format nil}) that only blew up much later at request
+        ;; time. Reject it here with the list of registered providers.
+        _                 (when-not provider-config
+                            (throw (ex-info
+                                    (str "create-lm: unknown provider "
+                                         (pr-str detected-provider)
+                                         " (model " (pr-str model) "). Known providers: "
+                                         (str/join ", " (map name (sort (keys providers)))) ".")
+                                    {:error           :unknown-provider
+                                     :provider        detected-provider
+                                     :model           model
+                                     :known-providers (vec (sort (keys providers)))})))
         ;; For OAuth providers (anthropic-max), api-key is resolved dynamically at call time
         oauth?            (= :oauth (:auth-type provider-config))
         bedrock?          (= :bedrock detected-provider)
