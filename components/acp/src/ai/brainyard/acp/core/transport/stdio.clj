@@ -20,7 +20,8 @@
    Stderr is drained on a separate daemon thread and surfaced through
    mulog (debug level) — losing it would cause subprocesses with full
    pipe buffers to deadlock."
-  (:require [ai.brainyard.acp.core.jsonrpc :as jsonrpc]
+  (:require [ai.brainyard.acp.core.env :as env]
+            [ai.brainyard.acp.core.jsonrpc :as jsonrpc]
             [ai.brainyard.acp.core.transport :as transport]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.java.io :as io])
@@ -111,25 +112,6 @@
     t))
 
 ;; =============================================================================
-;; Environment normalization
-;; =============================================================================
-
-(defn- normalize-env-key
-  "Coerce an env-var key to the plain string form the OS expects.
-
-   Callers frequently build `:env` maps with keyword (or symbol) keys —
-   `{:ANTHROPIC_MODEL \"claude-opus-5\"}`. A bare `(str :ANTHROPIC_MODEL)`
-   yields \":ANTHROPIC_MODEL\" (leading colon), so the subprocess never sees
-   the intended name. Keywords/symbols therefore contribute only their
-   `name`; strings pass through trimmed."
-  [k]
-  (let [s (cond
-            (keyword? k) (name k)
-            (symbol? k)  (name k)
-            :else        (str k))]
-    (.trim ^String s)))
-
-;; =============================================================================
 ;; StdioTransport
 ;; =============================================================================
 
@@ -153,12 +135,16 @@
     (let [pb (ProcessBuilder. ^java.util.List (vec command))]
       (when working-dir
         (.directory pb (io/file working-dir)))
-      (when env
+      ;; STRICT: `:env` must ALREADY be plain string->string. Coercing here
+      ;; would paper over caller bugs — a keyword key renders as
+      ;; ":ANTHROPIC_MODEL", a variable the child never reads, and the
+      ;; failure only resurfaces later as odd backend behaviour. Builders
+      ;; normalize up front (`ai.brainyard.acp.core.env/normalize`); this
+      ;; boundary refuses to spawn rather than guess.
+      (when (some? env)
         (let [env-map (.environment pb)]
-          (doseq [[k v] env
-                  :let [ek (normalize-env-key k)]
-                  :when (and (seq ek) (some? v))]
-            (.put env-map ek (str v)))))
+          (doseq [[k v] (env/validate! env {:context {:command command}})]
+            (.put env-map ^String k ^String v))))
       (let [proc (.start pb)
             stdin (OutputStreamWriter. (.getOutputStream proc))
             stdout (BufferedReader. (InputStreamReader. (.getInputStream proc)))
@@ -259,7 +245,10 @@
    Options:
      :command     — vector<string>, required. e.g. [\"node\" \"-e\" \"…\"]
      :working-dir — cwd for the spawned process (string)
-     :env         — map<string,string> of additional env vars
+     :env         — map<string,string> of additional env vars. STRICT:
+                    `open!` throws `{:type :acp/invalid-env}` on non-string
+                    keys/values, blank or untrimmed keys, and `:K`/\"K\"
+                    collisions. Pre-normalize with `acp.core.env/normalize`.
 
    Call `open!` to spawn the process and start I/O threads."
   [{:keys [command working-dir env]}]

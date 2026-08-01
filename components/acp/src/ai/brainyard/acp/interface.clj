@@ -17,7 +17,8 @@
    This component is **pure protocol plumbing**. It must not depend on
    `agent` or `clj-llm`; lifecycle, dispatch, and event-bridge logic
    live in components/acp-client. See docs/design/acp-design.md."
-  (:require [ai.brainyard.acp.core.jsonrpc :as jsonrpc]
+  (:require [ai.brainyard.acp.core.env :as env]
+            [ai.brainyard.acp.core.jsonrpc :as jsonrpc]
             [ai.brainyard.acp.core.methods :as methods]
             [ai.brainyard.acp.core.schema :as schema]
             [ai.brainyard.acp.core.transport :as transport]
@@ -127,7 +128,10 @@
    Options map:
      :command     — vector<string>, required (e.g. [\"node\" \"agent.js\"])
      :working-dir — cwd for the spawned process (string)
-     :env         — map of additional env vars"
+     :env         — map of **string->string** env vars. STRICT: `open!`
+                    throws `{:type :acp/invalid-env}` on non-string keys or
+                    values; run caller-supplied maps through `normalize-env`
+                    (or build them with `merge-envs`) first."
   [opts]
   (stdio/create opts))
 
@@ -156,3 +160,40 @@
   "Release transport resources. Idempotent."
   [t]
   (transport/close! t))
+
+
+;; =============================================================================
+;; Environment (subprocess launch env)
+;; =============================================================================
+
+(defn normalize-env
+  "Coerce an EDN-shaped env map to the plain string->string form the OS
+   requires: keyword/symbol keys and values contribute their `name`, blank
+   keys and nil values are dropped, and a `:K` / \"K\" collision resolves in
+   favour of the string key. `nil` -> `{}`. Use this when BUILDING a launch
+   spec."
+  [m]
+  (env/normalize m))
+
+(defn merge-envs
+  "Normalize both sides, then merge `override` on top of `base`. Override
+   entries win."
+  [base override]
+  (env/merge-envs base override))
+
+(defn env-problems
+  "Vector describing why `m` is not already a strict string->string env map
+   (empty == valid). Never throws."
+  [m]
+  (env/problems m))
+
+(defn valid-env?
+  "True when `m` is already a strict string->string env map."
+  [m]
+  (env/valid? m))
+
+(defn validate-env!
+  "Strict gate used at the spawn boundary — coerces nothing, returns `m`,
+   throws `{:type :acp/invalid-env :problems [...]}` when malformed."
+  ([m]      (env/validate! m))
+  ([m opts] (env/validate! m opts)))

@@ -20,6 +20,7 @@
    Custom backends can be added at runtime via `register-backend!`."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [ai.brainyard.acp.interface :as acp]
             [ai.brainyard.mulog.interface :as mulog]))
 
 ;; =============================================================================
@@ -49,13 +50,17 @@
 ;; =============================================================================
 
 (defn- merge-env
-  "Merge user-supplied `:env` overrides on top of an opinionated default
-   env (which copies through API key env vars when present)."
+  "Merge user-supplied `:env` overrides ON TOP of an opinionated default env
+   (which copies through API key env vars when present).
+
+   Normalization and precedence live in the shared ACP helper
+   (`acp/merge-envs` -> `ai.brainyard.acp.core.env`): both sides are coerced
+   to string->string BEFORE merging, so keyword/symbol keys and values
+   cannot silently produce a \":ANTHROPIC_MODEL\" variable, nor survive as a
+   second entry colliding with their string twin. User entries win — an
+   explicit `:env` override beats a forwarded parent-process value."
   [defaults user-env]
-  (reduce-kv (fn [m k v]
-               (if (some? v) (assoc m (str k) (str v)) m))
-             (or user-env {})
-             defaults))
+  (acp/merge-envs defaults user-env))
 
 (defn- copy-env
   "Build a map of env-var pairs for any keys whose value is set in the
