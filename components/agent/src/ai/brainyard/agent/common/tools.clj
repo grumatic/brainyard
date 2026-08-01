@@ -102,35 +102,49 @@
 ;; Tool Definitions
 ;; ============================================================================
 
+(defn- grouped-tool-index
+  "Compact `{:total N :families {family [{:id :description}]}}` view — one line
+   per tool, descriptions clipped to their first line. The bounded shape: it
+   scales with the registry's NAMES, never with its schemas."
+  [tools]
+  {:total    (count tools)
+   :families (into (sorted-map)
+                   (map (fn [[fam ts]]
+                          [fam (mapv (fn [t] {:id          (:id t)
+                                              :description (first-line (:description t))})
+                                     ts)]))
+                   (group-by #(tool-family (:id %)) tools))})
+
 (deftool list-tools
-  "List registered tools. With NO args returns a grouped index
-   `{:total N :families {family [{:id :description} ...]}}` — one entry per
-   visible tool, descriptions reduced to a single line and schemas omitted so the
-   ~200-tool roster stays scannable; drill into a tool with `get-tool-info`.
-   Pass `:pattern` (regex over id/name/description) and/or `:type` to get a flat,
-   DETAILED vector `[{:id :type :description :input-schema :output-schema} ...]`.
-   `:grouped false` forces the flat detailed list even with no filter."
-  (fn [{:keys [pattern type grouped]}]
-    (let [tools (collapsed-visible-tools {:pattern pattern :type type})]
-      (if (or (non-blank? pattern) (non-blank? type) (false? grouped))
-        tools
-        {:total    (count tools)
-         :families (into (sorted-map)
-                         (map (fn [[fam ts]]
-                                [fam (mapv (fn [t] {:id          (:id t)
-                                                    :description (first-line (:description t))})
-                                           ts)]))
-                         (group-by #(tool-family (:id %)) tools))})))
+  "List registered tools. Returns id/type/description only — call `get-tool-info`
+   for a tool's schema, or pass `:detail true` to inline schemas here.
+     - no args, or `:type` alone → grouped index {:total :families {family [{:id :description}]}}
+     - `:pattern` (regex over id/name/description) → flat [{:id :type :description}]
+     - `:grouped false` → flat list of everything
+     - `:detail true` → flat list carrying :input-schema/:output-schema"
+  (fn [{:keys [pattern type grouped detail]}]
+    (let [tools (collapsed-visible-tools {:pattern pattern :type type})
+          ;; Schemas are the expensive part — a filtered list of them ran to
+          ;; ~40K tokens for `:type "command"`, past :max-output-chars, for
+          ;; information the model is told to fetch per-tool via get-tool-info
+          ;; anyway. So detail is opt-in, and asking for it implies the flat
+          ;; list (the grouped index has nowhere to put a schema).
+          flat? (or (non-blank? pattern) (false? grouped) (true? detail))]
+      (cond
+        (and flat? detail) tools
+        flat?              (mapv #(select-keys % [:id :type :description]) tools)
+        :else              (grouped-tool-index tools))))
   :input-schema  [:map
-                  [:pattern {:optional true} [:string {:desc "Regex (case-insensitive) over id/name/description; returns a flat detailed list"}]]
-                  [:type    {:optional true} [:enum {:desc "Filter by tool type; returns a flat detailed list"}
+                  [:pattern {:optional true} [:string {:desc "Regex (case-insensitive) over id/name/description; returns a flat list"}]]
+                  [:type    {:optional true} [:enum {:desc "Filter by tool type (grouped unless :pattern/:detail/:grouped false is also given)"}
                                               "tool" "command" "skill" "agent"]]
-                  [:grouped {:optional true} [:boolean {:desc "Default true for the no-arg grouped index; pass false to force a flat detailed list"}]]]
+                  [:grouped {:optional true} [:boolean {:desc "Pass false to force the flat list when no :pattern is given"}]]
+                  [:detail  {:optional true} [:boolean {:desc "Inline :input-schema/:output-schema per entry (implies a flat list); default false — prefer get-tool-info for the one tool you are about to call"}]]]
   :output-schema [:or
-                  [:map {:desc "Grouped index, returned when no :pattern/:type is given"}
+                  [:map {:desc "Grouped index, returned with no args or :type alone"}
                    [:total    [:int {:desc "Total visible tools"}]]
                    [:families [:map {:desc "Family (segment before `$`, or \"_ungrouped\") → vector of {:id :description}; drill in via get-tool-info"}]]]
-                  [:vector {:desc "Flat detailed list, returned when :pattern/:type is given or :grouped false"} :map]])
+                  [:vector {:desc "Flat list of {:id :type :description}, plus :input-schema/:output-schema when :detail true"} :map]])
 
 (deftool get-tool-info
   "Get a registered tool's details (schema, type, description) by tool-id."

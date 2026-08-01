@@ -411,6 +411,60 @@
       (is (not (str/includes? code-only "\"tool-name\""))
           "but the JSON envelope is not taught"))))
 
+;; ============================================================================
+;; 3e. Tool binding (:enable-tool-binding) — the roster's prompt cost
+;; ============================================================================
+
+(deftest unbound-roster-drops-the-agent-tools-block-test
+  ;; With :enable-tool-binding false, setup-agent binds nothing, so the section
+  ;; builder receives an empty :agent-tools. The `### Agent Tools` block — the
+  ;; whole reason to turn binding off — must then be absent, while everything
+  ;; that teaches the model how to REACH a tool stays.
+  (testing ":enable-tool-binding defaults true (every existing agent unchanged)"
+    (is (true? (get config/default-config :enable-tool-binding))))
+
+  (let [build   (resolve 'ai.brainyard.agent.common.coact-agent/build-tools-section)
+        sandbox (sb-bind/auto-tool-bindings nil)
+        bound   (first (tool/bind-tools (assoc agent-roster/default-agent-roster
+                                               :agent-id :coact-agent)))
+        with    (build {:sandbox-bindings sandbox :agent-tools bound})
+        without (build {:sandbox-bindings sandbox :agent-tools []})]
+    (is (str/includes? with "### Agent Tools"))
+    (is (not (str/includes? without "### Agent Tools"))
+        "an unbound roster costs no prompt bytes")
+    (is (str/includes? with "### Discovery (other registered tools)"))
+    (is (str/includes? without "### Discovery (the tool registry)")
+        "discovery is what replaces the roster — and it stops calling itself a long tail")
+    (is (str/includes? without "list-tools")
+        "it must name the command that enumerates the registry")
+    (is (not (str/includes? without "the bound set above"))
+        "no prompt text may point at a roster block that was not rendered")
+    (is (< (count without) (count with))
+        "the point of the flag: a materially smaller ## Tools section")))
+
+(deftest unbound-tools-section-survives-index-compaction-test
+  ;; The :tools-tier reducer disables :function-index third of four. With a
+  ;; roster bound, the (compacted) roster keeps the section alive; with none,
+  ;; the index used to be the last thing holding it up, so this tier silently
+  ;; took the overview + Discovery blocks too — leaving the model no statement
+  ;; of how to reach a tool, two tiers before the reducer means to drop any.
+  (let [build   (resolve 'ai.brainyard.agent.common.coact-agent/build-tools-section)
+        sandbox (sb-bind/auto-tool-bindings nil)
+        squeezed (build {:sandbox-bindings sandbox :agent-tools []
+                         :disabled-tiers #{:usage-guides :tool-context-overlay
+                                           :function-index}})]
+    (is (some? squeezed)
+        "an unbound agent must not lose its whole ## Tools section to one tier")
+    (is (str/includes? squeezed "list-tools")
+        "the surviving text must still name the way to find a tool")
+    ;; Assert on a category chip, not the heading: the hot-path table names
+    ;; `### Sandbox Categories` in prose, so the heading string survives the
+    ;; tier that drops the block itself.
+    (is (not (str/includes? squeezed "Tool Invocation ("))
+        "the tier that WAS requested is still honored")
+    (is (nil? (build {:agent-tools []}))
+        "a bootstrap call with no tool surface at all still renders nothing")))
+
 (deftest channel-flags-survive-the-assembler-test
   ;; Regression: CoActAssembler.sections passes agent state through a
   ;; select-keys ALLOWLIST. :tool-channel? was missing from it, so the flag was

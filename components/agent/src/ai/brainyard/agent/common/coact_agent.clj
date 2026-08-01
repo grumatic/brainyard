@@ -650,8 +650,8 @@ on-demand (see `### Sandbox Categories` and `### Discovery`).
 | When | Call | Notes |
 |---|---|---|
 | Run any registered tool | `(<tool-id> {:arg val})` — e.g. `(mcp$server {:op \"list\"})` | JSON channel `tool-calls` is equivalent. |
-| Find tools by pattern   | `(list-tools :pattern \"…\")` / `:type \"command\"` | Regex over id/name/desc. |
-| Inspect one tool        | `(get-tool-info \"<id>\")` | Schema (inputs/outputs/description). |
+| Find tools by pattern   | `(list-tools :pattern \"…\")` / `:type \"command\"` | Regex over id/name/desc; returns id + description only. |
+| Inspect one tool        | `(get-tool-info \"<id>\")` | Schema (inputs/outputs/description) — the step BEFORE calling anything unfamiliar. |
 | Inspect a sandbox sym   | `(meta #'<sym>)` | `:doc`/`:arglists`/`:category`. |
 | Cheap sub-LLM           | `(query$llm :prompt \"prompt\")` / `(query$llm :prompts [\"a\" \"b\"])` | One-shot, no agent state. |
 | Run a registered agent  | `(explore-agent {:question \"…\"})` / `(plan-agent {…})` | Flat dispatch to a sibling agent by name. |
@@ -669,22 +669,42 @@ Multi-arity bindings list each arity separated by `/`. A trailing entry without
 parens is a value binding, not a callable. Use `(meta #'name)` inside a clojure
 block for `:doc` / `:arglists` / `:category`.")
 
-(def ^:private coact-tools-index-hints
-  "Categories above only count callables — they do NOT list signatures. To use
-anything outside the per-turn `### Agent Tools` block:
+(defn- coact-tools-index-hints
+  "Lead-in for the compact category index. `roster?` is false when
+   `:enable-tool-binding` is off and no `### Agent Tools` block was rendered —
+   pointing at a block that isn't there would send the model looking for it."
+  [roster?]
+  (str "Categories above only count callables — they do NOT list signatures. "
+       (if roster?
+         "To use anything outside the per-turn `### Agent Tools` block:"
+         "No per-turn tool roster ships in this prompt — resolve every tool you use through these:")
+       "
 - `(list-tools :pattern \"…\")` — regex over id/name/description (e.g. `:pattern \"^mcp\\\\$\"`).
-- `(list-tools :type \"command\")` — filter by registry type.
+- `(list-tools :type \"command\")` — grouped index for one registry type.
 - `(get-tool-info \"<id>\")` — full inputs/outputs schema for one tool.
-- `(meta #'<sandbox-binding>)` — arglists/doc/category for a callable already in scope.")
+- `(meta #'<sandbox-binding>)` — arglists/doc/category for a callable already in scope.
 
-(def ^:private coact-tools-discovery
-  "Beyond the bound set above, the runtime exposes everything else via:
+`list-tools` answers WHICH tool; `get-tool-info` answers HOW to call it. Reach for
+the pair — never `(list-tools :detail true)` to bulk-fetch schemas you won't use."))
+
+(defn- coact-tools-discovery
+  "The `### Discovery` body. Without a rendered roster (`:enable-tool-binding`
+   off) this is not a long tail beyond a bound set — it is the ONLY route to a
+   tool, so it says so."
+  [roster?]
+  (str (if roster?
+         "Beyond the bound set above, the runtime exposes everything else via:"
+         "No tool roster is pre-loaded — every tool in the runtime is reached the same way, on demand:")
+       "
 - `list-tools` — enumerate registered tools (commands, skills, agents, MCP tools all live in the
-  same registry). Filter by `type` (\"tool\"|\"command\"|\"skill\"|\"agent\") or `pattern` (regex on
-  id/name/description). MCP tools are registered as `mcp$<server>$<tool>`, so to filter by server use
-  `:pattern \"^mcp\\\\$<server>\\\\$\"`.
+  same registry), as id + description. Filter by `type` (\"tool\"|\"command\"|\"skill\"|\"agent\") or
+  `pattern` (regex on id/name/description). MCP tools are registered as `mcp$<server>$<tool>`, so to
+  filter by server use `:pattern \"^mcp\\\\$<server>\\\\$\"`.
 - `get-tool-info` — fetch full schema (id/type/inputs/outputs/description) by
-  `tool-id`. Always call this BEFORE invoking an unfamiliar tool.")
+  `tool-id`. Always call this BEFORE invoking an unfamiliar tool."
+       (when-not roster?
+         "\n\nStart here whenever you need a capability you have not already looked up this
+session: one `list-tools` call with a pattern is cheaper than guessing a name.")))
 
 (defn- coact-usage-guide-table
   "On-demand usage-guide section for the `## Tools` system context. The
@@ -759,7 +779,22 @@ anything outside the per-turn `### Agent Tools` block:
                            (not (str/blank? tool-context-overlay))
                            (not (disabled :tool-context-overlay)))
                   tool-context-overlay)]
-    (when (or function-directory function-index agent-tools-block overlay)
+    ;; With a roster bound, `agent-tools-block` always survives (the
+    ;; :agent-tools-details tier only compacts it), so the section never
+    ;; collapses. Without one — `:enable-tool-binding` false, or an agent that
+    ;; declares no tools — the index was the last thing holding it up, and the
+    ;; :function-index tier would take the overview, hot-path and Discovery
+    ;; blocks with it: the model would be left with no statement of how to
+    ;; reach a tool at all, two tiers before the reducer means to drop
+    ;; anything. Those static blocks are the substitute for the roster, so
+    ;; they render on their own — but only when a tool surface actually
+    ;; exists. `sandbox-bindings` is the signal: coact-init passes it for
+    ;; every derived agent, tool-only ones included (they just don't render
+    ;; the index). With none, this is a bootstrap call describing nothing,
+    ;; and teaching `list-tools` for a registry the caller never mentioned
+    ;; would be noise.
+    (when (or function-directory function-index agent-tools-block overlay
+              (and (empty? agent-tools) (seq sandbox-bindings)))
       (str/join "\n\n"
                 (cond-> (cond
                           ;; Code-only: tools are sandbox callables, so the
@@ -786,15 +821,17 @@ anything outside the per-turn `### Agent Tools` block:
                   (and function-index (not (str/blank? function-index)))
                   (conj "### Sandbox Categories (counts only — no signatures)"
                         function-index
-                        coact-tools-index-hints)
+                        (coact-tools-index-hints (boolean agent-tools-block)))
 
                   agent-tools-block
                   (conj "### Agent Tools (bound for THIS turn — full specs)"
                         agent-tools-block)
 
                   true
-                  (conj "### Discovery (other registered tools)"
-                        coact-tools-discovery)
+                  (conj (if agent-tools-block
+                          "### Discovery (other registered tools)"
+                          "### Discovery (the tool registry)")
+                        (coact-tools-discovery (boolean agent-tools-block)))
 
                   (not (disabled :usage-guides))
                   (conj "### Usage Guides (on-demand `(usage$guide :topic <name>)` lookup)"

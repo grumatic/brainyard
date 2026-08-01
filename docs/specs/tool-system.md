@@ -35,6 +35,7 @@ skill, and an agent at the registry level — dispatch routes on it.
 | CR-TOOL-05 | Registered-fn dispatch MUST run through the hook gate `dispatch-with-hooks`, honoring verdicts `{:allow :modify-args :replace :block}`. | Implemented | `do-call-tool--registered-fn`, `dispatch-with-hooks` |
 | CR-TOOL-06 | Tool visibility MUST be resolved by `tool-visible?`: `:visibility :hidden` → not visible; `:allow`/`:deny` glob patterns honored; otherwise visible. | Implemented | `tool.clj` (`tool-visible?`) |
 | CR-TOOL-07 | `bind-tools` MUST drop hidden tools when an `:agent-id` is supplied. | Implemented | `tool.clj` (`bind-tools`) |
+| CR-TOOL-07b | `setup-agent` MUST bind the declared `:agent-tools` roster only when `:enable-tool-binding` (default true) resolves true, and MUST bind `:functions` regardless (no registry entry to fall through to). An unbound roster MUST cost no capability: CR-TOOL-04's registry path, CR-TOOL-06's visibility check and CR-TOOL-05's hook gate all still apply. | Implemented | `core/agent.clj` (`setup-agent`) |
 
 CR-TOOL-05 is where the `:agent.tool-use/pre` gated hook (the loop guard)
 takes effect — see [agent-runtime](agent-runtime.md) CR-RT-24..26.

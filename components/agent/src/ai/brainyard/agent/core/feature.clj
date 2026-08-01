@@ -514,11 +514,20 @@
 
    `:feature-profile` is ambient for a different reason: it configures the
    feature system rather than any capability within it, and gating it with a
-   feature would be circular."
+   feature would be circular.
+
+   `:enable-tool-binding` is `:enable-*`-shaped but ambient, and that is the
+   §4.11 case for giving such a key an explicit home rather than a gate: it
+   removes no capability. With it off, every tool stays callable through the
+   registry and discoverable via `list-tools` — only the up-front roster in
+   the prompt goes away. It sits beside its two siblings
+   (`:compact-agent-tools`, `:include-function-directory`), which tune the
+   same prompt real estate."
   #{:lm-config :dirs :allowed-dirs :permission-mode :max-output-tokens
     :max-output-chars :max-thought-chars :claude-code-max-turns
     :include-function-directory
-    :compact-agent-tools :inline-usage-guides :feature-profile})
+    :compact-agent-tools :enable-tool-binding :inline-usage-guides
+    :feature-profile})
 
 (def unclassified-keys
   "Schema keys claimed by no feature because nothing reads them. Empty, and the

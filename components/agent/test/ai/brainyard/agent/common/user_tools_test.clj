@@ -114,7 +114,12 @@
     (let [hits (tool/invoke-tool :list-tools {:pattern "user\\$tool\\$wc-test"})]
       (is (= 1 (count hits)))
       (is (= "user$tool$wc-test" (:id (first hits))))
-      (is (= [:map [:text :string]] (:input-schema (first hits)))))))
+      (is (nil? (:input-schema (first hits)))
+          "schemas are opt-in now — the default listing is id/type/description"))
+    (testing ":detail true still inlines the schema"
+      (let [hits (tool/invoke-tool :list-tools {:pattern "user\\$tool\\$wc-test"
+                                                :detail true})]
+        (is (= [:map [:text :string]] (:input-schema (first hits))))))))
 
 (deftest ensure-loaded-idempotent
   (testing "tools persist project-scoped under .brainyard/tools (no user-id segment)"

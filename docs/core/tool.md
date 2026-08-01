@@ -36,6 +36,18 @@ CLI, an MCP-exposed remote, or a full sub-agent — lives in this same map
 with the same shape. The LLM surface is uniform: `call-tool`,
 `get-tool-defs`, `list-tools`, `get-tool-info`.
 
+**Discovery is two steps, and the split is a token-budget decision.**
+`list-tools` answers *which* tool — id, type, one-line description — and
+`get-tool-info` answers *how to call it*, for the one tool you are about to
+use. It used to inline full Malli input/output schemas into every filtered
+listing, which cost ~40K tokens for `(list-tools :type "command")` (past the
+`:max-output-chars` truncation cap, on a call the CoAct prompt recommends by
+name) to deliver schemas the model was told to re-fetch per-tool anyway.
+Schemas are now opt-in via `:detail true`, and a bare `:type` filter returns
+the grouped index rather than a flat dump. Measured against a 229-tool
+registry: `:pattern "schedule"` 6,013 → 1,502 chars, `:type "command"`
+161,734 → 23,964.
+
 ---
 
 ## Macro flavours
@@ -90,6 +102,19 @@ session the TUI or web UI may track).
   LLM as part of the system prompt.
 - `tools-fn-map` — a map from tool id to bound invocation fn, with
   `:parent-agent` and `:agent-session` already partially applied.
+
+Binding is optional. `:enable-tool-binding` (config-schema, default `true`)
+decides whether `setup-agent` binds the declared `:agent-tools` roster at all.
+With it `false`, nothing is bound: the `### Agent Tools` block leaves the
+system prompt and the model reaches tools the same way it reaches the long
+tail — `list-tools` / `get-tool-info`, then a normal call. Nothing becomes
+uncallable, because `call-tool` falls through to the `!tool-defs` registry
+(same `tool-visible?` check, same hook chain, plus the sub-agent guards of
+§3), `tool-bound?` accepts any registered id, and the sandbox binds from the
+registry regardless. Raw `:functions` vars are bound either way — they have no
+registry entry to fall through to. The trade is prompt bytes against an
+up-front menu: worth it for a model that discovers well, not for one that
+needs its tools spelled out.
 
 `tool-calls-action` (in `common/react_agent.clj`, reused by CoAct) is
 the BT leaf that turns LLM-selected calls into real invocations:

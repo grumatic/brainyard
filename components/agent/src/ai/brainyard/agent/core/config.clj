@@ -94,6 +94,8 @@
                                 :doc "CoAct system-context: include the full sandbox function directory (categories + signatures for all bound callables) instead of a compact category index."}
    :compact-agent-tools        {:type "boolean" :default true
                                 :doc "CoAct system-context: render the `### Agent Tools` roster compactly (one line per tool) instead of full per-tool specs. ReAct ignores this (its roster is its menu)."}
+   :enable-tool-binding        {:type "boolean" :default true
+                                :doc "Bind the agent's declared :agent-tools roster into each turn — the LLM-facing `### Agent Tools` specs plus the tools-fn-map fast path in call-tool. False ⇒ nothing is bound: the roster block leaves the system prompt entirely, and every tool stays callable (JSON tool-calls and sandbox callables both resolve through the !tool-defs registry, which enforces the same visibility + hooks) and discoverable via list-tools / get-tool-info. For capable models that don't need the roster spelled out up front. Raw `:functions` vars are bound regardless — they have no registry entry to fall back to. Read once at setup-agent — takes effect for agents created after the change."}
    :code-channel?              {:type "boolean" :default true
                                 :doc "CoAct: expose the code-blocks channel (SCI/bash/python/javascript sandbox). When false the agent is tool-only — the code-blocks prompt sections are dropped and the BT never routes code (react-agent pins this false). Default true keeps every other agent unchanged."}
    :tool-channel?              {:type "boolean" :default true

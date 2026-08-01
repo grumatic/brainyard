@@ -44,7 +44,7 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "31 feature gates + 9 family gates + 83 knobs + 16 presentation + 12 ambient = 151"
+  (testing "31 feature gates + 9 family gates + 83 knobs + 16 presentation + 13 ambient = 152"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
@@ -54,10 +54,10 @@
       (is (= 9 (count feat/family-gate-keys)) "one per capability family; :ui has none")
       (is (= 83 knobs) "+1: :skill-artifact-max-chars (context/live-artifacts)")
       (is (= 16 pres))
-      (is (= 12 (count feat/ambient-keys)) "+1: :max-thought-chars, alongside :max-output-chars")
+      (is (= 13 (count feat/ambient-keys)) "+1: :enable-tool-binding, beside :compact-agent-tools")
       (is (= 0 (count feat/unclassified-keys))
           "no schema key is currently unreadable")
-      (is (= 151 (count cfg/config-keys))))))
+      (is (= 152 (count cfg/config-keys))))))
 
 ;; ============================================================================
 ;; Family master switches

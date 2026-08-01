@@ -899,7 +899,9 @@
                        the :<defagent-type>/<suffix> convention. If omitted,
                        one is auto-generated via `generate-instance-id`.
      :bt-factory     - (fn [options] bt-config)
-     :agent-tools    - tool map to bind, or nil
+     :agent-tools    - tool map to bind, or nil. Its registered `:tools` roster
+                       is bound only when `:enable-tool-binding` (default true)
+                       resolves true; `:functions` are always bound.
      :instruction    - system prompt
      :tool-context   - tool usage context
      :agent-context  - additional context
@@ -958,20 +960,52 @@
         max-iterations (or max-iterations
                            (get config/default-config :max-iterations 100))
         options (assoc options :max-iterations max-iterations)
+        ;; Split :config-extra into schema-shape overrides (→ st-mem-init :config)
+        ;; vs. non-schema agent metadata (→ @!state :config). Caller options that
+        ;; collide with config-schema keys win over defagent author defaults.
+        ;; Resolved BEFORE the bind below, which consults :enable-tool-binding —
+        ;; the agent record does not exist yet, so its per-agent layer has to be
+        ;; read from here rather than through (get-config agent …).
+        schema-overrides  (merge (select-keys config-extra config/config-keys)
+                                 (select-keys options config/config-keys))
+        agent-meta-extras (apply dissoc config-extra config/config-keys)
+        ;; :enable-tool-binding — env wins over this agent's own override, which
+        ;; wins over the global/default layers, matching get-config's precedence.
+        ;; Deliberately NOT via *current-agent*: during a sub-agent's setup that
+        ;; is the PARENT, whose override must not decide the child's binding.
+        bind-tools?
+        (let [ev (config/schema-env-value :enable-tool-binding)]
+          (cond
+            (not= config/env-unset ev)                    (boolean ev)
+            (contains? schema-overrides :enable-tool-binding)
+            (boolean (:enable-tool-binding schema-overrides))
+            :else (boolean (config/get-config :enable-tool-binding))))
         ;; Bind tools if agent-tools present. Pass :agent-id so bind-tools can
         ;; drop tools hidden by :tool-use-control (visibility :hidden / allow /
         ;; deny patterns) — keeps the LLM JSON tool-calls roster in sync with
         ;; what's actually callable.
-        [tools tools-fn-map] (when agent-tools
-                               (tool/bind-tools (assoc agent-tools :agent-id instance-id)))
+        ;;
+        ;; With :enable-tool-binding false the registered `:tools` roster is
+        ;; dropped: it costs a `### Agent Tools` block in every system prompt,
+        ;; and nothing needs it to CALL a tool — `call-tool` falls through to
+        ;; the !tool-defs registry (same visibility check, same hooks, plus the
+        ;; subagent guards), `tool-bound?` accepts any registered id, and the
+        ;; sandbox binds from the registry regardless. `:functions` (raw fn
+        ;; vars) stay bound either way: they have no registry entry, so
+        ;; dropping them would make them uncallable rather than merely
+        ;; undocumented.
+        agent-tools' (if bind-tools?
+                       agent-tools
+                       (not-empty (select-keys agent-tools [:functions])))
+        _ (when (and agent-tools (not bind-tools?))
+            (mulog/info ::tool-binding-disabled
+                        :agent-id instance-id
+                        :dropped-roster (count (:tools agent-tools))
+                        :kept-functions (count (:functions agent-tools))))
+        [tools tools-fn-map] (when agent-tools'
+                               (tool/bind-tools (assoc agent-tools' :agent-id instance-id)))
         ;; Build BT from factory
         bt-config (when bt-factory (bt-factory options))
-        ;; Split :config-extra into schema-shape overrides (→ st-mem-init :config)
-        ;; vs. non-schema agent metadata (→ @!state :config). Caller options that
-        ;; collide with config-schema keys win over defagent author defaults.
-        schema-overrides  (merge (select-keys config-extra config/config-keys)
-                                 (select-keys options config/config-keys))
-        agent-meta-extras (apply dissoc config-extra config/config-keys)
         ;; Build st-memory-init. `:config` is the canonical per-agent
         ;; override slot — readers use `config/get-config` to resolve.
         st-init (cond-> {:tool-context   tool-context
