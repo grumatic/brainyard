@@ -205,9 +205,24 @@
                             live cap)}
             (let [backend-opts (cond-> (merge (or (config/get-config :acp-backend-opts) {}) (or extra {}))
                                  (and model (not (str/blank? (str model)))) (assoc :model model))
+                  ;; The connection is a SESSION-SHARING sibling of its creator:
+                  ;; :parent-agent records who opened it (so acp$update/close
+                  ;; can be scoped to its owner, and it never claims the
+                  ;; session's persisted resume identity), while
+                  ;; :share-parent-session marks it a peer rather than a
+                  ;; dispatched worker — exempt from the subagent LRU cap and
+                  ;; the parent-close cascade, and its turns still reach L2.
+                  ;; It also makes the connection inherit the caller's actual
+                  ;; !session atom: without a :parent-agent (and with no
+                  ;; :session-store passed here) create-agent fell through to a
+                  ;; STANDALONE session atom carrying the same session-id, so
+                  ;; the usage tracker, :total-turns audit index and session
+                  ;; config silently diverged from the root's.
                   ag (agent-core/setup-agent-by-id
                       :acp-agent
                       :agent-session    {:user-id uid :session-id sid}
+                      :parent-agent     caller
+                      :share-parent-session true
                       :acp-backend      backend
                       :acp-backend-opts backend-opts)]
               (acp/mark-provisioned! ag)

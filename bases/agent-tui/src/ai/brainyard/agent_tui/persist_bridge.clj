@@ -94,11 +94,10 @@
           ;; agents (no parent — including `/agent new` siblings) write
           ;; :agent-id/:defagent-id. Otherwise the last subagent created wins
           ;; and `--resume` restores the subagent type instead of the root.
-          ;; ACP connections (acp$create) are also side-channel siblings that
-          ;; share the caller's session-id without a :parent-agent link — they
-          ;; must never claim the session's resume identity either.
-          subagent? (or (some? (agent/get-parent-agent (:!state agent)))
-                        (= :acp-agent defid))]
+          ;; This covers ACP connections too: acp$create now records the caller
+          ;; as :parent-agent (a session-sharing sibling), so the parent link
+          ;; alone is enough — no per-defagent exception needed.
+          subagent? (some? (agent/get-parent-agent (:!state agent)))]
       (swallow
        (persist/append-event! sid
                               {:kind :agent.instance/created

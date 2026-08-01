@@ -138,7 +138,8 @@
                 setup-agent setup-agent-by-id run-agent
                 ;; Instance lifecycle (subagents) —
                 ;; docs/design/agent-lifecycle-management.md
-                lifecycle subagent? instance-idle-ms
+                lifecycle subagent? dispatched-subagent? share-parent-session?
+                instance-idle-ms
                 ask-agent close-instance!)
 
 ;; Memory-manager factory — wires the context-graph provider opts (embed /

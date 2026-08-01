@@ -44,10 +44,22 @@ another:
 
 An acp-agent is modeled as a **session-scoped shared connection**:
 
-- Registered with **`:owner nil`** (root-like) so it is automatically **exempt
-  from the generic LRU** (`evict-subagents-to-cap!` only evicts `subagent?`
-  instances — non-nil `:owner`) and from parent-close cascade. It dies only on
+- Registered as a **session-sharing sibling** — `:owner` names whoever called
+  `acp$create`, and `:share-parent-session? true` marks it a peer rather than a
+  dispatched worker. That keeps it **exempt from the generic LRU**
+  (`evict-subagents-to-cap!` and `count-subagents` filter on
+  `dispatched-subagent?`) and from the parent-close cascade. It dies only on
   explicit `acp$close`, `/agent close`, task-cancel, or session teardown.
+
+  > **Superseded (2026-08-02):** this exemption used to come from registering
+  > with `:owner nil` — no parent at all. That also made the connection read as
+  > a *root* to everything else: it clobbered the session's resume identity in
+  > `meta.edn` (patched with a per-defagent exception in the persist bridge),
+  > and, since `acp$create` passes no `:session-store`, `create-agent` fell
+  > through to a **standalone session atom** with the same session-id, so the
+  > usage tracker, `:total-turns` audit index and session config diverged from
+  > the root's. The parent link now carries lineage and the flag carries the
+  > exemption; see `agent-lifecycle-management.md` §4.1.1.
 - Governed by a dedicated `acp$*` family layered over the same registry, so acp
   connections get acp-aware reads/CRUD while the LRU leaves them alone. `acp$ask`
   keeps the **same topology fence as `agent-registry$ask`** (a root may ask a
@@ -107,13 +119,16 @@ dispatched) and are idle-only. `nil` caller
 `:max-acp-agents-per-session` (default **3**) counts **all** acp instances in the
 session — TUI roots and `acp$create`-provisioned alike (each is a real
 subprocess). `acp$create` **refuses** at the cap rather than evicting, so a paid
-external session is never silently killed by an unrelated dispatch. (ACP roots
-are `:owner nil`, hence already outside the generic subagent LRU.)
+external session is never silently killed by an unrelated dispatch. (TUI ACP
+roots have no parent, and provisioned ones carry `:share-parent-session? true`,
+so neither is inside the generic subagent LRU.)
 
 ## 6. Root-attached (TUI) vs provisioned (headless) — same registry entry
 
-Two front-ends create acp instances; both produce the same kind of thing (an
-`:owner nil` acp connection with a descriptor):
+Two front-ends create acp instances; both produce an acp connection with a
+descriptor, outside the generic subagent LRU — they differ only in lineage (a
+TUI root has no parent; a provisioned one records its creator and carries
+`:share-parent-session? true`):
 
 - **Provisioned (headless):** `acp$create` — flagged `:provisioned? true`,
   eager, closeable via `acp$close`.

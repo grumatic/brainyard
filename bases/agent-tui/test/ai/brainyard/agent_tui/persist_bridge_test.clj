@@ -25,6 +25,8 @@
   ([session-id user-id]
    (stub-agent session-id user-id :stub-agent/instance-1))
   ([session-id user-id agent-id]
+   (stub-agent session-id user-id agent-id {}))
+  ([session-id user-id agent-id state]
    (let [!session (atom {:session-id session-id
                          :user-id    user-id
                          :messages   []
@@ -36,10 +38,11 @@
                          :config     {}
                          :created-at 100
                          :updated-at 100})
-         ;; Top-level agent (no :runtime/:parent-agent) — the bridge's
-         ;; on-instance-created reads :!state to decide subagent? via
-         ;; agent/get-parent-agent, which derefs this atom.
-         !state   (atom {})]
+         ;; `state` seeds @!state. Empty ⇒ a top-level agent; pass
+         ;; {:runtime {:parent-agent …}} for a subagent — the bridge's
+         ;; on-instance-created reads it via agent/get-parent-agent to decide
+         ;; whether this instance may claim the session's resume identity.
+         !state   (atom state)]
      (reify
        ai.brainyard.agent.core.protocol/IAgent
        (session-id [_] session-id)
@@ -101,6 +104,27 @@
     (is (= :coact-agent/abc (:agent-id (persist/read-meta "agt-2"))))
     (let [events (persist/read-events "agt-2")]
       (is (some #(= :agent.instance/created (:kind %)) events)))))
+
+(deftest instance-created-subagents-never-claim-resume-identity
+  ;; Both kinds of subagent share the root's session-id, and neither may
+  ;; overwrite :agent-id/:defagent-id — otherwise `--resume` restores the
+  ;; subagent's type instead of the root's. ACP connections used to reach here
+  ;; with NO parent link (acp$create passed none), so the guard needed a
+  ;; per-defagent `(= :acp-agent defid)` exception; acp$create now records its
+  ;; caller as :parent-agent, so the parent link alone covers both kinds.
+  (testing "a dispatched worker and an ACP sibling both leave the root's meta alone"
+    (on-session-created {:session-id "agt-sub" :user-id "u"})
+    (on-instance-created {:agent (stub-agent "agt-sub" "u" :coact-agent/root)})
+    (on-instance-created {:agent (stub-agent "agt-sub" "u" :explore-agent/w1
+                                             {:runtime {:parent-agent :coact-agent/root}})})
+    (on-instance-created {:agent (stub-agent "agt-sub" "u" :acp-agent/conn-1
+                                             {:runtime {:parent-agent :coact-agent/root}})})
+    (let [meta (persist/read-meta "agt-sub")]
+      (is (= :coact-agent/root (:agent-id meta)))
+      (is (= :coact-agent (:defagent-id meta))))
+    (testing "every instance still appends its own created event"
+      (is (= 3 (count (filter #(= :agent.instance/created (:kind %))
+                              (persist/read-events "agt-sub"))))))))
 
 (deftest ask-pre-and-post-write-messages-and-snap
   (testing "ask/pre logs event; ask/post flushes new messages + writes session snap"

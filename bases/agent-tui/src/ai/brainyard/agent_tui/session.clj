@@ -1959,7 +1959,7 @@
    No-op for root agents or untracked sub-agents. Mirrors the iter-rollup bump
    in `iteration-post-handler` — driven by tool-calls/post + code-eval/post."
   [agent f]
-  (when (get-in @(:!state agent) [:runtime :parent-agent])
+  (when (agent/dispatched-subagent? agent)
     (let [[root _]  (root-of-agent agent)
           root-aid  (:agent-id root)
           aid       (:agent-id agent)
@@ -2504,12 +2504,13 @@
    2. Sub-agent fallback: the root's shared sub-output session, when the
       sub-agent is NOT in :share-parent-output-session mode. This is what
       consolidates per-sub-agent output into one tab per root.
-   Returns nil when nothing matches (e.g. share-parent-output sub-agent —
-   callers fall through to `find-session-for-parent` for those)."
+   Returns nil when nothing matches (e.g. share-parent-output sub-agent, or a
+   session-sharing sibling like an acp$create connection — callers fall through
+   to `find-session-for-parent` for those, i.e. onto the creator's chat tab)."
   [agent]
   (or (first (filter #(identical? (:agent %) agent) (sessions/session-list)))
       (when (and agent
-                 (get-in @(:!state agent) [:runtime :parent-agent])
+                 (agent/dispatched-subagent? agent)
                  (not (share-parent-output? agent)))
         (let [[root _] (root-of-agent agent)
               root-aid (:agent-id root)
@@ -2553,14 +2554,17 @@
 (defn agent-created-handler
   "Handler for :agent.instance/created. Event: {:agent}.
 
-   For sub-agents (those with a :runtime/:parent-agent), add an entry
-   into the consolidated subagents block belonging to this sub-agent's
-   ROOT ancestor — there is exactly one block per root, listing all
-   descendants one line each. The block is pinned to the root's TUI
-   session so a session switch doesn't cause spinner updates to land
-   in the wrong scrollback."
+   For DISPATCHED sub-agents, add an entry into the consolidated subagents
+   block belonging to this sub-agent's ROOT ancestor — there is exactly one
+   block per root, listing all descendants one line each. The block is pinned
+   to the root's TUI session so a session switch doesn't cause spinner updates
+   to land in the wrong scrollback.
+
+   Session-sharing siblings (acp$create connections) are skipped: they have a
+   parent but render themselves in the user's session through the ACP
+   transcript block, so a subagents-block line would double-report them."
   [{:keys [agent]}]
-  (when (get-in @(:!state agent) [:runtime :parent-agent])
+  (when (agent/dispatched-subagent? agent)
     (let [[root-agent root-hops] (root-of-agent agent)
           root-aid    (:agent-id root-agent)
           agent-id    (:agent-id agent)
@@ -2610,7 +2614,7 @@
    block is frozen so the lines stay in scrollback as a permanent
    record (handled inside `mark-sub-agent-done!`)."
   [{:keys [agent]}]
-  (when (get-in @(:!state agent) [:runtime :parent-agent])
+  (when (agent/dispatched-subagent? agent)
     (let [[root-agent _] (root-of-agent agent)]
       (mark-sub-agent-done! (:agent-id root-agent) (:agent-id agent) :done))))
 
@@ -2698,7 +2702,7 @@
                  (layout/input-empty?)
                  (not (layout/popover-active?)))
         (try (redraw-idle-prompt!) (catch Exception _)))))
-  (when-let [_parent (get-in @(:!state agent) [:runtime :parent-agent])]
+  (when (agent/dispatched-subagent? agent)
     (let [agent-id (:agent-id agent)
           st-mem-atom (try (agent/get-bt-st-memory agent) (catch Throwable _ nil))
           share? (when st-mem-atom (:share-parent-output-session @st-mem-atom))
@@ -2871,7 +2875,7 @@
   ;; (the parent session is typically active during a sub-agent run, so
   ;; plain `emit!` would route to the wrong scrollback — route through
   ;; the origin session via `emit-to-session!`).
-  (when (get-in @(:!state agent) [:runtime :parent-agent])
+  (when (agent/dispatched-subagent? agent)
     (let [agent-id   (:agent-id agent)
           [root _]   (root-of-agent agent)
           root-aid   (:agent-id root)]
@@ -3142,7 +3146,7 @@
     ;; bump that entry's :iter-rollup so the one-line summary stays
     ;; current. Top-level (root) agents have no entry here — their own
     ;; iteration block in scrollback is the source of truth.
-    (when (get-in @(:!state agent) [:runtime :parent-agent])
+    (when (agent/dispatched-subagent? agent)
       (let [[root _]   (root-of-agent agent)
             root-aid   (:agent-id root)
             sub-state  (get-in @!subagents-blocks

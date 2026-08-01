@@ -84,11 +84,12 @@ only at one of four events:
 `@!state :lifecycle` carries:
 
 ```clojure
-{:owner         :coact-agent/…   ; parent instance-id; nil for a root agent
- :answers       n                ; completed asks
- :created-at    <ms>
- :last-ask-at   <ms>             ; drives LRU
- :last-question "…"}             ; truncated, for list/detail}
+{:owner                 :coact-agent/…   ; parent instance-id; nil for a root agent
+ :share-parent-session? false            ; session-sharing sibling vs dispatched worker
+ :answers               n                ; completed asks
+ :created-at            <ms>
+ :last-ask-at           <ms>             ; drives LRU
+ :last-question         "…"}             ; truncated, for list/detail}
 ```
 
 There is **no `:mode`** — the ephemeral/persistent split is gone. Everything keys
@@ -96,6 +97,47 @@ off `:owner`: a non-nil `:owner` marks a *managed subagent* (`subagent?`) —
 evictable, closeable, askable, and a cascade target. A root agent (`:owner`
 nil) is none of those. `mark-ask-start!` / `mark-ask-done!` maintain the ask
 bookkeeping in `ask`.
+
+### 4.1.1 Two kinds of subagent — `:share-parent-session?`
+
+A subagent used to mean exactly one thing: *dispatched by a BT to do a job*,
+borrowing the parent's session to emit output and dying when it answers. ACP
+connections (`acp$create`) are the other kind — **peers inside the user's own
+session** — and they were originally modelled by simply having no parent at all.
+That made them read as roots everywhere it mattered: they clobbered the
+session's resume identity in `meta.edn` (patched with a per-defagent exception),
+they passed the reach fences as roots, and — because `create-agent` falls back
+to `get-or-create-session` with no store — they got a **standalone session atom
+carrying the same session-id**, so the usage tracker, the `:total-turns` audit
+index and the session config silently diverged from the root's.
+
+Both kinds now carry a parent, and `:share-parent-session?` (default **false**)
+says which is which. Three predicates in `core/agent.clj`:
+
+| predicate | true for |
+|---|---|
+| `subagent?` | anything with an `:owner` — both kinds |
+| `share-parent-session?` | session-sharing siblings only |
+| `dispatched-subagent?` | workers only — `subagent?` minus the above |
+
+`dispatched-subagent?` is what most callers want, and it is what the four
+behaviours below branch on:
+
+- **LRU cap / eviction** (§5) counts and evicts workers only. A sharing sibling
+  has its own bound (`:max-acp-agents-per-session`), and an idle ACP connection
+  is idle because nobody has asked it yet, not because it is stale.
+- **Parent-close cascade** (§6) collects workers only. A connection opened by a
+  subagent belongs to the user's session and outlives whoever opened it.
+- **L2 capture** keeps root turns *and* sharing-sibling turns: a second model in
+  the user's own conversation is exactly the material that layer remembers. A
+  worker's `ask/post` stays operational detail.
+- **TUI rendering** puts workers in the consolidated subagents block and the
+  shared sub-output tab; a sharing sibling renders itself where the user is
+  (an acp-agent has its own transcript block), so it is skipped.
+
+Everything that is genuinely about *lineage* — `:owner`, the reach fences,
+`root-of-agent`, persist's "may I claim the session's resume identity" guard —
+uses the parent link and therefore covers both kinds without special cases.
 
 ### 4.2 Surfacing the askable id (always)
 
