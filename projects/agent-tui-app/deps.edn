@@ -26,6 +26,13 @@
         ;; `poly check` correctly demands the project declare it.
         ai.brainyard/acp-client {:local/root "../../components/acp-client"}
         ai.brainyard/acp {:local/root "../../components/acp"}
+        ;; A2A — same reasoning as ACP directly above. `agent` requires
+        ;; a2a-client statically (core/remote_agent.clj, common/a2a.clj) so
+        ;; AOT emits their classes into the image, and `poly check` demands
+        ;; the project declare them. See docs/design/a2a-design.md §11.
+        ai.brainyard/a2a {:local/root "../../components/a2a"}
+        ai.brainyard/a2a-client {:local/root "../../components/a2a-client"}
+        ai.brainyard/a2a-server {:local/root "../../components/a2a-server"}
         ai.brainyard/analytics {:local/root "../../components/analytics"}
         ai.brainyard/behavior-tree {:local/root "../../components/behavior-tree"}
         ai.brainyard/clj-llm {:local/root "../../components/clj-llm"}

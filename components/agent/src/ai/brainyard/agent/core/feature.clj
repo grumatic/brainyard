@@ -373,6 +373,20 @@
     :lifecycle :session
     :doc       "External agents driven over the Agent Client Protocol."}
 
+   :agents/a2a
+   {:title     "A2A peers"
+    :family    :agents
+    :gate      :enable-a2a
+    :keys      [:a2a-peers :a2a-timeout-ms :a2a-stream? :a2a-max-peers-per-session
+                :a2a-serve-host :a2a-serve-port :a2a-serve-token :a2a-expose-skills]
+    ;; A remote peer IS a subagent — it is registered, asked and evicted
+    ;; through the same machinery. Turning off subagent calls must therefore
+    ;; stop remote traffic too, so there is ONE kill-switch rather than two
+    ;; that can disagree.
+    :requires  #{:agents/subagents}
+    :lifecycle :session
+    :doc       "Remote agents reached over the Agent2Agent protocol, and the local A2A server."}
+
    :agents/explore
    {:title     "Explore agent"
     :family    :agents

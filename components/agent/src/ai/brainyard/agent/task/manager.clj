@@ -746,4 +746,5 @@
                   :cli-client       (executor/->CliClientJobExecutor)
                   :clj-sandbox-eval (executor/->ClojureSandboxJobExecutor)
                   :clj-nrepl-eval   (executor/->NreplEvalJobExecutor)
-                  :fn               (executor/->FnJobExecutor)}))
+                  :fn               (executor/->FnJobExecutor)
+                  :a2a              (executor/->A2ATaskJobExecutor)}))

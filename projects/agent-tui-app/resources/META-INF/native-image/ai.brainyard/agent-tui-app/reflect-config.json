@@ -107,6 +107,14 @@
   "methods":[{"name":"check_run_cancelled_QMARK_","parameterTypes":[] }, {"name":"close","parameterTypes":[] }, {"name":"get_bt_st_memory","parameterTypes":[] }, {"name":"update_session_thinking","parameterTypes":["java.lang.Object"] }]
 },
 {
+  "name":"ai.brainyard.agent.core.remote_agent.RemoteAgent",
+  "queryAllPublicMethods":true,
+  "methods":[{"name":"check_run_cancelled_QMARK_","parameterTypes":[] }, {"name":"close","parameterTypes":[] }, {"name":"get_bt_st_memory","parameterTypes":[] }]
+},
+{
+  "name":"ai.brainyard.agent.core.remote_agent__init"
+},
+{
   "name":"ai.brainyard.agent.core.agent__init"
 },
 {
@@ -2836,6 +2844,11 @@
 },
 {
   "name":"ai.brainyard.agent.core.agent.Agent",
+  "allPublicMethods":true,
+  "allPublicFields":true
+},
+{
+  "name":"ai.brainyard.agent.core.remote_agent.RemoteAgent",
   "allPublicMethods":true,
   "allPublicFields":true
 }

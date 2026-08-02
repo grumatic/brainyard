@@ -2228,6 +2228,54 @@
        (filter #(let [s (:ask-socket-path %)]
                   (and (not (str/blank? (str s))) (.exists (io/file ^String s)))))))
 
+(defn cmd-a2a-serve
+  "Serve local agents over the Agent2Agent protocol.
+
+   Runs in the FOREGROUND until interrupted: this is a server, and
+   daemonising it would hide both its logs and the fact that it is
+   listening. Ctrl-C stops it.
+
+   Three things must be true before it binds, and each refusal names its
+   own fix rather than failing generically:
+     - `:enable-a2a` is on (BY_ENABLE_A2A=1)
+     - `:a2a-serve-token` is set (BY_A2A_SERVE_TOKEN) — there is no
+       unauthenticated mode
+     - `:a2a-expose-skills` names at least one agent — nothing is exposed
+       by default
+
+   Inbound A2A executes prompts against this workspace with tools and disk
+   access. The default bind address is loopback; exposing it further should
+   be paired with `--sandbox`. See docs/design/a2a-design.md §8."
+  [opts]
+  (install-working-dir! opts)
+  (let [json? (:json opts)
+        host  (or (:host opts) (agent/get-config nil :a2a-serve-host))
+        port  (or (:port opts) (agent/get-config nil :a2a-serve-port))
+        result (agent/a2a-serve! nil {:host host :port port})]
+    (if (:error result)
+      (do (if json?
+            (print-json! {:success false :error (:error result)})
+            (emit-err! (str "Error: " (:error result))))
+          (System/exit 1))
+      (do
+        (if json?
+          (print-json! {:success true :url (:url result) :card-url (:card-url result)
+                        :host (:host result) :port (:port result)})
+          (do (println (str "A2A server listening on " (:url result)))
+              (println (str "  agent card: " (:card-url result)))
+              (println (str "  skills:     "
+                            (str/join ", " (agent/a2a-exposed-skill-ids nil))))
+              (println "  auth:       Bearer <BY_A2A_SERVE_TOKEN>")
+              (when-not (contains? #{"127.0.0.1" "localhost" "::1"} (str (:host result)))
+                (println (str "  WARNING: bound to " (:host result)
+                              " — reachable beyond this host. Inbound A2A runs"
+                              " prompts against this workspace; consider --sandbox.")))
+              (println "\nCtrl-C to stop.")))
+        ;; Park the main thread. The server's own threads are daemons, so
+        ;; without this the JVM would exit immediately and the listener
+        ;; would vanish the moment it started.
+        @(promise)))))
+
 (defn cmd-events-emit
   "Fire a user-defined event INTO a live session over its ask channel
    (external → agent — the CLI twin of `by ask --attach`). Resolves the
@@ -2663,13 +2711,26 @@
                                                 :type :string}
                                                working-dir-opt
                                                json-opt]
-                                 :runs        cmd-events-emit}]}]})
+                                 :runs        cmd-events-emit}]}
+                 {:command     "a2a"
+                  :description "Serve local agents to other agents over the Agent2Agent protocol"
+                  :subcommands [{:command     "serve"
+                                 :description "Run the A2A server (foreground; Ctrl-C to stop)"
+                                 :opts        [{:option "host"
+                                                :as "Bind address (default: BY_A2A_SERVE_HOST, else 127.0.0.1)"
+                                                :type :string}
+                                               {:option "port" :short "p"
+                                                :as "Port (default: BY_A2A_SERVE_PORT, else 41241)"
+                                                :type :int}
+                                               working-dir-opt
+                                               json-opt]
+                                 :runs        cmd-a2a-serve}]}]})
 
 ;; ============================================================================
 ;; Entry point
 ;; ============================================================================
 
-(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "memory" "events"})
+(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "memory" "events" "a2a"})
 (def ^:private help-flags #{"--help" "-?" "-h"})
 ;; `-v` is taken by `run --verbose`, so the short version flag is capital `-V`.
 (def ^:private version-flags #{"--version" "-V"})

@@ -50,6 +50,32 @@
    and resolution falls through to the next layer. Compared in `get-config`."
   ::env-unset)
 
+(defn parse-string-list
+  "Parse an env var holding a LIST of strings into a vector, or nil when it
+   yields nothing usable.
+
+   Accepts both shapes a human might reach for:
+     \"a,b,c\"           -> [\"a\" \"b\" \"c\"]   (the natural env form)
+     \"[\\\"a\\\" \\\"b\\\"]\"      -> [\"a\" \"b\"]       (EDN, matching config.edn)
+
+   Returns nil rather than `[]` on junk, so an `:env-fn` can fall through to
+   the next config layer instead of silently installing an empty list — for
+   an allow-list, \"unparseable\" and \"deliberately empty\" must not look the
+   same."
+  [^String s]
+  (let [s (str/trim (str s))]
+    (when-not (str/blank? s)
+      (let [items (if (str/starts-with? s "[")
+                    (try (let [v (edn/read-string s)]
+                           (when (sequential? v) (map str v)))
+                         (catch Exception _ nil))
+                    (str/split s #","))]
+        (some->> items
+                 (map str/trim)
+                 (remove str/blank?)
+                 seq
+                 vec)))))
+
 (def config-schema
   "Config key → {:type <coerce-value type-str> :default <value>}
 
@@ -464,6 +490,40 @@
                                 :doc "ACP request timeout (ms)."}
    :acp-permission-timeout-ms  {:type "integer" :default 120000
                                 :doc "ACP permission-prompt timeout (ms)."}
+   :enable-a2a                 {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_A2A")]
+                                           (contains? #{"1" "true"} v) ::env-unset)
+                                :default false
+                                :doc "Enable the Agent2Agent (A2A) protocol — both consuming remote peers (a2a$connect, then agent-registry$ask) and serving local agents over `by a2a serve`. OFF by default: an inbound A2A endpoint executes prompts against this workspace with tools and disk access, so it is opt-in. Env: BY_ENABLE_A2A."}
+   :a2a-peers                  {:type "object"  :default {}
+                                :doc "Remote A2A peers to connect at session start, as {peer-name {:url \"https://…\" :auth <token-or-map> :timeout-ms N}}. Peer names must match ^[a-z][a-z0-9-]*$ — they become part of the tool id a2a$<peer>$<skill>. Seeding is best-effort: an unreachable peer is logged and skipped, never fatal."}
+   :a2a-timeout-ms             {:type "integer" :default 600000
+                                :env-fn #(if-some [v (System/getenv "BY_A2A_TIMEOUT_MS")]
+                                           (or (parse-long v) ::env-unset) ::env-unset)
+                                :doc "A2A request timeout (ms) for a blocking call. Does NOT bound an SSE subscription — streaming uses its own much larger cap, because the JDK counts a request timeout against the whole exchange and would kill a healthy long-lived stream."}
+   :a2a-stream?                {:type "boolean" :default true
+                                :doc "Prefer message/stream over message/send when a peer's Agent Card advertises the streaming capability. Streaming renders progressively in the TUI; turning this off makes every remote ask a single blocking call."}
+   :a2a-max-peers-per-session  {:type "integer" :default 8
+                                :doc "Per-session cap on connected A2A peers."}
+   :a2a-serve-host             {:type "string"
+                                :env-fn #(or (System/getenv "BY_A2A_SERVE_HOST") ::env-unset)
+                                :default "127.0.0.1"
+                                :doc "Bind address for `by a2a serve`. Defaults to LOOPBACK: an exposed A2A endpoint runs prompts against this workspace, so reaching beyond the host must be a deliberate act (and should be paired with --sandbox). Env: BY_A2A_SERVE_HOST."}
+   :a2a-serve-port             {:type "integer"
+                                :env-fn #(if-some [v (System/getenv "BY_A2A_SERVE_PORT")]
+                                           (or (parse-long v) ::env-unset) ::env-unset)
+                                :default 41241
+                                :doc "Port for `by a2a serve`. Env: BY_A2A_SERVE_PORT."}
+   :a2a-serve-token            {:type "string"
+                                :env-fn #(or (System/getenv "BY_A2A_SERVE_TOKEN") ::env-unset)
+                                :default nil
+                                :doc "Bearer token required by `by a2a serve`. With none set the server REFUSES TO START rather than binding unauthenticated. Env: BY_A2A_SERVE_TOKEN."}
+   :a2a-expose-skills          {:type "array"
+                                :env-fn #(if-let [v (not-empty (System/getenv "BY_A2A_EXPOSE_SKILLS"))]
+                                           (or (parse-string-list v) ::env-unset)
+                                           ::env-unset)
+                                :default []
+                                :doc "Allow-list of local agent ids exposed as A2A skills by `by a2a serve` (e.g. [\"explore-agent\"]). EMPTY BY DEFAULT — nothing is reachable until named. There is deliberately no deny-list mode: an allow-list that defaults to 'everything except…' is how an internal agent leaks. Env BY_A2A_EXPOSE_SKILLS accepts a comma-separated list (explore-agent,plan-agent) or an EDN vector."}
    :max-acp-agents-per-session {:type "integer" :default 3
                                 :doc "Per-session cap on live ACP agent instances (each backs an external subprocess + one model-pinned session). Counts ALL acp-agent instances in the session — TUI roots and acp$create-provisioned alike. acp$create refuses at the cap (a paid external session is never silently LRU-evicted); close one with acp$close first."}
    :parent-trail-k             {:type "integer" :default 3

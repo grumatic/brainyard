@@ -28,6 +28,15 @@
         ai.brainyard/clj-nrepl {:local/root "../clj-nrepl"}
         ;; ACP client — soft dependency (requiring-resolve) for the acp-agent defagent.
         ;; On classpath so the agent is invokable without consumers needing extra wiring.
-        ai.brainyard/acp-client {:local/root "../acp-client"}}
+        ai.brainyard/acp-client {:local/root "../acp-client"}
+        ;; A2A — remote agents over the Agent2Agent protocol.
+        ;; STATICALLY required (core/remote_agent.clj, common/a2a.clj), never via
+        ;; requiring-resolve: AOT only follows a static :require, so a namespace
+        ;; reached only at runtime has no .class in the native image and can never
+        ;; load there. That is precisely how the ACP integration shipped broken in
+        ;; every released binary — see common/acp_agent.clj:17-38.
+        ai.brainyard/a2a {:local/root "../a2a"}
+        ai.brainyard/a2a-client {:local/root "../a2a-client"}
+        ai.brainyard/a2a-server {:local/root "../a2a-server"}}
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {ai.brainyard/acp-stub-agent {:local/root "../../bases/acp-stub-agent"}}}}}

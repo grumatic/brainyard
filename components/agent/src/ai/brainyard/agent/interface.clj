@@ -14,6 +14,9 @@
    - LLM client (via clj-llm) with embeddings
    - Context building from memory + conversation"
   (:require [ai.brainyard.util.interface.macros :refer [export-symbols]]
+            [ai.brainyard.util.interface :as util]
+            [ai.brainyard.a2a-server.interface :as a2a-server]
+            [ai.brainyard.agent.common.a2a-serve :as a2a-serve]
             [ai.brainyard.agent.core.protocol :as protocol]
             [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.session :as session]
@@ -80,6 +83,23 @@
             ;; default-agent-roster; required here so the defcommands register
             ;; even if the roster ns hasn't been loaded yet.
             [ai.brainyard.agent.common.acp-commands]
+            ;; Side-effecting load: registers the a2a$* family (connect / list /
+            ;; card / disconnect) for remote agents over the Agent2Agent
+            ;; protocol. Unlike acp-agent above, a2a-client is required
+            ;; STATICALLY (see components/agent/deps.edn) — AOT only follows a
+            ;; static :require, so a requiring-resolve'd namespace has no .class
+            ;; in the native image and can never load there. There is no
+            ;; "a2a$ask": a remote peer is an agent-registry instance, asked
+            ;; with agent-registry$ask like any other.
+            ;; See docs/design/a2a-design.md.
+            [ai.brainyard.agent.common.a2a]
+            ;; The A2A conversational front door. Registered here like every
+            ;; other built-in defagent — this require list is the single
+            ;; source of truth for the roster.
+            [ai.brainyard.agent.common.a2a-agent]
+            ;; (The SERVING half, `common.a2a-serve`, is aliased at the top of
+            ;; this :require — it backs the a2a-serve!/a2a-build-card exports
+            ;; for `by a2a serve`.)
             ;; Front-door router. Loads main-agent AND its three lifecycle
             ;; hooks (:agent.session/created bootstrap, :agent.tool-use/post
             ;; capture-saved-artifacts, :agent.session/closed INDEX summary).
@@ -406,6 +426,41 @@
 
 (export-symbols ai.brainyard.agent.common.acp-agent
                 descriptor)
+
+;; ============================================================================
+;; A2A serving — used by the `by a2a serve` subcommand.
+;;
+;; Thin `defn` wrappers rather than `export-symbols`: that macro does an
+;; eager `(def sym @var)` value-copy, which can freeze as an unbound fn
+;; under native-image (the failure common/acp_agent.clj:70-80 documents).
+;; These are on the CLI path of the shipping binary, so they get the safe
+;; form.
+;; ============================================================================
+
+(defn a2a-serve!
+  "Start the A2A server for this process. Returns the server handle, or
+   `{:error …}` when A2A is disabled, no token is configured, or no skills
+   are exposed. See docs/design/a2a-design.md §8."
+  [agent opts]
+  (a2a-serve/serve! agent opts))
+
+(defn a2a-stop!
+  "Stop a running A2A server handle. Idempotent."
+  [handle]
+  (a2a-server/stop! handle))
+
+(defn a2a-exposed-skill-ids
+  "The agent ids currently exposed as A2A skills, as strings. Empty unless
+   `:a2a-expose-skills` names them — nothing is exposed by default."
+  [agent]
+  (let [allow (or (get-config agent :a2a-expose-skills) [])]
+    (mapv (fn [[id _]] (if (keyword? id) (util/kw->str id) (str id)))
+          (a2a-serve/exposable-agents allow))))
+
+(defn a2a-build-card
+  "Build this process's Agent Card from the exposed roster."
+  [opts]
+  (a2a-serve/build-card opts))
 
 ;; ============================================================================
 ;; Auth methods — the /login /logout registry (api-key | oauth | cli-delegate)

@@ -23,6 +23,9 @@
                 ai.brainyard/agent-tui-tmux    {:local/root "components/agent-tui-tmux"}
                 ai.brainyard/acp               {:local/root "components/acp"}
                 ai.brainyard/acp-client        {:local/root "components/acp-client"}
+                ai.brainyard/a2a               {:local/root "components/a2a"}
+                ai.brainyard/a2a-client        {:local/root "components/a2a-client"}
+                ai.brainyard/a2a-server        {:local/root "components/a2a-server"}
                 ai.brainyard/web-share         {:local/root "components/web-share"}
                 ai.brainyard/ask-channel       {:local/root "components/ask-channel"}
                 ;; Bases

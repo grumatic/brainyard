@@ -21,6 +21,7 @@
             [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.agent :as agent-core]
             [ai.brainyard.agent.core.memory :as agent-mem]
+            [ai.brainyard.agent.core.remote-agent :as remote]
             [ai.brainyard.agent.core.runtime :as runtime]
             [ai.brainyard.agent.task.commands :as task-cmds]
             [ai.brainyard.agent.common.analytics-commands :as analytics-cmds]
@@ -92,7 +93,12 @@
      :owner         (:owner lc)
      :answers       (or (:answers lc) 0)
      :idle-ms       (agent-core/instance-idle-ms a)
-     :last-question (:last-question lc)}))
+     :last-question (:last-question lc)
+     ;; :local vs :remote — the reach policy is identical for both, but the
+     ;; failure modes are not: a remote peer can be UNREACHABLE, which no
+     ;; local instance can be. A remote row also reports :iter 0 because it
+     ;; genuinely has no local loop, not because it has not started.
+     :kind          (if (remote/remote-agent? a) :remote :local)}))
 
 (defcommand agent-registry$list
   "List live agent instances (root + subagents) with lifecycle info (:owner,
@@ -112,7 +118,7 @@
   :input-schema  [:map
                   [:session-id {:optional true} [:string {:desc "Agent-session id (e.g. \"agt-…\") to filter to; omit to list all instances across every session."}]]]
   :output-schema [:map
-                  [:agents [:string {:desc "Vector of {:agent-id :turn :iter :parent-id :status :owner :answers :idle-ms :last-question}. :owner nil = root; non-nil = a managed subagent (askable/closeable)."}]]
+                  [:agents [:string {:desc "Vector of {:agent-id :turn :iter :parent-id :status :owner :answers :idle-ms :last-question :kind}. :owner nil = root; non-nil = a managed subagent (askable/closeable). :kind is :local or :remote — a :remote row is an A2A peer, asked exactly the same way, but it can be unreachable and reports :iter 0 because it runs no local loop."}]]
                   [:total [:int {:desc "Number of instances returned (scoped to :session-id when given, else all)"}]]
                   [:total-turns [:int {:desc "Cumulative ask count across the session"}]]])
 
@@ -133,18 +139,25 @@
             (let [st     @(:!state a)
                   st-mem (some-> (proto/get-bt-st-memory a) deref)
                   lc     (agent-core/lifecycle a)]
-              {:id            (proto/agent-id a)
-               :type          (proto/defagent-type a)
-               :status        (:status st)
-               :owner         (:owner lc)
-               :answers       (or (:answers lc) 0)
-               :created-at    (:created-at lc)
-               :last-ask-at   (:last-ask-at lc)
-               :idle-ms       (agent-core/instance-idle-ms a)
-               :last-question (:last-question lc)
-               :iteration     (or (:iteration-count st-mem) 0)
-               :last-reasoning (some-> (:last-reasoning st-mem) str)
-               :last-answer   (agent-core/last-answer a)})
+              (cond-> {:id            (proto/agent-id a)
+                       :type          (proto/defagent-type a)
+                       :status        (:status st)
+                       :owner         (:owner lc)
+                       :answers       (or (:answers lc) 0)
+                       :created-at    (:created-at lc)
+                       :last-ask-at   (:last-ask-at lc)
+                       :idle-ms       (agent-core/instance-idle-ms a)
+                       :last-question (:last-question lc)
+                       :iteration     (or (:iteration-count st-mem) 0)
+                       :last-reasoning (some-> (:last-reasoning st-mem) str)
+                       :last-answer   (agent-core/last-answer a)
+                       :kind          (if (remote/remote-agent? a) :remote :local)}
+                ;; A remote peer has no local BT, st-memory or iteration
+                ;; count — they read as nil/0 above because there genuinely
+                ;; is none, not because it stalled. Add what a remote
+                ;; instance CAN report instead: which peer and skill it
+                ;; fronts, and the A2A contextId/task it is continuing.
+                (remote/remote-agent? a) (merge (remote/describe a))))
             {:error (str "Instance not found: " id-str)})))))
   :input-schema  [:map
                   [:id [:string {:desc "Instance id (e.g. \"exec-agent/crimson-parrot-42\")"}]]]
@@ -159,8 +172,13 @@
                   [:idle-ms [:int {:desc "ms since the last ask started (or creation). Large + :running = alive mid-turn; large + :idle = quiescent."}]]
                   [:last-question [:string {:desc "Truncated latest question"}]]
                   [:iteration [:int {:desc "Current/last BT iteration count"}]]
-                  [:last-reasoning [:string {:desc "Latest 'Think:' reasoning text"}]]
+                  [:last-reasoning [:string {:desc "Latest 'Think:' reasoning text (nil for a remote peer — its reasoning is not visible to us)"}]]
                   [:last-answer [:string {:desc "Most recent answer (from the per-instance previous-turns chain)"}]]
+                  [:kind [:string {:desc ":local or :remote"}]]
+                  [:peer [:string {:desc "Remote only: the A2A peer name"}]]
+                  [:skill [:string {:desc "Remote only: the A2A skill id"}]]
+                  [:context-id [:string {:desc "Remote only: the A2A contextId this instance is continuing"}]]
+                  [:last-task-id [:string {:desc "Remote only: the most recent remote task id"}]]
                   [:error [:string {:desc "Error if id missing or instance not found"}]]])
 
 (defn- authorize-instance-op

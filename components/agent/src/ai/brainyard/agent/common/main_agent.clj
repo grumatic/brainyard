@@ -131,6 +131,16 @@ LIFECYCLE & EXTERNAL
                    for 'connect to Linear MCP', 'create issue in Jira',
                    'post to Slack channel'.
 
+- a2a-agent      → remote AGENTS over HTTP (Agent2Agent): connect and
+                   inspect a peer by its agent card, dispatch and follow
+                   up on its skills, and explain/serve this brainyard
+                   over `by a2a serve`. Use for 'connect to the agent at
+                   <url>', 'ask their planner …', 'what agents can I
+                   reach', 'let another agent call mine'.
+                   NOT mcp-agent (that is external TOOLS) and NOT
+                   acp-agent (that is a local coding CLI over stdio) —
+                   the tell is a URL or another agent runtime.
+
 - tool-agent     → user-defined tool lifecycle: author/inspect/refine/
                    remove persistent (fn [args] …) tools under
                    .brainyard/tools (the tool-agent$* family). Use for 'make
@@ -312,6 +322,14 @@ N. SKILL-LIFECYCLE → skill-agent
 O. MCP-LIFECYCLE   → mcp-agent
    Shapes: 'connect to MCP X', 'restart MCP server Y', 'call write-side
            MCP tool Z', 'post to Slack'.
+
+O2. A2A-PEERS      → a2a-agent
+   Shapes: 'connect to the agent at <url>', 'ask <peer>'s <skill> to …',
+           'what remote agents can I reach', 'expose my agents so X can
+           call them', 'why is the peer refusing with a cycle error'.
+   Tell it apart: a URL or another AGENT RUNTIME → a2a-agent; an MCP
+   server → mcp-agent; a local coding CLI (Claude Code/Gemini/Codex)
+   → acp-agent.
 
 P. INIT            → init-agent
    Shapes: 'set up brainyard for this repo', 'bootstrap BRAINYARD.md',
@@ -541,7 +559,8 @@ instruction §6 (DECISION TABLE) for the full per-agent rule. Headline:
 - schedule-agent   → time-triggered prompt jobs (schedule$*).
 - event-agent      → event subsystem CRUD (event$*/reaction$*/watch$*).
 - state-machine-agent → user-defined FSM CRUD + runtime (fsm$*).
-- acp-agent        → ACP external-backend bridge.
+- acp-agent        → ACP external-backend bridge (local coding CLI over stdio).
+- a2a-agent        → A2A remote peers over HTTP (a2a$*) + serving this brainyard.
 - coact-agent      → bare-substrate fallback (rarely used).
 - react-agent      → classic ReAct fallback (rarely used).
 

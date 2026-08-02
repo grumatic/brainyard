@@ -8,8 +8,11 @@
    ToolJobExecutor — invoke registered tools from !tool-defs
    CliClientJobExecutor — drive CliClient processes
    ClojureSandboxJobExecutor — evaluate Clojure code in a clj-sandbox SCI ctx
-   NreplEvalJobExecutor — evaluate Clojure code in the LIVE runtime via clj-nrepl"
-  (:require [ai.brainyard.agent.task.protocol :as tp]
+   NreplEvalJobExecutor — evaluate Clojure code in the LIVE runtime via clj-nrepl
+   A2ATaskJobExecutor — track a REMOTE task on an A2A peer by polling tasks/get"
+  (:require [ai.brainyard.a2a.interface :as a2a]
+            [ai.brainyard.a2a-client.interface :as a2a-client]
+            [ai.brainyard.agent.task.protocol :as tp]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.stdio.client :as stdio-client]
@@ -238,6 +241,124 @@
 
   (cancel-job [_ _task] false)
   (job-type [_] :fn))
+
+;; ============================================================================
+;; A2ATaskJobExecutor
+;;
+;; Adopts a REMOTE A2A task into the local task manager, so `task$wait`,
+;; `task$cancel`, `task$detail`, the iteration hold and the TUI task block all
+;; work on it with no new machinery. A2A's `returnImmediately` + `tasks/get`
+;; polling is the same shape as the manager's detach handler.
+;;
+;; job-config: {:peer-name "b" :remote-task-id "t-1" :poll-interval-ms 2000}
+;; ============================================================================
+
+(def ^:const DEFAULT_A2A_POLL_MS
+  "How often to actually hit the peer with `tasks/get`.
+
+   The manager's shared watcher calls `:on-poll` roughly every 250ms. That
+   cadence is fine for checking a local Process, but issuing four HTTP
+   requests per second per task at a third party is abusive and would get us
+   rate-limited by any sane server. `:on-poll` therefore throttles itself and
+   returns `still-running` without a network call in between."
+  2000)
+
+(defrecord A2ATaskJobExecutor []
+  tp/IJobExecutor
+  (execute-job [_ task on-output]
+    (let [{:keys [peer-name remote-task-id poll-interval-ms]} (:job-config task)
+          interval (or poll-interval-ms DEFAULT_A2A_POLL_MS)
+          peer     (a2a-client/get-peer peer-name)]
+      (cond
+        (nil? peer)
+        (let [msg (str "A2A peer '" peer-name "' is not connected")]
+          (on-output msg)
+          {:error msg})
+
+        (str/blank? (str remote-task-id))
+        (let [msg "job-config :remote-task-id is required"]
+          (on-output msg)
+          {:error msg})
+
+        :else
+        (let [!last-poll  (atom 0)
+              !last-state (atom nil)
+              !announced  (atom #{})]
+          (on-output (str "Tracking remote A2A task " remote-task-id
+                          " on peer '" peer-name "' (poll " interval "ms)"))
+          {:status :detached
+           :on-poll
+           (fn []
+             (let [now (System/currentTimeMillis)]
+               (if (< (- now @!last-poll) interval)
+                 tp/still-running
+                 (do
+                   (reset! !last-poll now)
+                   (let [{:keys [state task error]} (a2a-client/task-state peer remote-task-id)]
+                     (cond
+                       ;; A transport blip must not fail the task — the peer
+                       ;; may simply be restarting. Report it once and keep
+                       ;; polling; the user can task$cancel if it persists.
+                       error
+                       (do (when-not (contains? @!announced [:error error])
+                             (swap! !announced conj [:error error])
+                             (on-output (str "poll failed (will retry): " error)))
+                           tp/still-running)
+
+                       :else
+                       (do
+                         (when (not= state @!last-state)
+                           (reset! !last-state state)
+                           (on-output (str "state: " (name state))))
+                         (cond
+                           ;; INTERRUPTED is not finished. The peer is
+                           ;; holding the task open for us; promoting it to
+                           ;; a terminal status here would abandon work we
+                           ;; could still resume.
+                           (a2a/interrupted? state)
+                           (do (when-not (contains? @!announced state)
+                                 (swap! !announced conj state)
+                                 (on-output
+                                  (str "remote task is awaiting "
+                                       (if (= :auth-required state)
+                                         "credentials" "input")
+                                       " — reply via agent-registry$ask on the"
+                                       " remote instance, or task$cancel to give up")))
+                               tp/still-running)
+
+                           (a2a/terminal? state)
+                           (let [answer (or (some-> (get-in task [:status :message])
+                                                    a2a/message-text)
+                                            (->> (:artifacts task)
+                                                 (mapcat :parts)
+                                                 a2a/parts-text))]
+                             (on-output (str "remote task " (name state)))
+                             (when-not (str/blank? answer) (on-output answer))
+                             (if (contains? #{:failed :rejected} state)
+                               {:error (str "remote task " (name state)
+                                            (when-not (str/blank? answer)
+                                              (str ": " answer)))}
+                               {:result {:state state
+                                         :task-id remote-task-id
+                                         :peer peer-name
+                                         :answer answer
+                                         :artifacts (vec (:artifacts task))}}))
+
+                           :else tp/still-running))))))))
+           :on-cancel
+           (fn []
+             (mulog/info ::a2a-task-cancel :task-id (:id task)
+                         :remote-task-id remote-task-id :peer peer-name)
+             ;; Best-effort: a peer may answer TaskNotCancelableError because
+             ;; the task already finished. That is a normal outcome, not a
+             ;; failure to report.
+             (let [{:keys [error]} (a2a-client/cancel-task! peer remote-task-id)]
+               (when error
+                 (on-output (str "remote cancel: " error)))
+               nil))}))))
+
+  (cancel-job [_ _task] true)
+  (job-type [_] :a2a))
 
 ;; ============================================================================
 ;; CliClientJobExecutor
