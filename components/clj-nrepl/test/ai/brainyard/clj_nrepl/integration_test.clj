@@ -55,3 +55,26 @@
                  "```bash\necho hi\n```")]
       (is (= "bash" (:lang blk)))
       (is (nil? (:fence-error blk))))))
+
+(deftest unreachable-endpoint-honors-timeout
+  ;; Regression guard (measured 2026-08-02): `nrepl.core/connect` builds its
+  ;; socket with `(java.net.Socket. host port)` — the blocking constructor,
+  ;; which takes no connect timeout and falls back to the OS default. On macOS
+  ;; that is ~75s, so `eval-string` against an unreachable remote :nrepl-host
+  ;; blocked for 75s while REPORTING it had a 1s budget. It also made
+  ;; exec-backend-test the single slowest namespace in the workspace (75s of a
+  ;; 165s brick) purely from one unreachable-host assertion.
+  (testing "an unreachable host fails inside the caller's timeout, not the OS default"
+    (let [budget 1000
+          t0     (System/currentTimeMillis)
+          r      (n/eval-string "(+ 1 2)" :host "127.0.0.2" :port 1 :timeout-ms budget)
+          dt     (- (System/currentTimeMillis) t0)]
+      (is (string? (:error r)) "must surface a transport error, not a result")
+      (is (nil? (:result r)))
+      (is (< dt 15000)
+          (str "connect must be bounded by the caller's timeout; took " dt "ms"))))
+
+  (testing "a reachable local server is unaffected by the pre-flight probe"
+    (let [r (n/eval-string "(+ 1 2)" :timeout-ms 5000)]
+      (is (nil? (:error r)))
+      (is (= "3" (:result r))))))

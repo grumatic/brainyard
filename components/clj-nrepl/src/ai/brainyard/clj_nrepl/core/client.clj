@@ -62,6 +62,42 @@
    endpoint, whose liveness the local `server/running?` atom can't observe."
   #{"127.0.0.1" "localhost" "::1" "0:0:0:0:0:0:0:1"})
 
+(def ^:private max-connect-ms
+  "Ceiling on the TCP handshake, independent of the message round-trip budget.
+
+   `nrepl.core/connect` builds its socket with `(java.net.Socket. host port)` —
+   the blocking constructor, which takes NO connect timeout and therefore falls
+   back to the OS default (~75s on macOS). `:timeout-ms` only ever reached
+   `nrepl/client`, which bounds the message round-trip AFTER a socket exists, so
+   an unreachable remote `:nrepl-host` (R4) hung the caller for 75s no matter
+   what timeout it asked for — measured, not theorized.
+
+   The effective budget is `(min timeout-ms max-connect-ms)`: deriving it from
+   the caller's own timeout avoids a second knob that could drift out of sync
+   with the first, while this ceiling keeps a generous message timeout (the eval
+   path uses an hour) from re-inheriting the OS default."
+  5000)
+
+(defn- reachable?
+  "Bounded TCP pre-flight. Returns nil when `host:port` accepts a connection
+   within `budget-ms`, else a short reason string.
+
+   Done as a separate probe rather than by handing `nrepl/connect` a socket:
+   its `:socket` option takes a UNIX domain socket, not a connected TCP one.
+   The probe socket is closed immediately; the real connect that follows is
+   against a host already known to be listening, so it returns promptly."
+  [^String host port budget-ms]
+  (let [sock (java.net.Socket.)]
+    (try
+      (.connect sock (java.net.InetSocketAddress. host (int port)) (int budget-ms))
+      nil
+      (catch java.net.SocketTimeoutException _
+        (str "connect timed out after " budget-ms "ms"))
+      (catch java.io.IOException e
+        (str "connect failed: " (.getMessage e)))
+      (finally
+        (try (.close sock) (catch Exception _))))))
+
 (defn- gate
   "Return an error result map when the eval should be rejected; nil to allow.
    nREPL is full-trust: the only checks are the deny-list (catastrophic
@@ -104,16 +140,18 @@
                            "clj-nrepl server is not running"
                            "remote nREPL endpoint requires :port"))
         (try
-          (with-open [conn (nrepl/connect :host host* :port port*)]
-            (let [base    (nrepl/client conn timeout-ms)
-                  client* (if session
-                            (nrepl/client-session base :session session)
-                            (nrepl/client-session base))
-                  msg     (cond-> {:op "eval" :code code}
-                            session (assoc :session session))
-                  harvested (harvest-responses (nrepl/message client* msg)
-                                               :output-writer output-writer)]
-              (assoc harvested :code code)))
+          (if-let [why (reachable? host* port* (min timeout-ms max-connect-ms))]
+            (err-result code (str "nREPL transport error: " why))
+            (with-open [conn (nrepl/connect :host host* :port port*)]
+              (let [base    (nrepl/client conn timeout-ms)
+                    client* (if session
+                              (nrepl/client-session base :session session)
+                              (nrepl/client-session base))
+                    msg     (cond-> {:op "eval" :code code}
+                              session (assoc :session session))
+                    harvested (harvest-responses (nrepl/message client* msg)
+                                                 :output-writer output-writer)]
+                (assoc harvested :code code))))
           (catch Exception e
             (err-result code
                         (str "nREPL transport error: " (.getMessage e)))))))))
