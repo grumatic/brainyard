@@ -55,18 +55,68 @@
 
 ;; -- Specialised wrappers for the most common cases ---------------------------
 
+;; -- Identity sanitisation (write side) ---------------------------------------
+
+(def ^:private unreadable-kw-chars
+  #"[\s(){}\[\]\"@^`~,;\\]")
+
+(defn- unreadable-keyword?
+  "True when `x` is a keyword whose printed form cannot be read back by the EDN
+   reader — i.e. its name/namespace embeds whitespace or a delimiter char."
+  [x]
+  (and (keyword? x)
+       (let [s (subs (str x) 1)]
+         (or (empty? s)
+             (boolean (re-find unreadable-kw-chars s))))))
+
+(defn sanitise-identity
+  "Drop `:agent-id` / `:defagent-id` values that would serialise as UNREADABLE
+   EDN.  A free-form string coerced to a keyword (e.g. a prompt landing as
+   `:reply this: OK`) writes out fine but throws `Invalid token` on the way
+   back in, and ONE such file used to break `by sessions list` for the whole
+   project.  Dropping the key keeps meta.edn readable; the field is re-derived
+   on the next `:agent.instance/created`.  Strings are left alone — they are
+   always readable."
+  [meta]
+  (reduce (fn [m k]
+            (if (unreadable-keyword? (get m k))
+              (do (binding [*out* *err*]
+                    (println (str "[persist] dropping unreadable " k " "
+                                  (pr-str (get m k)) " from meta.edn")))
+                  (dissoc m k))
+              m))
+          meta
+          [:agent-id :defagent-id]))
+
 (defn save-meta!
   "Write or merge into the session's meta.edn (agent-id, started-at, working-
-   dir, model, etc.)."
+   dir, model, etc.).  Identity keys are sanitised so a bad keyword can never
+   render the file unreadable (see `sanitise-identity`)."
   [session-id meta]
   (update-snap! session-id :meta
                 (fn [prev]
                   (-> (merge prev meta)
+                      sanitise-identity
                       (update :started-at #(or % (System/currentTimeMillis)))))))
 
 (defn read-meta
   [session-id]
   (read-snap session-id :meta {}))
+
+(defn safe-read-meta
+  "Read a session's meta.edn but NEVER throw — a corrupt or unparseable file
+   just yields nil, with a one-line stderr warning so the corruption isn't
+   silent.  This is THE reader to use anywhere sessions are iterated: without
+   it one bad meta.edn blocks `by sessions list` / `/session list` and
+   discover-attach-target for the entire project."
+  [session-id]
+  (try
+    (read-meta session-id)
+    (catch Throwable t
+      (binding [*out* *err*]
+        (println (str "[persist] skipping unreadable meta.edn for "
+                      session-id ": " (.getMessage t))))
+      nil)))
 
 (defn pending-dialogs
   "Return the queue of pending dialog questionnaires, de-duplicated by

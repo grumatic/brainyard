@@ -71,6 +71,7 @@
 
 (def save-meta!         snapshots/save-meta!)
 (def read-meta          snapshots/read-meta)
+(def safe-read-meta     snapshots/safe-read-meta)
 (def pending-dialogs    snapshots/pending-dialogs)
 (def save-pending-dialogs! snapshots/save-pending-dialogs!)
 (def add-pending-dialog!   snapshots/add-pending-dialog!)

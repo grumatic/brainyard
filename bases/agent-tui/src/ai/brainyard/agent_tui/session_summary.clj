@@ -76,7 +76,7 @@
   []
   (->> (persist/summarise-sessions)
        (map (fn [{:keys [session-id] :as s}]
-              (let [meta (persist/read-meta session-id)]
+              (let [meta (persist/safe-read-meta session-id)]
                 (-> s
                     (merge (persist/scan-session session-id))
                     (assoc :live?           (persist/session-live? session-id)

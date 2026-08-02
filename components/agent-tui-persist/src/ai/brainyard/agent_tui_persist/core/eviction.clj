@@ -41,14 +41,12 @@
       :end-bytes (session-size session-id)
       :max-bytes max-bytes})))
 
-(declare safe-read-meta)
-
 (defn- last-attached-at-millis
   "Resolve the session's last-attached-at timestamp (epoch millis) from
    meta.edn, falling back to started-at, then to now. Tolerates a
    corrupt meta.edn (treats it as 'now')."
   ^long [session-id]
-  (let [meta (safe-read-meta session-id)]
+  (let [meta (snapshots/safe-read-meta session-id)]
     (or (:last-attached-at meta) (:started-at meta) (System/currentTimeMillis))))
 
 (def ^:private millis-per-day (* 24 60 60 1000))
@@ -70,22 +68,6 @@
      (doseq [s victims] (paths/delete-session-dir! s))
      (vec victims))))
 
-(defn- safe-read-meta
-  "Read a session's meta.edn but never throw — a corrupt or
-   unparseable file just yields nil. Without this, ONE bad
-   meta.edn (e.g. an old session written by buggy keyword
-   parsing) would block /session list and discover-attach-target
-   for the entire user. Prints a one-line warning on stderr so
-   the corruption isn't completely silent."
-  [session-id]
-  (try
-    (snapshots/read-meta session-id)
-    (catch Throwable t
-      (binding [*out* *err*]
-        (println (str "[persist] skipping unreadable meta.edn for "
-                      session-id ": " (.getMessage t))))
-      nil)))
-
 (defn summarise
   "Return a summary of every persisted session (id, size, last-attached-at).
    Sessions whose meta.edn is unreadable are still included with
@@ -93,7 +75,7 @@
    /session list and prune them."
   []
   (vec (for [s (paths/list-sessions)
-             :let [meta (safe-read-meta s)]]
+             :let [meta (snapshots/safe-read-meta s)]]
          {:session-id s
           :bytes (session-size s)
           :started-at (:started-at meta)
