@@ -101,23 +101,34 @@
          (mulog/warn ::on-tool-post-error :error (.getMessage e))))
   nil)
 
-(defonce ^:private !installed (atom false))
+(defn register-hooks!
+  "(Re)register usage-nudge's observers. Idempotent — `register-hook!` dedupes by
+   [event-key handler-id], so calling this at ns load, across reloads, or from a
+   test that has wiped the global registry (`hooks/reset-hooks!`) is safe.
+
+   A fn rather than the `defonce`+`compare-and-set!` latch it used to be: that
+   made registration a ONE-SHOT for the life of the JVM, so anything clearing the
+   hook table (`reset-hooks!` is on the public interface — ~24 test namespaces
+   call it) permanently disarmed the JIT usage guides, silently. Same fix as
+   agent.core.agent's parent-close cascade and coact-agent's scratch cleanup."
+  []
+  (hooks/register-hook! :agent.tool-use/post ::usage-nudge on-tool-post
+                        :source :usage-nudge)
+  ;; Arg-validation rejections never reach :agent.tool-use/post (they
+  ;; short-circuit before dispatch), so also listen for the rejected event —
+  ;; a malformed FIRST call to a family is exactly when the guide helps most.
+  (hooks/register-hook! :agent.tool-use/rejected ::usage-nudge-rejected on-tool-post
+                        :source :usage-nudge)
+  nil)
+
+(register-hooks!)
 
 (defn ensure-global-hooks!
-  "Install the `:agent.tool-use/post` observer once per process at RUNTIME
-   (guarded by a runtime atom so native-image bakes `false` and the first real
-   turn installs). Safe to call every turn."
+  "Install the tool-use observers at RUNTIME. Retained as the name coact-init
+   calls every turn; delegates to the idempotent `register-hooks!`, which also
+   re-arms the hooks if something cleared the registry mid-process."
   []
-  (when (compare-and-set! !installed false true)
-    (hooks/register-hook! :agent.tool-use/post ::usage-nudge on-tool-post
-                          :source :usage-nudge)
-    ;; Arg-validation rejections never reach :agent.tool-use/post (they
-    ;; short-circuit before dispatch), so also listen for the rejected event —
-    ;; a malformed FIRST call to a family is exactly when the guide helps most.
-    (hooks/register-hook! :agent.tool-use/rejected ::usage-nudge-rejected on-tool-post
-                          :source :usage-nudge)
-    (mulog/info ::global-hooks-installed))
-  nil)
+  (register-hooks!))
 
 (defn seed-inlined-topics!
   "Pre-mark permanently-inlined guide topics as shown so the JIT path skips them.

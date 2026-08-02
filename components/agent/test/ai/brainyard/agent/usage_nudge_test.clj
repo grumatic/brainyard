@@ -110,7 +110,9 @@
 
 (deftest rejected-hook-wiring-test
   (testing "ensure-global-hooks! registers usage-nudge on post AND rejected events"
-    (un/ensure-global-hooks!)               ; idempotent; may already be installed
+    ;; Re-establish explicitly: an earlier ns in the suite may have called
+    ;; hooks/reset-hooks!, and registration must survive that (no JVM latch).
+    (un/register-hooks!)
     (is (some #(= :usage-nudge (:source %)) (hooks/list-hooks :agent.tool-use/post)))
     (is (some #(= :usage-nudge (:source %)) (hooks/list-hooks :agent.tool-use/rejected))))
   (testing "firing :agent.tool-use/rejected queues the family guide with :reason :error"
