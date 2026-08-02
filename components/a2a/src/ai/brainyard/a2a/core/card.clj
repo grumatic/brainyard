@@ -109,26 +109,48 @@
 
 (def ^:const JSONRPC_TRANSPORT "JSONRPC")
 
+(defn- interface-entries
+  "Every transport binding a card declares, across BOTH card generations.
+
+   A2A v1.0 replaced the v0.3 endpoint fields wholesale, and real servers
+   ship both shapes:
+
+     v0.3  :url + :preferredTransport + :additionalInterfaces [{:url :transport}]
+     v1.0  :supportedInterfaces [{:url :protocolBinding :protocolVersion}]
+
+   A v1.0 card has NO top-level `:url` and NO `:preferredTransport` at all,
+   so a reader that only knows v0.3 resolves no endpoint and reports the
+   peer as offering no JSON-RPC binding — which is what brainyard did
+   against the official a2a-sdk 1.1.0 sample until this existed."
+  [card]
+  (concat (:supportedInterfaces card) (:additionalInterfaces card)))
+
+(defn- jsonrpc-interface-url
+  "The URL of one interface entry when it is a JSON-RPC binding, else nil.
+   Reads `:protocolBinding` (v1.0) or `:transport` (v0.3)."
+  [{:keys [url protocolBinding transport]}]
+  (let [binding' (or protocolBinding transport)]
+    (when (= JSONRPC_TRANSPORT (some-> binding' str str/upper-case))
+      (base-url url))))
+
 (defn jsonrpc-endpoint
   "Resolve the JSON-RPC endpoint URL from a card, or nil when the peer does
-   not offer one.
+   not offer one. Understands both the v0.3 and v1.0 card shapes — see
+   `interface-entries`.
 
-   A card advertises a primary `:url` + `:preferredTransport`, plus any
-   number of `:additionalInterfaces`. `:preferredTransport` is optional and
-   defaults to JSONRPC per spec, so an absent value means the primary URL
-   is the JSON-RPC one. When the preferred transport is something else
-   (gRPC, HTTP+JSON), we look for a JSONRPC entry among the additional
-   interfaces before giving up — a gRPC-first agent is usually still
-   reachable over JSON-RPC."
+   Order:
+   1. The v0.3 primary `:url`, when `:preferredTransport` is JSONRPC or
+      absent (absent defaults to JSONRPC per spec, so omitting it is a
+      positive statement rather than a missing one).
+   2. Any JSON-RPC entry among `:supportedInterfaces` / `:additionalInterfaces`.
+      This covers a v1.0 card, and also a gRPC-first v0.3 agent that is
+      still reachable over JSON-RPC."
   [card]
   (let [preferred (some-> (:preferredTransport card) str str/upper-case)
         primary   (base-url (:url card))]
-    (if (or (nil? preferred) (= JSONRPC_TRANSPORT preferred))
-      primary
-      (some (fn [{:keys [url transport]}]
-              (when (= JSONRPC_TRANSPORT (some-> transport str str/upper-case))
-                (base-url url)))
-            (:additionalInterfaces card)))))
+    (or (when (and primary (or (nil? preferred) (= JSONRPC_TRANSPORT preferred)))
+          primary)
+        (some jsonrpc-interface-url (interface-entries card)))))
 
 (defn peer-agent-id
   "The identity of one remote skill, as used in the cross-process call

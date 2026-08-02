@@ -291,3 +291,66 @@
     (let [s (card/skill {:id "a" :name "A" :tags ["x"] :input-modes ["text/plain"]})]
       (is (= ["x"] (:tags s)))
       (is (= ["text/plain"] (:inputModes s))))))
+
+;; =============================================================================
+;; Cross-version card shapes — captured from real servers
+;; =============================================================================
+
+(def v1-card
+  "A REAL Agent Card, captured verbatim from the official `a2a-sdk` 1.1.0
+   helloworld sample (a2aproject/a2a-samples).
+
+   A2A v1.0 replaced the v0.3 endpoint fields: there is NO top-level `:url`,
+   NO `:preferredTransport` and NO top-level `:protocolVersion` — only
+   `:supportedInterfaces`, whose entries name the binding `:protocolBinding`
+   rather than `:transport`. Reading only the v0.3 shape resolved no endpoint
+   and reported the peer as offering no JSON-RPC binding, which is exactly
+   what brainyard did against this server."
+  {:name "Hello World Agent"
+   :description "Just a hello world agent"
+   :version "0.0.1"
+   :supportedInterfaces [{:url "http://127.0.0.1:9999"
+                          :protocolBinding "JSONRPC"
+                          :protocolVersion "1.0"}]
+   :capabilities {:streaming true :extendedAgentCard true}
+   :defaultInputModes ["text/plain"]
+   :defaultOutputModes ["text/plain"]
+   :skills [{:id "echo_bot" :name "Echo Bot"
+             :description "An example agent."
+             :tags ["a2a" "echo-example"]
+             :inputModes ["text/plain"] :outputModes ["text/plain"]}]})
+
+(deftest v1-card-is-understood-test
+  (testing "a real v1.0 card validates"
+    (is (schema/valid? schema/AgentCard v1-card))
+    (is (nil? (:error (card/parse v1-card)))))
+
+  (testing "its endpoint resolves from :supportedInterfaces"
+    ;; The regression: v1.0 has no top-level :url at all.
+    (is (= "http://127.0.0.1:9999" (card/jsonrpc-endpoint v1-card))))
+
+  (testing ":protocolBinding is honoured, not just :transport"
+    (is (= "https://x" (card/jsonrpc-endpoint
+                        {:supportedInterfaces [{:url "https://x"
+                                                :protocolBinding "JSONRPC"}]}))))
+
+  (testing "a v1.0 card offering only gRPC still resolves to nil"
+    (is (nil? (card/jsonrpc-endpoint
+               {:supportedInterfaces [{:url "https://x" :protocolBinding "GRPC"}]}))))
+
+  (testing "its skills read normally"
+    (is (= ["echo_bot"] (mapv :id (card/skills v1-card)))))
+
+  (testing "an absent top-level :protocolVersion is treated as compatible"
+    ;; It lives inside the interface entry in v1.0. Refusing on its absence
+    ;; would reject every v1.0 card outright.
+    (is (nil? (card/version-error v1-card)))))
+
+(deftest v03-card-still-resolves-test
+  (testing "the v0.3 shape is unaffected by v1.0 support"
+    (is (= "https://peer-b.example/a2a" (card/jsonrpc-endpoint a-card)))
+    (is (= "https://peer-b.example/rpc"
+           (card/jsonrpc-endpoint
+            (assoc a-card :preferredTransport "GRPC"
+                   :additionalInterfaces [{:url "https://peer-b.example/rpc"
+                                           :transport "JSONRPC"}]))))))

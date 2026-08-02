@@ -243,10 +243,18 @@
 
 (def AgentInterface
   "One transport binding the agent is reachable on. A card may advertise
-   several (JSON-RPC, gRPC, REST); we consume the JSON-RPC one."
+   several (JSON-RPC, gRPC, REST); we consume the JSON-RPC one.
+
+   The binding field is named differently by card generation —
+   `:transport` under v0.3's `:additionalInterfaces`, `:protocolBinding`
+   under v1.0's `:supportedInterfaces` — so BOTH are optional here and
+   `card/jsonrpc-endpoint` reads whichever is present. Requiring either one
+   would reject a conformant card from the other generation."
   [:map {:closed false}
    [:url :string]
-   [:transport :string]])
+   [:transport {:optional true} :string]
+   [:protocolBinding {:optional true} :string]
+   [:protocolVersion {:optional true} :string]])
 
 (def SecurityScheme
   [:map {:closed false}
@@ -267,7 +275,11 @@
    [:provider {:optional true} [:maybe AgentProvider]]
    [:capabilities {:optional true} [:maybe AgentCapabilities]]
    [:skills {:optional true} [:vector AgentSkill]]
+   ;; v0.3 spelling and v1.0 spelling of the same idea. Neither is required:
+   ;; a v1.0 card carries only `:supportedInterfaces` (and no top-level
+   ;; `:url`), a v0.3 card only `:additionalInterfaces`.
    [:additionalInterfaces {:optional true} [:vector AgentInterface]]
+   [:supportedInterfaces {:optional true} [:vector AgentInterface]]
    [:securitySchemes {:optional true} [:maybe :map]]
    [:security {:optional true} [:vector :map]]
    [:defaultInputModes {:optional true} [:vector :string]]
