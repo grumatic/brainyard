@@ -132,3 +132,39 @@
             (.close root)
             (try (.close sub) (catch Throwable _))
             (try (.close conn) (catch Throwable _))))))))
+
+(deftest ^:integration acp-create-close-roundtrip-test
+  (testing "acp$close reaps a connection that acp$create provisioned (regression: the owner-first guard refused every one of them)"
+    (let [sid    (str "acp-roundtrip-" (System/currentTimeMillis))
+          caller (agent/setup-agent-by-id
+                  :coact-agent
+                  :agent-session {:user-id "u" :session-id sid})]
+      (binding [proto/*current-agent* caller]
+        (try
+          (let [created (tool/invoke-tool :acp$create
+                                          {:backend      "stub"
+                                           :purpose      "roundtrip"
+                                           :backend-opts {:chunk-delay-ms 5}})
+                acp-id  (:acp-id created)]
+            (is (nil? (:error created)) (str "acp$create failed: " (:error created)))
+            (is (string? acp-id))
+
+            (testing "acp$create ALWAYS parents the connection — the precondition that made the old owner-first guard unreachable"
+              (let [row (first (filter #(= acp-id (:acp-id %))
+                                       (:acp-agents (tool/invoke-tool :acp$list {:session-id sid}))))]
+                (is (some? row) "created connection shows up in acp$list")
+                (is (some? (:owner row)) "a provisioned connection has a NON-NIL owner (:parent-agent is unconditional)")
+                (is (true? (:provisioned? row)) "mark-provisioned! flagged it")))
+
+            (testing "acp$close closes it instead of deflecting to agent-registry$close"
+              (let [closed (tool/invoke-tool :acp$close {:id acp-id})]
+                (is (not (re-find #"owned subagent" (str (:error closed))))
+                    "acp$close must not send an acp$create-provisioned connection to agent-registry$close")
+                (is (not (re-find #"TUI-attached root" (str (:error closed)))))
+                (is (nil? (:error closed)) (str "acp$close failed: " (:error closed)))
+                (is (:closed closed))))
+
+            (testing "the connection is gone from acp$list"
+              (is (empty? (filter #(= acp-id (:acp-id %))
+                                  (:acp-agents (tool/invoke-tool :acp$list {:session-id sid})))))))
+          (finally (.close caller)))))))

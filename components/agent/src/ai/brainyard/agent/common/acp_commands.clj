@@ -383,14 +383,23 @@
               (let [d     (acp/descriptor target)
                     owner (:owner (agent-core/lifecycle target))]
                 (cond
+                  ;; :provisioned? is checked FIRST, before ownership. acp$create
+                  ;; ALWAYS passes :parent-agent (so acp$update/close can be
+                  ;; owner-scoped and the connection never claims the session's
+                  ;; persisted resume identity), which means every connection it
+                  ;; provisions has a non-nil owner. An owner-first guard therefore
+                  ;; refused the exact instances acp$close exists to reap, telling
+                  ;; the caller to use agent-registry$close instead. The flag set by
+                  ;; mark-provisioned! is the real signal for "this is mine to tear
+                  ;; down"; ownership only distinguishes the two REFUSAL cases below.
+                  (:provisioned? d)
+                  (agent-core/close-instance! (:agent-id target))
+
                   (some? owner)
                   {:error "This ACP instance is an owned subagent — close it via agent-registry$close."}
 
-                  (not (:provisioned? d))
-                  {:error "This ACP instance is a TUI-attached root — close it via /agent close (acp$close only reaps acp$create-provisioned connections)."}
-
                   :else
-                  (agent-core/close-instance! (:agent-id target)))))
+                  {:error "This ACP instance is a TUI-attached root — close it via /agent close (acp$close only reaps acp$create-provisioned connections)."})))
           {:error (str "ACP instance not found: " id)}))))
   :input-schema  [:map
                   [:id [:string {:desc "ACP instance id to close"}]]]
