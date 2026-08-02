@@ -256,7 +256,7 @@
    sources at the root, and `<project>/src` would silently add nothing."
   [agent]
   (when-let [pd (:project-dir (config/get-config agent :dirs))]
-    (let [src (java.io.File. pd "src")]
+    (let [src (java.io.File. ^String pd "src")]
       [(.getPath (if (.isDirectory src) src (java.io.File. ^String pd)))])))
 
 (defcommand clj-nrepl$add-classpath
