@@ -1269,9 +1269,113 @@
            (apply shell docker-args))}
 
   ;; --------------- Test tasks ---------------
+  ;;
+  ;; Cost note (measured 2026-08-02, 14-core M-series): the suite is NOT
+  ;; CPU-bound — a full run sits at ~55% of ONE core, because ~62s of it is
+  ;; literal `Thread/sleep` in components/agent/test (task_test,
+  ;; clj_sandbox_executor_test, background_test, coact_agent_test,
+  ;; coact_agent_step_f_test). Reach for `test:ns` / `test:brick` in the edit
+  ;; loop rather than paying that on every change.
+  ;;
+  ;; Thread-level parallelism (kaocha/eftest :multithread?) is NOT safe here:
+  ;; the suite mutates process-global state — `with-redefs` (rebinds var ROOTS,
+  ;; visible to every thread), the hooks registry, the task-manager singleton,
+  ;; `!tool-defs`. Any parallel runner must isolate at the PROCESS level.
   test
-  {:doc "Run all Polylith tests"
+  {:doc "Run Polylith tests for CHANGED bricks only (incremental).
+
+  Change detection is relative to the most recent `stable-*` tag (:tag-patterns
+  in workspace.edn). With NO such tag Polylith falls back to the repo's FIRST
+  commit and marks every brick changed — i.e. this silently degrades into
+  `bb test:all` on every run, which is how it drifted to ~2.5 min. Check the
+  current marker with `clj -M:poly info` (top line: 'stable since'); move it
+  forward with `bb test:stable`.
+
+  Note: the run ABORTS at the first namespace with a failure, so a red suite
+  under-reports how much is left unrun. Iterate with `bb test:ns` (one JVM,
+  namespace-level) or `bb test:component <name>` instead; for Polylith's own
+  per-brick selection use `clj -M:poly test brick:agent`."
    :task (shell "clj" "-M:poly" "test")}
+
+  test:all
+  {:doc "Run every brick test, ignoring change detection (`poly test :all-bricks`)."
+   :task (shell "clj" "-M:poly" "test" ":all-bricks")}
+
+  test:ns
+  {:doc "Run specific test namespaces in ONE plain JVM — the fast edit-loop path.
+
+  Skips Polylith entirely (no workspace scan, no per-project re-runs), so a
+  single namespace comes back in seconds instead of minutes. Accepts full
+  namespace names or a substring to match against them.
+
+  Examples:
+    bb test:ns ai.brainyard.agent.common.nrepl-bindings-test
+    bb test:ns nrepl-bindings           # substring match
+    bb test:ns coact-agent-test debug-agent-test
+
+  Unlike `bb test` this does NOT stop at the first failing namespace."
+   :requires ([clojure.string :as str]
+              [babashka.fs :as fs])
+   :task (let [args (vec *command-line-args*)
+               test-dirs (->> (concat (fs/glob "." "components/*/test")
+                                      (fs/glob "." "bases/*/test"))
+                              (map str) sort vec)
+               all-ns (->> test-dirs
+                           (mapcat (fn [d]
+                                     (map (fn [p]
+                                            (let [rel (str (fs/relativize (fs/path d) p))
+                                                  bare (subs rel 0 (- (count rel) 4))]
+                                              (-> bare
+                                                  (str/replace "/" ".")
+                                                  (str/replace "_" "-"))))
+                                          (fs/glob d "**/*_test.clj"))))
+                           sort vec)
+               selected (if (empty? args)
+                          []
+                          (->> all-ns
+                               (filter (fn [n]
+                                         (some (fn [a] (or (= n a) (str/includes? n a)))
+                                               args)))
+                               distinct vec))]
+           (cond
+             (empty? args)
+             (do (println "Usage: bb test:ns <namespace-or-substring> [...]")
+                 (println (str "(" (count all-ns) " test namespaces available)"))
+                 (System/exit 1))
+
+             (empty? selected)
+             (do (println (str "No test namespace matched: " (str/join ", " args)))
+                 (System/exit 1))
+
+             :else
+             (let [_ (println (str "Running " (count selected) " namespace(s):"))
+                   _ (doseq [n selected] (println "  " n))
+                   deps (str "{:aliases {:brick-tests {:extra-paths "
+                             (pr-str test-dirs) "}}}")
+                   forms (str "(require '[clojure.test :as t])"
+                              (str/join (map (fn [n] (str "(require '" n ")")) selected))
+                              ;; symbols, not strings — run-tests casts to Symbol
+                              "(let [r (apply t/run-tests '(" (str/join " " selected) "))]"
+                              "  (shutdown-agents)"
+                              "  (System/exit (if (pos? (+ (:fail r) (:error r))) 1 0)))")]
+               (shell "clojure" "-Sdeps" deps "-M:dev:brick-tests" "-e" forms))))}
+
+  test:stable
+  {:doc "Tag HEAD as the new Polylith stable point (local tag; NOT pushed).
+
+  `bb test` only re-runs bricks changed since this marker. Move it after a
+  green run so the next `bb test` stays incremental — if no `stable-*` tag
+  exists at all, Polylith treats the ENTIRE workspace as changed forever.
+
+  Usage: bb test:stable [tag-name]     (default: stable-YYYYMMDD)"
+   :requires ([clojure.string :as str])
+   :task (let [tag (or (first *command-line-args*)
+                       (str "stable-" (.format (java.time.LocalDate/now)
+                                               (java.time.format.DateTimeFormatter/ofPattern
+                                                "yyyyMMdd"))))]
+           (shell "git" "tag" "-f" tag "HEAD")
+           (println (str "Tagged HEAD as " tag " (local only — push with `git push origin " tag "` if you want it shared)."))
+           (shell "clj" "-M:poly" "info"))}
 
   test:memory
   {:doc "End-to-end memory-recall harness (real LLM) — session-scoped L1/L2.
