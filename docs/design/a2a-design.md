@@ -1,6 +1,37 @@
 # Applying the Agent2Agent Protocol (A2A) to brainyard
 
 > Status: **Shipped** (2026-08-02, author: assistant + Jake Na).
+>
+> **Live-verified (nrepl-verify, against a real LLM and a separate server
+> process).** A `bb tui` JVM as client, a second `by` process as server:
+> `a2a$connect` discovered the card, `a2a$card` listed the skill,
+> `a2a$<peer>$<skill>` returned a real answer from the peer's `explore-agent`,
+> `agent-registry$ask` followed up in the same remote conversation, the remote
+> instance appeared in `agent-registry$list` as `:kind :remote`, and
+> `a2a-agent` answered a live question by calling `a2a$list` + `a2a$card`.
+>
+> **Two bugs that ONLY live verification could find** — both fixed, both with
+> regression tests. Every unit test had set the relevant state by hand and so
+> never exercised the real layering:
+>
+> - **Call depth was counted three times, so no remote call could ever
+>   succeed.** `tool/call-tool` already binds an incremented `*call-depth*`
+>   for a `:type :agent` dispatch, `make-invoke` incremented it again, and
+>   `stamp-chain` added its own `+1`. With the default limit of 3, the very
+>   first hop came back "depth limit reached (3 >= 3)". Fixed by removing the
+>   duplicate increment and handing `stamp-chain` the pre-dispatch depth; a
+>   first hop now stamps 1.
+> - **Conversation continuity was broken on the default path.**
+>   `message/send` returned the peer's `contextId`, but the STREAMING path
+>   never put it in any frame and `ask-streaming` never read it back — so
+>   every follow-up silently started a fresh remote conversation. Streaming is
+>   the default, so this was the normal case. Fixed on both sides (server
+>   emits it, client captures it).
+>
+> One thing the topology cannot test in-process: the full
+> client → HTTP → separate-server → follow-up path. Client and server sharing
+> a JVM share a node id, so the cycle guard correctly refuses it. That path is
+> covered by the live run above; the in-process suite pins the two halves.
 > **Phases 0–7 complete** except OAuth2 client auth and push notifications,
 > which are written up in §12 rather than left to be rediscovered. Both halves
 > of the protocol work end to end, in the JVM and **in the native binary**.

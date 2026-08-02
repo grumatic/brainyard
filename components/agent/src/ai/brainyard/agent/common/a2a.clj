@@ -157,8 +157,15 @@
                                    :description     (:description skill)
                                    :remote-agent-id remote-id})]
             (agent-core/register-agent ra)
-            (binding [proto/*call-depth* (inc proto/*call-depth*)
-                      proto/*call-chain* (conj proto/*call-chain* remote-id)]
+            ;; Only the CHAIN is extended here, never the depth.
+            ;; `tool/call-tool` already bound an incremented `*call-depth*`
+            ;; for this dispatch (core/tool.clj) — incrementing again counted
+            ;; one hop twice and, together with `stamp-chain`'s own +1, made
+            ;; every first remote call arrive at the depth limit.
+            ;; The chain conj is still ours: call-tool conj'd the TOOL id,
+            ;; while `cycle-target?` and the outbound stamp need the
+            ;; URL-scoped remote token.
+            (binding [proto/*call-chain* (conj proto/*call-chain* remote-id)]
               (let [result (agent-core/ask ra question)]
                 (cond-> {:answer (:answer result)
                          :id     (id-str agent-id)}

@@ -286,8 +286,28 @@
       (let [m (remote/outbound-metadata "agt-1")]
         (is (= [(a2a/node-id)] (a2a/read-chain m))
             "the chain is this NODE, not the local agent stack")
-        (is (= 2 (a2a/read-depth m)) "depth comes from the local dispatch depth")
         (is (= "agt-1" (a2a/read-context-id m))))))
+
+  (testing "a FIRST hop stamps depth 1, not 3"
+    ;; Regression, found only by live verification against a real peer.
+    ;; `*call-depth*` is ALREADY incremented for this dispatch by the time
+    ;; `process` runs — `tool/call-tool` does it for a :type :agent tool,
+    ;; `ask-agent` does it for agent-registry$ask. An earlier version also
+    ;; incremented in `make-invoke`, and `stamp-chain` adds its own +1, so
+    ;; one logical hop was counted three times: with the default limit of 3,
+    ;; the very first remote call came back "depth limit reached (3 >= 3)"
+    ;; and NO remote dispatch could ever succeed. Every unit test set
+    ;; *call-depth* by hand and so never exercised the real layering.
+    (binding [proto/*call-depth* 1]   ;; what call-tool leaves for hop #1
+      (is (= 1 (a2a/read-depth (remote/outbound-metadata nil)))))
+
+    (testing "and a second hop stamps 2"
+      (binding [proto/*call-depth* 2]
+        (is (= 2 (a2a/read-depth (remote/outbound-metadata nil))))))
+
+    (testing "depth never goes negative if something calls in unbound"
+      (binding [proto/*call-depth* 0]
+        (is (= 1 (a2a/read-depth (remote/outbound-metadata nil)))))))
 
   (testing "an inbound chain is extended, not replaced, on the next hop"
     (binding [remote/*inbound-chain* ["by-node:upstream"]

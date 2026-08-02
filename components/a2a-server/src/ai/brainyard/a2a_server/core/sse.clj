@@ -114,20 +114,28 @@
                       (catch Throwable t
                         (mulog/error ::stream-ask-failed :exception t)
                         {:error (ex-message t)}))]
-            (if (:error out)
-              (do (emit! (status-frame id task-id context-id :failed
-                                       :text (:error out) :final true))
-                  {:frames @!frames :error (:error out)})
-              (do (emit! (status-frame id task-id context-id
-                                       (or (:state out) :completed)
-                                       :text (:answer out)
-                                       ;; An INTERRUPTED state is not final:
-                                       ;; the task stays open awaiting the
-                                       ;; client, and marking it final would
-                                       ;; tell them to stop listening.
-                                       :final (not (a2a/interrupted?
-                                                    (or (:state out) :completed)))))
-                  {:frames @!frames}))))))))
+            ;; The context id the CLIENT should continue with. On a first
+            ;; call the request carries none, so it is whatever `ask-fn`
+            ;; established — and it must be echoed back, or the client has
+            ;; nothing to send next time and every follow-up silently starts
+            ;; a fresh remote conversation. `message/send` already returned
+            ;; it via `task-response`; the streaming path did not, which
+            ;; broke continuity on the DEFAULT path.
+            (let [ctx (or (:context-id out) context-id)]
+              (if (:error out)
+                (do (emit! (status-frame id task-id ctx :failed
+                                         :text (:error out) :final true))
+                    {:frames @!frames :error (:error out)})
+                (do (emit! (status-frame id task-id ctx
+                                         (or (:state out) :completed)
+                                         :text (:answer out)
+                                         ;; An INTERRUPTED state is not final:
+                                         ;; the task stays open awaiting the
+                                         ;; client, and marking it final would
+                                         ;; tell them to stop listening.
+                                         :final (not (a2a/interrupted?
+                                                      (or (:state out) :completed)))))
+                    {:frames @!frames})))))))))
 
 (defn resubscribe!
   "`tasks/resubscribe` — reattach to an existing task.

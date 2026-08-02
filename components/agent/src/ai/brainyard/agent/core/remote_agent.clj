@@ -112,12 +112,27 @@
 
    Appends THIS node's id to the chain we are servicing (see
    `a2a.core.chain` — the caller appends itself, and entries are node ids,
-   not agent ids). `proto/*call-depth*` supplies the depth, so a local
+   not agent ids). Depth comes from `proto/*call-depth*`, so a local
    dispatch chain and a remote one share one budget and a caller cannot
-   launder depth by alternating local and remote hops."
+   launder depth by alternating local and remote hops.
+
+   ## Why `dec`
+
+   `*call-depth*` ALREADY counts this dispatch by the time `process` runs:
+   both entry points bind an incremented depth first — `tool/call-tool` for
+   a `:type :agent` tool (`core/tool.clj`), and `agent-core/ask-agent` for
+   `agent-registry$ask`. `stamp-chain` then adds one more for the hop it is
+   about to make. Passing `*call-depth*` straight through counts ONE logical
+   hop twice, which is not a rounding error: with the default limit of 3, a
+   first call arrived already at the limit and every remote dispatch was
+   refused. Handing `stamp-chain` the PRE-dispatch depth makes a first hop
+   stamp 1, which is what a receiver expects.
+
+   Found by live verification against a real peer, not by any unit test —
+   every test set `*call-depth*` by hand and so never saw the layering."
   [context-id]
   (a2a/stamp-chain {:chain      (or *inbound-chain* [])
-                    :depth      proto/*call-depth*
+                    :depth      (max 0 (dec proto/*call-depth*))
                     :context-id context-id}))
 
 ;; =============================================================================
@@ -201,7 +216,16 @@
             ;; Prefer the accumulated stream text: the terminal frame's
             ;; own message is often just a status line.
             (and (str/blank? (str (:answer r))) (not (str/blank? (:text @!acc))))
-            (assoc :answer (:text @!acc))))))))
+            (assoc :answer (:text @!acc))
+
+            ;; Carry the peer's contextId out of the accumulator. The
+            ;; terminal descriptor does not include it, so without this the
+            ;; streaming path returns no context and `process` stores nil —
+            ;; every follow-up then starts a FRESH remote conversation
+            ;; instead of continuing the one the instance is supposed to
+            ;; remember. The blocking path never had this gap.
+            (:context-id @!acc)
+            (assoc :context-id (:context-id @!acc))))))))
 
 ;; =============================================================================
 ;; State construction

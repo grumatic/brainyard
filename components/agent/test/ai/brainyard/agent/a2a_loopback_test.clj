@@ -241,6 +241,55 @@
 ;; Serve-side guards
 ;; =============================================================================
 
+(deftest streaming-carries-context-id-for-follow-ups-test
+  ;; Regression, found only by live verification. `message/send` returned the
+  ;; peer's contextId via `task-response`, but the STREAMING path never put it
+  ;; in any frame and `ask-streaming` never read it out of the accumulator.
+  ;; Streaming is the DEFAULT, so in normal use every follow-up silently
+  ;; started a FRESH remote conversation — defeating the entire point of the
+  ;; instance remembering a context.
+  (let [srv (start-server!
+             :ask-fn (fn [{:keys [context-id]}]
+                       ;; A real server establishes a context on the first
+                       ;; call and echoes the client's on later ones.
+                       {:answer "ok" :state :completed
+                        :context-id (or context-id "ctx-established")}))]
+    (try
+      (a2a-client/connect! {:name "self" :url (:url srv) :auth TOKEN})
+      (let [peer (a2a-client/get-peer "self")]
+
+        (testing "the blocking path returns the context (it always did)"
+          (is (= "ctx-established"
+                 (:context-id (a2a-client/send-message! peer "hi" :blocking? true)))))
+
+        (testing "the STREAMING path returns it too"
+          (let [!s (make-session)
+                ra (remote/create {:agent-id :a2a$self$echo/ctx
+                                   :peer-name "self" :skill-id "explore-agent"
+                                   :parent-agent (make-parent !s) :!session !s
+                                   :remote-agent-id "x#y"})
+                out (remote/ask-streaming ra peer "hi" {:timeout-ms 8000})]
+            (is (nil? (:error out)))
+            (is (= "ctx-established" (:context-id out))
+                "without this, process stores nil and continuity is lost")))
+
+        ;; There is deliberately NO in-process assertion that `process`
+        ;; stores the context across two turns. `process` stamps this node's
+        ;; id, and here the client and server share a JVM — so the server
+        ;; correctly refuses its own id as a cycle (see
+        ;; `self-loopback-is-refused-over-the-wire-test`). The full
+        ;; client -> HTTP -> separate-server -> follow-up path cannot be
+        ;; expressed in a same-JVM test BY DESIGN.
+        ;;
+        ;; It was verified live instead, TUI JVM against a separate server
+        ;; process: first ask captured contextId a2a-1785707243147, and the
+        ;; follow-up through agent-registry$ask reported the same one.
+        ;; What this test pins is the two halves that made that possible —
+        ;; the server emitting contextId in its stream frames, and
+        ;; `ask-streaming` reading it back out.
+        )
+      (finally (a2a-server/stop! srv)))))
+
 (deftest serve-refuses-without-configuration-test
   (testing "serve! refuses when A2A is disabled"
     ;; :enable-a2a defaults false, so an unconfigured process cannot
