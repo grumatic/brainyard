@@ -220,9 +220,10 @@ hook event ──► S0 dispatcher ──► S1 parser ──► sidecar thread 
   (pre self-recalled and doubled episode count; tool/eval/error episodes
   were operational noise — successes *and* errors live in the trajectory
   log + `memory_audit`, queryable via `trajectory$search`). Capture is
-  further scoped to **ROOT-agent turns** by a `:match` predicate
-  (`root-agent-capture-event?`): a subagent's ask/post is sub-task detail,
-  dropped. The generic droppable `sliding-buffer` + dedup path still exists
+  further scoped to **the user's turns** by a `:match` predicate
+  (`agent-capture-event?`): the session root plus any session-sharing
+  subagent (an ACP connection). A DISPATCHED subagent's ask/post is
+  sub-task detail, dropped. The generic droppable `sliding-buffer` + dedup path still exists
   but no subscribed event routes there.
 - **S1 — Parser** (`memory.core.capture.parser`) is a pure multimethod
   by `:event-key`. Each event becomes an L2 episode with populated

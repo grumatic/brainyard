@@ -2505,7 +2505,7 @@
       sub-agent is NOT in :share-parent-output-session mode. This is what
       consolidates per-sub-agent output into one tab per root.
    Returns nil when nothing matches (e.g. share-parent-output sub-agent, or a
-   session-sharing sibling like an acp$create connection — callers fall through
+   session-sharing subagent like an acp$create connection — callers fall through
    to `find-session-for-parent` for those, i.e. onto the creator's chat tab)."
   [agent]
   (or (first (filter #(identical? (:agent %) agent) (sessions/session-list)))
@@ -2560,7 +2560,7 @@
    to the root's TUI session so a session switch doesn't cause spinner updates
    to land in the wrong scrollback.
 
-   Session-sharing siblings (acp$create connections) are skipped: they have a
+   Session-sharing subagents (acp$create connections) are skipped: they have a
    parent but render themselves in the user's session through the ACP
    transcript block, so a subagents-block line would double-report them."
   [{:keys [agent]}]

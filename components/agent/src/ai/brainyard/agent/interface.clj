@@ -217,7 +217,7 @@
                 event-catalog known-event?
                 register-event! unregister-event! dynamic-events
                 match-all match-any match-agent-id match-defagent-type
-                match-root-agent)
+                match-root-agent match-user-turn-agent)
 
 ;; User-defined event registry + emit path (docs/design/event-bus-and-reactor.md).
 ;; `emit-event!` backs both the `event$emit` tool and the ask.sock `:op :emit`

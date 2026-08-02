@@ -102,7 +102,7 @@
 (deftest match-predicate-scopes-capture-test
   (testing ":match passed to start-capture! filters writes end-to-end — the
             mechanism behind root-only capture (subagent ask/post is dropped)"
-    ;; Stand in for root-agent-capture-event? with a simple flag on the event.
+    ;; Stand in for agent-capture-event? with a simple flag on the event.
     (mem/start-capture! *mm* :match (fn [m] (:keep? m)))
     (hooks/fire! :agent.ask/post {:session-id "sm" :user-id "u"
                                   :input "root turn" :result "a" :keep? true})

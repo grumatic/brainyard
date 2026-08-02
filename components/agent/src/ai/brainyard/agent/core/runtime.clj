@@ -302,3 +302,62 @@
   "Get the parent agent, if any."
   [!state]
   (get-in @!state [:runtime :parent-agent]))
+
+;; ---------------------------------------------------------------------------
+;; Agent hierarchy — TWO ORTHOGONAL AXES
+;;
+;; These live here, on the leaf ns that already owns the `!state` accessors,
+;; because the low-level callers that need them (core.hooks, core.feature)
+;; cannot require `core.agent` — `core.agent` requires THEM. `core.agent` keeps
+;; the record-level predicates; these ask the same questions of raw `!state`.
+;;
+;;   Axis 1 — HIERARCHY (ownership).  Exactly ONE root per session; everything
+;;            else is a subagent (has a parent / `:owner`). Answers "is this THE
+;;            session's agent?" — who drives per-session SINGLETON behaviour
+;;            (consolidation cadence, distillation, nudges, reactions, FSM,
+;;            task-wakeup, auto-notify), who holds management authority, who
+;;            owns the persisted resume identity.
+;;
+;;   Axis 2 — SESSION SHARING.  A property OF a subagent: are its turns the
+;;            user's turns in this session? An acp-agent shares (it is the user
+;;            talking to a second model); a dispatched worker does not (its ask
+;;            is operational detail nested in the root's turn). Answers "is this
+;;            the user talking?" — L2 capture, answer rendering, input
+;;            suggestions.
+;;
+;; `:share-parent-session` is an axis-2 MODIFIER, never an axis-1 promotion.
+;; A session-sharing subagent is still a subagent: it must not drive per-session
+;; singletons, or it and the root would both advance the same session's cadence
+;; and double-count it. (This is exactly the trap the "sibling"/"peer" language
+;; elsewhere in the codebase sets — there is no third kind of agent.)
+;; ---------------------------------------------------------------------------
+
+(defn root-state?
+  "Axis 1. True when this instance is the session's ROOT — no parent.
+
+   The strict test, and the right one for every per-session singleton. Do NOT
+   widen it to admit session-sharing subagents: sharing is about whose turn it
+   is (axis 2), not about who owns the session.
+
+   Defensive: an unreadable/absent state reads as root, so an unknown shape
+   never silently withholds a capability."
+  [!state]
+  (try (nil? (get-parent-agent !state))
+       (catch Throwable _ true)))
+
+(defn dispatched-subagent-state?
+  "Axis 2 (complement). True when this instance is a subagent DISPATCHED to do a
+   job — i.e. NOT the user talking. False for the root and for a
+   session-sharing subagent.
+
+   `(not (dispatched-subagent-state? …))` is the 'is this the user talking?'
+   test: use it for L2 capture, user-facing answer rendering and input
+   suggestions. It is NOT a root test — see `root-state?`.
+
+   Defensive: an unreadable/absent state reads as NOT dispatched, so an unknown
+   shape is never silently treated as operational detail and dropped."
+  [!state]
+  (try
+    (boolean (and (some? (get-parent-agent !state))
+                  (not (get-in @!state [:lifecycle :share-parent-session?]))))
+    (catch Throwable _ false)))

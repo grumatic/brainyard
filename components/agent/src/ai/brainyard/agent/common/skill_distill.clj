@@ -44,6 +44,7 @@
             [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
+            [ai.brainyard.agent.core.runtime :as runtime]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.clj-llm.interface :as clj-llm]
             [ai.brainyard.mulog.interface :as mulog]
@@ -260,11 +261,13 @@
 ;; ============================================================================
 
 (defn- root-agent?
-  "True when `agent` has no parent — only root agents drive distillation;
-   sub-agents share the session turn and would double-fire."
+  "True when `agent` is the session's ROOT — no parent (axis 1). Distillation is
+   a per-session singleton driven by the one root; any other instance in the
+   session is a subagent and would double-fire against the same trajectory.
+   A session-sharing subagent (acp-agent) contributes turns to the session but
+   does not drive the trigger. See `runtime/root-state?`."
   [agent]
-  (try (nil? (get-in @(:!state agent) [:runtime :parent-agent]))
-       (catch Exception _ false)))
+  (runtime/root-state? (:!state agent)))
 
 (defn distill-eligible?
   "True when the just-finished agent should attempt skill distillation:

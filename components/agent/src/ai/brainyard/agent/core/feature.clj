@@ -43,7 +43,8 @@
    - `unclassified-keys` quarantines schema keys that belong to no feature
      because nothing reads them. P3 wires or deletes them."
   (:require [clojure.string :as str]
-            [ai.brainyard.agent.core.config :as config]))
+            [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.runtime :as runtime]))
 
 ;; ============================================================================
 ;; Registry
@@ -849,15 +850,22 @@
     (get-in config/config-schema [k :default])))
 
 (defn- root-agent?
-  "True when `agent` has no parent. A nil agent — the global/programmatic
-   context — counts as root, and anything unreadable does too: this decides
-   whether to WITHHOLD a capability, so an unknown shape must not silently
-   disable one."
+  "True when `agent` is the session's ROOT — no parent (axis 1). A nil agent —
+   the global/programmatic context — counts as root, and anything unreadable
+   does too: this decides whether to WITHHOLD a capability, so an unknown shape
+   must not silently disable one.
+
+   STRICT on purpose. Every `:root-only` feature here (memory consolidation,
+   skill distillation, self-improve nudges, reactions, FSM, task-wakeup) is a
+   per-session SINGLETON, and there is exactly one root per session to drive it.
+   A session-sharing subagent (acp-agent) must NOT qualify: it and the root
+   would both advance the same session's cadence and double-count it. Sharing is
+   about whose TURN it is (axis 2 — see `runtime/dispatched-subagent-state?`),
+   not about who owns the session."
   [agent]
   (if (nil? agent)
     true
-    (try (nil? (get-in @(:!state agent) [:runtime :parent-agent]))
-         (catch Throwable _ true))))
+    (runtime/root-state? (:!state agent))))
 
 (defn feature-state
   "Full resolution for one feature against live config.

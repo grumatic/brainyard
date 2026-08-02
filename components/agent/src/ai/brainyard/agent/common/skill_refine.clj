@@ -217,14 +217,22 @@
          (catch Exception _ false))))
 
 (defn- root-agent?
-  "True when `agent` has no parent.
+  "True when `agent` has no parent — a STRICT parent test, deliberately.
 
    The TURN-level trigger must be root-only: sub-agents share the session id, so
    a sub-agent finishing its own ask would consume and clear the root turn's
    loaded set before the root turn ever ended. This is a local check rather than
    `:root-only` on the feature, because the TOOL-level trigger below legitimately
    fires for sub-agents — a delegated skill that errors is attributable whoever
-   called it."
+   called it.
+
+   NOT migrated to `runtime/dispatched-subagent-state?` like the other root-only
+   sites. Those ask 'whose user turn is this?', and a session-sharing subagent
+   owns its own. This one guards state keyed by SESSION-ID, and a sharing
+   sibling shares the session id exactly as a dispatched worker does — so
+   admitting it here would let it consume and clear the root's loaded set early,
+   which is precisely the failure this predicate exists to prevent. The
+   distinction is the keying, not the ownership of the turn."
   [agent]
   (try (nil? (get-in @(:!state agent) [:runtime :parent-agent]))
        (catch Exception _ false)))

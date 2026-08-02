@@ -127,13 +127,21 @@
    non-nil :owner is a managed subagent (evictable / closeable / cascade target).
 
    :share-parent-session? marks the second kind of subagent: a SESSION-SHARING
-   sibling (acp$create's ACP connections) rather than a dispatched worker. Both
-   have a parent — the difference is what they do with the parent's session. A
-   dispatched worker borrows it to emit output and then dies; a sharing sibling
-   is a peer in the user's own session, so it is not evicted against the
-   dispatch cap, does not die with its creator, and its turns are the user's
-   turns (captured into L2). Default false — a subagent is a worker unless it
-   says otherwise. Agent-level cousin of the TUI's st-memory
+   subagent (acp$create's ACP connections) rather than a dispatched worker. Both
+   have a parent — BOTH ARE SUBAGENTS; the difference is only what they do with
+   the parent's session. A dispatched worker borrows it to emit output and then
+   dies; a session-sharing subagent runs inside the user's own session, so it is
+   not evicted against the dispatch cap, does not die with its creator, and its
+   turns are the user's turns (captured into L2). Default false — a subagent is
+   a worker unless it says otherwise.
+
+   NOT a promotion toward root. A session has exactly ONE root (the instance
+   with no parent); sharing is a property OF a subagent, describing whose turn
+   it is, never who owns the session. Per-session singleton behaviour
+   (consolidation cadence, distillation, nudges, reactions, FSM, task-wakeup)
+   belongs to the root alone — admitting a sharing subagent would have it and
+   the root both advance the same session's counters. See the two-axis note in
+   `agent.core.runtime`. Agent-level cousin of the TUI's st-memory
    `:share-parent-output-session`, which routes rendering only; this one has to
    live on @!state because an acp-agent has no BT st-memory to carry it."
   [{:keys [parent-agent share-parent-session]}]
@@ -161,7 +169,7 @@
     (and (some? o) (= owner-id o))))
 
 (defn share-parent-session?
-  "True when `agent` is a session-sharing sibling rather than a dispatched
+  "True when `agent` is a session-sharing subagent rather than a dispatched
    worker — it has a parent, but it operates inside the parent's own session as
    a peer (acp$create's ACP connections). See `make-lifecycle`."
   [agent]
@@ -171,7 +179,7 @@
   "True when `agent` is a subagent DISPATCHED to do a job — the population the
    per-session cap evicts, the parent-close cascade collects, and the TUI
    renders in the consolidated subagents block. Excludes session-sharing
-   siblings, which have a parent but are peers in the user's session.
+   subagents, which have a parent but run inside the user's own session.
 
    Most callers that historically asked `(some? (get-parent-agent …))` want
    this, not bare `subagent?`: they were written when a parent could only mean
@@ -541,20 +549,27 @@
 ;; Agent Factory
 ;; ============================================================================
 
-(defn- root-agent-capture-event?
-  "L2-capture match predicate: keep only turns that are the USER's Q&A. A
-   dispatched subagent's `:agent.ask/post` is operational detail (sub-task
-   execution) rather than the essential, cross-session Q&A worth remembering, so
-   it is dropped. A session-sharing sibling is kept: an ACP connection's turns
-   are the user talking to a second model inside their own session, which is
-   exactly the material this layer exists to remember. Runs on the raw hook
-   event-map (before capture normalizes away `:agent`). A missing agent ⇒ keep
-   (defensive)."
+(defn- agent-capture-event?
+  "L2-capture match predicate: keep only turns that are the USER's Q&A.
+
+   This is an AXIS-2 test — 'is the user talking?' — not a root test, which is
+   why it is no longer named `root-agent-capture-event?`. It keeps the session
+   root AND session-sharing subagents (an ACP connection's turns are the user
+   addressing a second model inside their own session — exactly the material
+   this layer exists to remember), and drops only the DISPATCHED subagent, whose
+   `:agent.ask/post` is sub-task execution detail.
+
+   Deliberately different from the root test that drives the consolidation
+   CADENCE (`memory-agent.hooks/root-agent?`, axis 1): what is worth remembering
+   and who drives the reduction are different questions. See the two-axis note
+   in `agent.core.runtime`.
+
+   Runs on the raw hook event-map (before capture normalizes away `:agent`).
+   A missing agent ⇒ keep (defensive)."
   [event-map]
   (let [ag (:agent event-map)]
     (or (nil? ag)
-        (nil? (runtime/get-parent-agent (:!state ag)))
-        (share-parent-session? ag))))
+        (not (runtime/dispatched-subagent-state? (:!state ag))))))
 
 (defn- create-agent
   "Create a new Agent instance. Internal — call setup-agent instead.
@@ -578,7 +593,7 @@
      :session-store  - ISessionStore instance for session persistence
      :parent-agent   - Parent agent for sub-agent hierarchy (inherits !session;
                        user-id/session-id args are ignored in that case)
-     :share-parent-session - Mark this subagent a session-sharing sibling rather
+     :share-parent-session - Mark this subagent a session-sharing subagent rather
                        than a dispatched worker (see `make-lifecycle`). Only
                        meaningful alongside :parent-agent.
      :st-memory-init - Initial short-term memory map (stored as atom in !state)
@@ -647,7 +662,7 @@
         _ (swap! !state assoc :clj-agent (runtime/create-clj-agent agent))
 
         ;; Forward sub-agent display events to shared !session for TUI rendering.
-        ;; Dispatched workers only — a session-sharing sibling renders itself in
+        ;; Dispatched workers only — a session-sharing subagent renders itself in
         ;; the user's session (an ACP connection has its own transcript block),
         ;; so forwarding would duplicate it as someone else's activity.
         _ (when (and parent-agent (not share-parent-session))
@@ -667,9 +682,10 @@
               ;; agent on a shared manager fixes the caps for the session).
               (mem/start-capture!
                mm
-               ;; Capture only ROOT-agent turns; a subagent's ask/post is
-               ;; operational, not the essential cross-session Q&A.
-               :match root-agent-capture-event?
+               ;; Capture the USER's turns — the root and any session-sharing
+               ;; subagent (an ACP connection). A DISPATCHED subagent's ask/post
+               ;; is operational, not the essential cross-session Q&A.
+               :match agent-capture-event?
                :limits {:question (config/get-config agent :memory-question-max-chars)
                         :answer   (config/get-config agent :memory-answer-max-chars)}
                ;; Confine graph node/edge explosion: per-episode caps for the
@@ -955,7 +971,7 @@
      :agent-session   - {:user-id :session-id} (required) — the agent-session
                         scope; sub-agents inherit this from :parent-agent's session.
      :parent-agent    - parent agent (if sub-agent call)
-     :share-parent-session - mark this subagent a session-sharing sibling
+     :share-parent-session - mark this subagent a session-sharing subagent
                         (peer in the parent's session) rather than a dispatched
                         worker; default false. See `make-lifecycle`.
      :memory-opts     - memory manager options
@@ -1239,7 +1255,7 @@
 
 (defn count-subagents
   "Number of live DISPATCHED subagents in a session — the LRU cap counts against
-   this. Session-sharing siblings are excluded: they are peers in the user's
+   this. Session-sharing subagents are excluded: they run in the user's
    session with their own cap (ACP connections: :max-acp-agents-per-session),
    and counting them here would let a burst of BT dispatches evict them."
   [session-id]
@@ -1248,7 +1264,7 @@
 (defn lru-subagent
   "The least-recently-asked, non-running DISPATCHED subagent in a session, or
    nil. The eviction victim when a dispatch would exceed the per-session cap.
-   Session-sharing siblings are never victims — an idle ACP connection is idle
+   Session-sharing subagents are never victims — an idle ACP connection is idle
    because the user hasn't asked it anything yet, not because it is stale."
   [session-id]
   (->> (list-agents-for-session session-id)
@@ -1278,7 +1294,7 @@
 ;; a single handler rather than a change to .close's body. Closing a child fires
 ;; its own :agent.instance/closed, cascading naturally down the tree.
 ;;
-;; Session-sharing siblings are NOT collected: an ACP connection created by a
+;; Session-sharing subagents are NOT collected: an ACP connection created by a
 ;; subagent belongs to the user's session, not to the caller's task, and
 ;; outlives whoever happened to open it (the TUI closes it at session end, or
 ;; the user closes it with acp$close).
@@ -1296,7 +1312,22 @@
                     :owner owner-id :child (proto/agent-id child))
         (close-agent-quietly! child)))))
 
-(defonce ^:private !cascade-hook-registered?
-  (do (hooks/register-hook! :agent.instance/closed ::cascade-close-owned
-                            cascade-close-owned! :source ::agent-lifecycle)
-      true))
+(defn register-hooks!
+  "(Re)register the parent-close cascade. Idempotent — `register-hook!` dedupes
+   by [event-key handler-id], so calling this at ns load, across reloads, or
+   from a test that has wiped the global registry (`hooks/reset-hooks!`) is
+   safe.
+
+   Why this is a fn and not the `defonce` it used to be: `defonce` made the
+   registration a ONE-SHOT for the life of the JVM. `reset-hooks!` is on the
+   public interface, so anything that clears the hook table — a test fixture, a
+   user hook, a reload — silently disarmed the cascade PERMANENTLY, since the
+   defonce would never re-run. A closed parent then leaked every subagent it
+   owned, with no error anywhere. That is what made
+   `cascade-collects-workers-but-spares-session-sharing-subagents` pass alone and fail in
+   the full suite. Same shape as debug-agent/acp-agent's `register-hooks!`."
+  []
+  (hooks/register-hook! :agent.instance/closed ::cascade-close-owned
+                        cascade-close-owned! :source ::agent-lifecycle))
+
+(register-hooks!)

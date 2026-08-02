@@ -319,11 +319,13 @@
                         tui-session/evaluation-llm-calling-handler :source :tui)
   (agent/register-hook! :agent.evaluation/done ::tui-eval-done
                         tui-session/evaluation-done-handler :source :tui)
-  ;; Agent suggestion → idle input-bar help tip. Scoped to root agents so a
-  ;; sub-agent's follow-up doesn't hijack the shared input bar.
+  ;; Agent suggestion → idle input-bar help tip. Scoped to turns the USER drove
+  ;; (axis 2), so a dispatched sub-agent's follow-up never hijacks the shared
+  ;; input bar — while an acp-agent, which IS the user talking in this session,
+  ;; still offers its follow-up on its own tab.
   (agent/register-hook! :agent.suggestion/next-user-prompt ::tui-agent-suggestion
                         tui-session/agent-suggestion-handler
-                        :match (agent/match-root-agent) :source :tui))
+                        :match (agent/match-user-turn-agent) :source :tui))
 
 ;; ============================================================================
 ;; Dynamic Skill Registration (once per process, at runtime)

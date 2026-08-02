@@ -442,13 +442,34 @@
    st-memory atom (returned by `agent/get-bt-st-memory` via with-redefs),
    and an `:!state` atom holding `{:runtime {…}}` so handlers that walk
    the `[:runtime :parent-agent]` chain (e.g. `root-of-agent`) work.
-   Pass `:parent` to mark this agent as a sub-agent of another."
+   Pass `:parent` to mark this agent as a sub-agent of another.
+
+   `:parent` has to stamp TWO things, because the two are read by different
+   predicates:
+     - `[:runtime :parent-agent]` — the chain `root-of-agent` walks.
+     - `[:lifecycle :owner]`      — what `agent/subagent?` (and therefore
+                                    `dispatched-subagent?`) actually tests.
+   Only the first existed here originally, which was correct back when a parent
+   could only mean 'dispatched'. `:share-parent-session` (2714099) split that
+   into two kinds and moved the predicate onto the `:lifecycle` map, so a stub
+   carrying only the runtime chain silently stopped counting as a sub-agent —
+   and every handler branch gated on `dispatched-subagent?` (the sub-agent
+   iteration rollup, the tools/code-block accumulators) became dead code under
+   test while still working in production. Mirrors `agent/make-lifecycle`."
   ([] (stub-agent {}))
   ([{:keys [agent-id parent]}]
    (let [st (atom {})]
      {:agent-id (or agent-id :test-agent)
       :stub-st  st
-      :!state   (atom {:runtime (cond-> {} parent (assoc :parent-agent parent))})})))
+      :!state   (atom (cond-> {:runtime (cond-> {} parent (assoc :parent-agent parent))}
+                        parent
+                        (assoc :lifecycle
+                               {:owner                 (:agent-id parent)
+                                :share-parent-session? false
+                                :answers               0
+                                :created-at            0
+                                :last-ask-at           nil
+                                :last-question         nil})))})))
 
 (defn- with-stub-agent
   "Run thunk with `agent/get-bt-st-memory` and `find-session-for-agent`

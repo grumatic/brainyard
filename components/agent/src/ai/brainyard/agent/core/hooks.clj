@@ -86,7 +86,8 @@
    Returning `nil`, a non-map, or any map without a recognized `:result`
    keyword is treated as `{:result :allow}` — observer-style handlers stay
    compatible without changes."
-  (:require [ai.brainyard.mulog.interface :as mulog]))
+  (:require [ai.brainyard.agent.core.runtime :as runtime]
+            [ai.brainyard.mulog.interface :as mulog]))
 
 ;; ============================================================================
 ;; Registry
@@ -487,10 +488,27 @@
            (= (name type-kw) (namespace aid))))))
 
 (defn match-root-agent
-  "Match events whose agent has no parent (i.e. a root agent, not a sub-agent).
-   Looks up the agent's :runtime :parent-agent via !state."
+  "Axis 1. Match events from the session's ROOT — the one instance with no
+   parent. Use for per-session SINGLETON behaviour.
+
+   Strict: a session-sharing subagent (acp-agent) does NOT match. Sharing is
+   about whose turn it is, not who owns the session — if you want 'is the user
+   talking?', that is `match-user-turn-agent` below."
   []
   (fn [event-map]
     (let [ag (event-agent event-map)]
-      (and ag
-           (nil? (get-in @(:!state ag) [:runtime :parent-agent]))))))
+      (and ag (runtime/root-state? (:!state ag))))))
+
+(defn match-user-turn-agent
+  "Axis 2. Match events that are the USER talking — the root, or a
+   session-sharing subagent (an acp-agent: the user addressing a second model
+   inside their own session). Drops the DISPATCHED subagent, whose ask is
+   operational detail nested in the root's turn.
+
+   Use for user-facing surfaces (rendering, input suggestions), NOT for
+   per-session singletons — a sharing subagent matching here is exactly why it
+   must not match `match-root-agent`."
+  []
+  (fn [event-map]
+    (let [ag (event-agent event-map)]
+      (and ag (not (runtime/dispatched-subagent-state? (:!state ag)))))))

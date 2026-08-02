@@ -247,10 +247,10 @@
      (assoc (empty-result :coact-scratch dry-run?) :skipped :disabled)
      (assoc (empty-result :sandbox-cache dry-run?) :skipped :disabled)]
     (let [run (fn [sweep-fn class]
-              (try (sweep-fn dirs :dry-run? dry-run?)
-                   (catch Exception e
-                     (mulog/warn ::sweep-failed :class class :exception e)
-                     (assoc (empty-result class dry-run?) :error (.getMessage e)))))]
+                (try (sweep-fn dirs :dry-run? dry-run?)
+                     (catch Exception e
+                       (mulog/warn ::sweep-failed :class class :exception e)
+                       (assoc (empty-result class dry-run?) :error (.getMessage e)))))]
       [(run sweep-tasks!         :tasks)
        (run sweep-coact-scratch! :coact-scratch)
        (run sweep-sandbox-cache! :sandbox-cache)])))
@@ -283,14 +283,21 @@
           (catch Throwable t
             (mulog/warn ::session-sweep-failed :exception t)))))))
 
-(defonce ^:private !session-hook-registered?
-  (delay
-    (require '[ai.brainyard.agent.core.hooks :as hooks])
-    (let [register! (resolve 'ai.brainyard.agent.core.hooks/register-hook!)]
-      (register! :agent.session/created
-                 ::gc-session-sweep
-                 (fn [_event] (maybe-sweep-async!))
-                 :source ::agent-gc))
-    true))
+(defn register-hooks!
+  "(Re)register the session-created sweep trigger. Idempotent — `register-hook!`
+   dedupes by [event-key handler-id], so calling this at ns load, across
+   reloads, or after a `hooks/reset-hooks!` is safe.
 
-@!session-hook-registered?
+   A fn rather than the `defonce`+`delay` it used to be: that made registration
+   a ONE-SHOT for the life of the JVM, so anything clearing the hook table
+   (`reset-hooks!` is on the public interface) permanently disarmed the sweep —
+   silently, since a GC that never runs looks exactly like a GC with nothing to
+   collect. Same fix as agent.core.agent's parent-close cascade."
+  []
+  (let [register! (requiring-resolve 'ai.brainyard.agent.core.hooks/register-hook!)]
+    (register! :agent.session/created
+               ::gc-session-sweep
+               (fn [_event] (maybe-sweep-async!))
+               :source ::agent-gc)))
+
+(register-hooks!)

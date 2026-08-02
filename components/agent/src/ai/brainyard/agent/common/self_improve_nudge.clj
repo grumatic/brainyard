@@ -30,6 +30,7 @@
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.protocol :as proto]
+            [ai.brainyard.agent.core.runtime :as runtime]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.set :as set]
             [clojure.string :as str]))
@@ -80,11 +81,13 @@
             :queued)))))
 
 (defn- root-agent?
-  "True when `agent` has no parent — only root agents nudge (sub-agents share
-   the session)."
+  "True when `agent` is the session's ROOT — no parent (axis 1). Only the root
+   nudges: the nudge is a per-session singleton, and every other instance in the
+   session is a subagent. A session-sharing subagent (acp-agent) does NOT
+   qualify — it would nudge in the same session the root already does. See
+   `runtime/root-state?`."
   [agent]
-  (try (nil? (get-in @(:!state agent) [:runtime :parent-agent]))
-       (catch Exception _ false)))
+  (runtime/root-state? (:!state agent)))
 
 (defn maybe-queue!
   "Turn-start entry point. No-op unless `:enable-self-improve-nudges` is true

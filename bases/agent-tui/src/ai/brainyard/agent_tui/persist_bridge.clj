@@ -91,11 +91,11 @@
                   (if (namespace aid) (keyword (namespace aid)) aid))
           ;; Subagents (coact→explore, main→rlm, …) share the session-id but
           ;; must NOT redefine the session's resume identity. Only TOP-LEVEL
-          ;; agents (no parent — including `/agent new` siblings) write
+          ;; agents (no parent — including `/agent new` instances (each the root of its own agent-session)) write
           ;; :agent-id/:defagent-id. Otherwise the last subagent created wins
           ;; and `--resume` restores the subagent type instead of the root.
           ;; This covers ACP connections too: acp$create now records the caller
-          ;; as :parent-agent (a session-sharing sibling), so the parent link
+          ;; as :parent-agent (a session-sharing subagent), so the parent link
           ;; alone is enough — no per-defagent exception needed.
           subagent? (some? (agent/get-parent-agent (:!state agent)))]
       (swallow

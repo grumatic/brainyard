@@ -205,7 +205,7 @@
                             live cap)}
             (let [backend-opts (cond-> (merge (or (config/get-config :acp-backend-opts) {}) (or extra {}))
                                  (and model (not (str/blank? (str model)))) (assoc :model model))
-                  ;; The connection is a SESSION-SHARING sibling of its creator:
+                  ;; The connection is a SESSION-SHARING subagent of its creator:
                   ;; :parent-agent records who opened it (so acp$update/close
                   ;; can be scoped to its owner, and it never claims the
                   ;; session's persisted resume identity), while

@@ -30,6 +30,7 @@
             [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
+            [ai.brainyard.agent.core.runtime :as runtime]
             [ai.brainyard.memory.interface :as mem]
             [ai.brainyard.mulog.interface :as mulog])
   (:import [java.lang ProcessHandle]))
@@ -140,12 +141,19 @@
 ;; the parent ask.
 
 (defn- root-agent?
-  "True when `agent` has no parent — only root agents drive consolidation;
-   sub-agents share the session and would double-count the same turn."
+  "True when `agent` is the session's ROOT — no parent (axis 1). Only the root
+   advances the consolidation cadence.
+
+   Note the cadence counter below is keyed by SESSION-ID, so 'once per session'
+   is the whole point: a session-sharing subagent (acp-agent) admitted here would
+   advance the same counter the root advances, firing the cadence boundary at
+   the wrong multiples. It is deliberately NOT symmetric with
+   `agent/agent-capture-event?` — that decides which turns are worth
+   REMEMBERING (axis 2, and a sharing subagent's turns are), while this decides
+   who DRIVES the reduction (axis 1). Content and cadence are different
+   questions. See `runtime/root-state?`."
   [agent]
-  (try
-    (nil? (get-in @(:!state agent) [:runtime :parent-agent]))
-    (catch Exception _ false)))
+  (runtime/root-state? (:!state agent)))
 
 ;; session-id → completed-turn tally. Per-session so the cadence boundary
 ;; is deterministic and independent of which agent instance handled a turn.
