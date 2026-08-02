@@ -1,6 +1,14 @@
 # Applying the Agent2Agent Protocol (A2A) to brainyard
 
-> Status: **Shipped** (2026-08-02, author: assistant + Jake Na).
+> Status: **Shipped, speaking A2A v0.3** (2026-08-02, author: assistant + Jake Na).
+>
+> **Read §13 before relying on this for third-party interop.** The
+> implementation targets the **v0.3** JSON-RPC binding. The current official
+> SDK (`a2a-sdk` 1.1.0) speaks **v1.0**, a materially different wire dialect,
+> so brainyard can talk to another brainyard but **cannot yet call a v1.0
+> peer**. Verified against the official `a2a-samples` helloworld agent: its
+> card parses and its skills read, but its methods do not. Card endpoint
+> resolution for v1.0 is fixed; the dialect is scoped, not built.
 >
 > **Live-verified (nrepl-verify, against a real LLM and a separate server
 > process).** A `bb tui` JVM as client, a second `by` process as server:
@@ -271,14 +279,20 @@ is `spec/a2a.proto`; the JSON-RPC binding is what we implement.
   `"rejected"` (terminal), `"unknown"`, plus two *interrupted* states,
   `"input-required"` and `"auth-required"`.
 
-  > **Two spellings of the same protocol.** A2A's normative artifact is a
-  > protobuf schema whose enum constants are spelled
-  > `TASK_STATE_INPUT_REQUIRED`. Those names appear throughout the published
-  > documentation but **do not travel on the JSON-RPC wire** — a real server
-  > sends `"input-required"`. Everything in this design is the JSON wire form.
-  > Verified against the v0.3.0 specification; `components/a2a`'s schema tests
-  > assert that the protobuf spelling is *rejected*, so the two can never be
-  > confused silently.
+  > **Two spellings of the same protocol — and which one travels depends on
+  > the version.** A2A's normative artifact is a protobuf schema whose enum
+  > constants are spelled `TASK_STATE_INPUT_REQUIRED`. **In v0.3** those names
+  > do *not* travel on the JSON-RPC wire — a v0.3 server sends
+  > `"input-required"` — and everything in this design is that v0.3 JSON wire
+  > form. `components/a2a`'s schema tests assert the protobuf spelling is
+  > *rejected*, which is correct for v0.3.
+  >
+  > **This does not hold for v1.0.** Its JSON-RPC binding is ProtoJSON, so a
+  > v1.0 server sends exactly `TASK_STATE_COMPLETED` and `ROLE_USER` — the
+  > spellings these tests reject. Those assertions therefore encode the right
+  > rule for the dialect we implement and the wrong one for the dialect the
+  > ecosystem now defaults to; they belong behind the dialect split in **§13**
+  > rather than being deleted.
   >
   > Note also that A2A spells it **`"canceled"`** (US, one L) while
   > brainyard's task manager uses `:cancelled` (two Ls). The bridge lives in
@@ -881,9 +895,13 @@ Full `bb test` and `bb build:ata` at the end of Phase 7.
   use `#'alias/x` or thin `defn-` wrappers, as `acp_agent.clj:70-80`
   documents); `Thread/sleep` needs a `long`. `com.sun.net.httpserver` was
   chosen partly because the JDK already puts it in the image.
-- **Spec churn** — A2A is at v1.x under the Linux Foundation with a public RFC
-  process. The version literal lives only in `core/card.clj` (§5.1) and is
-  negotiated, not assumed.
+- **Spec churn — this one already happened, and it is the largest open gap.**
+  What ships implements the **v0.3** JSON-RPC binding; the current official SDK
+  speaks **v1.0**, whose binding is ProtoJSON with different method names, enum
+  spellings, `Part` shape and result envelope. A v0.3 client cannot call a v1.0
+  server. Single-sourcing the version literal in `core/card.clj` (§5.1) was
+  necessary but nowhere near sufficient — the risk was never a scattered string,
+  it was a *dialect* change. Fully scoped in **§13**.
 - **OAuth2 client auth is NOT implemented** (see §12). Bearer, HTTP basic and
   API key are. A peer requiring OAuth2 cannot currently be reached.
 - ~~**Streaming backpressure**~~ — **resolved in Phase 2, differently than
@@ -950,7 +968,95 @@ to a webhook instead of us polling. It needs an inbound HTTP route we are
 willing to expose, which is a bigger security question than the rest of the
 server — worth doing deliberately rather than as a Phase-7 tail item.
 
-## 13. References
+## 13. A2A v1.0 — the wire dialect we do not yet speak
+
+**Status: scoped, not built.** What ships implements the **v0.3** JSON-RPC
+binding. The current official SDK (`a2a-sdk` 1.1.0) speaks **v1.0**, and the
+two are different enough that a v0.3 client cannot call a v1.0 server at all.
+
+### How this was missed
+
+Worth recording, because the failure was in method rather than in code. The
+first spec fetch for this design reported *"Method names: snake_case
+(SendMessage, GetTask)"*. The label `snake_case` is wrong for those examples,
+and that inconsistency was used to dismiss the whole line as garbled — throwing
+away the correct method **names** along with the incorrect **label**. The next
+fetch targeted v0.3.0 specifically, which confirmed the `message/send` shape
+already being written. Contradicting evidence was discarded on a technicality
+and then not sought again.
+
+A consequence still in the tree: §2's note that protobuf enum names "do not
+travel on the JSON-RPC wire" is true of v0.3 and **false of v1.0**, and
+`schema_test.clj` asserts those names are *rejected*. Those assertions encode
+the right rule for the dialect we implement and the wrong one for the dialect
+the ecosystem now defaults to. They should move behind the dialect split
+below rather than simply be deleted.
+
+### The differences, verified against a running `a2a-sdk` 1.1.0
+
+Established empirically — by driving the sample and reading the SDK's own
+`METHOD_TO_MODEL` — not from documentation:
+
+| | v0.3 (implemented) | v1.0 (official SDK) |
+|---|---|---|
+| method names | `message/send`, `tasks/get`, … | `SendMessage`, `GetTask`, … (gRPC service names) |
+| `A2A-Version` header | optional | **required**; absent is read as `0.3` and rejected `-32009` |
+| `Message.role` | `"user"` | `"ROLE_USER"` |
+| `Part` | `{"kind":"text","text":…}` | `{"text":…}` — no discriminator |
+| `TaskStatus.state` | `"completed"` | `"TASK_STATE_COMPLETED"` |
+| result envelope | `{"result": <Task>}` | `{"result":{"task": <Task>}}` |
+| card endpoint | `url` + `preferredTransport` | `supportedInterfaces[{protocolBinding}]` |
+| error code | — | `-32009` VERSION_NOT_SUPPORTED (absent from our catalog) |
+
+`SendMessageRequest` carries `tenant / message / configuration / metadata`, and
+`Message` carries `messageId / contextId / taskId / role / parts / metadata /
+extensions / referenceTaskIds`. In short, **v1.0's JSON-RPC binding is ProtoJSON
+over the protobuf model**, which is what the spec means when it calls the
+`.proto` normative.
+
+Card endpoint resolution is already fixed (`373e294`), so a v1.0 peer is
+**reachable but not callable**.
+
+### Still to determine
+
+Not guesses to be written down as fact:
+
+- The full v1.0 `Part` variant set (the proto models a `text | raw | url | data`
+  one-of; only `text` has been observed, and artifact parts carried `mediaType`).
+- The streaming frame shape under v1.0 (`SendStreamingMessage` /
+  `SubscribeToTask`), including whether the result stays wrapped.
+- Whether artifacts are keyed `artifactId` or `id` in v1.0.
+- Push-notification method naming — `METHOD_TO_MODEL` shows
+  `CreateTaskPushNotificationConfig` while v0.3 used `…/set`.
+- Whether our **server** must speak v1.0 to be callable by modern clients.
+  Almost certainly yes: a v1.0 client will send `SendMessage` and our
+  dispatcher answers `MethodNotFound`.
+
+### Recommended approach
+
+**A negotiated dialect codec in `components/a2a`.** One namespace owns both
+wire vocabularies — method names, enum spellings, `Part` encoding, result
+unwrapping, the version header — and everything else asks it to encode or
+decode. The client selects a dialect per peer from its card; the server selects
+per request from the inbound `A2A-Version`.
+
+The alternative — `if v1?` branches threaded through `a2a-client` and
+`a2a-server` — is how a two-dialect codebase rots, because each new call site
+is one more place to forget. Concentrating it also means the existing
+schema/enum tests split cleanly by dialect instead of being deleted.
+
+Two options deliberately **not** recommended:
+
+- **v1.0 only, drop v0.3.** Cleaner, but it breaks our own server and any v0.3
+  peer, and the SDK still ships a `JSONRPC03Adapter`, so v0.3 servers persist.
+- **Client-side v1.0 only.** Reaches modern peers but leaves us uncallable by
+  them, discarding half the value of the symmetric design.
+
+Scale is comparable to Phases 1–2 combined: this is a second wire format, not
+a compatibility shim. It should be planned as its own piece of work rather
+than appended to this one.
+
+## 14. References
 
 - [A2A Protocol specification](https://a2a-protocol.org/latest/specification/) —
   the JSON-RPC binding, data model, and error catalog implemented here.
