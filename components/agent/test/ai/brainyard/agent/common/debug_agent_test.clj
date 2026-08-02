@@ -122,6 +122,27 @@
       (is (str/includes? ctx (usage/get-usage-guide :nrepl))
           "tool-context must inline the registered guide, not a separate copy"))))
 
+(deftest nrepl-guide-teaches-bound-tools-not-call-tool-workarounds
+  ;; Registered tools are interned into the agent's live namespace
+  ;; (agent.common.nrepl-bindings), so the guide must teach the SAME call shape
+  ;; the system prompt's Function Directory advertises. Before that, the guide
+  ;; carried a whole workaround section — including a `(def dbg (first (filter
+  ;; …)))` dance to recover *current-agent* — for symbols the prompt claimed
+  ;; were already callable.
+  (let [g (usage/get-usage-guide :nrepl)]
+    (testing "bare tool calls are the documented shape"
+      (is (str/includes? g "they are bound as functions"))
+      (is (str/includes? g "(read-file :path"))
+      (is (str/includes? g "(memory$status)")))
+    (testing "the stale denial is gone"
+      (is (not (str/includes? g "does NOT auto-bind"))
+          "the guide must not tell the model its bound tools are unresolvable"))
+    (testing "call-tool survives as the escape hatch, with its two real cases"
+      (is (str/includes? g "escape hatch"))
+      (is (str/includes? g "AS ANOTHER agent"))
+      (is (str/includes? g ":nrepl-host")
+          "a remote endpoint cannot hold local closures — must stay documented"))))
+
 ;; ============================================================================
 ;; Backend selection — agent-clj-backend reads :clj-backend via the unified
 ;; config chain (per-agent override → session → global → schema default
@@ -232,6 +253,17 @@
           "hook backstop must restore the route the shallow merge dropped")
       (is (= :nrepl (agent-clj-backend agent))
           "…and CoAct's block router must see it")
+      ;; The route alone is not enough: resolve-clj-backend demotes :nrepl to
+      ;; :sandbox unless the same agent ALSO resolves :nrepl-enabled? true, so
+      ;; the hook has to re-assert both. Assert the LAYER, not just the value —
+      ;; a value-only check passed for the wrong reason on any machine whose
+      ;; (gitignored) .brainyard/config.edn happened to enable nREPL, and failed
+      ;; on a fresh clone, on CI, and whenever an earlier test perturbed the
+      ;; global layer.
+      (is (true? (:nrepl-enabled? (instance-config agent)))
+          "hook must re-assert the gate too, not just the route")
+      (is (= :agent (config/config-source agent :nrepl-enabled?))
+          "…on the per-agent layer, so the result cannot depend on ambient config")
       (finally
         (.close ^java.io.Closeable agent)))))
 

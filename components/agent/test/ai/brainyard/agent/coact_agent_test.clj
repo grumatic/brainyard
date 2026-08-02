@@ -327,6 +327,48 @@
           "tool-only mode drops the sandbox hot-path table"))))
 
 ;; ============================================================================
+;; 3c-bis. Backend-conditional sections (:clj-backend)
+;;
+;; The SCI state-memory contract is a sandbox construct. A :nrepl agent's
+;; clojure fences never reach that sandbox, so shipping the section would teach
+;; `context-get` — an accessor that cannot resolve there. Registered TOOLS do
+;; bind on both backends (agent.common.nrepl-bindings); only these accessors are
+;; sandbox-only, which is why the split is per-section and not per-channel.
+;; ============================================================================
+
+(deftest clj-backend-gates-sandbox-context-accessor
+  (let [sysctx  (resolve 'ai.brainyard.agent.common.coact-agent/coact-system-context)
+        sandbox (sysctx {:agent-tools [] :clj-backend :sandbox} :return-breakdown? true)
+        nrepl   (sysctx {:agent-tools [] :clj-backend :nrepl}   :return-breakdown? true)
+        unset   (sysctx {:agent-tools []}                       :return-breakdown? true)]
+
+    (testing ":sandbox (and an unset backend) keep the SCI state-memory contract"
+      (is (contains? (:sections sandbox) :sandbox-context-accessor))
+      (is (contains? (:sections unset) :sandbox-context-accessor)
+          "nil backend must behave exactly as :sandbox did before this split"))
+
+    (testing ":nrepl drops it — the live image is that agent's state surface"
+      (is (not (contains? (:sections nrepl) :sandbox-context-accessor))))
+
+    (testing "the other code-channel sections survive on both backends"
+      (doseq [k [:execution-model :code-blocks-format]]
+        (is (contains? (:sections sandbox) k))
+        (is (contains? (:sections nrepl) k) (str ":nrepl must keep " k))))))
+
+(deftest nrepl-execution-model-advertises-bound-tools
+  ;; Regression guard for the mismatch this replaced: the prompt rendered a
+  ;; `### Function Directory` of sandbox callables while the execution model
+  ;; told the model those same symbols did not exist on this backend.
+  (let [exec-nrepl (deref #'ai.brainyard.agent.common.coact-agent/execution-model-nrepl)]
+    (is (str/includes? exec-nrepl "Registered tools ARE bound as functions"))
+    (is (not (str/includes? exec-nrepl "NO SCI shortcuts"))
+        "the old denial must be gone — tools now resolve on :nrepl")
+    (testing "…while still naming what is genuinely sandbox-only"
+      (is (str/includes? exec-nrepl "context-get"))
+      (is (str/includes? exec-nrepl "clojure.pprint/pprint")
+          "only clojure.core is referred, so library fns still need qualifying"))))
+
+;; ============================================================================
 ;; 3d. Tool channel flag (:tool-channel?) — the code-only mirror of 3c
 ;; ============================================================================
 

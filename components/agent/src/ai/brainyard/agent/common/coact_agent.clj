@@ -33,6 +33,7 @@
             [ai.brainyard.agent.common.previous-turns :as prev-turns]
             [ai.brainyard.agent.core.usage :as usage]
             [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
+            [ai.brainyard.agent.common.nrepl-bindings :as nrepl-bind]
             [ai.brainyard.agent.common.user-tools :as ut]
             [ai.brainyard.agent.common.user-hooks :as uh]
             [ai.brainyard.agent.common.user-agents :as ua]
@@ -882,10 +883,18 @@ reflection, every loaded namespace, and arbitrary interop are all reachable.
   **deny-list**: `System/exit`, `Runtime/.exec`, credential namespaces
   (`ai.brainyard.aws-client`, `ai.brainyard.keycloak`) are rejected. If you
   need ISOLATED evaluation, the SCI sandbox backend is the tool, not this.
-- **NO SCI shortcuts**: `context-get`, `(usage$guide :topic :foo)`, and bare
-  tool-name-as-fn (`(some-tool …)`) do not exist here. Use the
-  tool-call channel for registered tools, and refer to library functions
-  by their full namespace (`clojure.pprint/pprint`, not bare `pprint`).
+- **Registered tools ARE bound as functions**: every tool visible to you is
+  interned into your session's namespace (`by.tools.…`), so the
+  `### Function Directory` / `### Hot-path primitives` above are callable
+  verbatim — `(read-file :path \"…\")`, `(usage$guide :topic :nrepl)`,
+  `(memory$status)`. Each closure carries YOUR agent identity, so agent-scoped
+  tools (`memory$*`, session) need no extra argument, and `(meta #'read-file)`
+  reads the same `:doc`/`:arglists` as the directory.
+- **What is NOT bound**: SCI-only accessors (`context-get`, `FINAL`) — those are
+  sandbox constructs, not registered tools. Here the live image IS the state you
+  inspect. Library fns still need their full namespace
+  (`clojure.pprint/pprint`, not bare `pprint`): only `clojure.core` is referred
+  into your namespace.
 - **Auto-background detach**: a block that hasn't returned by the agent's
   `:auto-background-timeout-ms` (default 180s) detaches into the background;
   the underlying nREPL session keeps running and the resolved result is
@@ -1104,7 +1113,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
   [{:keys [sandbox-bindings instruction agent-context tool-context agent-tools
            include-function-directory? system-info tools-disabled-tiers
            brainyard-instructions project-memory execution-model code-channel?
-           tool-channel? enable-subagent-calls]
+           tool-channel? enable-subagent-calls clj-backend]
     :or {code-channel? true tool-channel? true enable-subagent-calls true}}
    & {:keys [return-breakdown?]}]
   (let [tools-section (build-tools-section
@@ -1139,9 +1148,17 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
           ;; python/js sandbox and the code-blocks envelope; none of that
           ;; applies without a code channel.
           code-channel?
-          (assoc :execution-model          exec-model
-                 :code-blocks-format       coact-code-blocks-format
-                 :sandbox-context-accessor sandbox-context-accessor)
+          (assoc :execution-model    exec-model
+                 :code-blocks-format coact-code-blocks-format)
+
+          ;; The SCI state-memory contract (`context-get`, `[:user-vars]`) is a
+          ;; sandbox construct. On the :nrepl backend the clojure fences never
+          ;; reach that sandbox, so the section would teach an accessor that
+          ;; cannot resolve — the live image is that agent's state surface
+          ;; instead. Registered tools DO bind on both backends (see
+          ;; agent.common.nrepl-bindings); only these accessors are sandbox-only.
+          (and code-channel? (not= :nrepl clj-backend))
+          (assoc :sandbox-context-accessor sandbox-context-accessor)
 
           ;; "When to use which channel" only earns its tokens when there IS a
           ;; choice — drop it in either single-action-channel mode.
@@ -1657,6 +1674,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                                    :tools-disabled-tiers
                                    :brainyard-instructions :project-memory
                                    :execution-model :code-channel? :tool-channel?
+                                   :clj-backend
                                    :enable-subagent-calls])
                :return-breakdown? true)
           usr (coact-user-context
@@ -1895,6 +1913,15 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         bindings (merge (sb-bind/make-tool-bindings agent)
                         (or restore-bindings {}))
 
+        ;; :nrepl backend — intern that SAME map into the live image, so the
+        ;; function directory the prompt renders below is callable there too
+        ;; (`(read-file …)`, `(memory$status)`) instead of resolving only in the
+        ;; SCI sandbox this agent's clojure fences never reach. Per-turn, so
+        ;; tools registered mid-session bind exactly like they do in the
+        ;; sandbox. No-ops for a remote :nrepl-host; never fails the turn.
+        _ (when (and agent (= :nrepl (config/resolve-clj-backend agent)))
+            (nrepl-bind/install! agent bindings))
+
         ;; Sandbox-side context map for context-accessors (context-get, etc.).
         ;; `:recalled-memory` is wired as a direct DSPy signature input;
         ;; `:previous-turns` is rendered into :user-context (system message),
@@ -2056,6 +2083,10 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                          ;; agent-clj-backend / run-clj-sandbox-block / run-clj-nrepl-block). No
                          ;; separate :execution-model knob.
                          :execution-model (execution-model-for agent)
+                         ;; Same key the runtime dispatches on — lets the
+                         ;; section builder drop sandbox-only contracts
+                         ;; (`context-get`) for a :nrepl agent.
+                         :clj-backend     (when agent (config/resolve-clj-backend agent))
                          ;; Tool-only agents (react-agent pins :code-channel? false)
                          ;; drop the code-blocks prompt sections; code-only
                          ;; agents (:tool-channel? false) drop the JSON
@@ -3100,19 +3131,26 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
 ;; regardless of how the task ended. Idempotent — explicit deletes in
 ;; run-task-block / harvest-pending-tasks! are kept for promptness, and
 ;; this becomes a no-op when the file is already gone.
-(defonce ^:private !coact-cleanup-hook-registered?
-  (delay
-    (hooks/register-hook!
-     :task/completed
-     ::coact-scratch-cleanup
-     (fn [{:keys [task]}]
-       (when-let [tmp-file (get-in task [:metadata :coact/tmp-file])]
-         (delete-coact-tmp-file! tmp-file)))
-     :source ::coact-agent)
-    true))
+(defn register-hooks!
+  "(Re)register the scratch-file cleanup hook. Idempotent — `register-hook!`
+   dedupes by [event-key handler-id], so ns load, reloads, and re-arming after
+   a `hooks/reset-hooks!` are all safe.
 
-;; Force registration at namespace load.
-@!coact-cleanup-hook-registered?
+   A fn rather than the `defonce`+`delay` it used to be: that made registration
+   a ONE-SHOT for the life of the JVM, so anything clearing the hook table
+   (`reset-hooks!` is on the public interface) permanently disarmed this safety
+   net and leaked a scratch file per abnormally-ended coact task. Same fix as
+   agent.core.agent's parent-close cascade."
+  []
+  (hooks/register-hook!
+   :task/completed
+   ::coact-scratch-cleanup
+   (fn [{:keys [task]}]
+     (when-let [tmp-file (get-in task [:metadata :coact/tmp-file])]
+       (delete-coact-tmp-file! tmp-file)))
+   :source ::coact-agent))
+
+(register-hooks!)
 
 (defn- maybe-mark-truncated
   "Prefix a one-line `[output truncated …]` marker to `output-str` when the
@@ -3529,71 +3567,79 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
   "Evaluate a clojure block against the live JVM via clj-nrepl. When inside a
    task context or invoked by a sub-agent, runs inline (no detach). When
    `fast-eval-ms` is set, tries inline eval first — only promotes to a tracked
-   task on timeout."
+   task on timeout.
+
+   `tool-ns` (when the agent has auto-bound tools installed — see
+   agent.common.nrepl-bindings) is the namespace those tool symbols live in;
+   the block is prefixed with an `(in-ns …)` so they resolve unqualified. Only
+   the WIRE copy carries the prefix: `:code` on the eval entry and on the task
+   metadata stays the model's own text, so nothing injected shows up in the
+   iteration record or the TUI."
   [code auto-bg-ms & {:keys [from-iteration nrepl-session-id fast-eval-ms subagent? owner-agent-id
-                             nrepl-host nrepl-port]}]
-  (cond
-    (or (proto/in-task-context?) subagent?)
-    (let [[thunk _] (clj-nrepl/eval-nrepl-thunk
-                     code
-                     :session    nrepl-session-id
-                     :timeout-ms (* 1000 60 60)
-                     :host       nrepl-host
-                     :port       nrepl-port)]
-      (run-inline-clj-eval code :nrepl thunk))
+                             nrepl-host nrepl-port tool-ns]}]
+  (let [wire-code (if tool-ns (nrepl-bind/prefix-code tool-ns code) code)]
+    (cond
+      (or (proto/in-task-context?) subagent?)
+      (let [[thunk _] (clj-nrepl/eval-nrepl-thunk
+                       wire-code
+                       :session    nrepl-session-id
+                       :timeout-ms (* 1000 60 60)
+                       :host       nrepl-host
+                       :port       nrepl-port)]
+        (run-inline-clj-eval code :nrepl thunk))
 
-    (not fast-eval-ms)
-    (run-task-block
-     {:lang "clojure" :code code :auto-bg-ms auto-bg-ms
-      :start-fn
-      (fn []
-        (let [mgr  (task-mgr/get-default-manager)
-              task (tp/create-task mgr
-                                   (task-label "nrepl-clj: " code)
-                                   :clj-nrepl-eval
-                                   (cond-> {:code code :timeout-ms (* 1000 60 60)}
-                                     nrepl-session-id (assoc :session nrepl-session-id))
-                                   {:metadata (coact-task-metadata
-                                               {:lang "clojure" :backend :nrepl
-                                                :nrepl-session-id nrepl-session-id
-                                                :from-iteration from-iteration
-                                                :code code
-                                                :owner-agent-id owner-agent-id})})]
-          (tp/start-task mgr (:id task))
-          task))})
+      (not fast-eval-ms)
+      (run-task-block
+       {:lang "clojure" :code code :auto-bg-ms auto-bg-ms
+        :start-fn
+        (fn []
+          (let [mgr  (task-mgr/get-default-manager)
+                task (tp/create-task mgr
+                                     (task-label "nrepl-clj: " code)
+                                     :clj-nrepl-eval
+                                     (cond-> {:code wire-code :timeout-ms (* 1000 60 60)}
+                                       nrepl-session-id (assoc :session nrepl-session-id))
+                                     {:metadata (coact-task-metadata
+                                                 {:lang "clojure" :backend :nrepl
+                                                  :nrepl-session-id nrepl-session-id
+                                                  :from-iteration from-iteration
+                                                  :code code
+                                                  :owner-agent-id owner-agent-id})})]
+            (tp/start-task mgr (:id task))
+            task))})
 
-    :else
-    (let [t0        (System/currentTimeMillis)
-          [thunk eval-output] (clj-nrepl/eval-nrepl-thunk
-                               code
-                               :session    nrepl-session-id
-                               :timeout-ms (* 1000 60 60)
-                               :host       nrepl-host
-                               :port       nrepl-port)
-          !task-ref (atom :inline-code-eval)
-          fut (future (binding [proto/*current-task* !task-ref] (thunk)))
-          r   (deref fut fast-eval-ms ::timeout)]
-      (if (not= r ::timeout)
-        (project-fast-eval-result code :nrepl r)
-        (let [meta (coact-task-metadata
-                    {:lang "clojure" :backend :nrepl
-                     :nrepl-session-id nrepl-session-id
-                     :from-iteration from-iteration :code code
-                     :owner-agent-id owner-agent-id})]
-          (adopt-and-await-task
-           {:task-name    (task-label "nrepl-clj: " code)
-            :job-type     :clj-nrepl-eval
-            :job-config   (cond-> {:code code :timeout-ms (* 1000 60 60)}
-                            nrepl-session-id (assoc :session nrepl-session-id))
-            :metadata     meta
-            :make-on-poll (executor/make-future-poll-fn fut eval-output code
-                                                        #(select-keys % [:code :output :result :error :ns]))
-            :on-cancel    (fn [] (future-cancel fut))
-            :lang         "clojure"
-            :auto-bg-ms   auto-bg-ms
-            :fast-eval-ms fast-eval-ms
-            :started-at   t0
-            :!task-ref    !task-ref}))))))
+      :else
+      (let [t0        (System/currentTimeMillis)
+            [thunk eval-output] (clj-nrepl/eval-nrepl-thunk
+                                 wire-code
+                                 :session    nrepl-session-id
+                                 :timeout-ms (* 1000 60 60)
+                                 :host       nrepl-host
+                                 :port       nrepl-port)
+            !task-ref (atom :inline-code-eval)
+            fut (future (binding [proto/*current-task* !task-ref] (thunk)))
+            r   (deref fut fast-eval-ms ::timeout)]
+        (if (not= r ::timeout)
+          (project-fast-eval-result code :nrepl r)
+          (let [meta (coact-task-metadata
+                      {:lang "clojure" :backend :nrepl
+                       :nrepl-session-id nrepl-session-id
+                       :from-iteration from-iteration :code code
+                       :owner-agent-id owner-agent-id})]
+            (adopt-and-await-task
+             {:task-name    (task-label "nrepl-clj: " code)
+              :job-type     :clj-nrepl-eval
+              :job-config   (cond-> {:code wire-code :timeout-ms (* 1000 60 60)}
+                              nrepl-session-id (assoc :session nrepl-session-id))
+              :metadata     meta
+              :make-on-poll (executor/make-future-poll-fn fut eval-output code
+                                                          #(select-keys % [:code :output :result :error :ns]))
+              :on-cancel    (fn [] (future-cancel fut))
+              :lang         "clojure"
+              :auto-bg-ms   auto-bg-ms
+              :fast-eval-ms fast-eval-ms
+              :started-at   t0
+              :!task-ref    !task-ref})))))))
 
 (defn- agent-clj-backend
   "Resolve the Clojure code-execution backend for `agent`. There is **no**
@@ -3717,6 +3763,12 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                                      :nrepl-session-id session-id
                                      :nrepl-host       (when remote? host)
                                      :nrepl-port       (when remote? (config/get-config agent :nrepl-port))
+                                     ;; nil unless coact-init actually interned this
+                                     ;; agent's tools (skipped for a remote endpoint),
+                                     ;; so a failed install degrades to plain `user`
+                                     ;; eval instead of an empty namespace.
+                                     :tool-ns          (when-not remote?
+                                                         (nrepl-bind/active-ns agent))
                                      :fast-eval-ms     fast-eval-ms
                                      :subagent?        subagent?
                                      :owner-agent-id   owner-agent-id)

@@ -52,6 +52,7 @@
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.usage :as usage]
             [ai.brainyard.agent.common.coact-agent :as coact]
+            [ai.brainyard.agent.common.nrepl-bindings :as nrepl-bind]
             ;; Loading code-eval ensures `code$eval` is in the registry
             ;; whenever debug-agent is on the classpath — the defagent's
             ;; :agent-tools vector references it.
@@ -464,6 +465,20 @@
   (when-let [smi (some-> agent :!state deref :st-memory-init)]
     (swap! smi assoc-in [:config k] v)))
 
+(defn- restore-config-default!
+  "Re-assert an author-declared `:config-extra` key that a caller's shallow-merged
+   `:config-extra` DROPPED — and only then.
+
+   Absent-only, unlike `write-config!`: a key present on the per-agent layer got
+   there because the caller deliberately passed it, and a safety gate the caller
+   explicitly turned off must stay off. (Restoring it unconditionally is exactly
+   the regression this arity exists to prevent: it silently re-enabled the
+   full-trust channel for a caller that asked for `:nrepl-enabled? false`.)"
+  [agent k v]
+  (when-let [smi (some-> agent :!state deref :st-memory-init)]
+    (swap! smi update :config
+           (fn [cfg] (if (contains? cfg k) cfg (assoc cfg k v))))))
+
 (defn- on-instance-created
   "Ensure the live channel exists, then pin a server-issued nREPL session id
    + the :clj-backend route on the new debug-agent instance.
@@ -485,7 +500,23 @@
     ;; wholesale — and a debug-agent silently demoted to the SCI sandbox looks
     ;; like it is working while answering from an image it cannot see. This
     ;; write is last and unconditional, so it cannot be merged away.
+    ;;
     (write-config! agent :clj-backend :nrepl)
+    ;; The route alone leaves the clobber hole half-open: `resolve-clj-backend`
+    ;; demotes :nrepl to :sandbox unless the SAME agent also resolves
+    ;; :nrepl-enabled? true, so a restored route just got demoted one layer
+    ;; down. It only looked fixed because the gate happened to resolve true from
+    ;; a lower layer — on a dev box that is typically a GITIGNORED
+    ;; .brainyard/config.edn, i.e. the behaviour differed per machine and
+    ;; vanished on a fresh clone or in CI.
+    ;;
+    ;; Restore-if-absent, not the unconditional write above: :clj-backend is
+    ;; this agent's identity (a debug-agent on the SCI sandbox is a
+    ;; contradiction), whereas :nrepl-enabled? is a SAFETY GATE — a caller that
+    ;; explicitly passed `:config-extra {:nrepl-enabled? false}` gets to keep
+    ;; the full-trust channel closed. Env BY_NREPL_ENABLED=false outranks this
+    ;; layer either way, so the operator kill-switch is untouched.
+    (restore-config-default! agent :nrepl-enabled? true)
     ;; Always consult ensure-server!, even when a server is already up — it
     ;; owns the already-running short-circuit AND the native-image check, and
     ;; a reachable-but-unusable server (native) must still be reported.
@@ -521,7 +552,9 @@
                   :message  "clj-nrepl server not running; debug-agent will fail at first eval"))))
 
 (defn- on-instance-closed
-  "Close the pinned nREPL session when the agent is torn down."
+  "Close the pinned nREPL session when the agent is torn down, and drop the
+   per-instance tool namespace so a long-lived JVM doesn't accumulate one
+   `by.tools.*` namespace per closed agent."
   [{:keys [agent]}]
   (when (debug-agent? agent)
     (when-let [sid (some-> agent :!state deref
@@ -529,7 +562,8 @@
       (try (clj-nrepl/close-session sid) (catch Throwable _))
       (mulog/info ::debug-agent-session-closed
                   :agent-id (proto/agent-id agent)
-                  :session  sid))))
+                  :session  sid))
+    (try (nrepl-bind/uninstall! agent) (catch Throwable _))))
 
 (defn register-hooks!
   "(Re)register debug-agent's instance lifecycle hooks. Idempotent —
@@ -599,8 +633,10 @@
      orphans live record instances (e.g. running agents). `:reload` is a flag,
      not a key: `(require '[ns :as a] :reload)`, never inside the libspec vector.
    - You do NOT need the `:nrepl` info-arg — your code blocks route to the
-     live runtime by default. Fully-qualify symbols (the session is the `user`
-     ns); slice big values (`(take 20 …)`, `(keys …)`) instead of dumping.
+     live runtime by default. Your session evaluates in a private namespace
+     that holds your bound tools (`by.tools.…`) with `clojure.core` referred, so
+     fully-qualify everything else (`clojure.pprint/pprint`, not bare `pprint`);
+     slice big values (`(take 20 …)`, `(keys …)`) instead of dumping.
    - No parallel mode: do NOT emit `<!-- ParallelBlock -->` markers. The live
      session can't be forked, so multiple ```clojure fences in one turn run
      SEQUENTIALLY in the SAME session (each sees the prior blocks' defs/state).
@@ -668,8 +704,10 @@ lean into it (probe → bind a var → reuse it in the next block).
 
    Your code runs in the real JVM, so any loaded namespace, var, or value is
    reachable. Every snippet below is non-destructive — run them to understand
-   the system instead of guessing. Fully-qualify symbols (your session is in
-   the `user` namespace).
+   the system instead of guessing. Your session evaluates in a private namespace
+   holding your bound tools, with `clojure.core` referred — so fully-qualify
+   everything else (that is why the snippets below spell out
+   `ai.brainyard.…/…`).
 
    ### Survey the codebase
    ```clojure
@@ -781,9 +819,11 @@ lean into it (probe → bind a var → reuse it in the next block).
 
    ## Making a fix permanent (edit source + reload)
    You own the whole cycle — validate the fix live, then write it to source
-   and reload, all in this one agent. You have the file tools bound directly
-   (no `call-tool` needed): `read-file`, `update-file`, `write-file`, `grep`,
-   plus `bash` for tests/probes. Workflow:
+   and reload, all in this one agent. The file tools are bound as plain
+   functions in your session namespace — `(read-file :path \"…\")`,
+   `(update-file …)`, `(write-file …)`, `(grep …)`, `(bash …)` — callable from a
+   ```clojure block with no `call-tool` wrapper, or through the tool channel,
+   whichever fits the turn. Workflow:
 
    1. VALIDATE LIVE first (cheap, reversible). Patch the running image and
       re-run the reproducer:
@@ -815,94 +855,81 @@ lean into it (probe → bind a var → reuse it in the next block).
       the libspec vector.
    5. (Optional) run the brick's tests to guard against regressions:
       ```clojure
-      (t/call-tool :task$run {:job-type :bash
-                              :command \"bb test:component --brick agent\"})
+      (task$run :job-type :bash :command \"bb test:component --brick agent\")
       ;; or a focused nREPL test run — see `bb repl:test <ns>`
       ```
    6. REPORT the source path(s) edited, the change, and how you verified.
 
-   ### Invoking registered tools from nREPL
-   Unlike the SCI sandbox, the nREPL backend does NOT auto-bind registered
-   tools as kebab-case sandbox fns — `(some-tool {…})` will hit
-   Unable-to-resolve. Use `ai.brainyard.agent.core.tool/call-tool` to
-   dispatch any registered tool by id. It normalizes args, checks
-   permissions, validates against the tool's schema, and runs the tool fn.
+   ### Invoking registered tools — they are bound as functions
+   Registered tools are interned into your session namespace, exactly as they
+   are in the SCI sandbox, so the `### Function Directory` in your system prompt
+   is callable verbatim. Kwargs is the canonical shape; a single flat map also
+   works.
 
    ```clojure
-   ;; Alias for terseness — register once per session
-   (require '[ai.brainyard.agent.core.tool :as t])
-
-   ;; Discover tools by pattern (the registered list-tools command)
-   (t/call-tool :list-tools {:pattern \"^memory\\$\"})
-   (t/call-tool :list-tools {:type \"agent\"})
-
-   ;; Inspect a specific tool's schema before invoking it
-   (t/call-tool :get-tool-info {:tool-id \"task$run\"})
-
-   ;; Search project files / config / memory / tools
-   (t/call-tool :search {:query \"clj-backend\"})
+   ;; Discover / inspect
+   (list-tools :pattern \"^memory\\$\")
+   (list-tools :type \"agent\")
+   (get-tool-info :tool-id \"task$run\")     ;; schema BEFORE calling anything new
+   (search :query \"clj-backend\")
 
    ;; Read / grep files (project-root anchored)
-   (t/call-tool :read-file {:path \"components/agent/src/ai/brainyard/agent/core/tool.clj\"
-                            :lines [450 510]})
-   (t/call-tool :grep {:pattern \"defn call-tool\"
-                       :path \"components/agent/src\"
-                       :include-exts [\".clj\"]})
+   (read-file :path \"components/agent/src/ai/brainyard/agent/core/tool.clj\"
+              :lines [450 510])
+   (grep :pattern \"defn call-tool\" :path \"components/agent/src\"
+         :include-exts [\".clj\"])
 
-   ;; Run / inspect / cancel background tasks
-   (t/call-tool :task$run    {:job-type :bash :command \"ls -la .brainyard\"})
-   (t/call-tool :task$list   {})
-   (t/call-tool :task$detail {:task-id \"task-mkq8f3x2a1b\" :last-n \"50\"})
-   (t/call-tool :task$cancel {:task-id \"task-mkq8f3x2a1b\"})
+   ;; Background tasks
+   (task$run    :job-type :bash :command \"ls -la .brainyard\")
+   (task$list)
+   (task$detail :task-id \"task-mkq8f3x2a1b\" :last-n \"50\")
+   (task$cancel :task-id \"task-mkq8f3x2a1b\")
 
-   ;; Memory / session tools read *current-agent* — pass :agent (see below)
-   (t/call-tool :memory$recall {:query \"recent commits\" :limit 5} :agent dbg)
-   (t/call-tool :memory$status {} :agent dbg)
+   ;; Agent-scoped tools — no :agent argument needed, see below
+   (memory$status)
+   (memory$recall :query \"recent commits\" :limit 5)
 
    ;; Sub-LLM (no tools, no iteration — cheap fan-out)
-   (t/call-tool :query$llm {:prompt \"Summarize this stack trace: …\"})
+   (query$llm :prompt \"Summarize this stack trace: …\")
+
+   ;; The binding carries the tool's own docs
+   (:doc      (meta #'read-file))
+   (:arglists (meta #'task$run))
    ```
 
-   ### Tools that need *current-agent* — pass :agent
-   Agent-state tools (memory$*, session, anything reading the running agent)
-   resolve `ai.brainyard.agent.core.protocol/*current-agent*`, which is nil on
-   the nREPL thread — each eval runs unbound, and a `(binding […])` does NOT
-   survive to the next eval. Called bare they degrade to
-   `{:error \"current agent is not running\"}` / `\"…no memory manager\"`.
-   `call-tool` binds `*current-agent*` for you when you pass `:agent`, so pass
-   it per call. Default to the running debug-agent instance from the registry:
+   These bindings close over THIS agent instance, so `*current-agent*` is bound
+   for you on every call — the reason `memory$*` / session tools work bare here
+   rather than degrading to `{:error \"current agent is not running\"}`. They are
+   refreshed at the start of every turn, so a tool you create mid-session
+   (`tool-agent$create`, a newly connected MCP server) is callable next turn.
 
-   ```clojure
-   (require '[ai.brainyard.agent.core.agent :as ag]
-            '[ai.brainyard.agent.core.protocol :as proto])
+   ### `call-tool` — the escape hatch (two cases only)
+   `ai.brainyard.agent.core.tool/call-tool` still dispatches any registered tool
+   by id, and remains the way in when:
 
-   ;; The debug-agent itself — the agent-id namespace IS the defagent type.
-   ;; (def persists across evals; *current-agent* bindings do not.)
-   (def dbg (first (filter #(= \"debug-agent\" (namespace (proto/agent-id %)))
-                           (ag/list-agents))))
-
-   (t/call-tool :memory$status {} :agent dbg)
-   (t/call-tool :memory$recall {:query \"recent commits\" :limit 5} :agent dbg)
-
-   ;; To inspect ANOTHER agent's context (memory/session), pass that instance:
-   (def coact (first (filter #(= \"coact-agent\" (namespace (proto/agent-id %)))
-                             (ag/list-agents))))
-   (t/call-tool :memory$status {} :agent coact)
-   ```
+   1. You need to run a tool AS ANOTHER agent — e.g. reading a different
+      agent's memory/session context:
+      ```clojure
+      (require '[ai.brainyard.agent.core.tool :as t]
+               '[ai.brainyard.agent.core.agent :as ag]
+               '[ai.brainyard.agent.core.protocol :as proto])
+      (def coact (first (filter #(= \"coact-agent\" (namespace (proto/agent-id %)))
+                                (ag/list-agents))))
+      (t/call-tool :memory$status {} :agent coact)
+      ```
+   2. Your nREPL endpoint is a REMOTE host (`:nrepl-host`), where local bindings
+      cannot exist — `(some-tool …)` will hit Unable-to-resolve and every call
+      must go through `call-tool` or the tool channel.
 
    Notes:
-   - tool-id is a keyword (`:task$run`); tool-args is a plain map. The
-     `[{:name … :value …}]` LLM form is also accepted but rarely needed here.
-   - Return shape matches the tool's :output-schema. Errors surface as
-     `{:error-message …}` (permission denied, schema mismatch) or as a
-     thrown exception from the tool fn — read `*e` / `(ex-data *e)` after.
-   - Permission gating: the global allow/deny/approval permission (name-based)
-     always applies. Per-agent visibility (`:tool-use-control`) applies ONLY
-     when you pass `:agent` — with no agent, a nil agent-id is treated as
-     visible, so `call-tool` reaches anything in `!tool-defs`. Pass `:agent dbg`
-     to exercise the debug-agent's own gating; `:agent-tools` lists its bound set.
-   - For internal fns (not registered as tools), call them directly by
-     their fully-qualified var — no `call-tool` needed.")
+   - Errors surface as `{:error …}` on the binding (`{:error-message …}` from
+     raw `call-tool`) for permission denial / schema mismatch, or as a thrown
+     exception from the tool fn — read `*e` / `(ex-data *e)` after.
+   - Permission gating is unchanged: the global allow/deny/approval policy always
+     applies, and per-agent visibility (`:tool-use-control`) applies because the
+     bindings carry this agent — you only see what debug-agent may see.
+   - For internal fns (not registered as tools), call them directly by their
+     fully-qualified var — no binding and no `call-tool` involved.")
 
 ;; Register the guide so any agent can pull it with `(usage$guide :topic :nrepl)` and the
 ;; JIT nudge can surface it on first `clj-nrepl$*` use. :scope :user keeps it

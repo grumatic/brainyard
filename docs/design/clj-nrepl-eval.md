@@ -322,3 +322,20 @@ Differences from the original revision-1 proposal worth flagging for readers com
 - Phase 1 routing: `(System/getProperty "java.version")` returned `"25.0.3"` via the `:nrepl` backend (SCI denies this call).
 - Mutation: `(def my-probe 99) my-probe` → `99` against the agent's pinned live session.
 - *(Removed)* drift-count / drift-chip and `debug$promote-hot-patch` artifact probes — no longer part of the shipped feature.
+
+---
+
+## 15. Tool auto-binding on the `:nrepl` backend (Aug 2026)
+
+**The gap.** `coact-init` builds ONE bindings map (`sandbox-bindings/make-tool-bindings`) and uses it twice: it injects it into the SCI sandbox, *and* the system prompt renders it as `### Function Directory` / `### Sandbox Categories` plus the `### Hot-path primitives` table (`(read-file …)`, `(bash …)`, `(<tool-id> {…})`). On `:nrepl` the clojure fences are routed away from that sandbox to a bare socket eval where nothing was interned — so the model was handed a catalog of callables that could not resolve. The prompt then contradicted itself three ways: the directory advertised the symbols, the execution-model section denied them ("bare tool-name-as-fn … do not exist here"), and the `:nrepl` usage guide taught a `tool/call-tool` workaround — including a `(def dbg (first (filter …)))` dance to recover `*current-agent*`, which is nil on the nREPL thread.
+
+**As-built.** `components/agent/src/ai/brainyard/agent/common/nrepl_bindings.clj` interns that same map into the live image. The nREPL server is in-process, so the closures are ordinary fns — no serialization. Four properties worth knowing:
+
+- **Per-agent namespace, never `user`.** Each binding closes over its agent (which is what binds `*current-agent*` through `call-tool`, so `memory$*`/session tools now work bare). A shared `user` would let the last installer's identity win and silently run tool calls as the *wrong* agent. The namespace is `by.tools.<type>.<suffix>`, derived from the agent id — so installer and eval path agree with no registry atom (which would also bake build-time state under native-image). `uninstall!` on instance close keeps a long-lived JVM from accumulating one namespace per closed agent.
+- **`(in-ns …)` is prefixed per block, not once at session open.** Self-healing: a block ending with the model's own `(in-ns 'some.ns)` — legitimate, e.g. to reach private vars — does not strand every later block. Only the WIRE copy carries the prefix; `:code` on the eval entry and the task metadata stays the model's own text, so nothing injected reaches the iteration record or the TUI.
+- **Local endpoint only.** A non-loopback `:nrepl-host` (R4 remote exec) is a different JVM that cannot hold local closures; `install!` no-ops and `call-tool` remains the documented route. `active-ns` is a stateless probe, so a skipped or failed install degrades to plain `user`-ns eval rather than dropping blocks into an empty namespace with no `clojure.core` refers.
+- **Refreshed every turn**, so a tool created mid-session (`tool-agent$create`, a newly connected MCP server) binds exactly as it does in the sandbox. Stale tool vars are swept by a `::tool-binding` var-meta marker, which is also what keeps the model's own `def`s from being swept.
+
+Only genuinely sandbox-only constructs stay unavailable: `context-get` and `FINAL` are SCI bindings, not registered tools, so `coact-system-context` now drops the `:sandbox-context-accessor` section for a `:nrepl` agent instead of teaching an accessor that cannot resolve. Library fns still need full qualification — only `clojure.core` is referred into the tool namespace.
+
+- Source: `components/agent/src/ai/brainyard/agent/common/nrepl_bindings.clj`; call site in `coact_agent.clj` (`coact-init-action` install, `run-clj-nrepl-block` prefix, `execution-model-nrepl` + `:clj-backend` section gating); teardown in `debug_agent.clj`'s `:agent.instance/closed` hook. Tests: `components/agent/test/ai/brainyard/agent/common/nrepl_bindings_test.clj`.
