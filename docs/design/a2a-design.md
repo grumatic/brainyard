@@ -675,6 +675,25 @@ GET  /a2a/agent-card                  authenticated extended card
 - **`message/send`** → resolve-or-create an agent-session keyed by `contextId`,
   then `agent-core/ask-agent`. With `returnImmediately: true`, create a task and
   return `SUBMITTED` immediately.
+
+  **Reuse is bounded** (`common/a2a_serve.clj`, the context registry). The
+  instance behind a `contextId` is kept warm so a follow-up continues the same
+  conversation — for a subprocess-backed skill (an exposed `acp-agent` is one
+  Claude Code session per context) that is also an expensive backend not worth
+  rebuilding per turn. But a remote caller invents `contextId`s freely, so
+  keying live state on them needs a ceiling:
+
+  | Bound | Behaviour |
+  |---|---|
+  | `:a2a-max-contexts` (8) | Past the cap, the least-recently-used **idle** context is evicted and its instance closed. **0 disables reuse** — every turn dispatches and reclaims, the behaviour that shipped first. |
+  | `:a2a-context-ttl-ms` (30 min) | Contexts idle longer are swept on the next turn. Idle is measured from the END of a turn, so a long turn never expires under itself. |
+  | Failed turn | The context is dropped and its instance closed, so a wedged backend cannot poison every later turn on that id. |
+  | Concurrent turn | **Refused**, not queued — the stance `agent-registry$ask` already takes on a `:running` instance. Queueing would let a caller pin instances against the cap by holding turns open. |
+  | Skill change | Re-addressing one `contextId` to a different skill retires the old instance rather than handing agent B agent A's history. |
+
+  LRU order comes off a monotonic counter, not the wall clock: `currentTimeMillis`
+  is coarse enough that several turns share a millisecond, and tied keys make the
+  victim whichever way an unordered map happened to seq.
 - **`message/stream`** → subscribe to the hooks bus for that session and write
   SSE frames.
 - **Inbound call-chain enforcement** per §4, before any work is done.
@@ -714,6 +733,8 @@ New keys in `core/config.clj`'s `config-schema` (same entry shape as the
 :a2a-serve-port             integer  41241          BY_A2A_SERVE_PORT
 :a2a-serve-token            string   nil            BY_A2A_SERVE_TOKEN   (required to serve)
 :a2a-expose-skills          array    []             BY_A2A_EXPOSE_SKILLS
+:a2a-max-contexts           integer  8              BY_A2A_MAX_CONTEXTS   (0 = no reuse)
+:a2a-context-ttl-ms         integer  1800000        BY_A2A_CONTEXT_TTL_MS
 ```
 
 New feature family in `core/feature.clj`, mirroring `:agents/acp` (line 366):

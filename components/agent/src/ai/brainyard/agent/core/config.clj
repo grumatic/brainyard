@@ -526,6 +526,16 @@
                                            ::env-unset)
                                 :default []
                                 :doc "Allow-list of local agent ids exposed as A2A skills by `by a2a serve` (e.g. [\"explore-agent\"]). EMPTY BY DEFAULT — nothing is reachable until named. There is deliberately no deny-list mode: an allow-list that defaults to 'everything except…' is how an internal agent leaks. Env BY_A2A_EXPOSE_SKILLS accepts a comma-separated list (explore-agent,plan-agent) or an EDN vector."}
+   :a2a-max-contexts           {:type "integer"
+                                :env-fn #(if-some [v (System/getenv "BY_A2A_MAX_CONTEXTS")]
+                                           (or (parse-long v) ::env-unset) ::env-unset)
+                                :default 8
+                                :doc "Cap on live A2A conversations (`contextId`s) the server keeps warm, so a follow-up on the same contextId continues the same agent instead of starting over. SET TO 0 TO DISABLE REUSE — every turn then gets a fresh instance that is closed when it ends, which is the safest posture and was the only behaviour before this key existed. The cap is the anti-accumulation bound: a remote caller invents contextIds freely, so past it the least-recently-used idle context is evicted and its instance closed. Kept low by default because a context can hold an external subprocess (an exposed acp-agent is one Claude Code process per context), not just memory. Env: BY_A2A_MAX_CONTEXTS."}
+   :a2a-context-ttl-ms         {:type "integer"
+                                :env-fn #(if-some [v (System/getenv "BY_A2A_CONTEXT_TTL_MS")]
+                                           (or (parse-long v) ::env-unset) ::env-unset)
+                                :default 1800000
+                                :doc "How long an idle A2A context is kept warm before it is swept and its agent instance closed (ms, default 30 min). Idle is measured from the END of its last turn, so a long-running turn never expires under itself. Only meaningful when :a2a-max-contexts is above 0. Env: BY_A2A_CONTEXT_TTL_MS."}
    :max-acp-agents-per-session {:type "integer" :default 3
                                 :doc "Per-session cap on live ACP agent instances (each backs an external subprocess + one model-pinned session). Counts ALL acp-agent instances in the session — TUI roots and acp$create-provisioned alike. acp$create refuses at the cap (a paid external session is never silently LRU-evicted); close one with acp$close first."}
    :parent-trail-k             {:type "integer" :default 3

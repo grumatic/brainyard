@@ -462,6 +462,18 @@
   [opts]
   (a2a-serve/build-card opts))
 
+(defn a2a-contexts
+  "Snapshot of the A2A conversations currently kept warm by the server, as
+   `[{:context-id :skill :agent-id :turns :idle-ms :in-use?} …]`. Empty when
+   `:a2a-max-contexts` is 0 (reuse off) or nothing has been asked yet."
+  []
+  (a2a-serve/describe-contexts))
+
+(defn a2a-reset-contexts!
+  "Close every warm A2A context and forget it. Returns how many were closed."
+  []
+  (a2a-serve/reset-contexts!))
+
 ;; ============================================================================
 ;; Auth methods — the /login /logout registry (api-key | oauth | cli-delegate)
 ;; ============================================================================
