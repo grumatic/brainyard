@@ -234,10 +234,15 @@
                             cap)}
 
             :else
-            (let [{:keys [peer card error] :as res}
+            (let [pinned (let [d (config/get-config agent :a2a-dialect)]
+                           ;; :auto (the default) means infer from the card;
+                           ;; only an explicit dialect is passed through.
+                           (when (contains? #{:v0.3 :v1.0} d) d))
+                  {:keys [peer card error] :as res}
                   (a2a-client/connect!
                    {:name nm :url url :auth (:token args)
                     :timeout-ms (config/get-config agent :a2a-timeout-ms)
+                    :dialect pinned
                     :refresh? (boolean (:refresh args))})]
               (if error
                 res
@@ -247,6 +252,7 @@
                    :endpoint  (:endpoint peer)
                    :agent-name (:agent-name peer)
                    :streaming (:streaming peer)
+                   :dialect (str (:dialect peer))
                    :skills    (mapv id-str ids)
                    :note      (str "Ask a skill with agent-registry$ask, or call "
                                    (id-str (first ids)) " directly.")})))))))

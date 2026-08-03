@@ -61,11 +61,17 @@
 
 (defn request-headers
   "Headers for an A2A request: content negotiation, the protocol version
-   service parameter, and credentials."
-  [auth-spec & {:keys [accept extensions]}]
+   service parameter, and credentials.
+
+   `:dialect` decides the `A2A-Version` value, and it is per-PEER rather
+   than global. This line used to send a single hardcoded
+   `a2a/PROTOCOL_VERSION` — which is how a v1.0 server came back
+   `-32009 VERSION_NOT_SUPPORTED` no matter what we asked it."
+  [auth-spec & {:keys [accept extensions dialect]}]
   (cond-> (merge {"Content-Type" "application/json"
                   "Accept"       (or accept "application/json")
-                  a2a/VERSION_HEADER a2a/PROTOCOL_VERSION}
+                  a2a/VERSION_HEADER (a2a/dialect-version
+                                      (or dialect a2a/DEFAULT_DIALECT))}
                  (auth/headers auth-spec))
     (seq extensions) (assoc a2a/EXTENSIONS_HEADER (str/join "," extensions))))
 
@@ -103,13 +109,14 @@
    from every server in the ecosystem.
 
    Returns `{:result …}` on success, or `{:error …}` — never throws."
-  [{:keys [endpoint auth timeout-ms card next-id] :as _peer} method params]
-  (let [url  (auth/apply-to-url endpoint auth)
-        mname (a2a/method-name method)
-        id   (if next-id (next-id) 1)
-        body (a2a/encode (a2a/request id mname params))]
+  [{:keys [endpoint auth timeout-ms card next-id dialect] :as _peer} method params]
+  (let [dl    (or dialect a2a/DEFAULT_DIALECT)
+        url   (auth/apply-to-url endpoint auth)
+        mname (a2a/dialect-method-name dl method)
+        id    (if next-id (next-id) 1)
+        body  (a2a/encode (a2a/request id mname params))]
     (try
-      (let [resp (http/post url {:headers          (request-headers auth)
+      (let [resp (http/post url {:headers          (request-headers auth :dialect dl)
                                  :body             body
                                  :as               :string
                                  :throw-exceptions false
@@ -119,7 +126,13 @@
           (let [decoded (a2a/decode (:body resp))]
             (cond
               (:error decoded) (a2a/error->result (:error decoded))
-              (contains? decoded :result) {:result (:result decoded)}
+              ;; The result is handed back in CANONICAL form, so every caller
+              ;; above this line stays dialect-unaware. Decoding is per
+              ;; METHOD — a GetTask result is a bare Task, not the
+              ;; SendMessage one-of.
+              (contains? decoded :result)
+              {:result (a2a/decode-result dl method (:result decoded))}
+
               :else {:error (str "Malformed JSON-RPC response from " url
                                  " (no :result and no :error)")}))))
       (catch Exception e
@@ -184,17 +197,21 @@
 
    A2A streams JSON-RPC responses, so each frame's data is a full envelope
    and the payload we want is its `:result`. A frame carrying an `:error`
-   envelope is surfaced as an error rather than silently skipped."
-  [frame]
+   envelope is surfaced as an error rather than silently skipped.
+
+   The result is normalized to the CANONICAL frame shape, so
+   `events/translate` never learns that a second dialect exists."
+  [dialect frame]
   (let [payload (frame-payload frame)]
     (when-not (str/blank? payload)
       (try
         (let [decoded (a2a/decode payload)]
           (cond
             (:error decoded) (a2a/error->result (:error decoded))
-            (contains? decoded :result) {:result (:result decoded)}
+            (contains? decoded :result)
+            {:result (a2a/decode-stream-frame dialect (:result decoded))}
             ;; Some servers stream the bare object without an envelope.
-            :else {:result decoded}))
+            :else {:result (a2a/decode-stream-frame dialect decoded)}))
         (catch Exception e
           {:error (str "Malformed SSE frame: " (ex-message e))})))))
 
@@ -217,11 +234,12 @@
    the agent pool, whose non-daemon threads keep the JVM alive at exit
    unless `shutdown-agents` is called. A subscription that outlives its
    caller must never be the reason `by` will not quit."
-  [{:keys [endpoint auth stream-timeout-ms card next-id] :as _peer}
+  [{:keys [endpoint auth stream-timeout-ms card next-id dialect] :as _peer}
    method params
    {:keys [on-event on-error on-close]}]
-  (let [url     (auth/apply-to-url endpoint auth)
-        mname   (a2a/method-name method)
+  (let [dl      (or dialect a2a/DEFAULT_DIALECT)
+        url     (auth/apply-to-url endpoint auth)
+        mname   (a2a/dialect-method-name dl method)
         id      (if next-id (next-id) 1)
         body    (a2a/encode (a2a/request id mname params))
         !running (atom true)
@@ -235,7 +253,8 @@
                   (try
                     (let [resp (http/post url
                                           {:headers (request-headers
-                                                     auth :accept "text/event-stream")
+                                                     auth :accept "text/event-stream"
+                                                     :dialect dl)
                                            :body    body
                                            :as      :reader
                                            :throw-exceptions false
@@ -255,7 +274,7 @@
                                 nil ;; EOF — server closed the stream
                                 (let [[acc' dispatch?] (parse-sse-line acc line)]
                                   (if dispatch?
-                                    (do (when-let [payload (decode-frame acc')]
+                                    (do (when-let [payload (decode-frame dl acc')]
                                           (when on-event (on-event payload)))
                                         (recur {}))
                                     (recur acc')))))))))

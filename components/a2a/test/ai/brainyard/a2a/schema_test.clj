@@ -6,10 +6,16 @@
   "Unit tests for A2A payload schemas and wire<->keyword coercion.
    Pure data — no I/O.
 
-   The fixtures below are shaped like real v0.3 JSON-RPC wire payloads
-   (`kind` discriminators, camelCase ids, lowercase-kebab task states),
-   because the whole point of these schemas is to accept what a
-   conformant peer actually sends."
+   The fixtures below are shaped like real **v0.3** JSON-RPC wire payloads
+   (`kind` discriminators, camelCase ids, lowercase-kebab task states).
+
+   That is not the only wire A2A has. v1.0 replaced the binding, and these
+   schemas describe the CANONICAL form — which happens to equal v0.3 — not
+   A2A in general. A v1.0 payload is translated by `a2a.core.dialect` at the
+   transport boundary and reaches these schemas already canonical, so the
+   assertions that reject protobuf enum spellings pin the canonical shape
+   rather than claiming those spellings do not exist. The v1.0 side is
+   covered by `dialect_test`."
   (:require [clojure.set]
             [clojure.test :refer [deftest is testing]]
             [ai.brainyard.a2a.core.methods :as methods]
@@ -76,8 +82,11 @@
   (testing "role is constrained to the wire enum"
     (is (schema/valid? schema/Message (assoc text-msg :role "agent")))
     (is (not (schema/valid? schema/Message (assoc text-msg :role "system"))))
+    ;; As above: `ROLE_USER` IS the v1.0 wire spelling. It is decoded to
+    ;; "user" before it ever reaches this schema, so rejecting it here pins
+    ;; the canonical form rather than denying that v1.0 exists.
     (is (not (schema/valid? schema/Message (assoc text-msg :role "ROLE_USER")))
-        "the protobuf enum spelling does not travel on this wire"))
+        "the protobuf enum spelling does not travel on the v0.3 wire"))
 
   (testing "optional linkage fields validate when present"
     (is (schema/valid? schema/Message (assoc text-msg :taskId "t-1"
@@ -102,7 +111,15 @@
         "two-L 'cancelled' is brainyard's spelling, NOT the wire's")
     (is (not (schema/valid? schema/Task (assoc-in a-task [:status :state]
                                                   "TASK_STATE_WORKING")))
-        "the protobuf enum spelling does not travel on this wire"))
+        ;; Correct for THIS dialect only. These schemas describe the v0.3
+        ;; wire, where the protobuf enum spelling genuinely does not appear.
+        ;; It is exactly what a v1.0 server sends, and it reaches these
+        ;; schemas already translated — `dialect/decode-state` runs at the
+        ;; transport boundary, before anything validates. Rejecting it here
+        ;; is therefore a check that the CANONICAL form is canonical, not a
+        ;; claim about A2A in general. See a2a.core.dialect and
+        ;; dialect_test/state-coercion-test for the v1.0 side.
+        "the protobuf enum spelling does not travel on the v0.3 wire"))
 
   (testing "history and artifacts validate when present"
     (is (schema/valid? schema/Task

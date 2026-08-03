@@ -22,7 +22,8 @@
    server handlers should reach for it rather than composing a bespoke
    403. This is enforced by convention, not by the compiler, so it is
    called out here and in docs/design/a2a-design.md §8."
-  (:require [ai.brainyard.acp.interface :as acp]))
+  (:require [clojure.string :as str]
+            [ai.brainyard.acp.interface :as acp]))
 
 ;; =============================================================================
 ;; Codes
@@ -42,7 +43,11 @@
    :unsupported-operation            -32004
    :content-type-not-supported       -32005
    :invalid-agent-response           -32006
-   :extended-card-not-configured     -32007})
+   :extended-card-not-configured     -32007
+   ;; v1.0. Observed from a running a2a-sdk 1.1.0, which answers this when
+   ;; the inbound A2A-Version is one it does not serve — including when the
+   ;; header is ABSENT, since the spec reads an absent header as 0.3.
+   :version-not-supported            -32009})
 
 (def all-codes
   (merge standard-codes a2a-codes))
@@ -65,7 +70,8 @@
    :unsupported-operation            "This operation is not supported"
    :content-type-not-supported       "Incompatible content types"
    :invalid-agent-response           "Invalid agent response"
-   :extended-card-not-configured     "Authenticated Extended Card is not configured"})
+   :extended-card-not-configured     "Authenticated Extended Card is not configured"
+   :version-not-supported            "A2A version is not supported by this handler"})
 
 (defn code-of
   "Numeric code for an error keyword, or the internal-error code when the
@@ -133,7 +139,19 @@
    on the failure kind without parsing prose."
   [err]
   (let [k      (error-key err)
-        detail (some-> err :data :detail)
+        ;; `data` is spec'd as free-form. We emit `{:detail …}`; the Python
+        ;; SDK emits a bare STRING; the spec's own examples use a vector of
+        ;; `@type`-tagged objects. Reading only our own shape threw away the
+        ;; other peer's diagnostic and reduced a precise parse error to
+        ;; "Invalid params (-32602)" — which is how a v1.0 field mismatch
+        ;; took a round of guessing to identify.
+        detail (let [d (:data err)]
+                 (cond
+                   (string? d)     (not-empty d)
+                   (:detail d)     (:detail d)
+                   (sequential? d) (not-empty (str/join "; " (map pr-str d)))
+                   (map? d)        (not-empty (pr-str d))
+                   :else           nil))
         msg    (or (:message err) (message-of k))]
     {:error     (cond-> (str msg " (" (:code err) ")")
                   detail (str " — " detail))

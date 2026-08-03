@@ -35,13 +35,16 @@
    caller normally supplies only `:name`, `:url`, `:card` and `:auth`.
    Each peer gets its OWN id source, so concurrent peers never share a
    request-id counter."
-  [{:keys [name url card auth endpoint timeout-ms stream-timeout-ms]}]
+  [{:keys [name url card auth endpoint timeout-ms stream-timeout-ms dialect]}]
   {:name              (str name)
    :url               (a2a/base-url url)
    :endpoint          (or endpoint
                           (some-> card a2a/jsonrpc-endpoint)
                           (a2a/base-url url))
    :card              card
+   ;; The wire dialect is a property OF THE PEER, inferred from its card.
+   ;; An explicit `:dialect` overrides, for a peer that mis-advertises.
+   :dialect           (or dialect (a2a/dialect-of-card card))
    :auth              (auth/normalize auth)
    :timeout-ms        (or timeout-ms transport/DEFAULT_TIMEOUT_MS)
    :stream-timeout-ms (or stream-timeout-ms transport/DEFAULT_STREAM_TIMEOUT_MS)
@@ -54,6 +57,7 @@
   {:name       (:name peer)
    :url        (:url peer)
    :endpoint   (:endpoint peer)
+   :dialect    (:dialect peer)
    :auth       (auth/describe (:auth peer))
    :agent-name (some-> peer :card :name)
    :skills     (mapv :id (a2a/card-skills (:card peer)))
@@ -78,15 +82,22 @@
     (seq metadata)    (assoc :metadata metadata)))
 
 (defn- send-params
-  [message {:keys [blocking? history-length accepted-output-modes push-config]}]
+  "Build `message/send` params, encoded for `dialect`.
+
+   The params field names are identical across dialects; only the Message
+   differs (role enum, Part shape, no `:kind`). `a2a/encode-send-params`
+   owns that difference so this stays a shape-builder."
+  [dialect message {:keys [blocking? history-length accepted-output-modes push-config]}]
   (let [config (cond-> {}
                  (some? blocking?)            (assoc :blocking (boolean blocking?))
                  (some? history-length)       (assoc :historyLength history-length)
                  (seq accepted-output-modes)  (assoc :acceptedOutputModes
                                                      (vec accepted-output-modes))
                  push-config                  (assoc :pushNotificationConfig push-config))]
-    (cond-> {:message message}
-      (seq config) (assoc :configuration config))))
+    (a2a/encode-send-params
+     (or dialect a2a/DEFAULT_DIALECT)
+     (cond-> {:message message}
+       (seq config) (assoc :configuration config)))))
 
 ;; =============================================================================
 ;; Result normalization
@@ -160,7 +171,7 @@
                           :metadata (:metadata opts)
                           :parts (:parts opts))
         {:keys [result error] :as res} (transport/rpc! peer :message-send
-                                                       (send-params msg opts))]
+                                                       (send-params (:dialect peer) msg opts))]
     (if error res (result->outcome result))))
 
 (defn stream-message!
@@ -179,7 +190,8 @@
                             :context-id (:context-id opts)
                             :metadata (:metadata opts)
                             :parts (:parts opts))]
-      (transport/open-sse! peer :message-stream (send-params msg opts) handlers))))
+      (transport/open-sse! peer :message-stream
+                           (send-params (:dialect peer) msg opts) handlers))))
 
 (defn get-task
   "`tasks/get`. Returns `{:task …}` or `{:error …}`.

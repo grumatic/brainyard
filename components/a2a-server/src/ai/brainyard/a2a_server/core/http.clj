@@ -172,15 +172,26 @@
               (not (a2a/request? msg))
               (respond-json! ex 200 (a2a/error->jsonrpc (:id msg) :invalid-request))
 
-              (handlers/streaming-method? (:method msg))
-              (let [write! (start-sse! ex)
-                    params (or (:params msg) {})]
-                (if (= "tasks/resubscribe" (:method msg))
-                  (sse/resubscribe! service (:id msg) params write!)
-                  (sse/stream-turn! service (:id msg) params write!)))
-
               :else
-              (respond-json! ex 200 (handlers/dispatch service msg)))))
+              ;; Resolve the wire dialect BEFORE routing: it decides both
+              ;; the method vocabulary and how the reply is encoded. The
+              ;; A2A-Version header is the spec's answer, but the method
+              ;; name is unambiguous on its own — see
+              ;; `handlers/resolve-dialect`.
+              (let [version (.getFirst (.getRequestHeaders ^HttpExchange ex)
+                                       a2a/VERSION_HEADER)]
+                (if-let [[dialect method-kw] (handlers/resolve-dialect version (:method msg))]
+                  (let [svc (assoc service :dialect dialect)]
+                    (if (contains? #{:message-stream :tasks-resubscribe} method-kw)
+                      (let [write! (start-sse! ex)
+                            params (a2a/decode-send-params dialect (or (:params msg) {}))]
+                        (if (= :tasks-resubscribe method-kw)
+                          (sse/resubscribe! svc (:id msg) params write!)
+                          (sse/stream-turn! svc (:id msg) params write!)))
+                      (respond-json! ex 200 (handlers/dispatch service msg dialect))))
+                  (respond-json! ex 200 (a2a/error->jsonrpc
+                                         (:id msg) :method-not-found
+                                         {:detail (str (:method msg))})))))))
         (catch Throwable t
           (mulog/error ::rpc-handler-failed :exception t)
           ;; Never leak a stack trace to a remote caller.

@@ -70,9 +70,20 @@
 (defn dispatch
   "Route one decoded JSON-RPC request to its handler, returning a JSON-RPC
    response map. Streaming methods are not routed here — see
-   `streaming-method?`."
-  [service msg]
-  (handlers/dispatch service msg))
+   `streaming-method?`.
+
+   `dialect` decides both the method vocabulary and the reply encoding;
+   it defaults to v0.3 (what an unmarked request is assumed to speak)."
+  ([service msg] (handlers/dispatch service msg))
+  ([service msg dialect] (handlers/dispatch service msg dialect)))
+
+(defn resolve-dialect
+  "Decide a request's wire dialect from its `A2A-Version` header and method
+   name, returning `[dialect method-kw]` or nil. The method name wins when
+   the header is missing or contradicts it — the two vocabularies are
+   disjoint, so the name is unambiguous."
+  [version method]
+  (handlers/resolve-dialect version method))
 
 (defn streaming-method?
   "True for methods answered with an SSE frame sequence."

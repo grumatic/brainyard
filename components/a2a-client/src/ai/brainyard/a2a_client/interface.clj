@@ -265,7 +265,8 @@
   (transport/frame-payload frame))
 
 (defn request-headers
-  "Headers for an A2A request: content negotiation, version, credentials."
+  "Headers for an A2A request: content negotiation, version, credentials.
+   Pass `:dialect` — the `A2A-Version` value is per-peer, not global."
   [auth-spec & {:as opts}]
   (apply transport/request-headers auth-spec (mapcat identity opts)))
 

@@ -1,14 +1,15 @@
 # Applying the Agent2Agent Protocol (A2A) to brainyard
 
-> Status: **Shipped, speaking A2A v0.3** (2026-08-02, author: assistant + Jake Na).
+> Status: **Shipped, speaking A2A v0.3 AND v1.0** (2026-08-02, author:
+> assistant + Jake Na).
 >
-> **Read §13 before relying on this for third-party interop.** The
-> implementation targets the **v0.3** JSON-RPC binding. The current official
-> SDK (`a2a-sdk` 1.1.0) speaks **v1.0**, a materially different wire dialect,
-> so brainyard can talk to another brainyard but **cannot yet call a v1.0
-> peer**. Verified against the official `a2a-samples` helloworld agent: its
-> card parses and its skills read, but its methods do not. Card endpoint
-> resolution for v1.0 is fixed; the dialect is scoped, not built.
+> Both wire dialects are supported and negotiated: the client picks per peer
+> from its Agent Card, the server per request from the inbound
+> `A2A-Version`, and one card advertises both generations. Verified in both
+> directions against the official `a2a-sdk` 1.1.0 helloworld agent, and
+> repeatable with **`bb a2a:interop`** — the only check that catches a
+> dialect change, since fixtures only ever encode what we already believe.
+> See §13.
 >
 > **Live-verified (nrepl-verify, against a real LLM and a separate server
 > process).** A `bb tui` JVM as client, a second `by` process as server:
@@ -895,15 +896,15 @@ Full `bb test` and `bb build:ata` at the end of Phase 7.
   use `#'alias/x` or thin `defn-` wrappers, as `acp_agent.clj:70-80`
   documents); `Thread/sleep` needs a `long`. `com.sun.net.httpserver` was
   chosen partly because the JDK already puts it in the image.
-- **Spec churn — this one already happened, and it is the largest open gap.**
-  What ships implements the **v0.3** JSON-RPC binding; the current official SDK
-  speaks **v1.0**, whose binding is ProtoJSON with different method names, enum
-  spellings, `Part` shape and result envelope. A v0.3 client cannot call a v1.0
-  server. Single-sourcing the version literal in `core/card.clj` (§5.1) was
-  necessary but nowhere near sufficient — the risk was never a scattered string,
-  it was a *dialect* change. Fully scoped in **§13**.
+- ~~**Spec churn**~~ — **happened, and is now resolved.** v1.0 replaced the
+  binding wholesale (ProtoJSON: different method names, enum spellings, `Part`
+  shape, result envelope). Single-sourcing the version literal in
+  `core/card.clj` was necessary but nowhere near sufficient — the risk was
+  never a scattered string, it was a *dialect*. Both are now spoken (§13), and
+  `bb a2a:interop` is what will tell us when it happens again.
 - **OAuth2 client auth is NOT implemented** (see §12). Bearer, HTTP basic and
-  API key are. A peer requiring OAuth2 cannot currently be reached.
+  API key are. A peer requiring OAuth2 cannot currently be reached — the one
+  remaining gap.
 - ~~**Streaming backpressure**~~ — **resolved in Phase 2, differently than
   planned.** The original mitigation was "bound the event queue and drop with a
   warning". That was wrong: dropping loses protocol frames, and an
@@ -968,11 +969,15 @@ to a webhook instead of us polling. It needs an inbound HTTP route we are
 willing to expose, which is a bigger security question than the rest of the
 server — worth doing deliberately rather than as a Phase-7 tail item.
 
-## 13. A2A v1.0 — the wire dialect we do not yet speak
+## 13. A2A v1.0 — both dialects, negotiated
 
-**Status: scoped, not built.** What ships implements the **v0.3** JSON-RPC
-binding. The current official SDK (`a2a-sdk` 1.1.0) speaks **v1.0**, and the
-two are different enough that a v0.3 client cannot call a v1.0 server at all.
+**Status: shipped.** Brainyard speaks **both** v0.3 and v1.0. The client picks
+per peer from its Agent Card; the server answers per request from the inbound
+`A2A-Version` (falling back to the method name, which is unambiguous). One
+card advertises both generations, so a client of either era can discover us.
+
+Verified against the official `a2a-sdk` 1.1.0 helloworld agent, in both
+directions, and repeatable via **`bb a2a:interop`**.
 
 ### How this was missed
 
@@ -1032,29 +1037,61 @@ Not guesses to be written down as fact:
   Almost certainly yes: a v1.0 client will send `SendMessage` and our
   dispatcher answers `MethodNotFound`.
 
-### Recommended approach
+### As built
 
-**A negotiated dialect codec in `components/a2a`.** One namespace owns both
-wire vocabularies — method names, enum spellings, `Part` encoding, result
-unwrapping, the version header — and everything else asks it to encode or
-decode. The client selects a dialect per peer from its card; the server selects
-per request from the inbound `A2A-Version`.
+**`components/a2a/core/dialect.clj` is the only namespace that knows a second
+dialect exists.** Everything inside brainyard works on one canonical form —
+which equals the v0.3 shape — so v0.3 encode/decode is near-identity and all
+real translation is confined to the v1.0 arms.
 
-The alternative — `if v1?` branches threaded through `a2a-client` and
-`a2a-server` — is how a two-dialect codebase rots, because each new call site
-is one more place to forget. Concentrating it also means the existing
-schema/enum tests split cleanly by dialect instead of being deleted.
+That paid off exactly as intended: `client/result->outcome`,
+`events/translate`, `events/frame-kind` and the agent-side `ask-fn` were
+**never touched**. A test now pins it, asserting the service receives plain
+text and never a dialect-shaped payload.
 
-Two options deliberately **not** recommended:
+Seams (7 in total): client — `make-peer` stores `:dialect`, `request-headers`
+takes it, `rpc!` resolves the method and decodes **per method**, `open-sse!`
+decodes frames, `connect!`/`describe-peer` surface it. Server —
+`rpc-handler` resolves the dialect, `dispatch` routes by method keyword, and
+the response/SSE encoders honour it.
 
-- **v1.0 only, drop v0.3.** Cleaner, but it breaks our own server and any v0.3
-  peer, and the SDK still ships a `JSONRPC03Adapter`, so v0.3 servers persist.
-- **Client-side v1.0 only.** Reaches modern peers but leaves us uncallable by
-  them, discarding half the value of the symmetric design.
+Three things worth knowing:
 
-Scale is comparable to Phases 1–2 combined: this is a second wire format, not
-a compatibility shim. It should be planned as its own piece of work rather
-than appended to this one.
+- **`decode-result` dispatches on METHOD, not just dialect.** `SendMessage`
+  returns the `Task | Message` one-of; `GetTask` and `CancelTask` return a
+  bare `Task`. Decoding everything as a send-result would have left a
+  `tasks/get` Task carrying raw `TASK_STATE_*`, which the task poller compares
+  against canonical states — it would never observe a terminal state and would
+  poll forever.
+- **The method name beats the version header** when they disagree or the
+  header is missing. The two vocabularies are disjoint, so the name is
+  unambiguous; this is deliberately more liberal than the reference SDK, which
+  rejects a missing header outright.
+- **One card, both generations.** The v0.3 fields and v1.0
+  `supportedInterfaces` are different fields, so a single card serves both
+  with no negotiation. Ours lists v1.0 first, so brainyard-to-brainyard now
+  runs over v1.0 — the loopback E2E exercises that.
+
+### Two findings the live run produced
+
+Neither was in the proto, and neither would have surfaced from fixtures:
+
+- **`blocking` became `returnImmediately` — its logical NEGATION**, not a
+  rename. It failed loudly here (`-32602`, unknown field), but against a
+  server that tolerated unknown fields it would have silently inverted
+  behaviour: fire-and-forget where the caller asked to wait. The round trip is
+  tested in both senses, because a one-way inversion bug reads correctly in
+  one direction.
+- **Our error mapper was discarding the peer's diagnostic.** `data` is
+  free-form: we emit `{:detail …}`, the Python SDK emits a bare string, the
+  spec's examples use `@type`-tagged vectors. Reading only our own shape
+  reduced a precise *"no field named blocking"* to `"Invalid params
+  (-32602)"`, and cost a round of guessing. All three shapes are now surfaced.
+
+Options deliberately **not** taken: v1.0-only (breaks our own server and any
+deployed v0.3 peer; the SDK still ships a `JSONRPC03Adapter`), and client-side
+v1.0 only (reaches modern peers but leaves us uncallable by them, discarding
+half the symmetric design).
 
 ## 14. References
 

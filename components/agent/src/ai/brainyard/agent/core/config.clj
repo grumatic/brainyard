@@ -501,6 +501,8 @@
                                 :env-fn #(if-some [v (System/getenv "BY_A2A_TIMEOUT_MS")]
                                            (or (parse-long v) ::env-unset) ::env-unset)
                                 :doc "A2A request timeout (ms) for a blocking call. Does NOT bound an SSE subscription — streaming uses its own much larger cap, because the JDK counts a request timeout against the whole exchange and would kill a healthy long-lived stream."}
+   :a2a-dialect                {:type "keyword" :default :auto
+                                :doc "A2A wire dialect for outbound calls: :auto (default — infer per peer from its Agent Card) | :v0.3 | :v1.0. A2A v1.0 REPLACED the v0.3 JSON-RPC binding (PascalCase method names, a required A2A-Version header, proto enum values, no Part discriminator, a wrapped result envelope), so the two are not interchangeable. :auto is right unless a peer mis-advertises its version; pinning the wrong one produces MethodNotFound or -32009, never silent misbehaviour. The SERVER always answers both, chosen per request from the inbound header."}
    :a2a-stream?                {:type "boolean" :default true
                                 :doc "Prefer message/stream over message/send when a peer's Agent Card advertises the streaming capability. Streaming renders progressively in the TUI; turning this off makes every remote ask a single blocking call."}
    :a2a-max-peers-per-session  {:type "integer" :default 8

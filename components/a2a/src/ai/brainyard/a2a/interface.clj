@@ -37,6 +37,7 @@
   (:require [ai.brainyard.acp.interface :as acp]
             [ai.brainyard.a2a.core.card :as card]
             [ai.brainyard.a2a.core.chain :as chain]
+            [ai.brainyard.a2a.core.dialect :as dialect]
             [ai.brainyard.a2a.core.errors :as errors]
             [ai.brainyard.a2a.core.methods :as methods]
             [ai.brainyard.a2a.core.schema :as schema]))
@@ -369,6 +370,83 @@
   "Human-readable one-liner for logs and errors."
   [metadata]
   (chain/describe metadata))
+
+;; =============================================================================
+;; Wire dialects (v0.3 vs v1.0)
+;;
+;; v1.0 REPLACED the JSON-RPC binding rather than extending it. Everything
+;; inside brainyard works on ONE canonical form (the v0.3 shape); this is the
+;; only seam that knows a second dialect exists. See
+;; `ai.brainyard.a2a.core.dialect`.
+;; =============================================================================
+
+(def ^{:doc "Dialects this build understands."} dialects dialect/dialects)
+(def ^{:doc "Assumed dialect for an unmarked peer/request (v0.3, per spec)."}
+  DEFAULT_DIALECT dialect/DEFAULT_DIALECT)
+
+(defn dialect?      [d] (dialect/dialect? d))
+(defn dialect-of-card
+  "Dialect a peer speaks, from its Agent Card. A card declaring both
+   generations resolves to v1.0."
+  [card]
+  (dialect/of-card card))
+(defn dialect-of-version
+  "Dialect for an `A2A-Version` value. Absent/blank -> v0.3."
+  [v]
+  (dialect/of-version v))
+(defn dialect-version
+  "The `A2A-Version` header value for a dialect."
+  [d]
+  (dialect/version-of d))
+
+(defn dialect-method-name
+  "Wire method name for a method keyword in `dialect`. Throws on a typo."
+  [d k]
+  (dialect/method-name d k))
+(defn dialect-method->kw
+  "Wire method name -> method keyword under `dialect`, or nil."
+  [d wire]
+  (dialect/method->kw d wire))
+(defn resolve-method
+  "Resolve a wire method under EITHER dialect: `[dialect method-kw]` or nil."
+  [wire]
+  (dialect/any-method->kw wire))
+
+(defn decode-state  [d s] (dialect/decode-state d s))
+(defn encode-state* [d s] (dialect/encode-state d s))
+(defn decode-part   [d p] (dialect/decode-part d p))
+(defn encode-part   [d p] (dialect/encode-part d p))
+(defn decode-message [d m] (dialect/decode-message d m))
+(defn encode-message [d m] (dialect/encode-message d m))
+(defn decode-task    [d t] (dialect/decode-task d t))
+(defn encode-task    [d t] (dialect/encode-task d t))
+(defn decode-artifact [d a] (dialect/decode-artifact d a))
+(defn encode-artifact [d a] (dialect/encode-artifact d a))
+(defn decode-status   [d s] (dialect/decode-status d s))
+(defn encode-status   [d s] (dialect/encode-status d s))
+
+(defn decode-send-result
+  "`message/send` result -> canonical (unwraps v1.0's one-of)."
+  [d r]
+  (dialect/decode-send-result d r))
+
+(defn decode-result
+  "Decode a JSON-RPC result to canonical form for a given METHOD. The shape
+   varies by method as well as dialect — `GetTask` returns a bare Task, not
+   the `SendMessage` one-of."
+  [d method r]
+  (dialect/decode-result d method r))
+(defn encode-send-result [d r] (dialect/encode-send-result d r))
+
+(defn decode-stream-frame
+  "One streaming frame -> canonical. Synthesises `:final` for v1.0, whose
+   status events have no such field."
+  [d f]
+  (dialect/decode-stream-frame d f))
+(defn encode-stream-frame [d f] (dialect/encode-stream-frame d f))
+
+(defn encode-send-params [d p] (dialect/encode-send-params d p))
+(defn decode-send-params [d p] (dialect/decode-send-params d p))
 
 ;; =============================================================================
 ;; Errors

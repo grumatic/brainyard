@@ -34,9 +34,16 @@
   (:import [java.util UUID]))
 
 (defn frame
-  "Encode one JSON-RPC result as an SSE frame, terminator included."
-  [id result]
-  (str "data: " (a2a/encode (a2a/response id result)) "\n\n"))
+  "Encode one JSON-RPC result as an SSE frame, terminator included.
+
+   With a `dialect`, the CANONICAL frame is encoded for that wire first —
+   v1.0 wraps it in the `StreamResponse` one-of (`statusUpdate` /
+   `artifactUpdate` / `task` / `message`) instead of tagging with `:kind`,
+   and drops `:final`, which its schema has no field for."
+  ([id result] (frame id result nil))
+  ([id result dialect]
+   (let [payload (if dialect (a2a/encode-stream-frame dialect result) result)]
+     (str "data: " (a2a/encode (a2a/response id payload)) "\n\n"))))
 
 (defn error-frame
   "Encode a JSON-RPC error response as an SSE frame."
@@ -50,7 +57,8 @@
   (str ": " text "\n\n"))
 
 (defn- status-frame
-  [id task-id context-id state & {:keys [text final]}]
+  "A canonical status-update frame, encoded for `dialect` on the way out."
+  [dialect id task-id context-id state & {:keys [text final]}]
   (frame id
          (cond-> {:taskId task-id
                   :kind   "status-update"
@@ -59,9 +67,11 @@
                             (assoc :message
                                    {:messageId (str (UUID/randomUUID))
                                     :role "agent"
+                                    :kind "message"
                                     :parts [(a2a/text-part text)]}))}
            context-id (assoc :contextId context-id)
-           final      (assoc :final true))))
+           final      (assoc :final true))
+         dialect))
 
 (defn stream-turn!
   "Run one `message/stream` turn, writing SSE frames via `write!`.
@@ -71,7 +81,7 @@
    error — a client hanging up mid-stream is normal.
 
    Returns `{:frames n}` or `{:error …}`."
-  [{:keys [ask-fn max-depth] :as _service} id params write!]
+  [{:keys [ask-fn max-depth dialect] :as _service} id params write!]
   (let [msg        (:message params)
         text       (a2a/message-text msg)
         metadata   (:metadata msg)
@@ -103,12 +113,13 @@
         (do
           (emit! (frame id {:id task-id :kind "task"
                             :contextId context-id
-                            :status {:state "submitted"}}))
+                            :status {:state "submitted"}}
+                        dialect))
           (let [out (try
                       (ask-fn {:text text :context-id context-id :task-id task-id
                                :metadata metadata
                                :on-chunk (fn [_delta accumulated]
-                                           (emit! (status-frame id task-id context-id
+                                           (emit! (status-frame dialect id task-id context-id
                                                                 :working
                                                                 :text accumulated)))})
                       (catch Throwable t
@@ -123,10 +134,10 @@
             ;; broke continuity on the DEFAULT path.
             (let [ctx (or (:context-id out) context-id)]
               (if (:error out)
-                (do (emit! (status-frame id task-id ctx :failed
+                (do (emit! (status-frame dialect id task-id ctx :failed
                                          :text (:error out) :final true))
                     {:frames @!frames :error (:error out)})
-                (do (emit! (status-frame id task-id ctx
+                (do (emit! (status-frame dialect id task-id ctx
                                          (or (:state out) :completed)
                                          :text (:answer out)
                                          ;; An INTERRUPTED state is not final:
@@ -144,7 +155,7 @@
    immediately. We do not replay the frames a client missed: nothing is
    retained to replay, and inventing a synthetic history would misrepresent
    what happened."
-  [{:keys [get-task-fn] :as _service} id params write!]
+  [{:keys [get-task-fn dialect] :as _service} id params write!]
   (let [task-id (:id params)]
     (cond
       (nil? get-task-fn)
@@ -153,7 +164,7 @@
 
       :else
       (if-let [task (get-task-fn task-id)]
-        (do (write! (frame id task))
+        (do (write! (frame id task dialect))
             {:frames 1})
         (do (write! (error-frame (a2a/error-not-found id)))
             {:frames 1})))))

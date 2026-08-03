@@ -81,7 +81,7 @@
    Returns `{:peer <redaction-safe summary> :card <card>}` or `{:error …}`.
    Re-connecting an existing name REPLACES it — that is how a peer's card
    is refreshed after it gains a skill."
-  [{:keys [name url auth timeout-ms stream-timeout-ms refresh?]}]
+  [{:keys [name url auth timeout-ms stream-timeout-ms refresh? dialect]}]
   (let [nm (some-> name str str/trim str/lower-case)]
     (cond
       (str/blank? (str url))
@@ -104,7 +104,10 @@
               (let [peer (client/make-peer {:name nm :url url :card card
                                             :auth auth :endpoint endpoint
                                             :timeout-ms timeout-ms
-                                            :stream-timeout-ms stream-timeout-ms})]
+                                            :stream-timeout-ms stream-timeout-ms
+                                            ;; nil means "infer from the card",
+                                            ;; which is what :auto resolves to.
+                                            :dialect dialect})]
                 (register-peer! peer)
                 {:peer (client/describe-peer peer)
                  :card card}))))))))

@@ -934,6 +934,29 @@
     bb smoke:ata ~/.local/bin/by        ; smoke the wrapper"
    :task (apply shell "bin/smoke-native.sh" *command-line-args*)}
 
+  a2a:interop
+  {:doc "Interop check against the OFFICIAL a2a-sdk Python implementation.
+
+  Provisions the a2aproject/a2a-samples helloworld agent into a cached venv,
+  starts it, and drives brainyard's A2A client through connect -> agent card
+  -> SendMessage -> SendStreamingMessage, asserting a real answer and a
+  terminal stream descriptor.
+
+  Deliberately NOT part of `bb test`: it needs python3 and (on first run)
+  network access, and it clones a third-party repo. Skips cleanly — exit 0,
+  with a reason — when python3, git or the network is unavailable, so it
+  never blocks anyone who cannot run it.
+
+  This is the only check that catches a WIRE DIALECT change. Brainyard
+  shipped A2A speaking v0.3 while the ecosystem had moved to v1.0, and the
+  entire test suite stayed green throughout, because fixtures encode what we
+  already believe. Only an independent implementation disagrees with us.
+
+    bb a2a:interop                 ; provision, run, tear down
+    bb a2a:interop --keep          ; keep the venv for a faster re-run
+    bb a2a:interop --port 9998     ; pick the sample agent's port"
+   :task (apply shell "bin/a2a-interop.sh" *command-line-args*)}
+
   reflect:check
   {:doc "Ratchet on reflective Java interop in first-party code.
 

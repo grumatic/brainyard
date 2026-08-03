@@ -241,10 +241,14 @@
     (seq output-modes)      (assoc :outputModes (vec output-modes))))
 
 (defn build
-  "Build an Agent Card for this agent.
+  "Build an Agent Card for this agent, advertising BOTH generations.
 
-   `:protocolVersion` is stamped from `methods/PROTOCOL_VERSION` and is not
-   an argument — see the note there about single-sourcing the version."
+   The v0.3 fields (`:url` + `:preferredTransport` + `:protocolVersion`)
+   and the v1.0 field (`:supportedInterfaces`) are DIFFERENT fields, so one
+   card satisfies both without negotiation and without a second endpoint —
+   a v0.3 reader sees what it expects and ignores the rest, and a v1.0
+   reader does the same. That is most of why serving both dialects is
+   nearly free, and it is why a v1.0 client can discover us at all."
   [{:keys [name description url version provider capabilities skills
            default-input-modes default-output-modes
            security-schemes security extended-card?]}]
@@ -253,6 +257,13 @@
            :preferredTransport JSONRPC_TRANSPORT
            :capabilities    (or capabilities {})
            :skills          (vec skills)}
+    url (assoc :supportedInterfaces
+               [{:url (base-url url)
+                 :protocolBinding JSONRPC_TRANSPORT
+                 :protocolVersion "1.0"}
+                {:url (base-url url)
+                 :protocolBinding JSONRPC_TRANSPORT
+                 :protocolVersion methods/PROTOCOL_VERSION}])
     description          (assoc :description (str description))
     url                  (assoc :url (base-url url))
     version              (assoc :version (str version))

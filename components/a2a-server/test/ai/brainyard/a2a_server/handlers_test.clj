@@ -76,6 +76,90 @@
       (is (str/includes? (get-in r [:error :data :detail]) "agent exploded")))))
 
 ;; =============================================================================
+;; Dual dialect — serving v1.0 clients
+;; =============================================================================
+
+(defn- send-req-v1
+  "A v1.0 SendMessage: PascalCase method, ROLE_USER, bare parts."
+  [service text]
+  (server/dispatch service
+                   (a2a/request 1 "SendMessage"
+                                {:message {:messageId "m" :role "ROLE_USER"
+                                           :parts [{:text text}]}})
+                   :v1.0))
+
+(deftest serves-v1-clients-test
+  (let [r (send-req-v1 (stub-service) "hello")]
+    (testing "a v1.0 SendMessage is served"
+      (is (nil? (:error r))))
+
+    (testing "the result is WRAPPED in the v1.0 one-of"
+      ;; v0.3 returns the Task bare; v1.0 returns {task: …}.
+      (is (contains? (:result r) :task))
+      (is (not (contains? (:result r) :status))))
+
+    (testing "the state is a proto enum, and :kind is gone"
+      (let [t (get-in r [:result :task])]
+        (is (= "TASK_STATE_COMPLETED" (get-in t [:status :state])))
+        (is (not (contains? t :kind)))))
+
+    (testing "the reply message uses ROLE_AGENT and bare parts"
+      (let [m (get-in r [:result :task :status :message])]
+        (is (= "ROLE_AGENT" (:role m)))
+        (is (= [{:text "echo: hello"}] (:parts m)))
+        (is (not (contains? m :kind)))))))
+
+(deftest v1-request-is-decoded-before-the-service-sees-it-test
+  (let [!seen (atom nil)]
+    (send-req-v1 (stub-service :ask-fn (fn [req] (reset! !seen req)
+                                         {:answer "ok" :state :completed}))
+                 "decoded?")
+    (testing "ask-fn receives plain text, never a dialect-shaped payload"
+      ;; The service is agent code; it must never learn a wire dialect exists.
+      (is (= "decoded?" (:text @!seen))))))
+
+(deftest v03-clients-still-served-test
+  (testing "the v0.3 shape is unaffected by v1.0 support"
+    (let [r (send-req (stub-service) "hello")]
+      (is (nil? (:error r)))
+      (is (= "task" (get-in r [:result :kind])))
+      (is (= "completed" (get-in r [:result :status :state])))
+      (is (not (contains? (:result r) :task)) "v0.3 results are NOT wrapped"))))
+
+(deftest dialect-resolution-test
+  (testing "the header selects the dialect"
+    (is (= [:v1.0 :message-send] (handlers/resolve-dialect "1.0" "SendMessage")))
+    (is (= [:v0.3 :message-send] (handlers/resolve-dialect "0.3" "message/send"))))
+
+  (testing "the METHOD NAME wins when the header is missing"
+    ;; Deliberately more liberal than the reference SDK, which rejects a
+    ;; missing header outright. The two vocabularies are disjoint, so the
+    ;; name determines the dialect exactly — there is no ambiguity to
+    ;; resolve wrongly, and a client that forgot the header gets served.
+    (is (= [:v1.0 :message-send] (handlers/resolve-dialect nil "SendMessage")))
+    (is (= [:v0.3 :message-send] (handlers/resolve-dialect nil "message/send"))))
+
+  (testing "the method name also wins when the header CONTRADICTS it"
+    (is (= [:v1.0 :message-send] (handlers/resolve-dialect "0.3" "SendMessage")))
+    (is (= [:v0.3 :message-send] (handlers/resolve-dialect "1.0" "message/send"))))
+
+  (testing "a method in neither vocabulary is unresolvable"
+    (is (nil? (handlers/resolve-dialect "1.0" "nonsense/method")))))
+
+(deftest v1-cycle-guard-still-fires-test
+  (let [!called (atom 0)
+        service (stub-service :ask-fn (fn [_] (swap! !called inc) {:answer "x"}))
+        r (server/dispatch service
+                           (a2a/request 1 "SendMessage"
+                                        {:message {:messageId "m" :role "ROLE_USER"
+                                                   :parts [{:text "hi"}]
+                                                   :metadata {a2a/CHAIN_KEY [(a2a/node-id)]}}})
+                           :v1.0)]
+    (testing "the cross-process guard is dialect-independent"
+      (is (some? (:error r)))
+      (is (zero? @!called)))))
+
+;; =============================================================================
 ;; The inbound cycle guard — the payoff
 ;; =============================================================================
 
