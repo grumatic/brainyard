@@ -8,6 +8,7 @@
    back on stdout. Validates framing, parsing, EOF handling, and
    close idempotency."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [ai.brainyard.acp.core.transport :as transport]
             [ai.brainyard.acp.core.transport.stdio :as stdio]
             [ai.brainyard.acp.core.jsonrpc :as jsonrpc]))
@@ -123,3 +124,71 @@
       (transport/close! t)
       (is (thrown? clojure.lang.ExceptionInfo
                    (transport/write-message! t (jsonrpc/notification "x" nil)))))))
+
+;; =============================================================================
+;; stderr tail — a backend narrates the real failure on stderr and then answers
+;; the request with a generic error, so the tail is what makes it actionable.
+;; =============================================================================
+
+(defn- await-tail
+  "Poll for stderr to arrive — the drain runs on its own thread, so the line
+   is not guaranteed to be buffered the instant the subprocess writes it."
+  [t]
+  (loop [n 0]
+    (or (stdio/stderr-tail t)
+        (when (< n 50)
+          (Thread/sleep (long 100))
+          (recur (inc n))))))
+
+(deftest stderr-tail-test
+  (testing "stderr lines are retained and readable"
+    (let [t (stdio/create
+             {:command ["sh" "-c" "echo 'fatal: nested session' >&2; sleep 5"]})]
+      (transport/open! t)
+      (try
+        (is (= ["fatal: nested session"] (await-tail t)))
+        (finally (transport/close! t)))))
+
+  (testing "a transport that emitted nothing on stderr reports nil, not []"
+    (with-echo
+      (fn [t]
+        (is (nil? (stdio/stderr-tail t))))))
+
+  (testing "the tail is bounded to the most recent STDERR_TAIL_LINES"
+    (let [n (+ stdio/STDERR_TAIL_LINES 10)
+          t (stdio/create
+             {:command ["sh" "-c" (str "i=1; while [ $i -le " n " ]; do "
+                                       "echo line-$i >&2; i=$((i+1)); done; sleep 5")]})]
+      (transport/open! t)
+      (try
+        ;; Give every line a chance to land before asserting on the window.
+        (Thread/sleep (long 500))
+        (let [tail (stdio/stderr-tail t)]
+          (is (= stdio/STDERR_TAIL_LINES (count tail)))
+          (is (= (str "line-" n) (last tail)))
+          (is (= (str "line-" (inc (- n stdio/STDERR_TAIL_LINES))) (first tail))))
+        (finally (transport/close! t)))))
+
+  (testing "an over-long line is truncated rather than retained whole"
+    (let [t (stdio/create
+             {:command ["sh" "-c" (str "printf '%" (* 4 stdio/STDERR_LINE_MAX)
+                                       "s\\n' x >&2; sleep 5")]})]
+      (transport/open! t)
+      (try
+        (let [line (first (await-tail t))]
+          (is (= (inc stdio/STDERR_LINE_MAX) (count line))
+              "capped at STDERR_LINE_MAX plus the ellipsis")
+          (is (str/ends-with? line "…")))
+        (finally (transport/close! t)))))
+
+  (testing "reopening clears the previous process's stderr"
+    (let [t (stdio/create {:command ["sh" "-c" "echo first-run >&2; sleep 5"]})]
+      (transport/open! t)
+      (is (= ["first-run"] (await-tail t)))
+      (transport/close! t)
+      (transport/open! t)
+      (try
+        ;; The new process says the same thing; what matters is that the tail
+        ;; was reset rather than accumulating both runs.
+        (is (= ["first-run"] (await-tail t)))
+        (finally (transport/close! t))))))

@@ -31,7 +31,8 @@
    left as a follow-up."
   (:require [ai.brainyard.acp.interface :as acp]
             [ai.brainyard.acp-client.core.callbacks :as callbacks]
-            [ai.brainyard.mulog.interface :as mulog])
+            [ai.brainyard.mulog.interface :as mulog]
+            [clojure.string :as str])
   (:import [java.io Closeable]
            [java.util.concurrent TimeUnit TimeoutException]))
 
@@ -192,28 +193,105 @@
   (acp/write-message! (:transport client) (acp/notification method params))
   nil)
 
+(def ^:private STDERR_EXPLAIN_LINES
+  "How many trailing stderr lines to append to a failure message. Enough for
+   a short diagnostic and its follow-up hint, not a log dump in an answer."
+  5)
+
+(defn- diagnostic-line?
+  "True for a stderr line that reads like a human-facing diagnostic, false
+   for a fragment of a pretty-printed object dump.
+
+   Backends do not print one tidy error line. `claude-code-acp` prints the
+   cause in prose and THEN dumps the offending request and error object
+   across a dozen lines:
+
+       Error: Claude Code cannot be launched inside another Claude Code session.
+       To bypass this check, unset the CLAUDECODE environment variable.
+       Error handling request {
+         jsonrpc: '2.0',
+         id: 2,
+       } {
+         code: -32603,
+         message: 'Internal error',
+       }
+
+   Naively keeping the last few lines yields `code: -32603, | message: …`,
+   which restates the JSON-RPC error the user already has and buries the one
+   sentence that tells them what to do. So drop the dump and keep the prose:
+
+     - structural punctuation (`}`, `} {`, `],`) carries nothing;
+     - INDENTED `key: value` lines are object entries — the leading-whitespace
+       requirement is load-bearing, since a top-level `Error: …` has the same
+       shape and is exactly what we want to keep;
+     - a line ending in `{` opens a dump rather than saying anything;
+     - a one- or two-word line is a token, not a diagnostic."
+  [line]
+  (let [l (str/trim line)]
+    (and (not (str/blank? l))
+         (re-find #"[A-Za-z]" l)
+         (not (re-matches #"[\{\}\[\]\(\),;:'\"\s]+" l))
+         (not (re-matches #"\s+[A-Za-z_$][\w$]*:\s.*" line))
+         (not (str/ends-with? l "{"))
+         (>= (count (str/split l #"\s+")) 3))))
+
+(defn backend-stderr
+  "The backend's recent stderr as one line, or nil when it said nothing
+   worth reading.
+
+   Public because every layer that renders an ACP failure wants it, not just
+   `await-result`."
+  [client]
+  (when-let [tail (some-> client :transport acp/transport-stderr-tail)]
+    (let [lines (->> tail
+                     (filter diagnostic-line?)
+                     (map str/trim)
+                     (take-last STDERR_EXPLAIN_LINES))]
+      (when (seq lines) (str/join " | " lines)))))
+
+(defn- explain
+  "`msg`, plus the backend's recent stderr when there is any.
+
+   A backend commonly narrates a fatal condition on stderr and then answers
+   the request with a generic `Internal error`; joining the two is the
+   difference between an actionable message and a dead end."
+  [client msg]
+  (if-let [err (backend-stderr client)]
+    (str msg " — backend stderr: " err)
+    msg))
+
 (defn await-result
   "Deref a request! result, returning the JSON-RPC `:result` value on
    success or throwing ExceptionInfo on error response or transport
-   failure."
-  ([result-ref]            (await-result result-ref nil))
-  ([result-ref timeout-ms]
+   failure.
+
+   `client` is used only to enrich failures with the backend's recent
+   stderr (see `explain`); pass nil when there is none to hand."
+  ([client result-ref]            (await-result client result-ref nil))
+  ([client result-ref timeout-ms]
    (let [msg (if timeout-ms
                (let [v (deref result-ref timeout-ms ::timeout)]
                  (if (= ::timeout v)
-                   (throw (ex-info "ACP await timeout" {:timeout-ms timeout-ms}))
+                   (throw (ex-info (explain client "ACP await timeout")
+                                   {:type :acp/timeout
+                                    :timeout-ms timeout-ms
+                                    :stderr (backend-stderr client)}))
                    v))
                (deref result-ref))]
      (cond
        (and (map? msg) (::error msg))
-       (throw (ex-info "ACP transport error before response"
-                       {:type :acp/transport-error :error (::error msg)}))
+       (throw (ex-info (explain client "ACP transport error before response")
+                       {:type :acp/transport-error
+                        :error (::error msg)
+                        :stderr (backend-stderr client)}))
 
        (acp/error? msg)
-       (throw (ex-info (or (-> msg :error :message) "ACP error response")
+       (throw (ex-info (explain client (or (-> msg :error :message)
+                                           "ACP error response"))
                        {:type :acp/error-response
                         :error (:error msg)
-                        :id (:id msg)}))
+                        :id (:id msg)
+                        :stderr (backend-stderr client)}))
 
        :else
        (:result msg)))))
@@ -306,6 +384,6 @@
                                :clientCapabilities  client-capabilities
                                :clientInfo          client-info}
                               {:timeout-ms timeout-ms})
-         result     (await-result result-ref timeout-ms)]
+         result     (await-result client result-ref timeout-ms)]
      (reset! (:!server-info client) result)
      result)))

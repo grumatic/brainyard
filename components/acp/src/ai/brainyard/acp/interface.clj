@@ -135,6 +135,15 @@
   [opts]
   (stdio/create opts))
 
+(defn transport-stderr-tail
+  "The most recent stderr lines from a transport's subprocess (oldest first),
+   or nil when it has no subprocess or has emitted nothing.
+
+   For explaining a failure: an ACP backend often describes the real problem
+   on stderr and then returns a bare `Internal error` over JSON-RPC."
+  [t]
+  (stdio/stderr-tail t))
+
 (defn open!
   "Open a transport (spawn subprocess, start I/O threads). Returns the transport."
   [t]
@@ -160,7 +169,6 @@
   "Release transport resources. Idempotent."
   [t]
   (transport/close! t))
-
 
 ;; =============================================================================
 ;; Environment (subprocess launch env)

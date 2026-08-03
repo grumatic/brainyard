@@ -17,9 +17,17 @@
      2. Writes are serialized through a write lock so concurrent
         `write-message!` calls don't interleave bytes on stdin.
 
-   Stderr is drained on a separate daemon thread and surfaced through
-   mulog (debug level) — losing it would cause subprocesses with full
-   pipe buffers to deadlock."
+   Stderr is drained on a separate daemon thread — losing it would cause
+   subprocesses with full pipe buffers to deadlock. Each line goes to
+   mulog at debug level AND into a bounded in-memory tail (`stderr-tail`).
+
+   The tail exists because a backend routinely explains a failure on
+   stderr and then answers the JSON-RPC request with a generic
+   `Internal error`. Debug-level logs are off by default, so the only
+   actionable half of the failure was being discarded: `claude-code-acp`
+   printing \"Claude Code cannot be launched inside another Claude Code
+   session\" surfaced to the user as an unexplained \"ACP error: Internal
+   error\". Callers attach this tail when they render an ACP failure."
   (:require [ai.brainyard.acp.core.env :as env]
             [ai.brainyard.acp.core.jsonrpc :as jsonrpc]
             [ai.brainyard.acp.core.transport :as transport]
@@ -89,10 +97,21 @@
     (.start t)
     t))
 
+(def ^:const STDERR_TAIL_LINES
+  "How many recent stderr lines to retain per transport. Small on purpose:
+   this is diagnostic context appended to an error message, not a log."
+  20)
+
+(def ^:const STDERR_LINE_MAX
+  "Longest retained stderr line. A backend that dumps a whole stack trace
+   on one line must not be able to grow this buffer without bound."
+  500)
+
 (defn- start-stderr-drain
   "Drain stderr on a daemon thread to prevent pipe-full deadlock.
-   Each line is logged at debug level."
-  [^BufferedReader reader !running thread-name]
+   Each line is logged at debug level and appended to `!tail`, a bounded
+   ring of the most recent `STDERR_TAIL_LINES` lines."
+  [^BufferedReader reader !running !tail thread-name]
   (let [t (Thread.
            (fn []
              (try
@@ -103,6 +122,15 @@
                        (mulog/debug ::subprocess-stderr
                                     :thread thread-name
                                     :line line)
+                       (when !tail
+                         (let [trimmed (if (> (count line) STDERR_LINE_MAX)
+                                         (str (subs line 0 STDERR_LINE_MAX) "…")
+                                         line)]
+                           (swap! !tail (fn [v]
+                                          (let [v' (conj (or v []) trimmed)]
+                                            (if (> (count v') STDERR_TAIL_LINES)
+                                              (subvec v' (- (count v') STDERR_TAIL_LINES))
+                                              v'))))))
                        (recur)))))
                (catch InterruptedException _ nil)
                (catch Exception _ nil))))]
@@ -124,6 +152,7 @@
                            !running        ;; atom<boolean>
                            !reader-thread  ;; atom<Thread?>
                            !stderr-thread  ;; atom<Thread?>
+                           !stderr-tail    ;; atom<vector<string>> — bounded recent stderr
                            write-lock]     ;; Object — held while writing
 
   ITransport
@@ -157,8 +186,12 @@
         (reset! !reader-thread
                 (start-reader-thread stdout inbox !running
                                      (str "acp-stdio-reader[" (first command) "]")))
+        ;; A reopened transport starts with a clean tail — stale stderr from a
+        ;; previous process would be worse than none, since it would be
+        ;; appended to a failure it had nothing to do with.
+        (when !stderr-tail (reset! !stderr-tail []))
         (reset! !stderr-thread
-                (start-stderr-drain stderr !running
+                (start-stderr-drain stderr !running !stderr-tail
                                     (str "acp-stdio-stderr[" (first command) "]")))
         (mulog/info ::stdio-transport-opened
                     :command command :working-dir working-dir)
@@ -231,6 +264,17 @@
   Closeable
   (close [this] (transport/close! this)))
 
+(defn stderr-tail
+  "The most recent stderr lines from `transport`'s subprocess, oldest first,
+   or nil when it keeps no tail.
+
+   Deliberately duck-typed on the `:!stderr-tail` key rather than typed to
+   `StdioTransport`: callers hold an `ITransport` that may be an in-memory
+   or socket transport with no subprocess at all, and \"this transport has
+   no stderr\" is an ordinary answer (nil), not an error."
+  [transport]
+  (some-> transport :!stderr-tail deref not-empty vec))
+
 (defmethod print-method StdioTransport [t ^java.io.Writer w]
   (.write w (str "#StdioTransport{:command " (pr-str (:command t))
                  ", :open? " (boolean (transport/open? t)) "}")))
@@ -255,4 +299,4 @@
   (->StdioTransport command working-dir env
                     (atom nil) (atom nil) (atom nil)
                     (atom false) (atom nil) (atom nil)
-                    (Object.)))
+                    (atom []) (Object.)))

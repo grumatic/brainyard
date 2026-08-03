@@ -37,6 +37,7 @@
                        mcp-servers []
                        timeout-ms  30000}}]
    (let [result (client/await-result
+                 acp-client
                  (client/request! acp-client "session/new"
                                   {:cwd        cwd
                                    :mcpServers mcp-servers}
@@ -63,6 +64,7 @@
   ([{:keys [session-id client] :as _sess} model-id {:keys [timeout-ms]
                                                     :or   {timeout-ms 30000}}]
    (client/await-result
+    client
     (client/request! client "session/set_model"
                      {:sessionId session-id :modelId model-id}
                      {:timeout-ms timeout-ms})
@@ -126,6 +128,7 @@
   ([{:keys [session-id client] :as _sess} content {:keys [timeout-ms]
                                                    :or   {timeout-ms 600000}}]
    (let [result (client/await-result
+                 client
                  (client/request! client "session/prompt"
                                   {:sessionId session-id
                                    :prompt    content}
@@ -154,6 +157,7 @@
   ([{:keys [session-id client] :as _sess} {:keys [timeout-ms]
                                            :or   {timeout-ms 5000}}]
    (client/await-result
+    client
     (client/request! client "session/cancel" {:sessionId session-id}
                      {:timeout-ms timeout-ms})
     timeout-ms)))
