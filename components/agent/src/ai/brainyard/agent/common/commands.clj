@@ -201,7 +201,7 @@
       {:error "Instance belongs to a different session; you can only manage instances in your own session."}
 
       (and (not caller-root?) (not= owner caller-id))
-      {:error (format "Not owned by you (owner: %s). You may only resume/close subagents you dispatched."
+      {:error (format "Not owned by you (owner: %s). You may only ask/close subagents you dispatched."
                       (pr-str owner))}
 
       :else nil)))
@@ -1025,7 +1025,7 @@ results are intentionally kept out of semantic recall so it stays focused on kno
 
 (def registry-commands
   "Commands for inspecting and managing the agent registry (root + subagent
-   instances). Every dispatched subagent is kept alive here; resume/close act on
+   instances). Every dispatched subagent is kept alive here; ask/close act on
    them — see docs/design/agent-lifecycle-management.md."
   [#'agent-registry$list
    #'agent-registry$detail
