@@ -465,6 +465,41 @@
             :max-depth  (or (config/get-config agent :max-agent-call-depth) 3)}
            (make-task-fns))))
 
+(defonce ^:private !shutdown-hook-installed? (atom false))
+
+(defn- install-shutdown-hook!
+  "Close warm contexts when the JVM goes down.
+
+   Warm contexts are the whole point of the registry, but they are also the
+   reason this hook has to exist: a context can hold an EXTERNAL SUBPROCESS
+   (an exposed acp-agent is one `npx claude-code-acp` per context), and
+   `by a2a serve` parks the main thread forever, so the only ways out are
+   Ctrl-C and SIGTERM. Without the hook those subprocesses are reparented to
+   init and survive the server that spawned them — one orphan per warm
+   context, every restart. Before instances outlived a turn this could not
+   happen: each turn closed its own in a `finally`.
+
+   SIGKILL still orphans them; nothing in-process can prevent that."
+  []
+  (when (compare-and-set! !shutdown-hook-installed? false true)
+    (.addShutdownHook (Runtime/getRuntime)
+                      (Thread. ^Runnable
+                       (fn []
+                         (let [n (reset-contexts!)]
+                           (when (pos? n)
+                             (println (str "\nclosed " n " warm A2A context(s)")))))
+                               "a2a-serve-shutdown"))))
+
+(defn stop!
+  "Stop a running A2A server and close every warm context.
+
+   The graceful counterpart to the shutdown hook: `a2a-server/stop!` alone
+   would free the port and leave the conversations — and their subprocesses —
+   running."
+  [handle]
+  (reset-contexts!)
+  (a2a-server/stop! handle))
+
 (defn serve!
   "Start the A2A server for this process.
 
@@ -492,6 +527,7 @@
             service (build-service agent (assoc opts :url url))
             result  (a2a-server/start! service {:host host :port port})]
         (when-not (:error result)
+          (install-shutdown-hook!)
           (mulog/info ::serving :url (:url result)
                       :skills (mapv (comp id-str first) (exposable-agents allow))))
         result))))

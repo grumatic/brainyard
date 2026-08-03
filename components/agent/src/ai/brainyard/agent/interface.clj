@@ -15,7 +15,6 @@
    - Context building from memory + conversation"
   (:require [ai.brainyard.util.interface.macros :refer [export-symbols]]
             [ai.brainyard.util.interface :as util]
-            [ai.brainyard.a2a-server.interface :as a2a-server]
             [ai.brainyard.agent.common.a2a-serve :as a2a-serve]
             [ai.brainyard.agent.core.protocol :as protocol]
             [ai.brainyard.agent.core.feature :as feature]
@@ -445,9 +444,12 @@
   (a2a-serve/serve! agent opts))
 
 (defn a2a-stop!
-  "Stop a running A2A server handle. Idempotent."
+  "Stop a running A2A server handle and close every warm context. Idempotent.
+
+   Closing the contexts is part of stopping: one can hold an external
+   subprocess, which would otherwise outlive the server that spawned it."
   [handle]
-  (a2a-server/stop! handle))
+  (a2a-serve/stop! handle))
 
 (defn a2a-exposed-skill-ids
   "The agent ids currently exposed as A2A skills, as strings. Empty unless

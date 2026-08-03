@@ -210,6 +210,23 @@
           (is (= "plan-agent" (namespace (last (asked-ids)))))
           (is (= 1 (serve/context-count)) "one context, now bound to plan-agent"))))))
 
+(deftest reset-closes-every-warm-context-test
+  (testing "teardown reclaims warm contexts rather than orphaning them"
+    ;; A warm context can hold an external subprocess, so this is the
+    ;; difference between stopping the server and leaking one process per
+    ;; live conversation. Both the graceful `stop!` and the JVM shutdown hook
+    ;; funnel through `reset-contexts!`.
+    (with-stubs {:cap 8 :ttl 600000}
+      (fn []
+        (let [f (ask-fn)]
+          (ask! f "ctx-a" "a")
+          (ask! f "ctx-b" "b")
+          (is (= 2 (serve/context-count)))
+          (is (= 2 (serve/reset-contexts!)) "reports what it closed")
+          (is (= 2 (count @!closed)) "and actually closed both instances")
+          (is (zero? (serve/context-count)))
+          (is (zero? (serve/reset-contexts!)) "idempotent"))))))
+
 (deftest concurrent-turn-on-one-context-is-refused-test
   (testing "a second in-flight turn on one contextId errors instead of queueing"
     (let [release (promise)
