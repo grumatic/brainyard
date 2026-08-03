@@ -243,7 +243,7 @@
                    :health  (live-health agent)
                    :purpose (if (and (:purpose d) (not (str/blank? (:purpose d))))
                               (:purpose d)
-                              (str (name (or (:backend d) :stub))
+                              (str (name (or (:backend d) :claude-code))
                                    (when (:model-label d) (str "/" (:model-label d))))))
       (backend-auth-status (:backend d)) (assoc :auth (backend-auth-status (:backend d))))))
 
@@ -534,7 +534,7 @@
 ;; =============================================================================
 
 (defagent acp-agent
-  "ACP-driven agent that hands the question to an external ACP backend (default :stub) and streams responses, plans, tool calls, and permission requests through the TUI hook bridge."
+  "ACP-driven agent that hands the question to an external ACP backend (default :claude-code) and streams responses, plans, tool calls, and permission requests through the TUI hook bridge."
   agent/run-agent
   :bt-factory (fn [{:keys [max-iterations]}] (acp-behavior-tree max-iterations))
   :tool-use-control {}
@@ -542,7 +542,7 @@
                   [:question [:string {:desc "User question to forward to the ACP backend"}]]
                   [:purpose {:optional true} [:string {:desc "Short role label for this connection (\"who's for what\"); surfaced by acp$list/detail"}]]
                   [:agent-context {:optional true} [:string {:desc "Extra context (currently unused)"}]]
-                  [:acp-backend {:optional true} [:keyword {:desc "ACP backend keyword (e.g. :stub)" :default :stub}]]
+                  [:acp-backend {:optional true} [:keyword {:desc "ACP backend keyword (e.g. :claude-code, :gemini, :codex); omit to take the :acp-backend config default" :default :claude-code}]]
                   [:acp-backend-opts {:optional true} [:map {:desc "Per-backend launch options forwarded to acp-client/registry" :default {}}]]]
   :output-schema [:map
                   [:answer [:string {:desc "Agent's final answer accumulated from streamed chunks"}]]]
