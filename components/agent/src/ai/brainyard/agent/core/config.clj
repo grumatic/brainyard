@@ -1192,6 +1192,12 @@
    "memory"        :both
    "logs"          :user-only
 
+   ;; user-only: the project registry (`projects/<slug>/project.edn`) is
+   ;; per-account bookkeeping ABOUT projects — where each one lives, when it
+   ;; was last opened. It must never appear inside a repo, so :project is
+   ;; refused here rather than left to caller discipline. See core.projects.
+   "projects"      :user-only
+
    ;; project-only: sessions are project-specific. Their scrollback, message
    ;; log, todo, queue, permissions and trajectory all describe work done in
    ;; one codebase, so they live under <project>/.brainyard/sessions/ (gitignored)

@@ -232,6 +232,37 @@ which is now implied by `BY_ENABLE_GRAPH_MEMORY`. Two decisions worth knowing:
   `memory$status` flag, and waits for the user to run `memory$reembed`. Guided,
   not automatic — no surprise embedding cost, no silent wrong rankings.
 
+### Projects get a user-scope folder, keyed by a reversible slug
+
+Every project is registered under `~/.brainyard/projects/<slug>/`, giving
+user-scoped state *about* a project a home that is not the repo's own
+`<project>/.brainyard/` (which travels with the codebase). v1 stores **registry
+metadata only** — `project.edn` with the canonical path, name, git remote, and
+created/last-opened stamps. Nothing moved out of project scope.
+
+The slug is `<sanitized-basename>-<8 hex of SHA-256(canonical path)>`, e.g.
+`brainyard-3f9a1c2d`: space-free, readable, stable (so registration is
+idempotent), and collision-free across two checkouts that share a basename.
+
+Two decisions worth knowing:
+
+- **slug → path is a LOOKUP, not an algorithm.** It's recovered by reading
+  `<slug>/project.edn`, which is exact. The tempting alternative — encoding the
+  path by substituting separators (`/Users/me/my-app` → `-Users-me-my-app`) —
+  is *not* reversible once a path segment contains the separator character, and
+  real paths do (`my-app` vs `my/app`). There's a regression test for exactly
+  that pair.
+- **`index.edn` is a derived cache, never authority.** It's rebuilt by scanning
+  the per-slug records, so concurrent `by` processes never contend (each writes
+  only its own slug) and a torn index heals on the next refresh.
+
+Registration happens in `run-tui!` and `cmd-ask` only, always *after*
+`install-working-dir!` so `-C`/`BY_PROJECT_DIR` are in effect — deliberately
+not in `ensure-config-dirs!`, which is a hot path. Failure is swallowed; the
+registry must never block a session. Surfaced by `by projects list` /
+`by projects path <slug>`. Design: `docs/design/project-registry.md`; impl in
+`components/agent/src/ai/brainyard/agent/core/projects.clj`.
+
 ### Task output files are GC-reclaimed, not deleted on task removal
 
 Each task gets a project-scoped dir `<project>/.brainyard/tasks/<task-id>/`

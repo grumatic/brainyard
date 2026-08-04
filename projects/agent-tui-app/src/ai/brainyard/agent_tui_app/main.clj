@@ -480,11 +480,31 @@
          (mulog/warn ::consolidation-offload-spawn-failed :exception e)
          nil)))))
 
+(defn- register-project!
+  "Record this project in the user-scope registry
+   (`~/.brainyard/projects/<slug>/project.edn`) and stamp `:last-opened-at`.
+
+   Call sites are the two paths that actually open a session — `run-tui!` and
+   `cmd-ask` — and always AFTER `install-working-dir!`, so `-C` /
+   `BY_PROJECT_DIR` are already in effect and we register the project the
+   session will really work in.
+
+   Deliberately NOT hooked into `agent/ensure-config-dirs!`: that runs on
+   every `init-dirs!` (including each memory-manager construction), so
+   stamping there would be write churn on a hot path. Read-only invocations
+   (`--version`, `--help`, `by projects list`) never register.
+
+   Failure is swallowed inside `agent/register-project!` — the registry is
+   auxiliary bookkeeping and must never block a session from starting."
+  []
+  (agent/register-project! (agent/init-dirs!)))
+
 (defn- run-tui!
   "Start the interactive TUI agent session in this process.
    Config precedence: CLI flags > config.edn > hardcoded defaults.
    `opts` is assumed already normalized by `parse-legacy-provider`."
   [opts]
+  (register-project!)
   ;; Offload the heavy graph-mode session-end consolidation to a detached
   ;; `by memory reduce` child so /quit never blocks on it (this process knows how
   ;; to re-exec the binary; components/agent can't). No-op unless graph memory is
@@ -1016,6 +1036,7 @@
         real-out *out*
         opts (parse-legacy-provider opts)
         _ (install-working-dir! opts)
+        _ (register-project!)
         file-config (agent/read-edn-config (agent/init-dirs!))
         question (first (:_arguments opts))
         cli-agent (:agent opts)
@@ -2447,6 +2468,66 @@
         (println (str "Session not found: " target))))))
 
 ;; ============================================================================
+;; Subcommand: projects — the user-scope project registry
+;; ============================================================================
+
+(defn- local-date-str
+  "`inst` as `yyyy-MM-dd` in the local zone, or \"\" when absent/unparseable.
+   NOT `(subs (str date) 0 10)` — `java.util.Date`'s string form starts
+   `Tue Aug 04 …`, so slicing it yields a weekday, not a date."
+  [inst]
+  (try
+    (if inst
+      (-> (java.time.Instant/ofEpochMilli (inst-ms inst))
+          (.atZone (java.time.ZoneId/systemDefault))
+          (.toLocalDate)
+          str)
+      "")
+    (catch Exception _ "")))
+
+(defn- format-projects-table
+  "Render registry rows as an aligned table. Returns a seq of lines."
+  [rows]
+  (let [col    (fn [k hdr] (apply max (count hdr) (map #(count (str (get % k))) rows)))
+        w-slug (col :slug "SLUG")
+        w-name (col :name "NAME")
+        fmt    (str "%-" w-slug "s  %-" w-name "s  %-10s  %s")]
+    (cons (format fmt "SLUG" "NAME" "OPENED" "PATH")
+          (map (fn [r]
+                 (format fmt
+                         (str (:slug r))
+                         (str (:name r))
+                         (local-date-str (:last-opened-at r))
+                         (str (:path r) (when (:missing? r) "  (missing)"))))
+               rows))))
+
+(defn cmd-projects-list
+  "List every project registered under `~/.brainyard/projects/`, newest first.
+
+   Rows whose directory no longer exists are tagged `(missing)` rather than
+   removed — a moved or unmounted project should be visible, not silently
+   dropped. Reclaiming those entries is a separate concern, in keeping with
+   how task artifacts are GC-swept rather than deleted inline."
+  [opts]
+  (let [rows (agent/list-projects (agent/init-dirs!))]
+    (if (:json opts)
+      (print-json! rows)
+      (if (empty? rows)
+        (println "No registered projects.")
+        (doseq [line (format-projects-table rows)] (println line))))))
+
+(defn cmd-projects-path
+  "Print the absolute project path for a registry slug — the reverse of the
+   slug derivation. Exits 1 when the slug isn't registered."
+  [opts]
+  (let [slug (or (first (:_arguments opts)) (:slug opts))]
+    (when (str/blank? (str slug))
+      (exit-err! "Usage: by projects path <slug>"))
+    (if-let [p (agent/project-path-for-slug (agent/init-dirs!) slug)]
+      (println p)
+      (exit-err! (str "Not a registered project slug: " slug)))))
+
+;; ============================================================================
 ;; CLI configuration
 ;; ============================================================================
 
@@ -2616,6 +2697,16 @@
                                                 :type :with-flag :default false}
                                                working-dir-opt]
                                  :runs        cmd-sessions-prune}]}
+                 {:command     "projects"
+                  :description "Inspect the user-scope project registry (~/.brainyard/projects)"
+                  :subcommands [{:command     "list"
+                                 :description "List every registered project, newest first"
+                                 :opts        [json-opt]
+                                 :runs        cmd-projects-list}
+                                {:command     "path"
+                                 :description "Print the absolute project path for a registry slug"
+                                 :opts        []
+                                 :runs        cmd-projects-path}]}
                  {:command     "memory"
                   :description "Maintenance on the user-scoped L1/L2/L3 memory store"
                   :subcommands [{:command     "consolidate"
@@ -2730,7 +2821,7 @@
 ;; Entry point
 ;; ============================================================================
 
-(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "memory" "events" "a2a"})
+(def ^:private known-subcommands #{"run" "ask" "agents" "models" "config" "sessions" "projects" "memory" "events" "a2a"})
 (def ^:private help-flags #{"--help" "-?" "-h"})
 ;; `-v` is taken by `run --verbose`, so the short version flag is capital `-V`.
 (def ^:private version-flags #{"--version" "-V"})

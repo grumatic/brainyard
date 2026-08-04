@@ -382,6 +382,13 @@
                 brainyard-subdir brainyard-subdir! sessions-root
                 working-dir allowed-dirs set-allowed-dirs! resolve-agent-dirs)
 
+;; User-scope project registry (~/.brainyard/projects/<slug>/). See
+;; core.projects for the slug scheme and why slug->path is a lookup.
+(export-symbols ai.brainyard.agent.core.projects
+                project-slug projects-root project-user-dir
+                register-project! ensure-project-registered!
+                project-path-for-slug list-projects refresh-projects-index!)
+
 ;; ============================================================================
 ;; Live Artifacts
 ;; ============================================================================
