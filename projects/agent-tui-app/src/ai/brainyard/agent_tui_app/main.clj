@@ -2527,6 +2527,36 @@
       (println p)
       (exit-err! (str "Not a registered project slug: " slug)))))
 
+(defn cmd-projects-add
+  "Register a project WITHOUT opening a session in it.
+
+   Until now the registry only gained entries as a side effect of `run-tui!` /
+   `cmd-ask`, which means a tool that wants to offer \"add an existing repo\"
+   had to boot a whole agent just to record a path. That is the entire reason
+   this exists; the work itself is one call to the same idempotent
+   `register-project!` those paths use, so re-adding preserves `:created-at`
+   and simply re-stamps `:last-opened-at`.
+
+   Defaults to the effective working directory, so a bare `by projects add`
+   inside a repo registers that repo. Exits 1 when the path is not a directory
+   — registering a typo would put a permanently `(missing)` row in the registry."
+  [opts]
+  (let [raw (or (first (:_arguments opts)) (:path opts) ".")
+        f   (io/file (str raw))
+        ;; Hinted: `try` erases to Object, so without this the .isDirectory /
+        ;; .getPath below become reflective — which `bb reflect:check` fails the
+        ;; build over, since reflection is a native-image break waiting to happen.
+        ^java.io.File dir (try (.getCanonicalFile f)
+                               (catch Exception _ (.getAbsoluteFile f)))]
+    (when-not (.isDirectory dir)
+      (exit-err! (str "Not a directory: " dir)))
+    (if-let [rec (agent/register-project! (agent/init-dirs!) (.getPath dir))]
+      (if (:json opts)
+        (print-json! rec)
+        (println (:slug rec) (:path rec)))
+      (exit-err! (str "Could not register " dir
+                      " (is ~/.brainyard writable?)")))))
+
 ;; ============================================================================
 ;; CLI configuration
 ;; ============================================================================
@@ -2706,7 +2736,11 @@
                                 {:command     "path"
                                  :description "Print the absolute project path for a registry slug"
                                  :opts        []
-                                 :runs        cmd-projects-path}]}
+                                 :runs        cmd-projects-path}
+                                {:command     "add"
+                                 :description "Register a project (default: the working dir) without opening a session"
+                                 :opts        [json-opt]
+                                 :runs        cmd-projects-add}]}
                  {:command     "memory"
                   :description "Maintenance on the user-scoped L1/L2/L3 memory store"
                   :subcommands [{:command     "consolidate"
