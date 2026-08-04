@@ -23,6 +23,7 @@
    `set-local-clj-eval!` — a dependency inversion that keeps the coupled code in
    coact while the protocol lives here."
   (:require [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.proc :as proc]
             [ai.brainyard.mulog.interface :as mulog])
   (:import [java.io File InputStreamReader StringWriter]
            [java.util.concurrent TimeUnit]))
@@ -53,9 +54,7 @@
    {:exit :output :error}. Mirrors the proven ProcessBuilder logic in
    coact-agent's run-script-block (subagent / in-task branch)."
   [command {:keys [cwd timeout-ms] :or {timeout-ms 30000}}]
-  (let [pb (ProcessBuilder. ^"[Ljava.lang.String;"
-            (into-array String ["/bin/sh" "-c" command]))]
-    (.redirectErrorStream pb true)
+  (let [pb (proc/shell-pb command)]
     (when cwd (.directory pb (File. ^String cwd)))
     (let [^Process proc (.start pb)
           _ (.close (.getOutputStream proc))

@@ -9,6 +9,7 @@
             [ai.brainyard.agent.common.reference :as ref]
             [ai.brainyard.agent.common.skills :as skill]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.core.proc :as proc]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.session :as session]
             [ai.brainyard.agent.core.timeutil :as timeutil]
@@ -220,75 +221,6 @@
 ;; Shell Tools
 ;; ============================================================================
 
-(def ^:private new-session-script
-  "Shell prologue that re-execs the command in a BRAND-NEW SESSION.
-
-   Closing the child's stdin (below) stops it reading the pipe, but it does
-   NOT stop it opening `/dev/tty`: ProcessBuilder leaves the child attached to
-   the JVM's controlling terminal, which exists whenever `by` runs from a real
-   one (`bb tui`, `by ask` in a shell). A command that goes to the terminal
-   directly — `git` asking for a password, `sudo`, `ssh` — then blocks on a
-   prompt the agent cannot see and cannot answer:
-
-     - the prompt is written to the tty, so it NEVER reaches `:output`, which
-       comes back empty; the model gets no hint why the call stalled,
-     - the prompt lands on the user's screen, interleaved with TUI rendering,
-     - and `timeout-ms` defaults to nil, so the wait is unbounded.
-
-   A process in its own session has no controlling terminal, so `/dev/tty`
-   fails with ENXIO and the command dies in milliseconds with a readable
-   error instead of hanging.
-
-   The command arrives as `$1` — an argv element, never interpolated into
-   this script — so no quoting in the user's command can break the wrapper.
-
-   perl is tried BEFORE setsid, the reverse of the detach chain in the app's
-   `spawn-detached-reduce!`, and the order is load-bearing: util-linux
-   `setsid` FORKS when its caller is already a process-group leader, and a
-   forked child would let the parent exit immediately — `.waitFor` would
-   return success while the real work ran on, losing both the exit code and
-   the output. `POSIX::setsid()` never forks, so the PID we wait on stays the
-   PID that does the work. Unlike that detach path this one does NOT abort
-   when setsid fails: a command that cannot get its own session should still
-   run, just without the protection."
-  (str "if command -v perl >/dev/null 2>&1; then "
-       "exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' /bin/sh -c \"$1\"; "
-       "elif command -v setsid >/dev/null 2>&1; then "
-       "exec setsid /bin/sh -c \"$1\"; "
-       "else exec /bin/sh -c \"$1\"; fi"))
-
-(def ^:private non-interactive-env
-  "Environment that makes credential prompts FAIL rather than wait.
-
-   The new session (above) removes the terminal, which stops anything reading
-   /dev/tty. It does not stop the other way in: `git` and `ssh` will spawn an
-   ASKPASS program, and a GUI one — the common case on a desktop — pops a
-   dialog and blocks with no terminal involved at all.
-
-   Two distinct mechanisms are at play here and only one of them blocks:
-
-     - `credential.helper` (osxkeychain, libsecret, a token script) answers
-       git PROGRAMMATICALLY and never prompts. It is untouched, so silent
-       keychain-backed auth keeps working exactly as before.
-     - `GIT_ASKPASS` / `SSH_ASKPASS` spawn a program to ask a human. That is
-       the one that hangs, so it is pointed at `false`.
-
-   `false` rather than an absolute path because /usr/bin/false and /bin/false
-   disagree across platforms; git resolves the name on PATH. It exits
-   non-zero, so git reports \"unable to read askpass response\" and then, with
-   the prompt disabled, \"could not read Username … terminal prompts
-   disabled\" — a diagnosis instead of a hang. `SSH_ASKPASS_REQUIRE=never`
-   (OpenSSH 8.4+) tells ssh not to reach for askpass at all.
-
-   This overrides a user's own askpass, which is the point — but it is not a
-   dead end. A command can set its own: `GIT_ASKPASS=/my/helper git fetch …`
-   wins over what it inherits, so a genuinely non-interactive helper stays
-   usable without a config knob for it."
-  {"GIT_TERMINAL_PROMPT"  "0"
-   "GIT_ASKPASS"          "false"
-   "SSH_ASKPASS"          "false"
-   "SSH_ASKPASS_REQUIRE"  "never"})
-
 (defn- run-bash-inline
   "Direct ProcessBuilder execution — no task creation. The outer call site
    (call-tool-with-fast-eval or code-eval task) handles timeout/detach.
@@ -303,17 +235,13 @@
 
    The command runs with stdin closed, in its own session, and with credential
    prompts disarmed, so nothing it spawns can block waiting to be asked
-   something — see `new-session-script` and `non-interactive-env`."
+   something — see `agent.core.proc`."
   ([command timeout-ms] (run-bash-inline command timeout-ms nil))
   ([command timeout-ms dir]
    (try
      (let [infinite? (nil? timeout-ms)
-           pb (ProcessBuilder. ^"[Ljava.lang.String;"
-               (into-array String ["/bin/sh" "-c" new-session-script
-                                   "brainyard-bash" command]))
+           pb (proc/shell-pb command)
            _ (when dir (.directory pb (java.io.File. ^String dir)))
-           _ (doseq [[k v] non-interactive-env] (.put (.environment pb) k v))
-           _ (.redirectErrorStream pb true)
            ^Process proc (.start pb)
            _ (.close (.getOutputStream proc))
            ^java.io.StringWriter sw (java.io.StringWriter.)

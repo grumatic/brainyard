@@ -38,6 +38,7 @@
    are dropped on each reload. Mirrors `mcp/integration/register-mcp-tools-for-server!`."
   (:require [ai.brainyard.agent.common.artifacts :as artifacts]
             [ai.brainyard.agent.core.tool :as tool :refer [defcommand]]
+            [ai.brainyard.agent.core.proc :as proc]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.java.io :as io]
@@ -60,14 +61,13 @@
    ANSI escape codes are stripped from output."
   [cmd timeout-ms]
   (try
-    (let [pb (ProcessBuilder. ^"[Ljava.lang.String;" (into-array String ["/bin/sh" "-c" cmd]))
-          _ (.redirectErrorStream pb true)
-          proc (.start pb)
-          output (slurp (.getInputStream proc))
-          finished (.waitFor proc (long timeout-ms) TimeUnit/MILLISECONDS)]
+    (let [pb (proc/shell-pb cmd)
+          ^Process p (.start pb)
+          output (slurp (.getInputStream p))
+          finished (.waitFor p (long timeout-ms) TimeUnit/MILLISECONDS)]
       (if finished
-        {:output (strip-ansi (str/trim output)) :exit-code (.exitValue proc)}
-        (do (.destroyForcibly proc)
+        {:output (strip-ansi (str/trim output)) :exit-code (.exitValue p)}
+        (do (.destroyForcibly p)
             {:output "" :exit-code -1 :error "timed out"})))
     (catch Exception e
       {:output "" :exit-code -1 :error (.getMessage e)})))

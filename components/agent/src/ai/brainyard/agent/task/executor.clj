@@ -13,6 +13,7 @@
   (:require [ai.brainyard.a2a.interface :as a2a]
             [ai.brainyard.a2a-client.interface :as a2a-client]
             [ai.brainyard.agent.task.protocol :as tp]
+            [ai.brainyard.agent.core.proc :as proc]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.stdio.client :as stdio-client]
@@ -48,9 +49,14 @@
   tp/IJobExecutor
   (execute-job [_ task on-output]
     (let [{:keys [command working-dir env]} (:job-config task)
-          pb (ProcessBuilder. ^"[Ljava.lang.String;" (into-array String ["/bin/sh" "-c" command]))]
-      (.redirectErrorStream pb true)
+          ;; Own session + disarmed credential prompts (see agent.core.proc).
+          ;; Closing stdin below is not enough on its own: a `:bash` task that
+          ;; hits a git password prompt would otherwise sit at :running until
+          ;; its timeout with :output empty, while the prompt itself appeared
+          ;; on the user's terminal.
+          pb (proc/shell-pb command)]
       (when working-dir (.directory pb (java.io.File. ^String working-dir)))
+      ;; AFTER hardening, so an explicit job env still wins.
       (when env
         (let [env-map (.environment pb)]
           (doseq [[k v] env] (.put env-map (str k) (str v)))))

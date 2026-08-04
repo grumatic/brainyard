@@ -64,6 +64,7 @@
             [ai.brainyard.agent.core.context.section-assembler :as sa]
             [ai.brainyard.agent.core.system-info :as sys-info]
             [ai.brainyard.agent.core.hooks :as hooks]
+            [ai.brainyard.agent.core.proc :as proc]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :as tool :refer [defagent]]
             [ai.brainyard.agent.task.commands :as task-cmds]
@@ -3428,9 +3429,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
               (tp/start-task mgr (:id task))
               task))})
         (let [t0 (System/currentTimeMillis)
-              pb (ProcessBuilder. ^"[Ljava.lang.String;"
-                  (into-array String ["/bin/sh" "-c" command]))
-              _ (.redirectErrorStream pb true)
+              pb (proc/shell-pb command)
               _ (.directory pb (java.io.File. ^String proj-dir))
               ^Process proc (.start pb)
               _ (.close (.getOutputStream proc))
