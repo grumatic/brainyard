@@ -257,6 +257,38 @@
        "exec setsid /bin/sh -c \"$1\"; "
        "else exec /bin/sh -c \"$1\"; fi"))
 
+(def ^:private non-interactive-env
+  "Environment that makes credential prompts FAIL rather than wait.
+
+   The new session (above) removes the terminal, which stops anything reading
+   /dev/tty. It does not stop the other way in: `git` and `ssh` will spawn an
+   ASKPASS program, and a GUI one — the common case on a desktop — pops a
+   dialog and blocks with no terminal involved at all.
+
+   Two distinct mechanisms are at play here and only one of them blocks:
+
+     - `credential.helper` (osxkeychain, libsecret, a token script) answers
+       git PROGRAMMATICALLY and never prompts. It is untouched, so silent
+       keychain-backed auth keeps working exactly as before.
+     - `GIT_ASKPASS` / `SSH_ASKPASS` spawn a program to ask a human. That is
+       the one that hangs, so it is pointed at `false`.
+
+   `false` rather than an absolute path because /usr/bin/false and /bin/false
+   disagree across platforms; git resolves the name on PATH. It exits
+   non-zero, so git reports \"unable to read askpass response\" and then, with
+   the prompt disabled, \"could not read Username … terminal prompts
+   disabled\" — a diagnosis instead of a hang. `SSH_ASKPASS_REQUIRE=never`
+   (OpenSSH 8.4+) tells ssh not to reach for askpass at all.
+
+   This overrides a user's own askpass, which is the point — but it is not a
+   dead end. A command can set its own: `GIT_ASKPASS=/my/helper git fetch …`
+   wins over what it inherits, so a genuinely non-interactive helper stays
+   usable without a config knob for it."
+  {"GIT_TERMINAL_PROMPT"  "0"
+   "GIT_ASKPASS"          "false"
+   "SSH_ASKPASS"          "false"
+   "SSH_ASKPASS_REQUIRE"  "never"})
+
 (defn- run-bash-inline
   "Direct ProcessBuilder execution — no task creation. The outer call site
    (call-tool-with-fast-eval or code-eval task) handles timeout/detach.
@@ -269,8 +301,9 @@
    `projects/agent-tui-app/` subdir. When `dir` is nil the shell inherits
    the JVM cwd (the historical behavior; used by direct unit tests).
 
-   The command runs with stdin closed AND in its own session, so nothing it
-   spawns can block on terminal input — see `new-session-script`."
+   The command runs with stdin closed, in its own session, and with credential
+   prompts disarmed, so nothing it spawns can block waiting to be asked
+   something — see `new-session-script` and `non-interactive-env`."
   ([command timeout-ms] (run-bash-inline command timeout-ms nil))
   ([command timeout-ms dir]
    (try
@@ -279,15 +312,7 @@
                (into-array String ["/bin/sh" "-c" new-session-script
                                    "brainyard-bash" command]))
            _ (when dir (.directory pb (java.io.File. ^String dir)))
-           ;; Without a controlling terminal git already fails, but it fails
-           ;; as "Device not configured" — an ENXIO leak that reads like a
-           ;; broken machine. Disabling the prompt makes it name itself
-           ;; ("terminal prompts disabled"), which is the difference between
-           ;; an agent that reports a credential problem and one that reports
-           ;; nonsense. Askpass helpers are deliberately left alone: a working
-           ;; one supplies credentials WITHOUT blocking, and stripping it
-           ;; would break the very setups that behave correctly here.
-           _ (.put (.environment pb) "GIT_TERMINAL_PROMPT" "0")
+           _ (doseq [[k v] non-interactive-env] (.put (.environment pb) k v))
            _ (.redirectErrorStream pb true)
            ^Process proc (.start pb)
            _ (.close (.getOutputStream proc))

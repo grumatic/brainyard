@@ -698,6 +698,48 @@
           (is (seq (str (:output result)))
               "a tty prompt would leave :output empty; a real error does not"))))))
 
+(deftest run-bash-inline-disarms-credential-prompts-test
+  ;; The new session stops anything reading /dev/tty, but git and ssh can also
+  ;; spawn an ASKPASS program, and a GUI one blocks with no terminal involved.
+  ;; Asserted on the child's environment rather than by provoking a real
+  ;; prompt: the parent JVM's own env cannot be mutated in-process, so an
+  ;; end-to-end version could only prove the negative on a machine that
+  ;; happens to have a blocking helper installed.
+  (testing "askpass is neutralised in the child environment"
+    (let [tm (manager/create-task-manager)]
+      (manager/set-default-manager! tm)
+      (let [result (@#'ctools/run-bash-inline
+                    (str "echo \"$GIT_TERMINAL_PROMPT|$GIT_ASKPASS|"
+                         "$SSH_ASKPASS|$SSH_ASKPASS_REQUIRE\"")
+                    10000)
+            [prompt git-ap ssh-ap ssh-req]
+            (-> (:output result) str string/trim (string/split #"\|"))]
+        (is (= "completed" (:status result)))
+        (is (= "0" prompt) "terminal prompts off, so git names its own failure")
+        (is (= "false" git-ap) "a GUI askpass must not be inherited")
+        (is (= "false" ssh-ap))
+        (is (= "never" ssh-req) "OpenSSH 8.4+ skips askpass entirely"))))
+
+  (testing "credential.helper is NOT disturbed — it answers without prompting"
+    ;; The whole point of the distinction: osxkeychain/libsecret/token scripts
+    ;; are programmatic and non-blocking, so disabling them would break auth
+    ;; that already works headlessly.
+    (let [tm (manager/create-task-manager)]
+      (manager/set-default-manager! tm)
+      (let [result (@#'ctools/run-bash-inline
+                    "git config --get credential.helper || echo NONE" 10000)]
+        (is (= "completed" (:status result)))
+        (is (not (string/includes? (str (:output result)) "false"))
+            "the askpass override must not have leaked into credential.helper"))))
+
+  (testing "a command may still set its own askpass"
+    (let [tm (manager/create-task-manager)]
+      (manager/set-default-manager! tm)
+      (let [result (@#'ctools/run-bash-inline
+                    "GIT_ASKPASS=/my/helper sh -c 'echo $GIT_ASKPASS'" 10000)]
+        (is (= "/my/helper" (string/trim (str (:output result))))
+            "inherited env is a default, not a ceiling")))))
+
 (deftest task-run-tool-args-accepts-string-and-map-test
   ;; task$run's :tool-args is [:or [:string] [:map]] so BOTH invocation channels
   ;; validate: the tool-calls channel delivers a JSON object *string*, the
