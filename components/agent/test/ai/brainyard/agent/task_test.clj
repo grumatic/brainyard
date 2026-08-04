@@ -7,6 +7,7 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as string]
             [ai.brainyard.agent.task.protocol :as tp]
             [ai.brainyard.agent.task.manager :as manager]
             [ai.brainyard.agent.task.persist :as persist]
@@ -655,6 +656,47 @@
         ;; Generous bound: 500ms timeout + 500ms poll tick + 2s grace + invoke-tool overhead.
         (is (< elapsed 5000)
             (str "returned without waiting full 5s sleep (actual " elapsed "ms)"))))))
+
+(deftest run-bash-inline-runs-in-its-own-session-test
+  ;; The child must not be able to reach the JVM's controlling terminal.
+  ;; Closing its stdin is not enough: `git` asking for a password, `sudo` and
+  ;; `ssh` open /dev/tty directly, and with a terminal present they BLOCK on a
+  ;; prompt that never reaches :output (it goes to the tty) with a default
+  ;; timeout of nil — an unbounded, invisible hang.
+  ;;
+  ;; Asserted via process group rather than the terminal itself, because a
+  ;; test runner usually has no controlling terminal — a tty-based assertion
+  ;; would pass vacuously and catch nothing. setsid() makes the process a
+  ;; group leader, so pgid == pid exactly when the wrapper worked; an
+  ;; unwrapped child inherits the JVM's group and reports pgid != pid.
+  (testing "the command runs as a session/process-group leader"
+    (let [tm (manager/create-task-manager)]
+      (manager/set-default-manager! tm)
+      (let [result (@#'ctools/run-bash-inline
+                    "echo \"$$ $(ps -o pgid= -p $$ | tr -d ' ')\"" 10000)
+            [pid pgid] (-> (:output result) str string/trim
+                           (string/split #"\s+"))]
+        (is (= "completed" (:status result)))
+        (is (and pid pgid) (str "expected 'pid pgid', got " (pr-str (:output result))))
+        (is (= pid pgid)
+            (str "child should lead its own process group (pid=" pid " pgid=" pgid ")")))))
+
+  (testing "git reports a credential failure instead of blocking on a prompt"
+    (let [tm (manager/create-task-manager)]
+      (manager/set-default-manager! tm)
+      (let [start  (System/currentTimeMillis)
+            result (@#'ctools/run-bash-inline
+                    (str "git -c credential.helper= ls-remote "
+                         "https://github.com/grumatic/no-such-private-repo-probe-xyz 2>&1")
+                    20000)
+            elapsed (- (System/currentTimeMillis) start)]
+        ;; The point is that it RETURNS. Skipped when git or the network is
+        ;; unavailable — the failure mode under test is a hang, not a verdict
+        ;; about GitHub.
+        (when-not (= "timeout" (:status result))
+          (is (< elapsed 20000) "returned rather than hanging on a prompt")
+          (is (seq (str (:output result)))
+              "a tty prompt would leave :output empty; a real error does not"))))))
 
 (deftest task-run-tool-args-accepts-string-and-map-test
   ;; task$run's :tool-args is [:or [:string] [:map]] so BOTH invocation channels

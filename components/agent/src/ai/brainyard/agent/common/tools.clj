@@ -220,6 +220,43 @@
 ;; Shell Tools
 ;; ============================================================================
 
+(def ^:private new-session-script
+  "Shell prologue that re-execs the command in a BRAND-NEW SESSION.
+
+   Closing the child's stdin (below) stops it reading the pipe, but it does
+   NOT stop it opening `/dev/tty`: ProcessBuilder leaves the child attached to
+   the JVM's controlling terminal, which exists whenever `by` runs from a real
+   one (`bb tui`, `by ask` in a shell). A command that goes to the terminal
+   directly — `git` asking for a password, `sudo`, `ssh` — then blocks on a
+   prompt the agent cannot see and cannot answer:
+
+     - the prompt is written to the tty, so it NEVER reaches `:output`, which
+       comes back empty; the model gets no hint why the call stalled,
+     - the prompt lands on the user's screen, interleaved with TUI rendering,
+     - and `timeout-ms` defaults to nil, so the wait is unbounded.
+
+   A process in its own session has no controlling terminal, so `/dev/tty`
+   fails with ENXIO and the command dies in milliseconds with a readable
+   error instead of hanging.
+
+   The command arrives as `$1` — an argv element, never interpolated into
+   this script — so no quoting in the user's command can break the wrapper.
+
+   perl is tried BEFORE setsid, the reverse of the detach chain in the app's
+   `spawn-detached-reduce!`, and the order is load-bearing: util-linux
+   `setsid` FORKS when its caller is already a process-group leader, and a
+   forked child would let the parent exit immediately — `.waitFor` would
+   return success while the real work ran on, losing both the exit code and
+   the output. `POSIX::setsid()` never forks, so the PID we wait on stays the
+   PID that does the work. Unlike that detach path this one does NOT abort
+   when setsid fails: a command that cannot get its own session should still
+   run, just without the protection."
+  (str "if command -v perl >/dev/null 2>&1; then "
+       "exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' /bin/sh -c \"$1\"; "
+       "elif command -v setsid >/dev/null 2>&1; then "
+       "exec setsid /bin/sh -c \"$1\"; "
+       "else exec /bin/sh -c \"$1\"; fi"))
+
 (defn- run-bash-inline
   "Direct ProcessBuilder execution — no task creation. The outer call site
    (call-tool-with-fast-eval or code-eval task) handles timeout/detach.
@@ -230,14 +267,27 @@
    resolve where the functional agents actually write their artifacts —
    NOT the JVM cwd, which under `bb tui` is the launcher's
    `projects/agent-tui-app/` subdir. When `dir` is nil the shell inherits
-   the JVM cwd (the historical behavior; used by direct unit tests)."
+   the JVM cwd (the historical behavior; used by direct unit tests).
+
+   The command runs with stdin closed AND in its own session, so nothing it
+   spawns can block on terminal input — see `new-session-script`."
   ([command timeout-ms] (run-bash-inline command timeout-ms nil))
   ([command timeout-ms dir]
    (try
      (let [infinite? (nil? timeout-ms)
            pb (ProcessBuilder. ^"[Ljava.lang.String;"
-               (into-array String ["/bin/sh" "-c" command]))
+               (into-array String ["/bin/sh" "-c" new-session-script
+                                   "brainyard-bash" command]))
            _ (when dir (.directory pb (java.io.File. ^String dir)))
+           ;; Without a controlling terminal git already fails, but it fails
+           ;; as "Device not configured" — an ENXIO leak that reads like a
+           ;; broken machine. Disabling the prompt makes it name itself
+           ;; ("terminal prompts disabled"), which is the difference between
+           ;; an agent that reports a credential problem and one that reports
+           ;; nonsense. Askpass helpers are deliberately left alone: a working
+           ;; one supplies credentials WITHOUT blocking, and stripping it
+           ;; would break the very setups that behave correctly here.
+           _ (.put (.environment pb) "GIT_TERMINAL_PROMPT" "0")
            _ (.redirectErrorStream pb true)
            ^Process proc (.start pb)
            _ (.close (.getOutputStream proc))
