@@ -130,7 +130,19 @@ sdk use java 25.0.3-graal         # matches .sdkmanrc
 bb build:ata                      # version:ata → compile → uberjar → native binary (~3 min)
 bin/release-stage.sh              # stage release/ artifacts + SHA256SUMS + BUILD-INFO.txt
 gh release create vX.Y.Z release/* --notes-file CHANGELOG-latest.md
+bin/release-verify.sh vX.Y.Z      # confirm every SHA256SUMS entry actually published
 ```
+
+**Upload `release/*` — never a hand-written asset list.** Every staged file is
+an asset, including the version-less `by.jar` alias that keeps
+`releases/latest/download/by.jar` resolving and that `SHA256SUMS` covers. v0.6.0
+shipped without it because the assets were listed by hand: the documented
+stable-URL download 404'd and `shasum -c SHA256SUMS` exited 1 for everyone who
+verified their download, on a release whose binaries were fine.
+`release-stage.sh` now prints the exact `gh release create` line, and
+`release-verify.sh` re-downloads the published assets and checks them against
+the manifest that shipped with them — the only step that can catch this, since
+it happens after the build and after staging.
 
 ### Tagging discipline (critical)
 
@@ -140,13 +152,15 @@ The binary's `--version` is **baked at build time from `git describe` of this re
 2. `git tag vX.Y.Z` at HEAD.
 3. `bb build:ata` — `bb version:ata` runs first, stamping `projects/agent-tui-app/resources/build-version.edn` from `git describe`. (That file is gitignored.)
 4. `bin/release-stage.sh` — **refuses to stage** if the describe output is `-dirty`, `-N-gabc123` (commits past the tag), or `dev`. These would bake a misleading version into a public binary.
-5. `gh release create vX.Y.Z release/* …`
+5. `gh release create vX.Y.Z release/* …` (the glob, not a hand-listed set)
+6. `bin/release-verify.sh vX.Y.Z` — re-downloads the published assets and checks them against the shipped `SHA256SUMS`. Also runs against a staging dir before publishing: `bin/release-verify.sh --dir release/`.
 
 Committing after tagging puts the repo into post-tag state (`vX.Y.Z-1-g…`); `release-stage.sh` will reject builds from this state. To re-release after a doc fix, move the tag (`git tag -f vX.Y.Z`) and re-build.
 
 ## Key files
 
 - `bin/release-stage.sh` — packages `target/` outputs into `release/` with the exact asset names `bin/install.sh` expects. Reads the version from `projects/agent-tui-app/resources/build-version.edn` and records this repo's commit in `BUILD-INFO.txt`.
+- `bin/release-verify.sh` — post-publish gate: downloads a release's assets and verifies them against the `SHA256SUMS` that shipped with it, failing on an asset that was checksummed but never uploaded, or one that uploaded corrupted. `--dir <path>` runs the same checks on a local staging dir before publishing.
 - `bin/install.sh` — public `curl | bash` installer. Resolves the latest release tag via the GitHub API, downloads platform-matched assets, verifies SHA-256, re-codesigns on macOS.
 - `deps.edn` / `bb.edn` / `workspace.edn` — Polylith workspace + task config.
 - `docs/` — architecture, design notes, specs, and tutorials.
@@ -260,7 +274,9 @@ Registration happens in `run-tui!` and `cmd-ask` only, always *after*
 `install-working-dir!` so `-C`/`BY_PROJECT_DIR` are in effect — deliberately
 not in `ensure-config-dirs!`, which is a hot path. Failure is swallowed; the
 registry must never block a session. Surfaced by `by projects list` /
-`by projects path <slug>`. Design: `docs/design/project-registry.md`; impl in
+`by projects path <slug>`; `by projects prune` reclaims entries whose
+directory is gone (confirms first — `(missing)` also covers an unmounted
+volume, which comes back). Design: `docs/design/project-registry.md`; impl in
 `components/agent/src/ai/brainyard/agent/core/projects.clj`.
 
 ### Task output files are GC-reclaimed, not deleted on task removal

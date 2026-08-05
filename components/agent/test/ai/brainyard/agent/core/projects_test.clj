@@ -250,6 +250,63 @@
              (:projects (edn/read-string (slurp idx))))))))
 
 ;; ============================================================================
+;; Prune
+;; ============================================================================
+
+(deftest prune-removes-only-missing-test
+  (testing "prune drops records whose dir is gone and keeps the rest"
+    (let [live (mkdir! (str *home* "/repos/live"))
+          gone (mkdir! (str *home* "/repos/gone"))]
+      (projects/register-project! (dirs) live)
+      (projects/register-project! (dirs) gone)
+      (rm-rf (io/file gone))
+      (let [pruned (projects/prune-projects! (dirs))]
+        (is (= ["gone"] (mapv :name pruned)) "only the missing record is returned")
+        (is (= ["live"] (mapv :name (projects/list-projects (dirs))))
+            "the live project survives")
+        (is (not (.exists (io/file (projects/project-user-dir (dirs) gone))))
+            "the missing project's registry folder is removed")
+        (is (.exists (io/file (projects/project-user-dir (dirs) live)))
+            "the live project's registry folder is untouched")))))
+
+(deftest prune-is-a-noop-when-nothing-missing-test
+  (testing "prune returns [] and changes nothing when every project exists"
+    (let [p (mkdir! (str *home* "/repos/alpha"))]
+      (projects/register-project! (dirs) p)
+      (is (= [] (projects/prune-projects! (dirs))))
+      (is (= ["alpha"] (mapv :name (projects/list-projects (dirs))))))))
+
+(deftest prune-refreshes-index-test
+  (testing "the derived index no longer lists a pruned project"
+    (let [live (mkdir! (str *home* "/repos/live"))
+          gone (mkdir! (str *home* "/repos/gone"))]
+      (projects/register-project! (dirs) live)
+      (projects/register-project! (dirs) gone)
+      (rm-rf (io/file gone))
+      (projects/prune-projects! (dirs))
+      (let [idx (edn/read-string
+                 (slurp (io/file (projects/projects-root (dirs)) "index.edn")))]
+        (is (= {(projects/project-slug live) live} (:projects idx)))))))
+
+(deftest prune-refuses-to-escape-the-registry-root-test
+  (testing "a record's slug is untrusted — it can never aim the delete outside
+            the registry root, and a hostile one does not abort the prune"
+    (let [del    @#'projects/delete-record-dir!
+          root   (projects/projects-root (dirs))
+          victim (mkdir! (str *home* "/VICTIM"))]
+      (spit (io/file victim "keep.txt") "must survive")
+      (.mkdirs (io/file root))
+      (doseq [[label slug] [["parent ref"    "../VICTIM"]
+                            ["absolute path" victim]
+                            ["nested"        "a/b"]
+                            ["blank"         ""]
+                            ["nil"           nil]]]
+        (is (false? (del root slug))
+            (str label " must be refused, not deleted")))
+      (is (.exists (io/file victim "keep.txt"))
+          "nothing outside the registry root was touched"))))
+
+;; ============================================================================
 ;; Scope policy
 ;; ============================================================================
 

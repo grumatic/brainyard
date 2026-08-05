@@ -282,6 +282,72 @@
                               :projects       entries}))
       entries)))
 
+(defn- delete-record-dir!
+  "Delete `<root>/<slug>` and its contents. Returns true when the directory
+   was removed.
+
+   Refuses anything that does not resolve to a DIRECT CHILD of `root`. The
+   slug is read back off disk rather than computed here, so it is untrusted
+   input: a record carrying `..` or an absolute path would otherwise aim a
+   recursive delete anywhere the user can write. Compares canonical paths so
+   a symlinked slug dir cannot escape either."
+  [root slug]
+  (boolean
+   (try
+     ;; Reject anything that is not a BARE directory name before building a
+     ;; File from it. `(.getName (io/file s))` strips every separator and
+     ;; parent ref, so `..`, `../x` and `/abs/x` all fail this equality —
+     ;; without ever constructing the escaping path. Checking first also keeps
+     ;; the function total: `io/file` throws on some absolute-child inputs,
+     ;; and an exception escaping here would abort the whole prune partway,
+     ;; leaving the index describing directories that are already gone.
+     (when (and (string? slug)
+                (not (str/blank? slug))
+                (= slug (.getName (io/file slug))))
+       (let [canon-d    (canonical-path (str root "/" slug))
+             canon-root (canonical-path root)]
+         (when (and canon-d canon-root
+                    ;; Defence in depth: canonicalization resolves symlinks,
+                    ;; so a slug dir symlinked elsewhere is caught here even
+                    ;; though its name is bare.
+                    (= canon-root (.getParent (io/file canon-d)))
+                    (.isDirectory (io/file canon-d)))
+           ;; Depth-first: file-seq yields parents before children, so reverse
+           ;; it or the directory is never empty when .delete reaches it.
+           (doseq [^File f (reverse (file-seq (io/file canon-d)))]
+             (.delete f))
+           (not (.exists (io/file canon-d))))))
+     (catch Exception e
+       (mulog/log ::project-prune-failed :slug slug :error (.getMessage e))
+       false))))
+
+(defn prune-projects!
+  "Remove registry records whose `:path` no longer names a directory, then
+   rebuild the index. Returns the vector of pruned records (as
+   `list-projects` reported them); `[]` when there was nothing to reclaim.
+
+   Deliberately manual, and never a side effect of opening a session. An entry
+   goes `:missing?` when its directory is deleted OR merely unreachable — an
+   unmounted volume, a detached external disk, a network share that is down —
+   and those come back. Reclaiming automatically would quietly discard the
+   user-scope folder of a project that still exists, which is why
+   `list-projects` tags rather than drops them and why this is a command the
+   user runs.
+
+   Same reasoning as task artifacts being GC-swept rather than deleted inline
+   with the task: removal is bulk, explicit, and separable from the thing that
+   created the record."
+  [dirs]
+  (if-let [root (projects-root dirs)]
+    (let [gone (filterv :missing? (list-projects dirs))
+          removed (filterv #(delete-record-dir! root (:slug %)) gone)]
+      (when (seq removed)
+        (refresh-projects-index! dirs)
+        (mulog/log ::projects-pruned :count (count removed)
+                   :slugs (mapv :slug removed)))
+      removed)
+    []))
+
 (defn register-project!
   "Register (or refresh) a project's user-scope folder and return its record.
 

@@ -2,6 +2,20 @@
 
 All notable changes to Brainyard's public distribution are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`by projects prune` reclaims registry entries whose project directory no longer exists.** Until now the user-scope registry only ever grew: `list` tagged a vanished project `(missing)` and kept the row, and since the slug is path-derived, *moving* a repo orphaned its old entry rather than re-homing it — so every scratch dir, temp checkout and moved project left a permanent row with no way to remove it. Pruning stays **explicit and confirmed** rather than automatic, because `(missing)` is not proof a project is gone: an unmounted volume, a detached disk and a downed network share all report identically and come back, and reclaiming automatically would silently discard the user-scope folder of a project that still exists. `--yes` skips the prompt for scripting, `--json` reports the pruned records. The slug is untrusted on this path (it is read back off disk, not recomputed), so the delete accepts only a bare directory name and re-checks that the canonical target is a direct child of the registry root; a hostile or malformed record returns false instead of throwing, so it cannot abort a prune partway and leave the derived index describing directories that are already gone.
+
+### Fixed
+
+- **Releases are now verified after publishing, not just after staging.** v0.6.0 was published with a hand-written asset list that omitted the version-less `by.jar` alias — the copy that keeps `releases/latest/download/by.jar` (documented in `docs/build-and-deploy.md`) resolving. `SHA256SUMS` still listed it, so the documented stable-URL download 404'd and `shasum -c SHA256SUMS` exited 1 for everyone who verified their download, on a release whose binaries were otherwise fine. The missing asset has been uploaded, so v0.6.0 now verifies clean. Nothing in the build or staging step could catch this, because it happens after both: new `bin/release-verify.sh` re-downloads a published release and checks it against the manifest that shipped with it, failing on an asset that was checksummed but never uploaded or that uploaded corrupted (`--dir <path>` runs the same checks on a staging dir before publishing). `bin/release-stage.sh` now prints the exact `gh release create` command covering every staged file, so the asset list is never retyped.
+
+### Internal
+
+- **The iteration-block live ticker no longer races its own tests.** `start-iteration-block-ticker!` re-renders every non-`:done` block from a daemon thread once a second, while the tests install a *global* `with-redefs` on the render fn — so a ticker still alive from an earlier test called the test's own capture with a foreign key, and because the ticker only ever visits non-`:done` blocks the clobber always looked like a stage regression. It failed roughly one full-workspace run in six and was green in isolation. Fixed at the class level: the fixture now suppresses ticker startup for the duration of each test (nothing there asserts a ticker starts) and stops any inherited from an earlier namespace. `session.clj` gains `stop-iteration-block-ticker!`, mirroring the subagents and task-block ones — the iteration ticker was the only one of the three that could not be halted deterministically.
+
 ## [v0.6.0] — 2026-08-05
 
 ### Added

@@ -141,9 +141,22 @@ brainyard-c59395fc  brainyard  2026-08-04  /tmp/repos/one/brainyard
   is path-derived, so this is inherent to the scheme. `:git-remote` is recorded
   so a future `by projects adopt` could merge them; today the stale entry is
   simply flagged `(missing)`.
-- **No pruning.** `list-projects` flags missing entries; nothing deletes them.
-  This follows the existing precedent that reclamation is a separate GC concern
-  (`gc/sweep-tasks!`), not a side effect of another operation.
+- ~~**No pruning.**~~ **Resolved:** `by projects prune` (`prune-projects!`)
+  reclaims entries whose directory is gone. It keeps the precedent that
+  reclamation is a *separate, explicit* operation rather than a side effect of
+  another one — `list-projects` still only flags, and nothing prunes
+  automatically. That is deliberate: `(missing)` is not proof a project is
+  gone. An unmounted volume, a detached disk and a downed network share all
+  report identically and come back, so automatic reclamation would silently
+  discard the user-scope folder of a project that still exists. Hence the
+  command confirms before deleting, with `--yes` for scripting.
+
+  The slug is untrusted input on this path — it is read back off disk, not
+  recomputed — so `delete-record-dir!` accepts only a bare directory name and
+  re-checks that the canonical target is a direct child of the registry root
+  before deleting anything. It is also total: a hostile or malformed record
+  returns false rather than throwing, so it cannot abort a prune partway and
+  leave the index describing directories that are already gone.
 - **A corrupt `project.edn` is skipped, not repaired** — it's dropped from
   listings and rewritten on the next registration of that path.
 

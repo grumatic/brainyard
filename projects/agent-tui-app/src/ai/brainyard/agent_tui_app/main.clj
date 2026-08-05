@@ -2557,6 +2557,44 @@
       (exit-err! (str "Could not register " dir
                       " (is ~/.brainyard writable?)")))))
 
+(defn cmd-projects-prune
+  "Drop registry entries whose project directory no longer exists.
+
+   `list` tags those rows `(missing)` and keeps them, so before this the
+   registry only ever grew — every scratch dir, every temp checkout, every
+   moved repo left a permanent row (the slug is path-derived, so moving a
+   project orphans the old entry rather than re-homing it).
+
+   Confirms first, because `(missing)` is not proof the project is gone: an
+   unmounted volume or a disconnected network share reports exactly the same
+   way and comes back later. `--yes` skips the prompt for scripting; `--json`
+   reports the pruned records."
+  [opts]
+  (let [dirs (agent/init-dirs!)
+        gone (filterv :missing? (agent/list-projects dirs))]
+    (cond
+      (empty? gone)
+      (if (:json opts)
+        (print-json! [])
+        (println "Nothing to prune — every registered project still exists."))
+
+      (not (or (:yes opts)
+               (confirm! (str "Remove " (count gone)
+                              " registry entr" (if (= 1 (count gone)) "y" "ies")
+                              " for missing project(s)?\n  "
+                              (str/join "\n  " (map :path gone))
+                              "\nThis drops only the user-scope registry folder"
+                              ", never the project itself. [y/N] "))))
+      (println "Cancelled.")
+
+      :else
+      (let [pruned (agent/prune-projects! dirs)]
+        (if (:json opts)
+          (print-json! pruned)
+          (do (doseq [r pruned] (println "removed" (:slug r) (:path r)))
+              (println (str "Pruned " (count pruned) " entr"
+                            (if (= 1 (count pruned)) "y" "ies") "."))))))))
+
 ;; ============================================================================
 ;; CLI configuration
 ;; ============================================================================
@@ -2740,7 +2778,11 @@
                                 {:command     "add"
                                  :description "Register a project (default: the working dir) without opening a session"
                                  :opts        [json-opt]
-                                 :runs        cmd-projects-add}]}
+                                 :runs        cmd-projects-add}
+                                {:command     "prune"
+                                 :description "Drop registry entries whose project directory no longer exists (confirm or --yes)"
+                                 :opts        [yes-opt json-opt]
+                                 :runs        cmd-projects-prune}]}
                  {:command     "memory"
                   :description "Maintenance on the user-scoped L1/L2/L3 memory store"
                   :subcommands [{:command     "consolidate"

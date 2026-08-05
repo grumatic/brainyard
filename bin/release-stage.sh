@@ -177,7 +177,21 @@ main() {
 
   log "Done. Staged files in ${RELEASE_DIR}:"
   ls -1 "${RELEASE_DIR}" | sed 's/^/  /'
-  log "Upload these as assets to the v${version} GitHub Release."
+
+  # Print the exact publish command rather than "upload these".
+  #
+  # Every staged file is an asset, including the version-less `by.jar` alias
+  # that keeps `releases/latest/download/by.jar` resolving (see the header) and
+  # that SHA256SUMS covers. Hand-listing assets is how v0.6.0 shipped without
+  # it: the documented stable-URL download 404'd, and `shasum -c SHA256SUMS`
+  # exited 1 for every user who verified their download, on an otherwise good
+  # release. Emitting the command removes the opportunity to omit one.
+  log "Publish with:"
+  printf '\n  gh release create v%s \\\n' "${version}"
+  ( cd "${RELEASE_DIR}" && ls -1 | sed 's|^|    release/|; s|$| \\|' )
+  printf '    --title "v%s" \\\n    --notes-file CHANGELOG-latest.md\n\n' "${version}"
+  log "Then verify what actually published:"
+  printf '\n  bin/release-verify.sh v%s\n\n' "${version}"
 }
 
 main "$@"
