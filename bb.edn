@@ -723,6 +723,28 @@
              (println "Uberjar built: projects/agent-tui-app/target/agent-tui-app.jar")
              (println "  META-INF/native-image config: present.")))}
 
+  catalog:test
+  {:doc "Verify the providers.clj source surgery behind `bb catalog:refresh --write`.
+
+  Contacts no provider (CATALOG_REFRESH_NO_RUN=1 loads the script's functions
+  without running it), so it is safe offline and in CI.
+
+  Exercises the bracket cases that make the rewrite non-trivial and that each
+  shipped broken at least once: a provider's FIRST entry shares its line with
+  the opening `[`, its LAST carries the closing `]` (or `]))` at the end of the
+  whole form), and removing every entry of a provider must still leave a
+  vector. Each case re-READS the rewritten text, so a rewrite that produces
+  something unparseable fails here rather than in a commit.
+
+  Cases are derived from the catalog rather than naming model ids — a hardcoded
+  id that later leaves the catalog turns its case into a silent no-op that
+  still reports ok."
+   :task (shell {:dir "components/clj-llm"
+                 :extra-env {"CATALOG_REFRESH_NO_RUN" "1"}}
+                "clojure" "-M"
+                "-i" "../../scripts/catalog_refresh.clj"
+                "-i" "../../scripts/catalog_refresh_test.clj")}
+
   catalog:refresh
   {:doc "Compare the BAKED model catalog in providers.clj against what every
   reachable provider actually serves, and report the drift.
