@@ -364,6 +364,13 @@
                                            (= "true" v) ::env-unset)
                                 :default true
                                 :doc "Inject the `## Live Artifacts` prompt section: reference files from :reference-artifact-paths plus the dynamic artifact$* registry. Set false to drop the section entirely. Env: BY_ENABLE_LIVE_ARTIFACTS."}
+   :enable-catalog-refresh     {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_ENABLE_CATALOG_REFRESH")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Let the model catalog refresh itself from each configured provider's model-list endpoint (ids only; curation stays in the baked catalog). Off means the shipped catalog is used verbatim and no provider is contacted. Env: BY_ENABLE_CATALOG_REFRESH."}
+   :catalog-refresh-ttl-hours  {:type "integer" :default 24
+                                :doc "How stale a provider's cached model list may get before a background refresh. Local servers (Ollama) derive a much shorter TTL from this — their model set changes whenever the user pulls one — so no second knob is needed."}
    :enable-artifact-gc         {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_ARTIFACT_GC")]
                                            (= "true" v) ::env-unset)
@@ -1196,6 +1203,9 @@
    ;; per-account bookkeeping ABOUT projects — where each one lives, when it
    ;; was last opened. It must never appear inside a repo, so :project is
    ;; refused here rather than left to caller discipline. See core.projects.
+   ;; Refreshed model lists, per provider. User-scope because a provider's
+   ;; roster is an account-level fact, not a property of any one repo.
+   "catalog"       :user-only
    "projects"      :user-only
 
    ;; project-only: sessions are project-specific. Their scrollback, message

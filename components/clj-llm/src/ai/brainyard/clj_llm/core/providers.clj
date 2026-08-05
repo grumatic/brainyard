@@ -4,7 +4,8 @@
 
 (ns ai.brainyard.clj-llm.core.providers
   "Multi-provider LM configuration, model catalogs, and provider detection."
-  (:require [ai.brainyard.clj-llm.core.usage :as usage]
+  (:require [ai.brainyard.clj-llm.core.catalog :as catalog]
+            [ai.brainyard.clj-llm.core.usage :as usage]
             [clojure.string :as str]))
 
 ;; ============================================================================
@@ -341,13 +342,48 @@
    [{:model "deepseek-chat" :curated-rank 29 :description "DeepSeek V3.2 (ultra cheap)"}
     {:model "deepseek-reasoner" :curated-rank 30 :description "DeepSeek V3.2 Reasoner"}]))
 
-;; Reverse index model-id -> provider, DERIVED from model-catalog. Used by
-;; get-provider-from-model for catalog lookup. Unambiguous: no model id appears
-;; under more than one provider in the catalog.
-(def ^:private model->provider
-  (into {} (for [[provider models] model-catalog
-                 {:keys [model]} models]
-             [model provider])))
+;; ============================================================================
+;; Effective catalog = baked ∪ refresh overlay
+;; ============================================================================
+
+(def ^:private !catalog-cache
+  "Memo of the merged catalog and its reverse index, keyed on the IDENTITY of
+   the overlay value that produced them.
+
+   `get-popular-models` runs on the autocomplete path — once per keystroke —
+   so re-merging per call is not acceptable. The overlay is swapped wholesale
+   by `catalog/set-overlay!`, so `identical?` on the value is a sound and
+   allocation-free staleness check."
+  (atom {:overlay ::none :catalog nil :index nil}))
+
+(defn- catalog-view
+  "Merged catalog + reverse index, recomputed only when the overlay changes."
+  []
+  (let [ov     (catalog/overlay)
+        cached @!catalog-cache]
+    (if (identical? ov (:overlay cached))
+      cached
+      (let [merged (catalog/merge-catalog model-catalog ov)
+            index  (into {} (for [[provider models] merged
+                                  {:keys [model]} models]
+                              [model provider]))]
+        (reset! !catalog-cache {:overlay ov :catalog merged :index index})))))
+
+(defn current-catalog
+  "`model-catalog` with the refresh overlay applied — the effective catalog
+   every derived view reads.
+
+   Identical to `model-catalog` until something calls `catalog/set-overlay!`,
+   so offline and first-run behaviour is byte-for-byte what it was before the
+   refresh mechanism existed."
+  []
+  (:catalog (catalog-view)))
+
+;; Reverse index model-id -> provider, DERIVED from the effective catalog. Used
+;; by get-provider-from-model for catalog lookup. Unambiguous: no model id
+;; appears under more than one provider.
+(defn- model->provider [model]
+  (get (:index (catalog-view)) model))
 
 (def ^:private drop-temperature-exact
   "Exact model names that reject the `temperature` parameter.
@@ -795,7 +831,7 @@
   []
   (->> (mapcat (fn [[provider models]]
                  (map #(assoc % :provider provider) models))
-               model-catalog)
+               (current-catalog))
        (filter :curated-rank)
        (sort-by :curated-rank)
        (mapv (fn [m] (cond-> {:model (:model m)
@@ -817,7 +853,7 @@
 
    Pure data — no network calls, no API keys."
   [& {:keys [provider curated?]}]
-  (let [entries (for [[prov models] model-catalog
+  (let [entries (for [[prov models] (current-catalog)
                       m models
                       :when (or (nil? provider) (= provider prov))]
                   (cond-> {:model    (:model m)
@@ -845,7 +881,7 @@
   with {:provider :available-providers} when :provider is given but unknown."
   [& {:keys [provider]}]
   (let [all (into {} (map (fn [[prov ms]] [prov (set (map :model ms))]))
-                  model-catalog)]
+                  (current-catalog))]
     (cond
       (nil? provider)          all
       (contains? all provider) (select-keys all [provider])

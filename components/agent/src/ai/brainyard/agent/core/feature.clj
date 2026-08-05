@@ -354,6 +354,14 @@
     :lifecycle :live
     :doc       "Retention sweeps over task output, scratch and sandbox cache."}
 
+   :exec/catalog-refresh
+   {:title     "Model catalog refresh"
+    :family    :exec
+    :gate      :enable-catalog-refresh
+    :keys      [:catalog-refresh-ttl-hours]
+    :lifecycle :live
+    :doc       "Refresh the model catalog from each provider's model-list endpoint."}
+
    ;; --- agents --------------------------------------------------------------
    :agents/subagents
    {:title     "Subagent calls"

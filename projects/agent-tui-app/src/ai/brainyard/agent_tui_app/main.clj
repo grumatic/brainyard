@@ -499,12 +499,51 @@
   []
   (agent/register-project! (agent/init-dirs!)))
 
+(defn- install-catalog-cache!
+  "Point the catalog overlay at `~/.brainyard/catalog` and load whatever is
+   already cached.
+
+   `clj-llm` sits below the agent component and cannot resolve `~/.brainyard`
+   itself, so the app installs the root — the same shape as
+   `agent/sessions-root` -> `persist/set-root!`. Pure local file reads, so it
+   is safe on the startup path; failure is swallowed, because a stale or
+   unreadable cache must never stop `by` from starting with the baked
+   catalog."
+  []
+  (try
+    (let [dirs (agent/init-dirs!)]
+      (when-let [root (agent/brainyard-subdir dirs "catalog" :user)]
+        (clj-llm/set-catalog-cache-root! root)
+        (clj-llm/load-catalog-overlay!)))
+    (catch Throwable _ nil)))
+
+(defn- maybe-refresh-catalog!
+  "Kick a background refresh when the cache is past its TTL.
+
+   Gated by `:enable-catalog-refresh`, non-blocking, and best-effort: it exists
+   so the catalog keeps up with providers between releases, never so that a
+   user waits on one."
+  []
+  (try
+    ;; `feature-on?` rather than a raw get-config: it accounts for the family
+    ;; master switch and :requires, which a direct key read would bypass.
+    (when (agent/feature-on? nil :exec/catalog-refresh)
+      (clj-llm/refresh-catalog-async!
+       {:ttl-hours (agent/get-config nil :catalog-refresh-ttl-hours)}))
+    (catch Throwable _ nil)))
+
 (defn- run-tui!
   "Start the interactive TUI agent session in this process.
    Config precedence: CLI flags > config.edn > hardcoded defaults.
    `opts` is assumed already normalized by `parse-legacy-provider`."
   [opts]
   (register-project!)
+  ;; Install the cached model catalog, then let a background refresh top it up
+  ;; if it is past its TTL. Load is local file reads; the refresh is on a
+  ;; daemon thread and never gates startup — same contract as the project
+  ;; registry above, for the same reason: neither may block a session.
+  (install-catalog-cache!)
+  (maybe-refresh-catalog!)
   ;; Offload the heavy graph-mode session-end consolidation to a detached
   ;; `by memory reduce` child so /quit never blocks on it (this process knows how
   ;; to re-exec the binary; components/agent can't). No-op unless graph memory is
@@ -2083,11 +2122,87 @@
     (println)
     (count rows)))
 
+(defn cmd-models-refresh
+  "Ask every reachable provider which models it serves, now, ignoring the TTL.
+
+   Only providers this machine can actually reach are contacted — one with no
+   API key in the environment is skipped without a request. Ollama and other
+   local servers need no credentials, which is the point: a baked list can
+   never know what someone has pulled locally."
+  [opts]
+  (install-catalog-cache!)
+  (let [candidates (clj-llm/refreshable-providers)]
+    (if (empty? candidates)
+      (println "No refreshable providers — none reachable or credentialed here.")
+      (do
+        (when-not (:json opts)
+          (println (str "Refreshing: " (str/join ", " (map name candidates)) " …")))
+        (let [refreshed (clj-llm/refresh-catalog! {:force? true})
+              drift     (clj-llm/catalog-drift)]
+          (if (:json opts)
+            (print-json! {:refreshed (vec refreshed) :drift drift})
+            (do
+              (doseq [p refreshed]
+                (let [n (count (:models (get (clj-llm/catalog-overlay) p)))]
+                  (println (format "  %-12s %d model(s)" (name p) n))))
+              (when-let [skipped (seq (remove (set refreshed) candidates))]
+                (println (str "  (unreachable: " (str/join ", " (map name skipped)) ")")))
+              (println (str (count refreshed) " provider(s) refreshed."))
+              (when (seq drift)
+                (println "Run `by models --drift` to see what changed.")))))))))
+
+(defn cmd-models-drift
+  "Show how the live providers differ from the baked catalog.
+
+   `retired` entries are catalogued models the provider no longer serves —
+   the failure this whole mechanism exists to surface, since a stale entry is
+   otherwise only discovered when a call fails. `discovered` are models the
+   provider serves that the catalog has never heard of: usable immediately,
+   but deliberately NOT in the picker until a human gives them a rank and a
+   description.
+
+   Bedrock reports no retirements by design — it is enumerated one region at a
+   time, and one region's inventory cannot prove a model is globally gone."
+  [opts]
+  (install-catalog-cache!)
+  (let [drift (clj-llm/catalog-drift)]
+    (cond
+      (:json opts) (print-json! drift)
+
+      (empty? drift)
+      (println (if (empty? (clj-llm/catalog-overlay))
+                 "No refresh cached yet — run `by models --refresh`."
+                 "No drift: the catalog matches every refreshed provider."))
+
+      :else
+      (doseq [[provider {:keys [retired discovered fetched-at]}] drift]
+        (println (str (name provider)
+                      (when fetched-at (str "  (refreshed " fetched-at ")"))))
+        (doseq [r retired]
+          (println (format "  - retired    %-42s %s"
+                           (:model r)
+                           (if (:curated-rank r) "[was in picker]" ""))))
+        (doseq [d discovered]
+          (println (format "  + discovered %s" d)))
+        (println)))))
+
+(declare cmd-models-refresh cmd-models-drift)
+
 (defn cmd-models
   "List available LLM models (provider/model) from the curated popular-models
-   catalog in clj-llm. Optionally filter to a single provider with -p/--provider."
+   catalog in clj-llm. Optionally filter to a single provider with -p/--provider.
+
+   `--refresh` and `--drift` select a mode rather than listing, the same way
+   `sessions prune --expired/--all` does. They are flags rather than
+   subcommands because this command already has a `:runs`, and the router
+   dispatches to either `:runs` or `:subcommands` — never both, so a
+   `models refresh` subcommand would silently fall through to the listing."
   [opts]
-  (let [models (clj-llm/get-popular-models)
+  (cond
+    (:refresh opts) (cmd-models-refresh opts)
+    (:drift opts)   (cmd-models-drift opts)
+    :else
+  (let [models (do (install-catalog-cache!) (clj-llm/get-popular-models))
         provider-filter (some-> (:provider opts) keyword)]
     (if (empty? models)
       (println "No models registered.")
@@ -2096,7 +2211,7 @@
           (println (str "No models found for provider: " (name provider-filter)))
           (println (str n " model(s) listed."
                         (when provider-filter
-                          (str " (filtered to " (name provider-filter) ")")))))))))
+                          (str " (filtered to " (name provider-filter) ")"))))))))))
 
 ;; ============================================================================
 ;; Subcommand: config — interactive environment bootstrap
@@ -2695,7 +2810,14 @@
                   :description "List available LLM models (provider/model)"
                   :opts        [{:option "provider" :short "p"
                                  :as "Filter to a single provider (e.g. anthropic, openai, bedrock)"
-                                 :type :string}]
+                                 :type :string}
+                                {:option "refresh"
+                                 :as "Ask each reachable provider which models it serves, now"
+                                 :type :with-flag :default false}
+                                {:option "drift"
+                                 :as "Show how live providers differ from the baked catalog"
+                                 :type :with-flag :default false}
+                                json-opt]
                   :runs        cmd-models}
                  {:command     "config"
                   :description "Bootstrap pipeline (detect → ladder → handoff)"

@@ -15,6 +15,9 @@
             [ai.brainyard.clj-llm.core.schema-registry :as schema-registry]
             [ai.brainyard.clj-llm.core.prompt :as prompt]
             [ai.brainyard.clj-llm.core.providers :as providers]
+            [ai.brainyard.clj-llm.core.catalog :as catalog]
+            [ai.brainyard.clj-llm.core.catalog-store :as catalog-store]
+            [ai.brainyard.clj-llm.core.catalog-fetch :as catalog-fetch]
             [ai.brainyard.clj-llm.core.llm :as llm]
             [ai.brainyard.clj-llm.core.predict :as predict-impl]
             [ai.brainyard.clj-llm.core.chain-of-thought :as cot-impl]
@@ -202,6 +205,46 @@
    :curated? (boolean). Returns {:model :provider :curated? :curated-rank?
    :description? :region?} maps. Pure data — no network calls."
   providers/list-models)
+
+;; ── Catalog refresh ────────────────────────────────────────────────────────
+;; The baked catalog is the offline/first-run fallback; a refresh overlays it
+;; with what each provider actually serves. Ids only — curation stays human.
+;; See core.catalog for the full rationale.
+
+(def set-catalog-cache-root!
+  "Install the directory the refresh overlay is cached in. The app owns path
+   policy, so it calls this at startup (cf. `persist/set-root!`). Until it is
+   called, the catalog is simply the baked one."
+  catalog-store/set-cache-root!)
+
+(def load-catalog-overlay!
+  "Load cached provider entries from disk and install them. Cheap, offline,
+   never throws — safe on the startup path."
+  catalog-store/load-overlay!)
+
+(def refresh-catalog!
+  "Refresh providers whose cache is stale, synchronously. Opts:
+   :ttl-hours, :force?, :region. Returns the providers refreshed."
+  catalog-fetch/refresh-stale!)
+
+(def refresh-catalog-async!
+  "Same as `refresh-catalog!` but on a daemon thread, guarded against
+   concurrent runs. Returns true when it started one."
+  catalog-fetch/refresh-stale-async!)
+
+(def refreshable-providers
+  "Providers this machine can refresh right now — enumerable, reachable, and
+   credentialed where required."
+  catalog-fetch/refreshable-providers)
+
+(def catalog-drift
+  "What the current overlay changes versus the baked catalog, per provider:
+   {:retired [...] :discovered [...]}. Empty when nothing was refreshed."
+  (fn [] (catalog/drift providers/model-catalog (catalog/overlay))))
+
+(def catalog-overlay
+  "The refresh overlay currently in force, provider -> entry."
+  catalog/overlay)
 
 (def get-models-by-provider
   "Get all known models grouped by provider, optionally filtered by :provider.

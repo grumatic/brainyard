@@ -7,7 +7,12 @@
         ai.brainyard/aws-client {:local/root "../aws-client"}
         ;; Bedrock Converse `cachePoint` member was added after 871.2.30.11
         ;; (Feb 2025); 871.2.42.29 carries it in the bundled service.edn.
-        com.cognitect.aws/bedrock-runtime {:mvn/version "871.2.42.29"}}
+        com.cognitect.aws/bedrock-runtime {:mvn/version "871.2.42.29"}
+        ;; Bedrock CONTROL plane (ListFoundationModels / ListInferenceProfiles),
+        ;; a different service from bedrock-runtime above. Used only by the
+        ;; catalog refresh, and lazy-loaded like the runtime client so it costs
+        ;; nothing at startup.
+        com.cognitect.aws/bedrock {:mvn/version "871.2.29.35"}}
  :aliases {:test {:extra-paths ["test"]
                   ;; ACP provider is soft-coupled at runtime via requiring-resolve.
                   ;; Test-time we pull acp-client + the in-tree stub onto the

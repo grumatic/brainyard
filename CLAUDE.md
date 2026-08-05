@@ -69,6 +69,20 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   the cwd subtree, `$TMPDIR`/`/tmp`. The `--sandbox` launcher sets
   **`BY_SANDBOX_CHILD=1`** on the re-exec'd child as the re-entrancy guard.
   Mutually exclusive with `--web` in v1; macOS-only. See `docs/sandboxing.md`.
+- **`BY_ENABLE_CATALOG_REFRESH`** — let the model catalog refresh itself from
+  each configured provider's model-list endpoint (`:enable-catalog-refresh`,
+  default **true**). The refresh carries **model ids only**; curation
+  (`:curated-rank`, `:description`, `:region`) stays in the baked catalog,
+  because a provider's list cannot tell you which of its models a chat client
+  can drive — `/v1/models` also returns embeddings, TTS and image models, and
+  OpenAI's `-pro` tier answers "not a chat model" on `/v1/chat/completions`.
+  So a refreshed model becomes *usable and listed* but never enters the
+  `/model` picker on its own. Staleness is per provider via
+  `:catalog-refresh-ttl-hours` (default 24); local servers derive a much
+  shorter TTL from it, since an Ollama roster changes whenever the user pulls
+  a model. Cached under `~/.brainyard/catalog/<provider>.edn`; `by models
+  --refresh` forces one and `by models --drift` shows what changed. Off ⇒ the
+  shipped catalog is used verbatim and no provider is contacted.
 - **`BY_ENABLE_GRAPH_MEMORY`** — opt into the **context-graph memory** overlay
   (`:enable-graph-memory`, default **false**): a typed entity/relationship graph
   + vector index layered over the L1/L2/L3 FTS store as extra recall signals.
@@ -245,6 +259,53 @@ which is now implied by `BY_ENABLE_GRAPH_MEMORY`. Two decisions worth knowing:
   recall (FTS fallback, no mixed-space writes), surfaces a startup banner +
   `memory$status` flag, and waits for the user to run `memory$reembed`. Guided,
   not automatic — no surprise embedding cost, no silent wrong rankings.
+
+### The model catalog refreshes itself, but curation stays human
+
+`clj-llm`'s `model-catalog` is hand-curated and baked into the binary, and it
+drifts — a single audit against the live provider APIs found three OpenAI ids
+that do not exist, a retired Claude family still listed, the Claude 5 family
+missing, and models catalogued that this client cannot drive at all. So the
+catalog now refreshes from each provider's model-list endpoint.
+
+What refreshes and what does not is the whole design:
+
+```
+provider API  ->  WHICH IDS EXIST        (refreshable, changes weekly)
+baked catalog ->  :curated-rank,
+                  :description, :region  (human judgement, changes rarely)
+```
+
+A provider's list is **not** a catalog. `/v1/models` returns embeddings, TTS,
+transcription and image models; Bedrock's `ListFoundationModels` adds Titan
+embeddings and Stability image models; OpenAI's `-pro` tier is chat-shaped but
+served only by `/v1/responses`. Nothing in any response says which entries a
+chat client can drive, nor which reject `temperature` — both were established
+by probing. So the overlay carries **ids only**: it can retire a curated model
+and surface a new one as usable, but it can never invent curation, which is
+what keeps a `whisper-1` out of the `/model` picker.
+
+Four safety rules, each guarding a quiet failure:
+
+- **A provider absent from the overlay passes through untouched** — the
+  offline, first-run and no-credentials path.
+- **An empty fetch is ignored, never applied.** An outage returning `{}` must
+  not be read as "this provider serves nothing".
+- **A partial (region-scoped) fetch is additive only.** Bedrock is enumerated
+  one region at a time and the catalog deliberately pins us-east-1-only
+  models; retiring on absence would delete a working model because of where
+  the user was standing. One region's inventory cannot prove a model is gone.
+- **Non-enumerable providers cannot be overlaid** (`claude-code`, `acp`,
+  `apple-fm`, `free-llm` have no list endpoint).
+
+Ollama is the case that most needs this: a baked list of models is a guess
+about someone else's machine, and `/v1/models` on the local server is the only
+authority for what is actually installed. Impl: `components/clj-llm/…/core/`
+`catalog.clj` (pure merge), `catalog_store.clj` (cache, TTL), `catalog_fetch.clj`
+(per-provider fetchers). The cache root is **injected** by the app via
+`set-catalog-cache-root!`, the same shape as `persist/set-root!`, because
+`clj-llm` sits below the agent component and cannot resolve `~/.brainyard`
+itself.
 
 ### Projects get a user-scope folder, keyed by a reversible slug
 

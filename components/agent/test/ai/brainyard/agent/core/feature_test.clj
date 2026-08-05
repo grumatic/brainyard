@@ -44,20 +44,20 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "32 feature gates + 9 family gates + 94 knobs + 16 presentation + 13 ambient = 164"
+  (testing "33 feature gates + 9 family gates + 95 knobs + 16 presentation + 13 ambient = 166"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
                      count)
           pres  (->> feat/all-features (filter :presentation) (mapcat :keys) count)]
-      (is (= 32 (count feat/gate-keys)) "+1: :enable-a2a (agents/a2a)")
+      (is (= 33 (count feat/gate-keys)) "+1: :enable-catalog-refresh (exec/catalog-refresh)")
       (is (= 9 (count feat/family-gate-keys)) "one per capability family; :ui has none")
-      (is (= 94 knobs) "+11: the :a2a-* knobs (agents/a2a), incl. :a2a-dialect and the warm-context pair")
+      (is (= 95 knobs) "+1: :catalog-refresh-ttl-hours (exec/catalog-refresh)")
       (is (= 16 pres))
       (is (= 13 (count feat/ambient-keys)) "+1: :enable-tool-binding, beside :compact-agent-tools")
       (is (= 0 (count feat/unclassified-keys))
           "no schema key is currently unreadable")
-      (is (= 164 (count cfg/config-keys)))
+      (is (= 166 (count cfg/config-keys)))
       (testing "the partition still balances"
         ;; The real invariant behind the hardcoded numbers: every schema key
         ;; lands in exactly one bucket. Asserting the sum catches a
@@ -251,11 +251,11 @@
   (is (= (set feat/families) (set (map :family feat/all-features))))
   (is (= (count feat/feature-registry)
          (reduce + (map (comp count feat/family->features) feat/families))))
-  (testing "nine capability families hold 42 features — 32 gated, 10 ungated groupings"
+  (testing "nine capability families hold 43 features — 33 gated, 10 ungated groupings"
     (let [capability (remove :presentation feat/all-features)]
       (is (= 9 (count (disj (set feat/families) :ui))))
-      (is (= 42 (count capability)) "+1: :agents/a2a")
-      (is (= 32 (count (filter :gate capability)))
+      (is (= 43 (count capability)) "+1: :agents/a2a")
+      (is (= 33 (count (filter :gate capability)))
           "every gated feature now has a real schema key")
       (is (= 10 (count (remove :gate capability)))
           "an ungated grouping exists so its knobs have a discoverable home")))
