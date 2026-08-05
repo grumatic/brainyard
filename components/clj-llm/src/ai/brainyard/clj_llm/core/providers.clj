@@ -128,7 +128,7 @@
     {:model "sonnet" :curated-rank 1 :description "Claude Sonnet (latest) via CLI (no API key)"}
     {:model "haiku" :curated-rank 2 :description "Claude Haiku (latest) via CLI (no API key)"}]
    :mistral
-   [{:model "mistral-large-latest" :curated-rank 35 :description "Mistral Large 3"}
+   [{:model "mistral-large-latest" :curated-rank 31 :description "Mistral Large 3"}
     {:model "mistral-small-2501"}
     {:model "mistral-small-latest"}
     {:model "mistral-large-2512"}
@@ -140,13 +140,13 @@
     {:model "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo"}]
    :groq
    [{:model "qwen/qwen3-32b"}
-    {:model "llama-3.3-70b-versatile" :curated-rank 36 :description "Groq Llama 3.3 70B (fast inference)"}
+    {:model "llama-3.3-70b-versatile" :curated-rank 32 :description "Groq Llama 3.3 70B (fast inference)"}
     {:model "meta-llama/llama-4-scout-17b-16e-instruct"}
     {:model "llama-3.1-8b-instant"}]
    :apple-fm
-   [{:model "apple-foundationmodel" :curated-rank 39 :description "Apple FM ~3B (on-device, macOS 26+)"}]
+   [{:model "apple-foundationmodel" :curated-rank 35 :description "Apple FM ~3B (on-device, macOS 26+)"}]
    :free-llm
-   [{:model "auto" :curated-rank 38 :description "Free OpenAI-compatible endpoint (FREELLM_BASE_URL); 'auto' lets the backend pick"}]
+   [{:model "auto" :curated-rank 34 :description "Free OpenAI-compatible endpoint (FREELLM_BASE_URL); 'auto' lets the backend pick"}]
    :anthropic
    [{:model "claude-opus-5" :curated-rank 3 :description "Anthropic Claude Opus 5 (flagship)"}
     {:model "claude-sonnet-5" :curated-rank 4 :description "Anthropic Claude Sonnet 5 (fast + smart)"}
@@ -176,33 +176,20 @@
     {:model "gpt-5.6-sol" :curated-rank 12 :description "OpenAI GPT-5.6 Sol"}
     {:model "gpt-5.6-terra" :curated-rank 13 :description "OpenAI GPT-5.6 Terra"}
     {:model "gpt-5.5" :curated-rank 14 :description "OpenAI GPT-5.5"}
-    {:model "gpt-5.5-pro" :curated-rank 15 :description "OpenAI GPT-5.5 Pro (extended reasoning)"}
-    {:model "gpt-5.4" :curated-rank 16 :description "OpenAI GPT-5.4"}
-    {:model "gpt-5.4-mini" :curated-rank 17 :description "OpenAI GPT-5.4 Mini"}
-    {:model "gpt-5.4-nano" :curated-rank 18 :description "OpenAI GPT-5.4 Nano (cheapest)"}
-    {:model "gpt-5.2" :curated-rank 19 :description "OpenAI GPT-5.2"}
-    {:model "gpt-5.1" :curated-rank 20 :description "OpenAI GPT-5.1"}
-    {:model "gpt-5" :curated-rank 21 :description "OpenAI GPT-5"}
-    {:model "gpt-5-mini" :curated-rank 22 :description "OpenAI GPT-5 Mini (fast, cheap)"}
-    {:model "gpt-5-nano" :curated-rank 23 :description "OpenAI GPT-5 Nano (lowest latency)"}
-    {:model "gpt-5-pro" :curated-rank 24 :description "OpenAI GPT-5 Pro (extended reasoning)"}
-    {:model "gpt-5.3-codex" :curated-rank 25 :description "OpenAI GPT-5.3 Codex (coding)"}
-    {:model "gpt-5.1-codex-max" :curated-rank 26 :description "OpenAI GPT-5.1 Codex Max (coding)"}
-    {:model "o3" :curated-rank 27 :description "OpenAI o3 (reasoning)"}
-    {:model "o4-mini" :curated-rank 28 :description "OpenAI o4-mini (reasoning, cheap)"}
-    {:model "gpt-4.1" :curated-rank 29 :description "OpenAI GPT-4.1 (coding)"}
-    {:model "gpt-4.1-mini" :curated-rank 30 :description "OpenAI GPT-4.1 Mini"}
-    {:model "gpt-5.5-pro-2026-04-23"}
-    {:model "gpt-5.4-pro"}
+    {:model "gpt-5.4" :curated-rank 15 :description "OpenAI GPT-5.4"}
+    {:model "gpt-5.4-mini" :curated-rank 16 :description "OpenAI GPT-5.4 Mini"}
+    {:model "gpt-5.4-nano" :curated-rank 17 :description "OpenAI GPT-5.4 Nano (cheapest)"}
+    {:model "gpt-5.2" :curated-rank 18 :description "OpenAI GPT-5.2"}
+    {:model "gpt-5.1" :curated-rank 19 :description "OpenAI GPT-5.1"}
+    {:model "gpt-5" :curated-rank 20 :description "OpenAI GPT-5"}
+    {:model "gpt-5-mini" :curated-rank 21 :description "OpenAI GPT-5 Mini (fast, cheap)"}
+    {:model "gpt-5-nano" :curated-rank 22 :description "OpenAI GPT-5 Nano (lowest latency)"}
+    {:model "o3" :curated-rank 23 :description "OpenAI o3 (reasoning)"}
+    {:model "o4-mini" :curated-rank 24 :description "OpenAI o4-mini (reasoning, cheap)"}
+    {:model "gpt-4.1" :curated-rank 25 :description "OpenAI GPT-4.1 (coding)"}
+    {:model "gpt-4.1-mini" :curated-rank 26 :description "OpenAI GPT-4.1 Mini"}
     {:model "gpt-5.3-chat-latest"}
-    {:model "gpt-5.2-pro"}
-    {:model "gpt-5.2-codex"}
     {:model "gpt-5.2-chat-latest"}
-    {:model "gpt-5.1-codex"}
-    {:model "gpt-5.1-codex-mini"}
-    {:model "gpt-5.1-chat-latest"}
-    {:model "gpt-5-codex"}
-    {:model "gpt-5-chat-latest"}
     {:model "gpt-4.1-nano"}
     {:model "gpt-4o"}
     {:model "gpt-4o-mini"}
@@ -210,27 +197,31 @@
     {:model "gpt-4"}
     {:model "gpt-3.5-turbo"}
     {:model "o3-mini"}
-    {:model "o1"}
-    {:model "o1-pro"}]
+    {:model "o1"}]
+   ;; Deliberately absent: the `-pro` tier (gpt-5-pro, gpt-5.5-pro, gpt-5.4-pro,
+   ;; gpt-5.2-pro) and o1-pro are served only by /v1/responses, and this client
+   ;; speaks /v1/chat/completions — they answer "not a chat model". The whole
+   ;; codex line (gpt-5*-codex, -codex-max, -codex-mini) plus gpt-5-chat-latest
+   ;; and gpt-5.1-chat-latest report deprecated. Verified by probing each id.
    :ollama
    [{:model "gemma3:12b"}
-    {:model "glm-5:cloud" :curated-rank 37 :description "GLM-5 Cloud (Ollama)"}]
+    {:model "glm-5:cloud" :curated-rank 33 :description "GLM-5 Cloud (Ollama)"}]
    :bedrock
    ;; Anthropic on Bedrock — prefer the `global.` cross-region inference
    ;; profiles; `us.`/`eu.`/`apac.` variants exist per partition.
-   [{:model "global.anthropic.claude-opus-5" :curated-rank 40 :description "Claude Opus 5 on Bedrock (global cross-region, flagship)"}
-    {:model "us.anthropic.claude-opus-5" :curated-rank 41 :description "Claude Opus 5 on Bedrock (US cross-region)"}
-    {:model "global.anthropic.claude-sonnet-5" :curated-rank 42 :description "Claude Sonnet 5 on Bedrock (global cross-region)"}
-    {:model "us.anthropic.claude-sonnet-5" :curated-rank 43 :description "Claude Sonnet 5 on Bedrock (US cross-region)"}
-    {:model "global.anthropic.claude-fable-5" :curated-rank 44 :description "Claude Fable 5 on Bedrock (global cross-region)"}
-    {:model "global.anthropic.claude-opus-4-8" :curated-rank 45 :description "Claude Opus 4.8 on Bedrock (global cross-region)"}
-    {:model "global.anthropic.claude-opus-4-7" :curated-rank 46 :description "Claude Opus 4.7 on Bedrock (global cross-region)"}
-    {:model "global.anthropic.claude-opus-4-6-v1" :curated-rank 47 :description "Claude Opus 4.6 on Bedrock (global cross-region)"}
-    {:model "global.anthropic.claude-sonnet-4-6" :curated-rank 48 :description "Claude Sonnet 4.6 on Bedrock (global cross-region)"}
-    {:model "global.anthropic.claude-haiku-4-5-20251001-v1:0" :curated-rank 49 :description "Claude Haiku 4.5 on Bedrock (global cross-region)"}
-    {:model "us.anthropic.claude-haiku-4-5-20251001-v1:0" :curated-rank 50 :description "Claude Haiku 4.5 on Bedrock (US cross-region)"}
-    {:model "global.anthropic.claude-opus-4-5-20251101-v1:0" :curated-rank 51 :description "Claude Opus 4.5 on Bedrock (global cross-region)"}
-    {:model "us.anthropic.claude-sonnet-4-5-20250929-v1:0" :curated-rank 52 :description "Claude Sonnet 4.5 on Bedrock (US cross-region)"}
+   [{:model "global.anthropic.claude-opus-5" :curated-rank 36 :description "Claude Opus 5 on Bedrock (global cross-region, flagship)"}
+    {:model "us.anthropic.claude-opus-5" :curated-rank 37 :description "Claude Opus 5 on Bedrock (US cross-region)"}
+    {:model "global.anthropic.claude-sonnet-5" :curated-rank 38 :description "Claude Sonnet 5 on Bedrock (global cross-region)"}
+    {:model "us.anthropic.claude-sonnet-5" :curated-rank 39 :description "Claude Sonnet 5 on Bedrock (US cross-region)"}
+    {:model "global.anthropic.claude-fable-5" :curated-rank 40 :description "Claude Fable 5 on Bedrock (global cross-region)"}
+    {:model "global.anthropic.claude-opus-4-8" :curated-rank 41 :description "Claude Opus 4.8 on Bedrock (global cross-region)"}
+    {:model "global.anthropic.claude-opus-4-7" :curated-rank 42 :description "Claude Opus 4.7 on Bedrock (global cross-region)"}
+    {:model "global.anthropic.claude-opus-4-6-v1" :curated-rank 43 :description "Claude Opus 4.6 on Bedrock (global cross-region)"}
+    {:model "global.anthropic.claude-sonnet-4-6" :curated-rank 44 :description "Claude Sonnet 4.6 on Bedrock (global cross-region)"}
+    {:model "global.anthropic.claude-haiku-4-5-20251001-v1:0" :curated-rank 45 :description "Claude Haiku 4.5 on Bedrock (global cross-region)"}
+    {:model "us.anthropic.claude-haiku-4-5-20251001-v1:0" :curated-rank 46 :description "Claude Haiku 4.5 on Bedrock (US cross-region)"}
+    {:model "global.anthropic.claude-opus-4-5-20251101-v1:0" :curated-rank 47 :description "Claude Opus 4.5 on Bedrock (global cross-region)"}
+    {:model "us.anthropic.claude-sonnet-4-5-20250929-v1:0" :curated-rank 48 :description "Claude Sonnet 4.5 on Bedrock (US cross-region)"}
     {:model "anthropic.claude-opus-5"}
     {:model "anthropic.claude-sonnet-5"}
     {:model "anthropic.claude-fable-5"}
@@ -260,10 +251,10 @@
     {:model "apac.anthropic.claude-3-5-sonnet-20241022-v2:0"}
     {:model "apac.anthropic.claude-sonnet-4-20250514-v1:0"}
     ;; Amazon Nova
-    {:model "us.amazon.nova-2-lite-v1:0" :curated-rank 53 :description "Amazon Nova 2 Lite on Bedrock (US cross-region, fast)"}
-    {:model "us.amazon.nova-premier-v1:0" :curated-rank 54 :description "Amazon Nova Premier on Bedrock (US cross-region)" :region "us-east-1"}
-    {:model "us.amazon.nova-pro-v1:0" :curated-rank 55 :description "Amazon Nova Pro on Bedrock (US cross-region, multimodal)"}
-    {:model "us.amazon.nova-lite-v1:0" :curated-rank 56 :description "Amazon Nova Lite on Bedrock (US cross-region, fast)"}
+    {:model "us.amazon.nova-2-lite-v1:0" :curated-rank 49 :description "Amazon Nova 2 Lite on Bedrock (US cross-region, fast)"}
+    {:model "us.amazon.nova-premier-v1:0" :curated-rank 50 :description "Amazon Nova Premier on Bedrock (US cross-region)" :region "us-east-1"}
+    {:model "us.amazon.nova-pro-v1:0" :curated-rank 51 :description "Amazon Nova Pro on Bedrock (US cross-region, multimodal)"}
+    {:model "us.amazon.nova-lite-v1:0" :curated-rank 52 :description "Amazon Nova Lite on Bedrock (US cross-region, fast)"}
     {:model "amazon.nova-2-lite-v1:0"}
     {:model "amazon.nova-premier-v1:0" :region "us-east-1"}
     {:model "amazon.nova-pro-v1:0"}
@@ -280,22 +271,22 @@
     {:model "apac.amazon.nova-micro-v1:0"}
     ;; Open-weights and third-party. Entries pinned to us-east-1 are not
     ;; served in every region (verified against list-foundation-models).
-    {:model "meta.llama3-3-70b-instruct-v1:0" :curated-rank 57 :description "Meta Llama 3.3 70B on Bedrock"}
-    {:model "openai.gpt-oss-120b-1:0" :curated-rank 58 :description "OpenAI gpt-oss 120B (open-weights) on Bedrock" :region "us-east-1"}
-    {:model "openai.gpt-oss-20b-1:0" :curated-rank 59 :description "OpenAI gpt-oss 20B (open-weights) on Bedrock" :region "us-east-1"}
-    {:model "qwen.qwen3-32b-v1:0" :curated-rank 60 :description "Qwen3 32B (dense) on Bedrock" :region "us-east-1"}
-    {:model "qwen.qwen3-coder-30b-a3b-v1:0" :curated-rank 61 :description "Qwen3 Coder 30B (A3B) on Bedrock" :region "us-east-1"}
-    {:model "qwen.qwen3-vl-235b-a22b" :curated-rank 62 :description "Qwen3 VL 235B A22B (vision) on Bedrock" :region "us-east-1"}
-    {:model "deepseek.r1-v1:0" :curated-rank 63 :description "DeepSeek-R1 (reasoning) on Bedrock" :region "us-east-1"}
-    {:model "us.deepseek.r1-v1:0" :curated-rank 64 :description "DeepSeek-R1 on Bedrock (US cross-region)" :region "us-east-1"}
-    {:model "deepseek.v3.2" :curated-rank 65 :description "DeepSeek V3.2 on Bedrock" :region "us-east-1"}
-    {:model "mistral.mistral-large-3-675b-instruct" :curated-rank 66 :description "Mistral Large 3 675B on Bedrock" :region "us-east-1"}
-    {:model "zai.glm-5" :curated-rank 67 :description "Z.ai GLM-5 on Bedrock" :region "us-east-1"}
-    {:model "minimax.minimax-m2.5" :curated-rank 68 :description "MiniMax M2.5 on Bedrock" :region "us-east-1"}
-    {:model "moonshotai.kimi-k2.5" :curated-rank 69 :description "Moonshot Kimi K2.5 on Bedrock" :region "us-east-1"}
-    {:model "ai21.jamba-1-5-large-v1:0" :curated-rank 70 :description "AI21 Jamba 1.5 Large on Bedrock" :region "us-east-1"}
-    {:model "writer.palmyra-x5-v1:0" :curated-rank 71 :description "Writer Palmyra X5 on Bedrock" :region "us-east-1"}
-    {:model "us.writer.palmyra-x5-v1:0" :curated-rank 72 :description "Writer Palmyra X5 on Bedrock (US cross-region)" :region "us-east-1"}
+    {:model "meta.llama3-3-70b-instruct-v1:0" :curated-rank 53 :description "Meta Llama 3.3 70B on Bedrock"}
+    {:model "openai.gpt-oss-120b-1:0" :curated-rank 54 :description "OpenAI gpt-oss 120B (open-weights) on Bedrock" :region "us-east-1"}
+    {:model "openai.gpt-oss-20b-1:0" :curated-rank 55 :description "OpenAI gpt-oss 20B (open-weights) on Bedrock" :region "us-east-1"}
+    {:model "qwen.qwen3-32b-v1:0" :curated-rank 56 :description "Qwen3 32B (dense) on Bedrock" :region "us-east-1"}
+    {:model "qwen.qwen3-coder-30b-a3b-v1:0" :curated-rank 57 :description "Qwen3 Coder 30B (A3B) on Bedrock" :region "us-east-1"}
+    {:model "qwen.qwen3-vl-235b-a22b" :curated-rank 58 :description "Qwen3 VL 235B A22B (vision) on Bedrock" :region "us-east-1"}
+    {:model "deepseek.r1-v1:0" :curated-rank 59 :description "DeepSeek-R1 (reasoning) on Bedrock" :region "us-east-1"}
+    {:model "us.deepseek.r1-v1:0" :curated-rank 60 :description "DeepSeek-R1 on Bedrock (US cross-region)" :region "us-east-1"}
+    {:model "deepseek.v3.2" :curated-rank 61 :description "DeepSeek V3.2 on Bedrock" :region "us-east-1"}
+    {:model "mistral.mistral-large-3-675b-instruct" :curated-rank 62 :description "Mistral Large 3 675B on Bedrock" :region "us-east-1"}
+    {:model "zai.glm-5" :curated-rank 63 :description "Z.ai GLM-5 on Bedrock" :region "us-east-1"}
+    {:model "minimax.minimax-m2.5" :curated-rank 64 :description "MiniMax M2.5 on Bedrock" :region "us-east-1"}
+    {:model "moonshotai.kimi-k2.5" :curated-rank 65 :description "Moonshot Kimi K2.5 on Bedrock" :region "us-east-1"}
+    {:model "ai21.jamba-1-5-large-v1:0" :curated-rank 66 :description "AI21 Jamba 1.5 Large on Bedrock" :region "us-east-1"}
+    {:model "writer.palmyra-x5-v1:0" :curated-rank 67 :description "Writer Palmyra X5 on Bedrock" :region "us-east-1"}
+    {:model "us.writer.palmyra-x5-v1:0" :curated-rank 68 :description "Writer Palmyra X5 on Bedrock (US cross-region)" :region "us-east-1"}
     {:model "meta.llama3-1-70b-instruct-v1:0"}
     {:model "meta.llama3-1-8b-instruct-v1:0"}
     {:model "meta.llama3-70b-instruct-v1:0"}
@@ -340,15 +331,15 @@
    [{:model "gemini-3-flash-preview"}
     {:model "gemini-1.5-pro"}
     {:model "gemini-1.5-flash"}
-    {:model "gemini-2.5-pro" :curated-rank 31 :description "Google Gemini 2.5 Pro (advanced)"}
+    {:model "gemini-2.5-pro" :curated-rank 27 :description "Google Gemini 2.5 Pro (advanced)"}
     {:model "gemini-2.5-flash-lite"}
-    {:model "gemini-2.5-flash" :curated-rank 32 :description "Google Gemini 2.5 Flash (very cheap)"}
+    {:model "gemini-2.5-flash" :curated-rank 28 :description "Google Gemini 2.5 Flash (very cheap)"}
     {:model "gemini-3.1-pro-preview"}
     {:model "gemini-3-pro-preview"}
     {:model "gemini-2.0-flash"}]
    :deepseek
-   [{:model "deepseek-chat" :curated-rank 33 :description "DeepSeek V3.2 (ultra cheap)"}
-    {:model "deepseek-reasoner" :curated-rank 34 :description "DeepSeek V3.2 Reasoner"}]))
+   [{:model "deepseek-chat" :curated-rank 29 :description "DeepSeek V3.2 (ultra cheap)"}
+    {:model "deepseek-reasoner" :curated-rank 30 :description "DeepSeek V3.2 Reasoner"}]))
 
 ;; Reverse index model-id -> provider, DERIVED from model-catalog. Used by
 ;; get-provider-from-model for catalog lookup. Unambiguous: no model id appears
@@ -359,26 +350,35 @@
              [model provider])))
 
 (def ^:private drop-temperature-exact
-  "Exact model names that reject the `temperature` parameter."
-  #{"gpt-5" "gpt-5-mini" "gpt-5-nano"
-    "gpt-5.5" "gpt-5.5-mini"
+  "Exact model names that reject the `temperature` parameter.
+   Membership was established by probing each id against
+   /v1/chat/completions — note gpt-5.4/5.2/5.1 accept it while their
+   -mini/-nano siblings and the 5.5/5.6 generations do not, so this cannot
+   be inferred from the family name."
+  #{"gpt-5.6-luna" "gpt-5.6-sol" "gpt-5.6-terra"
+    "gpt-5.5"
     "gpt-5.4-mini" "gpt-5.4-nano"
-    "gpt-5-pro" "o3-pro"
-    "o1" "o1-mini" "o3" "o3-mini" "o4-mini"})
+    "gpt-5" "gpt-5-mini" "gpt-5-nano"
+    "gpt-5.3-chat-latest" "gpt-5.2-chat-latest"
+    "o1" "o3" "o3-mini" "o4-mini"})
 
 (defn- drops-temperature?
   "True if the model rejects (or ignores) the `temperature` parameter.
    When detected, `create-lm` sets `:drop-params #{:temperature}` automatically.
    Matches by exact name (OpenAI GPT-5/o-series reasoning models) and by
-   substring for the Claude families that reject sampling params (Opus 4.7+,
-   Fable, Mythos) on the Anthropic API and on Bedrock under every prefix
-   (anthropic., us.anthropic., global.anthropic., …)."
+   substring for the Claude families that reject sampling params (Opus 5,
+   Sonnet 5, Opus 4.8, Opus 4.7, Fable, Mythos) on the Anthropic API and on
+   Bedrock under every prefix (anthropic., us.anthropic., global.anthropic., …).
+   Opus 4.6 and Sonnet 4.6 still accept sampling params and are absent here.
+   The substrings are version-anchored so `claude-opus-5` cannot match
+   `claude-opus-4-5`, nor `claude-sonnet-5` match `claude-sonnet-4-5`."
   [model]
   (boolean
    (when (string? model)
      (or (contains? drop-temperature-exact model)
          (some #(str/includes? model %)
-               ["claude-opus-4-8" "claude-opus-4-7"
+               ["claude-opus-5" "claude-sonnet-5"
+                "claude-opus-4-8" "claude-opus-4-7"
                 "claude-fable" "claude-mythos"])))))
 
 (defn- bedrock-supports-prompt-cache?
