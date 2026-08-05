@@ -298,6 +298,18 @@ Four safety rules, each guarding a quiet failure:
 - **Non-enumerable providers cannot be overlaid** (`claude-code`, `acp`,
   `apple-fm`, `free-llm` have no list endpoint).
 
+**`bb catalog:refresh`** is the maintainer counterpart: it compares the *baked*
+catalog against the live providers and reports drift, so what ships in the
+binary stays current between releases. `--write` deletes entries a provider no
+longer serves; additions are reported but never written, because an entry only
+earns a place once a human gives it a rank and a description. The rewrite is
+**surgical, not a regenerate** — `providers.clj` carries comments recording
+which ids were probed and rejected, and losing them means someone re-adds the
+models they warn about. Ids deliberately not catalogued live in
+`excluded-model-patterns` as **data**, not prose: as a comment they were
+invisible to the tool, so the first run proposed all 40 of them as new and
+would have done so forever.
+
 Ollama is the case that most needs this: a baked list of models is a guess
 about someone else's machine, and `/v1/models` on the local server is the only
 authority for what is actually installed. Impl: `components/clj-llm/…/core/`

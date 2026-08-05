@@ -228,7 +228,15 @@
      ;; reject it downstream anyway, and an empty entry must never be mistaken
      ;; for "this provider serves nothing".
      (let [entry (when entry
-                   (let [ids (into #{} (filter chat-ish?) (:models entry))]
+                   (let [ids (into #{}
+                                   (comp (filter chat-ish?)
+                                         ;; Ids probed and deliberately rejected
+                                         ;; (see providers/excluded-model-patterns).
+                                         ;; Filtered here so they are never
+                                         ;; discovered AND never re-proposed by
+                                         ;; `bb catalog:refresh` on every run.
+                                         (remove #(providers/excluded-model? provider %)))
+                                   (:models entry))]
                      (when (seq ids) (assoc entry :models ids))))]
        (if entry
          (do (mulog/log ::catalog-refreshed :provider provider

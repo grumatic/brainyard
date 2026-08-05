@@ -173,7 +173,7 @@
    ;; GPT-5.6 ships as three co-released variants (luna / sol / terra) rather
    ;; than a tiered pro/mini/nano split; listed alphabetically because the
    ;; /v1/models payload exposes no capability ordering between them.
-   [{:model "gpt-5.6-luna" :curated-rank 11 :description "OpenAI GPT-5.6 Luna"}
+    [{:model "gpt-5.6-luna" :curated-rank 11 :description "OpenAI GPT-5.6 Luna"}
     {:model "gpt-5.6-sol" :curated-rank 12 :description "OpenAI GPT-5.6 Sol"}
     {:model "gpt-5.6-terra" :curated-rank 13 :description "OpenAI GPT-5.6 Terra"}
     {:model "gpt-5.5" :curated-rank 14 :description "OpenAI GPT-5.5"}
@@ -199,11 +199,8 @@
     {:model "gpt-3.5-turbo"}
     {:model "o3-mini"}
     {:model "o1"}]
-   ;; Deliberately absent: the `-pro` tier (gpt-5-pro, gpt-5.5-pro, gpt-5.4-pro,
-   ;; gpt-5.2-pro) and o1-pro are served only by /v1/responses, and this client
-   ;; speaks /v1/chat/completions — they answer "not a chat model". The whole
-   ;; codex line (gpt-5*-codex, -codex-max, -codex-mini) plus gpt-5-chat-latest
-   ;; and gpt-5.1-chat-latest report deprecated. Verified by probing each id.
+   ;; Deliberately absent — see `excluded-model-patterns` below, which is the
+   ;; enforceable form of this note.
    :ollama
    [{:model "gemma3:12b"}
     {:model "glm-5:cloud" :curated-rank 33 :description "GLM-5 Cloud (Ollama)"}]
@@ -341,6 +338,39 @@
    :deepseek
    [{:model "deepseek-chat" :curated-rank 29 :description "DeepSeek V3.2 (ultra cheap)"}
     {:model "deepseek-reasoner" :curated-rank 30 :description "DeepSeek V3.2 Reasoner"}]))
+
+(def excluded-model-patterns
+  "Ids a provider serves that this client deliberately does NOT catalogue,
+   with the reason. Consulted by the refresh so they are never discovered and
+   never proposed.
+
+   This is DATA rather than a comment because a comment cannot be enforced. It
+   was one: a prose note in the `:openai` block recording that these had been
+   probed and rejected. The first live `bb catalog:refresh` then proposed all
+   40 of them as new models, and would have done so on every run forever —
+   the note was invisible to the tool that needed it. Same lesson as the
+   feature ledger being data rather than section comments.
+
+   Patterns rather than an id list, because the families keep growing: a
+   `gpt-6-pro` would need re-rejecting by hand otherwise. Over-matching costs
+   only a catalog entry a user can still select explicitly by id, since
+   nothing here affects provider detection or `create-lm`."
+  {:openai [;; Served only by /v1/responses; this client speaks
+            ;; /v1/chat/completions, and they answer "not a chat model".
+            #"-pro$" #"-pro-\d{4}-\d{2}-\d{2}$"
+            ;; The codex line reports deprecated.
+            #"-codex$" #"-codex-max$" #"-codex-mini$"
+            ;; Superseded aliases that report deprecated.
+            #"^gpt-5-chat-latest$" #"^gpt-5\.1-chat-latest$"
+            ;; Search-augmented variants: a different product surface, not a
+            ;; chat model you would pick from the model picker.
+            #"-search-api" #"-search-preview"]})
+
+(defn excluded-model?
+  "True when `id` is one `provider` serves but this client deliberately does
+   not catalogue."
+  [provider id]
+  (boolean (some #(re-find % (str id)) (get excluded-model-patterns provider []))))
 
 ;; ============================================================================
 ;; Effective catalog = baked ∪ refresh overlay

@@ -120,6 +120,19 @@
   (testing "until something refreshes, the effective catalog IS the baked one"
     (is (= providers/model-catalog (providers/current-catalog)))))
 
+(deftest deliberately-excluded-models-are-never-discovered-test
+  (testing "ids probed and rejected stay rejected — as data, so the refresh
+            honours them instead of re-proposing them on every run"
+    (doseq [id ["gpt-5-pro" "gpt-5.5-pro" "gpt-5.4-pro-2026-03-05"
+                "gpt-5.3-codex" "gpt-5.1-codex-max" "o1-pro"
+                "gpt-5-chat-latest" "gpt-5-search-api"]]
+      (is (true? (providers/excluded-model? :openai id)) (str id " must stay excluded")))
+    (doseq [id ["gpt-5.6-terra" "gpt-5.5" "gpt-4.1" "o3" "gpt-5.4"]]
+      (is (false? (providers/excluded-model? :openai id))
+          (str id " is a real chat model and must NOT be excluded")))
+    (testing "exclusions are per provider, not global"
+      (is (false? (providers/excluded-model? :ollama "some-pro"))))))
+
 (deftest overlay-reaches-provider-detection-test
   (testing "a discovered model resolves to its provider, which is what makes
             it usable at all"

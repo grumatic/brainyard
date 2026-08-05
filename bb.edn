@@ -723,6 +723,34 @@
              (println "Uberjar built: projects/agent-tui-app/target/agent-tui-app.jar")
              (println "  META-INF/native-image config: present.")))}
 
+  catalog:refresh
+  {:doc "Compare the BAKED model catalog in providers.clj against what every
+  reachable provider actually serves, and report the drift.
+
+  Reports by default. `--write` deletes entries the provider no longer serves;
+  additions are reported but never written, because an entry only earns a place
+  once a human has given it a :curated-rank and a :description — the same
+  \"curation stays human\" split the runtime overlay uses.
+
+  This is the MAINTAINER counterpart to the runtime refresh: it keeps the
+  catalog shipped inside the binary current, which is what users get before any
+  refresh of their own has run. Only providers this machine can reach are
+  queried (a missing API key is skipped, not an error), so run it somewhere
+  with the credentials that matter.
+
+  The rewrite is surgical, not a regenerate: providers.clj carries comments
+  recording which ids were probed and rejected, and losing them means someone
+  re-adds the models they warn about.
+
+    bb catalog:refresh            # report only
+    bb catalog:refresh --write    # apply removals"
+   :task (let [args (vec *command-line-args*)]
+           ;; `-M <script> <args…>`, not `-i`: with `-i` clojure.main treats
+           ;; the next bare arg as another file to load, so `--write` became
+           ;; "FileNotFoundException: --write".
+           (apply shell {:dir "components/clj-llm"}
+                  "clojure" "-M" "../../scripts/catalog_refresh.clj" args))}
+
   sqlite-vec:fetch
   {:doc "Fetch the sqlite-vec loadable extension (vec0) for the host platform
   into components/memory/resources/sqlite-vec/ (gitignored). The native build
