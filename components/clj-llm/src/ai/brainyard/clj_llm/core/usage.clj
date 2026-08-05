@@ -42,6 +42,9 @@
    [:openai "o1"]               {:input 15.00 :output 60.00 :cache-read 7.50  :cache-write 15.00}
    [:openai "o1-mini"]          {:input 3.00  :output 12.00 :cache-read 1.50  :cache-write 3.00}
    ;; Anthropic (pricing from https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#pricing)
+   [:anthropic "claude-opus-5"]             {:input 5.00  :output 25.00 :cache-read 0.50  :cache-write 6.25}
+   ;; Sonnet 5 list price; an introductory $2/$10 ran through 2026-08-31.
+   [:anthropic "claude-sonnet-5"]           {:input 3.00  :output 15.00 :cache-read 0.30  :cache-write 3.75}
    [:anthropic "claude-opus-4-8"]           {:input 5.00  :output 25.00 :cache-read 0.50  :cache-write 6.25}
    [:anthropic "claude-opus-4-7"]           {:input 5.00  :output 25.00 :cache-read 0.50  :cache-write 6.25}
    [:anthropic "claude-mythos-5"]           {:input 10.00 :output 50.00 :cache-read 1.00  :cache-write 12.50}
@@ -77,6 +80,8 @@
    [:groq "llama-3.1-8b-instant"]    {:input 0.05  :output 0.08  :cache-read 0.025 :cache-write 0.05}
    ;; Bedrock — Anthropic on Bedrock (rates match the direct Anthropic API).
    ;; Keys use the normalized form: region prefix and -v\d+:\d+ suffix stripped.
+   [:bedrock "anthropic.claude-opus-5"]     {:input 5.00  :output 25.00 :cache-read 0.50 :cache-write 6.25}
+   [:bedrock "anthropic.claude-sonnet-5"]   {:input 3.00  :output 15.00 :cache-read 0.30 :cache-write 3.75}
    [:bedrock "anthropic.claude-sonnet-4-6"] {:input 3.00  :output 15.00 :cache-read 0.30 :cache-write 3.75}
    [:bedrock "anthropic.claude-sonnet-4-5"] {:input 3.00  :output 15.00 :cache-read 0.30 :cache-write 3.75}
    [:bedrock "anthropic.claude-sonnet-4-0"] {:input 3.00  :output 15.00 :cache-read 0.30 :cache-write 3.75}
