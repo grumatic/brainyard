@@ -193,10 +193,34 @@
         ;; self-ownership must never refuse — same PID is not an 'other' process.
         (is (false? (persist/held-by-other-live-process? "agt-self")))
         (persist/release-lock! h)))
-    (testing "a lockfile naming another LIVE pid (1 = init/launchd) → held"
-      (spit (lockfile "agt-foreign") "1\n")
-      (is (= 1 (persist/owner-pid "agt-foreign")))
-      (is (true? (persist/held-by-other-live-process? "agt-foreign"))))
+    (testing "a lockfile naming another live pid of OURS → held"
+      (let [proc (.start (ProcessBuilder. ["/bin/sleep" "30"]))
+            p    (.pid proc)]
+        (try
+          ;; spit stamps the lockfile now, i.e. AFTER the process started —
+          ;; the ordering a genuine owner always has.
+          (spit (lockfile "agt-ours") (str p "\n"))
+          (is (true? (persist/held-by-other-live-process? "agt-ours")))
+          (finally (.destroyForcibly proc) (.waitFor proc)))))
+    (testing "a live pid owned by ANOTHER user → not held (pid reuse)"
+      ;; pid 1 (launchd/init) is root-owned, so it can never be one of our
+      ;; hosts. Skipped under a root test runner, where there is no foreign
+      ;; user to detect.
+      (when-not (= "root" (System/getProperty "user.name"))
+        (spit (lockfile "agt-foreign") "1\n")
+        (is (= 1 (persist/owner-pid "agt-foreign")))
+        (is (false? (persist/held-by-other-live-process? "agt-foreign")))))
+    (testing "a live pid of ours that started AFTER the lock was written → not held"
+      ;; The exact shape of pid reuse: the lockfile predates the process now
+      ;; wearing its pid, so that process cannot be the one that wrote it.
+      (let [proc (.start (ProcessBuilder. ["/bin/sleep" "30"]))
+            p    (.pid proc)
+            ^java.io.File f (lockfile "agt-reused")]
+        (try
+          (spit f (str p "\n"))
+          (.setLastModified f (- (System/currentTimeMillis) 600000))
+          (is (false? (persist/held-by-other-live-process? "agt-reused")))
+          (finally (.destroyForcibly proc) (.waitFor proc)))))
     (testing "a lockfile naming a dead pid → stale, not held (read-only probe)"
       ;; A reaped child's pid is guaranteed dead. Spawn `true`, wait, reuse its pid.
       (let [proc (.start (ProcessBuilder. ["/usr/bin/true"]))
@@ -215,9 +239,19 @@
         (is (true? (persist/session-live? "agt-mine")))
         (persist/release-lock! h)
         (is (false? (persist/session-live? "agt-mine")))))
-    (testing "another LIVE pid (1 = init/launchd) → live"
-      (spit (lockfile "agt-foreign-live") "1\n")
-      (is (true? (persist/session-live? "agt-foreign-live"))))
+    (testing "another live pid of OURS → live"
+      (let [proc (.start (ProcessBuilder. ["/bin/sleep" "30"]))
+            p    (.pid proc)]
+        (try
+          (spit (lockfile "agt-ours-live") (str p "\n"))
+          (is (true? (persist/session-live? "agt-ours-live")))
+          (finally (.destroyForcibly proc) (.waitFor proc)))))
+    (testing "a live pid owned by ANOTHER user → NOT live (the reuse bug)"
+      ;; Regression guard: seven sessions once read as live because their dead
+      ;; owner's pid had been reissued to a root-owned system daemon.
+      (when-not (= "root" (System/getProperty "user.name"))
+        (spit (lockfile "agt-foreign-live") "1\n")
+        (is (false? (persist/session-live? "agt-foreign-live")))))
     (testing "a dead pid → not live (stale lock)"
       (let [proc (.start (ProcessBuilder. ["/usr/bin/true"]))
             dead (.pid proc)]

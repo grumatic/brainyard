@@ -9,17 +9,82 @@
             [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.io File RandomAccessFile]
-           [java.lang ProcessHandle]
+           [java.lang ProcessHandle ProcessHandle$Info]
            [java.nio.channels FileChannel FileLock OverlappingFileLockException]
-           [java.nio.file StandardOpenOption]))
+           [java.nio.file StandardOpenOption]
+           [java.time Instant]
+           [java.util Optional]))
 
 (defn- pid []
   (.pid (ProcessHandle/current)))
 
-(defn- alive? [^long candidate-pid]
+(defn- info-of
+  "`ProcessHandle$Info` for `candidate-pid`, or nil when no such process."
+  ^ProcessHandle$Info [^long candidate-pid]
   (try
-    (.isPresent (ProcessHandle/of candidate-pid))
-    (catch Throwable _ false)))
+    ;; Every Optional here is hinted: an unhinted .orElse is reflective, which
+    ;; `bb reflect:check` fails the build over (and native-image would break on).
+    (let [^Optional opt (ProcessHandle/of candidate-pid)]
+      (when-let [^ProcessHandle ph (.orElse opt nil)]
+        (.info ph)))
+    (catch Throwable _ nil)))
+
+(defn- current-user
+  "This process's OS user, or nil when the JVM won't report it."
+  []
+  (try
+    (let [^ProcessHandle$Info info (.info (ProcessHandle/current))
+          ^Optional u              (.user info)]
+      (.orElse u nil))
+    (catch Throwable _ nil)))
+
+(defn- started-after?
+  "True when the process now holding a pid demonstrably started AFTER `lockfile`
+   was written — i.e. it cannot be the process that wrote it.
+
+   `lockfile`'s mtime is the moment the owner claimed the lock, and an owner
+   always starts before it claims. So `start > mtime` is positive proof of pid
+   reuse. Returns false whenever either timestamp is unavailable."
+  [^ProcessHandle$Info info ^File lockfile]
+  (let [^Optional so (.startInstant info)
+        ^Instant start (.orElse so nil)
+        m              (.lastModified lockfile)]
+    (boolean
+     (when (and start (pos? m))
+       ;; A second of slack: mtime and process start come from different clocks
+       ;; and filesystems vary in timestamp granularity.
+       (> (.toEpochMilli start) (+ m 1000))))))
+
+(defn- owner-alive?
+  "True when `candidate-pid` names a live process that can still plausibly be the
+   owner recorded in `lockfile`.
+
+   A bare `ProcessHandle/of` presence check is NOT enough: a pid is not a durable
+   identity. When an owner dies the OS is free to reissue its pid, and every
+   session whose lockfile names that pid then reads as live again — observed in
+   the field as seven sessions still 'live' on a pid that had been reissued to a
+   root-owned system daemon. So we also require that the process could actually
+   be the one that wrote the lock: same OS user, and not started after the
+   lockfile was written.
+
+   Deliberately conservative — it answers false only on POSITIVE evidence of
+   reuse. When the JVM cannot report the user or the start time we say `true`,
+   because the dangerous error is the other way: `try-acquire!` steals a lock it
+   believes dead, so a false 'dead' would let two processes own one session,
+   whereas a false 'alive' merely leaves a stale lock to be cleaned up later."
+  [^long candidate-pid ^File lockfile]
+  ;; Hinted at the binding: `if-let` does not carry `info-of`'s return tag
+  ;; through, so `.user` below would resolve against Object and be reflective.
+  (if-let [^ProcessHandle$Info info (info-of candidate-pid)]
+    (let [^Optional ou (.user info)
+          owner        (.orElse ou nil)
+          me           (current-user)]
+      (cond
+        ;; Someone else's process wearing our old pid.
+        (and owner me (not= owner me))  false
+        (started-after? info lockfile)  false
+        :else                           true))
+    false))
 
 (defn- read-pid
   [^File f]
@@ -40,7 +105,7 @@
         _      (when-let [^File parent (.getParentFile f)]
                  (when-not (.exists parent) (.mkdirs parent)))
         prior  (read-pid f)]
-    (when (or (nil? prior) (= prior (pid)) (not (alive? prior)))
+    (when (or (nil? prior) (= prior (pid)) (not (owner-alive? prior f)))
       (let [raf (RandomAccessFile. f "rw")
             ch  (.getChannel raf)
             lock (try
@@ -71,15 +136,20 @@
   [session-id]
   (boolean
    (when-let [p (owner-pid session-id)]
-     (and (not= p (pid)) (alive? p)))))
+     (and (not= p (pid))
+          (owner-alive? p (paths/file-of session-id :lock))))))
 
 (defn session-live?
   "True when `session-id`'s lockfile names a currently-alive PID — i.e. some
    `by` process owns it right now, whether or not that's this process. Read-only.
    The basis for `by sessions list` liveness: a clean exit unlinks the lockfile
-   (→ false), a crash leaves a stale lockfile whose dead PID also reads false."
+   (→ false), a crash leaves a stale lockfile whose dead PID also reads false —
+   as does a lockfile whose PID has since been REUSED by an unrelated process
+   (see `owner-alive?`)."
   [session-id]
-  (boolean (some-> (owner-pid session-id) alive?)))
+  (boolean
+   (when-let [p (owner-pid session-id)]
+     (owner-alive? p (paths/file-of session-id :lock)))))
 
 (defn release!
   "Release a lock handle returned by `try-acquire!`."
