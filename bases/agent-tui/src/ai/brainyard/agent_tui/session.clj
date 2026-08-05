@@ -2119,6 +2119,21 @@
 ;; Iteration Block Ticker (elapsed-time refresh for per-iteration live blocks)
 ;; ============================================================================
 
+(defn- stop-iteration-block-ticker!
+  "Stop the iteration block ticker thread. Idempotent.
+
+   Mirrors `stop-subagents-ticker!` / `stop-task-block-ticker!`, which this
+   ticker was the only one of the three to lack. It self-stops once no
+   non-`:done` blocks remain, but only on its next 1s wake — so there was no
+   way to halt it deterministically. That matters wherever the ticker must
+   not outlive the state it renders: it re-renders every non-`:done` block
+   from its own thread, so a ticker left running past its blocks is a
+   background writer nobody can stop."
+  []
+  (when-let [t @!iteration-ticker-thread]
+    (reset! !iteration-ticker-thread nil)
+    (try (.interrupt ^Thread t) (catch Exception _))))
+
 (defn- start-iteration-block-ticker!
   "Start daemon thread that refreshes iteration block elapsed-time counters
    every 1000ms while any iteration is still running (`:stage` not `:done`).

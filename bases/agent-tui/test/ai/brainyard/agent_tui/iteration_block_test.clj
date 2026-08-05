@@ -33,13 +33,59 @@
 ;; Test fixtures: clean shared state
 ;; ----------------------------------------------------------------------------
 
-(defn- reset-state-fixture [t]
+(defn- stop-tickers!
+  "Halt the live-block ticker daemons.
+
+   Clearing the block atoms is NOT sufficient isolation. The iteration ticker
+   is a daemon thread that re-renders every non-`:done` block once a second by
+   calling `update-iteration-block!` — and tests here install a *global*
+   `with-redefs` on that var. A ticker still alive from an earlier test
+   therefore calls THIS test's capture fn, on its own thread, with a foreign
+   key. Because the ticker visits only non-`:done` blocks, such a clobber
+   always looks like a stage regression, which is precisely how it presented:
+   `freeze-pending-stamps-done-stage-not-success` failing on
+   `(= :done (:stage @seen))` while `(some? @seen)` passed, roughly one run in
+   six, and only in the full-workspace JVM where a ticker survives into the
+   redef window.
+
+   Stopping the threads (not just emptying the atoms they read) is what
+   actually closes the hole."
+  []
+  (#'s/stop-iteration-block-ticker!)
+  (#'s/stop-subagents-ticker!)
+  (#'s/stop-task-block-ticker!))
+
+(defn- reset-state-fixture
+  "Isolate each test from the live-block ticker daemons.
+
+   Two halves, and both are needed:
+
+   1. `stop-tickers!` kills any ticker inherited from an earlier namespace.
+   2. The `with-redefs` no-ops ticker STARTUP for the duration of the test —
+      because `iteration-pre-handler` starts the iteration ticker itself, so
+      stopping beforehand does not help a test that then starts a fresh one
+      and runs past its first 1s tick.
+
+   Every test here drives the handlers explicitly and asserts on
+   `!iteration-blocks` or on recorded sink ops. The ticker contributes only an
+   elapsed-time re-render on a background thread, which is not under test and
+   is pure interference: it clobbered a global `with-redefs` capture in one
+   test, and appended a stray `:write` after the `:freeze` in another. Nothing
+   here asserts the ticker starts, so suppressing it removes a whole class of
+   order- and timing-dependent failure rather than one symptom."
+  [t]
+  (stop-tickers!)
   (reset! @#'s/!iteration-blocks {})
   (reset! @#'s/!subagents-blocks {})
-  (try (t)
-       (finally
-         (reset! @#'s/!iteration-blocks {})
-         (reset! @#'s/!subagents-blocks {}))))
+  (try
+    (with-redefs [s/start-iteration-block-ticker! (fn [] nil)
+                  s/start-subagents-ticker!       (fn [] nil)
+                  s/start-task-block-ticker!      (fn [] nil)]
+      (t))
+    (finally
+      (stop-tickers!)
+      (reset! @#'s/!iteration-blocks {})
+      (reset! @#'s/!subagents-blocks {}))))
 
 (use-fixtures :each reset-state-fixture)
 
@@ -975,10 +1021,18 @@
           (s/iteration-pre-handler {:agent a :iteration 1 :max-iterations 5
                                     :repeat-id "main"})
           ;; Capture the entry as it would be re-rendered, before dissoc.
-          (let [seen (atom nil)]
+          (let [seen     (atom nil)
+                our-key  [(:agent-id a) "main" 1]]
             (with-redefs [s/update-iteration-block!
                           (fn [aid rid it]
-                            (reset! seen (get @@#'s/!iteration-blocks [aid rid it])))]
+                            ;; Capture OUR key only. `with-redefs` rebinds the
+                            ;; var globally, so any other caller — notably the
+                            ;; iteration ticker on its own thread — lands here
+                            ;; too. An unscoped `reset!` takes whichever call
+                            ;; happened last, which is how this test used to
+                            ;; flake.
+                            (when (= [aid rid it] our-key)
+                              (reset! seen (get @@#'s/!iteration-blocks [aid rid it]))))]
               (#'s/freeze-pending-iterations! a))
             (is (some? @seen) "the re-render must observe the final state")
             (is (= :done (:stage @seen))
