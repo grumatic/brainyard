@@ -388,7 +388,7 @@
                 project-slug projects-root project-user-dir
                 register-project! ensure-project-registered!
                 project-path-for-slug list-projects refresh-projects-index!
-                prune-projects!)
+                prune-projects! remove-project!)
 
 ;; ============================================================================
 ;; Live Artifacts

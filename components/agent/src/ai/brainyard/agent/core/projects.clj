@@ -348,6 +348,28 @@
       removed)
     []))
 
+(defn remove-project!
+  "Remove ONE registry record by slug, then rebuild the index. Returns the
+   record as `list-projects` reported it, or nil when the slug is not
+   registered.
+
+   The per-slug counterpart to `prune-projects!`, which can only ever take
+   every missing record at once — useful for reclaiming a batch, useless for
+   \"drop this one\". Deliberately does NOT require `:missing?`: a repo you have
+   stopped working on has not stopped existing, and forgetting it is a
+   legitimate thing to ask for.
+
+   Like prune, this removes only the user-scope record dir. The project itself
+   is never touched, and re-registering it later restores a record with the
+   same path-derived slug."
+  [dirs slug]
+  (when-let [root (projects-root dirs)]
+    (when-let [rec (first (filterv #(= slug (:slug %)) (list-projects dirs)))]
+      (when (delete-record-dir! root slug)
+        (refresh-projects-index! dirs)
+        (mulog/log ::project-removed :slug slug :path (:path rec))
+        rec))))
+
 (defn register-project!
   "Register (or refresh) a project's user-scope folder and return its record.
 

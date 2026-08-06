@@ -2672,6 +2672,35 @@
       (exit-err! (str "Could not register " dir
                       " (is ~/.brainyard writable?)")))))
 
+(defn cmd-projects-remove
+  "Forget ONE registered project by slug.
+
+   `prune` reclaims every missing record at once, which is the wrong tool for
+   \"drop this one\" — and useless for a project that still exists but is no
+   longer worked on. Takes the slug rather than the path because the slug is
+   what `list` prints and what a UI already holds; `by projects path <slug>`
+   goes the other way.
+
+   Confirms first (`--yes` skips it, for scripting and for callers with no TTY),
+   and removes only the user-scope registry folder — never the project."
+  [opts]
+  (let [slug (some-> (or (first (:_arguments opts)) (:slug opts)) str str/trim not-empty)
+        dirs (agent/init-dirs!)]
+    (when-not slug
+      (exit-err! "Usage: by projects remove <slug>  (see `by projects list`)"))
+    (if-let [rec (first (filterv #(= slug (:slug %)) (agent/list-projects dirs)))]
+      (if (or (:yes opts)
+              (confirm! (str "Forget \"" (:name rec) "\" (" (:path rec) ")?\n"
+                             "This drops only the user-scope registry folder"
+                             ", never the project itself. [y/N] ")))
+        (if-let [removed (agent/remove-project! dirs slug)]
+          (if (:json opts)
+            (print-json! removed)
+            (println "Removed:" (:slug removed) (:path removed)))
+          (exit-err! (str "Could not remove " slug " (is ~/.brainyard writable?)")))
+        (println "Cancelled."))
+      (exit-err! (str "No such registered project: " slug)))))
+
 (defn cmd-projects-prune
   "Drop registry entries whose project directory no longer exists.
 
@@ -2904,7 +2933,11 @@
                                 {:command     "prune"
                                  :description "Drop registry entries whose project directory no longer exists (confirm or --yes)"
                                  :opts        [yes-opt json-opt]
-                                 :runs        cmd-projects-prune}]}
+                                 :runs        cmd-projects-prune}
+                                {:command     "remove"
+                                 :description "Forget one registered project by slug (confirm or --yes)"
+                                 :opts        [yes-opt json-opt]
+                                 :runs        cmd-projects-remove}]}
                  {:command     "memory"
                   :description "Maintenance on the user-scoped L1/L2/L3 memory store"
                   :subcommands [{:command     "consolidate"
