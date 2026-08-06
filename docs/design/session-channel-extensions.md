@@ -298,7 +298,15 @@ A specialized outbound subscription — the external env wants what the agent *r
 → {:op :status}
 → {:op :config  :query "…"}                       ; read-only effective config
 → {:op :cancel}
+→ {:op :emit    :event "…" :payload {…}}          ; event-bus-and-reactor.md §3.2
+→ {:op :fsm-status}                               ; state-machine-design.md §7
 ← {:status :ok …}            ← {:status :error :error "…"}
+
+;; ── Mode A: session lifecycle (process-level — no `ag`, any socket serves) ────
+→ {:op :new-session    :agent-id "mcp-agent" :label "…"}   ; → :session-id + :ask-socket-path
+→ {:op :close-session  :session-id "agt-…"}                ; refuses the host's last chat session
+→ {:op :rename-session :label "…"}                         ; THIS session's live tab
+→ {:op :switch-session :session-id "agt-…"}                ; → :index, :already-active
 
 ;; ── Mode B: subscription (one in, N out, until disconnect) ────
 → {:op :subscribe :events [:agent.iteration/post :display …] :filter {…}}
@@ -308,6 +316,9 @@ A specialized outbound subscription — the external env wants what the agent *r
 
 - `:op`-dispatched (compat preserved). Bump `:protocol` in `meta.edn`; advertise `:ops`
   so a client discovers capability without connecting.
+- The lifecycle verbs let one JVM host many sessions instead of one OS process each.
+  `:new-session` deliberately does **not** move the local terminal's focus (a headless
+  driver doesn't want its tab yanked); `:switch-session` is the explicit opt-in.
 
 ---
 

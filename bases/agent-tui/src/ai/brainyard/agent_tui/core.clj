@@ -932,6 +932,38 @@
     (catch Throwable e
       {:status :error :error (str "close-session failed: " (.getMessage e))})))
 
+(defn- handle-switch-session-op
+  "Make ONE co-hosted session the ACTIVE tab, by its `:session-id` (the on-disk
+   agent-session-id) — the counterpart to `/session switch N`, and the opt-in
+   complement to `:new-session` (which deliberately leaves the local terminal's
+   focus where it was). Process-level, like its siblings: any live session's
+   socket can service it. Idempotent — switching to the already-active session
+   reports `:already-active true` and does nothing. Returns
+   {:status :ok :switched … :index …}."
+  [{:keys [session-id] :as _req}]
+  (try
+    (if (str/blank? (str session-id))
+      {:status :error :error "switch-session requires :session-id"}
+      (let [target (str session-id)
+            match  (some (fn [s] (when (= target (str (:agent-session-id s))) s))
+                         (sessions/session-list))]
+        (if (nil? match)
+          {:status :error :error (str "no live session with id " target)}
+          (let [idx  (:id match)
+                base {:status :ok :switched target :index idx
+                      :label (:label match)
+                      :defagent-id (some-> (:defagent-id match) name)}]
+            (if (= idx (sessions/active-idx))
+              (assoc base :already-active true)
+              (do (sessions/switch-to! idx)
+                  ;; switch-to! swaps the tab but leaves the chrome showing the
+                  ;; previous session's agent/model until repainted — the
+                  ;; interactive `/session switch` path does the same.
+                  (try (tui-session/update-status-bar!) (catch Throwable _))
+                  base))))))
+    (catch Throwable e
+      {:status :error :error (str "switch-session failed: " (.getMessage e))})))
+
 (defn- handle-rename-session-op
   "Rename THIS session's live TUI tab to `:label` — the process-level counterpart
    to the interactive `/session rename`. Lets `by sessions label <id> <text>`
@@ -962,8 +994,9 @@
    / turn / memory); `:cancel` stops the running turn; `:subscribe` streams
    runtime events until disconnect; `:emit` fires a user-defined event onto the
    bus; `:fsm-status` snapshots this session's state machines. `:new-session`
-   spawns another session in THIS process (returns its id + socket); `:close-session`
-   closes one co-hosted session by id. The last two are process-level (they don't
+   spawns another session in THIS process (returns its id + socket);
+   `:close-session` closes one co-hosted session by id; `:switch-session` makes
+   one the active tab. Those three are process-level (they don't
    use `ag`) — any live session's socket can service them, so an external driver
    can host many sessions in one JVM. Unknown ops get a clear error. See
    docs/design/session-channel-extensions.md, event-bus-and-reactor.md, and
@@ -981,6 +1014,7 @@
       :fsm-status (handle-fsm-status-op ag)
       :new-session    (handle-new-session-op req)
       :close-session  (handle-close-session-op req)
+      :switch-session (handle-switch-session-op req)
       :rename-session (handle-rename-session-op ag req)
       {:status :error :error (str "unknown op: " op)})))
 
@@ -1002,7 +1036,7 @@
             ;; without connecting. Keep in sync with `ask-handle-fn`'s dispatch.
             (try (persist/save-meta! sid {:ask-socket-path path
                                           :ops [:ask :status :config :inject :cancel :subscribe :emit :fsm-status
-                                                :new-session :close-session :rename-session]})
+                                                :new-session :close-session :rename-session :switch-session]})
                  (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
           (catch clojure.lang.ExceptionInfo e

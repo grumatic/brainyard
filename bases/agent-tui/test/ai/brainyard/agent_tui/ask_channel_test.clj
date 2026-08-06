@@ -9,6 +9,8 @@
    stubbed, so no LLM is needed."
   (:require [clojure.test :refer [deftest is testing]]
             [ai.brainyard.agent-tui.core :as core]
+            [ai.brainyard.agent-tui.session :as tui-session]
+            [ai.brainyard.agent-tui.sessions :as sessions]
             [ai.brainyard.ask-channel.interface :as ask]
             [ai.brainyard.agent-tui-persist.interface :as persist]
             [ai.brainyard.agent.interface :as agent])
@@ -131,3 +133,42 @@
               (is (= :error (:status resp)))
               (is (re-find #"timed out" (:error resp))))
             (finally (core/stop-ask-listener! sid))))))))
+
+(deftest switch-session-op
+  (testing ":switch-session makes one co-hosted session the active tab"
+    ;; Two live tabs: index 3 is active, index 7 is the switch target. The op is
+    ;; process-level, so it's driven directly — no socket/TUI needed.
+    (let [switched (atom [])
+          bar      (atom 0)
+          tabs     [{:id 3 :agent-session-id "agt-a" :label "main1" :defagent-id :coact-agent}
+                    {:id 7 :agent-session-id "agt-b" :label "main2" :defagent-id :mcp-agent}]
+          op       #'core/handle-switch-session-op]
+      (with-redefs [sessions/session-list          (fn [] tabs)
+                    sessions/active-idx            (fn [] 3)
+                    sessions/switch-to!            (fn [idx] (swap! switched conj idx))
+                    tui-session/update-status-bar! (fn ([] (swap! bar inc))
+                                                     ([_] (swap! bar inc)))]
+        (testing "a blank :session-id is rejected"
+          (is (= :error (:status (op {}))))
+          (is (= :error (:status (op {:session-id "  "}))))
+          (is (empty? @switched)))
+
+        (testing "an unknown session-id is rejected"
+          (let [resp (op {:session-id "agt-nope"})]
+            (is (= :error (:status resp)))
+            (is (re-find #"no live session" (:error resp)))
+            (is (empty? @switched))))
+
+        (testing "a match switches by TAB INDEX and repaints the status bar"
+          (let [resp (op {:session-id "agt-b"})]
+            (is (= {:status :ok :switched "agt-b" :index 7
+                    :label "main2" :defagent-id "mcp-agent"}
+                   resp))
+            (is (= [7] @switched) "switch-to! takes the tab index, not the session-id")
+            (is (= 1 @bar))))
+
+        (testing "switching to the already-active session is a no-op"
+          (let [resp (op {:session-id "agt-a"})]
+            (is (= :ok (:status resp)))
+            (is (true? (:already-active resp)))
+            (is (= [7] @switched) "no second switch-to!")))))))
