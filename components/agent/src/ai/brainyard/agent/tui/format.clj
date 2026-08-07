@@ -1439,6 +1439,43 @@
                  (str/join "\n")) "\n"
             (gb bottom))))))
 
+(def ^:const soft-wrap-width
+  "Width handed to `render-markdown` when the TERMINAL is going to do the
+   wrapping. Large enough that no line reaches it, so every paragraph stays a
+   single logical line and the only newlines in the output are ones the author
+   actually wrote."
+  1000000)
+
+(defn format-answer-soft
+  "Render the answer for a surface where the TERMINAL owns line breaking.
+
+   The difference from `format-answer-plain` is what is NOT here: no wrap at
+   the pane width, so no hard newline is invented. A paragraph leaves as one
+   long line and the terminal soft-wraps it under DECAWM.
+
+   Why that matters: a hard newline is permanent and lossy. Terminals record
+   which rows were soft-wrapped and rejoin them on copy — verified against
+   tmux, where `capture-pane -J` reconstitutes a soft-wrapped paragraph
+   exactly while a pre-wrapped one stays broken into rows forever. So the
+   wrapping we do to make text fit is the same wrapping that makes it
+   unpasteable.
+
+   Only valid where nothing else is positioning rows: the caller must be on a
+   surface that writes a stream and lets the terminal advance the cursor.
+   A cursor-addressed renderer (`layout/render-viewport!` writes each
+   scrollback entry to an absolutely-positioned row) would have every row
+   after a soft-wrapped one land one line too low, cumulatively — which is
+   why the fullscreen path keeps hard wrapping.
+
+   No box either, for the same reason: a right border has to be padded to a
+   known width, and the width is exactly what we are handing to the terminal."
+  [answer-str]
+  (when (and answer-str (not (str/blank? answer-str)))
+    (let [lines (render-markdown (expand-tabs (str/trim answer-str)) soft-wrap-width)]
+      (str "\n" (->> lines
+                     (map #(if (str/blank? %) % (str "  " %)))
+                     (str/join "\n"))))))
+
 (defn format-answer-plain
   "Render the final answer as ANSI (markdown → styling) WITHOUT the highlighted
    box — the bare content lines. Used in :quiet display-format. Mirrors

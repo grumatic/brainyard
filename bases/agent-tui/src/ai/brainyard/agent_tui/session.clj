@@ -2920,9 +2920,17 @@
             ;; wants the text regardless of which surface displayed it.
             (record-last-answer! (or *render-session-idx* (sessions/active-idx)) answer)
             (when-not hide-final?
-              (emit! (if (quiet?)
-                       (fmt/format-answer-plain answer)
-                       (fmt/format-answer answer))))
+              ;; Three renderings, one decision each:
+              ;;   quiet         -> no box, still pre-wrapped
+              ;;   terminal-owns -> no box, NOT pre-wrapped (soft newlines)
+              ;;   otherwise     -> the boxed, pre-wrapped answer
+              ;; The box and soft wrapping are mutually exclusive: a right
+              ;; border must be padded to a width we chose, and soft wrapping
+              ;; is precisely handing that choice to the terminal.
+              (emit! (cond
+                       (quiet?) (fmt/format-answer-plain answer)
+                       (layout/terminal-owns-line-breaking?) (fmt/format-answer-soft answer)
+                       :else (fmt/format-answer answer))))
             ;; In :quiet the box-less answer needs a blank line after it —
             ;; prepend one to the first of the goal / next-prompt lines.
             (when (and (some? goal-achieved) (not hide-final?))
@@ -2955,9 +2963,11 @@
           (when (and (string? answer) (not (str/blank? answer)))
             (record-last-answer! sidx answer))
           (when (and (string? answer) (not (str/blank? answer)) (not hide-final?))
-            (sessions/emit-to-session! sidx (if (quiet?)
-                                              (fmt/format-answer-plain answer)
-                                              (fmt/format-answer answer)))
+            (sessions/emit-to-session! sidx
+                                       (cond
+                                         (quiet?) (fmt/format-answer-plain answer)
+                                         (layout/terminal-owns-line-breaking?) (fmt/format-answer-soft answer)
+                                         :else (fmt/format-answer answer)))
             ;; In :quiet the box-less answer needs a blank line after it —
             ;; prepend one to the goal-status line (mirrors the root path).
             (when (some? goal-achieved)

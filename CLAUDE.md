@@ -148,6 +148,36 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   exception — resolves to clustering **off**. Impl: `components/agent/…/tui/
   terminal_caps.clj`; negotiation runs once in `run-tui!` before the first
   render.
+### Line breaking belongs to whoever owns the grid
+
+A hard newline inserted to make text fit is permanent and lossy — the terminal
+cannot tell it from one the author wrote, so a copied answer comes back broken
+mid-sentence. A soft wrap is recorded as a wrap and rejoined on copy (verified:
+in tmux, `capture-pane -J` reconstitutes a soft-wrapped paragraph exactly,
+while a pre-wrapped one stays broken into rows forever).
+
+So the answer renderer is chosen by **who decides where lines break**, via
+`layout/terminal-owns-line-breaking?`:
+
+- **Inline mode** — the terminal advances the cursor itself, so
+  `format-answer-soft` emits each paragraph as ONE logical line and lets
+  DECAWM wrap it. No box: a right border must be padded to a width we chose,
+  and choosing that width is exactly what soft wrapping hands away.
+- **Fullscreen mode** — keeps `format-answer` and its hard wrap, because
+  `render-viewport!` writes each `!scrollback` entry to an
+  absolutely-positioned row (`cursor-to`), and viewport offset, page scrolling
+  and every live block's `:start-idx` all count entries **as rows**. One
+  soft-wrapped entry would occupy two rows and shift everything below it,
+  cumulatively. Cursor-addressed rendering and terminal autowrap cannot both
+  be in charge.
+- **Headless `by ask`** — already correct: it prints the raw answer with
+  `println`, never wrapping.
+
+Giving fullscreen soft newlines means making `!scrollback` hold *logical*
+lines with a derived row-span index, and teaching viewport/scroll/live-block
+accounting to distinguish lines from rows. That is a layout-engine change, not
+a renderer change.
+
 - **`BY_SANDBOX_INTEROP`** — seeds the `:sandbox-interop` config default
   (`restricted` | `full` | `auto`) controlling Java interop in the **in-process
   SCI code-eval sandbox** (distinct from `--sandbox`, which is the OS seatbelt).

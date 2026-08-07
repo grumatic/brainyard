@@ -18,7 +18,7 @@
                 format-tool-result-block format-tool-error-block
                 format-goal-status
                 format-next-prompt format-eval-verdict
-                format-answer format-answer-plain render-markdown
+                format-answer format-answer-plain format-answer-soft render-markdown
                 format-usage-summary format-usage-table
                 format-conversation-message format-conversation-history
                 format-status-summary

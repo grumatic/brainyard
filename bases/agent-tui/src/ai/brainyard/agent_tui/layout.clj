@@ -90,6 +90,23 @@
   []
   (= :fullscreen (:mode @!layout)))
 
+(defn terminal-owns-line-breaking?
+  "True when the TERMINAL, not this process, decides where a line breaks.
+
+   Inline mode writes a stream and lets the cursor advance on its own, so a
+   long line soft-wraps under DECAWM and the terminal remembers it did —
+   which is what lets a copy rejoin the paragraph.
+
+   Fullscreen is the opposite: `render-viewport!` writes each scrollback
+   entry to an absolutely-positioned row via `cursor-to`, and viewport
+   offset, page scrolling and every live block's `:start-idx` all count
+   entries AS rows. One soft-wrapped entry would occupy two rows, and every
+   row after it would be off by one, cumulatively. Cursor-addressed
+   rendering and terminal autowrap cannot both be in charge, so callers
+   must pre-wrap there."
+  []
+  (not (fullscreen?)))
+
 ;; ============================================================================
 ;; Writer Access
 ;; ============================================================================
