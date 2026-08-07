@@ -119,3 +119,43 @@
   (testing "nil result event (no result event seen) is treated by exit code alone"
     (is (false? (:cli-error? (classify 0 nil "x"))))
     (is (:fatal? (classify 1 nil "")))))
+
+
+;; ============================================================================
+;; Spawn directory (a dead cwd must not read as a missing CLI)
+;; ============================================================================
+
+(deftest spawn-dir-is-always-a-real-directory
+  (testing "a bare ProcessBuilder inherits the JVM cwd, and a JVM whose cwd was
+            deleted or unmounted cannot spawn ANY child. Whatever this returns
+            must therefore exist."
+    (let [d (#'cc/spawn-dir)]
+      (is (.isDirectory ^java.io.File d)))))
+
+(deftest spawn-dir-falls-back-when-the-cwd-is-gone
+  (testing "user.dir pointing at a deleted directory must fall back to the temp
+            dir rather than hand ProcessBuilder a path that cannot be entered"
+    (let [real (System/getProperty "user.dir")]
+      (try
+        (System/setProperty "user.dir" "/tmp/by-definitely-not-here-98765")
+        (let [d (#'cc/spawn-dir)]
+          (is (.isDirectory ^java.io.File d) "fallback must exist")
+          (is (= (.getCanonicalPath (java.io.File. (System/getProperty "java.io.tmpdir")))
+                 (.getCanonicalPath ^java.io.File d))
+              "expected the temp dir"))
+        (finally (System/setProperty "user.dir" real))))))
+
+(deftest dead-directory-enoent-is-not-a-missing-cli
+  (testing "THE regression this guards: a dead working directory raises
+            'Cannot run program X (in directory Y): ... No such file or
+            directory' -- text that matches the not-installed branches too.
+            Ordering the directory branch first is what keeps the user from
+            being told to reinstall a CLI that is already present."
+    (let [msg (str "Cannot run program \"claude\" (in directory \"/gone\"): "
+                   "Exec failed, error: 2 (No such file or directory)")]
+      ;; Both not-installed predicates DO match this message --
+      ;; that is precisely why the directory test has to run before them.
+      (is (str/includes? msg "Cannot run program"))
+      (is (str/includes? msg "No such file"))
+      (is (str/includes? msg "in directory")
+          "the directory marker is the only thing that tells the two apart"))))

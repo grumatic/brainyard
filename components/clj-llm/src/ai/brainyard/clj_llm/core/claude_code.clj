@@ -174,12 +174,41 @@
 ;; Process Execution
 ;; ============================================================================
 
+(defn- spawn-dir
+  "Directory to start the Claude CLI in.
+
+   A bare `ProcessBuilder` inherits the JVM's working directory, and a JVM
+   whose cwd has been deleted or unmounted cannot spawn ANY child: `.start`
+   fails with ENOENT that names the PROGRAM, not the directory —
+   `Cannot run program \"claude\" (in directory \"/gone\"): ... error: 2`.
+   That string matches this fn's \"CLI not installed\" branches, so a dead cwd
+   was reported as a missing CLI and the user was told to install something
+   they already had.
+
+   Which directory it is barely matters: the CLI runs with `--tools \"\"` and
+   `--setting-sources \"\"`, so it touches no files and its cwd cannot affect
+   the completion. It only has to EXIST. So: the JVM's cwd when that is still
+   a directory, else the temp dir, which by definition is one.
+
+   (`user.dir` is a proxy for the real process cwd — a JVM cannot chdir, so
+   they agree unless something rewrote the property.)"
+  ^File []
+  (let [cwd (File. ^String (or (System/getProperty "user.dir") "."))]
+    (if (.isDirectory cwd)
+      cwd
+      (File. ^String (System/getProperty "java.io.tmpdir")))))
+
 (defn- start-claude-process
   "Start the Claude CLI process. Rewrites IOException with a precise cause:
    - 'Argument list too long' (E2BIG) → argv overflow, with the offending size
+   - '(in directory ...)' → the working directory died under us
    - 'Cannot run program' / 'No such file' → CLI not installed"
   ^Process [^java.util.List args]
-  (let [pb (ProcessBuilder. args)
+  (let [dir (spawn-dir)
+        pb (ProcessBuilder. args)
+        ;; Explicit, and verified to exist — never the inherited cwd, which
+        ;; may be gone. See `spawn-dir`.
+        _ (.directory pb dir)
         _ (.redirectErrorStream pb false)
         _ (.. pb environment (remove "CLAUDECODE"))]
     (try
@@ -195,6 +224,19 @@
                          "Largest single arg is likely --system-prompt or --json-schema. "
                          "Increase spool-threshold-bytes or shrink the prompt.")
                     {:cause msg :argv-bytes argv-bytes}
+                    e))
+
+            ;; MUST precede the not-installed branch: a dead working
+            ;; directory raises the same "Cannot run program ... No such
+            ;; file" text, and misreading it as a missing CLI sends the user
+            ;; to reinstall a CLI that is sitting right there.
+            (str/includes? msg "in directory")
+            (throw (ex-info
+                    (str "Claude CLI could not be started in " (.getPath dir)
+                         " — the directory does not exist or is not reachable "
+                         "(deleted, or an unmounted volume). The CLI itself may "
+                         "be fine; re-run from a directory that exists.")
+                    {:cause msg :dir (.getPath dir)}
                     e))
 
             (or (str/includes? msg "Cannot run program")
