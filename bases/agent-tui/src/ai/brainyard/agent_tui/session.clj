@@ -360,12 +360,13 @@
         (let [end-i (loop [j i, w 0]
                       (if (>= j len)
                         j
-                        (let [cp (Character/codePointAt s (int j))
-                              n  (Character/charCount cp)
-                              cw (fmt/display-width (.substring s j (+ j n)))]
+                        ;; Step by display UNIT, not codepoint — a wrap that
+                        ;; cuts inside a joined emoji emits two unrelated
+                        ;; glyphs and overflows the width it was enforcing.
+                        (let [[cw nxt] (fmt/next-unit s j)]
                           (if (and (pos? cw) (> (+ w cw) width))
                             j
-                            (recur (+ j n) (+ w cw))))))
+                            (recur nxt (+ w cw))))))
               break-i (if (>= end-i len)
                         end-i
                         ;; Prefer last whitespace before end-i
@@ -377,6 +378,20 @@
                           (if (pos? ws) ws end-i)))]
           (recur break-i (conj! acc (subs s i break-i))))))))
 
+(defn- drop-dangling-joiners
+  "Strip trailing ZWJ / variation selectors from a truncated prefix.
+
+   They are zero-width, so a width-driven cut happily consumes one and then
+   stops at the next base — leaving a joiner with nothing to join to, right
+   before the ellipsis. Harmless to render but meaningless, and it makes the
+   cut look like it landed mid-cluster."
+  [^String s]
+  (let [drop? #(or (= % \u200d) (= % \ufe0f))]
+    (loop [end (count s)]
+      (if (and (pos? end) (drop? (.charAt s (dec end))))
+        (recur (dec end))
+        (subs s 0 end)))))
+
 (defn- truncate-to-display-width
   "Truncate `s` (plain text, no ANSI) so it fits `width` display columns.
    Appends `…` when truncation happens. Width-aware for wide unicode chars."
@@ -386,12 +401,12 @@
     (loop [i 0, w 0]
       (if (>= i len)
         s
-        (let [cp (Character/codePointAt s (int i))
-              n  (Character/charCount cp)
-              cw (fmt/display-width (.substring s i (+ i n)))]
+        ;; Same unit-stepping contract as the wrapper above: the ellipsis
+        ;; must land on a unit boundary, never inside a cluster.
+        (let [[cw nxt] (fmt/next-unit s i)]
           (cond
-            (> (+ w cw) width) (str (subs s 0 i) "…")
-            :else (recur (+ i n) (+ w cw))))))))
+            (> (+ w cw) width) (str (drop-dangling-joiners (subs s 0 i)) "…")
+            :else (recur nxt (+ w cw))))))))
 
 (defn- render-think-block-lines
   "Build the ANSI lines for the thinking live block — a single line:

@@ -217,14 +217,15 @@
       (String. (byte-array [(unchecked-byte b)]) "UTF-8"))))
 
 (defn- char-width
-  "Column width of the Unicode codepoint at char-index idx in s.
-   Returns [cw next-idx] where cw is 0/1/2 and next-idx skips surrogate pairs."
+  "Column width of the display unit at char-index idx in s.
+   Returns [cw next-idx] where cw is 0/1/2 and next-idx skips surrogate pairs.
+
+   Delegates to `fmt/next-unit` so the step matches whatever regime
+   `display-width` is measuring in: under negotiated grapheme clustering the
+   unit is a whole cluster, so cursor motion moves over a joined emoji in one
+   step instead of landing between its parts."
   [^String s ^long idx]
-  (let [cp (Character/codePointAt s (int idx))
-        n  (Character/charCount cp)
-        ;; Quick classification via display-width of a 1-codepoint substring
-        cw (fmt/display-width (.substring s idx (+ idx n)))]
-    [cw (+ idx n)]))
+  (fmt/next-unit s idx))
 
 (defn- wrap-line-to-width
   "Word-wrap a single logical line (no \\n inside) to visual segments that each

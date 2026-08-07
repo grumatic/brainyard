@@ -206,11 +206,28 @@
 ;; so all eight emoji/CJK cases segment identically.  That does NOT extend to
 ;; getWordInstance / getLineInstance, which do consult locale data.
 
-(def ^:private ^ThreadLocal grapheme-iterator
+(def ^:private ^ThreadLocal grapheme-ctx
   ;; BreakIterator is stateful and not thread-safe; the TUI renders from
-  ;; several threads (agent, watch, task).  One per thread, reused.
+  ;; several threads (agent, watch, task).  One per thread, reused, paired
+  ;; with the string it was last pointed at so a loop stepping through one
+  ;; string doesn't re-attach the iterator on every single unit.
+  ;; Slot 0 = the iterator, slot 1 = the string it currently holds.
   (proxy [ThreadLocal] []
-    (initialValue [] (java.text.BreakIterator/getCharacterInstance))))
+    (initialValue []
+      (object-array [(java.text.BreakIterator/getCharacterInstance) nil]))))
+
+(defn- ^java.text.BreakIterator bi-for
+  "The thread's grapheme iterator, attached to `s`. Re-attaches only when the
+   string actually changed — `identical?` is the right test because callers
+   loop over one String instance, and Strings are immutable so identity can
+   never go stale."
+  [^String s]
+  (let [^objects ctx (.get grapheme-ctx)
+        ^java.text.BreakIterator bi (aget ctx 0)]
+    (when-not (identical? s (aget ctx 1))
+      (.setText bi s)
+      (aset ctx 1 s))
+    bi))
 
 (defn- clusterable?
   "True when clustering could possibly change the answer.
@@ -234,8 +251,7 @@
   (if-not (clusterable? s)
     (width-by-codepoint s)
     (let [len (.length s)
-          ^java.text.BreakIterator bi (.get grapheme-iterator)]
-      (.setText bi s)
+          ^java.text.BreakIterator bi (bi-for s)]
       (loop [i 0, w 0]
         (if (>= i len)
           w
@@ -260,6 +276,50 @@
     (width-by-cluster s)
     (width-by-codepoint s)))
 
+(defn next-unit
+  "The display unit starting at char index `i` in `s`, as `[width end-index]`.
+
+   A \"unit\" is whatever the terminal advances the cursor by in one step: a
+   grapheme CLUSTER when clustering has been negotiated, a single codepoint
+   otherwise. `end-index` is a char (UTF-16) index, so a surrogate pair is
+   never split.
+
+   This is the stepping counterpart to `display-width`, and it exists so the
+   two cannot disagree. Cursor positioning, word-wrap and truncation all walk
+   a string deciding where the next column starts; when they step by codepoint
+   while `display-width` measures by cluster, a cut lands inside a ZWJ sequence
+   and the two halves render as unrelated glyphs — WIDENING the line the cut
+   was supposed to narrow. Callers that walk a string must use this rather
+   than `Character/charCount` + a one-codepoint `display-width`.
+
+   Plain text only: ANSI escapes are measured, not skipped. Styled strings
+   belong in `display-width` / `ansi-aware-word-wrap`, which handle them."
+  [^String s ^long i]
+  (let [len (.length s)]
+    (cond
+      (>= i len) [0 len]
+
+      (and (caps/grapheme-clustering?) (clusterable? s))
+      (let [nxt (.following (bi-for s) (int i))
+            end (if (= nxt java.text.BreakIterator/DONE) len nxt)]
+        [(min 2 (width-by-codepoint (subs s i end))) end])
+
+      :else
+      ;; A trailing U+FE0F belongs to the unit, not after it. `display-width`
+      ;; LOOKS AHEAD for it (a base plus the emoji variation selector renders
+      ;; 2 columns, not 1), so a unit cut before it would measure the base
+      ;; detached and report 1 — the walk would then total less than
+      ;; `display-width` says for the very same string. That mismatch is what
+      ;; the callers of this fn had before it existed: each measured a
+      ;; one-codepoint substring and silently under-counted every VS16 emoji.
+      (let [cp   (Character/codePointAt s (int i))
+            end0 (+ i (Character/charCount cp))
+            end  (if (and (< end0 len)
+                          (= 0xFE0F (Character/codePointAt s (int end0))))
+                   (+ end0 (Character/charCount 0xFE0F))
+                   end0)]
+        [(width-by-codepoint (subs s i end)) end]))))
+
 (defn- char-index-at-width
   "Find the char index where cumulative display-width reaches limit.
    Returns the index of the first unit that would exceed the limit.
@@ -273,8 +333,7 @@
   (let [len (.length s)
         cluster? (caps/grapheme-clustering?)
         ^java.text.BreakIterator bi (when (and cluster? (clusterable? s))
-                                      (doto ^java.text.BreakIterator (.get grapheme-iterator)
-                                        (.setText s)))]
+                                      (bi-for s))]
     (loop [i 0, w 0]
       (if (>= i len)
         i

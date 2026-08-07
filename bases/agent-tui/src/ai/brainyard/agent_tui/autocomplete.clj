@@ -724,15 +724,17 @@
                           (let [{:keys [^String text start]} (nth visual-lines row)
                                 len (count text)
                                 ;; Walk characters until display width reaches target-col
+                                ;; Step by display UNIT so vertical cursor
+                                ;; motion lands between glyphs — stepping by
+                                ;; codepoint can park the cursor inside a
+                                ;; joined emoji, where the next edit splits it.
                                 idx (loop [i 0, w 0]
                                       (if (or (>= i len) (>= w target-col))
                                         i
-                                        (let [cp (Character/codePointAt text (int i))
-                                              n  (Character/charCount cp)
-                                              cw (fmt/display-width (.substring text i (+ i n)))]
+                                        (let [[cw nxt] (fmt/next-unit text i)]
                                           (if (and (pos? cw) (> (+ w cw) target-col))
                                             i
-                                            (recur (+ i n) (+ w cw))))))]
+                                            (recur nxt (+ w cw))))))]
                             (+ start idx))))
         move-cursor-visual! (fn [direction]
                               ;; direction = :up or :down

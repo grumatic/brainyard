@@ -167,3 +167,81 @@
                 (k {"TERM" "xterm-256color" "TERM_PROGRAM" "ghostty"
                     "TMUX" "/tmp/tmux-1000/default,1,0"}))
           "tmux is its own terminal and answers differently"))))
+
+;; ============================================================================
+;; next-unit -- the stepping counterpart to display-width
+;; ============================================================================
+
+(defn- walk
+  "Step the whole string with next-unit, returning [unit-strings total-width].
+   This is the shape every caller that walks a string uses."
+  [s]
+  (loop [i 0, units [], w 0]
+    (if (>= i (count s))
+      [units w]
+      (let [[cw nxt] (fmt/next-unit s i)]
+        (recur nxt (conj units (subs s i nxt)) (+ w cw))))))
+
+(deftest next-unit-steps-in-the-same-regime-display-width-measures
+  (testing "walking with next-unit must total exactly what display-width says --
+            if they disagree, a wrap enforces a width its own measurement denies"
+    (doseq [regime [false true]]
+      (caps/set-grapheme-clustering! regime :test)
+      (doseq [s ["hello" CJK WARN FAMILY FLAG THUMB KEYCAP
+                 (str "ab " FAMILY " cd") (str CJK " x " FLAG)]]
+        (is (= (fmt/display-width s) (second (walk s)))
+            (str "walk total != display-width, clustering=" regime
+                 ", s=" (pr-str s)))))))
+
+(deftest next-unit-never-splits-a-cluster-when-clustering
+  (testing "a joined sequence is ONE step, so no caller can stop inside it"
+    (caps/set-grapheme-clustering! true :test)
+    (are [s] (= 1 (count (first (walk s))))
+      FAMILY FLAG THUMB KEYCAP WARN))
+
+  (testing "without clustering the same sequences step per codepoint -- this is
+            the behavior every caller had before, preserved exactly"
+    (caps/set-grapheme-clustering! false :test)
+    (is (= 7 (count (first (walk FAMILY)))))   ;; 4 bases + 3 ZWJ
+    (is (= 2 (count (first (walk FLAG)))))))   ;; 2 regional indicators
+
+(deftest next-unit-never-splits-a-surrogate-pair
+  (testing "in EITHER regime -- half a surrogate pair is not a character"
+    (doseq [regime [false true]]
+      (caps/set-grapheme-clustering! regime :test)
+      (doseq [unit (first (walk (str "a" FAMILY "b" FLAG)))]
+        (is (not (Character/isHighSurrogate (.charAt ^String unit (dec (count unit)))))
+            (str "unit ends on a high surrogate: " (pr-str unit)))
+        (is (not (Character/isLowSurrogate (.charAt ^String unit 0)))
+            (str "unit starts on a low surrogate: " (pr-str unit)))))))
+
+(deftest next-unit-terminates-past-the-end
+  (testing "callers loop on (>= i len); a bad end-index would spin forever"
+    (doseq [regime [false true]]
+      (caps/set-grapheme-clustering! regime :test)
+      (is (= [0 5] (fmt/next-unit "hello" 5)))
+      (is (= [0 5] (fmt/next-unit "hello" 99))))))
+
+(deftest next-unit-always-advances
+  (testing "every step must move the index forward, in both regimes, or the
+            loops built on it hang"
+    (doseq [regime [false true]]
+      (caps/set-grapheme-clustering! regime :test)
+      (doseq [s ["hello" CJK FAMILY FLAG (str "x" WARN "y")]]
+        (loop [i 0, guard 0]
+          (when (and (< i (count s)) (< guard 1000))
+            (let [[_ nxt] (fmt/next-unit s i)]
+              (is (> nxt i) (str "next-unit did not advance at " i " in " (pr-str s)))
+              (recur nxt (inc guard)))))))))
+
+(deftest bi-reattach-is-correct-across-interleaved-strings
+  (testing "the iterator is cached per thread against the last string it saw.
+            Interleaving two strings must not leak one's boundaries into the
+            other -- the identity check is what prevents it."
+    (caps/set-grapheme-clustering! true :test)
+    (let [a (str "ab " FAMILY)
+          b (str FLAG " cd")]
+      (dotimes [_ 3]
+        (is (= 1 (count (first (walk FAMILY)))))
+        (is (= (fmt/display-width a) (second (walk a))))
+        (is (= (fmt/display-width b) (second (walk b))))))))

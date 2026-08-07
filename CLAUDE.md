@@ -119,16 +119,25 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
     the bundled `sqlite-vec` extension / Model2Vec model (else the native-image
     resources fetched by `bb sqlite-vec:fetch` / `bb model2vec:fetch` are used).
 - **`BY_GRAPHEME_WIDTH`** — how the TUI measures emoji/CJK width
-  (`:grapheme-width`, default **`off`**). Terminals disagree about how wide a
+  (`:grapheme-width`, default **`auto`**). Terminals disagree about how wide a
   grapheme is, and the two regimes differ by up to **6 columns on one glyph**:
   a ZWJ family emoji is 8 columns summed per codepoint, 2 columns clustered.
-  `off` counts per codepoint — what a terminal *without* DEC private mode 2027
-  does, and byte-identical to the behavior that predates this knob. `auto`
-  asks the terminal via DECRQM (`CSI ? 2027 $ p`) and caches the answer in
-  `~/.brainyard/terminal-caps.edn`, keyed by `TERM`+`TERM_PROGRAM`+version+tmux
-  (TERM alone is useless — every emulator claims `xterm-256color`). `on`
-  forces clustering with no probe. Mode 2027 is default-on in Windows
-  Terminal, WezTerm, Ghostty, Contour and foot.
+  `auto` asks the terminal via DECRQM (`CSI ? 2027 $ p`) and caches the answer
+  in `~/.brainyard/terminal-caps.edn`, keyed by
+  `TERM`+`TERM_PROGRAM`+version+tmux (TERM alone is useless — every emulator
+  claims `xterm-256color`). `off` counts per codepoint — what a terminal
+  *without* DEC private mode 2027 does. `on` forces clustering with no probe.
+  It defaults to `auto` because 2027 is default-**on** in Windows Terminal,
+  WezTerm, Ghostty, Contour and foot, so a per-codepoint default is actively
+  wrong there; and because every failure mode resolves to per-codepoint,
+  `auto` can only ever be as wrong as `off`.
+  **Everything that walks a string must step by `fmt/next-unit`**, not by
+  `Character/charCount` — cursor motion, word-wrap and truncation have to move
+  in the same unit `display-width` measures in, or a cut lands inside a ZWJ
+  sequence and the two halves render as unrelated glyphs, *widening* the line
+  the cut was narrowing.
+  Negotiation runs in `run-tui!` only; `by ask` never probes and so always
+  renders per-codepoint.
   **Why it caches, and why tmux is skipped:** a terminal that doesn't know
   DECRQM replies with *nothing*, so the read is time-bounded and that timeout
   is then paid in full — measured at ~500 ms on the native binary, roughly 4x
