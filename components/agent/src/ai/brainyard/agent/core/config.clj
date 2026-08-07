@@ -575,6 +575,11 @@
                                            (keyword v) ::env-unset)
                                 :default :normal
                                 :doc "TUI display detail level (source of truth for the /display-format command and the -v flag): :quiet (think bullets + box-less answer) | :normal (iterations+tools+answer) | :verbose (+ BT traces). Env: BY_DISPLAY_FORMAT."}
+   :grapheme-width             {:type "keyword"
+                                :env-fn #(if-let [v (not-empty (System/getenv "BY_GRAPHEME_WIDTH"))]
+                                           (keyword v) ::env-unset)
+                                :default :off
+                                :doc "How the TUI measures the width of emoji/CJK graphemes: :off (default) counts per codepoint, matching a terminal without DEC private mode 2027 | :auto negotiates 2027 once per terminal via DECRQM and caches the answer in <user-config-dir>/terminal-caps.edn | :on forces grapheme clustering with no probe. The regimes differ by up to 6 columns on one glyph (a ZWJ family emoji is 8 columns per-codepoint, 2 clustered), so the wrong one drifts every right-hand edge. :auto skips the probe inside tmux, which never answers and uses wcwidth itself. Env: BY_GRAPHEME_WIDTH."}
    :mcp-allow-tools            {:type "array"
                                 :default []
                                 :doc "Allowlist of MCP tools that skip the fail-closed permission gate (auto-approved). Each entry is a `server/tool` glob — `*` matches any run of chars (e.g. \"linear/*\", \"slack/post_message\", \"*/*_read\"). Side-effecting MCP tools NOT matched here (and lacking readOnlyHint) prompt for approval via the same UI as write-file/bash. See mcp/permission.clj."}

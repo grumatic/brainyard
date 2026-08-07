@@ -118,6 +118,27 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   - **`BY_SQLITE_VEC_PATH`** / **`BY_MODEL2VEC_PATH`** — override the locations of
     the bundled `sqlite-vec` extension / Model2Vec model (else the native-image
     resources fetched by `bb sqlite-vec:fetch` / `bb model2vec:fetch` are used).
+- **`BY_GRAPHEME_WIDTH`** — how the TUI measures emoji/CJK width
+  (`:grapheme-width`, default **`off`**). Terminals disagree about how wide a
+  grapheme is, and the two regimes differ by up to **6 columns on one glyph**:
+  a ZWJ family emoji is 8 columns summed per codepoint, 2 columns clustered.
+  `off` counts per codepoint — what a terminal *without* DEC private mode 2027
+  does, and byte-identical to the behavior that predates this knob. `auto`
+  asks the terminal via DECRQM (`CSI ? 2027 $ p`) and caches the answer in
+  `~/.brainyard/terminal-caps.edn`, keyed by `TERM`+`TERM_PROGRAM`+version+tmux
+  (TERM alone is useless — every emulator claims `xterm-256color`). `on`
+  forces clustering with no probe. Mode 2027 is default-on in Windows
+  Terminal, WezTerm, Ghostty, Contour and foot.
+  **Why it caches, and why tmux is skipped:** a terminal that doesn't know
+  DECRQM replies with *nothing*, so the read is time-bounded and that timeout
+  is then paid in full — measured at ~500 ms on the native binary, roughly 4x
+  its entire startup. tmux 3.6a never answers for 2027 (it answers 2004, so
+  the query is fine) and computes widths with `wcwidth` itself, so `auto`
+  skips the probe there rather than burn the timeout reaching an answer we
+  already know. Every failure mode — no tty, no reply, garbled reply,
+  exception — resolves to clustering **off**. Impl: `components/agent/…/tui/
+  terminal_caps.clj`; negotiation runs once in `run-tui!` before the first
+  render.
 - **`BY_SANDBOX_INTEROP`** — seeds the `:sandbox-interop` config default
   (`restricted` | `full` | `auto`) controlling Java interop in the **in-process
   SCI code-eval sandbox** (distinct from `--sandbox`, which is the OS seatbelt).

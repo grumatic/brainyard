@@ -7,6 +7,7 @@
    All functions: data in -> string out. No I/O side effects."
   (:require [ai.brainyard.agent.tui.ansi :as ansi]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.agent.tui.terminal-caps :as caps]
             [ai.brainyard.display-block.interface :as block]
             [ai.brainyard.util.interface :as util]
             [clojure.string :as str]))
@@ -171,11 +172,10 @@
   (and (< ni (.length s))
        (= 0xFE0F (Character/codePointAt s (int ni)))))
 
-(defn display-width
-  "Terminal display width of a string. CJK/fullwidth/emoji chars count as 2
-   columns. A base char followed by U+FE0F (emoji presentation, e.g. ⚠️) also
-   counts as 2. Zero-width chars (ZWJ, variation selectors) count as 0. Skips
-   ANSI escape sequences."
+(defn- width-by-codepoint
+  "Per-codepoint width — what a terminal WITHOUT DEC mode 2027 does. CJK /
+   fullwidth / emoji count 2, a base followed by U+FE0F counts 2, ZWJ and
+   combining marks count 0, ANSI escapes are skipped."
   [^String s]
   (let [len (.length s)]
     (loop [i 0, w 0]
@@ -192,27 +192,104 @@
                        :else                       1)]
               (recur (+ i (Character/charCount cp)) (+ w cw)))))))))
 
+;; -- grapheme clustering (DEC private mode 2027) -----------------------------
+;;
+;; Under 2027 a whole grapheme CLUSTER occupies one cell slot, so a ZWJ family
+;; emoji is 2 columns rather than the 8 that summing its four base codepoints
+;; gives.  Whether a cluster is narrow or wide is decided by re-using
+;; `width-by-codepoint` on the cluster and clamping to 2 — that inherits the
+;; VS16 handling and the wide-range table instead of maintaining a second one.
+;;
+;; `BreakIterator` is verified to work under GraalVM native-image with this
+;; project's flags: locale data IS pruned (166 available locales on the JVM
+;; drops to 3 in the image), but character-break rules are locale-independent,
+;; so all eight emoji/CJK cases segment identically.  That does NOT extend to
+;; getWordInstance / getLineInstance, which do consult locale data.
+
+(def ^:private ^ThreadLocal grapheme-iterator
+  ;; BreakIterator is stateful and not thread-safe; the TUI renders from
+  ;; several threads (agent, watch, task).  One per thread, reused.
+  (proxy [ThreadLocal] []
+    (initialValue [] (java.text.BreakIterator/getCharacterInstance))))
+
+(defn- clusterable?
+  "True when clustering could possibly change the answer.
+
+   Only a codepoint that joins or modifies a neighbour can — ZWJ, variation
+   selectors, combining marks, regional indicators, skin-tone modifiers — and
+   all of those live at or above U+0300.  Below that a cluster IS a codepoint
+   and the cheaper loop is already correct.  This is what keeps clustering
+   free on ASCII (measured 1.01x) rather than 1.5x on everything."
+  [^String s]
+  (let [len (.length s)]
+    (loop [i 0]
+      (cond
+        (>= i len)                      false
+        (>= (int (.charAt s i)) 0x0300) true
+        :else                           (recur (inc i))))))
+
+(defn- width-by-cluster
+  "Per-grapheme-cluster width — what a terminal WITH DEC mode 2027 does."
+  [^String s]
+  (if-not (clusterable? s)
+    (width-by-codepoint s)
+    (let [len (.length s)
+          ^java.text.BreakIterator bi (.get grapheme-iterator)]
+      (.setText bi s)
+      (loop [i 0, w 0]
+        (if (>= i len)
+          w
+          ;; ANSI escapes must never reach the segmenter — ESC, [, ; and the
+          ;; final letter are ordinary characters to it, so each would become
+          ;; its own cluster and count as width.
+          (if (= (.charAt s i) \u001b)
+            (recur (skip-ansi-seq s i) w)
+            (let [nxt (.following bi (int i))
+                  end (if (= nxt java.text.BreakIterator/DONE) len nxt)]
+              (recur end (+ w (min 2 (width-by-codepoint (subs s i end))))))))))))
+
+(defn display-width
+  "Terminal display width of `s` in columns, ANSI escapes excluded.
+
+   WHICH width regime applies is the terminal's to decide, not ours — see
+   `agent.tui.terminal-caps`.  Unnegotiated (the default) this is the
+   per-codepoint model, byte-identical to the behavior that predates
+   mode-2027 support."
+  [^String s]
+  (if (caps/grapheme-clustering?)
+    (width-by-cluster s)
+    (width-by-codepoint s)))
+
 (defn- char-index-at-width
   "Find the char index where cumulative display-width reaches limit.
-   Returns the index of the first codepoint that would exceed the limit.
-   Handles surrogate pairs and skips ANSI escape sequences."
+   Returns the index of the first unit that would exceed the limit.
+   Handles surrogate pairs and skips ANSI escape sequences.
+
+   Tracks `display-width`'s regime: when grapheme clustering is active the
+   cut-point must fall on a CLUSTER boundary, or a wrap/truncate would slice
+   a ZWJ sequence in half and emit two half-rendered glyphs where the source
+   had one."
   [^String s limit]
-  (let [len (.length s)]
+  (let [len (.length s)
+        cluster? (caps/grapheme-clustering?)
+        ^java.text.BreakIterator bi (when (and cluster? (clusterable? s))
+                                      (doto ^java.text.BreakIterator (.get grapheme-iterator)
+                                        (.setText s)))]
     (loop [i 0, w 0]
       (if (>= i len)
         i
         (let [ch (.charAt s i)]
           (if (= ch \u001b)
             (recur (skip-ansi-seq s i) w)
-            (let [cp (Character/codePointAt s (int i))
-                  cw (cond
-                       (zero-width-codepoint? cp) 0
-                       (or (wide-codepoint? cp)
-                           (emoji-vs16-next? s (+ i (Character/charCount cp)))) 2
-                       :else                       1)]
+            (let [end (if bi
+                        (let [nxt (.following bi (int i))]
+                          (if (= nxt java.text.BreakIterator/DONE) len nxt))
+                        (+ i (Character/charCount (Character/codePointAt s (int i)))))
+                  cw  (let [raw (width-by-codepoint (subs s i end))]
+                        (if bi (min 2 raw) raw))]
               (if (and (pos? cw) (> (+ w cw) limit))
                 i
-                (recur (+ i (Character/charCount cp)) (+ w cw))))))))))
+                (recur end (+ w cw))))))))))
 
 (defn- truncate
   "Truncate string to max-len, appending ellipsis if needed."

@@ -32,6 +32,7 @@
             [ai.brainyard.agent-tui.persist-bridge :as persist-bridge]
             [ai.brainyard.agent.interface.tui.format :as fmt]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
+            [ai.brainyard.agent.interface.tui.terminal-caps :as caps]
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.agent-tui-persist.interface :as persist]
             [ai.brainyard.ask-channel.interface :as ask-channel]
@@ -1773,6 +1774,12 @@
     ;; mouse control sequences — refresh-terminal-size! falls back to [24 80]
     ;; there, which would otherwise fool init-fullscreen!'s rows>=12 gate.
     (let [tty?           (terminal/stdout-terminal?)
+          ;; Settle how wide a grapheme is BEFORE the first render — the
+          ;; answer feeds every display-width call, and flipping it mid-session
+          ;; would re-measure lines already in scrollback. Passing `tty?`
+          ;; keeps a daemon / piped run from emitting the DECRQM query at all.
+          ;; Default config is :off, so this is a no-op unless opted in.
+          _              (try (caps/negotiate! tty?) (catch Throwable _ nil))
           fullscreen-ok? (and (not force-inline?)
                               tty?
                               (layout/init-fullscreen!))]
