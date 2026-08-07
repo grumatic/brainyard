@@ -283,3 +283,40 @@
 ;; Allows the application to distinguish typed Enter from pasted newlines.
 (def enable-bracketed-paste  (str esc "?2004h"))
 (def disable-bracketed-paste (str esc "?2004l"))
+
+;; ============================================================================
+;; OSC 52 — set the system clipboard from inside the terminal
+;; ============================================================================
+;;
+;; `ESC ] 52 ; <selection> ; <base64-of-utf8> BEL`.  The *terminal emulator*
+;; performs the write, so the text lands on the clipboard of the machine the
+;; USER is sitting at — through ssh, through tmux, through ttyd/xterm.js.
+;; That is the whole reason to prefer it over `pbcopy` and friends, which
+;; copy to whichever host the process happens to run on.
+;;
+;; Fire-and-forget: there is no reply and no error channel, so a caller can
+;; honestly report "sent", never "copied".  Support is not universal —
+;; iTerm2, Kitty, Alacritty, WezTerm, Ghostty and Windows Terminal honor it;
+;; macOS Terminal.app, GNOME Terminal and Konsole do not.
+;;
+;; NOTE the intro is OSC (`ESC ]`), not the CSI that `esc` holds (`ESC [`).
+
+(def ^:const osc "\033]")
+
+(def ^:const bel "\007")
+
+(defn osc52-copy
+  "Build the OSC 52 sequence asking the terminal to put `text` on the
+   clipboard.  `selection` is xterm's selector: \"c\" = CLIPBOARD (the one
+   ⌘V / Ctrl-V pastes), \"p\" = X11 PRIMARY (middle-click).  Terminals
+   ignore selectors they don't implement, so \"c\" is the portable default.
+
+   Returns \"\" for nil/blank text: an empty OSC 52 payload CLEARS the
+   user's clipboard, which must never happen by accident."
+  ([text] (osc52-copy text "c"))
+  ([^String text ^String selection]
+   (if (or (nil? text) (zero? (.length ^String text)))
+     ""
+     (let [b64 (.encodeToString (java.util.Base64/getEncoder)
+                                (.getBytes ^String text "UTF-8"))]
+       (str osc "52;" selection ";" b64 bel)))))

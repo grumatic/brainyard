@@ -630,6 +630,8 @@
    ["/compact"          " [ratio]"                "Compact context to ratio of max tokens (default 0.2)"]
    ["/config"           " [key [val]]"            "Show/set runtime config"]
    ["/continue"         " [N]"                    "Resume last answer with N more iterations"]
+   ["/copy"             " [code [N]]"             "Copy the last answer (or one of its code blocks) to the clipboard"
+    {:completions [["code" "Copy the last fenced code block (add N for the Nth)"]]}]
    ["/display-format"   " [level]"                "Show/set display detail level"
     {:completions [["quiet"   "Minimal output"]
                    ["normal"  "Default output"]

@@ -13,6 +13,7 @@
             [ai.brainyard.agent-tui.helpers :as helpers]
             [ai.brainyard.agent-tui.input :as input]
             [ai.brainyard.agent-tui.permissions :as permissions]
+            [ai.brainyard.agent-tui.clipboard :as clipboard]
             [ai.brainyard.agent.interface.tui.format :as fmt]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
             [ai.brainyard.agent.interface :as agent]
@@ -774,6 +775,68 @@
         (tui-session/emit! (ansi/success (str "Captured " (count lines) " lines to " args))))
       (catch Exception e
         (tui-session/emit! (ansi/failure (str "Failed to write: " (.getMessage e))))))))
+
+;; ============================================================================
+;; Copy Command (private)
+;; ============================================================================
+
+(def ^:private fenced-block-re
+  ;; ```lang\n …body… \n``` — body captured, fence lines discarded. Reluctant
+  ;; so consecutive blocks don't merge into one across the gap between them.
+  #"(?ms)^[ \t]*```[^\n]*\n(.*?)^[ \t]*```")
+
+(defn- code-blocks
+  "Bodies of the fenced code blocks in `s`, in document order."
+  [s]
+  (mapv second (re-seq fenced-block-re (str s))))
+
+(defn- copy-target
+  "Resolve `/copy` args to [text label] or [nil error-message].
+
+     (no args)  → the last answer, verbatim
+     code       → its last fenced code block
+     code N     → its Nth fenced block, 1-based
+
+   The point of `code` is that the block arrives WITHOUT the four-space
+   indent and `│ ` rail we render it behind, and without the line breaks our
+   word-wrap introduced — i.e. it pastes into a file and runs."
+  [args]
+  (let [answer (tui-session/last-answer)
+        parts  (remove str/blank? (str/split (str/trim (or args "")) #"\s+"))]
+    (cond
+      (str/blank? (str answer))
+      [nil "Nothing to copy — this session has no answer yet."]
+
+      (empty? parts)
+      [answer "last answer"]
+
+      (not= "code" (first parts))
+      [nil (str "Usage: /copy [code [N]]  — got: " (str/join " " parts))]
+
+      :else
+      (let [blocks (code-blocks answer)
+            n      (count blocks)
+            idx    (if-let [raw (second parts)]
+                     (try (Long/parseLong raw) (catch NumberFormatException _ nil))
+                     n)]
+        (cond
+          (zero? n)         [nil "The last answer has no fenced code blocks."]
+          (nil? idx)        [nil (str "Not a block number: " (second parts))]
+          (or (< idx 1) (> idx n))
+          [nil (str "No block " idx " — the last answer has " n
+                    " code block" (when (not= 1 n) "s") ".")]
+          :else [(str/trimr (nth blocks (dec idx)))
+                 (str "code block " idx "/" n)])))))
+
+(defn- copy-cmd
+  "Copy the last answer (or one of its code blocks) to the user's clipboard."
+  [args]
+  (let [[text label] (copy-target args)]
+    (if-not text
+      (tui-session/emit! (ansi/warning label))
+      (let [{:keys [ok?] :as res} (clipboard/copy! text)
+            line (str (clipboard/describe res) " — " label)]
+        (tui-session/emit! (if ok? (ansi/success line) (ansi/failure line)))))))
 
 ;; ============================================================================
 ;; Sandbox Command (private)
@@ -2327,6 +2390,7 @@
         "/task"         (do (emit-command-header! input) (handle-task-command args) :continue)
         "/allow-path"   (do (emit-command-header! input) (permissions/handle-allow-path-command args) :continue)
         "/capture"      (do (emit-command-header! input) (capture-cmd args) :continue)
+        "/copy"         (do (emit-command-header! input) (copy-cmd args) :continue)
         "/sandbox"      (do (emit-command-header! input) (handle-sandbox-command args) :continue)
         "/mcp"          (do (emit-command-header! input) (try (handle-mcp-command args) (catch Exception e (tui-session/emit! (ansi/failure (str "MCP error: " (.getMessage e)))))) :continue)
         "/login"        (do (emit-command-header! input) (handle-login-command args) :continue)

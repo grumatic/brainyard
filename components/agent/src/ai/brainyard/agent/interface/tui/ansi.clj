@@ -39,3 +39,7 @@
                 reset-scroll-region erase-line
                 enable-alt-scroll disable-alt-scroll
                 enable-bracketed-paste disable-bracketed-paste)
+
+;; Clipboard (OSC 52)
+(export-symbols ai.brainyard.agent.tui.ansi
+                osc bel osc52-copy)

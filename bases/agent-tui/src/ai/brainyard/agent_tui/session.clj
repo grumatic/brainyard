@@ -66,6 +66,34 @@
 ;;   :confirm {:promise p :kind :confirm :choices <vec of {:key char :label :value}>}
 (defonce !pending-feedback (atom nil))
 
+;; ----------------------------------------------------------------------
+;; Last answer per session — the SOURCE text behind `/copy`.
+;;
+;; What reaches the screen has been through markdown styling, ANSI codes,
+;; tab expansion and a hard word-wrap at the pane width; a mouse selection
+;; over it yields all of that plus whatever box chrome sits in the same
+;; cells. This holds the raw model answer, so `/copy` hands over what the
+;; model actually said rather than a transcript of how we drew it.
+;;
+;; Keyed by session-idx (tabs run concurrently, so this cannot be a
+;; singleton), bounded to the LAST answer per session — it is a copy
+;; buffer, not a history; `/history` already owns that.
+;; Shape: {session-idx string}.
+(defonce !last-answers (atom {}))
+
+(defn record-last-answer!
+  "Remember `answer` as session `session-idx`'s most recent answer."
+  [session-idx ^String answer]
+  (when (and session-idx (string? answer) (not (str/blank? answer)))
+    (swap! !last-answers assoc session-idx answer))
+  nil)
+
+(defn last-answer
+  "The raw text of the most recent answer in `session-idx` (default: the
+   active session), or nil when that session hasn't answered yet."
+  ([] (last-answer (sessions/active-idx)))
+  ([session-idx] (get @!last-answers session-idx)))
+
 (defn feedback-prompt-parts
   "Input-line prompt look for a feedback `fb-kind` (nil = idle). Shared by the
    editor's redraw (`terminal/redraw-input-line!`) and the open/close refresh
@@ -2871,6 +2899,11 @@
                                (not (agent/get-config agent :acp-show-final-answer)))]
           (when (and (string? answer) (not (str/blank? answer)))
             (when (render-active?) (stop-thinking-indicator!))
+            ;; Stash the SOURCE before rendering — recorded even when
+            ;; `hide-final?` suppresses the box (acp-agent turns render the
+            ;; answer in their transcript block instead), because `/copy`
+            ;; wants the text regardless of which surface displayed it.
+            (record-last-answer! (or *render-session-idx* (sessions/active-idx)) answer)
             (when-not hide-final?
               (emit! (if (quiet?)
                        (fmt/format-answer-plain answer)
@@ -2904,6 +2937,8 @@
               goal-achieved (:goal-achieved st)
               hide-final? (and (acp-agent-instance? agent)
                                (not (agent/get-config agent :acp-show-final-answer)))]
+          (when (and (string? answer) (not (str/blank? answer)))
+            (record-last-answer! sidx answer))
           (when (and (string? answer) (not (str/blank? answer)) (not hide-final?))
             (sessions/emit-to-session! sidx (if (quiet?)
                                               (fmt/format-answer-plain answer)
