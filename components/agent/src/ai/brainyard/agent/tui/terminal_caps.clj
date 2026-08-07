@@ -144,7 +144,15 @@
    controlling terminal (the pipe / CI / `by ask > file` case)."
   [cmd]
   (try
-    (let [pb   (doto (ProcessBuilder. ["/bin/sh" "-c" (str cmd " < /dev/tty 2>/dev/null")])
+    (let [;; The hint is load-bearing, not decoration: an unhinted
+          ;; ProcessBuilder ctor compiles to a reflective call, and
+          ;; `bb reflect:check` gates the build on exactly that.
+          ;; It must be an into-array with the array-class hint, matching
+          ;; `query-stty-size` above — a `^java.util.List` on a LITERAL vector
+          ;; is silently ignored (the reader attaches it as the vector's own
+          ;; metadata), which is how this got past a first fix attempt.
+          argv (into-array String ["/bin/sh" "-c" (str cmd " < /dev/tty 2>/dev/null")])
+          pb   (doto (ProcessBuilder. ^"[Ljava.lang.String;" argv)
                  (.redirectErrorStream true))
           proc (.start pb)
           out  (slurp (.getInputStream proc))]
