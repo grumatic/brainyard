@@ -76,6 +76,45 @@
   (merge (normalize base) (normalize override)))
 
 ;; =============================================================================
+;; Inherited process markers — dropped at the spawn boundary
+;; =============================================================================
+
+(def nested-session-markers
+  "Env vars that announce \"the process reading me is itself a coding-agent
+   session\" — set by whatever agent happened to start THIS JVM, never by us.
+
+   They must not reach an ACP subprocess. `CLAUDECODE=1` makes the Claude
+   Code CLI refuse to start at all:
+
+       Error: Claude Code cannot be launched inside another Claude Code session.
+       Nested sessions share runtime resources and will crash all active sessions.
+       To bypass this check, unset the CLAUDECODE environment variable.
+
+   So a `by` launched from a Claude Code terminal inherits the marker,
+   passes it down, and every claude-code ACP backend dies on spawn. The
+   guard itself is right — two interactive sessions sharing one terminal do
+   fight — but that is not what an ACP backend is: it is a fresh headless
+   process brainyard owns end to end, talking JSON-RPC on its own pipes.
+
+   Only markers with a demonstrated failure belong here. This set DROPS
+   inherited state, and dropping more than necessary is its own surprise."
+  #{"CLAUDECODE"})
+
+(defn strip-nested-session-markers!
+  "Remove `nested-session-markers` from `env-map` — a MUTABLE env map, in
+   practice `(.environment pb)`, which starts as a copy of this JVM's
+   environment and can only be edited in place. Returns the set of names
+   actually removed (for logging); `#{}` when there was nothing to drop.
+
+   Call this BEFORE applying a launch spec's `:env`, so an explicit override
+   still wins: the point is to stop inheriting a claim that is false for the
+   child, not to overrule a caller who set the variable on purpose."
+  [^java.util.Map env-map]
+  (into #{}
+        (filter (fn [^String k] (some? (.remove env-map k))))
+        nested-session-markers))
+
+;; =============================================================================
 ;; Strict validation — for the spawn boundary
 ;; =============================================================================
 

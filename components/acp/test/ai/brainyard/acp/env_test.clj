@@ -135,3 +135,50 @@
         (transport/open! t)
         (is (transport/open? t))
         (finally (transport/close! t))))))
+
+;; =============================================================================
+;; Nested-session markers — never inherited, still overridable
+;; =============================================================================
+
+(deftest strip-nested-session-markers-test
+  (testing "the marker is removed from a ProcessBuilder-shaped env map"
+    (let [m (java.util.HashMap. {"CLAUDECODE" "1" "PATH" "/usr/bin"})]
+      (is (= #{"CLAUDECODE"} (env/strip-nested-session-markers! m)))
+      (is (nil? (.get m "CLAUDECODE")))
+      (is (= "/usr/bin" (.get m "PATH"))
+          "unrelated inherited vars are left alone")))
+
+  (testing "nothing to drop reports nothing, and is not an error"
+    (let [m (java.util.HashMap. {"PATH" "/usr/bin"})]
+      (is (= #{} (env/strip-nested-session-markers! m)))
+      (is (= 1 (.size m))))))
+
+(def ^:private CLAUDECODE-ECHO
+  "Report the child's own $CLAUDECODE (empty when unset). Same idle-then-exit
+   shape as ENV-ECHO so the read doesn't race the child's EOF."
+  "printf '{\"jsonrpc\":\"2.0\",\"method\":\"env\",\"params\":{\"v\":\"%s\"}}\\n' \"$CLAUDECODE\"; sleep 2")
+
+(deftest stdio-does-not-inherit-claudecode-test
+  ;; The regression this guards: `by` started from inside a Claude Code
+  ;; terminal inherits CLAUDECODE=1, hands it to claude-code-acp, and the
+  ;; backend dies with "cannot be launched inside another Claude Code
+  ;; session". The assertion is exact where it matters (a test JVM that has
+  ;; the marker) and vacuously true elsewhere, so it never flakes on CI.
+  (testing "an inherited marker does not reach the child"
+    (let [t (stdio/create {:command ["sh" "-c" CLAUDECODE-ECHO]})]
+      (try
+        (transport/open! t)
+        (let [msg (transport/read-message! t 5000)]
+          (is (= "" (get-in msg [:params :v]))
+              (str "parent CLAUDECODE=" (pr-str (System/getenv "CLAUDECODE")))))
+        (finally (transport/close! t))))))
+
+(deftest stdio-explicit-claudecode-still-wins-test
+  (testing "a marker set on purpose in :env survives — only inheritance is refused"
+    (let [t (stdio/create {:command ["sh" "-c" CLAUDECODE-ECHO]
+                           :env     {"CLAUDECODE" "1"}})]
+      (try
+        (transport/open! t)
+        (let [msg (transport/read-message! t 5000)]
+          (is (= "1" (get-in msg [:params :v]))))
+        (finally (transport/close! t))))))

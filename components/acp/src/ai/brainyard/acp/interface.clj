@@ -131,7 +131,12 @@
      :env         — map of **string->string** env vars. STRICT: `open!`
                     throws `{:type :acp/invalid-env}` on non-string keys or
                     values; run caller-supplied maps through `normalize-env`
-                    (or build them with `merge-envs`) first."
+                    (or build them with `merge-envs`) first.
+
+   The subprocess inherits this JVM's environment except for the
+   nested-session markers `open!` drops — chiefly `CLAUDECODE`, whose
+   presence makes the Claude Code CLI refuse to launch. Set one explicitly
+   in `:env` to keep it; only inherited values are dropped."
   [opts]
   (stdio/create opts))
 

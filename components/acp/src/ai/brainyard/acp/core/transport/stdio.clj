@@ -164,6 +164,15 @@
     (let [pb (ProcessBuilder. ^java.util.List (vec command))]
       (when working-dir
         (.directory pb (io/file working-dir)))
+      ;; The child inherits this JVM's environment wholesale, including any
+      ;; "you are inside a coding-agent session" marker set by whoever
+      ;; started `by`. Drop those first (see `env/nested-session-markers` —
+      ;; an inherited CLAUDECODE=1 makes claude-code-acp refuse to spawn),
+      ;; then apply the spec's `:env` on top so an explicit override wins.
+      (let [dropped (env/strip-nested-session-markers! (.environment pb))]
+        (when (seq dropped)
+          (mulog/debug ::stdio-dropped-inherited-env
+                       :vars (vec dropped) :command command)))
       ;; STRICT: `:env` must ALREADY be plain string->string. Coercing here
       ;; would paper over caller bugs — a keyword key renders as
       ;; ":ANTHROPIC_MODEL", a variable the child never reads, and the
@@ -293,6 +302,10 @@
                     `open!` throws `{:type :acp/invalid-env}` on non-string
                     keys/values, blank or untrimmed keys, and `:K`/\"K\"
                     collisions. Pre-normalize with `acp.core.env/normalize`.
+
+   The child otherwise inherits this JVM's environment, minus the
+   nested-session markers `open!` drops (`acp.core.env`). An explicit `:env`
+   entry for such a marker is honoured — only inheritance is refused.
 
    Call `open!` to spawn the process and start I/O threads."
   [{:keys [command working-dir env]}]
