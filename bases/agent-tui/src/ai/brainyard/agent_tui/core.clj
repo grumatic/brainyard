@@ -886,24 +886,45 @@
    a standalone session. Does NOT switch the active tab (headless callers don't
    want the local terminal's focus to move). `:agent-id` is a defagent type
    string (e.g. \"mcp-agent\"); omitted → the active session's defagent, else
-   coact-agent. `:label` is optional. Returns {:status :ok :session-id … :ask-socket-path …}."
-  [{:keys [agent-id label] :as _req}]
+   coact-agent. `:label` is optional.
+
+   `:acp-backend` (a backend key, e.g. \"claude-code\") and `:acp-backend-opts`
+   (a map, e.g. `{:model \"opus\"}`) pin an acp-agent session's connection at
+   birth — the same two options `/session new acp-agent <backend> <model>`
+   passes through `create-session!`. Without them a new acp-agent session falls
+   back to the project's configured `:acp-backend`, so every session an external
+   driver created over this op got the SAME backend, and choosing one per
+   session was impossible without editing project config first.
+
+   Returns {:status :ok :session-id … :ask-socket-path …}."
+  [{:keys [agent-id label acp-backend acp-backend-opts] :as _req}]
   (try
-    (let [agent-kw (cond
-                     (keyword? agent-id) agent-id
-                     (and (string? agent-id) (seq agent-id)) (keyword agent-id)
-                     :else nil)
+    (let [->kw     (fn [v] (cond
+                             (keyword? v) v
+                             (and (string? v) (seq v)) (keyword v)
+                             :else nil))
+          agent-kw (->kw agent-id)
+          backend-kw (->kw acp-backend)
           lbl      (or (when (and (string? label) (seq label)) label)
                        (sessions/next-root-tab-label!))
           idx      (sessions/create-session!
                     (cond-> {:label lbl}
-                      agent-kw (assoc :agent-id agent-kw)))
+                      agent-kw   (assoc :agent-id agent-kw)
+                      backend-kw (assoc :acp-backend backend-kw)
+                      ;; Only a map is forwarded: create-session! hands this
+                      ;; straight to the agent as its launch options, and a
+                      ;; malformed value would surface later as a backend that
+                      ;; ignored them rather than as a bad request here.
+                      (map? acp-backend-opts) (assoc :acp-backend-opts acp-backend-opts)))
           sess     (sessions/get-session idx)
           sid      (:agent-session-id sess)
           sock     (when sid (.getAbsolutePath ^java.io.File (persist/file-of sid :ask-sock)))]
       (if sid
-        {:status :ok :session-id (str sid) :ask-socket-path sock
-         :defagent-id (some-> (:defagent-id sess) name) :label lbl :index idx}
+        (cond-> {:status :ok :session-id (str sid) :ask-socket-path sock
+                 :defagent-id (some-> (:defagent-id sess) name) :label lbl :index idx}
+          ;; Echoed so the caller can confirm the pin took, rather than having to
+          ;; ask the new session what it ended up connected to.
+          backend-kw (assoc :acp-backend (name backend-kw)))
         {:status :error :error "session created but no session-id was assigned"}))
     (catch Throwable e
       {:status :error :error (str "new-session failed: " (.getMessage e))})))
