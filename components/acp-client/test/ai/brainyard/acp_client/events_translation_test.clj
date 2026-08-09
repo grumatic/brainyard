@@ -6,6 +6,7 @@
   "Pure-data tests for the ACP session/update → hook event bridge.
    No I/O, no subprocess. Verifies the translation table from §4.2.1."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [ai.brainyard.acp-client.core.events :as events]
             [ai.brainyard.acp-client.core.callbacks :as callbacks]))
 
@@ -124,7 +125,9 @@
                        :content [{:type "text" :text "ok"}]}})]
       (is (= :agent.tool-use/post event))
       (is (= "tc-1" (:call-id data)))
-      (is (= "completed" (-> data :result :status))))))
+      (is (= "completed" (-> data :result :status)))
+      ;; Bare ContentBlock (what the in-tree stub emits) still reads.
+      (is (= "ok" (-> data :result :output))))))
 
 (deftest tool-call-update-failed-test
   (testing "tool_call_update with failed → :agent.tool-use/post with :error"
@@ -138,6 +141,126 @@
       (is (= :agent.tool-use/post event))
       (is (= "failed" (-> data :result :status)))
       (is (some? (-> data :result :error))))))
+
+;; ---------------------------------------------------------------------------
+;; ToolCallContent normalization.
+;;
+;; The raw `ToolCallContent[]` must never reach a renderer: `pr-str`'d it shows
+;; the wire envelope (`[{:type "content", :content {:type "text", …}}]`) where
+;; the tool's actual output belongs. These pin the flattening per variant.
+;; ---------------------------------------------------------------------------
+
+(defn- tool-result
+  "Translate one completed/failed tool_call_update and return its `:result`."
+  [status content]
+  (-> (events/translate-update
+       {:sessionId "s1"
+        :sessionUpdate "tool_call_update"
+        :toolCall (cond-> {:toolCallId "tc-1" :status status}
+                    (some? content) (assoc :content content))})
+      :data :result))
+
+(deftest tool-content-spec-wrapper-test
+  (testing "the spec's {:type \"content\" :content <ContentBlock>} wrapper is unwrapped"
+    (let [result (tool-result "completed"
+                              [{:type "content"
+                                :content {:type "text" :text "total 48\ndrwxr-xr-x"}}])]
+      (is (= "total 48\ndrwxr-xr-x" (:output result)))
+      ;; The envelope is preserved for persistence, but out of the display key.
+      (is (= [{:type "content" :content {:type "text" :text "total 48\ndrwxr-xr-x"}}]
+             (:acp/content result)))
+      (is (not (str/includes? (str (:output result)) ":type"))))))
+
+(deftest tool-content-multiple-blocks-joined-test
+  (testing "several content entries join as lines, in order"
+    (is (= "first\nsecond"
+           (:output (tool-result "completed"
+                                 [{:type "content" :content {:type "text" :text "first"}}
+                                  {:type "content" :content {:type "text" :text "second"}}]))))))
+
+(deftest tool-content-diff-test
+  (testing "a diff entry becomes structured :diffs, not prose"
+    (let [result (tool-result "completed"
+                              [{:type "diff" :path "src/x.clj"
+                                :oldText "(def a 1)" :newText "(def a 2)"}])]
+      (is (= [{:path "src/x.clj" :old "(def a 1)" :new "(def a 2)"}] (:diffs result)))
+      ;; A diff carries no prose, so there is no :output to render as text.
+      (is (nil? (:output result))))))
+
+(deftest tool-content-mixed-diff-and-text-test
+  (testing "prose and diffs from the same result are separated, both kept"
+    (let [result (tool-result "completed"
+                              [{:type "content" :content {:type "text" :text "edited 1 file"}}
+                               {:type "diff" :path "a.clj" :oldText "x" :newText "y"}])]
+      (is (= "edited 1 file" (:output result)))
+      (is (= 1 (count (:diffs result)))))))
+
+(deftest tool-content-terminal-test
+  (testing "a terminal entry renders as a readable placeholder"
+    (is (= "[terminal term-7]"
+           (:output (tool-result "completed" [{:type "terminal" :terminalId "term-7"}]))))))
+
+(deftest tool-content-unknown-variant-test
+  (testing "an unrecognized entry is pr-str'd rather than dropped"
+    (let [out (:output (tool-result "completed" [{:type "future_thing" :payload 42}]))]
+      (is (some? out))
+      (is (str/includes? out "future_thing")))))
+
+(deftest tool-content-empty-completed-test
+  (testing "a completed call with no content yields no :output (no empty Result box)"
+    (let [result (tool-result "completed" nil)]
+      (is (= "completed" (:status result)))
+      (is (nil? (:output result))))))
+
+(deftest tool-content-failed-without-detail-test
+  (testing "a failed call ALWAYS carries an :error string"
+    ;; An absent :error reads as success downstream — the TUI's error? test is
+    ;; `(some? (:error result))` — and would render a green `done` marker for a
+    ;; call that failed.
+    (is (string? (:error (tool-result "failed" nil))))))
+
+(deftest tool-content-failed-error-is-prose-test
+  (testing "the failure :error is prose, not the raw wire vector"
+    (let [result (tool-result "failed"
+                              [{:type "content"
+                                :content {:type "text" :text "permission denied"}}])]
+      (is (= "permission denied" (:error result)))
+      (is (not (str/includes? (:error result) ":type"))))))
+
+(deftest tool-content-strips-a-wrapping-code-fence-test
+  (testing "a fence enclosing the WHOLE text is unwrapped (claude-code fences its errors)"
+    ;; Observed live: the leading ``` also ate 4 of the head line's 40-char
+    ;; error preview before the message started.
+    (is (= "Reading file failed: file not found"
+           (:error (tool-result "failed"
+                                [{:type "content"
+                                  :content {:type "text"
+                                            :text "```\nReading file failed: file not found\n```"}}])))))
+  (testing "a language tag on the opening fence is dropped with it"
+    (is (= "(def a 1)"
+           (:output (tool-result "completed"
+                                 [{:type "content"
+                                   :content {:type "text" :text "```clojure\n(def a 1)\n```"}}])))))
+  (testing "prose containing a fenced block keeps its fences — only a lone wrapper is stripped"
+    (let [text "Here is the fix:\n```\n(def a 1)\n```\nApply it."
+          out  (:output (tool-result "completed"
+                                     [{:type "content" :content {:type "text" :text text}}]))]
+      (is (= text out))))
+  (testing "text with two separate fenced blocks is left alone"
+    (let [text "```\nfirst\n```\nand\n```\nsecond\n```"
+          out  (:output (tool-result "completed"
+                                     [{:type "content" :content {:type "text" :text text}}]))]
+      (is (= text out)))))
+
+(deftest tool-call-update-raw-output-test
+  (testing "the spec's rawOutput is carried through when present"
+    (let [result (-> (events/translate-update
+                      {:sessionId "s1"
+                       :sessionUpdate "tool_call_update"
+                       :toolCall {:toolCallId "tc-1" :status "completed"
+                                  :rawOutput {:exitCode 0}}})
+                     :data :result)]
+      (is (= {:exitCode 0} (:raw-output result))))))
 
 (deftest tool-call-update-in-progress-test
   (testing "tool_call_update with in_progress → no event (observer-only)"

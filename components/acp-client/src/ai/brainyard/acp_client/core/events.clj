@@ -153,18 +153,102 @@
              :session-id sessionId
              :observer?  true}}))
 
+(defn- strip-lone-code-fence
+  "Unwrap ```…``` when it encloses the WHOLE text, else return it unchanged.
+
+   claude-code fences its tool errors (`\"```\\nReading file failed: …\\n```\"`),
+   which in a box that is already a box reads as two literal ``` lines, and on
+   the head line the opening fence eats 4 of the 40 preview characters before
+   the message starts.
+
+   Deliberately conservative: only a text that both begins and ends with a
+   fence is unwrapped, so a result mixing prose with a code block keeps its
+   fences and still renders as markdown wherever that matters."
+  [text]
+  (let [t (str/trim text)]
+    (if (and (str/starts-with? t "```")
+             (str/ends-with? t "```")
+             (> (count t) 6)
+             ;; Exactly two fence markers — otherwise this is prose containing
+             ;; several code blocks, not one fenced block.
+             (= 2 (count (re-seq #"(?m)^```" t))))
+      (-> t
+          (str/replace #"(?s)\A```[^\n]*\n?" "")
+          (str/replace #"(?s)\n?```\z" ""))
+      text)))
+
+(defn- tool-content-text
+  "Display text for ONE `ToolCallContent` entry, or nil when the entry carries
+   no text (a `diff`, which is structured separately). Handles both the spec
+   wrapper (`{:type \"content\" :content <ContentBlock>}`) and a bare
+   ContentBlock, which the in-tree stub and some agents emit directly."
+  [block]
+  (when (map? block)
+    (case (:type block)
+      "content"  (let [t (strip-lone-code-fence (content-block-text (:content block)))]
+                   (when-not (str/blank? t) t))
+      "diff"     nil
+      "terminal" (str "[terminal " (:terminalId block) "]")
+      ;; Bare ContentBlock, or a variant added to the spec after this was
+      ;; written. `content-block-text` returns "" for anything it can't read,
+      ;; and we'd rather show a pr-str than silently drop the entry.
+      (let [t (content-block-text block)]
+        (if (str/blank? t) (pr-str block) t)))))
+
+(defn normalize-tool-content
+  "Flatten a tool call's raw `ToolCallContent[]` into the display-ready shape
+   the rest of brainyard consumes: `{:text <joined prose> :diffs [{…}]}`.
+
+   The raw vector must never reach a renderer — `pr-str`'d it reads as
+   `[{:type \"content\", :content {:type \"text\", :text \"…\"}}]`, i.e. the
+   wire envelope where the tool's output belongs. This mirrors why the `plan`
+   translation above normalizes PlanEntry into the native todo shape.
+
+   `:text` is nil when no entry carried prose; `:diffs` is omitted when empty,
+   so callers can `cond->` on presence."
+  [content]
+  (let [blocks (cond
+                 (nil? content)    []
+                 (sequential? content) (vec content)
+                 :else             [content])
+        text   (->> blocks (keep tool-content-text) (str/join "\n"))
+        diffs  (->> blocks
+                    (filter #(and (map? %) (= "diff" (:type %))))
+                    (mapv (fn [d] {:path (:path d)
+                                   :old  (:oldText d)
+                                   :new  (:newText d)})))]
+    (cond-> {}
+      (not (str/blank? text)) (assoc :text text)
+      (seq diffs)             (assoc :diffs diffs))))
+
 (defmethod dispatch-update "tool_call_update"
   [{:keys [toolCall sessionId] :as params}]
-  (let [{:keys [toolCallId status content] :as src} (or toolCall params)]
+  (let [{:keys [toolCallId status content rawOutput] :as src} (or toolCall params)]
     (case status
       ("completed" "failed")
-      {:event event-tool-use-post
-       :data  {:call-id    toolCallId
-               :tool-name  (acp-tool-name src)
-               :result     (cond-> {:status status}
-                             (= status "failed")    (assoc :error content)
-                             (= status "completed") (assoc :content content))
-               :session-id sessionId}}
+      (let [{:keys [text diffs]} (normalize-tool-content content)]
+        {:event event-tool-use-post
+         :data  {:call-id    toolCallId
+                 :tool-name  (acp-tool-name src)
+                 ;; `:error` is a STRING on the failure path, not the raw
+                 ;; vector: the TUI's `error?` test is `(some? (:error result))`
+                 ;; (so the red Error box still triggers) and the head line
+                 ;; truncates it to 40 chars — which is only readable if it is
+                 ;; prose. The raw vector survives under `:acp/content` for
+                 ;; persistence and debugging, but never drives display.
+                 :result     (cond-> {:status status}
+                               ;; Always present on failure, even when the
+                               ;; agent reported no detail — an absent `:error`
+                               ;; would read as success and render a green
+                               ;; `done` marker for a call that failed.
+                               (= status "failed")
+                               (assoc :error (or text "tool call failed"))
+
+                               (and (= status "completed") text) (assoc :output text)
+                               (seq diffs)                       (assoc :diffs diffs)
+                               (some? rawOutput)                 (assoc :raw-output rawOutput)
+                               (some? content)                   (assoc :acp/content content))
+                 :session-id sessionId}})
 
       ;; status pending or in_progress (or absent) — observer-only update,
       ;; no hook fired. The dispatcher may still surface progress to UIs

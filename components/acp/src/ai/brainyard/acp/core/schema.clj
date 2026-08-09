@@ -58,6 +58,32 @@
                      [:name {:optional true} :string]
                      [:mimeType {:optional true} :string]]]])
 
+(def ToolCallContent
+  "A single entry of a tool call's `:content`. NOT a `ContentBlock` — the ACP
+   spec gives tool-call results their own union, which WRAPS a ContentBlock in
+   the `\"content\"` variant and adds `\"diff\"` / `\"terminal\"` variants a
+   ContentBlock has no counterpart for.
+
+   The `::m/default` branch is load-bearing twice over: it admits future spec
+   variants, and it admits a bare `ContentBlock` (`{:type \"text\" …}`), which
+   the in-tree stub and some agents emit directly where the spec wants a
+   wrapper. `acp-client.core.events/normalize-tool-content` reads both shapes
+   for the same reason."
+  [:multi {:dispatch :type}
+   ["content"  [:map {:closed false}
+                [:type [:= "content"]]
+                [:content ContentBlock]]]
+   ["diff"     [:map {:closed false}
+                [:type [:= "diff"]]
+                [:path :string]
+                [:oldText {:optional true} [:maybe :string]]
+                [:newText {:optional true} [:maybe :string]]]]
+   ["terminal" [:map {:closed false}
+                [:type [:= "terminal"]]
+                [:terminalId :string]]]
+   [::m/default [:map {:closed false}
+                 [:type :string]]]])
+
 ;; =============================================================================
 ;; Plan entries (the agent's todo list)
 ;; =============================================================================
@@ -82,7 +108,8 @@
    [:kind {:optional true} ToolCallKind]
    [:status {:optional true} ToolCallStatus]
    [:rawInput {:optional true} [:maybe :map]]
-   [:content {:optional true} [:vector ContentBlock]]
+   [:rawOutput {:optional true} [:maybe :map]]
+   [:content {:optional true} [:vector ToolCallContent]]
    [:locations {:optional true} [:vector :map]]])
 
 ;; =============================================================================

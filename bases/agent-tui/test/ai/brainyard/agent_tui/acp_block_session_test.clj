@@ -128,6 +128,75 @@
     (is (str/includes? (first (render-plain (assoc base-state :stage :done :result :success))) "✓"))
     (is (str/includes? (first (render-plain (assoc base-state :stage :done :result :failure))) "✗"))))
 
+;; ---------------------------------------------------------------------------
+;; Tool result bodies
+;;
+;; The result reaching this block is the normalized shape built at the
+;; acp-client boundary (`normalize-tool-content`), NOT the raw ACP
+;; `ToolCallContent[]`. These pin that the box shows the tool's own output and
+;; never the wire envelope, which is what made the block unreadable.
+;; ---------------------------------------------------------------------------
+
+(def ^:private result->body #'session/acp-tool-result->body)
+
+(deftest tool-result-body-shows-output-not-the-envelope
+  (testing "a completed result renders its :output raw — no pr-str, no `name: value` wrapper"
+    (let [body (result->body {:status "completed"
+                              :output "total 48\ndrwxr-xr-x  6 jake  staff"
+                              :acp/content [{:type "content"
+                                             :content {:type "text" :text "total 48"}}]})]
+      (is (= "total 48\ndrwxr-xr-x  6 jake  staff" body))
+      (testing "the raw wire vector and the redundant status never reach the box"
+        (is (not (str/includes? body ":type")))
+        (is (not (str/includes? body "acp/content")))
+        (is (not (str/includes? body "status:")))))))
+
+(deftest tool-result-body-is-nil-when-empty
+  (testing "a completed call with no content renders no box at all"
+    ;; Previously this produced a box containing only `status: completed`.
+    (is (nil? (result->body {:status "completed"})))))
+
+(deftest tool-result-body-error-is-the-message-alone
+  (testing "a failed result renders just the message — the box is already red and labelled Error"
+    (let [body (result->body {:status "failed" :error "permission denied"
+                              :acp/content [{:type "content"
+                                             :content {:type "text" :text "permission denied"}}]})]
+      (is (= "permission denied" body)))))
+
+(deftest tool-result-body-renders-a-diff
+  (testing "a diff renders as +/- lines under its path, with identical context trimmed"
+    (let [body (strip (result->body
+                       {:status "completed"
+                        :diffs [{:path "src/x.clj"
+                                 :old "(ns x)\n(def a 1)\n(def b 2)"
+                                 :new "(ns x)\n(def a 99)\n(def b 2)"}]}))]
+      (is (str/includes? body "--- src/x.clj"))
+      (is (str/includes? body "- (def a 1)"))
+      (is (str/includes? body "+ (def a 99)"))
+      (testing "unchanged leading/trailing lines are trimmed, not echoed"
+        (is (not (str/includes? body "(ns x)")))
+        (is (not (str/includes? body "(def b 2)")))))))
+
+(deftest tool-result-body-diff-of-a-new-file
+  (testing "a Write (no oldText) shows every line as an addition"
+    (let [body (strip (result->body {:status "completed"
+                                     :diffs [{:path "new.clj" :old nil :new "line1\nline2"}]}))]
+      (is (str/includes? body "+ line1"))
+      (is (str/includes? body "+ line2"))
+      ;; No removal LINE (the `--- <path>` header also contains "- ").
+      (is (not-any? #(str/starts-with? % "- ") (str/split-lines body))))))
+
+(deftest tool-result-body-combines-prose-and-diff
+  (testing "prose output and a diff both render, prose first"
+    (let [body (strip (result->body {:status "completed"
+                                     :output "Edited 1 file"
+                                     :diffs [{:path "a.clj" :old "x" :new "y"}]}))]
+      (is (< (.indexOf body "Edited 1 file") (.indexOf body "--- a.clj"))))))
+
+(deftest tool-result-body-non-map-falls-back
+  (testing "a non-map result still stringifies (the native tool path's behaviour)"
+    (is (= "plain string" (result->body "plain string")))))
+
 (deftest thoughts-hidden-when-disabled
   (testing ":acp-show-thoughts false suppresses thought segments but keeps tools + message"
     (let [joined (str/join "\n" (render-plain (assoc base-state :show-thoughts? false)))]

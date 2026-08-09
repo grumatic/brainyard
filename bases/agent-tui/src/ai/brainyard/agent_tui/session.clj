@@ -3803,10 +3803,93 @@
                               :now (System/currentTimeMillis)})
       (update-acp-block! aid rid iter))))
 
+(def ^:private acp-diff-max-lines
+  "Max +/- lines shown per diff in an ACP tool `Result` box. A claude-code
+   `Edit`/`Write` diff carries whole-file `oldText`/`newText`, so even after
+   the common prefix/suffix trim below a large rewrite can run to thousands of
+   lines — the display-block collapses them visually, but the string is still
+   held in state, so it is bounded here too."
+  40)
+
+(defn- acp-diff-body
+  "Render one normalized ACP diff (`{:path :old :new}`) as a readable
+   unified-ish block:
+
+     --- src/x.clj
+     - (def a 1)
+     + (def a 2)
+
+   Identical leading and trailing LINES are dropped first so an `Edit` whose
+   `oldText`/`newText` are whole-file contents shows only what changed. This is
+   a prefix/suffix trim, not a real LCS diff: a change with an unmodified
+   middle shows more context than a proper diff would, which is the correct
+   trade at this size (no O(n·m) table on the render path, and the ACP block
+   re-renders on every stream tick)."
+  [{:keys [path old new]}]
+  (let [old-lines (if (str/blank? (str old)) [] (vec (str/split-lines (str old))))
+        new-lines (if (str/blank? (str new)) [] (vec (str/split-lines (str new))))
+        n         (min (count old-lines) (count new-lines))
+        pre       (or (some (fn [i] (when (not= (old-lines i) (new-lines i)) i))
+                            (range n))
+                      n)
+        ;; Trailing run of identical lines, never overlapping the prefix.
+        suf       (or (some (fn [i]
+                              (when (not= (old-lines (- (count old-lines) 1 i))
+                                          (new-lines (- (count new-lines) 1 i)))
+                                i))
+                            (range (- n pre)))
+                      (- n pre))
+        removed   (subvec old-lines pre (- (count old-lines) suf))
+        added     (subvec new-lines pre (- (count new-lines) suf))
+        header    (ansi/tool-arg-name (str "--- " path))
+        body      (concat (map #(ansi/failure (str "- " %)) removed)
+                          (map #(ansi/success (str "+ " %)) added))
+        shown     (take acp-diff-max-lines body)
+        hidden    (max 0 (- (count body) acp-diff-max-lines))]
+    (str/join "\n"
+              (cond-> (cons header shown)
+                (pos? hidden)
+                (concat [(ansi/style (str "… [+" hidden " more lines]") ansi/dim)])
+                (and (empty? removed) (empty? added))
+                (concat [(ansi/muted "(no textual change)")])))))
+
+(defn- acp-tool-result->body
+  "Stringify an ACP tool result for the transcript block's `Result` / `Error`
+   box. The ACP-shaped counterpart of `tool-result->body`, which must not learn
+   ACP shapes (it serves the native tool path).
+
+   The result has already been normalized at the acp-client boundary
+   (`normalize-tool-content`) into `{:status :output :diffs :acp/content …}`,
+   so the work here is purely presentational:
+
+     - `:output` is already prose — emitted RAW, with no `pr-str` and no
+       `name: value` wrapper. It is the tool's own stdout/answer.
+     - `:diffs` render as diff blocks beneath it.
+     - `:status` and `:acp/content` are dropped: the status is already the
+       head line's `done`/`error` marker, and the raw wire vector is exactly
+       the unreadable envelope this whole path exists to keep off screen.
+     - `:error` (failure path) is the message on its own — the surrounding box
+       is already red and labelled `Error`.
+
+   Returns nil when there is nothing worth showing, so a tool that completes
+   with no content renders no box at all rather than an empty one."
+  [result]
+  (if-not (map? result)
+    (tool-result->body result)
+    (let [parts (cond-> []
+                  (seq (str (:error result)))  (conj (str (:error result)))
+                  (seq (str (:output result))) (conj (str (:output result))))
+          parts (into parts (map acp-diff-body (:diffs result)))
+          raw   (str/join "\n\n" (remove str/blank? parts))]
+      (when-not (str/blank? raw)
+        (if (> (count raw) tool-result-body-cap)
+          (str (subs raw 0 tool-result-body-cap) "\n… [truncated]")
+          raw)))))
+
 (defn- acp-tool-post!
   "Handler for :agent.tool-use/post on an acp instance — resolve the tool
-   segment's status / result. Reuses `tool-result->body` and the same error
-   detection as `tool-use-post-handler`."
+   segment's status / result. Uses the ACP-aware `acp-tool-result->body` and
+   the same error detection as `tool-use-post-handler`."
   [{:keys [agent tool-name call-id result]}]
   (when-let [[aid rid iter] (iter-current-key agent)]
     (when (get @!acp-blocks [aid rid iter])
@@ -3814,8 +3897,11 @@
             error?      (and (map? result)
                              (or (some? (:error-message result)) (some? (:error result))))
             error-msg   (when error? (str (or (:error-message result) (:error result))))
-            result-body (tool-result->body result)
-            chars       (try (count (pr-str result)) (catch Exception _ nil))]
+            result-body (acp-tool-result->body result)
+            ;; Count the DISPLAYED body, not `(pr-str result)` — the latter
+            ;; counts the JSON envelope and `:acp/content` (which duplicates
+            ;; the whole output), so a 200-char result reported as "1.4k chars".
+            chars       (some-> result-body count)]
         (swap! !acp-blocks update-in [[aid rid iter] :segments]
                acp-resolve-tool {:call-id call-id :tool-name tool-name
                                  :status (if error? :error :done)
