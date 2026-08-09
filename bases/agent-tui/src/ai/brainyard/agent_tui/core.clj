@@ -1207,6 +1207,29 @@
       (swap! (:!session ag) agent/set-session-config :dirs dirs)
       (swap! (:!session ag) agent/set-session-config :permission-fn
              (permissions/make-permission-fn input/!input-reader-thread feedback-fn)))
+    ;; Persist an acp-agent session's CONNECTION so a resume can rebuild it.
+    ;;
+    ;; The pin is a birth property — `open-session!` reads it once, when the
+    ;; connection opens — and it arrived here as a call argument, so nothing on
+    ;; disk remembered it. A resumed acp-agent session therefore fell back to the
+    ;; project's configured backend: a session created as Sonnet came back as the
+    ;; default, and an Opus 5 one lost the `:env` that makes that model reachable
+    ;; at all, silently answering as something else.
+    ;;
+    ;; Only what was EXPLICITLY passed is written. Recording the resolved value
+    ;; instead would freeze every session onto whatever the default happened to
+    ;; be the day it was made, which is not a choice anyone expressed.
+    ;;
+    ;; Safe against subagents by construction: acp$create builds its connections
+    ;; through `setup-agent-by-id`, never here, so a session-sharing subagent
+    ;; cannot overwrite its root's meta.
+    (when (or acp-backend acp-backend-opts)
+      (try
+        (persist/save-meta! sess-id
+                            (cond-> {}
+                              acp-backend      (assoc :acp-backend acp-backend)
+                              acp-backend-opts (assoc :acp-backend-opts acp-backend-opts)))
+        (catch Throwable _)))
     ;; Claim the per-session ownership lock (stamps :pid into meta.edn) so a
     ;; second live process can't silently co-own this session's state + socket.
     ;; Non-fatal: the resume pre-flight already refused a live cross-process open.
@@ -1435,6 +1458,13 @@
         ;; Persisted defagent-id wins over the CLI default on resume so the
         ;; agent type matches what the user had when they last quit.
         agent-id (or (when resuming? (:defagent-id resumed-meta)) agent-id)
+        ;; Same for an acp-agent's connection: restoring the agent TYPE but not
+        ;; the backend it was pinned to brought the session back as the right
+        ;; kind of agent talking to the wrong model. An explicit CLI pin still
+        ;; wins, so `--resume` can be used to move a session onto another
+        ;; backend deliberately.
+        acp-backend (or acp-backend (when resuming? (:acp-backend resumed-meta)))
+        acp-backend-opts (or acp-backend-opts (when resuming? (:acp-backend-opts resumed-meta)))
         ;; Restore the persisted model on resume unless the CLI passed an
         ;; explicit --model override. switch-model! writes :model/:provider to
         ;; meta.edn on every /model swap; rebuild + install the default LM here

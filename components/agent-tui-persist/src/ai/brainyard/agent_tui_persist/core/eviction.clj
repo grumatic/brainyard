@@ -86,5 +86,11 @@
           :model (:model meta)
           :label (:label meta)
           :working-dir (:working-dir meta)
+          ;; An acp-agent session's pinned connection, so a listing can say what
+          ;; a STOPPED session will come back as. `:model` above is the LM's,
+          ;; which an ACP session does not use — without these the only honest
+          ;; thing a list could say about a stopped ACP session was "unknown".
+          :acp-backend (:acp-backend meta)
+          :acp-backend-opts (:acp-backend-opts meta)
           :parent-id (:parent-id meta)
           :fork-point (:fork-point meta)})))
