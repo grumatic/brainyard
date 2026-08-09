@@ -20,8 +20,9 @@
 >   `providers.clj` and the `llm.clj` dispatch (`:acp` arm).
 > - `acp-agent` is registered in `agent.interface` (the one-line require flagged
 >   in §9.2 was added) and its config keys (`:acp-backend`, `:acp-backend-opts`,
->   `:acp-timeout-ms` 600000, `:acp-permission-timeout-ms` 120000) live in
->   `agent.core.config`.
+>   `:acp-timeout-ms` 3600000) live in `agent.core.config`. Permission handling
+>   has no ACP-specific keys: `session/request_permission` is gated by the shared
+>   `:permission-mode` and `:permission-timeout-ms`, like every other tool op.
 > - **All four registry backends shipped** (`:stub`, `:claude-agent-acp`,
 >   `:gemini`, `:codex`) — see §9.5. The phase language below that calls Phase 6
 >   "future"/"optional" is therefore stale; treat it as historical sequencing.

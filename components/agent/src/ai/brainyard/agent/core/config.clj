@@ -493,10 +493,8 @@
                                 :doc "Advertise the client filesystem capability to ACP backends. When true (default), backends route file reads/writes back through brainyard (mediated writes + diff rendering in the TUI). When false, the backend does its own direct disk I/O (no diffs). Does NOT affect the permission prompt (session/request_permission is gated either way) or OS sandboxing (--sandbox contains the subprocess regardless) — only who performs the write and whether diffs render. Env: BY_ACP_CLIENT_FS."}
    :acp-backend-opts           {:type "object"  :default {:model "haiku"}
                                 :doc "Options map for the ACP backend. Launch keys (:command/:working-dir/:env/:forward-env) go to the registry factory; :model (e.g. \"sonnet\"/\"opus\"/\"haiku\" for :claude-code) is resolved against the agent's advertised models and set per session via session/set_model. Defaults to \"haiku\" — the cheapest of the claude-code aliases, so an unconfigured acp-agent doesn't silently run the most expensive model. An unmatched name warns and keeps the backend's own default rather than failing. NOTE this map REPLACES the default wholesale, it does not merge into it: writing {:command [...]} drops the default :model too, so carry :model along if you still want it."}
-   :acp-timeout-ms             {:type "integer" :default 600000
-                                :doc "ACP request timeout (ms)."}
-   :acp-permission-timeout-ms  {:type "integer" :default 120000
-                                :doc "ACP permission-prompt timeout (ms)."}
+   :acp-timeout-ms             {:type "integer" :default 3600000
+                                :doc "How long ONE ACP turn may take (ms) — total wall clock from session/prompt to the backend's final response, not an idle timeout, so streamed updates do not extend it. On expiry the turn is cut off, a session/cancel is sent, and the answer says so. Default one hour: a coding backend legitimately works for a long time, and the previous ten minutes cut real turns off mid-flight."}
    :enable-a2a                 {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_A2A")]
                                            (contains? #{"1" "true"} v) ::env-unset)
@@ -569,7 +567,9 @@
                                 :default-fn #(default-allowed-dirs)
                                 :doc "Allow-list of directories for filesystem-touching tools (bash/read/write/grep/task$run). Lazy default: /tmp + system temp dir (java.io.tmpdir, e.g. /var/folders/.../T on macOS) + project-dir + user-config-dir."}
    :permission-mode            {:type "keyword" :default :auto
-                                :doc "Permission-prompt policy for sensitive tool ops: :auto-approve | :ask-each-time | :deny-by-default | :auto (default; :auto-approve when a container is detected via env-detect, else :ask-each-time — so a bare host still prompts). Resolved by resolve-permission-mode. Persisted as [:permissions :mode]."}
+                                :doc "Permission-prompt policy for sensitive tool ops: :auto-approve | :ask-each-time | :deny-by-default | :auto (default; :auto-approve when a container is detected via env-detect, else :ask-each-time — so a bare host still prompts). Resolved by resolve-permission-mode. Applies to ACP backends' session/request_permission too. Persisted as [:permissions :mode]."}
+   :permission-timeout-ms      {:type "integer" :default 60000
+                                :doc "How long a permission prompt waits for an answer (ms) before it is treated as dismissed — deny for a tool gate, `cancelled` for an ACP request. 60s was already the interactive layer's built-in fallback; naming it makes the one timeout configurable for every prompt, ACP included (which used to carry its own :acp-permission-timeout-ms)."}
    :display-format             {:type "keyword"
                                 :env-fn #(if-let [v (not-empty (System/getenv "BY_DISPLAY_FORMAT"))]
                                            (keyword v) ::env-unset)

@@ -112,33 +112,46 @@
        (when (and kind (not (str/blank? kind)))   (str " [" kind "]"))))
 
 (defn- make-permission-callback
-  "Reverse-call handler for ACP `session/request_permission`. Routes the
-   request to the agent's interactive `:user-feedback-fn` (N-option
-   picker). Returns an ACP SessionRequestPermissionResult:
+  "Reverse-call handler for ACP `session/request_permission`. Returns an ACP
+   SessionRequestPermissionResult:
 
-     {:outcome {:outcome \"selected\" :optionId <id>}}  on a choice
+     {:outcome {:outcome \"selected\" :optionId <id>}}  on a decision
      {:outcome {:outcome \"cancelled\"}}                 on timeout/dismiss
 
-   No interactive session (or no options) → deny by selecting a reject_
-   option, matching acp-client's deny-by-default handler."
+   The decision follows `:permission-mode` — the SAME policy every other
+   sensitive tool op is gated by, resolved through `resolve-permission-mode`, so
+   `:auto` still means auto-approve in a container and prompt on a bare host.
+
+   This used to prompt unconditionally and ignore the mode, which made an ACP
+   backend the one actor in the system that could not be told to stop asking: a
+   container session set to auto-approve still blocked on every backend tool
+   call, and a `:deny-by-default` session still put the question on screen.
+
+   Only `:ask-each-time` reaches the interactive `:user-feedback-fn`, bounded by
+   `:permission-timeout-ms` — the shared prompt timeout, not an ACP-specific one.
+   No interactive session (or no options) → deny, the same posture as
+   acp-client's default handler."
   [agent]
   (fn [{:keys [toolCall options] :as _params}]
     (let [options     (vec options)
+          mode        (config/resolve-permission-mode agent)
           feedback-fn (some-> (:!session agent) deref
-                              (session/get-session-config :user-feedback-fn))]
+                              (session/get-session-config :user-feedback-fn))
+          decide      (fn [d] {:outcome {:outcome  "selected"
+                                         :optionId (pick-option-id* d options)}})]
       (cond
         (empty? options)
         {:outcome {:outcome "cancelled"}}
 
-        (nil? feedback-fn)
-        {:outcome {:outcome  "selected"
-                   :optionId (pick-option-id* :block options)}}
+        (= :auto-approve mode)    (decide :allow)
+        (= :deny-by-default mode) (decide :block)
+        (nil? feedback-fn)        (decide :block)
 
         :else
         (let [result (feedback-fn
                       {:question   (permission-question toolCall)
                        :options    (mapv permission-option-label options)
-                       :timeout-ms (config/get-config agent :acp-permission-timeout-ms)})
+                       :timeout-ms (config/get-config agent :permission-timeout-ms)})
               idx    (:index result)]
           (if (and (integer? idx) (< -1 idx (count options)))
             {:outcome {:outcome  "selected"

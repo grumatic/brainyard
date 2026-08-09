@@ -292,7 +292,7 @@ catches it. A `:keys` list in a registry is at least checkable.
 | Feature | Gate | Def | Lifecycle | Knobs | Deps |
 |---|---|---|---|---|---|
 | `agents/subagents` | `:enable-subagent-calls` | on | per-call | `:max-agent-call-depth` `:max-subagents-per-session` `:parent-trail-k` | — |
-| `agents/acp` | **new** `:enable-acp` | on | session | `:acp-backend` `:acp-backend-opts` `:acp-client-fs` `:acp-timeout-ms` `:acp-permission-timeout-ms` `:max-acp-agents-per-session` | requires `subagents` |
+| `agents/acp` | **new** `:enable-acp` | on | session | `:acp-backend` `:acp-backend-opts` `:acp-client-fs` `:acp-timeout-ms` `:max-acp-agents-per-session` | requires `subagents` |
 | `agents/explore` | *(ungated)* | — | live | `:explore-persist-threshold` `:explore-auto-persist` `:explore-reuse-volatile-hours` | — |
 | `agents/workflow` | *(ungated)* | — | live | `:workflow-auto-finalize` `:research-auto-finalize` | — |
 

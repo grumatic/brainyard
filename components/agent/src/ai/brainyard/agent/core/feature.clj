@@ -375,8 +375,10 @@
    {:title     "ACP backends"
     :family    :agents
     :gate      :enable-acp
+    ;; Permission knobs are deliberately absent: ACP requests are gated by the
+    ;; shared :permission-mode / :permission-timeout-ms, not by keys of their own.
     :keys      [:acp-backend :acp-backend-opts :acp-client-fs :acp-timeout-ms
-                :acp-permission-timeout-ms :max-acp-agents-per-session]
+                :max-acp-agents-per-session]
     :requires  #{:agents/subagents}
     :lifecycle :session
     :doc       "External agents driven over the Agent Client Protocol."}
