@@ -481,7 +481,10 @@
              (when input-row
                (.append sb (ansi/cursor-to input-row cursor-col))
                (.append sb ^String ansi/hide-cursor)))
-           (layout/raw-write-unsafe! w (.toString sb))))))
+           (layout/raw-write-unsafe! w (.toString sb))
+           ;; The open menu owns the cursor and keeps it hidden; record that so
+           ;; the next frame after dismissal knows to show it again.
+           (layout/note-cursor-hidden!)))))
     ;; Inline: print menu lines below current cursor position (fixed-height
     ;; reservation only applies to fullscreen mode).
     (let [n          (count items)

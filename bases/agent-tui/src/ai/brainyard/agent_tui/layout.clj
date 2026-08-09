@@ -126,8 +126,11 @@
 ;; Low-level Terminal Writes (must be called inside locking layout-lock)
 ;; ============================================================================
 
-(defn- raw-write!
-  "Write string to writer, flush. Caller must hold layout-lock."
+(defn- raw-write-direct!
+  "Write string to writer, flush. Caller must hold layout-lock.
+   The ONLY place bytes actually reach the terminal — every flush here is one
+   thing the terminal can present, so anything that flushes twice for one user
+   gesture is a visible two-step. Prefer `with-frame`."
   [^java.io.Writer w ^String s]
   (when w
     (try
@@ -135,32 +138,112 @@
       (.flush w)
       (catch Exception _ nil))))
 
+;; The frame currently open on THIS thread, or nil. A dynamic var rather than a
+;; ThreadLocal: `binding` is thread-local by construction, deliberately does not
+;; propagate to threads the body spawns (a ticker thread must not join the input
+;; thread's frame), and carries no native-image build-time state.
+(def ^:private ^:dynamic *frame-batch* nil)
+
+(defn- raw-write!
+  "Contribute to the frame open on this thread, or write straight through when
+   there is none. Caller must hold layout-lock."
+  [^java.io.Writer w ^String s]
+  (if-let [^StringBuilder sb *frame-batch*]
+    (when (seq s) (.append sb ^String s))
+    (raw-write-direct! w s)))
+
+;; ----------------------------------------------------------------------------
+;; Cursor ownership
+;;
+;; Exactly one thing decides where the cursor is and whether it is visible: the
+;; frame epilogue below. Individual draw functions never emit show-cursor — they
+;; used to, and the result was a cursor that appeared wherever a given repaint
+;; happened to finish (`render-viewport!` ends on the last scrollback row, so a
+;; viewport repaint parked a VISIBLE cursor in the content area until some later
+;; write moved it back).
+;; ----------------------------------------------------------------------------
+
+;; What we believe DECTCEM is set to right now. Terminals start with the cursor
+;; shown; `init-fullscreen!` hides it. Tracked so the epilogue can emit a
+;; hide/show only on a TRANSITION: toggling visibility every frame is itself a
+;; blink source, and during a turn frames arrive ~18x/second.
+(defonce ^:private !cursor-shown? (atom true))
+
+(defn note-cursor-shown!
+  "Record that something outside the frame path made the cursor visible (the
+   external-editor handoff in `display-block-ui`). Keeps the transition
+   tracking honest; without it the next frame would skip a hide it owes."
+  []
+  (reset! !cursor-shown? true))
+
+(defn note-cursor-hidden!
+  "Counterpart of `note-cursor-shown!` — the autocomplete popover parks the
+   cursor hidden at the input line and owns it until dismissed."
+  []
+  (reset! !cursor-shown? false))
+
 (defn- frame
-  "Envelope one repaint so it is presented as a single, cursor-free frame.
+  "Envelope one repaint as a single, cursor-stable frame.
 
-   Every repaint here is a sequence of cursor moves — `cursor-to` per line on the
-   scroll path, per row in the viewport, and a jump to the status row and back in
-   `draw-status!`. All of it was written with the cursor VISIBLE and nothing
-   telling the terminal where a frame begins, so a fast burst let the terminal
-   present intermediate states: the cursor flashing at column 1 of the bottom
-   row, or parked on the status line, over text that was still being drawn.
+   A repaint is a sequence of cursor moves — `cursor-to` per line on the scroll
+   path, per row in the viewport, per row of a live block. Written bare, a fast
+   burst lets the terminal present intermediate states: the cursor flashing at
+   column 1 of each row it is about to erase.
 
-   Two mechanisms, because they cover different terminals. Synchronized output
-   (DEC 2026) is the real fix where it exists — xterm.js and tmux 3.4+ both
-   honour it — and hiding the cursor for the duration removes the artifact
-   everywhere else. Both are inert on a terminal that knows neither: an unknown
-   private mode is ignored, and the cursor is restored below.
+   Three mechanisms:
 
-   The cursor comes back only when input is active, which is the same rule
-   `maybe-show-cursor` applies — read straight from `!layout` here because this
-   sits above that helper and a repaint is not the place to grow a forward
-   declaration."
+   - Synchronized output (DEC 2026) is the real fix where it exists (xterm.js
+     and tmux 3.4+ honour it); an unknown private mode is ignored elsewhere.
+   - Hiding the cursor for the duration removes the artifact on terminals
+     without 2026.
+   - The epilogue PARKS the cursor at the input line before showing it, so a
+     frame can only ever end with the cursor hidden or on the input line —
+     never mid-content, whatever the body happened to draw last.
+
+   The hide/show pair is emitted only when it changes something. Mid-turn
+   `:input-active` is false and the cursor is already hidden, so a whole turn of
+   streaming emits ONE hide and then nothing — rather than a hide/show pair per
+   frame, which reads as blinking in its own right."
   ^String [^String body]
-  (str ansi/begin-sync
-       ansi/hide-cursor
-       body
-       (if (:input-active @!layout) ansi/show-cursor "")
-       ansi/end-sync))
+  (let [{:keys [input-active input-row input-cursor-row input-cursor-col]} @!layout
+        park  (when (and input-active input-row)
+                (ansi/cursor-to (or input-cursor-row input-row)
+                                (or input-cursor-col 3)))
+        show? (some? park)
+        prologue (if @!cursor-shown? ansi/hide-cursor "")
+        epilogue (if show? (str park ansi/show-cursor) "")]
+    (reset! !cursor-shown? show?)
+    (str ansi/begin-sync prologue body epilogue ansi/end-sync)))
+
+(defmacro with-frame
+  "Run `body` so that everything it writes is presented as ONE frame.
+
+   Reentrant: a nested `with-frame` (or any draw function called from inside
+   one) just contributes to the frame already open on this thread, and only the
+   outermost one flushes. That is what collapses a composite gesture into a
+   single presentation — `redraw-chrome!` was four separate flushes with three
+   separate show-cursors, and a page scroll was two (viewport, then separator).
+
+   Holds `layout-lock` for the whole body, so a ticker thread cannot interleave
+   its own repaint into the middle of a composite. Pass-through outside
+   fullscreen, where there is no frame to speak of."
+  [& body]
+  `(locking layout-lock
+     (if (or (not (fullscreen?)) (some? *frame-batch*))
+       (do ~@body)
+       (let [sb# (StringBuilder.)]
+         (binding [*frame-batch* sb#]
+           (try
+             ~@body
+             (finally
+               (when (pos? (.length sb#))
+                 (raw-write-direct! (get-writer) (frame (.toString sb#)))))))))))
+
+(defn draw-frame!
+  "Function form of `with-frame` for callers outside this namespace (the input
+   redraw in `terminal`). `f` is a thunk."
+  [f]
+  (with-frame (f)))
 
 ;; ============================================================================
 ;; Public Overlay Primitives
@@ -200,7 +283,7 @@
    Inline: plain write + newline."
   [s]
   (when (and s (not (str/blank? s)))
-    (locking layout-lock
+    (with-frame
       (let [w (get-writer)]
         (when w
           (if (fullscreen?)
@@ -253,11 +336,10 @@
                   ;; "no newlines, multiple emits run together" symptom.
                   (raw-write!
                    w
-                   (frame
-                    (apply str
-                           (mapcat (fn [line]
-                                     [(ansi/cursor-to scroll-bottom 1) "\n" line])
-                                   new-lines)))))))
+                   (apply str
+                          (mapcat (fn [line]
+                                    [(ansi/cursor-to scroll-bottom 1) "\n" line])
+                                  new-lines))))))
             (raw-write! w (str s "\n"))))))))
 
 (defn write-inline!
@@ -303,7 +385,7 @@
    When a popover is active, the terminal write is deferred (dirty flag set)."
   []
   (when (fullscreen?)
-    (locking layout-lock
+    (with-frame
       (if (popover-active?)
         (mark-dirty!)
         (let [w (get-writer)
@@ -332,7 +414,7 @@
   "Draw bottom separator (between input and status). Always a plain dim ─── line."
   []
   (when (fullscreen?)
-    (locking layout-lock
+    (with-frame
       (let [w (get-writer)
             {:keys [separator2-row cols]} @!layout]
         (when (and w separator2-row)
@@ -368,11 +450,6 @@
   []
   (boolean (:input-empty? @!layout)))
 
-(defn- maybe-show-cursor
-  "Return show-cursor only when :input-active is true, else empty string."
-  []
-  (if (:input-active @!layout) ansi/show-cursor ""))
-
 (defn draw-status-bar!
   "Erase + write status bar with optional left text and right-aligned status text.
    Single-arity sets right text only (left cleared). Two-arity sets both.
@@ -382,11 +459,11 @@
   ([left-text right-text]
    (swap! !layout assoc :status-text right-text :status-left left-text)
    (when (fullscreen?)
-     (locking layout-lock
+     (with-frame
        (if (popover-active?)
          (mark-dirty!)
          (let [w (get-writer)
-               {:keys [status-row input-row cols]} @!layout]
+               {:keys [status-row cols]} @!layout]
            (when (and w status-row)
              (let [left           (or left-text "")
                    right          (or right-text "")
@@ -395,18 +472,14 @@
                    ;; Gap between left text and right text
                    gap            (max 1 (- cols left-vis-len right-vis-len
                                             status-right-pad 1))]
-               (raw-write! w (frame
-                              (str (ansi/cursor-to status-row 1)
+               ;; No cursor restore here — the frame epilogue parks the cursor
+               ;; at the input line for every frame, so a body that ends on the
+               ;; status row is fine.
+               (raw-write! w (str (ansi/cursor-to status-row 1)
                                   ansi/erase-line
                                   " " left
                                   (apply str (repeat gap " "))
-                                  right
-                                  ;; Return cursor to input prompt at last known position
-                                  ;; (use tracked row so multi-row input keeps cursor on user's line)
-                                  (when input-row
-                                    (str (ansi/cursor-to (or (:input-cursor-row @!layout) input-row)
-                                                         (or (:input-cursor-col @!layout) 3))
-                                         (maybe-show-cursor))))))))))))))
+                                  right))))))))))
 
 (defn draw-tab-strip!
   "Paint the tab strip row (between separator2 and status). `text` is a pre-styled
@@ -420,19 +493,15 @@
   ([text]
    (swap! !layout assoc :tab-strip-text (or text ""))
    (when (fullscreen?)
-     (locking layout-lock
+     (with-frame
        (if (popover-active?)
          (mark-dirty!)
          (let [w (get-writer)
-               {:keys [tab-row input-row]} @!layout]
+               {:keys [tab-row]} @!layout]
            (when (and w tab-row)
              (raw-write! w (str (ansi/cursor-to tab-row 1)
                                 ansi/erase-line
-                                (or text "")
-                                (when input-row
-                                  (str (ansi/cursor-to (or (:input-cursor-row @!layout) input-row)
-                                                       (or (:input-cursor-col @!layout) 3))
-                                       (maybe-show-cursor))))))))))))
+                                (or text ""))))))))))
 
 (defn set-input-cursor-col!
   "Track the current cursor column in the input row (1-based).
@@ -452,14 +521,13 @@
   "Erase + write prompt at input-row, position cursor after prompt text."
   [prompt]
   (when (fullscreen?)
-    (locking layout-lock
+    (with-frame
       (let [w (get-writer)
             {:keys [input-row]} @!layout]
         (when (and w input-row)
           (raw-write! w (str (ansi/cursor-to input-row 1)
                              ansi/erase-line
-                             prompt
-                             (maybe-show-cursor))))))))
+                             prompt)))))))
 
 (defn restore-input-cursor!
   "Reposition the hardware cursor back to the input prompt at its last
@@ -472,14 +540,15 @@
    known, or under a popover (which owns the cursor)."
   []
   (when (fullscreen?)
-    (locking layout-lock
+    (with-frame
       (when-not (popover-active?)
         (let [w (get-writer)
               {:keys [input-row input-cursor-row input-cursor-col]} @!layout]
           (when (and w input-row)
-            (raw-write! w (str (ansi/cursor-to (or input-cursor-row input-row)
-                                               (or input-cursor-col 3))
-                               (maybe-show-cursor)))))))))
+            ;; The park is the frame epilogue's job; this body only has to be
+            ;; non-empty so the frame actually flushes one.
+            (raw-write! w (ansi/cursor-to (or input-cursor-row input-row)
+                                          (or input-cursor-col 3)))))))))
 
 ;; ============================================================================
 ;; Viewport Scrolling
@@ -493,7 +562,7 @@
    When a popover is active, the terminal write is deferred (dirty flag set)."
   []
   (when (fullscreen?)
-    (locking layout-lock
+    (with-frame
       (if (popover-active?)
         (mark-dirty!)
         (let [w (get-writer)
@@ -535,52 +604,56 @@
                       (.append sb ^String (if (= sb-idx highlight-idx)
                                             (highlight-line line)
                                             line))))))
-              (raw-write! w (frame (.toString sb))))))))))
+              (raw-write! w (.toString sb)))))))))
 
 (defn scroll-page-up!
   "Scroll viewport up by one page. Clamps to max offset."
   []
   (when (fullscreen?)
-    (let [{:keys [scroll-bottom]} @!layout
-          total (count @!scrollback)
-          max-offset (max 0 (- total scroll-bottom))]
-      (swap! !layout update :viewport-offset
-             (fn [off] (min max-offset (+ off scroll-bottom))))
-      (render-viewport!)
-      (draw-separator!))))
+    (with-frame
+      (let [{:keys [scroll-bottom]} @!layout
+            total (count @!scrollback)
+            max-offset (max 0 (- total scroll-bottom))]
+        (swap! !layout update :viewport-offset
+               (fn [off] (min max-offset (+ off scroll-bottom))))
+        (render-viewport!)
+        (draw-separator!)))))
 
 (defn scroll-page-down!
   "Scroll viewport down by one page. Clamps to 0 (live)."
   []
   (when (fullscreen?)
-    (let [{:keys [scroll-bottom]} @!layout]
-      (swap! !layout update :viewport-offset
-             (fn [off] (max 0 (- off scroll-bottom))))
-      (render-viewport!)
-      (draw-separator!))))
+    (with-frame
+      (let [{:keys [scroll-bottom]} @!layout]
+        (swap! !layout update :viewport-offset
+               (fn [off] (max 0 (- off scroll-bottom))))
+        (render-viewport!)
+        (draw-separator!)))))
 
 (defn scroll-lines-up!
   "Scroll viewport up by n lines (default 3). Clamps to max offset."
   ([] (scroll-lines-up! 3))
   ([n]
    (when (fullscreen?)
-     (let [{:keys [scroll-bottom]} @!layout
-           total (count @!scrollback)
-           max-offset (max 0 (- total scroll-bottom))]
-       (swap! !layout update :viewport-offset
-              (fn [off] (min max-offset (+ off n))))
-       (render-viewport!)
-       (draw-separator!)))))
+     (with-frame
+       (let [{:keys [scroll-bottom]} @!layout
+             total (count @!scrollback)
+             max-offset (max 0 (- total scroll-bottom))]
+         (swap! !layout update :viewport-offset
+                (fn [off] (min max-offset (+ off n))))
+         (render-viewport!)
+         (draw-separator!))))))
 
 (defn scroll-lines-down!
   "Scroll viewport down by n lines (default 3). Clamps to 0 (live)."
   ([] (scroll-lines-down! 3))
   ([n]
    (when (fullscreen?)
-     (swap! !layout update :viewport-offset
-            (fn [off] (max 0 (- off n))))
-     (render-viewport!)
-     (draw-separator!))))
+     (with-frame
+       (swap! !layout update :viewport-offset
+              (fn [off] (max 0 (- off n))))
+       (render-viewport!)
+       (draw-separator!)))))
 
 (defn scroll-to-bottom!
   "Reset viewport to live output (offset 0). No-op if already at bottom."
@@ -624,36 +697,39 @@
 
 (defn- render-block-rows!
   "Re-render only the viewport rows that overlap with scrollback range
-   [block-start, block-start+line-count). Restores cursor to input prompt.
-   Caller must hold layout-lock.
+   [block-start, block-start+line-count).
+
+   THE hot path: every live-block tick lands here — the 150ms think ticker, the
+   1s ACP/task/iteration/subagent tickers, and every streamed chunk — because
+   `update-live-block!` only falls back to a full `render-viewport!` when the
+   block's line COUNT changes. It must therefore be framed; unframed it was ~18
+   naked presentations per second during a turn.
+
    When a popover is active, the terminal write is deferred (dirty flag set)."
   [block-start line-count]
   (when (fullscreen?)
-    (if (popover-active?)
-      (mark-dirty!)
-      (let [w (get-writer)
-            {:keys [scroll-bottom viewport-offset input-row input-cursor-col input-cursor-row]} @!layout
-            lines @!scrollback
-            total (count lines)
-            view-end   (- total viewport-offset)
-            view-start (max 0 (- view-end scroll-bottom))
-            block-end  (+ block-start line-count)
-            vis-start  (max block-start view-start)
-            vis-end    (min block-end view-end)]
-        (when (and w (< vis-start vis-end))
-          (let [sb (StringBuilder.)
-                blank-rows (max 0 (- scroll-bottom (- view-end view-start)))]
-            (doseq [idx (range vis-start vis-end)]
-              (let [row (+ 1 blank-rows (- idx view-start))]
-                (.append sb (ansi/cursor-to row 1))
-                (.append sb ^String ansi/erase-line)
-                (.append sb ^String (get lines idx ""))))
-            ;; Restore cursor to input prompt — use tracked row/col so multi-row
-            ;; input keeps the cursor on the user's actual line, not the top.
-            (when input-row
-              (.append sb (ansi/cursor-to (or input-cursor-row input-row)
-                                          (or input-cursor-col 3))))
-            (raw-write! w (.toString sb))))))))
+    (with-frame
+      (if (popover-active?)
+        (mark-dirty!)
+        (let [w (get-writer)
+              {:keys [scroll-bottom viewport-offset]} @!layout
+              lines @!scrollback
+              total (count lines)
+              view-end   (- total viewport-offset)
+              view-start (max 0 (- view-end scroll-bottom))
+              block-end  (+ block-start line-count)
+              vis-start  (max block-start view-start)
+              vis-end    (min block-end view-end)]
+          (when (and w (< vis-start vis-end))
+            (let [sb (StringBuilder.)
+                  blank-rows (max 0 (- scroll-bottom (- view-end view-start)))]
+              (doseq [idx (range vis-start vis-end)]
+                (let [row (+ 1 blank-rows (- idx view-start))]
+                  (.append sb (ansi/cursor-to row 1))
+                  (.append sb ^String ansi/erase-line)
+                  (.append sb ^String (get lines idx ""))))
+              ;; No cursor restore — the frame epilogue parks it at the input line.
+              (raw-write! w (.toString sb)))))))))
 
 (defn- sticky-bottom-entry
   "Return [id block] of the first sticky-bottom live block, or nil.
@@ -679,7 +755,7 @@
   ([block-id new-lines] (update-live-block! block-id new-lines nil))
   ([block-id new-lines opts]
    (let [sticky? (boolean (:sticky-bottom? opts))]
-     (locking layout-lock
+     (with-frame
        (if-let [existing (get @!live-blocks block-id)]
          ;; Existing block: splice in-place (preserve original sticky flag)
          (let [{:keys [start-idx line-count sticky-bottom?]} existing
@@ -756,8 +832,9 @@
       ;; Repaint scrollback so the removed rows are gone
       (if (popover-active?)
         (mark-dirty!)
-        (do (render-viewport!)
-            (draw-separator!))))))
+        (with-frame
+          (render-viewport!)
+          (draw-separator!))))))
 
 (defn- earliest-live-block-idx
   "Return the start-idx of the earliest live block, or nil if none."
@@ -830,23 +907,22 @@
    ANSI code and redraw everything (scrollback + sticky areas + chrome).
    Caller should NOT hold layout-lock (callees acquire it)."
   [scroll-bottom]
-  ;; Update scroll region
-  (locking layout-lock
+  ;; One frame for the whole rebuild: scroll region, scrollback, sticky areas
+  ;; and every piece of chrome. Separately these were seven presentations of a
+  ;; half-drawn screen.
+  (with-frame
     (let [w (get-writer)]
       (when w
-        (raw-write! w (str (ansi/set-scroll-region 1 scroll-bottom))))))
-  ;; Redraw scrollback in resized region
-  (render-viewport!)
-  ;; Redraw sticky areas
-  (draw-agent-activity-area!)
-  (draw-task-activity-area!)
-  ;; Redraw all chrome
-  (draw-separator!)
-  (draw-bottom-separator!)
-  (draw-tab-strip!)
-  (let [{:keys [status-text status-left]} @!layout]
-    (when (seq status-text)
-      (draw-status-bar! status-left status-text))))
+        (raw-write! w (str (ansi/set-scroll-region 1 scroll-bottom)))))
+    (render-viewport!)
+    (draw-agent-activity-area!)
+    (draw-task-activity-area!)
+    (draw-separator!)
+    (draw-bottom-separator!)
+    (draw-tab-strip!)
+    (let [{:keys [status-text status-left]} @!layout]
+      (when (seq status-text)
+        (draw-status-bar! status-left status-text)))))
 
 (defn resize-sticky-areas!
   "Resize scroll region and redraw everything for new sticky area heights.
@@ -948,7 +1024,7 @@
                 (let [row (+ start-row idx)]
                   (.append sb (ansi/cursor-to row 1))
                   (.append sb ^String ansi/erase-line)))
-              (locking layout-lock
+              (with-frame
                 (raw-write! w (.toString sb))))))))))
 
 (defn update-task-activity!
@@ -1009,7 +1085,7 @@
                 (let [row (+ start-row idx)]
                   (.append sb (ansi/cursor-to row 1))
                   (.append sb ^String ansi/erase-line)))
-              (locking layout-lock
+              (with-frame
                 (raw-write! w (.toString sb))))))))))
 
 (defn update-agent-activity!
@@ -1092,26 +1168,24 @@
 ;; ============================================================================
 
 (defn redraw-chrome!
-  "Redraw separators + status bar + sticky areas, then return cursor to input prompt.
-   Fixes corruption from Enter-induced scrolling."
+  "Redraw separators + status bar + sticky areas as ONE frame.
+   Fixes corruption from Enter-induced scrolling.
+
+   Was four separate flushes carrying three separate show-cursors, so a single
+   Enter presented the chrome in four steps with the cursor re-appearing in
+   between. The cursor is not restored here at all any more — the frame epilogue
+   parks it at the input line, which is the only place it may end up."
   []
   (when (fullscreen?)
-    (draw-separator!)
-    (draw-agent-activity-area!)
-    (draw-task-activity-area!)
-    (draw-bottom-separator!)
-    (draw-tab-strip!)
-    (let [{:keys [status-text status-left input-row input-cursor-col input-cursor-row]} @!layout]
-      (if (seq status-text)
-        ;; draw-status-bar! restores cursor to input row
-        (draw-status-bar! status-left status-text)
-        ;; No status text — manually return cursor to input prompt
-        (when input-row
-          (locking layout-lock
-            (when-let [w (get-writer)]
-              (raw-write! w (str (ansi/cursor-to (or input-cursor-row input-row)
-                                                 (or input-cursor-col 3))
-                                 (maybe-show-cursor))))))))))
+    (with-frame
+      (draw-separator!)
+      (draw-agent-activity-area!)
+      (draw-task-activity-area!)
+      (draw-bottom-separator!)
+      (draw-tab-strip!)
+      (let [{:keys [status-text status-left]} @!layout]
+        (when (seq status-text)
+          (draw-status-bar! status-left status-text))))))
 
 (defn handle-resize!
   "Handle terminal resize: refresh dimensions, recalculate row layout,
@@ -1156,22 +1230,23 @@
                  :menu-height menu-h
                  :input-height input-h
                  :input-height-max input-h-max)
-          (locking layout-lock
+          ;; One frame: clear, region, scrollback replay, sticky areas, chrome.
+          ;; A resize that presents in seven steps is a visibly rebuilding screen.
+          (with-frame
             (let [w (get-writer)]
               (when w
                 (raw-write! w (str ansi/clear-screen
                                    (ansi/set-scroll-region 1 scroll-bottom)
                                    ansi/enable-alt-scroll
-                                   (ansi/cursor-to 1 1))))))
-          ;; Replay visible scrollback in the new scroll region
-          (render-viewport!)
-          (draw-agent-activity-area!)
-          (draw-task-activity-area!)
-          (draw-separator!)
-          (draw-bottom-separator!)
-          (draw-tab-strip!)
-          (when (seq st)
-            (draw-status-bar! sl st)))))))
+                                   (ansi/cursor-to 1 1)))))
+            (render-viewport!)
+            (draw-agent-activity-area!)
+            (draw-task-activity-area!)
+            (draw-separator!)
+            (draw-bottom-separator!)
+            (draw-tab-strip!)
+            (when (seq st)
+              (draw-status-bar! sl st))))))))
 
 (defn init-fullscreen!
   "Enter alt screen, set up scroll region + chrome.
@@ -1233,6 +1308,9 @@
                                  ;; Start at bottom of scroll region so content
                                  ;; anchors near the input area, not at row 1
                                  (ansi/cursor-to scroll-bottom 1))))))
+        ;; We just hid the cursor; keep the transition tracking in step so the
+        ;; first frame does not emit a redundant hide.
+        (note-cursor-hidden!)
         true))))
 
 (defn teardown!
@@ -1250,6 +1328,7 @@
                                ansi/reset-scroll-region
                                ansi/show-cursor
                                ansi/leave-alt-screen))
+            (note-cursor-shown!)
             ;; Replay buffered output so it's in terminal scrollback
             (when (seq final-lines)
               (raw-write! w (str (str/join "\n" final-lines) "\n"))))))

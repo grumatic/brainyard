@@ -402,8 +402,14 @@
           ;; instead of snapping to the top of the input block.
           (.append sb (ansi/cursor-to screen-cursor-row screen-cursor-col))
           (layout/set-input-cursor-pos! screen-cursor-row screen-cursor-col)
-          (layout/draw-overlay!
-           (fn [w] (layout/raw-write-unsafe! w (.toString sb))))))
+          ;; `draw-frame!`, not `draw-overlay!`: this fires on every keystroke,
+          ;; and unframed the cursor was visibly jumping to column 1 of the input
+          ;; row to erase it and back again for each character typed. The frame
+          ;; also re-parks the cursor at the position stamped just above, so the
+          ;; input line is the one place a frame can leave it visible.
+          (layout/draw-frame!
+           (fn [] (layout/draw-overlay!
+                   (fn [w] (layout/raw-write-unsafe! w (.toString sb))))))))
       ;; Inline mode — single-line with placeholder behavior preserved
       (let [line (if buf-empty?
                    (str prompt (ansi/muted placeholder))

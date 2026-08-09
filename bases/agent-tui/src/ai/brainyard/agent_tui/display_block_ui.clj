@@ -184,6 +184,9 @@
                (.write ^java.io.Writer w "[?25h")
                (.write ^java.io.Writer w "[2J[H")
                (.flush ^java.io.Writer w))))
+          ;; Handing the terminal to $EDITOR with the cursor shown — tell the
+          ;; frame epilogue, or it will skip the hide it owes on return.
+          (layout/note-cursor-shown!)
           (when term-ns (term-ns))
           (let [cmd-str (str editor " "
                              (pr-str path)
@@ -198,6 +201,7 @@
                  (.write ^java.io.Writer w "[?1049h")
                  (.write ^java.io.Writer w "[?25l")
                  (.flush ^java.io.Writer w)))
+              (layout/note-cursor-hidden!)
               (try (layout/handle-resize!) (catch Exception _)))
             (when start-input (start-input System/in))))
         path))))
