@@ -138,6 +138,56 @@
    :as "Effective working directory for tools/agents (default: $BY_WORKING_DIR, else process cwd)"
    :type :string})
 
+(def config-opt
+  {:option "config"
+   :as (str "Agent config overrides for this session, as an EDN map — e.g. "
+            "'{:acp-backend-opts {:model \"claude-opus-5\" :env {:ANTHROPIC_MODEL \"claude-opus-5\"}}}'. "
+            "Keys must be config-schema keys. Seeded as per-agent overrides, and they win over the "
+            "equivalent flags.")
+   :type :string})
+
+(defn- parse-config-overrides
+  "Read `--config` into a validated map of config-schema keys, or nil when the
+   flag was absent.
+
+   Refuses rather than warns. A typo'd key here is silent by nature — the
+   session starts, the knob keeps its default, and the only symptom is behaviour
+   that looks like the flag was ignored, which is exactly what happened. The
+   read-only check is the same argument: those keys are reported by the runtime,
+   so accepting one would mean promising something the session cannot deliver.
+
+   Returns [overrides nil] or [nil error-message]."
+  [s]
+  (if (str/blank? (str s))
+    [nil nil]
+    (let [v (try (edn/read-string s)
+                 (catch Exception e
+                   {::unreadable (.getMessage e)}))]
+      (cond
+        (::unreadable v)
+        [nil (str "--config is not readable EDN: " (::unreadable v))]
+
+        (not (map? v))
+        [nil (str "--config must be an EDN map, got " (some-> v class .getSimpleName))]
+
+        :else
+        (let [ks       (set (keys v))
+              non-kw   (remove keyword? ks)
+              unknown  (remove agent/config-keys (filter keyword? ks))
+              readonly (filter agent/read-only-key? (filter keyword? ks))]
+          (cond
+            (seq non-kw)
+            [nil (str "--config keys must be keywords; got " (str/join ", " (map pr-str non-kw)))]
+
+            (seq unknown)
+            [nil (str "--config names unknown config keys: " (str/join ", " (map pr-str unknown))
+                      ". See `by config` / the config schema for valid keys.")]
+
+            (seq readonly)
+            [nil (str "--config names read-only config keys: " (str/join ", " (map pr-str readonly)))]
+
+            :else [v nil]))))))
+
 (def json-opt
   {:option "json" :as "Output machine-readable JSON instead of a table"
    :type :with-flag :default false})
@@ -659,6 +709,14 @@
         ;; resolves BY_USER_ID / user.name once at session creation.
         user-id (some-> (:user-id opts) str/trim not-empty)
 
+        ;; Refused before the session exists, not after: a bad --config that
+        ;; started a session anyway would leave one to clean up, configured the
+        ;; way the caller was trying to avoid.
+        [config-overrides config-err] (parse-config-overrides (:config opts))
+        _ (when config-err
+            (emit-err! config-err)
+            (System/exit 1))
+
         base-args (if (= agent-id :acp-agent)
                     (cond-> [:agent-id agent-id
                              :acp-backend provider
@@ -669,6 +727,7 @@
                              :mode (:mode probe)]
                       model (into [:lm-model model])))
         run-args (cond-> base-args
+                   (seq config-overrides) (into [:config-overrides config-overrides])
                    inline?    (into [:inline true])
                    serve?     (into [:serve true])
                    verbose?   (into [:display-format :verbose])
@@ -2202,16 +2261,16 @@
     (:refresh opts) (cmd-models-refresh opts)
     (:drift opts)   (cmd-models-drift opts)
     :else
-  (let [models (do (install-catalog-cache!) (clj-llm/get-popular-models))
-        provider-filter (some-> (:provider opts) keyword)]
-    (if (empty? models)
-      (println "No models registered.")
-      (let [n (format-models-table models provider-filter)]
-        (if (and provider-filter (zero? n))
-          (println (str "No models found for provider: " (name provider-filter)))
-          (println (str n " model(s) listed."
-                        (when provider-filter
-                          (str " (filtered to " (name provider-filter) ")"))))))))))
+    (let [models (do (install-catalog-cache!) (clj-llm/get-popular-models))
+          provider-filter (some-> (:provider opts) keyword)]
+      (if (empty? models)
+        (println "No models registered.")
+        (let [n (format-models-table models provider-filter)]
+          (if (and provider-filter (zero? n))
+            (println (str "No models found for provider: " (name provider-filter)))
+            (println (str n " model(s) listed."
+                          (when provider-filter
+                            (str " (filtered to " (name provider-filter) ")"))))))))))
 
 ;; ============================================================================
 ;; Subcommand: config — interactive environment bootstrap
@@ -2752,6 +2811,7 @@
                   :opts        [agent-opt
                                 provider-opt
                                 model-opt
+                                config-opt
                                 user-id-opt
                                 working-dir-opt
                                 {:option "inline" :short "i" :as "Inline mode (no alt screen)"

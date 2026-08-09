@@ -1134,8 +1134,15 @@
 
    Returns the agent instance with permission-fn, user-feedback-fn, and dirs configured."
   [agent-id & {:keys [user-id session-id max-iterations instance-id display-format
-                      acp-backend acp-backend-opts]}]
+                      acp-backend acp-backend-opts config-overrides]}]
   (let [user-id  (or user-id (helpers/resolve-user-id))
+        ;; `:config-overrides` is the general form of the specific options above:
+        ;; any config-schema key, seeded as a per-agent override. It is applied
+        ;; LAST and therefore wins — it exists to say what no flag can (a nested
+        ;; `:acp-backend-opts` carrying `:env`, say), and a flag that contradicts
+        ;; it is the vaguer statement of the two.
+        acp-backend      (or (:acp-backend config-overrides) acp-backend)
+        acp-backend-opts (or (:acp-backend-opts config-overrides) acp-backend-opts)
         sess-id  (or session-id
                      (throw (ex-info "create-tui-agent! requires :session-id" {})))
         ;; Resolve the effective agent type. A persisted session may name an
@@ -1190,7 +1197,10 @@
                                 ;; are config-schema keys, so they seed per-agent
                                 ;; overrides read by config/get-config.
                                 acp-backend (assoc :acp-backend acp-backend)
-                                acp-backend-opts (assoc :acp-backend-opts acp-backend-opts)))
+                                acp-backend-opts (assoc :acp-backend-opts acp-backend-opts)
+                                ;; Every other config-schema key the caller
+                                ;; named. Merged last for the reason above.
+                                (seq config-overrides) (merge config-overrides)))
         ;; Defense-in-depth: the fallback above guarantees a registered type, so
         ;; invoke-tool returns a real Agent — but surface any residual setup
         ;; failure as a clear error rather than a downstream nil-swap! NPE.
@@ -1307,7 +1317,7 @@
    Returns: :ok"
   [& {:keys [agent-id user-id session-id max-iterations display-format
              lm-provider lm-model inline mode resume? skip-banner
-             acp-backend acp-backend-opts]
+             acp-backend acp-backend-opts config-overrides]
       :or {agent-id :coact-agent
            display-format :normal
            inline false
@@ -1520,7 +1530,8 @@
                               :max-iterations max-iter
                               :display-format display-format
                               :acp-backend acp-backend
-                              :acp-backend-opts acp-backend-opts)
+                              :acp-backend-opts acp-backend-opts
+                              :config-overrides config-overrides)
         ;; Resume hydration step: replay the persisted usage-tracker snap
         ;; into the freshly-minted tracker atom inside ag's session config
         ;; (the agent's init created an empty one — we overwrite from disk).

@@ -302,6 +302,7 @@
 
 (export-symbols ai.brainyard.agent.core.config
                 config-schema config-keys default-config
+                read-only-keys read-only-key?
                 coerce-config-value valid-config-value?
                 migrate-legacy-edn-shape
                 !global-config load-global-config! invalidate-global-config!
