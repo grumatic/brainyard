@@ -78,6 +78,7 @@
 (defn- set-model!*       [& args] (apply acp-client/set-model! args))
 (defn- resolve-model-id* [& args] (apply acp-client/resolve-model-id args))
 (defn- prompt!*          [& args] (apply acp-client/prompt! args))
+(defn- cancel!*          [& args] (apply acp-client/cancel! args))
 (defn- close!*           [& args] (apply acp-client/close! args))
 (defn- translate-update* [& args] (apply acp-client/translate-update args))
 (defn- pick-option-id*   [& args] (apply acp-client/pick-option-id args))
@@ -404,6 +405,61 @@
                       :error  (ex-message t)))))))
 
 ;; =============================================================================
+;; Giving up on a turn
+;; =============================================================================
+
+(defn- humanize-ms
+  "A duration a person can read back to a config value: 600000 -> \"10m\"."
+  [ms]
+  (let [s (long (/ (or ms 0) 1000))]
+    (cond
+      (< s 60)        (str s "s")
+      (zero? (mod s 60)) (str (quot s 60) "m")
+      :else           (format "%dm %ds" (quot s 60) (mod s 60)))))
+
+(defn- cancel-in-flight!
+  "Tell the backend to stop the prompt we just gave up on. Returns true when the
+   cancel was handed to the transport.
+
+   `session/cancel` is a notification, so there is no acknowledgement to report —
+   true means \"sent\", not \"stopped\". The backend winds the turn down on its
+   own; we are no longer listening either way.
+
+   Nothing used to send this. `await-result` timing out only ended brainyard's
+   WAIT — the subprocess carried on working and billing for a turn no one would
+   ever read, and its later `session/update` notifications arrived for a turn
+   that had already been closed. The prompt is what gets cancelled, not the ACP
+   session: the connection stays usable for the next ask.
+
+   Short deadline and non-throwing on purpose: this runs on the failure path of a
+   turn that has already failed, and a backend wedged badly enough to ignore a
+   cancel must not also hold up the error the caller is waiting for."
+  [agent]
+  (boolean
+   (when-let [sess (get @(:!state agent) session-key)]
+     (try
+       (cancel!* sess {:timeout-ms 5000})
+       (mulog/info ::acp-prompt-cancelled :agent-id (:agent-id agent))
+       true
+       (catch Throwable t
+         (mulog/warn ::acp-prompt-cancel-failed :error (ex-message t))
+         false)))))
+
+(defn- timeout-answer
+  "What the user reads when a turn is cut off — the cap that cut it, whether the
+   backend was actually stopped, and the knob that changes it. The bare
+   \"ACP error: ACP await timeout\" this replaces named the exception and nothing
+   a reader could act on."
+  [cap-ms cancelled?]
+  (str "⏱ Turn cut off after " (humanize-ms cap-ms)
+       " — the backend was still working when `:acp-timeout-ms` (" cap-ms "ms) ran out. "
+       (if cancelled?
+         "A cancel was sent, so the backend should stop shortly. "
+         "The cancel could NOT be delivered, so the backend may still be running. ")
+       "Anything it produced after the cut-off is lost. "
+       "Raise `:acp-timeout-ms` in config.edn for genuinely long turns."))
+
+;; =============================================================================
 ;; Trajectory
 ;; =============================================================================
 
@@ -509,20 +565,37 @@
                      {:agent agent :usage {} :reasoning nil})
         p/success)
       (catch Throwable t
-        (mulog/error ::acp-prompt-action-error :error (ex-message t))
-        (let [answer (str "ACP error: " (ex-message t))]
+        ;; A timeout is not the same failure as a dead backend: the backend is
+        ;; alive and working, we simply stopped waiting. So it gets its own stop
+        ;; reason, its own cancel, and its own wording.
+        (let [timeout?   (= :acp/timeout (:type (ex-data t)))
+              cap-ms     (config/get-config agent :acp-timeout-ms)
+              cancelled? (when timeout? (cancel-in-flight! agent))
+              answer     (if timeout?
+                           (timeout-answer cap-ms cancelled?)
+                           (str "ACP error: " (ex-message t)))
+              reason     (if timeout? "timeout" "error")]
+          (mulog/error ::acp-prompt-action-error
+                       :error (ex-message t) :timeout? timeout? :cancelled? cancelled?)
           (swap! st-memory assoc
                  :answer answer
                  :goal-achieved false
-                 :stop-reason "error")
+                 :stop-reason reason)
           ;; A failed turn is recorded too. "The backend died here, on this
           ;; question" is exactly what someone reading the trajectory afterwards
           ;; needs, and dropping it would make the log silently skip turns.
           (record-turn! agent {:question question
                                :answer answer
                                :success false
-                               :terminated-by "error"
-                               :turn (:prompts (descriptor agent))
+                               :terminated-by reason
+                               ;; The descriptor's counter is bumped on the
+                               ;; SUCCESS path only, so on this one it still
+                               ;; reads the previous turn — and nil on a
+                               ;; connection whose first prompt is the one that
+                               ;; just failed, which is how these records came
+                               ;; out numbered `:turn nil`. This is the turn that
+                               ;; would have been.
+                               :turn (inc (or (:prompts (descriptor agent)) 0))
                                :started-at started-at}))
         p/failure))))
 

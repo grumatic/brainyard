@@ -150,17 +150,23 @@
 ;; =============================================================================
 
 (defn cancel!
-  "Send `session/cancel` for an in-flight prompt. Returns once the
-   agent acknowledges the cancel; the in-flight `prompt!` future will
-   then resolve with `:stop-reason \"cancelled\"`."
+  "Send `session/cancel` for an in-flight prompt.
+
+   A NOTIFICATION, not a request. ACP defines no response for this method, so
+   sending it with an id and awaiting a result could only ever fail — the
+   claude-code adapter answers `\"Method not found\": session/cancel`, which is
+   exactly what it did the first time anything called this. Nothing had, so the
+   defect sat here unnoticed.
+
+   Returns nil as soon as the frame is written. There is no acknowledgement to
+   wait for: the in-flight `prompt!` resolves on its own with
+   `:stop-reason \"cancelled\"` once the agent winds the turn down.
+
+   `opts` is accepted and ignored, so the old timeout-bearing call shape keeps
+   working — there is no longer anything for a timeout to bound."
   ([sess] (cancel! sess {}))
-  ([{:keys [session-id client] :as _sess} {:keys [timeout-ms]
-                                           :or   {timeout-ms 5000}}]
-   (client/await-result
-    client
-    (client/request! client "session/cancel" {:sessionId session-id}
-                     {:timeout-ms timeout-ms})
-    timeout-ms)))
+  ([{:keys [session-id client] :as _sess} _opts]
+   (client/notify! client "session/cancel" {:sessionId session-id})))
 
 ;; =============================================================================
 ;; Iteration helpers — caller fires these via its own hook system if
