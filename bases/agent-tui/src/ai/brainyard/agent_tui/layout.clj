@@ -135,6 +135,33 @@
       (.flush w)
       (catch Exception _ nil))))
 
+(defn- frame
+  "Envelope one repaint so it is presented as a single, cursor-free frame.
+
+   Every repaint here is a sequence of cursor moves — `cursor-to` per line on the
+   scroll path, per row in the viewport, and a jump to the status row and back in
+   `draw-status!`. All of it was written with the cursor VISIBLE and nothing
+   telling the terminal where a frame begins, so a fast burst let the terminal
+   present intermediate states: the cursor flashing at column 1 of the bottom
+   row, or parked on the status line, over text that was still being drawn.
+
+   Two mechanisms, because they cover different terminals. Synchronized output
+   (DEC 2026) is the real fix where it exists — xterm.js and tmux 3.4+ both
+   honour it — and hiding the cursor for the duration removes the artifact
+   everywhere else. Both are inert on a terminal that knows neither: an unknown
+   private mode is ignored, and the cursor is restored below.
+
+   The cursor comes back only when input is active, which is the same rule
+   `maybe-show-cursor` applies — read straight from `!layout` here because this
+   sits above that helper and a repaint is not the place to grow a forward
+   declaration."
+  ^String [^String body]
+  (str ansi/begin-sync
+       ansi/hide-cursor
+       body
+       (if (:input-active @!layout) ansi/show-cursor "")
+       ansi/end-sync))
+
 ;; ============================================================================
 ;; Public Overlay Primitives
 ;; ============================================================================
@@ -226,10 +253,11 @@
                   ;; "no newlines, multiple emits run together" symptom.
                   (raw-write!
                    w
-                   (apply str
-                          (mapcat (fn [line]
-                                    [(ansi/cursor-to scroll-bottom 1) "\n" line])
-                                  new-lines))))))
+                   (frame
+                    (apply str
+                           (mapcat (fn [line]
+                                     [(ansi/cursor-to scroll-bottom 1) "\n" line])
+                                   new-lines)))))))
             (raw-write! w (str s "\n"))))))))
 
 (defn write-inline!
@@ -367,7 +395,8 @@
                    ;; Gap between left text and right text
                    gap            (max 1 (- cols left-vis-len right-vis-len
                                             status-right-pad 1))]
-               (raw-write! w (str (ansi/cursor-to status-row 1)
+               (raw-write! w (frame
+                              (str (ansi/cursor-to status-row 1)
                                   ansi/erase-line
                                   " " left
                                   (apply str (repeat gap " "))
@@ -377,7 +406,7 @@
                                   (when input-row
                                     (str (ansi/cursor-to (or (:input-cursor-row @!layout) input-row)
                                                          (or (:input-cursor-col @!layout) 3))
-                                         (maybe-show-cursor)))))))))))))
+                                         (maybe-show-cursor))))))))))))))
 
 (defn draw-tab-strip!
   "Paint the tab strip row (between separator2 and status). `text` is a pre-styled
@@ -506,7 +535,7 @@
                       (.append sb ^String (if (= sb-idx highlight-idx)
                                             (highlight-line line)
                                             line))))))
-              (raw-write! w (.toString sb)))))))))
+              (raw-write! w (frame (.toString sb))))))))))
 
 (defn scroll-page-up!
   "Scroll viewport up by one page. Clamps to max offset."

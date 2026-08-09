@@ -262,6 +262,14 @@
 (def restore-cursor (str esc "u"))
 (def hide-cursor    (str esc "?25l"))
 (def show-cursor    (str esc "?25h"))
+
+;; Synchronized output (DEC private mode 2026). Between these two, a terminal
+;; that understands them buffers everything and presents it as ONE frame instead
+;; of painting as bytes arrive — so a repaint made of many cursor moves can never
+;; be shown half-finished. Terminals that don't understand it ignore an unknown
+;; private mode, which is why this is safe to emit unconditionally.
+(def begin-sync (str esc "?2026h"))
+(def end-sync   (str esc "?2026l"))
 (def enter-alt-screen (str esc "?1049h"))
 (def leave-alt-screen (str esc "?1049l"))
 (def clear-screen     (str esc "2J"))

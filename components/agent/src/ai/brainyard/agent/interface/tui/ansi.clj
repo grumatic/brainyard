@@ -35,6 +35,7 @@
                 h-line v-line tl-corner tr-corner bl-corner br-corner
                 check cross-mark arrow left-arrow bullet ellipsis
                 save-cursor restore-cursor hide-cursor show-cursor
+                begin-sync end-sync
                 enter-alt-screen leave-alt-screen clear-screen
                 reset-scroll-region erase-line
                 enable-alt-scroll disable-alt-scroll
