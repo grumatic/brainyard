@@ -46,9 +46,11 @@
   (:require [ai.brainyard.acp-client.interface :as acp-client]
             [ai.brainyard.agent.common.auth :as auth]
             [ai.brainyard.agent.common.schema :as acs]
+            [ai.brainyard.agent.common.trajectory :as trajectory]
             [ai.brainyard.agent.core.agent :as agent]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.hooks :as hooks]
+            [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.session :as session]
             [ai.brainyard.agent.core.tool :refer [defagent]]
             [ai.brainyard.behavior-tree.interface :as bt :refer [st-memory-has-value?]]
@@ -402,6 +404,50 @@
                       :error  (ex-message t)))))))
 
 ;; =============================================================================
+;; Trajectory
+;; =============================================================================
+
+(defn- record-turn!
+  "Append one trajectory record for an ACP turn.
+
+   The recorder lives in coact's turn epilogue, which an acp-agent never reaches
+   — its whole tree is a single ACP round-trip, so ACP sessions wrote no
+   `trajectory.edn` at all. Their questions and answers were kept only in
+   `messages.log` and the scrollback, which nothing reads back: a resumed ACP
+   session had no per-turn record to show, and the analytics/trajectory surfaces
+   were empty for the one agent type whose transcript lives entirely in another
+   process.
+
+   `:iterations` is empty by nature, not by omission: the backend owns the
+   iteration loop, so brainyard sees one prompt and one answer. The model
+   recorded is the EFFECTIVE one (what the backend actually served), falling back
+   to the label that was requested when a session never opened.
+
+   Best-effort, exactly like coact's: a write failure must never fail a turn
+   that already produced an answer."
+  [agent {:keys [question answer success terminated-by turn started-at]}]
+  (when (and agent (config/get-config agent :enable-trajectory-recording))
+    (try
+      (when-let [sid (some-> (proto/session-id agent) str)]
+        (let [d (descriptor agent)]
+          (trajectory/append-trajectory!
+           sid
+           (trajectory/build-turn-trajectory
+            {:session-id       sid
+             :agent-id         (str (proto/agent-id agent))
+             :turn-id          turn
+             :question         question
+             :answer           answer
+             :iterations       []
+             :total-iterations 1
+             :success          (boolean success)
+             :terminated-by    terminated-by
+             :model            (or (:effective-model d) (:model-label d))
+             :started-at       started-at}))))
+      (catch Exception e
+        (mulog/debug ::acp-trajectory-store-failed :message (ex-message e))))))
+
+;; =============================================================================
 ;; BT action — drives one ACP turn
 ;; =============================================================================
 
@@ -421,6 +467,9 @@
         backend-opts (effective-backend-opts agent)
         question (:question @st-memory)
         accumulator (StringBuilder.)
+        ;; Stamped before the spawn, so a cold `npx` backend's start-up counts
+        ;; toward the turn's duration — it is time the caller waited.
+        started-at (System/currentTimeMillis)
         {:keys [client on-event-atom]} (get-or-spawn-client! agent backend backend-opts)]
     ;; Optional per-dispatch label — folds into the descriptor so
     ;; acp$list/detail can say "who's for what" for a dispatched instance.
@@ -446,6 +495,14 @@
         ;; Descriptor bookkeeping: count ACP turns driven on this connection.
         (swap! (:!state agent) update descriptor-key
                (fn [d] (update (or d {}) :prompts (fnil inc 0))))
+        ;; Recorded AFTER the prompts bump so the turn number matches the count
+        ;; the descriptor reports.
+        (record-turn! agent {:question question
+                             :answer answer
+                             :success goal-achieved?
+                             :terminated-by stop-reason
+                             :turn (:prompts (descriptor agent))
+                             :started-at started-at})
         ;; Fire :agent.dspy-action/post so the TUI iteration block
         ;; clears its streaming state and freezes the final text.
         (hooks/fire! :agent.dspy-action/post
@@ -453,10 +510,20 @@
         p/success)
       (catch Throwable t
         (mulog/error ::acp-prompt-action-error :error (ex-message t))
-        (swap! st-memory assoc
-               :answer (str "ACP error: " (ex-message t))
-               :goal-achieved false
-               :stop-reason "error")
+        (let [answer (str "ACP error: " (ex-message t))]
+          (swap! st-memory assoc
+                 :answer answer
+                 :goal-achieved false
+                 :stop-reason "error")
+          ;; A failed turn is recorded too. "The backend died here, on this
+          ;; question" is exactly what someone reading the trajectory afterwards
+          ;; needs, and dropping it would make the log silently skip turns.
+          (record-turn! agent {:question question
+                               :answer answer
+                               :success false
+                               :terminated-by "error"
+                               :turn (:prompts (descriptor agent))
+                               :started-at started-at}))
         p/failure))))
 
 ;; =============================================================================
