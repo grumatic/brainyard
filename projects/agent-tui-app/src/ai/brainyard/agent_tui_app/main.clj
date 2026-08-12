@@ -2333,32 +2333,102 @@
 (defn- known-session? [id]
   (and id (contains? (set (persist/list-sessions)) id)))
 
+(defn- newest-first
+  "Sort enriched rows the way `enriched-summaries` does. Re-applied after a
+   multi-project concat, which otherwise leaves rows grouped by project — each
+   group internally sorted and the whole thing globally not."
+  [rows]
+  (vec (sort-by (fn [s] (- 0 (long (or (:last-attached-at s) (:started-at s) 0)))) rows)))
+
+(defn- project-sessions
+  "Enriched rows for ONE registered project, tagged with where they came from.
+
+   Re-pointing the reader is a `set-working-dir-override!` away because the
+   sessions root is resolved fresh on every persistence call rather than pinned
+   once (see `install-working-dir!`) — which is the whole reason a single
+   process can answer for every project.
+
+   That override is process-global mutable state, so WHEN each project is read
+   matters: a read deferred past the next project's override returns the wrong
+   project's sessions. Two things keep it paired, and one of them is enough —
+   `enriched-summaries` is called in argument position, so it runs while this
+   project is still installed, and `all-projects-summaries` accumulates eagerly
+   rather than handing back a lazy view over that mutable state. `mapv` is the
+   same defensiveness a third time. Anything that defers the read (wrapping it
+   in `delay`/`lazy-seq`, returning an unrealized seq) has to keep at least one
+   of those, or rows get attributed to whichever project happened to be last.
+
+   One unreadable project yields [] rather than aborting the listing. A registry
+   entry can go bad between the `missing?` filter and this read (unmounted,
+   permissions), and a whole-machine query that dies on one stale row is worse
+   than one that reports the other nine."
+  [{:keys [slug path]}]
+  (try
+    (agent/set-working-dir-override! path)
+    (mapv #(assoc % :project-slug slug :project-path path) (ssum/enriched-summaries))
+    (catch Exception _ [])))
+
+(defn- all-projects-summaries
+  "Enriched rows for every registered project that still exists.
+
+   `missing?` entries are skipped: the registry deliberately keeps a moved or
+   unmounted project visible rather than dropping it (see `cmd-projects-list`),
+   but there is nothing to read from one, so it contributes no sessions."
+  []
+  (let [projects (remove :missing? (agent/list-projects (agent/init-dirs!)))]
+    (newest-first (into [] (mapcat project-sessions) projects))))
+
 (defn cmd-sessions-list
-  "List every persisted agent session (project-scoped). `--tree` renders the
-   fork/lineage tree instead of the flat table; `--live` keeps only sessions
-   open in a running `by` process. Each row carries `:live?`/`:owner-pid` (see
+  "List every persisted agent session. `--tree` renders the fork/lineage tree
+   instead of the flat table; `--live` keeps only sessions open in a running
+   `by` process. Each row carries `:live?`/`:owner-pid` (see
    docs/design/session-channel-extensions.md §2). Shared formatting with the TUI
-   `/session list` via `agent-tui.session-summary`."
+   `/session list` via `agent-tui.session-summary`.
+
+   Project-scoped by default. `--all-projects` widens it to every project in the
+   user-scope registry, adding `:project-slug`/`:project-path` to each row.
+
+   That flag exists to collapse a fan-out, not to add a view. A multi-project
+   console polls liveness by shelling out once PER project per tick — liveness
+   is a lockfile plus a live pid, so it cannot be watched or cached away — and
+   the cost being amortized is process startup, which only the CLI side can
+   amortize. Batching in the caller just renames the same N spawns."
   [opts]
   ;; Pin the project-scoped sessions root (from cwd's project-dir) before reading.
   (install-working-dir! opts)
-  (let [live-only? (:live opts)
-        rows       (cond->> (ssum/enriched-summaries)
+  (let [all?       (:all-projects opts)
+        live-only? (:live opts)
+        rows       (cond->> (if all? (all-projects-summaries) (ssum/enriched-summaries))
                      live-only? (filterv :live?))]
+    ;; The override now points at whichever project was read last; put it back so
+    ;; nothing after this reads a project the caller never asked about.
+    (when all? (install-working-dir! opts))
     (cond
       ;; --json wins over --tree: the flat array carries :parent-id so a consumer
       ;; can rebuild the lineage itself. Always valid JSON ([] when empty).
       (:json opts)
       (print-json! rows)
 
-      ;; --tree ignores --live (lineage needs the full set); honored only without --json.
-      (and (:tree opts) (not live-only?))
+      ;; --tree ignores --live (lineage needs the full set); honored only without
+      ;; --json. Also ignored under --all-projects: lineage is a within-project
+      ;; relation, so one tree spanning every project would be a forest drawn as
+      ;; if it were rooted.
+      (and (:tree opts) (not live-only?) (not all?))
       (doseq [line (ssum/format-tree {})] (println line))
 
+      (empty? rows)
+      (println (if live-only? "No live sessions." "No persisted sessions."))
+
+      ;; Grouped under a project header rather than run together: the flat table
+      ;; has no project column, so without this two identically-labelled sessions
+      ;; in different repos render as duplicates of each other.
+      all?
+      (doseq [[slug group] (sort-by key (group-by :project-slug rows))]
+        (println (str "── " slug " (" (count group) ")"))
+        (doseq [line (ssum/format-table (newest-first group) {})] (println line)))
+
       :else
-      (if (empty? rows)
-        (println (if live-only? "No live sessions." "No persisted sessions."))
-        (doseq [line (ssum/format-table rows {})] (println line))))))
+      (doseq [line (ssum/format-table rows {})] (println line)))))
 
 (defn cmd-sessions-show
   "Print full detail for one persisted session (meta, lineage, counts, first
@@ -2974,6 +3044,10 @@
                                                 :type :with-flag :default false}
                                                {:option "live"
                                                 :as "Only sessions open in a running `by` process right now"
+                                                :type :with-flag :default false}
+                                               {:option "all-projects"
+                                                :as (str "Every project in the registry, not just this one; "
+                                                         "each row gains project-slug/project-path")
                                                 :type :with-flag :default false}
                                                working-dir-opt
                                                json-opt]

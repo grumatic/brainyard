@@ -118,3 +118,85 @@
                               "reembed" #'main/cmd-memory-reembed}]
         (is (contains? subs cmd) (str "memory " cmd " is registered"))
         (is (= @expected (get subs cmd)) (str "memory " cmd " runs its cmd fn"))))))
+
+;; ============================================================================
+;; sessions list --all-projects
+;; ============================================================================
+
+(defn- sessions-list-opts []
+  (->> (:subcommands main/cli-config)
+       (filter #(= "sessions" (:command %)))
+       first :subcommands
+       (filter #(= "list" (:command %)))
+       first :opts
+       (map (juxt :option identity))
+       (into {})))
+
+(deftest all-projects-flag-registered
+  (testing "--all-projects is wired into `sessions list` as an off-by-default flag"
+    (let [opt (get (sessions-list-opts) "all-projects")]
+      (is (some? opt) "the flag is registered")
+      (is (= :with-flag (:type opt)) "a boolean flag, so --no-all-projects also parses")
+      (is (false? (:default opt))
+          "OFF by default — widening the default scope would change what every
+           existing `by sessions list` call answers")))
+
+  (testing "the project-scoped flags it composes with are still there"
+    (let [opts (sessions-list-opts)]
+      (is (contains? opts "live"))
+      (is (contains? opts "json")))))
+
+(deftest newest-first-test
+  (let [newest-first @#'main/newest-first]
+    (testing "orders by last-attached-at, falling back to started-at"
+      (is (= [3 2 1]
+             (map :n (newest-first [{:n 1 :last-attached-at 10}
+                                    {:n 3 :last-attached-at 30}
+                                    {:n 2 :started-at 20}])))))
+    (testing "last-attached-at wins over started-at on the same row"
+      (is (= [:fresh :stale]
+             (map :id (newest-first [{:id :stale :last-attached-at 1  :started-at 99}
+                                     {:id :fresh :last-attached-at 50 :started-at 2}])))))
+    (testing "a row with neither timestamp sorts last rather than blowing up"
+      (is (= [:dated :undated]
+             (map :id (newest-first [{:id :undated} {:id :dated :started-at 5}])))))))
+
+(deftest all-projects-summaries-test
+  (let [all-projects-summaries @#'main/all-projects-summaries
+        ;; Where the reader is currently pointed. The real `enriched-summaries`
+        ;; resolves the sessions root through this on every call, which is what
+        ;; the stub below imitates.
+        pointed (atom nil)]
+    (with-redefs [ai.brainyard.agent.interface/init-dirs! (constantly {})
+                  ai.brainyard.agent.interface/list-projects
+                  (constantly [{:slug "alpha" :path "/p/alpha" :missing? false}
+                               {:slug "gone"  :path "/p/gone"  :missing? true}
+                               {:slug "beta"  :path "/p/beta"  :missing? false}])
+                  ai.brainyard.agent.interface/set-working-dir-override!
+                  (fn [p] (reset! pointed p))
+                  ai.brainyard.agent-tui.session-summary/enriched-summaries
+                  (fn [] [{:session-id (str "s-" @pointed) :started-at 1}])]
+
+      (testing "skips registry entries whose directory is gone"
+        (is (= #{"alpha" "beta"} (set (map :project-slug (all-projects-summaries))))
+            "a `missing?` project has nothing to read, so it contributes no rows"))
+
+      (testing "every row is tagged with the project it came from"
+        (let [rows (all-projects-summaries)]
+          (is (every? :project-slug rows))
+          (is (= #{"/p/alpha" "/p/beta"} (set (map :project-path rows))))))
+
+      (testing "each project's rows are read while THAT project is installed"
+        ;; The stub stamps the session id with wherever the reader was pointed
+        ;; when it ran, so this pins read-time attribution rather than just the
+        ;; tags (which close over the loop bindings and would look right even if
+        ;; the read had drifted).
+        ;;
+        ;; Note on its strength, so nobody reads more into a green run than is
+        ;; there: `project-sessions` has redundant guarantees (argument-position
+        ;; read, eager accumulation, `mapv`), so removing any ONE of them still
+        ;; passes — verified by mutation. It catches a restructuring that defers
+        ;; the read past the next override, not the loss of a single guard.
+        (doseq [{:keys [session-id project-path]} (all-projects-summaries)]
+          (is (= (str "s-" project-path) session-id)
+              (str "row " session-id " was read while pointed at " project-path)))))))
