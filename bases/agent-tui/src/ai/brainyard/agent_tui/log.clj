@@ -60,14 +60,18 @@
        (reset! !publisher-handle
                (mulog/start-publisher! {:type :inline :publisher p}))))))
 
-(defn stop-file-publisher!
-  "Stop global file publisher WITHOUT draining it. Idempotent.
+(defn- stop-file-publisher!
+  "Stop the global file publisher WITHOUT draining it. Idempotent.
 
-   Prefer `flush-file-publisher!` when the process is about to exit: the
-   handle mulog returns cancels the recurring publish task, it does not
-   drain the buffer, so anything emitted inside the last batch window is
-   discarded. Verified: an event emitted immediately before this call never
-   reaches the file, while the same event followed by a wait does."
+   PRIVATE, and deliberately so: it is the lossy half of
+   `flush-file-publisher!`, not a shutdown routine. The handle mulog
+   returns cancels the recurring publish task without draining the buffer,
+   so calling this on the way out discards whatever was emitted inside the
+   last batch window — verified: an event emitted immediately before it
+   never reaches the file, while the same event followed by a wait does.
+   That was the shipped behavior of every caller until they were moved to
+   `flush-file-publisher!`, so the name is left with no way to be reached
+   by accident again."
   []
   (when-let [handle @!publisher-handle]
     (mulog/stop-publisher! handle)

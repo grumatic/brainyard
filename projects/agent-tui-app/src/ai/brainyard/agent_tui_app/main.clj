@@ -112,9 +112,9 @@
 (defn- teardown-app-log!
   "Drain and stop the mulog file publisher.  Paired with `setup-app-log!`.
 
-   Drains via `flush-file-publisher!` rather than `stop-file-publisher!`.
-   The plain stop cancels the publish task without writing what is still
-   buffered, so this used to discard the tail of every one-shot command —
+   Drains via `flush-file-publisher!`. It used to merely stop the
+   publisher, which cancels the publish task without writing what is still
+   buffered, and so discarded the tail of every one-shot command —
    including the detached `by memory reduce` child, whose only durable
    audit trail is this log."
   []
