@@ -345,6 +345,103 @@
                   [:error [:string {:desc "Error: A2A disabled, missing name, or unknown peer"}]]])
 
 ;; =============================================================================
+;; Deterministic peer CRUD — for the ask channel, not the LLM
+;; =============================================================================
+;;
+;; The four commands above are what an AGENT calls: they are tool-defs, so
+;; reaching them means a turn, a model, and a bill. An external driver (the
+;; workspace app's A2A section) wants the same four operations with none of
+;; that — it already knows the peer's name and url, and asking an LLM to
+;; retype them into a tool call is both slower and less reliable than calling
+;; the function.
+;;
+;; So this is the machine-facing face of the same commands: same validation,
+;; same registry, same gate, no turn. `bases/agent-tui` exposes it as
+;; `{:op :a2a :action …}` on the session's ask socket.
+;;
+;; Two things a caller has to know, and both are reported rather than hidden:
+;;
+;;   - PEERS ARE PROCESS-WIDE, not per-session. `a2a-client`'s registry is a
+;;     `defonce` atom, so in a shared host every co-hosted session sees the
+;;     same peers. `:host-wide? true` in the reply says so.
+;;   - CONNECTING IS NOT FREE OF SIDE EFFECTS. It fetches the card and
+;;     registers `a2a$<peer>$<skill>` tool-defs, which is exactly what makes
+;;     the peer callable — but it also means `:add` reaches the network and
+;;     can fail slowly.
+
+(defn- peer-summary
+  "One peer, redaction-safe (`describe-peer` never includes the secret)."
+  [nm]
+  (when-let [p (a2a-client/get-peer nm)]
+    (a2a-client/describe-peer p)))
+
+(defn peers-op
+  "Deterministic `:list | :add | :update | :delete` over the A2A peer registry.
+
+   Runs the same code path `a2a$connect` / `a2a$list` / `a2a$disconnect` run —
+   including the `:enable-a2a` gate, the name regex and the per-session peer
+   cap — with `*current-agent*` bound to `agent` so config and the gate resolve
+   against the live session. Returns a plain map; never throws.
+
+   `:add` refuses a name that already exists and `:update` refuses one that
+   does not. That asymmetry is deliberate: this is an API, and a caller that
+   thinks it is creating a peer while actually overwriting a colleague's
+   (or vice versa) has no way to notice. `:update` is disconnect-then-connect,
+   so a changed url cannot leave the old endpoint's skills registered."
+  [agent {:keys [action name url token timeout-ms refresh]}]
+  (binding [proto/*current-agent* agent]
+    (let [nm (some-> name str str/trim str/lower-case not-empty)
+          act (cond-> action (string? action) (-> (str/replace #"^:" "") keyword))
+          exists? #(some? (a2a-client/get-peer nm))
+          connect! (fn []
+                     (let [r (a2a$connect (cond-> {:name nm :url url}
+                                            token      (assoc :token token)
+                                            timeout-ms (assoc :timeout-ms timeout-ms)
+                                            refresh    (assoc :refresh true)))]
+                       (if (:error r)
+                         r
+                         (assoc r :peer (peer-summary nm)))))]
+      (case act
+        :list
+        (or (gate-off)
+            {:peers (a2a-client/describe-peers)
+             :total (count (a2a-client/list-peers))
+             :host-wide? true})
+
+        :add
+        (or (gate-off)
+            (cond
+              (str/blank? (str nm))  {:error "name is required"}
+              (str/blank? (str url)) {:error "url is required"}
+              (exists?)              {:error (str "peer '" nm "' is already connected in this process"
+                                                  " — use :action :update to change its url or token,"
+                                                  " or :delete first")}
+              :else (connect!)))
+
+        :update
+        (or (gate-off)
+            (cond
+              (str/blank? (str nm))  {:error "name is required"}
+              (str/blank? (str url)) {:error "url is required"}
+              (not (exists?))        {:error (str "no such A2A peer: " nm " — use :action :add to connect it")}
+              :else
+              ;; Disconnect first so a changed url cannot leave the previous
+              ;; endpoint's skills registered under the same peer name.
+              (let [_ (a2a$disconnect {:name nm})
+                    r (connect!)]
+                (if (:error r) r (assoc r :updated true)))))
+
+        :delete
+        (or (gate-off)
+            (cond
+              (str/blank? (str nm)) {:error "name is required"}
+              (not (exists?))       {:error (str "no such A2A peer: " nm)}
+              :else                 (a2a$disconnect {:name nm})))
+
+        {:error (str "unknown a2a action: " (pr-str action)
+                     " (expected :list, :add, :update or :delete)")}))))
+
+;; =============================================================================
 ;; Session seeding
 ;; =============================================================================
 

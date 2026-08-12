@@ -15,6 +15,7 @@
    - Context building from memory + conversation"
   (:require [ai.brainyard.util.interface.macros :refer [export-symbols]]
             [ai.brainyard.util.interface :as util]
+            [ai.brainyard.agent.common.a2a :as a2a-cmds]
             [ai.brainyard.agent.common.a2a-serve :as a2a-serve]
             [ai.brainyard.agent.core.protocol :as protocol]
             [ai.brainyard.agent.core.feature :as feature]
@@ -444,6 +445,19 @@
 ;; These are on the CLI path of the shipping binary, so they get the safe
 ;; form.
 ;; ============================================================================
+
+(defn a2a-peers-op
+  "Deterministic peer CRUD — `{:action :list|:add|:update|:delete …}`.
+
+   The machine-facing face of `a2a$connect` / `a2a$list` / `a2a$disconnect`:
+   same gate, same validation, same registry, but callable without a model in
+   the loop. Backs `{:op :a2a}` on the session ask socket, which is how an
+   external console manages peers without paying for a turn per click.
+
+   Note the peer registry is PROCESS-wide, so in a shared host this affects
+   every co-hosted session; the `:list` reply says so with `:host-wide? true`."
+  [agent opts]
+  (a2a-cmds/peers-op agent opts))
 
 (defn a2a-serve!
   "Start the A2A server for this process. Returns the server handle, or

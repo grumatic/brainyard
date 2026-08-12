@@ -390,3 +390,75 @@
   (testing "a2a$list output carries no secret"
     (let [r ((:fn (get @tool/!tool-defs :a2a$list)))]
       (is (not (str/includes? (pr-str r) "SUPERSECRET"))))))
+
+;; =============================================================================
+;; peers-op — the turn-free face of the same commands (ask channel `{:op :a2a}`)
+;; =============================================================================
+
+(deftest peers-op-list-test
+  (register-peer!)
+  (testing "list reports the same peers a2a$list would"
+    (let [r (a2a-cmd/peers-op nil {:action :list})]
+      (is (= 1 (:total r)))
+      (is (= "b" (:name (first (:peers r)))))))
+  (testing "and says the registry is process-wide, because it is"
+    ;; A caller that assumed per-session peers would be wrong in a shared
+    ;; host — one connect is visible to every co-hosted session.
+    (is (true? (:host-wide? (a2a-cmd/peers-op nil {:action :list}))))))
+
+(deftest peers-op-list-never-leaks-credentials-test
+  (a2a-client/register-peer!
+   (a2a-client/make-peer {:name "b" :url (:url a-card) :card a-card
+                          :auth "sk-SUPERSECRET"}))
+  ;; The command path is already covered above; this is the SECOND door to the
+  ;; same data, and a redaction that only holds on one door is not a redaction.
+  (is (not (str/includes? (pr-str (a2a-cmd/peers-op nil {:action :list}))
+                          "SUPERSECRET"))))
+
+(deftest peers-op-add-refuses-an-existing-name-test
+  (register-peer!)
+  ;; Silently overwriting would let a caller believe it created a peer while
+  ;; actually replacing someone else's — the kind of thing an API must not do
+  ;; quietly, even though `a2a$connect` (a human-driven command) may.
+  (let [r (a2a-cmd/peers-op nil {:action :add :name "b" :url "https://other.example"})]
+    (is (:error r))
+    (is (str/includes? (:error r) "already connected"))
+    (is (str/includes? (:error r) ":update"))
+    (testing "and the existing peer is untouched"
+      (is (= (:url a-card) (:endpoint (first (:peers (a2a-cmd/peers-op nil {:action :list})))))))))
+
+(deftest peers-op-update-refuses-an-unknown-name-test
+  (let [r (a2a-cmd/peers-op nil {:action :update :name "ghost" :url "https://x.example"})]
+    (is (:error r))
+    (is (str/includes? (:error r) "no such A2A peer"))
+    (is (str/includes? (:error r) ":add"))))
+
+(deftest peers-op-delete-test
+  (register-peer!)
+  (a2a-cmd/register-skills! "b" a-card)
+  (is (contains? @tool/!tool-defs :a2a$b$planner))
+  (let [r (a2a-cmd/peers-op nil {:action :delete :name "b"})]
+    (is (:disconnected r))
+    (testing "the peer is gone AND so are its skill tool-defs"
+      ;; Leaving the tool-defs behind would keep a dead peer callable — the
+      ;; model would dispatch it and get a confusing runtime failure.
+      (is (zero? (:total (a2a-cmd/peers-op nil {:action :list}))))
+      (is (not (contains? @tool/!tool-defs :a2a$b$planner)))))
+  (testing "deleting it again is an error, not a silent success"
+    (is (str/includes? (:error (a2a-cmd/peers-op nil {:action :delete :name "b"}))
+                       "no such A2A peer"))))
+
+(deftest peers-op-validates-input-test
+  (testing "unknown action names the four that exist"
+    (let [e (:error (a2a-cmd/peers-op nil {:action :frobnicate}))]
+      (is (str/includes? e ":list"))
+      (is (str/includes? e ":delete"))))
+  (testing "a string action is accepted — the wire carries EDN keywords loosely"
+    ;; A client that sent "list" or ":list" as a string should not get an
+    ;; "unknown action" for what is plainly the right one.
+    (is (= 0 (:total (a2a-cmd/peers-op nil {:action "list"}))))
+    (is (= 0 (:total (a2a-cmd/peers-op nil {:action ":list"})))))
+  (testing "missing required args are named"
+    (is (str/includes? (:error (a2a-cmd/peers-op nil {:action :add :name "x"})) "url"))
+    (is (str/includes? (:error (a2a-cmd/peers-op nil {:action :add :url "https://x.example"})) "name"))
+    (is (str/includes? (:error (a2a-cmd/peers-op nil {:action :delete})) "name"))))

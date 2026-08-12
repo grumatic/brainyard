@@ -877,6 +877,29 @@
                                                  (catch Throwable _ nil))
                                             [])))})
 
+(defn- handle-a2a-op
+  "Manage A2A peers WITHOUT a turn: `:list | :add | :update | :delete`.
+
+   Every other way to reach `a2a$connect` goes through the model — it is a
+   tool-def, so a console wanting to connect a peer it already has the url for
+   would be paying an LLM to retype it, and hoping the retyping is faithful.
+   This is the same code path with the model removed: same `:enable-a2a` gate,
+   same name regex, same peer cap, same registry.
+
+   Non-blocking, like `:config` and `:fsm-status` — except `:add`/`:update`,
+   which fetch the peer's Agent Card and so reach the network. A caller should
+   expect those to take as long as the peer does.
+
+   The registry is process-wide, so in a shared host this touches every
+   co-hosted session; `:list` reports `:host-wide? true` rather than letting a
+   caller assume otherwise."
+  [ag req]
+  (let [r (agent/a2a-peers-op ag (select-keys req [:action :name :url :token
+                                                   :timeout-ms :refresh]))]
+    (if (:error r)
+      {:status :error :error (:error r)}
+      (merge {:status :ok} (edn-safe r)))))
+
 (defn- handle-new-session-op
   "Spawn an additional LIVE session inside THIS process and return its identity —
    the process-level counterpart to the interactive `/session new`. Lets an
@@ -1015,7 +1038,9 @@
    non-blocking effective-config read; `:inject` pushes external data in (artifact
    / turn / memory); `:cancel` stops the running turn; `:subscribe` streams
    runtime events until disconnect; `:emit` fires a user-defined event onto the
-   bus; `:fsm-status` snapshots this session's state machines. `:new-session`
+   bus; `:fsm-status` snapshots this session's state machines; `:a2a` does
+   deterministic peer CRUD (`:list`/`:add`/`:update`/`:delete`) without a turn.
+   `:new-session`
    spawns another session in THIS process (returns its id + socket);
    `:close-session` closes one co-hosted session by id; `:switch-session` makes
    one the active tab. Those three are process-level (they don't
@@ -1034,6 +1059,7 @@
       :subscribe  (handle-subscribe-op ag req)
       :emit       (handle-emit-op ag req)
       :fsm-status (handle-fsm-status-op ag)
+      :a2a        (handle-a2a-op ag req)
       :new-session    (handle-new-session-op req)
       :close-session  (handle-close-session-op req)
       :switch-session (handle-switch-session-op req)
@@ -1058,6 +1084,7 @@
             ;; without connecting. Keep in sync with `ask-handle-fn`'s dispatch.
             (try (persist/save-meta! sid {:ask-socket-path path
                                           :ops [:ask :status :config :inject :cancel :subscribe :emit :fsm-status
+                                                :a2a
                                                 :new-session :close-session :rename-session :switch-session]})
                  (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
