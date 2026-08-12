@@ -3213,6 +3213,15 @@
   ;;
   ;; Deliberately NOT in `-main`: `--version` short-circuits before this and
   ;; should stay a bare println, touching no dirs and writing no log.
+  ;;
+  ;; pid FIRST, so every event the log goes on to publish carries the process
+  ;; that emitted it. Several `by` processes share one app log, and until this
+  ;; there was no way to tell their events apart. Note the gap: events emitted
+  ;; while namespaces LOAD (side-effecting requires such as
+  ;; `common/a2a.clj`'s `install-stream-hooks!`) happen before `-main` runs at
+  ;; all, so they carry no pid. Closing that would mean a load-time side
+  ;; effect, which native-image would evaluate at BUILD time and freeze.
+  (mulog/install-process-context!)
   (setup-app-log!)
   (install-log-flush-hook!)
   ;; The SLF4J bridge is hoisted for the same reason and in the same place —

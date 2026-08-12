@@ -172,6 +172,17 @@
    Returns: Map with :app-name :version :env :host :pid"
   context/app-context)
 
+(def process-id
+  "This process's OS pid."
+  context/process-id)
+
+(def install-process-context!
+  "Stamp this process's pid onto every mulog event via the global context, so
+   an `agent-tui-app.log` written by several concurrent `by` processes can be
+   attributed to one of them. Call once at startup, at RUNTIME — never from a
+   top-level form, or native-image bakes the build machine's pid."
+  context/install-process-context!)
+
 ;; ============================================================================
 ;; Publisher Management
 ;; ============================================================================
