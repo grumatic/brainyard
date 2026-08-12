@@ -62,6 +62,33 @@
     event
     (assoc event :pid (context/process-id))))
 
+(defn stale-event?
+  "True when `event` was emitted before this process started — i.e. it does
+   not belong to this run at all.
+
+   Under GraalVM native-image, namespace loading happens at BUILD time, so a
+   `mulog/log` in a top-level form (the `(install-…!)` calls that self-wire
+   hooks) is evaluated during compilation. mulog holds events with no
+   publisher registered in its global buffer — deliberately, so nothing is
+   lost before one starts — and native-image then bakes that buffer into the
+   image heap. The result ships inside the binary and EVERY launch
+   republishes it, carrying the build's timestamp and flake id. A caller
+   that runs `by` in a loop turns one build-time event into a log full of
+   identical records dated hours earlier.
+
+   Filtering by process start rather than clearing the buffer, because on
+   the JVM that same buffer legitimately holds this process's own load-time
+   events: there, namespaces load at startup, milliseconds ago. Clearing
+   would discard them. A start-time comparison cannot: no event a process
+   emits predates its own start.
+
+   Conservative on both edges — an event with no usable timestamp, or an
+   unknown process start, is kept."
+  [event]
+  (let [ts    (:mulog/timestamp event)
+        start (context/process-start-ms)]
+    (boolean (and (number? ts) (pos? start) (< (long ts) start)))))
+
 (defn- strip-ansi
   "Remove ANSI escape sequences from a string."
   [s]
@@ -88,7 +115,7 @@
       (agent-buffer [_] buf)
       (publish-delay [_] delay)
       (publish [_ buffer]
-        (let [items (map second (rb/items buffer))]
+        (let [items (remove stale-event? (map second (rb/items buffer)))]
           (when (seq items)
             (try
               (with-open [w (java.io.FileWriter. ^String filename true)]
@@ -138,7 +165,7 @@
       (agent-buffer [_] buf)
       (publish-delay [_] delay)
       (publish [_ buffer]
-        (let [items (map second (rb/items buffer))]
+        (let [items (remove stale-event? (map second (rb/items buffer)))]
           (when (seq items)
             (try
               (let [f (java.io.File. ^String filename)]

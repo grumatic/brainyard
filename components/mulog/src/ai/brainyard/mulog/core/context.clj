@@ -40,6 +40,32 @@
   ^long []
   (or @!pid (reset! !pid (.pid ^java.lang.ProcessHandle (java.lang.ProcessHandle/current)))))
 
+(defonce ^:private !start-ms (atom nil))
+
+(defn process-start-ms
+  "Epoch millis at which THIS process started, resolved on first use and
+   cached. 0 when the OS will not tell us.
+
+   The boundary for deciding whether a buffered event belongs to this
+   process at all. No event a process emits can predate its own start, so
+   anything older was emitted by something else — under native-image, by
+   the BUILD: top-level forms run at image-build time, their mulog events
+   land in the global buffer, and that buffer is baked into the image heap
+   and shipped. Every launch then republishes them, dated at build time.
+
+   Fails OPEN (0, which no timestamp is below) rather than guessing with
+   `now`: this is first called at PUBLISH time, well after namespace load,
+   so a `now` fallback would discard the very load-time events the JVM
+   legitimately buffers."
+  ^long []
+  (or @!start-ms
+      (reset! !start-ms
+              (let [^java.lang.ProcessHandle ph (java.lang.ProcessHandle/current)
+                    opt (.startInstant (.info ph))]
+                (if (.isPresent opt)
+                  (.toEpochMilli ^java.time.Instant (.get opt))
+                  0)))))
+
 (defn install-process-context!
   "Stamp this process's pid onto EVERY mulog event, via the global context.
 
