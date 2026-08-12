@@ -197,7 +197,31 @@
    ;; State-machine lifecycle (ai.brainyard.agent.common.fsm).
    :fsm/transition              {:keys #{:machine :from :to :event :context}}
    :fsm/entered                 {:keys #{:machine :state :context}}
-   :fsm/final                   {:keys #{:machine :state}}})
+   :fsm/final                   {:keys #{:machine :state}}
+
+   ;; Remote A2A stream descriptors, fired by `core/remote_agent.clj`
+   ;; (`fire-descriptor!`) from what `a2a-client`'s `translate` produces. Each
+   ;; carries `:agent`, added at the fire site so a handler can scope to one
+   ;; instance. They are namespaced `:a2a/*` rather than reusing an
+   ;; `:agent.*` key because they describe things only a REMOTE agent can
+   ;; report; the one descriptor that DOES have a local equivalent is
+   ;; deliberately mapped to `:agent.dspy-action/chunk` instead of inventing
+   ;; an `:a2a/chunk` (a2a_client/core/events.clj).
+   ;;
+   ;; Catalogued because `register-hook!` warns on an unknown key and
+   ;; `common/a2a.clj` subscribes to `:a2a/artifact` at namespace load — so
+   ;; the omission cost an `::unknown-event` WARN on EVERY process start.
+   ;; The handler worked regardless (the bus fires any keyword, and
+   ;; register-hook! warns but still registers); what the missing entries
+   ;; really cost was `known-event?`, and with it discovery's ability to
+   ;; advertise the family at all. The other four have no subscriber today
+   ;; and are listed so the next one to add a handler does not re-learn this.
+   :a2a/artifact                {:keys #{:agent :task-id :artifact-id :name :description
+                                         :text :append :last-chunk :artifact}}
+   :a2a/task-state              {:keys #{:agent :state :task-id :final :error}}
+   :a2a/input-required          {:keys #{:agent :task-id :prompt}}
+   :a2a/auth-required           {:keys #{:agent :task-id :prompt}}
+   :a2a/task-terminal           {:keys #{:agent :task-id :state :answer}}})
 
 (defn gated-event?
   "True when the event's handlers produce decisions consumed by the caller."
