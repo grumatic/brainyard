@@ -22,10 +22,23 @@
   [context-map & body]
   `(mu/with-context ~context-map ~@body))
 
+(defonce ^:private !pid
+  ;; nil until first use. Holding nil is what makes this native-image safe:
+  ;; a `defonce` initializer runs at BUILD time, so computing the pid here
+  ;; would bake the compiling machine's pid into the binary.
+  (atom nil))
+
 (defn process-id
-  "This process's OS pid."
+  "This process's OS pid, resolved on first use and cached.
+
+   Cached because it is now read once per published event. Resolved lazily
+   for the native-image reason above.
+
+   No compare-and-set guard, unlike other lazily-minted identities: two
+   threads racing here both compute the SAME pid, so a duplicate
+   computation is indistinguishable from the winner."
   ^long []
-  (.pid ^java.lang.ProcessHandle (java.lang.ProcessHandle/current)))
+  (or @!pid (reset! !pid (.pid ^java.lang.ProcessHandle (java.lang.ProcessHandle/current)))))
 
 (defn install-process-context!
   "Stamp this process's pid onto EVERY mulog event, via the global context.

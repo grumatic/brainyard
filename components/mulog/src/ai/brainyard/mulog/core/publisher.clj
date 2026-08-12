@@ -6,6 +6,9 @@
   "Publisher management and Integrant lifecycle for μ/log."
   (:refer-clojure :exclude [reset!])
   (:require [clojure.string :as str]
+            ;; For `process-id` in `add-pid`. One-way: context requires only
+            ;; mulog itself, so this cannot cycle.
+            [ai.brainyard.mulog.core.context :as context]
             [com.brunobonacci.mulog :as mu]
             [com.brunobonacci.mulog.buffer :as rb]
             [com.brunobonacci.mulog.core :as mu-core]
@@ -36,6 +39,28 @@
                      (ZoneId/systemDefault))
                     ts-formatter))
     event))
+
+(defn add-pid
+  "Ensure the event carries the pid of the process writing it.
+
+   Belt to the global context's braces, and the only thing that can cover
+   the events emitted while NAMESPACES LOAD. Those run before `-main`, so
+   `install-process-context!` has not been called yet and they reach the
+   buffer without a pid — the hook registrations in `common/a2a.clj` and
+   `agent/mcp/permission.clj` are exactly that.
+
+   A publisher can only ever run at RUNTIME: native-image evaluates
+   build-time initializers, but it cannot perform a publish, so there is no
+   build-time path through here and nothing to bake.
+
+   Publishing pid equals emitting pid because a publisher only ever drains
+   its OWN process's buffer; mulog does not relay events between processes.
+   Never overwrites an existing `:pid`, so a caller that sets one for a
+   better reason keeps it."
+  [event]
+  (if (contains? event :pid)
+    event
+    (assoc event :pid (context/process-id))))
 
 (defn- strip-ansi
   "Remove ANSI escape sequences from a string."
@@ -68,7 +93,7 @@
             (try
               (with-open [w (java.io.FileWriter. ^String filename true)]
                 (doseq [item items]
-                  (.write w (str (ut/pprint-event-str (add-human-timestamp (strip-ansi-deep item))) \newline))
+                  (.write w (str (ut/pprint-event-str (add-pid (add-human-timestamp (strip-ansi-deep item)))) \newline))
                   (.flush w)))
               (catch Exception _))))
         (rb/clear buffer)))))
@@ -79,7 +104,7 @@
    `pprint-event-str` (NOT `clojure.pprint`, which throws under native-image).
    The single-event counterpart to what the file publishers write per line."
   [event]
-  (str (ut/pprint-event-str (add-human-timestamp (strip-ansi-deep event))) \newline))
+  (str (ut/pprint-event-str (add-pid (add-human-timestamp (strip-ansi-deep event)))) \newline))
 
 (defn- rotate-log-file!
   "Rotate `filename` → `filename.1`, `.1` → `.2`, …, dropping anything past
@@ -121,7 +146,7 @@
                   (rotate-log-file! filename max-rotations)))
               (with-open [w (java.io.FileWriter. ^String filename true)]
                 (doseq [item items]
-                  (.write w (str (ut/pprint-event-str (add-human-timestamp (strip-ansi-deep item))) \newline))
+                  (.write w (str (ut/pprint-event-str (add-pid (add-human-timestamp (strip-ansi-deep item)))) \newline))
                   (.flush w)))
               (catch Exception _))))
         (rb/clear buffer)))))
