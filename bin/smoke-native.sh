@@ -92,4 +92,40 @@ ${ACP_OUT}"
 fi
 pass "acp-agent: spawn + JSON-RPC write + read + parse"
 
+# ── 3. A2A node identity is not baked into the image ────────────────────────
+#
+# The A2A cycle guard identifies each node by a random UUID minted per
+# PROCESS (components/a2a/.../core/chain.clj). If that UUID is generated in
+# a `defonce` initializer it is computed at BUILD time and interned into the
+# image heap as a constant — so every process launched from one binary
+# reports the same node id, and any two `by` instances refuse each other's
+# A2A calls on the first hop: the caller stamps its id into the chain, the
+# callee finds its own id already there and answers -32004 "call cycle
+# refused". brainyard-to-brainyard A2A becomes impossible rather than merely
+# mis-detected, on loopback and across hosts alike.
+#
+# Checked here rather than in chain_test.clj because no unit test can see
+# it: the defect is introduced by the compiler, not the code, so the
+# namespace's tests pass either way. The image itself is the only witness.
+#
+# Match the full UUID form, never the bare prefix — "by-node:" is a source
+# literal and is legitimately present in a correctly-built binary. It is the
+# UUID welded onto it that means the value was computed too early.
+#
+# No `head` on the pipeline: under `pipefail` a downstream reader that closes
+# early would SIGPIPE grep, turn a HIT into a non-zero pipeline, and silently
+# skip the failure branch — a safety check that fails open. `sort -u` emits
+# one line here in practice, so there is nothing to truncate anyway.
+
+if BAKED="$(LC_ALL=C grep -a -o -E \
+     'by-node:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+     "${BY}" | sort -u)" && [[ -n "${BAKED}" ]]; then
+  fail "A2A node id baked into the image at build time: ${BAKED}
+  Every process from this binary will claim that identity, so two \`by\`
+  instances refuse each other's A2A calls on the first hop (-32004, cycle).
+  Mint it lazily on first use instead of in the defonce initializer —
+  see node-id in components/a2a/src/ai/brainyard/a2a/core/chain.clj."
+fi
+pass "a2a: node id minted at runtime, not baked into the image"
+
 log "All native smoke checks passed."

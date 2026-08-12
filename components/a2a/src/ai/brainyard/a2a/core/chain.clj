@@ -86,15 +86,36 @@
   ;; and when checking inbound ones. It must be the same token in both
   ;; directions or the guard cannot fire — see the ns docstring.
   ;;
-  ;; A random UUID rather than the served URL: a node may serve on several
-  ;; addresses, sit behind a proxy, or not serve at all, and any of those
-  ;; would make a URL-derived id disagree with itself.
-  (atom (str "by-node:" (UUID/randomUUID))))
+  ;; Holds nil until first use. The id is minted in `node-id`, NOT here:
+  ;; see the comment there.
+  (atom nil))
 
 (defn node-id
-  "This process's stable A2A node identity."
+  "This process's stable A2A node identity, minted on first use.
+
+   A random UUID rather than the served URL: a node may serve on several
+   addresses, sit behind a proxy, or not serve at all, and any of those
+   would make a URL-derived id disagree with itself.
+
+   Minted LAZILY rather than in the `defonce` initializer above, because
+   under GraalVM native-image a `defonce` runs at BUILD time and its value
+   is baked into the image heap as a constant. An eagerly-generated UUID
+   would therefore be the SAME for every process launched from one binary
+   — and two nodes sharing an id refuse each other's calls on the first
+   hop (`cycle?` sees its own id in the chain the caller stamped), which
+   makes brainyard-to-brainyard A2A impossible rather than merely
+   mis-detected. Lazy init is what keeps this per-process under both the
+   JVM and native-image.
+
+   No unit test can catch a regression here — the defect would be created
+   by the compiler, not the code, so this namespace's tests pass either
+   way. The guard lives in the build: `bb smoke:ata` (bin/smoke-native.sh)
+   asserts the image contains no `by-node:` followed by a UUID."
   []
-  @!node-id)
+  ;; `(or % …)` keeps the swap idempotent under CAS retry, so two threads
+  ;; racing on first use cannot end up with different ids.
+  (or @!node-id
+      (swap! !node-id #(or % (str "by-node:" (UUID/randomUUID))))))
 
 (defn set-node-id!
   "Override the node id. For tests, and for an operator who wants a
