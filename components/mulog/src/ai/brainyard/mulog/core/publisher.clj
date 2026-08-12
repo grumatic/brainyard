@@ -226,6 +226,46 @@
   [publisher]
   (publisher))  ;; Publisher handles are functions that stop when called
 
+(defn pending-events?
+  "True while mulog's GLOBAL buffer still holds events that its dispatcher
+   has not yet handed to the registered publishers.
+
+   Lets a flush wait only as long as it actually has to. The alternative —
+   sleeping one full dispatch interval unconditionally — taxes every
+   invocation of a CLI that now starts the log on every command path,
+   including the overwhelmingly common case of a command that logged
+   nothing at all and has an empty buffer to begin with."
+  []
+  (boolean (some (fn [{:keys [buffer]}] (seq (rb/items @buffer)))
+                 (vals @mu-core/publishers))))
+
+(def ^:const dispatch-interval-ms
+  "mulog's own global dispatch period (`mulog.core/PUBLISH-INTERVAL`).
+
+   Events land in a global buffer and a recurring task moves them into each
+   registered publisher's agent-buffer every this-many ms. A publisher's
+   `:delay` is clamped UP to this value, so nothing can batch faster.
+
+   Mirrored here as a plain int because it is `^:const` in mulog and a
+   caller needs the number to know how long a flush has to wait."
+  200)
+
+(defn await-publisher!
+  "Block until `publisher`'s agent-buffer has drained, or `timeout-ms`
+   elapses. True if it drained. Nil publisher is a no-op (true).
+
+   Needed because `stop-publisher!` does not synchronously write. mulog's
+   stop function deregisters the publisher, cancels its recurring task, and
+   then dispatches ONE final publish with `send-off` — asynchronously. A
+   process that stops its publisher and immediately exits kills the JVM
+   before that agent action runs, so the last batch is silently dropped.
+   Awaiting the agent is what turns the stop into an actual flush."
+  ([publisher] (await-publisher! publisher 3000))
+  ([publisher timeout-ms]
+   (if publisher
+     (boolean (await-for timeout-ms (pub/agent-buffer publisher)))
+     true)))
+
 (defn start-publishers!
   "Start multiple publishers from a configuration map.
    Config format: {:publisher-id {:type :console :pretty? true} ...}

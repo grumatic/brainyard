@@ -192,6 +192,22 @@
   "Stop a publisher using its handle."
   publisher/stop-publisher!)
 
+(def pending-events?
+  "True while mulog's global buffer still holds undispatched events. Lets a
+   flush wait only as long as it must, instead of a fixed interval."
+  publisher/pending-events?)
+
+(def dispatch-interval-ms
+  "mulog's global dispatch period in ms — how long events sit in the global
+   buffer before reaching a publisher. A flush must outwait this."
+  publisher/dispatch-interval-ms)
+
+(def await-publisher!
+  "Block (bounded) until a publisher's agent-buffer has drained. Pair with
+   `stop-publisher!`, whose final publish is dispatched asynchronously and
+   is otherwise lost when the process exits."
+  publisher/await-publisher!)
+
 (def start-publishers!
   "Start multiple publishers from a config map.
 

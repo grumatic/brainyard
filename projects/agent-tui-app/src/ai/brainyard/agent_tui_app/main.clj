@@ -110,9 +110,45 @@
     (try (agent/set-app-log-path! path) (catch Exception _))))
 
 (defn- teardown-app-log!
-  "Stop the mulog file publisher.  Paired with `setup-app-log!`."
+  "Drain and stop the mulog file publisher.  Paired with `setup-app-log!`.
+
+   Drains via `flush-file-publisher!` rather than `stop-file-publisher!`.
+   The plain stop cancels the publish task without writing what is still
+   buffered, so this used to discard the tail of every one-shot command —
+   including the detached `by memory reduce` child, whose only durable
+   audit trail is this log."
   []
-  (try (tui-log/stop-file-publisher!) (catch Exception _)))
+  (try (tui-log/flush-file-publisher!) (catch Exception _)))
+
+(defonce ^:private !log-flush-hook
+  ;; Guards one-time shutdown-hook registration. `defonce` + CAS rather than
+  ;; a bare `when-not`, because -dispatch can be re-entered in a REPL and
+  ;; the JVM throws on registering the same hook twice.
+  (atom nil))
+
+(defn- install-log-flush-hook!
+  "Flush the app log on process exit, for every command path.
+
+   The file publisher is ASYNC — it batches on a 500 ms timer — so events
+   emitted by a short one-shot command are still sitting in the ring buffer
+   when the process ends, and are lost unless the publisher is STOPPED
+   (`stop-publisher!` drains before releasing). That is what the
+   `teardown-app-log!` calls in `cmd-ask` and `with-memory-manager` are
+   really for: not tidiness, a flush.
+
+   Those two paths keep their own explicit teardown. This hook is what
+   makes the log real for everything else — `by agents`, `by sessions
+   list`, `by projects`, and `by a2a serve`, which runs until Ctrl-C and
+   so can only ever flush from a signal.
+
+   Idempotent with the explicit teardowns: stopping twice is a no-op."
+  []
+  (when (compare-and-set! !log-flush-hook nil ::installed)
+    (try
+      (.addShutdownHook (Runtime/getRuntime)
+                        (Thread. ^Runnable (fn [] (teardown-app-log!))
+                                 "by-log-flush"))
+      (catch Exception _))))
 
 (def agent-opt
   {:option "agent" :short "a" :as "Agent ID" :type :string
@@ -3159,6 +3195,27 @@
         (println (format "[dotenv] loaded %d key(s) from %s"
                          loaded-count
                          (str/join ", " (map :path paths)))))))
+  ;; The app log belongs to the PROCESS, not to a subcommand. It used to be
+  ;; started inside `cmd-ask` and `with-memory-manager` only, so every other
+  ;; path ran unlogged — `by a2a serve` emitted `::server-started` (carrying
+  ;; the node id) and every request event into a publisher that did not
+  ;; exist, which is why a running server had no audit trail at all.
+  ;;
+  ;; Started AFTER dotenv so a `.env` is in effect first, and paired with a
+  ;; shutdown-hook flush because the publisher is async (see
+  ;; `install-log-flush-hook!`). Both calls are idempotent, so the paths that
+  ;; still set up and tear down explicitly are unaffected.
+  ;;
+  ;; Deliberately NOT in `-main`: `--version` short-circuits before this and
+  ;; should stay a bare println, touching no dirs and writing no log.
+  ;;
+  ;; Only the log is hoisted, NOT `setup-slf4j-bridge!` — that one detaches
+  ;; and replaces every root logback appender, so running it on paths that
+  ;; never asked for it (down to `by --help`) changes global logging state
+  ;; well beyond making a log file exist. The paths that want library
+  ;; warnings captured still set it up themselves.
+  (setup-app-log!)
+  (install-log-flush-hook!)
   (let [first-arg (first args)
         ;; Default to "run" when no subcommand given or when first arg is a flag
         args (cond

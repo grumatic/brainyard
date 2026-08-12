@@ -1747,8 +1747,9 @@
   (try (agent/task-shutdown) (catch Throwable _))
   (tui-session/stop-tui-publisher!)
   (tui-session/stop-memory-activity-publisher!)
-  ;; Stop file publisher
-  (try (tui-log/stop-file-publisher!) (catch Exception _))
+  ;; Drain, then stop, the file publisher — a plain stop discards whatever
+  ;; is still batched, which on this path is the whole shutdown sequence.
+  (try (tui-log/flush-file-publisher!) (catch Exception _))
   ;; Stop in-process nREPL server if we started one
   (stop-nrepl-server!)
   ;; Close every per-session ask socket
