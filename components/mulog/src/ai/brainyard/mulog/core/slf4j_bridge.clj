@@ -29,20 +29,34 @@
   "Set up SLF4J-to-mulog bridge. Replaces any existing logback appenders
    with a mulog-forwarding appender. Default level is WARN (Java lib noise).
    Options:
-     :level - logback Level (default Level/WARN)"
+     :level - logback Level (default Level/WARN)
+
+   IDEMPOTENT: a second call while the bridge is already active returns
+   `:already-active` and touches nothing. It used to re-run unconditionally,
+   which meant every caller after the first detached the appender the
+   previous one had installed and built another — harmless in its result,
+   but it made the root logger's appender set depend on call order, and
+   there is no reason for a process to rebuild a bridge it already has.
+   To re-arm at a different level, `stop!` first."
   ([] (setup! {}))
   ([{:keys [level] :or {level Level/WARN}}]
-   (let [^AppenderBase appender (new-slf4j-to-mulog-appender)
-         logger-context (LoggerFactory/getILoggerFactory)
-         ^Logger root-logger (LoggerFactory/getLogger Logger/ROOT_LOGGER_NAME)]
-     (.detachAndStopAllAppenders root-logger)
-     (.setLevel root-logger level)
-     (.setContext appender logger-context)
-     (.setName appender "mulog-bridge")
-     (.start appender)
-     (.addAppender root-logger appender)
-     (reset! !bridge-active true)
-     :ok)))
+   (if @!bridge-active
+     :already-active
+     (let [^AppenderBase appender (new-slf4j-to-mulog-appender)
+           logger-context (LoggerFactory/getILoggerFactory)
+           ^Logger root-logger (LoggerFactory/getLogger Logger/ROOT_LOGGER_NAME)]
+       ;; Detach rather than add alongside: without a logback.xml the root
+       ;; logger carries logback's DEFAULT ConsoleAppender, and leaving it
+       ;; attached would print library output straight onto the TUI's
+       ;; rendered screen. Library logs belong in the app log.
+       (.detachAndStopAllAppenders root-logger)
+       (.setLevel root-logger level)
+       (.setContext appender logger-context)
+       (.setName appender "mulog-bridge")
+       (.start appender)
+       (.addAppender root-logger appender)
+       (reset! !bridge-active true)
+       :ok))))
 
 (defn stop!
   "Stop the SLF4J-to-mulog bridge."

@@ -128,7 +128,10 @@
 (def setup-slf4j-bridge!
   "Set up SLF4J-to-mulog bridge. Routes Java library SLF4J events into mulog.
    Replaces logback appenders with a mulog-forwarding appender.
-   Default captures WARN+ level. Pass {:level Level/INFO} for more."
+   Default captures WARN+ level. Pass {:level Level/INFO} for more.
+
+   Idempotent — a call while already active is a no-op returning
+   `:already-active`. `stop-slf4j-bridge!` first to re-arm at another level."
   slf4j-bridge/setup!)
 
 (def stop-slf4j-bridge!

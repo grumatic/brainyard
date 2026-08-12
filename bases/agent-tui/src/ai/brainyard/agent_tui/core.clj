@@ -1365,7 +1365,10 @@
   ;;      working even in normal/quiet mode.
   (tui-session/start-memory-activity-publisher!)
 
-  ;; 2b2. Route Java SLF4J logs through mulog
+  ;; 2b2. Route Java SLF4J logs through mulog. The app's `-dispatch` now
+  ;;      does this for every command, so in the shipping binary this is an
+  ;;      idempotent no-op. Kept because this base is its own bootstrap and
+  ;;      must not depend on a particular project's entry point having run.
   (mulog/setup-slf4j-bridge!)
 
   ;; 2c. File publisher (always on). Default path is ~/.brainyard/logs/agent-tui-app.log

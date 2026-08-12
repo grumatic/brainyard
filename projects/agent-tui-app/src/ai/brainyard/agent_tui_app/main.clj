@@ -1269,7 +1269,10 @@
                 ;; setting one up is what produced the nil-model NPE.
                 (when-not acp?
                   (helpers/setup-lm! provider :model model))
-                (mulog/setup-slf4j-bridge!)
+                ;; The SLF4J bridge and the app log are both installed by
+                ;; `-dispatch` now, for every command. `setup-app-log!` is
+                ;; kept because this path also pairs it with an explicit
+                ;; teardown below; it is an idempotent no-op here.
                 (setup-app-log!)
                 ;; Hand the graph-mode session-end consolidation to a detached
                 ;; `by memory reduce` child, exactly as the TUI does. Without
@@ -1384,7 +1387,9 @@
    to a transient $TMPDIR log). `teardown-app-log!` in the finally flushes the
    async publisher before the one-shot process exits, else the events are lost."
   [user-id f]
-  (mulog/setup-slf4j-bridge!)
+  ;; The SLF4J bridge is installed once by `-dispatch`. `setup-app-log!`
+  ;; stays because of the paired teardown in the finally below — an
+  ;; idempotent no-op when the process already started it.
   (setup-app-log!)
   (let [mm (agent/create-memory-manager user-id)]
     (try
@@ -3208,14 +3213,20 @@
   ;;
   ;; Deliberately NOT in `-main`: `--version` short-circuits before this and
   ;; should stay a bare println, touching no dirs and writing no log.
-  ;;
-  ;; Only the log is hoisted, NOT `setup-slf4j-bridge!` — that one detaches
-  ;; and replaces every root logback appender, so running it on paths that
-  ;; never asked for it (down to `by --help`) changes global logging state
-  ;; well beyond making a log file exist. The paths that want library
-  ;; warnings captured still set it up themselves.
   (setup-app-log!)
   (install-log-flush-hook!)
+  ;; The SLF4J bridge is hoisted for the same reason and in the same place —
+  ;; library warnings are a property of the process too, and capturing them
+  ;; only on the two paths that used to set it up meant an AWS or HTTP
+  ;; warning raised by any other command went to logback's DEFAULT console
+  ;; appender (there is no logback.xml) instead of the app log.
+  ;;
+  ;; AFTER `setup-app-log!`, so the forwarded events have a publisher to
+  ;; land in. It detaches the console appender rather than adding alongside
+  ;; it: leaving it attached would print library output onto the TUI's
+  ;; rendered screen. Idempotent, so this is the only call site that has to
+  ;; exist.
+  (mulog/setup-slf4j-bridge!)
   (let [first-arg (first args)
         ;; Default to "run" when no subcommand given or when first arg is a flag
         args (cond
