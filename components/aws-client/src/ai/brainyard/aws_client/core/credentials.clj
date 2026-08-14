@@ -7,6 +7,7 @@
    environment-based providers, and STS assume-role with auto-refresh."
   (:require [cognitect.aws.client.api :as aws]
             [cognitect.aws.credentials :as cred]
+            [cognitect.aws.http :as http]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.data.json :as json]
             [taoensso.truss :refer [have have?]]))
@@ -56,15 +57,31 @@
   [providers]
   (cred/chain-credentials-provider providers))
 
+(def ^:private default-http-client
+  "One lazily-created HTTP client for the no-arg `default-credentials-provider`.
+
+   `cognitect.aws.http/resolve-http-client` builds a NEW client (and its thread
+   pool) on every call, so a wrapper that resolved one per invocation would leak
+   one per call. A delay rather than a `defonce`d value because this component
+   is compiled into a GraalVM native image: an unrealized delay carries no build
+   state, while eagerly resolving at load time would bake a client — and its
+   threads — into the image."
+  (delay (http/resolve-http-client nil)))
+
 (defn default-credentials-provider
   "Create the default credentials provider chain that tries:
    1. Environment variables
    2. System properties
    3. Profile credentials
    4. Container credentials
-   5. Instance profile credentials"
-  []
-  (cred/default-credentials-provider))
+   5. Instance profile credentials
+
+   The container and instance-profile links reach IMDS over HTTP, so aws-api
+   requires the http-client explicitly — its 0-arity was removed upstream.
+   Callers that already have one (an `aws/client`'s, say) should pass it; the
+   no-arg form falls back to a single shared client."
+  ([] (default-credentials-provider @default-http-client))
+  ([http-client] (cred/default-credentials-provider http-client)))
 
 ;; ============================================================================
 ;; STS Assume Role

@@ -57,9 +57,12 @@
    2. System properties
    3. Profile credentials
    4. Container credentials
-   5. Instance profile credentials"
-  []
-  (credentials/default-credentials-provider))
+   5. Instance profile credentials
+
+   With no args, uses one shared HTTP client for the IMDS-backed links; pass
+   an `http-client` to reuse one you already have."
+  ([] (credentials/default-credentials-provider))
+  ([http-client] (credentials/default-credentials-provider http-client)))
 
 ;; ============================================================================
 ;; STS Assume Role

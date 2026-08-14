@@ -5,7 +5,6 @@
 (ns ai.brainyard.aws-client.core.client
   "AWS client management with caching, multi-account support, and lifecycle management."
   (:require [cognitect.aws.client.api :as aws]
-            [cognitect.aws.credentials :as cred]
             [cognitect.aws.client.protocol :as client.protocol]
             [ai.brainyard.mulog.interface :as mulog]
             [taoensso.truss :refer [have have?]]
@@ -48,10 +47,15 @@
    - :validate-requests? - Enable request validation (default: true)"
   [service-key region & {:keys [credentials-provider validate-requests?]
                          :or {validate-requests? true}}]
-  (let [provider (or credentials-provider (cred/default-credentials-provider))
-        client (aws/client {:api service-key
-                            :region region
-                            :credentials-provider provider})]
+  ;; No `:credentials-provider` ⇒ omit the key entirely and let `aws/client`
+  ;; build the default chain itself, against the http-client it just resolved.
+  ;; Handing it one we built separately would spin up a second HTTP client for
+  ;; the IMDS lookups, and the 0-arity we used to call for it no longer exists
+  ;; upstream (`default-credentials-provider` now takes an http-client), so
+  ;; this path threw ArityException for every caller that omitted a provider.
+  (let [client (aws/client (cond-> {:api service-key :region region}
+                             credentials-provider
+                             (assoc :credentials-provider credentials-provider)))]
     (when validate-requests?
       (aws/validate-requests client true))
     client))
