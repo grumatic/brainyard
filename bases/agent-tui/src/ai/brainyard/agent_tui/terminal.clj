@@ -324,6 +324,15 @@
      :cursor-row cursor-row
      :cursor-col cursor-col}))
 
+(defonce ^{:doc "Last (buffer, cursor-pos) handed to `redraw-input-line!`.
+
+  The input loop owns those two as locals, so anything that has to repaint the
+  input line WITHOUT being the input loop — the SIGWINCH handler below — has no
+  other way to reach them. Every keystroke goes through `redraw-input-line!`,
+  so this is current by construction."}
+  !last-input
+  (atom {:buffer "" :cursor-pos 0}))
+
 (defn redraw-input-line!
   "Redraw the input prompt with current buffer content and cursor position.
    Shows placeholder hint when buffer is empty. Supports multi-row rendering:
@@ -333,6 +342,7 @@
 
    cursor-pos is the 0-based char position within the buffer text."
   [buffer cursor-pos]
+  (reset! !last-input {:buffer (str buffer) :cursor-pos (or cursor-pos 0)})
   (let [;; Answer-mode indicator: when a user-feedback prompt is pending, the
         ;; input line is answering the agent's question rather than starting a
         ;; new turn — flag it with a distinct yellow "? " prompt + a per-kind
@@ -383,8 +393,15 @@
               (let [row (+ input-row screen-i)
                     {:keys [text]} (nth visual-lines vl-idx)
                     line-prefix (if (zero? vl-idx) prompt indent)
+                    ;; Clamp the placeholder to the room the input row actually
+                    ;; has. Typed text arrives pre-wrapped from `layout-buffer`;
+                    ;; the placeholder does not, so below ~62 columns the
+                    ;; default hint ran past the end of its row and wrapped
+                    ;; DOWN into the chrome — its last characters landing on the
+                    ;; bottom separator and the tab strip (` main0*` rendering
+                    ;; as `nsain0*`, the "ns" of "sessions").
                     body (if (and buf-empty? (zero? screen-i))
-                           (ansi/muted placeholder)
+                           (ansi/muted (fmt/truncate-to-width placeholder avail-w))
                            text)]
                 (.append sb (ansi/cursor-to row 1))
                 (.append sb ^String ansi/erase-line)
@@ -430,15 +447,36 @@
 
 (defn install-sigwinch-handler!
   "Install SIGWINCH handler via sun.misc.Signal to detect terminal resize.
-   Calls layout/handle-resize! then redraws the input prompt."
+   Rebuilds the chrome for the new geometry, then repaints the input line.
+
+   The repaint goes through `redraw-input-line!` with the LIVE buffer, not
+   `draw-input-prompt!` with a bare prompt string. Three things were wrong with
+   the latter, and a width change showed all of them at once: it erased the
+   input row and wrote only the prompt, so whatever the user had typed
+   vanished from the screen (still in the buffer, invisible); it never
+   restamped `:input-cursor-row`/`:input-cursor-col`, so the frame epilogue
+   went on parking the cursor at coordinates computed for the OLD width, off
+   the end of a line that had since re-wrapped; and its hardcoded `\"> \"`
+   overwrote the yellow `\"? \"` prompt whenever a feedback question was
+   pending. `redraw-input-line!` re-wraps the buffer to the new width, picks
+   the right prompt, and stamps the cursor position it actually drew.
+
+   Wrapped in one frame with the resize so the whole rebuild — scroll region,
+   viewport, chrome, input line — is a single presentation rather than a
+   visibly reassembling screen. Never throws: a signal handler that throws
+   takes the handler thread down with it."
   []
   (try
     (let [signal  (sun.misc.Signal. "WINCH")
           handler (proxy [sun.misc.SignalHandler] []
                     (handle [_sig]
-                      (layout/handle-resize!)
-                      (layout/draw-input-prompt!
-                       (ansi/style "> " ansi/bold ansi/bright-cyan))))]
+                      (try
+                        (layout/draw-frame!
+                         (fn []
+                           (layout/handle-resize!)
+                           (let [{:keys [buffer cursor-pos]} @!last-input]
+                             (redraw-input-line! buffer cursor-pos))))
+                        (catch Throwable _ nil))))]
       (reset! !old-winch-handler (sun.misc.Signal/handle signal handler)))
     (catch Exception _ nil)))
 

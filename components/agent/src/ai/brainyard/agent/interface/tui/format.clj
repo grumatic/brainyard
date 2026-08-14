@@ -9,7 +9,8 @@
 (export-symbols ai.brainyard.agent.tui.format
                 command-registry
                 refresh-terminal-size! terminal-columns terminal-rows
-                display-width next-unit format-number format-help format-welcome-banner
+                display-width next-unit truncate-to-width
+                format-number format-help format-welcome-banner
                 format-iteration-header format-iteration-exhausted
                 format-recovery-status
                 format-thought format-tool-calls format-tool-results

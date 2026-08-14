@@ -500,3 +500,36 @@
                                     {:mulog/event-name :m/chat-completion
                                      :model "claude" :total-tokens 10}))
                        "chat model=claude"))))
+
+(deftest truncate-to-width-test
+  (testing "a string within the limit is returned untouched"
+    (is (= "idle" (fmt/truncate-to-width "idle" 10)))
+    (is (= "idle" (fmt/truncate-to-width "idle" 4)) "exactly at the limit is not a cut"))
+
+  (testing "an over-long string is cut to the limit, ellipsis included"
+    (let [out (fmt/truncate-to-width "brainyard coact-agent" 10)]
+      (is (= 10 (fmt/display-width out)) "never wider than asked for")
+      (is (str/ends-with? out "…"))))
+
+  (testing "the ellipsis is counted, not added on top"
+    ;; The bug this guards: cutting to `limit` and THEN appending an ellipsis
+    ;; yields limit+1 columns — one past the edge, which is all it takes to wrap.
+    (doseq [limit (range 1 12)]
+      (is (<= (fmt/display-width (fmt/truncate-to-width "0123456789abcdef" limit))
+              limit)
+          (str "limit " limit))))
+
+  (testing "ANSI escapes cost no columns and are not cut through"
+    (let [styled (str "\033[1m" "brainyard coact-agent" "\033[0m")
+          out    (fmt/truncate-to-width styled 10)]
+      (is (= 10 (fmt/display-width out)))
+      (is (str/starts-with? out "\033[1m") "the opening style survives the cut")
+      (is (str/ends-with? out "\033[0m")
+          "a cut styled string is reset, so the style cannot bleed into the next write")))
+
+  (testing "degenerate limits"
+    (is (= "" (fmt/truncate-to-width "anything" 0)))
+    (is (= "" (fmt/truncate-to-width "anything" -3)))
+    (is (= "" (fmt/truncate-to-width "" 5)))
+    (is (= "…" (fmt/truncate-to-width "anything" 1))
+        "one column left says only that something was dropped")))

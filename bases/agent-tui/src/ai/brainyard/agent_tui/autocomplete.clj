@@ -1116,8 +1116,14 @@
               ;; Menu inactive: try to move cursor up within multi-row input;
               ;; if cursor is already on the first visual line, scroll viewport.
               (do (or (move-cursor-visual! :up)
-                      (do (layout/scroll-lines-up! 1)
-                          (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
+                      ;; ONE frame for the gesture: the viewport repaint and the
+                      ;; input repaint each open their own otherwise, so a wheel
+                      ;; burst hides and re-shows the cursor twice per notch —
+                      ;; which is the flicker, not the scrolling.
+                      (layout/draw-frame!
+                       (fn []
+                         (layout/scroll-lines-up! 1)
+                         (terminal/redraw-input-line! (.toString buf) @cursor-pos))))
                   (recur)))
 
             :scroll-down
@@ -1144,9 +1150,11 @@
               ;; Menu inactive: try to move cursor down within multi-row input;
               ;; if cursor is already on the last visual line, scroll viewport.
               (do (or (move-cursor-visual! :down)
-                      (do (layout/scroll-lines-down! 1)
-                          (maybe-deselect!)
-                          (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
+                      (layout/draw-frame!            ; one frame per notch — see :scroll-up
+                       (fn []
+                         (layout/scroll-lines-down! 1)
+                         (maybe-deselect!)
+                         (terminal/redraw-input-line! (.toString buf) @cursor-pos))))
                   (recur)))
 
             ;; Cursor movement
@@ -1288,20 +1296,28 @@
                           (terminal/redraw-input-line! (.toString buf) @cursor-pos)
                           (recur))
 
+            ;; A page scroll is ONE frame: viewport, marker highlight and input
+            ;; line all contribute to it, so holding Page Up presents one
+            ;; repaint per keypress with a single cursor park at the input line
+            ;; — instead of two or three, each toggling the cursor on its way.
             :page-up  (do (dismiss-menu!)
-                          (layout/scroll-page-up!)
-                          ;; Entering/staying in scroll mode — auto-select first visible marker
-                          (when (and (scroll-mode?) (nil? @selected-mark))
-                            (when-let [first-mark (first (block-ui/find-markers-in-viewport))]
-                              (vreset! selected-mark first-mark)
-                              (refresh-highlight!)))
-                          (terminal/redraw-input-line! (.toString buf) @cursor-pos)
+                          (layout/draw-frame!
+                           (fn []
+                             (layout/scroll-page-up!)
+                             ;; Entering/staying in scroll mode — auto-select first visible marker
+                             (when (and (scroll-mode?) (nil? @selected-mark))
+                               (when-let [first-mark (first (block-ui/find-markers-in-viewport))]
+                                 (vreset! selected-mark first-mark)
+                                 (refresh-highlight!)))
+                             (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
                           (recur))
 
             :page-down (do (dismiss-menu!)
-                           (layout/scroll-page-down!)
-                           (maybe-deselect!)
-                           (terminal/redraw-input-line! (.toString buf) @cursor-pos)
+                           (layout/draw-frame!
+                            (fn []
+                              (layout/scroll-page-down!)
+                              (maybe-deselect!)
+                              (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
                            (recur))
 
             :backspace (do (when (pos? @cursor-pos)

@@ -420,10 +420,11 @@
         (when (and w separator2-row)
           (draw-plain-separator! w separator2-row cols))))))
 
-(defn- strip-ansi
-  "Remove ANSI escape sequences for visible-length calculation."
-  [^String s]
-  (str/replace s #"\033\[[0-9;]*m" ""))
+;; `strip-ansi` + `count` used to measure the status bar. It is gone in favour
+;; of `fmt/display-width`, which is the measure the terminal actually uses:
+;; counting stripped CHARS says 1 for a CJK glyph the terminal advances 2
+;; columns for, so the row overflowed on exactly the strings a byte-count
+;; cannot see coming.
 
 (def ^:private status-right-pad 1)
 
@@ -465,10 +466,26 @@
          (let [w (get-writer)
                {:keys [status-row cols]} @!layout]
            (when (and w status-row)
-             (let [left           (or left-text "")
-                   right          (or right-text "")
-                   left-vis-len   (count (strip-ansi left))
-                   right-vis-len  (count (strip-ansi right))
+             (let [;; The row is ONE line and must stay one line. Clamping only
+                   ;; the gap (which is all this did) leaves `left + right`
+                   ;; free to exceed `cols`, and the overflow wraps — onto the
+                   ;; row below on a normal line, but this IS the bottom row, so
+                   ;; the tail lands back on top of the row's own start. That is
+                   ;; the "$0.0000agent [claude-code/opus] idle" garble you get
+                   ;; by narrowing the terminal.
+                   ;;
+                   ;; Budget: a leading space, at least one column of gap, and
+                   ;; `status-right-pad` free at the right edge.
+                   avail          (max 0 (- cols 2 status-right-pad))
+                   ;; The right side wins the space. It is the live state
+                   ;; (running/idle, calls, tokens, cost) and it is what the
+                   ;; user is watching change; the left is identity, which does
+                   ;; not change and is also on the tab strip above.
+                   right          (fmt/truncate-to-width (or right-text "") avail)
+                   right-vis-len  (fmt/display-width right)
+                   left           (fmt/truncate-to-width (or left-text "")
+                                                         (- avail right-vis-len))
+                   left-vis-len   (fmt/display-width left)
                    ;; Gap between left text and right text
                    gap            (max 1 (- cols left-vis-len right-vis-len
                                             status-right-pad 1))]
@@ -656,12 +673,17 @@
        (draw-separator!)))))
 
 (defn scroll-to-bottom!
-  "Reset viewport to live output (offset 0). No-op if already at bottom."
+  "Reset viewport to live output (offset 0). No-op if already at bottom.
+
+   Framed like its four siblings: unframed, the viewport repaint and the
+   separator were two flushes, so returning to live presented in two steps and
+   toggled the cursor twice."
   []
   (when (and (fullscreen?) (pos? (:viewport-offset @!layout)))
-    (swap! !layout assoc :viewport-offset 0)
-    (render-viewport!)
-    (draw-separator!)))
+    (with-frame
+      (swap! !layout assoc :viewport-offset 0)
+      (render-viewport!)
+      (draw-separator!))))
 
 ;; ============================================================================
 ;; Live Blocks — in-scrollback regions that update in-place
@@ -1229,7 +1251,19 @@
                  :agent-activity-height clamped-aa-h
                  :menu-height menu-h
                  :input-height input-h
-                 :input-height-max input-h-max)
+                 :input-height-max input-h-max
+                 ;; The tracked input cursor is an ABSOLUTE screen position,
+                 ;; computed by `redraw-input-line!` against the geometry that
+                 ;; just stopped being true — and both terms are stale: the row
+                 ;; moved with the chrome, and a width change re-wraps the
+                 ;; buffer underneath it. Dropping it makes the frame epilogue
+                 ;; fall back to `(input-row, 3)`, which is correct for the new
+                 ;; geometry; the input repaint that follows this resize
+                 ;; restamps the exact position. Keeping it parked the cursor
+                 ;; wherever the OLD input line used to be — mid-content when
+                 ;; the terminal grew, on the chrome when it shrank.
+                 :input-cursor-row nil
+                 :input-cursor-col nil)
           ;; One frame: clear, region, scrollback replay, sticky areas, chrome.
           ;; A resize that presents in seven steps is a visibly rebuilding screen.
           (with-frame
@@ -1296,6 +1330,13 @@
                :menu-height 0
                :input-height 1
                :input-height-max (max 3 (quot rows 3))
+               ;; Same reason as in `handle-resize!`: entering fullscreen
+               ;; establishes a NEW geometry, and a tracked cursor position
+               ;; left over from a previous one (a prior fullscreen session, or
+               ;; a re-entry after the external-editor handoff) is an absolute
+               ;; row that means nothing here.
+               :input-cursor-row nil
+               :input-cursor-col nil
                :input-active false)
         (locking layout-lock
           (let [w (get-writer)]

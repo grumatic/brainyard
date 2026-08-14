@@ -357,6 +357,38 @@
     (str (subs s 0 (- max-len 1)) ansi/ellipsis)
     s))
 
+(defn truncate-to-width
+  "Cut `s` down to at most `limit` DISPLAY COLUMNS, ellipsis included.
+
+   The public counterpart to the private `truncate` above, which measures in
+   chars: that one is fine for plain prose but wrong for anything styled or
+   non-Latin, where `(count s)` is neither the column count nor a safe cut
+   point. This walks with `char-index-at-width`, so it skips ANSI escapes
+   rather than counting them and lands the cut on a grapheme-cluster boundary
+   under the same regime `display-width` measures in.
+
+   A cut that lands after an SGR introducer would leave that styling
+   unterminated and bleed it into whatever the caller writes next, so a
+   truncated styled string gets a `reset` appended. The reset costs no columns.
+
+   `limit` <= 0 yields \"\"; a string already within `limit` is returned
+   untouched (no reset appended, nothing to terminate)."
+  [^String s limit]
+  (let [limit (long (or limit 0))]
+    (cond
+      (str/blank? (str s)) (or s "")
+      (<= limit 0)         ""
+      (<= (display-width s) limit) s
+      :else
+      (let [ell-w (display-width ansi/ellipsis)
+            ;; Room for the ellipsis itself. When even that doesn't fit, there
+            ;; is nothing useful to show — an ellipsis alone says "something was
+            ;; here" without saying what, and still fits.
+            body  (if (> limit ell-w)
+                    (subs s 0 (char-index-at-width s (- limit ell-w)))
+                    "")]
+        (str body ansi/ellipsis (when (str/includes? body ansi/esc) ansi/reset))))))
+
 (defn- indent
   "Indent each line of a multi-line string."
   [s prefix]
