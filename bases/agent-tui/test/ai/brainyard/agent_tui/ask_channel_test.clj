@@ -134,6 +134,50 @@
               (is (re-find #"timed out" (:error resp))))
             (finally (core/stop-ask-listener! sid))))))))
 
+(deftest rename-session-op-writes-both-surfaces
+  (testing ":rename-session updates the PERSISTED label and the live tab"
+    (let [root (tmp-root) sid "agt-rn-1"
+          op   #'core/handle-rename-session-op]
+      (persist/with-root root
+        (with-redefs [agent/session-id (fn [_] sid)]
+          (sessions/reset-sessions!)
+          (let [ag (reify ai.brainyard.agent.core.protocol/IAgent
+                     (session-id [_] sid)
+                     java.io.Closeable (close [_] nil))]
+            (sessions/create-session! {:id 0 :label "main0" :agent ag :agent-id :a
+                                       :agent-instances [ag] :skip-agent-creation true})
+
+            (testing "a set renames the tab AND persists the label"
+              (let [resp (op ag {:label "  release work  "})]
+                (is (= :ok (:status resp)))
+                (is (= "release work" (:label resp)))
+                (is (true? (:live-tab resp)))
+                (is (= "release work" (:label (sessions/get-session 0))))
+                (is (= "release work" (persist/session-label sid))
+                    "`by sessions list` reads this")))
+
+            (testing "a blank/omitted label is REJECTED, leaving both surfaces alone"
+              (doseq [req [{:label "   "} {:label nil} {}]]
+                (let [resp (op ag req)]
+                  (is (= :error (:status resp)) (str "rejected: " (pr-str req)))
+                  (is (re-find #":label" (:error resp)))
+                  (is (= "release work" (:label (sessions/get-session 0)))
+                      "tab keeps its label")
+                  (is (= "release work" (persist/session-label sid))
+                      "a missing label must never wipe the persisted one"))))
+
+            (testing "with no live tab the persisted label is still written"
+              (sessions/reset-sessions!)
+              (let [resp (op ag {:label "headless"})]
+                (is (= :ok (:status resp)))
+                (is (false? (:live-tab resp)))
+                (is (= "headless" (persist/session-label sid)))))
+
+            (testing "an unresolvable session-id is rejected without persisting"
+              (with-redefs [agent/session-id (fn [_] nil)]
+                (is (= :error (:status (op ag {:label "x"}))))
+                (is (= "headless" (persist/session-label sid)))))))))))
+
 (deftest switch-session-op
   (testing ":switch-session makes one co-hosted session the active tab"
     ;; Two live tabs: index 3 is active, index 7 is the switch target. The op is

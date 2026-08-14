@@ -305,7 +305,8 @@ A specialized outbound subscription — the external env wants what the agent *r
 ;; ── Mode A: session lifecycle (process-level — no `ag`, any socket serves) ────
 → {:op :new-session    :agent-id "mcp-agent" :label "…"}   ; → :session-id + :ask-socket-path
 → {:op :close-session  :session-id "agt-…"}                ; refuses the host's last chat session
-→ {:op :rename-session :label "…"}                         ; THIS session's live tab
+→ {:op :rename-session :label "…"}                         ; THIS session: persisted label + live tab
+                                                           ;   :label required (blank → error); → :label, :live-tab
 → {:op :switch-session :session-id "agt-…"}                ; → :index, :already-active
 
 ;; ── Mode B: subscription (one in, N out, until disconnect) ────

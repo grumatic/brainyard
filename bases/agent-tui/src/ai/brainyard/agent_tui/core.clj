@@ -1010,25 +1010,37 @@
       {:status :error :error (str "switch-session failed: " (.getMessage e))})))
 
 (defn- handle-rename-session-op
-  "Rename THIS session's live TUI tab to `:label` — the process-level counterpart
-   to the interactive `/session rename`. Lets `by sessions label <id> <text>`
-   (a separate process) propagate to a running `by` so the tab strip updates
-   without a restart. A blank/omitted `:label` clears back to a default `mainN`.
-   The persisted label is written by the CLI caller (and again by
-   `rename-session!`); this op syncs the in-memory tab. Returns {:status :ok
-   :label …}."
+  "Rename THIS session — BOTH surfaces: the persisted label in `meta.edn` (what
+   `by sessions list` and the resume picker show) and the live TUI tab. The
+   process-level counterpart to the interactive `/session rename`, which does
+   the same two writes; `by sessions label <id> <text>` pushes this op so a
+   running `by` updates its tab strip without a restart.
+
+   A blank/omitted `:label` is REJECTED — every rename surface (this op, the
+   CLI, `/session rename`) requires the text. A rename is a two-surface write
+   and the label is the whole payload; reading a missing one as \"clear\" turns
+   the commonest caller mistake (an unset variable, a dropped quote) into
+   silent data loss on the one field the caller was trying to set.
+
+   The persisted label is the durable half and is written even when no live tab
+   matches (session hosted without a tab, or already closed) — `:live-tab`
+   reports whether a tab was actually relabelled. Returns
+   {:status :ok :label … :live-tab bool}."
   [ag {:keys [label] :as _req}]
   (try
     (let [sid (try (agent/session-id ag) (catch Throwable _ nil))]
-      (if (str/blank? (str sid))
+      (cond
+        (str/blank? (str sid))
         {:status :error :error "session has no resolvable session-id"}
-        (let [lbl     (if (str/blank? (str label))
-                        (sessions/next-root-tab-label!)
-                        (str/trim label))
+
+        (str/blank? (str label))
+        {:status :error :error "rename-session requires a non-blank :label"}
+
+        :else
+        (let [lbl     (str/trim label)
               applied (sessions/rename-by-agent-session-id! (str sid) lbl)]
-          (if applied
-            {:status :ok :label applied}
-            {:status :error :error (str "no live tab for session " sid)}))))
+          (persist/set-session-label! (str sid) lbl)
+          {:status :ok :label lbl :live-tab (boolean applied)})))
     (catch Throwable e
       {:status :error :error (str "rename-session failed: " (.getMessage e))})))
 

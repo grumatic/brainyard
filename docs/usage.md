@@ -226,7 +226,7 @@ Re-run `by config` any time to refresh settings or switch providers.
 by sessions list                 # list all persisted sessions (id, label, agent, last-attached)
 by sessions show -s <id>         # full detail for one session
 by sessions config -s <id> -q .  # read a *live* session's effective config over its ask channel
-by sessions label -s <id> "…"    # set (or, with no text, clear) a session's label
+by sessions label -s <id> "…"    # set a session's label (text required); renames a live tab too
 by sessions prune -s <id>        # delete persisted session(s)
 ```
 

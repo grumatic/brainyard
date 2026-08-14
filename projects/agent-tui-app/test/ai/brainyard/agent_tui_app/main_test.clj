@@ -90,6 +90,36 @@
     (is (nil? (parse-layer "l4")))
     (is (nil? (parse-layer "graph")))))
 
+(deftest parse-label-args-test
+  (let [parse @#'main/parse-label-args]
+    (testing "positional form: everything after the id is the label"
+      (is (= {:id "agt-1" :label "release work"}
+             (parse {:_arguments ["agt-1" "release" "work"]}))
+          "multi-word works unquoted"))
+
+    (testing "-s form: the whole argument list is the label"
+      (is (= {:id "agt-1" :label "release work"}
+             (parse {:session-id "agt-1" :_arguments ["release" "work"]}))))
+
+    (testing "surrounding whitespace is trimmed"
+      (is (= {:id "agt-1" :label "tidy"}
+             (parse {:session-id "agt-1" :_arguments ["  tidy  "]}))))
+
+    (testing "a missing label is an ERROR — never a silent clear"
+      (doseq [opts [{:_arguments ["agt-1"]}
+                    {:session-id "agt-1" :_arguments []}
+                    {:session-id "agt-1" :_arguments ["   "]}
+                    {:session-id "agt-1"}]]
+        (let [{:keys [error label]} (parse opts)]
+          (is (some? error) (str "rejected: " (pr-str opts)))
+          (is (nil? label) "no label is handed to the writer")
+          (is (re-find #"Missing label text" error))
+          (is (re-find #"Usage: by sessions label" error)))))
+
+    (testing "a missing session-id is a usage error"
+      (doseq [opts [{} {:_arguments []} {:_arguments ["  "]}]]
+        (is (= {:error @#'main/label-usage} (parse opts)))))))
+
 (defn- memory-subcommands []
   (->> (:subcommands main/cli-config)
        (filter #(= "memory" (:command %)))

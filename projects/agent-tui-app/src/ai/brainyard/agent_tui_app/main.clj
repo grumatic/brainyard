@@ -2648,21 +2648,47 @@
                 (emit-err! (str "Error: " (:error resp)))))
             (System/exit (if ok? 0 1))))))))
 
-(defn cmd-sessions-label
-  "Set (or clear) a persisted session's label. Usage:
-     by sessions label <session-id> <text…>   ; set
-     by sessions label <session-id>           ; clear"
-  [opts]
-  (install-working-dir! opts)
-  (let [args  (:_arguments opts)
-        id    (or (:session-id opts) (first args))
-        ;; Everything after the id is the label (so multi-word works unquoted).
-        words (if (:session-id opts) args (rest args))
+(def ^:private label-usage
+  "Usage: by sessions label <session-id> <text>")
+
+(defn- parse-label-args
+  "Shape the args for `by sessions label` — pure, so the argument rules are
+   testable without the command's `System/exit`. Returns {:id … :label …}, or
+   {:error \"…\"} for a usage failure. Everything after the id is joined, so a
+   multi-word label works unquoted.
+
+   The label text is REQUIRED: an omitted one is an error, not a request to
+   clear. The argument is far likelier to have gone missing (an unset shell
+   variable, a dropped quote) than to have been left out on purpose, and
+   silently wiping a session's name on that mistake is the wrong default. Every
+   other rename surface agrees — `/session rename` and the `:rename-session`
+   ask op both reject a blank label, so there is no clear verb anywhere; to
+   drop a name, set a new one."
+  [{:keys [session-id _arguments]}]
+  (let [id    (or session-id (first _arguments))
+        words (if session-id _arguments (rest _arguments))
         text  (when (seq words) (str/trim (str/join " " words)))
         label (when-not (str/blank? (str text)) text)]
     (cond
-      (str/blank? (str id))
-      (do (emit-err! "Usage: by sessions label <session-id> <text>") (System/exit 1))
+      (str/blank? (str id)) {:error label-usage}
+      (nil? label)          {:error (str "Missing label text for session " id ".\n"
+                                         label-usage)}
+      :else                 {:id id :label label})))
+
+(defn cmd-sessions-label
+  "Set a persisted session's label — both on disk (what `by sessions list` and
+   the resume picker show) and, when the session is open in a running `by`, on
+   its live tab. Usage:
+     by sessions label <session-id> <text…>
+
+   Argument rules — including why the text is required — live in
+   `parse-label-args`."
+  [opts]
+  (install-working-dir! opts)
+  (let [{:keys [id label error]} (parse-label-args opts)]
+    (cond
+      error
+      (do (emit-err! error) (System/exit 1))
 
       (not (known-session? id))
       (do (emit-err! (str "Session not found: " id)) (System/exit 1))
@@ -2672,18 +2698,22 @@
           ;; If the session is open in a running `by`, push the rename over its
           ;; ask socket so the live tab strip updates without a restart.
           ;; Best-effort: a closed/stale socket degrades to persist-only.
+          ;; The op re-writes the same persisted label itself (it is the durable
+          ;; half of a rename for any caller, not just this one) and reports
+          ;; `:live-tab` for whether a tab was actually relabelled. A running
+          ;; older `by` omits that key — treat its plain `:ok` as live, the
+          ;; meaning it had before the key existed.
           (let [row  (first (filter #(= id (:session-id %)) (ssum/enriched-summaries)))
                 sock (:ask-socket-path row)
-                live? (and (not (str/blank? (str sock)))
-                           (.exists (io/file ^String sock))
-                           (= :ok (:status
-                                   (try (ask-channel/send-op! sock {:op :rename-session :label label})
-                                        (catch Exception _ nil)))))]
-            (println (cond
-                       (and label live?)  (str "Labeled " id ": " label " (live tab renamed)")
-                       label              (str "Labeled " id ": " label)
-                       live?              (str "Cleared label on " id " (live tab reset)")
-                       :else              (str "Cleared label on " id))))))))
+                resp (when (and (not (str/blank? (str sock)))
+                                (.exists (io/file ^String sock)))
+                       (try (ask-channel/send-op! sock {:op :rename-session :label label})
+                            (catch Exception _ nil)))
+                live? (and (= :ok (:status resp))
+                           (not (false? (:live-tab resp))))]
+            (println (if live?
+                       (str "Labeled " id ": " label " (live tab renamed)")
+                       (str "Labeled " id ": " label))))))))
 
 (defn- pick-session-to-prune!
   "Show a numbered list of persisted sessions (newest first) and prompt the
@@ -3068,7 +3098,7 @@
                                                json-opt]
                                  :runs        cmd-sessions-config}
                                 {:command     "label"
-                                 :description "Set or clear a session's label (no text = clear)"
+                                 :description "Set a session's label (text required)"
                                  :opts        [{:option "session-id" :short "s"
                                                 :as "Session ID" :type :string}
                                                working-dir-opt]
