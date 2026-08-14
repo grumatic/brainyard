@@ -98,7 +98,7 @@
   (testing "Ps 1 (set) and 3 (permanently set) mean clustering is active"
     (are [ps clustering?]
          (= clustering? (:clustering? (caps/parse-decrqm-reply
-                                        (str \u001b "[?2027;" ps "$y"))))
+                                       (str \u001b "[?2027;" ps "$y"))))
       1 true
       3 true
       2 false      ;; reset: supported but off
@@ -134,15 +134,62 @@
                   caps/probe! (fn [] (throw (AssertionError. "probed while :on")))]
       (is (true? (:grapheme-clustering? (caps/negotiate! true)))))))
 
-(deftest auto-skips-the-probe-inside-tmux
-  (testing "tmux never answers DECRQM for 2027 (measured against 3.6a) and uses
-            wcwidth itself, so probing only buys a ~500ms startup stall"
-    (with-redefs [config/get-config (constantly :auto)
-                  caps/probe! (fn [] (throw (AssertionError. "probed inside tmux")))]
+(deftest auto-measures-tmux-rather-than-probing-it
+  (testing "tmux never answers DECRQM for 2027 (measured against 3.6a), so the
+            probe stays skipped — but the answer comes from measuring tmux, not
+            from assuming it counts per codepoint, which 3.6a does not"
+    (with-redefs [config/get-config   (constantly :auto)
+                  caps/probe!         (fn [] (throw (AssertionError. "probed inside tmux")))
+                  caps/read-cache     (constantly {})
+                  caps/write-cache!   (fn [_ _] nil)
+                  caps/tmux-version   (constantly "tmux 3.6a")
+                  caps/tmux-clusters? (constantly true)]
       (with-tmux "/tmp/tmux-1000/default,4242,0"
         (let [st (caps/negotiate! true)]
-          (is (false? (:grapheme-clustering? st)))
+          (is (true? (:grapheme-clustering? st)))
           (is (= :tmux (:source (:negotiated st)))))))))
+
+(deftest a-tmux-that-does-not-cluster-still-resolves-to-off
+  (testing "the measurement decides, both ways — an older tmux that counts per
+            codepoint must keep the legacy regime, which is what makes this
+            safe to run against a tmux nobody here has"
+    (with-redefs [config/get-config   (constantly :auto)
+                  caps/probe!         (fn [] (throw (AssertionError. "probed inside tmux")))
+                  caps/read-cache     (constantly {})
+                  caps/write-cache!   (fn [_ _] nil)
+                  caps/tmux-version   (constantly "tmux 3.0a")
+                  caps/tmux-clusters? (constantly false)]
+      (with-tmux "/tmp/tmux-1000/default,4242,0"
+        (is (false? (:grapheme-clustering? (caps/negotiate! true))))))))
+
+(deftest a-tmux-upgrade-invalidates-the-cached-answer
+  (testing "the cache entry carries the tmux version, because an upgrade is
+            exactly the event that changes the answer — a stale yes is a UI
+            that drifts on every emoji"
+    (let [measured (atom 0)]
+      (with-redefs [config/get-config   (constantly :auto)
+                    caps/probe!         (fn [] (throw (AssertionError. "probed inside tmux")))
+                    caps/read-cache     (fn [] {(caps/terminal-key)
+                                                {:clustering? false :tmux-version "tmux 3.0a"}})
+                    caps/write-cache!   (fn [_ _] nil)
+                    caps/tmux-version   (constantly "tmux 3.6a")
+                    caps/tmux-clusters? (fn [] (swap! measured inc) true)]
+        (with-tmux "/tmp/tmux-1000/default,4242,0"
+          (is (true? (:grapheme-clustering? (caps/negotiate! true)))
+              "the stale entry must not win")
+          (is (= 1 @measured) "and the new tmux must actually be measured"))))))
+
+(deftest a-matching-tmux-version-is-a-cache-hit
+  (testing "same tmux, same answer, no scratch session — the measurement is
+            cheap but it is not free, and it runs before the first render"
+    (with-redefs [config/get-config   (constantly :auto)
+                  caps/probe!         (fn [] (throw (AssertionError. "probed inside tmux")))
+                  caps/read-cache     (fn [] {(caps/terminal-key)
+                                              {:clustering? true :tmux-version "tmux 3.6a"}})
+                  caps/tmux-version   (constantly "tmux 3.6a")
+                  caps/tmux-clusters? (fn [] (throw (AssertionError. "measured on a cache hit")))]
+      (with-tmux "/tmp/tmux-1000/default,4242,0"
+        (is (true? (:grapheme-clustering? (caps/negotiate! true))))))))
 
 (deftest auto-prefers-the-cache-over-reprobing
   (testing "a cached answer short-circuits the probe -- the cache exists so the

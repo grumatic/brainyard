@@ -138,16 +138,20 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   the cut was narrowing.
   Negotiation runs in `run-tui!` only; `by ask` never probes and so always
   renders per-codepoint.
-  **Why it caches, and why tmux is skipped:** a terminal that doesn't know
+  **Why it caches, and what tmux gets instead:** a terminal that doesn't know
   DECRQM replies with *nothing*, so the read is time-bounded and that timeout
   is then paid in full — measured at ~500 ms on the native binary, roughly 4x
   its entire startup. tmux 3.6a never answers for 2027 (it answers 2004, so
-  the query is fine) and computes widths with `wcwidth` itself, so `auto`
-  skips the probe there rather than burn the timeout reaching an answer we
-  already know. Every failure mode — no tty, no reply, garbled reply,
-  exception — resolves to clustering **off**. Impl: `components/agent/…/tui/
-  terminal_caps.clj`; negotiation runs once in `run-tui!` before the first
-  render.
+  the query is fine), so `auto` still skips the probe there — but it no longer
+  assumes the answer. That assumption was that tmux counts with `wcwidth`;
+  measured by writing into a pane and reading `#{cursor_x}`, 3.6a **clusters**:
+  a ZWJ family, a flag, a skin-toned thumb and a keycap are all 2 columns.
+  Inside tmux the answer therefore comes from measuring tmux — a detached
+  scratch session, tens of ms, re-measured when the tmux version changes.
+  Every failure mode — no tty, no reply, garbled reply, exception, an
+  unmeasurable tmux — resolves to clustering **off**. Impl:
+  `components/agent/…/tui/terminal_caps.clj`; negotiation runs once in
+  `run-tui!` before the first render.
 ### Line breaking belongs to whoever owns the grid
 
 A hard newline inserted to make text fit is permanent and lossy — the terminal

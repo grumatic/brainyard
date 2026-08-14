@@ -21,11 +21,15 @@
      single unanswered probe adds ~500ms, roughly 4x the binary's entire
      startup. That is why the result is CACHED and why tmux is skipped.
 
-   - **tmux can never say yes.** Measured against tmux 3.6a: it does not answer
-     DECRQM for 2027 (it answers 2004, so the query itself is fine), and tmux
-     computes widths with `wcwidth` internally. Inside tmux the legacy regime
-     is both the only reachable answer and the correct one, so we skip the
-     probe entirely rather than burn the timeout to learn it.
+   - **tmux never answers, so tmux gets measured instead.** It does not reply
+     to DECRQM for 2027 (it answers 2004, so the query itself is fine), which
+     is why the probe is still skipped there. What changed is the conclusion
+     drawn from that silence: this used to assume tmux counts with `wcwidth`,
+     and 3.6a does not — it folds every cluster kind into one cell. Measured
+     by writing into a pane and reading `#{cursor_x}`, a ZWJ family, a flag, a
+     skin-toned thumb and a keycap are all 2 columns, exactly the clustered
+     table. So inside tmux we ask tmux (~50ms, see `tmux-clusters?`) rather
+     than assume an answer that has been wrong since at least 3.6a.
 
    - **Fail-safe means OFF.** No tty, no reply, a garbled reply, an exception,
      a probe we never ran — all resolve to clustering disabled, which is
@@ -125,9 +129,12 @@
         {}))
     (catch Exception _ {})))
 
-(defn- write-cache!
+(defn write-cache!
   "Merge one terminal's answer into the cache. Best-effort: a read-only home
-   directory must not break the TUI, it just means we re-probe next time."
+   directory must not break the TUI, it just means we re-probe next time.
+
+   Public for the same reason `read-cache` is: a test that exercises the
+   measuring path must be able to stop it writing into the real config dir."
   [tkey entry]
   (try
     (when-let [f (cache-file)]
@@ -215,6 +222,81 @@
     {:clustering? false :ps nil :reason :no-tty}))
 
 ;; ============================================================================
+;; tmux
+;; ============================================================================
+
+(defn- sh
+  "Run `argv`, returning trimmed stdout, or nil on a non-zero exit or a throw.
+
+   No /dev/tty in sight, unlike `sh-tty` above: a tmux client command talks to
+   the tmux SERVER over its socket and needs no controlling terminal — which is
+   also why this works from a TUI whose own tty is busy being a TUI.
+
+   Same array-class hint as `sh-tty`, for the same reason: the unhinted
+   ProcessBuilder ctor compiles to a reflective call and `bb reflect:check`
+   gates the build on it."
+  [& argv]
+  (try
+    (let [pb   (doto (ProcessBuilder. ^"[Ljava.lang.String;" (into-array String argv))
+                 (.redirectErrorStream true))
+          proc (.start pb)
+          out  (slurp (.getInputStream proc))]
+      (when (zero? (.waitFor proc)) (str/trim out)))
+    (catch Exception _ nil)))
+
+(defn tmux-version
+  "`tmux -V`, or nil when there is no tmux to ask.
+
+   Part of the cached ENTRY rather than of the cache key: an upgrade can change
+   how tmux counts, and a stale yes is a UI that drifts on every emoji. Keeping
+   it out of the key also keeps `terminal-key` a pure function of the
+   environment, which is what makes it testable."
+  []
+  (sh "tmux" "-V"))
+
+(def ^:private cluster-probe
+  "MAN ZWJ BOY ZWJ BOY: 6 columns counted per codepoint, 2 clustered.
+
+   Octal escapes for `printf` rather than the characters themselves, so the
+   bytes that reach tmux do not depend on how this JVM encodes argv — a
+   mangled probe would still measure something, just not this."
+  "\\360\\237\\221\\250\\342\\200\\215\\360\\237\\221\\246\\342\\200\\215\\360\\237\\221\\246")
+
+(defn tmux-clusters?
+  "Does the tmux we are inside fold a grapheme cluster into one cell?
+
+   Asked of the binary rather than of a version table. A DETACHED scratch
+   session prints the sequence and tmux reports where its own cursor landed:
+   2 means clustered, 6 means per-codepoint. Detached and killed immediately,
+   so nothing appears in the pane the user is looking at.
+
+   Costs a handful of tmux round trips — tens of milliseconds against the
+   ~500ms an unanswered DECRQM costs, and unlike DECRQM tmux always answers.
+
+   False on anything unexpected: a tmux that cannot be measured gets the
+   fail-safe this whole namespace is built on, which is the old behaviour."
+  []
+  (let [session (str "by-caps-probe-" (System/currentTimeMillis))]
+    (try
+      (boolean
+       (when (sh "tmux" "new-session" "-d" "-s" session "-x" "40" "-y" "4"
+                 "sh" "-c" (str "printf '" cluster-probe "'; sleep 2"))
+         ;; The pane's shell runs on its own schedule, so poll for the cursor to
+         ;; move rather than sleeping a guessed interval and hoping.
+         (loop [tries 0]
+           (let [x (some-> (sh "tmux" "display-message" "-p" "-t" session "#{cursor_x}")
+                           parse-long)]
+             (cond
+               (and x (pos? x)) (= 2 x)
+               (< tries 30)     (do (Thread/sleep 10) (recur (inc tries)))
+               :else            false)))))
+      (catch Exception _ false)
+      (finally
+        ;; Unconditional: a probe that died halfway must not leave a session in
+        ;; the user's `tmux ls` forever.
+        (sh "tmux" "kill-session" "-t" session)))))
+
+;; ============================================================================
 ;; Negotiation (config-driven, cached)
 ;; ============================================================================
 
@@ -222,9 +304,11 @@
   "Resolve grapheme-width handling and install it. Idempotent per process.
 
    `:grapheme-width` decides:
-     :off  (default) — never probe, clustering disabled
-     :on             — force clustering on, no probe (for a terminal you know)
-     :auto           — probe once per terminal identity, cache the answer
+     :auto (the configured default) — resolve once per terminal identity and
+           cache: DECRQM against the emulator, a direct measurement inside tmux
+     :on   — force clustering on, ask nothing (for a terminal you know)
+     :off  — never ask, clustering disabled. Also the fallback here when the
+           config key is unset, since off is the safe half of a wrong guess
 
    `tty?` is the caller's own answer to \"is stdout a real terminal\" — a
    daemon / piped run must not emit escape sequences at all.
@@ -244,13 +328,30 @@
            (status))
 
        ;; :auto below.
-       ;; tmux is skipped rather than probed: measured against tmux 3.6a it
-       ;; never answers, so probing only buys a ~500ms startup stall on the
-       ;; way to the answer we already know.
+       ;; Inside tmux, tmux IS the terminal: it owns the grid this TUI writes
+       ;; into, and the emulator behind it only draws what tmux decided. It
+       ;; still never answers DECRQM, so the probe stays skipped — but the
+       ;; answer is measured rather than assumed, because the assumption (tmux
+       ;; counts per codepoint) is false on 3.6a.
+       ;;
+       ;; Cached like any other terminal, and invalidated by a tmux upgrade:
+       ;; the whole point of measuring is that this changed once already.
        (not-empty (or (env-var "TMUX") ""))
-       (do (set-grapheme-clustering! false :tmux)
-           (mulog/log ::grapheme-width :mode :auto :clustering? false :reason :tmux)
-           (status))
+       (let [tkey      (terminal-key)
+             ver       (tmux-version)
+             cached    (get (read-cache) tkey)
+             cache-hit (and (contains? cached :clustering?)
+                            (= ver (:tmux-version cached)))
+             clusters? (if cache-hit (:clustering? cached) (tmux-clusters?))]
+         (when-not cache-hit
+           (write-cache! tkey {:clustering?  clusters?
+                               :reason       :tmux-measured
+                               :tmux-version ver}))
+         (set-grapheme-clustering! clusters? :tmux)
+         (mulog/log ::grapheme-width :mode :auto :clustering? clusters?
+                    :reason (if cache-hit :cache-hit :tmux-measured)
+                    :tmux-version ver)
+         (status))
 
        :else
        (let [tkey   (terminal-key)
