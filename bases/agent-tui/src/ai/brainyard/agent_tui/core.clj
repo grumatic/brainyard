@@ -900,6 +900,40 @@
       {:status :error :error (:error r)}
       (merge {:status :ok} (edn-safe r)))))
 
+;; Both live below the op handlers but are needed by `:resume-session`, which
+;; brings a session in off disk exactly as `start!` does further down.
+(declare create-tui-agent! load-input-history-for-session!)
+
+(defn hydrate-persisted-session!
+  "Load `sid`'s persisted agent-session off disk into the session store, ready
+   for `create-tui-agent!` to find. Returns the restored message count.
+
+   The disk→memory half of a resume, shared by the two callers that perform one:
+   `start!`, resuming as the process's first session, and
+   `handle-resume-session-op`, adopting a session into a host already running.
+   Shared because the three steps are not independent and only look it — the
+   store entry has to exist BEFORE the agent's `get-or-create-session` runs or
+   it mints an empty session over the top of the restored one, and the bridge's
+   high-water mark has to match the count just restored or the next turn appends
+   a second copy of the entire history.
+
+   Callers layer their own steps on top: `start!` also snapshots the scrollback
+   tail, having a screen to replay it onto, and both hydrate the usage tracker
+   afterwards — that one needs the agent, which does not exist yet here.
+
+   Throws whatever the persist layer throws. The two callers report a failed
+   resume differently and neither wants a half-restored session called fine."
+  [sid]
+  (let [restored (persist/restore-session-map sid)
+        n        (count (:messages restored))]
+    (agent/set-session !session-store sid (atom restored))
+    ;; Attaching IS a use — bump last-activity so a just-resumed session sorts
+    ;; as the latest for the next --select-resume / bare --resume, even before
+    ;; its first new turn completes.
+    (persist/save-meta! sid {:last-attached-at (System/currentTimeMillis)})
+    (persist-bridge/prime-session-counts! sid n)
+    n))
+
 (defn- handle-new-session-op
   "Spawn an additional LIVE session inside THIS process and return its identity —
    the process-level counterpart to the interactive `/session new`. Lets an
@@ -951,6 +985,108 @@
         {:status :error :error "session created but no session-id was assigned"}))
     (catch Throwable e
       {:status :error :error (str "new-session failed: " (.getMessage e))})))
+
+(defn- handle-resume-session-op
+  "Adopt a PERSISTED session into THIS process — the third way to put a session
+   in a host, beside `:new-session` (mint a fresh one) and the `by run --resume
+   <id>` a separate process performs.
+
+   It exists because the second of those is not co-hosting. An external driver
+   could add NEW sessions to a running host but had to launch its own `by` for
+   one that already existed, which left two hosts standing in the same checkout
+   — the second on a private tmux socket, so invisible to anything looking for
+   the first — and left the next create with no way to guess which was meant.
+   `:new-session` is no substitute: it starts an empty session, and the point
+   here is the history.
+
+   Refuses rather than co-owns. A session open in another live process holds
+   that process's ownership lock and its ask.sock, and a second opener clobbers
+   both (last-opener-wins) while interleaving snapshots into one file. The probe
+   is PID-checked, so a lock left behind by a crashed process does not block.
+   A session already live in THIS process is not a failure but the answer, and
+   is reported with `:already-live true` and its tab index — the shape
+   `:switch-session` uses for a switch that was already true.
+
+   Restores what the session WAS, not what the caller says it is: agent type,
+   label and acp pin come from `meta.edn`, exactly as `--resume` reads them.
+   `:label` is the one accepted override, for a caller renaming as it resumes.
+
+   NOT restored: the persisted `:model`/`:provider`. `configure-default-lm!` is
+   process-global — as is the `/model` command that writes those keys — so
+   honouring them here would move every OTHER co-hosted session onto this one's
+   model. Reported back as `:model` instead, so a caller that cares can see what
+   the session last ran on and decide.
+
+   Does NOT move the local terminal's focus, for the same reason `:new-session`
+   does not — a headless driver does not want its tab yanked. `:switch-session`
+   is the opt-in. Returns
+   {:status :ok :session-id … :ask-socket-path … :index … :messages …}."
+  [{:keys [session-id label] :as _req}]
+  (try
+    (let [sid  (str/trim (str session-id))
+          live (when-not (str/blank? sid)
+                 (some (fn [s] (when (= sid (str (:agent-session-id s))) s))
+                       (sessions/session-list)))
+          sock #(.getAbsolutePath ^java.io.File (persist/file-of sid :ask-sock))]
+      (cond
+        (str/blank? sid)
+        {:status :error :error "resume-session requires :session-id"}
+
+        live
+        {:status :ok :session-id sid :already-live true :index (:id live)
+         :label (:label live) :defagent-id (some-> (:defagent-id live) name)
+         :ask-socket-path (sock)}
+
+        (not (some #{sid} (persist/list-sessions)))
+        {:status :error :error (str "no persisted session with id " sid)}
+
+        (persist/held-by-other-live-process? sid)
+        {:status :error
+         :error (str "session " sid " is already open in another live `by` process (pid "
+                     (persist/owner-pid sid) ")")}
+
+        :else
+        (let [meta*    (or (try (persist/read-meta sid) (catch Throwable _ nil)) {})
+              defagent (or (:defagent-id meta*) :coact-agent)
+              lbl      (or (not-empty (str/trim (str (or label ""))))
+                           (:label meta*)
+                           (sessions/next-root-tab-label!))
+              n        (hydrate-persisted-session! sid)
+              ;; The store entry above is what makes this a resume rather than a
+              ;; new session under an old id: create-tui-agent! claims the
+              ;; ownership lock and opens the ask socket, and the agent's own
+              ;; init finds the restored session instead of minting one.
+              ag       (create-tui-agent! defagent
+                                          :session-id sid
+                                          :acp-backend (:acp-backend meta*)
+                                          :acp-backend-opts (:acp-backend-opts meta*))
+              ;; Replay the persisted usage snapshot over the tracker the agent
+              ;; just minted empty, so /usage and the status bar carry the
+              ;; session's real running cost rather than restarting it at zero.
+              _        (try
+                         (when-let [snap (persist/read-snap sid :usage-tracker nil)]
+                           (when-let [tracker (agent/get-session-config
+                                               @(:!session ag) :usage-tracker)]
+                             (clj-llm/hydrate-tracker! tracker snap)))
+                         (catch Throwable _))
+              idx      (sessions/create-session! {:label lbl
+                                                  :agent ag
+                                                  :agent-id defagent
+                                                  :started-at (System/currentTimeMillis)
+                                                  :skip-agent-creation true})]
+          ;; Watches, so this session's output routes to its own tab. The step
+          ;; start! performs after creating session 0, and needed for the same
+          ;; reason here: create-session! attaches them itself only when it
+          ;; BUILT the agent, and this one arrived ready-made.
+          (tui-session/set-agent! ag (:agent-id ag) :session-idx idx)
+          ;; Up/down recall reads a per-session atom, so a resumed tab without
+          ;; this has the history on disk and none of it at the prompt.
+          (load-input-history-for-session! sid)
+          {:status :ok :session-id sid :ask-socket-path (sock) :index idx
+           :label lbl :defagent-id (name defagent) :messages n
+           :model (:model meta*)})))
+    (catch Throwable e
+      {:status :error :error (str "resume-session failed: " (.getMessage e))})))
 
 (defn- handle-close-session-op
   "Gracefully close ONE co-hosted session by its `:session-id` (the on-disk
@@ -1054,8 +1190,10 @@
    deterministic peer CRUD (`:list`/`:add`/`:update`/`:delete`) without a turn.
    `:new-session`
    spawns another session in THIS process (returns its id + socket);
-   `:close-session` closes one co-hosted session by id; `:switch-session` makes
-   one the active tab. Those three are process-level (they don't
+   `:resume-session` adopts a PERSISTED one into it instead of leaving the
+   caller to launch a second host for it; `:close-session` closes one co-hosted
+   session by id; `:switch-session` makes one the active tab. Those four are
+   process-level (they don't
    use `ag`) — any live session's socket can service them, so an external driver
    can host many sessions in one JVM. Unknown ops get a clear error. See
    docs/design/session-channel-extensions.md, event-bus-and-reactor.md, and
@@ -1073,6 +1211,7 @@
       :fsm-status (handle-fsm-status-op ag)
       :a2a        (handle-a2a-op ag req)
       :new-session    (handle-new-session-op req)
+      :resume-session (handle-resume-session-op req)
       :close-session  (handle-close-session-op req)
       :switch-session (handle-switch-session-op req)
       :rename-session (handle-rename-session-op ag req)
@@ -1097,7 +1236,8 @@
             (try (persist/save-meta! sid {:ask-socket-path path
                                           :ops [:ask :status :config :inject :cancel :subscribe :emit :fsm-status
                                                 :a2a
-                                                :new-session :close-session :rename-session :switch-session]})
+                                                :new-session :resume-session
+                                                :close-session :rename-session :switch-session]})
                  (catch Throwable _))
             (mulog/info ::ask-listener-bootstrapped :session-id sid :path path))
           (catch clojure.lang.ExceptionInfo e
@@ -1535,9 +1675,7 @@
         ;;     NEW messages.
         _ (when resuming?
             (try
-              (let [restored (persist/restore-session-map agt-sess-id)
-                    !s       (atom restored)
-                    ;; Snapshot the on-disk scrollback tail NOW, before the
+              (let [;; Snapshot the on-disk scrollback tail NOW, before the
                     ;; welcome banner emit (step 13) tees its own bytes into
                     ;; the same file. The replay in `run!` (and the inline
                     ;; branch below) uses this fixed snapshot so the banner
@@ -1547,14 +1685,11 @@
                                    agt-sess-id :stream
                                    (agent/get-config :resume-scrollback-bytes))
                                   (catch Throwable _ nil))]
-                (agent/set-session !session-store agt-sess-id !s)
-                ;; Attaching IS a use — bump last-activity so a just-resumed
-                ;; session sorts as the latest for the next --select-resume /
-                ;; bare --resume, even before its first new turn completes.
-                (persist/save-meta! agt-sess-id
-                                    {:last-attached-at (System/currentTimeMillis)})
-                (persist-bridge/prime-session-counts!
-                 agt-sess-id (count (:messages restored)))
+                ;; Restore the session map, stamp last-attached-at and prime the
+                ;; bridge's high-water mark — shared with `:resume-session`, so
+                ;; a session adopted into a running host comes back the same way
+                ;; one resumed at startup does.
+                (hydrate-persisted-session! agt-sess-id)
                 ;; Mark the TUI state as resumed so `run!` knows to replay
                 ;; the snapshot into the alt-screen after `init-fullscreen!`
                 ;; (which clears `!scrollback` and the alt-screen buffer).

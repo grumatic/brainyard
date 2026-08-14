@@ -216,3 +216,91 @@
             (is (= :ok (:status resp)))
             (is (true? (:already-active resp)))
             (is (= [7] @switched) "no second switch-to!")))))))
+
+(deftest resume-session-op
+  (testing ":resume-session adopts a PERSISTED session into this running host"
+    ;; Process-level like its siblings, so it is driven directly. Everything
+    ;; that touches disk or builds a real agent is stubbed; what is under test is
+    ;; the decision table (refuse / already-live / resume) and that a resume
+    ;; carries the session's OWN identity rather than a fresh one.
+    (let [op       #'core/handle-resume-session-op
+          hydrated (atom [])
+          built    (atom [])
+          watched  (atom [])
+          history  (atom [])
+          sid      "agt-old-1"
+          fake-ag  {:agent-id :coact-agent/inst-9 :!session (atom {})}]
+      (sessions/reset-sessions!)
+      (with-redefs [;; create-session! files the tab under the id it reads OFF
+                    ;; the agent, which is the whole point of the op — so the
+                    ;; stand-in agent has to answer with the resumed id.
+                    agent/session-id                   (fn [_] sid)
+                    persist/list-sessions              (fn [] [sid])
+                    persist/held-by-other-live-process? (fn [_] false)
+                    persist/owner-pid                  (fn [_] 4242)
+                    persist/read-meta                  (fn [_] {:defagent-id :mcp-agent
+                                                                :label "old work"
+                                                                :model "opus"})
+                    persist/read-snap                  (fn [& _] nil)
+                    persist/file-of                    (fn [s _] (java.io.File. (str "/tmp/" s "/ask.sock")))
+                    core/hydrate-persisted-session!    (fn [s] (swap! hydrated conj s) 17)
+                    core/create-tui-agent!             (fn [a & kvs]
+                                                         (swap! built conj [a (apply hash-map kvs)])
+                                                         fake-ag)
+                    core/load-input-history-for-session! (fn [s] (swap! history conj s))
+                    tui-session/set-agent!             (fn [_ inst & kvs]
+                                                         (swap! watched conj
+                                                                [inst (apply hash-map kvs)]))]
+
+        (testing "a blank :session-id is rejected"
+          (doseq [req [{} {:session-id "  "}]]
+            (is (= :error (:status (op req))) (str "rejected: " (pr-str req))))
+          (is (empty? @hydrated) "nothing was restored"))
+
+        (testing "an id with no persisted session is rejected"
+          (let [resp (op {:session-id "agt-nope"})]
+            (is (= :error (:status resp)))
+            (is (re-find #"no persisted session" (:error resp)))
+            (is (empty? @hydrated))))
+
+        (testing "a session open in ANOTHER live process is refused, naming the owner"
+          (with-redefs [persist/held-by-other-live-process? (fn [_] true)]
+            (let [resp (op {:session-id sid})]
+              (is (= :error (:status resp)))
+              (is (re-find #"another live" (:error resp)))
+              (is (re-find #"4242" (:error resp)) "the owning pid is reported")
+              (is (empty? @hydrated) "co-ownership never begins"))))
+
+        (testing "a resume hydrates, builds the agent on the SESSION'S OWN id, and adds a tab"
+          (let [resp (op {:session-id sid})]
+            (is (= :ok (:status resp)))
+            (is (= sid (:session-id resp)))
+            (is (= 17 (:messages resp)) "the restored message count is reported")
+            (is (= "mcp-agent" (:defagent-id resp)) "the persisted agent type, not a default")
+            (is (= "old work" (:label resp)) "the persisted label")
+            (is (= "opus" (:model resp))
+                "reported rather than applied — configure-default-lm! is process-global")
+            (is (nil? (:already-live resp)))
+            (is (= [sid] @hydrated))
+            (let [[agent-kw opts] (first @built)]
+              (is (= :mcp-agent agent-kw))
+              (is (= sid (:session-id opts))
+                  "resumed under its own id — a fresh one would be a new session"))
+            (is (= [sid] @history) "input recall is loaded for the resumed tab")
+            (let [idx (:index resp)]
+              (is (= sid (:agent-session-id (sessions/get-session idx))))
+              (is (= [[(:agent-id fake-ag) {:session-idx idx}]] @watched)
+                  "watches attached, so its output routes to its own tab"))))
+
+        (testing "resuming one already live HERE is the answer, not a failure"
+          (let [resp (op {:session-id sid})]
+            (is (= :ok (:status resp)))
+            (is (true? (:already-live resp)))
+            (is (= [sid] @hydrated) "no second hydration")
+            (is (= 1 (count @built)) "no second agent")))
+
+        (testing ":label overrides the persisted one, for a rename-as-you-resume"
+          (sessions/reset-sessions!)
+          (let [resp (op {:session-id sid :label "  revived  "})]
+            (is (= "revived" (:label resp)))
+            (is (= "revived" (:label (sessions/get-session (:index resp)))))))))))

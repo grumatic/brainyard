@@ -304,6 +304,9 @@ A specialized outbound subscription — the external env wants what the agent *r
 
 ;; ── Mode A: session lifecycle (process-level — no `ag`, any socket serves) ────
 → {:op :new-session    :agent-id "mcp-agent" :label "…"}   ; → :session-id + :ask-socket-path
+→ {:op :resume-session :session-id "agt-…" :label "…"}     ; adopt a PERSISTED session into this host
+                                                           ;   :label optional (else meta.edn's);
+                                                           ;   → :index, :messages, :model, :already-live
 → {:op :close-session  :session-id "agt-…"}                ; refuses the host's last chat session
 → {:op :rename-session :label "…"}                         ; THIS session: persisted label + live tab
                                                            ;   :label required (blank → error); → :label, :live-tab
@@ -320,6 +323,16 @@ A specialized outbound subscription — the external env wants what the agent *r
 - The lifecycle verbs let one JVM host many sessions instead of one OS process each.
   `:new-session` deliberately does **not** move the local terminal's focus (a headless
   driver doesn't want its tab yanked); `:switch-session` is the explicit opt-in.
+- `:resume-session` is what makes that true of OLD sessions too. Without it a driver
+  could only add new sessions to a running host and had to launch `by run --resume <id>`
+  for one that already existed — a second host in the same checkout, on a private tmux
+  socket, invisible to anything looking for the first. It refuses a session held by
+  another live process (PID-checked, so a crashed process's lock does not block) and
+  reports one already live *here* as `:already-live` rather than as a failure. It
+  restores the agent type, label and acp pin from `meta.edn`, but **not** the persisted
+  `:model`/`:provider`: `configure-default-lm!` is process-global, so applying it would
+  move every co-hosted session onto the resumed one's model. It is reported back
+  instead.
 
 ---
 
