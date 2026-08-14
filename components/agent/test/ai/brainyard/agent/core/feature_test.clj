@@ -44,7 +44,7 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "33 feature gates + 9 family gates + 95 knobs + 16 presentation + 13 ambient = 166"
+  (testing "33 feature gates + 9 family gates + 94 knobs + 17 presentation + 14 ambient = 167"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
@@ -52,12 +52,14 @@
           pres  (->> feat/all-features (filter :presentation) (mapcat :keys) count)]
       (is (= 33 (count feat/gate-keys)) "+1: :enable-catalog-refresh (exec/catalog-refresh)")
       (is (= 9 (count feat/family-gate-keys)) "one per capability family; :ui has none")
-      (is (= 95 knobs) "+1: :catalog-refresh-ttl-hours (exec/catalog-refresh)")
-      (is (= 16 pres))
-      (is (= 13 (count feat/ambient-keys)) "+1: :enable-tool-binding, beside :compact-agent-tools")
+      (is (= 94 knobs)
+          "-1: :acp-permission-timeout-ms folded into the shared :permission-timeout-ms")
+      (is (= 17 pres) "+1: :grapheme-width (ui/grapheme-width)")
+      (is (= 14 (count feat/ambient-keys))
+          "+1: :permission-timeout-ms, beside :permission-mode")
       (is (= 0 (count feat/unclassified-keys))
           "no schema key is currently unreadable")
-      (is (= 166 (count cfg/config-keys)))
+      (is (= 167 (count cfg/config-keys)))
       (testing "the partition still balances"
         ;; The real invariant behind the hardcoded numbers: every schema key
         ;; lands in exactly one bucket. Asserting the sum catches a
@@ -259,8 +261,9 @@
           "every gated feature now has a real schema key")
       (is (= 10 (count (remove :gate capability)))
           "an ungated grouping exists so its knobs have a discoverable home")))
-  (testing "ui is modelled as sub-features, not one flat 16-key bucket"
-    (is (= 2 (count (feat/family->features :ui))))))
+  (testing "ui is modelled as sub-features, not one flat 17-key bucket"
+    (is (= 3 (count (feat/family->features :ui)))
+        "+1: :ui/grapheme-width — split out because :ui/display is :live and it is not")))
 
 (deftest annotate-hit-adds-feature-and-family
   (let [hit (feat/annotate-hit {:key "graph-max-nodes" :value 100})]

@@ -123,10 +123,19 @@
           offenders (->> (file-seq src-root)
                          (filter #(.endsWith (.getName %) ".clj"))
                          (remove #(= "proc.clj" (.getName %)))
-                         ;; format.clj deliberately reads the real terminal
-                         ;; (`stty size < /dev/tty`) to measure it — hardening
-                         ;; that would defeat its entire purpose.
-                         (remove #(= "format.clj" (.getName %)))
+                         ;; These two deliberately talk to the REAL terminal
+                         ;; over /dev/tty — format.clj measures it (`stty size
+                         ;; < /dev/tty`), terminal_caps.clj negotiates DEC mode
+                         ;; 2027 with it (`stty -g`, `stty raw -echo min 0 time
+                         ;; 5`). `sh-argv` exists to take the controlling
+                         ;; terminal AWAY, so routing these through it would
+                         ;; make /dev/tty fail ENXIO and defeat their entire
+                         ;; purpose. The guard is about LLM-supplied commands,
+                         ;; which neither of these runs: every command here is
+                         ;; an `stty` literal, and the one interpolated value
+                         ;; is `stty -g`'s own output being handed back to
+                         ;; `stty` to restore the mode.
+                         (remove #(#{"format.clj" "terminal_caps.clj"} (.getName %)))
                          (filter #(string/includes? (slurp %) "\"/bin/sh\" \"-c\""))
                          (mapv #(.getName %)))]
       (is (some? proc-url) "core/proc.clj must be on the classpath")

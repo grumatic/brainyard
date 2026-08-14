@@ -518,6 +518,22 @@
     :lifecycle    :live
     :doc          "Terminal rendering and input affordances."}
 
+   ;; Its own entry rather than a knob on :ui/display, because that feature is
+   ;; `:live` and this key is not: `terminal-caps/install!` negotiates DEC mode
+   ;; 2027 once, before the first render, and is idempotent per process — so a
+   ;; mid-session change does nothing until the next start. `:session` is the
+   ;; closest honest lifecycle; `:startup` would be closer still, but that is
+   ;; the derivation behind `restart-required-keys`, whose set is deliberately
+   ;; frozen verbatim against the deleted `:requires-restart` flag.
+   :ui/grapheme-width
+   {:title        "Grapheme width"
+    :family       :ui
+    :gate         nil
+    :presentation true
+    :keys         [:grapheme-width]
+    :lifecycle    :session
+    :doc          "How emoji/CJK width is measured (DEC mode 2027 negotiation)."}
+
    :ui/blocks
    {:title        "Live blocks"
     :family       :ui
@@ -537,7 +553,11 @@
 
    `:allowed-dirs` and `:permission-mode` must never become gateable: they are
    the security floor, and the config-agent's hard rules already treat them as
-   human-approval-only.
+   human-approval-only. `:permission-timeout-ms` sits with `:permission-mode`
+   for the same reason and one more: it is the ONE prompt timeout, shared by
+   the tool gate and by ACP's `session/request_permission` (which used to
+   carry its own `:acp-permission-timeout-ms`). A key two capabilities both
+   read cannot be owned by either.
 
    `:feature-profile` is ambient for a different reason: it configures the
    feature system rather than any capability within it, and gating it with a
@@ -550,7 +570,8 @@
    the prompt goes away. It sits beside its two siblings
    (`:compact-agent-tools`, `:include-function-directory`), which tune the
    same prompt real estate."
-  #{:lm-config :dirs :allowed-dirs :permission-mode :max-output-tokens
+  #{:lm-config :dirs :allowed-dirs :permission-mode :permission-timeout-ms
+    :max-output-tokens
     :max-output-chars :max-thought-chars :claude-code-max-turns
     :include-function-directory
     :compact-agent-tools :enable-tool-binding :inline-usage-guides
