@@ -435,7 +435,10 @@
           (tui-session/emit! (str "\n" (ansi/failure (str "Error: " (:error result)))) origin-sidx)
 
           diff
-          (tui-session/emit! (str "\n" (format-per-ask-usage diff)) origin-sidx))
+          ;; Right-aligned, so its leading padding is computed against the pane
+          ;; width — a stale one leaves the line hanging off the right edge.
+          (let [usage-fn (fn [_cols] (str "\n" (format-per-ask-usage diff)))]
+            (tui-session/emit! (usage-fn nil) origin-sidx {:render usage-fn})))
         ;; Auto-compaction check (between turns) — both paths.
         (when-not (or cancelled? (:error result))
           (maybe-auto-compact! ag))
@@ -561,14 +564,18 @@
       (do (set-count! queue-len) (tui-session/update-status-bar!))
 
       :processing
-      (let [echo      (str "\n" (ansi/user-text (format-user-input-display (:input item))))
+      (let [echo-fn   (fn [_cols]
+                        (str "\n" (ansi/user-text
+                                   (format-user-input-display (:input item)))))
+            echo      (echo-fn nil)
+            echo-opts {:render echo-fn}
             target-ag (:agent (:opts item))]
         ;; Route the input echo to the queue's session (targeted resume or the
         ;; tab the input was typed in) rather than whatever's on screen.
         (cond
-          sidx      (tui-session/emit! echo sidx)
+          sidx      (tui-session/emit! echo sidx echo-opts)
           target-ag nil
-          :else     (tui-session/emit! echo))
+          :else     (tui-session/emit! echo nil echo-opts))
         (set-count! queue-len)
         (tui-session/update-status-bar!))
 
@@ -1843,13 +1850,14 @@
                             vals
                             (mapv #(select-keys % [:id]))
                             (sort-by (comp name :id)))]
-            (layout/write-output!
-             (fmt/format-welcome-banner
-              {:agent-id    agent-id
-               :session-id  agt-sess-id
-               :lm-provider (:provider lm)
-               :lm-model    (:model lm)
-               :agents      agents}))))
+            (let [banner (fn [_cols]
+                           (fmt/format-welcome-banner
+                            {:agent-id    agent-id
+                             :session-id  agt-sess-id
+                             :lm-provider (:provider lm)
+                             :lm-model    (:model lm)
+                             :agents      agents}))]
+              (layout/write-output! (banner nil) {:render banner}))))
         ;; One-line MCP connecting/lazy summary, under the banner.
         (when-let [s (format-mcp-summary (:mcp-summary @tui-session/!tui-state))]
           (layout/write-output! (str s "\n")))
@@ -1964,7 +1972,9 @@
     ;; Direct/inline path (one-shot `bb tui ask`, /continue): echo the input,
     ;; then run the shared lifecycle on the active session. :set-idle? true
     ;; restores the status bar; :rethrow lets REPL/CLI callers see failures.
-    (tui-session/emit! (str "\n" (ansi/user-text (format-user-input-display input))) origin-sidx)
+    (let [echo-fn (fn [_cols]
+                    (str "\n" (ansi/user-text (format-user-input-display input))))]
+      (tui-session/emit! (echo-fn nil) origin-sidx {:render echo-fn}))
     (run-ask-lifecycle {:ag ag :input input :opts nil
                         :origin-sidx origin-sidx :active? true
                         :set-idle? true :error-mode :rethrow})))
@@ -1977,7 +1987,9 @@
   (let [ag (tui-session/get-active-agent)]
     (when-not ag
       (throw (ex-info "No TUI agent running. Call (start! :agent-id) first." {})))
-    (tui-session/emit! (str "\n" (ansi/user-text (format-user-input-display input))))
+    (let [echo-fn (fn [_cols]
+                    (str "\n" (ansi/user-text (format-user-input-display input))))]
+      (tui-session/emit! (echo-fn nil) nil {:render echo-fn}))
     (agent/ask-async ag input)))
 
 ;; ============================================================================
@@ -2064,13 +2076,14 @@
                               vals
                               (mapv #(select-keys % [:id]))
                               (sort-by (comp name :id)))]
-              (layout/write-output!
-               (fmt/format-welcome-banner
-                {:agent-id    (or defagent-id agent-id :unknown)
-                 :session-id  (or sess-id "unknown")
-                 :lm-provider (:provider lm)
-                 :lm-model    (:model lm)
-                 :agents      agents}))))
+              (let [banner (fn [_cols]
+                             (fmt/format-welcome-banner
+                              {:agent-id    (or defagent-id agent-id :unknown)
+                               :session-id  (or sess-id "unknown")
+                               :lm-provider (:provider lm)
+                               :lm-model    (:model lm)
+                               :agents      agents}))]
+                (layout/write-output! (banner nil) {:render banner}))))
         ;; One-line MCP connecting/lazy summary, under the banner. The async
         ;; ✓/✗ per-server emits land in the live loop below as connects settle.
           (when-let [s (format-mcp-summary (:mcp-summary @tui-session/!tui-state))]

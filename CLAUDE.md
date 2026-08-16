@@ -182,6 +182,89 @@ lines with a derived row-span index, and teaching viewport/scroll/live-block
 accounting to distinguish lines from rows. That is a layout-engine change, not
 a renderer change.
 
+#### Pre-wrapped is not the same as wrapped once
+
+Fullscreen must pre-wrap, but a row pre-wrapped at yesterday's width is wrong
+today: `handle-resize!` used to update every geometry field and then replay the
+*same* rows into a terminal that was no longer that wide. Nothing in the
+codebase touches DECAWM (only `?1007` alt-scroll), so autowrap is on and the
+overflow was silent — each row wrapped onto the row below, the next row's
+`erase-line` wiped the spill, and the tail of every line disappeared; on the
+bottom region row it scrolled the DECSTBM region instead, shifting every
+absolutely-addressed row under the layout's model of where it was. Widening was
+merely ugly: text stayed broken at the old column.
+
+So each emit also records **how to render itself at a width**. `!scrollback-src`
+is an ordered entry list covering exactly the rows in `!scrollback`
+(`{:render (fn [cols] …) :n :block-id :sticky?}`), and `reflow-scrollback!`
+re-renders all of it on resize, then recomputes every live block's `:start-idx`
+from the new row counts.
+
+The scroll position gets the same treatment, for the same reason: `viewport-offset`
+counts ROWS back from the tail, so after a rewrap the same number lands on
+different text. `viewport-anchor` reads it — **before** the resize writes the new
+`:scroll-bottom`, since which row is on top depends on the height the viewport
+still has — as `[entry-idx row-within-entry]`, and `restore-viewport-anchor!`
+seats it back afterwards, clamping the row into an entry that may have got
+shorter and the offset into the scrollable range. Offset 0 anchors to *nothing*
+and stays 0: at the tail the user is following live output, and holding their top
+row fixed while content re-wraps below would walk them off the bottom.
+
+Two properties worth preserving if you touch this:
+
+- **Reflow is opt-in per producer.** A caller that hands over a pre-formatted
+  string gets `(constantly rows)` and behaves exactly as before, which is why
+  this landed without changing all 22 `write-output!` call sites. Pass
+  `:render` (via `write-output!` / `update-live-block!` / `emit!` /
+  `emit-to-session!`) to make an emit reflow — `format-answer` and
+  `format-answer-plain` already take `cols`, so the answer path is a one-liner.
+  `format-answer-soft` needs none: it emits no hard newlines.
+- **Live blocks need it MORE than ordinary output, not less.** A block re-renders
+  on every tick, so while it is live a resize self-corrects on the next tick —
+  but the moment it freezes (`[✓] Iteration 1` and its `Think:` text, a settled
+  task, a finished sub-agent rollup) it never ticks again and keeps whatever
+  width it was last wrapped at, forever. That is why `src-freeze-block!` keeps
+  the renderer when it detaches the block. The block renderers in `session` take
+  their width from `layout/!layout`'s `:cols` rather than an argument, and
+  `reflow-scrollback!` sets `:cols` before invoking anything — so a block's
+  `:render` is just `(fn [_cols] (render-… state …))`, and the two routes agree
+  by construction. `iter-sink/-write-widget!` carries `opts` for the same reason.
+- **A renderer is only as reflowable as its inputs.** The iteration block's
+  `:eval-section-lines` are PRE-RENDERED strings held in state, so re-running
+  `render-iteration-block-lines` re-wrapped the header/Think/tool lines and left
+  the Code / Result / Output boxes at their old width — measured at a 120→70
+  resize as Think 116→68 while the Result rows stayed 119. The block's `:render`
+  therefore re-derives them from the structured `:eval-display`; `:id-prefix` is
+  what keeps the display-block providers idempotent across re-renders. When
+  adding a `:render`, check whether the state it closes over holds *data* or
+  *already-wrapped strings*.
+- **Some formatters had no width to reflow to.** `format-welcome-banner` sized
+  its box to its content and never capped it, `format-next-prompt` truncated at
+  200 chars — a content cap, not a width — and the permission prompts
+  (`format-{feedback,confirm,text}-lines`) never wrapped their question at all.
+  All overflowed a narrow pane at LAUNCH, not just after a resize, so no amount
+  of `:render` would have fixed them. All now wrap/clamp to `terminal-columns`;
+  the wrap helper is exported as `fmt/ansi-aware-word-wrap`. The permission case
+  is the one that was more than cosmetic: rows too wide are clipped at paint
+  time, so a long path meant approving something you could not fully read.
+- **Wrap prose, truncate tables.** Not every block should reflow the same way.
+  Questions, descriptions and think text WRAP. The pause-tips key hints and the
+  frozen compaction summary TRUNCATE — they are fixed two-column rows held
+  together by padding, and wrapping them reads as noise while truncation keeps
+  the part that matters (the key, the verdict) on the left. Same reasoning as
+  `draw-status-bar!`.
+- **Blocks that re-render fast enough need nothing.** The `async-spin` block in
+  `commands` ticks every 120 ms and is disposed on completion, so a resize
+  self-corrects within a frame. `:render` there would be dead code.
+- **Drift degrades, it never corrupts.** A session switch swaps `!scrollback`
+  wholesale and a test resets it directly, so the entry list can fall out of
+  step. `ensure-src!` rebuilds it from whatever is on screen, and a reflow only
+  runs against a list that accounts for exactly the rows present. The cost of
+  drift is that those rows stop reflowing — which is what they did before any
+  of this existed. `render-viewport!` / `render-block-rows!` additionally clamp
+  every row to `cols` at paint time, so an un-reflowable row clips visibly
+  instead of corrupting the screen. Tests: `resize_reflow_test.clj`.
+
 - **`BY_SANDBOX_INTEROP`** — seeds the `:sandbox-interop` config default
   (`restricted` | `full` | `auto`) controlling Java interop in the **in-process
   SCI code-eval sandbox** (distinct from `--sandbox`, which is the OS seatbelt).

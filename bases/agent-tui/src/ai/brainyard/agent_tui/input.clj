@@ -10,6 +10,7 @@
             [ai.brainyard.agent-tui.layout :as layout]
             [ai.brainyard.agent-tui.permissions :as permissions]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
+            [ai.brainyard.agent.interface.tui.format :as fmt]
             [ai.brainyard.agent.interface :as agent])
   (:import [java.io InputStream]
            [java.util.concurrent LinkedBlockingQueue TimeUnit]))
@@ -47,14 +48,23 @@
   :pause-tips)
 
 (defn- pause-tips-lines
-  "Rows for the paused 'what next' tips block."
-  []
-  [""
-   (str "  " (ansi/warning "⏸ Paused")
-        (ansi/muted " — agent stops at the next safe checkpoint"))
-   (str "    ESC                      " (ansi/muted "continue"))
-   (str "    type a message + Enter   " (ansi/muted "continue, steering the agent"))
-   (str "    Ctrl-C                   " (ansi/muted "cancel this turn"))])
+  "Rows for the paused 'what next' tips block.
+
+   Key-hint rows are a two-column table held together by fixed padding, so they
+   are TRUNCATED rather than wrapped when the pane is too narrow — a wrapped
+   keybinding table reads as noise, and the key (the part the user needs) is on
+   the left where truncation preserves it. `cols` nil means \"ask the layout\"."
+  ([] (pause-tips-lines nil))
+  ([cols]
+   (let [w   (max 20 (- (or cols (:cols @layout/!layout) 80) 1))
+         fit (fn [s] (fmt/truncate-to-width s w))]
+     (mapv fit
+           [""
+            (str "  " (ansi/warning "⏸ Paused")
+                 (ansi/muted " — agent stops at the next safe checkpoint"))
+            (str "    ESC                      " (ansi/muted "continue"))
+            (str "    type a message + Enter   " (ansi/muted "continue, steering the agent"))
+            (str "    Ctrl-C                   " (ansi/muted "cancel this turn"))]))))
 
 (defn show-pause-tips!
   "Render the paused-state tips as a sticky-bottom live-block (anchored below
@@ -63,7 +73,8 @@
   []
   (if (layout/fullscreen?)
     (layout/update-live-block! pause-tips-block-id (pause-tips-lines)
-                               {:sticky-bottom? true})
+                               {:sticky-bottom? true
+                                :render pause-tips-lines})
     (tui-session/emit! (str/join "\n" (pause-tips-lines)))))
 
 (defn hide-pause-tips!

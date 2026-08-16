@@ -26,6 +26,7 @@
             [ai.brainyard.agent-tui-tmux.interface :as tmux-iface]
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
+            [ai.brainyard.agent.interface.tui.format :as fmt]
             [clojure.string :as str]
             [clojure.java.io :as io])
   (:import [java.io BufferedReader InputStreamReader]
@@ -40,14 +41,33 @@
   :user-feedback)
 
 (defn- show-user-feedback-block!
-  "Render `lines` as the sticky-bottom user-feedback live-block.
+  "Render the sticky-bottom user-feedback live-block from `render-fn`, a
+   `(fn [cols] -> lines)`.
    In fullscreen TUI, the block is anchored below iteration/think/todo
-   blocks; in non-fullscreen mode, falls back to a plain emit."
-  [lines]
+   blocks; in non-fullscreen mode, falls back to a plain emit.
+
+   Takes a thunk rather than finished lines so the prompt re-wraps if the
+   terminal is resized while it is open. That matters more here than anywhere
+   else on screen: a permission question names a path or a command, and rows
+   too wide for the pane are clipped at paint time — which would ask the user
+   to approve something they cannot fully read."
+  [render-fn]
   (if (layout/fullscreen?)
-    (layout/update-live-block! user-feedback-block-id (vec lines)
-                               {:sticky-bottom? true})
-    (tui-session/emit! (str "\n" (str/join "\n" lines)))))
+    (layout/update-live-block! user-feedback-block-id (vec (render-fn nil))
+                               {:sticky-bottom? true
+                                :render (fn [c] (vec (render-fn c)))})
+    (tui-session/emit! (str "\n" (str/join "\n" (render-fn nil))))))
+
+(defn- wrap-prompt-text
+  "Word-wrap one prompt row to the pane, indenting continuations by `indent`.
+   `nil` cols means \"ask the layout\" — the tick path passes nothing, the
+   reflow passes the width it is rendering for."
+  ([s cols] (wrap-prompt-text s cols ""))
+  ([s cols indent]
+   (let [w (max 20 (- (or cols (:cols @layout/!layout) 80)
+                      2 (count indent)))]
+     (map-indexed (fn [i r] (str indent (when (pos? i) "  ") r))
+                  (fmt/ansi-aware-word-wrap s w)))))
 
 (defn- hide-user-feedback-block!
   "Dispose the user-feedback live-block (removes lines from scrollback).
@@ -86,17 +106,24 @@
 
 (defn format-feedback-lines
   "Build the :select prompt as a vector of ANSI-styled lines.
-   Options with :free-input true show a '(free input)' hint."
-  [question options]
-  (let [hint (str "Select [1-" (count options) "]: ")]
-    (-> [(ansi/style question ansi/bold ansi/bright-cyan)]
-        (into (map-indexed
-               (fn [i {:keys [label description free-input]}]
-                 (str "  " (ansi/style (str "[" (inc i) "]") ansi/bold) " " label
-                      (when description (str " — " (ansi/muted description)))
-                      (when free-input (str " " (ansi/muted "(free input)")))))
-               options))
-        (conj (str "  " (ansi/muted hint))))))
+   Options with :free-input true show a '(free input)' hint.
+
+   The 3-arity wraps to `cols`; the 2-arity asks the layout. Both the question
+   and the option rows are wrapped — an option's `:description` is free text and
+   a question routinely carries a path, so neither fits a narrow pane."
+  ([question options] (format-feedback-lines question options nil))
+  ([question options cols]
+   (let [hint (str "Select [1-" (count options) "]: ")]
+     (-> (vec (wrap-prompt-text (ansi/style question ansi/bold ansi/bright-cyan) cols))
+         (into (mapcat
+                (fn [i {:keys [label description free-input]}]
+                  (wrap-prompt-text
+                   (str (ansi/style (str "[" (inc i) "]") ansi/bold) " " label
+                        (when description (str " — " (ansi/muted description)))
+                        (when free-input (str " " (ansi/muted "(free input)"))))
+                   cols "  "))
+                (range) options))
+         (into (wrap-prompt-text (ansi/muted hint) cols "  "))))))
 
 (defn format-feedback-prompt
   "Format the :select prompt as a single string (joined with newlines).
@@ -108,27 +135,34 @@
   "Build the :confirm prompt as ANSI lines: the question followed by a hint
    derived from `choices` (each `{:key char :label …}`). When the key is the
    label's first letter (yes/no/always) it renders inline — `[y]es`; otherwise
-   the key is shown separately — `[d] never`."
-  [question choices]
-  (let [hint (->> choices
-                  (map (fn [{:keys [key label]}]
-                         (let [l (str label)]
-                           (if (and (pos? (count l))
-                                    (= (Character/toLowerCase ^char (first l))
-                                       (Character/toLowerCase ^char key)))
-                             (str "[" key "]" (subs l 1))
-                             (str "[" key "] " l)))))
-                  (str/join " / "))]
-    [(ansi/warning question)
-     (str "  " (ansi/muted (str hint ": ")))]))
+   the key is shown separately — `[d] never`.
+
+   The 3-arity wraps the question to `cols`; the 2-arity asks the layout."
+  ([question choices] (format-confirm-lines question choices nil))
+  ([question choices cols]
+   (let [hint (->> choices
+                   (map (fn [{:keys [key label]}]
+                          (let [l (str label)]
+                            (if (and (pos? (count l))
+                                     (= (Character/toLowerCase ^char (first l))
+                                        (Character/toLowerCase ^char key)))
+                              (str "[" key "]" (subs l 1))
+                              (str "[" key "] " l)))))
+                   (str/join " / "))]
+     (into (vec (wrap-prompt-text (ansi/warning question) cols))
+           (wrap-prompt-text (ansi/muted (str hint ": ")) cols "  ")))))
 
 (defn format-text-lines
   "Build the :text prompt as a vector of ANSI-styled lines for the sticky
    user-feedback block. The answer is typed into the main input line (whose
-   prompt flips to an answer-mode indicator), so this is just the question."
-  [question]
-  [(ansi/style question ansi/bold ansi/bright-cyan)
-   (str "  " (ansi/muted "Type your answer below, Enter to submit"))])
+   prompt flips to an answer-mode indicator), so this is just the question.
+
+   The 2-arity wraps to `cols`; the 1-arity asks the layout."
+  ([question] (format-text-lines question nil))
+  ([question cols]
+   (into (vec (wrap-prompt-text (ansi/style question ansi/bold ansi/bright-cyan) cols))
+         (wrap-prompt-text (ansi/muted "Type your answer below, Enter to submit")
+                           cols "  "))))
 
 ;; ============================================================================
 ;; Non-raw stdin reader (one temporary thread per prompt)
@@ -266,7 +300,8 @@
                   _  (reset! tui-session/!pending-feedback
                              {:promise p :kind :select :options normalized})
                   _  (if raw-mode?
-                       (show-user-feedback-block! (format-feedback-lines question normalized))
+                       (show-user-feedback-block!
+                        (fn [c] (format-feedback-lines question normalized c)))
                        (tui-session/emit! (format-feedback-prompt question normalized)))
                   _  (refresh-feedback-prompt! :select)
                   done-latch (CountDownLatch. 1)
@@ -326,7 +361,7 @@
                 _  (reset! tui-session/!pending-feedback {:promise p :kind :text})
                 ;; Show the question as a sticky-bottom block above the input and
                 ;; flip the input prompt to answer-mode immediately.
-                _  (show-user-feedback-block! (format-text-lines question))
+                _  (show-user-feedback-block! (fn [c] (format-text-lines question c)))
                 _  (refresh-feedback-prompt! :text)
                 done-latch (CountDownLatch. 1)
                 stdin-thread (when-not raw-mode?
@@ -382,7 +417,8 @@
             (let [p (promise)
                   _ (reset! tui-session/!pending-feedback
                             {:promise p :kind :confirm :choices choices})
-                  _ (show-user-feedback-block! (format-confirm-lines question choices))
+                  _ (show-user-feedback-block!
+                     (fn [c] (format-confirm-lines question choices c)))
                   _ (refresh-feedback-prompt! :confirm)
                   resp (deref p timeout :timeout)]
               (reset! tui-session/!pending-feedback nil)

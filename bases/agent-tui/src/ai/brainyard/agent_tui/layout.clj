@@ -53,6 +53,148 @@
 ;; {block-id {:start-idx int, :line-count int}}
 (defonce !live-blocks (atom {}))
 
+;; ----------------------------------------------------------------------------
+;; Reflow source — what lets a resize re-wrap what is already on screen
+;;
+;; !scrollback holds RENDERED ROWS, hard-wrapped at whatever the width was when
+;; they were formatted. That is the right representation to paint from (see
+;; `terminal-owns-line-breaking?`), but it is the wrong one to KEEP: on a resize
+;; the stored rows are still the old width, and `render-viewport!` replays them
+;; verbatim. Narrower, each row overflows, and the next row's `erase-line` wipes
+;; the spill — the tail of every line silently disappears, and a spill on the
+;; bottom region row scrolls the DECSTBM region out from under the absolute row
+;; accounting. Wider, text stays broken at the old column.
+;;
+;; So each logical emit also records HOW TO RENDER ITSELF at a given width.
+;; `!scrollback-src` is an ordered list of entries covering exactly the rows in
+;; !scrollback, in the same order:
+;;
+;;   {:render   (fn [cols] -> string | [rows])
+;;    :n        row count this entry currently occupies
+;;    :block-id live-block id, or nil for ordinary output
+;;    :sticky?  the block's :sticky-bottom? flag}
+;;
+;; A caller that hands over a pre-formatted string gets `(constantly rows)` and
+;; so re-renders to itself — exactly today's behaviour. Reflow is opt-in per
+;; producer via `:render`, which is why this could be added without touching all
+;; 22 `write-output!` call sites.
+;;
+;; The list is kept in step with !scrollback by the same functions that mutate
+;; it, and `ensure-src!` rebuilds it from scratch whenever the two have drifted
+;; (a session switch swaps !scrollback wholesale; a test resets it directly).
+;; Drift therefore costs reflowability for the affected rows and nothing else —
+;; it can never scramble the screen, because a reflow only ever runs against a
+;; list that accounts for exactly the rows on screen.
+(defonce !scrollback-src (atom []))
+
+(defn- rows-of
+  "Normalise what a `:render` fn returned into a row vector. Producers hand back
+   a string with embedded newlines (`format-answer` and friends all do), so the
+   split lives here rather than in every caller."
+  [x]
+  (cond
+    (nil? x)    []
+    (string? x) (vec (str/split-lines x))
+    :else       (vec x)))
+
+(defn- src-rebuild
+  "Reconstruct an entry list that describes `rows` + `blocks` exactly, treating
+   every row not owned by a live block as its own non-reflowable entry.
+
+   This is the recovery path, and it is why drift is harmless: whatever state
+   !scrollback is in, a valid list can always be derived from it. Rows recovered
+   this way re-render to themselves, so they stop reflowing — which is precisely
+   the behaviour they had before any of this existed."
+  [rows blocks]
+  (let [starts (into {} (map (fn [[id b]] [(:start-idx b) [id b]])) blocks)
+        n      (count rows)]
+    (loop [i 0, acc []]
+      (if (>= i n)
+        acc
+        (if-let [[id b] (get starts i)]
+          (let [cnt  (max 1 (int (:line-count b)))
+                span (subvec rows i (min n (+ i cnt)))]
+            (recur (+ i cnt)
+                   (conj acc {:render   (constantly span)
+                              :n        (count span)
+                              :block-id id
+                              :sticky?  (boolean (:sticky-bottom? b))})))
+          (let [row (nth rows i)]
+            (recur (inc i)
+                   (conj acc {:render (constantly [row]) :n 1 :block-id nil}))))))))
+
+(defn- src-consistent?
+  "True when the entry list accounts for exactly the rows on screen AND names
+   exactly the live blocks that exist. Both halves matter: a row-count match
+   with a missing block would rebuild `!live-blocks` without it."
+  [entries]
+  (and (= (reduce + 0 (map :n entries)) (count @!scrollback))
+       (= (set (keep :block-id entries)) (set (keys @!live-blocks)))))
+
+(defn- ensure-src!
+  "Return the entry list, rebuilding it first if it has drifted from
+   !scrollback. Called at the top of every mutation, so the invariant holds
+   going in and each mutation only has to preserve it."
+  []
+  (let [entries @!scrollback-src]
+    (if (src-consistent? entries)
+      entries
+      (reset! !scrollback-src (src-rebuild @!scrollback @!live-blocks)))))
+
+(defn- entry-index-at-row
+  "Index of the entry whose rows begin at scrollback row `row`, or nil when
+   `row` falls inside an entry rather than on a boundary."
+  [entries row]
+  (loop [i 0, acc 0]
+    (cond
+      (= acc row)            i
+      (> acc row)            nil
+      (>= i (count entries)) nil
+      :else                  (recur (inc i) (+ acc (long (:n (nth entries i))))))))
+
+(defn- src-insert!
+  "Record `entry` as beginning at scrollback row `row`. Falls back to a rebuild
+   when `row` is not an entry boundary — the caller's row math and this list
+   have diverged, and guessing a split point would be worse than losing reflow."
+  [row entry]
+  (let [entries (ensure-src!)]
+    (if-let [i (entry-index-at-row entries row)]
+      (reset! !scrollback-src
+              (into (conj (subvec entries 0 i) entry) (subvec entries i)))
+      (reset! !scrollback-src []))))
+
+(defn- src-update-block!
+  "Point `block-id`'s entry at a new renderer and row count."
+  [block-id n render sticky?]
+  (let [entries (ensure-src!)
+        i (first (keep-indexed (fn [i e] (when (= block-id (:block-id e)) i)) entries))]
+    (reset! !scrollback-src
+            (if i
+              (assoc entries i {:render render :n n :block-id block-id :sticky? sticky?})
+              []))))
+
+(defn- src-drop-block!
+  "Remove `block-id`'s entry and its rows from the list (dispose)."
+  [block-id]
+  (let [entries (ensure-src!)
+        i (first (keep-indexed (fn [i e] (when (= block-id (:block-id e)) i)) entries))]
+    (reset! !scrollback-src
+            (if i
+              (into (subvec entries 0 i) (subvec entries (inc i)))
+              []))))
+
+(defn- src-freeze-block!
+  "Detach `block-id` from its entry, leaving the rows as ordinary scrollback.
+   The renderer is kept, so a frozen answer still reflows on resize."
+  [block-id]
+  (let [entries (ensure-src!)
+        i (first (keep-indexed (fn [i e] (when (= block-id (:block-id e)) i)) entries))]
+    (when i
+      (reset! !scrollback-src
+              (assoc entries i (-> (nth entries i)
+                                   (assoc :block-id nil)
+                                   (dissoc :sticky?)))))))
+
 ;; Popover state: when an overlay (autocomplete menu, etc.) is active, defer
 ;; terminal paints from background writers (live block tickers, viewport renders).
 ;; Data updates to !scrollback / !live-blocks still happen — only the terminal
@@ -280,52 +422,66 @@
    ('iter → answer') is preserved even when a background task block is
    still alive (e.g. soft-timeout detach keeps the task widget visible while
    the answer is being emitted by ask-post). Auto-snaps viewport to bottom.
-   Inline: plain write + newline."
-  [s]
-  (when (and s (not (str/blank? s)))
-    (with-frame
-      (let [w (get-writer)]
-        (when w
-          (if (fullscreen?)
-            (let [{:keys [scroll-bottom]} @!layout
-                  new-lines (str/split-lines s)
-                  n (count new-lines)
-                  sticky-bot (sticky-bottom-entry)
-                  insert-at (if sticky-bot
-                              (:start-idx (second sticky-bot))
-                              (count @!scrollback))
-                  needs-shift? (some? sticky-bot)]
+   Inline: plain write + newline.
+
+   `opts` may carry `:render` — a `(fn [cols] -> string | [rows])` that
+   re-renders this emit at an arbitrary width. Supplying it makes the emit
+   reflow on terminal resize instead of staying wrapped at the width it was
+   formatted for; without it the rows are recorded as-is and behave exactly as
+   before. See the `!scrollback-src` commentary above."
+  ([s] (write-output! s nil))
+  ([s opts]
+   (when (and s (not (str/blank? s)))
+     (with-frame
+       (let [w (get-writer)]
+         (when w
+           (if (fullscreen?)
+             (let [{:keys [scroll-bottom]} @!layout
+                   new-lines (str/split-lines s)
+                   n (count new-lines)
+                   sticky-bot (sticky-bottom-entry)
+                   insert-at (if sticky-bot
+                               (:start-idx (second sticky-bot))
+                               (count @!scrollback))
+                   needs-shift? (some? sticky-bot)]
               ;; Auto-snap to bottom if scrolled up
-              (when (pos? (:viewport-offset @!layout))
-                (swap! !layout assoc :viewport-offset 0))
+               (when (pos? (:viewport-offset @!layout))
+                 (swap! !layout assoc :viewport-offset 0))
+              ;; Record how to re-render this emit at another width BEFORE the
+              ;; rows land, so `src-insert!` still sees the pre-insert list and
+              ;; `insert-at` is a boundary in it.
+               (src-insert! insert-at
+                            {:render   (or (:render opts) (constantly new-lines))
+                             :n        n
+                             :block-id nil})
               ;; Insert into scrollback. When a sticky-bottom anchor exists,
               ;; splice in just above it and shift live blocks at/after the
               ;; insert point forward. Otherwise just append at the tail.
-              (if needs-shift?
-                (do (swap! !scrollback
-                           (fn [sb]
-                             (into (into (subvec sb 0 insert-at) new-lines)
-                                   (subvec sb insert-at))))
-                    (when (pos? n)
-                      (swap! !live-blocks
-                             (fn [blocks]
-                               (reduce-kv
-                                (fn [m id block]
-                                  (assoc m id
-                                         (if (>= (:start-idx block) insert-at)
-                                           (update block :start-idx + n)
-                                           block)))
-                                {} blocks)))))
-                (swap! !scrollback into new-lines))
+               (if needs-shift?
+                 (do (swap! !scrollback
+                            (fn [sb]
+                              (into (into (subvec sb 0 insert-at) new-lines)
+                                    (subvec sb insert-at))))
+                     (when (pos? n)
+                       (swap! !live-blocks
+                              (fn [blocks]
+                                (reduce-kv
+                                 (fn [m id block]
+                                   (assoc m id
+                                          (if (>= (:start-idx block) insert-at)
+                                            (update block :start-idx + n)
+                                            block)))
+                                 {} blocks)))))
+                 (swap! !scrollback into new-lines))
               ;; When live blocks exist, use render-viewport! to avoid ghost
               ;; duplication from hardware scroll conflicting with cursor-positioned
               ;; block rendering. Without live blocks, use fast hardware scroll.
               ;; When a popover is active, defer the terminal write — scrollback
               ;; data above is already updated; the popover dismissal flushes via render-viewport!.
-              (if (popover-active?)
-                (mark-dirty!)
-                (if (seq @!live-blocks)
-                  (render-viewport!)
+               (if (popover-active?)
+                 (mark-dirty!)
+                 (if (seq @!live-blocks)
+                   (render-viewport!)
                   ;; Hardware-scroll path. Position cursor at column 1 of
                   ;; the scroll-bottom row BEFORE each line so embedded
                   ;; `\n`s in multi-line `s` don't rely on tty `ONLCR`
@@ -334,13 +490,13 @@
                   ;; subsequent lines stay at the previous column and
                   ;; visually overlay each other at scroll-bottom — the
                   ;; "no newlines, multiple emits run together" symptom.
-                  (raw-write!
-                   w
-                   (apply str
-                          (mapcat (fn [line]
-                                    [(ansi/cursor-to scroll-bottom 1) "\n" line])
-                                  new-lines))))))
-            (raw-write! w (str s "\n"))))))))
+                   (raw-write!
+                    w
+                    (apply str
+                           (mapcat (fn [line]
+                                     [(ansi/cursor-to scroll-bottom 1) "\n" line])
+                                   new-lines))))))
+             (raw-write! w (str s "\n")))))))))
 
 (defn write-inline!
   "Write without trailing newline (for streaming).
@@ -583,7 +739,7 @@
       (if (popover-active?)
         (mark-dirty!)
         (let [w (get-writer)
-              {:keys [scroll-bottom viewport-offset collapse-highlight]} @!layout
+              {:keys [scroll-bottom viewport-offset collapse-highlight cols]} @!layout
               lines @!scrollback
               total (count lines)
               ;; viewport-offset 0 = show latest (tail), N = scrolled up N lines
@@ -601,6 +757,17 @@
               marker-substr (when highlight-id (str "*Block:" highlight-id "*"))
               marker-re-collapsed #"\[\*Block:[a-z0-9]+\* collapsed:[^\]]*\]"
               marker-re-expanded  #"\[\*Block:[a-z0-9]+\* expanded:[^\]]*\]"
+              ;; Last line of defence against a row wider than the terminal.
+              ;; `reflow-scrollback!` normally guarantees this can't happen, but
+              ;; rows it could not re-render (a `(constantly …)` entry recovered
+              ;; after drift) keep their old width. Autowrap is on — nothing
+              ;; here touches DEC mode 7 — so an overlong row wraps onto the row
+              ;; below, which the next iteration's `erase-line` then wipes; on
+              ;; the bottom region row it scrolls the region instead, shifting
+              ;; every absolutely-addressed row underneath the layout's model of
+              ;; where they are. Clipping is a visible loss; both of those are
+              ;; silent corruption.
+              clamp (fn [^String line] (fmt/truncate-to-width line cols))
               highlight-line (fn [^String line]
                                (if (and marker-substr (str/includes? line marker-substr))
                                  (let [marker (or (re-find marker-re-collapsed line)
@@ -618,9 +785,9 @@
                 (when (>= row blank-rows)
                   (let [sb-idx (+ start (- row blank-rows))]
                     (when-let [line (get visible (- row blank-rows))]
-                      (.append sb ^String (if (= sb-idx highlight-idx)
-                                            (highlight-line line)
-                                            line))))))
+                      (.append sb ^String (clamp (if (= sb-idx highlight-idx)
+                                                   (highlight-line line)
+                                                   line)))))))
               (raw-write! w (.toString sb)))))))))
 
 (defn scroll-page-up!
@@ -734,7 +901,7 @@
       (if (popover-active?)
         (mark-dirty!)
         (let [w (get-writer)
-              {:keys [scroll-bottom viewport-offset]} @!layout
+              {:keys [scroll-bottom viewport-offset cols]} @!layout
               lines @!scrollback
               total (count lines)
               view-end   (- total viewport-offset)
@@ -749,7 +916,8 @@
                 (let [row (+ 1 blank-rows (- idx view-start))]
                   (.append sb (ansi/cursor-to row 1))
                   (.append sb ^String ansi/erase-line)
-                  (.append sb ^String (get lines idx ""))))
+                  ;; Same clamp as `render-viewport!` — see the note there.
+                  (.append sb ^String (fmt/truncate-to-width (get lines idx "") cols))))
               ;; No cursor restore — the frame epilogue parks it at the input line.
               (raw-write! w (.toString sb)))))))))
 
@@ -773,16 +941,27 @@
    region. The sticky block's `:start-idx` (and any other block at or after
    the insert point) is shifted forward by the new line count.
 
-   Selectively re-renders affected viewport rows."
+   Selectively re-renders affected viewport rows.
+
+   `opts` may carry `:render` — a `(fn [cols] -> string | [rows])` re-rendering
+   the block at an arbitrary width, which makes it reflow on resize. Unlike
+   `:sticky-bottom?` it IS honoured on update, because a block's content
+   changes on every tick and the renderer has to describe the current content."
   ([block-id new-lines] (update-live-block! block-id new-lines nil))
   ([block-id new-lines opts]
-   (let [sticky? (boolean (:sticky-bottom? opts))]
+   (let [sticky? (boolean (:sticky-bottom? opts))
+         render  (or (:render opts) (constantly new-lines))]
      (with-frame
        (if-let [existing (get @!live-blocks block-id)]
          ;; Existing block: splice in-place (preserve original sticky flag)
          (let [{:keys [start-idx line-count sticky-bottom?]} existing
                old-count line-count
                new-count (count new-lines)
+               ;; Re-point the entry BEFORE the rows move. `ensure-src!` inside
+               ;; validates against the current rows, so it has to run while
+               ;; they still match — afterwards the row count has changed and it
+               ;; would rebuild, discarding this block's renderer.
+               _ (src-update-block! block-id new-count render (boolean sticky-bottom?))
                delta (splice-scrollback! start-idx old-count new-lines)]
            (swap! !live-blocks assoc block-id
                   {:start-idx start-idx
@@ -800,6 +979,12 @@
                insert-at (if sticky-bot
                            (:start-idx (second sticky-bot))
                            (count @!scrollback))]
+           ;; Entry first, for the same reason as the update path above.
+           (src-insert! insert-at
+                        {:render   render
+                         :n        new-count
+                         :block-id block-id
+                         :sticky?  sticky?})
            (swap! !scrollback
                   (fn [sb]
                     (into (into (subvec sb 0 insert-at) new-lines)
@@ -825,7 +1010,12 @@
 (defn freeze-live-block!
   "Freeze a live block — its lines become normal scrollback. No more updates."
   [block-id]
-  (swap! !live-blocks dissoc block-id))
+  (locking layout-lock
+    ;; Detach the entry before the block goes, so `ensure-src!` still sees a
+    ;; consistent pair. The renderer stays attached to the now-ordinary rows,
+    ;; so a frozen block keeps reflowing on resize.
+    (src-freeze-block! block-id)
+    (swap! !live-blocks dissoc block-id)))
 
 (defn dispose-live-block!
   "Remove a live block AND its lines from scrollback. Adjusts start-idx of any
@@ -834,6 +1024,8 @@
   [block-id]
   (locking layout-lock
     (when-let [{:keys [start-idx line-count]} (get @!live-blocks block-id)]
+      ;; Entry first, while rows and blocks still agree (see `update-live-block!`).
+      (src-drop-block! block-id)
       ;; Remove the block's lines from scrollback
       (swap! !scrollback
              (fn [sb]
@@ -1209,9 +1401,108 @@
         (when (seq status-text)
           (draw-status-bar! status-left status-text))))))
 
+(defn- viewport-anchor
+  "What the viewport is currently looking at, as `[entry-idx row-within-entry]`,
+   or nil when it is pinned to the live tail.
+
+   `viewport-offset` counts ROWS back from the tail, so a reflow that changes
+   row counts invalidates it — the same number now lands somewhere else in the
+   text. The entry a row belongs to survives a reflow (re-rendering maps
+   entries 1:1, changing only their heights), so it is what the position has to
+   be expressed in to be restorable.
+
+   Offset 0 deliberately anchors to NOTHING. At the tail the user is following
+   live output, and holding their top row fixed while content re-wraps below
+   would walk them off the bottom — the one thing a resize must never do.
+
+   Read this BEFORE the resize writes the new `:scroll-bottom`: which row is on
+   top is a function of the height the viewport has right now."
+  [entries]
+  (let [{:keys [viewport-offset scroll-bottom]} @!layout]
+    (when (and scroll-bottom (pos? (long (or viewport-offset 0))))
+      (let [total (count @!scrollback)
+            top   (max 0 (- total (long viewport-offset) (long scroll-bottom)))]
+        (loop [i 0, acc 0]
+          (cond
+            (>= i (count entries)) nil
+            (< top (+ acc (long (:n (nth entries i))))) [i (- top acc)]
+            :else (recur (inc i) (+ acc (long (:n (nth entries i)))))))))))
+
+(defn- restore-viewport-anchor!
+  "Put `anchor` back on the top row of the viewport, against the post-reflow
+   rows and the post-resize height. A nil anchor means the live tail.
+
+   The row within the entry is clamped: an entry that re-wrapped from four rows
+   to two has no row 3 any more, and the nearest surviving row is the honest
+   answer. The resulting offset is clamped to the scrollable range, which is
+   what handles a grow — fewer rows can mean there is no longer anything to
+   scroll back through."
+  [entries anchor]
+  (let [scroll-bottom (long (or (:scroll-bottom @!layout) 0))
+        total   (count @!scrollback)
+        max-off (max 0 (- total scroll-bottom))
+        offset  (if (and anchor (seq entries))
+                  (let [[i k] anchor
+                        i      (min (long i) (dec (count entries)))
+                        before (reduce + 0 (map :n (take i entries)))
+                        n-i    (long (:n (nth entries i)))
+                        top    (+ before (min (long k) (max 0 (dec n-i))))]
+                    (- total top scroll-bottom))
+                  0)]
+    (swap! !layout assoc :viewport-offset (max 0 (min max-off offset)))))
+
+(defn- reflow-scrollback!
+  "Re-render every scrollback entry at `cols` and rebuild the rows and the
+   live-block index from the result. `anchor` is a `viewport-anchor` read
+   before the geometry changed; the scroll position is restored onto it.
+
+   This is what makes a resize non-destructive. Without it the stored rows keep
+   the width they were formatted at, and `render-viewport!` replays them into a
+   terminal that is no longer that wide.
+
+   All-or-nothing: if any renderer throws, nothing changes. A half-reflowed
+   scrollback would have rows at two different widths and block indices
+   pointing at neither.
+
+   `:cols` in `!layout` is set to `cols` first, and that is part of the
+   contract: the live-block renderers in `session` are pure functions of
+   (state, width) that read the width from `!layout` rather than taking it as
+   an argument, so a `:render` for a block can ignore its parameter and still
+   be correct. Both routes see the same number by construction."
+  [cols anchor]
+  (swap! !layout assoc :cols cols)
+  (let [entries (ensure-src!)]
+    (when-let [rendered (try
+                          (mapv (fn [e]
+                                  (let [rows (rows-of ((:render e) cols))]
+                                    (assoc e :rows rows :n (count rows))))
+                                entries)
+                          (catch Throwable _ nil))]
+      (reset! !scrollback (into [] (mapcat :rows) rendered))
+      (reset! !scrollback-src (mapv #(dissoc % :rows) rendered))
+      ;; Block positions are row offsets, and re-wrapping moved every row after
+      ;; the first entry whose height changed. Recompute them from the order.
+      (reset! !live-blocks
+              (:blocks (reduce (fn [{:keys [off blocks]} e]
+                                 {:off    (+ off (long (:n e)))
+                                  :blocks (if-let [id (:block-id e)]
+                                            (assoc blocks id
+                                                   {:start-idx      off
+                                                    :line-count     (:n e)
+                                                    :sticky-bottom? (boolean (:sticky? e))})
+                                            blocks)})
+                               {:off 0 :blocks {}}
+                               rendered)))
+      ;; `viewport-offset` counts rows from the tail, and the tail just moved.
+      ;; Put the reader back on the text they were reading rather than on the
+      ;; row number they happened to be at.
+      (restore-viewport-anchor! (mapv #(dissoc % :rows) rendered) anchor)
+      true)))
+
 (defn handle-resize!
   "Handle terminal resize: refresh dimensions, recalculate row layout,
-   update scroll region, and redraw everything. No-op in inline mode."
+   re-wrap the scrollback to the new width, and redraw everything.
+   No-op in inline mode."
   []
   (when (fullscreen?)
     (fmt/refresh-terminal-size!)
@@ -1237,7 +1528,11 @@
               tab-row        (- rows menu-h 1)
               status-row     (- rows menu-h)
               st             (:status-text @!layout)
-              sl             (:status-left @!layout)]
+              sl             (:status-left @!layout)
+              ;; Read the scroll position while the OLD geometry is still in
+              ;; effect — the top visible row depends on the height the
+              ;; viewport has now, not the one it is about to have.
+              anchor         (viewport-anchor (ensure-src!))]
           (swap! !layout assoc
                  :rows rows
                  :cols cols
@@ -1264,6 +1559,13 @@
                  ;; the terminal grew, on the chrome when it shrank.
                  :input-cursor-row nil
                  :input-cursor-col nil)
+          ;; Re-wrap what is already on screen to the new width. Must happen
+          ;; before the repaint below, which replays whatever rows it finds.
+          ;; When the reflow bails (a renderer threw, or the source had drifted)
+          ;; the rows are untouched — but `scroll-bottom` still changed, so the
+          ;; old row-counted offset can now point past the end. Re-seat it.
+          (when-not (reflow-scrollback! cols anchor)
+            (restore-viewport-anchor! (ensure-src!) anchor))
           ;; One frame: clear, region, scrollback replay, sticky areas, chrome.
           ;; A resize that presents in seven steps is a visibly rebuilding screen.
           (with-frame
@@ -1310,6 +1612,7 @@
             status-row     rows]
         (reset! !scrollback [])
         (reset! !live-blocks {})
+        (reset! !scrollback-src [])
         (swap! !layout assoc
                :mode :fullscreen
                :rows rows
@@ -1374,7 +1677,8 @@
             (when (seq final-lines)
               (raw-write! w (str (str/join "\n" final-lines) "\n"))))))
       (reset! !scrollback [])
-      (reset! !live-blocks {}))
+      (reset! !live-blocks {})
+      (reset! !scrollback-src []))
     (swap! !layout assoc
            :mode :inline
            :scroll-bottom nil

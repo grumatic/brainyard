@@ -485,7 +485,7 @@
           (recur (if (= code ansi/reset) [] (conj active code))))
         (apply str active)))))
 
-(defn- ansi-aware-word-wrap
+(defn ansi-aware-word-wrap
   "Wrap line to max-width display columns.
    When splitting mid-span, closes and reopens active ANSI state."
   [line max-width]
@@ -1377,8 +1377,20 @@
    FinalizeAnswer's :next-user-prompt output). Returns nil when blank."
   [next-prompt]
   (when (and next-prompt (not (str/blank? next-prompt)))
-    (str "  " (ansi/muted (str "↳ Try next: "
-                               (truncate (str/trim next-prompt) 200))))))
+    ;; Wrapped, not just truncated: 200 chars is a content cap, not a width,
+    ;; so on any pane narrower than the suggestion this ran off the right edge.
+    ;; Continuation rows align under the text, matching the `Think:` block.
+    (let [indent "  "
+          label  "↳ Try next: "
+          cont   (apply str (repeat (display-width label) \space))
+          avail  (max 20 (- (terminal-columns)
+                            (count indent)
+                            (display-width label)))
+          rows   (ansi-aware-word-wrap (truncate (str/trim next-prompt) 200) avail)]
+      (->> rows
+           (map-indexed (fn [i r]
+                          (str indent (ansi/muted (str (if (zero? i) label cont) r)))))
+           (str/join "\n")))))
 
 (defn format-eval-verdict
   "Render an answer-evaluation verdict line (`:agent.evaluation/done`): an icon
@@ -2296,8 +2308,18 @@
                       (when session (str sep session)))
         hint     (ansi/style "Type /help for commands. AI output may be inaccurate."
                              ansi/dim)
-        inner    (max (display-width head) (display-width hint))
-        pad      (fn [s] (apply str (repeat (- inner (display-width s)) " ")))
+        ;; Fit the box to its content, but never wider than the pane. Sized on
+        ;; content alone this overflowed every terminal narrower than the
+        ;; banner text — at launch, not just after a resize — and an overflow
+        ;; on a cursor-addressed surface is silent: the spill lands on the row
+        ;; below and the next `erase-line` wipes it.
+        ;; -4, not -2: a row is `│ <content> │` and the rules are `inner + 2`
+        ;; between two corners, so the chrome costs four columns either way.
+        inner    (min (max (display-width head) (display-width hint))
+                      (max 20 (- (terminal-columns) 4)))
+        head     (truncate-to-width head inner)
+        hint     (truncate-to-width hint inner)
+        pad      (fn [s] (apply str (repeat (max 0 (- inner (display-width s))) " ")))
         bar      (apply str (repeat (+ inner 2) ansi/h-line))
         vbar     (ansi/style ansi/v-line ansi/dim)
         row      (fn [s] (str vbar " " s (pad s) " " vbar))

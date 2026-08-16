@@ -19,10 +19,17 @@
   (:require [ai.brainyard.mulog.interface :as mulog]))
 
 (defprotocol IterationSink
-  (-write-widget! [this widget-id lines]
+  (-write-widget! [this widget-id lines] [this widget-id lines opts]
     "Update the widget's rendered lines (or create the widget if absent).
      `widget-id` is a stable keyword unique to one live block.
-     `lines` is a vector of ANSI-styled strings, one per row.")
+     `lines` is a vector of ANSI-styled strings, one per row.
+
+     `opts` may carry `:render` — a `(fn [cols] -> [rows])` re-rendering this
+     widget at an arbitrary width. Surfaces that own a resizable grid use it to
+     re-wrap the widget when the terminal changes size, INCLUDING after the
+     widget has been frozen (rows already pre-wrapped for a width that no
+     longer exists are the bug it exists to prevent). A surface with no such
+     concept may ignore it.")
   (-freeze-widget! [this widget-id]
     "Mark the widget as frozen — no further updates will be accepted.
      The lines stay in pane history (or scrollback) as a static record.")
@@ -33,9 +40,10 @@
   "Default sink that swallows all calls. Active when no TUI is wired
    (REPL, tests that don't exercise rendering)."
   (reify IterationSink
-    (-write-widget!  [_ _ _] nil)
-    (-freeze-widget! [_ _]   nil)
-    (-clear-widget!  [_ _]   nil)))
+    (-write-widget!  [_ _ _]   nil)
+    (-write-widget!  [_ _ _ _] nil)
+    (-freeze-widget! [_ _]     nil)
+    (-clear-widget!  [_ _]     nil)))
 
 (defonce ^:private !current-sink (atom noop-sink))
 
@@ -56,8 +64,8 @@
 
 (defn write-widget!
   "Convenience: dispatch through the current sink."
-  [widget-id lines]
-  (-write-widget! @!current-sink widget-id lines))
+  ([widget-id lines] (-write-widget! @!current-sink widget-id lines))
+  ([widget-id lines opts] (-write-widget! @!current-sink widget-id lines opts)))
 
 (defn freeze-widget!
   [widget-id]

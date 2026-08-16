@@ -527,7 +527,7 @@
                 s/find-session-for-agent (constantly {:id 0})
                 ;; Skip live-block render — the layout machinery isn't
                 ;; initialized in this test environment.
-                layout/update-live-block! (fn [_ _] nil)
+                layout/update-live-block! (fn ([_ _] nil) ([_ _ _] nil))
                 layout/freeze-live-block! (fn [_] nil)]
     (thunk)))
 
@@ -886,9 +886,10 @@
    etc.)."
   [!ops]
   (reify iter-sink/IterationSink
-    (-write-widget!  [_ id lines] (swap! !ops conj [:write id (count lines)]))
-    (-freeze-widget! [_ id]       (swap! !ops conj [:freeze id]))
-    (-clear-widget!  [_ id]       (swap! !ops conj [:clear id]))))
+    (-write-widget!  [_ id lines]   (swap! !ops conj [:write id (count lines)]))
+    (-write-widget!  [_ id lines _] (swap! !ops conj [:write id (count lines)]))
+    (-freeze-widget! [_ id]         (swap! !ops conj [:freeze id]))
+    (-clear-widget!  [_ id]         (swap! !ops conj [:clear id]))))
 
 (deftest sink-receives-write-and-freeze-on-iter-lifecycle
   (let [a    (stub-agent)
@@ -997,7 +998,7 @@
       (with-redefs [agent/get-bt-st-memory (fn [x]
                                              (or (:stub-st x) (:stub-st a1)))
                     s/find-session-for-agent (constantly {:id 0})
-                    layout/update-live-block! (fn [_ _] nil)
+                    layout/update-live-block! (fn ([_ _] nil) ([_ _ _] nil))
                     layout/freeze-live-block! (fn [_] nil)]
         (s/iteration-pre-handler {:agent a1 :iteration 1 :max-iterations 100
                                   :repeat-id "main"})

@@ -533,3 +533,59 @@
     (is (= "" (fmt/truncate-to-width "" 5)))
     (is (= "…" (fmt/truncate-to-width "anything" 1))
         "one column left says only that something was dropped")))
+
+;; ---------------------------------------------------------------------------
+;; Width-awareness of one-line / boxed formatters
+;;
+;; Both of these had no width term at all, so they overflowed a narrow pane at
+;; FIRST PAINT, not just after a resize — meaning no amount of re-rendering
+;; would have fixed them. On the fullscreen surface an overflow is silent: the
+;; spill lands on the row below and the next `erase-line` wipes it.
+;; ---------------------------------------------------------------------------
+
+(defn- line-widths [s]
+  (->> (str/split-lines (or s ""))
+       (remove str/blank?)
+       (map fmt/display-width)))
+
+(defn- at-cols [cols f]
+  (let [saved @fmt/!terminal-size]
+    (try
+      (reset! fmt/!terminal-size {:rows 40 :cols cols})
+      (f)
+      (finally (reset! fmt/!terminal-size saved)))))
+
+(deftest welcome-banner-never-exceeds-the-pane
+  (testing "box is fit to content but capped at the pane width"
+    (doseq [cols [30 60 90 200]]
+      (at-cols cols
+        (fn []
+          (let [b (fmt/format-welcome-banner
+                   {:agent-id :coact-agent
+                    :session-id "agt-1786861946759-7726"
+                    :lm-provider :claude-code :lm-model "opus"})]
+            (is (every? #(<= % cols) (line-widths b))
+                (str "banner overflows at " cols " columns: " (vec (line-widths b))))))))))
+
+(deftest welcome-banner-still-shrinks-to-content-when-there-is-room
+  (testing "the cap is a ceiling, not a target — a wide pane does not stretch the box"
+    (let [w200 (at-cols 200 #(first (line-widths
+                                     (fmt/format-welcome-banner {:agent-id :a :session-id "s"}))))
+          w400 (at-cols 400 #(first (line-widths
+                                     (fmt/format-welcome-banner {:agent-id :a :session-id "s"}))))]
+      (is (= w200 w400) "box width is content-driven once the pane is wide enough"))))
+
+(deftest next-prompt-wraps-to-the-pane
+  (testing "the 200 limit is a content cap, not a width"
+    (let [s (str "write squares-str to a file and then compute the sum of all "
+                 "sixty squares as well")]
+      (doseq [cols [40 68 120]]
+        (at-cols cols
+          (fn []
+            (let [ws (line-widths (fmt/format-next-prompt s))]
+              (is (every? #(<= % cols) ws)
+                  (str "next-prompt overflows at " cols " columns: " (vec ws))))))))))
+
+(deftest next-prompt-still-nil-on-blank
+  (is (nil? (fmt/format-next-prompt nil)))
+  (is (nil? (fmt/format-next-prompt "   "))))

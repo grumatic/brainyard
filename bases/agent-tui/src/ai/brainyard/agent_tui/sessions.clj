@@ -199,11 +199,19 @@
     (when (get-session current-idx)
       (let [current-scrollback @layout/!scrollback
             current-viewport (:viewport-offset @layout/!layout)
-            current-live-blocks @layout/!live-blocks]
+            current-live-blocks @layout/!live-blocks
+            ;; Carried alongside the rows so this tab's output still re-wraps
+            ;; on resize after a switch away and back. Without it the rows come
+            ;; back with no renderers and `ensure-src!` rebuilds them as
+            ;; non-reflowable — correct, but the tab quietly stops reflowing.
+            ;; These are closures; `!sessions` is in-memory only (it already
+            ;; holds the Agent record), so nothing here is ever serialised.
+            current-src (deref layout/!scrollback-src)]
         (swap! !sessions update-in [:sessions current-idx] merge
                {:scrollback      current-scrollback
                 :viewport-offset current-viewport
-                :live-blocks     current-live-blocks})))))
+                :live-blocks     current-live-blocks
+                :scrollback-src  current-src})))))
 
 (defn- load-session-into-layout!
   "Load a session's state into the layout for display. Redraws in fullscreen mode."
@@ -212,6 +220,11 @@
   (reset! layout/!scrollback (or (:scrollback session) []))
   ;; Restore live-blocks (start-idx values are valid for this session's scrollback)
   (reset! layout/!live-blocks (or (:live-blocks session) {}))
+  ;; Restore the reflow source. When it is absent or has drifted from the rows
+  ;; (a background emit patched :scrollback directly while this tab was away),
+  ;; layout's `ensure-src!` rebuilds it on the next write — those rows lose
+  ;; reflow, everything after keeps it.
+  (reset! layout/!scrollback-src (or (:scrollback-src session) []))
   ;; Restore viewport offset
   (swap! layout/!layout assoc :viewport-offset (or (:viewport-offset session) 0))
   ;; Clear unread flag
@@ -482,14 +495,19 @@
    Used by cross-session widgets whose lifecycle can span session switches
    (e.g. the consolidated subagents block, which lives in the root chat
    session but may need its final settle-and-freeze while the user is looking
-   at the shared sub-output tab)."
-  [sidx block-id new-lines]
-  (locking switch-lock
-    (if (= sidx (active-idx))
-      (layout/update-live-block! block-id new-lines)
-      (when (get-session sidx)
-        (swap! !sessions update-in [:sessions sidx]
-               patch-live-block-in-snapshot block-id new-lines)))))
+   at the shared sub-output tab).
+
+   `opts` is forwarded to `layout/update-live-block!` — notably `:render`,
+   which lets the block re-wrap on resize. It applies only on the active path;
+   a background session stores plain rows."
+  ([sidx block-id new-lines] (update-live-block-in-session! sidx block-id new-lines nil))
+  ([sidx block-id new-lines opts]
+   (locking switch-lock
+     (if (= sidx (active-idx))
+       (layout/update-live-block! block-id new-lines opts)
+       (when (get-session sidx)
+         (swap! !sessions update-in [:sessions sidx]
+                patch-live-block-in-snapshot block-id new-lines))))))
 
 (defn freeze-live-block-in-session!
   "Freeze a live block belonging to session `sidx`. When `sidx` is active,
@@ -543,25 +561,31 @@
    Acquires switch-lock to prevent race with switch-to!/close-session!.
 
    Always tees the bytes to the session's on-disk scrollback file (keyed on
-   `:agent-session-id`), so resume can replay them via `tail-scrollback`."
-  [idx s]
-  (when (and s (not (clojure.string/blank? s)))
-    (when-let [asid (:agent-session-id (get-session idx))]
-      (persist-bridge/tee-scrollback! asid s))
-    (locking switch-lock
-      (if (= idx (active-idx))
-        ;; Active session — write to terminal (which also updates !scrollback)
-        (layout/write-output! s)
-        ;; Background session — buffer in session's scrollback, mark unread.
-        ;; Refresh the tab strip when the unread marker flips so the user
-        ;; can see new activity in background tabs at a glance.
-        (let [had-unread? (:has-unread? (get-session idx))]
-          (swap! !sessions update-in [:sessions idx]
-                 (fn [session]
-                   (-> session
-                       (update :scrollback into (clojure.string/split-lines s))
-                       (assoc :has-unread? true))))
-          (when-not had-unread? (redraw-tab-strip!)))))))
+   `:agent-session-id`), so resume can replay them via `tail-scrollback`.
+
+   `opts` is forwarded to `layout/write-output!` — notably `:render`, which
+   makes the emit re-wrap on terminal resize. It only applies on the active
+   path; a background session stores plain rows, and they become
+   non-reflowable when the tab is next switched to."
+  ([idx s] (emit-to-session! idx s nil))
+  ([idx s opts]
+   (when (and s (not (clojure.string/blank? s)))
+     (when-let [asid (:agent-session-id (get-session idx))]
+       (persist-bridge/tee-scrollback! asid s))
+     (locking switch-lock
+       (if (= idx (active-idx))
+         ;; Active session — write to terminal (which also updates !scrollback)
+         (layout/write-output! s opts)
+         ;; Background session — buffer in session's scrollback, mark unread.
+         ;; Refresh the tab strip when the unread marker flips so the user
+         ;; can see new activity in background tabs at a glance.
+         (let [had-unread? (:has-unread? (get-session idx))]
+           (swap! !sessions update-in [:sessions idx]
+                  (fn [session]
+                    (-> session
+                        (update :scrollback into (clojure.string/split-lines s))
+                        (assoc :has-unread? true))))
+           (when-not had-unread? (redraw-tab-strip!))))))))
 
 ;; ============================================================================
 ;; Formatting

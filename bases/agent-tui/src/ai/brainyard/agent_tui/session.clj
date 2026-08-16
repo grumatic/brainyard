@@ -477,12 +477,14 @@
               tick   @spinner-idx
               frame  (nth think-ticker-frames
                           (mod tick (count think-ticker-frames)))
-              lines  (render-think-block-lines shuffled-words tick frame
-                                               start-time
-                                               (fresh-activity-text activity)
-                                               paused-at)]
+              render (fn [_cols]
+                       (render-think-block-lines shuffled-words tick frame
+                                                 start-time
+                                                 (fresh-activity-text activity)
+                                                 paused-at))
+              lines  (render nil)]
           (layout/update-live-block! (think-block-id root-aid) lines
-                                     {:sticky-bottom? true}))))))
+                                     {:sticky-bottom? true :render render}))))))
 
 (defn- think-root-paused?
   "True when `root-aid`'s agent is parked on a cooperative pause. Resolved via
@@ -742,20 +744,26 @@
    `:keep-thinking? true` for INTERMEDIATE status lines emitted while the agent
    is still working (e.g. quiet-mode sub-agent milestones dispatched mid-turn):
    `write-output!` splices them in *above* the sticky-bottom think block, so the
-   spinner keeps animating instead of being torn down mid-turn."
+   spinner keeps animating instead of being torn down mid-turn.
+
+   Pass `:render (fn [cols] -> string)` to make the emit re-wrap on terminal
+   resize instead of staying hard-wrapped at the width it was formatted for.
+   Only meaningful on the two terminal paths; the daemon out-sink owns its own
+   wrapping."
   ([s] (emit! s nil nil))
   ([s session-idx] (emit! s session-idx nil))
-  ([s session-idx {:keys [keep-thinking?]}]
+  ([s session-idx {:keys [keep-thinking? render]}]
    (when (and s (not (str/blank? s)))
      (when (and (render-active?) (not keep-thinking?)) (stop-thinking-indicator!))
-     (let [target (or session-idx *render-session-idx*)]
+     (let [target (or session-idx *render-session-idx*)
+           opts   (when render {:render render})]
        (cond
-         target                  (sessions/emit-to-session! target s)
+         target                  (sessions/emit-to-session! target s opts)
          (out-sink/route! s)     nil
          :else                   (do
                                    (when-let [asid (:agent-session-id (sessions/get-active-session))]
                                      (persist-bridge/tee-scrollback! asid s))
-                                   (layout/write-output! s)))))))
+                                   (layout/write-output! s opts)))))))
 
 (defn emit-inline!
   "Thread-safe write without trailing newline. Routes through the daemon
@@ -1159,10 +1167,12 @@
        (let [spinner-char (nth subagents-spinner-frames
                                (mod @!subagents-spinner-idx
                                     (count subagents-spinner-frames)))
-             lines (render-subagents-block-lines st spinner-char final?)]
+             lines (render-subagents-block-lines st spinner-char final?)
+             render (fn [_cols] (render-subagents-block-lines st spinner-char final?))]
          (if session-idx
-           (sessions/update-live-block-in-session! session-idx block-id lines)
-           (layout/update-live-block! block-id lines)))))))
+           (sessions/update-live-block-in-session! session-idx block-id lines
+                                                   {:render render})
+           (layout/update-live-block! block-id lines {:render render})))))))
 
 (defn- task-block-id
   "Live block key for a task."
@@ -1245,11 +1255,12 @@
   (when-let [state (get @!task-blocks task-id)]
     (let [origin-idx   (:session-idx state)
           spinner-char (nth subagents-spinner-frames @!subagents-spinner-idx)
-          lines        (render-task-block-lines task-id state spinner-char)]
+          lines        (render-task-block-lines task-id state spinner-char)
+          render       (fn [_cols] (render-task-block-lines task-id state spinner-char))]
       (if origin-idx
         (sessions/update-live-block-in-session!
-         origin-idx (task-block-id task-id) lines)
-        (layout/update-live-block! (task-block-id task-id) lines)))))
+         origin-idx (task-block-id task-id) lines {:render render})
+        (layout/update-live-block! (task-block-id task-id) lines {:render render})))))
 
 ;; ============================================================================
 ;; Iteration live block (per-iteration LLM step within a turn)
@@ -1632,11 +1643,42 @@
     (let [origin-idx   (:session-idx state)
           block-id     (iteration-block-id agent-id repeat-id iteration)
           spinner-char (nth subagents-spinner-frames @!subagents-spinner-idx)
-          lines        (render-iteration-block-lines state spinner-char)]
+          lines        (render-iteration-block-lines state spinner-char)
+          ;; Reflow on resize. `render-iteration-block-lines` reads the width
+          ;; from `layout/!layout`, which the reflow has already set to the new
+          ;; value — so the thunk ignores its `cols` argument and is still
+          ;; correct. This matters most AFTER the iteration finishes and the
+          ;; block freezes: without it the Think text keeps whatever width it
+          ;; was last wrapped at, forever.
+          ;;
+          ;; The eval sections need one extra step. `:eval-section-lines` are
+          ;; PRE-RENDERED strings, so re-running the block renderer alone
+          ;; re-wraps the header/Think/tool lines and leaves the Code / Result /
+          ;; Output boxes at their original width — measured: at a 120→70
+          ;; resize the Think row went 116→68 while the Result rows stayed 119.
+          ;; Re-deriving them from the structured `:eval-display` fixes that;
+          ;; `:id-prefix` is what makes the display-block providers idempotent
+          ;; across re-renders, so this overwrites rather than leaks.
+          ;;
+          ;; `state` is closed over deliberately — it is the snapshot these rows
+          ;; were rendered from. Re-reading `!iteration-blocks` at resize time
+          ;; would let a resize silently change the block's CONTENT, and for a
+          ;; frozen block the entry may be gone entirely.
+          render       (fn [_cols]
+                         (let [ed (vec (remove nil? (:eval-display state)))]
+                           (render-iteration-block-lines
+                            (cond-> state
+                              (seq ed)
+                              (assoc :eval-section-lines
+                                     (fmt/format-eval-sections
+                                      ed :id-prefix (iter-id-prefix agent-id repeat-id
+                                                                    iteration))))
+                            spinner-char)))]
       (when (seq lines)
         (if (or (nil? origin-idx) (= origin-idx (sessions/active-idx)))
-          (iter-sink/write-widget! block-id lines)
-          (sessions/update-live-block-in-session! origin-idx block-id lines))))))
+          (iter-sink/write-widget! block-id lines {:render render})
+          (sessions/update-live-block-in-session! origin-idx block-id lines
+                                                  {:render render}))))))
 
 (def ^:private todo-block-id :todo)
 (def ^:private todo-auto-dispose-ms 5000)
@@ -1716,13 +1758,18 @@
           (empty? items)
           (dispose-todo-block!)
 
+          ;; `render-todo-lines` takes both width AND height from `layout/!layout`
+          ;; (the item cap is 40% of the rows), so a resize changes how many
+          ;; items fit as well as how they truncate.
           (every? :done items)
-          (do (layout/update-live-block! todo-block-id (render-todo-lines items))
+          (do (layout/update-live-block! todo-block-id (render-todo-lines items)
+                                         {:render (fn [_cols] (render-todo-lines items))})
               (dispose-todo-block!))
 
           :else
           (let [now (System/currentTimeMillis)]
-            (layout/update-live-block! todo-block-id (render-todo-lines items))
+            (layout/update-live-block! todo-block-id (render-todo-lines items)
+                                       {:render (fn [_cols] (render-todo-lines items))})
             (reset! !todo-state {:last-updated-ms now :session-idx sidx})
             (schedule-todo-auto-dispose! sidx now)))))))
 
@@ -1904,8 +1951,15 @@
         running (sort-by :created-at (filter #(= :running (:status %)) tasks))
         cols (or (:cols @layout/!layout) 80)]
     (if (seq running)
-      (let [lines (build-task-activity-lines running bullet-char cols)]
-        (layout/update-live-block! :task-activity lines))
+      ;; `build-task-activity-lines` takes the width as an ARGUMENT rather than
+      ;; reading it, so the thunk uses the width the reflow hands it (falling
+      ;; back to `!layout` for the ordinary tick path, where it is called with
+      ;; nil).
+      (let [render (fn [c] (build-task-activity-lines
+                            running bullet-char
+                            (or c (:cols @layout/!layout) 80)))
+            lines  (build-task-activity-lines running bullet-char cols)]
+        (layout/update-live-block! :task-activity lines {:render render}))
       (finalize-task-block! :task-activity))))
 
 (defn stop-task-activity-ticker!
@@ -2927,18 +2981,33 @@
               ;; The box and soft wrapping are mutually exclusive: a right
               ;; border must be padded to a width we chose, and soft wrapping
               ;; is precisely handing that choice to the terminal.
+              ;; `:render` re-runs the same formatter at whatever width the
+              ;; terminal becomes, so the box re-fits and the prose re-wraps on
+              ;; resize rather than staying broken at today's column. The soft
+              ;; branch needs none: it emits no hard newlines, so the terminal
+              ;; reflows it for free.
               (emit! (cond
                        (quiet?) (fmt/format-answer-plain answer)
                        (layout/terminal-owns-line-breaking?) (fmt/format-answer-soft answer)
-                       :else (fmt/format-answer answer))))
+                       :else (fmt/format-answer answer))
+                     nil
+                     (cond
+                       (quiet?) {:render #(fmt/format-answer-plain answer %)}
+                       (layout/terminal-owns-line-breaking?) nil
+                       :else {:render #(fmt/format-answer answer %)})))
             ;; In :quiet the box-less answer needs a blank line after it —
             ;; prepend one to the first of the goal / next-prompt lines.
             (when (and (some? goal-achieved) (not hide-final?))
-              (emit! (str (when (quiet?) "\n") (fmt/format-goal-status goal-achieved))))
+              (let [gs (fn [_cols] (str (when (quiet?) "\n")
+                                        (fmt/format-goal-status goal-achieved)))]
+                (emit! (gs nil) nil {:render gs})))
             ;; Suggested follow-up (:next-user-prompt). format-next-prompt
             ;; returns nil if blank.
             (when-let [np (fmt/format-next-prompt (:next-user-prompt st))]
-              (emit! (str (when (and (quiet?) (nil? goal-achieved)) "\n") np))))))))
+              (let [lead (when (and (quiet?) (nil? goal-achieved)) "\n")
+                    nf   (fn [_cols]
+                           (str lead (fmt/format-next-prompt (:next-user-prompt st))))]
+                (emit! (str lead np) nil {:render nf}))))))))
   ;; Sub-agent: stamp :done in the consolidated subagents block (handled
   ;; centrally in `mark-sub-agent-done!` — also auto-freezes the block
   ;; if this was the last running sub-agent under the root) and emit the
@@ -2967,7 +3036,12 @@
                                        (cond
                                          (quiet?) (fmt/format-answer-plain answer)
                                          (layout/terminal-owns-line-breaking?) (fmt/format-answer-soft answer)
-                                         :else (fmt/format-answer answer)))
+                                         :else (fmt/format-answer answer))
+                                       ;; Reflow on resize — see the root path.
+                                       (cond
+                                         (quiet?) {:render #(fmt/format-answer-plain answer %)}
+                                         (layout/terminal-owns-line-breaking?) nil
+                                         :else {:render #(fmt/format-answer answer %)}))
             ;; In :quiet the box-less answer needs a blank line after it —
             ;; prepend one to the goal-status line (mirrors the root path).
             (when (some? goal-achieved)
@@ -3617,11 +3691,13 @@
     (let [origin-idx   (:session-idx state)
           block-id     (acp-block-id agent-id repeat-id iteration)
           spinner-char (nth subagents-spinner-frames @!subagents-spinner-idx)
-          lines        (render-acp-block-lines state spinner-char)]
+          lines        (render-acp-block-lines state spinner-char)
+          render       (fn [_cols] (render-acp-block-lines state spinner-char))]
       (when (seq lines)
         (if (or (nil? origin-idx) (= origin-idx (sessions/active-idx)))
-          (iter-sink/write-widget! block-id lines)
-          (sessions/update-live-block-in-session! origin-idx block-id lines))))))
+          (iter-sink/write-widget! block-id lines {:render render})
+          (sessions/update-live-block-in-session! origin-idx block-id lines
+                                                  {:render render}))))))
 
 (defn- start-acp-block-ticker!
   "Refresh ACP block elapsed/spinner every 1s while any block is still running.
@@ -4107,7 +4183,8 @@
                  :start-ms (System/currentTimeMillis)}]
       (swap! !compaction-blocks assoc aid block)
       (with-agent-render-session agent
-        (layout/update-live-block! bid (render-compaction-lines block))))))
+        (layout/update-live-block! bid (render-compaction-lines block)
+                                   {:render (fn [_cols] (render-compaction-lines block))})))))
 
 (defn compaction-phase-handler
   "Handler for :agent.compaction/phase. Update the block's phase status row."
@@ -4122,7 +4199,8 @@
                              m)))]
       (when-let [block (get updated aid)]
         (with-agent-render-session agent
-          (layout/update-live-block! bid (render-compaction-lines block)))))))
+          (layout/update-live-block! bid (render-compaction-lines block)
+                                     {:render (fn [_cols] (render-compaction-lines block))}))))))
 
 (defn compaction-post-handler
   "Handler for :agent.compaction/post. Replace the live block's contents with
@@ -4142,7 +4220,14 @@
       (swap! !compaction-blocks dissoc aid)
       (with-agent-render-session agent
         (if (contains? @layout/!live-blocks bid)
-          (do (layout/update-live-block! bid [summary])
+          ;; This row is FROZEN immediately after, so it is the one compaction
+          ;; row that outlives every later resize. It is a single status line,
+          ;; not prose — truncate to the pane rather than wrap it across rows.
+          (do (layout/update-live-block!
+               bid [summary]
+               {:render (fn [c] [(fmt/truncate-to-width
+                                  summary
+                                  (max 20 (dec (or c (:cols @layout/!layout) 80))))])})
               (layout/freeze-live-block! bid))
           ;; No pre block (e.g. handler missed it) — emit the summary inline.
           (emit! summary))))))
@@ -4243,9 +4328,10 @@
    file; only the rendering surface changes."
   []
   (reify iter-sink/IterationSink
-    (-write-widget!  [_ id lines] (layout/update-live-block! id lines))
-    (-freeze-widget! [_ id]       (layout/freeze-live-block! id))
-    (-clear-widget!  [_ id]       (layout/dispose-live-block! id))))
+    (-write-widget!  [_ id lines]      (layout/update-live-block! id lines))
+    (-write-widget!  [_ id lines opts] (layout/update-live-block! id lines opts))
+    (-freeze-widget! [_ id]            (layout/freeze-live-block! id))
+    (-clear-widget!  [_ id]            (layout/dispose-live-block! id))))
 
 (defn install-layout-iteration-sink!
   "Idempotent: install the layout-backed sink as the active iteration sink.
