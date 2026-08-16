@@ -544,7 +544,16 @@
                         "elif command -v perl >/dev/null 2>&1; then "
                         "exec perl -MPOSIX -e 'POSIX::setsid() or exit 1; exec @ARGV' " cmd "; "
                         "else exec " cmd "; fi")
-            pb   (doto (ProcessBuilder. ^java.util.List ["/bin/sh" "-c" script])
+            ;; The hint is load-bearing, not decoration: an unhinted
+            ;; ProcessBuilder ctor compiles to a reflective call. It must be an
+            ;; into-array with the ARRAY-CLASS hint — a `^java.util.List` on a
+            ;; LITERAL vector is silently ignored, because the reader attaches
+            ;; it as the vector's own metadata and the compiler never sees it.
+            ;; That is what this line used to be, and it left the ctor
+            ;; reflective while looking hinted. Same fix, same reason, as
+            ;; `sh-tty` in agent.tui.terminal-caps.
+            pb-argv (into-array String ["/bin/sh" "-c" script])
+            pb   (doto (ProcessBuilder. ^"[Ljava.lang.String;" pb-argv)
                    (.redirectErrorStream true)
                    (.redirectOutput (java.lang.ProcessBuilder$Redirect/appendTo log)))
             proc (.start pb)]

@@ -26,8 +26,6 @@
  4,
  "ai/brainyard/agent_tui/permissions.clj - call to static method equiv on clojure.lang.Util can't be resolved (argument types: unknown, char)."
  1,
- "ai/brainyard/agent_tui_app/main.clj - call to java.lang.ProcessBuilder ctor can't be resolved."
- 1,
  "ai/brainyard/ask_channel/core/server.clj - call to static method readAttributes on java.nio.file.Files can't be resolved (argument types: java.nio.file.Path, java.lang.Class, unknown)."
  1,
  "ai/brainyard/ask_channel/core/server.clj - reference to field fileKey can't be resolved."
