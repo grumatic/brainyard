@@ -108,6 +108,24 @@ by run -- anthropic:claude-sonnet-4-6
 
 Ordinary question text containing a `:` is **not** affected — only an argument that matches the `provider:model` shape is interpreted this way.
 
+### Unrecognized arguments
+
+A bare first argument is accepted only when it names a **registered agent**
+(the legacy `by coact-agent` form) or matches the `provider:model` shape.
+Anything else exits 1 rather than starting a session:
+
+```console
+$ by sesions list
+Unknown command or agent: 'sesions'
+Did you mean: sessions?
+
+Subcommands: a2a agents ask config events memory models projects run sessions
+Run `by --help` for usage, or `by agents` for the agent list.
+```
+
+A quoting mistake lands here too — `by "sessions list"` arrives as one argument
+— so the suggestion falls back to the token's first word.
+
 ---
 
 ## `by run` — interactive TUI

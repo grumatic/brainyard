@@ -3262,6 +3262,118 @@
 ;; `-v` is taken by `run --verbose`, so the short version flag is capital `-V`.
 (def ^:private version-flags #{"--version" "-V"})
 
+(defn- registered-agent-id?
+  "True when `tok` names an agent in the registry.
+
+   Only BUILT-IN agents can answer here, and that is correct rather than a
+   limitation to be fixed: user-defined agents are registered by
+   `user-agents/ensure-loaded!`, which runs inside a turn (it needs an agent
+   instance for its dirs), so at dispatch time they are not in the registry —
+   and a positional user-agent id could not reach one today either. It would
+   hit `create-tui-agent!`'s own `registered?` guard and fall back to
+   coact-agent. So this gate rejects nothing that works."
+  [tok]
+  (contains? (agent/get-tool-defs :type :agent) (keyword tok)))
+
+(defn- edit-distance
+  "Levenshtein distance, for `did-you-mean` only."
+  [^String a ^String b]
+  (let [n (count b)]
+    (loop [i 1
+           prev (vec (range (inc n)))]
+      (if (> i (count a))
+        (peek prev)
+        (recur
+         (inc i)
+         (loop [j 1 row [i]]
+           (if (> j n)
+             row
+             (recur (inc j)
+                    (conj row (min (inc (nth row (dec j)))
+                                   (inc (nth prev j))
+                                   (+ (nth prev (dec j))
+                                      (if (= (.charAt a (dec i))
+                                             (.charAt b (dec j)))
+                                        0 1))))))))))))
+
+(defn- did-you-mean
+  "Up to 3 candidates within edit distance 2 of `tok`, nearest first."
+  [tok candidates]
+  (let [t (str/lower-case tok)]
+    (->> candidates
+         (map (fn [c] [c (edit-distance t (str/lower-case c))]))
+         (filter (fn [[_ d]] (<= d 2)))
+         (sort-by second)
+         (mapv first)
+         (take 3))))
+
+(defn- normalize-dispatch-args
+  "Resolve the implied subcommand for `args`.
+
+   Returns `{:args [...]}` to hand to cli-matic, or `{:unknown <token>}` when
+   the first argument is a bare token that names nothing. Kept separate from
+   the reporting so the routing rules are testable without the command's
+   `System/exit` — the same split as `parse-label-args`."
+  [args]
+  (let [first-arg (first args)]
+    (cond
+      ;; No args → run
+      (nil? first-arg)
+      {:args (cons "run" args)}
+
+      ;; Known subcommand → pass through
+      (contains? known-subcommands first-arg)
+      {:args args}
+
+      ;; Help flags → pass through to cli-matic top-level
+      (contains? help-flags first-arg)
+      {:args args}
+
+      ;; Other flags (starts with -) → prepend run
+      (str/starts-with? first-arg "-")
+      {:args (cons "run" args)}
+
+      ;; Bare agent-id (e.g. `bb tui coact-agent`) or the legacy
+      ;; `provider:model` shorthand → run with the positional.
+      (or (registered-agent-id? first-arg)
+          (legacy-provider-model? first-arg))
+      {:args (cons "run" args)}
+
+      ;; Anything else is a typo. It used to land here and be treated as an
+      ;; agent-id anyway, which booted and PERSISTED a session named after it —
+      ;; the one outcome a mistyped command should never have.
+      :else
+      {:unknown first-arg})))
+
+(defn- exit-unknown-token!
+  "A bare first argument that is neither a subcommand, a registered agent, nor
+   the legacy `provider:model` shorthand.
+
+   It used to be taken as an agent-id regardless, so `by sesions list` booted a
+   whole interactive session named after the typo, persisted it, and wrote an
+   unresolvable `:defagent-id` into its `meta.edn` — the failure surfaced far
+   from its cause, as a `⚠ agent '…' is no longer registered` notice at session
+   creation and a `[persist] dropping unreadable :defagent-id` line after it."
+  [tok]
+  (let [subcmds (sort known-subcommands)
+        agents  (sort (map name (keys (agent/get-tool-defs :type :agent))))
+        pool    (concat subcmds agents)
+        ;; A token carrying whitespace is a QUOTING mistake, not a spelling one
+        ;; — `by "sessions list"` reaches here as one argument, and comparing
+        ;; the whole string finds nothing within edit distance. Fall back to its
+        ;; first word, which is the part the user meant as the command.
+        guesses (or (not-empty (did-you-mean tok pool))
+                    (when-let [head (first (str/split (str/trim tok) #"\s+"))]
+                      (when (not= head tok)
+                        (did-you-mean head pool))))]
+    (emit-err! (str "Unknown command or agent: '" tok "'"))
+    (when (seq guesses)
+      (emit-err! (str "Did you mean: " (str/join ", " guesses) "?")))
+    (emit-err! "")
+    (emit-err! (str "Subcommands: " (str/join " " subcmds)))
+    (emit-err! "Run `by --help` for usage, or `by agents` for the agent list.")
+    (System/exit 1)))
+
 (defn- inject-bare-resume-sentinel
   "cli-matic treats `--resume` as a required-value option, so a bare
    `--resume`/`-r` (= resume the latest session) would fail to parse.  Detect
@@ -3340,26 +3452,6 @@
   ;; rendered screen. Idempotent, so this is the only call site that has to
   ;; exist.
   (mulog/setup-slf4j-bridge!)
-  (let [first-arg (first args)
-        ;; Default to "run" when no subcommand given or when first arg is a flag
-        args (cond
-               ;; No args → run
-               (nil? first-arg)
-               (cons "run" args)
-
-               ;; Known subcommand → pass through
-               (contains? known-subcommands first-arg)
-               args
-
-               ;; Help flags → pass through to cli-matic top-level
-               (contains? help-flags first-arg)
-               args
-
-               ;; Other flags (starts with -) → prepend run
-               (str/starts-with? first-arg "-")
-               (cons "run" args)
-
-               ;; Bare agent-id (e.g. `bb tui coact-agent`) → run with positional
-               :else
-               (cons "run" args))]
+  (let [{:keys [args unknown]} (normalize-dispatch-args args)
+        _ (when unknown (exit-unknown-token! unknown))]
     (cli/run-cmd (inject-bare-resume-sentinel args) cli-config)))

@@ -230,3 +230,52 @@
         (doseq [{:keys [session-id project-path]} (all-projects-summaries)]
           (is (= (str "s-" project-path) session-id)
               (str "row " session-id " was read while pointed at " project-path)))))))
+
+;; ============================================================================
+;; Dispatch: an unrecognized bare token must not boot a session
+;; ============================================================================
+
+(def ^:private normalize @#'main/normalize-dispatch-args)
+(def ^:private suggest @#'main/did-you-mean)
+
+(deftest normalize-dispatch-args-test
+  (testing "no args, subcommands and flags route exactly as before"
+    (is (= ["run"] (:args (normalize []))))
+    (is (= ["sessions" "list"] (:args (normalize ["sessions" "list"])))
+        "known subcommand passes through untouched")
+    (is (= ["--help"] (:args (normalize ["--help"])))
+        "top-level help reaches cli-matic rather than being rerouted to run")
+    (is (= ["run" "-i" "-v"] (:args (normalize ["-i" "-v"])))
+        "a leading flag implies run")
+    (is (= ["run" "--" "claude-code:sonnet"]
+           (:args (normalize ["--" "claude-code:sonnet"])))))
+
+  (testing "a registered agent-id is still accepted as a bare positional"
+    ;; The `bb tui coact-agent` form. coact-agent is built in, so it is in the
+    ;; registry at dispatch time.
+    (is (= ["run" "coact-agent"] (:args (normalize ["coact-agent"]))))
+    (is (nil? (:unknown (normalize ["coact-agent"])))))
+
+  (testing "the legacy provider:model shorthand is still accepted bare"
+    (is (= ["run" "claude-code:sonnet"] (:args (normalize ["claude-code:sonnet"]))))
+    (is (= ["run" "openai:gpt-4o"] (:args (normalize ["openai:gpt-4o"])))))
+
+  (testing "an unrecognized bare token is reported, NOT routed into run"
+    ;; The regression this guards: every one of these used to be taken as an
+    ;; agent-id, booting and persisting a session named after the typo.
+    (doseq [tok ["sesions" "sessions --help" "what" "list" "memory stats"]]
+      (let [{:keys [args unknown]} (normalize [tok])]
+        (is (= tok unknown) (str "'" tok "' should be reported as unknown"))
+        (is (nil? args) (str "'" tok "' must not produce args to run"))))))
+
+(deftest did-you-mean-test
+  (testing "a near-miss subcommand is suggested"
+    (is (= ["sessions"] (suggest "sesions" ["sessions" "projects" "memory"])))
+    (is (= ["memory"] (suggest "memroy" ["sessions" "projects" "memory"]))))
+
+  (testing "nothing within edit distance 2 yields no guess"
+    (is (empty? (suggest "wildlyunrelated" ["sessions" "projects" "memory"]))))
+
+  (testing "suggestions are capped and nearest-first"
+    (is (>= 3 (count (suggest "run" ["run" "ran" "rum" "rug" "rub"]))))
+    (is (= "run" (first (suggest "run" ["ran" "run" "rum"]))))))

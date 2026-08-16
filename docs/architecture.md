@@ -110,6 +110,23 @@ kept in the build even when not directly referenced from `main`.
 the `run` path (preserving the legacy `bb tui coact-agent` and
 `bb tui -- provider:model` syntaxes).
 
+A bare first token is accepted only when it **names a registered agent** or
+matches the strict `provider:model` shape; anything else exits 1 with a
+`did-you-mean` suggestion. Previously any bare token was taken as an agent-id
+regardless, so a mistyped subcommand (`by sesions list`) booted and *persisted*
+a whole interactive session named after the typo, and the failure surfaced far
+from its cause — a `⚠ agent '…' is no longer registered` notice at session
+creation, then `[persist] dropping unreadable :defagent-id` from the new
+session's `meta.edn`. The routing rules live in the pure
+`normalize-dispatch-args` (returning `{:args …}` or `{:unknown tok}`) so they
+are testable without `System/exit`, matching the `parse-label-args` split.
+
+Only built-in agents can satisfy that gate, which is correct rather than a
+limitation: user-defined agents are registered by `user-agents/ensure-loaded!`,
+which needs an agent instance for its dirs and therefore runs inside a turn. A
+positional user-agent id could not reach one before this change either — it hit
+`create-tui-agent!`'s own `registered?` guard and fell back to `coact-agent`.
+
 `run` adds session-management flags on top of provider/model/agent:
 
 | Flag | Meaning |
