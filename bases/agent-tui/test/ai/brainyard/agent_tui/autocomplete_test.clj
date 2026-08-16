@@ -7,6 +7,7 @@
    scroll-state indicator rendered on the menu's reserved last row."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [ai.brainyard.agent.interface.tui.format :as fmt]
             [ai.brainyard.agent-tui.autocomplete :as ac]))
 
 (defn- strip-ansi
@@ -131,3 +132,56 @@
           "/pause must appear (substring match on name)")
       (is (< i-sess i-paus)
           "/session (prefix) must sort before /pause (substring only)"))))
+
+;; ---------------------------------------------------------------------------
+;; Menu-description truncation
+;;
+;; The menu's private truncator checked the fit with `display-width` but did the
+;; cut with `subs`, so it split whatever the char index happened to land in —
+;; measured on the old code, 40 ZWJ family emoji cut to 12 columns ended on a
+;; LONE HIGH SURROGATE. Its fallback was worse: when no indicator could fit it
+;; cut to max-w CHARS against a COLUMN budget, so 200 CJK glyphs at max-w 12
+;; rendered 24 columns — twice the budget it existed to enforce, on the row it
+;; was called to protect.
+;; ---------------------------------------------------------------------------
+
+(def ^:private truncate-to-width #'ac/truncate-to-width)
+
+(defn- ends-mid-surrogate? [^String s]
+  (and (pos? (count s))
+       (Character/isHighSurrogate (.charAt s (dec (count s))))))
+
+(deftest truncation-never-exceeds-the-budget
+  (testing "across scripts and down to degenerate budgets"
+    (doseq [[label s] [["ascii" (apply str (repeat 200 "a"))]
+                       ["cjk"   (apply str (repeat 200 "漢"))]
+                       ["emoji" (apply str (repeat 40 "👨‍👩‍👦"))]
+                       ["mixed" (str "list the files " (apply str (repeat 40 "漢")) " now")]]
+            w [80 40 20 12 6 3 1]]
+      (let [r (truncate-to-width s w)]
+        (is (<= (fmt/display-width r) w)
+            (str label " overflows at max-w=" w ": " (fmt/display-width r)))))))
+
+(deftest truncation-cuts-on-a-unit-boundary
+  (testing "no lone surrogate is ever left at the cut"
+    (let [s (apply str (repeat 40 "👨‍👩‍👦"))]
+      (doseq [w [40 20 12 10 5 3 1]]
+        (is (not (ends-mid-surrogate? (truncate-to-width s w)))
+            (str "lone high surrogate at max-w=" w))))))
+
+(deftest truncation-keeps-the-indicator-when-it-fits
+  (testing "a long description reports how much was hidden"
+    (let [r (truncate-to-width (apply str (repeat 200 "a")) 20)]
+      (is (re-find #"\[\+\d+ chars\]" r))
+      (is (<= (fmt/display-width r) 20))))
+  (testing "and drops it rather than overflowing when it cannot fit"
+    (let [r (truncate-to-width (apply str (repeat 200 "a")) 6)]
+      (is (not (re-find #"\[\+" r)))
+      (is (<= (fmt/display-width r) 6)))))
+
+(deftest truncation-passes-through-what-already-fits
+  (is (= "short" (truncate-to-width "short" 40)))
+  (is (= "" (truncate-to-width "" 40)))
+  (testing "a non-positive budget is not an excuse to emit something"
+    (is (string? (truncate-to-width "anything" 0)))
+    (is (string? (truncate-to-width "anything" -5)))))

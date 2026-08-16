@@ -4,6 +4,8 @@
 
 (ns ai.brainyard.agent-tui.help-tips-test
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [clojure.string :as str]
+            [ai.brainyard.agent.interface.tui.format :as fmt]
             [ai.brainyard.agent-tui.help-tips :as ht]))
 
 ;; Suggestions are keyed per tab (session-idx); use a fixed key in these tests.
@@ -70,3 +72,56 @@
     (is (nil? (ht/agent-suggestion 1)) "clearing tab 1 leaves tab 2 intact")
     (is (= "tab-2 follow-up" (ht/agent-suggestion 2)))
     (ht/clear-agent-suggestion! 2)))
+
+;; ---------------------------------------------------------------------------
+;; Width
+;;
+;; The placeholder used to be cut at a flat 72 measured in `count`, which was
+;; wrong twice over: it ignored the pane (a 200-column terminal lost a
+;; follow-up at 72 for no reason) and `count` is UTF-16 code units, not
+;; columns, so 72 chars of CJK measured 143 columns — capping nothing on the
+;; one input where a cap matters most. `subs` also cut blind: 72 chars into a
+;; run of ZWJ family emoji landed on a lone high surrogate.
+;; ---------------------------------------------------------------------------
+
+(defn- ends-mid-surrogate? [^String s]
+  (and (pos? (count s))
+       (Character/isHighSurrogate (.charAt s (dec (count s))))))
+
+(deftest placeholder-fits-the-pane
+  (testing "the tip scales with the terminal instead of a fixed cap"
+    (ht/set-agent-suggestion! k (apply str (repeat 200 "a")))
+    (doseq [cols [40 80 150 220]]
+      (let [p (ht/current-placeholder k cols)]
+        (is (<= (fmt/display-width p) cols)
+            (str "placeholder overflows at " cols " columns"))))
+    (is (> (fmt/display-width (ht/current-placeholder k 220))
+           (fmt/display-width (ht/current-placeholder k 80)))
+        "a wider pane shows more of the suggestion — the old flat cap did not")))
+
+(deftest placeholder-measures-columns-not-chars
+  (testing "a CJK suggestion is budgeted in columns"
+    (ht/set-agent-suggestion! k (apply str (repeat 120 "漢")))
+    (doseq [cols [40 80 150]]
+      (let [p (ht/current-placeholder k cols)]
+        (is (<= (fmt/display-width p) cols)
+            (str "CJK placeholder overflows at " cols " columns: "
+                 (fmt/display-width p)))))))
+
+(deftest placeholder-never-splits-a-cluster
+  (testing "the cut lands on a grapheme boundary, not mid-surrogate"
+    (ht/set-agent-suggestion! k (apply str (repeat 30 "👨‍👩‍👦")))
+    (doseq [cols [30 45 60 90]]
+      (let [p (ht/current-placeholder k cols)]
+        (is (not (ends-mid-surrogate? p))
+            (str "cut left a lone high surrogate at " cols " columns"))
+        (is (<= (fmt/display-width p) cols))))))
+
+(deftest placeholder-keeps-the-affordance-suffix
+  (testing "truncation reserves the arrow hint rather than letting it fall off
+            the right — the input row cuts from the right, so an unreserved
+            suffix is the first thing lost"
+    (ht/set-agent-suggestion! k (apply str (repeat 200 "a")))
+    (doseq [cols [40 80 150]]
+      (is (str/ends-with? (ht/current-placeholder k cols) "(→ to use)")
+          (str "lost the affordance at " cols " columns")))))

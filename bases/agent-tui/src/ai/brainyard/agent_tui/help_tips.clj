@@ -21,7 +21,8 @@
    This is a leaf namespace (depends only on clojure.string). Callers own the
    muting/rendering — `current-placeholder` returns a plain string that the
    input redraw wraps in `ansi/muted`, matching the prior placeholder path."
-  (:require [clojure.string :as str]))
+  (:require [ai.brainyard.agent.interface.tui.format :as fmt]
+            [clojure.string :as str]))
 
 ;; ----------------------------------------------------------------------
 ;; Dynamic: agent suggestion (top priority)
@@ -114,16 +115,33 @@
 ;; Resolution (priority lives here)
 ;; ----------------------------------------------------------------------
 
-(def ^:private max-tip-width
-  "Cap on the rendered suggestion width so a long follow-up can't overflow the
-   single-line placeholder."
-  72)
+;; Columns the input row spends on things that are not the tip: the `> ` prompt
+;; it prints before the placeholder, and a column of right margin.
+(def ^:private prompt-cols 2)
+(def ^:private right-margin 1)
 
-(defn- truncate [s n]
-  (let [s (str s)]
-    (if (<= (count s) n)
-      s
-      (str (subs s 0 (max 0 (dec n))) "…"))))
+(defn- tip-budget
+  "Columns available to the tip TEXT, after the prompt, the margin, and any
+   lead/suffix that must survive alongside it.
+
+   This used to be a flat 72 measured in `count`, which was wrong twice. It
+   ignored the pane — a 200-column terminal cut a follow-up at 72 for no
+   reason, and a 50-column one was over budget and relied on the input row to
+   cut it a second time. And `count` is UTF-16 code units, not columns: 72
+   chars of CJK is 143 columns, so on the one input where a cap matters most it
+   capped nothing at all.
+
+   `cols` nil means \"ask the terminal\"; an explicit value is for tests."
+  [cols lead-w suffix-w]
+  (max 8 (- (or cols (fmt/terminal-columns))
+            prompt-cols right-margin lead-w suffix-w)))
+
+;; `fmt/truncate-to-width` replaces a local `count`/`subs` truncate. Besides
+;; measuring in columns it lands the cut on a grapheme-cluster boundary — the
+;; old one sliced UTF-16 blind, and cutting 72 chars into a run of ZWJ family
+;; emoji left a LONE HIGH SURROGATE at the end, which is not a character at all.
+;; Per CLAUDE.md: anything walking a string steps by `fmt/next-unit`, never by
+;; char index.
 
 (defn current-tip
   "Resolve tab `k`'s active tip by priority: agent-suggestion > static.
@@ -151,19 +169,34 @@
    The suggestion stays right-arrow-acceptable on both frames (accept reads the
    suggestion atom, not the rendered text); the odd-frame suffix keeps that
    discoverable. With no live suggestion, the static tip renders verbatim.
-   Returns \"\" when no tip is available."
-  [k]
-  (let [sug (agent-suggestion k)
-        st  (current-static)]
-    (cond
+   Returns \"\" when no tip is available.
+
+   The 2-arity takes an explicit pane width; the 1-arity asks the terminal.
+
+   Truncation here reserves room for the trailing affordance rather than
+   letting it fall off the end. The input row clamps the finished string to the
+   width it actually has (`redraw-input-line!`), which is the authority on
+   fitting — but it cuts from the RIGHT, so a suffix left unreserved is the
+   first thing lost, taking the `→` discoverability with it."
+  ([k] (current-placeholder k nil))
+  ([k cols]
+   (let [sug      (agent-suggestion k)
+         st       (current-static)
+         lead     "↳ "
+         sug-sfx  "  (→ to use)"
+         lead-w   (fmt/display-width lead)
+         sug-sfx-w (fmt/display-width sug-sfx)
+         frame-sfx-w (fmt/display-width tip-frame-suffix)
+         fit-sug  (fn [s] (fmt/truncate-to-width s (tip-budget cols lead-w sug-sfx-w)))]
+     (cond
       ;; Live suggestion + a static tip available → alternate by frame.
-      (and sug st)
-      (if (even? (long @!frame))
-        (str "↳ " (truncate sug max-tip-width) "  (→ to use)")
-        (str (truncate st (max 8 (- max-tip-width (count tip-frame-suffix))))
-             tip-frame-suffix))
+       (and sug st)
+       (if (even? (long @!frame))
+         (str lead (fit-sug sug) sug-sfx)
+         (str (fmt/truncate-to-width st (tip-budget cols 0 frame-sfx-w))
+              tip-frame-suffix))
       ;; Suggestion only (no static set) → always show it.
-      sug (str "↳ " (truncate sug max-tip-width) "  (→ to use)")
-      ;; No suggestion → static tip verbatim.
-      st  (str st)
-      :else "")))
+       sug (str lead (fit-sug sug) sug-sfx)
+      ;; No suggestion → static tip, fitted to the pane.
+       st  (fmt/truncate-to-width (str st) (tip-budget cols 0 0))
+       :else ""))))

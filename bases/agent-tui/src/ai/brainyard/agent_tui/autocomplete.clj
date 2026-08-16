@@ -375,34 +375,50 @@
       (str/replace #"\s+" " ")
       str/trim))
 
+(defn- cut-at-width
+  "Split plain `s` at the last DISPLAY UNIT boundary that still fits in `w`
+   columns. Returns `[kept dropped-char-count]`.
+
+   Stepping by `fmt/next-unit` rather than by char index is the whole point: a
+   char index can land inside a surrogate pair (leaving half a codepoint) or
+   inside a grapheme cluster (rendering one glyph as two unrelated ones, which
+   makes the line WIDER than the cut was meant to make it). It is also what
+   keeps the walk in the same unit `display-width` measures in, so the two
+   cannot disagree about where column `w` is.
+
+   Plain text only — `next-unit` measures ANSI escapes rather than skipping
+   them. The caller truncates the raw description and styles the result after."
+  [^String s ^long w]
+  (let [len (.length s)]
+    (loop [i 0, acc 0]
+      (if (>= i len)
+        [s 0]
+        (let [[uw end] (fmt/next-unit s i)]
+          (if (> (+ acc (long uw)) w)
+            [(subs s 0 i) (- len i)]
+            (recur (long end) (+ acc (long uw)))))))))
+
 (defn- truncate-to-width
   "Truncate s so its display-width fits in max-w columns. If truncated,
-   appends a [+N chars] indicator that itself fits within max-w."
+   appends a [+N chars] indicator that itself fits within max-w.
+
+   The indicator's own width depends on how many chars it reports hidden, which
+   depends on where the cut lands — so the budget is converged on rather than
+   guessed. When even a bare indicator cannot fit, it is dropped and the text is
+   cut to `max-w` COLUMNS; the previous fallback cut to max-w CHARS, which for
+   CJK is twice the budget and overflowed the row it was called to protect."
   [s ^long max-w]
-  (let [s (str s)
-        full-w (fmt/display-width s)]
-    (if (or (<= full-w max-w) (zero? max-w))
+  (let [s (str s)]
+    (if (or (<= (fmt/display-width s) max-w) (not (pos? max-w)))
       s
-      ;; Need to truncate. Reserve space for indicator " [+N chars]".
-      (let [hidden-count (- (count s) 0)  ;; placeholder; computed below
-            ;; We choose truncation char count by trying decreasing keep-lengths
-            ;; until both kept text and indicator fit within max-w.
-            try-fit
-            (fn [keep-chars]
-              (let [kept (subs s 0 (max 0 keep-chars))
-                    hidden (- (count s) keep-chars)
-                    indicator (str " [+" hidden " chars]")
-                    total-w (+ (fmt/display-width kept)
-                               (fmt/display-width indicator))]
-                (when (<= total-w max-w)
-                  (str kept indicator))))
-            ;; Binary-search-ish: start from a sensible guess and shrink.
-            ;; Keep ~max-w - 12 chars (rough room for indicator), then refine.
-            initial (max 0 (- max-w 12))]
-        (or (some try-fit (range initial -1 -1))
-            ;; Fallback: just hard-truncate to max-w
-            (let [end (min (count s) max-w)]
-              (subs s 0 end)))))))
+      (loop [budget (max 0 (- max-w 12)), guard 0]
+        (let [[kept dropped] (cut-at-width s budget)
+              indicator (str " [+" dropped " chars]")
+              total     (+ (fmt/display-width kept) (fmt/display-width indicator))]
+          (cond
+            (<= total max-w) (str kept indicator)
+            (>= guard 4)     (first (cut-at-width s max-w))
+            :else            (recur (- budget (- total max-w)) (inc guard))))))))
 
 (defn draw-autocomplete-menu!
   "Render autocomplete menu as a bottom-anchored popover. Reserves vis-count
