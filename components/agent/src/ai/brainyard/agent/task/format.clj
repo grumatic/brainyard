@@ -6,6 +6,7 @@
   "Pure formatting functions for task management TUI output.
    Uses tui/ansi.clj helpers for color-coded terminal display."
   (:require [ai.brainyard.agent.tui.ansi :as ansi]
+            [ai.brainyard.agent.tui.format :as fmt]
             [clojure.string :as str]))
 
 ;; ============================================================================
@@ -156,22 +157,31 @@
   [bullet-char task-id task-name cols]
   (let [id-str (if (keyword? task-id) (name task-id) (str task-id))
         prefix (str bullet-char " " id-str ": ")
-        max-name (max 1 (- cols (count prefix)))
-        truncated-name (if (> (count task-name) max-name)
-                         (str (subs task-name 0 (max 1 (- max-name 3))) "...")
-                         task-name)]
-    (str prefix truncated-name)))
+        ;; `cols` is a COLUMN budget, so the prefix and the name must both be
+        ;; measured in columns. Counting chars said 1 for a glyph the terminal
+        ;; advances 2 for, so a task named in CJK overflowed the row by up to 2x.
+        ;;
+        ;; The floor is 0, not 1, and the composed line is clamped again: a long
+        ;; task id can spend the whole budget on the prefix, and granting the
+        ;; name one guaranteed column then put the line one column over — which
+        ;; is all it takes to wrap.
+        max-name (max 0 (- cols (fmt/display-width prefix)))
+        truncated-name (fmt/truncate-to-width (str task-name) max-name)]
+    (fmt/truncate-to-width (str prefix truncated-name) cols)))
 
 (defn format-task-output-line
   "Format a single task output line with indent and dim styling.
    Returns: '  │ output text' truncated to cols."
   [line cols]
   (let [prefix "  │ "
-        max-text (max 1 (- cols (count prefix)))
-        truncated (if (> (count (str line)) max-text)
-                    (str (subs (str line) 0 (max 1 (- max-text 3))) "...")
-                    (str line))]
-    (str (ansi/muted prefix) (ansi/muted truncated))))
+        max-text (max 0 (- cols (fmt/display-width prefix)))
+        ;; Task output is arbitrary subprocess bytes — paths, JSON, whatever the
+        ;; command printed — so this is exactly where a char count is wrong.
+        truncated (fmt/truncate-to-width (str line) max-text)]
+    ;; Clamped again as a whole, for the degenerate case where the prefix alone
+    ;; does not fit. `truncate-to-width` skips the SGR escapes rather than
+    ;; counting them, so styling first is safe.
+    (fmt/truncate-to-width (str (ansi/muted prefix) (ansi/muted truncated)) cols)))
 
 (defn format-task-status-bar
   "Format compact task notification for status bar left side.

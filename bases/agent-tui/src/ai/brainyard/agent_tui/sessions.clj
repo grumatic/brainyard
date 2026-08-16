@@ -106,9 +106,9 @@
    (when defagent-id
      (let [base (-> (name defagent-id)
                     (str/replace #"-agent$" ""))
-           truncated (if (> (count base) label-max-chars)
-                       (str (subs base 0 (dec label-max-chars)) "…")
-                       base)]
+           ;; The tab strip budgets its row in columns and a user-defined agent
+           ;; can be named in any script, so the cap is columns too.
+           truncated (fmt/truncate-to-width base label-max-chars)]
        (cond-> truncated suffix (str suffix))))))
 
 (defn- make-session

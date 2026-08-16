@@ -501,10 +501,10 @@
         used     (+ 35 (count right-plain) (if (seq right-plain) 2 0))
         room     (- feature-line-width used)
         doc      (some-> (:doc f) (str/replace #"\s+" " ") str/trim not-empty)
+        ;; `room` is columns left on the line. User-defined tools and agents
+        ;; supply their own docstrings, so this is not safely ASCII.
         doc*     (when (and doc (>= room feature-doc-min))
-                   (if (> (count doc) room)
-                     (str (subs doc 0 (dec room)) "\u2026")
-                     doc))]
+                   (fmt/truncate-to-width doc room))]
     (tui-session/emit!
      (str "  " (feature-dot (:on? st))
           " " (ansi/style (format "%-20s" (name fid)) ansi/bold)

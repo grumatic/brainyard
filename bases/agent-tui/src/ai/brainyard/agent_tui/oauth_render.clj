@@ -49,11 +49,13 @@
 
 (defn ^:private truncate-to-width
   "Truncate `s` to at most `w` display columns, appending … when shortened.
-   URLs/labels here are ASCII, so a char cut matches the display width."
+
+   Delegates rather than cutting locally. The old note here — that URLs and
+   labels are ASCII so a char cut matches the display width — was true of the
+   URLs but is an assumption about the LABELS that nothing enforces, and a char
+   index can land inside a surrogate pair regardless."
   [s w]
-  (if (<= (fmt/display-width s) w)
-    s
-    (str (subs s 0 (max 0 (min (count s) (dec w)))) "…")))
+  (fmt/truncate-to-width s w))
 
 (defn ^:private osc8
   "OSC-8 hyperlink: `label` is clickable and opens `url` in terminals that

@@ -1063,11 +1063,9 @@
       ;; Running: append recent-activity lines + a muted totals footer.
       (let [cols       (or (:cols @layout/!layout) 80)
             child-ind  (str indent "  ")
-            max-text   (max 8 (- cols (count child-ind) 4))
-            trunc      (fn [s] (let [s (str s)]
-                                 (if (> (count s) max-text)
-                                   (str (subs s 0 (max 1 (- max-text 1))) "…")
-                                   s)))
+            ;; `cols` is a column budget; measure and cut in the same unit.
+            max-text   (max 8 (- cols (fmt/display-width child-ind) 4))
+            trunc      (fn [s] (fmt/truncate-to-width (str s) max-text))
             act-items  (cond-> []
                          (seq recent-tools)
                          (conj (str "tools: "
@@ -1232,12 +1230,12 @@
         tree (map-indexed
               (fn [i line]
                 (let [prefix (if (= i (dec n)) "  └ " "  ├ ")
-                      max-text (max 1 (- cols (count prefix)))
-                      text (str line)
-                      truncated (if (> (count text) max-text)
-                                  (str (subs text 0 (max 1 (- max-text 3))) "...")
-                                  text)]
-                  (str prefix (ansi/muted truncated))))
+                      max-text (max 0 (- cols (fmt/display-width prefix)))
+                      truncated (fmt/truncate-to-width (str line) max-text)]
+                  ;; Clamped as a whole too: a floor of 1 on the text put the
+                  ;; line one column over when the prefix already spent the
+                  ;; budget, and one column is all it takes to wrap.
+                  (fmt/truncate-to-width (str prefix (ansi/muted truncated)) cols)))
               body-lines)]
     (vec (cons header tree))))
 
@@ -1891,11 +1889,8 @@
                              (let [styled-bullet (ansi/style bullet-char ansi/bold ansi/bright-yellow)]
                                (str styled-bullet " "
                                     (ansi/style (str (name (:id task)) ": ") ansi/bold)
-                                    (let [task-name (:name task)
-                                          max-name (max 1 (- cols 15))]
-                                      (if (> (count task-name) max-name)
-                                        (str (subs task-name 0 (max 1 (- max-name 3))) "...")
-                                        task-name)))))
+                                    (fmt/truncate-to-width (str (:name task))
+                                                           (max 1 (- cols 15))))))
                            (take max-headers running-tasks))
         more-tasks-line (when show-more-tasks?
                           [(ansi/muted (str "  +" (- n 2) " more task"
@@ -1913,12 +1908,12 @@
         overflow-count (- output-count (count visible-output))
         output-lines (cond-> (mapv (fn [line]
                                      (let [prefix "  \u2502 "
-                                           max-text (max 1 (- cols (count prefix)))
-                                           text (str line)
-                                           truncated (if (> (count text) max-text)
-                                                       (str (subs text 0 (max 1 (- max-text 3))) "...")
-                                                       text)]
-                                       (ansi/muted (str prefix truncated))))
+                                           max-text (max 0 (- cols (fmt/display-width prefix)))]
+                                       (fmt/truncate-to-width
+                                        (ansi/muted
+                                         (str prefix
+                                              (fmt/truncate-to-width (str line) max-text)))
+                                        cols)))
                                    visible-output)
                        show-overflow?
                        (conj (ansi/muted (str "  +" overflow-count " lines more"))))]
