@@ -91,18 +91,20 @@ kept in the build even when not directly referenced from `main`.
 ## The `by` binary: entry point
 
 `projects/agent-tui-app/src/ai/brainyard/agent_tui_app/main.clj` is a
-`cli-matic` driver with eight subcommands:
+`cli-matic` driver with ten subcommands:
 
 | Subcommand | Purpose |
 |---|---|
 | `run` *(default)* | Start the interactive TUI session. |
 | `ask` | One-shot, non-interactive question (`--attach` targets a running session). |
 | `agents` | List registered agents (`get-tool-defs :type :agent`) as a text table. |
-| `models` | List known `provider/model` pairs. |
+| `models` | List known `provider/model` pairs; `--refresh` / `--drift` reconcile against the live providers. |
 | `config` | Interactive environment-bootstrap wizard (API keys, providers, defaults). |
 | `sessions` | `list` / `show` / `config` / `label` / `prune` persisted agent sessions. |
+| `projects` | `list` / `path` / `add` / `prune` / `remove` over the user-scope project registry. |
 | `memory` | Maintenance + inspection of the user-scoped L1/L2/L3 store and context graph. |
 | `events` | Emit user-defined events into a live session over its ask channel. |
+| `a2a` | `serve` — expose local agents to other agents over the Agent2Agent protocol. |
 
 `-main` normalises args so that bare flags or a bare agent-id reuse
 the `run` path (preserving the legacy `bb tui coact-agent` and

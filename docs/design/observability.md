@@ -354,6 +354,68 @@ Publisher configuration lives in `bases/agent-tui/src/ai/brainyard/agent_tui/log
 Projects that need a different sink swap the publisher; the emit sites
 do not change.
 
+### The app log covers every command, and every event names its process
+
+Three properties were added once several `by` processes started sharing one
+`~/.brainyard/logs/agent-tui-app.log` — an interactive TUI, a detached
+`by memory reduce`, `by a2a serve`, and every one-shot CLI command.
+
+**1. Started in the dispatcher, not per-command.** The app log used to be
+started only inside `cmd-ask` and `with-memory-manager`, so every other command
+ran unlogged: `by a2a serve` emitted its server-started event and every request
+event into a publisher that did not exist, which is why a running server had no
+audit trail at all. It now starts in `-dispatch` — after dotenv, before any
+subcommand. `setup-slf4j-bridge!` is hoisted alongside it (and *after* it, so
+forwarded events have a publisher to land in), which routes library WARNs into
+the app log instead of logback's default console appender; it detaches that
+appender rather than adding alongside it, because console output would print
+onto the screen the TUI is drawing. `setup!` is idempotent — it had a
+`bridge-active` atom all along but only ever wrote it, so every caller after the
+first detached its predecessor's appender and installed another.
+
+**2. Stopping actually flushes.** `teardown-app-log!` never flushed despite both
+call sites documenting it as one. mulog moves an event to disk over two
+asynchronous hops, and a plain stop breaks both: events sit in a global buffer
+until a recurring task hands them to each publisher every 200 ms, and the stop
+function **deregisters first**, so whatever is still buffered is never handed
+over — then dispatches its final write with `send-off`, which returns
+immediately, so a process exiting right after kills the JVM mid-action. The
+order therefore has to be **wait → stop → await**, which is what
+`flush-file-publisher!` does (backed by a bounded `await-publisher!`). Cost is
+roughly 200 ms at exit, accepted deliberately in exchange for complete logs —
+including the detached `by memory reduce` child, whose only durable audit trail
+is this log. `stop-file-publisher!` is private: it is the lossy half of that
+pair, and calling it on the way out is precisely the bug that was fixed.
+
+**3. Every event carries `:pid`.** Without it an interleaved log cannot be
+attributed to a process at all — which invalidated one measurement in this very
+series, where a delta of "new log lines from one command" turned out to be
+mostly other processes writing concurrently. The stamp is applied at **publish**
+time (`add-pid`, beside `add-human-timestamp` at all three formatting sites),
+not from the global context, and that placement is the whole point: a global
+context installed in `-dispatch` cannot reach events emitted while namespaces
+*load*, but native-image cannot perform a publish, so a publisher is guaranteed
+to run at runtime and has nothing to bake. It never overwrites an existing
+`:pid`, so the two mechanisms compose rather than fight. Publishing pid equals
+emitting pid, because a publisher only ever drains its own process buffer.
+
+> **Native-image trap, same family.** A load-time side effect is evaluated at
+> BUILD time, which is how the A2A node id got frozen into the binary (see
+> [`a2a-design.md`](a2a-design.md) §4). The same mechanism leaked *log records*:
+> top-level forms that self-wire hooks call mulog while loading their namespace,
+> before any publisher is registered, and mulog holds those events in its global
+> buffer deliberately so nothing emitted during startup is lost. Under
+> native-image that buffer is non-empty exactly when the image heap is
+> snapshotted — so the events shipped **inside the binary**, and every launch
+> republished them carrying the build machine's timestamp and flake id. It
+> stayed invisible at a few hundred bytes per launch, and became a 50 MB log
+> once a desktop app started polling `by sessions list --live --json` about
+> forty times a minute. The fix filters by **process start time** rather than
+> clearing the buffer: clearing looks equivalent but would discard a JVM
+> process's own legitimate load-time events, and no event a process emits can
+> predate its own start, so the comparison cannot drop anything real. It fails
+> open when the OS will not report a start time.
+
 ---
 
 ## File map

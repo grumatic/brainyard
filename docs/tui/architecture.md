@@ -353,7 +353,7 @@ in-stream prompt), and 7 (the `/activity show` is a friendly no-op).
 ## 8. Boot integration with `agent-tui-app`
 
 `projects/agent-tui-app/src/ai/brainyard/agent_tui_app/main.clj`
-exposes eight subcommands (`known-subcommands`,
+exposes ten subcommands (`known-subcommands`,
 [build-and-deploy.md](../build-and-deploy.md)):
 
 | Subcommand | Purpose |
@@ -361,11 +361,13 @@ exposes eight subcommands (`known-subcommands`,
 | `run` *(default)* | Start the interactive TUI session. Calls `mode/probe` + `agent-tui.core/run!`. |
 | `ask` | One-shot, non-interactive question (`--attach` targets a running session). |
 | `agents` | List registered agents. |
-| `models` | List available providers / models. |
+| `models` | List available providers / models; `--refresh` / `--drift` reconcile against the live providers. |
 | `config` | Interactive environment bootstrap wizard. |
-| `sessions list` / `show` / `config` / `label` / `prune` | Inspect / relabel / clean up persisted agent sessions under `<project>/.brainyard/sessions/`. All accept `-C` / `--working-dir` to target a specific project. |
+| `sessions list` / `show` / `config` / `label` / `prune` | Inspect / relabel / clean up persisted agent sessions under `<project>/.brainyard/sessions/`. All accept `-C` / `--working-dir` to target a specific project; `list --all-projects` reads every registered project in one process. |
+| `projects list` / `path` / `add` / `prune` / `remove` | The user-scope project registry under `~/.brainyard/projects/`. |
 | `memory` | Maintenance + inspection of the user-scoped L1/L2/L3 store and context graph. |
 | `events` | Emit user-defined events into a live session over its ask channel. |
+| `a2a serve` | Expose local agents to other agents over the Agent2Agent protocol. |
 
 `run` adds session-management flags:
 
@@ -374,6 +376,11 @@ exposes eight subcommands (`known-subcommands`,
 - `-r` / `--resume` — bare: pick a persisted session to resume from an interactive menu (fresh if none).
 - `-r <id>` / `--resume <id>` — resume that specific session (error + exit 1 if absent).
 - `--resume-latest` — resume the most-recent persisted session non-interactively (fresh if none); env `BY_RESUME_LATEST`.
+- `-s <id>` / `--session <id>` — start a NEW session with this exact id (errors if it exists).
+- `--config <edn>` — agent config overrides for this session, as an EDN map of
+  `config-schema` keys. Seeded as per-agent overrides and applied last, so they
+  win over the equivalent flags — it exists to say what a flag cannot (an ACP
+  backend pin carrying `:env`, for instance).
 - No resume flag → fresh session. (`--new` is a deprecated no-op, still accepted.)
 
 On resume the trailing bytes of `scrollback.stream.txt` are replayed into the

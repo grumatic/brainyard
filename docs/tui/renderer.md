@@ -197,10 +197,138 @@ Column math (wrapping, status-bar fit, marker alignment) goes through the
 canonical width helpers in `components/agent/src/ai/brainyard/agent/tui/format.clj`
 (re-exported as `agent.interface.tui.format`): `display-width`,
 `wide-codepoint?` (CJK + emoji ranges count as 2 columns),
-`zero-width-codepoint?` (ZWJ / variation selectors count as 0), and
-`char-index-at-width`. Recent fixes stopped over-counting EAW-narrow
-glyphs (`✓ ★ ⤴ ⬅ ⤵`) as wide. (`render.clj` carries a simpler ASCII-only
+`zero-width-codepoint?` (ZWJ / variation selectors count as 0),
+`char-index-at-width`, `truncate-to-width`, `ansi-aware-word-wrap`, and
+`next-unit`. Earlier fixes stopped over-counting EAW-narrow glyphs
+(`✓ ★ ⤴ ⬅ ⤵`) as wide. (`render.clj` carries a simpler ASCII-only
 `display-width` for hot-path lines.)
+
+**Grapheme width is negotiated, not assumed** (`BY_GRAPHEME_WIDTH`,
+`:grapheme-width`, default `auto`). Terminals disagree about how wide a grapheme
+is, and the two regimes differ by up to **6 columns on one glyph**: a ZWJ family
+emoji is 8 columns summed per codepoint, 2 columns clustered. `auto` asks the
+terminal via DECRQM (`CSI ? 2027 $ p`) and caches the answer in
+`~/.brainyard/terminal-caps.edn`, keyed by `TERM` + `TERM_PROGRAM` + version +
+tmux — `TERM` alone is useless, since every emulator claims `xterm-256color`.
+`off` counts per codepoint (what a terminal without DEC private mode 2027 does);
+`on` forces clustering with no probe.
+
+It caches because a terminal that doesn't know DECRQM replies with *nothing*, so
+the read is time-bounded and that timeout is then paid in full — measured at
+~500 ms on the native binary, roughly 4× its entire startup. tmux 3.6a never
+answers for 2027, so `auto` skips the probe there but no longer *assumes* the
+answer either: measured by writing into a pane and reading `#{cursor_x}`, tmux
+3.6a **clusters**. Inside tmux the answer therefore comes from measuring tmux —
+a detached scratch session, tens of ms, re-measured when the tmux version
+changes. Every failure mode (no tty, no reply, garbled reply, exception, an
+unmeasurable tmux) resolves to clustering **off**. Negotiation runs once in
+`run-tui!` before the first render; `by ask` never probes, and so always renders
+per-codepoint. Impl: `components/agent/.../tui/terminal_caps.clj`.
+
+> **Everything that walks a string must step by `fmt/next-unit`**, not by
+> `Character/charCount` — cursor motion, word-wrap and truncation have to move
+> in the same unit `display-width` measures in, or a cut lands inside a ZWJ
+> sequence and the two halves render as unrelated glyphs, *widening* the line
+> the cut was narrowing.
+
+> **A budget derived from `cols` must be enforced in columns.** Enforcing a
+> column budget with `count` (UTF-16 code units) overflows on anything but
+> ASCII — a task-activity line budgeted at 80 measured 126 columns with CJK
+> content — and `subs` at a raw index can leave a lone high surrogate behind.
+> Every terminal-column budget goes through `truncate-to-width`. Content caps
+> for LLM payloads, trajectories and logs are deliberately *not* swept: chars
+> are the right unit there, because those budgets are about token and storage
+> size rather than grid width.
+
+### Line breaking belongs to whoever owns the grid
+
+A hard newline inserted to make text fit is permanent and lossy — the terminal
+cannot tell it from one the author wrote, so a copied answer comes back broken
+mid-sentence. A soft wrap is recorded as a wrap and rejoined on copy (verified:
+in tmux, `capture-pane -J` reconstitutes a soft-wrapped paragraph exactly, while
+a pre-wrapped one stays broken into rows forever).
+
+So the answer renderer is chosen by **who decides where lines break**, via
+`layout/terminal-owns-line-breaking?`:
+
+- **Inline mode** — the terminal advances the cursor itself, so
+  `format-answer-soft` emits each paragraph as ONE logical line and lets DECAWM
+  wrap it. No box: a right border must be padded to a width we chose, and
+  choosing that width is exactly what soft wrapping hands away.
+- **Fullscreen mode** — keeps `format-answer` and its hard wrap, because
+  `render-viewport!` writes each `!scrollback` entry to an absolutely-positioned
+  row, and viewport offset, page scrolling and every live block's `:start-idx`
+  count entries **as rows**. One soft-wrapped entry would occupy two rows and
+  shift everything below it, cumulatively. Cursor-addressed rendering and
+  terminal autowrap cannot both be in charge.
+- **Headless `by ask`** — prints the raw answer with `println`, never wrapping.
+
+Giving fullscreen soft newlines would mean making `!scrollback` hold *logical*
+lines with a derived row-span index, and teaching viewport/scroll/live-block
+accounting to distinguish lines from rows. That is a layout-engine change, not a
+renderer change.
+
+`/copy` sidesteps all of this by copying the source text rather than the screen
+— see [usage.md](../usage.md#slash-commands).
+
+### Reflow: pre-wrapped is not the same as wrapped once
+
+Fullscreen pre-wraps, per the section above, and a row pre-wrapped at
+yesterday's width is wrong today. Nothing in the codebase
+touches DECAWM, so autowrap is on and the overflow is silent: each row wraps
+onto the row below, the next row's `erase-line` wipes the spill, and the tail of
+every line disappears — on the bottom region row it scrolls the DECSTBM region
+instead, shifting every absolutely-addressed row out from under the layout's
+model of where it is.
+
+So each emit also records **how to render itself at a width**.
+`!scrollback-src` is an ordered entry list covering exactly the rows in
+`!scrollback` (`{:render (fn [cols] …) :n :block-id :sticky?}`), and
+`reflow-scrollback!` re-renders all of it on resize, then recomputes every live
+block's `:start-idx` from the new row counts. Scroll position gets the same
+treatment: `viewport-offset` counts ROWS back from the tail, so `viewport-anchor`
+reads it as `[entry-idx row-within-entry]` *before* the resize writes the new
+geometry, and `restore-viewport-anchor!` seats it back afterwards. Offset 0
+anchors to nothing and stays 0 — at the tail the user is following live output.
+
+Four properties worth preserving:
+
+- **Reflow is opt-in per producer.** A caller that hands over a pre-formatted
+  string gets `(constantly rows)` and behaves exactly as before. Pass `:render`
+  (via `write-output!` / `update-live-block!` / `emit!` / `emit-to-session!`) to
+  make an emit reflow.
+- **Live blocks need it more than ordinary output, not less.** A block
+  re-renders every tick, so a resize self-corrects while it is live — but the
+  moment it freezes it never ticks again and keeps that width forever. That is
+  why `src-freeze-block!` keeps the renderer when it detaches the block.
+- **A renderer is only as reflowable as its inputs.** The iteration block's
+  `:eval-section-lines` are pre-rendered strings, so its `:render` re-derives
+  them from the structured `:eval-display` instead. When adding a `:render`,
+  check whether the state it closes over holds *data* or *already-wrapped
+  strings*.
+- **Wrap prose, truncate tables.** Questions, descriptions and think text wrap.
+  The pause-tips key hints and the frozen compaction summary truncate — they are
+  fixed two-column rows held together by padding, and wrapping reads as noise
+  where truncation keeps the key and the verdict on the left.
+
+Drift degrades, never corrupts: a session switch swaps `!scrollback` wholesale,
+so `ensure-src!` rebuilds the entry list from what is on screen and a reflow only
+runs against a list that accounts for exactly the rows present. Paint-time
+clamping to `cols` means an un-reflowable row clips visibly instead of corrupting
+the screen. Tests: `resize_reflow_test.clj`.
+
+### One frame per gesture
+
+Every repaint in `layout.clj` is a sequence of cursor moves, and they used to go
+out with the cursor visible and nothing marking where a frame began — so a fast
+burst let the terminal present intermediate states: the cursor flashing at column
+1 of the bottom row, or parked on the status line over text still being drawn.
+That was the flicker seen in both xterm and the browser terminal, and it was
+renderer-independent because the cause sits upstream of the renderer.
+
+Write sites now wrap their body in **synchronized output (DEC 2026)** plus a
+cursor hide, restoring the cursor only when input is active. The rule is that
+**the input line is the only place a cursor lands**.
 
 ---
 

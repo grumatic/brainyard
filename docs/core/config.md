@@ -136,6 +136,49 @@ environment (env vars, `user.dir`, other components like
 `(clj-llm/get-default-lm)`); it is invoked lazily by `get-config` only when no
 override is present, which keeps load-time fast and avoids cyclic init.
 
+### The feature registry — the discoverable face of the schema
+
+166 keys is too many to browse, and a raw key list says nothing about what
+depends on what. `agent.core.feature/feature-registry` groups them: **48
+features across 11 families**, each feature naming its gate key (a
+`config-schema` key), the knobs it owns, and its dependencies. Every schema key
+appears in exactly one feature's gate-or-keys, in `ambient-keys`, or in
+`unclassified-keys` — a partition the invariant tests prove is total.
+
+Surfaced by `/feature` and the `feature$*` commands. Because dependencies are
+declared, **a gate set `true` can still resolve `off`** (an unmet `:requires` is
+fail-safe), and `feature$explain` reports which layer supplied the value and
+what is unmet. `:requires-partial` is the honest encoding for a relation that
+degrades rather than disables — the feature still works, minus a capability.
+Bulk steering comes from family switches, `BY_FEATURES`, and profiles
+(`BY_PROFILE=minimal` turns off everything that spends an LLM call).
+
+Two properties worth knowing when adding a key:
+
+- **`ambient-keys` is an explicit set, not a fallthrough.** `:allowed-dirs`,
+  `:permission-mode` and `:permission-timeout-ms` live there because they are
+  the security floor and must never become gateable. `:permission-timeout-ms`
+  is additionally *the* prompt timeout (default 60000 ms), shared by the tool
+  gate and by ACP's `session/request_permission` — which used to carry its own
+  `:acp-permission-timeout-ms`. A key that two capabilities both read cannot be
+  owned by either.
+- **Restart-ness is a property of *when a key is read*, not of the key.**
+  `restart-required-keys` is derived from each feature's `:lifecycle :startup`
+  minus its `:live-keys` exemptions, rather than hand-flagged. `:grapheme-width`
+  is its own `:ui/grapheme-width` feature for exactly this reason: DEC mode 2027
+  is negotiated once before the first render and is idempotent per process, so a
+  mid-session change does nothing until the next start — it cannot join the
+  `:live` `:ui/display` feature.
+
+### Seeding overrides from the command line
+
+`by run --config '<edn-map>'` takes any `config-schema` keys as an EDN map and
+seeds them into the **per-agent override** layer for that session. It is applied
+after the equivalent flags (`-p`, `-m`, …) and wins over them: it exists to
+express what a flag cannot — an ACP backend pin carrying `:env`, for instance —
+and a flag that contradicts it is the vaguer of the two. Env vars still outrank
+it, per the chain above.
+
 **Type strings** (`coerce-value`):
 
 - `"keyword"` — `keyword?`. Preferred for keyword-valued knobs

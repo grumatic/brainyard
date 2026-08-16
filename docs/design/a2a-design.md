@@ -384,6 +384,23 @@ LLM turn.
 > checking inbound. It is URL-independent, so it survives proxies, multiple
 > interfaces, and a peer reachable at more than one address.
 >
+> **1a. That id MUST be minted at runtime, not in a `defonce` initializer.**
+> Under GraalVM native-image a `defonce` runs at BUILD time, so the UUID was
+> computed once during compilation and interned into the image heap as a
+> constant: **every process launched from a given binary reported the same node
+> id**. That made brainyard-to-brainyard A2A impossible rather than merely
+> mis-detected — the caller stamps its own id into the chain, the callee finds
+> it already present, and refuses with `-32004 call cycle refused` on the very
+> first hop, on loopback and across hosts alike. Only a non-brainyard peer,
+> which sends no chain, could get through. The id is now minted lazily on first
+> use, with the `or` inside the `swap!` keeping it idempotent under CAS retry.
+>
+> No unit test can catch a regression here: the defect is introduced by the
+> compiler, not the code, so `chain_test` passes either way. The guard lives in
+> the build instead — a section of `bin/smoke-native.sh` greps the image for
+> `by-node` followed by a full UUID (never the bare prefix, which is a source
+> literal legitimately present in a correct binary).
+>
 > **2. The CALLER appends itself, not the callee.** Appending the callee (as
 > the draft said) puts the receiver's own id in the chain it receives, so a
 > membership check would refuse the very first hop.
@@ -617,6 +634,32 @@ clojure code block in the *same* turn it was connected, not the next one.
 Commands (`common/a2a.clj`): `a2a$connect`, `a2a$list`, `a2a$card`,
 `a2a$disconnect`. Deliberately small — connection management only. The *ask*
 path is `agent-registry$ask`, per §5.3, and `a2a$*` must not grow a second one.
+
+#### 5.4a Peer CRUD without a turn — the `:a2a` ask-channel op
+
+Those four are tool-defs, so **every route to them runs through the model**. An
+external driver that already holds a peer name and URL was therefore paying an
+LLM to retype them into a tool call, and hoping the retyping was faithful.
+
+`peers-op` is the machine-facing face of the same commands — same `:enable-a2a`
+gate, same name regex, same per-session peer cap, same registry, no turn.
+`bases/agent-tui` exposes it as `{:op :a2a :action …}` on the session ask socket
+and advertises it in the session `:ops` metadata alongside the other
+non-blocking ops (see [`../session-channel.md`](../session-channel.md)).
+
+Two asymmetries are deliberate, because this is an **API** rather than a person
+at a keyboard:
+
+- `:add` refuses a name that already exists and `:update` refuses one that does
+  not. A caller that believes it is creating a peer while actually replacing a
+  colleague's has no way to notice; a human driving `a2a$connect` would.
+- `:update` is **disconnect-then-connect**, so a changed URL cannot leave the
+  previous endpoint's skills registered under the same peer name.
+
+The peer registry is a process-wide `defonce`, so in a shared host one connect
+is visible to every co-hosted session; `:list` reports `:host-wide? true`
+rather than letting a caller assume otherwise. Redaction is tested on this door
+too — a redaction that only holds on one door is not a redaction.
 
 ### 5.5 Long-running remote work rides the existing task manager
 

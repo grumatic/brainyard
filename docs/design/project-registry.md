@@ -126,6 +126,9 @@ need the folder to exist but aren't a session start.
 by projects list            # every registered project, newest first
 by projects list --json     # machine-readable
 by projects path <slug>     # reverse a slug to its absolute path (exit 1 if unknown)
+by projects add             # register a project (default: the working dir) without opening a session
+by projects prune           # drop every entry whose directory is gone (confirms; --yes, --json)
+by projects remove <slug>   # forget ONE entry (confirms; --yes, --json)
 ```
 
 ```
@@ -157,6 +160,17 @@ brainyard-c59395fc  brainyard  2026-08-04  /tmp/repos/one/brainyard
   before deleting anything. It is also total: a hostile or malformed record
   returns false rather than throwing, so it cannot abort a prune partway and
   leave the index describing directories that are already gone.
+- ~~**No way to drop a single entry.**~~ **Resolved:** `by projects remove
+  <slug>` (`remove-project!`) is the per-slug counterpart, built on the same
+  guarded `delete-record-dir!`. `prune` can only take every *missing* record at
+  once, which cannot express "drop this one" and cannot touch a project that
+  still exists — and a repo you have stopped working on has not stopped
+  existing, so its row was permanent. `remove` therefore deliberately does
+  **not** require `:missing?`. It removes only the user-scope record dir; the
+  project itself is never touched, and re-registering restores the same
+  path-derived slug. The verb takes a **slug** rather than a path, because the
+  slug is what `list` prints and what a UI already holds — `by projects path
+  <slug>` goes the other way.
 - **A corrupt `project.edn` is skipped, not repaired** — it's dropped from
   listings and rewritten on the next registration of that path.
 
