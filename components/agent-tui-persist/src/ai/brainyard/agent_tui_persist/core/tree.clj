@@ -14,9 +14,9 @@
      {:id          \"<session-id>\"
       :parent-id   \"<parent-session-id>\" ; nil for root sessions
       :fork-point  N                       ; index into parent's
-                                           ; messages.log; events 0..N-1
-                                           ; are inherited by the child.
-                                           ; nil for root sessions.
+                                           ; messages.log, RECORDED ONLY —
+                                           ; see `fork-session!`. nil for
+                                           ; root sessions.
       :label       \"free-text label\"     ; optional, user-set
       :created-at  #inst \"...\"
       :last-active #inst \"...\"}
@@ -116,11 +116,28 @@
    `parent-id`. The fork point is `:at` (default: the parent's current
    event count). `:label` is optional. Returns the new child's meta.
 
-   The child's `messages.log` is NOT pre-populated — readers reconstruct
-   the inherited prefix by reading `parent-id`'s log up to `fork-point`
-   and then continuing with the child's own appends. This keeps fork
-   cheap (no copy) and lets multiple children share the parent's
-   immutable history."
+   `:fork-point` IS RECORDED BUT NOT YET CONSUMED. No reader anywhere reads
+   it: `restore.clj` folds only the child's OWN `messages.log`, and nothing
+   else walks `:parent-id` for history. So a forked child resumes EMPTY
+   today — it inherits provenance, not context. `handle-fork-command` also
+   only writes this metadata; it does not move the TUI onto the child.
+
+   What DOES work is the genealogy: `tree-of`, `lineage`, `render-tree`, and
+   through them `/session tree`, `by sessions list --tree`, and the
+   `lineage:` row in `/session show`.
+
+   The intended-but-unbuilt half is copy-on-write inheritance: the child's
+   log stays un-prepopulated, and a reader reconstructs the inherited prefix
+   from `parent-id`'s log up to `fork-point` before continuing with the
+   child's own appends — cheap (no copy), and letting many children share one
+   immutable parent prefix. Implementing it means teaching
+   `restore/restore-session-map` to walk the chain; until then, treat
+   `:fork-point` as a breadcrumb.
+
+   This is called out because the gap is invisible at the call site and
+   inverts intent silently in both directions: build a feature that wants an
+   EMPTY child (a context reset) on top of fork, and implementing inheritance
+   later hands every such child its history back."
   [parent-id new-id {:keys [at label]}]
   (when (= (name parent-id) (name new-id))
     (throw (ex-info "fork-session!: child id must differ from parent"
