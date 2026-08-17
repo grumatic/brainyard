@@ -103,7 +103,19 @@
     (persist/append-scrollback! "agt-r" :stream "CCCCC"
                                 {:max-bytes 10 :max-rotations 2})
     (is (re-find #"^AAAAABBBBB" (persist/read-scrollback "agt-r" :stream)))
-    (is (re-find #"CCCCC$" (persist/read-scrollback "agt-r" :stream)))))
+    (is (re-find #"CCCCC$" (persist/read-scrollback "agt-r" :stream))))
+  (testing "a tail spanning rotated files reads oldest→newest, like read-all"
+    ;; The walk has to run newest→oldest to decide what \"the last n bytes\"
+    ;; are; forgetting to reverse the chunks replayed a long session's history
+    ;; backwards on every resume, and only once it had rotated.
+    (doseq [i (range 1 8)]
+      (persist/append-scrollback! "agt-rot" :stream (str "LINE-" i "\n")
+                                  {:max-bytes 10 :max-rotations 5}))
+    (is (= (persist/read-scrollback "agt-rot" :stream)
+           (persist/tail-scrollback "agt-rot" :stream 1000))
+        "a tail wider than the whole stream equals reading it all")
+    (is (= "LINE-6\nLINE-7\n" (persist/tail-scrollback "agt-rot" :stream 14))
+        "a partial tail still ends at the newest bytes")))
 
 (deftest pending-dialogs-test
   (testing "add/remove pending dialogs survive process restart"

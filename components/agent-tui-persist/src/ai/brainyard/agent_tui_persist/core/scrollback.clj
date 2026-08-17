@@ -102,7 +102,15 @@
 
 (defn tail-bytes
   "Return the last `n` bytes of the scrollback as a UTF-8 string, walking
-   rotated files as needed.  Used to seed a freshly attached pane's history."
+   rotated files as needed, joined oldest→newest.  Used to seed a freshly
+   attached pane's history.
+
+   The walk runs newest→oldest (that is the only direction in which \"the last
+   n bytes\" is decidable without knowing the total size up front), so the
+   collected chunks are REVERSED before joining.  Without that reversal a
+   resume replayed a rotated session's history backwards — invisible until a
+   stream passes `default-max-bytes` and rotates, which every long session
+   does, since `:resume-scrollback-bytes` defaults to twice that."
   [session-id tag n]
   (when (pos? n)
     (let [files (vec (ordered-files session-id tag))]
@@ -110,7 +118,7 @@
              remaining (long n)
              chunks (transient [])]
         (if (or (neg? i) (zero? remaining))
-          (apply str (persistent! chunks))
+          (apply str (rseq (persistent! chunks)))
           (let [^File f (nth files i)
                 len (.length f)
                 start (max 0 (- len remaining))
