@@ -19,7 +19,8 @@
    - Whatever is still too wide — an entry with no renderer — is clipped at
      paint time, so it can never wrap onto the row below or scroll the
      DECSTBM region."
-  (:require [ai.brainyard.agent-tui.layout :as layout]
+  (:require [ai.brainyard.agent-tui.core :as core]
+            [ai.brainyard.agent-tui.layout :as layout]
             [ai.brainyard.agent-tui.permissions :as perms]
             [ai.brainyard.agent.interface.tui.format :as fmt]
             [clojure.string :as str]
@@ -353,3 +354,47 @@
           "no painted row can overflow — an overflow wraps onto the row below,
            which the next erase-line wipes, and on the bottom region row it
            scrolls the region out from under the absolute row accounting"))))
+
+;; ---------------------------------------------------------------------------
+;; The replayed resume tail
+;; ---------------------------------------------------------------------------
+;;
+;; A `--resume` replays rows hard-wrapped at the PREVIOUS session's width. They
+;; arrived with no `:render`, so they were exactly the un-reflowable case the
+;; test above pins: resumed narrower, the overflow was clipped away and the
+;; text was simply not on screen.
+
+(defn- strip-ansi [s] (str/replace s #"\[[0-9;]*[A-Za-z]" ""))
+
+(deftest resume-tail-renderer-preserves-rows-that-fit
+  (testing "a row within the width is passed through byte-identical"
+    ;; Box-drawn output (answer frames, tables) must survive the common
+    ;; same-width-or-wider resume untouched — wrapping it would ragged the
+    ;; borders for no gain.
+    (let [tail "┌────────┐\n│ hello  │\n└────────┘\n"
+          rows ((#'core/resume-tail-renderer tail) 80)]
+      (is (= ["┌────────┐" "│ hello  │" "└────────┘"] rows)))))
+
+(deftest resume-tail-renderer-rescues-overflow-that-would-be-clipped
+  (testing "a row wider than the terminal is wrapped, not lost"
+    (let [tail (str long-text "\n")
+          rows ((#'core/resume-tail-renderer tail) 40)]
+      (is (< 1 (count rows)) "the over-wide row became several")
+      (is (every? #(<= (fmt/display-width %) 40) rows)
+          "every emitted row now fits, so nothing is clipped at paint time")
+      (is (= (str/replace (strip-ansi long-text) #"\s+" " ")
+             (str/replace (strip-ansi (str/join " " rows)) #"\s+" " "))
+          "and the words all survive the wrap"))))
+
+(deftest resume-tail-renderer-is-not-cumulative
+  (testing "re-rendering wide after narrow returns the original rows"
+    ;; The renderer closes over the ORIGINAL tail rather than over its own last
+    ;; output, so a narrow resize followed by a wide one is not lossy — the
+    ;; second render re-derives from the source instead of trying to unwrap
+    ;; what the first one produced.
+    (let [tail   (str long-text "\n")
+          render (#'core/resume-tail-renderer tail)
+          wide   (render 200)]
+      (render 40)
+      (is (= wide (render 200)) "the narrow pass left no residue")
+      (is (= [long-text] wide) "at a width that fits, the source is unchanged"))))

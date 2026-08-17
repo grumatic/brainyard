@@ -1460,6 +1460,75 @@
                        (when (and c l) "  ·  ")
                        (when l (str "lazy " (str/join ", " l))))))))
 
+(defn- resume-tail-renderer
+  "Build a `:render` for the replayed scrollback tail.
+
+   The tail is rows that were HARD-WRAPPED at whatever width the previous
+   session ran at, and those rows are all that survives — the structured values
+   that produced them are gone, so unlike a live block's renderer this cannot
+   restore the author's original line breaks. What it CAN do is make them fit.
+
+   Resumed narrower than it was written, an unwrapped tail fails TWICE, and
+   differently at each step:
+
+   - At the replay itself there are no live blocks yet, so `write-output!`
+     takes its hardware-scroll path and hands each row to the terminal whole.
+     DECAWM wraps the overflow onto the row below — measured at 80 columns on
+     a session written at 130, that stranded 9 fragments of box border mid
+     screen — and every such row occupies two physical rows while the layout
+     still counts it as one, which is the same desync `reflow-scrollback!`
+     exists to prevent.
+   - On the next repaint `render-viewport!` clamps rows to `cols` instead, so
+     the overflow stops corrupting the screen and starts disappearing from it.
+
+   Pre-wrapping fixes the first; registering this as the entry's `:render`
+   fixes the second and keeps it fixed across later resizes, instead of the
+   rows freezing at the width they were resumed onto.
+
+   Rows that already fit pass through untouched. That is deliberate: it leaves
+   box-drawn output (answer frames, tables) intact on the common
+   same-width-or-wider resume, and confines a ragged border to the narrower
+   case — where the alternative was not seeing the text at all."
+  [tail]
+  (fn [cols]
+    (let [w (max 1 (long (or cols 80)))]
+      (into []
+            (mapcat (fn [row]
+                      (if (> (fmt/display-width row) w)
+                        (fmt/ansi-aware-word-wrap row w)
+                        [row])))
+            (str/split-lines tail)))))
+
+(defn- write-resume-tail!
+  "Replay `tail` onto the active surface, wrapped only where this process owns
+   the line breaking.
+
+   In FULLSCREEN we own the grid, so the tail is pre-wrapped to the current
+   width and carries a `:render` to re-wrap on resize. INLINE is the opposite —
+   the terminal advances the cursor itself and records a soft wrap it can
+   rejoin on copy, so imposing our own hard breaks there would replace a
+   recoverable wrap with a permanent one. Nothing to reflow either: reflow is a
+   `!scrollback` concern and inline keeps no viewport. See
+   `layout/terminal-owns-line-breaking?`."
+  [tail]
+  (when (and tail (not= "" tail))
+    (if (layout/terminal-owns-line-breaking?)
+      (layout/write-output! tail)
+      (let [render (resume-tail-renderer tail)
+            rows   (render (fmt/terminal-columns))]
+        (when (seq rows)
+          (layout/write-output! (str/join "\n" rows) {:render render}))))))
+
+(defn- stash-startup-notice!
+  "Queue `s` for emission after the banner (see `write-startup-notice!`).
+   APPENDS rather than replaces: more than one thing can go wrong during a
+   single boot (no provider key AND a session that would not restore), and the
+   second one silently overwriting the first is how a user ends up debugging
+   the wrong problem."
+  [s]
+  (swap! tui-session/!tui-state update :startup-notice
+         (fn [prev] (if (seq prev) (str prev "\n" s) s))))
+
 (defn- write-startup-notice!
   "Emit (once) a notice stashed by `create-tui-agent!` that must appear AFTER the
    banner — e.g. the no-provider-key warning. It's deferred because
@@ -1538,8 +1607,7 @@
   ;;    could read it. See helpers/no-provider-message.
   (when (and lm-provider (not acp-backend))
     (if (helpers/missing-provider-key lm-provider)
-      (swap! tui-session/!tui-state assoc :startup-notice
-             (ansi/warning (helpers/no-provider-message lm-provider)))
+      (stash-startup-notice! (ansi/warning (helpers/no-provider-message lm-provider)))
       (helpers/setup-lm! lm-provider :model lm-model)))
 
   ;; 2b. Mulog publisher setup
@@ -1680,18 +1748,32 @@
         ;;     and reuses it instead of minting an empty one. Prime the
         ;;     persist bridge's high-water mark so the next ask only appends
         ;;     NEW messages.
+        ;;
+        ;;     A resume that FAILS must say so. The flags driving the replay
+        ;;     used to be set on the last line of one big
+        ;;     `(try … (catch Throwable _ nil))`, so a throw anywhere above
+        ;;     left `:resumed?` false and the session booted with the ordinary
+        ;;     welcome banner — no history, no scrollback, and nothing anywhere
+        ;;     saying why. The persist layer's readers are tolerant now
+        ;;     (`restore-session-map` degrades an unreadable file to its
+        ;;     default), so this is the backstop for whatever still gets
+        ;;     through: the two failures are separated (a scrollback that won't
+        ;;     read must not cost the message history) and each is reported.
         _ (when resuming?
-            (try
-              (let [;; Snapshot the on-disk scrollback tail NOW, before the
-                    ;; welcome banner emit (step 13) tees its own bytes into
-                    ;; the same file. The replay in `run!` (and the inline
-                    ;; branch below) uses this fixed snapshot so the banner
-                    ;; emitted by this start! call doesn't get replayed
-                    ;; on top of the alt-screen banner emitted by `run!`.
-                    tail     (try (persist/tail-scrollback
-                                   agt-sess-id :stream
-                                   (agent/get-config :resume-scrollback-bytes))
-                                  (catch Throwable _ nil))]
+            (let [;; Snapshot the on-disk scrollback tail NOW, before the
+                  ;; welcome banner emit (step 13) tees its own bytes into
+                  ;; the same file. The replay in `run!` (and the inline
+                  ;; branch below) uses this fixed snapshot so the banner
+                  ;; emitted by this start! call doesn't get replayed
+                  ;; on top of the alt-screen banner emitted by `run!`.
+                  tail (try (persist/tail-scrollback
+                             agt-sess-id :stream
+                             (agent/get-config :resume-scrollback-bytes))
+                            (catch Throwable e
+                              (mulog/warn ::resume-scrollback-failed
+                                          :session-id agt-sess-id :error (ex-message e))
+                              nil))]
+              (try
                 ;; Restore the session map, stamp last-attached-at and prime the
                 ;; bridge's high-water mark — shared with `:resume-session`, so
                 ;; a session adopted into a running host comes back the same way
@@ -1702,8 +1784,19 @@
                 ;; (which clears `!scrollback` and the alt-screen buffer).
                 (swap! tui-session/!tui-state assoc
                        :resumed? true
-                       :resume-tail tail))
-              (catch Throwable _ nil)))
+                       :resume-tail tail)
+                (catch Throwable e
+                  ;; `:resumed?` stays FALSE deliberately — nothing was
+                  ;; restored, and a resume notice over an empty session would
+                  ;; be a lie. Surface it as a startup notice instead, so the
+                  ;; user learns that this is a fresh session and why.
+                  (mulog/warn ::resume-hydration-failed
+                              :session-id agt-sess-id :error (ex-message e))
+                  (stash-startup-notice!
+                   (ansi/warning
+                    (str "Could not restore session " agt-sess-id
+                         " (" (ex-message e) ") — starting fresh; "
+                         "the persisted files are untouched.")))))))
         max-iter (or max-iterations
                      (:max-iterations (:meta (agent/get-tool-defs :id agent-id)))
                      (get agent/default-config :max-iterations 20))
@@ -1816,7 +1909,17 @@
     ;;     resume). Fullscreen replay is handled in `run!` after
     ;;     `init-fullscreen!` — printing here would only land in the
     ;;     terminal's primary buffer and be hidden by the alt-screen.
-    (when (and resume? inline)
+    ;;
+    ;;     `skip-banner` gates this for the same reason it gates step 13, and
+    ;;     the two must agree: WHOEVER PRINTS THE BANNER PRINTS THE REPLAY
+    ;;     ABOVE IT. `run!` is the only caller that passes it, and `run!`
+    ;;     forwards its own opts here — so with the replay keyed on `inline`
+    ;;     alone, `by run -i` on a real terminal ran both this print AND
+    ;;     `run!`'s `write-output!` and showed the whole restored history
+    ;;     twice. (Piping hid it: `run!` gates its half on `tty?`.) Deferring
+    ;;     to `run!` also makes a no-TTY run silent here, which is the rule
+    ;;     `run!` already states for the banner and notices.
+    (when (and resume? inline (not skip-banner))
       (when-let [tail (:resume-tail @tui-session/!tui-state)]
         (when (not= "" tail)
           (try (print tail) (flush)
@@ -2047,15 +2150,18 @@
               lm (try (clj-llm/get-default-lm) (catch Exception _ nil))]
         ;; Replay the persisted scrollback tail before the banner so prior
         ;; conversation appears above it. Mode-independent: fires once for
-        ;; ANY resume launch (fullscreen, primary-buffer fallback, etc.) —
-        ;; `layout/write-output!` targets the active surface in both cases.
-        ;; The inline-direct `start!` path (step 12) covers REPL/inline-only
-        ;; callers that never reach `run!`.
+        ;; ANY resume launch reaching `run!` — fullscreen, the too-small-
+        ;; terminal fallback, or `-i` — because `layout/write-output!`
+        ;; targets whichever surface is active. `run!` owns the replay
+        ;; outright: it passes `:skip-banner true`, which stands down BOTH
+        ;; halves of `start!`'s own emit (step 12's replay and step 13's
+        ;; banner), so `-i` on a real terminal shows the history once rather
+        ;; than once per path. `start!`'s step 12 is left for REPL/inline
+        ;; callers that never reach `run!` and get no banner from it either.
           (when resumed?
             (when-let [tail (:resume-tail @tui-session/!tui-state)]
-              (when (not= "" tail)
-                (try (layout/write-output! tail)
-                     (catch Throwable _ nil))))
+              (try (write-resume-tail! tail)
+                   (catch Throwable _ nil)))
             (swap! tui-session/!tui-state dissoc :resume-tail))
         ;; Banner / resume notice via layout/write-output! (not
         ;; tui-session/emit!) so the bytes don't tee into the on-disk
