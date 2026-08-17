@@ -11,7 +11,8 @@
    `by-host` startup — if `pending-dialogs.edn` is non-empty, the persisted
    questionnaires are re-emitted to the next attaching `by-ui`."
   (:require [ai.brainyard.agent-tui-persist.core.edn-io :as edn-io]
-            [ai.brainyard.agent-tui-persist.core.paths :as paths]))
+            [ai.brainyard.agent-tui-persist.core.paths :as paths]
+            [clojure.java.io :as io]))
 
 (defn- snap-fn
   "Build a {read,write} pair against the file tagged `kind` (e.g. :meta)."
@@ -31,11 +32,45 @@
 (defn read-snap
   "Read snapshot value for `kind` (one of :meta, :pending-dialogs, :permissions,
    :queue, :todo, :status, :layout, :session, :input-history, :usage-tracker).
-   Returns `default` when the file is missing or empty."
+   Returns `default` when the file is missing or empty.
+
+   THROWS on an unreadable file.  Anything on a path that must survive one bad
+   session — resume, listing, discovery — wants `safe-read-snap` instead."
   ([session-id kind] (read-snap session-id kind nil))
   ([session-id kind default]
    (when-let [{:keys [read]} (get snap-handles kind)]
      (read session-id default))))
+
+(defn- snap-filename
+  "The on-disk name behind a snapshot tag.  Warnings quote the FILE, not the
+   tag — whoever reads one has to go find it."
+  [kind]
+  (get paths/filenames kind (name kind)))
+
+(defn- warn-unreadable!
+  [session-id kind t]
+  (binding [*out* *err*]
+    (println (str "[persist] skipping unreadable " (snap-filename kind)
+                  " for " session-id ": " (.getMessage ^Throwable t)))))
+
+(defn safe-read-snap
+  "Read `kind`'s snapshot but NEVER throw — an unreadable file yields `default`
+   with a one-line stderr warning, so the corruption is degraded rather than
+   silent.
+
+   A snapshot holds whatever the writer's in-memory value printed as, and not
+   every value round-trips: a Java object prints as `#object[…]` and a keyword
+   coerced from free text can embed a delimiter, both of which `edn/read`
+   rejects on the way back in.  One such file used to abort the ENTIRE resume —
+   the caller in the TUI base swallows the throw, so the session came back with
+   no history and no scrollback and said nothing about why."
+  ([session-id kind] (safe-read-snap session-id kind nil))
+  ([session-id kind default]
+   (try
+     (read-snap session-id kind default)
+     (catch Throwable t
+       (warn-unreadable! session-id kind t)
+       default))))
 
 (defn write-snap!
   "Atomically write `value` as the snapshot for `kind`.  Returns the file."
@@ -88,16 +123,50 @@
           meta
           [:agent-id :defagent-id]))
 
+(defn- quarantine!
+  "Move an unreadable snapshot file aside to `<name>.corrupt` so the next write
+   starts from a clean file instead of failing forever, without destroying the
+   evidence.  Never overwrites an existing `.corrupt` — the FIRST corruption is
+   the interesting one; a later one is usually a consequence.  Best-effort:
+   a failed rename just means the caller overwrites in place."
+  [session-id kind]
+  (try
+    (when-let [^java.io.File f (paths/file-of session-id kind)]
+      (when (.exists f)
+        (let [bak (io/file (.getParentFile f) (str (.getName f) ".corrupt"))]
+          (when-not (.exists bak)
+            (.renameTo f bak)))))
+    (catch Throwable _ nil)))
+
 (defn save-meta!
   "Write or merge into the session's meta.edn (agent-id, started-at, working-
    dir, model, etc.).  Identity keys are sanitised so a bad keyword can never
-   render the file unreadable (see `sanitise-identity`)."
+   render the file unreadable (see `sanitise-identity`).
+
+   Read-modify-write, and the READ is the tolerant one: a meta.edn that will not
+   parse is quarantined to `meta.edn.corrupt` and the merge proceeds from `{}`.
+   Merging onto nothing loses whatever was in the bad file, but that content was
+   already unreadable to every reader in the process — and throwing here aborted
+   the resume that was only trying to stamp `:last-attached-at`."
   [session-id meta]
-  (update-snap! session-id :meta
-                (fn [prev]
-                  (-> (merge prev meta)
-                      sanitise-identity
-                      (update :started-at #(or % (System/currentTimeMillis)))))))
+  (let [prev (try
+               (read-snap session-id :meta {})
+               (catch Throwable t
+                 ;; Its own wording, not `warn-unreadable!`'s: this path does
+                 ;; not SKIP the file, it moves it aside and writes over the
+                 ;; name.  A warning that understated that would send someone
+                 ;; looking for content that is no longer where they expect.
+                 (binding [*out* *err*]
+                   (println (str "[persist] quarantining unreadable "
+                                 (snap-filename :meta) " for " session-id
+                                 " → " (snap-filename :meta) ".corrupt: "
+                                 (.getMessage t))))
+                 (quarantine! session-id :meta)
+                 {}))]
+    (write-snap! session-id :meta
+                 (-> (merge prev meta)
+                     sanitise-identity
+                     (update :started-at #(or % (System/currentTimeMillis)))))))
 
 (defn read-meta
   [session-id]
@@ -108,14 +177,16 @@
    just yields nil, with a one-line stderr warning so the corruption isn't
    silent.  This is THE reader to use anywhere sessions are iterated: without
    it one bad meta.edn blocks `by sessions list` / `/session list` and
-   discover-attach-target for the entire project."
+   discover-attach-target for the entire project.
+
+   Note the default differs from `safe-read-snap`: a MISSING meta.edn still
+   reads as `{}` (the session exists, we just know nothing about it), and only
+   an UNREADABLE one yields nil."
   [session-id]
   (try
     (read-meta session-id)
     (catch Throwable t
-      (binding [*out* *err*]
-        (println (str "[persist] skipping unreadable meta.edn for "
-                      session-id ": " (.getMessage t))))
+      (warn-unreadable! session-id :meta t)
       nil)))
 
 (defn pending-dialogs

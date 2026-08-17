@@ -125,3 +125,49 @@
       (persist/append-event! "agt-bad" {:kind :message :payload {:role "user" :content "ok2"}}))
     (let [m (persist/restore-session-map "agt-bad")]
       (is (= ["ok1" "ok2"] (mapv :content (:messages m)))))))
+
+(deftest restore-survives-unreadable-session-snap
+  (testing "a session.edn holding a value that won't read back degrades, not throws"
+    ;; `#object[…]` is what a Java object in :data / :sandbox-state prints as,
+    ;; and `edn/read` has no reader for it. This used to throw all the way out
+    ;; through the TUI's resume path, which swallowed it — so the session came
+    ;; back with no history AND no scrollback, silently.
+    (persist/write-snap! "agt-corrupt" :session {:user-id "u" :total-turns 7})
+    (spit (persist/session-file "agt-corrupt" "session.edn")
+          "{:probe #object[java.lang.Object 0x1 \"x\"], :total-turns 7}")
+    (persist/append-event! "agt-corrupt" {:kind :message :payload {:role "user" :content "kept"}})
+    (let [m (persist/restore-session-map "agt-corrupt")]
+      (is (= "agt-corrupt" (:session-id m)))
+      (is (= ["kept"] (mapv :content (:messages m)))
+          "messages.log is a separate file and still restores")
+      (is (= 0 (:total-turns m)) "the unreadable snap contributes nothing")
+      (is (= {} (:config m)) "the empty-session defaults still fill every key"))))
+
+(deftest restore-survives-unreadable-meta
+  (testing "an unreadable meta.edn degrades to no :user-id instead of throwing"
+    (persist/save-meta! "agt-badmeta" {:user-id "u"})
+    (spit (persist/session-file "agt-badmeta" "meta.edn")
+          "{:probe #object[java.lang.Object 0x1 \"x\"]}")
+    (let [m (persist/restore-session-map "agt-badmeta")]
+      (is (= "agt-badmeta" (:session-id m)))
+      (is (nil? (:user-id m))))))
+
+(deftest save-meta-quarantines-an-unreadable-file
+  (testing "save-meta! moves a corrupt meta.edn aside and writes a clean one"
+    ;; save-meta! is read-modify-write, so an unparseable prior value used to
+    ;; make it throw — and it is called by the resume path purely to stamp
+    ;; :last-attached-at, which is not worth losing a session over.
+    (spit (persist/session-file "agt-quar" "meta.edn")
+          "{:probe #object[java.lang.Object 0x1 \"x\"]}")
+    (let [err (java.io.StringWriter.)]
+      (binding [*err* err] (persist/save-meta! "agt-quar" {:label "after"}))
+      (is (re-find #"quarantining unreadable meta\.edn for agt-quar" (str err))
+          "and says so — this path overwrites the name, so 'skipping' would understate it"))
+    (is (= "after" (:label (persist/read-meta "agt-quar"))))
+    (is (.exists (persist/session-file "agt-quar" "meta.edn.corrupt"))
+        "the unreadable content is preserved, not destroyed")
+    (testing "and a second corruption does not overwrite the first backup"
+      (spit (persist/session-file "agt-quar" "meta.edn")
+            "{:probe #object[java.lang.Object 0x2 \"y\"]}")
+      (persist/save-meta! "agt-quar" {:label "later"})
+      (is (re-find #"0x1" (slurp (persist/session-file "agt-quar" "meta.edn.corrupt")))))))

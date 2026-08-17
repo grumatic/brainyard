@@ -66,6 +66,7 @@
 ;; -- Snapshots ----------------------------------------------------------------
 
 (def read-snap     snapshots/read-snap)
+(def safe-read-snap snapshots/safe-read-snap)
 (def write-snap!   snapshots/write-snap!)
 (def update-snap!  snapshots/update-snap!)
 

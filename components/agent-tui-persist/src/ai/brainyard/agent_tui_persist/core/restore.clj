@@ -83,11 +83,19 @@
                       into `:messages`, preserving order. Malformed lines are
                       skipped.
 
+   Every read is TOLERANT — an unreadable file degrades that one contribution
+   to its default (with a stderr warning from the persist layer) instead of
+   aborting the restore. The alternative is worse than it sounds: the TUI's
+   resume path swallows a throw from here, so one unparseable `session.edn`
+   used to bring the session back with no history AND no scrollback, silently.
+   A session.edn holds whatever the writer's `:data` / `:agent-activity` /
+   `:sandbox-state` printed as, and not every value round-trips.
+
    Returns a map shaped like `ai.brainyard.agent.core.session/create-session`
    so it drops straight into the agent's `ISessionStore`."
   [session-id]
-  (let [meta-map (snapshots/read-meta session-id)
-        snap (snapshots/read-snap session-id :session nil)
+  (let [meta-map (snapshots/safe-read-meta session-id)
+        snap (snapshots/safe-read-snap session-id :session nil)
         user-id (or (:user-id snap) (:user-id meta-map))
         ;; Always start from `empty-session` defaults and merge the snap on top,
         ;; so callers can rely on every key being present (`:config` and
