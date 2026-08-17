@@ -93,6 +93,15 @@
                [(live-file session-id tag)])]
     (filter #(.exists ^File %) files)))
 
+(defn stream-files
+  "Every file currently backing `tag` — rotations oldest-first, then the live
+   file. Exposed because a stream is not ONE file: anything relocating or
+   accounting for a session's scrollback has to reach the rotations too, and
+   the numbered-companion naming is this namespace's business, not the
+   caller's."
+  [session-id tag]
+  (vec (ordered-files session-id tag)))
+
 (defn read-all
   "Read the entire scrollback for `tag` (oldest first → newest), returning a
    single string.  Useful for replay after re-attach."

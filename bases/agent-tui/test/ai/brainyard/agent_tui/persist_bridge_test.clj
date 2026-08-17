@@ -253,3 +253,26 @@
           (is (= 4 (count all-msgs))
               "exactly four message events on disk — no duplicates"))))))
 
+(deftest clear-must-reset-the-high-water-mark
+  (testing "without a reset, the first turn after a /clear is silently dropped"
+    ;; The mark counts messages ALREADY WRITTEN. /clear empties the session's
+    ;; message vector and moves its log away, so a stale mark makes
+    ;; `flush-new-messages!` start PAST the end of the new, shorter vector and
+    ;; write nothing at all. The log then silently resumes from turn two, and
+    ;; a session cleared and used once resumes empty.
+    (bridge/reset-state!)
+    (let [msgs (fn [n] (mapv (fn [i] {:role "user" :content (str "m" i)}) (range n)))
+          on-disk (fn [sid] (->> (persist/read-events sid)
+                                 (filter #(= :message (:kind %)))
+                                 (mapv (comp :content :payload))))]
+      (#'bridge/flush-new-messages! "agt-clr" (msgs 10))
+      (is (= 10 (count (on-disk "agt-clr"))) "precondition: ten messages persisted")
+      ;; What /clear does to the log — archived away, leaving none behind.
+      (.delete ^File (persist/file-of "agt-clr" :messages))
+      (is (= [] (on-disk "agt-clr")))
+      (testing "the reset is what makes the next turn persist"
+        (bridge/prime-session-counts! "agt-clr" 0)
+        (#'bridge/flush-new-messages! "agt-clr" (msgs 2))
+        (is (= ["m0" "m1"] (on-disk "agt-clr"))
+            "both messages of the first post-clear turn reached disk")))))
+

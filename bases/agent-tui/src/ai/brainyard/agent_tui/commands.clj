@@ -21,6 +21,8 @@
             [ai.brainyard.clj-sandbox.interface :as clj-sandbox]
             [ai.brainyard.agent-tui.side-pane-commands :as side-pane-cmd]
             [ai.brainyard.agent-tui-persist.interface :as persist]
+            [ai.brainyard.agent-tui.persist-bridge :as persist-bridge]
+            [ai.brainyard.mulog.interface :as mulog]
             [clojure.string :as str]
             [clojure.java.io :as io]
             [clojure.pprint]
@@ -96,12 +98,27 @@
         (tui-session/emit!
          (fmt/format-conversation-history messages :last-n last-n))))))
 
+(defn- clear-stamp
+  "Local wall-clock stamp for an archive's label. Carries the DATE as well as
+   the time: archives live until the 14-day TTL purge takes them, so several
+   accumulate and 'before /clear 14:32' alone does not say which day."
+  []
+  (.format (java.time.LocalDateTime/now)
+           (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm")))
+
 (defn clear!
   "Restart the active session in place.
-   Clears conversation history, scrollback (in-memory and persisted),
-   resets st-memory to st-memory-init, drops any display selection, and
-   repaints the now-empty viewport. Keeps the same agent instance and
-   agent-session-id; tools, instruction, and input history are preserved."
+   Clears conversation history and in-memory scrollback, resets st-memory to
+   st-memory-init, drops any display selection, and repaints the now-empty
+   viewport. Keeps the same agent instance and agent-session-id; tools,
+   instruction, and input history are preserved.
+
+   The PERSISTED conversation is not destroyed — it is moved to a new session
+   id (`persist/archive-session!`) and the id is named in the confirmation, so
+   a mistaken /clear is recoverable with `by run -r <archive-id>`. Todo and
+   permission state stay with the live session: remembered approvals are
+   preferences, not conversation, and a user should not have to re-grant them
+   because they cleared."
   []
   (let [ag (tui-session/get-active-agent)]
     (if-not ag
@@ -139,19 +156,42 @@
                                      :viewport-offset 0
                                      :has-unread?     false}))
         ;; --- On-disk persistence -------------------------------------------
-        (when asid
-          (try (persist/truncate-scrollback! asid :stream) (catch Throwable _))
-          (try (persist/truncate-scrollback! asid :activity) (catch Throwable _))
-          (try (let [^java.io.File f (persist/file-of asid :messages)]
-                 (when (and f (.exists f)) (.delete f)))
-               (catch Throwable _)))
-        ;; --- Repaint --------------------------------------------------------
-        (try (layout/render-viewport!) (catch Throwable _))
-        (try (layout/draw-separator!) (catch Throwable _))
-        (try (layout/redraw-chrome!)  (catch Throwable _))
-        (try (tui-session/update-status-bar!) (catch Throwable _))
-        (tui-session/emit!
-         (ansi/success "Cleared session and restarted."))))))
+        ;; The conversation is MOVED to a new session id, not destroyed. This
+        ;; used to truncate the scrollback streams and delete messages.log, so
+        ;; a mistaken /clear was unrecoverable and a later resume could not
+        ;; tell that destruction apart from a corrupt file. The live id is
+        ;; kept deliberately: `ask.sock` is keyed on it, so re-issuing it here
+        ;; would move the socket out from under an attached `by ask -s <id>`.
+        (let [archived
+              (when asid
+                (try
+                  (persist/archive-session!
+                   asid (str asid "-cleared-" (System/currentTimeMillis))
+                   {:label (str "before /clear " (clear-stamp))})
+                  (catch Throwable t
+                    (mulog/warn ::clear-archive-failed
+                                :session-id asid :error (ex-message t))
+                    nil)))]
+          ;; The bridge's high-water mark counts messages ALREADY written, and
+          ;; the log those messages were in has just moved away. Left at its
+          ;; old value, `flush-new-messages!` computes a start index past the
+          ;; end of the now-empty message vector and writes nothing — so the
+          ;; FIRST turn after a /clear never reached disk, and the log silently
+          ;; resumed from turn two.
+          (when asid
+            (try (persist-bridge/prime-session-counts! asid 0)
+                 (catch Throwable _)))
+          ;; --- Repaint ------------------------------------------------------
+          (try (layout/render-viewport!) (catch Throwable _))
+          (try (layout/draw-separator!) (catch Throwable _))
+          (try (layout/redraw-chrome!)  (catch Throwable _))
+          (try (tui-session/update-status-bar!) (catch Throwable _))
+          (tui-session/emit!
+           (if-let [aid (:archive-id archived)]
+             (str (ansi/success "Cleared session and restarted.") "\n"
+                  (ansi/muted (str "  previous conversation saved as " aid
+                                   " — resume it with: by run -r " aid)))
+             (ansi/success "Cleared session and restarted."))))))))
 
 (defn- compact-cmd
   "Handle /compact [ratio] command.

@@ -11,7 +11,8 @@
    detail. The base wires the project-scoped root once via `set-root-resolver!`
    — `(fn [] (io/file (config/sessions-root)))` — so this dependency-free
    component never has to know about project-dir resolution."
-  (:require [ai.brainyard.agent-tui-persist.core.edn-io :as edn-io]
+  (:require [ai.brainyard.agent-tui-persist.core.archive :as archive]
+            [ai.brainyard.agent-tui-persist.core.edn-io :as edn-io]
             [ai.brainyard.agent-tui-persist.core.eviction :as eviction]
             [ai.brainyard.agent-tui-persist.core.lock :as lock]
             [ai.brainyard.agent-tui-persist.core.messages :as messages]
@@ -59,6 +60,7 @@
 (def read-scrollback        scrollback/read-all)
 (def tail-scrollback        scrollback/tail-bytes)
 (def truncate-scrollback!   scrollback/truncate!)
+(def scrollback-files       scrollback/stream-files)
 (def scrollback-bytes       scrollback/total-bytes)
 (def repair-scrollback!     scrollback/repair-concat!)
 (def repair-all-scrollbacks! scrollback/repair-all!)
@@ -110,6 +112,14 @@
 (def atomic-write!  edn-io/atomic-write!)
 (def append-line!   edn-io/append-line!)
 (def read-lines     edn-io/read-lines)
+
+;; -- Archive (what /clear runs on) --------------------------------------------
+;;
+;; Moves a session's conversation to a NEW id and leaves the live id empty but
+;; unchanged — so `ask.sock` never moves under an attached caller. Distinct
+;; from `fork-session!` below, which records a different relation.
+
+(def archive-session!      archive/archive-session!)
 
 ;; -- Session tree (parent / fork / labels) -----------------------------------
 
