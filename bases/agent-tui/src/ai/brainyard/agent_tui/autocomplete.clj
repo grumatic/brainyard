@@ -1050,43 +1050,31 @@
                         ;; paste markers in the buffer back to full content
                         ;; before returning the line.
                         (let [_ (dismiss-menu!)
-                              line (expand-paste! (.toString buf))
-                              pending @tui-session/!pending-feedback
-                              fb-kind (:kind pending)
-                              fb-open? (and fb-kind
-                                            (not (realized? (:promise pending))))]
+                              line (expand-paste! (.toString buf))]
                           (layout/scroll-to-bottom!)
                           (maybe-deselect!)
                           (layout/set-input-cursor-col! 3)
                           ;; Collapse multi-row input area back to single row
                           (layout/set-input-height! 1)
-                          (cond
-                            ;; A free-text feedback prompt is pending — this Enter
-                            ;; answers it instead of starting a new turn. Deliver
-                            ;; the typed line, clear the box, and keep reading.
-                            ;; Clear !pending-feedback here (not just in do-text on
-                            ;; the agent thread) to close the intercept window so a
-                            ;; fast follow-up keystroke isn't mis-routed.
-                            (and (= :text fb-kind) fb-open?)
-                            (do (deliver (:promise pending)
-                                         {:input (str/trim line) :index 0})
-                                (reset! tui-session/!pending-feedback nil)
-                                (.setLength buf 0)
-                                (vreset! cursor-pos 0)
-                                (terminal/redraw-input-line! "" 0)
-                                (recur))
-
-                            ;; A :select / :confirm prompt is pending — valid
-                            ;; answers already submit on keypress (single-key
-                            ;; fast-path), so a bare Enter is ignored: clear and
-                            ;; keep waiting rather than submitting a blank turn.
-                            fb-open?
+                          ;; The line is leaving the editor — drop it from the
+                          ;; repaint record NOW, not when the loop next paints
+                          ;; an idle prompt. Between those two points sits the
+                          ;; whole turn, and a resize anywhere in there would
+                          ;; otherwise repaint the just-submitted message back
+                          ;; into an input box that no longer holds it.
+                          (layout/set-last-input! "" 0)
+                          ;; A feedback prompt is open? Then this Enter answers it
+                          ;; instead of starting a new turn. `input` owns which
+                          ;; kinds a typed line can answer (:text, and a :select
+                          ;; whose free-input option was picked) and which just
+                          ;; swallow a bare Enter; either way the box clears and
+                          ;; the editor keeps reading.
+                          (if (input/handle-feedback-submit! line)
                             (do (.setLength buf 0)
                                 (vreset! cursor-pos 0)
                                 (terminal/redraw-input-line! "" 0)
                                 (recur))
 
-                            :else
                             (do
                               (when-not (str/blank? line)
                                 (let [hist @terminal/!input-history]

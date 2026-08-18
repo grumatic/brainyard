@@ -60,8 +60,9 @@
 ;; handler. One channel for all kinds — permission no longer has its own atom.
 ;; Value (nil when idle); shape depends on :kind:
 ;;   :select  {:promise p :kind :select :options <vec of {:label :description? :free-input?}>}
-;;             — a :free-input pick adds :mode :awaiting-text :buf StringBuilder
-;;               :free-idx int (byte-driven text collection)
+;;             — a :free-input pick adds :mode :awaiting-text :free-idx int, and
+;;               the typed answer is then edited in the sticky input line like
+;;               a :text prompt (see `input/handle-feedback-key!`)
 ;;   :text    {:promise p :kind :text}   — typed into the sticky input line
 ;;   :confirm {:promise p :kind :confirm :choices <vec of {:key char :label :value}>}
 (defonce !pending-feedback (atom nil))
@@ -100,16 +101,27 @@
    (`permissions`) so both agree on the answer-mode indicator. Returns
    {:prompt <styled 2-col string> :placeholder <raw hint string>}. While a
    prompt is open the prompt is a yellow '? ' with a per-kind hint; idle it is
-   the normal cyan '> '. Both prompts are 2 visible columns."
-  ([] (feedback-prompt-parts (:kind @!pending-feedback)))
-  ([fb-kind]
+   the normal cyan '> '. Both prompts are 2 visible columns.
+
+   `fb` is the pending-feedback map, which carries the SUB-state a kind alone
+   cannot: a :select whose :free-input option was picked is no longer asking
+   for an option number, it is asking for typed text, and the hint has to say
+   so. The 0-arity reads it, so the editor's per-keystroke redraw tracks the
+   transition without being told about it."
+  ([] (let [fb @!pending-feedback] (feedback-prompt-parts (:kind fb) fb)))
+  ([fb-kind] (feedback-prompt-parts fb-kind nil))
+  ([fb-kind fb]
    (if fb-kind
      {:prompt (ansi/style "? " ansi/bold ansi/bright-yellow)
-      :placeholder (case fb-kind
-                     :text    "Answer the prompt above, Enter to submit"
-                     :confirm "Press a highlighted key to answer"
-                     :select  "Press the option number to answer"
-                     "Answer the prompt above")}
+      :placeholder (if (= :awaiting-text (:mode fb))
+                     (if-let [label (:label (nth (:options fb) (:free-idx fb 0) nil))]
+                       (str "Type your response for \"" label "\", Enter to submit")
+                       "Type your response, Enter to submit")
+                     (case fb-kind
+                       :text    "Answer the prompt above, Enter to submit"
+                       :confirm "Press a highlighted key to answer"
+                       :select  "Press the option number to answer"
+                       "Answer the prompt above"))}
      {:prompt (ansi/style "> " ansi/bold ansi/bright-cyan)
       ;; Idle help tip: agent suggestion (top priority) or a rotating static
       ;; hint. The redraw mutes this string just like the old fixed placeholder.

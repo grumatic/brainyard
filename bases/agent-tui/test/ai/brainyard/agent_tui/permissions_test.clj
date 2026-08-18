@@ -197,3 +197,24 @@
   (testing "in-stream select with <2 options errors"
     (let [ff (p/make-feedback-fn (atom nil))]
       (is (re-find #"2-6" (:error (ff {:question "Q" :options ["only"]})))))))
+
+(deftest feedback-block-tracks-the-free-input-sub-state
+  (let [question "Which one?"
+        options  [{:label "A"} {:label "Other" :free-input true}]
+        plain    (fn [lines] (clojure.string/replace (clojure.string/join "\n" lines)
+                                                     #"\033\[[0-9;]*m" ""))]
+    (testing "before the pick, the block asks for an option number"
+      (let [text (plain (p/format-feedback-lines question options 80))]
+        (is (clojure.string/includes? text "Select [1-2]"))
+        (is (clojure.string/includes? text "(free input)"))
+        (is (not (clojure.string/includes? text "selected")))))
+
+    (testing "after it, the block marks the pick and asks for text instead"
+      (let [text (plain (p/format-feedback-lines question options 80 1))]
+        ;; The question and both options stay — the user is still answering it.
+        (is (clojure.string/includes? text question))
+        (is (clojure.string/includes? text "[1] A"))
+        (is (clojure.string/includes? text "✓ selected"))
+        (is (clojure.string/includes? text "Type your response"))
+        (is (not (clojure.string/includes? text "Select [1-2]"))
+            "a digit is text now — the block must stop asking for an option number")))))

@@ -35,10 +35,20 @@
 
 (def user-feedback-block-id
   "Stable id for the sticky-bottom live-block that renders the
-   permission/feedback prompt below all other live blocks. Public so
-   the input handler can dispose the block when transitioning a
-   feedback prompt into free-input mode."
+   permission/feedback prompt below all other live blocks. It stays up for the
+   whole prompt — including after a `:free-input` option is picked and the
+   answer is being typed, so the question the user is answering is still on
+   screen — and is disposed once the promise is delivered."
   :user-feedback)
+
+(defonce ^{:private true
+           :doc "The open feedback block's `(fn [cols] -> lines)`, or nil.
+
+  Kept so the block can be re-rendered against a CHANGED prompt state without
+  the caller having to hold the question and options. Only one feedback prompt
+  is ever open at a time (they take `feedback-lock`), so one slot is enough."}
+  !feedback-block-render
+  (atom nil))
 
 (defn- show-user-feedback-block!
   "Render the sticky-bottom user-feedback live-block from `render-fn`, a
@@ -52,11 +62,25 @@
    too wide for the pane are clipped at paint time — which would ask the user
    to approve something they cannot fully read."
   [render-fn]
+  (reset! !feedback-block-render render-fn)
   (if (layout/fullscreen?)
     (layout/update-live-block! user-feedback-block-id (vec (render-fn nil))
                                {:sticky-bottom? true
                                 :render (fn [c] (vec (render-fn c)))})
     (tui-session/emit! (str "\n" (str/join "\n" (render-fn nil))))))
+
+(defn refresh-user-feedback-block!
+  "Re-render the open feedback block. The thunk reads the pending state, so
+   this is how a prompt whose SUB-state changed — a :select whose free-input
+   option was just picked, which is no longer asking for an option number —
+   stops telling the user to do something that no longer works. No-op when no
+   block is open or outside fullscreen. Public because the transition is
+   detected in `input`, which does not own the question text."
+  []
+  (when-let [render-fn @!feedback-block-render]
+    (when (layout/fullscreen?)
+      (layout/update-live-block! user-feedback-block-id (vec (render-fn nil))
+                                 {:render (fn [c] (vec (render-fn c)))}))))
 
 (defn- wrap-prompt-text
   "Word-wrap one prompt row to the pane, indenting continuations by `indent`.
@@ -73,6 +97,7 @@
   "Dispose the user-feedback live-block (removes lines from scrollback).
    No-op in non-fullscreen mode."
   []
+  (reset! !feedback-block-render nil)
   (when (layout/fullscreen?)
     (layout/dispose-live-block! user-feedback-block-id)))
 
@@ -110,17 +135,27 @@
 
    The 3-arity wraps to `cols`; the 2-arity asks the layout. Both the question
    and the option rows are wrapped — an option's `:description` is free text and
-   a question routinely carries a path, so neither fits a narrow pane."
+   a question routinely carries a path, so neither fits a narrow pane.
+
+   `picked-idx` (4-arity) is the free-input option the user already chose: the
+   question and the options stay on screen as context, that option is marked,
+   and the trailer stops saying 'Select [1-N]' — by then a digit is text being
+   typed into the answer, not an option number."
   ([question options] (format-feedback-lines question options nil))
-  ([question options cols]
-   (let [hint (str "Select [1-" (count options) "]: ")]
+  ([question options cols] (format-feedback-lines question options cols nil))
+  ([question options cols picked-idx]
+   (let [hint (if picked-idx
+                "Type your response below, Enter to submit"
+                (str "Select [1-" (count options) "]: "))]
      (-> (vec (wrap-prompt-text (ansi/style question ansi/bold ansi/bright-cyan) cols))
          (into (mapcat
                 (fn [i {:keys [label description free-input]}]
                   (wrap-prompt-text
                    (str (ansi/style (str "[" (inc i) "]") ansi/bold) " " label
                         (when description (str " — " (ansi/muted description)))
-                        (when free-input (str " " (ansi/muted "(free input)"))))
+                        (when (and free-input (not picked-idx))
+                          (str " " (ansi/muted "(free input)")))
+                        (when (= i picked-idx) (str " " (ansi/success "✓ selected"))))
                    cols "  "))
                 (range) options))
          (into (wrap-prompt-text (ansi/muted hint) cols "  "))))))
@@ -300,8 +335,13 @@
                   _  (reset! tui-session/!pending-feedback
                              {:promise p :kind :select :options normalized})
                   _  (if raw-mode?
+                       ;; The thunk reads :free-idx at RENDER time, so the same
+                       ;; renderer covers both sub-states — the pick re-renders
+                       ;; through it, and so does a resize afterwards.
                        (show-user-feedback-block!
-                        (fn [c] (format-feedback-lines question normalized c)))
+                        (fn [c] (format-feedback-lines
+                                 question normalized c
+                                 (:free-idx @tui-session/!pending-feedback))))
                        (tui-session/emit! (format-feedback-prompt question normalized)))
                   _  (refresh-feedback-prompt! :select)
                   done-latch (CountDownLatch. 1)

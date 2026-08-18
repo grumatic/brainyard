@@ -324,14 +324,12 @@
      :cursor-row cursor-row
      :cursor-col cursor-col}))
 
-(defonce ^{:doc "Last (buffer, cursor-pos) handed to `redraw-input-line!`.
-
-  The input loop owns those two as locals, so anything that has to repaint the
-  input line WITHOUT being the input loop — the SIGWINCH handler below — has no
-  other way to reach them. Every keystroke goes through `redraw-input-line!`,
-  so this is current by construction."}
-  !last-input
-  (atom {:buffer "" :cursor-pos 0}))
+;; The (buffer, cursor-pos) record the SIGWINCH handler below repaints from
+;; lives in `layout` (`layout/set-last-input!` / `layout/last-input`), because
+;; the two halves of the input line write it from opposite sides:
+;; `redraw-input-line!` here fills it, and `layout/draw-input-prompt!` — the
+;; idle / answer-mode prompt, called from `session` and `permissions` — clears
+;; it. `session` cannot require this namespace without a cycle.
 
 (defn redraw-input-line!
   "Redraw the input prompt with current buffer content and cursor position.
@@ -342,7 +340,7 @@
 
    cursor-pos is the 0-based char position within the buffer text."
   [buffer cursor-pos]
-  (reset! !last-input {:buffer (str buffer) :cursor-pos (or cursor-pos 0)})
+  (layout/set-last-input! buffer cursor-pos)
   (let [;; Answer-mode indicator: when a user-feedback prompt is pending, the
         ;; input line is answering the agent's question rather than starting a
         ;; new turn — flag it with a distinct yellow "? " prompt + a per-kind
@@ -474,7 +472,7 @@
                         (layout/draw-frame!
                          (fn []
                            (layout/handle-resize!)
-                           (let [{:keys [buffer cursor-pos]} @!last-input]
+                           (let [{:keys [buffer cursor-pos]} (layout/last-input)]
                              (redraw-input-line! buffer cursor-pos))))
                         (catch Throwable _ nil))))]
       (reset! !old-winch-handler (sun.misc.Signal/handle signal handler)))

@@ -3,9 +3,14 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent-tui.input-test
-  "Unit coverage for the unified raw-byte feedback interceptor
-   (input/try-intercept-byte) across the three kinds — :confirm, :text,
-   :select — plus a CJK round-trip through the shared text editor."
+  "Unit coverage for feedback dispatch across the three kinds — :confirm,
+   :text, :select — over both halves of the contract: `handle-feedback-key!`
+   for single-key answers and `handle-feedback-submit!` for typed lines.
+
+   Every answer reaches these through the readline editor. Nothing reads raw
+   bytes behind it: a byte-level collector for free-input answers used to, and
+   its text was echoed straight at the terminal, so a resize — which repaints
+   from the editor's buffer — erased what the user had typed."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string]
             [ai.brainyard.agent-tui.input :as input]
@@ -14,20 +19,21 @@
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.agent-tui.permissions :as p]))
 
-;; Silence terminal echo + block ops so the interceptor runs hermetically.
+;; Silence terminal echo + block ops so dispatch runs hermetically.
 (use-fixtures :each
   (fn [t]
     (with-redefs [layout/write-raw-chars!   (fn [_] nil)
                   layout/dispose-live-block! (fn [_] nil)
+                  layout/draw-input-prompt! (fn [_] nil)
                   tui-session/emit!         (fn [& _] nil)]
       (try (t)
            (finally (reset! tui-session/!pending-feedback nil))))))
 
-(defn- feed! [bytes]
-  (doseq [b bytes] (input/try-intercept-byte (int b))))
-
 (defn- handle! [key]
   (input/handle-feedback-key! @tui-session/!pending-feedback key))
+
+(defn- submit! [line]
+  (input/handle-feedback-submit! line))
 
 (deftest confirm-kind
   (testing "a choice key delivers {:value … :key …} (single-key fast-path)"
@@ -60,38 +66,54 @@
       (is (nil? (handle! "h")))
       (is (not (realized? pr))))))
 
-(deftest text-kind-passes-through
-  (testing ":text is no longer byte-intercepted — bytes flow to the readline
-            editor (sticky input line), which captures + delivers on submit"
+(deftest text-kind-delivers-on-submit
+  (testing ":text is answered by the line the editor submits, trimmed"
     (let [pr (promise)]
       (reset! tui-session/!pending-feedback {:promise pr :kind :text})
-      (is (nil? (input/try-intercept-byte (int \h))))
-      (is (nil? (input/try-intercept-byte 13)))   ;; Enter not consumed here
-      (is (not (realized? pr))))))
+      (is (true? (submit! "  an answer  ")))
+      (is (= {:input "an answer" :index 0} @pr))
+      (is (nil? @tui-session/!pending-feedback)
+          "the intercept window closes on delivery"))))
 
 (deftest awaiting-text-kind
-  (testing ":select :free-input typed line + Enter delivers :input via the byte editor"
+  (testing ":select :free-input answers with the submitted line, not raw bytes"
     (let [pr (promise)]
       (reset! tui-session/!pending-feedback
-              {:promise pr :kind :select :mode :awaiting-text
-               :buf (StringBuilder.) :free-idx 0
+              {:promise pr :kind :select :mode :awaiting-text :free-idx 0
                :options [{:label "Q" :free-input true}]})
-      (feed! "hi")
-      (input/try-intercept-byte 13)            ;; Enter
+      (is (true? (submit! "hi")))
       (is (= {:selected "Q" :index 0 :input "hi"} @pr)))))
 
 (deftest awaiting-text-cjk-roundtrip
-  (testing "a multi-byte UTF-8 (CJK) char survives the byte buffer"
-    (let [pr (promise)
-          ;; 日 = U+65E5 → UTF-8 E6 97 A5
-          bs  [0xE6 0x97 0xA5]]
+  (testing "a CJK answer round-trips — the editor already decoded it"
+    (let [pr (promise)]
       (reset! tui-session/!pending-feedback
-              {:promise pr :kind :select :mode :awaiting-text
-               :buf (StringBuilder.) :free-idx 0
+              {:promise pr :kind :select :mode :awaiting-text :free-idx 0
                :options [{:label "Q" :free-input true}]})
-      (doseq [b bs] (input/try-intercept-byte b))
-      (input/try-intercept-byte 13)
-      (is (= {:selected "Q" :index 0 :input "日"} @pr)))))
+      (is (true? (submit! "日本語")))
+      (is (= {:selected "Q" :index 0 :input "日本語"} @pr)))))
+
+(deftest submit-with-no-prompt-is-an-ordinary-turn
+  (testing "no pending prompt ⇒ nil, so the editor returns the line as a turn"
+    (reset! tui-session/!pending-feedback nil)
+    (is (nil? (submit! "what is 2+2?"))))
+
+  (testing "an already-answered prompt does not swallow the next turn"
+    (let [pr (promise)]
+      (deliver pr {:value :yes :key \y})
+      (reset! tui-session/!pending-feedback
+              {:promise pr :kind :confirm :choices p/default-confirm-choices})
+      (is (nil? (submit! "what is 2+2?"))))))
+
+(deftest submit-swallows-a-bare-enter-on-key-kinds
+  (testing ":confirm / :select answer by keypress — Enter must not start a turn"
+    (doseq [fb [{:promise (promise) :kind :confirm :choices p/default-confirm-choices}
+                {:promise (promise) :kind :select :options [{:label "A"} {:label "B"}]}]]
+      (reset! tui-session/!pending-feedback fb)
+      (is (true? (submit! "")) "consumed, so the box clears and the prompt stays")
+      (is (not (realized? (:promise fb))))
+      (is (some? @tui-session/!pending-feedback)
+          "the prompt is still open — a bare Enter is not an answer"))))
 
 (deftest select-kind
   (testing "a digit selects an option (single-key fast-path)"
@@ -111,31 +133,41 @@
       (is (true? (handle! "x")))     ;; non-digit — consumed, not delivered
       (is (not (realized? pr)))))
 
-  (testing "a :free-input option transitions to byte-driven text collection"
-    (let [pr (promise)]
+  (testing "a :free-input option hands the typing to the editor"
+    (let [pr (promise)
+          repainted (atom 0)
+          block-refreshed (atom 0)]
       (reset! tui-session/!pending-feedback
               {:promise pr :kind :select
                :options [{:label "A"} {:label "Other" :free-input true}]})
-      (is (true? (handle! "2")))     ;; picks the free-input option
+      (with-redefs [tui-session/redraw-idle-prompt! (fn [] (swap! repainted inc))
+                    p/refresh-user-feedback-block! (fn [] (swap! block-refreshed inc))]
+        (is (true? (handle! "2"))))  ;; picks the free-input option
       (is (= :awaiting-text (:mode @tui-session/!pending-feedback)))
+      (is (= 1 @repainted) "the prompt hint flips without waiting for a keystroke")
+      (is (= 1 @block-refreshed) "and so does the question block")
       (is (not (realized? pr)))
-      (feed! "hi")                   ;; now the byte layer collects the text
-      (input/try-intercept-byte 13)
+      ;; From here the keys are ordinary line editing — the editor holds them.
+      (is (nil? (handle! "h")))
+      (is (nil? (handle! "2")) "a digit is now text, not an option number")
+      (is (true? (submit! "hi")))
       (is (= {:selected "Other" :index 1 :input "hi"} @pr)))))
 
-(deftest try-intercept-byte-only-awaiting-text
-  (testing "confirm/select/text bytes pass through (handled by the editor)"
+(deftest awaiting-text-prompt-hint-names-the-option
+  (testing "the input line asks for text, not an option number"
     (reset! tui-session/!pending-feedback
-            {:promise (promise) :kind :confirm :choices p/default-confirm-choices})
-    (is (nil? (input/try-intercept-byte (int \y))))
+            {:promise (promise) :kind :select :mode :awaiting-text :free-idx 1
+             :options [{:label "A"} {:label "Other" :free-input true}]})
+    (let [{:keys [placeholder]} (tui-session/feedback-prompt-parts)]
+      (is (clojure.string/includes? placeholder "Type your response"))
+      (is (clojure.string/includes? placeholder "Other"))))
+
+  (testing "before the pick it still asks for the option number"
     (reset! tui-session/!pending-feedback
-            {:promise (promise) :kind :select :options [{:label "A"}]})
-    (is (nil? (input/try-intercept-byte (int \1))))
-    (reset! tui-session/!pending-feedback {:promise (promise) :kind :text})
-    (is (nil? (input/try-intercept-byte (int \h)))))
-  (testing "no pending prompt ⇒ byte not intercepted"
-    (reset! tui-session/!pending-feedback nil)
-    (is (nil? (input/try-intercept-byte (int \y))))))
+            {:promise (promise) :kind :select
+             :options [{:label "A"} {:label "Other" :free-input true}]})
+    (is (clojure.string/includes? (:placeholder (tui-session/feedback-prompt-parts))
+                                  "option number"))))
 
 ;; ---------------------------------------------------------------------------
 ;; ESC-to-pause: tips block, turn-in-flight gate, and the shared toggle.

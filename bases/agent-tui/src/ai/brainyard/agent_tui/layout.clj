@@ -607,6 +607,32 @@
   []
   (boolean (:input-empty? @!layout)))
 
+(defonce ^{:doc "What the input line currently holds, as `{:buffer :cursor-pos}`.
+
+  The readline editor owns the buffer as a LOCAL, so anything that has to
+  repaint the input line without being the editor — the SIGWINCH handler in
+  `terminal` — has no other way to reach it. It lives here rather than in
+  `terminal` because both ends of the input line write it and `session` (which
+  paints the idle prompt) cannot require `terminal` without a cycle.
+
+  It must be cleared by everything that BLANKS the line, not only set by what
+  fills it. A submitted line stays in the editor's `!last-input` no longer than
+  it stays on screen: the loop repaints an empty prompt on the next iteration,
+  and a repaint from a stale record would put the submitted message back into
+  the input box on the next resize."}
+  !last-input
+  (atom {:buffer "" :cursor-pos 0}))
+
+(defn set-last-input!
+  "Record the (buffer, cursor-pos) just painted into the input line."
+  [buffer cursor-pos]
+  (reset! !last-input {:buffer (str buffer) :cursor-pos (or cursor-pos 0)}))
+
+(defn last-input
+  "The last (buffer, cursor-pos) painted into the input line."
+  []
+  @!last-input)
+
 (defn draw-status-bar!
   "Erase + write status bar with optional left text and right-aligned status text.
    Single-arity sets right text only (left cleared). Two-arity sets both.
@@ -691,8 +717,15 @@
   (swap! !layout assoc :input-cursor-row row :input-cursor-col col))
 
 (defn draw-input-prompt!
-  "Erase + write prompt at input-row, position cursor after prompt text."
+  "Erase + write prompt at input-row, position cursor after prompt text.
+
+   Every caller paints a PROMPT ONLY — the idle prompt at the loop top and the
+   answer-mode refresh when a feedback question opens/closes — i.e. this is the
+   call that BLANKS the input line. So it clears `!last-input` too: without
+   that, the record still held the line the user had just submitted, and the
+   next resize repainted it straight back into the (actually empty) input box."
   [prompt]
+  (set-last-input! "" 0)
   (when (fullscreen?)
     (with-frame
       (let [w (get-writer)

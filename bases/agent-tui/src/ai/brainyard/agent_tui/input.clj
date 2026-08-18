@@ -3,8 +3,10 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.agent-tui.input
-  "Input handling for the TUI: raw byte reading, Ctrl-C handling, UTF-8 decoding,
-   and permission/feedback interception."
+  "Input handling for the TUI: raw byte reading, Ctrl-C / Ctrl-\\ / ESC handling,
+   and the dispatch of permission + user-feedback answers typed into the input
+   line (`handle-feedback-key!` for single-key answers, `handle-feedback-submit!`
+   for typed lines)."
   (:require [clojure.string :as str]
             [ai.brainyard.agent-tui.session :as tui-session]
             [ai.brainyard.agent-tui.layout :as layout]
@@ -183,31 +185,12 @@
       (toggle-pause!)
       (.put ^LinkedBlockingQueue !raw-input-queue (int 27)))))
 
-(defn cjk-wide-char?
-  "Return true if character is a CJK full-width character (displays as 2 columns)."
-  [^Character ch]
-  (let [cp (int (.charValue ch))]
-    (or (<= 0x1100  cp 0x115F)    ;; Hangul Jamo
-        (<= 0x2E80  cp 0x303E)    ;; CJK Radicals, Kangxi, Ideographic
-        (<= 0x3041  cp 0x33BF)    ;; Hiragana, Katakana, Bopomofo, CJK compat
-        (<= 0x3400  cp 0x4DBF)    ;; CJK Unified Extension A
-        (<= 0x4E00  cp 0x9FFF)    ;; CJK Unified Ideographs
-        (<= 0xAC00  cp 0xD7AF)    ;; Hangul Syllables
-        (<= 0xF900  cp 0xFAFF)    ;; CJK Compatibility Ideographs
-        (<= 0xFE30  cp 0xFE4F)    ;; CJK Compatibility Forms
-        (<= 0xFF01  cp 0xFF60)    ;; Fullwidth Forms
-        (<= 0xFFE0  cp 0xFFE6)))) ;; Fullwidth Signs
-
-(defn utf8-lead-byte-length
-  "Return expected total byte count for a UTF-8 lead byte, or 0 if not a lead byte."
-  [b]
-  (cond
-    (< b 0x80)  1  ;; ASCII
-    (< b 0xC0)  0  ;; continuation byte (invalid as lead)
-    (< b 0xE0)  2  ;; 2-byte
-    (< b 0xF0)  3  ;; 3-byte (CJK)
-    (< b 0xF8)  4  ;; 4-byte (emoji, rare CJK)
-    :else       0))
+;; NOTE: a `cjk-wide-char?` / `utf8-lead-byte-length` pair used to live here,
+;; feeding a byte-level line editor that collected free-input feedback answers
+;; behind the readline editor's back. Both are gone with it: `read-key!`
+;; already decodes UTF-8 into whole characters, and the editor measures widths
+;; with `fmt/display-width`, which knows about grapheme clustering — something
+;; a per-codepoint CJK range check never did.
 
 (defn handle-feedback-key!
   "Validate + dispatch a single printable key string (from the readline editor,
@@ -216,7 +199,8 @@
      :confirm — a matching choice key (case-insensitive) delivers immediately;
                 any other key is rejected (consumed, never echoed).
      :select  — a number 1-N delivers that option immediately (a :free-input
-                option instead transitions to byte-driven text collection);
+                option instead flips the prompt into :awaiting-text, where the
+                typed answer is edited in the input line like a :text prompt);
                 non-digits / out-of-range are rejected (consumed).
    Returns true when the key is consumed (delivered or rejected), so the editor
    does not treat it as line input. Returns nil for kinds the editor edits
@@ -237,116 +221,82 @@
 
     ;; :select (default)
     (if (= mode :awaiting-text)
-      nil                                    ;; free-input text — byte layer collects it
+      nil                                    ;; free-input text — editor edits the line
       (do
         (when-let [n (parse-long key)]
           (when (and (>= n 1) (<= n (count options)))
             (let [idx (dec n)
                   selected (nth options idx)]
               (if (:free-input selected)
-                ;; Transition to byte-driven free-input text collection.
+                ;; Free-input option — flip into :awaiting-text and hand the
+                ;; typing to the readline editor (the input line), exactly as
+                ;; a :text prompt is handled. The question block stays up so
+                ;; the user can still see what they are answering, and both it
+                ;; and the input line survive a resize.
                 (do (swap! tui-session/!pending-feedback assoc
-                           :mode :awaiting-text :free-idx idx :buf (StringBuilder.))
-                    (layout/dispose-live-block! permissions/user-feedback-block-id)
-                    (tui-session/emit! (str "\n  " (ansi/muted "Type your response: "))))
+                           :mode :awaiting-text :free-idx idx)
+                    ;; Neither surface repaints itself: the block only
+                    ;; re-renders when told to, and the editor is parked in
+                    ;; read-key!. Flip both now — the block to mark the pick
+                    ;; and drop its "Select [1-N]" trailer, the input line to
+                    ;; ask for text — rather than on the user's first keystroke.
+                    (permissions/refresh-user-feedback-block!)
+                    (tui-session/redraw-idle-prompt!))
                 (do (deliver promise {:selected (:label selected) :index idx})
                     (reset! tui-session/!pending-feedback nil))))))
         true))))                             ;; consume every key (reject invalid)
 
-(defn- intercept-text-byte!
-  "Handle a byte in :awaiting-text mode — the shared line editor for the :text
-   kind and for a :select :free-input option. Supports multi-byte UTF-8 (CJK)
-   via byte buffering, backspace (width-aware), and printable echo. On Enter,
-   delivers the typed text; the delivered shape depends on :kind — :text →
-   {:input <text> :index 0}; :select free-input → {:selected … :index … :input}.
-   Returns true if consumed."
-  [{:keys [promise kind options buf free-idx] :as fb} b]
-  (let [^StringBuilder sb buf
-        utf8-buf (:utf8-buf fb)
-        utf8-need (:utf8-need fb 0)]
-    (cond
-      ;; Collecting continuation bytes for a multi-byte sequence
-      (pos? utf8-need)
-      (if (and (>= b 0x80) (< b 0xC0))
-        ;; Valid continuation byte
-        (let [new-buf (conj utf8-buf b)
-              remaining (dec utf8-need)]
-          (if (zero? remaining)
-            ;; Complete UTF-8 sequence — decode, append, echo
-            (let [ba (byte-array (map unchecked-byte new-buf))
-                  ch-str (String. ba "UTF-8")]
-              (.append sb ch-str)
-              (layout/write-raw-chars! ch-str)
-              (swap! tui-session/!pending-feedback dissoc :utf8-buf :utf8-need)
-              true)
-            ;; Still need more bytes
-            (do (swap! tui-session/!pending-feedback assoc
-                       :utf8-buf new-buf :utf8-need remaining)
-                true)))
-        ;; Invalid continuation — discard buffer, don't consume byte
-        (do (swap! tui-session/!pending-feedback dissoc :utf8-buf :utf8-need)
-            true))
+(defn handle-feedback-submit!
+  "Dispatch a SUBMITTED line (Enter in the readline editor) against the pending
+   prompt. The counterpart to `handle-feedback-key!`, which handles the
+   single-key answers; this handles the ones that need a whole typed line.
 
-      ;; Enter — deliver the typed text (shape depends on :kind)
-      (or (= b 13) (= b 10))
-      (let [text (.toString sb)]
-        (layout/write-raw-chars! "\r\n")
-        (if (= kind :text)
-          (deliver promise {:input text :index 0})
-          (let [selected (nth options free-idx)]
-            (deliver promise {:selected (:label selected) :index free-idx :input text})))
-        true)
+     :text                    → {:input <line> :index 0}
+     :select + :awaiting-text → {:selected <label> :index <idx> :input <line>}
+     :confirm / :select       → not answerable by a line. A bare Enter is
+                                swallowed (the box clears, the prompt stays)
+                                rather than submitted as a blank turn.
 
-      ;; Backspace — erase last char (CJK = 2 columns, else 1)
-      (or (= b 127) (= b 8))
-      (do (when (pos? (.length sb))
-            (let [last-ch (.charAt sb (dec (.length sb)))]
-              (.deleteCharAt sb (dec (.length sb)))
-              (if (cjk-wide-char? last-ch)
-                (layout/write-raw-chars! "\b\b  \b\b")
-                (layout/write-raw-chars! "\b \b"))))
-          true)
+   Returns true when the line was consumed by the prompt — the editor then
+   clears the box and keeps reading — and nil when no prompt is open, i.e. the
+   line is an ordinary turn. Clears !pending-feedback on delivery so a fast
+   follow-up keystroke can't be mis-routed before the agent thread wakes.
 
-      ;; Printable ASCII — echo on same line
-      (and (>= b 32) (<= b 126))
-      (do (.append sb (char b))
-          (layout/write-raw-chars! (str (char b)))
-          true)
+   With this, EVERY user-feedback response — single key or typed line — flows
+   through the one input channel: !raw-input-queue → read-key! → the readline
+   editor. Nothing collects raw bytes behind the editor's back. That is what
+   makes a typed answer survive a resize: it lives in the editor's buffer, so
+   `redraw-input-line!` re-wraps and repaints it like any other input, instead
+   of being characters echoed straight at the terminal that no repaint knows
+   how to reproduce."
+  [^String line]
+  (let [{:keys [kind mode promise options free-idx] :as fb} @tui-session/!pending-feedback]
+    (when (and fb promise (not (realized? promise)))
+      (let [text (str/trim (or line ""))
+            done! (fn [answer]
+                    (deliver promise answer)
+                    (reset! tui-session/!pending-feedback nil)
+                    true)]
+        (cond
+          (= :text kind)
+          (done! {:input text :index 0})
 
-      ;; UTF-8 multi-byte lead byte — start buffering
-      (>= b 0xC0)
-      (let [total (utf8-lead-byte-length b)]
-        (if (pos? total)
-          (do (swap! tui-session/!pending-feedback assoc
-                     :utf8-buf [b] :utf8-need (dec total))
-              true)
-          true))  ;; invalid lead byte — consume silently
+          (= :awaiting-text mode)
+          (let [selected (nth options (or free-idx 0) nil)]
+            (done! (cond-> {:index (or free-idx 0) :input text}
+                     selected (assoc :selected (:label selected)))))
 
-      ;; Consume other non-printable silently
-      :else true)))
-
-(defn try-intercept-byte
-  "Try to intercept a raw byte for the pending user-feedback prompt. Returns
-   true if intercepted (byte consumed), nil otherwise.
-
-   Only the byte-driven free-input text collection (:select :awaiting-text,
-   reached after picking a `:free-input` option) is handled here. :confirm,
-   :select digits, and :text all pass through to !raw-input-queue → read-key!
-   → the readline editor (the sticky input line), which validates + delivers
-   via `handle-feedback-key!` / the editor's submit path. This keeps every
-   user-feedback response flowing through one input channel."
-  [b]
-  (when-let [{:keys [mode] :as fb} @tui-session/!pending-feedback]
-    (when (= mode :awaiting-text)
-      (intercept-text-byte! fb b))))
+          :else true)))))
 
 (defn start-input-reader!
   "Start a daemon thread that polls /dev/tty for raw bytes and queues them.
    Uses available()+read() polling (not blocking read) so that Thread.interrupt
    can stop the thread immediately — blocking InputStream.read and .close both
    deadlock on macOS when called from different threads.
-   Ctrl-C (byte 3) is intercepted and handled directly.
-   Permission (y/n/a) and feedback (1-6) bytes are intercepted when pending."
+   Ctrl-C (byte 3), Ctrl-\\ (28) and a lone ESC (27) are handled inline; every
+   other byte is queued for `read-key!`. Permission / feedback answers are NOT
+   intercepted here — they are typed into the input line like anything else and
+   dispatched by `handle-feedback-key!` / `handle-feedback-submit!`."
   [^InputStream _in]
   (.clear ^LinkedBlockingQueue !raw-input-queue)
   (let [tty (java.io.FileInputStream. "/dev/tty")
@@ -362,7 +312,6 @@
                            (do (cond
                                  (= b 3)                (handle-ctrl-c!)
                                  (= b 28)               (handle-ctrl-backslash!)
-                                 (try-intercept-byte b) nil  ;; consumed by permission/feedback
                                  (= b 27)               (handle-esc! tty)  ;; lone ESC → pause toggle; sequence → pass through
                                  :else                  (.put ^LinkedBlockingQueue !raw-input-queue (int b)))
                                (recur))))
