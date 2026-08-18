@@ -63,7 +63,16 @@
 
         (testing "numbered? + active marker"
           (let [lines (ss/format-table (ss/enriched-summaries) {:numbered? true :active "agt-b"})]
-            (is (some #(str/includes? % "  1 ▸") lines)))))   ; active b is row 1
+            (is (some #(str/starts-with? % "[1] ▸") lines))   ; active b is row 1
+            (is (some #(str/starts-with? % "[2]  ") lines))   ; a is row 2, no marker
+            ;; The preview line is indented under the head, not out at column 0 —
+            ;; otherwise the second line of a row reads as a row of its own.
+            (is (every? #(str/starts-with? % " ")
+                        (filter #(str/includes? % "first prompt for A") lines)))))
+
+        (testing "un-numbered rows carry no index column"
+          (let [lines (ss/format-table (ss/enriched-summaries) {})]
+            (is (not-any? #(str/includes? % "[1]") lines)))))
       (finally (rm-rf root)))))
 
 (deftest detail-and-tree

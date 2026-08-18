@@ -712,15 +712,27 @@
                   (recur (next segs) (+ used seg-len) acc)))))))))
 
 (defn format-session-list
-  "Format a list of all sessions for display."
+  "Format a list of all LIVE tabs for display (`/session tabs`).
+
+   The first column is the tab's `[idx]` — the argument `/session switch <idx>`
+   (and bare `/session <idx>`) takes. It is the session's own `:id`, NOT a
+   positional counter: ids are handed out monotonically and closing a tab leaves
+   a hole, so numbering the rows 0,1,2… would name tabs that no longer exist and
+   silently switch to the wrong one. Right-aligned to the widest id so the labels
+   stay in one column once past ten tabs."
   []
   (let [sessions (session-list)
-        current-idx (active-idx)]
+        current-idx (active-idx)
+        idx-w (->> sessions (map #(count (str (:id %)))) (reduce max 1) (+ 2))]
     (str (ansi/header "Sessions") "\n"
          (clojure.string/join "\n"
                               (map (fn [{:keys [id label defagent-id agent-id scrollback has-unread?]}]
                                      (let [active? (= id current-idx)
                                            display-id (or defagent-id agent-id)
+                                           idx-str (format (str "%" idx-w "s") (str "[" id "]"))
+                                           idx-str (if active?
+                                                     (ansi/style idx-str ansi/bold ansi/bright-cyan)
+                                                     (ansi/muted idx-str))
                                            marker (cond active? (ansi/success "•")
                                                         has-unread? (ansi/warning "•")
                                                         :else (ansi/muted "•"))
@@ -731,9 +743,11 @@
                                                       (count @layout/!scrollback)
                                                       (count (or scrollback [])))
                                            size-str (ansi/muted (str sb-count " lines"))]
-                                       (str " " marker " " label-str (or agent-str "")
+                                       (str " " idx-str " " marker " " label-str (or agent-str "")
                                             "  " size-str)))
                                    sessions))
+         "\n"
+         (ansi/muted "  switch with /session switch <idx>")
          "\n")))
 
 ;; ============================================================================

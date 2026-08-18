@@ -443,7 +443,9 @@
         n (count rows)]
     (when (pos? n)
       (println)
-      (println (str n " persisted session(s) — pick one to resume, or [N] for a new session:"))
+      ;; "(N)ew", not "[N]" — the rows below are now bracket-numbered, and `[N]`
+      ;; beside `[1] [2] …` reads as one of them rather than as the letter.
+      (println (str n " persisted session(s) — pick one to resume, or (N)ew for a fresh session:"))
       (doseq [line (ssum/format-table rows {:numbered? true})] (println line))
       (println)
       (print (str "Choice [1-" n "] / (N)ew: "))

@@ -2042,7 +2042,14 @@
 
 (defn- handle-persisted-list-command
   "List PERSISTED on-disk sessions (mirrors `by sessions list`) using the
-   shared `session-summary` renderer. The active session is marked ▸."
+   shared `session-summary` renderer. The active session is marked ▸, and rows
+   carry a `[idx]` first column matching `by run --select-resume`'s picker.
+
+   That index is a POSITION IN THIS LIST, not a live-tab id: `/session switch`
+   takes tab ids (`/session tabs`), and only sessions already open in this
+   process have one. Resuming a session that isn't open is still a process-level
+   operation (`by run -r <id>`), so the two numbers are kept visibly apart —
+   this list is addressed by session-id (`/session show <id>`)."
   [_args]
   (let [rows   (ssum/enriched-summaries)
         active (some-> (active-session-id) name)]
@@ -2050,7 +2057,14 @@
      (if (empty? rows)
        (ansi/muted "No persisted sessions.")
        (str (ansi/header "Persisted sessions") "\n"
-            (str/join "\n" (ssum/format-table rows {:ansi? true :active active})))))))
+            (str/join "\n" (ssum/format-table rows {:ansi?     true
+                                                    :numbered? true
+                                                    :active    active}))
+            "\n"
+            (ansi/muted (str "  [idx] = position in this list (the `by run --select-resume` picker's)"
+                             " · detail: /session show <id>"))
+            "\n"
+            (ansi/muted "  live tabs are switchable: /session tabs → /session switch <idx>"))))))
 
 (defn- handle-show-command
   "Show full detail for one persisted session (shared with `by sessions show`)."

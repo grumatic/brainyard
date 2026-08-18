@@ -94,39 +94,47 @@
   "Render enriched `rows` into a vec of display lines (two per session: a
    metadata line + a dim first-user-message preview). Options:
      :ansi?     ANSI-style the output (default false — plain for CLI pipes)
-     :numbered? prefix a 1-based index per row (for interactive pickers)
-     :active    session-id to flag with a ▸ marker"
+     :numbered? prefix a bracketed 1-based index per row — the number the
+                interactive pickers (`Choice [1-N]`) and `/session list` read back
+     :active    session-id to flag with a ▸ marker
+
+   The index column is right-aligned to the widest row number, and the preview
+   line is indented by the same width, so the two lines of a row stay in one
+   column block once the list passes nine sessions."
   ([rows] (format-table rows {}))
   ([rows {:keys [ansi? numbered? active]}]
-   (vec
-    (mapcat
-     (fn [i {:keys [session-id label model bytes event-count live?
-                    last-attached-at started-at parent-id first-user-input] :as row}]
-       (let [marker  (cond (= session-id active) "▸"
-                           parent-id             "↳"
-                           :else                 " ")
-             idx     (when numbered? (format "%3d " (inc i)))
-             head    (str (or idx "")
-                          marker " "
-                          (sty ansi? session-id ansi/bold ansi/bright-cyan)
-                          (when live? (str " " (sty ansi? "●live" ansi/green)))
-                          "  " (agent-name row)
-                          (when model (str " · " model))
-                          "  " (dim ansi? (str (format-bytes bytes)
-                                               " · " (or event-count 0) " msg"
-                                               " · " (or (format-age-millis
-                                                          (or last-attached-at started-at))
-                                                         "-")))
-                          (when (and label (not (str/blank? label)))
-                            (str "  " (sty ansi? (str "[" label "]") ansi/bright-yellow))))
-             preview (let [p (one-line first-user-input)]
-                       (str "     "
-                            (dim ansi? (if (str/blank? p)
-                                         "(no messages yet)"
-                                         (str "› " (truncate p 76))))))]
-         [head preview]))
-     (range)
-     rows))))
+   (let [idx-w (if numbered? (+ 3 (count (str (count rows)))) 0)
+         pad   (apply str (repeat idx-w " "))]
+     (vec
+      (mapcat
+       (fn [i {:keys [session-id label model bytes event-count live?
+                      last-attached-at started-at parent-id first-user-input] :as row}]
+         (let [marker  (cond (= session-id active) "▸"
+                             parent-id             "↳"
+                             :else                 " ")
+               idx     (when numbered?
+                         (format (str "%" idx-w "s") (str "[" (inc i) "] ")))
+               head    (str (or idx "")
+                            marker " "
+                            (sty ansi? session-id ansi/bold ansi/bright-cyan)
+                            (when live? (str " " (sty ansi? "●live" ansi/green)))
+                            "  " (agent-name row)
+                            (when model (str " · " model))
+                            "  " (dim ansi? (str (format-bytes bytes)
+                                                 " · " (or event-count 0) " msg"
+                                                 " · " (or (format-age-millis
+                                                            (or last-attached-at started-at))
+                                                           "-")))
+                            (when (and label (not (str/blank? label)))
+                              (str "  " (sty ansi? (str "[" label "]") ansi/bright-yellow))))
+               preview (let [p (one-line first-user-input)]
+                         (str pad "     "
+                              (dim ansi? (if (str/blank? p)
+                                           "(no messages yet)"
+                                           (str "› " (truncate p 76))))))]
+           [head preview]))
+       (range)
+       rows)))))
 
 ;; ============================================================================
 ;; Detail (show)

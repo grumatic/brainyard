@@ -7,7 +7,10 @@
    (`mainN`) and the render shape produced by `format-tab-strip` —
    ` <label>` per tab (no id prefix), suffixed-without-space markers
    (`*` / `●` for active, `?` for unread), and `↓` glyph for
-   `:session-type :output` tabs."
+   `:session-type :output` tabs.
+
+   Also covers `format-session-list` (`/session tabs`), whose first column is
+   the tab id `/session switch <idx>` takes."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
             [ai.brainyard.agent-tui.sessions :as sessions]))
@@ -80,3 +83,26 @@
     (sessions/update-session! 1 assoc :has-unread? true)
     (let [out (plain (sessions/format-tab-strip))]
       (is (str/includes? out " main1?")))))
+
+(deftest format-session-list-shows-switch-index
+  (testing "each row leads with the tab's own [id] — the /session switch arg"
+    (sessions/create-session! {:id 0 :label "main0" :skip-agent-creation true})
+    (sessions/create-session! {:id 1 :label "main1" :skip-agent-creation true})
+    (let [lines (str/split-lines (plain (sessions/format-session-list)))]
+      (is (some #(str/starts-with? % " [0] ") lines))
+      (is (some #(str/starts-with? % " [1] ") lines))
+      (is (some #(str/includes? % "/session switch <idx>") lines))))
+
+  (testing "the index is the id, NOT the row position — a closed tab leaves a hole"
+    (sessions/reset-sessions!)
+    ;; Ids 2 and 11 only: tab 0/1 closed, and a two-digit id in play.
+    (sessions/create-session! {:id 2  :label "main2"  :skip-agent-creation true})
+    (sessions/create-session! {:id 11 :label "main11" :skip-agent-creation true})
+    (let [lines (str/split-lines (plain (sessions/format-session-list)))
+          rows  (filter #(str/includes? % "main") lines)]
+      ;; Numbering rows 0,1 here would name two tabs that do not exist.
+      (is (not-any? #(str/includes? % "[0]") rows))
+      (is (not-any? #(str/includes? % "[1]") rows))
+      ;; Right-aligned to the widest id so labels stay in one column.
+      (is (some #(str/starts-with? % "  [2] ") rows))
+      (is (some #(str/starts-with? % " [11] ") rows)))))

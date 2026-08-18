@@ -846,10 +846,10 @@
    ["/scrollback"       " dump"                    "Dump host pane scrollback to file (Mode B)"
     {:completions [["dump"   "Capture scrollback ANSI to file"]]}]
    ["/session"          " [N|subcmd] [args]"      "Manage TUI tabs + persisted sessions"
-    {:completions [["tabs"   "List live runtime tabs"]
+    {:completions [["tabs"   "List live runtime tabs with their [idx]"]
                    ["new"    "Create new tab (optional agent-id)"]
                    ["close"  "Close tab N (default: current)"]
-                   ["switch" "Switch to live tab N"]
+                   ["switch" "Switch to live tab [idx] (see /session tabs)"]
                    ["rename" "Rename current tab (also persists disk label)"]
                    ["list"   "List persisted on-disk sessions"]
                    ["show"   "Show one persisted session's detail (ID)"]
