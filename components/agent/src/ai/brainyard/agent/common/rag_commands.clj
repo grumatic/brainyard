@@ -192,7 +192,7 @@
                   [:top-k  {:optional true} [:int    {:desc "How many results to return (default 5)"}]]
                   [:source {:optional true} [:string {:desc "Restrict to one source filename"}]]]
   :output-schema [:map
-                  [:results {:optional true} [:any {:desc "Best-first hits with per_signal evidence"}]]
+                  [:results {:optional true} [:any {:desc "Best-first hits: id, text, score, per_signal, source, chunk_index, entities, neighbors"}]]
                   [:count   {:optional true} [:int]]
                   [:mode    {:optional true} [:string]]
                   [:error   {:optional true} [:string]]])
