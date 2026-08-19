@@ -25,7 +25,14 @@
                   :connect-timeout-ms  10000
                   :content-type :json  ;; sugar: sets Content-Type header
                   :proxy-host \"...\" :proxy-port 8080
-                  :insecure? true})
+                  :insecure? true
+                  :http-version HttpClient$Version/HTTP_2})
+
+   `:http-version` is rarely needed. The default is HTTP/2 for https and
+   HTTP/1.1 for cleartext — because on cleartext there is no ALPN, so asking
+   for HTTP/2 makes the JDK attempt the h2c upgrade, and some servers (uvicorn
+   with httptools) respond to those headers by dropping the request BODY. See
+   `core.client/http-version` for the measurements.
 
    Returns {:status int :headers {lower-str -> str} :body T}
    where T depends on :as.

@@ -51,6 +51,39 @@
           {:host (.getHost uri) :port (.getPort uri)}))
       (catch Exception _ nil))))
 
+(defn- http-version
+  "Which HTTP version to ASK for, given the URL.
+
+   `:http-version` overrides; otherwise cleartext gets HTTP/1.1 and TLS gets
+   HTTP/2.
+
+   WHY CLEARTEXT IS DOWNGRADED. Over TLS, HTTP/2 is negotiated by ALPN during
+   the handshake: the server either speaks it or it does not, and nothing is
+   sent that a 1.1-only server has to interpret. Over cleartext there is no
+   ALPN, so the JDK attempts the h2c upgrade from RFC 7540 §3.2 — it sends the
+   request with `Connection: Upgrade, HTTP2-Settings` and hopes.
+
+   That upgrade attempt is not free. httptools (the parser `uvicorn[standard]`
+   installs) responds to those headers by DROPPING THE REQUEST BODY: FastAPI
+   then answers 422 `{\"loc\":[\"body\"],\"msg\":\"Field required\"}` for a POST
+   whose body was demonstrably sent. Measured 2x2 against one app, one client,
+   changing only the parser and the requested version:
+
+     h11       + HTTP_2   → body arrives     httptools + HTTP_2   → BODY LOST
+     h11       + HTTP_1_1 → body arrives     httptools + HTTP_1_1 → body arrives
+
+   Only that one cell fails, and it fails SILENTLY from the caller's side — the
+   request looks fine going out. Since essentially nothing we talk to over
+   cleartext speaks h2c anyway (it is loopback sidecars and dev servers), the
+   upgrade was buying nothing and costing that."
+  [url {:keys [http-version]}]
+  (or http-version
+      ;; `str` is aliased to clojure.string in this ns, so spell the coercion
+      ;; out rather than write `str` twice meaning two different things.
+      (if (str/starts-with? (clojure.core/str url) "https:")
+        HttpClient$Version/HTTP_2
+        HttpClient$Version/HTTP_1_1)))
+
 (defn- ^HttpClient build-client
   "Build a fresh HttpClient configured from the supplied opts. We do
    NOT share a single global client because per-call options (proxy,
@@ -58,10 +91,11 @@
    HttpClient itself is lightweight; the heavyweight pieces (TLS
    session cache, connection pool) are inside the JDK's shared
    `sun.net.www.protocol.https` machinery."
-  [{:keys [connect-timeout-ms proxy-host proxy-port insecure?]
-    :or   {connect-timeout-ms 10000}}]
+  [url {:keys [connect-timeout-ms proxy-host proxy-port insecure?]
+        :or   {connect-timeout-ms 10000}
+        :as   opts}]
   (let [b ^HttpClient$Builder (-> (HttpClient/newBuilder)
-                                  (.version HttpClient$Version/HTTP_2)
+                                  (.version (http-version url opts))
                                   (.connectTimeout (Duration/ofMillis connect-timeout-ms)))
         b (if-let [pp (or (when proxy-host
                             {:host proxy-host :port (or proxy-port 8080)})
@@ -177,7 +211,7 @@
            throw-exceptions false
            as               :string}
     :as   opts}]
-  (let [client  (build-client opts)
+  (let [client  (build-client url opts)
         ;; :content-type sugar (clj-http-compatible): the keywords :json / :form
         ;; expand to their media types; any other value is used verbatim as the
         ;; Content-Type. Previously only :json was honored, so a string content
