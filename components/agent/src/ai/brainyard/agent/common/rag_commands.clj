@@ -278,7 +278,7 @@
                   [:error             {:optional true} [:string]]])
 
 (defcommand rag$extract-kg
-  "(Re-)extract entities and RELATED_TO relationships from documents into the graph. Costs an LLM call per document when one is configured; otherwise a deterministic rule-based pass runs."
+  "Run the backend's RULE-BASED extractor over documents (uppercase tokens, backtick terms, numbered headings). Free and deterministic, but shallow — for a real knowledge graph, extract yourself and write with rag$write-kg."
   (fn [& {:keys [ids]}]
     (let [payload (if (seq ids) {:document_ids (vec ids)} {:all true})]
       ;; No ceiling short of the backend's own: extraction walks every document
@@ -287,12 +287,49 @@
   :input-schema  [:map
                   [:ids {:optional true} [:any {:desc "Document ids; omit to extract from every document"}]]]
   :output-schema [:map
-                  [:count        {:optional true} [:int]]
-                  [:persisted    {:optional true} [:any {:desc "Entities, mentions and relationships written"}]]
-                  [:llm_fallback {:optional true} [:boolean {:desc "True when the rule-based extractor ran"}]]
-                  [:error        {:optional true} [:string]]])
+                  [:count     {:optional true} [:int]]
+                  [:persisted {:optional true} [:any {:desc "Entities, mentions and relationships written"}]]
+                  [:extractor {:optional true} [:string {:desc "Always \"rules\" for this command — see rag$write-kg for the LLM path"}]]
+                  [:error     {:optional true} [:string]]])
+
+(defcommand rag$write-kg
+  "Persist entities and relationships YOU extracted from a document's chunks into the knowledge graph. This is the LLM extraction path — read the chunks with rag$documents, extract, then write here. Idempotent (MERGE), so re-running converges rather than duplicating."
+  (fn [& {:keys [doc-id entities relationships]}]
+    (cond
+      (str/blank? (str doc-id))
+      {:error "doc-id is required — the document these entities came from"}
+
+      (empty? entities)
+      {:error "entities is required and must be non-empty"}
+
+      :else
+      ;; Chunks are NOT sent: the backend loads them by doc-id and places
+      ;; MENTIONS by matching entity names against chunk text. Round-tripping
+      ;; every chunk body back over the socket to have it matched would be
+      ;; pointless traffic for data the backend already holds.
+      (request :post "/kg/write"
+               {:body {:doc_id doc-id
+                       :entities (mapv (fn [e]
+                                         {:name (str (or (:name e) (get e "name")))
+                                          :type (str (or (:type e) (get e "type") "CONCEPT"))})
+                                       entities)
+                       :relationships (mapv (fn [r]
+                                              {:source (str (or (:source r) (get r "source")))
+                                               :target (str (or (:target r) (get r "target")))
+                                               :type (str (or (:type r) (get r "type") "RELATED_TO"))})
+                                            (or relationships []))}
+                :timeout-ms 120000})))
+  :input-schema  [:map
+                  [:doc-id [:string {:desc "Document id the extraction came from"}]]
+                  [:entities [:any {:desc "Vector of {:name <str> :type PERSON|ORG|CONCEPT|PRODUCT|TECH}"}]]
+                  [:relationships {:optional true} [:any {:desc "Vector of {:source <name> :target <name> :type <verb phrase, e.g. \"filters\" or \"is measured by\">}"}]]]
+  :output-schema [:map
+                  [:doc_id    {:optional true} [:string]]
+                  [:persisted {:optional true} [:any {:desc "Entities, mentions and relationships written"}]]
+                  [:extractor {:optional true} [:string {:desc "\"agent\" for this path"}]]
+                  [:error     {:optional true} [:string]]])
 
 (def all-rag-commands
   "The rag$* family, for a defagent's :agent-tools roster."
   [#'rag$health #'rag$stats #'rag$documents #'rag$search #'rag$graph
-   #'rag$ingest #'rag$delete #'rag$extract-kg])
+   #'rag$ingest #'rag$delete #'rag$extract-kg #'rag$write-kg])
