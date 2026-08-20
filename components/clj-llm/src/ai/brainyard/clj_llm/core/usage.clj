@@ -128,7 +128,65 @@
    [:bedrock "cohere.command-r"]      {:input 0.50 :output 1.50}
    ;; DeepSeek on Bedrock.
    [:bedrock "deepseek.r1"]   {:input 1.35 :output 5.40}
-   [:bedrock "deepseek.v3.2"] {:input 0.28 :output 0.42}})
+   [:bedrock "deepseek.v3.2"] {:input 0.28 :output 0.42}
+
+   ;; --------------------------------------------------------------------
+   ;; Bedrock third-party + Nova 2, pulled from the AWS Price List API
+   ;; (`aws pricing get-products --service-code AmazonBedrock`) rather than
+   ;; the pricing web page: us-east-1, STANDARD on-demand tier, converted
+   ;; from the API's $/1K to this table's $/1M.
+   ;;
+   ;; Read from the API because the web page could not be read correctly.
+   ;; It is region-tabbed and its Nova tables do not survive extraction, and
+   ;; the figures a scrape produced were Asia-Pacific rates — Nova 2 Lite
+   ;; came back as 0.08/0.24 against an actual us-east-1 0.33/2.75, and two
+   ;; sources disagreed on Nova Premier by 3x. `inferenceType` carries the
+   ;; service tier as a suffix ("Input tokens flex"/"… priority"/"… batch");
+   ;; only the unsuffixed rows are the standard rate priced here.
+   ;;
+   ;; :cache-read appears only where AWS publishes a non-zero rate. Most of
+   ;; these models have no prompt caching at all, so the sub-counts are
+   ;; always zero and an absent rate costs exactly what a 0.0 would.
+   ;; --------------------------------------------------------------------
+   [:bedrock "amazon.nova-2-lite"]                    {:input 0.33 :output 2.75 :cache-read 0.0825}
+   [:bedrock "amazon.nova-premier"]                   {:input 2.5 :output 12.5 :cache-read 0.625}
+   [:bedrock "google.gemma-3-4b-it"]                  {:input 0.04 :output 0.08}
+   [:bedrock "google.gemma-3-12b-it"]                 {:input 0.09 :output 0.29}
+   [:bedrock "google.gemma-3-27b-it"]                 {:input 0.23 :output 0.38}
+   [:bedrock "meta.llama3-8b-instruct"]               {:input 0.3 :output 0.6}
+   [:bedrock "meta.llama3-70b-instruct"]              {:input 2.65 :output 3.5}
+   [:bedrock "meta.llama4-maverick-17b-instruct"]     {:input 0.24 :output 0.97}
+   [:bedrock "meta.llama4-scout-17b-instruct"]        {:input 0.17 :output 0.66}
+   [:bedrock "minimax.minimax-m2"]                    {:input 0.3 :output 1.2}
+   [:bedrock "minimax.minimax-m2.1"]                  {:input 0.3 :output 1.2}
+   [:bedrock "minimax.minimax-m2.5"]                  {:input 0.3 :output 1.2}
+   [:bedrock "mistral.devstral-2-123b"]               {:input 0.4 :output 2.0}
+   [:bedrock "mistral.magistral-small-2509"]          {:input 0.5 :output 1.5}
+   [:bedrock "mistral.ministral-3-3b-instruct"]       {:input 0.1 :output 0.1}
+   [:bedrock "mistral.ministral-3-8b-instruct"]       {:input 0.15 :output 0.15}
+   [:bedrock "mistral.ministral-3-14b-instruct"]      {:input 0.2 :output 0.2}
+   [:bedrock "mistral.mistral-7b-instruct"]           {:input 0.15 :output 0.2}
+   [:bedrock "mistral.mistral-large-3-675b-instruct"] {:input 0.5 :output 1.5}
+   [:bedrock "mistral.mixtral-8x7b-instruct"]         {:input 0.45 :output 0.7}
+   [:bedrock "mistral.pixtral-large-2502"]            {:input 2.0 :output 6.0}
+   [:bedrock "moonshot.kimi-k2-thinking"]             {:input 0.6 :output 2.5}
+   [:bedrock "moonshotai.kimi-k2.5"]                  {:input 0.6 :output 3.0}
+   [:bedrock "nvidia.nemotron-nano-3-30b"]            {:input 0.06 :output 0.24}
+   ;; gpt-oss ids keep the `-1:0` suffix: normalize-bedrock-model-id strips
+   ;; `-v\d+(:\d+)?`, and this one has no `v`.
+   [:bedrock "openai.gpt-oss-120b-1:0"]               {:input 0.15 :output 0.6}
+   [:bedrock "openai.gpt-oss-20b-1:0"]                {:input 0.07 :output 0.3}
+   [:bedrock "openai.gpt-oss-safeguard-120b"]         {:input 0.15 :output 0.6}
+   [:bedrock "openai.gpt-oss-safeguard-20b"]          {:input 0.07 :output 0.2}
+   [:bedrock "qwen.qwen3-32b"]                        {:input 0.15 :output 0.6}
+   [:bedrock "qwen.qwen3-coder-30b-a3b"]              {:input 0.15 :output 0.6}
+   [:bedrock "qwen.qwen3-coder-next"]                 {:input 0.5 :output 1.2}
+   [:bedrock "qwen.qwen3-next-80b-a3b"]               {:input 0.14 :output 1.2}
+   [:bedrock "qwen.qwen3-vl-235b-a22b"]               {:input 0.53 :output 2.66}
+   [:bedrock "writer.palmyra-vision-7b"]              {:input 0.15 :output 0.6}
+   [:bedrock "zai.glm-4.7"]                           {:input 0.6 :output 2.2}
+   [:bedrock "zai.glm-4.7-flash"]                     {:input 0.07 :output 0.4}
+   [:bedrock "zai.glm-5"]                             {:input 1.0 :output 3.2}})
 
 (defonce ^:private pricing-table (atom default-pricing))
 
