@@ -30,7 +30,7 @@
    `defagent` uses (`register-agent!`, §5A), so a user agent immediately shows up
    in `list-tools` / `search`, flows through `call-tool`'s coercion + the
    sub-agent depth/circular guards in `do-call-tool--agent`, can be a routing
-   target for `main-agent`, and can be composed by a peer agent's tool-call
+   target for `router-agent`, and can be composed by a peer agent's tool-call
    channel — all without a recompile.
 
    The coact-agent functions are resolved LAZILY (requiring-resolve) rather than

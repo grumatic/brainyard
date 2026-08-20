@@ -350,7 +350,7 @@ forced-turn entry — the blast radius.")
   :tool-use-control {}
   :input-schema  [:map
                   [:question [:string {:desc "User request about state machines"}]]
-                  [:agent-context {:optional true} [:string {:desc "Optional handoff context (e.g. from main-agent)"}]]
+                  [:agent-context {:optional true} [:string {:desc "Optional handoff context (e.g. from router-agent)"}]]
                   [:auto? {:optional true} :boolean]]
   :output-schema [:map
                   [:answer [:string {:desc "Markdown summary; for a definition write, close with the validation result, gate outcome, reset consequence, and blast radius"}]]]

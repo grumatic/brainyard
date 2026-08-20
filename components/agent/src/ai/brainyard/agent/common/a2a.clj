@@ -502,7 +502,7 @@
                         :source artifact-hook-source))
 
 ;; Side-effecting: requiring this namespace wires the bridge, the same way
-;; `main-agent-hooks` and `loop-guard-hook` self-install.
+;; `router-agent-hooks` and `loop-guard-hook` self-install.
 (install-stream-hooks!)
 
 (def a2a-commands

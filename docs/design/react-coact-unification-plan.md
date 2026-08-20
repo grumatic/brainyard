@@ -32,7 +32,7 @@ Adoption confirms it:
 - **0 agents derive from react.** `run-react-derived` does not exist.
 
 `react-agent` survives only as a standalone, registered "advanced fallback"
-(`main_agent.clj:173`: *"classic ReAct loop. Niche"*). It costs ~1,231 lines
+(`router_agent.clj:173`: *"classic ReAct loop. Niche"*). It costs ~1,231 lines
 (`react_agent.clj`) plus a parallel system-context assembler and a parallel DSPy
 signature, all of which must track coact's shared roster + substrate changes by
 hand. The roster-drift hazard is already called out in the code
@@ -202,11 +202,11 @@ Net: ~1,231 → ~40 lines.
   `deftool` **docstring example** uses `react-agent` / `react-behavior-tree`.
   Cosmetic; update the example to a still-valid symbol. Non-blocking.
 
-- **`components/agent/src/ai/brainyard/agent/common/main_agent.clj:173`** —
+- **`components/agent/src/ai/brainyard/agent/common/router_agent.clj:173`** —
   routing note. Reword: react-agent is now *"coact with the code channel off
   (tool-only); use when you want strictly tool+answer behavior."*
 
-- **`main_agent_hooks.clj` `specialist-agents` set (incl. `"react-agent"`)** —
+- **`router_agent_hooks.clj` `specialist-agents` set (incl. `"react-agent"`)** —
   **no change** (react-agent stays registered & dispatchable). *(Grade C:
   remove `"react-agent"`.)*
 

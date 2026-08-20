@@ -47,7 +47,7 @@
 > substrate" rationale).
 > Sibling docs: `meta-agent-design.md` (user-agent lifecycle), `skill-agent`
 > (skill lifecycle), `mcp-agent` (MCP lifecycle), `config-agent` (config
-> lifecycle), `main-agent-design.md` (router),
+> lifecycle), `router-agent-design.md` (router),
 > `agent-lightweight-redesign-synthesis.md` (the series principle).
 
 ## 1. Motivation
@@ -72,7 +72,7 @@ tools rather than re-implementing them, and a verification pass — and it
 benefits from the same dedicated CoAct-derived specialist treatment the other
 lifecycle domains already get.
 
-`tool-agent` is that owner: the single specialist `main-agent` routes to for
+`tool-agent` is that owner: the single specialist `router-agent` routes to for
 "make me a tool that …", "what tools have I defined?", "fix the `count-words`
 tool", and "remove `shout`". It turns the raw `tool-agent$*` commands into a guided
 authoring workflow with verification built in.
@@ -211,11 +211,11 @@ side-effecting require list in
 `components/agent/src/ai/brainyard/agent/interface.clj` (the documented "single
 source of truth: add a new agent here when it ships").
 
-`main-agent` is the front door. It classifies a question's shape and delegates;
+`router-agent` is the front door. It classifies a question's shape and delegates;
 tool-lifecycle questions become a `tool-agent` call. This adds one routing shape
 to the existing roster in
 `components/agent/src/ai/brainyard/agent/common/main.clj` and the routing
-instruction in `main_agent.clj` — see §7.
+instruction in `router_agent.clj` — see §7.
 
 Like its siblings, the agent stays flat: it does not clone-self, and it does not
 write to sibling-specialist storage (`.brainyard/skills`, `.brainyard/agents/…`,
@@ -454,10 +454,10 @@ SAFETY (hard rules)
 A `:tool-context` block (as in `skill-agent`) restates the `tool-agent$*` arg
 signatures and the typical flows so the model has the command surface inline.
 
-## 7. Routing — Wiring into main-agent
+## 7. Routing — Wiring into router-agent
 
-`main-agent` owns a fixed roster of routing-decision shapes (the lettered list
-A–S in `main.clj` and `main_agent.clj`). Tool lifecycle currently has no shape;
+`router-agent` owns a fixed roster of routing-decision shapes (the lettered list
+A–S in `main.clj` and `router_agent.clj`). Tool lifecycle currently has no shape;
 the bare `tool-agent$create` is reachable as a generic tool, but there is no
 delegation target. This design adds one decision shape:
 
@@ -471,7 +471,7 @@ Concretely:
 1. Add `:tool-lifecycle` to the routing-decisions enum in `main.clj`
    (alongside `:skill-lifecycle`, `:mcp-lifecycle`).
 2. Add the corresponding lettered shape + one-line cue to the routing
-   instruction in `main_agent.clj` (the "→ tool-agent" line in the specialist
+   instruction in `router_agent.clj` (the "→ tool-agent" line in the specialist
    table and the decision list).
 3. Add `[ai.brainyard.agent.common.tool-agent]` to the side-effecting require
    list in `interface.clj`.
@@ -646,7 +646,7 @@ Agent level (new, mirroring `skill_agent`/`config_agent` tests under
 before authoring (dup check); refuses to delete without the named tool existing;
 summarizes rather than dumps long bodies.
 
-Routing level: a `main-agent` routing test asserting that tool-lifecycle
+Routing level: a `router-agent` routing test asserting that tool-lifecycle
 phrasings select `:tool-lifecycle → tool-agent` and that skill / MCP phrasings
 still select their own specialists (no regression in the existing roster).
 
@@ -661,7 +661,7 @@ projects/agent-tui-app/target/by ask -p bedrock -m amazon.nova-lite-v1:0 \
 ## 12. Migration / Phasing
 
 > **As-built:** Phases 1 and 2 shipped — the agent, `tool-agent$validate`, the
-> `tools-commands` roster var, `interface.clj` registration, and `main-agent`
+> `tools-commands` roster var, `interface.clj` registration, and `router-agent`
 > routing are all live. Phase 3 items (`tool-agent$update`, `:scope :user`,
 > versioning/provenance) remain open (§13).
 
@@ -673,7 +673,7 @@ beyond a side-effect-free command. The agent is immediately usable by direct
 invocation, with validate-before-create wired into its authoring flow.
 
 Phase 2 — wire routing. Add `:tool-lifecycle` to `main.clj`'s decision enum and
-the cue to `main_agent.clj`'s instruction so `main-agent` delegates
+the cue to `router_agent.clj`'s instruction so `router-agent` delegates
 automatically. Add the routing regression test.
 
 Phase 3 (optional) — close the remaining gaps in §13: a real `tool-agent$update` for

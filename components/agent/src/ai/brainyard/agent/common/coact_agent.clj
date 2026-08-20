@@ -3391,7 +3391,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
         ;; matching the `bash` tool (tools.clj) and the prompt's own promise —
         ;; NOT the JVM cwd, which under `bb tui` is the projects/agent-tui-app/
         ;; subdir. Without this a ```bash``` fence doing `.brainyard/…` reads
-        ;; the wrong tree (the main-agent path-divergence pattern).
+        ;; the wrong tree (the router-agent path-divergence pattern).
         proj-dir (config/project-dir)]
     (if (or (proto/in-task-context?) subagent?)
       ;; Synchronous spawn (sub-agent / in-task: no task system to detach into)

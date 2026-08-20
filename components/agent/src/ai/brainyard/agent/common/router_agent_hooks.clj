@@ -2,8 +2,8 @@
 ;; SPDX-License-Identifier: MIT
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
-(ns ai.brainyard.agent.common.main-agent-hooks
-  "Main-agent lifecycle hooks. Five handlers, all `:source ::main-agent` and
+(ns ai.brainyard.agent.common.router-agent-hooks
+  "Router-agent lifecycle hooks. Five handlers, all `:source ::router-agent` and
    self-installing at namespace load (idempotent — `register-hook!` replaces
    by id):
 
@@ -11,11 +11,11 @@
    - `:agent.ask/pre`         → snapshot max-turn-in-log so the post hook can
                                 detect whether the LLM appended a line this
                                 turn.
-   - `:agent.tool-use/post`   → when main-agent invoked a specialist that
+   - `:agent.tool-use/post`   → when router-agent invoked a specialist that
                                 emitted `Saved <kind>: <path>` lines, append
                                 bullets to pointers.md so the user can see
-                                the artifact trail without main-agent having
-                                to inline `main$append-pointer` calls in its
+                                the artifact trail without router-agent having
+                                to inline `router$append-pointer` calls in its
                                 instruction.
    - `:agent.ask/post`        → record the per-turn routing line. The line is
                                 HOOK-DERIVED (not LLM-constructed): routed-to
@@ -24,15 +24,15 @@
                                 a channel fallback, artifact from the surfaced
                                 `Saved <kind>:` path, reason from the model's
                                 one-sentence routing decision. This is the SOLE
-                                writer of routing.log (main-agent no longer
-                                calls main$append-log).
+                                writer of routing.log (router-agent no longer
+                                calls router$append-log).
    - `:agent.session/closed`  → append a one-line summary to INDEX.md
                                 covering turn count + distinct shapes seen.
 
    The hooks own routing-log discipline entirely — the LLM just routes + states
    a reason; the trail records itself. Every handler is wrapped in try/catch so
    hook failures never propagate up into the user-facing answer."
-  (:require [ai.brainyard.agent.common.main :as main]
+  (:require [ai.brainyard.agent.common.router :as router]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.mulog.interface :as mulog]
@@ -48,7 +48,7 @@
 ;; ============================================================================
 
 (def specialist-agents
-  "Kebab-case names of every defagent main-agent might dispatch to. Used by
+  "Kebab-case names of every defagent router-agent might dispatch to. Used by
    the post-tool hook to decide whether a tool-call was a specialist hand-off
    (worth capturing) vs. a generic tool (no pointer to capture)."
   #{"acp-agent"
@@ -75,9 +75,9 @@
 ;; Helpers
 ;; ============================================================================
 
-(defn- main-agent? [agent]
+(defn- router-agent? [agent]
   (try
-    (= :main-agent (proto/defagent-type agent))
+    (= :router-agent (proto/defagent-type agent))
     (catch Throwable _ false)))
 
 (defn- session-id-of [agent]
@@ -117,17 +117,17 @@
 ;; ============================================================================
 
 (defn routing-log-bootstrap
-  "Idempotent bootstrap of `.brainyard/agents/main-agent/<session-id>/`. Runs for
-   every agent-session created, not just main-agent — sessions are shared
+  "Idempotent bootstrap of `.brainyard/agents/router-agent/<session-id>/`. Runs for
+   every agent-session created, not just router-agent — sessions are shared
    across all agents in a TUI run, and any of them may end up invoking
-   main-agent later. The dir is cheap; failure to bootstrap is logged but
+   router-agent later. The dir is cheap; failure to bootstrap is logged but
    not re-thrown."
   [{:keys [session-id]}]
   (try
     (when (string? session-id)
-      (main/main$bootstrap :session-id session-id))
+      (router/router$bootstrap :session-id session-id))
     (catch Throwable t
-      (mulog/error ::main.bootstrap-failed
+      (mulog/error ::router.bootstrap-failed
                    :session-id session-id
                    :exception t))))
 
@@ -136,34 +136,34 @@
 ;; ============================================================================
 
 (defn capture-saved-artifacts
-  "When main-agent's tool-call returns a specialist defagent's answer, parse
+  "When router-agent's tool-call returns a specialist defagent's answer, parse
    every `Saved <kind>: <path>` line from it and append a bullet to
    pointers.md. Match conditions:
-     - the calling agent is main-agent
+     - the calling agent is router-agent
      - the tool-name is a known specialist defagent
      - the result is parseable as an :answer string
    Failures are logged but never re-thrown — the user-facing tool result
    must not be affected by hook errors."
   [{:keys [agent tool-name result]}]
   (try
-    (when (and (main-agent? agent)
+    (when (and (router-agent? agent)
                (string? tool-name)
                (specialist-agents tool-name))
       (let [answer (result-answer result)
-            saved  (main/parse-saved-lines (or answer ""))
+            saved  (router/parse-saved-lines (or answer ""))
             sid    (session-id-of agent)]
         (when (and sid (seq saved))
           (doseq [{:keys [kind path]} saved]
-            (main/main$append-pointer
+            (router/router$append-pointer
              :session-id sid
              :path path
              :caption (caption-for kind answer)))
-          (mulog/log ::main.captured-artifacts
+          (mulog/log ::router.captured-artifacts
                      :session-id sid
                      :tool-name tool-name
                      :saved-count (count saved)))))
     (catch Throwable t
-      (mulog/error ::main.capture-failed
+      (mulog/error ::router.capture-failed
                    :tool-name tool-name
                    :exception t))))
 
@@ -171,8 +171,8 @@
 ;; Routing-line recorder (handlers 3 + 4) — :agent.ask/pre + :agent.ask/post
 ;;
 ;; Lightweight redesign: the routing line is HOOK-DERIVED, not LLM-constructed.
-;; main-agent no longer calls main$append-log; this hook is the SOLE writer of
-;; the per-turn routing.log line. It runs on every main-agent turn:
+;; router-agent no longer calls router$append-log; this hook is the SOLE writer of
+;; the per-turn routing.log line. It runs on every router-agent turn:
 ;;
 ;;   pre  → snapshot max(turn) in routing.log on the agent's !state (so the
 ;;          post hook knows the next turn number + can no-op a double-fire).
@@ -212,7 +212,7 @@
 (defn- max-turn-in-log
   [session-id]
   (try
-    (->> (main/read-routing-log session-id)
+    (->> (router/read-routing-log session-id)
          (keep :turn)
          (filter integer?)
          (reduce max 0))
@@ -224,13 +224,13 @@
    ask. No-op when the agent doesn't carry a !state atom."
   [{:keys [agent]}]
   (try
-    (when (main-agent? agent)
+    (when (router-agent? agent)
       (when-let [sid (session-id-of agent)]
         (let [!st (:!state agent)]
           (when (instance? clojure.lang.IAtom !st)
             (swap! !st assoc ::pre-max-turn (max-turn-in-log sid))))))
     (catch Throwable t
-      (mulog/error ::main.pre-turn-failed :exception t))))
+      (mulog/error ::router.pre-turn-failed :exception t))))
 
 (defn- all-iteration-tool-names
   "Best-effort: tool-name strings across ALL of the turn's BT iterations
@@ -260,7 +260,7 @@
     (catch Throwable _ nil)))
 
 (defn- routed-to-of
-  "The specialist defagent main-agent dispatched this turn — the LAST specialist
+  "The specialist defagent router-agent dispatched this turn — the LAST specialist
    tool-call across the turn's iterations, or nil for a self-answered turn."
   [agent]
   (->> (all-iteration-tool-names agent)
@@ -300,7 +300,7 @@
    (specialist→shape); else the `Routing:` answer-line shape (self-answered);
    else a channel fallback. Coerced to a known shape (:unspecified otherwise)."
   [agent ans-line routed-to]
-  (main/coerce-shape
+  (router/coerce-shape
    (cond
      routed-to        (specialist->shape routed-to)
      (:shape ans-line) (:shape ans-line)
@@ -323,7 +323,7 @@
 
 (defn record-routing-line
   "Primary writer of the per-turn routing.log line (hook-derived, not LLM-
-   constructed — main-agent no longer calls main$append-log). On main-agent's
+   constructed — router-agent no longer calls router$append-log). On router-agent's
    :agent.ask/post: derive routed-to (dispatched specialist), shape
    (specialist→shape / `Routing:` answer line / channel fallback), artifact
    (surfaced `Saved <kind>:` path), and reason (`Routing:` reason or the first
@@ -331,25 +331,25 @@
    re-thrown."
   [{:keys [agent input result]}]
   (try
-    (when (main-agent? agent)
+    (when (router-agent? agent)
       (let [sid    (session-id-of agent)
             answer (result-answer result)]
         (when (and sid (string? answer) (not (str/blank? answer)))
           (let [pre-turn  (or (some-> (:!state agent) deref ::pre-max-turn) 0)
                 post-turn (max-turn-in-log sid)]
-            ;; main-agent no longer writes its own line, so this is normally the
+            ;; router-agent no longer writes its own line, so this is normally the
             ;; only write per turn; the guard just no-ops a double-fire.
             (when (= pre-turn post-turn)
               (let [ans-line  (extract-routing-answer-line answer)
                     routed-to (routed-to-of agent)
                     shape     (derive-shape agent ans-line routed-to)
-                    artifact  (first (map :path (main/parse-saved-lines answer)))
+                    artifact  (first (map :path (router/parse-saved-lines answer)))
                     reason    (or (:reason ans-line)
                                   (first-prose-line answer)
                                   "(routing reason not stated)")
                     question  (summary-question input)
                     next-turn (inc pre-turn)
-                    r (main/append-log!
+                    r (router/append-log!
                        :session-id sid
                        :turn next-turn
                        :iter 1
@@ -359,35 +359,35 @@
                        :artifact artifact
                        :reason reason)]
                 (when (:appended r)
-                  (mulog/log ::main.routing-line-recorded
+                  (mulog/log ::router.routing-line-recorded
                              :session-id sid :turn next-turn
                              :shape shape :routed-to routed-to
                              :artifact (boolean artifact)))))))))
     (catch Throwable t
-      (mulog/error ::main.routing-line-failed :exception t))))
+      (mulog/error ::router.routing-line-failed :exception t))))
 
 ;; ============================================================================
 ;; Handler 5 — :agent.session/closed → INDEX.md summary
 ;; ============================================================================
 
 (defn finalize-index
-  "Append a one-line summary to .brainyard/agents/main-agent/INDEX.md when the
+  "Append a one-line summary to .brainyard/agents/router-agent/INDEX.md when the
    session closes — turn count + distinct routing-decision shapes seen.
-   No-op when the session never had a routing log (main-agent was never
+   No-op when the session never had a routing log (router-agent was never
    invoked). Failures are logged but never re-thrown."
   [{:keys [session-id]}]
   (try
     (when (string? session-id)
-      (let [log     (main/read-routing-log session-id)
+      (let [log     (router/read-routing-log session-id)
             turns   (->> log (keep :turn) (apply max 0))
             shapes  (->> log (keep :shape) distinct vec)]
         (when (seq log)
-          (main/main$index-append
+          (router/router$index-append
            :session-id session-id
            :turn-count turns
            :shapes shapes))))
     (catch Throwable t
-      (mulog/error ::main.finalize-index-failed
+      (mulog/error ::router.finalize-index-failed
                    :session-id session-id
                    :exception t))))
 
@@ -397,37 +397,37 @@
 ;; ============================================================================
 
 (defn install!
-  "Register all five main-agent hooks globally. Idempotent — safe to call
+  "Register all five router-agent hooks globally. Idempotent — safe to call
    from boot. Apps can opt out via
-   `(hooks/unregister-source! ::main-agent)`."
+   `(hooks/unregister-source! ::router-agent)`."
   []
   (hooks/register-hook!
    :agent.session/created
    ::routing-log-bootstrap
    routing-log-bootstrap
-   :source ::main-agent)
+   :source ::router-agent)
   (hooks/register-hook!
    :agent.ask/pre
    ::capture-pre-turn
    capture-pre-turn
-   :source ::main-agent
-   :match  (fn [{:keys [agent]}] (main-agent? agent)))
+   :source ::router-agent
+   :match  (fn [{:keys [agent]}] (router-agent? agent)))
   (hooks/register-hook!
    :agent.tool-use/post
    ::capture-saved-artifacts
    capture-saved-artifacts
-   :source ::main-agent
-   :match  (fn [{:keys [agent]}] (main-agent? agent)))
+   :source ::router-agent
+   :match  (fn [{:keys [agent]}] (router-agent? agent)))
   (hooks/register-hook!
    :agent.ask/post
    ::record-routing-line
    record-routing-line
-   :source ::main-agent
-   :match  (fn [{:keys [agent]}] (main-agent? agent)))
+   :source ::router-agent
+   :match  (fn [{:keys [agent]}] (router-agent? agent)))
   (hooks/register-hook!
    :agent.session/closed
    ::finalize-index
    finalize-index
-   :source ::main-agent))
+   :source ::router-agent))
 
 (install!)

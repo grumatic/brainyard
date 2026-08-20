@@ -13,7 +13,7 @@
 >      (the `## Executing a checklist` system-context section in `agent_roster.clj`)
 >      is wired into **both** `coact-system-context` (`coact_agent.clj`) and
 >      `react-system-context` (`react_agent.clj`), next to `:todo-substrate`. So
->      *any* derived agent — `main-agent` included — can drive a checklist to
+>      *any* derived agent — `router-agent` included — can drive a checklist to
 >      completion with **evidence-before-flip** and **safe-writes-via-edit-agent**,
 >      with no `exec-agent` dispatch (§5, §8). The route → verify → record → flip
 >      discipline is base guidance; the tools (`edit-agent`, `bash`, `mcp$tools`,
@@ -220,7 +220,7 @@ one guidance edit on the base agents (tools already inherited).
 ## 3. Position in the Agent Stack
 
 **Two kinds of execution.** Most interactive work is **working execution**: an agent
-(often the root `main-agent`) just needs to do the items on its checklist, with
+(often the root `router-agent`) just needs to do the items on its checklist, with
 evidence and safe writes, but no audit dossier. That runs inline via the exec
 substrate (§5, §8) — zero exec-agent dispatch. **Contract execution** is the audited
 plan → todo → exec → eval handoff with an evidence dossier; that is what *this
@@ -681,7 +681,7 @@ execution: gated on passed plan+todo dossiers, bounded, audited with an evidence
 dossier eval-agent consumes.
 ```
 
-So a single base-level edit gives every agent — `main-agent` included — the ability
+So a single base-level edit gives every agent — `router-agent` included — the ability
 to execute its own checklist with evidence and safe writes, no dispatch. §8.1 below
 draws the working-vs-contract line.
 
@@ -1263,7 +1263,7 @@ The index-free flip depends on the todo redesign's substrate (the checklist form
 | Acceptance progress completeness       | All items advanced                                                                            | acceptance_progress map has every criterion either evidence-recorded or pending; eval-agent can score.                            |
 | Single dossier per turn                | Single turn                                                                                   | Exactly one dossier under dossiers/; `exec$read-dossier` returns all contract keys; no `runs/` artifact.                          |
 | Downstream unchanged                   | Feed the dossier to an eval-agent fixture                                                      | Reads `acceptance_progress` / `items_advanced` exactly as before.                                                                |
-| **Substrate**                          | main-agent (with the substrate) drives a working checklist                                     | Routes a write through edit-agent, verifies, flips index-free, reconciles — zero exec-agent dispatch.                            |
+| **Substrate**                          | router-agent (with the substrate) drives a working checklist                                     | Routes a write through edit-agent, verifies, flips index-free, reconciles — zero exec-agent dispatch.                            |
 | Auto-persist backstop                  | Skipped dossier                                                                                | Hook materializes a parseable one from answer text; `Saved dossier:` line injected.                                              |
 | Index integrity                        | Append 100 dossiers                                                                           | INDEX.md has 100 lines, append-only.                                                                                             |
 

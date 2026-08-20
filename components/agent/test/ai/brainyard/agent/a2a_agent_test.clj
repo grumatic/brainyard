@@ -16,7 +16,7 @@
       path, interrupted ≠ finished, the serve blast radius, the
       config-agent hand-off, the dossier contract).
 
-   2. ROUTER WIRING — main-agent must know about the agent in all three of
+   2. ROUTER WIRING — router-agent must know about the agent in all three of
       its router surfaces, and must state the boundary against mcp-agent and
       acp-agent. A front door nothing routes to is dead code.
 
@@ -26,7 +26,7 @@
             [clojure.test :refer [deftest is testing]]
             [ai.brainyard.agent.common.a2a-agent]
             [ai.brainyard.agent.common.coact-agent]
-            [ai.brainyard.agent.common.main-agent]
+            [ai.brainyard.agent.common.router-agent]
             [ai.brainyard.agent.core.tool :as tool]))
 
 ;; ============================================================================
@@ -53,8 +53,8 @@
   []
   (str/replace (instruction) #"\s+" " "))
 
-(defn- main-agent-text []
-  (let [d (get (tool/get-tool-defs :type :agent) :main-agent)]
+(defn- router-agent-text []
+  (let [d (get (tool/get-tool-defs :type :agent) :router-agent)]
     (str (get-in d [:meta :instruction]) "\n" (get-in d [:meta :tool-context]))))
 
 ;; ============================================================================
@@ -185,9 +185,9 @@
 ;; 2. ROUTER WIRING
 ;; ============================================================================
 
-(deftest main-agent-router-wiring
-  (let [t (main-agent-text)]
-    (testing "main-agent knows a2a-agent exists"
+(deftest router-agent-router-wiring
+  (let [t (router-agent-text)]
+    (testing "router-agent knows a2a-agent exists"
       ;; A front door nothing routes to is dead code.
       (is (str/includes? t "a2a-agent")))
 

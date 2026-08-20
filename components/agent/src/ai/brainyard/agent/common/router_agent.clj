@@ -2,8 +2,8 @@
 ;; SPDX-License-Identifier: MIT
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
-(ns ai.brainyard.agent.common.main-agent
-  "Main-agent — the front-door router for brainyard.
+(ns ai.brainyard.agent.common.router-agent
+  "Router-agent — the front-door router for brainyard.
 
    Built on the CoAct behavior tree via `coact/run-coact-derived`. Its job is
    to look at a user question and pick the right specialist (or use coact-
@@ -14,7 +14,7 @@
    research / workflow / memory / init / config / skill / mcp / rlm / acp /
    coact / react) self-register in the unified !tool-defs through their own
    defagent forms and are reached via direct kebab-case dispatch from a
-   clojure fence, or via the tool channel. main-agent's :agent-tools roster
+   clojure fence, or via the tool channel. router-agent's :agent-tools roster
    is just the substrate it needs for the routing log, light pre-research,
    and read-only inspection of upstream specialist dossiers.
 
@@ -24,12 +24,12 @@
        cherry-pick (`*$read-dossier` + `edit$read-record`) is the
        deliberate asymmetry.
 
-   See docs/design/main-agent-design.md for the design rationale."
+   See docs/design/router-agent-design.md for the design rationale."
   (:require [ai.brainyard.agent.common.coact-agent :as coact]
             [ai.brainyard.agent.common.commands :as common-cmds]
             [ai.brainyard.agent.common.eval :as eval-helpers]
             [ai.brainyard.agent.common.exec :as exec-helpers]
-            [ai.brainyard.agent.common.main :as main]
+            [ai.brainyard.agent.common.router :as router]
             [ai.brainyard.agent.common.plan :as plan-helpers]
             [ai.brainyard.agent.common.todo :as todo-helpers]
             [ai.brainyard.agent.common.tools :as common-tools]
@@ -38,7 +38,7 @@
             [ai.brainyard.agent.task.commands :as task-cmds]))
 
 (def ^:private instruction
-  "You are MAIN-agent, the front-door router for brainyard. Each user turn is
+  "You are ROUTER-agent, the front-door router for brainyard. Each user turn is
 your chance to pick the RIGHT next move: answer directly, fetch a quick
 tool, compose with code, or — most often — DELEGATE to a specialist agent
 whose domain fits the question. You decide. The specialists own their work.
@@ -234,8 +234,8 @@ The routing-log directory is created automatically when the session opens (an
 iteration, just probe whether this session already has history:
 
 ```clojure
-(def sid (:session-id (main$session-id)))   ; current agent-session id
-(def state (main$resume? :session-id sid))  ; {:exists? … :last-shape … :last-artifact …}
+(def sid (:session-id (router$session-id)))   ; current agent-session id
+(def state (router$resume? :session-id sid))  ; {:exists? … :last-shape … :last-artifact …}
 ;; If (:exists? state): RESUME — read routing.log / pointers.md and surface a
 ;; one-paragraph 'where this session has been' in your :thought before deciding
 ;; this turn's move. Otherwise it's a fresh session — route normally.
@@ -411,10 +411,10 @@ log helper. Your only obligations:
    parses the shape + reason from it.
 
 3. Specialist `Saved <kind>: <path>` lines are ALSO auto-captured into
-   pointers.md by a separate hook. You may call `main$append-pointer` explicitly
+   pointers.md by a separate hook. You may call `router$append-pointer` explicitly
    for an artifact you computed yourself, but it's rarely needed.
 
-Continuation detection still works: `main$resume?` / `main$last-shape` read the
+Continuation detection still works: `router$resume?` / `router$last-shape` read the
 hook-written routing.log. Failing to state a reason just yields a thinner log
 entry — never a failed turn.
 
@@ -424,7 +424,7 @@ PASSING CONTEXT TO SPECIALISTS
 Every specialist call's :agent-context should include:
 
     User session: <session-id>
-    Routing log: .brainyard/agents/main-agent/<session-id>/routing.log
+    Routing log: .brainyard/agents/router-agent/<session-id>/routing.log
     [Optional] Prior artifacts:
       - plan:    <path>
       - todo:    <path>
@@ -495,7 +495,7 @@ HARD RULES
 
 4. DO NOT solve a multi-specialist problem inline. If a question
    genuinely needs explore + plan + todo + exec + eval, route to
-   research-agent. Don't hand-roll the arc inside main-agent.
+   research-agent. Don't hand-roll the arc inside router-agent.
 
 5. DO NOT swallow a specialist's `Saved <kind>: <path>` line. Always
    surface it in your :answer — the user needs the durable path to
@@ -535,7 +535,7 @@ every turn after the first:
    first move of the turn.")
 
 (def ^:private tool-context
-  "## Main-agent tools — specialists + routing-log substrate
+  "## Router-agent tools — specialists + routing-log substrate
 
 ### Specialists (direct kebab-case dispatch — NOT bound directly)
 All registered specialist `defagent`s are reachable by name. See the
@@ -567,7 +567,7 @@ instruction §6 (DECISION TABLE) for the full per-agent rule. Headline:
 Invocation pattern (all identical):
     (<agent-name> {:question      \"<directed sub-question>\"
                    :agent-context \"User session: <session-id>\\n
-                                   Routing log: .brainyard/agents/main-agent/<session-id>/routing.log\\n
+                                   Routing log: .brainyard/agents/router-agent/<session-id>/routing.log\\n
                                    [Optional Prior artifacts: …]\\n
                                    [Optional Hint: …]\"})
 
@@ -576,7 +576,7 @@ Invocation pattern (all identical):
                     or sibling dossier files (read-only).
 - write-file     -- Update pointers.md. USE :append true for both
                     routing.log entries (NDJSON) and pointers.md bullets.
-                    Prefer main$* helpers over inline write-file.
+                    Prefer router$* helpers over inline write-file.
 - update-file    -- Rarely needed — both your files are append-only.
 - grep           -- Cheap content scan inside your own log files.
 - bash           -- mkdir -p, ls, find. NOT for builds or test runs —
@@ -636,33 +636,33 @@ Invocation pattern (all identical):
                          settings. Tune `:max-iterations` mid-run if
                          a question's arc legitimately needs more.
 
-## main$* helpers (auto-bound in the sandbox)
+## router$* helpers (auto-bound in the sandbox)
 
-The per-turn routing LINE is hook-recorded — there is NO `main$append-log`
+The per-turn routing LINE is hook-recorded — there is NO `router$append-log`
 helper. These accessors/probes remain (all read-only except append-pointer):
 
-- `(main$session-id)`
+- `(router$session-id)`
     → `{:session-id \"<id>\"}`. Current agent-session id.
 
-- `(main$resume? :session-id <id>)`
+- `(router$resume? :session-id <id>)`
     → `{:exists? bool :turn-count int :last-shape kw :last-artifact \"<path>\"}`.
     Cheap probe — does the routing-log dir exist + its last state?
 
-- `(main$bootstrap :session-id <id>)`
+- `(router$bootstrap :session-id <id>)`
     → `{:dir … :log-path … :pointers-path …}`. Idempotent. Normally
     unnecessary — the `:agent.session/created` hook bootstraps for you.
 
-- `(main$append-pointer :path \"<path>\" :caption \"<one-line>\")`
+- `(router$append-pointer :path \"<path>\" :caption \"<one-line>\")`
     → `{:appended true}`. One bullet to pointers.md. Usually the
     `:agent.tool-use/post` hook captures specialist `Saved <kind>:` lines for
     you; call this explicitly only for an artifact you computed yourself.
 
-- `(main$last-shape :session-id <id>)`
+- `(router$last-shape :session-id <id>)`
     → `{:exists? bool :shape kw :routed-to \"…\" :artifact \"…\" :turn N}`.
     Drives continuation detection ('user said now do X with the thing
     — what was the thing?').
 
-- `(main$index-append :session-id <id> :turn-count N :shapes [...])`
+- `(router$index-append :session-id <id> :turn-count N :shapes [...])`
     → `{:appended true}`. Appended on session close by the
     `:agent.session/closed` hook. You usually do not call this yourself.
 
@@ -673,7 +673,7 @@ a SELF-ANSWERED move, add `Routing: <shape> — <reason>` to your :answer so the
 hook can record the shape.
 
 ## Typical flow (no specific iteration count required)
-1. iter 1 — probe the session (main$resume?); surface session context in
+1. iter 1 — probe the session (router$resume?); surface session context in
    :thought. (The routing-log dir is already bootstrapped by a hook.)
 2. iter 2 — pick a decision-table move; either route to a specialist
    (tool / code channel invocation) or answer directly (answer channel).
@@ -695,8 +695,8 @@ hook can record the shape.
   specialists; reach for it only when reconciling outputs you've already
   collected.")
 
-(defagent main-agent
-  "Front-door router for brainyard. Picks the right specialist (or coact-agent's own channels) per question shape; maintains a thin routing log under .brainyard/agents/main-agent/<session-id>/ for session continuity, audit trail, and continuation detection. Default :max-iterations 20."
+(defagent router-agent
+  "Front-door router for brainyard. Picks the right specialist (or coact-agent's own channels) per question shape; maintains a thin routing log under .brainyard/agents/router-agent/<session-id>/ for session continuity, audit trail, and continuation detection. Default :max-iterations 20."
   coact/run-coact-derived
   ;; Pin :bt-factory explicitly so derived-agent inheritance works for entry
   ;; points (e.g. setup-agent-by-id used by `bb tui ask`) that resolve agent
@@ -712,7 +712,7 @@ hook can record the shape.
                   [:answer [:string {:desc "Final user-facing answer. When a specialist ran, surfaces the specialist's `Saved <kind>: <path>` line(s) verbatim plus a one-paragraph distillation."}]]]
   :agent-tools {:tools (vec (distinct (concat
                                        ;; Routing-log substrate — read/write
-                                       ;; on main-agent's OWN dir only. Hard
+                                       ;; on router-agent's OWN dir only. Hard
                                        ;; Rule 2 forbids writes to sibling
                                        ;; specialist dirs — those go through
                                        ;; their specialists.
@@ -725,7 +725,7 @@ hook can record the shape.
                                        common-tools/web-tools
 
                                        ;; Read-only sibling dossier helpers
-                                       ;; (cherry-picked). Lets main-agent
+                                       ;; (cherry-picked). Lets router-agent
                                        ;; cheaply detect 'plan exists; is
                                        ;; post-flight pass?' before routing
                                        ;; to todo-agent, etc.
@@ -754,11 +754,11 @@ hook can record the shape.
                                        ;; tuning mid-session.
                                        common-cmds/runtime-commands
 
-                                       ;; main$* helpers — session-id /
+                                       ;; router$* helpers — session-id /
                                        ;; resume? / bootstrap / append-pointer /
                                        ;; last-shape / index-append. The per-turn
                                        ;; routing LINE is hook-recorded (no
-                                       ;; main$append-log) — see main-agent-hooks.
-                                       main/main-helpers)))}
+                                       ;; router$append-log) — see router-agent-hooks.
+                                       router/router-helpers)))}
   :instruction instruction
   :tool-context tool-context)

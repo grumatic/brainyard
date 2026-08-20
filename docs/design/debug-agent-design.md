@@ -101,7 +101,7 @@ operates *on* the live image.
 ## 3. Position in the agent stack
 
 ```
-                    operator (or main-agent, via `-a debug-agent` / `@debug-agent`)
+                    operator (or router-agent, via `-a debug-agent` / `@debug-agent`)
                                         │
                                         ▼
                                   debug-agent

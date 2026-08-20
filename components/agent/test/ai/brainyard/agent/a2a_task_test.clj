@@ -99,7 +99,7 @@
 
 (defn- make-parent [!session]
   (agent-core/map->Agent
-   {:agent-id :main-agent/test-parent
+   {:agent-id :router-agent/test-parent
     :!state   (atom {:status :idle
                      :lifecycle {:owner nil :answers 0
                                  :created-at (System/currentTimeMillis)}

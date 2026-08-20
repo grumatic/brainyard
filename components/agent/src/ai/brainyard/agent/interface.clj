@@ -102,13 +102,13 @@
             ;; (The SERVING half, `common.a2a-serve`, is aliased at the top of
             ;; this :require — it backs the a2a-serve!/a2a-build-card exports
             ;; for `by a2a serve`.)
-            ;; Front-door router. Loads main-agent AND its three lifecycle
+            ;; Front-door router. Loads router-agent AND its three lifecycle
             ;; hooks (:agent.session/created bootstrap, :agent.tool-use/post
             ;; capture-saved-artifacts, :agent.session/closed INDEX summary).
             ;; Apps may opt out via (hooks/unregister-source!
-            ;; :ai.brainyard.agent.common.main-agent-hooks/main-agent).
-            [ai.brainyard.agent.common.main-agent]
-            [ai.brainyard.agent.common.main-agent-hooks]
+            ;; :ai.brainyard.agent.common.router-agent-hooks/router-agent).
+            [ai.brainyard.agent.common.router-agent]
+            [ai.brainyard.agent.common.router-agent-hooks]
             ;; Dynamic skill registry. `reload-skills!` is re-exported below
             ;; so entry points (e.g. the TUI's `start!`) can register skills at
             ;; runtime startup instead of via a namespace-load `defonce` — which

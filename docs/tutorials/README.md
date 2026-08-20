@@ -34,7 +34,7 @@ walkthrough.
 | 14 | MapReduce over big inputs                  | rlm-agent — fan out across logs, then aggregate          |
 | 15 | A focused research turn                    | research-agent — explore + recommend (no plan, no code)  |
 | 16 | Running a multi-stage workflow             | workflow-agent — explore + plan stages, threaded dossier |
-| 17 | The front-door router                      | main-agent — route questions to the right specialist     |
+| 17 | The front-door router                      | router-agent — route questions to the right specialist     |
 | 18 | Authoring a persistent tool                | tool-agent — discover / author / verify & run            |
 | 19 | Using free LLM models                      | coact-agent — `/model auto` → :free-llm, free endpoint   |
 | 20 | Sharing a session over the web             | `by --web` / `--web-tmux` — ttyd launcher (walkthrough only) |

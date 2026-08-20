@@ -72,7 +72,7 @@
 > **As-built (Phase 6, verified against code):** `a2a-agent`
 > (`common/a2a_agent.clj`) — a thin `run-coact-derived` defagent over
 > `a2a$*` + `agent-registry$*` + `task$*`, **zero new commands**, with the
-> hard FINAL-STEP dossier contract. Wired into `main_agent.clj`'s router in
+> hard FINAL-STEP dossier contract. Wired into `router_agent.clj`'s router in
 > all three surfaces (directory, lettered decision table `O2. A2A-PEERS`,
 > summary list). 8 structural/router tests / 59 assertions; the three sibling
 > front-door suites (event / schedule / state-machine) still green at 37
@@ -375,10 +375,10 @@ LLM turn.
 > the worst outcome for a safety check, because nothing appears broken.
 >
 > **1. Entries are NODE ids, not agent or skill ids.** A brainyard instance has
-> two unrelated names for itself: locally it is `main-agent/lime-mole-8966`, to
+> two unrelated names for itself: locally it is `router-agent/lime-mole-8966`, to
 > a remote peer it is `https://a.example/a2a#main`. The draft above put the
 > URL-scoped skill id in the chain — so `A → B → A` would have compared
-> `"main-agent/lime-mole-8966"` against `"https://a.example/a2a#main"`, never
+> `"router-agent/lime-mole-8966"` against `"https://a.example/a2a#main"`, never
 > matched, and never fired. Each node now stamps ONE stable identity
 > (`a2a/node-id`, a per-process UUID) used both when calling out and when
 > checking inbound. It is URL-independent, so it survives proxies, multiple
@@ -753,7 +753,7 @@ A thin `coact/run-coact-derived` `defagent` (`common/a2a_agent.clj`) over the
   without a dossier is an INCOMPLETE turn"), writing to
   `.brainyard/agents/a2a-agent/dossiers/<ts>-<slug>.md` + `INDEX.md`;
 - registration in `agent/interface.clj`'s side-effecting require list and
-  wiring into `common/main_agent.clj`'s router **in three places** (directory,
+  wiring into `common/router_agent.clj`'s router **in three places** (directory,
   lettered decision table, summary list).
 
 Boundary against the neighbours: `mcp-agent` owns external *tools*; `acp-agent`
@@ -832,7 +832,7 @@ components/agent/test/ai/brainyard/agent/{a2a_registry,a2a_task,a2a_agent}_test.
 | `components/agent/src/.../core/feature.clj` | the `:agents/a2a` family (§6) |
 | `components/agent/src/.../common/commands.clj` | `:kind :local\|:remote` in `instance-summary` + `agent-registry$detail` |
 | `components/agent/src/.../task/executor.clj` | `A2ATaskJobExecutor` |
-| `components/agent/src/.../common/main_agent.clj` | router wiring, three places |
+| `components/agent/src/.../common/router_agent.clj` | router wiring, three places |
 | `projects/agent-tui-app/src/.../main.clj` | `"a2a"` in `known-subcommands` (line 2672) + a cli-matic subcommand beside `events` (~line 2653) |
 | `projects/agent-tui-app/resources/.../reflect-config.json` | `RemoteAgent` + any new defrecords |
 | `workspace.edn` | `"a2a" "a2a-client" "a2a-server"` in `agent-tui-app`'s `:necessary`, if Polylith can't infer them |

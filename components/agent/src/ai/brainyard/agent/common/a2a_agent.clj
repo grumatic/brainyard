@@ -243,7 +243,7 @@ agent-runtime$config {:query \"a2a\"}
   :tool-use-control {}
   :input-schema  [:map
                   [:question [:string {:desc "User request about remote A2A agents, peers, or serving this brainyard"}]]
-                  [:agent-context {:optional true} [:string {:desc "Optional handoff context (e.g. from main-agent)"}]]]
+                  [:agent-context {:optional true} [:string {:desc "Optional handoff context (e.g. from router-agent)"}]]]
   :output-schema [:map
                   [:answer [:string {:desc "Markdown summary; for a write, close with what is now reachable, the exact tool/instance id to use next, and the blast radius for anything inbound"}]]]
   :agent-tools

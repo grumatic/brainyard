@@ -31,9 +31,9 @@
 
    **1. Entries are node ids, not agent or skill ids.** A brainyard
    instance has two unrelated names for itself: locally it is
-   `main-agent/lime-mole-8966`, and to a remote peer it is
+   `router-agent/lime-mole-8966`, and to a remote peer it is
    `https://a.example/a2a#main`. If the chain carried those, `A -> B -> A`
-   would compare `\"main-agent/lime-mole-8966\"` against
+   would compare `\"router-agent/lime-mole-8966\"` against
    `\"https://a.example/a2a#main\"`, never match, and the guard would
    silently never fire — the worst outcome for a safety check, because it
    looks like it is working. So every node stamps ONE stable identity

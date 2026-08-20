@@ -162,7 +162,7 @@
   (section-header "Agent Defaults")
   (let [agent-options [{:label "coact-agent" :value :coact-agent
                         :description "CoAct (default — three-channel tool/code/answer loop)"}
-                       {:label "main-agent" :value :main-agent
+                       {:label "router-agent" :value :router-agent
                         :description "Front-door router (picks the right specialist per question shape; CoAct-based)"}
                        {:label "react-agent" :value :react-agent
                         :description "ReAct (tool calling, single-step by default)"}]

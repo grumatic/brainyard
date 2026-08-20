@@ -303,7 +303,7 @@ caveat.")
   :tool-use-control {}
   :input-schema  [:map
                   [:question [:string {:desc "User request about scheduled prompt jobs"}]]
-                  [:agent-context {:optional true} [:string {:desc "Optional handoff context (e.g. from main-agent)"}]]
+                  [:agent-context {:optional true} [:string {:desc "Optional handoff context (e.g. from router-agent)"}]]
                   [:auto? {:optional true} :boolean]]
   :output-schema [:map
                   [:answer [:string {:desc "Markdown summary; for a write, close with the plain-words trigger, the concrete next-fire, and the session-bound caveat"}]]]

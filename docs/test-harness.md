@@ -304,7 +304,7 @@ handoff lines.
 
 ### Routing & meta-control
 
-- **`main-agent`** — front-door router. Function: route to the right specialist
+- **`router-agent`** — front-door router. Function: route to the right specialist
   and maintain a per-session routing log. Give it prompts of several shapes
   (explore-y, plan-y, config-y) and assert the routing log records the chosen
   specialist for each.

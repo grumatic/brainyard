@@ -5,7 +5,7 @@
 > (user-defined *skills*). Machinery lives in `common/user_agents.clj` (commands +
 > persistence + runtime registration) and `meta_agent.clj` (the manager defagent),
 > mirroring `user_tools.clj` / `tool_agent.clj`; routing is wired via the
-> `:agent-lifecycle` shape in `main.clj` / `main_agent.clj`. The lightweight-
+> `:agent-lifecycle` shape in `main.clj` / `router_agent.clj`. The lightweight-
 > authoring redesign shipped (2026-06); this doc is the as-built reference — the
 > former `tool-meta-agent-lightweight-redesign.md` (which covered meta-agent **and**
 > tool-agent together) has been folded in here and removed.
@@ -42,7 +42,7 @@
 >   directly (§8 as-built note).
 >
 > Related: `tool-agent-design.md` (the mirror; shared rationale),
-> `main-agent-design.md` (router), `config-agent-design.md`, `mcp-agent-design.md`,
+> `router-agent-design.md` (router), `config-agent-design.md`, `mcp-agent-design.md`,
 > `agent-lightweight-redesign-synthesis.md` (the series principle).
 > Phase 3 items (a real `meta-agent$update`, `:scope :user`, per-agent config,
 > router auto-advertisement, few-shot `examples.md`) remain open — see §13.
@@ -69,7 +69,7 @@ and whose tool-context names the tools it should reach for, persisted with the
 project and routable on the next turn.
 
 `meta-agent` is the specialist that owns this surface: the single agent
-`main-agent` routes to for "make me an agent that …", "what agents have I
+`router-agent` routes to for "make me an agent that …", "what agents have I
 defined?", "tweak my `tf-reviewer` agent's instructions", and "delete
 `copy-editor`." It turns raw persistence into a guided authoring workflow —
 draft the instruction, name the tools in the tool-context, validate, register,
@@ -216,7 +216,7 @@ in `tool-agent-design.md` §2A; the meta-agent shape:
 **Why no substrate.** The skill-agent doc added a base skill substrate so any
 agent could *use* skills (use = discover → read → follow, a three-step
 LLM-inherent procedure). A **user agent** is a *callable specialist*: using it =
-**dispatch to it**. Once `meta-agent$create` registers it, `main-agent`'s decision
+**dispatch to it**. Once `meta-agent$create` registers it, `router-agent`'s decision
 table and any peer's tool-call channel can already invoke it under the existing
 depth/circular guards. There is no "follow" step to make ambient — the registry
 already is the substrate. The series rule:
@@ -256,7 +256,7 @@ The consequence is worth stating plainly: once registered, a user-defined agent
 is **indistinguishable from a built-in specialist** to the rest of the system.
 It shows up in `list-tools` / `search`, flows through `call-tool`'s coercion and
 the sub-agent depth/circular guards in `do-call-tool--agent`, can be a routing
-target for `main-agent`, and can be composed by a peer agent's tool-call channel
+target for `router-agent`, and can be composed by a peer agent's tool-call channel
 — all without a recompile.
 
 Like its siblings, the manager stays flat: it does not clone-self, and it writes
@@ -311,7 +311,7 @@ mirroring `user-tools/tools-commands` and `skills/skills-commands`:
 
 The authored agent itself — once `meta-agent$create` succeeds, `user$agent$<name>` is a
 live, directly-callable `:type :agent`. The manager calls it (with a
-representative `:question`) to verify, and thereafter `main-agent` and peer
+representative `:question`) to verify, and thereafter `router-agent` and peer
 agents can call it too.
 
 There is deliberately **no tool-binding command** — no `meta-agent$bind-tool`, no
@@ -542,13 +542,13 @@ SAFETY (hard rules)
 A `:tool-context` block (as in `tool-agent`) restates the `meta-agent$*` arg
 signatures and typical flows so the model has the command surface inline.
 
-## 7. Routing — wiring into main-agent, and user-defined agents as targets
+## 7. Routing — wiring into router-agent, and user-defined agents as targets
 
 There are two routing concerns, and only the first needs new wiring.
 
-**(a) Routing to the manager.** `main-agent` owns a fixed roster of
+**(a) Routing to the manager.** `router-agent` owns a fixed roster of
 routing-decision shapes (the lettered set A–U in `main.clj`'s `valid-shapes` and
-`main_agent.clj`'s instruction). Agent lifecycle has no shape today; this design
+`router_agent.clj`'s instruction). Agent lifecycle has no shape today; this design
 adds one:
 
 - `:agent-lifecycle → meta-agent` — author/inspect/refine/remove user-defined
@@ -559,7 +559,7 @@ adds one:
 
 Concretely: add `:agent-lifecycle` to `valid-shapes` in `main.clj` (as the next
 letter, V), add the cue + the `→ meta-agent` line to the specialist table in
-`main_agent.clj`, and add `[ai.brainyard.agent.common.meta-agent]` to the
+`router_agent.clj`, and add `[ai.brainyard.agent.common.meta-agent]` to the
 require list in `interface.clj`.
 
 Routing cue: route to `meta-agent` when the user wants to *make, see, change, or
@@ -574,7 +574,7 @@ is already a legitimate delegation target and tool-call. Two integration points
 make this useful, and both are extensions rather than new mechanisms:
 
 - The router's specialist roster is assembled from the registry, so a
-  registered `user$agent$<name>` can be surfaced to `main-agent` as a candidate —
+  registered `user$agent$<name>` can be surfaced to `router-agent` as a candidate —
   routing a matching ask straight to the user's own agent. (How aggressively to
   advertise user agents to the router is an open question, §13 — the safe
   default is to keep them callable-by-name but not auto-routed until the user
@@ -781,7 +781,7 @@ roster (assert a known common tool is reachable from inside it) with no
 per-agent `:agent-tools`; `ensure-loaded!` re-registers persisted agents on a
 fresh process and is a no-op on the second call.
 
-**Routing level**: a `main-agent` routing test asserting `:agent-lifecycle →
+**Routing level**: a `router-agent` routing test asserting `:agent-lifecycle →
 meta-agent` for agent-authoring phrasings, and that tool / skill / MCP phrasings
 still select their own specialists (no regression in the existing roster).
 
@@ -804,7 +804,7 @@ loaders, and add both new nses to `interface.clj`. The manager is immediately us
 with validate-before-create and a runtime-registered, callable agent on success.
 
 **Phase 2 — wire routing.** Add `:agent-lifecycle` to `main.clj`'s
-`valid-shapes` and the cue to `main_agent.clj` so `main-agent` delegates
+`valid-shapes` and the cue to `router_agent.clj` so `router-agent` delegates
 authoring automatically. Add the routing regression test.
 
 **Phase 3 (optional)** — close the §13 gaps: a real `meta-agent$update` for partial
@@ -830,7 +830,7 @@ Recommended yes, once the storage variant lands.
 heavyweight research-style persona vs. a quick one-line summarizer.
 
 **Router advertisement.** Once `user$agent$<name>` is registered it is callable, but
-how visible should it be to `main-agent`'s classifier? Auto-routing every user
+how visible should it be to `router-agent`'s classifier? Auto-routing every user
 agent risks hijacking asks the built-ins should handle; the safe default is
 callable-by-name and composable, with explicit opt-in (a flag in `agent.edn`)
 before the router advertises it as a top-level target.

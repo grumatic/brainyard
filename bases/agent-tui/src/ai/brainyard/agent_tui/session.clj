@@ -1785,7 +1785,7 @@
 
 (defn- render-agent-activity-entry!
   "Render a single sub-agent display event with agent name prefix.
-   In :quiet display-format, mirror the main-agent iteration block: render only
+   In :quiet display-format, mirror the router-agent iteration block: render only
    the sub-agent's think text as a name-prefixed `•` bullet and skip every other
    stage (iteration headers, tool calls/results, observations, eval sections)."
   [agent-name stage data]

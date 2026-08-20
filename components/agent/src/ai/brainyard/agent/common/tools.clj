@@ -372,7 +372,7 @@
   ;; primary so read-file/grep agree with bash; the fallbacks only widen
   ;; discovery for files that live in a sibling tree or under ~/.brainyard.
   ;; The user-home reach is still gated by allowed-dirs/permission in
-  ;; read-file-content. See project_main_agent_path_divergence.
+  ;; read-file-content. See project_router_agent_path_divergence.
   (->> [(config/working-dir) (System/getProperty "user.home")]
        (remove nil?)
        distinct

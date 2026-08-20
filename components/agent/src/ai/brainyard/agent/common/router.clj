@@ -2,16 +2,16 @@
 ;; SPDX-License-Identifier: MIT
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
-(ns ai.brainyard.agent.common.main
-  "Main-agent quality-of-life helpers — mechanical defcommands that compress
+(ns ai.brainyard.agent.common.router
+  "Router-agent quality-of-life helpers — mechanical defcommands that compress
    the routing-log bootstrap / append-pointer / index-append flow plus the
    read seams (session-id / resume? / last-shape). The per-turn routing LINE is
-   hook-derived (main-agent-hooks/record-routing-line via the internal
-   `append-log!` fn) — `main$append-log` is retired as an LLM-facing tool.
+   hook-derived (router-agent-hooks/record-routing-line via the internal
+   `append-log!` fn) — `router$append-log` is retired as an LLM-facing tool.
 
    Each helper is a `defcommand` so it surfaces in the unified tool registry
-   and is auto-bound into the SCI sandbox (callable as `(main$session-id)` in
-   a clojure fence). Main-agent works without them — the instruction can fall
+   and is auto-bound into the SCI sandbox (callable as `(router$session-id)` in
+   a clojure fence). Router-agent works without them — the instruction can fall
    back to inline `write-file :append true` — but binding them shrinks the
    prompt because the routing-log mechanics no longer have to be inlined every
    iteration.
@@ -30,11 +30,11 @@
 ;; Constants
 ;; ============================================================================
 
-(def ^:private base-rel ".brainyard/agents/main-agent")
+(def ^:private base-rel ".brainyard/agents/router-agent")
 (def ^:private index-rel (str base-rel "/INDEX.md"))
 
 (def valid-shapes
-  "The 22 routing-decision shapes from docs/design/main-agent-design.md §6
+  "The 22 routing-decision shapes from docs/design/router-agent-design.md §6
    (decision-table letter labels A–V). The routing-log hook coerces a derived/
    parsed shape against this set via `coerce-shape` (unknown → :unspecified),
    so a mis-parsed shape never poisons the log nor fails the turn."
@@ -181,22 +181,22 @@
           (re-seq saved-line-re text))))
 
 ;; ============================================================================
-;; main$session-id
+;; router$session-id
 ;; ============================================================================
 
-(defcommand main$session-id
+(defcommand router$session-id
   "Return the current agent-session id (read from `*current-agent*`)."
   (fn [& _]
     (if-let [sid (current-session-id)]
       {:session-id sid}
-      {:error "No current agent — main$session-id must be called from inside an agent ask loop."}))
+      {:error "No current agent — router$session-id must be called from inside an agent ask loop."}))
   :input-schema  [:map]
   :output-schema [:map
                   [:session-id {:optional true} [:string {:desc "Current agent-session id"}]]
                   [:error      {:optional true} [:string {:desc "Error if no agent is bound"}]]])
 
 ;; ============================================================================
-;; main$resume?
+;; router$resume?
 ;; ============================================================================
 
 (defn- read-last-log-line
@@ -205,7 +205,7 @@
     (with-open [r (io/reader log-file)]
       (last (line-seq (java.io.BufferedReader. r))))))
 
-(defcommand main$resume?
+(defcommand router$resume?
   "Cheap probe: does the routing-log dir exist for this session, and what is its state?"
   (fn [& {:keys [session-id base-dir]
           :or   {base-dir (config/project-dir)}}]
@@ -246,14 +246,14 @@
                   [:error         {:optional true} [:string  {:desc "Error if validation failed"}]]])
 
 ;; ============================================================================
-;; main$bootstrap
+;; router$bootstrap
 ;; ============================================================================
 
 (def ^:private pointers-header
   "# Session pointers\n\n_Routing decisions and durable artifacts emitted this session, newest first._\n\n")
 
-(defcommand main$bootstrap
-  "Create .brainyard/agents/main-agent/<session-id>/ with empty routing.log and pointers.md header. Idempotent."
+(defcommand router$bootstrap
+  "Create .brainyard/agents/router-agent/<session-id>/ with empty routing.log and pointers.md header. Idempotent."
   (fn [& {:keys [session-id base-dir]
           :or   {base-dir (config/project-dir)}}]
     (let [sid (or session-id (current-session-id))]
@@ -270,7 +270,7 @@
               pointers-rel (str dir-rel "/pointers.md")]
           (if (.isDirectory dir)
             (do
-              (mulog/log ::main.bootstrap-skip :session-id sid :reason :already-exists)
+              (mulog/log ::router.bootstrap-skip :session-id sid :reason :already-exists)
               {:exists?       true
                :dir           dir-rel
                :log-path      log-rel
@@ -281,7 +281,7 @@
                 (spit log-file ""))
               (when-not (.isFile pointers)
                 (spit pointers pointers-header))
-              (mulog/log ::main.bootstrap :session-id sid)
+              (mulog/log ::router.bootstrap :session-id sid)
               {:dir           dir-rel
                :log-path      log-rel
                :pointers-path pointers-rel}))))))
@@ -299,9 +299,9 @@
 ;; Routing-log line writer (internal — the routing-log hook is the sole caller)
 ;;
 ;; Lightweight redesign: the routing line is HOOK-DERIVED, not LLM-constructed.
-;; `main$append-log` is retired as an LLM-facing tool; this plain fn renders the
-;; same NDJSON line and is called from main-agent-hooks/record-routing-line.
-;; The routing.log format is unchanged, so main$resume? / main$last-shape parse
+;; `router$append-log` is retired as an LLM-facing tool; this plain fn renders the
+;; same NDJSON line and is called from router-agent-hooks/record-routing-line.
+;; The routing.log format is unchanged, so router$resume? / router$last-shape parse
 ;; it identically.
 ;; ============================================================================
 
@@ -318,7 +318,7 @@
 
 (defn append-log!
   "Append one NDJSON routing-decision line to routing.log. INTERNAL — the
-   routing-log hook is the sole caller (main-agent no longer constructs log
+   routing-log hook is the sole caller (router-agent no longer constructs log
    lines). `:shape` is coerced to :unspecified if unknown; the dossier dir is
    created if missing. Returns {:appended true :line …} or {:error …}."
   [& {:keys [session-id turn iter question shape routed-to artifact reason base-dir]
@@ -340,16 +340,16 @@
                      :reason     (or reason ""))
               line  (str (json-object entry) "\n")]
           (spit log-file line :append true)
-          (mulog/log ::main.routing-decision
+          (mulog/log ::router.routing-decision
                      :session-id sid :turn turn :iter iter :shape shape-kw
                      :routed-to routed-to :artifact (boolean artifact))
           {:appended true :line (str/trim-newline line)})))))
 
 ;; ============================================================================
-;; main$append-pointer
+;; router$append-pointer
 ;; ============================================================================
 
-(defcommand main$append-pointer
+(defcommand router$append-pointer
   "Append one markdown bullet to pointers.md with a timestamp + caption."
   (fn [& {:keys [session-id path caption base-dir]
           :or   {base-dir (config/project-dir)}}]
@@ -367,12 +367,12 @@
                                 flat-caption "\n")]
           (if-not (.isDirectory dir)
             {:error (str "routing-log dir not found at " base-rel "/" sid
-                         " — call main$bootstrap first")}
+                         " — call router$bootstrap first")}
             (do
               (when-not (.isFile pointers)
                 (spit pointers pointers-header))
               (spit pointers line :append true)
-              (mulog/log ::main.pointer :session-id sid :path path)
+              (mulog/log ::router.pointer :session-id sid :path path)
               {:appended true}))))))
   :input-schema  [:map
                   [:session-id {:optional true} [:string {:desc "Agent-session id (default: current agent's session)"}]]
@@ -384,10 +384,10 @@
                   [:error    {:optional true} [:string  {:desc "Error if validation failed or dir missing"}]]])
 
 ;; ============================================================================
-;; main$last-shape
+;; router$last-shape
 ;; ============================================================================
 
-(defcommand main$last-shape
+(defcommand router$last-shape
   "Return the last routing decision in the current session's routing.log."
   (fn [& {:keys [session-id base-dir]
           :or   {base-dir (config/project-dir)}}]
@@ -431,11 +431,11 @@
                   [:error     {:optional true} [:string  {:desc "Error if validation failed"}]]])
 
 ;; ============================================================================
-;; main$index-append
+;; router$index-append
 ;; ============================================================================
 
-(defcommand main$index-append
-  "Append one line to .brainyard/agents/main-agent/INDEX.md summarizing a closed session."
+(defcommand router$index-append
+  "Append one line to .brainyard/agents/router-agent/INDEX.md summarizing a closed session."
   (fn [& {:keys [session-id turn-count shapes base-dir]
           :or   {base-dir (config/project-dir)
                  shapes   []}}]
@@ -467,7 +467,7 @@
             file       (io/file base-dir index-rel)]
         (.mkdirs (.getParentFile file))
         (spit file line :append true)
-        (mulog/log ::main.index :session-id session-id :turn-count turn-count
+        (mulog/log ::router.index :session-id session-id :turn-count turn-count
                    :shape-count (count shape-strs))
         {:appended true :line (str/trim-newline line)})))
   :input-schema  [:map
@@ -497,18 +497,18 @@
              vec)))))
 
 ;; ============================================================================
-;; Public roster (for main-agent's :agent-tools)
+;; Public roster (for router-agent's :agent-tools)
 ;; ============================================================================
 
-(def main-helpers
-  "The main$* helper vars bound into main-agent's roster (auto-bound in the SCI
-   sandbox, e.g. `(main$session-id)`). The per-turn routing line is no longer
-   one of them — it is HOOK-DERIVED (see main-agent-hooks/record-routing-line);
-   `main$append-log` was retired as an LLM tool in favor of the internal
+(def router-helpers
+  "The router$* helper vars bound into router-agent's roster (auto-bound in the SCI
+   sandbox, e.g. `(router$session-id)`). The per-turn routing line is no longer
+   one of them — it is HOOK-DERIVED (see router-agent-hooks/record-routing-line);
+   `router$append-log` was retired as an LLM tool in favor of the internal
    `append-log!` fn the hook calls."
-  [#'main$session-id
-   #'main$resume?
-   #'main$bootstrap
-   #'main$append-pointer
-   #'main$last-shape
-   #'main$index-append])
+  [#'router$session-id
+   #'router$resume?
+   #'router$bootstrap
+   #'router$append-pointer
+   #'router$last-shape
+   #'router$index-append])

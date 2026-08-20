@@ -517,7 +517,7 @@
                   [:id       [:string {:desc "lowercase-kebab hook id (no prefix)"}]]
                   [:event    [:string {:desc "Non-gated event key from hook-agent$events, e.g. \"agent.tool-use/post\""}]]
                   [:body     [:string {:desc "Clojure source: a `(fn [event] ...)` of one map"}]]
-                  [:match    {:desc "REQUIRED scope: a map, or an EDN string: {:tool-name \"bash\"}, {:defagent-type \"main-agent\"}, or {:global true}"} ::acs/map-object-arg]
+                  [:match    {:desc "REQUIRED scope: a map, or an EDN string: {:tool-name \"bash\"}, {:defagent-type \"router-agent\"}, or {:global true}"} ::acs/map-object-arg]
                   [:doc      {:optional true} [:string {:desc "one-line description"}]]
                   [:priority {:optional true} [:int {:desc "Higher fires first; default 0"}]]]
   :output-schema [:map

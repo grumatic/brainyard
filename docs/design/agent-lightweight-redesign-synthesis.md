@@ -20,7 +20,7 @@
 > [skill](./skill-agent-design.md) (lifecycle + skill substrate) ·
 > [mcp](./mcp-agent-design.md) (lifecycle + MCP substrate) ·
 > [tool](./tool-agent-design.md) + [meta](./meta-agent-design.md) (user-artifact lifecycle pair) ·
-> [main](./main-agent-design.md) (the front-door router).
+> [main](./router-agent-design.md) (the front-door router).
 >
 > Boundary: [acp-agent](./acp-agent-redesign-boundary.md) sits *outside* the
 > series — a pure transport adapter (not CoAct-derived, authors nothing), so the
@@ -94,7 +94,7 @@ and parsing them by hand would dwarf the scoring in error rate).
 | **skill** (lifecycle specialist) | `skills$write`'s `:scripts`/`:resources` `{filename content}` maps → direct `write-file`s | `skills$find/read/list` (discovery), `skills$install/sync` (CLI), `skills$reload`, `skills$import`, `skill-proposal$*` | Already mostly lightweight (SKILL.md content was always markdown). The real win: a **skill substrate in the base agents** — find → read → follow a SKILL.md — so *any* agent can **use** skills inline; skill-agent keeps the **lifecycle**. Needs a read-subset roster add (skills aren't in `default-agent-roster` today). Pairs with Project Memory as a "consult before acting" base protocol. |
 | **mcp** (lifecycle specialist) | **nothing** — 3 polymorphic commands (`mcp$server`/`tools`/`lifecycle`) are all RPC/discovery/invocation; authors nothing | all three commands (discover / invoke / manage a connection) | Already all-mechanism (keep). The win: an **MCP substrate in the base agents** — discover → inspect schema → invoke — so any agent can **use** MCP. Side-effect safety is **not** a model-side read/write classifier: MCP tools are registered (`mcp$<server>$<tool>`) and every call flows through `call-tool`'s **existing permission mechanism, fail-closed** (default `:approval-required`) — uniform across the proxy and the direct binding. Needs an MCP-command roster add + the fail-closed `:tool-use-control` stamp at registration. mcp-agent keeps lifecycle/troubleshooting. |
 | **tool + meta** (user-artifact lifecycle pair) | **almost nothing** — content (a `(fn …)` body / an agent's instruction + tool-context) is already code/markdown the LLM writes | `*$validate` (dry-run: eval-smoke in a fork / structural + sample), `*$create` (persist + **register**), `*$list`/`*$read` (dup-check) | **The lightest cases + the "keep the mechanism" exemplar.** Validate and register are deterministic acts the model can't hand-roll → make validate-before-create a hard rule. **No substrate, correctly** — a created tool/agent is *registered*, so "use" is ambient (a registry call), unlike a skill ("use" = read+follow a procedure). Completes the substrate theory. |
-| **main** (front-door router) | `main$append-log` (per-turn routing-line map) → **moved to a hook** | `main$session-id` (accessor), `main$resume?`/`main$last-shape`, hook-driven `main$append-pointer`/`index-append`, five sibling readers | Routing is **inherent judgment** (the decision table — untouched); **the routing log is observation, not authoring → derive it from the turn in a hook** (shape-from-dispatched-agent). The **chief beneficiary of the substrates**: the front door does casual track/execute/edit inline instead of always dispatching. |
+| **main** (front-door router) | `router$append-log` (per-turn routing-line map) → **moved to a hook** | `router$session-id` (accessor), `router$resume?`/`router$last-shape`, hook-driven `router$append-pointer`/`index-append`, five sibling readers | Routing is **inherent judgment** (the decision table — untouched); **the routing log is observation, not authoring → derive it from the turn in a hook** (shape-from-dispatched-agent). The **chief beneficiary of the substrates**: the front door does casual track/execute/edit inline instead of always dispatching. |
 
 ## 3. Invariants — what does NOT change
 
@@ -241,13 +241,13 @@ payoff is one checklist format across template, dossier, and todo.
 
 **main (the front-door router) is the chief *beneficiary* of the substrates.**
 There is no substrate below the root agent — the "two kinds" framing terminates
-at main-agent, which *is* the casual path's home and delegates to the contract
+at router-agent, which *is* the casual path's home and delegates to the contract
 path when work earns it. The substrate work across the series is in large part
-*for* main-agent: once todo/exec/edit substrates land, the front door handles a
+*for* router-agent: once todo/exec/edit substrates land, the front door handles a
 trivially-scoped request (track three follow-ups, rename A→B in F, do-this-then-
 that) **inline** instead of dispatching a subagent for every small thing — while
 still routing genuinely contract-shaped work (gated plan→todo→exec→eval, audited
-edits, durable research) to the specialists. Main-agent's own redesign is the
+edits, durable research) to the specialists. Router-agent's own redesign is the
 lightest of all: it's already hook-driven, so the only change is moving its last
 per-turn authoring obligation (the routing-log line) onto a hook too.
 
@@ -293,7 +293,7 @@ migration proceeded; all phases have landed.
 **Phase 0 — settle §5 decisions.** Especially the combined-substrate question
 and the enforcement model, since they shape the base-agent edits.
 
-**Phase 1 — base substrates + main-agent's hook (additive, low-risk).** Add the
+**Phase 1 — base substrates + router-agent's hook (additive, low-risk).** Add the
 "Working on the repo" section to `coact-system-context` + `react-system-context`
 (shared string). Nothing is removed; the tools are already inherited. This alone
 unlocks root-agent-inline track/execute/edit and starts cutting subagent
@@ -307,9 +307,9 @@ base roster; its side-effect safety is **fail-closed**, via a
 `:agent.tool-use/pre` hook that bridges to the same `permission-fn` UI as
 `write-file`/`bash` (covering the native binding *and* the proxy), *not* a bespoke
 read/write classifier. (See the as-built correction above — this is **not** a
-`:tool-use-control`/`check-permission` stamp.) **Pair all of this with main-agent's routing-log
-hook** (move `main$append-log` to a `:agent.ask/finalize` hook): every piece here
-touches the base/root agent, and main-agent is the chief substrate beneficiary, so
+`:tool-use-control`/`check-permission` stamp.) **Pair all of this with router-agent's routing-log
+hook** (move `router$append-log` to a `:agent.ask/finalize` hook): every piece here
+touches the base/root agent, and router-agent is the chief substrate beneficiary, so
 they land together.
 
 **Phase 2 — per-agent lightweight rewrites.** Retire the authoring helpers,

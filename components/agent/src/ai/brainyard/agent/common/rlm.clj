@@ -354,7 +354,7 @@
 ;; report under results/ and emit a `Saved RLM report:` line. This is the
 ;; safety net: when a non-trivial answer lacks that line, a gated
 ;; `:agent.ask/finalize` hook persists the report AND injects the line so
-;; answer-grepping consumers (and the main-agent capture hook) can find it —
+;; answer-grepping consumers (and the router-agent capture hook) can find it —
 ;; the same observe-only-gap fix used for explore/research/etc.
 ;; ============================================================================
 

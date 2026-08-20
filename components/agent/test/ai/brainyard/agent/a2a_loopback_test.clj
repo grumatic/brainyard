@@ -77,7 +77,7 @@
 
 (defn- make-parent [!session]
   (agent-core/map->Agent
-   {:agent-id :main-agent/loopback-parent
+   {:agent-id :router-agent/loopback-parent
     :!state   (atom {:status :idle
                      :lifecycle {:owner nil :answers 0
                                  :created-at (System/currentTimeMillis)}

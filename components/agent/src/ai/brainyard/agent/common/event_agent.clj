@@ -339,7 +339,7 @@ KEYWORD (e.g. :order/shipped). reaction$add keeps `:on` for the trigger (its
   :tool-use-control {}
   :input-schema  [:map
                   [:question [:string {:desc "User request about events, reactions, or watches"}]]
-                  [:agent-context {:optional true} [:string {:desc "Optional handoff context (e.g. from main-agent)"}]]
+                  [:agent-context {:optional true} [:string {:desc "Optional handoff context (e.g. from router-agent)"}]]
                   [:auto? {:optional true} :boolean]]
   :output-schema [:map
                   [:answer [:string {:desc "Markdown summary; for a write, close with what it does, the gate outcome (live/inert), and the blast radius"}]]]

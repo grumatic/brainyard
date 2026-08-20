@@ -1923,7 +1923,7 @@
    `:base-dir` is `project-dir` (git-root), not `working-dir` (JVM cwd) —
    `bb tui` cd's into `projects/agent-tui-app/` before launching, so a
    working-dir-anchored bash would `cd` into the subdir, see only that
-   tree (e.g. `ls .brainyard/` would miss main-agent's routing.log + the
+   tree (e.g. `ls .brainyard/` would miss router-agent's routing.log + the
    plan/todo/research artifacts), and reject absolute paths under the
    canonical repo root. Anchoring at project-dir makes bash agree with
    `read-file`/`write-file`/`grep` and with the functional agents'

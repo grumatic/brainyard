@@ -227,7 +227,7 @@
   "Collect usage summaries and tagged history entries from all agent instances
    in the active TUI session, plus any sub-trackers.
 
-   Every history entry is tagged with `:agent-instance-id` — main-agent
+   Every history entry is tagged with `:agent-instance-id` — router-agent
    entries get the agent's `:agent-id`; sub-tracker entries get the
    sub-tracker's `:label`. `format-usage-table` decides whether to show the
    tags as a single combined table or per-agent sub-tables."

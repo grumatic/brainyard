@@ -554,7 +554,7 @@ Shared conventions worth knowing:
   This was added after a live run skipped the (previously advisory) dossier.
 - **Registration:** add the ns to the side-effecting require list in
   `components/agent/src/ai/brainyard/agent/interface.clj` (single source of
-  truth for built-in `defagent`s) and wire the agent into `common/main_agent.clj`'s
+  truth for built-in `defagent`s) and wire the agent into `common/router_agent.clj`'s
   router in three places (directory, lettered decision table, summary list).
 
 Designs: `docs/design/{schedule,event,state-machine}-agent-design.md`. Each has

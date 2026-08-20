@@ -161,9 +161,9 @@
 ;; ============================================================================
 
 (def ^:private multi-agent-history
-  ;; Three calls: two from main-agent, one interleaved from a sub-tracker.
+  ;; Three calls: two from router-agent, one interleaved from a sub-tracker.
   ;; Chronological by :timestamp. Note that the sub-agent's call lands between
-  ;; main-agent iters 1 and 2 (mimicking a sub-agent invocation mid-turn) —
+  ;; router-agent iters 1 and 2 (mimicking a sub-agent invocation mid-turn) —
   ;; which is exactly the ordering that confused readers pre-grouping.
   [{:provider :bedrock :model "claude-opus" :latency-ms 1000
     :input-tokens 6 :output-tokens 100
@@ -302,7 +302,7 @@
             r-idx (.indexOf out "research-agent/turquoise-ant-6100")
             p-idx (.indexOf out "plan-agent/pink-deer-6726")]
         (is (and (pos? v-idx) (pos? r-idx) (pos? p-idx)))
-        (is (< v-idx r-idx) "main-agent (first call) before research-agent")
+        (is (< v-idx r-idx) "router-agent (first call) before research-agent")
         (is (< r-idx p-idx) "research-agent before plan-agent")))
 
     (testing "per-group # restarts at 1 — three rows numbered #1"

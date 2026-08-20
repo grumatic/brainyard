@@ -473,23 +473,23 @@ _Recorded against `by` version: `unknown`._
 
 ---
 
-## Routing questions with the main-agent
+## Routing questions with the router-agent
 
-The main-agent — brainyard's front-door router — picks the right specialist per question instead of solving it itself. Over two turns it routes a 'where is X?' question to the explore-agent (printing `Routed to explore-agent —` and surfacing `Saved exploration:`), then builds on it — keeping a routing log under .brainyard/agents/main-agent/<session-id>/. Recorded live against claude-code/opus in an isolated /tmp workspace.
+The router-agent — brainyard's front-door router — picks the right specialist per question instead of solving it itself. Over two turns it routes a 'where is X?' question to the explore-agent (printing `Routed to explore-agent —` and surfacing `Saved exploration:`), then builds on it — keeping a routing log under .brainyard/agents/router-agent/<session-id>/. Recorded live against claude-code/opus in an isolated /tmp workspace.
 
-The **main-agent** is brainyard's front door. It does **not** answer questions
+The **router-agent** is brainyard's front door. It does **not** answer questions
 directly — it *routes*: it reads the shape of each question, picks the right
 specialist (explore / plan / todo / exec / update / config / init / research /
 workflow / …), dispatches it, and records the decision in a routing log under
-`.brainyard/agents/main-agent/<session-id>/` so the session stays coherent
+`.brainyard/agents/router-agent/<session-id>/` so the session stays coherent
 across turns.
 
-**The setup.** `by` launches the main-agent inside a fresh, git-inited /tmp
+**The setup.** `by` launches the router-agent inside a fresh, git-inited /tmp
 workspace seeded with the small `greet` CLI, so any routed specialist's
 artifacts land in /tmp, not this repo.
 
 **Turn 1 — a discovery question routes to explore.** Asked *where* greetings
-are rendered, the main-agent prints its decision —
+are rendered, the router-agent prints its decision —
 `Routed to explore-agent — …` — dispatches it, and surfaces the specialist's
 handoff (`Saved exploration: <path>`) plus a direct answer.
 

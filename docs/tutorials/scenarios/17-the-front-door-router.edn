@@ -3,40 +3,40 @@
 ;; Showcases the MAIN-AGENT — brainyard's front-door router. It doesn't solve
 ;; sub-problems itself: it looks at each question, picks the right specialist
 ;; (explore / plan / update / config / …), dispatches it, and maintains a
-;; routing log under .brainyard/agents/main-agent/<session-id>/ so a session
+;; routing log under .brainyard/agents/router-agent/<session-id>/ so a session
 ;; stays coherent across turns.
 ;;
 ;; Two turns show routing + session continuity: turn 1 routes a "where is X?"
-;; question to the explore-agent; turn 2 builds on it. Because main-agent
+;; question to the explore-agent; turn 2 builds on it. Because router-agent
 ;; dispatches a sub-agent, the routed specialist bumps the SAME session's
 ;; turn.complete — a coordination-turn settle race the driver guards by also
 ;; waiting for the pane to read `idle`; give the turns a generous settle.
 ;; Native `by` in an isolated /tmp git workspace so the routed explore-agent's
 ;; artifacts land in /tmp. Recorded live on claude-code/opus.
 {:id          "17-the-front-door-router"
- :title       "Routing questions with the main-agent"
- :description "The main-agent — brainyard's front-door router — picks the right
+ :title       "Routing questions with the router-agent"
+ :description "The router-agent — brainyard's front-door router — picks the right
                specialist per question instead of solving it itself. Over two
                turns it routes a 'where is X?' question to the explore-agent
                (printing `Routed to explore-agent —` and surfacing
                `Saved exploration:`), then builds on it — keeping a routing log
-               under .brainyard/agents/main-agent/<session-id>/. Recorded live
+               under .brainyard/agents/router-agent/<session-id>/. Recorded live
                against claude-code/opus in an isolated /tmp workspace."
 
  :walkthrough
- "The **main-agent** is brainyard's front door. It does **not** answer questions
+ "The **router-agent** is brainyard's front door. It does **not** answer questions
   directly — it *routes*: it reads the shape of each question, picks the right
   specialist (explore / plan / todo / exec / update / config / init / research /
   workflow / …), dispatches it, and records the decision in a routing log under
-  `.brainyard/agents/main-agent/<session-id>/` so the session stays coherent
+  `.brainyard/agents/router-agent/<session-id>/` so the session stays coherent
   across turns.
 
-  **The setup.** `by` launches the main-agent inside a fresh, git-inited /tmp
+  **The setup.** `by` launches the router-agent inside a fresh, git-inited /tmp
   workspace seeded with the small `greet` CLI, so any routed specialist's
   artifacts land in /tmp, not this repo.
 
   **Turn 1 — a discovery question routes to explore.** Asked *where* greetings
-  are rendered, the main-agent prints its decision —
+  are rendered, the router-agent prints its decision —
   `Routed to explore-agent — …` — dispatches it, and surfaces the specialist's
   handoff (`Saved exploration: <path>`) plus a direct answer.
 
@@ -46,13 +46,13 @@
 
   One front door; the right specialist behind it each time."
 
- :terminal    {:cols 110 :rows 36 :title "brainyard tutorial — main-agent"}
+ :terminal    {:cols 110 :rows 36 :title "brainyard tutorial — router-agent"}
  :idle-time-limit 2.5
  :startup-timeout-secs 30
 
  :launch
  {:binary "by"
-  :args   ["run" "-a" "main-agent" "-p" "claude-code" "-m" "opus" "--new"]
+  :args   ["run" "-a" "router-agent" "-p" "claude-code" "-m" "opus" "--new"]
   :env    {"BY_TUTORIAL_MODE" "1"
            "BY_SESSION_ID"     "tutorial-17-main"}}
 
@@ -70,7 +70,7 @@
 
  :preamble
  [{:type :narrate
-   :text "# main-agent — the front door that routes to the right specialist"
+   :text "# router-agent — the front door that routes to the right specialist"
    :pause-ms 2400}]
 
  :chapters

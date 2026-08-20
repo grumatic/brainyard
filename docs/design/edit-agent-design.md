@@ -133,7 +133,7 @@ RULES:
 
 The substrate carries the *discipline*; `edit$apply` (in
 `default-agent-roster` via the common commands, inherited by every coact/react-
-derived agent) carries the *mechanism*. Net: **any agent — main-agent included —
+derived agent) carries the *mechanism*. Net: **any agent — router-agent included —
 makes a verified, reversible edit by calling one tool**, no edit-agent dispatch.
 That is what closes the gap: expose the transaction as a first-class tool plus a
 base protocol for using it, rather than gating it behind a subagent.
@@ -309,7 +309,7 @@ contract and §5 record schema are unchanged.
 ### 9.3 Blast radius (measured)
 `update-agent` / `update$*` appears **~179 times across 20 source files** —
 heaviest in `research_agent` (28), `exec_agent` (20), `eval_agent` (16),
-`main_agent` (10), plus the dossier schemas. Two references are *data*, not code:
+`router_agent` (10), plus the dossier schemas. Two references are *data*, not code:
 - **`:via :update-agent`** — persisted in **todo/exec dossier markdown**, read by
   exec routing + eval coverage. New writers emit `:via :edit-agent`; readers
   **normalize both** for one release.
@@ -353,7 +353,7 @@ heaviest in `research_agent` (28), `exec_agent` (20), `eval_agent` (16),
 - **Rollback (reverse-diff)** — a lint-regressing edit rolls back via `git apply
   -R`; working tree restored incl. prior dirty hunks; record `ok: false` with the
   failing stage.
-- **Edit substrate** — main-agent (with the substrate) makes a verified edit via
+- **Edit substrate** — router-agent (with the substrate) makes a verified edit via
   `edit$apply` and keeps the rollback, with zero edit-agent dispatch.
 - **Downstream unchanged** — exec/eval read `diff_match`/`ok` from a
   template-written record exactly as before.

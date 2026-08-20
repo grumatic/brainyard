@@ -101,7 +101,7 @@ unified tool registry (see [tool.md](tool.md)):
 | Agent | File | Purpose |
 |---|---|---|
 | `coact-agent` *(current TUI default)* | `common/coact_agent.clj` | Three-channel tool/code/answer loop |
-| `main-agent` *(opt-in via `-a main-agent`; future default)* | `common/main_agent.clj` | Front-door router — picks the right specialist per question shape, maintains routing log under `.brainyard/agents/main-agent/<session-id>/` |
+| `router-agent` *(opt-in via `-a router-agent`; future default)* | `common/router_agent.clj` | Front-door router — picks the right specialist per question shape, maintains routing log under `.brainyard/agents/router-agent/<session-id>/` |
 | `react-agent` | `common/react_agent.clj` | Classic ReAct (thought/action/observation) |
 | `plan-agent` | `common/plan_agent.clj` | Build / refine plans |
 | `todo-agent` | `common/todo_agent.clj` | Manage a todo list |

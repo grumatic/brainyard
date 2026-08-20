@@ -21,7 +21,7 @@
 >   (`agent-roster/todo-substrate-protocol`) is installed in BOTH base agents —
 >   `coact-system-context` (`coact_agent.clj`) and `react-system-context`
 >   (`react_agent.clj`), in each `section-order` next to the other substrates.
->   Every derived agent (main-agent included) inherits the checklist convention
+>   Every derived agent (router-agent included) inherits the checklist convention
 >   for free, modeled 1:1 on the Project Memory protocol. **No roster change** —
 >   `write-file`/`update-file`/`read-file` + `todo$sync` already ride
 >   `default-agent-roster`. Routine "what I'm doing now" checklists need no
@@ -547,7 +547,7 @@ There are two halves, and the tools half was already done:
    `agent-roster/default-agent-roster` already includes
    `read-file`/`write-file`/`update-file` and the `doc$*`/`todo$*` commands
    (`todo$sync` among them). `run-coact-derived` concatenates that base roster
-   onto every derived agent (`merge-derived-tools`), so `main-agent` and the
+   onto every derived agent (`merge-derived-tools`), so `router-agent` and the
    other coact/react-derived agents already hold the tools needed to create,
    edit, and reconcile a checklist. (The specialist subagents that strip
    `write-file` via a `remove` clause are the exception, not the base.)
@@ -578,7 +578,7 @@ checklist item route→verify→record→flip — see `docs/design/exec-agent-de
 
 ### 8.3 Root-agent inline management
 
-With the substrate inherited, `main-agent` (or any orchestrator) handles working
+With the substrate inherited, `router-agent` (or any orchestrator) handles working
 todos itself:
 
 ```clojure
@@ -914,7 +914,7 @@ change; the storage migration to the new layout was completed alongside it.
 | ADVANCE checkbox flip | User marks item 2 done | Lite rubric; dossier records the single update; `author.action advanced`. |
 | **Dossier (file-write)** | Non-trivial run | `write-file` from template; `todo$read-dossier` returns all contract keys incl. `acceptance_coverage`. |
 | Routing tag enumeration | Spawn 10 mixed items | Every item carries a `:via` tag in the allowed set; out-of-set dropped with warning. |
-| **Root substrate** | main-agent (with the substrate section) creates + advances a working checklist | Zero todo-agent dispatches; `todo$sync :path …` keeps st-memory live. |
+| **Root substrate** | router-agent (with the substrate section) creates + advances a working checklist | Zero todo-agent dispatches; `todo$sync :path …` keeps st-memory live. |
 | Downstream unchanged | New dossier → exec-agent fixture | Reads `via`/`covers`/coverage as before. |
 | Dual-read fallback | Legacy todo at `.brainyard/todos/<slug>.md` | `read-todo` returns body; `list-todos` tags it `:layout :legacy`. |
 | Migration | `bb migrate:todo-agent` against fixture | All files copied; legacy preserved. |
@@ -952,7 +952,7 @@ mulog signals: `::todo.invalid-via`, `::todo.sync`, `::todo.dossier-index`,
 3. **Where does the working/contract boundary live** — directory
    (`<root>/todos/` vs `todo-agent/todos/`), a frontmatter `kind: working|contract`,
    or presence of a dossier? Directory is simplest; frontmatter is most explicit.
-4. **Should `main-agent` get the substrate by default**, or opt-in? Default
+4. **Should `router-agent` get the substrate by default**, or opt-in? Default
    reduces dispatches but widens the tool surface. (Shipped: it rides the base
    section, so it is present.)
 5. **Status as frontmatter edit vs. guarded helper.** Pure `update-file` is

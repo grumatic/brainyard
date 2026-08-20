@@ -83,7 +83,7 @@ either). Layered on a broken config, it "measured" a second artifact.
 | + memory-split (`667fd52`) | 5.02s | **no** | no | ❌ crash |
 | roster re-loaded (either fix, or **revert**) | **~6.9–7.3s** | yes | yes | ✅ |
 
-A *working* TUI must load the agent roster (main-agent routes to every
+A *working* TUI must load the agent roster (router-agent routes to every
 specialist) and, through the framework, the memory subsystem. Loading them puts
 require-main back at ~7s. The "−30%" was removed functionality, not deferred work.
 

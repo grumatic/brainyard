@@ -59,7 +59,7 @@
   "A minimal local agent standing in for the dispatching parent."
   [!session]
   (agent-core/map->Agent
-   {:agent-id :main-agent/test-parent
+   {:agent-id :router-agent/test-parent
     :!state   (atom {:status :idle
                      :lifecycle {:owner nil :answers 0
                                  :created-at (System/currentTimeMillis)}
@@ -107,7 +107,7 @@
 
     (testing "a remote peer is ALWAYS a subagent — :owner is set"
       ;; A session has exactly one root and it is local by definition.
-      (is (= :main-agent/test-parent (:owner (agent-core/lifecycle ra))))
+      (is (= :router-agent/test-parent (:owner (agent-core/lifecycle ra))))
       (is (agent-core/subagent? ra)))
 
     (testing "it is a DISPATCHED worker, not a session-sharing subagent"
@@ -260,11 +260,11 @@
 (deftest local-cycle-guard-test
   (let [rid "https://peer-b.example/a2a#planner"]
     (testing "not a cycle when the target is absent from the local chain"
-      (binding [proto/*call-chain* [:main-agent/x]]
+      (binding [proto/*call-chain* [:router-agent/x]]
         (is (not (remote/cycle-target? rid)))))
 
     (testing "IS a cycle when the same remote skill is already dispatched"
-      (binding [proto/*call-chain* [:main-agent/x rid]]
+      (binding [proto/*call-chain* [:router-agent/x rid]]
         (is (remote/cycle-target? rid))))
 
     (testing "keyword entries in the local chain compare without their colon"
@@ -272,8 +272,8 @@
         (is (remote/cycle-target? "explore-agent/lime-mole"))))
 
     (testing "describe-outbound-chain renders the would-be chain"
-      (binding [proto/*call-chain* [:main-agent/x]]
-        (is (= (str "main-agent/x -> " rid)
+      (binding [proto/*call-chain* [:router-agent/x]]
+        (is (= (str "router-agent/x -> " rid)
                (remote/describe-outbound-chain rid)))))))
 
 (deftest wire-chain-is-node-scoped-not-agent-scoped-test
@@ -281,7 +281,7 @@
     ;; The two vocabularies must not be mixed: a local chain holds
     ;; :explore-agent/x while the wire chain holds by-node:UUID. Mixing
     ;; them is what made an earlier version of the guard unable to fire.
-    (binding [proto/*call-chain* [:main-agent/x]
+    (binding [proto/*call-chain* [:router-agent/x]
               proto/*call-depth* 1]
       (let [m (remote/outbound-metadata "agt-1")]
         (is (= [(a2a/node-id)] (a2a/read-chain m))

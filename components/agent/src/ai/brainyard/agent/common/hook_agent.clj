@@ -56,7 +56,7 @@ AUTHORING (the disciplined path)
              or \"agent.iteration/post\".
    - :match  REQUIRED scope, passed as an EDN string. Scope narrowly:
              \"{:tool-name \\\"bash\\\"}\" (only when a given tool ran),
-             \"{:defagent-type \\\"main-agent\\\"}\" (only for one agent type),
+             \"{:defagent-type \\\"router-agent\\\"}\" (only for one agent type),
              \"{:agent-id \\\"...\\\"}\", or \"{:global true}\" to fire for every
              agent (use sparingly — confirm a global hook with the user first).
    - :doc    one tight line describing the side effect.

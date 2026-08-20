@@ -22,7 +22,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-HARNESSES="${HARNESSES:-test-agent-coact.sh test-agent-react.sh test-agent-edit.sh test-agent-plan.sh test-agent-todo.sh test-agent-exec.sh test-agent-explore.sh test-agent-eval.sh test-agent-main.sh test-agent-event.sh}"
+HARNESSES="${HARNESSES:-test-agent-coact.sh test-agent-react.sh test-agent-edit.sh test-agent-plan.sh test-agent-todo.sh test-agent-exec.sh test-agent-explore.sh test-agent-eval.sh test-agent-router.sh test-agent-event.sh}"
 PROVIDERS="${PROVIDERS:-claude-code:haiku}"
 
 declare -a CELLS=()
