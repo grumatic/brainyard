@@ -730,7 +730,13 @@
       (case type-str
         "integer" (or (parse-long value) value)
         "number"  (or (parse-double value) value)
-        "boolean" (case value "true" true "false" false value)
+        ;; Same accepted spellings as `llm-args-transformer`'s :boolean decoder —
+        ;; the two must agree, or a CLI colon-command and an LLM tool-call
+        ;; disagree about whether `True` is a boolean.
+        "boolean" (case (str/lower-case value)
+                    ("true"  "yes" "1") true
+                    ("false" "no"  "0") false
+                    value)
         ;; Strip a leading ':' so callers can pass either "nrepl" or ":nrepl".
         "keyword" (keyword (if (.startsWith ^String value ":")
                              (subs value 1)
@@ -767,6 +773,14 @@
    routinely hedge by sending either `\"a\"` or `\":a\"` for a keyword field —
    both should yield `:a`.
 
+   The `:boolean` override widens `mt/string-transformer`'s decoder, which
+   recognizes only the exact strings `\"true\"`/`\"false\"`. A boolean-typed arg
+   accepts a native JSON `true` either way; the override is for the strings a
+   model hedges with — `\"True\"`, `\"yes\"`, `\"1\"` — which the string-typed
+   schemas this replaced used to admit (`edit$apply` lower-cased `:dirty-ok?`
+   itself, so `\"True\"` worked there). Anything else passes through untouched
+   so `m/explain` still reports a clean error rather than a silent `false`.
+
    The `:enum` decoder handles the dual calling convention: a JSON tool-call
    delivers the value as a wire STRING (`\"gates\"`), while a sandbox code-fence
    delivers it as a KEYWORD (`:gates`) because the agent writes Clojure. It
@@ -786,6 +800,14 @@
      (fn [v]
        (if (string? v)
          (keyword (if (str/starts-with? v ":") (subs v 1) v))
+         v))
+     :boolean
+     (fn [v]
+       (if (string? v)
+         (case (str/lower-case v)
+           ("true"  "yes" "1") true
+           ("false" "no"  "0") false
+           v)
          v))
      :enum
      {:compile

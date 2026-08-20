@@ -219,7 +219,7 @@ INPUTS YOU WILL RECEIVE
                     explore-agent or a plan path from plan-agent. If
                     present, read its frontmatter first to learn the
                     target file(s) — do NOT re-discover.
-:dirty-ok?        — Optional. \"true\" | \"false\". Default false. Forwarded to
+:dirty-ok?        — Optional boolean. Default false. Forwarded to
                     edit$apply.
 :run-tests?       — Optional. Default false. When true (and the target is
                     under components/<name>/), V5 runs `bb test:component
@@ -338,7 +338,7 @@ ANSWER with `Saved edit:` and (`Rollback:` | `Rolled back:`).")
   :input-schema  [:map
                   [:question         [:string {:desc "Edit request — e.g., 'Rename foo→bar in src/x.clj' or 'Create components/.../foo.clj with skeleton'"}]]
                   [:agent-context    {:optional true} [:string {:desc "Optional context — typically a `Saved exploration:` path or a plan path that names the target file"}]]
-                  [:dirty-ok?        {:optional true} [:string {:desc "false (default) | true. Allow editing files with uncommitted changes; rollback is transaction-scoped byte-overwrite."}]]
+                  [:dirty-ok?        {:optional true} [:boolean {:desc "Allow editing files with uncommitted changes (default false); rollback is transaction-scoped byte-overwrite."}]]
                   [:run-tests?       {:optional true} [:boolean {:desc "When true, run `bb test:component` after VERIFY (V5)"}]]
                   [:lint-ok-to-fail? {:optional true} [:boolean {:desc "When true, lint failures (V4) warn instead of rolling back"}]]]
   :output-schema [:map

@@ -251,7 +251,7 @@
   :input-schema [:map
                  [:profile [:string {:desc "AWS profile name to set"}]]
                  [:region {:optional true} [:string {:desc "AWS region override (optional)"}]]
-                 [:restart {:optional true} [:string {:desc "Restart affected MCP servers after update (\"true\"/\"false\", default false)"}]]]
+                 [:restart {:optional true} [:boolean {:desc "Restart affected MCP servers after update (default false)"}]]]
   :output-schema [:map
                   [:result {:optional true} [:string {:desc "Map with :profile, :region, :updated-servers (array), :restarted? (boolean)"}]]
                   [:error {:optional true} [:string {:desc "Error message if failed"}]]])

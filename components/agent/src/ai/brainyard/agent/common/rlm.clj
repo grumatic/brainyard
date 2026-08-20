@@ -223,6 +223,13 @@
 
       :else
       (let [shape-kw (if (#{:edn "edn"} shape) :edn :json)
+            ;; The schema is :boolean, so a call through `tool/call-tool` has
+            ;; already decoded this. A bare `invoke-tool` / REPL caller can still
+            ;; hand over a string, and a plain truthiness test reads "false" as
+            ;; TRUE — which silently split every result. Test the decoded value.
+            per-line (if (string? per-line)
+                       (contains? #{"true" "yes" "1"} (str/lower-case per-line))
+                       (boolean per-line))
             items (if per-line
                     (->> results
                          (mapcat split-lines-non-blank)
@@ -245,7 +252,7 @@
   :input-schema  [:map
                   [:results  [:vector {:desc "Vector of strings to parse (e.g. :results from query$llm batched)"} :string]]
                   [:shape    {:optional true} [:string {:desc "Tier-1 parser: \"json\" or \"edn\" (default \"json\")"}]]
-                  [:per-line {:optional true} [:string {:desc "When true, split each result by newline and parse each non-blank line (default false)"}]]]
+                  [:per-line {:optional true} [:boolean {:desc "Split each result by newline and parse each non-blank line (default false)"}]]]
   :output-schema [:map
                   [:parsed   [:vector {:desc "Successfully parsed values"} :any]]
                   [:failed   [:vector {:desc "Parse failures: {:idx :raw}"} :any]]

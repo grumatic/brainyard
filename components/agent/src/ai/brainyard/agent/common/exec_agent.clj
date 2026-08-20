@@ -455,7 +455,7 @@ thinner than a hand-authored one.
                   [:question [:string {:desc "Execution request — e.g., 'Drive ship-v2-checkout to completion'"}]]
                   [:agent-context {:optional true} [:string {:desc "Optional context — typically a todo-agent `Saved dossier:` path"}]]
                   [:max-items-per-turn {:optional true} :int]
-                  [:dirty-ok? {:optional true} [:string {:desc "Allow edit-agent to edit dirty files: \"true\" | \"false\" | \"stash\""}]]]
+                  [:dirty-ok? {:optional true} [:boolean {:desc "Allow edit-agent to edit dirty files (default false); forwarded verbatim to edit-agent"}]]]
   :output-schema [:map
                   [:answer [:string {:desc "Markdown summary of the execution turn; ends with `Saved dossier:` (always), and `Done:`/`Manual:`/`Hold:` + `Next:` as applicable"}]]]
   :agent-tools {:tools (vec (distinct (concat

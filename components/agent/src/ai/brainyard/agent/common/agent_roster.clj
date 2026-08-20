@@ -88,7 +88,7 @@ To DO a checklist item (not just track it), follow route → verify → record �
 
 1. ROUTE — decide how the item gets done:
    • source edit  → DELEGATE to edit-agent: (edit-agent {:question \"<item>\"
-                    :agent-context \"<context>\" :dirty-ok? \"false\"}). It diffs,
+                    :agent-context \"<context>\" :dirty-ok? false}). It diffs,
                     verifies, and returns `Saved edit: <path>` + `Rollback: <cmd>`.
                     Prefer this over raw write-file for tracked source — you get a
                     reversible, verified edit.

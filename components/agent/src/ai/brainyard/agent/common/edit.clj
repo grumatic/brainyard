@@ -770,7 +770,12 @@
                       (keyword? mode) mode
                       (string? mode)  (keyword mode)
                       :else           :pattern)
-          ;; dirty-ok? accepts boolean or the strings "true"/"false".
+          ;; The schema is :boolean, so a call through `tool/call-tool` has
+          ;; already decoded "true"/"false" and rejected anything else. This
+          ;; stays for the paths that skip validation entirely — a bare
+          ;; `invoke-tool`, a direct Clojure/REPL caller — where a string can
+          ;; still arrive. `:else false` is deliberate: an unparseable value
+          ;; must fail CLOSED (refuse the dirty target), never open.
           dirty-ok? (cond
                       (boolean? dirty-ok?) dirty-ok?
                       (string? dirty-ok?)  (= "true" (str/lower-case dirty-ok?))
@@ -820,7 +825,7 @@
                   [:regex?           {:optional true} [:boolean {:desc "Treat :pattern as a Java regex (default false)"}]]
                   [:all?             {:optional true} [:boolean {:desc "Replace every match (default false — first match only)"}]]
                   [:content          {:optional true} [:string  {:desc "Full file content for new-file mode"}]]
-                  [:dirty-ok?        {:optional true} [:string  {:desc "false (default) | true. When false, refuses a dirty target. Rollback is byte-overwrite, so :dirty-ok? true safely allows layered edits."}]]
+                  [:dirty-ok?        {:optional true} [:boolean {:desc "Edit a target with uncommitted changes (default false — a dirty target is refused). Rollback is byte-overwrite, so true safely allows layered edits."}]]
                   [:run-tests?       {:optional true} [:boolean {:desc "Run `bb test:component <inferred>` after VERIFY when the target is under components/<name>/; rolls back on failure (default false)"}]]
                   [:lint-ok-to-fail? {:optional true} [:boolean {:desc "When true, lint failures warn instead of rolling back"}]]
                   [:base-dir         {:optional true} [:string  {:desc "Project root (default: resolved from session/git)"}]]]
