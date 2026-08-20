@@ -15,10 +15,20 @@
    Rates: :input, :output, :cache-read, :cache-write (per 1M tokens)."
   {;; OpenAI — GPT-5 family
    [:openai "gpt-5"]            {:input 1.25  :output 10.00 :cache-read 0.625 :cache-write 1.25}
+   [:openai "gpt-5.1"]          {:input 1.25  :output 10.00 :cache-read 0.125 :cache-write 1.25}
+   [:openai "gpt-5.2"]          {:input 1.75  :output 14.00 :cache-read 0.175 :cache-write 1.75}
+   ;; OpenAI — GPT-5.6 family. Three co-released variants rather than a tiered
+   ;; split; short-context standard-tier rates. Cached input is 10% of input
+   ;; and a cache WRITE bills at the ordinary input rate (OpenAI does not
+   ;; surcharge writes), which is why :cache-write mirrors :input here.
+   [:openai "gpt-5.6-luna"]     {:input 0.20  :output 1.20  :cache-read 0.02  :cache-write 0.20}
+   [:openai "gpt-5.6-sol"]      {:input 5.00  :output 30.00 :cache-read 0.50  :cache-write 5.00}
+   [:openai "gpt-5.6-terra"]    {:input 2.00  :output 12.00 :cache-read 0.20  :cache-write 2.00}
    ;; OpenAI — GPT-5.5 family
    [:openai "gpt-5.5"]          {:input 5.00  :output 25.00 :cache-read 2.50  :cache-write 5.00}
    [:openai "gpt-5.5-mini"]     {:input 1.00  :output 5.00  :cache-read 0.50  :cache-write 1.00}
    ;; OpenAI — GPT-5.4 family
+   [:openai "gpt-5.4"]          {:input 2.50  :output 15.00 :cache-read 0.25  :cache-write 2.50}
    [:openai "gpt-5.4-mini"]     {:input 0.40  :output 2.00  :cache-read 0.20  :cache-write 0.40}
    [:openai "gpt-5.4-nano"]     {:input 0.10  :output 0.50  :cache-read 0.05  :cache-write 0.10}
    ;; OpenAI — GPT-5 Pro
@@ -85,6 +95,12 @@
    [:bedrock "anthropic.claude-sonnet-4-6"] {:input 3.00  :output 15.00 :cache-read 0.30 :cache-write 3.75}
    [:bedrock "anthropic.claude-sonnet-4-5"] {:input 3.00  :output 15.00 :cache-read 0.30 :cache-write 3.75}
    [:bedrock "anthropic.claude-sonnet-4-0"] {:input 3.00  :output 15.00 :cache-read 0.30 :cache-write 3.75}
+   ;; `anthropic.claude-sonnet-4-20250514-v1:0` normalizes to
+   ;; `anthropic.claude-sonnet-4` — NOT to the `-4-0` alias above — so without
+   ;; this key the dated Sonnet 4 id (and its apac./eu./us. inference profiles)
+   ;; fell through to no-pricing and billed 0.0. Same rates as every other
+   ;; Sonnet in the table; found by `pricing-coverage`.
+   [:bedrock "anthropic.claude-sonnet-4"]   {:input 3.00  :output 15.00 :cache-read 0.30 :cache-write 3.75}
    [:bedrock "anthropic.claude-haiku-4-5"]  {:input 1.00  :output 5.00  :cache-read 0.10 :cache-write 1.25}
    [:bedrock "anthropic.claude-opus-4-8"]   {:input 5.00  :output 25.00 :cache-read 0.50 :cache-write 6.25}
    [:bedrock "anthropic.claude-mythos-5"]   {:input 10.00 :output 50.00 :cache-read 1.00 :cache-write 12.50}
