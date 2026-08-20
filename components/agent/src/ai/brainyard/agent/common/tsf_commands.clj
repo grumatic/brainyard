@@ -146,7 +146,7 @@
 
 (defcommand tsf$run
   "Queue a training run over one dataset. Returns immediately with a run id — training takes minutes; poll tsf$run-status."
-  (fn [& {:keys [dataset_id models horizon input_size max_steps confidence_level freq n_windows]}]
+  (fn [& {:keys [dataset_id models horizon input_size max_steps confidence_level freq n_windows eval_method]}]
     (if (str/blank? (str dataset_id))
       {:error "dataset_id is required. Call tsf$datasets to find one."}
       (request :post "/runs"
@@ -158,6 +158,7 @@
                         max_steps             (assoc :max_steps max_steps)
                         confidence_level      (assoc :confidence_level confidence_level)
                         n_windows             (assoc :n_windows n_windows)
+                        (not (str/blank? (str eval_method))) (assoc :eval_method eval_method)
                         (not (str/blank? (str freq))) (assoc :freq freq))})))
   :input-schema  [:map
                   [:dataset_id [:string {:desc "Which series to train on"}]]
@@ -166,6 +167,7 @@
                   [:input_size       {:optional true} [:int {:desc "Steps of history the model sees. input_size + horizon must not exceed the series length."}]]
                   [:max_steps        {:optional true} [:int {:desc "Training steps. More is slower and not always better."}]]
                   [:confidence_level {:optional true} [:int {:desc "Prediction-interval level, 1-99"}]]
+                  [:eval_method      {:optional true} [:string {:desc "How to score: \"holdout\" (default) scores the tail nf.fit held out of the optimiser — free, but that tail drove early stopping so it is mildly optimistic. \"cv-refit\" is rolling-origin cross-validation REFITTING at each window — the most honest number available, at roughly one extra training run per window. Measured on one model: cross-validation WITHOUT refitting reported R2 +0.007 where refitting reported -0.365, so the difference is a sign change, not a rounding."}]]
                   [:n_windows        {:optional true} [:int {:desc "Calibration windows for the conformal prediction interval, 2-20. Default 2, which is the minimum: at 2 the interval width jitters between adjacent steps rather than widening with the horizon, because each step's width is a quantile over only two residuals. Raise it when the INTERVAL matters; it costs a cross-validation pass per window at fit time and does not change the point forecast."}]]
                   [:freq             {:optional true} [:string {:desc "pandas offset alias. Defaults to the dataset's inferred one."}]]]
   :output-schema [:map
