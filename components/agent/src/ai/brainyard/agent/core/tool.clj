@@ -311,8 +311,13 @@
 (def ^:private !last-dispatch-tier (atom nil))
 
 (defn last-dispatch-tier
-  "The `{:agent-type :tier :model :clamped?}` of the most recent sub-agent
+  "The `{:agent-type :tier :model :clamped? :by}` of the most recent sub-agent
    dispatch, or nil when none has happened (or tier routing is inert).
+
+   `:by` is the dispatching agent's instance id, so a reader can tell its OWN
+   dispatch from a nested one (a specialist dispatching its own sub-agent
+   overwrites this atom). Combined with `clear-dispatch-tier!` at the start of
+   a turn, that is what makes the value safe to attribute to this turn.
 
    Deliberately last-write-wins and NOT per-thread: it feeds an audit line in
    the routing log, where the useful answer is 'the specialist this turn ran at
@@ -321,6 +326,14 @@
    billing is not."
   []
   @!last-dispatch-tier)
+
+(defn clear-dispatch-tier!
+  "Forget the last dispatch. Called at the START of a router-agent turn so that
+   anything present at the end of the turn necessarily came FROM that turn —
+   otherwise a turn that self-answers would inherit the previous turn's tier
+   and log a specialist it never called."
+  []
+  (reset! !last-dispatch-tier nil))
 
 (defn- do-call-tool--agent
   "Dispatch a registered :agent-type tool with subagent guards.
@@ -405,7 +418,8 @@
                            :tier       (:tier tier-info)
                            :model      (when tier-lm (str (name (:provider tier-lm))
                                                           "/" (:model tier-lm)))
-                           :clamped?   (boolean (:clamped? tier-info))})
+                           :clamped?   (boolean (:clamped? tier-info))
+                           :by         current-agent-id})
                   ;; Log the decision even when it is inert (tier-lm nil), so a
                   ;; user asking "why is this still on the session model" can
                   ;; see the tier was chosen and simply had no mapping.

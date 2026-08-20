@@ -112,10 +112,18 @@
 ;; ============================================================================
 
 (deftest resolve-tier-lm-is-inert-by-default
-  (testing "the SHIPPED default maps every tier to nothing"
-    ;; This is the regression guard for the whole feature: if this fails, a
-    ;; stock build has started re-pointing dispatches at a different model.
-    (is (every? nil? (vals (config/get-config :agent-lm-tiers))))
+  ;; Asserts the SCHEMA default, deliberately not `get-config`'s merged view.
+  ;; Reading the merged value would make this test fail on any machine whose
+  ;; .brainyard/config.edn actually configures tiers — i.e. it would punish
+  ;; adopting the feature. The invariant that matters is what SHIPS.
+  (testing "the shipped schema default maps every tier to nothing"
+    (let [shipped (get-in config/config-schema [:agent-lm-tiers :default])]
+      (is (= #{:light :standard :deep} (set (keys shipped))))
+      (is (every? nil? (vals shipped))
+          "a stock build must not re-point any dispatch at a different model")))
+
+  (testing "with the shipped default in effect, every tier resolves to nothing"
+    (set-tiers! (get-in config/config-schema [:agent-lm-tiers :default]))
     (doseq [t config/tier-order]
       (is (nil? (config/resolve-tier-lm nil t))
           (str "tier " t " must resolve to nil on a stock build")))))
@@ -165,7 +173,7 @@
 
 (deftest tier-map-covers-the-built-in-specialists
   (testing "every specialist the router can route to has a tier entry"
-    (let [m (config/get-config :agent-tier-map)]
+    (let [m (get-in config/config-schema [:agent-tier-map :default])]
       (doseq [a [:explore-agent :plan-agent :todo-agent :exec-agent :eval-agent
                  :edit-agent :research-agent :workflow-agent :rlm-agent
                  :skill-agent :mcp-agent :tool-agent :meta-agent :memory-agent
@@ -174,7 +182,7 @@
         (is (contains? m a) (str a " has no work-tier entry")))))
 
   (testing "every entry's tiers are valid and its window is not inverted"
-    (doseq [[a {:keys [default min max]}] (config/get-config :agent-tier-map)]
+    (doseq [[a {:keys [default min max]}] (get-in config/config-schema [:agent-tier-map :default])]
       (is (some? (config/coerce-tier default)) (str a " :default"))
       (when min (is (some? (config/coerce-tier min)) (str a " :min")))
       (when max (is (some? (config/coerce-tier max)) (str a " :max")))
@@ -184,7 +192,7 @@
             (str a " :default " default " is outside its own [:min :max] window")))))
 
   (testing "agents whose output is prose or a gating verdict are floor-capped"
-    (let [m (config/get-config :agent-tier-map)]
+    (let [m (get-in config/config-schema [:agent-tier-map :default])]
       (doseq [a [:plan-agent :eval-agent :research-agent :workflow-agent]]
         (is (some? (:min (get m a)))
             (str a " should have a :min floor — a weak model here produces "

@@ -243,6 +243,54 @@ for a `:light`-capped specialist, and the dispatch still succeeds.
 | feature claim | `agent/core/feature.clj` `:agents/work-tiers` (requires `:agents/subagents`) |
 | tests | `agent/test/…/work_tier_test.clj` — 14 tests, 139 assertions |
 
+### Verified live (nREPL, 2026-08-20)
+
+Against a real `bb tui` router-agent session on Bedrock, tiers configured via
+`.brainyard/config.edn`:
+
+- **Dispatch injection.** `explore-agent` with no tier ran on the `:light`
+  model, `explore-agent` asking `"deep"` ran on the `:deep` model, and
+  `schedule-agent` asking `"deep"` was **clamped** to `:standard` (its `:max`)
+  and fell back to the session model. `config-source` reported `:agent` for the
+  two injected cases, i.e. the per-agent layer, which outranks session.
+- **Per-agent cost.** One turn produced
+  `{:router-agent {… :models #{"apac.amazon.nova-lite-v1:0"}}
+    :explore-agent {… :models #{"apac.amazon.nova-micro-v1:0"}}}` —
+  the router on the session model, its specialist on the `:light` tier, billed
+  separately. That single observation exercises P0.3, P1 and P2 together.
+- **Routing log.** `{:turn 1 :shape "explore" :routed-to "explore-agent"
+  :tier "light" :tier-model "bedrock/apac.amazon.nova-micro-v1:0"}`, and a
+  following self-answered turn logged `:shape "direct-answer"` with **no**
+  tier.
+
+**P2.3 was broken as first written, and live testing is what caught it.**
+The tier was only recorded when `routed-to` was non-nil, and `routed-to-of`
+derives the specialist from TOOL-channel call names — but the router's
+instruction makes a **clojure-fence dispatch the primary path**, and that
+leaves no tool-call trace. So a normal routed turn logged
+`{:shape "code-compose" :routed-to nil}` with no tier: the routing log was
+under-reporting real routing, and had been doing so before tiers existed.
+
+The fix stamps the dispatching agent's id (`:by`) on the dispatch record and
+clears it at `:agent.ask/pre`, so a record surviving to `:agent.ask/post`
+provably belongs to this turn and this agent. `routed-to` now falls back to the
+dispatch record, which repairs `routed-to` **and** `shape` for every
+code-channel dispatch, not just the tier field. Regression-guarded by the
+staleness case above (a self-answered turn must not inherit the prior tier).
+
+Two environment gotchas found while testing, neither caused by this change:
+
+- **`bb tui` lets `.env` clobber real shell env vars.** The bb.edn task runs
+  `set -a && source .env`, the opposite of the shipped binary's `dotenv.clj`
+  (which checks `System/getenv` first). An exported `AWS_REGION=us-east-1` was
+  silently overridden by the project `.env`'s `ap-northeast-2`, which sent
+  `us.`-prefixed inference profiles to a region that rejects them. Worth
+  reconciling separately.
+- **A tier label must be valid in the session's AWS region.** Pointing `:light`
+  at a `us.` profile while the session runs in `ap-northeast-2` fails the
+  dispatch with "The provided model identifier is invalid". Tier labels are not
+  region-checked at config time.
+
 Two implementation notes worth carrying forward:
 
 - **`:work-tier` is consumed at the dispatch and never forwarded.** §6 says a

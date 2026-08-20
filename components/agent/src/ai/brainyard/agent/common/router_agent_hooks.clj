@@ -229,7 +229,11 @@
       (when-let [sid (session-id-of agent)]
         (let [!st (:!state agent)]
           (when (instance? clojure.lang.IAtom !st)
-            (swap! !st assoc ::pre-max-turn (max-turn-in-log sid))))))
+            (swap! !st assoc ::pre-max-turn (max-turn-in-log sid)))))
+      ;; Forget any earlier dispatch so the tier recorded at the END of this
+      ;; turn necessarily belongs to this turn. Without it a self-answered turn
+      ;; inherits the previous turn's tier and logs a specialist it never called.
+      (tool/clear-dispatch-tier!))
     (catch Throwable t
       (mulog/error ::router.pre-turn-failed :exception t))))
 
@@ -342,7 +346,20 @@
             ;; only write per turn; the guard just no-ops a double-fire.
             (when (= pre-turn post-turn)
               (let [ans-line  (extract-routing-answer-line answer)
-                    routed-to (routed-to-of agent)
+                    ;; The dispatch record from THIS agent this turn. Safe to
+                    ;; attribute because `record-pre-turn-state` cleared it when
+                    ;; the turn began and `:by` distinguishes our own dispatch
+                    ;; from a nested one a specialist made.
+                    dt        (let [d (tool/last-dispatch-tier)]
+                                (when (and d (= (:by d) (proto/agent-id agent))) d))
+                    ;; `routed-to-of` only sees TOOL-channel dispatches, but the
+                    ;; instruction makes a clojure-fence call the primary path —
+                    ;; and that leaves no tool-call trace, so a code-channel
+                    ;; dispatch logged `routed-to nil` + shape :code-compose and
+                    ;; the routing log under-reported real routing. The dispatch
+                    ;; record covers exactly that case.
+                    routed-to (or (routed-to-of agent)
+                                  (some-> (:agent-type dt) name))
                     shape     (derive-shape agent ans-line routed-to)
                     artifact  (first (map :path (router/parse-saved-lines answer)))
                     reason    (or (:reason ans-line)
@@ -350,15 +367,7 @@
                                   "(routing reason not stated)")
                     question  (summary-question input)
                     next-turn (inc pre-turn)
-                    ;; Work tier the dispatch ran at. Only trusted when it
-                    ;; names the SAME specialist this turn routed to — the
-                    ;; dispatch record is last-write-wins, so a self-answered
-                    ;; turn following a dispatched one would otherwise inherit
-                    ;; the previous turn's tier.
-                    dt        (tool/last-dispatch-tier)
-                    tier      (when (and routed-to dt
-                                         (= (name (:agent-type dt)) (str routed-to)))
-                                dt)
+                    tier      dt
                     r (router/append-log!
                        :session-id sid
                        :turn next-turn
