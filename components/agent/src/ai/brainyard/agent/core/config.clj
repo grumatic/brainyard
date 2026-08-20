@@ -150,6 +150,38 @@
                                 :doc "Model for the answer-evaluation (hallucination/completeness) check that gates refinement. nil/blank → use the agent's :lm-config; a \"provider/model\" (or legacy \"provider:model\") label routes to a dedicated model. See resolve-eval-lm."}
    :sub-lm-config              {:type "string"  :default nil
                                 :doc "Model for sub-LLM queries (llm-query / rlm-query in the sandbox). nil → use the agent's :lm-config."}
+   :agent-lm-tiers             {:type "object"  :default {:light nil :standard nil :deep nil}
+                                :doc "Work-tier → model map used when router-agent dispatches a specialist. Each value is a \"provider/model\" label (or nil/blank → the agent's own :lm-config, i.e. today's behavior). Ships all-nil so the feature is INERT until configured: with no tier set, every dispatch resolves exactly as it did before tier routing existed. See resolve-tier-lm and :agent-tier-map."}
+   :agent-tier-map             {:type "object"
+                                :default {;; Lifecycle / CRUD — the work is a registry read or a
+                                          ;; small structured write, not judgement.
+                                          :config-agent        {:default :light :max :standard}
+                                          :schedule-agent      {:default :light :max :standard}
+                                          :event-agent         {:default :light :max :standard}
+                                          :state-machine-agent {:default :light :max :standard}
+                                          :memory-agent        {:default :light :max :standard}
+                                          :init-agent          {:default :light :max :standard}
+                                          ;; Discovery / mechanical transform — varies with breadth,
+                                          ;; so the router may escalate one step.
+                                          :explore-agent       {:default :light :max :deep}
+                                          :edit-agent          {:default :standard :max :deep}
+                                          :exec-agent          {:default :standard :max :deep}
+                                          :rlm-agent           {:default :standard :max :deep}
+                                          ;; Authoring / judgement / synthesis — floor-capped at
+                                          ;; :standard because a weak model here produces prose a
+                                          ;; human reads and acts on, or a verdict that gates work.
+                                          :plan-agent          {:default :deep :min :standard}
+                                          :todo-agent          {:default :standard :min :standard}
+                                          :eval-agent          {:default :deep :min :standard}
+                                          :research-agent      {:default :deep :min :standard}
+                                          :workflow-agent      {:default :deep :min :standard}
+                                          ;; Authoring agents whose output is executable or is a
+                                          ;; persisted contract — same reasoning as the block above.
+                                          :skill-agent         {:default :standard :min :standard}
+                                          :tool-agent          {:default :standard :min :standard}
+                                          :meta-agent          {:default :standard :min :standard}
+                                          :mcp-agent           {:default :standard :max :deep}}
+                                :doc "Per-specialist work tier used by router-agent's dispatch: {<defagent-type> {:default <tier> :min <tier> :max <tier>}}, tiers :light|:standard|:deep. :default applies when the router names no tier; :min/:max clamp what a router-requested :work-tier may become (a clamp is logged, never an error). An agent absent from the map is unconstrained :standard, so user-defined agents and any new defagent behave as they do today. Inert unless :agent-lm-tiers maps at least one tier to a model."}
    :llm-query-max-depth        {:type "integer" :default 1
                                 :doc "Max recursion depth for nested llm-query / sub-LLM calls."}
    :claude-code-max-turns      {:type "integer" :default 4
@@ -1976,6 +2008,100 @@
      (if (and a-str (not (str/blank? a-str)))
        (or (clj-llm/parse-lm-str a-str) main-lm)
        main-lm))))
+
+;; ----------------------------------------------------------------------------
+;; Work tiers — router-agent's per-dispatch model choice
+;;
+;; The router picks a TIER (what kind of work this is, which it can see);
+;; config maps tier → model (which credentials exist and which ids are real,
+;; which the router cannot see). Same split as the catalog's "provider API owns
+;; ids, humans own curation" rule, and for the same reason: model ids churn
+;; weekly and an instruction that names them is stale on release day.
+;; ----------------------------------------------------------------------------
+
+(def tier-order
+  "Work tiers, cheapest → most capable. The vector IS the ordering used by
+   `clamp-tier`; there is no separate rank table to drift from it."
+  [:light :standard :deep])
+
+(def ^:private tier-rank
+  (into {} (map-indexed (fn [i t] [t i]) tier-order)))
+
+(defn coerce-tier
+  "Coerce `t` (keyword or string) to a known tier, or nil when unrecognized.
+   Nil rather than a default, so callers can tell 'not specified' from
+   'specified as :light' — the router omitting a tier and the router asking
+   for the cheapest one are different events, and only one is worth logging."
+  [t]
+  (let [kw (cond (keyword? t) t
+                 (string? t)  (keyword (str/replace t #"^:" ""))
+                 :else        nil)]
+    (when (tier-rank kw) kw)))
+
+(defn clamp-tier
+  "Clamp `tier` into the `[:min :max]` window of a `:agent-tier-map` entry.
+   Returns `{:tier <clamped> :clamped? bool :from <requested>}`.
+
+   Clamping rather than rejecting is deliberate: a router asking for :deep on a
+   :light-capped specialist has made a routing judgement that is wrong about
+   cost, not about intent. Failing the dispatch would turn a cost question into
+   an outage; obeying it would make the cap decorative."
+  [tier {:keys [min max] :as _entry}]
+  (let [lo (or (tier-rank (coerce-tier min)) 0)
+        hi (or (tier-rank (coerce-tier max)) (dec (count tier-order)))
+        ;; A malformed entry with :min above :max would otherwise invert the
+        ;; window and clamp everything to :min. Widen to :min rather than
+        ;; silently pinning.
+        hi (if (< hi lo) lo hi)
+        r  (tier-rank tier)
+        r' (cond (< r lo) lo (> r hi) hi :else r)]
+    {:tier     (nth tier-order r')
+     :clamped? (not= r r')
+     :from     tier}))
+
+(defn resolve-work-tier
+  "Decide the work tier for a dispatch to `agent-type`.
+
+   `requested` is the router-supplied tier (nil when it said nothing). The
+   per-specialist `:default` wins when nothing was requested; otherwise the
+   request is clamped into the specialist's `[:min :max]` window. An agent with
+   no `:agent-tier-map` entry is unconstrained and defaults to :standard, so a
+   newly-added defagent and a user-authored persona behave exactly as they do
+   today.
+
+   Returns `{:tier :clamped? :from :entry}`."
+  ([agent agent-type] (resolve-work-tier agent agent-type nil))
+  ([agent agent-type requested]
+   (let [entry (get (get-config agent :agent-tier-map) agent-type)
+         req   (coerce-tier requested)
+         dflt  (or (coerce-tier (:default entry)) :standard)]
+     (if req
+       (assoc (clamp-tier req entry) :entry entry)
+       {:tier dflt :clamped? false :from nil :entry entry}))))
+
+(defn resolve-tier-lm
+  "Resolve the LM for a work tier. Pattern (mirrors `resolve-sub-lm` /
+   `resolve-eval-lm` / `resolve-analytics-lm` exactly):
+     (:agent-lm-tiers agent) tier → a \"provider/model\" string, parsed via
+     `clj-llm/parse-lm-str` when non-blank
+     otherwise → the agent's main `:lm-config`
+
+   Returns nil ONLY when there is no tier override to apply, which is the
+   signal the dispatch uses to inject nothing at all — an absent key leaves the
+   sub-agent resolving `:lm-config` through the normal precedence, i.e. today's
+   behavior. That is different from the three sibling resolvers, which must
+   always yield an LM because their call sites hand it straight to dspy; here a
+   nil is the inert path, not a crash.
+
+   An unparseable label yields nil (inert) rather than the main LM, for the same
+   reason: injecting the main LM would be a no-op with extra steps, and letting
+   a typo silently pin every dispatch to the session model would hide the typo."
+  ([tier] (resolve-tier-lm proto/*current-agent* tier))
+  ([agent tier]
+   (when-let [t (coerce-tier tier)]
+     (let [label (get (get-config agent :agent-lm-tiers) t)]
+       (when (and (string? label) (not (str/blank? label)))
+         (clj-llm/parse-lm-str label))))))
 
 (defn resolve-eval-lm
   "Resolve the LM for the answer-evaluation check (EvaluateAnswer). Pattern:

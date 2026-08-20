@@ -320,8 +320,15 @@
   "Append one NDJSON routing-decision line to routing.log. INTERNAL — the
    routing-log hook is the sole caller (router-agent no longer constructs log
    lines). `:shape` is coerced to :unspecified if unknown; the dossier dir is
-   created if missing. Returns {:appended true :line …} or {:error …}."
-  [& {:keys [session-id turn iter question shape routed-to artifact reason base-dir]
+   created if missing. Returns {:appended true :line …} or {:error …}.
+
+   `:tier` / `:tier-model` record the work tier the dispatched specialist ran
+   at (see core.config/resolve-work-tier). Both are omitted from the line when
+   nil, which is the inert case — the field is additive NDJSON and every
+   existing reader (`router$resume?`, `router$last-shape`) parses a line
+   without it exactly as before."
+  [& {:keys [session-id turn iter question shape routed-to artifact reason
+             tier tier-model base-dir]
       :or   {base-dir (config/project-dir) iter 1}}]
   (let [sid (or session-id (current-session-id))]
     (if-not (string? sid)
@@ -330,19 +337,22 @@
             log-file (io/file dir "routing.log")
             shape-kw (coerce-shape shape)]
         (when-not (.isDirectory dir) (.mkdirs dir))
-        (let [entry (array-map
-                     :turn       turn
-                     :iter       iter
-                     :question   (or question "")
-                     :shape      (name shape-kw)
-                     :routed-to  (when routed-to (str routed-to))
-                     :artifact   (when artifact  (str artifact))
-                     :reason     (or reason ""))
+        (let [entry (cond-> (array-map
+                             :turn       turn
+                             :iter       iter
+                             :question   (or question "")
+                             :shape      (name shape-kw)
+                             :routed-to  (when routed-to (str routed-to))
+                             :artifact   (when artifact  (str artifact))
+                             :reason     (or reason ""))
+                      tier       (assoc :tier (name tier))
+                      tier-model (assoc :tier-model (str tier-model)))
               line  (str (json-object entry) "\n")]
           (spit log-file line :append true)
           (mulog/log ::router.routing-decision
                      :session-id sid :turn turn :iter iter :shape shape-kw
-                     :routed-to routed-to :artifact (boolean artifact))
+                     :routed-to routed-to :artifact (boolean artifact)
+                     :tier tier)
           {:appended true :line (str/trim-newline line)})))))
 
 ;; ============================================================================

@@ -331,6 +331,22 @@
 
 (def ^:private default-history-cap 1000)
 
+(def ^:dynamic *attribution*
+  "Who the next recorded LLM call belongs to: `{:agent-id … :agent-type …}`.
+
+   clj-llm sits BELOW the agent component and cannot see
+   `proto/*current-agent*`, so the agent layer binds this around its ask
+   instead — the same injection shape as `set-catalog-cache-root!`. Unbound
+   (the default) the tracker behaves exactly as it did before attribution
+   existed: `:by-agent` simply stays empty.
+
+   `:agent-type` (`:plan-agent`) is the ROLLUP key, not `:agent-id`
+   (`:plan-agent/lime-mole-8966`) — the question this exists to answer is
+   \"what did routing to plan-agent cost\", which is about the specialist, not
+   about one dispatch of it. The instance id rides along on each history entry
+   so a drill-down is still possible."
+  nil)
+
 (defn create-usage-tracker
   "Create a new usage tracker atom.
    Options:
@@ -344,51 +360,78 @@
                       :total-cost         0.0
                       :call-count         0}
          :by-model   {}
+         :by-agent   {}
          :history    []
          :history-cap history-cap}))
 
 (defn record-usage!
-  "Record a usage map into a tracker. Returns the usage map unchanged."
+  "Record a usage map into a tracker. Returns the usage map (with attribution
+   merged in when `*attribution*` is bound) so callers see what was stored.
+
+   Rolls up three ways: `:totals`, `:by-model`, and — when the agent layer has
+   bound `*attribution*` — `:by-agent`, keyed by `:agent-type`. An unattributed
+   call updates the first two and leaves `:by-agent` untouched, so a tracker
+   used outside an agent (a bare `chat-completion`, a test) is unaffected."
   [tracker usage-map]
-  (when (and tracker usage-map)
-    (let [model (:model usage-map)
-          cost  (get-in usage-map [:cost :total-cost] 0.0)
-          cache-read  (get-in usage-map [:cache :read-tokens] 0)
-          cache-write (get-in usage-map [:cache :write-tokens] 0)]
-      (swap! tracker
-             (fn [state]
-               (-> state
+  (let [usage-map (cond-> usage-map
+                    (and usage-map *attribution*)
+                    (merge (select-keys *attribution* [:agent-id :agent-type])))]
+    (when (and tracker usage-map)
+      (let [model (:model usage-map)
+            agent-type (:agent-type usage-map)
+            cost  (get-in usage-map [:cost :total-cost] 0.0)
+            cache-read  (get-in usage-map [:cache :read-tokens] 0)
+            cache-write (get-in usage-map [:cache :write-tokens] 0)]
+        (swap! tracker
+               (fn [state]
+                 (cond-> state
                    ;; Update totals
-                   (update-in [:totals :input-tokens] + (:input-tokens usage-map 0))
-                   (update-in [:totals :output-tokens] + (:output-tokens usage-map 0))
-                   (update-in [:totals :total-tokens] + (:total-tokens usage-map 0))
-                   (update-in [:totals :cache-read-tokens] + cache-read)
-                   (update-in [:totals :cache-write-tokens] + cache-write)
-                   (update-in [:totals :total-cost] + cost)
-                   (update-in [:totals :call-count] inc)
-                   ;; Update per-model breakdown
-                   (update-in [:by-model model :input-tokens] (fnil + 0) (:input-tokens usage-map 0))
-                   (update-in [:by-model model :output-tokens] (fnil + 0) (:output-tokens usage-map 0))
-                   (update-in [:by-model model :total-tokens] (fnil + 0) (:total-tokens usage-map 0))
-                   (update-in [:by-model model :cache-read-tokens] (fnil + 0) cache-read)
-                   (update-in [:by-model model :cache-write-tokens] (fnil + 0) cache-write)
-                   (update-in [:by-model model :total-cost] (fnil + 0.0) cost)
-                   (update-in [:by-model model :call-count] (fnil inc 0))
+                   true
+                   (-> (update-in [:totals :input-tokens] + (:input-tokens usage-map 0))
+                       (update-in [:totals :output-tokens] + (:output-tokens usage-map 0))
+                       (update-in [:totals :total-tokens] + (:total-tokens usage-map 0))
+                       (update-in [:totals :cache-read-tokens] + cache-read)
+                       (update-in [:totals :cache-write-tokens] + cache-write)
+                       (update-in [:totals :total-cost] + cost)
+                       (update-in [:totals :call-count] inc)
+                       ;; Update per-model breakdown
+                       (update-in [:by-model model :input-tokens] (fnil + 0) (:input-tokens usage-map 0))
+                       (update-in [:by-model model :output-tokens] (fnil + 0) (:output-tokens usage-map 0))
+                       (update-in [:by-model model :total-tokens] (fnil + 0) (:total-tokens usage-map 0))
+                       (update-in [:by-model model :cache-read-tokens] (fnil + 0) cache-read)
+                       (update-in [:by-model model :cache-write-tokens] (fnil + 0) cache-write)
+                       (update-in [:by-model model :total-cost] (fnil + 0.0) cost)
+                       (update-in [:by-model model :call-count] (fnil inc 0)))
+
+                   ;; Per-dispatching-agent breakdown — only when attributed.
+                   agent-type
+                   (-> (update-in [:by-agent agent-type :input-tokens] (fnil + 0) (:input-tokens usage-map 0))
+                       (update-in [:by-agent agent-type :output-tokens] (fnil + 0) (:output-tokens usage-map 0))
+                       (update-in [:by-agent agent-type :total-tokens] (fnil + 0) (:total-tokens usage-map 0))
+                       (update-in [:by-agent agent-type :total-cost] (fnil + 0.0) cost)
+                       (update-in [:by-agent agent-type :call-count] (fnil inc 0))
+                       (update-in [:by-agent agent-type :models] (fnil conj #{}) model))
+
                    ;; Append to history (capped)
+                   true
                    (update :history (fn [h]
                                       (let [h' (conj h usage-map)]
                                         (if (> (count h') (:history-cap state))
                                           (subvec h' (- (count h') (:history-cap state)))
                                           h')))))))))
-  usage-map)
+    usage-map))
 
 (defn get-usage-summary
-  "Get cumulative usage summary from a tracker."
+  "Get cumulative usage summary from a tracker.
+
+   `:by-agent` is `{}` unless the agent layer bound `*attribution*` during the
+   calls — an empty map means unattributed, never zero-cost."
   [tracker]
   (when tracker
     (let [state @tracker]
       {:totals   (:totals state)
-       :by-model (:by-model state)})))
+       :by-model (:by-model state)
+       :by-agent (:by-agent state)})))
 
 (defn get-usage-history
   "Get call history from a tracker.
@@ -440,8 +483,23 @@
                                     :cache-read-tokens 0 :cache-write-tokens 0
                                     :total-cost 0.0 :call-count 0}
                       :by-model    {}
+                      :by-agent    {}
                       :history     []
                       :history-cap (:history-cap state)}))))
+
+(defn with-attribution*
+  "Call `f` with `*attribution*` bound to `attribution`, so every LLM call it
+   makes is recorded against that agent. Exposed as a FUNCTION rather than a
+   macro because it crosses the Polylith interface boundary: the agent
+   component cannot `binding` a var it reaches through a value-copying `def`,
+   and a re-exported dynamic var would carry its value, not its identity.
+
+   A nil `attribution` is a pass-through, not a rebind to nil — callers that
+   cannot identify an agent should not clobber an outer binding."
+  [attribution f]
+  (if attribution
+    (binding [*attribution* attribution] (f))
+    (f)))
 
 (defn serialize-tracker
   "Return an EDN-safe snapshot of a tracker's state — suitable for

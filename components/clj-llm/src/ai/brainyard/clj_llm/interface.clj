@@ -357,8 +357,27 @@
 
 (def get-usage-summary
   "Get cumulative usage summary from a tracker.
-   Returns {:totals {...} :by-model {...}}"
+   Returns {:totals {...} :by-model {...} :by-agent {...}}.
+   :by-agent is keyed by dispatching agent-type and is empty unless the caller
+   ran the calls inside `with-usage-attribution*`."
   usage/get-usage-summary)
+
+(def with-usage-attribution*
+  "(with-usage-attribution* {:agent-id … :agent-type …} thunk) — record every
+   LLM call `thunk` makes against that agent, feeding `get-usage-summary`'s
+   :by-agent rollup. A nil attribution passes through without rebinding."
+  usage/with-attribution*)
+
+(def pricing-coverage
+  "Which catalog models have a per-token price and which do not.
+   Options: :catalog (default: the baked catalog), :curated-only?
+   Returns {:priced [...] :unpriced [...] :counts {...}}."
+  providers/pricing-coverage)
+
+(def get-pricing
+  "Per-1M-token rates for a [provider model] pair, or nil when unpriced.
+   Returns {:input :output :cache-read :cache-write}."
+  usage/get-pricing)
 
 (def get-usage-history
   "Get call history from a tracker.

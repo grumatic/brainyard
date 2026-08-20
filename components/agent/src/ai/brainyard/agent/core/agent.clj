@@ -789,7 +789,17 @@
           (runtime/set-active-http! !state stream)
           (runtime/clear-active-http! !state)))
       (try
-        (let [result (proto/process agent input nil)
+        (let [;; Attribute every LLM call this ask makes to THIS agent, so the
+              ;; session tracker's :by-agent rollup can answer "what did routing
+              ;; to plan-agent cost". The tracker is shared across the whole
+              ;; agent-session (root + every dispatched sub-agent), so without
+              ;; this the totals are session-wide and a per-specialist question
+              ;; is unanswerable. Bound here rather than inside clj-llm because
+              ;; clj-llm sits below this component and cannot see an agent.
+              result (llm/with-usage-attribution*
+                       {:agent-id   (:agent-id agent)
+                        :agent-type (proto/defagent-type agent)}
+                       (fn [] (proto/process agent input nil)))
             ;; Include usage summary if tracker exists
               usage-summary (when-let [tracker (session/get-session-config @!session :usage-tracker)]
                               (llm/get-usage-summary tracker))

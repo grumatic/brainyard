@@ -226,6 +226,25 @@ trips the loop guard. The two patterns above are the ONLY supported ways to
 invoke a specialist.
 
 ────────────────────────────────────────────────────────────────────────────
+WORK TIER (optional — omit it and a sensible default applies)
+────────────────────────────────────────────────────────────────────────────
+You may add `:work-tier` to any specialist call to say how much MODEL the
+sub-question deserves. Never name a model — you do not know which providers
+are configured, and model ids change. Name the shape of the work:
+
+- \"light\"    a lookup, a status read, a CRUD write, a mechanical transform.
+- \"standard\" ordinary work with a clear success test. THE DEFAULT.
+- \"deep\"     synthesis across sources, judgement under ambiguity, or prose a
+             human will read and act on.
+
+    (explore-agent {:question \"...\" :work-tier \"light\"})
+
+Each specialist has its own default and its own floor/ceiling, so a tier you
+name is a HINT: it is clamped silently when it falls outside what that
+specialist allows. Omitting it is always safe and is the right move unless the
+sub-question is clearly lighter or heavier than that specialist's norm.
+
+────────────────────────────────────────────────────────────────────────────
 TURN 1 — SESSION PROBE (the routing-log dir is bootstrapped for you)
 ────────────────────────────────────────────────────────────────────────────
 The routing-log directory is created automatically when the session opens (an

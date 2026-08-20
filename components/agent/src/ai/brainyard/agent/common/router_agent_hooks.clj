@@ -35,6 +35,7 @@
   (:require [ai.brainyard.agent.common.router :as router]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
+            [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.string :as str]))
 
@@ -349,6 +350,15 @@
                                   "(routing reason not stated)")
                     question  (summary-question input)
                     next-turn (inc pre-turn)
+                    ;; Work tier the dispatch ran at. Only trusted when it
+                    ;; names the SAME specialist this turn routed to — the
+                    ;; dispatch record is last-write-wins, so a self-answered
+                    ;; turn following a dispatched one would otherwise inherit
+                    ;; the previous turn's tier.
+                    dt        (tool/last-dispatch-tier)
+                    tier      (when (and routed-to dt
+                                         (= (name (:agent-type dt)) (str routed-to)))
+                                dt)
                     r (router/append-log!
                        :session-id sid
                        :turn next-turn
@@ -357,12 +367,15 @@
                        :shape shape
                        :routed-to routed-to
                        :artifact artifact
-                       :reason reason)]
+                       :reason reason
+                       :tier (:tier tier)
+                       :tier-model (:model tier))]
                 (when (:appended r)
                   (mulog/log ::router.routing-line-recorded
                              :session-id sid :turn next-turn
                              :shape shape :routed-to routed-to
-                             :artifact (boolean artifact)))))))))
+                             :artifact (boolean artifact)
+                             :tier (:tier tier)))))))))
     (catch Throwable t
       (mulog/error ::router.routing-line-failed :exception t))))
 

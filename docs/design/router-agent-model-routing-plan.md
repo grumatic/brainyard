@@ -1,6 +1,36 @@
 # router-agent: model routing plan
 
-**Status:** proposal · **Date:** 2026-08-20 · **Depends on:** `docs/design/router-agent-design.md` (as-built)
+**Status:** phases 0–3 implemented · **Date:** 2026-08-20 · **Depends on:** `docs/design/router-agent-design.md` (as-built)
+
+> ## Correction on implementation (§2 was wrong)
+>
+> The plan asserted that "nothing in the repo maps a model id to $/token".
+> That is false. `components/clj-llm/src/ai/brainyard/clj_llm/core/usage.clj`
+> already carries `default-pricing` — a full per-1M-token table keyed
+> `[provider model]` with `:input`/`:output`/`:cache-read`/`:cache-write`,
+> covering openai, anthropic, google, deepseek, groq and bedrock — plus
+> `get-pricing` (with Bedrock region/version normalization), `calculate-cost`,
+> and a tracker that already rolls up `:by-model` totals *including cost*.
+>
+> **P0.1 was therefore NOT implemented as written.** Adding `:input-cost` /
+> `:output-cost` to catalog entries in `providers.clj` would have created a
+> second pricing source next to a complete one, and the two would have drifted
+> — the exact failure the catalog-refresh design exists to prevent. What
+> shipped instead:
+>
+> - **P0.1′** `providers/pricing-coverage` reconciles the catalog against the
+>   *existing* table and reports which models have no rate. First run: **102
+>   priced, 81 unpriced, 7 not-applicable of 190** — the unpriced ones bill
+>   `0.0` today, which reads as free rather than as unknown. Providers that
+>   cannot carry a rate (`claude-code`, which reports `cost_usd` directly;
+>   `ollama`/`apple-fm`, local; `free-llm`) are a separate `:not-applicable`
+>   bucket so the report does not cry wolf.
+> - **P0.2′** `bb catalog:refresh` prints that report. It contacts no
+>   provider, so it runs offline and even when every provider is unreachable.
+>
+> The rest of the plan stands as written and is implemented below. §2's
+> conclusion — that cost cannot be *predicted* from the catalog — was right;
+> its premise about what exists was not.
 
 The rename from `main-agent` to `router-agent` names what the agent already
 does. This document is about what it does **not** do yet: pick the model the
@@ -194,6 +224,40 @@ for a `:light`-capped specialist, and the dispatch still succeeds.
   silently rewrites its own cost/quality tradeoff is unauditable, and the
   data volume from one user's sessions cannot support the inference. Report
   it; let the human move the table.
+
+## 4a. As-built map
+
+| Plan item | Where it landed |
+|---|---|
+| P0.1′ pricing coverage | `clj-llm/core/providers.clj` `pricing-coverage` |
+| P0.2′ drift report | `scripts/catalog_refresh.clj` `report-pricing-coverage!` |
+| P0.3 per-agent attribution | `clj-llm/core/usage.clj` `*attribution*` + `with-attribution*` + `:by-agent`; bound in `agent/core/agent.clj` around `proto/process` |
+| P1.1 `:agent-lm-tiers` | `agent/core/config.clj` config-schema (ships all-nil) |
+| P1.2 `resolve-tier-lm` | `agent/core/config.clj`, beside `resolve-sub-lm` |
+| P2.1 `:agent-tier-map` | `agent/core/config.clj` config-schema (19 built-in specialists) |
+| P2.2 dispatch injection | `agent/core/tool.clj` `do-call-tool--agent` |
+| P2.3 tier logging | `::tier-routed` / `::tier-clamped` mulog; `tier`/`tier-model` on the routing.log line (`common/router.clj` `append-log!`, `common/router_agent_hooks.clj`) |
+| P3.1 `:work-tier` | consumed in `do-call-tool--agent`, stripped before the specialist sees it |
+| P3.2 clamping | `agent/core/config.clj` `clamp-tier` / `resolve-work-tier` |
+| P3.3 router instruction | `common/router_agent.clj` — WORK TIER section, 20 lines |
+| feature claim | `agent/core/feature.clj` `:agents/work-tiers` (requires `:agents/subagents`) |
+| tests | `agent/test/…/work_tier_test.clj` — 14 tests, 139 assertions |
+
+Two implementation notes worth carrying forward:
+
+- **`:work-tier` is consumed at the dispatch and never forwarded.** §6 says a
+  specialist should not know its tier; the dispatch `dissoc`es the key before
+  `invoke-tool`, so no specialist `:input-schema` changed. P3.1's "add it to
+  the specialist input-schema" would have touched ~19 defagents to declare a
+  key none of them read.
+- **The dispatch records its tier in an atom (`tool/last-dispatch-tier`)** for
+  the routing-log hook to read, and the hook only trusts it when it names the
+  same specialist the turn routed to. Last-write-wins is fine for an audit
+  line about a turn that dispatches one specialist; it is deliberately not a
+  billing mechanism — that is `:by-agent`, which is per-call.
+
+**Phase 4 is not implemented.** It needs data from real sessions that this
+change is what starts producing.
 
 ## 5. Risks
 

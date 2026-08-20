@@ -299,6 +299,28 @@
   (delay (requiring-resolve 'ai.brainyard.agent.core.agent/generate-instance-id)))
 (def ^:private !evict-subagents-to-cap!
   (delay (requiring-resolve 'ai.brainyard.agent.core.agent/evict-subagents-to-cap!)))
+(def ^:private !resolve-work-tier
+  (delay (requiring-resolve 'ai.brainyard.agent.core.config/resolve-work-tier)))
+(def ^:private !resolve-tier-lm
+  (delay (requiring-resolve 'ai.brainyard.agent.core.config/resolve-tier-lm)))
+
+;; Set by do-call-tool--agent for the duration of one sub-agent dispatch, so the
+;; router-agent routing-log hook can record WHICH tier and model the dispatch
+;; ran at without the dispatch having to reach up into the hook system. Read by
+;; `last-dispatch-tier`; nil when tier routing is inert.
+(def ^:private !last-dispatch-tier (atom nil))
+
+(defn last-dispatch-tier
+  "The `{:agent-type :tier :model :clamped?}` of the most recent sub-agent
+   dispatch, or nil when none has happened (or tier routing is inert).
+
+   Deliberately last-write-wins and NOT per-thread: it feeds an audit line in
+   the routing log, where the useful answer is 'the specialist this turn ran at
+   :light', and a turn dispatches one specialist. A concurrent fan-out would
+   report the last one — which is why the routing line is the consumer and
+   billing is not."
+  []
+  @!last-dispatch-tier)
 
 (defn- do-call-tool--agent
   "Dispatch a registered :agent-type tool with subagent guards.
@@ -357,12 +379,55 @@
               evicted (when agent
                         (seq (@!evict-subagents-to-cap!
                               (proto/session-id agent)
-                              (or (@!get-config agent :max-subagents-per-session) 8))))]
+                              (or (@!get-config agent :max-subagents-per-session) 8))))
+              ;; ---- Work-tier model routing -------------------------------
+              ;; The caller (router-agent) may name a :work-tier; the
+              ;; per-specialist :agent-tier-map supplies the default and clamps
+              ;; the request. The resolved tier maps to an LM via
+              ;; :agent-lm-tiers, and lands on the sub-agent's PER-AGENT config
+              ;; layer — which outranks session — by riding the same
+              ;; parsed-args path setup-agent already folds into
+              ;; schema-overrides.
+              ;;
+              ;; :work-tier is consumed HERE and never forwarded: a specialist
+              ;; that knew its own tier would be invited to hedge, and its
+              ;; :input-schema does not declare the key.
+              tier-req  (:work-tier parsed-args)
+              tier-info (when agent (@!resolve-work-tier agent target-id tier-req))
+              ;; An explicit :lm-config in the call wins over the tier: it is
+              ;; the more specific instruction, and silently overriding it would
+              ;; make a caller that named a model unable to get it.
+              tier-lm   (when (and tier-info (not (:lm-config parsed-args)))
+                          (@!resolve-tier-lm agent (:tier tier-info)))
+              _ (when tier-info
+                  (reset! !last-dispatch-tier
+                          {:agent-type target-id
+                           :tier       (:tier tier-info)
+                           :model      (when tier-lm (str (name (:provider tier-lm))
+                                                          "/" (:model tier-lm)))
+                           :clamped?   (boolean (:clamped? tier-info))})
+                  ;; Log the decision even when it is inert (tier-lm nil), so a
+                  ;; user asking "why is this still on the session model" can
+                  ;; see the tier was chosen and simply had no mapping.
+                  (mulog/log ::tier-routed
+                             :agent-type target-id
+                             :requested-tier (:from tier-info)
+                             :tier (:tier tier-info)
+                             :clamped (boolean (:clamped? tier-info))
+                             :model (when tier-lm (:model tier-lm))
+                             :applied (boolean tier-lm)))
+              _ (when (:clamped? tier-info)
+                  (mulog/info ::tier-clamped
+                              :agent-type target-id
+                              :requested (:from tier-info)
+                              :allowed (:tier tier-info)))]
           (let [r (resolve-agent-ref
                    (apply invoke-tool target-id
                           (mapcat identity
                                   (cond-> parsed-args
                                     true          (assoc :id instance-id :auto-close? auto-close?)
+                                    true          (dissoc :work-tier)
+                                    tier-lm       (assoc :lm-config tier-lm)
                                     agent-session (assoc :agent-session agent-session)
                                     agent         (assoc :parent-agent agent)))))]
             ;; Always surface the askable instance-id back to the caller — the

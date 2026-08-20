@@ -144,7 +144,39 @@
 ;; Run
 ;; ---------------------------------------------------------------------------
 
+;; ---------------------------------------------------------------------------
+;; Pricing coverage
+;;
+;; The catalog and the pricing table (clj-llm core/usage default-pricing) are
+;; two independent hand-curated lists and nothing kept them in step. A model
+;; catalogued but unpriced still runs; it just bills 0.0, which reads as free
+;; rather than as unknown. This contacts no provider, so it runs even offline
+;; and even when every provider is unreachable.
+;; ---------------------------------------------------------------------------
+
+(defn report-pricing-coverage! []
+  (let [{:keys [unpriced counts]} (providers/pricing-coverage)
+        curated-unpriced (set (map (juxt :provider :model)
+                                   (:unpriced (providers/pricing-coverage :curated-only? true))))]
+    (println (format "\n[catalog:pricing] %d priced, %d unpriced, %d not-applicable (of %d)"
+                     (:priced counts) (:unpriced counts)
+                     (:not-applicable counts) (:total counts)))
+    (if (empty? unpriced)
+      (println "[catalog:pricing] Every priceable catalog model has a rate.")
+      (do
+        (doseq [[provider ms] (group-by :provider unpriced)]
+          (println (str "\n" (name provider)))
+          (doseq [{:keys [model] :as e} (sort-by :model ms)]
+            (println (format "  ? unpriced   %-46s %s" model
+                             (if (curated-unpriced ((juxt :provider :model) e))
+                               "[curated — in the picker, bills 0.0]"
+                               "")))))
+        (println (str "\n[catalog:pricing] These bill 0.0 today. Add rates to `default-pricing` "
+                      "in components/clj-llm/src/ai/brainyard/clj_llm/core/usage.clj."))
+        (println "[catalog:pricing] Never written automatically — a price is curation, like :description.")))))
+
 (defn main! []
+  (report-pricing-coverage!)
   (let [candidates (fetch/refreshable-providers)]
     (if (empty? candidates)
       (println "[catalog:refresh] No reachable providers — nothing to compare against.")

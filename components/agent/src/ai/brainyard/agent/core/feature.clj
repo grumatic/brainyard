@@ -371,6 +371,22 @@
     :lifecycle :per-call
     :doc       "Agent-to-agent invocation, depth and roster limits."}
 
+   :agents/work-tiers
+   {:title     "Subagent work tiers"
+    :family    :agents
+    ;; No gate of its own. The feature is inert by construction: with
+    ;; :agent-lm-tiers all-nil (the shipped default) resolve-tier-lm returns nil
+    ;; and the dispatch injects nothing, so behavior is byte-identical to having
+    ;; no tier routing. A gate would be a second off-switch for something that
+    ;; is already off, which §4.11 argues against.
+    :gate      nil
+    :keys      [:agent-lm-tiers :agent-tier-map]
+    ;; A tier only matters at the moment one agent dispatches another, so it
+    ;; cannot outlive the subagent machinery it rides on.
+    :requires  #{:agents/subagents}
+    :lifecycle :per-call
+    :doc       "Per-specialist model choice: router-agent picks a work tier, config maps tier to model."}
+
    :agents/acp
    {:title     "ACP backends"
     :family    :agents

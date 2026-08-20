@@ -173,7 +173,7 @@
    ;; GPT-5.6 ships as three co-released variants (luna / sol / terra) rather
    ;; than a tiered pro/mini/nano split; listed alphabetically because the
    ;; /v1/models payload exposes no capability ordering between them.
-    [{:model "gpt-5.6-luna" :curated-rank 11 :description "OpenAI GPT-5.6 Luna"}
+   [{:model "gpt-5.6-luna" :curated-rank 11 :description "OpenAI GPT-5.6 Luna"}
     {:model "gpt-5.6-sol" :curated-rank 12 :description "OpenAI GPT-5.6 Sol"}
     {:model "gpt-5.6-terra" :curated-rank 13 :description "OpenAI GPT-5.6 Terra"}
     {:model "gpt-5.5" :curated-rank 14 :description "OpenAI GPT-5.5"}
@@ -918,6 +918,62 @@
       :else                    (throw (ex-info (str "Unknown provider: " provider)
                                                {:provider            provider
                                                 :available-providers (vec (sort (keys all)))})))))
+
+(defn pricing-coverage
+  "Which catalog models have a per-token price and which do not.
+
+   The catalog (`:model`/`:curated-rank`/`:description`/`:region`) and the
+   pricing table (`usage/default-pricing`, keyed `[provider model]`) are two
+   independent hand-curated sources, and nothing kept them in step. A model
+   catalogued but unpriced still runs — it just reports a cost of 0.0, which
+   reads as free rather than as unknown. That is the failure this surfaces.
+
+   Deliberately reports against the BAKED catalog by default rather than the
+   refreshed one: an unpriced model that a refresh surfaced is not a curation
+   gap anybody can fix in this repo, whereas an unpriced model we ship is.
+   Pass `:catalog` to check a refreshed view instead.
+
+   Returns `{:priced […] :unpriced […] :not-applicable […] :counts {…}}`, each
+   a vector of `{:provider :model}` sorted by provider then model.
+
+   `:unpriced` is the ACTIONABLE set. Providers that cannot meaningfully carry
+   a per-token rate are separated into `:not-applicable` rather than counted as
+   gaps — a report that lists them every run is one nobody reads:
+
+     :claude-code  the CLI reports cost_usd directly and `build-usage-map`
+                   uses it in preference to the table, so a rate here would
+                   never be consulted.
+     :ollama       local inference; the marginal token cost is zero.
+     :apple-fm     on-device.
+     :free-llm     free by definition, and the endpoint is user-supplied.
+
+   `:curated-only?` narrows to entries that reach the /model picker — the set
+   a user can actually select, and so the set where a silent 0.0 is most
+   likely to be seen and believed."
+  [& {:keys [catalog curated-only?]}]
+  (let [not-applicable-providers #{:claude-code :ollama :apple-fm :free-llm}
+        entries (for [[prov models] (or catalog model-catalog)
+                      m models
+                      :when (or (not curated-only?) (:curated-rank m))]
+                  {:provider prov :model (:model m)})
+        {:keys [priced unpriced not-applicable]}
+        (reduce (fn [acc {:keys [provider model] :as e}]
+                  (update acc
+                          (cond
+                            (usage/get-pricing provider model)      :priced
+                            (not-applicable-providers provider)     :not-applicable
+                            :else                                   :unpriced)
+                          conj e))
+                {:priced [] :unpriced [] :not-applicable []}
+                entries)
+        by-key (fn [v] (vec (sort-by (juxt #(name (:provider %)) :model) v)))]
+    {:priced         (by-key priced)
+     :unpriced       (by-key unpriced)
+     :not-applicable (by-key not-applicable)
+     :counts         {:priced         (count priced)
+                      :unpriced       (count unpriced)
+                      :not-applicable (count not-applicable)
+                      :total          (count entries)}}))
 
 ;; ============================================================================
 ;; Global Usage Tracker

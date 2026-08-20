@@ -284,6 +284,58 @@ Two properties worth preserving if you touch this:
   once per (key, source) via `::config-resolved`. Resolved in
   `agent.core.config/get-config`.
 
+### Subagent work tiers: router-agent picks a tier, config picks the model
+
+A dispatched specialist has no per-agent `:lm-config`, and `get-config` has no
+parent→child inheritance — so before this existed every specialist resolved its
+model from the shared *session* layer. A `config-agent` call flipping one
+boolean billed whatever `/model` last set. The router chose the cheap agent and
+handed it the expensive model.
+
+The fix splits the decision, because neither half can make the other:
+
+```
+router-agent  ->  a WORK TIER  (:light | :standard | :deep)   — it can see the work
+config        ->  tier -> "provider/model"                    — it knows the credentials
+```
+
+The router never names a model. Model ids churn weekly (which is why the
+catalog refresh exists), the router cannot know which providers are
+configured, and "why did this run on Opus?" deserves a configuration answer
+rather than a per-turn LLM whim — the same reasoning as the catalog's
+"provider API owns ids, humans own curation" split.
+
+- **`:agent-lm-tiers`** — `{:light "…" :standard nil :deep "…"}`, each a
+  `provider/model` label resolved by `resolve-tier-lm` (same fallback
+  discipline as `resolve-sub-lm`/`resolve-eval-lm`). **Ships all-nil, so the
+  feature is inert**: nothing is injected, and every dispatch resolves exactly
+  as it did before. An unparseable label is also inert — deliberately NOT a
+  fallback to the main LM, which would hide the typo behind working dispatches.
+- **`:agent-tier-map`** — `{<defagent-type> {:default … :min … :max …}}` for the
+  19 built-in specialists. `:default` applies when the router says nothing;
+  `:min`/`:max` clamp what a router-requested `:work-tier` may become. A clamp
+  is logged (`::tier-clamped`), never an error: a router asking for `:deep` on
+  a `:light`-capped specialist is wrong about cost, not about intent, so
+  failing the dispatch would turn a cost question into an outage while obeying
+  would make the cap decorative. An agent absent from the map is unconstrained
+  `:standard`, so new and user-authored agents behave as they do today.
+
+The resolved LM rides the dispatch args into `setup-agent`, landing on the
+sub-agent's **per-agent** layer, which outranks session. `:work-tier` is
+consumed at the dispatch and stripped before the specialist sees it — a
+specialist that knew its own tier would be invited to hedge.
+
+**Observability:** `::tier-routed` (every dispatch, including inert ones, so
+"why is this still on the session model" is answerable), `::tier-clamped`, and
+additive `tier`/`tier-model` fields on the routing.log NDJSON line. Cost is
+attributed per specialist via the usage tracker's `:by-agent` rollup, which
+needs `llm/with-usage-attribution*` — bound in `agent.clj` around
+`proto/process`, since `clj-llm` sits below the agent component and cannot see
+an agent. `bb catalog:refresh` reports which catalog models have no entry in
+`clj-llm`'s `default-pricing` table and therefore silently bill `0.0`.
+
+Design + as-built map: `docs/design/router-agent-model-routing-plan.md`.
+
 ## Build & release pipeline
 
 ```bash
