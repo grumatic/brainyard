@@ -405,7 +405,14 @@
   ([type sid bt-mem] (->StubAgent type sid (atom {}) bt-mem)))
 
 (defn- bt-mem-with-dispatch
-  "An st-memory atom whose last iteration dispatched `agent-name` (CoAct shape)."
+  "An st-memory atom whose last iteration dispatched `agent-name` via a
+   TOOL-CALL, i.e. the shape `routed-to-of` can read a specialist name out of.
+
+   NOTE the `:channel :code` here is incidental — what makes this fixture work
+   is `:tool-results`. Do NOT read it as covering a code-channel dispatch: the
+   router's primary path is a clojure fence, which produces NO tool names at
+   all, and this fixture's hybrid shape once hid that gap for an entire
+   feature. `bt-mem-code-channel-only` below is the real code-channel shape."
   [agent-name]
   (atom {:iterations [{:channel :code
                        :tool-results [{:tool-name agent-name}]}]}))
@@ -543,3 +550,91 @@
           (router-hooks/record-routing-line
            {:agent stub :input {:question "x"} :result {:answer "y"}}))
         (is (= pre (count (router/read-routing-log sid :base-dir base))))))))
+
+;; ============================================================================
+;; Code-channel dispatch — the PRIMARY routing path
+;;
+;; Regression. `routed-to-of` derives the specialist from tool-call names, but
+;; the router instruction makes a clojure-fence dispatch the primary path, and
+;; that leaves NO tool-call trace. Every such turn logged
+;; `{:shape "code-compose" :routed-to nil}` — the routing log under-reported
+;; real routing, and the tier field inherited the same blind spot.
+;;
+;; `bt-mem-with-dispatch` above hid it: it sets `:channel :code` yet still
+;; supplies `:tool-results`, a hybrid that does not occur in production. The
+;; fixture encoded the assumption the bug was made of, so the test passed while
+;; the real path was broken. These use the shape a live run actually produced:
+;; `:channel :code` with no tool names at all.
+;; ============================================================================
+
+(defn- bt-mem-code-channel-only
+  "St-memory for a turn that dispatched from a clojure fence: code channel, and
+   NO tool-call names — verified against a live session."
+  []
+  (atom {:iterations [{:channel :code}]}))
+
+(defn- dispatch-record
+  "What `do-call-tool--agent` stamps for a dispatch made BY `by`."
+  [agent-type tier model by]
+  {:agent-type agent-type :tier tier :model model :clamped? false :by by})
+
+(deftest code-channel-dispatch-is-logged-test
+  (let [base (tempdir)
+        sid  "code-channel-session"]
+
+    (testing "a code-channel dispatch still records routed-to, shape and tier"
+      (let [stub (mk-stub :router-agent sid (bt-mem-code-channel-only))]
+        (with-redefs [config/project-dir  (constantly base)
+                      tool/last-dispatch-tier
+                      (constantly (dispatch-record :explore-agent :light
+                                                   "bedrock/apac.amazon.nova-micro-v1:0"
+                                                   :router-agent/stub))]
+          (router/router$bootstrap :session-id sid :base-dir base)
+          ;; Snapshot the pre-turn max(turn) — record-routing-line no-ops unless
+          ;; it matches, which is its double-fire guard.
+          (router-hooks/capture-pre-turn {:agent stub})
+          (router-hooks/record-routing-line
+           {:agent stub
+            :input  {:question "which file defines clamp-tier?"}
+            :result {:answer "Routed to explore-agent — discovery across the repo."}}))
+        (let [ln (first (router/read-routing-log sid :base-dir base))]
+          (is (= "explore-agent" (:routed-to ln))
+              "the dispatch record supplies routed-to when no tool-call name exists")
+          (is (= "explore" (:shape ln))
+              "shape follows the specialist, NOT the :code channel fallback")
+          (is (= "light" (:tier ln)))
+          (is (= "bedrock/apac.amazon.nova-micro-v1:0" (:tier-model ln))))))
+
+    (testing "a dispatch made by a DIFFERENT agent is ignored"
+      ;; A specialist dispatching its own sub-agent overwrites the record; the
+      ;; router must not adopt it and claim a specialist it never called.
+      (let [stub (mk-stub :router-agent sid (bt-mem-code-channel-only))]
+        (with-redefs [config/project-dir (constantly base)
+                      tool/last-dispatch-tier
+                      (constantly (dispatch-record :edit-agent :deep "x/y"
+                                                   :research-agent/other))]
+          (router-hooks/capture-pre-turn {:agent stub})
+          (router-hooks/record-routing-line
+           {:agent stub
+            :input  {:question "anything"}
+            :result {:answer "Answered directly.\n\nRouting: direct-answer — no specialist needed"}}))
+        (let [ln (last (router/read-routing-log sid :base-dir base))]
+          (is (nil? (:routed-to ln)) "a foreign dispatch record must not become our routed-to")
+          (is (nil? (:tier ln)))
+          (is (= "direct-answer" (:shape ln))))))))
+
+(deftest capture-pre-turn-clears-the-dispatch-record-test
+  (testing "the record is cleared at turn start, so a later turn cannot inherit it"
+    ;; Without this, a self-answered turn following a routed one reports the
+    ;; previous turn's tier and names a specialist it never dispatched.
+    (let [base (tempdir)
+          sid  "clear-session"
+          stub (mk-stub :router-agent sid)]
+      (reset! @#'tool/!last-dispatch-tier
+              (dispatch-record :explore-agent :light "p/m" :router-agent/stub))
+      (is (some? (tool/last-dispatch-tier)) "precondition: a record is present")
+      (with-redefs [config/project-dir (constantly base)]
+        (router/router$bootstrap :session-id sid :base-dir base)
+        (router-hooks/capture-pre-turn {:agent stub}))
+      (is (nil? (tool/last-dispatch-tier))
+          "capture-pre-turn must clear the previous turn's dispatch record"))))

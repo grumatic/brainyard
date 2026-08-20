@@ -228,3 +228,47 @@
         (testing "a string content type is used verbatim"
           (http/post *base-url* {:body "x" :content-type "text/plain; charset=utf-8" :as :string})
           (is (= "text/plain; charset=utf-8" @seen)))))))
+
+;; ============================================================================
+;; Error bodies are REALIZED, whatever `:as` asked for
+;;
+;; Regression: the error branch coerced an InputStream but let anything else
+;; fall through, so `:as :reader` (the streaming chat path) handed back an
+;; unread BufferedReader. Callers inspect an error body to tell one failure
+;; from another — clj-llm reads a 429 to distinguish an exhausted quota from a
+;; throttle — and that check silently failed on exactly the streaming calls,
+;; costing ~63s of pointless backoff per call.
+;;
+;; A body cannot be read later: the connection may be closed by then, and
+;; whoever reads first consumes it for everyone. So an error body is realized
+;; eagerly, and these tests pin that for every `:as` the codebase uses.
+;; ============================================================================
+
+(def ^:private quota-429-body
+  "{\"error\":{\"message\":\"You have no credits remaining.\",\"type\":\"insufficient_quota\",\"code\":\"credit_balance_exhausted\"}}")
+
+(deftest error-body-is-realized-for-every-as
+  (doseq [as [:string :reader :stream]]
+    (testing (str "429 error body is a readable String with :as " as)
+      (with-server
+        (fn [exch] (write-response exch 429 quota-429-body))
+        (fn []
+          (let [e (try (http/get *base-url* {:as as :throw-exceptions true})
+                       (catch clojure.lang.ExceptionInfo e e))
+                body (:body (ex-data e))]
+            (is (= 429 (:status (ex-data e))))
+            (is (string? body)
+                (str ":as " as " must yield a realized String error body, not a stream"))
+            ;; The substring a caller actually greps for.
+            (is (clojure.string/includes? body "insufficient_quota"))))))))
+
+(deftest success-body-still-streams-for-reader
+  ;; The realization above is scoped to the ERROR branch — a 2xx :as :reader
+  ;; must still hand back a Reader, or streaming chat would break.
+  (with-server
+    (fn [exch] (write-response exch 200 "data: one\n\ndata: two\n\n"))
+    (fn []
+      (let [r (http/get *base-url* {:as :reader :throw-exceptions true})]
+        (is (= 200 (:status r)))
+        (is (instance? java.io.Reader (:body r))
+            "a successful :as :reader response must stay lazy")))))
