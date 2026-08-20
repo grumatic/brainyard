@@ -141,12 +141,45 @@
 ;; Retry Logic
 ;; ============================================================================
 
+(def ^:private exhausted-quota-markers
+  "Error `type`/`code` values that make a 429 PERMANENT rather than transient.
+
+   A 429 means two unrelated things. `rate_limit_exceeded` is a per-minute
+   window and retrying is exactly right. An exhausted credit balance or a hard
+   billing stop is also served as 429, and retrying it can never succeed — the
+   first response already said so definitively.
+
+   Matched as substrings against the response body, so provider wording
+   variations (`insufficient_quota` as `type`, `credit_balance_exhausted` as
+   `code`) both hit without parsing a per-provider shape."
+  ["insufficient_quota"
+   "credit_balance_exhausted"
+   "billing_hard_limit_reached"
+   "billing_not_active"
+   "account_deactivated"])
+
+(defn- exhausted-quota?
+  "True when a 429's body identifies an exhausted quota / stopped billing.
+
+   Deliberately POSITIVE-match only: an unparseable, empty or unrecognized body
+   stays retryable, preserving today's behavior. The asymmetry is intentional —
+   wrongly calling a transient limit permanent turns a recoverable blip into a
+   hard failure, whereas the cost of missing one of these is the status quo."
+  [e]
+  (boolean
+   (when (instance? clojure.lang.ExceptionInfo e)
+     (let [body (:body (ex-data e))
+           s    (when (string? body) (str/lower-case body))]
+       (and s (some #(str/includes? s %) exhausted-quota-markers))))))
+
 (defn- retryable-status?
-  "Check if an HTTP status code is retryable."
-  [status]
-  (when status
-    (or (= 429 status)
-        (>= status 500))))
+  "Check if an HTTP status code is retryable. `e` (optional) lets a 429 be
+   ruled out when its body says the quota is gone rather than throttled."
+  ([status] (retryable-status? status nil))
+  ([status e]
+   (when status
+     (or (and (= 429 status) (not (exhausted-quota? e)))
+         (>= status 500)))))
 
 (defn- parse-retry-after
   "Parse retry-after header (seconds) from an ExceptionInfo's ex-data.
@@ -170,11 +203,21 @@
                    {:ok (f)}
                    (catch clojure.lang.ExceptionInfo e
                      (let [status (-> (ex-data e) :status)
-                           ;; 429 gets extra retries to ride out rate-limit windows
-                           effective-max (if (= 429 status)
+                           ;; 429 gets extra retries to ride out rate-limit
+                           ;; windows — but only a THROTTLING 429. An exhausted
+                           ;; balance is permanent, and the extra retries turned
+                           ;; a definitive first answer into ~90s of backoff
+                           ;; (1+2+4+8+16+32s) before failing anyway, on every
+                           ;; single call.
+                           quota-gone?   (exhausted-quota? e)
+                           effective-max (if (and (= 429 status) (not quota-gone?))
                                            (+ max-retries 3)
                                            max-retries)]
-                       (if (and (retryable-status? status)
+                       (when quota-gone?
+                         (mulog/warn ::llm-quota-exhausted
+                                     :status status
+                                     :message "429 reports exhausted quota/billing — not retrying"))
+                       (if (and (retryable-status? status e)
                                 (< attempt effective-max))
                          {:retry true :exception e}
                          {:error e})))
@@ -287,7 +330,13 @@
       (some? status)
       (cond
         (>= status 500) {:class :transient :reason (str "provider error (HTTP " status ")")}
-        (= status 429)  {:class :fatal     :reason "rate limited (HTTP 429)"}
+        ;; Both are :fatal here (a 429 is never re-promptable), but the reason
+        ;; is what the user reads — "rate limited" sends them to wait it out
+        ;; when the actual fix is to add credits.
+        (= status 429)  {:class :fatal
+                         :reason (if (exhausted-quota? e)
+                                   "quota/credits exhausted (HTTP 429) — check provider billing"
+                                   "rate limited (HTTP 429)")}
         (>= status 400) {:class :fatal     :reason (str "request rejected (HTTP " status ")")}
         :else           {:class :transient :reason (str "HTTP " status)})
 
