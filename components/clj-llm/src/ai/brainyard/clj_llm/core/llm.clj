@@ -202,10 +202,47 @@
             parse-long
             (* 1000))))
 
+;; Defined below (error-classification section); used here to give a retry
+;; notification the SAME human cause the final failure would report, so a
+;; progress line and an abort line never disagree about what went wrong.
+(declare classify-error)
+
+(def ^:dynamic *on-retry*
+  "Optional 1-arg callback invoked before each backoff sleep, with
+   `{:attempt :max :delay-ms :status :reason}`.
+
+   Call-layer retries used to be invisible: `retry-with-backoff` logged to mulog
+   and slept, so a user watching the TUI saw a silent multi-second pause with no
+   indication anything was wrong. The AGENT-level repairs (malformed output,
+   transient stall) already surface via `:agent.recovery/retrying`; this is the
+   seam that lets the layer BELOW the agent reach the same progress line.
+
+   A callback, not a hook, because clj-llm sits under the agent and has no hook
+   system — same injection shape as `*attribution*`. Unbound, nothing changes."
+  nil)
+
+(defn with-retry-listener*
+  "Call `f` with `*on-retry*` bound to `listener`. Function rather than macro so
+   it crosses the Polylith interface boundary (a re-exported dynamic var would
+   carry its value, not its identity). A nil listener passes through without
+   rebinding, so an inner call cannot blind an outer one."
+  [listener f]
+  (if listener
+    (binding [*on-retry* listener] (f))
+    (f)))
+
+(defn- notify-retry!
+  "Fire `*on-retry*`, swallowing anything it throws. A progress notification
+   must never turn a recoverable retry into a failed call."
+  [info]
+  (when-let [cb *on-retry*]
+    (try (cb info) (catch Throwable _ nil))))
+
 (defn- retry-with-backoff
   "Execute f with exponential backoff retry on retryable errors.
    Respects retry-after header from 429 responses.
    For 429 rate limits, allows extra retries beyond max-retries.
+   Each retry fires `*on-retry*` so the wait is visible to the user.
    Returns the result of f or throws the last exception."
   [f {:keys [max-retries base-delay-ms]
       :or   {max-retries 3 base-delay-ms 1000}}]
@@ -230,11 +267,11 @@
                                      :message "429 reports exhausted quota/billing — not retrying"))
                        (if (and (retryable-status? status e)
                                 (< attempt effective-max))
-                         {:retry true :exception e}
+                         {:retry true :exception e :max effective-max}
                          {:error e})))
                    (catch Exception e
                      (if (< attempt max-retries)
-                       {:retry true :exception e}
+                       {:retry true :exception e :max max-retries}
                        {:error e})))]
       (cond
         (:ok result)    (:ok result)
@@ -248,6 +285,14 @@
                                 retry-after-ms (or (parse-retry-after (:exception result)) 0)
                                 delay-ms (max backoff-ms retry-after-ms)]
                             (mulog/info ::retry-llm-call :delay-ms delay-ms :attempt (inc attempt))
+                            ;; Surface the wait BEFORE sleeping — announcing it
+                            ;; afterwards would describe a pause the user has
+                            ;; already sat through.
+                            (notify-retry! {:attempt  (inc attempt)
+                                            :max      (:max result)
+                                            :delay-ms delay-ms
+                                            :status   (-> (ex-data (:exception result)) :status)
+                                            :reason   (:reason (classify-error (:exception result)))})
                             ;; (long ...) required for native-image —
                             ;; Thread/sleep dispatches via reflection
                             ;; without it. See mode.clj note.

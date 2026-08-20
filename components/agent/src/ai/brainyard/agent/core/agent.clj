@@ -796,10 +796,27 @@
               ;; this the totals are session-wide and a per-specialist question
               ;; is unanswerable. Bound here rather than inside clj-llm because
               ;; clj-llm sits below this component and cannot see an agent.
-              result (llm/with-usage-attribution*
-                       {:agent-id   (:agent-id agent)
-                        :agent-type (proto/defagent-type agent)}
-                       (fn [] (proto/process agent input nil)))
+              ;; Call-layer retries (HTTP 429 throttle, 5xx, network) happen
+              ;; BELOW the agent, where there is no hook system — so they used
+              ;; to be a silent multi-second pause while the agent-level
+              ;; repairs right next to them printed a progress line. Same
+              ;; injection shape as the attribution above: bridge the callback
+              ;; onto the `:agent.recovery/retrying` hook the TUI already
+              ;; renders, reusing the `:provider-error` kind so the wording
+              ;; matches the abort line if the retries run out.
+              result (llm/with-retry-listener*
+                       (fn [{:keys [attempt max reason]}]
+                         (hooks/fire! :agent.recovery/retrying
+                                      {:agent   agent
+                                       :kind    :provider-error
+                                       :attempt attempt
+                                       :max     max
+                                       :reason  reason}))
+                       (fn []
+                         (llm/with-usage-attribution*
+                           {:agent-id   (:agent-id agent)
+                            :agent-type (proto/defagent-type agent)}
+                           (fn [] (proto/process agent input nil)))))
             ;; Include usage summary if tracker exists
               usage-summary (when-let [tracker (session/get-session-config @!session :usage-tracker)]
                               (llm/get-usage-summary tracker))

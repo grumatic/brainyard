@@ -152,3 +152,84 @@
                                       :body (java.io.BufferedReader.
                                              (java.io.StringReader. real-openai-quota-body))}))]
       (is (re-find #"(?i)quota|credits" reason)))))
+
+;; ============================================================================
+;; Retry visibility
+;;
+;; A call-layer retry used to be a silent multi-second pause: retry-with-backoff
+;; slept and logged to mulog, while the agent-level repairs sitting right next
+;; to it printed a progress line. *on-retry* is the seam that lets the layer
+;; below the agent reach the same surface.
+;; ============================================================================
+
+(def ^:private retry-with-backoff #'llm/retry-with-backoff)
+(def ^:private with-retry-listener* llm/with-retry-listener*)
+
+(deftest fires-on-every-backoff
+  (testing "one notification per retry, none on success"
+    (let [seen  (atom [])
+          calls (atom 0)
+          ;; Fail twice with a retryable 503, then succeed.
+          f     #(if (< (swap! calls inc) 3)
+                   (throw (http-ex 503 "overloaded"))
+                   :done)
+          r     (with-retry-listener* (fn [i] (swap! seen conj i))
+                  (fn [] (retry-with-backoff f {:max-retries 3 :base-delay-ms 1})))]
+      (is (= :done r))
+      (is (= 2 (count @seen)) "two failures → two notifications")
+      (is (= [1 2] (mapv :attempt @seen)) "attempts are 1-based and ordered")
+      (is (every? #(= 503 (:status %)) @seen))
+      (is (every? #(pos? (:delay-ms %)) @seen) "the wait is announced with its length")
+      (is (every? #(re-find #"(?i)provider error" (:reason %)) @seen)
+          "reason matches what the abort line would say")))
+
+  (testing "a successful first call notifies nothing"
+    (let [seen (atom [])]
+      (with-retry-listener* (fn [i] (swap! seen conj i))
+        (fn [] (retry-with-backoff (constantly :ok) {:max-retries 3 :base-delay-ms 1})))
+      (is (empty? @seen))))
+
+  (testing "a non-retryable failure notifies nothing — it is not a retry"
+    (let [seen (atom [])]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (with-retry-listener* (fn [i] (swap! seen conj i))
+                     (fn [] (retry-with-backoff #(throw (http-ex 401 "nope"))
+                                                {:max-retries 3 :base-delay-ms 1})))))
+      (is (empty? @seen))))
+
+  (testing "an exhausted-quota 429 notifies nothing — the whole point is that it does not retry"
+    (let [seen (atom [])]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (with-retry-listener* (fn [i] (swap! seen conj i))
+                     (fn [] (retry-with-backoff #(throw (http-ex 429 real-openai-quota-body))
+                                                {:max-retries 3 :base-delay-ms 1})))))
+      (is (empty? @seen))))
+
+  (testing "a throttling 429 DOES notify, and reports its extra budget"
+    (let [seen  (atom [])
+          calls (atom 0)
+          f     #(if (< (swap! calls inc) 2)
+                   (throw (http-ex 429 openai-throttle-body))
+                   :done)]
+      (with-retry-listener* (fn [i] (swap! seen conj i))
+        (fn [] (retry-with-backoff f {:max-retries 3 :base-delay-ms 1})))
+      (is (= 1 (count @seen)))
+      (is (= 6 (:max (first @seen))) "429 gets max-retries+3, and the line says so"))))
+
+(deftest listener-failure-cannot-break-the-call
+  (testing "a throwing listener is swallowed — progress reporting must not fail the retry"
+    (let [calls (atom 0)
+          f     #(if (< (swap! calls inc) 2) (throw (http-ex 503 "x")) :done)]
+      (is (= :done
+             (with-retry-listener* (fn [_] (throw (RuntimeException. "listener blew up")))
+               (fn [] (retry-with-backoff f {:max-retries 3 :base-delay-ms 1}))))))))
+
+(deftest nil-listener-passes-through
+  (testing "an inner nil listener does not blind an outer one"
+    (let [seen  (atom [])
+          calls (atom 0)
+          f     #(if (< (swap! calls inc) 2) (throw (http-ex 503 "x")) :done)]
+      (with-retry-listener* (fn [i] (swap! seen conj i))
+        (fn [] (with-retry-listener* nil
+                 (fn [] (retry-with-backoff f {:max-retries 3 :base-delay-ms 1})))))
+      (is (= 1 (count @seen))))))

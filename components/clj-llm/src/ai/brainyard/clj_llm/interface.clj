@@ -368,6 +368,13 @@
    :by-agent rollup. A nil attribution passes through without rebinding."
   usage/with-attribution*)
 
+(def with-retry-listener*
+  "(with-retry-listener* f thunk) — call `f` with
+   `{:attempt :max :delay-ms :status :reason}` before every call-layer backoff
+   sleep `thunk` triggers, so an HTTP-level retry is visible rather than a
+   silent pause. A nil listener passes through without rebinding."
+  llm/with-retry-listener*)
+
 (def pricing-coverage
   "Which catalog models have a per-token price and which do not.
    Options: :catalog (default: the baked catalog), :curated-only?
