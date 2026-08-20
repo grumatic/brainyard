@@ -248,6 +248,31 @@
     {:model "eu.anthropic.claude-haiku-4-5-20251001-v1:0"}
     {:model "apac.anthropic.claude-3-5-sonnet-20241022-v2:0"}
     {:model "apac.anthropic.claude-sonnet-4-20250514-v1:0"}
+    ;; OpenAI + xAI on Bedrock. All four probed in us-east-1 via Converse
+    ;; (2026-08-20): TEXT+IMAGE in, TEXT out, streaming, and INFERENCE_PROFILE
+    ;; ONLY — the bare ids below exist for provider detection and --resume of
+    ;; an old session, but cannot be invoked directly; use a `global.`/`us.`
+    ;; profile. NOT yet in the AWS Price List for any commercial region (only
+    ;; us-gov-west-1), so `bb catalog:refresh` reports them unpriced and they
+    ;; bill 0.0 until AWS publishes rates. Catalogued anyway: whether a model
+    ;; is drivable and whether we know its price are separate questions, and
+    ;; the coverage report is what tracks the second.
+    {:model "global.openai.gpt-5.6-sol" :curated-rank 69 :description "OpenAI GPT-5.6 Sol on Bedrock (global cross-region, most capable)"}
+    {:model "global.openai.gpt-5.6-terra" :curated-rank 70 :description "OpenAI GPT-5.6 Terra on Bedrock (global cross-region, balanced)"}
+    {:model "global.openai.gpt-5.6-luna" :curated-rank 71 :description "OpenAI GPT-5.6 Luna on Bedrock (global cross-region, fastest + cheapest)"}
+    ;; Grok 4.6 emits a `reasoningContent` block BEFORE any text and will
+    ;; spend the whole budget on it: probed at maxTokens 64 it returned
+    ;; reasoning only and stopped on max_tokens with empty text; at 2000 it
+    ;; answered normally. Give it room, or it looks like an empty reply.
+    {:model "global.xai.grok-4.6" :curated-rank 72 :description "xAI Grok 4.6 on Bedrock (global cross-region, reasoning — needs a large max-tokens)"}
+    {:model "us.openai.gpt-5.6-sol"}
+    {:model "us.openai.gpt-5.6-terra"}
+    {:model "us.openai.gpt-5.6-luna"}
+    {:model "us.xai.grok-4.6"}
+    {:model "openai.gpt-5.6-sol"}
+    {:model "openai.gpt-5.6-terra"}
+    {:model "openai.gpt-5.6-luna"}
+    {:model "xai.grok-4.6"}
     ;; Amazon Nova
     {:model "us.amazon.nova-2-lite-v1:0" :curated-rank 49 :description "Amazon Nova 2 Lite on Bedrock (US cross-region, fast)"}
     {:model "us.amazon.nova-premier-v1:0" :curated-rank 50 :description "Amazon Nova Premier on Bedrock (US cross-region)" :region "us-east-1"}
@@ -489,6 +514,11 @@
    ["moonshotai."     :bedrock]
    ["nvidia."         :bedrock]
    ["google."         :bedrock]
+   ;; xAI is Bedrock-only here (there is no direct-xAI provider), and every
+   ;; other third-party vendor prefix is already listed. Without it a
+   ;; `xai.grok-*` id not yet in the catalog falls through to the
+   ;; contains-"claude"-else-:openai default and routes to OpenAI.
+   ["xai."            :bedrock]
    ["openai/"         :openai]
    ["anthropic/"      :anthropic]
    ["google/"         :google]
@@ -504,8 +534,15 @@
 (def ^:private bedrock-region-profile-re
   "Bedrock cross-region inference profile IDs:
    <region>.<vendor>.<model>  e.g. apac.amazon.nova-lite-v1:0,
-   global.anthropic.claude-haiku-4-5-20251001-v1:0."
-  #"^(us|eu|apac|global)\.(anthropic|amazon|meta|mistral|cohere|twelvelabs|openai|qwen|deepseek|ai21|writer)\..+")
+   global.anthropic.claude-haiku-4-5-20251001-v1:0.
+
+   The vendor alternation must stay in step with the bare-vendor entries in
+   `provider-prefixes`. It had drifted: zai/minimax/moonshot/nvidia/google/xai
+   were prefix-routed to :bedrock in their bare form but missing here, so a
+   region-scoped id NOT in the catalog fell past this regex to the
+   contains-\"claude\"-else-:openai default — `us.zai.glm-5` and
+   `global.minimax.minimax-m2.5` both resolved to :openai."
+  #"^(us|eu|apac|global)\.(anthropic|amazon|meta|mistral|cohere|twelvelabs|openai|qwen|deepseek|ai21|writer|zai|minimax|moonshot|moonshotai|nvidia|google|xai)\..+")
 
 (defn get-provider-from-model
   "Determine the provider for a given model string.
