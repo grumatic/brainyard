@@ -1,4 +1,4 @@
-# Main-Agent — The Front-Door Orchestrator (CoAct-derived)
+# Router-Agent — The Front-Door Orchestrator (CoAct-derived)
 
 > **Status:** Shipped. router-agent is registered in `components/agent`
 > (`common/router_agent.clj`) and is the front-door router; the lightweight,

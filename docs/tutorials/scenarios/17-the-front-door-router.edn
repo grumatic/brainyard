@@ -1,6 +1,6 @@
 ;; docs/tutorials/scenarios/17-the-front-door-router.edn
 ;;
-;; Showcases the MAIN-AGENT — brainyard's front-door router. It doesn't solve
+;; Showcases the ROUTER-AGENT — brainyard's front-door router. It doesn't solve
 ;; sub-problems itself: it looks at each question, picks the right specialist
 ;; (explore / plan / update / config / …), dispatches it, and maintains a
 ;; routing log under .brainyard/agents/router-agent/<session-id>/ so a session
