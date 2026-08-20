@@ -1,72 +1,68 @@
-# CLAUDE.md
+# CLAUDE.md — clj-llm
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Directory-scoped guidance, loaded when working under `components/clj-llm/`.
+**Keep only what does not rot**: this file used to hand-list the providers, the
+source files and the test namespaces, and all three drifted (13-of-17,
+8-of-19, 3-of-15). Anything that changes when a file or provider is added
+belongs in the source, not here.
 
-## What This Is
-
-clj-llm is a pure Clojure DSPy-style framework for structured LLM interactions. It is a Polylith component in the brainyard monorepo (top namespace: `ai.brainyard.clj-llm`).
+A pure Clojure DSPy-style framework for structured LLM interactions — a
+Polylith component (`ai.brainyard.clj-llm`) sitting **below** the agent.
 
 ## Commands
 
-### Run all tests
 ```bash
-cd components/clj-llm
-clj -M:test -e "(require 'clojure.test 'ai.brainyard.clj-llm.signature-test 'ai.brainyard.clj-llm.schema-test 'ai.brainyard.clj-llm.prompt-test) (clojure.test/run-tests 'ai.brainyard.clj-llm.signature-test 'ai.brainyard.clj-llm.schema-test 'ai.brainyard.clj-llm.prompt-test) (shutdown-agents)"
+bb test:component clj-llm    # every *_test.clj under test/, auto-discovered
+bb test:ns schema-test       # one namespace (or substring) in a plain JVM
+bb repl:test <ns>            # run a namespace against a live nREPL
+clj -M:dev                   # REPL, from the monorepo root
 ```
 
-### Run a single test namespace
-```bash
-clj -M:test -e "(require 'clojure.test 'ai.brainyard.clj-llm.schema-test) (clojure.test/run-tests 'ai.brainyard.clj-llm.schema-test) (shutdown-agents)"
-```
+Prefer these to a hand-listed `clj -M:test -e "(require …)"`: they discover
+namespaces, so a new test file cannot fall out of "run everything".
 
-### REPL (from monorepo root)
-```bash
-cd /Users/you/Projects/brainyard
-clj -M:dev
-```
-
-## Architecture
-
-### Data Flow
+## Data Flow
 
 ```
-defsignature → compile-signature → {name, instructions, inputs, outputs, output-json-schema}
-                                          ↓
-                              build-messages (prompt.clj)
-                                          ↓
-                              chat-completion (llm.clj) → provider dispatch
-                                          ↓
-                              parse-json-response → validate-output
-                                          ↓
-                              {:outputs {...}} or {:outputs {...} :reasoning "..."}
+defsignature → compile-signature → {:name :instructions :inputs :outputs
+                                    :input-keys :input-order :output-keys
+                                    :output-json-schema}
+                          ↓
+              build-messages (prompt.clj)
+                          ↓
+              chat-completion (llm.clj) → provider dispatch
+                          ↓
+     parse-json-response (llm.clj) → validate-output (schema.clj)
+                          ↓
+              {:outputs {…}} (+ :reasoning for chain-of-thought)
 ```
 
-### Core Modules
+`signature` / `prompt` / `llm` / `schema` / `predict` / `chain_of_thought` are
+the spine. The rest of `core/` is provider adapters, the model catalog and
+usage accounting — read the directory, not a list here.
 
-- **signature.clj** — `defsignature` macro compiles a signature definition (instructions + Malli input/output schemas) into a map with pre-computed JSON Schema.
-- **schema.clj** — Malli↔JSON Schema conversion. Applies `additionalProperties: false` recursively and hoists `$ref` definitions to root level for OpenAI strict mode compliance.
-- **schema_registry.clj** — Global mutable Malli registry. `defschemas` macro registers schemas at load time via `mr/set-default-registry!`.
-- **providers.clj** — Multi-provider LM config. Auto-detects provider from model name via catalog lookup. Reads API keys from env vars. `default-lm` atom holds global config.
-- **llm.clj** — HTTP client dispatching to OpenAI-compatible (`/chat/completions`) or Anthropic (`/messages`) APIs. Includes retry with exponential backoff for 429/5xx. Handles JSON schema as request param (when supported) or fallback instruction in system message.
-- **prompt.clj** — Builds system/user messages from signatures. Chain-of-thought mode augments the output schema with a `reasoning` field.
-- **predict.clj** / **chain_of_thought.clj** — The two operations. Both resolve LM, build messages, call LLM, parse JSON, validate output. CoT additionally separates reasoning from outputs.
+## Key Design Decisions
 
-### Key Design Decisions
+- **Malli-centric.** JSON Schema is *derived* (`malli->json-schema`), never
+  hand-written. `schema_registry.clj` holds a global registry that `defschemas`
+  populates at load time.
+- **Two message formats.** Dispatch keys off `:message-format` (`:openai` or
+  `:anthropic`); most providers are OpenAI-compatible.
+- **No protocols, no records.** Pure functions and maps — this is what keeps
+  the component native-image-safe.
+- **`execute-dspy-operation` exists TWICE, deliberately.** `interface.clj` has
+  the multimethod (`:predict` / `:chain-of-thought`); behavior-tree's
+  `core/dspy_action.clj` defines its own same-named one that resolves
+  signature/LM from BT context and then calls `clj-llm/predict`. Different
+  vars — when tracing a BT `dspy-action`, check which you are reading.
+- **The provider/model roster is not documented here.** `core/providers.clj` is
+  the authority for providers and their env vars; the catalog is the authority
+  for models. Root `CLAUDE.md` covers the catalog-refresh design.
 
-- **Malli-centric**: All schema validation uses Malli. JSON Schema is derived, never hand-written.
-- **Two message formats**: Provider dispatch is based on `:message-format` (`:openai` or `:anthropic`). Most providers use OpenAI-compatible format.
-- **`execute-dspy-operation` multimethod**: Dispatches on keyword (`:predict`, `:chain-of-thought`). Used by the behavior-tree component's `dspy-action` node.
-- **No protocols/records**: Pure functions and maps throughout.
+## Downstream Dependents
 
-### Downstream Dependents
-
-- **agent component** — Uses `create-lm`, `chat-completion`, `create-embedding`, `defschemas`, `defsignature`. Soft dep via `requiring-resolve` for `parse-malli-field`.
-- **behavior-tree component** — `dspy-action.clj` calls `execute-dspy-operation` to run predict/CoT from BT nodes.
-
-### Supported Providers
-
-OpenAI, Anthropic, Google, Azure, Groq, Together, Fireworks, OpenRouter, Ollama, Mistral, DeepSeek. Each has an env var for its API key (e.g., `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
-
-Also **Free LLM** (`:free-llm` provider) — a generic OpenAI-compatible endpoint for free/self-hosted models. Set `FREELLM_BASE_URL` (the `/v1` base; resolved at `create-lm` time) and optionally `FREELLM_API_KEY` (sent as a Bearer token). Default model is `auto`. Route via the `free-llm/` model prefix or `:provider :free-llm`.
-
-Additionally, **Anthropic Max** (`:anthropic-max` provider) supports OAuth 2.0 PKCE authentication for Max/Pro plan subscriptions — no API key required. Use `(oauth-authenticate!)` to log in via browser, then `(create-lm {:model "claude-sonnet-4-6" :provider :anthropic-max})` to create an LM config using subscription auth.
+- **agent** — `create-lm`, `chat-completion`, `create-embedding`,
+  `defsignature`, `defschemas`, `parse-malli-field`, `parse-lm-str`,
+  `estimate-tokens`, via a **direct** `:require [… :as clj-llm]`
+  (e.g. `agent/core/tool.clj`), not `requiring-resolve`.
+- **behavior-tree** — `core/dspy_action.clj`, per the note above.
