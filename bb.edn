@@ -1,10 +1,34 @@
 {:min-bb-version "0.9.161"
  :tasks
- {;; --------------- REPL tasks ---------------
+ {:init
+  (def load-dotenv
+    "Shell prelude that loads `.env` WITHOUT clobbering variables the caller
+     already exported.
+
+     These tasks used to run `set -a && source .env`, which overwrites the
+     caller's environment — the opposite of the shipped binary, whose
+     `dotenv.clj` checks `System/getenv` first and treats a real shell variable
+     as authoritative (see the runtime-configuration section of CLAUDE.md).
+     The dev path therefore disagreed with the product: `AWS_REGION=us-east-1
+     bb tui …` silently ran in whatever region `.env` named, and the only
+     symptom was a request rejected by the wrong region.
+
+     Implemented by snapshotting the exported environment with `export -p`,
+     sourcing `.env` normally, then re-applying the snapshot so pre-existing
+     values win while `.env`-only variables survive. Sourcing (rather than
+     parsing key=value by hand) is what preserves `${VAR}` interpolation,
+     quoted values and comments — a hand parser would quietly get those wrong.
+     `2>/dev/null` swallows the readonly builtins (`UID`, `SHELLOPTS`, …) that
+     `export -p` also emits; the eval still exits 0, so `&&` chains are safe."
+    (str "__env_before=$(export -p); "
+         "set -a; [ -f .env ] && . ./.env; set +a; "
+         "eval \"$__env_before\" 2>/dev/null; unset __env_before; "))
+
+  ;; --------------- REPL tasks ---------------
   repl
   {:doc "Start dev REPL with all components (.env loaded)"
    :override-builtin true
-   :task (shell "bash" "-c" "set -a && source .env && clj -M:dev:repl")}
+   :task (shell "bash" "-c" (str load-dotenv "clj -M:dev:repl"))}
 
   repl:component
   {:doc "Start REPL for a specific component: bb repl:component <name>"
@@ -18,7 +42,7 @@
              (println (str "Component not found: " dir))
              (System/exit 1))
            (shell "bash" "-c"
-                  (str "set -a && source .env && cd " dir " && "
+                  (str load-dotenv "cd " dir " && "
                        "clj -Sdeps '{:deps {nrepl/nrepl {:mvn/version \"1.3.0\"} cider/cider-nrepl {:mvn/version \"0.57.0\"}}}' "
                        "-M:test -m nrepl.cmdline --middleware \"[cider.nrepl/cider-middleware]\"")))}
 
@@ -91,7 +115,7 @@
                quote-arg (fn [a] (str "'" (str/replace a "'" "'\"'\"'") "'"))
                quoted-args (str/join " " (map quote-arg args))]
            (shell "bash" "-c"
-                  (str "set -a && [ -f .env ] && source .env || true; "
+                  (str load-dotenv
                        "cd projects/agent-tui-app && "
                        "exec clojure -J--enable-native-access=ALL-UNNAMED -M -m ai.brainyard.agent-tui-app.main "
                        "-a acp-agent " quoted-args)))}
@@ -134,7 +158,7 @@
                         (zero? (:exit (shell {:continue true} "bb" "aot:ensure"))))
                m-flag (if aot-ok "-M:aot-dev" "-M")]
            (shell "bash" "-c"
-                  (str "set -a && source .env && "
+                  (str load-dotenv
                        "cd projects/agent-tui-app && "
                        "exec clojure -J--enable-native-access=ALL-UNNAMED " m-flag " -m ai.brainyard.agent-tui-app.main "
                        quoted-args)))}
@@ -549,7 +573,7 @@
 
   repl:ata
   {:doc "Start Agent TUI app REPL (.env loaded)"
-   :task (shell "bash" "-c" "set -a && source .env && cd projects/agent-tui-app && clj -J--enable-native-access=ALL-UNNAMED -M:dev:nrepl")}
+   :task (shell "bash" "-c" (str load-dotenv "cd projects/agent-tui-app && clj -J--enable-native-access=ALL-UNNAMED -M:dev:nrepl"))}
 
   ;; --------------- GraalVM Native Build (agent-tui-app → 'by') ---------------
   version:ata

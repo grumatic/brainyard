@@ -99,7 +99,13 @@ fi
 # Provider creds (e.g. FREELLM_BASE_URL / FREELLM_API_KEY) live in the repo
 # .env; a real env var wins over the child's -C .env discovery (which points at
 # a throwaway project dir), so export them here before spawning children.
+# Snapshot/restore so an exported variable beats the file — the sentence above
+# only held for the CHILD's discovery; this line itself used to clobber the
+# caller. See `load-dotenv` in bb.edn.
+__env_before=$(export -p)
 [[ -f .env ]] && { set -a; . ./.env; set +a; }
+eval "$__env_before" 2>/dev/null
+unset __env_before
 
 command -v jq  >/dev/null 2>&1 || { echo "FATAL: 'jq' is required." >&2; exit 2; }
 command -v git >/dev/null 2>&1 || { echo "FATAL: 'git' is required." >&2; exit 2; }

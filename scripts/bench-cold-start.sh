@@ -60,12 +60,19 @@ esac
 command -v python3 >/dev/null 2>&1 || { echo "BENCH ERROR: python3 not found (needed for sub-ms timing)" >&2; exit 1; }
 command -v clojure >/dev/null 2>&1 || { echo "BENCH ERROR: clojure not found" >&2; exit 1; }
 
-# Mirror the `bb tui` task body (bb.edn L128-135): load .env before any timing run.
+# Mirror the `bb tui` task body: load .env before any timing run, WITHOUT
+# clobbering variables the caller already exported. Snapshot the exported
+# environment, source .env normally (so ${VAR} interpolation and quoting still
+# work), then re-apply the snapshot so a real shell variable wins — matching
+# the shipped binary's dotenv precedence. See `load-dotenv` in bb.edn.
+__env_before=$(export -p)
 if [ -f .env ]; then
   set -a
   . ./.env
   set +a
 fi
+eval "$__env_before" 2>/dev/null
+unset __env_before
 
 median() {
   python3 -c '
