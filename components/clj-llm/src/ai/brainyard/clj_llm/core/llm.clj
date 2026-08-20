@@ -169,7 +169,18 @@
   (boolean
    (when (instance? clojure.lang.ExceptionInfo e)
      (let [body (:body (ex-data e))
-           s    (when (string? body) (str/lower-case body))]
+           ;; clj-http-native realizes error bodies to a string, but a Reader /
+           ;; InputStream is read here too rather than skipped: a non-string
+           ;; body previously made this silently return false, which is how the
+           ;; streaming path kept retrying an exhausted quota for ~63s. Reading
+           ;; is safe — an error body is diagnostic and nothing else consumes it.
+           s    (try
+                  (cond
+                    (string? body)                    (str/lower-case body)
+                    (instance? java.io.Reader body)   (str/lower-case (slurp body))
+                    (instance? java.io.InputStream body) (str/lower-case (slurp body))
+                    :else nil)
+                  (catch Throwable _ nil))]
        (and s (some #(str/includes? s %) exhausted-quota-markers))))))
 
 (defn- retryable-status?

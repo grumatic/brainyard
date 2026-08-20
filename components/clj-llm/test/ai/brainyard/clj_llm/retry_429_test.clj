@@ -109,3 +109,46 @@
   (testing "other statuses are unchanged"
     (is (= :transient (:class (llm/classify-error (http-ex 503 "")))))
     (is (= :fatal     (:class (llm/classify-error (http-ex 401 "")))))))
+
+;; ============================================================================
+;; Non-string bodies — the streaming path
+;;
+;; The TUI streams, and on that path the error body arrived as a BufferedReader
+;; rather than a String. `exhausted-quota?` required a string, so it returned
+;; false and an exhausted quota was retried for ~63s before failing anyway.
+;; Measured live: {:body-type "class java.io.BufferedReader" :result {:reason
+;; "rate limited (HTTP 429)"}}.
+;; ============================================================================
+
+(deftest reads-a-reader-body
+  (testing "a Reader body is read, not skipped"
+    (is (true? (exhausted-quota?
+                (ex-info "HTTP 429" {:status 429
+                                     :body (java.io.BufferedReader.
+                                            (java.io.StringReader. real-openai-quota-body))}))))
+    (is (not (retryable-status?
+              429 (ex-info "HTTP 429" {:status 429
+                                       :body (java.io.BufferedReader.
+                                              (java.io.StringReader. real-openai-quota-body))})))))
+
+  (testing "an InputStream body is read too"
+    (is (true? (exhausted-quota?
+                (ex-info "HTTP 429"
+                         {:status 429
+                          :body (java.io.ByteArrayInputStream.
+                                 (.getBytes ^String real-openai-quota-body "UTF-8"))})))))
+
+  (testing "a streamed THROTTLE body still reads as retryable"
+    (is (false? (exhausted-quota?
+                 (ex-info "HTTP 429" {:status 429
+                                      :body (java.io.BufferedReader.
+                                             (java.io.StringReader. openai-throttle-body))}))))))
+
+(deftest classify-handles-a-reader-body
+  (testing "the reason names billing even when the body streamed"
+    (let [{:keys [reason]} (llm/classify-error
+                            (ex-info "HTTP 429"
+                                     {:status 429
+                                      :body (java.io.BufferedReader.
+                                             (java.io.StringReader. real-openai-quota-body))}))]
+      (is (re-find #"(?i)quota|credits" reason)))))

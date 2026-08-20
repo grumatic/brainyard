@@ -237,11 +237,23 @@
       (throw (ex-info (str "HTTP " status " " url)
                       {:status  status
                        :headers (:headers result)
+                       ;; The error body is DIAGNOSTIC, so it is always realized
+                       ;; to a string here. A caller holding an exception cannot
+                       ;; safely read a stream later — it may already be closed,
+                       ;; and whoever reads it first consumes it for everyone.
+                       ;;
+                       ;; `:as :reader`/`:stream` previously fell through to
+                       ;; `:else b` and handed back an unread BufferedReader, so
+                       ;; error-body inspection silently failed on exactly the
+                       ;; streaming calls: a 429 carrying `insufficient_quota`
+                       ;; could not be told from a throttle, and got retried for
+                       ;; ~63s before failing anyway.
                        :body    (let [b (:body result)]
                                   (cond
                                     (string? b) b
                                     (instance? InputStream b)
                                     (slurp (InputStreamReader. ^InputStream b
                                                                StandardCharsets/UTF_8))
+                                    (instance? java.io.Reader b) (slurp b)
                                     :else b))}))
       result)))
