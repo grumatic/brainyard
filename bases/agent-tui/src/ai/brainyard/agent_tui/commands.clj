@@ -2320,6 +2320,16 @@
    keys (`foo`) are also accepted; double-quoted substrings keep whitespace.
    String values are coerced to the schema's declared types before
    validation (CLI tokens are always strings).
+   An `:agent`-type tool (a defagent invoked as `:explore-agent :question …`)
+   additionally gets `:agent-session` + `:parent-agent` injected. `invoke-tool`
+   is the BARE dispatcher — no hooks, no permissions, and no agent bookkeeping
+   either — while every LLM-facing path (`do-call-tool--agent`,
+   `do-call-tool--bound-fn`, `bind-tools`' wrapper) injects that scope before
+   the tool-fn sees it. Without it `setup-agent` destructures a nil user-id out
+   of a missing `:agent-session` and the dispatch died three layers down in
+   `UnifiedStore requires :user-id`, so EVERY agent-type colon-command was
+   broken while command/skill/tool ones worked.
+
    Preconditions:
      - args validate against the :input-schema Malli schema (else: humanized error)
      - active agent, if any, must be in :idle state (colon commands run
@@ -2331,7 +2341,22 @@
         err          (when (seq (agent/malli-map-entries input-schema))
                        (m/explain (agent/inputs->malli-map-schema input-schema) kw-args))
         active-agent (tui-session/get-active-agent)
-        status       (when active-agent (:status @(:!state active-agent)))]
+        status       (when active-agent (:status @(:!state active-agent)))
+        ;; The scope the callee needs to exist at all. Prefer the active agent's
+        ;; — a console dispatch then behaves exactly like an LLM one, sharing
+        ;; the session and rendering into the root's sub-output tab. With no
+        ;; active agent (an output-only tab) fall back to the process-fixed
+        ;; identity, the same resolver session creation uses.
+        kw-args      (if (= :agent (:type tool-def))
+                       (assoc kw-args
+                              :agent-session
+                              {:user-id    (or (some-> active-agent agent/user-id)
+                                               (helpers/resolve-user-id))
+                               :session-id (or (some-> active-agent agent/session-id)
+                                               (:agent-session-id (sessions/get-active-session))
+                                               (str "console-" (System/currentTimeMillis)))}
+                              :parent-agent active-agent)
+                       kw-args)]
     (cond
       err
       (do

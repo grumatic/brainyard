@@ -1043,6 +1043,21 @@
                      :_deftool$id _deftool$id
                      :user-id user-id
                      :session-id session-id})))
+        ;; `:agent-session` is declared required, and the same class of caller
+        ;; error as a missing instance-id: reaching here through the BARE
+        ;; `invoke-tool`, which — unlike every LLM-facing dispatch path — injects
+        ;; no agent bookkeeping. Failing here names the missing argument and who
+        ;; has to supply it; without this the nil travelled two layers down and
+        ;; surfaced as `UnifiedStore requires :user-id`, which reads like a
+        ;; memory-subsystem fault and sent the diagnosis to the wrong component.
+        _ (when-not user-id
+            (mulog/error ::setup-agent-missing-agent-session
+                         :id instance-id :session-id session-id)
+            (throw (ex-info
+                    (str "setup-agent requires :agent-session {:user-id … :session-id …}. "
+                         "Dispatch through `call-tool` (which injects it), or pass it "
+                         "explicitly when invoking a defagent via `invoke-tool`.")
+                    {:id instance-id :session-id session-id})))
         ;; Ensure global config is loaded once (lazy + idempotent). Reads
         ;; .brainyard/config.edn :auto and merges over default-config.
         _ (config/load-global-config!)
