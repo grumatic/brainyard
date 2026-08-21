@@ -132,6 +132,21 @@
   (and (= (reduce + 0 (map :n entries)) (count @!scrollback))
        (= (set (keep :block-id entries)) (set (keys @!live-blocks)))))
 
+(defn describes-exactly?
+  "`src-consistent?` for rows and blocks held OUTSIDE the live atoms — a
+   background session's snapshot. Same two halves, same reasons."
+  [entries rows blocks]
+  (and (= (reduce + 0 (map :n entries)) (count rows))
+       (= (set (keep :block-id entries)) (set (keys blocks)))))
+
+(defn rebuild-src
+  "Pure `src-rebuild`, for callers holding a session snapshot rather than the
+   live scrollback. `sessions` maintains the same entry list on the rows it
+   buffers for a background tab, and needs the same recovery path when what it
+   is handed does not describe them."
+  [rows blocks]
+  (src-rebuild (vec rows) (or blocks {})))
+
 (defn- ensure-src!
   "Return the entry list, rebuilding it first if it has drifted from
    !scrollback. Called at the top of every mutation, so the invariant holds

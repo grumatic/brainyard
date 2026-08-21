@@ -3296,9 +3296,13 @@
                                              (clojure.string/join "\n" lines)))))
             ;; Either way, drop the (now-frozen) block from origin's saved
             ;; :live-blocks so a later switch-back doesn't restore a stale
-            ;; entry pointing at the live region.
+            ;; entry pointing at the live region. Through
+            ;; `freeze-live-block-in-session!`, not a raw dissoc: freezing also
+            ;; has to detach the block's REFLOW entry, and a raw dissoc left
+            ;; that entry naming a block that no longer existed — which is
+            ;; drift, and drift costs the whole tab its reflow.
             (when (and origin-idx (not= origin-idx active-idx))
-              (sessions/update-session! origin-idx update :live-blocks dissoc block-id)))))
+              (sessions/freeze-live-block-in-session! origin-idx block-id)))))
       (swap! !iteration-blocks dissoc k))
     ;; Surface the iteration's observation as a separate scrollback line,
     ;; matching the legacy `:observe` watch branch. Emitted after the widget
@@ -4042,8 +4046,10 @@
               (let [lines (render-acp-block-lines final-state \space)]
                 (when (seq lines)
                   (sessions/emit-to-session! origin-idx (str/join "\n" lines)))))
+            ;; Via `freeze-live-block-in-session!` — see the iteration-block
+            ;; counterpart: freezing must detach the reflow entry too.
             (when (and origin-idx (not= origin-idx active-idx))
-              (sessions/update-session! origin-idx update :live-blocks dissoc block-id)))))
+              (sessions/freeze-live-block-in-session! origin-idx block-id)))))
       (swap! !acp-blocks dissoc k))
     (iter-clear-current! agent)))
 

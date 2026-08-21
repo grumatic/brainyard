@@ -159,6 +159,93 @@
         "and the emit after it still re-wraps")))
 
 ;; ---------------------------------------------------------------------------
+;; Live blocks written while the tab is in the background
+;;
+;; A sub-agent's iteration block is the case that matters: it is written while
+;; the user is on the chat tab, FROZEN there, and only ever read from the output
+;; tab. A frozen block never ticks again, so its renderer is the only thing that
+;; can ever re-wrap it — and the background path used to drop it.
+;; ---------------------------------------------------------------------------
+
+(defn- block-lines [cols]
+  (mapv #(str "  " %) (fmt/ansi-aware-word-wrap long-text (max 8 (- cols 4)))))
+
+(deftest a-block-written-to-a-background-tab-keeps-its-renderer
+  (testing "the snapshot records the block's entry, renderer included"
+    (fake-fullscreen! 120)
+    (sessions/update-live-block-in-session! 1 :iter (block-lines 120)
+                                            {:render block-lines})
+    (let [session (sessions/get-session 1)]
+      (is (= [:iter] (keys (:live-blocks session))) "the block is recorded")
+      (is (= [:iter] (mapv :block-id (:scrollback-src session)))
+          "and so is its reflow entry, named after it")
+      (is (src-covers-rows? session)))))
+
+(deftest a-frozen-background-block-still-reflows
+  (testing "freeze detaches the block but keeps the renderer"
+    ;; This is what a finished sub-agent iteration is by the time anyone looks
+    ;; at it, and what was clipped instead of re-wrapped at every other width.
+    (fake-fullscreen! 120)
+    (sessions/update-live-block-in-session! 1 :iter (block-lines 120)
+                                            {:render block-lines})
+    (sessions/freeze-live-block-in-session! 1 :iter)
+    (let [session (sessions/get-session 1)]
+      (is (empty? (:live-blocks session)) "no longer live")
+      (is (= [nil] (mapv :block-id (:scrollback-src session)))
+          "the entry is detached, not dropped")
+      (is (every? (comp fn? :render) (:scrollback-src session))
+          "and it kept the renderer that freezing is supposed to preserve"))
+    (switch-to! 1)
+    (resize! 60)
+    (is (zero? (too-wide 60)) "the frozen block re-wrapped to the new width")
+    (resize! 110)
+    (is (zero? (too-wide 110)) "and back out again")))
+
+(deftest a-stale-block-reference-costs-only-itself
+  (testing "an entry naming a block that is gone is detached, not rebuilt over"
+    ;; Caught live: two handlers dropped a frozen background block with a raw
+    ;; `(update :live-blocks dissoc block-id)`, leaving the entry naming a block
+    ;; that no longer existed. The row count still matched, so nothing looked
+    ;; wrong — but the block SET did not, and the only repair on offer was a
+    ;; full rebuild, which turns every row into its own non-reflowable entry.
+    ;; One stale reference then cost the tab every renderer it had.
+    (fake-fullscreen! 120)
+    (let [[s opts] (answer-emit 120)]
+      (sessions/emit-to-session! 1 s opts))                 ;; reflowable
+    (sessions/update-live-block-in-session! 1 :iter (block-lines 120)
+                                            {:render block-lines})
+    ;; Exactly what those handlers did.
+    (sessions/update-session! 1 update :live-blocks dissoc :iter)
+    (let [[s opts] (answer-emit 120)]
+      (sessions/emit-to-session! 1 s opts))                 ;; triggers the repair
+    (let [session (sessions/get-session 1)]
+      (is (src-covers-rows? session))
+      (is (= 3 (count (:scrollback-src session)))
+          "three entries — not one per row, which is what a rebuild produces")
+      (is (every? (comp fn? :render) (:scrollback-src session))
+          "and every one of them kept its renderer"))
+    (switch-to! 1)
+    (resize! 60)
+    (is (zero? (too-wide 60))
+        "so the whole tab still reflows, stale reference and all")))
+
+(deftest disposing-a-background-block-leaves-no-stale-entry
+  (testing "removing a block's rows removes the entry describing them"
+    (fake-fullscreen! 120)
+    (sessions/update-live-block-in-session! 1 :keep (block-lines 120)
+                                            {:render block-lines})
+    (sessions/update-live-block-in-session! 1 :drop ["drop-1" "drop-2"] nil)
+    (sessions/dispose-live-block-in-session! 1 :drop)
+    (let [session (sessions/get-session 1)]
+      (is (nil? (some #{"drop-1"} (:scrollback session))) "rows gone")
+      (is (= [:keep] (mapv :block-id (:scrollback-src session)))
+          "and the entry with them — a leftover would be drift")
+      (is (src-covers-rows? session)))
+    (switch-to! 1)
+    (resize! 60)
+    (is (zero? (too-wide 60)) "what remains still reflows")))
+
+;; ---------------------------------------------------------------------------
 ;; The sub-agent ask header — the long line that had nothing to reflow
 ;; ---------------------------------------------------------------------------
 

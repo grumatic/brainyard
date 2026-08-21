@@ -213,6 +213,8 @@
                 :live-blocks     current-live-blocks
                 :scrollback-src  current-src})))))
 
+(declare snapshot-src)
+
 (defn- load-session-into-layout!
   "Load a session's state into the layout for display. Redraws in fullscreen mode."
   [session]
@@ -226,7 +228,11 @@
   ;; reflowable. When it is absent or has drifted anyway, layout's `ensure-src!`
   ;; rebuilds it on the next write: those rows lose reflow, everything after
   ;; keeps it.
-  (reset! layout/!scrollback-src (or (:scrollback-src session) []))
+  ;; Repaired on the way in, by the same rules that maintain it: a stale
+  ;; reference left by a background write would otherwise meet layout's own
+  ;; `ensure-src!`, whose only repair is a full rebuild — and that costs the
+  ;; tab every renderer it has, not just the stale one.
+  (reset! layout/!scrollback-src (snapshot-src session))
   ;; Restore viewport offset
   (swap! layout/!layout assoc :viewport-offset (or (:viewport-offset session) 0))
   ;; Re-wrap to the CURRENT width. A resize that happened while this tab was in
@@ -461,16 +467,78 @@
 ;; Session Output Routing
 ;; ============================================================================
 
+(defn- snapshot-src
+  "The session's reflow entry list, made to describe its buffered rows and
+   blocks exactly.
+
+   Same invariant `ensure-src!` keeps for the ACTIVE tab, kept here for the
+   background one — but repaired in the smallest step that restores it, because
+   the alternative is expensive in a way that is easy to miss: a full rebuild
+   makes every row its own `constantly` entry, so ONE stale reference costs the
+   whole tab its reflow, including everything written before and after.
+
+   The cheap case is an entry naming a block that no longer exists. That is
+   what dropping a frozen block looks like from here — the rows stay exactly
+   where they are, so the entry is still a correct description of them and only
+   its `:block-id` is stale. Detaching it is enough, and it keeps the renderer,
+   which for a frozen block is the only thing that can ever re-wrap it.
+
+   A LIVE block no entry names, or a row count that does not match, means the
+   list has genuinely lost track of the rows. Only then is a rebuild the honest
+   answer."
+  [{:keys [scrollback live-blocks scrollback-src]}]
+  (let [rows   (vec scrollback)
+        blocks (or live-blocks {})
+        src    (vec scrollback-src)]
+    (cond
+      (layout/describes-exactly? src rows blocks) src
+
+      ;; Rows still accounted for, so the list has not lost track of them —
+      ;; try detaching entries whose block is gone. Anything the detach does
+      ;; not fix (a LIVE block no entry names, whose rows could be anywhere)
+      ;; falls through to the rebuild.
+      (= (reduce + 0 (map :n src)) (count rows))
+      (let [detached (mapv (fn [e]
+                             (if (and (:block-id e) (not (contains? blocks (:block-id e))))
+                               (-> e (assoc :block-id nil) (dissoc :sticky?))
+                               e))
+                           src)]
+        (if (layout/describes-exactly? detached rows blocks)
+          detached
+          (layout/rebuild-src rows blocks)))
+
+      :else (layout/rebuild-src rows blocks))))
+
+(defn- patch-src-block
+  "Point `block-id`'s entry at new content, or add one when the block is new.
+   Mirrors layout's `src-update-block!` — a block re-renders on every tick, so
+   the renderer describes the CURRENT content and is replaced with it."
+  [src block-id new-lines render sticky?]
+  (let [entry {:render   (or render (constantly (vec new-lines)))
+               :n        (count new-lines)
+               :block-id block-id
+               :sticky?  (boolean sticky?)}
+        i     (first (keep-indexed (fn [i e] (when (= block-id (:block-id e)) i)) src))]
+    (if i (assoc src i entry) (conj src entry))))
+
 (defn- patch-live-block-in-snapshot
   "Pure: return an updated session map with `block-id`'s lines replaced by
    `new-lines` in the session's saved :scrollback + :live-blocks. If the
    block isn't recorded in the snapshot, the lines are appended at the tail
    (creating a fresh live-block entry). Other blocks positioned after the
-   patched block have their :start-idx shifted to keep alignment."
-  [{:keys [scrollback live-blocks] :as session} block-id new-lines]
-  (let [scrollback (or scrollback [])
+   patched block have their :start-idx shifted to keep alignment.
+
+   `:scrollback-src` is maintained alongside, so a block that lived its whole
+   life in a background tab still reflows. A sub-agent's iteration block is
+   exactly that: it is written while the user is on the chat tab, frozen there,
+   and only ever READ from the output tab — so without its renderer it keeps
+   the width it was wrapped at and is clipped at every other one."
+  [{:keys [scrollback live-blocks] :as session} block-id new-lines opts]
+  (let [scrollback  (or scrollback [])
         live-blocks (or live-blocks {})
-        new-count (count new-lines)]
+        new-count   (count new-lines)
+        src         (snapshot-src session)
+        render      (:render opts)]
     (if-let [{:keys [start-idx line-count]} (get live-blocks block-id)]
       (let [delta (- new-count line-count)
             sb-next (into (into (subvec scrollback 0 start-idx) new-lines)
@@ -484,13 +552,19 @@
                          {}
                          (assoc live-blocks block-id
                                 {:start-idx start-idx :line-count new-count}))]
-        (assoc session :scrollback sb-next :live-blocks blocks-next))
+        (assoc session
+               :scrollback sb-next
+               :live-blocks blocks-next
+               :scrollback-src (patch-src-block src block-id new-lines render
+                                                (:sticky-bottom? opts))))
       (let [start-idx (count scrollback)
             blocks-next (assoc live-blocks block-id
                                {:start-idx start-idx :line-count new-count})]
         (-> session
             (update :scrollback into new-lines)
-            (assoc :live-blocks blocks-next))))))
+            (assoc :live-blocks blocks-next
+                   :scrollback-src (patch-src-block src block-id new-lines render
+                                                    (:sticky-bottom? opts))))))))
 
 (defn update-live-block-in-session!
   "Update a live block in the (possibly background) session at `sidx`.
@@ -506,8 +580,9 @@
    at the shared sub-output tab).
 
    `opts` is forwarded to `layout/update-live-block!` — notably `:render`,
-   which lets the block re-wrap on resize. It applies only on the active path;
-   a background session stores plain rows."
+   which lets the block re-wrap on resize. It applies on BOTH paths: the
+   background path records it in the session's `:scrollback-src` (see
+   `patch-live-block-in-snapshot`)."
   ([sidx block-id new-lines] (update-live-block-in-session! sidx block-id new-lines nil))
   ([sidx block-id new-lines opts]
    (locking switch-lock
@@ -515,19 +590,35 @@
        (layout/update-live-block! block-id new-lines opts)
        (when (get-session sidx)
          (swap! !sessions update-in [:sessions sidx]
-                patch-live-block-in-snapshot block-id new-lines))))))
+                patch-live-block-in-snapshot block-id new-lines opts))))))
 
 (defn freeze-live-block-in-session!
   "Freeze a live block belonging to session `sidx`. When `sidx` is active,
    delegates to `layout/freeze-live-block!`. When background, removes the
    block from the session's saved :live-blocks map (the lines stay in the
-   saved :scrollback at the same position — they become permanent record)."
+   saved :scrollback at the same position — they become permanent record).
+
+   The reflow entry is detached rather than dropped, keeping its renderer —
+   the same trade layout's `src-freeze-block!` makes, and for a stronger
+   reason here: a frozen block never ticks again, so the renderer is the ONLY
+   thing that can ever re-wrap it."
   [sidx block-id]
   (locking switch-lock
     (if (= sidx (active-idx))
       (layout/freeze-live-block! block-id)
-      (when (get-session sidx)
-        (swap! !sessions update-in [:sessions sidx :live-blocks] dissoc block-id)))))
+      (when-let [session (get-session sidx)]
+        (let [src (snapshot-src session)
+              i   (first (keep-indexed (fn [i e] (when (= block-id (:block-id e)) i)) src))]
+          (swap! !sessions update-in [:sessions sidx]
+                 (fn [s]
+                   (-> s
+                       (update :live-blocks dissoc block-id)
+                       (assoc :scrollback-src
+                              (if i
+                                (assoc src i (-> (nth src i)
+                                                 (assoc :block-id nil)
+                                                 (dissoc :sticky?)))
+                                src))))))))))
 
 (defn- remove-live-block-from-snapshot
   "Pure: drop `block-id`'s lines from the session's saved :scrollback and
@@ -535,7 +626,8 @@
    line-count. No-op when the block isn't recorded."
   [{:keys [scrollback live-blocks] :as session} block-id]
   (let [scrollback (or scrollback [])
-        live-blocks (or live-blocks {})]
+        live-blocks (or live-blocks {})
+        src (snapshot-src session)]
     (if-let [{:keys [start-idx line-count]} (get live-blocks block-id)]
       (let [sb-next (into (subvec scrollback 0 start-idx)
                           (subvec scrollback (+ start-idx line-count)))
@@ -546,7 +638,12 @@
                                          b)))
                          {}
                          (dissoc live-blocks block-id))]
-        (assoc session :scrollback sb-next :live-blocks blocks-next))
+        (assoc session
+               :scrollback sb-next
+               :live-blocks blocks-next
+               ;; The rows are gone, so the entry describing them must go too —
+               ;; a leftover entry is drift, and drift costs the tab its reflow.
+               :scrollback-src (vec (remove #(= block-id (:block-id %)) src))))
       session)))
 
 (defn dispose-live-block-in-session!
@@ -574,30 +671,18 @@
    WHOLE tab as non-reflowable, which is why one long line stayed clipped at
    its emit-time width for the rest of the session, resize after resize.
 
-   Rows already present but not covered by an entry (a replayed on-disk tail, a
-   path that predates the source list) are sealed as one non-reflowable entry
-   first. They were never going to reflow; the point is that they no longer
-   stop anything AFTER them from reflowing. A source longer than the rows is
-   incoherent in the other direction — it can only come from rows being removed
-   behind this function's back — so it is dropped and everything sealed."
+   Rows already present that the entry list does not describe (a replayed
+   on-disk tail, a path that predates the list) are recovered by `snapshot-src`
+   as entries that re-render to themselves. They were never going to reflow;
+   the point is that they no longer stop anything AFTER them from reflowing."
   [session new-lines render]
-  (let [rows    (vec (:scrollback session))
-        src     (vec (:scrollback-src session))
-        covered (reduce + 0 (map :n src))
-        n-rows  (count rows)
-        src'    (cond
-                  (= covered n-rows) src
-                  (< covered n-rows) (conj src {:render   (constantly (subvec rows covered))
-                                                :n        (- n-rows covered)
-                                                :block-id nil})
-                  :else              [{:render   (constantly rows)
-                                       :n        n-rows
-                                       :block-id nil}])]
+  (let [rows (vec (:scrollback session))
+        src  (snapshot-src session)]
     (assoc session
            :scrollback     (into rows new-lines)
-           :scrollback-src (conj src' {:render   (or render (constantly new-lines))
-                                       :n        (count new-lines)
-                                       :block-id nil})
+           :scrollback-src (conj src {:render   (or render (constantly (vec new-lines)))
+                                      :n        (count new-lines)
+                                      :block-id nil})
            :has-unread?    true)))
 
 (defn emit-to-session!
