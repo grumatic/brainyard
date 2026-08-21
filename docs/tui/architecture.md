@@ -236,6 +236,9 @@ meta.edn               agent-id, defagent-id, model, started-at, working-dir
 session.edn            restorable session snapshot (messages, model, working-dir)
 messages.log           append-only EDN events (input lines, hooks)
 scrollback.stream.txt  rotated ANSI byte log for the stream
+scrollback.sub-output.txt  what the root's shared sub-output tab rendered
+                       (every sub-agent's transcript) — that tab has no agent
+                       and so no session dir of its own; see tui/persistence.md
 scrollback.activity.txt  optional activity scrollback
 layout.edn             {:activity-pane? :layout-mode}
 pending-dialogs.edn    open permission/feedback popups (atomic write)
@@ -448,6 +451,9 @@ What stays:
 - [renderer.md](renderer.md) — what lives inside `bases/agent-tui`:
   file map, hooks pipeline, layout, slash commands, multi-session,
   CliClient.
+- [persistence.md](persistence.md) — which ANSI streams are written, what a
+  `--resume` puts back on screen, what it cannot (live blocks, faithful
+  re-wrapping) and what closing each gap would cost.
 - [testing.md](testing.md) — driving the live binary from a tmux
   harness; debugging file-descriptor / FIFO interactions.
 - [architecture.md](../architecture.md) — where `agent-tui-app` sits in the
