@@ -445,7 +445,11 @@
       ;; Reserve a fixed 30%-of-screen row count regardless of item count.
       ;; Shifts chrome up and redraws everything via repaint-after-resize!.
       ;; Called OUTSIDE the popover gate so the repaint actually happens.
-      (layout/set-menu-height! reserved)
+      ;; `hold-` rather than `set-`: the reservation is pinned for the rest of
+      ;; the input line, so a menu that hides on a zero-match keystroke does not
+      ;; hand the rows back and flip the viewport (see the hold commentary in
+      ;; `layout`). `read-line-raw!` releases it on Enter or Esc.
+      (layout/hold-menu-height! reserved)
       ;; Redraw the input line in the (now-shifted) input-row so the user's
       ;; buffer appears at the prompt — repaint-after-resize! only repaints
       ;; scrollback + chrome, not the input buffer.
@@ -527,10 +531,11 @@
 
 (defn clear-autocomplete-menu!
   "Clear the bottom-anchored autocomplete menu.
-   On dismiss (default): deactivates the popover gate, then restores the
-   original layout via (set-menu-height! 0) which shifts chrome back down
-   and redraws scrollback + chrome — this naturally flushes any writes that
-   were deferred while the popover was up.
+   On dismiss (default): deactivates the popover gate, then either blanks the
+   held rows in place (while the reservation is pinned for this input line) or,
+   once it is released, restores the original layout via (set-menu-height! 0)
+   which shifts chrome back down and redraws scrollback + chrome. Either way the
+   repaint flushes writes that were deferred while the popover was up.
    On :redraw? true: keeps the popover active and menu-height reserved
    (caller will immediately redraw the menu, avoiding flicker)."
   [n-visible & {:keys [redraw?] :or {redraw? false}}]
@@ -542,11 +547,16 @@
         ;; explicitly since draw-autocomplete-menu! will paint over them
         ;; (and adjust menu-height if vis-count changed).
         nil
-        ;; Dismiss: deactivate popover, then restore layout (which repaints)
+        ;; Dismiss: deactivate popover, then repaint. While the reservation is
+        ;; held for this input line the rows are blanked in place — giving them
+        ;; back here is what made the viewport flip on every zero-match
+        ;; keystroke.
         (do
           (layout/set-popover-active! false)
           (layout/clear-dirty!)
-          (layout/set-menu-height! 0)))
+          (if (layout/menu-height-held?)
+            (layout/hide-menu-rows!)
+            (layout/set-menu-height! 0))))
       ;; Inline: cursor up N lines + erase each
       (let [sb (StringBuilder.)]
         (dotimes [_ n-visible]
@@ -604,6 +614,17 @@
                           ;; After layout restore, redraw the input line so the
                           ;; buffer text + cursor land in the restored input-row.
                           (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
+        ;; End the popover's row reservation, which is scoped to the INPUT LINE
+        ;; rather than to the menu (see the hold commentary in `layout`). Runs
+        ;; even when no menu is on screen — the reservation outlives the menu by
+        ;; design, so this is the only thing that gives the rows back.
+        end-menu-hold! (fn []
+                         (dismiss-menu!)
+                         (when (layout/menu-height-held?)
+                           (layout/release-menu-height!)
+                           ;; The layout just shifted back down; the buffer has
+                           ;; to be re-stamped in the restored input-row.
+                           (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
         show-menu!    (fn show-menu!
                         ([matches] (show-menu! matches nil))
                         ([matches query-body]
@@ -955,9 +976,9 @@
               (recur))
           :else
           (case key
-            nil       (do (dismiss-menu!) nil)
+            nil       (do (end-menu-hold!) nil)
             :ctrl-d   (if (zero? (.length buf))
-                        (do (dismiss-menu!) nil)
+                        (do (end-menu-hold!) nil)
                         (recur))
 
             :sigint   (do (dismiss-menu!)
@@ -981,8 +1002,12 @@
                         :else (recur))
 
             :escape   (cond
-                        @menu-active?
-                        (do (dismiss-menu!)
+                        ;; Esc is the user asking for the menu to be GONE, so it
+                        ;; also ends the reservation — the resulting shift is one
+                        ;; they made, which is the whole distinction the hold
+                        ;; exists to draw.
+                        (or @menu-active? (layout/menu-height-held?))
+                        (do (end-menu-hold!)
                             (terminal/redraw-input-line! (.toString buf) @cursor-pos)
                             (recur))
                         ;; Scroll mode with a selected marker: clear the selection
@@ -1049,7 +1074,7 @@
                         ;; Normal enter → dismiss menu + submit. Expand any
                         ;; paste markers in the buffer back to full content
                         ;; before returning the line.
-                        (let [_ (dismiss-menu!)
+                        (let [_ (end-menu-hold!)
                               line (expand-paste! (.toString buf))]
                           (layout/scroll-to-bottom!)
                           (maybe-deselect!)

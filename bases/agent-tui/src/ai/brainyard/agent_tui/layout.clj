@@ -35,6 +35,7 @@
          :agent-activity-height 0  ;; current agent activity panel height (0 = hidden)
          :agent-activity-data nil  ;; vector of pre-rendered ANSI strings for agent panel
          :menu-height    0        ;; popover menu height (0 = hidden). Inserts between input block and separator2, shifts input + scroll region up.
+         :menu-height-hold 0      ;; >0 = the reservation is PINNED for the current input line (see hold-menu-height!); the menu may hide without giving the rows back.
          :input-height   1        ;; input area height in rows (grows with word-wrap / multi-line buffer)
          :input-height-max 6      ;; cap on input-height (recomputed on resize based on terminal rows)
          :input-cursor-col 3      ;; last known cursor column in input row (1-based)
@@ -1218,23 +1219,100 @@
 
    This is the legitimate layout-shift operation that accompanies menu show/hide —
    it always paints (bypasses the popover gate) because the caller is the popover
-   itself. Callers should NOT hold layout-lock (callees acquire it)."
+   itself. Callers should NOT hold layout-lock (callees acquire it).
+
+   While a hold is in effect (`hold-menu-height!`) the request is clamped UP to
+   the held height: nothing may shrink the reservation until the hold is
+   released, because every such shrink/grow moves the whole viewport."
   [menu-h]
   (when (and (fullscreen?)
-             (not= (or (:menu-height @!layout) 0) menu-h))
+             (not= (or (:menu-height @!layout) 0)
+                   (max (long menu-h) (long (or (:menu-height-hold @!layout) 0)))))
     (let [was-popover? (popover-active?)]
       ;; Temporarily disable the popover gate so repaint-after-resize! actually
       ;; paints. This is safe because the resize is the popover's own layout
       ;; update — not a background writer that would conflict with the menu.
       (when was-popover? (set-popover-active! false))
       (try
-        (let [{:keys [task-activity-height agent-activity-height]} @!layout
+        (let [{:keys [task-activity-height agent-activity-height menu-height-hold]} @!layout
               scroll-bottom (recalc-layout-rows! task-activity-height
                                                  agent-activity-height
-                                                 menu-h)]
+                                                 (max (long menu-h)
+                                                      (long (or menu-height-hold 0))))]
           (repaint-after-resize! scroll-bottom))
         (finally
           (when was-popover? (set-popover-active! true)))))))
+
+;; ----------------------------------------------------------------------------
+;; Menu reservation hold — why the popover keeps its rows after it hides
+;;
+;; The reservation IS the viewport geometry: `recalc-layout-rows!` takes
+;; `menu-h` straight out of `scroll-bottom`, and `render-viewport!` bottom-
+;; anchors into whatever is left. So every show/hide of the menu moves the whole
+;; screen by ~30% of its height — up when the menu opens, back down when it
+;; closes.
+;;
+;; That is fine for a gesture the user made (typing `/`), and unbearable for one
+;; they did not: while typing a sentence containing an `@`-token, the match set
+;; crosses zero and back on ordinary keystrokes, and each crossing was a
+;; full-height flip of the text they were reading.
+;;
+;; So the reservation is scoped to the INPUT LINE, not to the menu: the first
+;; menu of a line pins it, and it is given back when the line ends (Enter) or
+;; when the user dismisses the menu outright (Esc). In between the menu may come
+;; and go as often as the filter says — it paints into rows it already owns, and
+;; hiding it blanks those rows rather than reclaiming them.
+;; ----------------------------------------------------------------------------
+
+(defn menu-height-held?
+  "True while the popover reservation is pinned for the current input line."
+  []
+  (pos? (long (or (:menu-height-hold @!layout) 0))))
+
+(defn hold-menu-height!
+  "Reserve menu-h rows AND pin the reservation until `release-menu-height!`.
+   Called by the popover on every draw, so a resize between two menus re-pins at
+   the new height."
+  [menu-h]
+  (when (fullscreen?)
+    (swap! !layout assoc :menu-height-hold (max 0 (long menu-h)))
+    (set-menu-height! menu-h)))
+
+(defn release-menu-height!
+  "Drop the hold and give the rows back. Safe to call when nothing is held or
+   the menu is already hidden — `set-menu-height!` no-ops when the height is
+   already 0, so this is the single call that ends a reservation regardless of
+   whether the menu happens to be on screen."
+  []
+  (when (fullscreen?)
+    (swap! !layout assoc :menu-height-hold 0)
+    (set-menu-height! 0)))
+
+(defn hide-menu-rows!
+  "Blank the held rows WITHOUT giving them back, and flush whatever the popover
+   gate deferred while the menu was up.
+
+   This is the hidden-but-held state: geometry is unchanged (so nothing moves),
+   the menu's own rows are erased, and the scroll region / sticky areas / chrome
+   repaint exactly as they would on a real dismiss. Caller should have cleared
+   the popover gate first, or the repaint defers itself right back."
+  []
+  (when (fullscreen?)
+    (let [{:keys [rows menu-height scroll-bottom]} @!layout
+          menu-h (long (or menu-height 0))]
+      (when (pos? menu-h)
+        (with-frame
+          (let [w (get-writer)]
+            (when w
+              (let [sb (StringBuilder.)
+                    ;; Same span the menu paints into: it sits directly above
+                    ;; separator2 (row rows-2), so its top is rows-menu-h-2.
+                    menu-top (- (long rows) menu-h 2)]
+                (dotimes [i menu-h]
+                  (.append sb (ansi/cursor-to (+ menu-top i) 1))
+                  (.append sb ^String ansi/erase-line))
+                (raw-write! w (.toString sb)))))
+          (repaint-after-resize! scroll-bottom))))))
 
 ;; ============================================================================
 ;; Sticky Task Activity Area
@@ -1664,6 +1742,7 @@
                :agent-activity-height 0
                :agent-activity-data nil
                :menu-height 0
+               :menu-height-hold 0
                :input-height 1
                :input-height-max (max 3 (quot rows 3))
                ;; Same reason as in `handle-resize!`: entering fullscreen
@@ -1727,6 +1806,8 @@
            :task-activity-data nil
            :agent-activity-height 0
            :agent-activity-data nil
+           :menu-height 0
+           :menu-height-hold 0
            :input-active false)))
 
 (defn init-inline!
