@@ -220,13 +220,21 @@
   (reset! layout/!scrollback (or (:scrollback session) []))
   ;; Restore live-blocks (start-idx values are valid for this session's scrollback)
   (reset! layout/!live-blocks (or (:live-blocks session) {}))
-  ;; Restore the reflow source. When it is absent or has drifted from the rows
-  ;; (a background emit patched :scrollback directly while this tab was away),
-  ;; layout's `ensure-src!` rebuilds it on the next write — those rows lose
-  ;; reflow, everything after keeps it.
+  ;; Restore the reflow source. Background emits maintain it alongside the rows
+  ;; (see `buffer-background-emit`), so a tab that was written to entirely while
+  ;; it was away — the normal life of an output-only tab — comes back
+  ;; reflowable. When it is absent or has drifted anyway, layout's `ensure-src!`
+  ;; rebuilds it on the next write: those rows lose reflow, everything after
+  ;; keeps it.
   (reset! layout/!scrollback-src (or (:scrollback-src session) []))
   ;; Restore viewport offset
   (swap! layout/!layout assoc :viewport-offset (or (:viewport-offset session) 0))
+  ;; Re-wrap to the CURRENT width. A resize that happened while this tab was in
+  ;; the background never reached these rows — `handle-resize!` only reflows the
+  ;; active tab — so without this they are painted at whatever width they were
+  ;; formatted for and clipped. Runs after the offset is restored: the reflow
+  ;; anchors on it.
+  (layout/reflow-to-current-width!)
   ;; Clear unread flag
   (swap! !sessions assoc-in [:sessions (:id session) :has-unread?] false)
   ;; Redraw terminal
@@ -554,6 +562,44 @@
         (swap! !sessions update-in [:sessions sidx]
                remove-live-block-from-snapshot block-id)))))
 
+(defn- buffer-background-emit
+  "Append `new-lines` to a background session's buffered rows AND record how to
+   re-render them, keeping `:scrollback` and `:scrollback-src` in step.
+
+   This is what makes an OUTPUT-ONLY tab reflow. Its rows arrive while it is in
+   the background — that is the normal state of a shared sub-output tab, since
+   the user is watching the chat tab the sub-agent was dispatched from — so
+   without this the reflow source never grows to cover them. `ensure-src!` then
+   sees a list that no longer describes the rows on screen and rebuilds the
+   WHOLE tab as non-reflowable, which is why one long line stayed clipped at
+   its emit-time width for the rest of the session, resize after resize.
+
+   Rows already present but not covered by an entry (a replayed on-disk tail, a
+   path that predates the source list) are sealed as one non-reflowable entry
+   first. They were never going to reflow; the point is that they no longer
+   stop anything AFTER them from reflowing. A source longer than the rows is
+   incoherent in the other direction — it can only come from rows being removed
+   behind this function's back — so it is dropped and everything sealed."
+  [session new-lines render]
+  (let [rows    (vec (:scrollback session))
+        src     (vec (:scrollback-src session))
+        covered (reduce + 0 (map :n src))
+        n-rows  (count rows)
+        src'    (cond
+                  (= covered n-rows) src
+                  (< covered n-rows) (conj src {:render   (constantly (subvec rows covered))
+                                                :n        (- n-rows covered)
+                                                :block-id nil})
+                  :else              [{:render   (constantly rows)
+                                       :n        n-rows
+                                       :block-id nil}])]
+    (assoc session
+           :scrollback     (into rows new-lines)
+           :scrollback-src (conj src' {:render   (or render (constantly new-lines))
+                                       :n        (count new-lines)
+                                       :block-id nil})
+           :has-unread?    true)))
+
 (defn emit-to-session!
   "Write output to a specific session's scrollback.
    If the session is active, also writes to the terminal via layout.
@@ -564,9 +610,10 @@
    `:agent-session-id`), so resume can replay them via `tail-scrollback`.
 
    `opts` is forwarded to `layout/write-output!` — notably `:render`, which
-   makes the emit re-wrap on terminal resize. It only applies on the active
-   path; a background session stores plain rows, and they become
-   non-reflowable when the tab is next switched to."
+   makes the emit re-wrap on terminal resize. It applies on BOTH paths: the
+   background path stores the renderer next to the rows (see
+   `buffer-background-emit`), so a tab that received all its output while it was
+   in the background still reflows once switched to."
   ([idx s] (emit-to-session! idx s nil))
   ([idx s opts]
    (when (and s (not (clojure.string/blank? s)))
@@ -579,12 +626,10 @@
          ;; Background session — buffer in session's scrollback, mark unread.
          ;; Refresh the tab strip when the unread marker flips so the user
          ;; can see new activity in background tabs at a glance.
-         (let [had-unread? (:has-unread? (get-session idx))]
+         (let [had-unread? (:has-unread? (get-session idx))
+               new-lines   (clojure.string/split-lines s)]
            (swap! !sessions update-in [:sessions idx]
-                  (fn [session]
-                    (-> session
-                        (update :scrollback into (clojure.string/split-lines s))
-                        (assoc :has-unread? true))))
+                  buffer-background-emit new-lines (:render opts))
            (when-not had-unread? (redraw-tab-strip!))))))))
 
 ;; ============================================================================

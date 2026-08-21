@@ -2780,20 +2780,34 @@
 (defn- emit-sub-agent-ask-header!
   "Paint a centered `── <agent-id> · ask ──` separator + the `❯ <input>`
    prompt into the shared sub-output tab. Makes it easy to see which
-   sub-agent is asking what when several share the same tab."
+   sub-agent is asking what when several share the same tab.
+
+   Both emits are width-aware in their own right, which they had to become
+   before reflow could reach them: the separator was sized to the width at emit
+   time and carried no `:render`, and the prompt was emitted RAW — a long ask
+   was one row of arbitrary length, so it overflowed a narrow pane at first
+   paint and was clipped there permanently. A renderer for a row that was never
+   wrapped would have nothing to re-wrap."
   [sidx agent-id input]
-  (let [cols      (or (:cols @layout/!layout) 80)
-        label     (str " " (name agent-id) " · ask ")
-        label-len (count label)
-        left-len  (max 3 (quot (- cols label-len) 2))
-        right-len (max 3 (- cols label-len left-len))
-        sep       (str (ansi/style (apply str (repeat left-len ansi/h-line)) ansi/dim)
-                       (ansi/style label ansi/bold ansi/bright-cyan)
-                       (ansi/style (apply str (repeat right-len ansi/h-line)) ansi/dim))]
-    (sessions/emit-to-session! sidx (str "\n" sep))
+  (let [render-sep (fn [cols]
+                     (let [cols      (max 20 (long (or cols 80)))
+                           label     (str " " (name agent-id) " · ask ")
+                           label-len (count label)
+                           left-len  (max 3 (quot (- cols label-len) 2))
+                           right-len (max 3 (- cols label-len left-len))]
+                       (str "\n"
+                            (ansi/style (apply str (repeat left-len ansi/h-line)) ansi/dim)
+                            (ansi/style label ansi/bold ansi/bright-cyan)
+                            (ansi/style (apply str (repeat right-len ansi/h-line)) ansi/dim))))
+        render-ask (fn [cols]
+                     (->> (fmt/ansi-aware-word-wrap (str "❯ " input)
+                                                    (max 8 (long (or cols 80))))
+                          (mapv #(ansi/style % ansi/bold ansi/bright-cyan))))
+        cols       (or (:cols @layout/!layout) 80)]
+    (sessions/emit-to-session! sidx (render-sep cols) {:render render-sep})
     (when (string? input)
-      (sessions/emit-to-session!
-       sidx (ansi/style (str "❯ " input) ansi/bold ansi/bright-cyan)))))
+      (sessions/emit-to-session! sidx (str/join "\n" (render-ask cols))
+                                 {:render render-ask}))))
 
 (defn ask-pre-handler
   "Handler for :agent.ask/pre. Event: {:agent :input}.

@@ -1617,6 +1617,29 @@
       (restore-viewport-anchor! (mapv #(dissoc % :rows) rendered) anchor)
       true)))
 
+(defn reflow-to-current-width!
+  "Re-wrap whatever is in `!scrollback` to the width the terminal has NOW.
+
+   `handle-resize!` only ever reaches the ACTIVE tab: a background session's
+   rows live in its own session map, untouched by the resize that happened
+   while the user was looking at another tab. Switching to it therefore
+   installs rows formatted for a width that is no longer true — which for an
+   output-only tab means the rows it collected in the background arrive too
+   wide and are clipped at paint time.
+
+   So a tab switch reflows what it loads, for exactly the reason a resize does.
+   Entries with no renderer re-render to themselves, so this is cheap for rows
+   that could not reflow anyway, and a no-op in the common case where nothing
+   resized. Caller should have restored `:viewport-offset` first — the anchor
+   is read from it."
+  []
+  (when (fullscreen?)
+    (let [cols (or (:cols @!layout) 80)]
+      (when-not (reflow-scrollback! cols (viewport-anchor (ensure-src!)))
+        ;; A renderer threw, or the source had drifted: rows are untouched, but
+        ;; the offset may now point past the end. Re-seat it.
+        (restore-viewport-anchor! (ensure-src!) nil)))))
+
 (defn handle-resize!
   "Handle terminal resize: refresh dimensions, recalculate row layout,
    re-wrap the scrollback to the new width, and redraw everything.
