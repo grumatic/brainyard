@@ -49,6 +49,21 @@
            :task-activity-height 0 :agent-activity-height 0
            :writer (java.io.PrintWriter. (java.io.StringWriter.))}))
 
+(defn- write-answer!
+  "Emit the answer formatted at `cols` — the width the fake terminal was just
+   set to — together with the renderer that re-wraps it on resize.
+
+   Passing `cols` is the whole point: `format-answer`'s 1-arity reaches for the
+   AMBIENT terminal's cached width, which made every pre-resize row count a
+   property of whoever's pane ran the suite rather than of `fake-fullscreen!`.
+   `reflows-on-grow-too` failed on a 194-column terminal because \"narrow\" had
+   never been narrow — the text was seeded at 194 and \"widening\" to 120 added
+   rows. The others passed by luck on a wide pane and would have failed on a
+   narrow one."
+  [cols]
+  (layout/write-output! (fmt/format-answer long-text cols)
+                        {:render #(fmt/format-answer long-text %)}))
+
 (defn- reset-layout-fixture [t]
   (let [saved @layout/!layout]
     (try (t)
@@ -82,8 +97,7 @@
 (deftest reflows-a-renderable-emit-on-shrink
   (testing "an emit that carries :render re-wraps to the narrower width"
     (fake-fullscreen! 100)
-    (layout/write-output! (fmt/format-answer long-text)
-                          {:render #(fmt/format-answer long-text %)})
+    (write-answer! 100)
     (is (pos? (rows-wider-than 60))
         "precondition: formatted at 100, the rows do not fit in 60")
     (resize! 60)
@@ -95,8 +109,7 @@
 (deftest reflows-on-grow-too
   (testing "widening re-wraps rather than leaving text broken at the old column"
     (fake-fullscreen! 50)
-    (layout/write-output! (fmt/format-answer long-text)
-                          {:render #(fmt/format-answer long-text %)})
+    (write-answer! 50)
     (let [narrow-rows (count @layout/!scrollback)]
       (resize! 120)
       (is (< (count @layout/!scrollback) narrow-rows)
@@ -106,7 +119,9 @@
 (deftest emit-without-render-is-left-alone
   (testing "a pre-formatted emit keeps its rows — reflow is opt-in"
     (fake-fullscreen! 100)
-    (layout/write-output! (fmt/format-answer long-text))
+    ;; Deliberately no :render — that is what this test is about. The width is
+    ;; still explicit, for the same reason `write-answer!` takes one.
+    (layout/write-output! (fmt/format-answer long-text 100))
     (let [before (count @layout/!scrollback)]
       (resize! 60)
       (is (= before (count @layout/!scrollback))
@@ -123,8 +138,7 @@
   (testing "block start-idx values still point at the block's own rows"
     (fake-fullscreen! 100)
     (layout/update-live-block! :blk-a ["block-a-1" "block-a-2"])
-    (layout/write-output! (fmt/format-answer long-text)
-                          {:render #(fmt/format-answer long-text %)})
+    (write-answer! 100)
     (layout/update-live-block! :blk-b ["block-b-1"])
     (let [b-before (:start-idx (get @layout/!live-blocks :blk-b))]
       (resize! 55)
@@ -145,8 +159,7 @@
     (fake-fullscreen! 100)
     (layout/update-live-block! :keep ["keep-1"])
     (layout/update-live-block! :drop ["drop-1" "drop-2"])
-    (layout/write-output! (fmt/format-answer long-text)
-                          {:render #(fmt/format-answer long-text %)})
+    (write-answer! 100)
     (layout/dispose-live-block! :drop)
     (layout/freeze-live-block! :keep)
     (is (nil? (some #{"drop-1"} @layout/!scrollback)) "disposed rows are gone")
@@ -223,8 +236,7 @@
   (testing "rows swapped in behind layout's back (a session switch, a test)
             are preserved as-is and the source re-establishes itself"
     (fake-fullscreen! 100)
-    (layout/write-output! (fmt/format-answer long-text)
-                          {:render #(fmt/format-answer long-text %)})
+    (write-answer! 100)
     (reset! layout/!scrollback ["a-row-layout-never-saw"])
     (reset! layout/!live-blocks {})
     (resize! 40)
@@ -300,7 +312,7 @@
     ;; Reflowable long answers, whose row counts DO change with width.
     (dotimes [i 12]
       (let [t (str "answer-" i " " long-text)]
-        (layout/write-output! (fmt/format-answer t)
+        (layout/write-output! (fmt/format-answer t 100)
                               {:render #(fmt/format-answer t %)})))
     (swap! layout/!layout assoc :viewport-offset 30)
     (let [before      (top-entry-index)
@@ -344,7 +356,7 @@
   (testing "a row wider than the terminal is never emitted at full width"
     (fake-fullscreen! 100)
     ;; No :render, so the resize cannot re-wrap these rows.
-    (layout/write-output! (fmt/format-answer long-text))
+    (layout/write-output! (fmt/format-answer long-text 100))
     (resize! 60)
     (is (pos? (rows-wider-than 60))
         "precondition: the buffer still holds rows too wide for the terminal")
