@@ -1772,7 +1772,21 @@
                             (catch Throwable e
                               (mulog/warn ::resume-scrollback-failed
                                           :session-id agt-sess-id :error (ex-message e))
-                              nil))]
+                              nil))
+                  ;; What the root's shared sub-output tab rendered — every
+                  ;; sub-agent's transcript for this session. Read here for the
+                  ;; same reason as the tail above (before anything this boot
+                  ;; emits reaches the same files) and failed independently:
+                  ;; losing the sub-agent history must not cost the
+                  ;; conversation, which is the whole point of separating the
+                  ;; two reads.
+                  sub-tail (try (persist/tail-scrollback
+                                 agt-sess-id :sub-output
+                                 (agent/get-config :resume-scrollback-bytes))
+                                (catch Throwable e
+                                  (mulog/warn ::resume-sub-output-failed
+                                              :session-id agt-sess-id :error (ex-message e))
+                                  nil))]
               (try
                 ;; Restore the session map, stamp last-attached-at and prime the
                 ;; bridge's high-water mark — shared with `:resume-session`, so
@@ -1784,7 +1798,8 @@
                 ;; (which clears `!scrollback` and the alt-screen buffer).
                 (swap! tui-session/!tui-state assoc
                        :resumed? true
-                       :resume-tail tail)
+                       :resume-tail tail
+                       :resume-sub-output-tail sub-tail)
                 (catch Throwable e
                   ;; `:resumed?` stays FALSE deliberately — nothing was
                   ;; restored, and a resume notice over an empty session would
@@ -2162,7 +2177,24 @@
             (when-let [tail (:resume-tail @tui-session/!tui-state)]
               (try (write-resume-tail! tail)
                    (catch Throwable _ nil)))
-            (swap! tui-session/!tui-state dissoc :resume-tail))
+            (swap! tui-session/!tui-state dissoc :resume-tail)
+            ;; Bring back the shared sub-output tab. Only in FULLSCREEN: the tab
+            ;; is a tab — inline mode has no tab strip and no second surface to
+            ;; put it on, so there is nowhere for it to be restored TO.
+            ;;
+            ;; After the main replay, so the chat tab is fully populated before
+            ;; a second session joins the strip, and swallowed the same way: a
+            ;; sub-agent transcript that will not come back is not a reason to
+            ;; fail a resume that otherwise worked.
+            (when (layout/fullscreen?)
+              (when-let [sub-tail (:resume-sub-output-tail @tui-session/!tui-state)]
+                (try
+                  (tui-session/restore-sub-output-session!
+                   ag (sessions/active-idx) sub-tail (resume-tail-renderer sub-tail))
+                  (catch Throwable e
+                    (mulog/warn ::resume-sub-output-restore-failed
+                                :error (ex-message e))))))
+            (swap! tui-session/!tui-state dissoc :resume-sub-output-tail))
         ;; Banner / resume notice via layout/write-output! (not
         ;; tui-session/emit!) so the bytes don't tee into the on-disk
         ;; scrollback file.

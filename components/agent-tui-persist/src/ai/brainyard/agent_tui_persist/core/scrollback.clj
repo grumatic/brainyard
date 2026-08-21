@@ -32,6 +32,12 @@
   (case tag
     :stream   "scrollback.stream.txt"
     :activity "scrollback.activity.txt"
+    ;; The root's shared sub-output tab (`:session-type :output`). It lives
+    ;; under the ROOT's session dir rather than getting one of its own, because
+    ;; that is exactly its lifetime: one per root, created on the root's first
+    ;; dispatch and cascade-closed with it. It has no agent and no
+    ;; agent-session-id, so it has no directory to be the owner of.
+    :sub-output "scrollback.sub-output.txt"
     (throw (ex-info "Unknown scrollback stream" {:tag tag}))))
 
 (defn- live-file

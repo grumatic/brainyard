@@ -2777,6 +2777,32 @@
             (sessions/close-session! new-sidx))
           winner))))
 
+(defn restore-sub-output-session!
+  "Bring back `root-agent`'s shared sub-output tab on resume and replay `tail`
+   into it. Returns the tab's session idx, or nil when there is nothing to
+   restore.
+
+   Registration is the part that matters beyond the visible tab: the tab is
+   keyed in `!root-output-sessions` by the root's agent-id, and a resumed root
+   is a NEW instance with a NEW id. Restoring without registering would put the
+   transcript on screen and then have the next dispatch create a SECOND output
+   tab beside it — the history in one, the live output in the other.
+
+   `:persist? false` on the replay: these bytes came out of the root's
+   `:sub-output` stream, and teeing them back would append the whole transcript
+   to itself on every resume."
+  [root-agent root-chat-sidx tail render]
+  (when (and root-agent (string? tail) (not (clojure.string/blank? tail)))
+    (let [sidx (ensure-shared-sub-output-session! root-agent root-chat-sidx)
+          rows (render (or (:cols @layout/!layout) 80))]
+      (when (seq rows)
+        (sessions/emit-to-session! sidx (str/join "\n" rows)
+                                   {:render render :persist? false}))
+      ;; It holds history, not live output — an unread marker would claim a
+      ;; sub-agent had just said something.
+      (sessions/update-session! sidx assoc :has-unread? false :status :idle)
+      sidx)))
+
 (defn- emit-sub-agent-ask-header!
   "Paint a centered `── <agent-id> · ask ──` separator + the `❯ <input>`
    prompt into the shared sub-output tab. Makes it easy to see which

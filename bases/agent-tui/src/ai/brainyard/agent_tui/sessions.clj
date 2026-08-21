@@ -685,25 +685,50 @@
                                       :block-id nil})
            :has-unread?    true)))
 
+(defn sub-output-tee-target
+  "The agent-session-id whose `:sub-output` stream backs the tab at `idx`, or
+   nil when `idx` is not an output-only tab (or its root is gone).
+
+   An output-only tab is created with `:skip-agent-creation true`, so it has no
+   agent and `:agent-session-id` is nil — which is why nothing it rendered was
+   ever written to disk, and why `--resume` brought back a session with no
+   sub-agent transcript at all. Its `:sub-output-of` names the root chat tab,
+   and that tab's session id is the one on disk."
+  [idx]
+  (let [session (get-session idx)]
+    (when (= :output (:session-type session))
+      (some-> (:sub-output-of session) get-session :agent-session-id))))
+
 (defn emit-to-session!
   "Write output to a specific session's scrollback.
    If the session is active, also writes to the terminal via layout.
    If the session is in the background, buffers the output and marks unread.
    Acquires switch-lock to prevent race with switch-to!/close-session!.
 
-   Always tees the bytes to the session's on-disk scrollback file (keyed on
-   `:agent-session-id`), so resume can replay them via `tail-scrollback`.
+   Always tees the bytes to disk, so resume can replay them via
+   `tail-scrollback`. A chat tab tees to its own `:agent-session-id`; an
+   OUTPUT-ONLY tab has no agent and therefore no session id of its own, so it
+   tees to its root's `:sub-output` stream (see `sub-output-tee-target`).
 
    `opts` is forwarded to `layout/write-output!` — notably `:render`, which
    makes the emit re-wrap on terminal resize. It applies on BOTH paths: the
    background path stores the renderer next to the rows (see
    `buffer-background-emit`), so a tab that received all its output while it was
-   in the background still reflows once switched to."
+   in the background still reflows once switched to.
+
+   `:persist? false` suppresses the tee. For the replay that RESTORES a tab from
+   these very bytes — writing them back to the file they came from would double
+   the transcript on every resume. Same reason `write-resume-tail!` goes through
+   `layout/write-output!` rather than `emit!`; a background tab has no such
+   bypass, so it needs the flag."
   ([idx s] (emit-to-session! idx s nil))
   ([idx s opts]
    (when (and s (not (clojure.string/blank? s)))
-     (when-let [asid (:agent-session-id (get-session idx))]
-       (persist-bridge/tee-scrollback! asid s))
+     (when (not (false? (:persist? opts)))
+       (if-let [asid (:agent-session-id (get-session idx))]
+         (persist-bridge/tee-scrollback! asid s)
+         (when-let [root-asid (sub-output-tee-target idx)]
+           (persist-bridge/tee-sub-output-scrollback! root-asid s))))
      (locking switch-lock
        (if (= idx (active-idx))
          ;; Active session — write to terminal (which also updates !scrollback)

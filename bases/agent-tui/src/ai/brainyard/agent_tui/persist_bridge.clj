@@ -210,6 +210,28 @@
       (try (agent/fire! :display {:session-id session-id :text s})
            (catch Throwable _ nil)))))
 
+(defn tee-sub-output-scrollback!
+  "Tee a chunk of ANSI bytes into the root session's `:sub-output` scrollback —
+   what its shared sub-output tab rendered, so `--resume` can bring that tab
+   back rather than losing every sub-agent's transcript at process exit.
+
+   `session-id` is the ROOT's agent-session-id: the tab has no agent and so no
+   session dir of its own, and its content belongs to the root's history in
+   exactly the way its lifetime does.
+
+   Same newline discipline as `tee-scrollback!`, and for the same reason — the
+   replay splits on `\\n` to rebuild rows, so an unterminated chunk would fuse
+   with the next one on disk and come back as a single concatenated row.
+
+   Deliberately does NOT fire the `:display` hook. That hook mirrors what THE
+   SESSION renders for an ask-socket subscriber; interleaving a second surface's
+   bytes into it under the same session-id would corrupt that stream rather than
+   enrich it."
+  [session-id ^String s]
+  (when (and session-id (string? s) (pos? (.length s)))
+    (let [terminated (if (.endsWith s "\n") s (str s "\n"))]
+      (swallow (persist/append-scrollback! session-id :sub-output terminated)))))
+
 ;; --- Lifecycle ---------------------------------------------------------------
 
 (defn start!

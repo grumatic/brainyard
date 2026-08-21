@@ -35,6 +35,7 @@
      (when (> start max-bytes)
        ;; Truncate scrollback streams; events log + snapshots are tiny.
        (scrollback/truncate! session-id :activity)
+       (scrollback/truncate! session-id :sub-output)
        (scrollback/truncate! session-id :stream))
      {:session-id session-id
       :start-bytes start

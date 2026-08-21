@@ -45,8 +45,11 @@
   [:messages :session :usage-tracker])
 
 (def scrollback-tags
-  "Scrollback streams to relocate. Each is several files once rotated."
-  [:stream :activity])
+  "Scrollback streams to relocate. Each is several files once rotated.
+   `:sub-output` is the root's shared sub-output tab — part of this session's
+   record, so it travels with it; left out, archiving would strand it in the
+   emptied live directory."
+  [:stream :activity :sub-output])
 
 (defn- move-file!
   "Relocate `src` to `dst`, preferring an atomic rename. Returns the bytes
