@@ -21,7 +21,8 @@
    Plus the anti-blink rule: the hide/show pair is emitted only on a
    transition, so a whole turn of streaming (frames arriving ~18x/second)
    emits no cursor toggles at all."
-  (:require [ai.brainyard.agent-tui.layout :as layout]
+  (:require [ai.brainyard.agent-tui.autocomplete :as ac]
+            [ai.brainyard.agent-tui.layout :as layout]
             [ai.brainyard.agent-tui.terminal :as terminal]
             [ai.brainyard.agent.interface.tui.format :as fmt]
             [clojure.string :as str]
@@ -58,6 +59,12 @@
    a turn."
   [active?]
   (reset! !flushes [])
+  ;; The popover gate is global state: a test that leaves the autocomplete menu
+  ;; up makes every LATER test's paint defer itself into the dirty flag and
+  ;; write nothing at all. Test vars run in map order, so this has to be reset
+  ;; here rather than assumed.
+  (layout/set-popover-active! false)
+  (layout/clear-dirty!)
   (layout/set-writer! (probe-writer))
   (swap! layout/!layout assoc
          :mode :fullscreen :rows 40 :cols 100
@@ -80,6 +87,8 @@
         saved-blocks @layout/!live-blocks]
     (try (t)
          (finally
+           (layout/set-popover-active! false)
+           (layout/clear-dirty!)
            (reset! layout/!layout saved-layout)
            (reset! layout/!scrollback saved-sb)
            (reset! layout/!live-blocks saved-blocks)))))
@@ -323,6 +332,64 @@
     (layout/note-cursor-hidden!)
     (layout/render-viewport!)
     (is (zero? (occurrences HIDE (joined))))))
+
+;; ---------------------------------------------------------------------------
+;; The popover owns the cursor
+;;
+;; Arrowing through the autocomplete menu redraws the input line AND every menu
+;; row per keystroke. Those were two presentations: the input redraw's frame
+;; re-showed the cursor at the prompt, and the menu paint that followed then
+;; walked that VISIBLE cursor down each of its rows before hiding it again. Held
+;; down, an arrow key is a cursor strobing between the prompt and the menu.
+;; ---------------------------------------------------------------------------
+
+(defn- menu-items [n]
+  (mapv (fn [i] [(str "/session new agent-" i) (str "description " i)]) (range n)))
+
+(deftest menu-draw-is-one-frame-that-never-shows-the-cursor
+  (testing "opening the menu presents once and leaves the cursor hidden"
+    (setup! true)
+    (ac/draw-autocomplete-menu! (menu-items 20) 3 0 4 "/ses")
+    (let [all (joined)]
+      (is (= 1 (count @!flushes))
+          "geometry shift + input redraw + menu rows are one presentation")
+      (is (= 1 (occurrences SYNC-ON all)) "one synchronized block")
+      (is (= 1 (occurrences HIDE all)) "hidden once, on the way in")
+      (is (zero? (occurrences SHOW all))
+          "a popover suspends the show half — the cursor must not land on a menu row")
+      (is (str/ends-with? all SYNC-OFF)))))
+
+(deftest arrowing-through-the-menu-emits-no-cursor-toggles
+  (testing "steady-state redraws are pure content — no DECTCEM churn at all"
+    (setup! true)
+    (ac/draw-autocomplete-menu! (menu-items 20) 0 0 4 "/ses")   ;; open
+    (reset! !flushes [])
+    ;; Five arrow keys: same reservation, so only the input line and the menu
+    ;; rows repaint.
+    (doseq [sel [1 2 3 4 5]]
+      (ac/draw-autocomplete-menu! (menu-items 20) sel 0 4 "/ses"))
+    (let [all (joined)]
+      (is (= 5 (count @!flushes)) "one frame per keystroke")
+      (is (= 5 (occurrences SYNC-ON all)) "each one synchronized")
+      (is (zero? (occurrences HIDE all)) "already hidden — nothing to re-hide")
+      (is (zero? (occurrences SHOW all)) "and never shown while the menu is up"))))
+
+(deftest dismissing-the-menu-hands-the-cursor-back-to-the-input-line
+  (testing "one frame, ending parked at the prompt with the cursor visible"
+    (setup! true)
+    (ac/draw-autocomplete-menu! (menu-items 20) 0 0 4 "/ses")
+    (reset! !flushes [])
+    ;; What `dismiss-menu!` does — the clear and the input redraw in one frame.
+    (layout/draw-frame!
+     (fn []
+       (ac/clear-autocomplete-menu! 12)
+       (terminal/redraw-input-line! "/ses" 4)))
+    (let [all (joined)]
+      (is (= 1 (count @!flushes)) "the dismissal presents once")
+      (is (zero? (occurrences HIDE all)) "it was already hidden")
+      (is (= 1 (occurrences SHOW all)) "shown exactly once, by the epilogue")
+      (is (str/ends-with? all (str SHOW SYNC-OFF))
+          "and the last thing the frame does is park it and show it"))))
 
 (deftest out-of-band-cursor-writes-are-tracked
   (testing "note-cursor-shown! makes the next frame emit the hide it owes"

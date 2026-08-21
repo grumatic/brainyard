@@ -346,10 +346,17 @@
    The hide/show pair is emitted only when it changes something. Mid-turn
    `:input-active` is false and the cursor is already hidden, so a whole turn of
    streaming emits ONE hide and then nothing — rather than a hide/show pair per
-   frame, which reads as blinking in its own right."
+   frame, which reads as blinking in its own right.
+
+   A POPOVER suspends the show half entirely: while the autocomplete menu owns
+   the screen the cursor stays hidden, so arrowing through 20 items is one hide
+   and then nothing. Without this the menu redraw was a hide/show pair PER
+   KEYSTROKE — the input redraw's frame re-showed the cursor, and the menu paint
+   that followed then walked that visible cursor down every one of its rows
+   before hiding it again."
   ^String [^String body]
   (let [{:keys [input-active input-row input-cursor-row input-cursor-col]} @!layout
-        park  (when (and input-active input-row)
+        park  (when (and input-active input-row (not (popover-active?)))
                 (ansi/cursor-to (or input-cursor-row input-row)
                                 (or input-cursor-col 3)))
         show? (some? park)

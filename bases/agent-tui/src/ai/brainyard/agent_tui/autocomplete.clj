@@ -442,69 +442,82 @@
           hidden-above (long vis-start)
           hidden-below (max 0 (long (- n vis-end)))
           max-cmd-w    (reduce max 0 (map (fn [[cmd _]] (count cmd)) vis-items))]
-      ;; Reserve a fixed 30%-of-screen row count regardless of item count.
-      ;; Shifts chrome up and redraws everything via repaint-after-resize!.
-      ;; Called OUTSIDE the popover gate so the repaint actually happens.
-      ;; `hold-` rather than `set-`: the reservation is pinned for the rest of
-      ;; the input line, so a menu that hides on a zero-match keystroke does not
-      ;; hand the rows back and flip the viewport (see the hold commentary in
-      ;; `layout`). `read-line-raw!` releases it on Enter or Esc.
-      (layout/hold-menu-height! reserved)
-      ;; Redraw the input line in the (now-shifted) input-row so the user's
-      ;; buffer appears at the prompt — repaint-after-resize! only repaints
-      ;; scrollback + chrome, not the input buffer.
-      (terminal/redraw-input-line! buf-str cursor-pos)
-      ;; Now paint the menu in the reserved rows and activate the popover gate
-      ;; so subsequent background writers defer their paints.
-      (layout/draw-overlay!
-       (fn [w]
-         (layout/set-popover-active! true)
-         (let [{:keys [rows cols input-row]} @layout/!layout
-               ;; Menu sits directly below the input block and above the
-               ;; bottom chrome (separator2 row at `rows - 2`). So the
-               ;; menu's bottom row is `rows - 3` and its top is
-               ;; `rows - 2 - reserved`.
-               menu-top (- rows reserved 2)
-               sb (StringBuilder.)]
-           (dotimes [i reserved]
-             (let [row (+ menu-top i)]
-               (.append sb (ansi/cursor-to row 1))
-               (.append sb ^String ansi/erase-line)
-               (cond
-                 ;; Item rows.
-                 (< i item-rows)
-                 (when (< i vis-count)
-                   (let [abs-idx    (+ vis-start i)
-                         [cmd desc] (nth vis-items i)
-                         highlight? (= abs-idx selected)
-                         padded-cmd (format (str "%-" max-cmd-w "s") cmd)
-                         max-desc-w (max 0 (- cols max-cmd-w 6))
-                         one-line   (normalize-desc desc)
-                         trunc-desc (truncate-to-width one-line max-desc-w)
-                         line-text  (if highlight?
-                                      (ansi/style (str " \u25B8 " padded-cmd "  " trunc-desc " ")
-                                                  ansi/reverse-video)
-                                      (str "   " (ansi/tool-name padded-cmd)
-                                           "  " (ansi/muted trunc-desc)))]
-                     (.append sb ^String line-text)))
-                 ;; Reserved last row: scroll indicator. `erase-line`
-                 ;; above already blanked the row, so when nothing is
-                 ;; hidden `format-scroll-indicator` returns "" and we
-                 ;; simply leave the row blank.
-                 (= i item-rows)
-                 (let [indicator (format-scroll-indicator hidden-above hidden-below cols)]
-                   (when (seq indicator)
-                     (.append sb ^String indicator))))))
-           ;; Reposition cursor back to the (now shifted) input line
-           (let [text-before-cursor (if (pos? cursor-pos) (subs buf-str 0 cursor-pos) "")
-                 cursor-col (+ (fmt/display-width text-before-cursor) 3)]
-             (when input-row
-               (.append sb (ansi/cursor-to input-row cursor-col))
-               (.append sb ^String ansi/hide-cursor)))
-           (layout/raw-write-unsafe! w (.toString sb))
-           ;; The open menu owns the cursor and keeps it hidden; record that so
-           ;; the next frame after dismissal knows to show it again.
-           (layout/note-cursor-hidden!)))))
+      ;; ONE frame for the whole menu, because arrowing through it redraws the
+      ;; input line AND every menu row on each keystroke. Unframed those were two
+      ;; presentations: the input redraw opened its own frame and left the cursor
+      ;; VISIBLE at the prompt, and the menu paint that followed then walked that
+      ;; visible cursor down all 12+ of its rows before hiding it again — a
+      ;; hide/show pair plus a trail of cursor motion per arrow key. Inside one
+      ;; frame it is a single synchronized write, and `layout/frame` suppresses
+      ;; the show half for as long as the popover is up.
+      (layout/draw-frame!
+       (fn []
+         ;; Reserve a fixed 30%-of-screen row count regardless of item count.
+         ;; Shifts chrome up and redraws everything via repaint-after-resize!.
+         ;; Called OUTSIDE the popover gate so the repaint actually happens.
+         ;; `hold-` rather than `set-`: the reservation is pinned for the rest of
+         ;; the input line, so a menu that hides on a zero-match keystroke does not
+         ;; hand the rows back and flip the viewport (see the hold commentary in
+         ;; `layout`). `read-line-raw!` releases it on Enter or Esc.
+         (layout/hold-menu-height! reserved)
+         ;; Redraw the input line in the (now-shifted) input-row so the user's
+         ;; buffer appears at the prompt — repaint-after-resize! only repaints
+         ;; scrollback + chrome, not the input buffer.
+         (terminal/redraw-input-line! buf-str cursor-pos)
+         ;; Now paint the menu in the reserved rows and activate the popover gate
+         ;; so subsequent background writers defer their paints — and so this
+         ;; frame's own epilogue leaves the cursor hidden.
+         (layout/draw-overlay!
+          (fn [w]
+            (layout/set-popover-active! true)
+            (let [{:keys [rows cols input-row]} @layout/!layout
+                  ;; Menu sits directly below the input block and above the
+                  ;; bottom chrome (separator2 row at `rows - 2`). So the
+                  ;; menu's bottom row is `rows - 3` and its top is
+                  ;; `rows - 2 - reserved`.
+                  menu-top (- rows reserved 2)
+                  sb (StringBuilder.)]
+              (dotimes [i reserved]
+                (let [row (+ menu-top i)]
+                  (.append sb (ansi/cursor-to row 1))
+                  (.append sb ^String ansi/erase-line)
+                  (cond
+                    ;; Item rows.
+                    (< i item-rows)
+                    (when (< i vis-count)
+                      (let [abs-idx    (+ vis-start i)
+                            [cmd desc] (nth vis-items i)
+                            highlight? (= abs-idx selected)
+                            padded-cmd (format (str "%-" max-cmd-w "s") cmd)
+                            max-desc-w (max 0 (- cols max-cmd-w 6))
+                            one-line   (normalize-desc desc)
+                            trunc-desc (truncate-to-width one-line max-desc-w)
+                            line-text  (if highlight?
+                                         (ansi/style (str " \u25B8 " padded-cmd "  " trunc-desc " ")
+                                                     ansi/reverse-video)
+                                         (str "   " (ansi/tool-name padded-cmd)
+                                              "  " (ansi/muted trunc-desc)))]
+                        (.append sb ^String line-text)))
+                    ;; Reserved last row: scroll indicator. `erase-line`
+                    ;; above already blanked the row, so when nothing is
+                    ;; hidden `format-scroll-indicator` returns "" and we
+                    ;; simply leave the row blank.
+                    (= i item-rows)
+                    (let [indicator (format-scroll-indicator hidden-above hidden-below cols)]
+                      (when (seq indicator)
+                        (.append sb ^String indicator))))))
+              ;; Park the terminal cursor back on the input line \u2014 but do NOT
+              ;; hide it here. The frame owns cursor visibility (`layout/frame`):
+              ;; its prologue already hid it and, with the popover now active,
+              ;; its epilogue will not show it again, so the cursor stays hidden
+              ;; for the menu's whole lifetime and can never appear over a menu
+              ;; row. A hide emitted here as well would be a second opinion on
+              ;; state the frame is tracking.
+              (let [text-before-cursor (if (pos? cursor-pos) (subs buf-str 0 cursor-pos) "")
+                    cursor-col (+ (fmt/display-width text-before-cursor) 3)]
+                (when input-row
+                  (.append sb (ansi/cursor-to input-row cursor-col))))
+              (layout/raw-write-unsafe! w (.toString sb))))))))
     ;; Inline: print menu lines below current cursor position (fixed-height
     ;; reservation only applies to fullscreen mode).
     (let [n          (count items)
@@ -604,16 +617,22 @@
         ;; Local helpers
         dismiss-menu! (fn []
                         (when @menu-active?
-                          (clear-autocomplete-menu! @menu-prev-vis)
-                          (vreset! menu-active? false)
-                          (vreset! menu-items [])
-                          (vreset! menu-selected -1)
-                          (vreset! menu-scroll 0)
-                          (vreset! menu-prev-vis 0)
-                          (vreset! at-token-start -1)
-                          ;; After layout restore, redraw the input line so the
-                          ;; buffer text + cursor land in the restored input-row.
-                          (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
+                          ;; One frame, for the same reason the draw is one:
+                          ;; the clear repaints and the input redraw are a
+                          ;; single gesture, and separately they show the
+                          ;; cursor, then hide and show it again.
+                          (layout/draw-frame!
+                           (fn []
+                             (clear-autocomplete-menu! @menu-prev-vis)
+                             (vreset! menu-active? false)
+                             (vreset! menu-items [])
+                             (vreset! menu-selected -1)
+                             (vreset! menu-scroll 0)
+                             (vreset! menu-prev-vis 0)
+                             (vreset! at-token-start -1)
+                             ;; After layout restore, redraw the input line so the
+                             ;; buffer text + cursor land in the restored input-row.
+                             (terminal/redraw-input-line! (.toString buf) @cursor-pos)))))
         ;; End the popover's row reservation, which is scoped to the INPUT LINE
         ;; rather than to the menu (see the hold commentary in `layout`). Runs
         ;; even when no menu is on screen — the reservation outlives the menu by
@@ -630,18 +649,23 @@
                         ([matches query-body]
                          (let [n (count matches)]
                            (if (zero? n)
-                             (do (let [was-active? @menu-active?]
-                                   (when was-active?
-                                     (clear-autocomplete-menu! @menu-prev-vis)))
-                                 (vreset! menu-active? false)
-                                 (vreset! menu-items [])
-                                 (vreset! menu-selected -1)
-                                 (vreset! menu-scroll 0)
-                                 (vreset! menu-prev-vis 0)
-                                 (vreset! at-token-start -1)
-                                 ;; Redraw input so buffer text reappears in the
-                                 ;; restored input-row after layout shift.
-                                 (terminal/redraw-input-line! (.toString buf) @cursor-pos))
+                             ;; One frame — see dismiss-menu!. This is the path a
+                             ;; keystroke that stops matching takes, so it runs
+                             ;; mid-sentence and its flicker is the most visible.
+                             (layout/draw-frame!
+                              (fn []
+                                (let [was-active? @menu-active?]
+                                  (when was-active?
+                                    (clear-autocomplete-menu! @menu-prev-vis)))
+                                (vreset! menu-active? false)
+                                (vreset! menu-items [])
+                                (vreset! menu-selected -1)
+                                (vreset! menu-scroll 0)
+                                (vreset! menu-prev-vis 0)
+                                (vreset! at-token-start -1)
+                                ;; Redraw input so buffer text reappears in the
+                                ;; restored input-row after layout shift.
+                                (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
                              (let [prev-sel   @menu-selected
                                    prev-items @menu-items
                                    qb         (some-> query-body str/lower-case)
