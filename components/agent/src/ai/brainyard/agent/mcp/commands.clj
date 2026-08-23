@@ -20,6 +20,7 @@
             ;; through the same permission UI as write-file/bash.
             ai.brainyard.agent.mcp.permission
             [ai.brainyard.agent.mcp.client :as mcp-client]
+            [ai.brainyard.agent.core.protocol :as proto]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.walk :as walk]
@@ -359,6 +360,165 @@
   :output-schema [:map
                   [:result [:string {:desc "Success message"}]]
                   [:error  [:string {:desc "Error message if failed"}]]])
+
+;; ============================================================================
+;; Deterministic MCP control — for the ask channel, not the LLM
+;; ============================================================================
+;;
+;; The three commands above are what an AGENT calls: they are tool-defs, so
+;; reaching them costs a turn, a model, and a bill. A console listing servers
+;; and tools wants none of that. It is asking a question the runtime can answer
+;; out of two atoms — which servers are configured, which clients are live —
+;; and routing that through an LLM means a multi-second turn, a token spend per
+;; refresh, and a JSON array that is only as reliable as the model's willingness
+;; to answer with nothing but JSON. A `:list` that occasionally arrives wrapped
+;; in prose is a `:list` the caller has to guess at.
+;;
+;; So this is the machine-facing face of the same commands: same runtime, same
+;; helpers, no turn. `bases/agent-tui` exposes it as `{:op :mcp :action …}` on
+;; the session's ask socket. Two things a caller has to know, both reported
+;; rather than hidden:
+;;
+;;   - THE MCP RUNTIME IS PROCESS-WIDE, not per-session. `mcp-servers-config`
+;;     and the client registry are `defonce` atoms, so in a shared host every
+;;     co-hosted session sees the same servers, and a `:stop` here disconnects
+;;     that server for all of them. Replies carry `:host-wide? true`.
+;;   - `:start` / `:stop` PERSIST. They run `start-mcp-server!` /
+;;     `stop-mcp-server!`, which write `[:mcp :servers <name> :enabled]` to
+;;     config.edn as well as connecting/disconnecting — so the choice survives
+;;     restart. `:restart` is a live reconnect and writes nothing.
+
+(defn- as-name
+  "A config value that may be a keyword or a string, as a string (or nil)."
+  [v]
+  (cond (nil? v) nil (keyword? v) (name v) :else (str v)))
+
+(defn- server-summary
+  "One configured server as a row: identity, live connection, and the two
+   config leaves that decide whether it connects at the next session start.
+
+   `:enabled` and `:lazy?` are why this doesn't just call `do-list-servers` —
+   that one reports name/connected/transport, and a console that shows a server
+   as disabled has to read them from somewhere. Reading them from config.edn
+   instead is not the same answer: the runtime set is the builtin definitions
+   deep-merged with config.edn (`init-mcp-from-config!`), so an untouched
+   builtin has no config.edn entry at all and its `:enabled` exists only here."
+  [active server-name]
+  (let [cfg (mcp-int/get-mcp-server-config server-name)]
+    {:name      server-name
+     :connected (contains? active server-name)
+     :transport (as-name (:transport cfg))
+     :enabled   (boolean (:enabled cfg true))
+     :lazy?     (boolean (:lazy cfg))}))
+
+(defn- tool-summary
+  "One tool as a row. `:read-only?` is the MCP `annotations.readOnlyHint` —
+   the same flag the permission gate reads to decide a call can skip the
+   approval prompt, so a console can mark which tools are safe to try.
+   Absent ⇒ false, matching the gate's fail-closed reading.
+
+   `:parameters` (the JSON input schema) is omitted unless asked for: it is by
+   far the largest field, and a list rendered as names and descriptions pays
+   for every byte of it on every refresh."
+  [schemas? t]
+  (let [ann (:annotations t)]
+    (cond-> {:name        (:name t)
+             :server-name (:server-name t)
+             :description (:description t)
+             :read-only?  (boolean (or (:readOnlyHint ann) (get ann "readOnlyHint")))}
+      schemas? (assoc :parameters (:parameters t)))))
+
+(defn- list-servers-op []
+  (let [configured (vec (mcp-int/list-configured-servers))
+        active     (set (mcp-client/list-active-clients))
+        servers    (mapv #(server-summary active %) configured)]
+    {:servers    servers
+     :total      (count servers)
+     :connected  (count (filter :connected servers))
+     :host-wide? true}))
+
+(defn- list-tools-op
+  "Tools for one server, or across every connected server when `nm` is nil.
+
+   A server that is configured but not connected is reported as
+   `{:connected false :tools []}`, never as an error: not-connected-yet is the
+   normal state of a server whose session has just booted (connects run in
+   background futures), and a caller polling for it wants a fact, not a failure.
+   Answered from the connect-time cache; `refresh?` forces a live tools/list."
+  [nm refresh? schemas?]
+  (let [active (set (mcp-client/list-active-clients))]
+    (if nm
+      (if-not (contains? active nm)
+        {:server nm :connected false :tools [] :total 0}
+        (let [ts (vec (mcp-int/cached-server-tools nm refresh?))]
+          {:server nm :connected true :tools (mapv #(tool-summary schemas? %) ts) :total (count ts)}))
+      (let [ts (vec (mcp-int/cached-all-server-tools refresh?))]
+        {:servers (vec (sort active))
+         :tools   (mapv #(tool-summary schemas? %) ts)
+         :total   (count ts)}))))
+
+(defn- lifecycle-op
+  "Start / stop / restart one server, then report the state it landed in.
+
+   Reuses the same `do-*` helpers `mcp$lifecycle` calls, so the gate on an
+   unknown name and the config.edn persistence are not reimplemented here. The
+   post-state is appended because the helpers answer with a human sentence and
+   a caller flipping a switch needs to know whether the switch took."
+  [act nm]
+  (if-not nm
+    {:error "server-name is required"}
+    (let [r (case act
+              :start   (do-start-server nm)
+              :stop    (do-stop-server nm)
+              :restart (do-restart-server nm))]
+      (if (:error r)
+        r
+        {:action     act
+         :server     nm
+         :message    (:result r)
+         :connected  (contains? (set (mcp-client/list-active-clients)) nm)
+         :enabled    (boolean (:enabled (mcp-int/get-mcp-server-config nm) true))
+         ;; :restart reconnects only — config.edn is left alone.
+         :persisted  (boolean (#{:start :stop} act))
+         :host-wide? true}))))
+
+(defn mcp-op
+  "Deterministic `:list-servers | :list-tools | :start | :stop | :restart` over
+   this process's MCP runtime, with `*current-agent*` bound to `agent` so
+   config resolves against the live session. Returns a plain map; never throws.
+
+   - `:list-servers` — every configured server with its live connection state.
+   - `:list-tools`   — `:server-name` for one server, omitted for all connected
+                       ones. `:refresh` forces a live `tools/list`; `:schemas`
+                       includes each tool's input schema.
+   - `:start` / `:stop` / `:restart` — need `:server-name`. `:start` connects
+     (spawning a stdio server or completing an HTTP handshake), so it takes as
+     long as the server does.
+
+   Refuses everything with a clear error when the MCP system was never
+   initialized in this process — an empty server list would otherwise read as
+   \"nothing is configured\", which is a different and wrong answer."
+  [agent {:keys [action server-name refresh schemas]}]
+  (binding [proto/*current-agent* agent]
+    (let [act (cond-> action (string? action) (-> (str/replace #"^:" "") keyword))
+          nm  (some-> server-name str str/trim not-empty)]
+      (cond
+        (not (mcp-int/mcp-initialized?))
+        {:error "MCP is not initialized in this process"}
+
+        (not (contains? #{:list-servers :list-tools :start :stop :restart} act))
+        {:error (str "unknown mcp action: " (pr-str action)
+                     " (expected :list-servers, :list-tools, :start, :stop or :restart)")}
+
+        :else
+        (try
+          (case act
+            :list-servers (list-servers-op)
+            :list-tools   (list-tools-op nm (boolean refresh) (boolean schemas))
+            (lifecycle-op act nm))
+          (catch Exception e
+            (mulog/error ::mcp-op-failed :action act :server nm :error (ex-message e))
+            {:error (format "mcp %s failed: %s" (name act) (ex-message e))}))))))
 
 ;; ============================================================================
 ;; Command Categories

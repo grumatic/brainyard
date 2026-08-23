@@ -16,6 +16,7 @@
   (:require [ai.brainyard.util.interface.macros :refer [export-symbols]]
             [ai.brainyard.util.interface :as util]
             [ai.brainyard.agent.common.a2a :as a2a-cmds]
+            [ai.brainyard.agent.mcp.commands :as mcp-cmds]
             [ai.brainyard.agent.common.a2a-serve :as a2a-serve]
             [ai.brainyard.agent.core.protocol :as protocol]
             [ai.brainyard.agent.core.feature :as feature]
@@ -525,6 +526,22 @@
 
 (export-symbols ai.brainyard.agent.mcp.client
                 list-active-clients set-oauth-prompt-renderer! set-oauth-read-code!)
+
+(defn mcp-op
+  "Deterministic MCP control — `{:action :list-servers|:list-tools|:start|:stop|
+   :restart …}`.
+
+   The machine-facing face of `mcp$server` / `mcp$tools` / `mcp$lifecycle`:
+   same runtime state, same helpers, callable without a model in the loop.
+   Backs `{:op :mcp}` on the session ask socket, which is how an external
+   console lists servers and tools without paying for a turn per refresh.
+
+   The MCP runtime is PROCESS-wide, so in a shared host this reads and moves
+   what every co-hosted session sees; replies say so with `:host-wide? true`.
+   A thin `defn` rather than `export-symbols` for the same native-image reason
+   the A2A wrappers above are."
+  [agent opts]
+  (mcp-cmds/mcp-op agent opts))
 
 ;; ============================================================================
 ;; ============================================================================

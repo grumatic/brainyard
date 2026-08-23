@@ -305,6 +305,58 @@ research-agent read a Notion doc — without a hop — while the write/lifecycle
 boundary keeps external side effects deliberate. It generalizes explore-agent's
 *proven* read-mostly MCP discipline to the whole fleet.
 
+### 5.6 Servers and tools without a turn — the `:mcp` ask-channel op
+
+The three commands are tool-defs, so **every route to them runs through the
+model**. For an agent that is the point. For a *console* it is a tax with
+nothing bought: the workspace MCP section asking "which servers are up, and what
+tools does this one expose?" was spending a full turn — seconds of latency and
+tokens per refresh — on two atom lookups, and getting back a JSON array whose
+shape depended on the model's willingness to answer with nothing but JSON. A
+`:list` that occasionally arrives wrapped in prose is a `:list` the caller has
+to guess at, and it degrades exactly when the model is under load.
+
+`mcp-op` (`mcp/commands.clj`) is the machine-facing face of the same commands —
+same runtime atoms, same `do-*` helpers, no turn. `bases/agent-tui` exposes it
+as `{:op :mcp :action …}` on the session ask socket and advertises `:mcp` in the
+session `:ops` metadata, so a client can tell before connecting whether the
+runtime has it. Five actions:
+
+| action | what it does |
+|---|---|
+| `:list-servers` | every configured server: `:connected` (live) + `:enabled` / `:lazy?` / `:transport` (config) |
+| `:list-tools` | one server's tools (`:server-name`) or all connected ones. `:refresh` forces a live `tools/list`; `:schemas` adds each tool's input schema |
+| `:start` / `:stop` | `start-mcp-server!` / `stop-mcp-server!` — connect/disconnect **and** persist `[:mcp :servers <name> :enabled]` |
+| `:restart` | `reconnect-mcp-server!` — live reconnect, writes nothing |
+
+Four things the shape is deliberate about:
+
+- **`:enabled` comes from the runtime, not config.edn.** The runtime set is the
+  builtin definitions deep-merged with config.edn (`init-mcp-from-config!`), so
+  an untouched builtin has *no config.edn entry at all* — a console reading the
+  file directly cannot see its enablement, and would render a shipped server as
+  absent.
+- **A disconnected server is a fact, not an error.** Connects run in background
+  futures after boot, so "not connected yet" is the normal state a poller sees;
+  `:list-tools` answers `{:connected false :tools []}`.
+- **`:persisted` distinguishes `:start`/`:stop` from `:restart`.** A caller that
+  treated them alike would tell the user a setting was saved that will be gone
+  at the next session start.
+- **Schemas are opt-in.** `:parameters` is by far the largest field on a reply
+  that gets polled.
+
+The MCP runtime is process-wide (`mcp-servers-config` and the client registry
+are `defonce` atoms), so in a shared host these reads and moves are visible to
+every co-hosted session — a `:stop` disconnects that server for all of them.
+Replies carry `:host-wide? true` rather than letting a caller assume otherwise.
+An uninitialized runtime **errors** instead of answering with an empty list,
+which would read as "nothing is configured" — a different, wrong answer.
+
+`:call` is **not** on the op, and that is the boundary: invoking a tool is the
+side-effecting half, and it belongs behind the §5.4 permission gate with a model
+that can read the result and react. The op covers what a console legitimately
+does on its own — enumerate, and turn servers on and off.
+
 ## 6. Where MCP sits in the substrate theory
 
 The tool/meta doc framed the rule: *install a substrate when "use" is a procedure
@@ -357,7 +409,9 @@ execution contract and stays.
   gate; see §5.4.)
 - **`mcp/commands.clj`**: no command retired; all three polymorphic commands stay.
   No write-classifier helper. It requires `mcp.permission` for its install
-  side-effect.
+  side-effect. Also carries `mcp-op` (§5.6) — the same operations callable
+  without a model, exported as `agent/mcp-op` and dispatched by
+  `agent-tui`'s `handle-mcp-op` as `{:op :mcp}` on the session ask socket.
 - **Base roster** (`agent_roster.clj`): `mcp-cmds/all-mcp-commands` is in
   `default-agent-roster` so every derived agent inherits MCP discovery +
   invocation. Safety is the permission gate, not the roster.

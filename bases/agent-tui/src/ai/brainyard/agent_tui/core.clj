@@ -907,6 +907,33 @@
       {:status :error :error (:error r)}
       (merge {:status :ok} (edn-safe r)))))
 
+(defn- handle-mcp-op
+  "MCP servers and tools WITHOUT a turn: `:list-servers | :list-tools |
+   :start | :stop | :restart`.
+
+   The reads exist because the console asking \"which servers are up, and what
+   tools does this one expose?\" was asking an LLM to call `mcp$server` /
+   `mcp$tools` and relay the answer as JSON. That is a full turn — seconds and
+   tokens — for two atom lookups, and the relayed JSON is only as reliable as
+   the model's willingness to answer with nothing else. This is the same
+   runtime with the model removed.
+
+   The lifecycle actions are here for the matching reason: `:start` and `:stop`
+   run `start-mcp-server!` / `stop-mcp-server!`, which connect/disconnect AND
+   persist `[:mcp :servers <name> :enabled]`, so a UI switch no longer means
+   hand-editing config.edn and restarting the session to see it take.
+
+   Non-blocking like `:config` and `:fsm-status`, except `:start`/`:restart`,
+   which spawn a stdio process or complete an HTTP handshake and so take as
+   long as the server does. The MCP runtime is process-wide, so in a shared
+   host this touches every co-hosted session — replies carry `:host-wide? true`
+   rather than letting a caller assume otherwise."
+  [ag req]
+  (let [r (agent/mcp-op ag (select-keys req [:action :server-name :refresh :schemas]))]
+    (if (:error r)
+      {:status :error :error (:error r)}
+      (merge {:status :ok} (edn-safe r)))))
+
 ;; Both live below the op handlers but are needed by `:resume-session`, which
 ;; brings a session in off disk exactly as `start!` does further down.
 (declare create-tui-agent! load-input-history-for-session!)
@@ -1194,7 +1221,9 @@
    / turn / memory); `:cancel` stops the running turn; `:subscribe` streams
    runtime events until disconnect; `:emit` fires a user-defined event onto the
    bus; `:fsm-status` snapshots this session's state machines; `:a2a` does
-   deterministic peer CRUD (`:list`/`:add`/`:update`/`:delete`) without a turn.
+   deterministic peer CRUD (`:list`/`:add`/`:update`/`:delete`) without a turn;
+   `:mcp` does the same for MCP servers and their tools (`:list-servers`/
+   `:list-tools`/`:start`/`:stop`/`:restart`).
    `:new-session`
    spawns another session in THIS process (returns its id + socket);
    `:resume-session` adopts a PERSISTED one into it instead of leaving the
@@ -1217,6 +1246,7 @@
       :emit       (handle-emit-op ag req)
       :fsm-status (handle-fsm-status-op ag)
       :a2a        (handle-a2a-op ag req)
+      :mcp        (handle-mcp-op ag req)
       :new-session    (handle-new-session-op req)
       :resume-session (handle-resume-session-op req)
       :close-session  (handle-close-session-op req)
@@ -1242,7 +1272,7 @@
             ;; without connecting. Keep in sync with `ask-handle-fn`'s dispatch.
             (try (persist/save-meta! sid {:ask-socket-path path
                                           :ops [:ask :status :config :inject :cancel :subscribe :emit :fsm-status
-                                                :a2a
+                                                :a2a :mcp
                                                 :new-session :resume-session
                                                 :close-session :rename-session :switch-session]})
                  (catch Throwable _))
