@@ -67,7 +67,16 @@
                     (into-array CopyOption [StandardCopyOption/ATOMIC_MOVE
                                             StandardCopyOption/REPLACE_EXISTING]))
         (catch Throwable _
+          ;; The array is hinted because `Files/copy` is OVERLOADED three ways
+          ;; — (Path, Path, CopyOption…), (InputStream, Path, CopyOption…) and
+          ;; (Path, OutputStream) — and `into-array` is statically Object, so
+          ;; without the hint the call is left to reflection. That is the exact
+          ;; shape that broke v0.5.1: the JVM's Reflector picks an overload from
+          ;; the runtime argument, a native image binds from metadata, and the
+          ;; two disagree. `Files/move` above needs no hint — it has one
+          ;; overload, so there is nothing to pick.
           (Files/copy (.toPath src) (.toPath dst)
+                      ^"[Ljava.nio.file.CopyOption;"
                       (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))
           (.delete src)))
       n)))
