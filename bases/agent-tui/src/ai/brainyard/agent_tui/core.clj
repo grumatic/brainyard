@@ -802,7 +802,18 @@
    matching runtime event until the client disconnects. Scoped to THIS session
    (sub-agents inherit the session-id; process-level events with no agent are
    included). Backpressure: a bounded queue drops events for a slow consumer
-   rather than stalling the agent. See docs/design/session-channel-extensions.md §5."
+   rather than stalling the agent. See docs/design/session-channel-extensions.md §5.
+
+   Each frame carries `:root?` / `:user-turn?` (`agent/event-provenance`) when
+   the event had an agent. Sub-agents inherit the session-id, so the scope
+   filter above lets their events through — correctly, a console showing what
+   the agent is doing wants the subagent's tool calls too — but the `:agent` is
+   stripped from the payload, so without these flags a consumer could not tell
+   WHOSE those events were. That distinction is load-bearing for at least one
+   consumer: `:agent.suggestion/next-user-prompt` fires for sub-agents as well,
+   and offering the user a follow-up a subagent wrote for itself is worse than
+   offering none. Absent flags mean the event had no agent at all — a
+   process-level event — which is not the same as `false`."
   [ag {:keys [events]}]
   (let [event-keys (->> events (map keyword) (filter some?) distinct vec)
         sid        (try (agent/session-id ag) (catch Throwable _ nil))]
@@ -820,7 +831,13 @@
                                  (try (some-> (:agent payload) agent/session-id) (catch Throwable _ nil)))]
                   ;; session-scoped: this session's events (+ agentless process events)
                   (when (or (nil? ev-sid) (nil? sid) (= ev-sid sid))
-                    (.offer q {:event ek :sid sid :payload (edn-safe (dissoc payload :agent))}))))
+                    (.offer q (merge {:event ek :sid sid
+                                      :payload (edn-safe (dissoc payload :agent))}
+                                     ;; Frame-level, not inside :payload — this is
+                                     ;; who emitted the event, not part of the
+                                     ;; event's own declared shape.
+                                     (try (agent/event-provenance payload)
+                                          (catch Throwable _ nil)))))))
               :source src))
            (try
              (emit! {:status :ok :subscribed event-keys})

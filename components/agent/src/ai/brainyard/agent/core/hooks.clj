@@ -536,3 +536,27 @@
   (fn [event-map]
     (let [ag (event-agent event-map)]
       (and ag (not (runtime/dispatched-subagent-state? (:!state ag)))))))
+
+(defn event-provenance
+  "The two agent axes as DATA — `{:root? bool :user-turn? bool}` — or nil when
+   the event carries no agent.
+
+   The matchers above answer the same questions, and are the right tool for a
+   handler running in this process: it can hold a predicate. A consumer on the
+   far side of a socket cannot. The ask channel's `:op :subscribe` strips the
+   `:agent` from every frame it forwards (it is an Agent instance, not data), so
+   an external console watching `:agent.suggestion/next-user-prompt` or a tool
+   feed had no way to tell the user's own turn from a dispatched subagent's —
+   and would offer the user a follow-up prompt some subagent wrote for itself.
+
+   Computed here rather than in the ask channel so the wire answer and the
+   in-process matchers cannot drift: both read the same two predicates.
+
+   Nil for an agentless process event means exactly that — no agent was
+   involved — which is not the same as \"not root\", and callers should keep
+   the two apart rather than defaulting the flags."
+  [event-map]
+  (when-let [ag (event-agent event-map)]
+    (let [st (:!state ag)]
+      {:root?      (runtime/root-state? st)
+       :user-turn? (not (runtime/dispatched-subagent-state? st))})))

@@ -216,6 +216,24 @@
       (testing "an unreadable state never withholds a capability"
         (is (runtime/root-state? (atom :not-a-state-map)))
         (is (not (runtime/dispatched-subagent-state? (atom :not-a-state-map)))))
+
+      (testing "event-provenance answers both axes as data, for consumers off-process"
+        ;; The matchers are for a handler in THIS process. A console on the far
+        ;; side of ask.sock cannot hold a predicate, and `:op :subscribe` strips
+        ;; the `:agent` before forwarding — so the same two answers have to
+        ;; travel as data or the frame is anonymous.
+        (is (= {:root? true :user-turn? true} (hooks/event-provenance {:agent root})))
+        (is (= {:root? false :user-turn? false} (hooks/event-provenance {:agent worker})))
+        (is (= {:root? false :user-turn? true} (hooks/event-provenance {:agent shared}))
+            "the sharing subagent is the pair the two axes disagree about — and
+             the reason a single :root? flag would not have been enough")
+        (testing "and reads the same agent key the matchers do"
+          (is (= (hooks/event-provenance {:agent shared})
+                 (hooks/event-provenance {:stage-agent shared}))))
+        (testing "nil for an agentless event, rather than a default"
+          ;; Process-level events have no agent; flags defaulted to false would
+          ;; read as \"a subagent did this\", which is a different claim.
+          (is (nil? (hooks/event-provenance {:session-id "s"})))))
       (finally (run! #(.close %) [shared worker root])))))
 
 ;; ============================================================================

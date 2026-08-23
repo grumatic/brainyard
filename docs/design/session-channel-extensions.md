@@ -228,7 +228,7 @@ One `:subscribe` frame in, **N event frames out** until the client disconnects.
 ```clojure
 → {:op :subscribe :events [:agent.iteration/post :display …] :filter {…}}
 ← {:status :ok :subscribed [...]}                        ; ack
-← {:event :agent.iteration/post :sid "…" :ts … :payload {…}}   ; repeated
+← {:event :agent.iteration/post :sid "…" :ts … :root? true :user-turn? true :payload {…}}
 ← {:event :display :sid "…" :ts … :text "…"}                   ; repeated
 ```
 
@@ -237,6 +237,28 @@ closes. For `:subscribe`, keep the connection open, register a hooks listener th
 serializes each matching event to the connection's writer, and tear the listener down on
 socket EOF. **Template: `agent-tui-tmux/.../control/server.clj`** — its persistent
 `Connection` record + accept loop already solved this (retired daemon, intact code).
+
+#### Frame provenance — `:root?` / `:user-turn?`
+
+Sub-agents inherit the session-id, so the session filter passes their events
+through. That is usually right: a console showing what the agent is *doing*
+wants the sub-agent's tool calls too. But the `:agent` is stripped from every
+payload — it is an Agent instance, not data — so without help a frame is
+**anonymous**, and the two questions every in-process handler can ask
+(`match-root-agent`, `match-user-turn-agent`) are unanswerable over a socket.
+
+Each frame therefore carries `agent/event-provenance`: `:root?` (axis 1 — the
+session's one parentless agent) and `:user-turn?` (axis 2 — the root *or* a
+session-sharing acp-agent, i.e. the user talking). Computed from the same two
+predicates the matchers use, so the wire answer and the in-process one cannot
+drift.
+
+`:agent.suggestion/next-user-prompt` is why this is load-bearing rather than
+nice: it fires for sub-agents too, and a console that offered the user a
+follow-up prompt some dispatched worker wrote for itself would be putting words
+in the agent's mouth. **Absent flags mean the event had no agent at all** (a
+process-level event) — not `false`; a consumer that defaults them reads
+"a sub-agent did this" from an event nobody's agent emitted.
 
 ---
 
