@@ -60,24 +60,39 @@ through the same API — there is no separate event bus.
 ### 2. Turn — trajectory + turn log
 
 `common/trajectory.clj` produces a **structured per-turn record**
-(covering all iterations + the final answer) suitable for replay and
-training-corpus export. One newline-delimited EDN record per turn
-(schema `:v 2`):
+(every iteration, the last of which carries the answer) suitable for
+replay and training-corpus export. One newline-delimited EDN record per
+turn (schema `:v 3`):
 
 ```clojure
-{:v 2 :ts <epoch-ms>
- :session "agt-…" :agent "…" :turn 3
- :question "…" :answer "…"
- :success true :terminated-by :answer
- :total-iterations 4
+{:v 3 :ts <epoch-ms>
+ :session "agt-…" :agent "…"
+ :question "…"
+ :success true :terminated-by :answer-channel
+ :total-iterations 3
  :iterations [{:n 1 :channel "code" :thought "…"
                :code [..] :result [..] :output [..] :error [..]}
               {:n 2 :channel "tool" :thought "…"
-               :tools [{:name "read-file" :args {…} :result "…"}]}]
+               :tools [{:name "read-file" :args {…} :result "…"}]}
+              {:n 3 :channel "answer" :thought "…" :answer "…"}]
  :model "…" :cost 0.0042
  :usage {:in 412 :out 87 :cache-read N :cache-write N}
  :duration-ms 1420}
 ```
+
+**v3 — the answer is the last iteration, and `:turn` is gone.** Choosing
+to answer is a round trip like any other, and the TUI has always drawn a
+block for it; v2 recorded it nowhere, so a directly-answered turn read
+back as `:iterations [] :total-iterations 0` — a question, an answer, and
+no work in between. With the answer inside the iterations there is no
+second copy at the top level, so read it with **`trajectory/record-answer`**,
+which understands both shapes (`trajectory.edn` is append-only: a session
+older than v3 keeps its v2 lines above its v3 ones forever).
+
+`:turn` was `:turn-id`, a per-agent-INSTANCE counter held in memory. A
+resume builds a new instance, so it restarted at 1 — a session resumed
+twice wrote `:turn 1` three times, ordering nothing. The file is
+append-only, so position already answers that question.
 
 `build-turn-trajectory` assembles the (uncapped) raw iteration vector
 into a turn-level record; `append-trajectory!` appends it to
@@ -423,7 +438,7 @@ emitting pid, because a publisher only ever drains its own process buffer.
 | File | Purpose |
 |---|---|
 | `agent/common/trace.clj` | Depth-indented BT traces into session thinking |
-| `agent/common/trajectory.clj` | Per-turn structured record (`:v 2`) appended to `sessions/<id>/trajectory.edn` + read-back |
+| `agent/common/trajectory.clj` | Per-turn structured record (`:v 3`) appended to `sessions/<id>/trajectory.edn` + read-back (`record-answer` reads v2 and v3) |
 | `agent/common/log.clj` | Queries over mulog events filtered by user / session / agent / turn; `log$turns` / `log$events` / `log$search` |
 | `agent/common/evaluation.clj` | `EvaluateAnswer` DSPy signature (FinalizeAnswer removed) |
 | `agent/common/analytics_commands.clj` | `session$analytics` command — trajectory-sourced, on-demand analytics |

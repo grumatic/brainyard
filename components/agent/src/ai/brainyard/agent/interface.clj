@@ -551,7 +551,11 @@
 (export-symbols ai.brainyard.agent.common.trajectory
                 project-iteration build-turn-trajectory
                 append-trajectory! read-trajectories latest-trajectory
-                session-trajectory-file)
+                session-trajectory-file
+                ;; The one supported way to get a turn's answer: v3 keeps it on
+                ;; the terminal iteration, v2 kept it at the top level, and one
+                ;; append-only file holds both.
+                record-answer)
 
 ;; ============================================================================
 ;; Task Management — direct exports for low-level access

@@ -3,16 +3,24 @@
 ;; Licensed under the MIT License. See LICENSE at the repository root.
 
 (ns ai.brainyard.analytics.core.trajectory
-  "Pure session analytics over a vector of `:v 2` trajectory turn records.
+  "Pure session analytics over a vector of trajectory turn records.
 
    The agent command supplies the records (it owns the file I/O); everything
    here is pure and native-image-safe. Each turn record is one map produced by
    `agent.common.trajectory/build-turn-trajectory`:
 
-     {:v 2 :turn N :question s :answer s :success bool :terminated-by kw
+     {:v 3 :question s :success bool :terminated-by kw
       :total-iterations N :iterations [{:n :channel :thought :code :result
-                                        :output :error :tools :async?}]
+                                        :output :error :tools :async? :answer}]
       :model s :cost N :usage {:in :out :cache-read :cache-write} :duration-ms N}
+
+   **Both v2 and v3 records arrive here**, because `trajectory.edn` is
+   append-only: v3 moved the final answer onto a terminal \"answer\" iteration
+   and dropped the top-level `:answer` (and `:turn`, which restarted at 1 on
+   every session resume and so ordered nothing). `record-answer` below reads
+   either shape — it is a small duplicate of the agent-side accessor because
+   this component may not depend on `agent`: the dependency runs the other way
+   (`agent` requires `analytics`), so the alternative to a copy is a cycle.
 
    `analyze-all` runs the full metric suite (PQS, TCE, ICE, TUR, LT, cache, OGA,
    waste, composite SHS) in one pass and returns a map keyed for the
@@ -73,15 +81,28 @@
 ;; Projection — trajectory records → analyzer inputs (inverse of usage->compact)
 ;; ============================================================================
 
+(defn record-answer
+  "The turn's final answer, from either record shape — v3's terminal `\"answer\"`
+   iteration or v2's top-level `:answer`. See the ns docstring for why this is
+   duplicated here rather than shared with the agent-side accessor."
+  [record]
+  (or (some->> (:iterations record)
+               (filter #(= "answer" (:channel %)))
+               last
+               :answer
+               not-empty)
+      (:answer record)))
+
 (defn records->messages
   "Project turn records into a `[{:role :content}]` conversation: each turn's
-   `:question` becomes a user message, its `:answer` an assistant message."
+   `:question` becomes a user message, its answer an assistant message."
   [records]
   (vec
-   (mapcat (fn [{:keys [question answer]}]
-             (cond-> []
-               (some? question) (conj {:role "user" :content (str question)})
-               (some? answer)   (conj {:role "assistant" :content (str answer)})))
+   (mapcat (fn [{:keys [question] :as record}]
+             (let [answer (record-answer record)]
+               (cond-> []
+                 (some? question) (conj {:role "user" :content (str question)})
+                 (some? answer)   (conj {:role "assistant" :content (str answer)}))))
            records)))
 
 (defn record->usage-call

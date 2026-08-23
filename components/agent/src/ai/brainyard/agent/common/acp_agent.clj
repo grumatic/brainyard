@@ -494,7 +494,7 @@
 
    Best-effort, exactly like coact's: a write failure must never fail a turn
    that already produced an answer."
-  [agent {:keys [question answer success terminated-by turn started-at]}]
+  [agent {:keys [question answer success terminated-by started-at]}]
   (when (and agent (config/get-config agent :enable-trajectory-recording))
     (try
       (when-let [sid (some-> (proto/session-id agent) str)]
@@ -504,11 +504,13 @@
            (trajectory/build-turn-trajectory
             {:session-id       sid
              :agent-id         (str (proto/agent-id agent))
-             :turn-id          turn
              :question         question
+             ;; No iteration loop to record: the backend answers in one hop.
+             ;; The builder turns this into the terminal "answer" iteration, so
+             ;; an ACP record has the same shape as a coact one — minus the
+             ;; thought, which there was no iteration to produce.
              :answer           answer
              :iterations       []
-             :total-iterations 1
              :success          (boolean success)
              :terminated-by    terminated-by
              :model            (or (:effective-model d) (:model-label d))
@@ -570,7 +572,6 @@
                              :answer answer
                              :success goal-achieved?
                              :terminated-by stop-reason
-                             :turn (:prompts (descriptor agent))
                              :started-at started-at})
         ;; Fire :agent.dspy-action/post so the TUI iteration block
         ;; clears its streaming state and freezes the final text.
@@ -601,14 +602,6 @@
                                :answer answer
                                :success false
                                :terminated-by reason
-                               ;; The descriptor's counter is bumped on the
-                               ;; SUCCESS path only, so on this one it still
-                               ;; reads the previous turn — and nil on a
-                               ;; connection whose first prompt is the one that
-                               ;; just failed, which is how these records came
-                               ;; out numbered `:turn nil`. This is the turn that
-                               ;; would have been.
-                               :turn (inc (or (:prompts (descriptor agent)) 0))
                                :started-at started-at}))
         p/failure))))
 

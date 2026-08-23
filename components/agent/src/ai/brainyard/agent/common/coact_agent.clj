@@ -4455,35 +4455,55 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                         :channel "none"
                         :tool-results []
                         :code-results (mapv sanitize-eval-entry (or last-code-results []))}
-                 ;; :answer — no record; the loop is about to exit
+                 ;; :answer — the terminal iteration. Recorded for the TRAJECTORY
+                 ;; only (see below): deciding to answer is a round trip like any
+                 ;; other, and the TUI has always drawn a block for it. Leaving it
+                 ;; out made a directly-answered turn read back as zero iterations
+                 ;; — as though the agent had done nothing to produce it.
+                 :answer {:iteration iteration-count
+                          :thought thought
+                          :channel "answer"
+                          :answer (:answer @st-memory)}
                  nil)
+        ;; The model's replay buffer takes every channel BUT this one. The
+        ;; answer is already in the conversation the model reads back, and the
+        ;; loop is exiting — putting it in :iterations would feed the next turn
+        ;; a second copy of an answer it can already see, and change prompting
+        ;; as a side effect of a recording change.
+        record-for-model (when-not (= :answer last-channel) record)
         ;; Fold runtime notices queued during this turn into the record so the
         ;; model reads them next: first-use usage guides (usage-nudge) and
-        ;; pending skill-proposal nudges (self-improve-nudge). Only drain when
-        ;; there's a record to carry them (the :answer path exits).
+        ;; pending skill-proposal nudges (self-improve-nudge). Drained ONLY when
+        ;; a model-visible record exists to carry them — read-and-clear, so
+        ;; draining them onto the terminal answer iteration (which the model
+        ;; never reads back) would surface them nowhere and lose them.
         ;; A pure-prose repair queues its schema correction here so it rides the
         ;; record's :notices (a model-visible advisory) instead of a fake
-        ;; code-result error. Read-and-clear so it surfaces exactly once.
-        fmt-guide (:pending-format-guidance @st-memory)
+        ;; code-result error.
+        fmt-guide (when record-for-model (:pending-format-guidance @st-memory))
         _ (when fmt-guide (swap! st-memory dissoc :pending-format-guidance))
-        record (if record
-                 (let [parts (->> [(usage-nudge/drain-iteration-notices! st-memory)
-                                   (self-improve-nudge/drain-iteration-notice! st-memory)
-                                   fmt-guide]
-                                  (remove str/blank?))]
-                   (if (seq parts)
-                     (assoc record :notices (str/join "\n\n" parts))
-                     record))
-                 record)]
+        record-for-model
+        (if record-for-model
+          (let [parts (->> [(usage-nudge/drain-iteration-notices! st-memory)
+                            (self-improve-nudge/drain-iteration-notice! st-memory)
+                            fmt-guide]
+                           (remove str/blank?))]
+            (if (seq parts)
+              (assoc record-for-model :notices (str/join "\n\n" parts))
+              record-for-model))
+          record-for-model)]
     (when record
-      (swap! st-memory update :iterations (fnil conj []) record)
-      ;; Uncapped mirror for trajectory recording (full turn, no budget cap).
-      (swap! st-memory update :trajectory-iterations (fnil conj []) record)
+      ;; Uncapped mirror for trajectory recording (full turn, no budget cap) —
+      ;; this one takes the answer iteration too.
+      (swap! st-memory update :trajectory-iterations (fnil conj []) record))
+    (when record-for-model
+      (swap! st-memory update :iterations (fnil conj []) record-for-model)
       ;; Cap :iterations to the last 10
       (let [max-n 10
             iters (:iterations @st-memory)]
         (when (> (count iters) max-n)
-          (swap! st-memory assoc :iterations (vec (take-last max-n iters)))))
+          (swap! st-memory assoc :iterations (vec (take-last max-n iters))))))
+    (when record
       (mulog/log ::accumulate
                  :iteration iteration-count
                  :channel last-channel)))
@@ -4879,7 +4899,6 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
               traj (trajectory/build-turn-trajectory
                     {:session-id session-id
                      :agent-id (str (proto/agent-id agent))
-                     :turn-id (:turn-id st)
                      :question question
                      :answer answer
                      :iterations traj-iterations
@@ -4893,7 +4912,6 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                                                       :none-channel-loop-guard}
                                                     terminated-by))))
                      :terminated-by terminated-by
-                     :total-iterations total-iterations
                      :model model-id
                      :usage-summary usage-summary
                      :started-at (:started-at st)})]

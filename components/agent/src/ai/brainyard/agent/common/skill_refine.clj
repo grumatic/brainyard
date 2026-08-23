@@ -199,7 +199,7 @@
                (when-let [t (:terminated-by record)]
                  (str " (terminated-by " t ")"))
                ".\nQuestion: " (:question record)
-               "\nFinal answer: " (:answer record)
+               "\nFinal answer: " (traj/record-answer record)
                "\n\nTrace:\n" (distill/trajectory->text record))]
     (if (> (count s) max-turn-evidence-chars)
       (str (subs s 0 max-turn-evidence-chars) "\n…[evidence truncated]")

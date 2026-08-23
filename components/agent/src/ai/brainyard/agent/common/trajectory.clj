@@ -14,24 +14,49 @@
    Suitable for post-hoc analysis/debugging and as fine-tuning training data.
 
    Record schema (one per line):
-   {:v               2
+   {:v               3
     :ts              <epoch-ms>
     :session         \"<session-id>\"
     :agent           \"<agent-id>\"
-    :turn            N
     :question        \"the user's question\"
-    :answer          \"the final answer\"
     :success         true|false
     :terminated-by   :answer | :max-iterations | ...
     :total-iterations N
     :iterations      [{:n 1 :channel \"code\" :thought \"...\"
                        :code [...] :result [...] :output [...] :error [...]}
                       {:n 2 :channel \"tool\" :thought \"...\"
-                       :tools [{:name \"read-file\" :args {...} :result \"...\"}]}]
+                       :tools [{:name \"read-file\" :args {...} :result \"...\"}]}
+                      {:n 3 :channel \"answer\" :thought \"...\"
+                       :answer \"the final answer\"}]
     :model           \"...\"
     :cost            0.0042            ;; per-turn, not session-cumulative
     :usage           {:in N :out N :cache-read N :cache-write N}  ;; per-turn
     :duration-ms     N}
+
+   ## v3 — the answer is an ITERATION, and there is no `:turn`
+
+   **The terminal answer is the last iteration**, `:channel \"answer\"`, carrying
+   the model's final thought beside the answer it produced. That is the shape
+   the TUI has always rendered — it draws an iteration block for the answer turn
+   like any other — and the shape the loop actually ran: deciding to answer is a
+   round trip, not the absence of one. v2 recorded it nowhere, so a turn answered
+   directly read back as `:iterations [] :total-iterations 0`, i.e. as though the
+   agent had done nothing at all. Anything reconstructing what happened from the
+   file saw a question, an answer, and no work in between.
+
+   With the answer inside the iterations there is no reason for a second copy at
+   the top level, so **`:answer` is gone from v2's place**. Readers must use
+   `record-answer`, which reads both shapes — the files on disk are append-only
+   and full of v2 lines that will never be rewritten.
+
+   **`:turn` is gone too, because it was not true.** It was `:turn-id`: a
+   per-AGENT-INSTANCE ask counter living in `:st-memory-init`, in memory. A
+   resume builds a new instance, so the counter restarts — a session resumed
+   twice writes `:turn 1` three times, and nothing in the file says which 1 came
+   first. The file is append-only and ordered, so position already answers the
+   only question `:turn` looked like it answered. (`:total-turns` on the session
+   IS session-cumulative and does survive a resume; it is not recorded here
+   because nothing asked for it, not because it would be wrong.)
 
    `:cost`/`:usage` are the tokens+cost spent *by this turn alone* — the caller
    windows the session-wide usage tracker to the turn's wall-clock span before
@@ -99,13 +124,20 @@
 
    Returns nil for synthetic records that carry no trace value
    (in-flight rosters, blank evaluation stubs)."
-  [{:keys [iteration thought channel tool-results code-results
+  [{:keys [iteration thought channel answer tool-results code-results
            async-completion? in-flight-roster?]}]
   (when-not in-flight-roster?
     (let [base (cond-> {:n iteration :channel (or channel "none")}
                  (not (str/blank? thought)) (assoc :thought (trunc thought max-thought-chars))
                  async-completion?          (assoc :async? true))]
       (case (or channel "none")
+        ;; The terminal iteration: the model chose to answer rather than act, so
+        ;; the answer IS this iteration's product. Held to its own (much larger)
+        ;; budget — it is the one field of a turn someone reads in full.
+        "answer"
+        (cond-> base
+          (not (str/blank? answer)) (assoc :answer (trunc answer max-answer-chars)))
+
         "tool"
         (cond-> base
           (seq tool-results)
@@ -149,30 +181,70 @@
     (or (:total-cost (:totals usage-summary))
         (:total-cost usage-summary))))
 
+(defn- answer-iteration?
+  [it]
+  (= "answer" (:channel it)))
+
+(defn- with-answer-iteration
+  "Guarantee the invariant v3 rests on: the answer is in the iterations.
+
+   The coact loop records its own terminal iteration, thought and all, so this
+   finds one already there and leaves it alone. A writer with no loop to record
+   — acp-agent hands over `:iterations []` and an answer — would otherwise
+   produce a record whose answer is nowhere, since v3 dropped the top-level
+   field. Synthesized entries carry no `:thought`: there was no iteration to
+   have one, and inventing the appearance of reasoning is worse than its absence."
+  [entries answer]
+  (cond
+    (some answer-iteration? entries) entries
+    (str/blank? (str answer))        entries
+    :else (conj (vec entries)
+                {:n (inc (count entries))
+                 :channel "answer"
+                 :answer (trunc answer max-answer-chars)})))
+
+(defn record-answer
+  "The turn's final answer, from either record shape.
+
+   v3 keeps it on the terminal `\"answer\"` iteration; v2 kept it at the top
+   level. Every reader goes through here rather than `(:answer record)`, because
+   `trajectory.edn` is append-only: a session that predates v3 has v2 lines
+   above its v3 ones, in one file, forever."
+  [record]
+  (or (some->> (:iterations record) (filter answer-iteration?) last :answer not-empty)
+      (:answer record)))
+
 (defn build-turn-trajectory
-  "Build a single per-turn trajectory record covering all iterations + answer.
+  "Build a single per-turn trajectory record covering all iterations, the last
+   of which carries the answer.
 
    opts keys:
-     :session-id :agent-id :turn-id :question :answer :iterations
-     :success :terminated-by :total-iterations :model :usage-summary
-     :started-at :ended-at
+     :session-id :agent-id :question :answer :iterations
+     :success :terminated-by :model :usage-summary :started-at :ended-at
 
-   `:iterations` is the FULL (uncapped) raw iteration vector for the turn."
-  [{:keys [session-id agent-id turn-id question answer iterations
-           success terminated-by total-iterations model usage-summary
+   `:iterations` is the FULL (uncapped) raw iteration vector for the turn.
+   `:answer` is still accepted — and is the only route in for a writer with no
+   iteration loop — but it lands in the iterations rather than at the top level.
+   `:turn-id` and `:total-iterations` are accepted and ignored: one was never
+   true across a resume, the other is now countable from the iterations
+   themselves. See the v3 note in the ns docstring."
+  [{:keys [session-id agent-id question answer iterations
+           success terminated-by model usage-summary
            started-at ended-at]}]
   (let [ended (or ended-at (System/currentTimeMillis))
-        entries (->> (or iterations []) (keep project-iteration) vec)
+        entries (-> (->> (or iterations []) (keep project-iteration) vec)
+                    (with-answer-iteration answer))
         cost (usage->cost usage-summary)
         usage (usage->compact usage-summary)]
-    (cond-> {:v 2
+    (cond-> {:v 3
              :ts ended
-             :turn turn-id
              :question question
-             :answer (trunc answer max-answer-chars)
              :success (boolean success)
              :terminated-by terminated-by
-             :total-iterations (or total-iterations (count entries))
+             ;; Counted off the entries rather than taken from the caller: the
+             ;; terminal answer is one of them now, and a caller that counted
+             ;; before it existed would report one fewer than the file holds.
+             :total-iterations (count entries)
              :iterations entries}
       session-id (assoc :session (str session-id))
       agent-id   (assoc :agent (str agent-id))

@@ -125,7 +125,7 @@
   (boolean
    (and (map? record)
         (:success record)
-        (not (str/blank? (str (:answer record))))
+        (not (str/blank? (str (traj/record-answer record))))
         (>= (turn-steps record) min-action-steps))))
 
 ;; ============================================================================
@@ -135,9 +135,10 @@
 (def ^:const max-trajectory-chars 8000)
 
 (defn- iteration->text
-  [{:keys [n channel thought tools code result output error]}]
+  [{:keys [n channel thought tools code result output error answer]}]
   (let [hdr (str "— iteration " n " [" (or channel "none") "]")
         thought' (when-not (str/blank? thought) (str "  thought: " thought))
+        answer'  (when-not (str/blank? answer) (str "  answer: " answer))
         tools'   (when (seq tools)
                    (str/join "\n" (map (fn [{:keys [name args result]}]
                                          (str "  tool " name
@@ -149,7 +150,7 @@
         result'  (when (seq result) (str "  result: " (str/join " ; " result)))
         output'  (when (seq output) (str "  output: " (str/join " ; " output)))
         error'   (when (seq error)  (str "  error: "  (str/join " ; " error)))]
-    (->> [hdr thought' tools' code' result' output' error']
+    (->> [hdr thought' tools' code' result' output' error' answer']
          (remove nil?)
          (str/join "\n"))))
 

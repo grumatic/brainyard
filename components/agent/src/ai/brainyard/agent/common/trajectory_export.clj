@@ -62,7 +62,13 @@
 ;; OpenAI tool-calling serializer
 ;; ============================================================================
 
-(defn- tool-call-id [turn n i]
+(defn- tool-call-id
+  "Unique within an export. `turn` is the record's POSITION in the file, not a
+   field of the record: v3 dropped `:turn` because it restarted at 1 on every
+   resume, which as an id source meant `call_1_2_0` from three different turns
+   of one session — colliding exactly where a tool result has to match the call
+   that produced it."
+  [turn n i]
   (str "call_" turn "_" n "_" i))
 
 (defn- args->json [args]
@@ -76,9 +82,16 @@
    (with tool_calls for tool/code channels, content carrying the thought) plus
    one `tool` message per call. A reasoning-only iteration yields a single
    assistant message with the thought. Returns [] for empty iterations."
-  [turn {:keys [n channel thought tools code result output error]}]
+  [turn {:keys [n channel thought tools code result output error answer]}]
   (let [thought' (non-blank thought)]
     (cond
+      ;; Answer channel — the turn's product, and the assistant message the
+      ;; example is training toward. The thought is dropped rather than
+      ;; concatenated: it is deliberation, and an example that teaches the model
+      ;; to emit its reasoning as the answer teaches the wrong thing.
+      (= "answer" channel)
+      (if-let [a (non-blank answer)] [{:role "assistant" :content a}] [])
+
       ;; Tool channel — one tool_call per invoked tool.
       (seq tools)
       (let [calls (map-indexed
@@ -116,18 +129,28 @@
 
 (defn record->example
   "Turn record → one OpenAI tool-calling example `{:messages [...]}`, or nil
-   when the turn has neither a question nor any content worth exporting."
-  [{:keys [turn question answer iterations] :as _record}]
-  (let [user-msg (when (non-blank question) [{:role "user" :content question}])
-        iter-msgs (mapcat #(iteration->messages turn %) iterations)
-        answer-msg (when (non-blank answer) [{:role "assistant" :content answer}])
-        messages (vec (concat user-msg iter-msgs answer-msg))]
-    (when (seq messages) {:messages messages})))
+   when the turn has neither a question nor any content worth exporting.
+
+   `idx` is the record's position in the export, used to scope tool-call ids.
+
+   A v3 record's answer is its terminal iteration, so the iterations already
+   end in the assistant message; only a v2 record needs one appended, and
+   appending it to both would train on the answer twice."
+  ([record] (record->example 0 record))
+  ([idx {:keys [question iterations] :as record}]
+   (let [user-msg (when (non-blank question) [{:role "user" :content question}])
+         iter-msgs (mapcat #(iteration->messages idx %) iterations)
+         answered? (some #(= "answer" (:channel %)) iterations)
+         answer-msg (when-not answered?
+                      (when-let [a (non-blank (traj/record-answer record))]
+                        [{:role "assistant" :content a}]))
+         messages (vec (concat user-msg iter-msgs answer-msg))]
+     (when (seq messages) {:messages messages}))))
 
 (defn records->openai
   "Vector of turn records → vector of OpenAI examples (one per non-empty turn)."
   [records]
-  (->> records (keep record->example) vec))
+  (->> records (map-indexed record->example) (keep identity) vec))
 
 ;; ============================================================================
 ;; Session discovery

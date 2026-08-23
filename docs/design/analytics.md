@@ -108,21 +108,27 @@ Already implemented and wired in; no new capture work is required.
   `<project>/.brainyard/sessions/<session-id>/trajectory.edn`; corrupt tail lines are
   skipped on read.
 
-### Record shape (schema `:v 2`)
+### Record shape (schema `:v 3`)
 
 ```clojure
-{:v 2 :ts <epoch-ms>
- :session "agt-…" :agent "…" :turn N
- :question "…" :answer "…"
- :success true|false :terminated-by :answer|:max-iterations|…
+{:v 3 :ts <epoch-ms>
+ :session "agt-…" :agent "…"
+ :question "…"
+ :success true|false :terminated-by :answer-channel|:max-iterations|…
  :total-iterations N
  :iterations [{:n 1 :channel "code"|"tool"|"none" :thought "…"
                :code [..] :result [..] :output [..] :error [..]
-               :tools [{:name "…" :args {…} :result "…"}] :async? true}]
+               :tools [{:name "…" :args {…} :result "…"}] :async? true}
+              {:n N :channel "answer" :thought "…" :answer "…"}]
  :model "…" :cost 0.0042
  :usage {:in N :out N :cache-read N :cache-write N}
  :duration-ms N}
 ```
+
+The terminal `"answer"` iteration replaces v2's top-level `:answer`, and
+`:turn` is gone (it restarted at 1 on every session resume). **Analyzers
+receive both shapes** — the file is append-only — so the answer is read
+through `analytics.core.trajectory/record-answer` rather than `:answer`.
 
 ### Why it is sufficient (and richer than the live view)
 
