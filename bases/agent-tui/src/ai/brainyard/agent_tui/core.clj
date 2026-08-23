@@ -953,7 +953,7 @@
 
 ;; Both live below the op handlers but are needed by `:resume-session`, which
 ;; brings a session in off disk exactly as `start!` does further down.
-(declare create-tui-agent! load-input-history-for-session!)
+(declare create-tui-agent! load-input-history-for-session! resume-tail-renderer)
 
 (defn hydrate-persisted-session!
   "Load `sid`'s persisted agent-session off disk into the session store, ready
@@ -1133,6 +1133,32 @@
           ;; Up/down recall reads a per-session atom, so a resumed tab without
           ;; this has the history on disk and none of it at the prompt.
           (load-input-history-for-session! sid)
+          ;; Replay the persisted scrollback onto the tab, which `start!` does
+          ;; for a session resumed AS the process (stashing `:resume-tail` for
+          ;; `run!` to write into the alt-screen). This path had no equivalent,
+          ;; so a session adopted into a running host came back with its
+          ;; conversation restored in memory and a blank screen: the transcript
+          ;; was on disk, the model could still see it, and the person looking
+          ;; at the tab could not.
+          ;;
+          ;; Through `emit-to-session!` rather than `write-resume-tail!` because
+          ;; the tab is not the active one — `:resume-session` deliberately does
+          ;; not move focus — so the bytes have to be buffered against ITS index
+          ;; instead of written to whatever screen is showing. `:persist? false`
+          ;; is what keeps the replay from teeing back into the file it just
+          ;; read, which would double the transcript on every resume; the
+          ;; renderer rides along so the rows re-wrap when the terminal resizes.
+          (try
+            (when-let [tail (persist/tail-scrollback
+                             sid :stream (agent/get-config :resume-scrollback-bytes))]
+              (when-not (str/blank? tail)
+                (sessions/emit-to-session! idx tail {:persist? false
+                                                     :render (resume-tail-renderer tail)})))
+            (catch Throwable e
+              ;; A transcript that will not replay is not a reason to fail a
+              ;; resume that otherwise worked — the session is live either way.
+              (mulog/warn ::resume-session-scrollback-failed
+                          :session-id sid :error (ex-message e))))
           {:status :ok :session-id sid :ask-socket-path (sock) :index idx
            :label lbl :defagent-id (name defagent) :messages n
            :model (:model meta*)})))
