@@ -117,7 +117,7 @@ Already implemented and wired in; no new capture work is required.
  :success true|false :terminated-by :answer-channel|:max-iterations|…
  :total-iterations N
  :iterations [{:n 1 :channel "code"|"tool"|"none" :thought "…"
-               :code [..] :result [..] :output [..] :error [..]
+               :code [..] :lang [..] :result [..] :output [..] :error [..]
                :tools [{:name "…" :args {…} :result "…"}] :async? true}
               {:n N :channel "answer" :thought "…" :answer "…"}]
  :model "…" :cost 0.0042

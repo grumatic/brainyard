@@ -71,7 +71,7 @@ turn (schema `:v 3`):
  :success true :terminated-by :answer-channel
  :total-iterations 3
  :iterations [{:n 1 :channel "code" :thought "…"
-               :code [..] :result [..] :output [..] :error [..]}
+               :code [..] :lang ["clojure"] :result [..] :output [..] :error [..]}
               {:n 2 :channel "tool" :thought "…"
                :tools [{:name "read-file" :args {…} :result "…"}]}
               {:n 3 :channel "answer" :thought "…" :answer "…"}]

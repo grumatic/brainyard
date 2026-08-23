@@ -61,6 +61,31 @@
       (is (= [{:name "read-file" :args {:path "deps.edn"} :result "…contents…"}]
              (:tools entry)))))
 
+  (testing "each code block's language rides beside it"
+    (let [entry (trajectory/project-iteration
+                 {:iteration 6 :channel "code"
+                  :code-results [{:code "(+ 1 1)" :lang "clojure" :output "2"}
+                                 {:code "echo hi" :lang "bash" :output "hi"}]})]
+      (is (= ["clojure" "bash"] (:lang entry)))
+      (is (= 2 (count (:code entry))))))
+
+  (testing "the language vector stays aligned with the code it describes"
+    ;; `:lang` is mapped over the same filtered blocks as `:code`, so a block
+    ;; that named no language holds its slot with "" instead of shifting the
+    ;; ones after it — which is the failure a reader zipping by index cannot
+    ;; see, since a shifted vector is still the right length.
+    (let [entry (trajectory/project-iteration
+                 {:iteration 7 :channel "code"
+                  :code-results [{:code "a"} {:code "b" :lang "bash"}]})]
+      (is (= ["" "bash"] (:lang entry)))
+      (is (= ["a" "b"] (:code entry)))))
+
+  (testing "no :lang at all when nothing named one"
+    ;; A vector of empty strings would be a field saying nothing, on every line.
+    (let [entry (trajectory/project-iteration
+                 {:iteration 8 :channel "code" :code-results [{:code "a"} {:code "b"}]})]
+      (is (nil? (:lang entry)))))
+
   (testing "async-completion records are tagged"
     (let [entry (trajectory/project-iteration
                  {:iteration 3 :channel "code" :async-completion? true

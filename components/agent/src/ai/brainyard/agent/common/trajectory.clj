@@ -23,7 +23,8 @@
     :terminated-by   :answer | :max-iterations | ...
     :total-iterations N
     :iterations      [{:n 1 :channel \"code\" :thought \"...\"
-                       :code [...] :result [...] :output [...] :error [...]}
+                       :code [...] :lang [\"clojure\" ...]
+                       :result [...] :output [...] :error [...]}
                       {:n 2 :channel \"tool\" :thought \"...\"
                        :tools [{:name \"read-file\" :args {...} :result \"...\"}]}
                       {:n 3 :channel \"answer\" :thought \"...\"
@@ -149,12 +150,24 @@
                        tool-results)))
 
         ;; "code" / "none" / anything else — project the code-results channels.
-        (let [codes   (->> code-results (keep :code)   (remove str/blank?) (mapv #(trunc % max-field-chars)))
+        ;;
+        ;; `:lang` is derived from the SAME entries `:code` is, so the two are
+        ;; aligned by construction: `blocks` is the filter, and both vectors map
+        ;; over it. The other three still `keep` independently, so a block that
+        ;; produced no output shifts the ones after it — a reader zipping them
+        ;; by index is doing something best-effort, and this is the field where
+        ;; that was cheap to avoid rather than a fix to the general shape.
+        (let [blocks  (->> code-results (filter #(not (str/blank? (:code %)))) vec)
+              codes   (mapv #(trunc (:code %) max-field-chars) blocks)
+              langs   (mapv #(or (some-> (:lang %) str not-empty) "") blocks)
               results (->> code-results (keep :result) (remove str/blank?) (mapv #(trunc % max-field-chars)))
               outputs (->> code-results (keep :output) (remove str/blank?) (mapv #(trunc % max-field-chars)))
               errors  (->> code-results (keep :error)  (remove str/blank?) vec)]
           (cond-> base
             (seq codes)   (assoc :code codes)
+            ;; Only when at least one block named a language — a vector of empty
+            ;; strings is a field that says nothing on every line of the file.
+            (some seq langs) (assoc :lang langs)
             (seq results) (assoc :result results)
             (seq outputs) (assoc :output outputs)
             (seq errors)  (assoc :error errors)))))))
