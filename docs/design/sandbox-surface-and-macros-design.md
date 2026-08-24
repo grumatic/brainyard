@@ -1,16 +1,20 @@
 # Code Channel — Call Shape, Prompt Truth, and Macros
 
-> **Status:** Draft, revision 3 (2026-08-24). Prompted by an audit against
+> **Status:** Draft, revision 4 (2026-08-24). Prompted by an audit against
 > [lisptc](https://d4shi.com/blog/lisptc), a Lisp dialect built for programmatic
 > tool calling.
 >
-> **Each revision corrected the previous one's central claim.** R1 proposed
+> **Every revision has corrected the previous one's central claim — including
+> two where the measuring instrument, not the reasoning, was at fault.** R1 proposed
 > documenting the sandbox's `clojure.core` surface; measurement showed the model
 > never fails on vocabulary, so R1's remedy is retracted in §3.1. R2 then
 > concluded the model fails on **delimiters** — but counted raw log occurrences,
 > which the `:iterations` replay inflates ~6x. Deduplicated (§1), delimiters are
-> 4 failures in 487 evals (0.82%), not 32 (6.6%), and the dominant class is
-> **timeouts**, not syntax at all.
+> 4 failures in 487 evals, not 32. R3's dedup was then found broken too (it keyed
+> on an iteration number belonging to the wrong event), so the real figures are
+> **2 delimiter failures (0.41%)** and **6 model-syntax failures total (1.23%)** —
+> and timeouts, which R3 crowned the dominant class, are 7 events from a single
+> session.
 >
 > - **CR-SBX-0 — Make kwargs the canonical tool-call shape.** **SHIPPED.**
 >   Justified by correctness and by the code's own stated preference — **not**,
@@ -55,6 +59,21 @@ of code-evals, so a grammar would be buying down an already-small number.
 
 ## 1. Measurement
 
+> **CORRECTION (revision 4).** Revision 3's dedup was itself broken. Its key
+> included an `:iteration` number scraped from the **enclosing provider event**,
+> not from the iteration record carrying the error — so a replayed failure got a
+> fresh iteration each time and was still counted as distinct. Fixed by keying on
+> `[session, code, error-class]` only. Effect: **75 "distinct" failures collapse
+> to 34** (13.6x replay, not 6.2x), and two headline claims die with it —
+> `Unmatched delimiter` is **2**, not 4 or 32; `Evaluation timed out` is **7
+> (1.44%)**, not 36 (7.39%), so **timeouts were never the dominant class** and
+> the "start the next CR there" conclusion in §2.7 and §6 was wrong.
+>
+> Known cost of the fix: a genuine RETRY of identical code within one session now
+> collapses with a replay. Replay and retry are textually identical in this log,
+> so they are not separable — and undercounting is the safer error for a number
+> used to justify work.
+>
 > **CORRECTION (revision 3).** Revisions 1–2 counted **raw error occurrences**
 > and were inflated ~6x. Error text does not live on the `code-eval` event at
 > all — it reaches the log inside the **provider API-call events**
@@ -81,26 +100,35 @@ of code-evals, so a grammar would be buying down an already-small number.
 **Method.** `bb code-eval:stats` over
 `~/.brainyard/logs/agent-tui-app.log{,.1,.2,.3}` — four rotated files,
 2026-08-14 → 08-23. Denominator: **487 `coact-agent/code-eval` events**.
-Numerator: 462 raw error occurrences → **75 distinct failures** (6.2x replay).
+Numerator: 462 raw error occurrences → **34 distinct failures** (13.6x replay).
 
 ### 1.1 Failures by class (deduplicated)
 
 | Error class | Distinct | % of code-evals | Model syntax? |
 |---|---|---|---|
-| `Evaluation timed out` | **36** | **7.39%** | no |
 | `Exit code` (shell non-zero) | 10 | 2.05% | no |
-| `Subprocess timed out` | 8 | 1.64% | no |
-| `FORMAT ERROR` (provider/schema) | 6 | 1.23% | no |
-| `No action emitted` | 4 | 0.82% | no |
-| `Unmatched delimiter` | 4 | 0.82% | **yes** |
+| `Evaluation timed out` | 7 | 1.44% | no |
+| `FORMAT ERROR` (provider/schema) | 4 | 0.82% | no |
 | `Could not resolve symbol` | 3 | 0.62% | **yes** |
+| `Subprocess timed out` | 2 | 0.41% | no |
+| `No action emitted` | 2 | 0.41% | no |
+| `Unmatched delimiter` | 2 | 0.41% | **yes** |
 | `Unexpected text on code fence` | 1 | 0.21% | **yes** |
 | `Unsupported escape character` | **0** | 0% | yes |
-| other (interop denial, /0, …) | 3 | 0.62% | no |
+| other (interop denial, /0, indexOf) | 3 | 0.62% | no |
 
-**Model-syntax failures total 8 of 487 — 1.64%.** Timeouts alone are 44 (9.0%),
-5.5x the entire syntax class. If the goal is fewer failed code blocks, the
-evidence points at execution time, not at syntax.
+**Model-syntax failures total 6 of 487 — 1.23%.** Nothing here is a systemic
+problem: 34 distinct failures across 487 evaluations means ~93% of code blocks
+ran clean, and the largest single class is a shell command exiting non-zero,
+which is frequently legitimate (a `grep` that matches nothing exits 1).
+
+**The timeouts are one session, not a rate.** All 7 — plus both
+`Subprocess timed out` — come from a single session on 2026-08-18 running one
+pattern: dispatching `edit-agent` (a full sub-agent run, minutes long) from
+*inside* clojure code blocks, fanned out over seven todo items, then polling for
+the results with a bash loop. That is a code block asking the eval timeout to
+cover work the deferred-tasking machinery exists to handle. Worth a guide note
+about dispatching sub-agents from code; not worth a CR.
 
 ### 1.2 The unresolved symbols, itemized (3 distinct)
 
@@ -144,7 +172,7 @@ the **map-argument call shape**, which nests two delimiter kinds in one call.
 Two aggravating facts:
 
 - `try-repair-eof` only *appends* closing delimiters for **unclosed** forms. It
-  cannot fix a **mismatched** one, so all 4 reach SCI unrepaired.
+  cannot fix a **mismatched** one, so both reach SCI unrepaired.
 - The kwargs call form has no braces at all and **cannot** produce this error.
 
 ### 1.4 Caveats on the data
@@ -356,14 +384,13 @@ What survives, and why it was still worth shipping:
 - **The cost was low and the risk is now bounded** by tests, a mutation-tested
   source guard, and a balance invariant (§2.6).
 
-What the corrected data actually argues for, and is **not** in this doc:
-**`Evaluation timed out` at 7.39% is the single largest failure class**, and
-`Subprocess timed out` adds 1.64%. Nothing here addresses it. That deserves its
-own investigation — are these genuinely slow operations, an
-`:auto-background-timeout-ms` tuned too tight, or blocks that should have been
-detached rather than run inline? Worth noting the deferred-tasking machinery
-already exists for exactly this, which makes a 9% timeout rate look more like a
-routing or threshold problem than a capability gap.
+Revision 4 note: R3 concluded here that timeouts were "the single largest
+failure class" at 7.39% and that the next CR should start there. That was an
+artifact of the same broken dedup — timeouts are 7 distinct failures, all in one
+session, all one pattern (§1.1). **There is no failure-driven CR waiting.** At
+34 distinct failures in 487 evals the code channel is not where the problems
+are; what remains from the original audit is capability work and correctness
+fixes, neither of which the error log will ever motivate.
 
 The honest summary: CR-SBX-0 is a correct, cheap, low-risk cleanup that removes
 a real failure mode; it was not the highest-leverage thing available, and the
@@ -805,8 +832,9 @@ observe the seam first.
 
 ## 5. Sequencing
 
-1. **CR-SBX-0** (§2) — kwargs sweep. Largest measured failure class;
-   documentation-only; code already agrees.
+1. ~~**CR-SBX-0** (§2) — kwargs sweep.~~ **SHIPPED 2026-08-24.** Note the
+   justification shrank twice under better counting: it was never the largest
+   failure class (§2.7). It stands as a correctness fix.
 2. **CR-SBX-1** §3.2, §3.4, §3.5 — the `str/` falsehood, the `parse-long`
    example, interop redirection. Independent one-liners.
 3. **CR-SBX-1** §3.1 — shrink `available-clojure-guide` to the non-derivable
@@ -829,10 +857,16 @@ adds it by cloning a proven one.
 - Does the kwargs sweep move the corrected 0.82% delimiter rate, or do the slips
   relocate to nested map values? `bb code-eval:stats --split 2026-08-24` answers
   it — though at 4 baseline events the answer can only ever be suggestive.
-- **Why is `Evaluation timed out` 7.39%?** The largest failure class by a wide
-  margin, and entirely unaddressed here. Slow work, a too-tight
-  `:auto-background-timeout-ms`, or blocks that should have detached instead of
-  running inline? This is where the next CR should start (§2.7).
+- ~~Why is `Evaluation timed out` 7.39%?~~ **Answered: it is not.** 7 distinct
+  failures (1.44%), all one session, all the same pattern — `edit-agent`
+  dispatched from inside a code block, which asks the eval timeout to cover a
+  minutes-long sub-agent run. The open item it leaves is small and documentary:
+  should the sandbox guide say "dispatch a sub-agent from a code block only via
+  `task$run`, never inline"? Worth a line; not worth a CR.
+- **Does anything in this doc still have failure-data behind it?** No. After the
+  revision-4 dedup fix, model-syntax is 6 events in 487 evals. Remaining work is
+  justified by correctness (§3.2/§3.4) or capability (§4, and the value-handle
+  gap that never made it into this doc) — not by the log.
 - ~~Are `clj-sandbox` mulog events absent from the publisher, or filtered?~~
   **Answered:** neither. mulog is wired and ungated; the repair logging simply
   sat on `eval-code`, a path CoAct does not take for sequential blocks. Fixed by

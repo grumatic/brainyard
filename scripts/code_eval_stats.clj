@@ -116,7 +116,6 @@
   ;; strings are escaped (\") because the dump is itself inside a string.
   #"\{:lang \\\"(\w+)\\\", :code \\\"(.*?)\\\", :result.*?:error \\\"(.*?)\\\"")
 
-(def ^:private iteration-re #":iteration (\d+)")
 
 (def ^:private repair-event-re
   ;; Silent code repairs, emitted by clj-sandbox's `repair-code`. These are
@@ -185,8 +184,7 @@
                (let [day (day-of chunk)
                      ev? (re-find code-eval-event-re chunk)
                      sess (or (second (re-find session-re chunk)) "?")
-                     entries (re-seq eval-entry-re chunk)
-                     iters (map second (re-seq iteration-re chunk))]
+                     entries (re-seq eval-entry-re chunk)]
                  (cond-> acc
                    ev? (update :evals conj day)
                    (seq entries)
@@ -204,11 +202,26 @@
                                            :class (error-class err)
                                            :err   (subs err 0 (min 160 (count err)))
                                            :code  (subs code 0 (min 200 (count code)))
-                                           ;; Iteration index disambiguates two
-                                           ;; different failures in one session;
-                                           ;; the code hash disambiguates two in
-                                           ;; one iteration (parallel blocks).
-                                           :key   [sess (first iters)
+                                           ;; Key is [session, code, class] —
+                                           ;; deliberately NOT including the
+                                           ;; iteration number. The `:iteration`
+                                           ;; on the chunk belongs to the
+                                           ;; ENCLOSING provider call, not to the
+                                           ;; iteration record carrying the
+                                           ;; error, so a replayed failure gets a
+                                           ;; fresh iteration each time and keying
+                                           ;; on it defeats the dedup entirely
+                                           ;; (measured: 75 "distinct" failures
+                                           ;; collapse to 34 without it).
+                                           ;;
+                                           ;; Cost: a genuine RETRY of identical
+                                           ;; code in one session collapses with a
+                                           ;; replay. Replay and retry are
+                                           ;; textually identical in this log, so
+                                           ;; that is not separable here — and
+                                           ;; undercounting is the safer error for
+                                           ;; a number used to justify work.
+                                           :key   [sess
                                                    (hash (subs code 0 (min 300 (count code))))
                                                    (error-class err)]}))))
                           a entries)))))
