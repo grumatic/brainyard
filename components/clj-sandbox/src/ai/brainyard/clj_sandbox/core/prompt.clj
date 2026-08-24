@@ -39,7 +39,9 @@ and the results (return value, stdout, or error) are sent back for the next iter
        (if (= interop :full)
          (str "- **Full Java interop**: arbitrary Java interop is available (System, Runtime, ProcessBuilder, reflection, etc.) — you are running in a container sandbox.\n"
               "- **File/shell libraries**: `slurp`, `spit`, `sh` (`(sh \"ls\" \"-l\")`), plus `clojure.java.io/*` (file, copy, reader…) and `clojure.java.shell/*` are available.")
-         "- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied.")
+         (str "- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied. "
+              "For what they are usually reached for: working dir / allowed dirs via "
+              "`(context-get [:agent-state :config])`, environment and anything else via `(bash :command \"…\")`."))
        "
 - **Timeout**: 30s per code block."))
 
@@ -47,7 +49,8 @@ and the results (return value, stdout, or error) are sent back for the next iter
   "## Available Clojure
 String: str, subs, count, clojure.string/split, clojure.string/join, clojure.string/includes?,
         clojure.string/replace, clojure.string/trim, clojure.string/lower-case, clojure.string/upper-case
-NOTE: No `str` alias — always use full `clojure.string/` prefix (e.g. `clojure.string/join` not `str/join`)
+NOTE: Alias once, then reuse: `(require '[clojure.string :as str])`. The alias persists across
+      iterations and into parallel forks, so later blocks can write `str/join`.
 Regex: re-find, re-seq, re-matches, re-pattern
 Collections: first, rest, last, nth, take, drop, map, filter, reduce, mapv, filterv,
              sort, sort-by, group-by, into, conj, assoc, dissoc, get, get-in, update,
@@ -101,7 +104,7 @@ In the next iteration, use those variables directly in sequential `code`:
 
   ;; Iteration N+1 (sequential code): use parallel-defined vars directly, FINAL
   ;; sum-a and sum-b are available from the previous parallel iteration.
-  (FINAL (str \"Total: \" (+ (parse-long sum-a) (parse-long sum-b))))")
+  (FINAL (str \"Total: \" (+ (Long/parseLong sum-a) (Long/parseLong sum-b))))")
 
 (def ^:private sci-string-restrictions
   "## SCI Sandbox String Restrictions — CRITICAL
@@ -316,7 +319,7 @@ NEVER put the result directly into a FINAL string literal. Assign to a variable 
 - **SCI string escaping**: Only `\\n`, `\\t`, `\\\"`, `\\\\` are valid. Regex in bash needs doubled backslashes: `\\\\d` not `\\d`. For complex scripts: write to /tmp/foo.sh via `write-file` and run with `(bash \"bash /tmp/foo.sh\")`.
 - **One ```clojure block per response**, then STOP. Think REPL: one expression, read result, next expression.
 - **No XML tool-calling**: Never use `<function_calls>`, `<invoke>`, `<parameter>` — only ```clojure fences.
-- **No `str/` alias**: Use `clojure.string/join`, not `str/join`.
+- **Alias once**: `(require '[clojure.string :as str])` — it persists across iterations and forks, so `str/join` works thereafter.
 - Call `(usage$guide :topic <name>)` for detailed guides on any capability — e.g. `(usage$guide :topic :plans)`, `(usage$guide :topic :skills)`, `(usage$guide :topic :llm-query)`, `(usage$guide :topic :files)`. `(usage$guide)` lists topics.")
 
 (def ^:private critical-rules-raw
@@ -325,7 +328,7 @@ NEVER put the result directly into a FINAL string literal. Assign to a variable 
 - **One code block per response**: brief reasoning + ONE fenced block (```clojure, ```bash, or ```python). Wait for feedback.
 - **Final answer**: Rich markdown text ONLY, no code blocks. Or call `(FINAL \"answer\")` in Clojure.
 - **No XML tool-calling**: Never use `<function_calls>`, `<invoke>`, `<parameter>` — only fenced code blocks.
-- **No `str/` alias**: Use `clojure.string/join`, not `str/join`.
+- **Alias once**: `(require '[clojure.string :as str])` — it persists across iterations and forks, so `str/join` works thereafter.
 - Call `(usage$guide :topic <name>)` for detailed guides on any capability — e.g. `(usage$guide :topic :plans)`, `(usage$guide :topic :skills)`, `(usage$guide :topic :llm-query)`, `(usage$guide :topic :files)`. `(usage$guide)` lists topics.")
 
 (def ^:private context-discovery

@@ -835,8 +835,10 @@ observe the seam first.
 1. ~~**CR-SBX-0** (§2) — kwargs sweep.~~ **SHIPPED 2026-08-24.** Note the
    justification shrank twice under better counting: it was never the largest
    failure class (§2.7). It stands as a correctness fix.
-2. **CR-SBX-1** §3.2, §3.4, §3.5 — the `str/` falsehood, the `parse-long`
-   example, interop redirection. Independent one-liners.
+2. ~~**CR-SBX-1** §3.2, §3.4, §3.5~~ **SHIPPED 2026-08-24** — the `str/`
+   falsehood replaced with the alias idiom at all four sites, the `parse-long`
+   example corrected to `Long/parseLong`, and the interop bullet now names the
+   alternatives rather than only the prohibition.
 3. **CR-SBX-1** §3.1 — shrink `available-clojure-guide` to the non-derivable
    delta. Measure with `build-system-prompt`'s `:return-breakdown?`.
 4. ~~Instrument the repair path~~ **DONE (2026-08-24)** — `repair-code` in
@@ -887,7 +889,7 @@ the five closed without code, and two of those closed by being **wrong**.
 
 | # | Gap | Disposition |
 |---|---|---|
-| 1 | Advertised language surface is wrong | Main remedy **retracted** (§3.1 — zero vocabulary failures). Three truth-fixes remain open: §3.2, §3.4, §3.5 |
+| 1 | Advertised language surface is wrong | Main remedy **retracted** (§3.1 — zero vocabulary failures). Three truth-fixes **SHIPPED 2026-08-24**: §3.2, §3.4, §3.5 |
 | 2 | No macro layer | Probe shipped (§4.0); full build gated on adoption |
 | 3 | Silent repair — model never learns | Instrumented; §3.3 decidable on data |
 | 4 | No value-handle across the tool-call boundary | **Closed — the claim was false.** See below |
@@ -933,3 +935,66 @@ all truncation. That is the conversation-compaction path repeatedly spilling
 oversized answers to disk — unrelated to this doc, and the only place the
 truncation machinery is under real load. (Raw counts, so replay-inflated; the
 ratio is what matters, not the absolute.)
+
+### 7.2 Follow-up: why compact-answer is 99% of all truncation
+
+Investigated after §7.1 surfaced the ratio. The cause is a design choice in
+`context_compaction/compact-previous-turns`, and it has a consequence worth
+fixing.
+
+**It searches by applying.** The compactor tries progressively tighter passes —
+`[3 10 2000] → [1 5 1000] → [0 0 400] → [0 0 200]` — and after each pass
+*measures the result* to decide whether to stop. Applying a pass calls
+`recompress-turns`, which calls `truncate-to-file` on every summary/minimal
+turn. That is real filesystem I/O: a read (to recover the prior original) plus a
+write (of the new original). So the search **writes files for candidate passes
+it then discards**; only the winning pass is ever referenced.
+
+Cost per compaction is up to `4 passes × turns-over-limit` file round-trips
+where `1 × turns-over-limit` would do. And auto-compaction fires after *every
+turn* once a session exceeds `:max-context-tokens` (`agent_tui/core.clj`), so a
+long session churns this continuously. Hence 1610 markers against 12 for
+`eval-output` and 1 for `tool-result`.
+
+**Each pass truncates the previous pass's output, not the original.** The loop
+recurs on `compressed`, so a turn that is `:summary` in both pass 1 and pass 2
+is truncated twice. `truncate-to-file` is idempotent *by reading the temp file
+back* to recover the untruncated text, so correctness depends on that file
+surviving.
+
+**What happens when it does not survive — measured, and milder than expected.**
+I predicted nested markers; that is wrong. Deleting the pass-1 file before
+pass 2 yields:
+
+```
+normal chain            markers: 1   reports "original: 5000 chars"   (correct)
+pass-1 file removed     markers: 1   reports "original: 2309 chars"   (silently wrong)
+```
+
+No nesting, no error, no stale path — but the new temp file now holds the
+**already-truncated** text while the marker still says "Full content saved to".
+Recoverability is lost quietly, and nothing downstream can detect it.
+
+**Why that is reachable rather than theoretical.** `gc/sweep-sandbox-cache!`
+caps the cache at `:sandbox-cache-max-files` (**default 200**) and evicts
+**oldest first**. The compaction churn above is what fills that cache, and the
+oldest files are precisely the ones holding the oldest turns' original answers.
+Since `:previous-turns` is mutated in place, each turn's compaction re-truncates
+the previous turn's already-truncated text — so the recovery chain is only as
+strong as its oldest surviving link. The GC docstring already notes the adjacent
+hazard: "a hot truncation cache can crowd out stale file-backed entries."
+
+**Proposed fix — separate searching from committing.** Run the pass search with
+in-memory truncation (plain `subs`, no I/O, no marker) to find the winning
+parameters, then call `truncate-to-file` exactly **once** per turn with those
+parameters, against the answer as received. Output is identical; file writes
+drop ~4x; and the within-compaction re-truncation chain disappears, because each
+answer is truncated once from what the compactor was handed.
+
+That does not fully fix the *cross-turn* chain (`:previous-turns` is mutated in
+place, so turn N+1 still starts from turn N's truncated text). Doing that
+properly means retaining originals somewhere, which is a bigger change. But
+cutting the churn 4x substantially delays reaching the 200-file cap, which is
+the trigger for the silent-loss case.
+
+Not implemented — filed here with the measurements behind it.

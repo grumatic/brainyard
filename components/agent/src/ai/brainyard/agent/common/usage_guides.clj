@@ -488,7 +488,8 @@ to `/tmp/foo.sh` via `write-file` and run it with `(bash \"bash /tmp/foo.sh\")`.
 - A nested map *value* still needs braces; kwargs removes the outer pair only.
 
 ### Aliases / namespaces
-- No `str/` alias — call `clojure.string/join`, not `str/join`. Fully-qualify.
+- Alias once: `(require '[clojure.string :as str])` — it persists across iterations
+  and into parallel forks, so `str/join` works in every later block.
 - Builtins are pre-bound (`read-file`, `bash`, `grep`, `query$llm`, `memory$*`, …);
   registered tools auto-bind as kebab-case fns. `(keys (ns-publics 'user))` lists
   your `def`'d vars.
