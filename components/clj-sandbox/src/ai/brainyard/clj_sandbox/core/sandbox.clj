@@ -657,6 +657,36 @@
             (= result :fail) nil
             :else (recur (str code (:append result)) (inc n))))))))
 
+(defn- repair-code
+  "Apply both repair layers and return the code SCI should actually evaluate:
+   invalid string escapes first (`\\d` → `\\\\d`), then unclosed delimiters.
+
+   EVERY eval entry point must go through this. The two entry points used to
+   inline the same two repairs, and the copies drifted: `eval-code` logged each
+   repair while `eval-sandbox-thunk` — the path CoAct's sequential clojure
+   blocks actually take — repaired silently. So the busiest caller reported a
+   repair rate of zero, which is exactly the number needed to decide whether
+   the prompt's escaping rules still earn their place. Keeping the repairs in
+   one place is what stops that from recurring.
+
+   `via` names the caller so the paths stay distinguishable in the log
+   (`:eval-code` also covers `eval-code-blocks-parallel`, which delegates here
+   through `eval-code`)."
+  [code-str via]
+  (let [escape-repaired (or (try-repair-escapes code-str) code-str)]
+    (when (not= escape-repaired code-str)
+      (mulog/debug ::repaired-escape-sequences
+                   :via via
+                   :original-len (count code-str)
+                   :repaired-len (count escape-repaired)))
+    (let [effective (or (try-repair-eof escape-repaired) escape-repaired)]
+      (when (not= effective escape-repaired)
+        (mulog/debug ::repaired-unclosed-delimiters
+                     :via via
+                     :original-len (count escape-repaired)
+                     :repaired-len (count effective)))
+      effective)))
+
 (defn eval-code
   "Evaluate a Clojure code string in the sandbox.
 
@@ -685,18 +715,7 @@
    caller can wrap it however they like."
   [sandbox code-str & {:keys [timeout-ms] :or {timeout-ms 30000}}]
   (let [{:keys [sci-ctx history]} sandbox
-        ;; Layer 1: repair invalid escape sequences (e.g. \d → \\d) before SCI parsing
-        escape-repaired (or (try-repair-escapes code-str) code-str)
-        escape-fixed? (not= escape-repaired code-str)
-        _ (when escape-fixed?
-            (mulog/debug ::repaired-escape-sequences :original-len (count code-str)
-                         :repaired-len (count escape-repaired)))
-        ;; Layer 2: repair unclosed delimiters
-        effective-code (or (try-repair-eof escape-repaired) escape-repaired)
-        repaired? (not= effective-code escape-repaired)
-        _ (when repaired?
-            (mulog/debug ::repaired-unclosed-delimiters :original-len (count escape-repaired)
-                         :repaired-len (count effective-code)))
+        effective-code (repair-code code-str :eval-code)
         eval-output (StringWriter.)]
     ;; Evaluate in a daemon thread with timeout via deref.
     ;; SCI's tight loops (loop/recur) ignore Thread.interrupt(), so a
@@ -762,14 +781,14 @@
                      contents (`(.toString w)`) at any time for partial-
                      progress display before the thunk returns.
 
-   The thunk applies the same code repair (try-repair-escapes →
-   try-repair-eof) and SCI/Clojure stdout bindings as `eval-code`, so its
-   sync semantics are identical for non-FINAL paths."
+   The thunk applies the same code repair as `eval-code` — both go through
+   `repair-code`, which is also what logs the repair (tagged
+   `:via :eval-sandbox-thunk` here) — and the same SCI/Clojure stdout
+   bindings, so its sync semantics are identical for non-FINAL paths."
   [sandbox code-str]
   (let [{:keys [sci-ctx history]} sandbox
-        escape-repaired (or (try-repair-escapes code-str) code-str)
-        effective-code  (or (try-repair-eof escape-repaired) escape-repaired)
-        eval-output     (StringWriter.)]
+        effective-code (repair-code code-str :eval-sandbox-thunk)
+        eval-output    (StringWriter.)]
     [(fn []
        (let [eval-ctx @sci-ctx
              raw (try

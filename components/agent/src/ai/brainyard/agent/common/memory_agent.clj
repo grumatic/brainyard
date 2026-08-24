@@ -180,7 +180,7 @@
 ;; ============================================================================
 
 (defagent memory-agent
-  "LLM-driven steward of the layered memory stack. Call as (memory-agent {:op ...}); :op ∈ stats | remember | essence | consolidate | purge | verify-fact | correct."
+  "LLM-driven steward of the layered memory stack. Call as (memory-agent :op ...); :op ∈ stats | remember | essence | consolidate | purge | verify-fact | correct."
   run-memory-agent
   ;; Pin :bt-factory explicitly so direct entry-points (setup-agent-by-id
   ;; used by `bb tui ask` and tests) that resolve agent metadata without

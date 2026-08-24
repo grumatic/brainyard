@@ -93,21 +93,21 @@ the dossier files DIRECTLY with bash + write-file (no construction helper):
 
 (when-not (:exists? state)
   ;; BOOTSTRAP — make the dir, then write the dossier files from the template.
-  (bash {:command (str \"mkdir -p .brainyard/agents/workflow-agent/\" wid \"/artifacts\")})
-  (write-file {:path (str \".brainyard/agents/workflow-agent/\" wid \"/purpose.md\")
-               :content \"<verbatim user question + any :agent-context>\\n\"})
+  (bash :command (str \"mkdir -p .brainyard/agents/workflow-agent/\" wid \"/artifacts\"))
+  (write-file :path (str \".brainyard/agents/workflow-agent/\" wid \"/purpose.md\")
+              :content \"<verbatim user question + any :agent-context>\\n\")
   ;; acceptance.md — the ACCEPTANCE CHECKLIST (refine the template's criteria)
-  (write-file {:path (str \".brainyard/agents/workflow-agent/\" wid \"/acceptance.md\")
-               :content (str \"# Acceptance — \" wid \"\\n\"
-                             \"- [ ] a1 (open) — <criterion>\\n- [ ] a2 (open) — <…>\\n\")})
+  (write-file :path (str \".brainyard/agents/workflow-agent/\" wid \"/acceptance.md\")
+              :content (str \"# Acceptance — \" wid \"\\n\"
+                             \"- [ ] a1 (open) — <criterion>\\n- [ ] a2 (open) — <…>\\n\"))
   ;; stages.md — the STAGE CHECKLIST (from the template, adapt as needed)
-  (write-file {:path (str \".brainyard/agents/workflow-agent/\" wid \"/stages.md\")
-               :content (str \"# Stages — \" wid \"\\n\"
-                             \"- [ ] s1 <name> (pending) — <purpose> {agent: <a>, gate: <none|user>, focus: [a1]}\\n\")})
-  (write-file {:path (str \".brainyard/agents/workflow-agent/\" wid \"/dossier.md\")
-               :content (str \"---\\nworkflow_id: \" wid \"\\nworkflow_template: feature-launch\\n\"
+  (write-file :path (str \".brainyard/agents/workflow-agent/\" wid \"/stages.md\")
+              :content (str \"# Stages — \" wid \"\\n\"
+                             \"- [ ] s1 <name> (pending) — <purpose> {agent: <a>, gate: <none|user>, focus: [a1]}\\n\"))
+  (write-file :path (str \".brainyard/agents/workflow-agent/\" wid \"/dossier.md\")
+              :content (str \"---\\nworkflow_id: \" wid \"\\nworkflow_template: feature-launch\\n\"
                              \"created: <ISO>\\nlast_iteration: 1\\nstatus: in-progress\\nhitl_mode: gates\\n---\\n\"
-                             \"\\n## Purpose\\n<…>\\n\\n## Stage progress\\n_(populated as stages run — see findings.log)_\\n\")}))
+                             \"\\n## Purpose\\n<…>\\n\\n## Stage progress\\n_(populated as stages run — see findings.log)_\\n\")))
 ;; If (:exists? state) → RESUME: read dossier.md + acceptance.md + stages.md +
 ;; last findings.log lines; pick up at the next pending stage.
 ```
@@ -184,16 +184,16 @@ DOSSIER UPDATE DISCIPLINE (after every move — all file-native)
 ────────────────────────────────────────────────────────────────────────────
 1. Append one line to findings.log (write-file :append) including the dossier
    path(s) the specialist emitted (the `Saved …:` lines you have verbatim):
-     (write-file {:path (str \".brainyard/agents/workflow-agent/\" wid \"/findings.log\")
-                  :append true
-                  :content \"iter 4 · s3 implement · exec-agent · Saved dossier: <path>\\n\"})
+     (write-file :path (str \".brainyard/agents/workflow-agent/\" wid \"/findings.log\")
+                 :append true
+                 :content \"iter 4 · s3 implement · exec-agent · Saved dossier: <path>\\n\")
 2. Flip the stage status INDEX-FREE in stages.md by its stable id:
-     (update-file {:path (str \".brainyard/agents/workflow-agent/\" wid \"/stages.md\")
-                   :pattern \"- [ ] s3 implement (pending)\" :replacement \"- [x] s3 implement (satisfied)\"})
+     (update-file :path (str \".brainyard/agents/workflow-agent/\" wid \"/stages.md\")
+                  :pattern \"- [ ] s3 implement (pending)\" :replacement \"- [x] s3 implement (satisfied)\")
 3. If the stage advanced workflow-level acceptance, flip the criterion in
    acceptance.md (index-free, by id):
-     (update-file {:path (str \".brainyard/agents/workflow-agent/\" wid \"/acceptance.md\")
-                   :pattern \"- [ ] a2 (open)\" :replacement \"- [x] a2 (satisfied)\"})
+     (update-file :path (str \".brainyard/agents/workflow-agent/\" wid \"/acceptance.md\")
+                  :pattern \"- [ ] a2 (open)\" :replacement \"- [x] a2 (satisfied)\")
    Acceptance criteria are FROZEN once confirmed — descope only with explicit
    user approval (CLARIFY → reply → flip to (descoped)).
 4. Update artifacts/ symlinks (bash + ln -s) so the dossier is a one-stop
@@ -217,8 +217,8 @@ Three terminal states: :achieved (all criteria :satisfied/:descoped), :partial
 ;; Step 1 — make every stage + acceptance status in the checklists reflect
 ;;   reality (flip index-free; see DOSSIER UPDATE DISCIPLINE 2-3). REQUIRED for
 ;;   :achieved — the guard (step 2) refuses :achieved while any criterion is open.
-(update-file {:path (str \".brainyard/agents/workflow-agent/\" wid \"/acceptance.md\")
-              :pattern \"- [ ] a1 (open)\" :replacement \"- [x] a1 (satisfied)\"})
+(update-file :path (str \".brainyard/agents/workflow-agent/\" wid \"/acceptance.md\")
+             :pattern \"- [ ] a1 (open)\" :replacement \"- [x] a1 (satisfied)\")
 ;; … flip every criterion + every stage that ran …
 
 ;; Step 2 — derive the outcome + enforce the :achieved guard (READ-SIDE; kept).
@@ -230,12 +230,12 @@ Three terminal states: :achieved (all criteria :satisfied/:descoped), :partial
 
 ;; Step 3 — write verdict.md DIRECTLY from the VERDICT TEMPLATE (no helper).
 ;;   status = (:outcome vo); acceptance_outcome/stage_outcomes from vo.
-(write-file {:path (str \".brainyard/agents/workflow-agent/\" wid \"/verdict.md\")
-             :content \"<filled VERDICT TEMPLATE — see tool-context>\"})
+(write-file :path (str \".brainyard/agents/workflow-agent/\" wid \"/verdict.md\")
+            :content \"<filled VERDICT TEMPLATE — see tool-context>\")
 
 ;; Step 4 — append one INDEX line.
-(write-file {:path \".brainyard/agents/workflow-agent/INDEX.md\" :append true
-             :content (str \"- <YYYY-MM-DD HH:MM> [\" wid \"](\" wid \"/) — ACHIEVED · <≤200-char one-line>\\n\")})
+(write-file :path \".brainyard/agents/workflow-agent/INDEX.md\" :append true
+            :content (str \"- <YYYY-MM-DD HH:MM> [\" wid \"](\" wid \"/) — ACHIEVED · <≤200-char one-line>\\n\"))
 ```
 
 Then populate :answer with a markdown report DERIVED from verdict.md, ending

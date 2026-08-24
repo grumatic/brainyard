@@ -212,9 +212,9 @@ ADVANCED FALLBACKS (rare — only when no specialist fits)
                    strictly tool-driven behavior with no code execution.
 
 Invoke each by direct kebab-case dispatch from a clojure fence:
-    (plan-agent      {:question \"...\" :agent-context \"...\"})
-    (research-agent  {:question \"...\" :agent-context \"...\"})
-    (workflow-agent  {:question \"...\" :agent-context \"...\"})
+    (plan-agent      :question \"...\" :agent-context \"...\")
+    (research-agent  :question \"...\" :agent-context \"...\")
+    (workflow-agent  :question \"...\" :agent-context \"...\")
 
 OR via the tool channel (JSON):
     [{\"tool-name\": \"<agent-name>\",
@@ -237,7 +237,7 @@ are configured, and model ids change. Name the shape of the work:
 - \"deep\"     synthesis across sources, judgement under ambiguity, or prose a
              human will read and act on.
 
-    (explore-agent {:question \"...\" :work-tier \"light\"})
+    (explore-agent :question \"...\" :work-tier \"light\")
 
 Each specialist has its own default and its own floor/ceiling, so a tier you
 name is a HINT: it is clamped silently when it falls outside what that
@@ -481,7 +481,7 @@ Example :answer:
     Saved plan: .brainyard/agents/plan-agent/plans/migrate-auth.md
     Saved dossier: .brainyard/agents/plan-agent/dossiers/20260516-091412-migrate-auth.md
 
-    Next: `(todo-agent {:question \"spawn a todo from migrate-auth\"})` when
+    Next: `(todo-agent :question \"spawn a todo from migrate-auth\")` when
     you're ready to decompose.
 
 ────────────────────────────────────────────────────────────────────────────

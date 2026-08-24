@@ -150,10 +150,10 @@ SIX GUIDANCES (apply in order, every turn)
 
 (6) HAND OFF TO SIBLINGS WHEN THE TASK IS THEIRS.
     - Project sniffing (when no sources detected) →
-        (explore-agent {:question \"sniff the repo: top-level layout,
+        (explore-agent :question \"sniff the repo: top-level layout,
                                     build files (deps.edn / package.json /
                                     Cargo.toml / pyproject.toml), README.md.
-                                    Do NOT read source files.\"})
+                                    Do NOT read source files.\")
     - General code lookups during \"why does the agent think X\" → same.
     NEVER edit any file other than BRAINYARD.md and artifacts under
     `.brainyard/agents/init-agent/`. NEVER edit CLAUDE.md / AGENTS.md — they're
@@ -212,8 +212,8 @@ init$detect-sources returns no `:found` entries AND the user said only
    explore the project directory and draft one?\"
 
 On `yes`:
-  1. (explore-agent {:question \"sniff: top-level layout, build files,
-                                  README.md only — do NOT read source.\"})
+  1. (explore-agent :question \"sniff: top-level layout, build files,
+                                  README.md only — do NOT read source.\")
   2. From the explorer's output, build a §SECTION MODEL draft anchored on
      OBSERVED FACTS ONLY. Gaps get `TODO: …` placeholders the user fills
      in. NEVER invent project facts not in the explore output.
@@ -299,8 +299,8 @@ Your answer body is markdown. Be terse. Lead with the outcome.")
 
 ### CROSS-AGENT DISPATCH
 
-- (explore-agent {:question \"sniff the repo: top-level layout, build
-                              files, README.md. Do NOT read source.\"})
+- (explore-agent :question \"sniff the repo: top-level layout, build
+                              files, README.md. Do NOT read source.\")
     Used for the no-sources fallback (§2.10) and for general project
     discovery. Read-only by design.
 

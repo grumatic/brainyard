@@ -68,9 +68,9 @@ the ordinary file tools; `.brainyard/` writes never prompt for permission.
 - RECONCILE: after ANY checklist edit, call `todo$sync` once — it re-parses the
   checklist and refreshes the live TUI/web view. READ-ONLY. For a working
   checklist under your own dir, pass the file path:
-  `(todo$sync {:path \".brainyard/agents/<agent>/todos/<slug>.md\"})`. (A contract
-  todo under todo-agent/todos/ can use `(todo$sync {:slug \"<slug>\"})`.)
-- LIST: `(doc$list {:kind :todo})` to enumerate.
+  `(todo$sync :path \".brainyard/agents/<agent>/todos/<slug>.md\")`. (A contract
+  todo under todo-agent/todos/ can use `(todo$sync :slug \"<slug>\")`.)
+- LIST: `(doc$list :kind :todo)` to enumerate.
 
 Manage working checklists yourself, inline — no todo-agent dispatch. Reserve
 todo-agent for a VETTED, plan-derived, AUDITED contract backlog: it adds
@@ -87,12 +87,12 @@ pre/post-flight gating + a dossier handoff that exec-agent/eval-agent consume.")
 To DO a checklist item (not just track it), follow route → verify → record → flip:
 
 1. ROUTE — decide how the item gets done:
-   • source edit  → DELEGATE to edit-agent: (edit-agent {:question \"<item>\"
-                    :agent-context \"<context>\" :dirty-ok? false}). It diffs,
+   • source edit  → DELEGATE to edit-agent: (edit-agent :question \"<item>\"
+                   :agent-context \"<context>\" :dirty-ok? false). It diffs,
                     verifies, and returns `Saved edit: <path>` + `Rollback: <cmd>`.
                     Prefer this over raw write-file for tracked source — you get a
                     reversible, verified edit.
-   • shell check  → (bash {:command \"<cmd>\"}); ok = exit 0.
+   • shell check  → (bash :command \"<cmd>\"); ok = exit 0.
    • external/MCP → (mcp$tools …); reads proceed, writes need user confirm.
    • lookup       → read-file / grep / query$llm; keep a short evidence excerpt.
    • manual       → STOP, surface it, do NOT flip.
@@ -129,7 +129,7 @@ evidence dossier that eval-agent consumes.")
 Skills are reusable, named procedures (a SKILL.md of imperative steps, sometimes
 with helper scripts). Before reinventing a multi-step procedure, check for one:
 
-1. DISCOVER — `(skills$find {:query \"<key nouns of the task>\"})`. Ranked,
+1. DISCOVER — `(skills$find :query \"<key nouns of the task>\")`. Ranked,
    local and instant (no network): `{:result [...] :count n}`, best match first,
    each with a `:score`. An empty `:result` means you have no such skill — just
    proceed. Also `(skills$list)` to browse. Skills span backends: :brainyard
@@ -141,7 +141,7 @@ with helper scripts). Before reinventing a multi-step procedure, check for one:
    pick up a skill you intend to use. (A skill whose frontmatter says
    `dispatch: agent` instead runs in its own sub-agent and returns an answer —
    pass it a `:question`.)
-   Use `(skills$read {:skill-name \"<name>\"})` only to PEEK at a skill you are
+   Use `(skills$read :skill-name \"<name>\")` only to PEEK at a skill you are
    not committing to — loading is what puts it in front of you to follow.
 3. FOLLOW — do what the SKILL.md says, in your own iterations: run its
    `scripts/<…>` via bash, read its `resources/<…>`, follow its imperative steps.
@@ -212,16 +212,16 @@ Previous Turns), instead of spawning a fresh one that starts from zero.
    \"explore-agent/<suffix>\"` + an `:ask-hint`. CAPTURE that instance-id — it
    is the handle for following up. (Nothing to opt into — this is automatic.)
 2. ASK — ask the SAME instance more (it still sees its ## Previous Turns):
-   `(agent-registry$ask {:id \"explore-agent/<suffix>\" :question \"now check token refresh\"})`
+   `(agent-registry$ask :id \"explore-agent/<suffix>\" :question \"now check token refresh\")`
    Prefer asking the existing subagent over re-dispatching a fresh one when the
    follow-up builds on what it already explored. (If you are a ROOT agent you may
    also `agent-registry$ask` a sibling root; a subagent may ask only instances IT
    dispatched, never upward — that would loop.)
 3. LIST / INSPECT — `(agent-registry$list)` shows live instances (`:owner`,
-   `:idle-ms`, `:answers`, `:last-question`); `(agent-registry$detail {:id \"…\"})`
+   `:idle-ms`, `:answers`, `:last-question`); `(agent-registry$detail :id \"…\")`
    gives status + last answer.
 4. CLOSE — when you're DONE with a subagent, free it:
-   `(agent-registry$close {:id \"…\"})`. This matters: there is a per-session cap
+   `(agent-registry$close :id \"…\")`. This matters: there is a per-session cap
    (`:max-subagents-per-session`) and dispatching a new subagent at the cap
    EVICTS the least-recently-used one (its `:subagent-id` won't resolve after
    that). Close the ones you no longer need so a useful one isn't evicted.
@@ -248,17 +248,17 @@ CONNECTION to an external backend (claude-code / gemini / codex / stub) — a
 subprocess + one MODEL-PINNED session + live conversation. Manage these with the
 acp-scoped family, which surfaces what the generic list can't (backend, model,
 purpose, health):
-- REUSE before spawning: `(acp$list {:backend :claude-code :model \"opus\"})` — if
+- REUSE before spawning: `(acp$list :backend :claude-code :model \"opus\")` — if
   a matching connection exists, ask it instead of creating another subprocess.
-- CREATE a named connection: `(acp$create {:backend :claude-code :model \"opus\"
-  :purpose \"refactor payments\"})` → returns `:acp-id`. Bounded per session
+- CREATE a named connection: `(acp$create :backend :claude-code :model \"opus\"
+ :purpose \"refactor payments\")` → returns `:acp-id`. Bounded per session
   (`:max-acp-agents-per-session`); it refuses at the cap (close one first).
 - ASK a connection (same reach as agent-registry$ask — a root may ask a sibling
   root or a subagent in its own session):
-  `(acp$ask {:id \"acp-agent/<suffix>\" :question \"…\"})`.
-- RELABEL / SWITCH MODEL: `(acp$update {:id \"…\" :purpose \"…\"})`; a `:model` change
+  `(acp$ask :id \"acp-agent/<suffix>\" :question \"…\")`.
+- RELABEL / SWITCH MODEL: `(acp$update :id \"…\" :purpose \"…\")`; a `:model` change
   RECYCLES the session (conversation context resets).
-- CLOSE a provisioned connection (reaps the subprocess): `(acp$close {:id \"…\"})`.
+- CLOSE a provisioned connection (reaps the subprocess): `(acp$close :id \"…\")`.
   (A TUI-attached acp root is closed with /agent close; an owned acp subagent
   with agent-registry$close.)")
 

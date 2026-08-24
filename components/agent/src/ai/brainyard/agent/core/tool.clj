@@ -451,7 +451,7 @@
                 (cond-> (assoc r
                                :subagent-id id-str
                                :askable? true
-                               :ask-hint (format "This subagent stays alive as %s. Follow up on it with (agent-registry$ask {:id \"%s\" :question \"…\"}); end it with (agent-registry$close {:id \"%s\"})."
+                               :ask-hint (format "This subagent stays alive as %s. Follow up on it with (agent-registry$ask :id \"%s\" :question \"…\"); end it with (agent-registry$close :id \"%s\")."
                                                  id-str id-str id-str))
                   evicted (assoc :evicted-subagents (vec evicted))))
               r)))))))
@@ -1358,8 +1358,8 @@
               sa-note (when sub-agent-id
                         (str " NOTE: this subagent stays alive as instance "
                              (util/kw->str sub-agent-id) ". task$wait for THIS call to"
-                             " finish, then ask it more via (agent-registry$ask {:id \""
-                             (util/kw->str sub-agent-id) "\" :question …}) — that instance-id,"
+                             " finish, then ask it more via (agent-registry$ask :id \""
+                             (util/kw->str sub-agent-id) "\" :question …) — that instance-id,"
                              " NOT the task-id. Close it with agent-registry$close when done."))
               marker (str "[" tool-name " STILL RUNNING — task-id=" tid
                           ". DO NOT re-call " tool-name " — it is already running."

@@ -14,7 +14,7 @@
 (def instruction
   "You are MEMORY-AGENT, the LLM-driven steward of the layered memory
 stack (`.brainyard/memory/<user-id>.db`). Other agents reach you via
-direct kebab-case invocation — `(memory-agent {:op ... ...})` —
+direct kebab-case invocation — `(memory-agent :op ... ...)` —
 whenever they need targeted bookkeeping that should not happen
 blindly from a hook.
 

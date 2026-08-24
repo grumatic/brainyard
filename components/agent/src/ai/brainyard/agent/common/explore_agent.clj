@@ -94,11 +94,11 @@ DECISION FLOW
 2. Probe surfaces in parallel when the question is broad or unclear:
    - In ONE clojure fence with `<!-- ParallelBlock -->` separators, fan out
      a discovery probe per surface. Cheapest probes first:
-       • A: `(grep {:pattern \"<keyword>\" :path \".brainyard\"})`
-            or `(search {:query \"<keyword>\"})`
+       • A: `(grep :pattern \"<keyword>\" :path \".brainyard\")`
+            or `(search :query \"<keyword>\")`
        • C: `(mcp$server :op :list)` then targeted `(mcp$tools :op :list …)`
        • D: `(skills$find :query \"<keyword>\")`
-       • B: `(web-search {:query \"<keyword>\" :max-results 5})`
+       • B: `(web-search :query \"<keyword>\" :max-results 5)`
    - Aggregate across the four results before deciding where to drill.
 
 3. Drill on the surfaces that returned promising hits. Stay shallow on the rest.
@@ -188,8 +188,8 @@ summary: >
  older than N days\" (volatile)>
 
 WRITE IT:
-   (write-file {:path \".brainyard/agents/explore-agent/results/<ts>-<slug>.md\"
-                :content \"<filled RESULT TEMPLATE>\"})
+   (write-file :path \".brainyard/agents/explore-agent/results/<ts>-<slug>.md\"
+               :content \"<filled RESULT TEMPLATE>\")
 The .brainyard/ prefix is auto-allowlisted (no permission prompt) and write-file
 creates parent dirs. Compute <ts> as yyyyMMdd-HHmmss — distinct timestamps make
 collisions a non-issue.
@@ -202,9 +202,9 @@ later iteration can read it and write-file it to the results path.
 
 INDEX — after writing, append ONE newest-first line (the corpus stays
 discoverable via explore$find even unsorted):
-   (write-file {:path \".brainyard/agents/explore-agent/INDEX.md\"
-                :content \"- <YYYY-MM-DD HH:MM> [<slug>](results/<file>.md) — <surfaces> · *<one-line summary>*\\n\"
-                :append true})
+   (write-file :path \".brainyard/agents/explore-agent/INDEX.md\"
+               :content \"- <YYYY-MM-DD HH:MM> [<slug>](results/<file>.md) — <surfaces> · *<one-line summary>*\\n\"
+               :append true)
 
 ANSWER FORMAT:
 1. Inline summary — what the user asked for, with citations.
@@ -378,11 +378,11 @@ index helpers to call. Three READ-ONLY helpers support the reuse discipline:
 
 ```clojure
 ;; STEP 0 already ran. Now author the dossier directly:
-(write-file {:path \".brainyard/agents/explore-agent/results/20260629-140311-<slug>.md\"
-             :content \"<filled RESULT TEMPLATE — frontmatter + 4 body sections, related/freshness set>\"})
-(write-file {:path \".brainyard/agents/explore-agent/INDEX.md\"
-             :content \"- 2026-06-29 14:03 [<slug>](results/20260629-140311-<slug>.md) — filesystem, mcp · *<one-line>*\\n\"
-             :append true})
+(write-file :path \".brainyard/agents/explore-agent/results/20260629-140311-<slug>.md\"
+            :content \"<filled RESULT TEMPLATE — frontmatter + 4 body sections, related/freshness set>\")
+(write-file :path \".brainyard/agents/explore-agent/INDEX.md\"
+            :content \"- 2026-06-29 14:03 [<slug>](results/20260629-140311-<slug>.md) — filesystem, mcp · *<one-line>*\\n\"
+            :append true)
 ```
 
 The results/ path you wrote is what you emit on the

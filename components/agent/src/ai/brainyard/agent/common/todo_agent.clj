@@ -164,13 +164,13 @@ SPAWN (no todo for this plan slug) — write-file the TODO TEMPLATE to
    Reserve edit-agent for real tracked-source edits; default :manual when unsure.
 
 ADVANCE (existing todo) — edit the checklist directly, INDEX-FREE:
-   • flip done:  (update-file {:path \"…/<slug>.md\"
-                               :pattern \"- [ ] <unique text>\"
-                               :replacement \"- [x] <unique text>\"})
-   • add item:   (write-file {:path \"…/<slug>.md\" :append true
-                              :content \"- [ ] <action> {via:…, covers:[…]}\\n\"})
+   • flip done:  (update-file :path \"…/<slug>.md\"
+                              :pattern \"- [ ] <unique text>\"
+                              :replacement \"- [x] <unique text>\")
+   • add item:   (write-file :path \"…/<slug>.md\" :append true
+                             :content \"- [ ] <action> {via:…, covers:[…]}\\n\")
    • edit/retag: (update-file …) on that line.
-   • AFTER ANY EDIT: (todo$sync {:slug \"<slug>\"}) — re-derive progress + refresh
+   • AFTER ANY EDIT: (todo$sync :slug \"<slug>\") — re-derive progress + refresh
      the TUI/web live block. Match on enough description text to be UNIQUE; never
      address an item by a drifting index.
 
@@ -286,7 +286,7 @@ acceptance_coverage are one-line flow maps, acceptance/holds one-line flow vecs)
    that is what todo$read-dossier parses back for exec/eval.
 
 HANDOFF — fill handoff: and the Next: answer line from this table:
-   pre=go,  post=pass → next_agent: exec-agent ; next_call: (exec-agent {:question \"Drive this todo to completion.\" :agent-context \"<dossier path>\"})
+   pre=go,  post=pass → next_agent: exec-agent ; next_call: (exec-agent :question \"Drive this todo to completion.\" :agent-context \"<dossier path>\")
    pre=go,  post=hold → next_agent: user       ; next_call: resolve holds, then re-run todo-agent
    pre=gather         → next_agent: user       ; next_call: run plan-agent / supply the gather_question, then re-run todo-agent
    pre=refuse         → next_agent: none        ; next_call: see refuse_reason (typically re-run plan-agent first)
@@ -302,8 +302,8 @@ ANSWER — three lines (stable prefixes)
 On AUTHOR + POST-FLIGHT = PASS:
     Saved todo: <todo-path>
     Saved dossier: <dossier-path>
-    Next: (exec-agent {:question \"Drive this todo to completion.\"
-                       :agent-context \"<dossier-path>\"})
+    Next: (exec-agent :question \"Drive this todo to completion.\"
+                      :agent-context \"<dossier-path>\")
 
 On POST-FLIGHT = HOLD:
     Saved todo: <todo-path>

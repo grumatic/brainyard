@@ -241,11 +241,11 @@ a temp file and executed), `python` (temp file + python3), `javascript`
 
   Parallel example:
     ```clojure
-    (println (search {:query \"topic A\"}))
+    (println (search :query \"topic A\"))
     ```
     <!-- ParallelBlock -->
     ```clojure
-    (println (search {:query \"topic B\"}))
+    (println (search :query \"topic B\"))
     ```
     <!-- ParallelBlock -->
     ```bash
@@ -505,7 +505,7 @@ after the language (`report.md`) is a filename hint. Use **4+ backticks** so any
 ordinary ``` fences inside the content pass through untouched.
 
 To READ the file back in a later block, use the `read-file` tool, e.g. a clojure
-fence `(read-file {:path \"<path>\"})`. To PROMOTE it into the working tree (files
+fence `(read-file :path \"<path>\")`. To PROMOTE it into the working tree (files
 are scratch, GC'd ~24h), copy it with a bash fence — `slurp`/`spit` are NOT
 available in the SCI sandbox:
 ```bash
@@ -618,7 +618,7 @@ kebab-case names — call them directly:
 ```clojure
 (query$llm \"prompt\")
 (list-tools :type \"command\")
-(mcp$server {:op \"list\"})
+(mcp$server :op \"list\")
 ```
 
 For MCP tools that aren't registered locally, use `call-tool` with `:server-name`:
@@ -651,16 +651,16 @@ on-demand (see `### Sandbox Categories` and `### Discovery`).
 
 | When | Call | Notes |
 |---|---|---|
-| Run any registered tool | `(<tool-id> {:arg val})` — e.g. `(mcp$server {:op \"list\"})` | JSON channel `tool-calls` is equivalent. |
+| Run any registered tool | `(<tool-id> :arg val)` — e.g. `(mcp$server :op \"list\")` | JSON channel `tool-calls` is equivalent. |
 | Find tools by pattern   | `(list-tools :pattern \"…\")` / `:type \"command\"` | Regex over id/name/desc; returns id + description only. |
 | Inspect one tool        | `(get-tool-info \"<id>\")` | Schema (inputs/outputs/description) — the step BEFORE calling anything unfamiliar. |
 | Inspect a sandbox sym   | `(meta #'<sym>)` | `:doc`/`:arglists`/`:category`. |
 | Cheap sub-LLM           | `(query$llm :prompt \"prompt\")` / `(query$llm :prompts [\"a\" \"b\"])` | One-shot, no agent state. |
-| Run a registered agent  | `(explore-agent {:question \"…\"})` / `(plan-agent {…})` | Flat dispatch to a sibling agent by name. |
-| MCP fallback             | `(call-tool \"<id>\" {…} :server-name \"<srv>\")` | Only for tools not in the local registry. |
+| Run a registered agent  | `(explore-agent :question \"…\")` / `(plan-agent :question \"…\")` | Flat dispatch to a sibling agent by name. |
+| MCP fallback             | `(call-tool \"<id>\" {…} :server-name \"<srv>\")` | Only for tools not in the local registry. `call-tool` is the ONE call that takes a `{…}` args map — it must, to keep the target's args from colliding with its own routing kwargs. |
 | Look up usage guide     | `(usage$guide :topic <name>)` | Topics: see `### Usage Guides` table below. |
 | Shell / files           | `(bash \"…\")`, `(read-file \"…\")`, `(write-file \"…\" \"…\")`, `(grep \"…\" \"path\")` | Standard primitives. |
-| Pin a seen file/skill   | `(artifact$add {:path \"/abs\"})` — re-reference w/o re-reading | Reloads fresh each turn; details `(usage$guide :topic :artifacts)`. |
+| Pin a seen file/skill   | `(artifact$add :path \"/abs\")` — re-reference w/o re-reading | Reloads fresh each turn; details `(usage$guide :topic :artifacts)`. |
 
 Per-agent overrides ride in `### Agent-specific guidance` at the bottom of this
 section — when present, prefer those over this generic list.")
@@ -965,7 +965,7 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
    :origin :system / :pinned? so the LLM can tell which artifacts it may remove.
 
    File-backed artifacts (:source :file) render only a `file-artifact-preview-chars`
-   preview; when longer, the body is cut and a `(read-file {:path …})` pointer is
+   preview; when longer, the body is cut and a `(read-file :path …)` pointer is
    appended (the file reloads fresh each turn, so the full bytes need not ride
    the prompt). Inline/legacy artifacts render their content up to :max-chars.
 
@@ -983,8 +983,8 @@ Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :
                       body  (if (and (= source :file) (not full?))
                               (if (> (count s) file-artifact-preview-chars)
                                 (str (subs s 0 file-artifact-preview-chars)
-                                     "…\n[truncated — `(read-file {:path \"" path
-                                     "\"})` for the full content]")
+                                     "…\n[truncated — `(read-file :path \"" path
+                                     "\")` for the full content]")
                                 s)
                               (if (> (count s) cap) (str (subs s 0 cap) "…") s))
                       badge (str/join " " (cond-> []

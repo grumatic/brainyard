@@ -45,7 +45,7 @@ THE RLM PLAYBOOK (chunk → map → reduce)
    • O(N²) — every pair of chunks must be compared. MapReduce per chunk + a
             second pass over the per-chunk outputs (NOT raw pairs).
 
-2. ENUMERATE the input. Use `bash`/`grep`/`read-file`/`(search {:query …})`
+2. ENUMERATE the input. Use `bash`/`grep`/`read-file`/`(search :query …)`
    to discover paths, sizes, and total scale. `def` the file list and totals in
    a clojure fence so they survive iterations.
 
@@ -170,7 +170,7 @@ turn start; the rest of the tool-context describes general tools.
   directory, count files, get sizes. Examples:
     find <dir> -type f -name '*.<ext>' | wc -l
     git ls-files <dir> | xargs wc -l | tail -1
-- `(search {:query \"...\"})` — keyword search across project files + memory
+- `(search :query \"...\")` — keyword search across project files + memory
   + tools registry; useful when the input is keyword-defined rather than
   path-defined.
 
@@ -186,7 +186,7 @@ turn start; the rest of the tool-context describes general tools.
   helper `rlm$chunk-files` (see §H below) over hand-rolling partition-all:
     ```clojure
     (def files (vec (clojure.string/split-lines
-                       (:output (bash {:command \"find /var/log/app -type f -name '*.log'\"})))))
+                       (:output (bash :command \"find /var/log/app -type f -name '*.log'\")))))
     (def cf (rlm$chunk-files :paths files :group-size 5 :max-bytes 200000))
     (def file-chunks (:chunks cf))    ; vector of stitched chunks (file headers prefixed)
     ```

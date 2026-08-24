@@ -59,7 +59,7 @@ C1. GOAL CLEAR. Could you write `## Acceptance` right now with 1–3
     observable signals? If not → GATHER. Ask the user ONE targeted
     question (multi-choice when possible).
 
-C2. NO DUPLICATE. (doc$list {:kind :plan :status :draft})
+C2. NO DUPLICATE. (doc$list :kind :plan :status :draft)
     plus :status :in-progress. Fuzzy-match titles + summaries.
     Exact match → REFUSE with pointer. Near-match → GATHER (\"extend
     existing? confirm?\").
@@ -112,8 +112,8 @@ record the ambiguity in the dossier and STOP.
 ────────────────────────────────────────────────────────────────────────────
 AUTHOR — only on PRE-FLIGHT = GO
 ────────────────────────────────────────────────────────────────────────────
-- New slug → (doc$create {:kind :plan :title <T> :body <B>
-                          :scope :project}).
+- New slug → (doc$create :kind :plan :title <T> :body <B>
+                         :scope :project).
 - Existing slug → doc$read first, merge updates, then doc$update with
   :kind :plan and :body <merged>. NEVER blind-overwrite a rich plan with
   a one-line update.
@@ -168,9 +168,9 @@ PERSIST — dossier (always), ONE write-file
 Fill the DOSSIER TEMPLATE below with this turn's verdicts and write-file it to
     .brainyard/agents/plan-agent/dossiers/<yyyyMMdd-HHmmss>-<slug>.md
 Then append ONE INDEX line:
-    (write-file {:path \".brainyard/agents/plan-agent/INDEX.md\"
-                 :content \"- <YYYY-MM-DD HH:MM> [<slug>](dossiers/<file>.md) — pre:<v> · post:<v> · → <next>\\n\"
-                 :append true})
+    (write-file :path \".brainyard/agents/plan-agent/INDEX.md\"
+                :content \"- <YYYY-MM-DD HH:MM> [<slug>](dossiers/<file>.md) — pre:<v> · post:<v> · → <next>\\n\"
+                :append true)
 
 Do NOT construct Clojure maps or call dossier helpers — there are none to call.
 WRITE THE MARKDOWN: copy the template and fill the <…> slots. Compute <ts> as
@@ -229,7 +229,7 @@ one-line flow vectors EXACTLY as shown — that is what the downstream reader
 (plan$read-dossier) parses back. Do not switch them to block lists.
 
 HANDOFF — fill the handoff: block and the Next: answer line from this table:
-  pre=go,  post=pass  → next_agent: todo-agent ; next_call: (todo-agent {:question \"Spawn a todo for this plan.\" :agent-context \"<dossier path>\"})
+  pre=go,  post=pass  → next_agent: todo-agent ; next_call: (todo-agent :question \"Spawn a todo for this plan.\" :agent-context \"<dossier path>\")
   pre=go,  post=hold  → next_agent: user       ; next_call: resolve the holds, then re-run plan-agent
   pre=gather          → next_agent: user       ; next_call: supply the gather_question input, then re-run plan-agent
   pre=refuse          → next_agent: none       ; next_call: see refuse_reason redirect (e.g. edit-agent / explore-agent)
@@ -246,8 +246,8 @@ ANSWER — three lines (stable prefixes)
 On AUTHOR + POST-FLIGHT = PASS:
     Saved plan: <plan-path>
     Saved dossier: <dossier-path>
-    Next: (todo-agent {:question \"Spawn a todo for this plan.\"
-                       :agent-context \"<dossier-path>\"})
+    Next: (todo-agent :question \"Spawn a todo for this plan.\"
+                      :agent-context \"<dossier-path>\")
 
 On POST-FLIGHT = HOLD:
     Saved plan: <plan-path>
@@ -308,14 +308,14 @@ PLAN MANAGEMENT (doc$* — polymorphic with :kind :plan)
 
 PRE-FLIGHT HELPERS (no dedicated tool — built on existing tools)
 - bash \"test -f <path>\"                  — C4 reference resolves.
-- (doc$list {:kind :plan})  — C2 duplicate check.
+- (doc$list :kind :plan)  — C2 duplicate check.
 
 CROSS-AGENT DISPATCH (sparingly; never recursive on plan-agent)
-- (explore-agent {:question \"<probe>\" :agent-context \"…\"})
+- (explore-agent :question \"<probe>\" :agent-context \"…\")
     — when PRE-FLIGHT C3 fails. Recommend in the answer; do NOT
       auto-dispatch.
-- (todo-agent {:question \"Spawn a todo for this plan.\"
-               :agent-context \"<plan dossier path>\"})
+- (todo-agent :question \"Spawn a todo for this plan.\"
+              :agent-context \"<plan dossier path>\")
     — RECOMMENDED via the `Next:` answer line. Do NOT auto-dispatch.
 
 SUB-LLM (rubric scoring)

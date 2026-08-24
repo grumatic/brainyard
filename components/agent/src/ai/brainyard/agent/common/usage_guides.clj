@@ -92,7 +92,7 @@ Use `search` as your FIRST step when you're unsure which file, config, memory, o
 (def ^:private usage-tool-priority
   "## Tool Priority (use the simplest available option)
 1. **Sandbox builtins** (FIRST) — direct functions listed above
-2. **Registered tools** — `(<tool-id> {:arg \"val\"})` for `task$*`, `aws$*`, etc. (auto-bound kebab-case symbols)
+2. **Registered tools** — `(<tool-id> :arg \"val\")` for `task$*`, `aws$*`, etc. (auto-bound kebab-case symbols)
 3. **MCP tools** — `(mcp$server :op \"list\")`; native MCP tools register as `mcp$<server>$<tool>` and call directly: `(mcp$<server>$<tool> {:arg \"val\"})`
 4. **Skills** — `(list-skills)`, `(read-skill \"name\")`, then `bash`
 5. **Unregistered MCP fallback** — `(call-tool \"<id>\" {…} :server-name \"<srv>\")` ONLY for tools not in the local registry.")
@@ -306,7 +306,7 @@ with optional kwargs, returning a result map (`{:result …}` / `{:results […]
 (There is no general agent-clone primitive in the sandbox. `query$clone` —
 clone-self / depth-2 recursion — is gated to `rlm-agent` only; if you are not
 rlm-agent you will not have it. To run multi-step work, call a registered agent
-by name, e.g. `(explore-agent {:question \"…\"})`.)
+by name, e.g. `(explore-agent :question \"…\")`.)
 
 ### `query$llm` — pure LLM reasoning, no tools
 Use for **analysis, reasoning, and summarization** on data you've already collected — not for raw coding.
@@ -382,11 +382,11 @@ context EVERY turn, so you don't have to re-read or re-quote it. You decide what
 ### Decide what to add
 After you READ something, ask: *will I reference this again across iterations or turns?*
 - **YES, and it's a file** (skill SKILL.md, a spec, a schema, a module you keep citing) →
-  `(artifact$add {:path \"/abs/path\"})`. Prefer `:path` over pasting text: only a short preview
+  `(artifact$add :path \"/abs/path\")`. Prefer `:path` over pasting text: only a short preview
   rides the prompt, the full bytes stay on disk, and it RELOADS FRESH each turn (on-disk edits
   show up automatically — the data-connector pattern).
 - **YES, but it's a derived note** (a distilled finding, a decision, a checklist you synthesized) →
-  `(artifact$add {:content \"…\" :name \"…\"})`. Inline content rides the prompt verbatim, so keep
+  `(artifact$add :content \"…\" :name \"…\")`. Inline content rides the prompt verbatim, so keep
   it tight.
 
 ### Don't add
@@ -397,9 +397,9 @@ After you READ something, ask: *will I reference this again across iterations or
 
 ### Keep the set lean (it costs budget every turn)
 - `(artifact$list)` — see what's loaded: `:id :name :origin :source :pinned :size`.
-- `(artifact$remove {:id \"…\"})` — drop an artifact once it's stale or its sub-task is done
+- `(artifact$remove :id \"…\")` — drop an artifact once it's stale or its sub-task is done
   (effective next turn). You can only remove your own; `system` artifacts are fixed.
-- `(artifact$pin {:id \"…\" :pinned true})` — protect from context-budget eviction. Pin SPARINGLY:
+- `(artifact$pin :id \"…\" :pinned true)` — protect from context-budget eviction. Pin SPARINGLY:
   only what must survive when the context is tight. Everything pinned is weight you always pay.
 
 Rule of thumb: add when re-reading would otherwise repeat across turns; remove the moment it
@@ -426,7 +426,7 @@ tool id or its args.
 
 ### Call
 - **In the sandbox** (CoAct's preferred channel): registered tools auto-bind as
-  kebab-case fns — `(task$run {:job-type :bash :command \"ls\"})`.
+  kebab-case fns — `(task$run :job-type :bash :command \"ls\")`.
 - **Via call-tool** (any channel, incl. unregistered MCP fallback):
   `(call-tool \"<tool-id>\" {:arg \"val\"})`, or
   `(call-tool \"<id>\" {…} :source \"mcp\" :server-name \"<srv>\")`.
@@ -455,10 +455,10 @@ REPL: one expression, read the result, then the next.
 ### Long-running work — deferred tasking
 - A block that exceeds `:auto-background-timeout-ms` (default 180s) is auto-detached
   and returns a `[pending — task-id=…]` marker. The eval keeps running as a task.
-- Check it with `(task$list)` / `(task$detail {:task-id \"…\"})`, or the live
+- Check it with `(task$list)` / `(task$detail :task-id \"…\")`, or the live
   `((:pending-tasks-fn rt))` from `(usage$guide :topic :agent-state)`. Do NOT re-emit the block —
   the marker means STILL RUNNING.
-- Run things explicitly in the background with `(task$run {:job-type :bash …})`.
+- Run things explicitly in the background with `(task$run :job-type :bash …)`.
 
 ### Languages
 - `clojure` fences eval in-process. `bash`/`python` fences route through the task
@@ -478,11 +478,44 @@ Only `\\n`, `\\t`, `\\\"`, `\\\\` are valid escapes. Regex in `bash` needs DOUBL
 backslashes: `\\\\d`, not `\\d`. For anything with heavy escaping, write the script
 to `/tmp/foo.sh` via `write-file` and run it with `(bash \"bash /tmp/foo.sh\")`.
 
+### Calling tools — prefer kwargs
+- `(tool :k v)` is the canonical shape. The map form `(tool {:k v})` is accepted
+  and equivalent, but it nests two delimiter kinds in one call, and a dropped
+  closing brace is the single most common code-block failure. Kwargs has none.
+- `call-tool` is the one exception — its target args MUST ride in a map:
+  `(call-tool \"<id>\" {:arg v} :server-name \"<srv>\")`, so the target's arg names
+  cannot collide with call-tool's own routing kwargs.
+- A nested map *value* still needs braces; kwargs removes the outer pair only.
+
 ### Aliases / namespaces
 - No `str/` alias — call `clojure.string/join`, not `str/join`. Fully-qualify.
 - Builtins are pre-bound (`read-file`, `bash`, `grep`, `query$llm`, `memory$*`, …);
   registered tools auto-bind as kebab-case fns. `(keys (ns-publics 'user))` lists
   your `def`'d vars.
+
+### Macros — for a repeated shape that wraps a BODY (session-local)
+`defmacro` works here (syntax-quote and auto-gensym `x#` included). Reach for it
+only when a plain `defn` or a user tool cannot express the shape — i.e. when the
+form must take code you do NOT want evaluated as an argument:
+```clojure
+(defmacro with-retry [n & body]
+  `(loop [i# 1]
+     (let [r# (try ~@body (catch Exception e# (if (< i# ~n) ::retry (throw e#))))]
+       (if (= r# ::retry) (recur (inc i#)) r#))))
+
+(with-retry 3 (bash :command \"flaky-check\"))   ;; retries up to 3x, then rethrows
+```
+- **Prefer a tool for anything else.** `tool-agent$create` persists, registers,
+  and is discoverable by every agent; a macro is none of those.
+- **Session-local.** It survives later iterations of this session (and parallel
+  blocks), but NOT a new session or `--resume`. Re-define it if you need it again.
+- **Code-channel only** — a macro is not a tool and cannot be called from `tool-calls`.
+- **Hygiene:** syntax-quote namespace-resolves symbols, so `` `(let [page …] ~@body) ``
+  binds `user/page` and the body's bare `page` will NOT resolve. To deliberately
+  bind a name the body can see, unquote it: `~'page`. Check with
+  `(macroexpand-1 '(your-macro …))` before relying on it.
+- `(keys (ns-publics 'user))` lists them alongside your `def`s;
+  `(:macro (meta #'name))` tells them apart.
 
 ### Interop policy (`:sandbox-interop`)
 - `restricted` (default) — denies `System`/`Runtime`/`ProcessBuilder`/`ClassLoader`.
@@ -502,7 +535,7 @@ brainyard JVM, that's the `:nrepl` backend (debug-agent) — see `(usage$guide :
 (def ^:private usage-agents
   "## Specialized sub-agents — delegate the right work
 Call a registered agent by name to run multi-step work in its own context:
-`(<agent-name> {:question \"…\"})`. Discover them with `(list-tools :type \"agent\")`
+`(<agent-name> :question \"…\")`. Discover them with `(list-tools :type \"agent\")`
 and inspect inputs with `(get-tool-info \"<agent>\")`.
 
 ### When to delegate (and to whom)

@@ -831,20 +831,20 @@
     (case (or post-verdict :n-a)
       :pass
       {:next-agent "todo-agent"
-       :next-call (str "(todo-agent {:question \"Spawn a todo for this plan.\""
-                       ctx "})")}
+       :next-call (str "(todo-agent :question \"Spawn a todo for this plan.\""
+                       ctx ")")}
 
       :hold
       {:next-agent "user"
        :next-call (str "Resolve holds, then re-call plan-agent: "
-                       "(plan-agent {:question \"<refined request>\""
-                       ctx "})")}
+                       "(plan-agent :question \"<refined request>\""
+                       ctx ")")}
 
       :revise
       ;; Revise → automatic plan body re-run via doc$update; don't recommend next agent yet.
       {:next-agent "plan-agent"
-       :next-call (str "(plan-agent {:question \"Re-run post-flight with revision applied.\""
-                       ctx "})")}
+       :next-call (str "(plan-agent :question \"Re-run post-flight with revision applied.\""
+                       ctx ")")}
 
       ;; No POST-FLIGHT ran (GATHER / REFUSE) — derive from pre-verdict.
       :n-a

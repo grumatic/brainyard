@@ -117,11 +117,11 @@ PROBE
       content byte-for-byte.
 
 APPLY  (exactly ONE call)
-  PATTERN  → (update-file {:path … :pattern … :replacement …
-                           :regex? … :all? …})
-  SYNTAX   → (update-file {:path … :pattern <region>
-                           :replacement <new-region> :all? false})
-  NEW-FILE → (write-file {:path … :content …})
+  PATTERN  → (update-file :path … :pattern … :replacement …
+                          :regex? … :all? …)
+  SYNTAX   → (update-file :path … :pattern <region>
+                          :replacement <new-region> :all? false)
+  NEW-FILE → (write-file :path … :content …)
 
 VERIFY
   V1. bash \"git diff --no-color -- <target>\"

@@ -16,8 +16,8 @@
    The tool body runs in a dedicated, long-lived `!tools-sandbox` (forked per
    call for isolation). The body is a `(fn [args] ...)` of one map argument and
    may compose other registered tools by their DIRECT symbol — builtins like
-   `(bash {…})` / `(read-file {…})` (supplied via :extra-bindings) and other
-   user tools as `(user$tool$<name> {…})` (bound on registration). call-tool is
+   `(bash :command …)` / `(read-file :path …)` (supplied via :extra-bindings) and other
+   user tools as `(user$tool$<name> :k v)` (bound on registration). call-tool is
    intentionally hidden, so composition is by symbol, not via call-tool. User
    tools are macros over the existing tool palette, not new host primitives (no
    new privilege beyond what the sandbox already grants).
@@ -48,8 +48,8 @@
 (defn- tools-sandbox
   "The live tools sandbox, created on first use. `extra-bindings` (typically the
    agent's `auto-tool-bindings`) expose registered tools as DIRECT symbols a body
-   can call — builtins like `(bash {…})` / `(read-file {…})` and other user
-   tools as `(user$tool$<name> {…})`. There is no generic `call-tool` helper here:
+   can call — builtins like `(bash :command …)` / `(read-file :path …)` and other
+   user tools as `(user$tool$<name> :k v)`. There is no generic `call-tool` helper here:
    call-tool is intentionally hidden (`:visibility :hidden`), so a tool is
    composed by its own symbol, not through call-tool."
   ([] (tools-sandbox nil))
@@ -271,8 +271,8 @@
 
 (defn- current-extra-bindings
   "Resolve the current agent's `auto-tool-bindings` — the full tool palette as
-   direct symbols a tool body may compose ((bash {…}), (read-file {…}),
-   (user$tool$peer {…})). Runtime-resolved to avoid a static require cycle
+   direct symbols a tool body may compose ((bash :command …), (read-file :path …),
+   (user$tool$peer :k v)). Runtime-resolved to avoid a static require cycle
    (sandbox-bindings requires this ns for registration). Returns {} when no
    agent is bound (e.g. in tests)."
   []
@@ -349,7 +349,7 @@
    `(fn [args] ...)` taking one map; :input-schema is a Malli [:map ...] passed
    as an EDN string. The tool survives restarts, registers as `user$tool$<name>`
    (callable directly as a tool in the SAME turn it is created), and its body may
-   compose other tools by their direct symbol, e.g. (bash {…}) or (user$tool$other {…})."
+   compose other tools by their direct symbol, e.g. (bash :command …) or (user$tool$other :k v)."
   (fn [& {:as args}]
     (try
       (let [extra (current-extra-bindings)]
@@ -418,8 +418,8 @@
             schema-ok  (or (nil? input-schema)
                            (and (vector? input-schema) (= :map (first input-schema))))
             ;; Fork the LIVE tools sandbox WITH the agent's tool palette bound,
-            ;; so a draft body that composes (read-file {…}) / (bash {…}) /
-            ;; (user$tool$peer {…}) evals here exactly as it would under tool-agent$create.
+            ;; so a draft body that composes (read-file :path …) / (bash :command …) /
+            ;; (user$tool$peer :k v) evals here exactly as it would under tool-agent$create.
             ;; The fork is discarded on return — nothing leaks into the live sandbox.
             fork       (sb/fork-sandbox (tools-sandbox (current-extra-bindings)))
             evald      (when (string? body)

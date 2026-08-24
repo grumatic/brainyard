@@ -599,7 +599,7 @@
           {:error (str "fetch-url failed: TLS validation failed (" (.getMessage e)
                        ") and the curl fallback also failed (" (.getMessage ce)
                        "). The server likely omits an intermediate certificate; "
-                       "try (bash {:command \"curl -sSL '<url>'\"}).")})))
+                       "try (bash :command \"curl -sSL '<url>'\").")})))
     (catch Exception e
       {:error (str "fetch-url failed: " (.getMessage e))})))
 

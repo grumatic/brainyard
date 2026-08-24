@@ -1088,14 +1088,14 @@
     (case (or post-verdict :n-a)
       :pass
       {:next-agent "exec-agent"
-       :next-call (str "(exec-agent {:question \"Drive this todo to completion.\""
-                       ctx "})")}
+       :next-call (str "(exec-agent :question \"Drive this todo to completion.\""
+                       ctx ")")}
 
       :hold
       {:next-agent "user"
        :next-call (str "Resolve holds, then re-call todo-agent: "
-                       "(todo-agent {:question \"<refined request>\""
-                       ctx "})")}
+                       "(todo-agent :question \"<refined request>\""
+                       ctx ")")}
 
       :n-a
       (case pre-verdict

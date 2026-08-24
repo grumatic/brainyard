@@ -69,9 +69,9 @@
              agent
              (not (memory-agent-instance? agent)))
     {:result :block
-     :reason (format "%s is gated to memory-agent. Reach it via (memory-agent {:op ...})."
+     :reason (format "%s is gated to memory-agent. Reach it via (memory-agent :op ...)."
                      tool-name)
-     :answer (format "(memory-agent write guard) Tool '%s' is only callable from inside memory-agent. Use (memory-agent {:op ...}) instead."
+     :answer (format "(memory-agent write guard) Tool '%s' is only callable from inside memory-agent. Use (memory-agent :op ...) instead."
                      tool-name)}))
 
 (defn install-write-guard!

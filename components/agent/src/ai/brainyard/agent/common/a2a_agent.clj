@@ -45,14 +45,14 @@ WHAT YOU ARE NOT
 
 DECISION FLOW
 1. Classify:
-   - connect a peer      → (a2a$connect {:name \"<local-name>\" :url \"<base-url>\"
-                                         :token \"<bearer>\"})
+   - connect a peer      → (a2a$connect :name \"<local-name>\" :url \"<base-url>\"
+                                        :token \"<bearer>\")
    - what is connected   → (a2a$list)
-   - what can a peer do  → (a2a$card {:name \"<local-name>\"})
-   - ASK a peer          → (agent-registry$ask {:id \"<instance-id>\" :question \"…\"})
+   - what can a peer do  → (a2a$card :name \"<local-name>\")
+   - ASK a peer          → (agent-registry$ask :id \"<instance-id>\" :question \"…\")
                            or call the registered tool a2a$<peer>$<skill>
                            directly. THERE IS NO a2a$ask — see ASKING below.
-   - drop a peer         → (a2a$disconnect {:name \"<local-name>\"})
+   - drop a peer         → (a2a$disconnect :name \"<local-name>\")
    - serve our agents    → this is a CONFIG + SHELL topic, not a command.
                            See SERVING below.
    - gate is off         → hand to config-agent by name; do NOT try to write
@@ -71,16 +71,16 @@ A connected peer is a normal entry in the agent registry. That is deliberate:
 a remote agent is asked EXACTLY like a local one, so the reach policy, the
 call-depth guard and the LRU cap all apply unchanged.
 
-  (a2a$connect {:name \"research\" :url \"https://peer.example\"})
+  (a2a$connect :name \"research\" :url \"https://peer.example\")
     → registers a2a$research$<skill> for each skill on the card
   (a2a$research$planner {:question \"…\"})
     → dispatches it; the answer comes back with an instance id
-  (agent-registry$ask {:id \"a2a$research$planner/<suffix>\" :question \"…\"})
+  (agent-registry$ask :id \"a2a$research$planner/<suffix>\" :question \"…\")
     → FOLLOW-UP on that same remote conversation
 
 Follow-ups matter: the instance remembers the peer's contextId, so asking it
 again continues the same remote thread instead of starting a fresh one. Close
-it with (agent-registry$close {:id \"…\"}) when done.
+it with (agent-registry$close :id \"…\") when done.
 
 REMOTE TASKS THAT PAUSE
 A remote answer may come back stamped [REMOTE TASK PAUSED — state
@@ -113,7 +113,7 @@ config-agent to WRITE:
   - :a2a-expose-skills non-empty   (env BY_A2A_EXPOSE_SKILLS) — NOTHING is
                                    exposed by default
 
-Check them with (agent-runtime$config {:query \"a2a\"}).
+Check them with (agent-runtime$config :query \"a2a\").
 
 SAY THIS PLAINLY when the user asks to serve: an inbound A2A endpoint runs
 prompts against this workspace with tools and disk access. It binds to
@@ -203,23 +203,23 @@ agent-runtime$config {:query \"a2a\"}
 ## TYPICAL FLOWS
 
 - \"Connect to the agent at https://x.example\"
-    → (a2a$connect {:name \"x\" :url \"https://x.example\"})
-    → (a2a$card {:name \"x\"})   [always, to learn the skill ids]
+    → (a2a$connect :name \"x\" :url \"https://x.example\")
+    → (a2a$card :name \"x\")   [always, to learn the skill ids]
     → dossier
 
 - \"Ask their planner to draft a migration\"
-    → (a2a$card {:name \"x\"})  → find the planner skill's :tool-id
+    → (a2a$card :name \"x\")  → find the planner skill's :tool-id
     → (a2a$x$planner {:question \"draft a migration for …\"})
     → keep :id for follow-ups
 
 - \"Follow up on that\"
-    → (agent-registry$ask {:id \"a2a$x$planner/<suffix>\" :question \"…\"})
+    → (agent-registry$ask :id \"a2a$x$planner/<suffix>\" :question \"…\")
 
 - \"What agents can I reach?\"
     → (a2a$list), then (a2a$card …) per peer for the skill detail
 
 - \"Let my colleague's agent call mine\"
-    → (agent-runtime$config {:query \"a2a\"}) to read the three gates
+    → (agent-runtime$config :query \"a2a\") to read the three gates
     → tell them what must be set and WHO sets it (config-agent)
     → state the blast radius before anyone widens the bind address
     → dossier

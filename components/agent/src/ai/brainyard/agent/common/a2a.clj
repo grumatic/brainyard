@@ -173,8 +173,8 @@
                   true (assoc :ask-hint
                               (let [s (id-str agent-id)]
                                 (format (str "This remote instance stays alive as %s. "
-                                             "Follow up with (agent-registry$ask {:id \"%s\" :question \"…\"}); "
-                                             "end it with (agent-registry$close {:id \"%s\"}).")
+                                             "Follow up with (agent-registry$ask :id \"%s\" :question \"…\"); "
+                                             "end it with (agent-registry$close :id \"%s\").")
                                         s s s))))))))))))
 
 (defn register-skills!

@@ -1713,6 +1713,44 @@
                  (println)
                  (println (str "Source files preserved at " (str legacy) " — `git checkout` rolls back."))))))}
 
+  ;; --------------- Code-channel diagnostics ---------------
+  code-eval:stats
+  {:doc "Measure how often the CODE CHANNEL fails, from ~/.brainyard/logs.
+
+  Answers 'did a prompt change move the code-block failure rate?' — the
+  after-measurement CR-SBX-0 needs (docs/design/sandbox-surface-and-macros-design.md).
+
+  DEDUPLICATES before counting, which is the whole point. Error text reaches
+  the log inside the PROVIDER API-CALL events, on their outbound prompt field —
+  and that prompt carries `## Previous Iterations`, rendered from a buffer of
+  the last 10 iterations. So a failure is re-logged once per LLM call for as
+  long as it stays in that window (measured: 6.2x inflation). A plain `grep -c` over this
+  log overstates failures by roughly the session's turn count, and overstates
+  long sessions most. The denominator (`coact-agent/code-eval`) is emitted
+  once per eval and is not replayed; the script re-checks that invariant and
+  warns if it ever stops holding.
+
+  Reports MODEL-SYNTAX failures (unmatched delimiter, EOF, bad escape,
+  unresolved symbol, fence error) separately from shell exit codes, provider
+  format errors and timeouts — only the former can be moved by a prompt change.
+
+  Also reports two probes that gate deferred work:
+    - SILENT CODE REPAIRS — how often the sandbox rewrote code before evaluating
+      it (gates CR-SBX-1 §3.3: are the escaping rules still earning their place?)
+    - DEFMACRO ADOPTION  — whether the model uses the macro capability at all
+      (gates CR-SBX-2 §4: build persistence, or close the CR?)
+  Both print `n/a` for windows predating their instrumentation rather than a
+  misleading 0.
+
+    bb code-eval:stats                     # whole history
+    bb code-eval:stats --split 2026-08-24  # before/after a change date
+    bb code-eval:stats --since 2026-08-24  # window (also --until)
+    bb code-eval:stats --detail            # show each distinct failure + its code
+    bb code-eval:stats --edn               # machine-readable
+    bb code-eval:stats --logs '<glob>'     # non-default log location"
+   :task (let [args (vec *command-line-args*)]
+           (apply shell "bb" "scripts/code_eval_stats.clj" args))}
+
   ;; --------------- License headers ---------------
   license:check
   {:doc "Verify every in-scope source file carries the standard MIT

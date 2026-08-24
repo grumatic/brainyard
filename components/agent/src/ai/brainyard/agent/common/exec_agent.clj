@@ -158,20 +158,20 @@ first), pick → ROUTE on item :tags.via:
      agent's answer. :ok? = no `Rolled back:` line.
 
   :bash →
-     (bash {:command <command from item :command or
+     (bash :command <command from item :command or
                       inferred from :description>
-            :timeout 30000})
+           :timeout 30000)
      :ok? = exit 0.
 
   :mcp →
-     (mcp$tools {:op :call :tool-calls [<one call>]})
+     (mcp$tools :op :call :tool-calls [<one call>])
      Read-only tools (search/list/get/show/read) proceed. WRITE-side
      tools (create/update/delete/send/post/execute) STOP, surface to
      user, do NOT flip the checkbox — same rule as explore-agent.
 
   :explore-agent →
-     (explore-agent {:question <description>
-                     :agent-context (:plan-dossier pre)})
+     (explore-agent :question <description>
+                    :agent-context (:plan-dossier pre))
      Always :ok? true (read-only). Record `Saved exploration:` as
      evidence.
 
@@ -185,10 +185,10 @@ first), pick → ROUTE on item :tags.via:
 
 After ROUTE → VERIFY (:ok? per the rules above) → RECORD evidence. Then FLIP
 the box, INDEX-FREE — only when :ok? is true:
-   (update-file {:path \"<todo path>\"
-                 :pattern \"- [ ] <unique item text>\"
-                 :replacement \"- [x] <unique item text>\"})
-   (todo$sync {:path \"<todo path>\"})   ; reconcile progress + refresh the TUI
+   (update-file :path \"<todo path>\"
+                :pattern \"- [ ] <unique item text>\"
+                :replacement \"- [x] <unique item text>\")
+   (todo$sync :path \"<todo path>\")   ; reconcile progress + refresh the TUI
 Match on enough of the item's description to be UNIQUE — never a drifting
 numeric index. If :ok? is false → leave the box un-flipped, record the failure,
 continue. NEVER flip a box without supporting evidence.
@@ -298,8 +298,8 @@ back for eval-agent):
    ## Handoff
 
 HANDOFF — fill handoff: and the Next: answer line from this table:
-   pre=go, post=pass, all done → next_agent: eval-agent ; next_call: (eval-agent {:question \"Score this todo against its plan.\" :agent-context \"<dossier path>\"})
-   pre=go, post=pass, items remain → next_agent: exec-agent ; next_call: (exec-agent {:question \"Continue.\" :agent-context \"<dossier path>\"})
+   pre=go, post=pass, all done → next_agent: eval-agent ; next_call: (eval-agent :question \"Score this todo against its plan.\" :agent-context \"<dossier path>\")
+   pre=go, post=pass, items remain → next_agent: exec-agent ; next_call: (exec-agent :question \"Continue.\" :agent-context \"<dossier path>\")
    pre=go, post=hold → next_agent: user ; next_call: resolve holds, then re-run exec-agent
    pre=gather → next_agent: user ; next_call: run todo-agent / plan-agent first
    pre=refuse → next_agent: none ; next_call: see refuse_reason (typically plan-agent / todo-agent re-run)
@@ -314,15 +314,15 @@ ANSWER — stable-prefix lines
 ────────────────────────────────────────────────────────────────────────────
 On EXECUTE + POST-FLIGHT = PASS, items remain:
     Saved dossier: <dossier-path>
-    Next: (exec-agent {:question \"Continue.\"
-                       :agent-context \"<dossier-path>\"})
+    Next: (exec-agent :question \"Continue.\"
+                      :agent-context \"<dossier-path>\")
 
 On EXECUTE + POST-FLIGHT = PASS, all done:
     Saved dossier: <dossier-path>
     Done: <slug> — all <N> items advanced; recommend doc$update :status
            :completed + eval-agent.
-    Next: (eval-agent {:question \"Score this todo.\"
-                       :agent-context \"<dossier-path>\"})
+    Next: (eval-agent :question \"Score this todo.\"
+                      :agent-context \"<dossier-path>\")
 
 On EXECUTE with :via :manual surfaced:
     Saved dossier: <dossier-path>
@@ -371,7 +371,7 @@ HARD RULES
 TODO CHECKLIST — flip boxes INDEX-FREE (the todo is a markdown file)
 - update-file \"- [ ] <unique text>\" → \"- [x] <unique text>\" — flip a completed
               item by line TEXT (never a drifting index), then
-              (todo$sync {:path \"<todo path>\"}) to reconcile + refresh the TUI.
+              (todo$sync :path \"<todo path>\") to reconcile + refresh the TUI.
               update-file is bound ONLY for this checkbox flip — never for source.
 - doc$list :kind :todo                  — enumerate.
 - doc$read :kind :todo :slug <s>        — load the active todo (or just read-file).

@@ -496,20 +496,20 @@
         ;; All items done — recommend eval-agent
         (or (nil? items-pending-after) (empty? items-pending-after))
         {:next-agent "eval-agent"
-         :next-call (str "(eval-agent {:question \"Score this todo against its plan.\""
-                         ctx "})")}
+         :next-call (str "(eval-agent :question \"Score this todo against its plan.\""
+                         ctx ")")}
 
         ;; Items remain — recommend continuing exec-agent
         :else
         {:next-agent "exec-agent"
-         :next-call (str "(exec-agent {:question \"Continue.\""
-                         ctx "})")})
+         :next-call (str "(exec-agent :question \"Continue.\""
+                         ctx ")")})
 
       :hold
       {:next-agent "user"
        :next-call (str "Resolve holds, then re-call exec-agent: "
-                       "(exec-agent {:question \"<refined request>\""
-                       ctx "})")}
+                       "(exec-agent :question \"<refined request>\""
+                       ctx ")")}
 
       :n-a
       (case pre-verdict

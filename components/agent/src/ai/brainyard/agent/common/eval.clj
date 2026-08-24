@@ -503,8 +503,8 @@
        :next-call (str "After user confirms: (doc$update "
                        "{:kind :todo :slug \"" (or slug "<slug>")
                        "\" :status :completed}) and "
-                       "(doc$update {:kind :plan :slug \""
-                       (or slug "<slug>") "\" :status :completed}).")}
+                       "(doc$update :kind :plan :slug \""
+                       (or slug "<slug>") "\" :status :completed).")}
 
       :partially-achieved
       {:next-agent "user"
@@ -516,8 +516,8 @@
       :not-achieved
       {:next-agent "plan-agent"
        :next-call (str "Recommended primary path: re-spec via plan-agent. "
-                       "(plan-agent {:question \"Revise approach: <gap>\""
-                       ctx "}). Per-criterion recommendations also in frontmatter.")}
+                       "(plan-agent :question \"Revise approach: <gap>\""
+                       ctx "). Per-criterion recommendations also in frontmatter.")}
 
       :n-a
       (case pre-verdict

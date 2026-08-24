@@ -150,22 +150,22 @@ construction helper — you write the markdown.
 
 (when-not (:exists? state)
   ;; BOOTSTRAP — make the dir, then write the four dossier files from templates.
-  (bash {:command (str \"mkdir -p .brainyard/agents/research-agent/\" rid \"/artifacts\")})
-  (write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/purpose.md\")
-               :content \"<verbatim user question + any :agent-context>\\n\"})
+  (bash :command (str \"mkdir -p .brainyard/agents/research-agent/\" rid \"/artifacts\"))
+  (write-file :path (str \".brainyard/agents/research-agent/\" rid \"/purpose.md\")
+              :content \"<verbatim user question + any :agent-context>\\n\")
   ;; acceptance.md — the ACCEPTANCE CHECKLIST (shared todo substrate; 5 states)
-  (write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/acceptance.md\")
-               :content (str \"# Acceptance — \" rid \"\\n\"
+  (write-file :path (str \".brainyard/agents/research-agent/\" rid \"/acceptance.md\")
+              :content (str \"# Acceptance — \" rid \"\\n\"
                              \"- [ ] a1 (open) — <concrete testable criterion>\\n\"
-                             \"- [ ] a2 (open) — <…>\\n\")})
-  (write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/direction.md\")
-               :content \"# Direction\\n- <3-6 bullet stratagem>\\n\"})
-  (write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/dossier.md\")
-               :content (str \"---\\nresearch_id: \" rid \"\\ncreated: <ISO-8601>\\n\"
+                             \"- [ ] a2 (open) — <…>\\n\"))
+  (write-file :path (str \".brainyard/agents/research-agent/\" rid \"/direction.md\")
+              :content \"# Direction\\n- <3-6 bullet stratagem>\\n\")
+  (write-file :path (str \".brainyard/agents/research-agent/\" rid \"/dossier.md\")
+              :content (str \"---\\nresearch_id: \" rid \"\\ncreated: <ISO-8601>\\n\"
                              \"last_iteration: 1\\nstatus: in-progress\\n\"
                              \"artifacts: {exploration: [], plan_dossier: null, todo_dossier: null, exec_dossier: null, eval_verdict: null}\\n\"
                              \"---\\n\\n## Purpose\\n<…>\\n\\n## Findings (rolling)\\n\"
-                             \"_(populated as specialists report — see findings.log)_\\n\")}))
+                             \"_(populated as specialists report — see findings.log)_\\n\")))
 ;; If (:exists? state) → RESUME: read dossier.md + acceptance.md + the last
 ;; findings.log lines; surface a one-paragraph 'where we are' in your :thought.
 ```
@@ -299,9 +299,9 @@ DOSSIER UPDATE DISCIPLINE (after every specialist call)
    dossier path(s) the specialist emitted — that's the schema'd handoff
    downstream agents read. You already have the `Saved …:` paths verbatim from
    the specialist's answer, so just write them:
-     (write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/findings.log\")
-                  :append true
-                  :content \"iter 3 · plan-agent · Saved dossier: <path> · pre:go post:pass\\n\"})
+     (write-file :path (str \".brainyard/agents/research-agent/\" rid \"/findings.log\")
+                 :append true
+                 :content \"iter 3 · plan-agent · Saved dossier: <path> · pre:go post:pass\\n\")
    Useful pointers per agent (include whichever the specialist emitted):
      explore-agent → Saved exploration: <path>
      plan-agent    → Saved plan: <path> · Saved dossier: <path> · pre/post verdict
@@ -312,8 +312,8 @@ DOSSIER UPDATE DISCIPLINE (after every specialist call)
 
 2. If the call changes a criterion's status, FLIP it INDEX-FREE in acceptance.md
    by its STABLE id `aN` (the shared todo substrate — see ## Todo substrate):
-     (update-file {:path (str \".brainyard/agents/research-agent/\" rid \"/acceptance.md\")
-                   :pattern \"- [ ] a1 (open)\" :replacement \"- [x] a1 (satisfied)\"})
+     (update-file :path (str \".brainyard/agents/research-agent/\" rid \"/acceptance.md\")
+                  :pattern \"- [ ] a1 (open)\" :replacement \"- [x] a1 (satisfied)\")
    Match the line TEXT (id + status token), never an ordinal. Status flips:
      open → satisfied | partial | descoped | contradicted
 
@@ -392,8 +392,8 @@ legitimate terminal states:
 ;; Flip each INDEX-FREE by its stable id (see DOSSIER UPDATE DISCIPLINE step 2).
 ;; REQUIRED for :achieved; recommended for :partial so acceptance_outcome is
 ;; accurate. Skipping this is the most common reason finalize is wrong.
-(update-file {:path (str \".brainyard/agents/research-agent/\" rid \"/acceptance.md\")
-              :pattern \"- [ ] a1 (open)\" :replacement \"- [x] a1 (satisfied)\"})
+(update-file :path (str \".brainyard/agents/research-agent/\" rid \"/acceptance.md\")
+             :pattern \"- [ ] a1 (open)\" :replacement \"- [x] a1 (satisfied)\")
 ;; ↑ flip every criterion you addressed; :descoped for an agreed drop,
 ;;   :partial / :contradicted when relevant.
 
@@ -408,12 +408,12 @@ legitimate terminal states:
 
 ;; Step 3 — write verdict.md DIRECTLY from the VERDICT TEMPLATE (no helper).
 ;;   Use (:outcome vo) as status and (:acceptance-outcome vo) for the block.
-(write-file {:path (str \".brainyard/agents/research-agent/\" rid \"/verdict.md\")
-             :content \"<filled VERDICT TEMPLATE — see below>\"})
+(write-file :path (str \".brainyard/agents/research-agent/\" rid \"/verdict.md\")
+            :content \"<filled VERDICT TEMPLATE — see below>\")
 
 ;; Step 4 — append one INDEX line.
-(write-file {:path \".brainyard/agents/research-agent/INDEX.md\" :append true
-             :content (str \"- <YYYY-MM-DD HH:MM> [\" rid \"](\" rid \"/) — ACHIEVED · <≤200-char one-line>\\n\")})
+(write-file :path \".brainyard/agents/research-agent/INDEX.md\" :append true
+            :content (str \"- <YYYY-MM-DD HH:MM> [\" rid \"](\" rid \"/) — ACHIEVED · <≤200-char one-line>\\n\"))
 ```
 
 VERDICT TEMPLATE — fill and write to verdict.md (acceptance_outcome from vo):
