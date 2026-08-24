@@ -877,3 +877,59 @@ adds it by cloning a proven one.
   **Resolved (§4.10): its own specialist.** The deciding factor was not moving
   parts but the instruction — `tool-agent`'s is a hard-rules document, and every
   rule would need an "unless it's a macro" hedge.
+
+---
+
+## 7. Disposition of the original lisptc audit
+
+The audit that started this doc listed five gaps. Recorded here because three of
+the five closed without code, and two of those closed by being **wrong**.
+
+| # | Gap | Disposition |
+|---|---|---|
+| 1 | Advertised language surface is wrong | Main remedy **retracted** (§3.1 — zero vocabulary failures). Three truth-fixes remain open: §3.2, §3.4, §3.5 |
+| 2 | No macro layer | Probe shipped (§4.0); full build gated on adoption |
+| 3 | Silent repair — model never learns | Instrumented; §3.3 decidable on data |
+| 4 | No value-handle across the tool-call boundary | **Closed — the claim was false.** See below |
+| 5 | Skills are prose, not composed programs | Explicit v1 non-goal (§4.14) |
+
+### 7.1 Gap 4 was already solved, twice over
+
+The claim was: a large tool result stays in a sandbox `def` on the code channel
+but enters context whole through the tool-calls channel, so the two should be
+unified behind a `ref://` handle.
+
+**Neither half holds.**
+
+*The mechanism already exists, and it is shared.* `sanitize-tool-result` routes
+every `:tool-result` through `truncate-iter-field` → `clj-sandbox/truncate-to-file`
+— the identical path `sanitize-eval-entry` uses for `:result` and `:output`.
+Both are capped at `:max-output-chars` (32000, ~8k tokens), keep head 70% + tail
+20%, spill the full value to a temp file, and leave a `(read-file …)` pointer.
+That *is* the value handle the gap asked for; it addresses by filesystem path
+rather than a `ref://` scheme, which needs no new resolver.
+
+*And the model never sees the untruncated form.* `ThinkActCode`'s only history
+input is `:iterations`, built exclusively by `coact-accumulate-iteration-action`,
+which sanitizes on the way in. The raw `:last-tool-results` is transient state
+consumed by that action and by the TUI display stage — it is never a signature
+input.
+
+*The residual difference costs nothing measurable.* A code-channel result can
+stay entirely out of context (bound to a var, never printed); a tool-channel
+result costs up to the cap. Truncation markers in the logs, by class:
+
+```
+1610  compact-answer
+  12  eval-output
+   1  tool-result      ← the whole of gap 4, one occurrence
+```
+
+One tool result in the entire log period was large enough to spill. Building a
+handle protocol for that would be machinery in search of a problem.
+
+**Incidental finding worth its own look:** `compact-answer` accounts for ~99% of
+all truncation. That is the conversation-compaction path repeatedly spilling
+oversized answers to disk — unrelated to this doc, and the only place the
+truncation machinery is under real load. (Raw counts, so replay-inflated; the
+ratio is what matters, not the absolute.)
