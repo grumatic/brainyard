@@ -87,11 +87,23 @@
                    :head-ratio     fraction of max-chars for head (default 0.7)
                    :tail-ratio     fraction of max-chars for tail (default 0.2)
                    :recovery-hint  custom recovery guidance string; %s is replaced with the
-                                   temp file path (default: read-file chunk guidance)}
+                                   temp file path (default: read-file chunk guidance)
+                   :dry-run?       MEASURE ONLY — see below (default false)}
+
+   `:dry-run? true` returns the same string this would produce but performs NO
+   write. It exists so a caller can SIZE the result — the notice is ~350 chars,
+   so estimating on the bare truncated body materially undercounts — without
+   spilling a file it may then discard. The placeholder id is the same width as
+   a real one, so the measured length matches the committed length.
+
+   The dry-run string therefore names a file that does not exist, and MUST NOT
+   be persisted or shown to a model. Re-call without `:dry-run?` to commit.
+   (An already-truncated input still recovers from its real temp file, so a
+   dry-run over one of those does name a live path.)
 
    Returns: String — original if under limit, or head + recovery notice + tail."
-  [text max-chars class & {:keys [label head-ratio tail-ratio recovery-hint]
-                           :or {label nil head-ratio 0.7 tail-ratio 0.2}}]
+  [text max-chars class & {:keys [label head-ratio tail-ratio recovery-hint dry-run?]
+                           :or {label nil head-ratio 0.7 tail-ratio 0.2 dry-run? false}}]
   (if (or (nil? text) (<= (count text) max-chars))
     text
     ;; Recover original from temp file if text is already truncated
@@ -100,11 +112,15 @@
         text
         (let [label (or label class)
               dir (ensure-dir (working-dir-subpath class))
-              ;; Reuse existing temp file if we recovered from one, else create new
-              file (if existing-path
-                     (io/file existing-path)
-                     (io/file dir (str (short-id) ".txt")))
-              _ (when-not existing-path (spit file text))
+              ;; Reuse existing temp file if we recovered from one, else create new.
+              ;; A dry run names a same-width placeholder so the notice it
+              ;; produces is exactly as long as the committed one will be.
+              file (cond
+                     existing-path (io/file existing-path)
+                     dry-run?      (io/file dir "00000000.txt")
+                     :else         (io/file dir (str (short-id) ".txt")))
+              _ (when (and (not existing-path) (not dry-run?))
+                  (spit file text))
               head-len (long (* max-chars head-ratio))
               tail-len (long (* max-chars tail-ratio))
               path (.getPath file)

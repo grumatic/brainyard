@@ -892,7 +892,7 @@ the five closed without code, and two of those closed by being **wrong**.
 | 1 | Advertised language surface is wrong | Main remedy **retracted** (§3.1 — zero vocabulary failures). Three truth-fixes **SHIPPED 2026-08-24**: §3.2, §3.4, §3.5 |
 | 2 | No macro layer | Probe shipped (§4.0); full build gated on adoption |
 | 3 | Silent repair — model never learns | Instrumented; §3.3 decidable on data |
-| 4 | No value-handle across the tool-call boundary | **Closed — the claim was false.** See below |
+| 4 | No value-handle across the tool-call boundary | **Closed — the claim was false.** See §7.1; the follow-up it surfaced (§7.2) shipped |
 | 5 | Skills are prose, not composed programs | Explicit v1 non-goal (§4.14) |
 
 ### 7.1 Gap 4 was already solved, twice over
@@ -984,17 +984,43 @@ the previous turn's already-truncated text — so the recovery chain is only as
 strong as its oldest surviving link. The GC docstring already notes the adjacent
 hazard: "a hot truncation cache can crowd out stale file-backed entries."
 
-**Proposed fix — separate searching from committing.** Run the pass search with
-in-memory truncation (plain `subs`, no I/O, no marker) to find the winning
-parameters, then call `truncate-to-file` exactly **once** per turn with those
-parameters, against the answer as received. Output is identical; file writes
-drop ~4x; and the within-compaction re-truncation chain disappears, because each
-answer is truncated once from what the compactor was handed.
+**Fix — separate searching from committing. IMPLEMENTED 2026-08-24.**
+`truncate-to-file` gained `:dry-run?`, which returns the byte-identical string
+it would commit but performs no write (placeholder id is the same width, so the
+measured length matches — verified: 2307 == 2307). `compact-previous-turns` now
+prices every candidate pass against the **original** turns with `:dry-run?`,
+then applies the winner **once**.
 
-That does not fully fix the *cross-turn* chain (`:previous-turns` is mutated in
-place, so turn N+1 still starts from turn N's truncated text). Doing that
-properly means retaining originals somewhere, which is a bigger change. But
-cutting the churn 4x substantially delays reaching the 200-file cap, which is
-the trigger for the silent-loss case.
+**Correction to this section's own claim.** It said writes would drop ~4x. They
+do not drop at all — `truncate-to-file` *reuses* the temp file it recovered
+from, so it is one file per truncated answer either way. The chain's real cost
+is **read-backs**, measured over 12 turns:
 
-Not implemented — filed here with the measurements behind it.
+| scenario | old reads | old writes | new reads | new writes |
+|---|---|---|---|---|
+| loose target (pass 1 fits) | 0 | 9 | **0** | 9 |
+| mid | 9 | 11 | **0** | 11 |
+| tight | 32 | 12 | **0** | 12 |
+| no pass fits | 56 | 20 | **0** | 20 |
+
+(Counters scoped to the truncation cache and both sides measured warm. A first
+cut counted every `slurp`, which also caught cold config/dirs resolution and so
+compared a cold old run against a warm new one — it reported 2 reads for the
+loose case, where the honest figure is 0 because pass 1 fits and neither
+implementation re-truncates. The regression test scopes its counter for the
+same reason.)
+
+Those reads *are* the eviction dependency — each one is a re-truncation asking
+the temp file to still hold the original. Removing them removes the silent
+re-basing failure entirely, which is the point; the I/O saving is incidental.
+
+Output is unchanged, verified against a reimplementation of the old cumulative
+loop across four targets: same turn count, same `:depth` assignments, same
+answers modulo the temp-file id. That oracle lives in
+`context_compaction_test.clj` rather than being a one-off check, because the
+split is only safe while depth stays a pure function of recency and the pass
+parameters — if that stops holding, the failure is silent.
+
+Still only the WITHIN-compaction chain. `:previous-turns` is mutated in place,
+so turn N+1 still starts from turn N's truncated text; breaking that needs
+originals retained somewhere and is a larger change.

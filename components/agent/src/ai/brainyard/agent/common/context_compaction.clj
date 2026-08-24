@@ -66,8 +66,14 @@
     0))
 
 (defn- recompress-turns
-  "Re-apply progressive compression to turns with given depth parameters."
-  [turns full-depth summary-depth answer-limit]
+  "Re-apply progressive compression to turns with given depth parameters.
+
+   `:dry-run?` forwards to `truncate-to-file`: the returned turns are shaped and
+   sized exactly as the committed ones would be, but no temp file is written.
+   Used by `compact-previous-turns` to price a candidate pass before choosing
+   one. Dry-run output is for measurement only and must not be returned to a
+   caller — its recovery paths are placeholders."
+  [turns full-depth summary-depth answer-limit & {:keys [dry-run?] :or {dry-run? false}}]
   (let [n (count turns)]
     (vec (map-indexed
           (fn [i turn]
@@ -82,14 +88,16 @@
                     (update :answer (fn [a]
                                       (when a
                                         (clj-sandbox/truncate-to-file a answer-limit "compact-answer"
-                                                                      :label "prior answer"))))
+                                                                      :label "prior answer"
+                                                                      :dry-run? dry-run?))))
                     (assoc :depth :summary))
 
                 :else
                 {:question (:question turn)
                  :answer (when-let [a (:answer turn)]
                            (clj-sandbox/truncate-to-file a (min 400 answer-limit) "compact-answer"
-                                                         :label "prior answer (minimal)"))
+                                                         :label "prior answer (minimal)"
+                                                         :dry-run? dry-run?))
                  :depth :minimal})))
           turns))))
 
@@ -97,34 +105,57 @@
   "Aggressively compress previous-turns to reduce tokens toward target.
    Pure function — no LLM call. Returns compacted turns vector.
 
-   Applies progressively tighter passes with early-exit when under target:
+   Picks the loosest of four progressively tighter passes that fits the target:
    1. full-depth=3, summary-depth=10, answer-limit=2000
    2. full-depth=1, summary-depth=5, answer-limit=1000
-   3. All minimal (question + short answer only)
-   4. Truncate minimal answers to 400 chars
-   5. Drop oldest turns (keep last 10)"
+   3. All minimal (question + short answer only), 400 chars
+   4. All minimal, 200 chars
+   …and if none fits, applies pass 4 and drops oldest turns (keep last 10).
+
+   SEARCH AND COMMIT ARE SEPARATE, which is the whole shape of this function.
+   Pricing a pass used to mean *applying* it, and the old loop fed each pass the
+   PREVIOUS pass's output — so an answer could be truncated up to four times.
+
+   That chain is the problem, and not for the reason it looks like. It costs no
+   extra WRITES: `truncate-to-file` reuses the temp file it recovered from, so
+   one file per truncated answer either way. What it costs is READ-BACKS — every
+   re-truncation slurps the temp file to recover the original. Measured on 12
+   turns: 32 reads at a tight target, 56 when no pass fits, versus 0 here.
+
+   Those reads are a correctness dependency, not just I/O. The sandbox cache
+   evicts oldest-first at `:sandbox-cache-max-files` (200). When the file is gone
+   the re-truncation silently re-bases: the marker still says \"Full content saved
+   to\" but the file now holds the already-truncated text. Recoverability is lost
+   with no error and nothing downstream can detect it.
+
+   So: price every candidate against the ORIGINAL turns with `:dry-run?` (no
+   writes, no reads), then apply the winner ONCE. Output is unchanged — depth is
+   a pure function of recency and the pass parameters, and truncating once from
+   the original equals truncating repeatedly *when recovery works*, which is
+   exactly the assumption this removes.
+
+   Note this fixes the WITHIN-compaction chain only. `:previous-turns` is
+   mutated in place, so turn N+1 still starts from turn N's truncated text;
+   breaking that needs originals retained somewhere and is a larger change."
   [previous-turns target-tokens]
   (if (empty? previous-turns)
     previous-turns
     (let [passes [[3 10 2000]   ;; pass 1: moderate compression
                   [1 5  1000]   ;; pass 2: aggressive
                   [0 0  400]    ;; pass 3: all minimal
-                  [0 0  200]]]  ;; pass 4: very tight minimal
-      (loop [turns previous-turns
-             [[fd sd al] & more] passes]
-        (if (nil? fd)
-          ;; All passes exhausted — drop oldest turns as last resort
-          (let [kept (subvec (vec turns) (max 0 (- (count turns) 10)))]
-            kept)
-          (let [compressed (recompress-turns turns fd sd al)
-                est (estimate-turns-tokens compressed)]
-            (if (<= est target-tokens)
-              compressed
-              (if (seq more)
-                (recur compressed more)
-                ;; After all passes, try dropping oldest
-                (let [kept (subvec (vec compressed) (max 0 (- (count compressed) 10)))]
-                  kept)))))))))
+                  [0 0  200]]   ;; pass 4: very tight minimal
+          fits?  (fn [[fd sd al]]
+                   (<= (estimate-turns-tokens
+                        (recompress-turns previous-turns fd sd al :dry-run? true))
+                       target-tokens))
+          winner (first (filter fits? passes))]
+      (if winner
+        (let [[fd sd al] winner]
+          (recompress-turns previous-turns fd sd al))
+        ;; Nothing fits — tightest pass, then drop oldest as a last resort.
+        (let [[fd sd al] (last passes)
+              compressed (recompress-turns previous-turns fd sd al)]
+          (subvec (vec compressed) (max 0 (- (count compressed) 10))))))))
 
 ;; ============================================================================
 ;; Main Compaction Entry Point

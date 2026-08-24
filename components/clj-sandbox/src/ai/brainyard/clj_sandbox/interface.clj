@@ -228,7 +228,11 @@
 
 (def truncate-to-file
   "If text exceeds max-chars, save original to temp file and return
-   truncated text with a recovery path. Otherwise return text unchanged."
+   truncated text with a recovery path. Otherwise return text unchanged.
+
+   `:dry-run? true` returns the byte-identical string without writing, so a
+   caller can SIZE the result before choosing to commit it. The returned string
+   names a placeholder file — measure it, do not persist it."
   truncation/truncate-to-file)
 
 ;; ============================================================================
