@@ -818,17 +818,67 @@ Mirroring `user_tools_test.clj`, which exercises the real sandbox + real store:
   than inventing dependency ordering.
 - **Retention/GC.** Macros are small text files; revisit with skills.
 
-### 4.14 Relationship to skills
+### 4.14 Relationship to skills — and one measured experiment
 
-`skills.clj` re-reads `SKILL.md` every invocation and asks the LM to follow prose
-— the "filing cabinet of markdown memory" lisptc criticizes by name. Macros are
-the executable counterpart: a procedure that runs rather than being
+`skills.clj` re-reads `SKILL.md` on every invocation and asks the LM to follow
+prose — the "filing cabinet of markdown memory" lisptc criticizes by name.
+Macros are the executable counterpart: a procedure that runs rather than being
 re-interpreted.
 
-**Explicit v1 non-goal:** compiling skills to macros. Let the two coexist and
-observe the seam first.
+**Experiment (2026-08-24): compile a skill to a user TOOL.** Not a macro — a
+tool, since `tool-agent$create` already exists and needs no new machinery. Run
+against the three skills present in this repo, which turn out to be a useful
+spread:
 
----
+| skill | content | compiles? |
+|---|---|---|
+| `run-bash` (145 ln) | API reference for `bash` / `task$run` | **No** — it is documentation for tools that already exist |
+| `by-rebuild-stamp-verify-loop` (100 ln) | procedure with judgement (write the commit message, judge staleness, decide whether a red check blocks) | **Partly** |
+| `nrepl-raw-bencode-client` (142 ln) | ~90 lines of bencode client **code** plus a fixed procedure | **Yes** — the payload is code |
+
+The third was compiled end to end: validate → create → persist → rehydrate in a
+**fresh JVM** → call. It works, including stdout capture, error propagation
+(`eval-error` status with the real exception text), and Malli rejecting a
+malformed call (`{:code ["missing required key"]}`) — a contract the prose skill
+never had.
+
+Token cost of the same capability:
+
+| path | tokens |
+|---|---|
+| skill: `SKILL.md` into context | 1542 |
+| skill: client code the model must then emit | 656 |
+| **skill total, per use** | **2198** |
+| tool: directory entry (description + schema) | 41 |
+| tool: the call itself | 13 |
+| **tool total, per use** | **54** |
+
+**~40x**, plus one iteration instead of two or more, plus arg validation, plus
+the client is no longer re-derived every session.
+
+**But read what actually compiled.** The skill has six sections; only §2 ("write
+the client ONCE") became the tool. §1 (determine the port), §3 (handshake and
+PROVE you are on the right JVM), §4 (discover before you mutate), §5 (reload and
+re-test) and §6 (hygiene) did **not** compile, and should not — they are
+operational caution, and a single tool call cannot decide whether you are about
+to mutate the wrong JVM.
+
+So the honest result: **the mechanism compiled, the procedure did not.** The 40x
+is real and applies to the code payload; it says nothing about the judgement
+around it. That maps cleanly onto the table above — a skill whose value is a
+lump of code is a tool wearing prose, and a skill whose value is knowing when to
+stop is not.
+
+**Implication for CR-SBX-2, unchanged:** this argues for *tools*, not macros.
+Nothing in the experiment needed an unevaluated body, which remains the only
+thing a macro uniquely provides (§4.0). If a compile-skills-to-X path is ever
+built, X is `tool-agent$create` and the interesting work is deciding which
+sections to leave in prose.
+
+**Not proposed:** an automatic skill→tool compiler. The classification above is
+a judgement about what a skill *is*, and the two failing cases fail for
+different reasons — one is redundant documentation, the other is irreducibly
+human. A compiler would have to make that call, and the sample here is three.
 
 ## 5. Sequencing
 
