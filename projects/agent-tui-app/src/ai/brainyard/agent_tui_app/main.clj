@@ -1182,6 +1182,13 @@
         opts (parse-legacy-provider opts)
         _ (install-working-dir! opts)
         _ (register-project!)
+        ;; Register user-authored defs (skills, user tools, user agents) BEFORE
+        ;; the agent is built. Synchronous for skills specifically: a one-shot
+        ;; ask has exactly one turn, so a background scan would race it and the
+        ;; skill would silently not exist for the only turn that mattered.
+        ;; Until this call existed, `by ask` never registered skills at all —
+        ;; `reload-skills!`'s only entry point was the TUI's `start!`.
+        _ (agent/boot-registries! :skills :sync)
         file-config (agent/read-edn-config (agent/init-dirs!))
         question (first (:_arguments opts))
         cli-agent (:agent opts)
@@ -2182,6 +2189,11 @@
   "List available agents. `--json` emits a machine-readable array instead of
    the table."
   [opts]
+  (install-working-dir! opts)
+  ;; Register user agents so they are actually listed. `:skills :skip` — the
+  ;; skill scan is the expensive part of boot and this command renders
+  ;; `:type :agent` only, so it would be paid for nothing.
+  (agent/boot-registries! :skills :skip)
   (let [agent-defs (agent/get-tool-defs :type :agent)]
     (cond
       (:json opts)
@@ -3045,7 +3057,10 @@
                   :runs        cmd-ask}
                  {:command     "agents"
                   :description "List available agents"
-                  :opts        [json-opt]
+                  ;; `-C` because the listing is now project-sensitive: user
+                  ;; agents live under `<project>/.brainyard/agents/user$agent/`,
+                  ;; so which project you point at changes the output.
+                  :opts        [working-dir-opt json-opt]
                   :runs        cmd-agents}
                  {:command     "models"
                   :description "List available LLM models (provider/model)"
@@ -3276,13 +3291,17 @@
 (defn- registered-agent-id?
   "True when `tok` names an agent in the registry.
 
-   Only BUILT-IN agents can answer here, and that is correct rather than a
-   limitation to be fixed: user-defined agents are registered by
-   `user-agents/ensure-loaded!`, which runs inside a turn (it needs an agent
-   instance for its dirs), so at dispatch time they are not in the registry —
-   and a positional user-agent id could not reach one today either. It would
-   hit `create-tui-agent!`'s own `registered?` guard and fall back to
-   coact-agent. So this gate rejects nothing that works."
+   Only BUILT-IN agents can answer here, and the reason is ORDERING, not the
+   registry: this runs during argv normalization, before cli-matic has parsed
+   `-C` and therefore before `install-working-dir!` — so there is no resolved
+   project to read `<project>/.brainyard/agents/user$agent/` from yet.
+   `boot-registries!` cannot run this early for the same reason.
+
+   Downstream this is no longer true. `start!` registers user agents before the
+   first `create-tui-agent!`, so `run --agent user$agent$<name>` resolves. Only
+   the BARE positional form (`by user$agent$<name>`) is rejected here, exiting
+   as an unknown token rather than reaching a guard that would now accept it.
+   Fixing that means resolving dirs before flag parsing; use `--agent` instead."
   [tok]
   (contains? (agent/get-tool-defs :type :agent) (keyword tok)))
 

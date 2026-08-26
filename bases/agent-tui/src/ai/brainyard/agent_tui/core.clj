@@ -329,31 +329,25 @@
                         :match (agent/match-user-turn-agent) :source :tui))
 
 ;; ============================================================================
-;; Dynamic Skill Registration (once per process, at runtime)
+;; User-authored registry boot (once per process, at runtime)
 ;; ============================================================================
 
-(defonce ^{:private true
-           :doc "Process-once guard for dynamic skill registration. A defonce
-   *atom* (not a defonce side effect): safe to bake at native-image build time
-   because it only stores `false`; the actual FS scan happens at runtime via
-   `register-skills-once!`."}
-  !skills-registered?
-  (atom false))
+(defn- register-user-defs-once!
+  "Register everything user-authored — skills, user tools, user agents — into
+   the shared tool registry. Called from `start!` at runtime, NOT from
+   `create-tui-agent!`, so per-agent / per-tab spawns never re-scan.
 
-(defn- register-skills-once!
-  "Register dynamic skills (~/.brainyard, ~/.claude, ~/.agents, project
-   .brainyard) exactly once per process. Called from `start!` at runtime —
-   NOT from `create-tui-agent!`, so per-agent / per-tab spawns never re-scan
-   skill directories. Replaces the old namespace-load `defonce` bootstrap in
-   ai.brainyard.agent.common.skills, which the native `by` binary baked at
-   build time."
+   Skills scan asynchronously: the FS walk (~/.brainyard, ~/.claude, ~/.agents
+   + project, slurping every SKILL.md) must not stall the boot path, and the
+   agent reads the registry per-turn, so a skill landing a moment after the
+   prompt appears simply shows up on the next turn. User tools and agents are
+   a handful of small `.brainyard/` files and register synchronously, so the
+   `/agents` list and autocomplete are correct from the first frame.
+
+   Idempotency and the native-image build-time-init discipline both live in
+   `agent.common.boot`; this is only the TUI's choice of scan mode."
   []
-  (when (compare-and-set! !skills-registered? false true)
-    (try
-      (agent/reload-skills!)
-      (catch Throwable e
-        (reset! !skills-registered? false)
-        (mulog/warn ::skills-register-failed :error (ex-message e))))))
+  (agent/boot-registries! :skills :async))
 
 (defn- format-per-ask-usage
   "Format per-ask usage as a right-aligned dim line."
@@ -1733,17 +1727,11 @@
   ;;    main tab. Idempotent across multiple start! invocations.
   (persist-bridge/start!)
 
-  ;; Register dynamic skills once per process, at runtime startup. Run on a
-  ;; background thread so the FS scan (~/.brainyard, ~/.claude, ~/.agents +
-  ;; project skill dirs — slurp/parse every SKILL.md) doesn't stall the boot
-  ;; path. Skills register into the shared tool registry, which the agent reads
-  ;; per-turn, so a skill that lands a moment after the prompt appears simply
-  ;; shows up on the next turn. The CAS guard inside keeps it once-per-process.
-  (future
-    (try
-      (register-skills-once!)
-      (catch Throwable e
-        (mulog/warn ::skills-register-async-failed :error (ex-message e)))))
+  ;; Register everything user-authored — skills (async), user tools and user
+  ;; agents (sync) — into the shared tool registry, once per process at runtime
+  ;; startup. This is what makes a user def visible to the first frame's
+  ;; `/agents` list and autocomplete instead of only after the first turn.
+  (register-user-defs-once!)
 
   ;; Apply OAuth config (token-store backend + default flow) and route device/
   ;; auth verification prompts to the rich TUI renderer (code box + optional QR)

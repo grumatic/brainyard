@@ -62,16 +62,24 @@
        (sb/update-bindings! sbx extra-bindings))
      sbx)))
 
-(defonce ^{:doc "Set of tools-dirs already loaded this process, so `ensure-loaded!`
-  is a no-op after the first session-boot for a given user/project."}
+(defonce ^{:doc "Set of tools-dirs whose METADATA is registered in !tool-defs this
+  process (phase 1). Guards `ensure-registered!`, which runs at process boot
+  before any agent exists."}
+  !registered
+  (atom #{}))
+
+(defonce ^{:doc "Set of tools-dirs whose BODIES are installed in the tools sandbox
+  this process (phase 2), so `ensure-loaded!` is a no-op after the first
+  session-boot for a given user/project."}
   !loaded
   (atom #{}))
 
 (defn reset-tools-sandbox!
-  "Drop the tools sandbox and the loaded-dirs set (next call rebuilds / reloads).
+  "Drop the tools sandbox and both phase guards (next call rebuilds / reloads).
    For tests / reload."
   []
   (reset! !tools-sandbox nil)
+  (reset! !registered #{})
   (reset! !loaded #{}))
 
 ;; ============================================================================
@@ -129,13 +137,32 @@
     (catch Exception e
       (mulog/warn ::bind-into-live-sandbox-failed :error (ex-message e)))))
 
+(defn- bind-peer-symbol!
+  "Bind the direct `user$tool$<name>` symbol in the TOOLS sandbox, so other user
+   tool bodies can compose this tool by symbol. Routes through the registry
+   (`tool/call-tool`) so composition still gets Malli coercion +
+   hook/permission/depth guards — not through the hidden call-tool helper.
+
+   Sandbox-touching, so it belongs to body installation (phase 2), NOT to
+   registration: `register!` runs at process boot, where creating an SCI context
+   would be work done for a `by agents` that never evaluates anything."
+  [name]
+  (sb/set-var! (tools-sandbox)
+               (symbol (str "user$tool$" name))
+               (fn [args]
+                 (let [r (tool/call-tool (tool-id name) (or args {}))]
+                   (if (:error-message r) {:error (:error-message r)} r)))))
+
 (defn- register!
-  "Register (or replace) the tool in the shared !tool-defs registry AND bind its
-   direct `user$tool$<name>` symbol in the tools sandbox so other user tool bodies can
-   compose it by symbol after registration. The registry :fn rehydrates by
-   forking the tools sandbox and calling `__ut_<name>` with the args map bound as
-   `args`. Also binds the symbol into the current agent's live code-eval sandbox
-   so a create-then-call in the same turn resolves (see bind-into-live-sandbox!)."
+  "Register (or replace) the tool in the shared !tool-defs registry. PURE
+   registry work — it never touches the tools sandbox — so it is safe to run at
+   process boot before any agent exists. The registry :fn rehydrates by forking
+   the tools sandbox and calling `__ut_<name>` with the args map bound as
+   `args`, which requires `install-bodies!` to have run first.
+
+   Also binds the symbol into the current agent's live code-eval sandbox so a
+   create-then-call in the same turn resolves (see bind-into-live-sandbox!); at
+   boot there is no current agent and that is a no-op."
   [{:keys [name description input-schema]}]
   (let [id     (tool-id name)
         schema (or input-schema [:map])
@@ -159,14 +186,6 @@
                          :category      :user
                          :user-defined  true}}]
     (swap! tool/!tool-defs assoc id tool-def)
-    ;; Direct symbol for body-to-body composition. Routes through the registry
-    ;; (tool/call-tool) so it still gets Malli coercion + hook/permission/depth
-    ;; guards — not through the hidden call-tool helper.
-    (sb/set-var! (tools-sandbox)
-                 (symbol (str "user$tool$" name))
-                 (fn [args]
-                   (let [r (tool/call-tool id (or args {}))]
-                     (if (:error-message r) {:error (:error-message r)} r))))
     ;; Same-turn callability from the LLM's clojure code blocks.
     (bind-into-live-sandbox! tool-def)
     id))
@@ -202,54 +221,107 @@
                :input-schema (or input-schema [:map]) :body body}
         {:keys [edn]} (def-store/write-def! dir name (dissoc rec :body) body)]
     (let [id (register! rec)]
+      ;; `register!` is sandbox-free (it runs at boot too), so the peer symbol
+      ;; other bodies compose by is bound here, next to the body install above.
+      (bind-peer-symbol! name)
       (mulog/info ::define-tool :id id :file edn)
       {:id id :name name :persisted edn})))
 
-(defn load-user-tools!
-  "Startup loader: re-eval every persisted body into the tools sandbox and
-   re-register it. Call once when an agent session boots. Returns the names
-   loaded."
-  [& {:keys [dirs extra-bindings]}]
-  (tools-sandbox extra-bindings)                  ;; ensure + refresh tool palette
-  (let [dir-str (tools-dir dirs)
-        dir     (io/file dir-str)]
+(defn- read-persisted
+  "Every persisted tool record under `dir-str`, as `{:name :description
+   :input-schema :body}` maps. An unreadable file is warned about and skipped —
+   one corrupt `.edn` must not cost the user every other tool."
+  [dir-str]
+  (let [dir (io/file dir-str)]
     (if (.isDirectory dir)
-      (let [recs (->> (.listFiles dir)
-                      (filter #(str/ends-with? (.getName ^java.io.File %) ".edn"))
-                      (keep (fn [^java.io.File f]
-                              (let [base (subs (.getName f) 0 (- (count (.getName f)) 4))]
-                                (try (def-store/read-def dir-str base)
-                                     (catch Exception e
-                                       (mulog/warn ::load-user-tool-read-failed
-                                                   :file (.getName f) :error (ex-message e))
-                                       nil)))))
-                      vec)]
-        ;; Pass 1: register all, binding every `user$tool$<name>` symbol up front —
-        ;; bodies may reference peer tools and .edn file order is undefined.
-        (doseq [rec recs] (register! rec))
-        ;; Pass 2: install bodies (now all peer symbols resolve); roll a tool
-        ;; back out of the registry if its body fails to eval.
-        (->> recs
-             (keep (fn [rec]
-                     (try (install-body! (:name rec) (:body rec))
-                          (:name rec)
+      (->> (.listFiles dir)
+           (filter #(str/ends-with? (.getName ^java.io.File %) ".edn"))
+           (keep (fn [^java.io.File f]
+                   (let [base (subs (.getName f) 0 (- (count (.getName f)) 4))]
+                     (try (def-store/read-def dir-str base)
                           (catch Exception e
-                            (swap! tool/!tool-defs dissoc (tool-id (:name rec)))
-                            (mulog/warn ::load-user-tool-failed
-                                        :name (:name rec) :error (ex-message e))
-                            nil))))
-             vec))
+                            (mulog/warn ::load-user-tool-read-failed
+                                        :file (.getName f) :error (ex-message e))
+                            nil)))))
+           vec)
       [])))
 
+(defn register-persisted!
+  "PHASE 1 — register every persisted tool's METADATA into !tool-defs. Pure
+   metadata: no sandbox, no tool palette, no agent, so this runs at process
+   BOOT (see agent.common.boot) and is what makes a user tool discoverable to
+   `list-tools`, the sandbox binding pass and the CLI before any turn starts.
+
+   Registering all names up front is also what lets phase 2 install bodies in
+   any order — a body may compose a peer by its `user$tool$<name>` symbol and
+   `.edn` file order is undefined.
+
+   A tool registered here is NOT yet callable: its `__ut_<name>` body var is
+   installed by `install-bodies!` at the first turn, when the agent's tool
+   palette exists to eval it against. Returns the names registered."
+  [& {:keys [dirs]}]
+  (let [recs (read-persisted (tools-dir dirs))]
+    (doseq [rec recs] (register! rec))
+    (mapv :name recs)))
+
+(defn install-bodies!
+  "PHASE 2 — eval every persisted body into the tools sandbox, so the tools
+   registered by `register-persisted!` become callable. Needs `extra-bindings`
+   (the agent's `auto-tool-bindings`): SCI resolves symbols during analysis, so
+   a body calling `(bash :command …)` cannot eval without the palette bound.
+   That is the whole reason this is a separate phase from registration.
+
+   Rolls a tool back OUT of !tool-defs if its body fails to eval, so the LLM is
+   never shown a tool that cannot run. Returns the names installed."
+  [& {:keys [dirs extra-bindings]}]
+  (tools-sandbox extra-bindings)                  ;; ensure + refresh tool palette
+  (let [recs (read-persisted (tools-dir dirs))]
+    ;; Bind every peer `user$tool$<name>` symbol BEFORE installing any body:
+    ;; a body may compose a peer and `.edn` file order is undefined.
+    (doseq [rec recs] (bind-peer-symbol! (:name rec)))
+    (->> recs
+         (keep (fn [rec]
+                 (try (install-body! (:name rec) (:body rec))
+                      (:name rec)
+                      (catch Exception e
+                        (swap! tool/!tool-defs dissoc (tool-id (:name rec)))
+                        (mulog/warn ::load-user-tool-failed
+                                    :name (:name rec) :error (ex-message e))
+                        nil))))
+         vec)))
+
+(defn load-user-tools!
+  "Both phases, unguarded: register every persisted tool and install its body.
+   Returns the names whose bodies loaded."
+  [& {:keys [dirs extra-bindings]}]
+  (register-persisted! :dirs dirs)
+  (install-bodies! :dirs dirs :extra-bindings extra-bindings))
+
+(defn ensure-registered!
+  "Idempotent PHASE 1 for boot: register this project's persisted tool metadata
+   the first time the dir is seen this process, and no-op thereafter. Returns
+   the names registered (or nil when already registered)."
+  [& {:keys [dirs]}]
+  (let [dir (tools-dir dirs)]
+    (when-not (contains? @!registered dir)
+      (swap! !registered conj dir)
+      (register-persisted! :dirs dirs))))
+
 (defn ensure-loaded!
-  "Idempotent session-boot loader: load this user/project's persisted tools the
-   first time it is seen this process, and no-op thereafter. Safe to call on
-   every turn. Returns the names loaded (or nil when already loaded)."
+  "Idempotent session-boot loader: make this user/project's persisted tools
+   CALLABLE the first time the dir is seen this process, and no-op thereafter.
+   Safe to call on every turn.
+
+   Runs `ensure-registered!` first, which no-ops when boot already registered
+   the metadata and does the work when this process never booted through one of
+   the `boot-registries!` entry points (a2a serve, ACP, tests). Returns the
+   names installed (or nil when already loaded)."
   [& {:keys [dirs extra-bindings]}]
   (let [dir (tools-dir dirs)]
     (when-not (contains? @!loaded dir)
       (swap! !loaded conj dir)
-      (load-user-tools! :dirs dirs :extra-bindings extra-bindings))))
+      (ensure-registered! :dirs dirs)
+      (install-bodies! :dirs dirs :extra-bindings extra-bindings))))
 
 ;; ============================================================================
 ;; Management (list / read / delete) — mirrors the skills$* command family

@@ -114,7 +114,11 @@
             ;; so entry points (e.g. the TUI's `start!`) can register skills at
             ;; runtime startup instead of via a namespace-load `defonce` — which
             ;; the native binary would otherwise bake at build time.
-            [ai.brainyard.agent.common.skills]))
+            [ai.brainyard.agent.common.skills]
+            ;; Boot-phase registration of user-authored defs (skills, user
+            ;; tools, user agents). `boot-registries!` is re-exported below;
+            ;; entry points call it once, after install-working-dir!.
+            [ai.brainyard.agent.common.boot]))
 
 ;; ============================================================================
 ;; Protocols (re-exported for implementors)
@@ -429,6 +433,14 @@
 ;; ai.brainyard.agent.common.skills).
 (export-symbols ai.brainyard.agent.common.skills
                 reload-skills!)
+
+;; `boot-registries!` is the process-boot counterpart: it registers everything
+;; USER-AUTHORED — skills, user tools, user agents — into the same registry
+;; before any agent exists, so a CLI subcommand can list and resolve them.
+;; Call it after `install-working-dir!` (see the ns docstring for why the
+;; ordering matters, and why user hooks are deliberately not included).
+(export-symbols ai.brainyard.agent.common.boot
+                boot-registries!)
 
 ;; ============================================================================
 ;; ACP agent — connection descriptor (backend, requested/effective model, match
