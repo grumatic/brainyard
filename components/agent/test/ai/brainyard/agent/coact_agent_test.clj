@@ -599,8 +599,13 @@
           "the JSON output shape must not survive into a code-only agent")
       (is (not (str/includes? tool-only "CODE CHANNEL")))
       (is (not (str/includes? tool-only "ParallelBlock")))
-      (is (not (str/includes? tool-only "AUTO-BACKGROUND DETACH"))
-          "code-block lifecycle is meaningless without a code channel"))
+      ;; The CODE-BLOCK LIFECYCLE section that used to be asserted here is gone
+      ;; from BOTH modes — auto-background detach is stated once, in the
+      ;; `## Execution Model` system-context section, which a tool-only agent
+      ;; never renders. Assert on the output-shape field instead, which is
+      ;; still code-conditional and would catch a leaked channel.
+      (is (not (str/includes? tool-only "code-blocks"))
+          "the code channel's output field must not survive into a tool-only agent"))
 
     (testing "the surviving channel's prose is kept"
       (is (str/includes? code-only "CODE CHANNEL"))
@@ -632,9 +637,11 @@
 
 (deftest instructions-both-channels-unchanged-test
   (testing "rendering with both channels reproduces the signature's instructions"
-    ;; The default path must be byte-identical to the pre-template text: it is
-    ;; the head of every CoAct system message, so any drift both changes the
-    ;; contract for every shipped agent and busts the prompt cache.
+    ;; The signature and the renderer must not drift apart: this text is the
+    ;; head of every CoAct system message, so a divergence would change the
+    ;; contract for every shipped agent and bust the prompt cache. (It no
+    ;; longer pins byte-identity with the ORIGINAL static text — the template
+    ;; has since been compacted; see its docstring.)
     (let [ri   (resolve 'ai.brainyard.agent.common.coact-agent/render-instructions)
           full @(resolve 'ai.brainyard.agent.common.coact-agent/ThinkActCode)]
       (is (= (ri true true) (:instructions full)))

@@ -165,10 +165,18 @@
    channel it does not have — the same prompt/contract contradiction the
    dynamic signature removed, just in prose.
 
-   Rendered with `{:tool-channel bool :code-channel bool}`. Rendering with both
-   true is byte-identical to the original static text (pinned by test), so the
-   default path is unchanged. String template only — never `render-file`,
-   whose resource lookup is the native-image-hostile part of Selmer.
+   Rendered with `{:tool-channel bool :code-channel bool}`. String template
+   only — never `render-file`, whose resource lookup is the native-image-hostile
+   part of Selmer.
+
+   Facts stated ONCE, on purpose. Auto-background detach used to appear here
+   twice (a TOOL CHANNEL aside + a whole CODE-BLOCK LIFECYCLE section) and
+   twice more in `coact-channel-routing` / `execution-model-sandbox` — four
+   copies of one 180s deadline, all always-on. It is an execution fact, so it
+   lives in the execution-model section alone. Likewise the worked examples:
+   only the parallel one survives, because `<!-- ParallelBlock -->` is pure
+   convention and unguessable, whereas `filter`/`pprint` and `grep | awk`
+   taught a capable model nothing it did not already know.
 
    NB the instruction text contains no `{{`, `{%` or `{#` sequences, so it
    needs no `{% verbatim %}` guards; a test pins that too, since a future edit
@@ -205,9 +213,6 @@ ACTION CHANNELS — WHEN TO USE EACH
   - No post-processing of the result is needed before the next step.
   - You want to launch a fire-and-forget background task (task$run (:job-type :tool|:bash))
     that you'll explicitly poll via `task$detail` (add `:last-n N` for the output tail).
-    Long-running CODE-channel blocks survive automatically — they auto-detach into
-    the background after the auto-background deadline (see below) and a later
-    iteration's harvest folds in the resolved result.
 
   Output shape:
     tool-calls: [{\"tool-name\": \"...\",
@@ -230,16 +235,7 @@ a temp file and executed), `python` (temp file + python3), `javascript`
     to a file and you get the path back — never hand-escape large content into a
     string literal. See the code-blocks format help for details.
 
-  Sequential example (`:grouped false` → flat seq to filter over; no-arg
-  `(list-tools)` returns a grouped-by-family index instead):
-    ```clojure
-    (def tools (list-tools :grouped false))
-    ```
-    ```clojure
-    (pprint (filter #(re-find #\"(?i)aws\" (str (:id %))) tools))
-    ```
-
-  Parallel example:
+  Parallel example (the delimiter line is the only non-obvious part):
     ```clojure
     (println (search :query \"topic A\"))
     ```
@@ -250,11 +246,6 @@ a temp file and executed), `python` (temp file + python3), `javascript`
     <!-- ParallelBlock -->
     ```bash
     curl -s https://api.example.com/status
-    ```
-
-  Raw bash example (no escaping — block content is verbatim):
-    ```bash
-    grep -E '\\d+\\.\\d+' /tmp/input.txt | awk '{print $2}'
     ```
 
   Output shape:
@@ -318,20 +309,7 @@ FIELD-CONSISTENCY RULES (enforced by the BT router)
 {% if tool-channel %}- tool-calls non-empty     ⇒ {% if code-channel %}code-blocks=\"\", {% endif %}answer=\"\".
 {% endif %}{% if code-channel %}- code-blocks non-blank    ⇒ {% if tool-channel %}tool-calls=[],  {% endif %}answer=\"\".
 {% endif %}- Populating NEITHER a channel NOR an answer triggers a repair iteration.
-{% if code-channel %}
----------------------------------------------------------------------------
-CODE-BLOCK LIFECYCLE — AUTO-BACKGROUND DETACH
----------------------------------------------------------------------------
-Each code block runs as a task in synchronous foreground mode (you see its
-live output). If the block has not finished by the agent's
-`:auto-background-timeout-ms` (configurable; 180s default), the runner
-detaches into background — the task keeps executing, but you get a
-`:status :pending :task-id <id>` eval-entry back immediately so the loop
-can continue. A LATER iteration receives the resolved result as an
-`[↺ async-completion]` record. You may also poll any time with
-`task$detail` (add `:last-n N` for the output tail) or stop with
-`task$cancel`. No per-iteration timeout knob is needed.
-{% endif %}")
+")
 
 (def render-instructions
   "Render `coact-instructions-template` for a pair of channel flags.
@@ -439,11 +417,7 @@ router prefers code > answer.")
   inside a single iteration with local `let`/`def`.
 - **code-blocks (bash / python / javascript)** for: raw scripts with verbatim content
   (no SCI escaping), long commands, or environment-sensitive logic that wants a fresh process.
-- **Long-running code** (any lang): no special flag needed. Each block runs synchronously
-  in the foreground; if it exceeds the agent's `:auto-background-timeout-ms` it auto-detaches
-  into the background as a pending task. A later iteration receives the resolved result
-  automatically as an `[↺ async-completion]` record. Poll any time with `task$detail` or
-  stop with `task$cancel`.
+  Long-running code needs no special flag — see the auto-background bullet in `## Execution Model`.
 - **answer** for: you have enough information to respond. Markdown only. This terminates the loop.
   This is legitimate on iteration 1 — greetings, direct-knowledge questions, or clarification
   requests don't require tool calls or code. Don't artificially generate a throwaway tool
@@ -460,11 +434,8 @@ Populate `tool-calls` as a JSON array to invoke one or more tools in a single it
 - The runtime dispatches each entry and appends results to the iteration record under `tool-results`.
 
 ### Bootstrap Tools (always bound)
-1. **list-tools** — enumerate registered tools (commands, skills, agents, MCP tools all live in the
-   same registry). Args: `type` (\"tool\"|\"command\"|\"skill\"|\"agent\"), `pattern` (regex on
-   id/name/description). MCP tools are registered as `mcp$<server>$<tool>`, so filter by server with
-   `:pattern \"^mcp\\\\$<server>\\\\$\"`.
-2. **get-tool-info** — fetch full schema for a specific `tool-id`. Call this before invoking an unfamiliar tool.
+**list-tools** (which tool exists; filter by `type` or `pattern`) and **get-tool-info** (how to
+call it) — always available through this channel. Full conventions: `### Discovery` in `## Tools`.
 
 ### Background Tasks (for long-running operations)
 - **task$run** — start a background task. Required: `job-type` (`\"tool\"` | `\"bash\"`).
@@ -490,27 +461,12 @@ Populate `tool-calls` as a JSON array to invoke one or more tools in a single it
 | ````markdown / ````text / ````html | NOT executed — body saved verbatim to a file | raw — no escaping | returns the file path |
 
 ### Verbatim content fences (markdown / text / html)
-To PRODUCE document content (a report, an HTML page, a long text blob), do NOT
-embed it as a string literal inside a clojure/python/bash block — escaping it
-by hand is error-prone. Instead emit a **four-backtick** verbatim fence:
-
-````markdown report.md
-# Title
-Even nested ```clojure (inc 1)``` fences stay literal — no escaping.
-````
-
-The body is written byte-for-byte to a scratch file and the eval result is its
-absolute path (`:result`) plus `Wrote N chars to <path>`. The optional token
-after the language (`report.md`) is a filename hint. Use **4+ backticks** so any
-ordinary ``` fences inside the content pass through untouched.
-
-To READ the file back in a later block, use the `read-file` tool, e.g. a clojure
-fence `(read-file :path \"<path>\")`. To PROMOTE it into the working tree (files
-are scratch, GC'd ~24h), copy it with a bash fence — `slurp`/`spit` are NOT
-available in the SCI sandbox:
-```bash
-cp \"<path>\" docs/report.md
-```
+To PRODUCE document content, never hand-escape it into a string literal — emit a
+**four-backtick** fence with an optional filename hint (````markdown report.md).
+The body is written byte-for-byte to a scratch file; the result is its absolute
+path. 4+ backticks so any ordinary ``` inside the content passes through. Scratch
+files are GC'd ~24h — promote with a `cp` in a bash fence, since `slurp`/`spit`
+are NOT bound in the SCI sandbox.
 
 ### Parallel execution (all-or-nothing)
 Insert `<!-- ParallelBlock -->` anywhere in `code-blocks` to run ALL fenced blocks
@@ -531,14 +487,13 @@ For mixed pipelines (\"A then B+C parallel then D\"), span multiple iterations.
   ````clojure … ```` — so the inner ``` passes through unparsed. A 3-backtick
   fence closes at the first inner ```. (To merely *save* such content to a file,
   prefer a 4-backtick ````markdown verbatim fence instead — it is not executed.)
-- **SCI string escaping** (clojure fences only): only `\\n` `\\t` `\\\"` `\\\\` are valid. For
-  regex in shell strings, double the backslashes (`\"grep '\\\\d+' …\"`). For multi-line
-  shell, here-docs, or template literals: use a raw ```bash / ```python fence instead — the
-  block content is passed verbatim with no SCI parsing.
-- JSON parsing in a clojure fence: `(parse-json s)` is built-in (no require).
-- Use `clojure.string/join`, not `str/join` (no `str/` alias).
+- **SCI string escaping** (clojure fences only): only `\\n` `\\t` `\\\"` `\\\\` are valid — regex in
+  shell strings needs doubled backslashes (`\"grep '\\\\d+' …\"`). For multi-line shell, here-docs,
+  or template literals use a raw ```bash / ```python fence — content is passed verbatim.
+- `(parse-json s)` is built-in (no require). Alias once — `(require '[clojure.string :as str])`
+  persists across iterations and into parallel forks, so `str/join` works in every later block.
 
-Detailed escaping recipes: `(usage$guide :topic :rules)`.")
+Escaping recipes, kwargs-vs-map calling, macros, interop policy: `(usage$guide :topic :sandbox)`.")
 
 (def ^:private coact-critical-rules
   "## Critical Rules
@@ -558,7 +513,7 @@ Detailed escaping recipes: `(usage$guide :topic :rules)`.")
   must sweep with bash, search BOTH roots: `root=$(git rev-parse --show-toplevel); find \"$root/.brainyard\" \"$HOME/.brainyard\" …`.
 - **Call `(usage$guide :topic <name>)` in a clojure fence** for detailed guides
   (e.g. `(usage$guide :topic :truncation)`, `(usage$guide :topic :discovery)`, `(usage$guide :topic :plans)`, `(usage$guide :topic :skills)`,
-  `(usage$guide :topic :files)`, `(usage$guide :topic :llm-query)`, `(usage$guide :topic :rules)`). `(usage$guide)` lists topics.
+  `(usage$guide :topic :files)`, `(usage$guide :topic :llm-query)`, `(usage$guide :topic :sandbox)`). `(usage$guide)` lists topics.
   See the `### Usage Guides` table in `## Tools` for when to consult each.")
 
 (def ^:private coact-large-results-playbook
@@ -651,15 +606,11 @@ on-demand (see `### Sandbox Categories` and `### Discovery`).
 
 | When | Call | Notes |
 |---|---|---|
-| Run any registered tool | `(<tool-id> :arg val)` — e.g. `(mcp$server :op \"list\")` | JSON channel `tool-calls` is equivalent. |
-| Find tools by pattern   | `(list-tools :pattern \"…\")` / `:type \"command\"` | Regex over id/name/desc; returns id + description only. |
-| Inspect one tool        | `(get-tool-info \"<id>\")` | Schema (inputs/outputs/description) — the step BEFORE calling anything unfamiliar. |
-| Inspect a sandbox sym   | `(meta #'<sym>)` | `:doc`/`:arglists`/`:category`. |
+| Find / inspect a tool   | `list-tools` then `get-tool-info` | See `### Discovery` — the single statement of how tool lookup works. |
 | Cheap sub-LLM           | `(query$llm :prompt \"prompt\")` / `(query$llm :prompts [\"a\" \"b\"])` | One-shot, no agent state. |
 | Run a registered agent  | `(explore-agent :question \"…\")` / `(plan-agent :question \"…\")` | Flat dispatch to a sibling agent by name. |
 | MCP fallback             | `(call-tool \"<id>\" {…} :server-name \"<srv>\")` | Only for tools not in the local registry. `call-tool` is the ONE call that takes a `{…}` args map — it must, to keep the target's args from colliding with its own routing kwargs. |
 | Look up usage guide     | `(usage$guide :topic <name>)` | Topics: see `### Usage Guides` table below. |
-| Shell / files           | `(bash \"…\")`, `(read-file \"…\")`, `(write-file \"…\" \"…\")`, `(grep \"…\" \"path\")` | Standard primitives. |
 | Pin a seen file/skill   | `(artifact$add :path \"/abs\")` — re-reference w/o re-reading | Reloads fresh each turn; details `(usage$guide :topic :artifacts)`. |
 
 Per-agent overrides ride in `### Agent-specific guidance` at the bottom of this
@@ -678,21 +629,18 @@ block for `:doc` / `:arglists` / `:category`.")
   [roster?]
   (str "Categories above only count callables — they do NOT list signatures. "
        (if roster?
-         "To use anything outside the per-turn `### Agent Tools` block:"
-         "No per-turn tool roster ships in this prompt — resolve every tool you use through these:")
-       "
-- `(list-tools :pattern \"…\")` — regex over id/name/description (e.g. `:pattern \"^mcp\\\\$\"`).
-- `(list-tools :type \"command\")` — grouped index for one registry type.
-- `(get-tool-info \"<id>\")` — full inputs/outputs schema for one tool.
-- `(meta #'<sandbox-binding>)` — arglists/doc/category for a callable already in scope.
-
-`list-tools` answers WHICH tool; `get-tool-info` answers HOW to call it. Reach for
-the pair — never `(list-tools :detail true)` to bulk-fetch schemas you won't use."))
+         "To use anything outside the per-turn `### Agent Tools` block, resolve it through `### Discovery` below"
+         "No per-turn tool roster ships in this prompt — resolve every tool you use through `### Discovery` below")
+       "; for a callable already in scope, `(meta #'<sandbox-binding>)` gives arglists/doc/category."))
 
 (defn- coact-tools-discovery
-  "The `### Discovery` body. Without a rendered roster (`:enable-tool-binding`
-   off) this is not a long tail beyond a bound set — it is the ONLY route to a
-   tool, so it says so."
+  "The `### Discovery` body — the SINGLE statement of how tool lookup works.
+   `coact-tools-hotpath` and `coact-tools-index-hints` point here rather than
+   restate it; before that, `list-tools`/`get-tool-info` were spelled out four
+   times in one always-on prompt (here, the hot-path table, the index hints and
+   `coact-tool-call-format`'s bootstrap block), the `^mcp\\$` pattern trick twice
+   verbatim. Without a rendered roster (`:enable-tool-binding` off) this is not
+   a long tail beyond a bound set — it is the ONLY route to a tool, so it says so."
   [roster?]
   (str (if roster?
          "Beyond the bound set above, the runtime exposes everything else via:"
@@ -701,9 +649,13 @@ the pair — never `(list-tools :detail true)` to bulk-fetch schemas you won't u
 - `list-tools` — enumerate registered tools (commands, skills, agents, MCP tools all live in the
   same registry), as id + description. Filter by `type` (\"tool\"|\"command\"|\"skill\"|\"agent\") or
   `pattern` (regex on id/name/description). MCP tools are registered as `mcp$<server>$<tool>`, so to
-  filter by server use `:pattern \"^mcp\\\\$<server>\\\\$\"`.
+  filter by server use `:pattern \"^mcp\\\\$<server>\\\\$\"`. No-arg returns a grouped-by-family index;
+  `:grouped false` returns a flat seq when you want to filter over it in code.
 - `get-tool-info` — fetch full schema (id/type/inputs/outputs/description) by
-  `tool-id`. Always call this BEFORE invoking an unfamiliar tool."
+  `tool-id`. Always call this BEFORE invoking an unfamiliar tool.
+
+`list-tools` answers WHICH tool; `get-tool-info` answers HOW to call it. Reach for the pair —
+never `(list-tools :detail true)` to bulk-fetch schemas you won't use."
        (when-not roster?
          "\n\nStart here whenever you need a capability you have not already looked up this
 session: one `list-tools` call with a pattern is cheaper than guessing a name.")))
@@ -859,10 +811,14 @@ and the results (return value, stdout, or error) are sent back for the next iter
               "- **File/shell libraries**: `slurp`, `spit`, `sh` (`(sh \"ls\" \"-l\")`), plus `clojure.java.io/*` and `clojure.java.shell/*` are available.")
          "- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied.")
        "
-- **Auto-background detach**: a block that hasn't finished by the agent's
-  `:auto-background-timeout-ms` (default 180s) detaches into the background; the
-  resolved result is harvested into a later iteration as an `[↺ async-completion]`
-  record. Wait for it; do NOT poll repeatedly."))
+- **Auto-background detach** (the ONLY statement of this — it is not repeated
+  elsewhere in the prompt): blocks run synchronously in the foreground; one that
+  hasn't finished by the agent's `:auto-background-timeout-ms` (default 180s)
+  detaches into the background and returns `:status :pending :task-id <id>`
+  immediately so the loop continues. The resolved result is harvested into a
+  later iteration as an `[↺ async-completion]` record — wait for it, do NOT poll
+  repeatedly. `task$detail` (`:last-n N` for the output tail) and `task$cancel`
+  work on the id if you must. There is no per-iteration timeout knob."))
 
 (def ^:private execution-model-nrepl
   "## Execution Model — Live JVM via clj-nrepl
@@ -912,36 +868,20 @@ reflection, every loaded namespace, and arbitrary interop are all reachable.
     (execution-model-sandbox (config/resolve-sandbox-interop agent))))
 
 (def ^:private sandbox-context-accessor
-  "## SCI Sandbox State Memory (TWO LAYERS)
-The sandbox is your state memory. There is **no `context` variable** — always go through accessors.
+  "## SCI Sandbox State Memory
+There is **no `context` variable** — reach state through the `context-*` accessors, whose
+signatures and options are in the function directory below (`(meta #'context-get)` for detail).
+- Start with `(context-index)`, then `context-keys` / `context-sample` / `context-search` /
+  `context-get` as the shape dictates.
+- **L1** = agent state, read-only, per-turn: `(context-get [:agent-state …])`, `[:restored-vars]`.
+  **L2** = your own `(def …)`s, in-session across iterations and turns: use the symbol directly;
+  `(context-get [:user-vars])` for an inventory.
+- Recalled memory and previous turns are NOT in here — they arrive as `## Recalled Memory` /
+  `## Previous Turns` prompt sections. Older operational detail: `(trajectory$search …)`.
+- **Never interpolate a raw accessor result into a string literal** — the embedded quotes cause
+  EOF parse errors. `def` it, then read fields off the var.
 
-| Layer | What | Owner | Lifetime | Access |
-|---|---|---|---|---|
-| **L1 inputs** | agent state (+ restored vars) | agent (read-only) | per-turn | `(context-get [:agent-state …])`, `[:restored-vars]` |
-| **L2 working `def`s** | anything you `(def x …)` in a clojure fence | you | across iterations + turns (in-session) | direct symbol; `(context-get [:user-vars])` for an inventory |
-
-Recalled memory and previous turns are **not** in the sandbox context — they arrive as
-prompt sections (`## Recalled Memory`, `## Previous Turns`) in your messages; read them
-there, not via `context-get`. Older turns' operational detail is reachable via `(trajectory$search …)`.
-
-### Accessors (call `(context-index)` FIRST every turn — top-level keys + sizes)
-- `(context-keys [:path])` — keys/indices at a level. `(context-keys [])` = top-level catalog.
-- `(context-get [:path …] & {:keys [raw limit str-limit]})` — fetch (auto-truncated unless `:raw true`).
-- `(context-sample [:path] N & {:keys [strategy]})` — `:strategy :random` (default) / `:evenly-spaced` / `:first` / `:last`.
-- `(context-search \"keyword\" & {:keys [limit case-sensitive]})` — recursive string search across L1.
-
-### Patterns
-- Pulling agent-provided data → L1 via `context-get`. Building a reusable value → L2 via `def`.
-- Exploration: `(context-index)` → `(context-keys […])` → `(context-sample [… ] 3)` → `(context-get […])`.
-
-**CRITICAL — accessor results contain embedded strings.** Never embed a raw accessor result
-inside another string literal (causes EOF parse errors). `def` it first, then read fields:
-```clojure
-(def st (context-get [:agent-state]))
-(println (str \"iteration: \" (:iteration st)))
-```
-
-Live-state introspection (runtime keys, iteration count): `(usage$guide :topic :agent-state)`.")
+Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 
 ;; ============================================================================
 ;; Context Assemblers
