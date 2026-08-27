@@ -1006,31 +1006,81 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                 iter-lines           (str "\n  Iterations:\n" iter-lines)))))
          (str/join "\n\n"))))
 
+(def coact-system-zones
+  "System-side cache-zone partition (prompt-cache Phase 3), ascending
+   volatility. Each zone composes into its own st-memory stable key and
+   rides its own provider cache breakpoint:
+
+     :agent-core      static per agent version — role, execution model,
+                      channel/format rules, critical rules, playbook,
+                      and the base substrates. Invalidates only on an
+                      agent/binary upgrade or a code-channel/config flip.
+     :session-context session-stable — system-info, tools, per-agent
+                      instruction/agent-context (L1 overlays),
+                      BRAINYARD.md files, project memory, footer.
+                      Invalidates on file edit / L1 overlay write /
+                      tools-tier compaction — without re-billing the
+                      much larger static zone above it.
+     :history-context append-only across turns (Phase 3b) — the
+                      previous-turns chain. Grows monotonically at the
+                      tail (batched depth-demotion in
+                      previous-turns/append-turn keeps old entries
+                      byte-stable between demotions), so the breakpoint
+                      advances turn-over-turn and old history reads from
+                      cache instead of re-billing wholesale.
+                      NOT here: :conversation-history — it is a SLIDING
+                      window (take-last :conversation-limit re-snapshotted
+                      each turn, so its head churns in long sessions);
+                      it stays in the volatile tail below.
+
+   (:user-context — the per-turn volatile tail (turn-info, parent-trail,
+   conversation window, live artifacts) — is the user-order side. It
+   renders after these zones WITHOUT a breakpoint of its own
+   (:no-zone-keys on the BT nodes); the Phase-2 user-message
+   stable-prefix breakpoint covers it within a turn.)
+
+   NB the concatenation of these section vectors IS the system render
+   order (system-order derives from it), so every section listed in
+   coact-system-context must appear in exactly one zone — compose drops
+   sections missing from the order. The five base substrates were
+   restored here after being absent from the previous flat system-order
+   (they were built but silently dropped from the prompt)."
+  [[:agent-core
+    [:role :execution-model
+     :channel-routing :tool-call-format :code-blocks-format
+     :sandbox-context-accessor
+     :critical-rules :large-results-playbook
+     :skill-substrate :mcp-substrate :todo-substrate :exec-substrate
+     :subagent-substrate]]
+   [:session-context
+    [:system-info :tools :instruction :agent-context
+     :project-instructions :project-memory :user-instructions
+     :footer]]
+   [:history-context
+    [:previous-turns]]])
+
+(def coact-system-order
+  "Flat system-side render order — the zone partition read end to end.
+
+   THE single source of truth for what order system sections appear in.
+   Both `coact-system-context`'s own `:content`/`:order` and the assembler's
+   `system-order` read this, so a standalone render and the live prompt are
+   the same sequence by construction rather than by two lists agreeing."
+  (into [] (mapcat second) coact-system-zones))
+
 (defn- coact-system-context
-  "Assemble the stable system-context string. Sections are emitted in the
-   order below; nil/blank inputs are omitted. SCI string restrictions are
-   folded into the code-blocks format section. Sandbox bindings, agent tool
-   listings, and per-agent tool-context overlay are unified in the `## Tools`
-   section.
+  "Assemble the stable system-context string. Sections are emitted in
+   `coact-system-order` (the zone partition read end to end); nil/blank inputs
+   are omitted. SCI string restrictions are folded into the code-blocks format
+   section. Sandbox bindings, agent tool listings, and per-agent tool-context
+   overlay are unified in the `## Tools` section.
 
-    1)  Role                       — coact-role
-    2)  Execution model            — execution-model-core
-    3)  Channel routing rules      — coact-channel-routing
-    4)  tool-calls format          — coact-tool-call-format
-    5)  code-blocks format         — coact-code-blocks-format
-    6)  Sandbox context accessor   — sandbox-context-accessor
-    7)  Tools                      — calling conventions + function directory
-                                     + detailed agent-tools + discovery pointer
-                                     + (optional) per-agent :tool-context overlay
-    8)  Critical rules             — coact-critical-rules
-    9)  Large-results playbook     — coact-large-results-playbook
-    10) Instructions               — :instruction
-    11) Agent Context              — :agent-context
-    12) Project/User Instructions  — BRAINYARD.md (project then user)
-    13) Project Memory             — :project-memory (index.md + protocol)
-    14) Footer                     — coact-footer
-
-   Deliberately OMITS brainyard instructions — those flow via :user-context.
+   The section inventory is NOT repeated here — see `coact-system-zones`,
+   which names every section and the cache zone it rides. A copy of the list
+   in this docstring is how the old literal order rotted unnoticed: it still
+   enumerated 14 sections, in a sequence the prompt had stopped using, with
+   all five base substrates missing and a closing line claiming BRAINYARD.md
+   flowed via :user-context — untrue since P4.6 promoted it here.
 
    Inputs:
      :sandbox-bindings - raw SCI bindings map (sym → fn/value). Drives the
@@ -1173,19 +1223,19 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 
           true
           (assoc :footer coact-footer))
-        ;; Stable display order. :system-info (priority 98) and
-        ;; BRAINYARD.md sections (priority 85, session-stable) sit
-        ;; above the cross-turn cache breakpoint so they ride the
-        ;; prefix cache.
-        section-order [:role :system-info :execution-model
-                       :channel-routing :tool-call-format :code-blocks-format
-                       :sandbox-context-accessor :tools
-                       :critical-rules :large-results-playbook
-                       :instruction :agent-context
-                       :project-instructions :project-memory :skill-substrate
-                       :mcp-substrate :user-instructions
-                       :todo-substrate :exec-substrate :subagent-substrate
-                       :footer]
+        ;; Render order comes from `coact-system-zones` — the SAME vector the
+        ;; assembler's `system-order` derives from, so this function and the
+        ;; live prompt cannot disagree.
+        ;;
+        ;; It used to be a literal here, and it drifted: `:system-info` sat
+        ;; 2nd where the live order has it 14th, `:tools` 8th vs 15th, and it
+        ;; had lost `:previous-turns` entirely. Nothing caught it because the
+        ;; only production caller passes `:return-breakdown? true` and reads
+        ;; `:sections`, never `:content` — so the literal ordered a string the
+        ;; model never saw, while its comment claimed to place cache
+        ;; breakpoints it did not control. Tests asserting on `:content` were
+        ;; validating that phantom render.
+        section-order coact-system-order
         content (str/join "\n\n" (keep #(get sections %) section-order))]
     (if return-breakdown?
       {:content content :sections sections :order section-order}
@@ -1552,59 +1602,6 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
              (assoc secs :tools new-text)
              (dissoc secs :tools))))))})
 
-(def coact-system-zones
-  "System-side cache-zone partition (prompt-cache Phase 3), ascending
-   volatility. Each zone composes into its own st-memory stable key and
-   rides its own provider cache breakpoint:
-
-     :agent-core      static per agent version — role, execution model,
-                      channel/format rules, critical rules, playbook,
-                      and the base substrates. Invalidates only on an
-                      agent/binary upgrade or a code-channel/config flip.
-     :session-context session-stable — system-info, tools, per-agent
-                      instruction/agent-context (L1 overlays),
-                      BRAINYARD.md files, project memory, footer.
-                      Invalidates on file edit / L1 overlay write /
-                      tools-tier compaction — without re-billing the
-                      much larger static zone above it.
-     :history-context append-only across turns (Phase 3b) — the
-                      previous-turns chain. Grows monotonically at the
-                      tail (batched depth-demotion in
-                      previous-turns/append-turn keeps old entries
-                      byte-stable between demotions), so the breakpoint
-                      advances turn-over-turn and old history reads from
-                      cache instead of re-billing wholesale.
-                      NOT here: :conversation-history — it is a SLIDING
-                      window (take-last :conversation-limit re-snapshotted
-                      each turn, so its head churns in long sessions);
-                      it stays in the volatile tail below.
-
-   (:user-context — the per-turn volatile tail (turn-info, parent-trail,
-   conversation window, live artifacts) — is the user-order side. It
-   renders after these zones WITHOUT a breakpoint of its own
-   (:no-zone-keys on the BT nodes); the Phase-2 user-message
-   stable-prefix breakpoint covers it within a turn.)
-
-   NB the concatenation of these section vectors IS the system render
-   order (system-order derives from it), so every section listed in
-   coact-system-context must appear in exactly one zone — compose drops
-   sections missing from the order. The five base substrates were
-   restored here after being absent from the previous flat system-order
-   (they were built but silently dropped from the prompt)."
-  [[:agent-core
-    [:role :execution-model
-     :channel-routing :tool-call-format :code-blocks-format
-     :sandbox-context-accessor
-     :critical-rules :large-results-playbook
-     :skill-substrate :mcp-substrate :todo-substrate :exec-substrate
-     :subagent-substrate]]
-   [:session-context
-    [:system-info :tools :instruction :agent-context
-     :project-instructions :project-memory :user-instructions
-     :footer]]
-   [:history-context
-    [:previous-turns]]])
-
 (defrecord CoActAssembler []
   sa/SectionAssembler
   (sections [_ state]
@@ -1623,8 +1620,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                                    :live-artifacts :events :state-machines :turn-info :parent-trail])
                :return-breakdown? true)]
       (merge (:sections sys) (:sections usr))))
-  (system-order [_]
-    (into [] (mapcat second) coact-system-zones))
+  (system-order [_] coact-system-order)
   (system-zones [_]
     coact-system-zones)
   (user-order [_]

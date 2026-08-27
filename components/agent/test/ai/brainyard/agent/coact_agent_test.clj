@@ -292,6 +292,41 @@
 ;; 3c. Code channel flag (:code-channel?) — the react-agent unification knob
 ;; ============================================================================
 
+(deftest system-order-has-one-source-test
+  ;; `coact-system-context` used to carry its own literal section-order. It
+  ;; drifted from the live order (`coact-system-zones`) in both sequence and
+  ;; membership without failing anything, because production reads only
+  ;; `:sections` — so the literal ordered a string nobody rendered while its
+  ;; comment claimed to place cache breakpoints. Both now read
+  ;; `coact-system-order`; this pins that they cannot diverge again.
+  (let [sysctx (resolve 'ai.brainyard.agent.common.coact-agent/coact-system-context)
+        order  @(resolve 'ai.brainyard.agent.common.coact-agent/coact-system-order)
+        zones  @(resolve 'ai.brainyard.agent.common.coact-agent/coact-system-zones)
+        asm    @(resolve 'ai.brainyard.agent.common.coact-agent/coact-assembler)]
+
+    (testing "the flat order is exactly the zone partition, read end to end"
+      (is (= order (vec (mapcat second zones)))))
+
+    (testing "the assembler and a standalone render share that one order"
+      (is (= order (sa/system-order asm)))
+      (is (= order (:order (sysctx {:agent-tools []} :return-breakdown? true)))))
+
+    (testing "every zone key is reachable and no section is stranded"
+      ;; A section built but absent from the order is silently dropped by the
+      ;; `keep` in both renderers — the failure mode that lost the five base
+      ;; substrates from an earlier flat order.
+      (let [built (keys (:sections (sysctx {:agent-tools []
+                                            :system-info "x"
+                                            :execution-model "y"}
+                                           :return-breakdown? true)))]
+        (is (empty? (remove (set order) built))
+            (str "sections built but never rendered: "
+                 (vec (remove (set order) built))))))
+
+    (testing "zone membership is a partition — no key in two zones"
+      (let [all (mapcat second zones)]
+        (is (= (count all) (count (distinct all))))))))
+
 (deftest code-channel-flag-test
   (testing ":code-channel? defaults true (every non-react agent unchanged)"
     (is (true? (get config/default-config :code-channel?))))
@@ -763,10 +798,15 @@
       (is (contains? sections :skill-substrate))
       (is (str/includes? (:skill-substrate sections) "Using a skill"))
       (is (str/includes? (:skill-substrate sections) "skills$find"))
-      ;; consult-before-acting cousins sit together: project-memory then skill
-      (is (< (.indexOf ^java.util.List order :project-memory)
-             (.indexOf ^java.util.List order :skill-substrate)
-             (.indexOf ^java.util.List order :user-instructions)))))
+      ;; The substrate is STATIC per agent version, so it belongs to the
+      ;; :agent-core zone — ahead of every session-stable section. The old
+      ;; assertion put it between :project-memory and :user-instructions,
+      ;; which was true only of the phantom order this function used to carry.
+      (is (< (.indexOf ^java.util.List order :skill-substrate)
+             (.indexOf ^java.util.List order :project-memory)))
+      (is (= :agent-core
+             (some (fn [[zone ks]] (when (some #{:skill-substrate} ks) zone))
+                   @(resolve 'ai.brainyard.agent.common.coact-agent/coact-system-zones))))))
 
   (testing "the skills READ subset rides default-agent-roster; WRITE subset does not"
     (let [ids (set (map (comp :id meta deref)
@@ -1744,10 +1784,14 @@
                     :return-breakdown? true)]
         (is (contains? sections :project-instructions))
         (is (contains? sections :user-instructions))
-      ;; Order places BRAINYARD.md (+ project-memory) between :agent-context and :footer
+        ;; BRAINYARD.md + project memory are session-stable, so they sit in the
+        ;; :session-context zone and run project -> memory -> user -> footer,
+        ;; with the append-only history zone last. (The previous expectation
+        ;; interleaved the base substrates here — an artifact of the phantom
+        ;; order, which no rendered prompt ever used.)
         (is (= (vec (drop-while #(not= % :project-instructions) order))
-               [:project-instructions :project-memory :skill-substrate :mcp-substrate
-                :user-instructions :todo-substrate :exec-substrate :subagent-substrate :footer])))))
+               [:project-instructions :project-memory :user-instructions
+                :footer :previous-turns])))))
 
   (testing "coact-user-context returns blank content + empty sections when nothing supplied"
     (let [user-fn (deref #'rca/coact-user-context)
