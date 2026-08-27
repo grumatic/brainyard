@@ -2061,6 +2061,81 @@
       ;; Once exhausted, strategy returns the input unchanged.
       (is (= secs4 secs5)))))
 
+(deftest tools-tier-skips-no-op-tiers-test
+  ;; With NO per-agent :tool-context overlay — the base coact agent, and the
+  ;; main agent — the :tool-context-overlay tier removes nothing. Reporting
+  ;; that unchanged text was fatal: `enforce` reads before == after as "cannot
+  ;; compact" and, before :keep-floor?, deleted the whole section. Measured
+  ;; against the real registry the ladder delivered ONE step (1674 -> 1290
+  ;; tok) and then dropped `:tools` at the next pass, taking `### Discovery`
+  ;; with it.
+  ;;
+  ;; The invariant is asserted, not a fixed tier set: WHICH tiers are no-ops
+  ;; depends on what is registered (this fixture has two sample bindings and,
+  ;; in a bare test JVM, an empty usage registry — so several tiers are
+  ;; degenerate here). That is precisely the condition the fix has to survive.
+  (testing "every returned step is a real reduction; no-op tiers never surface"
+    (let [config     {:sandbox-bindings     sample-bindings
+                      :agent-tools          sample-agent-tools
+                      :tool-context-overlay nil      ; <- the base-agent case
+                      :include-directory?   false}
+          st-memory  (atom {:tools-section-config config
+                            :tools-disabled-tiers #{}})
+          tools-tier (:tools-tier (@#'rca/coact-strategies st-memory))
+          secs0      {:tools (@#'rca/build-tools-section config)}
+          ;; Drive to fixpoint, recording each step.
+          steps      (->> (iterate tools-tier secs0)
+                          (take 8)
+                          (partition 2 1)
+                          (take-while (fn [[a b]] (not= a b)))
+                          vec)]
+
+      (is (seq steps) "the ladder must make at least one reduction")
+
+      (testing "each step strictly shrinks — a stall is never handed to enforce"
+        (doseq [[a b] steps]
+          (is (< (cb/estimate-tokens (:tools b))
+                 (cb/estimate-tokens (:tools a)))
+              "a returned step that does not shrink reads to enforce as 'cannot compact'")))
+
+      (testing "the section is present at every step, including the last"
+        (doseq [[_ b] steps]
+          (is (contains? b :tools))))
+
+      (testing "at fixpoint the ladder is exhausted and returns its input"
+        (let [final (second (last steps))]
+          (is (= final (tools-tier final)))
+          (is (contains? final :tools)))))))
+
+(deftest tools-floored-not-dropped-test
+  ;; `:tools` carries :keep-floor? so an exhausted ladder retires the section
+  ;; at its floor. The floor is not decoration: it holds the calling
+  ;; conventions, hot-path primitives and `### Discovery` — the only
+  ;; documented route to list-tools / get-tool-info. Dropping it removed the
+  ;; roster AND the means of rediscovering it in one step.
+  (testing "an impossible budget floors :tools and reports over-budget honestly"
+    (let [config    {:sandbox-bindings     sample-bindings
+                     :agent-tools          sample-agent-tools
+                     :tool-context-overlay nil
+                     :include-directory?   false}
+          st-memory (atom {:tools-section-config config
+                           :tools-disabled-tiers #{}})
+          result    (cb/enforce
+                     {:sections   {:role "R" :tools (@#'rca/build-tools-section config)
+                                   :footer "F"}
+                      :order      [:role :tools :footer]
+                      :budget     1               ; unmeetable on purpose
+                      :strategies (@#'rca/coact-strategies st-memory)})]
+      (is (contains? (:sections result) :tools)
+          "the tools section must never be deleted to satisfy a budget")
+      (is (str/includes? (get-in result [:sections :tools]) "### Discovery")
+          "the floor must retain the route to list-tools / get-tool-info")
+      (is (true? (:over-budget? result))
+          "an unmeetable budget is reported, not silently 'solved' by a drop")
+      (is (some #(= :kept-floor (:strategy %)) (:compactions result))
+          "the exhausted ladder should record :kept-floor, not :dropped")
+      (is (not-any? #(= :dropped (:strategy %)) (:compactions result))))))
+
 (deftest tools-tier-no-progress-without-config-test
   (testing "without :tools-section-config in st-memory, the strategy is a no-op"
     (let [st-memory   (atom {})

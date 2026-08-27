@@ -1586,21 +1586,48 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
    :tools-tier
    (fn [secs]
      (let [config (:tools-section-config @st-memory)
-           current-disabled (or (:tools-disabled-tiers @st-memory) #{})
            ;; Cheapest first (usage guides is a small static table; agent-tools
            ;; details is the largest variable block).
            tier-order [:usage-guides :tool-context-overlay
                        :function-index :agent-tools-details]
-           next-tier (some (fn [t] (when-not (current-disabled t) t)) tier-order)]
-       (if (or (nil? config) (nil? next-tier))
+           before (cb/estimate-tokens (get secs :tools))]
+       (if (nil? config)
          secs
-         (let [new-disabled (conj current-disabled next-tier)
-               _ (swap! st-memory assoc :tools-disabled-tiers new-disabled)
-               new-text (build-tools-section
-                         (assoc config :disabled-tiers new-disabled))]
-           (if new-text
-             (assoc secs :tools new-text)
-             (dissoc secs :tools))))))})
+         ;; Advance through tiers until one ACTUALLY shrinks the section.
+         ;;
+         ;; A tier can be a no-op — `:tool-context-overlay` saves nothing for
+         ;; any agent without a per-agent overlay, which includes the base
+         ;; coact agent. Returning that unchanged text was fatal: `enforce`
+         ;; reads before == after as "this section cannot compact further",
+         ;; and with no `:keep-floor?` it took the last-resort branch and
+         ;; dropped `:tools` wholesale. Measured on the shipped default, the
+         ;; four-tier ladder therefore delivered exactly ONE step
+         ;; (1674 -> 1290 tok via :usage-guides) and then deleted the whole
+         ;; section at the next pass — never reaching :function-index, and
+         ;; taking `### Discovery` (the only documented route to
+         ;; list-tools / get-tool-info) with it.
+         ;;
+         ;; So skip past no-op tiers rather than reporting one as the result.
+         ;; Compare on `cb/estimate-tokens` — the same metric `enforce` uses
+         ;; to judge progress, so a sub-token reduction can't read as a win
+         ;; here and as a stall there.
+         (loop [disabled (or (:tools-disabled-tiers @st-memory) #{})]
+           (if-let [next-tier (some (fn [t] (when-not (disabled t) t)) tier-order)]
+             (let [disabled' (conj disabled next-tier)
+                   new-text  (build-tools-section
+                              (assoc config :disabled-tiers disabled'))]
+               (if (< (cb/estimate-tokens new-text) before)
+                 (do (swap! st-memory assoc :tools-disabled-tiers disabled')
+                     (if new-text
+                       (assoc secs :tools new-text)
+                       (dissoc secs :tools)))
+                 (recur disabled')))
+             ;; Every remaining tier was a no-op. Persist that they are spent
+             ;; so later passes short-circuit, and return `secs` unchanged —
+             ;; the `:tools` policy's `:keep-floor? true` then retires the
+             ;; section at its floor instead of deleting it.
+             (do (swap! st-memory assoc :tools-disabled-tiers disabled)
+                 secs))))))})
 
 (defrecord CoActAssembler []
   sa/SectionAssembler

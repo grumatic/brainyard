@@ -44,7 +44,13 @@
    :tool-call-format          {:priority 99}
    :code-blocks-format        {:priority 99}
    :sandbox-context-accessor  {:priority 95}
-   :tools                     {:priority 90 :compact :tools-tier}
+   ;; :keep-floor? — the tier ladder bottoms out at a floor worth keeping:
+   ;; the calling conventions, hot-path primitives and `### Discovery`, which
+   ;; is the model's only documented route to list-tools / get-tool-info.
+   ;; Dropping the section as a last resort removed the tool roster AND the
+   ;; instructions for finding tools in one step. Floor it instead.
+   :tools                     {:priority 90 :compact :tools-tier
+                               :keep-floor? true}
    :critical-rules            {:priority 95}
    :large-results-playbook    {:priority 90}
    :instruction               {:priority 95}
