@@ -45,96 +45,6 @@ and the results (return value, stdout, or error) are sent back for the next iter
        "
 - **Timeout**: 30s per code block."))
 
-(def ^:private available-clojure-guide
-  "## Available Clojure
-String: str, subs, count, clojure.string/split, clojure.string/join, clojure.string/includes?,
-        clojure.string/replace, clojure.string/trim, clojure.string/lower-case, clojure.string/upper-case
-NOTE: Alias once, then reuse: `(require '[clojure.string :as str])`. The alias persists across
-      iterations and into parallel forks, so later blocks can write `str/join`.
-Regex: re-find, re-seq, re-matches, re-pattern
-Collections: first, rest, last, nth, take, drop, map, filter, reduce, mapv, filterv,
-             sort, sort-by, group-by, into, conj, assoc, dissoc, get, get-in, update,
-             merge, keys, vals, frequencies, distinct, partition, partition-by, concat,
-             flatten, interleave, zipmap, range, repeat, repeatedly, apply
-Math: +, -, *, /, mod, max, min, inc, dec, quot, rem, Math/abs, Math/ceil, Math/floor
-Random: rand, rand-int, rand-nth, shuffle
-Defs: def, defn, let, fn, loop/recur, cond, case, if, when, when-let, if-let, do
-Logic: and, or, not, true?, false?, nil?, some?, some, every?, not-every?, not-any?
-Types: str, int, long, double, keyword, name, symbol, type, string?, number?, keyword?, coll?, map?, vector?, seq?, set?
-Format: format — e.g. (format \"%.2f\" 3.14) → \"3.14\", (format \"%s: %d\" name count)
-I/O: print, println, pr, prn, printf (all captured — output returned to you)
-JSON: (parse-json s) — parse JSON string to Clojure data (string keys by default)
-      (to-json v) — convert Clojure data to JSON string
-Numbers: Integer/parseInt, Long/parseLong, Double/parseDouble, Float/parseFloat — parse strings to numbers
-Time: java.time.Instant, java.time.Duration, java.time.LocalDate, java.time.LocalDateTime,
-      java.time.LocalTime, java.time.ZonedDateTime, java.time.ZoneId, java.time.format.DateTimeFormatter
-
-## Namespace Discovery & Variable Tracking
-- `(keys (ns-publics 'clojure.set))` — list functions in a specific namespace
-- Available namespaces: clojure.core, clojure.string, clojure.set, clojure.walk, clojure.edn
-- Use `(pprint x)` for pretty-printing data structures
-- Variables persist across iterations — use `def` to name results
-- Use `clojure.set` for set operations (union, intersection, difference, subset?, etc.)
-- Use `clojure.walk` for tree transformations (postwalk, prewalk, keywordize-keys, stringify-keys)
-- Use `clojure.edn` for safe EDN parsing (read-string)")
-
-(def ^:private parallel-execution-guide
-  "## Parallel Execution
-To run independent computations concurrently, use the `parallel-code` output field
-with multiple code blocks separated by `;;---PARALLEL---` delimiter.
-Each block runs in a **forked sandbox** — after all blocks complete, new `def`s are merged back:
-- **Defs are merged** — variables defined in parallel blocks ARE available in subsequent iterations
-  (last-block-wins for conflicts; pre-existing parent vars are not overwritten)
-- Each block has its own stdout capture — results returned as a vector of outputs
-- FINAL is NOT allowed in parallel blocks — use sequential `code` to finalize
-- Max 10 blocks per iteration
-- Use for: independent tool calls, batch data transforms, decomposable sub-tasks
-- Do NOT use for: sequential operations where block B depends on block A's result
-- Do NOT call `get-user-feedback` in parallel blocks — it requires serial terminal interaction.
-  Place feedback calls in the next sequential `code` iteration instead.
-
-### Pattern: parallel compute → sequential combine
-Define results with `def` in parallel blocks — they are merged back into the parent sandbox.
-In the next iteration, use those variables directly in sequential `code`:
-
-  ;; Iteration N (parallel-code): run independent queries, DEF results
-  (def sum-a (:result (query$llm \"sum of 1 to 100\")))
-  ;;---PARALLEL---
-  (def sum-b (:result (query$llm \"sum of 101 to 200\")))
-
-  ;; Iteration N+1 (sequential code): use parallel-defined vars directly, FINAL
-  ;; sum-a and sum-b are available from the previous parallel iteration.
-  (FINAL (str \"Total: \" (+ (Long/parseLong sum-a) (Long/parseLong sum-b))))")
-
-(def ^:private sci-string-restrictions
-  "## SCI Sandbox String Restrictions — CRITICAL
-Your code runs in SCI (Small Clojure Interpreter), which has stricter string parsing than standard Clojure:
-
-1. **Backslash `\\` is ONLY valid for standard escapes**: `\\n` (newline), `\\t` (tab), `\\\"` (quote), `\\\\` (literal backslash)
-   - Shell line-continuation `\\` at end of line is **NOT SUPPORTED** — causes \"Unsupported escape character\" error
-   - **NEVER write multi-line shell commands with `\\` continuation in `bash` strings**
-
-2. **Regex in bash/sed/awk/grep — DOUBLE all backslashes**:
-   - `(bash \"grep '\\\\d+' file\")` ← CORRECT (`\\\\d` = literal `\\d` for the shell)
-   - `(bash \"grep '\\d+' file\")` ← WRONG (`\\d` is invalid in SCI)
-   - Same for `\\\\s`, `\\\\w`, `\\\\S`, `\\\\W`, `\\\\b` (regex), `\\\\[`, `\\\\(`, etc.
-
-3. **For complex scripts with many escapes**: write the script to a temp file and run it:
-   `(write-file \"/tmp/foo.sh\" \"#!/bin/bash\\n...\")` then `(bash \"bash /tmp/foo.sh\")`.
-
-4. **For multi-line shell commands**: Put everything on ONE line, or use the temp-file pattern above.
-
-5. **For JSON parsing**: Use `parse-json` (built-in, no require needed)")
-
-;; Legacy combined form for backward compat (standalone RLM mode)
-(def ^:private codeact-block-rule
-  "## CODE BLOCKS REQUIRED
-Write Clojure code in ```clojure fences to make progress. Each code block is evaluated in the sandbox.
-You may write multiple ```clojure blocks per response — they are evaluated sequentially.
-When done, respond with text only (no code blocks) — your text becomes the final answer.
-NEVER use XML tool-calling syntax like <function_calls>, <invoke>, or <parameter> tags — those are NOT supported.
-ALL actions must be Clojure code in ```clojure fences. For shell commands, use: (bash \"command here\")")
-
 ;; ============================================================================
 ;; Code Extraction
 ;; ============================================================================
@@ -201,7 +111,7 @@ ALL actions must be Clojure code in ```clojure fences. For shell commands, use: 
    Options:
      :mode            - :raw (default), :structured
      :briefing        - Pre-loaded context briefing (agent modes)
-     :iterations-text - Pre-formatted iteration history (from build-iterations-text)"
+     :iterations-text - Pre-formatted iteration history (caller-supplied)"
   [query & {:keys [mode briefing iterations-text] :or {mode :raw}}]
   {:role "user"
    :content
@@ -492,62 +402,10 @@ Start working from the function directory and briefing. Call `(usage$guide :topi
    :chart-command "Charts" :query-command "Queries"
    :usage "Usage Guides"})
 
-(defn- format-arglists
-  "Format arglists for a single binding entry.
-   Multiple arities rendered as `(fn a)` / `(fn a b)` separated by ` / `."
-  [sym arglists]
-  (if (and arglists (> (count arglists) 1))
-    (str/join " / "
-              (map (fn [args]
-                     (str "`(" sym (when (seq args) (str " " (str/join " " args))) ")`"))
-                   arglists))
-    (str "`(" sym
-         (when-let [args (first arglists)]
-           (when (seq args) (str " " (str/join " " args))))
-         ")`")))
-
-(defn- format-binding-entry
-  "Format a single binding entry as a markdown list item."
-  [{:keys [sym val]}]
-  (if (fn? val)
-    (let [m (meta val)
-          doc (or (:doc m) "")
-          first-line (first (str/split-lines doc))
-          arglists (:arglists m)]
-      (str "- " (format-arglists sym arglists)
-           " — " (if (str/blank? first-line) "callable function" first-line)))
-    (str "- `" sym "` — " (cond
-                            (string? val) "string variable"
-                            (number? val) (str "number (" val ")")
-                            :else "variable"))))
-
-(defn build-function-docs
-  "Auto-generate function reference from sandbox bindings, grouped by category.
-   Takes a bindings map {symbol fn-or-value} and produces a formatted string
-   with category headings and function signatures.
-   Functions with :category metadata are grouped; others fall under 'Other'."
-  [bindings]
-  (let [entries (map (fn [[sym val]]
-                       (let [m (when (fn? val) (meta val))]
-                         {:sym sym :val val
-                          :category (or (:category m) :other)}))
-                     bindings)
-        grouped (group-by :category entries)
-        ;; Ordered categories: defined order first, then any remaining
-        ordered-cats (concat (filter #(contains? grouped %) category-order)
-                             (remove (set category-order) (keys grouped)))]
-    (str/join "\n"
-              (mapcat (fn [cat]
-                        (let [items (sort-by (comp str :sym) (get grouped cat))
-                              header (get category-names cat (name cat))]
-                          (cons (str "### " header)
-                                (map format-binding-entry items))))
-                      ordered-cats))))
-
 (defn build-function-directory
   "Compact one-line-per-category function signatures for context briefing.
    Format: **Category**: fn1(args), fn2(args), ...
-   Much shorter than build-function-docs — signatures only, no descriptions."
+   Signatures only, no descriptions — the compact form used in a system prompt."
   [bindings]
   (let [entries (map (fn [[sym val]]
                        (let [m (when (fn? val) (meta val))]
@@ -754,57 +612,6 @@ Start working from the function directory and briefing. Call `(usage$guide :topi
       (->> (concat verbatim code)
            (sort-by :start)
            (mapv :block)))))
-
-(defn build-iterations-text-multi
-  "Format iteration records with language tags into text for the user message.
-   Supports :lang field on eval-results. Falls back to \"clojure\" if absent."
-  [iterations]
-  (when (seq iterations)
-    (let [sb (StringBuilder.)]
-      (.append sb "## Previous Iterations\n")
-      (doseq [{:keys [iteration eval-results]} iterations]
-        (.append sb (str "\n### Iteration " iteration "\n"))
-        (doseq [{:keys [lang code result output error]} eval-results]
-          (let [lang (or lang "clojure")]
-            (if (verbatim-lang? lang)
-              ;; Verbatim content blocks: never echo the body back into history
-              ;; — that is the whole point, keeping large content out of the
-              ;; token stream. Record only where it landed.
-              (when (and result (not (str/blank? (str result))))
-                (.append sb (str "[" lang " content saved verbatim → " result "]\n")))
-              (do
-                (when (and code (not (str/blank? code)))
-                  (.append sb (str "```" lang "\n" code "\n```\n")))
-                (when (and output (not (str/blank? output)))
-                  (.append sb (str "stdout:\n" (subs output 0 (min (long *max-feedback-chars*) (count output))) "\n")))
-                (when (and error (not (str/blank? error)))
-                  (.append sb (str "Error: " error "\n")))
-                (when (and (or (nil? error) (str/blank? error))
-                           (some? result) (not (str/blank? (str result))))
-                  (.append sb (str (if (= lang "clojure") "=> " "exit-code: ") result "\n"))))))))
-      (.toString sb))))
-
-(defn build-iterations-text
-  "Format iteration records into text for the user message.
-   Takes truncated iteration records (from accumulate-iteration-action).
-   Returns nil if iterations is empty."
-  [iterations]
-  (when (seq iterations)
-    (let [sb (StringBuilder.)]
-      (.append sb "## Previous Iterations\n")
-      (doseq [{:keys [iteration eval-results]} iterations]
-        (.append sb (str "\n### Iteration " iteration "\n"))
-        (doseq [{:keys [code result output error]} eval-results]
-          (when (and code (not (str/blank? code)))
-            (.append sb (str "```clojure\n" code "\n```\n")))
-          (when (and output (not (str/blank? output)))
-            (.append sb (str "stdout:\n" (subs output 0 (min (long *max-feedback-chars*) (count output))) "\n")))
-          (when (and error (not (str/blank? error)))
-            (.append sb (str "Error: " error "\n")))
-          (when (and (or (nil? error) (str/blank? error))
-                     (some? result) (not (str/blank? (str result))))
-            (.append sb (str "=> " result "\n")))))
-      (.toString sb))))
 
 ;; ============================================================================
 ;; Config Helpers

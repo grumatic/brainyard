@@ -13,8 +13,14 @@
    to inspect, decompose, and recursively call sub-LLMs — handling inputs
    100x beyond typical context windows.
 
-   Main entry point: `completion`
-   BT integration: `rlm-action`"
+   Main entry point: `completion` — reached in production from the
+   analytics component's LLM-based detectors (`analytics$*` with `:deep`),
+   which resolve it dynamically so it stays optional on the classpath.
+
+   There is deliberately NO BT integration here. `rlm-action` existed for
+   years with no behavior tree referencing it, and it was the ONLY reason
+   this component depended on behavior-tree — a component that sits ABOVE
+   it. Removing it inverted nothing and dropped the edge."
   (:require [ai.brainyard.clj-sandbox.core.chat :as chat]
             [ai.brainyard.clj-sandbox.core.prompt :as prompt]
             [ai.brainyard.clj-sandbox.core.sandbox :as sandbox]
@@ -24,9 +30,7 @@
             [ai.brainyard.clj-sandbox.core.conversation-window :as conv-window]
             [ai.brainyard.clj-sandbox.core.sandbox-state :as sandbox-state]
             [ai.brainyard.clj-sandbox.core.budget :as budget]
-            [ai.brainyard.clj-sandbox.core.truncation :as truncation]
-            [ai.brainyard.behavior-tree.interface :as bt]
-            [ai.brainyard.mulog.interface :as mulog]))
+            [ai.brainyard.clj-sandbox.core.truncation :as truncation]))
 
 ;; ============================================================================
 ;; Core API
@@ -266,10 +270,6 @@
 ;; Code Extraction & Iteration Helpers
 ;; ============================================================================
 
-(def build-function-docs
-  "Auto-generate compact function reference from sandbox bindings map."
-  prompt/build-function-docs)
-
 (def build-function-directory
   "Compact one-line-per-category function signatures for context briefing.
    Format: **Category**: fn1(args), fn2(args), ..."
@@ -302,10 +302,6 @@
    Returns Clojure code string wrapping shell commands in (bash ...), or nil."
   prompt/extract-xml-tool-calls)
 
-(def build-iterations-text
-  "Format iteration records into text for the user message."
-  prompt/build-iterations-text)
-
 (def extract-all-code-blocks-multi
   "Extract ALL fenced code blocks with language tags (clojure, python, bash).
    Returns [{:lang \"clojure\" :code \"...\"} ...]. Also extracts 4+-backtick
@@ -317,103 +313,9 @@
   "True when `lang` names a verbatim content block (markdown/text/html)."
   prompt/verbatim-lang?)
 
-(def build-iterations-text-multi
-  "Format iteration records with language tags into text for the user message."
-  prompt/build-iterations-text-multi)
-
 (def model-default-iterations
   "Return model-aware default max-iterations."
   prompt/model-default-iterations)
 
 ;; `parse-eval-lm` was moved to clj-llm as `clj-llm/parse-lm-str` — string-to-LM
 ;; parsing has nothing sandbox-specific. Use `clj-llm/parse-lm-str` directly.
-
-;; ============================================================================
-;; BT Integration
-;; ============================================================================
-
-(defn- resolve-lm-config
-  "Resolve lm-config with precedence:
-   1. BT action opts :lm-config (per-node override)
-   2. Agent's :lm-config via `agent.core.config/get-config` (per-agent
-      → session → global → schema :default-fn → nil)
-   When the agent component is absent from the classpath (clj-sandbox can
-   run standalone), falls back to the legacy slot-2/slot-3 read so the
-   resolver still works in tests."
-  [context]
-  (or (get-in context [:opts :lm-config])
-      (when-let [agent (:agent context)]
-        (if-let [get-config (try (requiring-resolve
-                                  'ai.brainyard.agent.core.config/get-config)
-                                 (catch Throwable _ nil))]
-          (get-config agent :lm-config)
-          (or (get-in @(:!state agent) [:config :lm-config])
-              (get-in @(:!session agent) [:config :lm-config]))))))
-
-(defn- resolve-usage-tracker
-  "Resolve usage-tracker from:
-   1. BT action opts :usage-tracker
-   2. Session config :usage-tracker"
-  [context]
-  (or (get-in context [:opts :usage-tracker])
-      (when-let [agent (:agent context)]
-        (get-in @(:!session agent) [:config :usage-tracker]))))
-
-(defn rlm-action
-  "BT action: run RLM on context from st-memory.
-
-   Expected opts in BT node:
-     :context-key    - st-memory key for the large context (default :context)
-     :query-key      - st-memory key for the query (default :question)
-     :answer-key     - st-memory key to store the answer (default :answer)
-     :max-iterations - Loop limit (default 20)
-     :max-depth      - Recursion depth limit (default 1)
-     :sub-lm-config  - LM config for sub-calls (default: same as main)
-
-   BT config example:
-     [:action
-      {:id :rlm/process-context
-       :context-key :large-document
-       :query-key :question
-       :answer-key :answer
-       :max-iterations 20}
-      clj-sandbox/rlm-action]"
-  [{{:keys [context-key query-key answer-key max-iterations max-depth sub-lm-config]} :opts
-    :keys [st-memory]
-    :as context}]
-  (let [state @st-memory
-        query (get state (or query-key :question))
-        ctx-data (get state (or context-key :context))
-        lm-config (resolve-lm-config context)
-        usage-tracker (resolve-usage-tracker context)
-        ;; Build on-chunk callback via the default chunk-factory in
-        ;; agent.core.bt (looked up lazily so clj-sandbox doesn't hard-depend
-        ;; on the agent component; safe when the agent ns isn't on classpath).
-        on-chunk-fn (when-let [factory (try (requiring-resolve
-                                             'ai.brainyard.agent.core.bt/chunk-factory-handler)
-                                            (catch Throwable _ nil))]
-                      (factory {:agent (:agent state)
-                                :st-memory-atom st-memory
-                                :node-id (:id (:opts context))}))]
-    (if (or (nil? query) (nil? ctx-data))
-      (do
-        (mulog/warn ::rlm-action-missing-input
-                    :message "rlm-action: missing query or context in st-memory"
-                    :query-key (or query-key :question)
-                    :context-key (or context-key :context))
-        bt/failure)
-      (try
-        (let [result (completion query ctx-data
-                                 :lm-config lm-config
-                                 :sub-lm-config sub-lm-config
-                                 :usage-tracker usage-tracker
-                                 :max-iterations (or max-iterations 20)
-                                 :max-depth (or max-depth 1)
-                                 :on-chunk on-chunk-fn)]
-          (swap! st-memory assoc (or answer-key :answer) (:answer result))
-          (swap! st-memory assoc :full-iterations (:iterations result))
-          (swap! st-memory assoc :terminated-by (:terminated-by result))
-          bt/success)
-        (catch Exception e
-          (mulog/error ::rlm-action-error :message "rlm-action error" :exception e)
-          bt/failure)))))

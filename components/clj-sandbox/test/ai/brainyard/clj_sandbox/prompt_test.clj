@@ -122,17 +122,7 @@
     (is (true? (prompt/verbatim-lang? "text")))
     (is (true? (prompt/verbatim-lang? "html")))
     (is (false? (prompt/verbatim-lang? "clojure")))
-    (is (false? (prompt/verbatim-lang? "bash"))))
-
-  (testing "build-iterations-text-multi elides verbatim body, keeps path"
-    (let [iters [{:iteration 1
-                  :eval-results [{:lang "markdown" :code ""
-                                  :result "/tmp/scratch/report.md"
-                                  :output "Wrote 6 chars to /tmp/scratch/report.md"
-                                  :error ""}]}]
-          hist (prompt/build-iterations-text-multi iters)]
-      (is (str/includes? hist "report.md"))
-      (is (str/includes? hist "saved verbatim")))))
+    (is (false? (prompt/verbatim-lang? "bash")))))
 
 (deftest build-system-prompt-test
   (testing "builds raw mode prompt with critical rules and context discovery"
