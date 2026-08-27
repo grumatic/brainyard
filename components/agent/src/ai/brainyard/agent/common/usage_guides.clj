@@ -85,8 +85,8 @@ Use `search` as your FIRST step when you're unsure which file, config, memory, o
 - `(bash \"find src -name '*.clj'\")` — glob file listing (use `bash` for any file enumeration)
 - `(read-file \"path\")` — read a project file
 - `(grep \"pattern\" \"src/\")` — regex search in files
-- `(list-skills)` / `(find-skills \"q\")` — skills (brainyard + claude + agents)
-- `(list-plans)` — plans
+- `(skills$find :query \"q\")` / `(skills$list)` — skills (brainyard + claude + agents)
+- `(doc$list :kind \"plan\")` / `(doc$list :kind \"todo\")` — plans and todos
 - `(mcp$server :op \"list\")` — MCP servers")
 
 (def ^:private usage-tool-priority
@@ -94,7 +94,7 @@ Use `search` as your FIRST step when you're unsure which file, config, memory, o
 1. **Sandbox builtins** (FIRST) — direct functions listed above
 2. **Registered tools** — `(<tool-id> :arg \"val\")` for `task$*`, `aws$*`, etc. (auto-bound kebab-case symbols)
 3. **MCP tools** — `(mcp$server :op \"list\")`; native MCP tools register as `mcp$<server>$<tool>` and call directly: `(mcp$<server>$<tool> {:arg \"val\"})`
-4. **Skills** — `(list-skills)`, `(read-skill \"name\")`, then `bash`
+4. **Skills** — `(skills$find :query \"…\")`, `(skills$read :skill-name \"…\")`, then `bash`
 5. **Unregistered MCP fallback** — `(call-tool \"<id>\" {…} :server-name \"<srv>\")` ONLY for tools not in the local registry.")
 
 (def ^:private usage-agent-state
@@ -144,128 +144,102 @@ Always discover exact tool ids via `(list-tools :pattern \"^mcp\\\\$\")` first �
 - `(search \"keyword\")` also includes memory results (limit 5) alongside tools, skills, plans, etc.")
 
 (def ^:private usage-todo
-  "## Task Planning (Todo List)
-Ephemeral single-session tracking for multi-step tasks.
+  "## Todos — markdown checklists, not an in-memory list
+A todo is a markdown checklist FILE with YAML frontmatter (`file-type: todo`,
+`id`, `title`) and a `## Todo` section of `- [ ] <action>` lines. Two ways in,
+and they agree because both end at the same file.
 
-**When to create a todo:** ALWAYS create a todo when a task requires 3+ distinct steps. Do this BEFORE starting work — plan first, then execute.
+### Managed (canonical todos under todo-agent/todos/)
+- `(doc$create :kind \"todo\" :title \"…\" :goal \"…\" :items [{:description \"step 1\"} …])`
+  -> `{:slug :file-path :status}`. `:scope` is \"project\" (default) or \"user\".
+- `(doc$list :kind \"todo\")` — optional `:status` draft|in-progress|completed|abandoned.
+- `(doc$read :kind \"todo\" :slug \"…\")` -> `{:items :progress :goal :file-path}`.
+  Absent returns `{:not-found true}`, NOT an error — check the flag.
+- `(doc$update :kind \"todo\" :slug \"…\" …)` — exactly ONE sub-op per call:
+  `:status`, `:goal`, `:item-idx N :item-done true|false`, or
+  `:add-item \"…\"` (optional `:after-idx`, `:tags {:via … :covers […]}`).
+- `(doc$delete :kind \"todo\" :slug \"…\")`.
 
-### API
-- `(create-todo \"goal\" [{:description \"step 1\"} {:description \"step 2\" :independent true}])` — create task list upfront
-- `(mark-todo-done task-id \"result\")` — mark a task as completed with its result
-- `(todo-status)` — progress summary; `(get-todo)` — full list; `(get-todo-pending)` — pending tasks
-- `(get-todo-independent-pending)` — pending tasks safe for parallel execution
+### Direct (working checklists anywhere — e.g. your own agent dir)
+Edit the file with the ordinary file tools, then reconcile:
+- flip: `update-file` turning `- [ ] <unique text>` into `- [x] <unique text>`.
+  Match the line TEXT, never a numeric index — an insert renumbers everything.
+- append: `write-file` a new `- [ ] …` line under `## Todo`.
+- then ALWAYS `(todo$sync :path \"/abs/path.md\")` (or `:slug` for a managed one)
+  — read-only reconciliation that recomputes progress and refreshes the live
+  block. Skip it and the TUI keeps showing stale counts.
 
-### Parallel Execution
-Mark tasks `:independent true` when they have NO data dependencies on other tasks. Then use `query$llm` with `:prompts` (a vector) to execute independent tasks concurrently.
+### Discipline
+- Create one when a task needs 3+ distinct steps, BEFORE starting work.
+- Flip each item as you finish it — do not batch flips at the end.
+- `:progress` / `todo$sync` return `:next-item`; use it instead of guessing an index.
+- Relate work back to `:goal`; finish by answering the goal, not the checklist.
 
-**Important:** Each batched sub-query runs in an ISOLATED conversation — it does NOT see prior RLM history. You MUST provide sufficient sub-context (gathered data, file contents, search results) so each sub-query can answer independently.
-```clojure
-;; Pattern: execute independent todo tasks in parallel with sub-context
-(let [tasks   (get-todo-independent-pending)
-      context (str \"Relevant data:\\n\" (pr-str gathered-data))  ;; provide enough context!
-      prompts (mapv #(str \"Execute: \" (:description %)) tasks)
-      results (:results (query$llm :prompts prompts :sub-context context))]  ;; context shared
-  (doseq [[task result] (map vector tasks results)]
-    (mark-todo-done (:id task) result)))
-```
-
-### Progress Discipline
-- Check `(todo-status)` after completing tasks to maintain awareness of overall progress
-- Do NOT lose sight of the original goal — always relate current work back to the todo
-- After all tasks are done, synthesize results into a final answer addressing the original goal")
-
+See the `## Todo substrate` section of your system prompt for the inline-file
+convention, and `(usage$guide :topic :plans)` for the plan kind.")
 (def ^:private usage-plans
-  "## Plan Management (Persistent Plans)
-Plans persist as markdown files in `.brainyard/plans/` across sessions.
-Each plan gets a unique random 3-word slug (e.g., \"coral-penguin-42\") and an absolute `:file-path`.
-Hybrid format: free-form `:body` (context, approach, risks — whatever you want) + structured `:steps` (machine-tracked progress).
+  "## Plans — persistent markdown, same `doc$*` family as todos
+A plan is a markdown file with a free-form `:body` (context, findings,
+approach, risks) under a random 3-word slug. It persists across sessions and
+is re-read during execution as working context.
 
-### API
-- `(create-plan \"title\" \"body markdown\" [{:description \"step 1\"} {:description \"step 2\" :independent true}])` — options: `:scope`. Returns map with `:slug`, `:file-path`, `:body`, `:steps`.
-- `(list-plans)` — options: `:scope`, `:status`; `(read-plan \"slug\")` — full details with `:body`, `:steps`, `:file-path`
-- `(update-plan-body \"slug\" \"new body markdown\")` — replace the free-form body (context, risks, etc.)
-- `(update-plan-step \"slug\" step-idx \"result\")` — mark step done (0-based)
-- `(add-plan-step \"slug\" \"new step\")` — options: `:independent`, `:after-idx`
-- `(plan-status \"slug\")` — progress; `(complete-plan \"slug\")` / `(abandon-plan \"slug\")`
-- `(reopen-plan \"slug\")` — reset all steps to pending for re-running
-- `(reset-plan-step \"slug\" step-idx)` — reset a single step; `(delete-plan \"slug\")`; `(plan-exists? \"slug\")`
+### API (`:kind \"plan\"`)
+- `(doc$create :kind \"plan\" :title \"…\" :body \"## Context\\n…\")`
+  -> `{:slug :file-path :status}`. `:scope` \"project\" (default) or \"user\".
+- `(doc$list :kind \"plan\")` — optional `:status`
+  draft|in-progress|completed|abandoned.
+- `(doc$read :kind \"plan\" :slug \"…\")` -> `{:body :status :file-path}`.
+  Absent returns `{:not-found true}`, not an error.
+- `(doc$update :kind \"plan\" :slug \"…\" :body \"…\")` — replace the body; or
+  `:status \"completed\"|\"abandoned\"|\"reopen\"`. ONE sub-op per call.
+- `(doc$delete :kind \"plan\" :slug \"…\")`.
+- `(plan$read-dossier :path \"…\")` — parse just the YAML frontmatter of a
+  plan-agent dossier (cheap; read a verdict without pulling the body).
 
-Resuming: `(read-plan \"slug\")` shows progress, continue from where you left off.
+### Writing the body
+It is not throwaway — it is the context you re-read while executing. Write it
+as if briefing a colleague: exact paths, function signatures, data shapes,
+commands to run, edge cases, what could go wrong. Research FIRST (`search`,
+`grep`, `read-file`, `bash`), then write the plan from what you found.
 
-## Plan Mode (Interactive Planning Workflow)
-Enter plan mode when the user's message contains \"plan\", \"make a plan\", \"plan mode\", \"plan first\",
-or similar planning intent. Do NOT enter plan mode for simple questions.
+### Executing
+- `def` the create result; you need `(:slug p)` and `(:file-path p)` later.
+- Re-read with `doc$read` on resume rather than re-deriving the context.
+- Answer beats bookkeeping: once you have everything the answer needs, populate
+  `answer`. Do not spend an iteration marking a plan complete first.
+- Prose lives in a plan, checkboxes live in a todo — for per-step tracking use
+  `(usage$guide :topic :todo)`.
 
-### Phase 1: Research (1-3 iterations)
-Explore BEFORE creating the plan:
-- Use `bash`, `read-file`, `grep`, `search` to gather facts (use `bash`'s
-  `find`/`ls`/`tree` for glob/tree views)
-- Note file paths, function signatures, data shapes, constraints, CLI commands
-- This research becomes the foundation of your plan body
-
-### Phase 2: Create the plan
-```clojure
-(def p (create-plan \"Title\"
-  \"## Context\\nWhat problem we're solving and why\\n\\n## Findings\\nKey facts from research:\\n- file X at path Y has function Z\\n- data shape: {:key type}\\n- exact CLI commands to run\\n\\n## Approach\\nChosen strategy with rationale\\n\\n## Risks\\nWhat could go wrong and mitigations\"
-  [{:description \"step 1\"} {:description \"step 2\" :independent true}]))
-```
-The body is NOT throwaway — it is re-read via `(read-plan slug)` during execution as working context.
-Write it as if briefing a colleague: include exact paths, commands, data examples, edge cases.
-**Always `def p` the result** — you'll need `(:slug p)` and `(:file-path p)` later.
-
-### Phase 3: Present for review
-```clojure
-(def step-list (clojure.string/join \"\\n\" (map-indexed (fn [i s] (str (inc i) \". \" (:description s))) (:steps p))))
-(get-user-feedback
-  (str \"## \" (:title p) \"\\n\\n\" (:body p) \"\\n\\n### Steps\\n\" step-list \"\\n\\n📄 \" (:file-path p))
-  [{:label \"Go\" :description \"Execute this plan\"}
-   {:label \"Modify\" :description \"I want to change something\" :free-input true}
-   {:label \"Cancel\" :description \"Abandon this plan\"}])
-```
-If `get-user-feedback` times out: the plan is saved — use `(:slug p)` (already def'd) to re-present. Do NOT re-discover via `list-plans`.
-
-### Phase 4: Execute
-- **Go** → Start execution. `(read-plan (:slug p))` to reload body context.
-- **Modify** → Update plan (`update-plan-body` / `add-plan-step`), re-present (repeat phase 3)
-- **Cancel** → In the SAME code block: `(abandon-plan (:slug p))` then `(FINAL \"Plan cancelled.\")`. Do NOT continue working — stop immediately.
-
-Execution rules:
-- **FINAL > plan bookkeeping**: If you have all data needed for the answer, write FINAL immediately. Don't waste iterations on `complete-plan` — delivering the answer is the priority.
-- **Check before completing**: `(plan-status slug)` shows `:next-step` with `:description` — use this to find the correct pending step index instead of guessing.
-- **Trust `def`'d variables**: Data stored via `def` persists across iterations. Do NOT re-read files or re-parse JSON that's already in a variable.
-- **Mark steps as you go**: Call `(update-plan-step slug idx \"result\")` right after completing each step's work — don't batch step updates at the end.
-- **Step indices are 0-based**: A 5-step plan has indices 0-4. Use `(plan-status slug)` if unsure which step is pending.
-
-### On [CONTINUATION] (resuming after iteration limit)
-Sandbox variables (`def`'d values) survive across continuation — the sandbox is NOT reset.
-But your LLM context is reset — you don't remember what you computed. On the FIRST iteration:
-1. Check what you already have: `(keys (ns-publics 'user))` — shows all def'd variables from prior iterations
-2. Review what was done: read the `## Previous Turns` prompt section — prior turn summaries show questions asked and answers given (use `(trajectory$search …)` for older operational detail)
-3. `(list-plans :status :in-progress)` — find the active plan slug
-4. `(plan-status slug)` — see which steps are done vs pending
-5. Resume from the next pending step — do NOT restart from step 1, do NOT re-fetch data that's already in variables")
-
+Termination is the signature's `answer` field. `(FINAL …)` is disabled for
+CoAct and returns an error nudge, not a terminator.")
 (def ^:private usage-skills
-  "## Skill Management
-Three skill types:
-- `:brainyard` — local FS under `.brainyard/skills/{name}/` (SKILL.md + optional scripts/ and resources/). Fully managed by the agent.
-- `:claude`    — `~/.claude/skills/`, installed via `npx skills add --target claude`.
-- `:agents`    — `~/.agents/skills/`, installed via `npx skills add`.
+  "## Skills — the `skills$*` family
+A skill is a named, reusable procedure: a SKILL.md of imperative steps, with
+optional `scripts/` and `resources/`. Three backends — `brainyard` (local,
+under `.brainyard/skills/`), `claude` (`~/.claude/skills/`) and `agents`
+(`~/.agents/skills/`).
 
-### Unified (auto-detect when `:type` omitted)
-- `(list-skills)` — all types; options: `:type (:brainyard|:claude|:agents)`, `:scope` (brainyard only)
-- `(read-skill \"name\")` — SKILL.md + metadata; options: `:type`, `:scope`
-- `(find-skills \"query\")` — search by name/description; options: `:type`
-- `(remove-skill \"name\")` — delete; options: `:type`, `:scope`
+### Find and read (what you need almost every time)
+- `(skills$find :query \"<key nouns>\")` — ranked search over INSTALLED skills.
+  Local, instant, no network. Optional `:type`, `:limit` (default 20).
+- `(skills$list)` — browse. Optional `:type`, and `:scope` project|user for
+  brainyard.
+- `(skills$read :skill-name \"…\")` — SKILL.md + metadata; `:type` auto-detects.
 
-### Brainyard only
-- `(create-skill \"my-skill\" \"# Instructions...\")` — new skill; options: `:scope (:project|:user)`, `:scripts {...}`, `:resources {...}`
-- `(update-skill \"name\" :content \"...\")` — edit SKILL.md or extras; options: `:content`, `:scope`, `:scripts`, `:resources`
+### Install and author
+- `(skills$search :query \"…\")` — search the npx MARKETPLACE for installable
+  packages. SLOW, hits the network — use `skills$find` for what you already have.
+- `(skills$install …)` / `(skills$import …)` / `(skills$sync)` — acquire and
+  refresh CLI-backed skills.
+- `(skills$write :op \"create\"|\"update\"|\"remove\" :skill-name \"…\" :content \"…\")`
+  — the single mutation entry point. `:scripts` / `:resources` take
+  `{filename content}` maps. Defaults to brainyard/project on create.
+- `(skills$reload)` — re-scan from disk after an out-of-band edit.
 
-### CLI only (:claude / :agents)
-- `(install-skill \"owner/repo\")` — install from registry; options: `:type (:claude|:agents, default :agents)`
-- `(sync-skills)` — update all CLI skills; options: `:type`")
-
+### Using one
+Loading a skill hands its SKILL.md to YOU (and pins it as a live artifact) —
+the agent holding the task context is the one that follows the procedure. See
+the `## Using a skill` section of your system prompt for that flow.")
 (def ^:private usage-file-ops
   "## File & URL Operations
 Use dedicated file functions instead of `bash` for read/write/grep — they are safer, faster, and return structured data. For glob/tree enumeration, use `bash` with `find`/`ls`/`tree`.
@@ -550,6 +524,23 @@ and inspect inputs with `(get-tool-info \"<agent>\")`.
 - Others surface via `(list-tools :type \"agent\")` — read the description before
   delegating.
 
+### Lifecycle — a dispatched subagent STAYS ALIVE
+It is not thrown away when it answers. The result carries `:subagent-id`
+(e.g. `\"explore-agent/crimson-parrot-42\"`) — capture it, that is the handle.
+- `(agent-registry$ask :id \"…\" :question \"…\")` — follow up on the SAME
+  instance, which still sees its own `## Previous Turns`. Prefer this over
+  re-dispatching a fresh agent when the follow-up builds on what it already
+  found. Reach is fenced: a root may ask a sibling root or its own subagents;
+  a subagent may ask only instances IT dispatched, never upward.
+- `(agent-registry$list)` — live instances with `:owner`, `:idle-ms`,
+  `:answers`, `:last-question`. Add `:session-id` to scope to one session.
+- `(agent-registry$detail :id \"…\")` — check a target is idle before asking.
+  A growing idle window on a `:running` instance means mid-turn, NOT wedged —
+  do not close one on a quiet window alone.
+- `(agent-registry$close :id \"…\")` — reclaim when done; cascades to any
+  subagents it owned, and refuses while `:running`. Close what you have
+  finished with so it is not the thing LRU-evicted when you dispatch next.
+
 ### How to delegate well
 - Give a crisp `:question` and, when you have it, `:agent-context` (a dossier path,
   issue link, prior notes) so the sub-agent starts grounded.
@@ -569,7 +560,7 @@ and inspect inputs with `(get-tool-info \"<agent>\")`.
   [{:topic :llm-query    :title "LLM Sub-Queries"      :category :llm         :guide usage-llm-query
     :consult "Before dispatching a sub-LLM (`query$llm` with `:prompt`/`:prompts`) — picks model, depth, context."}
    {:topic :agents       :title "Specialized Agents"   :category :agents      :scope :user :guide usage-agents
-    :consult "Before delegating to a sub-agent (explore/debug/exec/…) — who to pick and how to hand off."}
+    :consult "Before delegating to a sub-agent, and before re-dispatching one you already have (agent-registry$ask)."}
    {:topic :agent-state  :title "Agent State"          :category :agent       :guide usage-agent-state
     :consult "Before reading/writing `[:agent-state …]` via `context-get`."}
    {:topic :memory       :title "Memory"               :category :memory      :guide usage-memory
