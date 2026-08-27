@@ -30,7 +30,8 @@
             [ai.brainyard.agent.core.agent :as agent-core]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.remote-agent :as remote]
-            [ai.brainyard.agent.core.tool :as tool]))
+            [ai.brainyard.agent.core.tool :as tool]
+            [ai.brainyard.agent.test-support :as ts]))
 
 ;; =============================================================================
 ;; Fixtures
@@ -44,7 +45,10 @@
                   (a2a-client/reset-peers!)
                   (agent-core/reset-agent-registry!)))))
 
-(use-fixtures :each clean)
+;; The loopback server answers on a handler thread and persists a trajectory
+;; under a2a-<ms>; ts/with-tmp-sessions-root redirects it (with-redefs, so the
+;; handler thread sees it too).
+(use-fixtures :each ts/with-tmp-sessions-root clean)
 
 (def ^:const TOKEN "loopback-token")
 

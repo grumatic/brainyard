@@ -14,9 +14,19 @@
             [ai.brainyard.agent.common.acp-agent :as acp-agent]
             [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.tool :as tool]
-            [ai.brainyard.agent.core.hooks :as hooks]))
+            [ai.brainyard.agent.core.hooks :as hooks]
+            [ai.brainyard.agent.test-support :as ts]))
 
+;; ONE `use-fixtures :each` call, deliberately: clojure.test `assoc`es the
+;; fixture list onto the ns meta, so a second call REPLACES the first rather
+;; than adding to it — splitting these would silently drop the hook re-register
+;; below and make the suite order-dependent again.
+;;
+;; ts/with-tmp-sessions-root is first so it wraps the hook fixture: these tests
+;; drive real agent turns, which persist
+;; <sessions-root>/acp-{test,acc}-<ms>/trajectory.edn.
 (use-fixtures :each
+  ts/with-tmp-sessions-root
   (fn [t]
     ;; A prior test in the same JVM may have wiped the global hook registry
     ;; (hooks/reset-hooks! in hooks_test / capture_*); acp-agent's cleanup hook

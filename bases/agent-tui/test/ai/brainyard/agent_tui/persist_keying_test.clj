@@ -10,15 +10,29 @@
    Per docs/simplified-agent-tui-arch-design.md §6.3."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [ai.brainyard.agent-tui.sessions :as sessions]
-            [ai.brainyard.agent-tui-persist.interface :as persist])
+            [ai.brainyard.agent-tui-persist.interface :as persist]
+            [ai.brainyard.agent.core.config :as agent-config])
   (:import [java.io File]))
 
+;; `persist/with-root` pins the persist root for the test THREAD. That is not
+;; enough on its own: `agent-tui.core` installs
+;; `(persist/set-root-resolver! (fn [] (agent/sessions-root)))` at ns-load via
+;; alter-var-root, so it is process-global and permanent once any test requires
+;; that ns. Any persist write that misses the thread-local binding — off-thread,
+;; or after this fixture has unwound — falls through to that resolver and lands
+;; in the developer's real <project>/.brainyard/sessions/. That is exactly how
+;; `agt-stub-1234/meta.edn` appeared there, and only under a FULL `bb test`,
+;; where some earlier namespace had loaded agent-tui.core.
+;;
+;; So pin the resolver's own input too. with-redefs sets the root value, which
+;; every thread sees, so the fallback path also resolves into tmp.
 (use-fixtures :each
   (fn [t]
     (let [tmp (File/createTempFile "agent-tui-persist-keying-" "")]
       (.delete tmp)
       (.mkdirs tmp)
-      (try (persist/with-root tmp (t))
+      (try (with-redefs [agent-config/*sessions-root-override* (.getAbsolutePath tmp)]
+             (persist/with-root tmp (t)))
            (finally
              (doseq [^File f (reverse (file-seq tmp))]
                (.delete f)))))))

@@ -8,11 +8,16 @@
    The lifecycle test spawns ONE in-tree :stub backend (clj subprocess) and
    drives list/detail/ask/update/close through the registry with a bound caller.
    The guard tests (cap, provisioned-vs-root, owned-subagent) need no subprocess."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [ai.brainyard.agent.interface :as agent]
             [ai.brainyard.agent.common.acp-agent :as acp-agent]
             [ai.brainyard.agent.core.tool :as tool]
-            [ai.brainyard.agent.core.protocol :as proto]))
+            [ai.brainyard.agent.core.protocol :as proto]
+            [ai.brainyard.agent.test-support :as ts]))
+
+;; The lifecycle test opens a real ACP session, which persists a trajectory
+;; under acp-cmd-<ms>. Keep it out of the developer's sessions dir.
+(use-fixtures :each ts/with-tmp-sessions-root)
 
 (defn- provision!
   "Provision an acp-agent instance in `sid` on the :stub backend (no ask).

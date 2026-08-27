@@ -7,15 +7,40 @@
    per-session AF_UNIX listener, the real client, and the real response-shaping
    in `ask-handle-fn` — only the agent/queue boundary (`inject-side-ask!`) is
    stubbed, so no LLM is needed."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [clojure.java.io :as io]
             [ai.brainyard.agent-tui.core :as core]
             [ai.brainyard.agent-tui.session :as tui-session]
             [ai.brainyard.agent-tui.sessions :as sessions]
             [ai.brainyard.ask-channel.interface :as ask]
             [ai.brainyard.agent-tui-persist.interface :as persist]
-            [ai.brainyard.agent.interface :as agent])
+            [ai.brainyard.agent.interface :as agent]
+            [ai.brainyard.agent.core.config :as agent-config])
   (:import [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]))
+
+;; The resume-session op persists a trajectory for the session it resumes, so an
+;; unredirected run drops `agt-old-1` into the developer's own
+;; <project>/.brainyard/sessions/ — gitignored, therefore invisible, and sitting
+;; alongside their real sessions.
+;;
+;; Local rather than shared: the agent brick has ai.brainyard.agent.test-support
+;; for exactly this, but requiring another brick's TEST namespace would couple
+;; two bricks through a path Polylith only puts on the classpath by accident of
+;; which project is running.
+;;
+;; with-redefs, not binding: the var is dynamic, so a `binding` is thread-local
+;; and would miss any writer that is not on the test thread.
+(defn- with-tmp-sessions-root [f]
+  (let [dir (io/file (System/getProperty "java.io.tmpdir")
+                     (str "by-tui-sessions-test-" (System/nanoTime)))]
+    (.mkdirs dir)
+    (with-redefs [agent-config/*sessions-root-override* (.getAbsolutePath dir)]
+      (try (f)
+           (finally
+             (doseq [^java.io.File c (reverse (file-seq dir))] (.delete c)))))))
+
+(use-fixtures :each with-tmp-sessions-root)
 
 (defn- tmp-root []
   (.toFile (Files/createTempDirectory "ask-it" (make-array FileAttribute 0))))
