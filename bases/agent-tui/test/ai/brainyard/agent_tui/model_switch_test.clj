@@ -13,7 +13,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [ai.brainyard.clj-llm.interface :as llm]
             [ai.brainyard.agent-tui.session :as tui-session]
-            [ai.brainyard.agent-tui.commands :as commands]))
+            [ai.brainyard.agent-tui.commands :as commands]
+            [ai.brainyard.agent-tui-persist.interface :as persist]))
 
 (def ^:private switch-model! #'commands/switch-model!)
 
@@ -29,7 +30,14 @@
                   llm/create-lm               (fn [opts] (reset! captured opts) opts)
                   llm/configure-default-lm!   (fn [_] nil)
                   tui-session/emit!           (fn [_] nil)
-                  tui-session/update-status-bar! (fn [] nil)]
+                  tui-session/update-status-bar! (fn [] nil)
+                  ;; switch-model! persists {:model :provider} for the ACTIVE
+                  ;; agent so --resume restores the swap. Unstubbed, that wrote
+                  ;; into the developer's real sessions dir — keyed by whatever
+                  ;; stub session an earlier namespace had left in the global
+                  ;; registry. The docstring above promises every real side
+                  ;; effect is stubbed; this is one of them.
+                  persist/save-meta!          (fn [& _] nil)]
       (switch-model! model-name))
     @captured))
 

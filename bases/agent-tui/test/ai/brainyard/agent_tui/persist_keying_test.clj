@@ -10,30 +10,23 @@
    Per docs/simplified-agent-tui-arch-design.md §6.3."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [ai.brainyard.agent-tui.sessions :as sessions]
-            [ai.brainyard.agent-tui-persist.interface :as persist]
-            [ai.brainyard.agent.core.config :as agent-config])
+            [ai.brainyard.agent-tui-persist.interface :as persist])
   (:import [java.io File]))
 
-;; `persist/with-root` pins the persist root for the test THREAD. That is not
-;; enough on its own: `agent-tui.core` installs
-;; `(persist/set-root-resolver! (fn [] (agent/sessions-root)))` at ns-load via
-;; alter-var-root, so it is process-global and permanent once any test requires
-;; that ns. Any persist write that misses the thread-local binding — off-thread,
-;; or after this fixture has unwound — falls through to that resolver and lands
-;; in the developer's real <project>/.brainyard/sessions/. That is exactly how
-;; `agt-stub-1234/meta.edn` appeared there, and only under a FULL `bb test`,
-;; where some earlier namespace had loaded agent-tui.core.
-;;
-;; So pin the resolver's own input too. with-redefs sets the root value, which
-;; every thread sees, so the fallback path also resolves into tmp.
+;; These tests register a stub session in the PROCESS-GLOBAL sessions registry
+;; and used to leave it there. `commands/switch-model!` persists meta for
+;; `tui-session/get-active-agent`, so a later namespace in the same JVM —
+;; model-switch-test — wrote `agt-stub-1234/meta.edn` into the developer's real
+;; sessions dir on this test's behalf. That is why it appeared only under a full
+;; `bb test` and never when this namespace ran alone. Reset on the way out.
 (use-fixtures :each
   (fn [t]
     (let [tmp (File/createTempFile "agent-tui-persist-keying-" "")]
       (.delete tmp)
       (.mkdirs tmp)
-      (try (with-redefs [agent-config/*sessions-root-override* (.getAbsolutePath tmp)]
-             (persist/with-root tmp (t)))
+      (try (persist/with-root tmp (t))
            (finally
+             (sessions/reset-sessions!)
              (doseq [^File f (reverse (file-seq tmp))]
                (.delete f)))))))
 
