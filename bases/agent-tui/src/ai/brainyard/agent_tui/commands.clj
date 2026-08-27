@@ -496,24 +496,34 @@
 
 (def ^:private feature-doc-min 24)
 
+(defn- feature-ref-name
+  "How to name feature `r` in an annotation on a row of family `fam`. Rows are
+   already grouped under their family heading and the name column drops the
+   qualifier, so a same-family reference does too: `needs distillation` reads
+   the same as `needs self-improve/distillation` and leaves room for the doc,
+   which is what makes the row legible. Cross-family stays fully qualified."
+  [fam r]
+  (if (= (namespace r) (name fam)) (name r) (str (symbol r))))
+
 (defn- feature-annotation
   "The one state annotation worth showing inline, as [plain styled], or nil.
    Only surprising states qualify — a feature that is simply on says nothing."
   [f gate st]
-  (cond
-    (:proposed f) ["not gateable yet" (ansi/muted "not gateable yet")]
-    (nil? gate)   ["ungated" (ansi/muted "ungated")]
-    (seq (:unmet st))
-    (let [t (str "needs " (str/join ", "
-                                    (map (fn [r] (if (set? r)
-                                                   (str/join "|" (map #(str (symbol %)) (sort r)))
-                                                   (str (symbol r))))
-                                         (:unmet st))))]
-      [t (ansi/warning t)])
-    (= :implied-by (:source st))
-    (let [t (str "\u2190 implied by " (str/join ", " (map #(str (symbol %)) (sort (:implied-by st)))))]
-      [t (ansi/muted t)])
-    :else nil))
+  (let [ref #(feature-ref-name (:family f) %)]
+    (cond
+      (:proposed f) ["not gateable yet" (ansi/muted "not gateable yet")]
+      (nil? gate)   ["ungated" (ansi/muted "ungated")]
+      (seq (:unmet st))
+      (let [t (str "needs " (str/join ", "
+                                      (map (fn [r] (if (set? r)
+                                                     (str/join "|" (map ref (sort r)))
+                                                     (ref r)))
+                                           (:unmet st))))]
+        [t (ansi/warning t)])
+      (= :implied-by (:source st))
+      (let [t (str "\u2190 implied by " (str/join ", " (map ref (sort (:implied-by st)))))]
+        [t (ansi/muted t)])
+      :else nil)))
 
 (defn- emit-feature-line!
   "One indented feature row: state dot, short name, lifecycle, any annotation
