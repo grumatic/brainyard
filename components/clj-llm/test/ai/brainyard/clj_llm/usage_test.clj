@@ -210,8 +210,10 @@
         (is (= 150 (get-in summary [:totals :output-tokens])))
         (is (= 450 (get-in summary [:totals :total-tokens])))
         (is (= 2 (get-in summary [:totals :call-count])))
-        (is (contains? (:by-model summary) "gpt-4o"))
-        (is (contains? (:by-model summary) "gpt-4o-mini")))
+        ;; Keyed provider/model: a bare id is not an identity, since the same
+        ;; id is served by more than one provider at different prices.
+        (is (contains? (:by-model summary) "openai/gpt-4o"))
+        (is (contains? (:by-model summary) "openai/gpt-4o-mini")))
       ;; Check history
       (let [history (usage/get-usage-history tracker)]
         (is (= 2 (count history)))
@@ -230,6 +232,35 @@
         (is (= 0 (get-in summary [:totals :call-count])))
         (is (= 0 (get-in summary [:totals :input-tokens])))
         (is (empty? (:by-model summary)))))))
+
+(deftest by-model-separates-providers-serving-the-same-id
+  (testing "one id on two providers is two buckets, not one merged total"
+    ;; The bug this pins: keyed on the bare id, claude-code/opus and
+    ;; anthropic/opus summed into a single "opus" bucket whose cost belonged to
+    ;; neither. Prices differ per provider, so the merged figure is not
+    ;; recoverable after the fact.
+    (let [tracker (usage/create-usage-tracker)
+          call    (fn [provider cost]
+                    {:model "opus" :provider provider
+                     :input-tokens 100 :output-tokens 50 :total-tokens 150
+                     :cache {:read-tokens 0 :write-tokens 0}
+                     :cost {:total-cost cost}
+                     :call-type :chat-completion :timestamp (java.util.Date.)})]
+      (usage/record-usage! tracker (call :claude-code 0.10))
+      (usage/record-usage! tracker (call :anthropic 0.25))
+      (let [by-model (:by-model (usage/get-usage-summary tracker))]
+        (is (= #{"claude-code/opus" "anthropic/opus"} (set (keys by-model))))
+        (is (= 0.10 (get-in by-model ["claude-code/opus" :total-cost])))
+        (is (= 0.25 (get-in by-model ["anthropic/opus" :total-cost])))))))
+
+(deftest model-key-degrades-when-a-provider-is-absent
+  (testing "a usage map with no provider still keys on something usable"
+    ;; A bare chat-completion outside the agent, or a test fixture, has no
+    ;; provider. That must not produce a nil key that collides across models.
+    (is (= "opus" (usage/model-key nil "opus")))
+    (is (= "claude-code/opus" (usage/model-key :claude-code "opus")))
+    (is (= "claude-code" (usage/model-key :claude-code nil)))
+    (is (nil? (usage/model-key nil nil)))))
 
 (deftest tracker-history-cap-test
   (testing "History is capped at specified limit"

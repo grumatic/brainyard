@@ -514,6 +514,11 @@
              :success          (boolean success)
              :terminated-by    terminated-by
              :model            (or (:effective-model d) (:model-label d))
+             ;; The backend IS the provider here — it is what serves the model
+             ;; and what the descriptor's own `<backend>/<model>` label is built
+             ;; from, so a trajectory record identifies its model the same way
+             ;; a coact one does.
+             :provider         (:backend d)
              :started-at       started-at}))))
       (catch Exception e
         (mulog/debug ::acp-trajectory-store-failed :message (ex-message e))))))

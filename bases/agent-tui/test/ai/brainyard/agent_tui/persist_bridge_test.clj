@@ -14,7 +14,8 @@
             [ai.brainyard.agent-tui-persist.interface :as persist]
             [ai.brainyard.agent-tui.core :as core]
             [ai.brainyard.agent-tui.persist-bridge :as bridge]
-            [ai.brainyard.agent.interface.tui.format :as fmt])
+            [ai.brainyard.agent.interface.tui.format :as fmt]
+            [ai.brainyard.clj-llm.interface :as clj-llm])
   (:import [java.io File]
            [java.nio.file Files]))
 
@@ -107,6 +108,29 @@
     (is (= :coact-agent/abc (:agent-id (persist/read-meta "agt-2"))))
     (let [events (persist/read-events "agt-2")]
       (is (some #(= :agent.instance/created (:kind %)) events)))))
+
+(deftest instance-created-records-the-provider-with-the-model
+  (testing "meta.edn identifies the model, rather than leaving resume to guess"
+    ;; A bare id does not say who served it, and the resume path's inference
+    ;; ends in "contains claude -> anthropic, else openai". So a claude-code or
+    ;; bedrock session whose id the catalog does not pin came back on the wrong
+    ;; provider — wrong credentials, wrong bill — and nothing said so. The LM
+    ;; carries both; this pins that both are kept.
+    (with-redefs [clj-llm/get-default-lm (constantly {:model "opus"
+                                                      :provider :claude-code})]
+      (on-session-created {:session-id "agt-lm" :user-id "u"})
+      (on-instance-created {:agent (stub-agent "agt-lm" "u" :coact-agent/abc)}))
+    (let [meta (persist/read-meta "agt-lm")]
+      (is (= "opus" (:model meta)))
+      (is (= :claude-code (:provider meta))
+          "the provider is recorded, not inferred later from the id")))
+  (testing "an LM with no provider still records what it has"
+    (with-redefs [clj-llm/get-default-lm (constantly {:model "opus"})]
+      (on-session-created {:session-id "agt-lm2" :user-id "u"})
+      (on-instance-created {:agent (stub-agent "agt-lm2" "u" :coact-agent/abc)}))
+    (let [meta (persist/read-meta "agt-lm2")]
+      (is (= "opus" (:model meta)))
+      (is (nil? (:provider meta))))))
 
 (deftest instance-created-subagents-never-claim-resume-identity
   ;; Both kinds of subagent share the root's session-id, and neither may

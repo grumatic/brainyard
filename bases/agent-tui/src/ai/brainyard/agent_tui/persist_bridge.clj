@@ -104,10 +104,22 @@
                                :payload {:agent-id aid}}))
       (when-not subagent?
         (swallow (persist/save-meta! sid
-                                     (let [model (some-> (clj-llm/get-default-lm) :model)]
+                                     ;; :provider alongside :model, matching what
+                                     ;; switch-model! writes on a /model swap.
+                                     ;; Recording the id alone leaves the resume
+                                     ;; to INFER the provider from it, and that
+                                     ;; inference ends in "contains claude ->
+                                     ;; anthropic, else openai" — so a model the
+                                     ;; catalog does not pin (or that a refresh
+                                     ;; later retires) comes back on the wrong
+                                     ;; provider, with the wrong credentials and
+                                     ;; the wrong bill. The LM already carries
+                                     ;; both; only one was being kept.
+                                     (let [lm (clj-llm/get-default-lm)]
                                        (cond-> {:agent-id aid}
-                                         defid (assoc :defagent-id defid)
-                                         model (assoc :model model)))))))))
+                                         defid          (assoc :defagent-id defid)
+                                         (:model lm)    (assoc :model (:model lm))
+                                         (:provider lm) (assoc :provider (:provider lm))))))))))
 
 (defn- on-instance-closed [{:keys [agent]}]
   (when-let [sid (safe-session-id agent)]

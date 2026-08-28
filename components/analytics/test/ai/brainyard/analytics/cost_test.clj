@@ -43,6 +43,21 @@
       (is (contains? (:by-model result) "claude-sonnet-4-6"))
       (is (= :sonnet (get-in result [:by-model "claude-sonnet-4-6" :tier])))))
 
+  (testing "Tiers a provider-qualified key by its model, not by the whole key"
+    ;; :by-model is keyed "provider/model" now. The tier table is keyed on bare
+    ;; ids — a tier is a property of the model, not of who serves it — so an
+    ;; unstripped lookup would miss and default every model to :sonnet. That is
+    ;; a WRONG answer rather than an absent one: right-sizing would then report
+    ;; that nothing is over-tiered.
+    (let [result (cost/session-cost-breakdown
+                  {:totals {}
+                   :by-model {"claude-code/claude-opus-4-6" {:total-cost 0.10 :call-count 1}
+                              "bedrock/claude-haiku-4-5"    {:total-cost 0.01 :call-count 1}}})]
+      (is (= :opus  (get-in result [:by-model "claude-code/claude-opus-4-6" :tier])))
+      (is (= :haiku (get-in result [:by-model "bedrock/claude-haiku-4-5" :tier])))
+      (is (contains? (:by-model result) "claude-code/claude-opus-4-6")
+          "and the qualified key is preserved in the output")))
+
   (testing "Handles empty summary"
     (let [result (cost/session-cost-breakdown {:totals {} :by-model {}})]
       (is (= 0 (:total-cost result)))

@@ -233,7 +233,13 @@
 
    opts keys:
      :session-id :agent-id :question :answer :iterations
-     :success :terminated-by :model :usage-summary :started-at :ended-at
+     :success :terminated-by :model :provider :usage-summary
+     :started-at :ended-at
+
+   `:model` is a BARE id and `:provider` names who served it. Both, because the
+   id alone does not identify a model: the same string is served by more than
+   one provider at different prices, so a trajectory carrying only `:model`
+   cannot be aggregated by cost or compared across providers after the fact.
 
    `:iterations` is the FULL (uncapped) raw iteration vector for the turn.
    `:answer` is still accepted — and is the only route in for a writer with no
@@ -242,7 +248,7 @@
    true across a resume, the other is now countable from the iterations
    themselves. See the v3 note in the ns docstring."
   [{:keys [session-id agent-id question answer iterations
-           success terminated-by model usage-summary
+           success terminated-by model provider usage-summary
            started-at ended-at]}]
   (let [ended (or ended-at (System/currentTimeMillis))
         entries (-> (->> (or iterations []) (keep project-iteration) vec)
@@ -262,6 +268,7 @@
       session-id (assoc :session (str session-id))
       agent-id   (assoc :agent (str agent-id))
       model      (assoc :model model)
+      provider   (assoc :provider provider)
       cost       (assoc :cost (double cost))
       usage      (assoc :usage usage)
       started-at (assoc :duration-ms (- ended started-at)))))

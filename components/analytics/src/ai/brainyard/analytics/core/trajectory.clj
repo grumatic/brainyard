@@ -105,17 +105,32 @@
                  (some? answer)   (conj {:role "assistant" :content (str answer)}))))
            records)))
 
+(defn model-key
+  "The `:by-model` rollup key: `\"provider/model\"`, or the bare id when a
+   record predates `:provider` or carries none.
+
+   Mirrors `clj-llm.core.usage/model-key`, and is a copy for the same reason
+   the record shape above is one: `clj-llm` is a TEST dependency of this
+   component, not a runtime one, so requiring it in src is not available. Keep
+   the two in step — a summary produced here is consumed by the same cost
+   analyzers that read clj-llm's."
+  [provider model]
+  (if (and provider model)
+    (str (name provider) "/" model)
+    (or model (some-> provider name))))
+
 (defn record->usage-call
   "Synthesize one usage-history call record from a turn — the inverse of
    `agent.common.trajectory/usage->compact` plus cost/latency."
-  [{:keys [model usage cost duration-ms]}]
-  {:model              (or model "unknown")
-   :input-tokens       (get usage :in 0)
-   :output-tokens      (get usage :out 0)
-   :cache-read-tokens  (get usage :cache-read 0)
-   :cache-write-tokens (get usage :cache-write 0)
-   :cost               {:total-cost (or cost 0)}
-   :latency-ms         duration-ms})
+  [{:keys [model provider usage cost duration-ms]}]
+  (cond-> {:model              (or model "unknown")
+           :input-tokens       (get usage :in 0)
+           :output-tokens      (get usage :out 0)
+           :cache-read-tokens  (get usage :cache-read 0)
+           :cache-write-tokens (get usage :cache-write 0)
+           :cost               {:total-cost (or cost 0)}
+           :latency-ms         duration-ms}
+    provider (assoc :provider provider)))
 
 (defn records->usage-history [records] (mapv record->usage-call records))
 
@@ -136,7 +151,7 @@
                 :call-count         (count calls)}
         by-model (reduce
                   (fn [m c]
-                    (let [mk (:model c)]
+                    (let [mk (model-key (:provider c) (:model c))]
                       (-> m
                           (update-in [mk :input-tokens]  (fnil + 0) (:input-tokens c))
                           (update-in [mk :output-tokens] (fnil + 0) (:output-tokens c))

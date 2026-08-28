@@ -9,7 +9,8 @@
    - Structured cost breakdown by model
    - Optimal cost estimation (model right-sizing)
    - Throughput statistics"
-  (:require [ai.brainyard.mulog.interface :as mulog]))
+  (:require [ai.brainyard.mulog.interface :as mulog]
+            [clojure.string :as str]))
 
 ;; ============================================================================
 ;; Model Tier Classification
@@ -39,9 +40,20 @@
    :haiku  0.80})
 
 (defn- model-tier
-  "Get tier for a model name. Defaults to :sonnet for unknown models."
+  "Get tier for a model name. Defaults to :sonnet for unknown models.
+
+   Accepts either a bare id or a `provider/model` rollup key, stripping the
+   provider before the lookup. A tier is a property of the MODEL — the same
+   model is the same tier whoever serves it — so the table stays keyed on bare
+   ids rather than gaining a row per provider. Without the strip, every
+   qualified key misses the table and silently classifies as `:sonnet`, which
+   is a wrong answer rather than an absent one: right-sizing would then report
+   that nothing is over-tiered."
   [model]
-  (get model-tiers model :sonnet))
+  (let [bare (if-let [i (some-> model (str/last-index-of "/"))]
+               (subs model (inc i))
+               model)]
+    (get model-tiers bare :sonnet)))
 
 ;; ============================================================================
 ;; Cost Breakdown

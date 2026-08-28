@@ -4850,6 +4850,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
     (when (and enable-trajectory-recording agent (proto/session-id agent))
       (try
         (let [model-id (when (map? lm-config) (:model lm-config))
+              provider (when (map? lm-config) (:provider lm-config))
               ;; Per-turn (not session-cumulative) usage: diff the end-of-turn
               ;; cumulative totals against the snapshot taken at turn start
               ;; (:usage-baseline, set by coact-init-action).
@@ -4876,6 +4877,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                                                     terminated-by))))
                      :terminated-by terminated-by
                      :model model-id
+                     :provider provider
                      :usage-summary usage-summary
                      :started-at (:started-at st)})]
           (trajectory/append-trajectory! session-id traj)

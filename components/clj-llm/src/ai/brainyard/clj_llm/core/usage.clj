@@ -438,20 +438,53 @@
          :history    []
          :history-cap history-cap}))
 
+(defn model-key
+  "The `:by-model` rollup key: `\"provider/model\"`, or the bare id when no
+   provider is known.
+
+   A bare model id is not an identity. The same string is served by more than
+   one provider at different prices — `opus` by claude-code and by anthropic,
+   a `claude-*` id by anthropic and by bedrock — so keying the breakdown on it
+   alone merges two providers' spend into one bucket and reports a cost that
+   belongs to neither. `default-pricing` in this namespace already keys on
+   `[provider model]` for exactly that reason.
+
+   A STRING rather than that pair because this key is displayed, not resolved:
+   consumers print it (`str/join` over the keys, usage tables) and none of them
+   feeds it back to `get-provider-from-model` — which, notably, would misread
+   `\"claude-code/opus\"` as `:anthropic`, since a qualified spec matches
+   neither the prefix table nor the catalog and falls through to the
+   contains-claude default. Safe as a label, unsafe as a model id; keep the two
+   uses apart.
+
+   Deliberately NOT `providers/format-lm-label`, which is the same string:
+   `providers` requires THIS namespace, so the dependency cannot be reversed.
+   The registry-gated spec resolution that function performs is unnecessary
+   here anyway — `build-usage-map` supplies a provider keyword and a bare id."
+  [provider model]
+  (if (and provider model)
+    (str (name provider) "/" model)
+    (or model (some-> provider name))))
+
 (defn record-usage!
   "Record a usage map into a tracker. Returns the usage map (with attribution
    merged in when `*attribution*` is bound) so callers see what was stored.
 
-   Rolls up three ways: `:totals`, `:by-model`, and — when the agent layer has
-   bound `*attribution*` — `:by-agent`, keyed by `:agent-type`. An unattributed
-   call updates the first two and leaves `:by-agent` untouched, so a tracker
-   used outside an agent (a bare `chat-completion`, a test) is unaffected."
+   Rolls up three ways: `:totals`, `:by-model` (keyed by `model-key`, i.e.
+   `provider/model`), and — when the agent layer has bound `*attribution*` —
+   `:by-agent`, keyed by `:agent-type`. An unattributed call updates the first
+   two and leaves `:by-agent` untouched, so a tracker used outside an agent (a
+   bare `chat-completion`, a test) is unaffected.
+
+   History entries keep the BARE `:model` with `:provider` beside it — they are
+   per-call detail rather than a rollup, and `get-usage-history`'s `:model`
+   filter matches on that bare id."
   [tracker usage-map]
   (let [usage-map (cond-> usage-map
                     (and usage-map *attribution*)
                     (merge (select-keys *attribution* [:agent-id :agent-type])))]
     (when (and tracker usage-map)
-      (let [model (:model usage-map)
+      (let [model (model-key (:provider usage-map) (:model usage-map))
             agent-type (:agent-type usage-map)
             cost  (get-in usage-map [:cost :total-cost] 0.0)
             cache-read  (get-in usage-map [:cache :read-tokens] 0)
