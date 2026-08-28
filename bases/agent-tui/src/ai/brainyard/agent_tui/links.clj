@@ -30,7 +30,8 @@
    Nothing here touches the terminal: detection and resolution are pure, and
    `open-url!` shells out. The TUI-side orchestration (suspending for $EDITOR,
    emitting feedback) lives at the click site."
-  (:require [ai.brainyard.agent.interface.tui.format :as fmt]
+  (:require [ai.brainyard.agent.interface.tui.ansi :as ansi]
+            [ai.brainyard.agent.interface.tui.format :as fmt]
             [clojure.java.io :as io]
             [clojure.string :as str]))
 
@@ -139,6 +140,53 @@
       (detect-at plain idx))))
 
 ;; ============================================================================
+;; Recovering a target the visible wrap split across rows
+;; ============================================================================
+
+(defn recover-target
+  "Widen `t` — a target detected on ONE rendered row — using `unwrapped`, the
+   same scrollback entry re-rendered at a width where nothing wraps. Returns a
+   target, `t` unchanged when nothing better is found.
+
+   The visible row may hold only a FRAGMENT: a long URL or path that the
+   renderer hard-wrapped is split across two rows, and neither half is the real
+   target. `unwrapped` is the whole entry as the renderer would draw it if the
+   terminal were wide enough, so the target appears in it intact.
+
+   THIS IS NOT ROW CONCATENATION, and the difference is a security property,
+   not a nicety. Splicing row N's tail onto row N+1's head lets whoever wrote
+   the text choose where the seam falls, and a seam is enough to forge a
+   target: `https://safe.com` ending a row and `@evil.com/x` beginning the next
+   concatenate to `https://safe.com@evil.com/x`, which navigates to evil.com
+   while both visible halves read as harmless. Here the candidate comes from
+   the RENDERER's own output, so the text was never under the author's control
+   at the seam, and the fragment must appear inside it as a substring.
+
+   Ambiguity yields `t`: if the fragment occurs in two different candidates
+   there is no way to know which row the user was looking at, and guessing is
+   how you open the wrong thing."
+  [t unwrapped]
+  (if (or (nil? t) (str/blank? unwrapped))
+    t
+    (let [url?  (= :url (:kind t))
+          frag  (:text t)
+          hits  (->> (match-spans (if url? url-re path-candidate-re) unwrapped)
+                     (map (fn [[_ _ raw]] (if url? (strip-url-junk raw) raw)))
+                     (filter #(str/includes? % frag))
+                     distinct)]
+      (if (= 1 (count hits))
+        (let [full (first hits)]
+          (if (> (count full) (count frag))
+            (if url?
+              {:kind :url :text full}
+              ;; A widened path that no longer parses is a reason to keep the
+              ;; fragment, not to drop the click on the floor.
+              (or (some-> (parse-path-candidate full) (assoc :kind :file :text full))
+                  t))
+            t))
+        t))))
+
+;; ============================================================================
 ;; Resolution
 ;; ============================================================================
 
@@ -225,3 +273,105 @@
 
       :else
       [(str "+" line) path])))
+
+;; ============================================================================
+;; Affordance — underlining what is clickable
+;; ============================================================================
+;;
+;; Without this the feature is invisible: nothing on screen says a path or a URL
+;; will do anything. `render-viewport!` runs each visible row through
+;; `decorate-row` (installed by the app only when mouse reporting is on — an
+;; underline promising a click that cannot happen is worse than no underline).
+;;
+;; Two things make it affordable on the paint path. The result is MEMOISED on
+;; the row string, and rows are immutable and repaint constantly, so the regex
+;; scan and the stat() run once per distinct row rather than once per frame.
+;; And the cache never needs invalidating, because THE UNDERLINE IS ONLY A HINT
+;; — every click re-detects and re-resolves from scratch. A stale underline on
+;; a since-deleted file is cosmetic; the click that follows it correctly does
+;; nothing.
+
+(def ^:private decorate-cache-max
+  "Bound on the memo. Cleared wholesale on overflow rather than evicted in LRU
+   order: rows arrive in scrollback order, so the entries worth keeping are the
+   recent ones the next frame will ask for again, and they are re-derived in
+   microseconds anyway."
+  4096)
+
+(defonce ^:private !decorate-cache (atom {}))
+
+(defn- underline-spans
+  "`[[start end] …]` over PLAIN `s` for every target worth underlining, in
+   ascending order and never overlapping.
+
+   URLs need no I/O. File paths are checked against the filesystem, because an
+   underline on a path that does not resolve promises a click that will do
+   nothing — the same existence check that makes loose detection safe is what
+   makes the affordance honest."
+  [^String s base-dir]
+  (let [urls  (map (fn [[st _ raw]]
+                     (let [text (strip-url-junk raw)]
+                       [(long st) (+ (long st) (count text))]))
+                   (match-spans url-re s))
+        url-covered? (fn [i] (some (fn [[a b]] (and (>= i (long a)) (< i (long b)))) urls))
+        files (keep (fn [[st en raw]]
+                      (when-not (url-covered? (long st))
+                        (when-let [p (parse-path-candidate raw)]
+                          (when (resolve-file (:path p) base-dir)
+                            [(long st) (long en)]))))
+                    (match-spans path-candidate-re s))]
+    (sort-by first (concat urls files))))
+
+(defn- decorate-row*
+  [^String row base-dir]
+  (let [plain (fmt/strip-ansi row)
+        spans (underline-spans plain base-dir)]
+    (if (empty? spans)
+      row
+      (let [starts (into {} (map (fn [[a _]] [a true])) spans)
+            ends   (into {} (map (fn [[_ b]] [b true])) spans)
+            len    (.length row)
+            sb     (StringBuilder. (+ len 32))]
+        ;; One walk over the STYLED row, tracking the plain index alongside it,
+        ;; so a marker is only ever inserted between escapes — never inside one.
+        (loop [i 0, p 0, in? false]
+          (if (>= i len)
+            (do (when in? (.append sb ^String ansi/underline-off))
+                (.toString sb))
+            (let [c (.charAt row i)]
+              (if (= 27 (int c))
+                (let [e (long (fmt/ansi-seq-end row i))]
+                  (.append sb (.substring row i e))
+                  ;; Re-assert inside a span. The row's own escapes are not ours
+                  ;; to interpret, and one of them may well be a full SGR reset
+                  ;; — which would silently drop the underline for the rest of
+                  ;; the target. Cheap to re-emit; invisible when redundant.
+                  (when in? (.append sb ^String ansi/underline))
+                  (recur e p in?))
+                (let [end?   (contains? ends p)
+                      start? (contains? starts p)]
+                  ;; Close before open, so two targets that abut do not merge
+                  ;; into one underlined run.
+                  (when (and in? end?) (.append sb ^String ansi/underline-off))
+                  (when start? (.append sb ^String ansi/underline))
+                  (.append sb c)
+                  (recur (inc i) (inc p)
+                         (cond start? true end? false :else in?)))))))))))
+
+(defn decorate-row
+  "`row` with every clickable target underlined. Memoised — see the section
+   comment for why that is both safe and necessary."
+  [^String row base-dir]
+  (if (str/blank? row)
+    row
+    (if-let [hit (get @!decorate-cache row)]
+      hit
+      (let [out (decorate-row* row base-dir)]
+        (swap! !decorate-cache
+               (fn [m] (assoc (if (> (count m) decorate-cache-max) {} m) row out)))
+        out))))
+
+(defn reset-decorate-cache!
+  "Drop the memo. For tests, and for anything that changes what resolves."
+  []
+  (reset! !decorate-cache {}))

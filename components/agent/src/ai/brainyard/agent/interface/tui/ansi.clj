@@ -27,7 +27,7 @@
 
 ;; Constants are exported as defs (export-symbols handles them)
 (export-symbols ai.brainyard.agent.tui.ansi
-                esc reset bold dim italic underline reverse-video
+                esc reset bold dim italic underline underline-off reverse-video
                 black red green yellow blue magenta cyan white
                 bright-black bright-red bright-green bright-yellow
                 bright-blue bright-magenta bright-cyan bright-white

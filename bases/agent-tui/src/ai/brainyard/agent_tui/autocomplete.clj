@@ -917,7 +917,7 @@
                             (refresh-highlight!)
                             new-delta)))
         open-link!
-        (fn [styled-row col]
+        (fn [styled-row col sb-idx]
           ;; A file location opens in $EDITOR; an http(s) URL goes to the OS
           ;; opener. Neither prompts: the user clicked directly on the literal
           ;; text of the target, so what they see IS what opens — there is no
@@ -926,7 +926,13 @@
           ;; The guards that matter are elsewhere: an http(s)-only scheme
           ;; allowlist, argv rather than a shell string, and — for files — the
           ;; existence check that makes a loose detector safe.
-          (when-let [t (links/detect-in-row styled-row col)]
+          (when-let [t (some-> (links/detect-in-row styled-row col)
+                               ;; The visible row may hold only a fragment of a
+                               ;; hard-wrapped target; widen it against the
+                               ;; entry's unwrapped form before acting. A no-op
+                               ;; when the row already had the whole thing.
+                               (links/recover-target
+                                (layout/unwrapped-entry-text sb-idx)))]
             (case (:kind t)
               :url
               (when (links/open-url! (:text t))
@@ -985,7 +991,7 @@
                                                (block-ui/find-markers-in-viewport))))
                        (refresh-highlight!)
                        (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
-                    (open-link! (get @layout/!scrollback sb-idx) col))))))
+                    (open-link! (get @layout/!scrollback sb-idx) col sb-idx))))))
           nil)
         accept-sel!   (fn []
                         (when (and @menu-active?

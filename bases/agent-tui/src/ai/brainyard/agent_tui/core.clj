@@ -20,6 +20,7 @@
             [ai.brainyard.agent-tui.log :as tui-log]
             [ai.brainyard.agent-tui.help-tips :as help-tips]
             [ai.brainyard.agent-tui.layout :as layout]
+            [ai.brainyard.agent-tui.links :as links]
             [ai.brainyard.agent-tui.oauth-render :as oauth-render]
             [ai.brainyard.agent-tui.dirs :as dirs]
             [ai.brainyard.agent-tui.helpers :as helpers]
@@ -2218,6 +2219,18 @@
           _              (try (layout/set-mouse-enabled!
                                (not (false? (agent/get-config :enable-mouse))))
                               (catch Throwable _ nil))
+          ;; Underline what is clickable — but ONLY when clicking works. An
+          ;; underline promising a click the terminal will never deliver is
+          ;; worse than no underline, so this rides the same switch.
+          ;; `working-dir` is captured once here rather than read per row: it
+          ;; is resolved once at startup anyway (see CLAUDE.md), and this runs
+          ;; on the paint path.
+          _              (try
+                           (when (layout/mouse-enabled?)
+                             (let [wd (try (agent/working-dir) (catch Throwable _ nil))]
+                               (layout/install-row-decorator!
+                                (fn [row] (links/decorate-row row wd)))))
+                           (catch Throwable _ nil))
           fullscreen-ok? (and (not force-inline?)
                               tty?
                               (layout/init-fullscreen!))]

@@ -320,6 +320,18 @@
                    end0)]
         [(width-by-codepoint (subs s i end)) end]))))
 
+(defn ansi-seq-end
+  "Index just past the ANSI escape sequence beginning at `i`, which must point
+   at an ESC.
+
+   The public face of the walk `display-width` and `strip-ansi` use internally.
+   It exists for callers that need to REBUILD a styled string rather than
+   measure one: inserting a span marker into styled text means knowing exactly
+   where each existing escape ends, or the insertion lands inside one and
+   corrupts it."
+  [^String s ^long i]
+  (skip-ansi-seq s i))
+
 (defn strip-ansi
   "`s` with every ANSI escape sequence removed, leaving exactly the characters
    that occupy columns.

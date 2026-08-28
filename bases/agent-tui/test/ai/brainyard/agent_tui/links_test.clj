@@ -10,6 +10,7 @@
    at. So the file tests care most about what must NOT resolve, and lean on
    `resolve-file`'s existence check rather than on regex tightness."
   (:require [ai.brainyard.agent-tui.links :as links]
+            [ai.brainyard.agent.interface.tui.ansi :as ansi]
             [ai.brainyard.agent.interface.tui.format :as fmt]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -166,6 +167,138 @@
         (let [t (links/detect-in-row row col)]
           (is (not= :url (:kind t))
               "the annotated URL occupies no column and must not be reachable"))))))
+
+;; ---------------------------------------------------------------------------
+;; Recovering a target the wrap split across rows
+;; ---------------------------------------------------------------------------
+
+(deftest recovers-a-url-split-across-rows
+  (testing "the visible row holds a fragment; the unwrapped entry holds it whole"
+    (let [frag {:kind :url :text "https://example.com/very/long/pa"}
+          full "see https://example.com/very/long/path/that/continues here"]
+      (is (= "https://example.com/very/long/path/that/continues"
+             (:text (links/recover-target frag full)))))))
+
+(deftest recovers-a-file-path-split-across-rows
+  (let [frag {:kind :file :path "/Users/x/very/long/pa" :text "/Users/x/very/long/pa"}
+        full "at /Users/x/very/long/path/core.clj:42 boom"
+        t    (links/recover-target frag full)]
+    (is (= "/Users/x/very/long/path/core.clj" (:path t)))
+    (is (= 42 (:line t)))
+    (is (= :file (:kind t)))))
+
+(deftest recovery-is-a-no-op-when-the-row-already-had-it-all
+  (let [t {:kind :url :text "https://example.com/a"}]
+    (is (= t (links/recover-target t "see https://example.com/a here")))))
+
+(deftest recovery-never-forges-a-target-from-a-seam
+  (testing "row concatenation would let the AUTHOR pick the seam and build a
+            target neither visible half shows — the userinfo spoof. Recovery
+            searches the RENDERER's own unwrapped output instead, so a target
+            that appears in no rendered candidate is never produced."
+    (let [frag {:kind :url :text "https://safe.com"}
+          ;; What naive row-joining would have produced from
+          ;;   row N:   "… https://safe.com"
+          ;;   row N+1: "@evil.com/x …"
+          ;; is https://safe.com@evil.com/x — which navigates to evil.com.
+          ;; The unwrapped entry shows they are two separate tokens.
+          unwrapped "text https://safe.com and then @evil.com/x more"
+          t (links/recover-target frag unwrapped)]
+      (is (= "https://safe.com" (:text t))
+          "the fragment stands; nothing is spliced across the seam")
+      (is (not (str/includes? (:text t) "evil.com"))))))
+
+(deftest ambiguity-declines-rather-than-guesses
+  (testing "a fragment inside two DIFFERENT candidates cannot be resolved to
+            one, and opening the wrong one is worse than opening nothing"
+    (let [frag {:kind :url :text "https://example.com/a"}
+          unwrapped "https://example.com/a/one and https://example.com/a/two"]
+      (is (= "https://example.com/a" (:text (links/recover-target frag unwrapped))))))
+  (testing "the SAME candidate appearing twice is not ambiguous"
+    (let [frag {:kind :url :text "https://example.com/a/on"}
+          unwrapped "https://example.com/a/one and again https://example.com/a/one"]
+      (is (= "https://example.com/a/one"
+             (:text (links/recover-target frag unwrapped)))))))
+
+(deftest recovery-tolerates-nothing-to-recover-from
+  (let [t {:kind :url :text "https://example.com/a"}]
+    (is (= t (links/recover-target t nil)))
+    (is (= t (links/recover-target t "")))
+    (is (nil? (links/recover-target nil "anything")))))
+
+;; ---------------------------------------------------------------------------
+;; Underline affordance
+;; ---------------------------------------------------------------------------
+
+(defn- underlined-spans
+  "The VISIBLE text of each underlined run in `decorated`.
+
+   Strips ANSI from each capture, because a run legitimately contains escapes:
+   the decorator re-asserts the underline after any escape it passes over,
+   since one of them may be a full SGR reset."
+  [^String decorated]
+  (mapv (comp fmt/strip-ansi second)
+        (re-seq (re-pattern (str (java.util.regex.Pattern/quote ansi/underline)
+                                 "(.*?)"
+                                 (java.util.regex.Pattern/quote ansi/underline-off)))
+                decorated)))
+
+(deftest underlines-urls-without-touching-the-filesystem
+  (links/reset-decorate-cache!)
+  (let [out (links/decorate-row "see https://example.com/a now" "/nonexistent")]
+    (is (= ["https://example.com/a"] (underlined-spans out)))
+    (testing "display width is unchanged — only escapes were added"
+      (is (= (fmt/display-width "see https://example.com/a now")
+             (fmt/display-width out))))))
+
+(deftest underlines-only-files-that-exist
+  (links/reset-decorate-cache!)
+  (tmp-file! "here.clj" "x")
+  (let [base (.getPath @tmp-root)
+        out  (links/decorate-row "at here.clj:7 and gone.clj:9 end" base)]
+    (is (= ["here.clj:7"] (underlined-spans out))
+        "the affordance must not promise a click that will do nothing")))
+
+(deftest decoration-inserts-between-escapes-never-inside-one
+  (links/reset-decorate-cache!)
+  (let [row (str ESC "[2mat " ESC "[0m" ESC "[36mhttps://example.com/a" ESC "[0m done")
+        out (links/decorate-row row "/nonexistent")]
+    (is (= ["https://example.com/a"] (underlined-spans out)))
+    (testing "the original styling survives intact"
+      (is (str/includes? out (str ESC "[36m")))
+      (is (= (fmt/strip-ansi row) (fmt/strip-ansi out))
+          "no visible character was added or lost"))))
+
+(deftest an-sgr-reset-inside-a-target-does-not-drop-the-underline
+  (testing "a row may reset style mid-target; the underline must be re-asserted
+            or it silently stops partway through"
+    (links/reset-decorate-cache!)
+    (let [row (str "go https://example.com/" ESC "[0m" "a/b done")
+          out (links/decorate-row row "/nonexistent")]
+      (is (= ["https://example.com/a/b"] (underlined-spans out)))
+      (testing "and the underline is re-opened after the reset"
+        (is (str/includes? out (str ESC "[0m" ansi/underline)))))))
+
+(deftest a-row-with-nothing-clickable-is-returned-unchanged
+  (links/reset-decorate-cache!)
+  (let [row "just some ordinary prose here"]
+    (is (identical? row (links/decorate-row row "/nonexistent"))))
+  (is (= "" (links/decorate-row "" "/nonexistent"))))
+
+(deftest underline-is-always-closed
+  (testing "an unterminated underline would bleed into every row below it,
+            since SGR state survives a cursor move"
+    (links/reset-decorate-cache!)
+    (let [out (links/decorate-row "go https://example.com/a" "/nonexistent")]
+      (is (str/ends-with? out ansi/underline-off)
+          "a target running to end-of-row still closes"))))
+
+(deftest decoration-is-memoised-on-the-row
+  (links/reset-decorate-cache!)
+  (let [row "see https://example.com/a"
+        a   (links/decorate-row row "/nonexistent")
+        b   (links/decorate-row row "/nonexistent")]
+    (is (identical? a b) "the second call returns the cached string")))
 
 ;; ---------------------------------------------------------------------------
 ;; Editor argument conventions

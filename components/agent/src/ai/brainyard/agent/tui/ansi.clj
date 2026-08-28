@@ -45,6 +45,11 @@
 (def ^:const dim (str esc "2m"))
 (def ^:const italic (str esc "3m"))
 (def ^:const underline (str esc "4m"))
+;; SGR 24 turns underline OFF specifically, leaving colour and weight alone —
+;; unlike `reset`, which would drop whatever style the surrounding row set. That
+;; is what lets a span be underlined INSIDE already-styled text (see
+;; `links/decorate-row`) without repainting the rest of the row.
+(def ^:const underline-off (str esc "24m"))
 (def ^:const reverse-video (str esc "7m"))
 
 ;; Standard colors (foreground)

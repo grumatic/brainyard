@@ -78,6 +78,32 @@
   []
   (if @!mouse-enabled? ansi/enable-mouse ""))
 
+;; Row decorator — an optional last pass over each row `render-viewport!` paints,
+;; used to underline clickable targets. Installed by the app (see `core/run!`)
+;; rather than called directly, because deciding what is clickable needs the
+;; agent's working directory, which `layout` sits below and cannot resolve.
+;; Same shape as `sessions/install-tab-strip-builder!`.
+;;
+;; Unset by default, so nothing here costs anything unless the app opts in.
+(defonce ^:private !row-decorator (atom nil))
+
+(defn install-row-decorator!
+  "Install `f` (String -> String) as the per-row decoration pass, or nil to
+   remove it. `f` MUST preserve display width — it may only add escapes, never
+   visible characters — since the row has already been clamped to `cols` by the
+   time it runs."
+  [f]
+  (reset! !row-decorator f))
+
+(defn- decorate
+  "Apply the installed row decorator, falling back to the row unchanged. A
+   decorator that throws must never take the frame down with it — a missing
+   underline is invisible, a half-painted screen is not."
+  [^String row]
+  (if-let [f @!row-decorator]
+    (try (or (f row) row) (catch Throwable _ row))
+    row))
+
 ;; Scrollback buffer: stores all output lines written to the scroll region.
 ;; Dumped to normal screen on teardown so user can scroll back in terminal history.
 (defonce !scrollback (atom []))
@@ -550,7 +576,14 @@
                     w
                     (apply str
                            (mapcat (fn [line]
-                                     [(ansi/cursor-to scroll-bottom 1) "\n" line])
+                                     ;; Decorate here too, or a row is plain
+                                     ;; when it first appears and underlined
+                                     ;; the moment anything repaints it. These
+                                     ;; rows are formatted at the current width
+                                     ;; already, so unlike the other two paths
+                                     ;; there is no clamp to apply first.
+                                     [(ansi/cursor-to scroll-bottom 1) "\n"
+                                      (decorate line)])
                                    new-lines))))))
              (raw-write! w (str s "\n")))))))))
 
@@ -874,9 +907,14 @@
                 (when (>= row blank-rows)
                   (let [sb-idx (+ start (- row blank-rows))]
                     (when-let [line (get visible (- row blank-rows))]
-                      (.append sb ^String (clamp (if (= sb-idx highlight-idx)
-                                                   (highlight-line line)
-                                                   line)))))))
+                      ;; Decorate AFTER clamping, never before: the clamp is a
+                      ;; width-aware truncate, and a span marker inserted first
+                      ;; can have its closing `underline-off` cut away — leaving
+                      ;; the underline on for every row after it.
+                      (.append sb ^String (decorate
+                                           (clamp (if (= sb-idx highlight-idx)
+                                                    (highlight-line line)
+                                                    line))))))))
               (raw-write! w (.toString sb)))))))))
 
 (defn row->scrollback-idx
@@ -907,6 +945,46 @@
               ;; Guard the tail the same way render-viewport!'s `get` does:
               ;; rows past the last visible line paint nothing.
               (when (< idx end) idx))))))))
+
+(def ^:private unwrap-cols
+  "Width used to re-render an entry when recovering a target the visible wrap
+   split across rows. Far past anything this TUI emits, so nothing wraps."
+  100000)
+
+(defn unwrapped-entry-text
+  "The scrollback entry owning `idx`, re-rendered at a width where nothing
+   wraps and joined into one string. nil when that is not possible.
+
+   This is the reflow machinery used backwards. `!scrollback-src` entries
+   already know how to render themselves at ANY width — that is what makes a
+   resize re-wrap correctly — so asking one for its 100000-column form recovers
+   the logical text behind rows the terminal had to break. `links/recover-target`
+   then finds the whole URL or path there.
+
+   LIVE BLOCKS ARE EXCLUDED, deliberately. Their renderers take width from
+   `!layout`'s `:cols` rather than the argument (see the reflow notes in
+   CLAUDE.md), so a wide render would return the same wrapped rows while
+   inviting a re-entrant render of a block a ticker owns. Ordinary output —
+   answers, tool results, anything with a real `:render` — is the part this
+   works for, and the part where long URLs and paths actually appear.
+
+   Rows recovered as `(constantly …)` re-render to themselves, so they yield
+   the wrapped text and the caller simply finds nothing better. Degrading, not
+   failing, is the same contract the rest of the reflow layer keeps."
+  [idx]
+  (when (and idx (nat-int? idx))
+    (let [entries (ensure-src!)
+          idx     (long idx)]
+      (loop [i 0, acc 0]
+        (when (< i (count entries))
+          (let [e (nth entries i)
+                n (long (:n e))]
+            (if (< idx (+ acc n))
+              (when (nil? (:block-id e))
+                (try
+                  (str/join "\n" (rows-of ((:render e) unwrap-cols)))
+                  (catch Throwable _ nil)))
+              (recur (inc i) (+ acc n)))))))))
 
 (defn scroll-page-up!
   "Scroll viewport up by one page. Clamps to max offset."
@@ -1034,8 +1112,12 @@
                 (let [row (+ 1 blank-rows (- idx view-start))]
                   (.append sb (ansi/cursor-to row 1))
                   (.append sb ^String ansi/erase-line)
-                  ;; Same clamp as `render-viewport!` — see the note there.
-                  (.append sb ^String (fmt/truncate-to-width (get lines idx "") cols))))
+                  ;; Same clamp AND the same decoration as `render-viewport!`.
+                  ;; All three paint paths must agree: a row decorated on one
+                  ;; and not another changes appearance the moment something
+                  ;; repaints it, which reads as a rendering glitch.
+                  (.append sb ^String (decorate
+                                       (fmt/truncate-to-width (get lines idx "") cols)))))
               ;; No cursor restore — the frame epilogue parks it at the input line.
               (raw-write! w (.toString sb)))))))))
 

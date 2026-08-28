@@ -230,11 +230,30 @@ Three things that are load-bearing rather than incidental:
   scheme allowlist so `file:`/`javascript:` and registered custom handlers stay
   unreachable.
 
-**Scope limit:** detection runs on ONE rendered row, so a target hard-wrapped
-across two rows is not found. Rejoining an entry's rows via `!scrollback-src`
-sounds like the fix and is not — most output is boxed, so consecutive rows carry
-`│ ` borders and trailing pad that would splice into the middle of the target.
-Recovering a wrapped URL needs the box structure, not just the rows.
+#### A wrapped target is recovered by re-rendering, never by joining rows
+
+Detection runs on ONE rendered row, so a target the renderer hard-wrapped is
+only a fragment there. `layout/unwrapped-entry-text` runs the reflow machinery
+backwards to fix that: `!scrollback-src` entries already know how to render
+themselves at ANY width — that is what makes a resize re-wrap correctly — so
+asking the owning entry for its 100000-column form recovers the logical text,
+and `links/recover-target` finds the whole URL or path in it.
+
+**Joining row N's tail to row N+1's head would be the obvious implementation
+and is a vulnerability.** A seam whose position the text's author controls is
+enough to forge a target: `https://safe.com` ending a row and `@evil.com/x`
+beginning the next concatenate to `https://safe.com@evil.com/x`, which
+navigates to evil.com while both visible halves read as harmless. Re-rendering
+takes the candidate from the RENDERER's own output instead, so there is no seam
+to aim at, and the fragment must appear inside the result as a substring.
+Ambiguity (a fragment inside two different candidates) declines rather than
+guesses. Regression test: `recovery-never-forges-a-target-from-a-seam`.
+
+Live blocks are excluded — their renderers take width from `!layout`'s `:cols`
+rather than the argument, so a wide render would return the same wrapped rows
+while inviting a re-entrant render of a block a ticker owns. Non-reflowable
+`(constantly …)` entries re-render to themselves, so the caller finds nothing
+better and nothing breaks — degrading, not failing, as elsewhere in reflow.
 
 **tmux gives none of this for free** (measured on 3.6a): it stores OSC-8
 annotations (`#{copy_cursor_hyperlink}`) and forwards them outward, but it has
@@ -243,10 +262,45 @@ no URL detection for plain text — a bare `https://…` yields no annotation an
 hyperlink affordances are `Type`/`Copy` in the `MouseDown3Pane` menu, which
 `#{mouse_any_flag}` suppresses for us.
 
-Impl: `bases/agent-tui/…/links.clj` (pure detection + resolution),
+#### The underline is a hint; the click is authoritative
+
+Nothing on screen would otherwise say a path or URL does anything, so
+`links/decorate-row` underlines clickable targets and the app installs it via
+`layout/install-row-decorator!` — **only when mouse reporting is on**, since an
+underline promising a click the terminal will never deliver is worse than no
+underline at all. It rides `:enable-mouse` rather than adding a second knob for
+a sub-behaviour of the first.
+
+Three things this got wrong before it was right:
+
+- **All three paint paths must decorate, or rows change appearance when you
+  scroll.** `render-viewport!` is the obvious one; `write-output!`'s
+  hardware-scroll path (fresh emits) and `render-block-rows!` (live-block ticks)
+  paint rows too. Decorating only the first made a path render plain when it
+  appeared and underlined the moment anything repainted it.
+- **Decorate AFTER the clamp, never before.** The clamp is a width-aware
+  truncate; a marker inserted first can have its closing `underline-off` cut
+  away, leaving the underline on for every row below it — SGR state survives a
+  cursor move.
+- **Re-assert the underline after every escape inside a span.** The row's own
+  escapes are not ours to interpret and one may be a full SGR reset, which
+  silently drops the underline partway through the target. `ansi/underline-off`
+  (SGR 24) rather than `reset` for the same reason in the other direction: it
+  ends the underline without discarding the row's colour.
+
+Affordable on the paint path because it is **memoised on the row string** —
+rows are immutable and repaint constantly, so the regex scan and the `stat()`
+run once per distinct row rather than once per frame. The memo never needs
+invalidating: every click re-detects and re-resolves from scratch, so a stale
+underline on a since-deleted file is cosmetic and the click correctly does
+nothing. That is also why file paths are stat-ed for the underline at all — an
+underline on a path that will not resolve promises a click that does nothing.
+
+Impl: `bases/agent-tui/…/links.clj` (pure detection, resolution, recovery,
+decoration), `layout/unwrapped-entry-text` + `install-row-decorator!`,
 `display_block_ui/open-in-editor!` (the shared suspend dance, also behind
 `view-in-editor!`), the `open-link!` closure in `autocomplete.clj`. Tests:
-`links_test.clj`.
+`links_test.clj`, plus the unwrapping cases in `mouse_test.clj`.
 
 ### Line breaking belongs to whoever owns the grid
 

@@ -16,6 +16,7 @@
    was really written, rather than against a second copy of the arithmetic."
   (:require [ai.brainyard.agent-tui.display-block-ui :as block-ui]
             [ai.brainyard.agent-tui.layout :as layout]
+            [ai.brainyard.agent-tui.links :as links]
             [ai.brainyard.agent-tui.sessions :as sessions]
             [ai.brainyard.agent-tui.terminal :as terminal]
             [ai.brainyard.agent.interface.tui.format :as fmt]
@@ -201,6 +202,69 @@
         (let [plain-idx (layout/row->scrollback-idx 8)]
           (is (= 0 plain-idx))
           (is (empty? (block-ui/find-markers-in-range plain-idx (inc plain-idx)))))))))
+
+;; ---------------------------------------------------------------------------
+;; 2c. recovering the logical text behind a wrapped row
+;; ---------------------------------------------------------------------------
+
+(defn- wrap-at
+  "Hard-wrap `s` into rows of `cols` characters — a stand-in for what the real
+   renderers do to a token too long for the pane."
+  [^String s cols]
+  (mapv #(apply str %) (partition-all cols s)))
+
+(deftest unwrapped-entry-text-recovers-what-the-wrap-broke
+  (let [url  "https://example.com/very/long/path/that/does/not/fit/on/one/row"
+        text (str "see " url " end")]
+    (fake-fullscreen! 10 [] 0)
+    (layout/write-output! (str/join "\n" (wrap-at text 20))
+                          {:render (fn [cols] (wrap-at text cols))})
+    (testing "the visible rows really did split the URL"
+      (is (< 1 (count @layout/!scrollback)))
+      (is (not-any? #(str/includes? % url) @layout/!scrollback)))
+    (testing "re-rendering the owning entry wide puts it back together"
+      (let [un (layout/unwrapped-entry-text 0)]
+        (is (some? un))
+        (is (str/includes? un url))))
+    (testing "every row of the entry resolves to the same unwrapped text"
+      (is (apply = (map layout/unwrapped-entry-text
+                        (range (count @layout/!scrollback))))))))
+
+(deftest wrapped-recovery-composes-with-detection
+  (testing "the end-to-end shape: a click on a fragment yields the whole target"
+    (let [url  "https://example.com/very/long/path/that/does/not/fit"
+          text (str "see " url " end")]
+      (fake-fullscreen! 10 [] 0)
+      (layout/write-output! (str/join "\n" (wrap-at text 20))
+                            {:render (fn [cols] (wrap-at text cols))})
+      (let [row      (nth @layout/!scrollback 0)
+            ;; column 8 is inside the URL fragment on the first row
+            fragment (links/detect-in-row row 8)
+            widened  (links/recover-target fragment (layout/unwrapped-entry-text 0))]
+        (is (= :url (:kind fragment)))
+        (is (not= url (:text fragment)) "the row alone holds only a fragment")
+        (is (= url (:text widened)) "widening against the entry recovers it")))))
+
+(deftest live-blocks-are-excluded-from-unwrapping
+  (testing "block renderers take width from !layout, not the argument, so a
+            wide re-render would be both useless and re-entrant"
+    (fake-fullscreen! 10 [] 0)
+    (layout/update-live-block! :blk ["block row one" "block row two"] {})
+    (is (nil? (layout/unwrapped-entry-text 0)))))
+
+(deftest unwrapping-degrades-rather-than-throws
+  (fake-fullscreen! 10 ["plain row"] 0)
+  (testing "an index past the end has no owning entry"
+    (is (nil? (layout/unwrapped-entry-text 999))))
+  (testing "a renderer that throws loses reflow, not the click"
+    (fake-fullscreen! 10 [] 0)
+    (layout/write-output! "boom" {:render (fn [_] (throw (ex-info "nope" {})))})
+    (is (nil? (layout/unwrapped-entry-text 0))))
+  (testing "a non-reflowable entry yields its own rows, so nothing is recovered
+            and nothing breaks"
+    (fake-fullscreen! 10 [] 0)
+    (layout/write-output! "just text")
+    (is (= "just text" (layout/unwrapped-entry-text 0)))))
 
 ;; ---------------------------------------------------------------------------
 ;; 3. tab strip spans
