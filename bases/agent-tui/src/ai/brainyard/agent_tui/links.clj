@@ -20,12 +20,15 @@
    simply inert. A regex tight enough to avoid every false positive would also
    miss real paths, and a false positive here costs nothing.
 
-   Scope limit worth knowing: detection runs on ONE rendered row. A target
-   long enough to be hard-wrapped across two rows is not found. Rejoining an
-   entry's rows via `!scrollback-src` sounds like the fix and is not — most
-   output is boxed, so consecutive rows carry `│ ` borders and trailing pad
-   that would be spliced into the middle of the target. Recovering a wrapped
-   URL needs the box structure, not just the rows.
+   Detection runs on ONE rendered row, so a target the renderer hard-wrapped is
+   only a fragment there. `recover-target` widens it against the same entry
+   re-rendered at a width where nothing wraps — NOT by joining the visible rows,
+   which would let whoever wrote the text choose the seam and forge a target.
+   See that function.
+
+   `decorate-row` is the visible half: it marks what is clickable, since nothing
+   else on screen says so. What earns a mark is deliberately narrower than what
+   is clickable — see `worth-marking?`.
 
    Nothing here touches the terminal: detection and resolution are pure, and
    `open-url!` shells out. The TUI-side orchestration (suspending for $EDITOR,
@@ -300,14 +303,37 @@
 
 (defonce ^:private !decorate-cache (atom {}))
 
-(defn- underline-spans
-  "`[[start end] …]` over PLAIN `s` for every target worth underlining, in
+(defn- worth-marking?
+  "Whether a resolvable path candidate earns a visible mark.
+
+   MARKING EVERY RESOLVABLE PATH IS TOO LOUD. This TUI names files constantly —
+   tool args, results, dossier paths, echoed commands — and a bare relative
+   filename mid-sentence (`deps.edn`, `README.md`) is usually being *mentioned*,
+   not offered. Marking those turns ordinary prose into a field of underlines
+   and devalues the mark where it matters.
+
+   So the mark goes to the two shapes that read as a LOCATION rather than a
+   mention: anything carrying a `:line` suffix — the traceback/error case, and
+   the one where clicking saves the most work — and anything absolute, which is
+   already being given as a place to go.
+
+   This narrows the AFFORDANCE only. Clicking is unchanged: a bare `deps.edn`
+   still opens, it just is not advertised. The mark is a hint; the click stays
+   authoritative."
+  [p]
+  (let [path (str (:path p))]
+    (boolean (or (:line p)
+                 (str/starts-with? path "/")
+                 (str/starts-with? path "~")))))
+
+(defn- mark-spans
+  "`[[start end] …]` over PLAIN `s` for every target worth marking, in
    ascending order and never overlapping.
 
-   URLs need no I/O. File paths are checked against the filesystem, because an
-   underline on a path that does not resolve promises a click that will do
-   nothing — the same existence check that makes loose detection safe is what
-   makes the affordance honest."
+   URLs need no I/O and are always marked — they are rarer than paths and a
+   click is the only reasonable thing to do with one. File paths are filtered
+   by `worth-marking?` and then checked against the filesystem, because a mark
+   on a path that does not resolve promises a click that will do nothing."
   [^String s base-dir]
   (let [urls  (map (fn [[st _ raw]]
                      (let [text (strip-url-junk raw)]
@@ -317,7 +343,8 @@
         files (keep (fn [[st en raw]]
                       (when-not (url-covered? (long st))
                         (when-let [p (parse-path-candidate raw)]
-                          (when (resolve-file (:path p) base-dir)
+                          (when (and (worth-marking? p)
+                                     (resolve-file (:path p) base-dir))
                             [(long st) (long en)]))))
                     (match-spans path-candidate-re s))]
     (sort-by first (concat urls files))))
@@ -325,10 +352,12 @@
 (defn- decorate-row*
   [^String row base-dir]
   (let [plain (fmt/strip-ansi row)
-        spans (underline-spans plain base-dir)]
+        spans (mark-spans plain base-dir)]
     (if (empty? spans)
       row
-      (let [starts (into {} (map (fn [[a _]] [a true])) spans)
+      (let [on     (ansi/link-mark-on)
+            off    (ansi/link-mark-off)
+            starts (into {} (map (fn [[a _]] [a true])) spans)
             ends   (into {} (map (fn [[_ b]] [b true])) spans)
             len    (.length row)
             sb     (StringBuilder. (+ len 32))]
@@ -336,7 +365,7 @@
         ;; so a marker is only ever inserted between escapes — never inside one.
         (loop [i 0, p 0, in? false]
           (if (>= i len)
-            (do (when in? (.append sb ^String ansi/underline-off))
+            (do (when in? (.append sb ^String off))
                 (.toString sb))
             (let [c (.charAt row i)]
               (if (= 27 (int c))
@@ -346,30 +375,41 @@
                   ;; to interpret, and one of them may well be a full SGR reset
                   ;; — which would silently drop the underline for the rest of
                   ;; the target. Cheap to re-emit; invisible when redundant.
-                  (when in? (.append sb ^String ansi/underline))
+                  (when in? (.append sb ^String on))
                   (recur e p in?))
                 (let [end?   (contains? ends p)
                       start? (contains? starts p)]
                   ;; Close before open, so two targets that abut do not merge
                   ;; into one underlined run.
-                  (when (and in? end?) (.append sb ^String ansi/underline-off))
-                  (when start? (.append sb ^String ansi/underline))
+                  (when (and in? end?) (.append sb ^String off))
+                  (when start? (.append sb ^String on))
                   (.append sb c)
                   (recur (inc i) (inc p)
                          (cond start? true end? false :else in?)))))))))))
 
+(defonce ^:private !cache-mark
+  ;; The mark the cached rows were built with. `:link/target` can be rebound at
+  ;; runtime by a theme, and every cached row would then carry the OLD escapes
+  ;; forever — the memo is keyed on the input row, which does not change when
+  ;; the theme does.
+  (atom nil))
+
 (defn decorate-row
-  "`row` with every clickable target underlined. Memoised — see the section
-   comment for why that is both safe and necessary."
+  "`row` with every clickable target marked. Memoised — see the section comment
+   for why that is both safe and necessary."
   [^String row base-dir]
   (if (str/blank? row)
     row
-    (if-let [hit (get @!decorate-cache row)]
-      hit
-      (let [out (decorate-row* row base-dir)]
-        (swap! !decorate-cache
-               (fn [m] (assoc (if (> (count m) decorate-cache-max) {} m) row out)))
-        out))))
+    (let [mark (ansi/link-mark-on)]
+      (when (not= mark @!cache-mark)
+        (reset! !decorate-cache {})
+        (reset! !cache-mark mark))
+      (if-let [hit (get @!decorate-cache row)]
+        hit
+        (let [out (decorate-row* row base-dir)]
+          (swap! !decorate-cache
+                 (fn [m] (assoc (if (> (count m) decorate-cache-max) {} m) row out)))
+          out)))))
 
 (defn reset-decorate-cache!
   "Drop the memo. For tests, and for anything that changes what resolves."

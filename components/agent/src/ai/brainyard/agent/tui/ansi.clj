@@ -138,7 +138,19 @@
          :iter/marker-failure [:bright-red]
          :iter/marker-done    [:dim]
          :iter/label          [:bold :bright-white]
-         :iter/usage          [:dim]}))
+         :iter/usage          [:dim]
+         ;; What marks a clickable target — a link, a file location, a session
+         ;; tab. Rebind this to tune how loud the affordance is; it is the one
+         ;; lever for "too many underlines", and it moves every call site at
+         ;; once.
+         ;;
+         ;; ONLY the cleanly-toggleable mods belong here: `:bold` `:dim`
+         ;; `:italic` `:underline` `:reverse` (see `mod->off-code`). A COLOUR
+         ;; has no "off" — ending it needs a `reset`, which would also discard
+         ;; whatever styling the surrounding row had set, and the mark is
+         ;; inserted MID-ROW into text we do not own. Bind a colour here and
+         ;; `link-mark-off` cannot restore what came before it.
+         :link/target         [:underline]}))
 
 (defn set-theme!
   "Merge `bindings` (a {token-id mods-vec} map) into the theme atom.
@@ -159,6 +171,42 @@
   (if (empty? mods)
     ""
     (str esc (str/join ";" (keep mod->code mods)) "m")))
+
+(def ^:private mod->off-code
+  "Mod-keyword → the SGR parameter that turns JUST it off again.
+
+   Only these five attributes can be ended precisely, which is why the
+   `:link/target` binding is restricted to them. Note 22 clears bold AND dim
+   together — the terminal has no separate code for either — so a `:dim` mark
+   inside bold text ends the bold too. `:underline` (24) is the default for
+   being the one attribute that is both quiet and exactly reversible."
+  {:bold "22" :dim "22" :italic "23" :underline "24" :reverse "27"})
+
+(defn link-mark-on
+  "SGR that starts the clickable-target mark, per the `:link/target` theme
+   binding. \"\" when colour is off or the token is unbound."
+  []
+  (let [mods (get @!theme :link/target)]
+    (if (and @!color-enabled (seq mods)) (mods->ansi mods) "")))
+
+(defn link-mark-off
+  "SGR that ends the mark `link-mark-on` started, turning off exactly those
+   attributes and leaving the surrounding row's styling alone. Unknown mods
+   contribute nothing rather than forcing a `reset`, so a mis-bound theme
+   degrades to a mark that does not end — visible, not corrupting."
+  []
+  (let [mods (get @!theme :link/target)
+        offs (distinct (keep mod->off-code mods))]
+    (if (and @!color-enabled (seq offs))
+      (str esc (str/join ";" offs) "m")
+      "")))
+
+(defn link-mark
+  "Wrap `s` in the clickable-target mark. For whole strings a caller owns
+   (a tab label); `links/decorate-row` inserts the two halves itself when
+   marking a span inside a row it does not own."
+  [s]
+  (str (link-mark-on) s (link-mark-off)))
 
 (defn theme-style
   "Wrap `s` with the ANSI codes bound to `token-id`. Returns `s`

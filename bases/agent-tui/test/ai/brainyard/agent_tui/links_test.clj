@@ -259,6 +259,83 @@
     (is (= ["here.clj:7"] (underlined-spans out))
         "the affordance must not promise a click that will do nothing")))
 
+(deftest a-bare-mention-of-a-file-is-not-marked
+  (testing "a relative filename with no line number is usually being MENTIONED,
+            not offered — marking every one turns prose into a field of
+            underlines and devalues the mark where it matters"
+    (links/reset-decorate-cache!)
+    (tmp-file! "quiet.clj" "x")
+    (let [base (.getPath @tmp-root)]
+      (is (empty? (underlined-spans
+                   (links/decorate-row "I edited quiet.clj for you" base)))
+          "bare relative mention: resolvable, but not advertised")
+      (testing "it stays CLICKABLE though — the mark is a hint, not the gate"
+        (let [t (links/detect-at "I edited quiet.clj for you" 12)]
+          (is (= "quiet.clj" (:path t)))
+          (is (some? (links/resolve-file (:path t) base))))))))
+
+(deftest a-location-is-marked
+  (links/reset-decorate-cache!)
+  (let [f    (tmp-file! "loc.clj" "x")
+        base (.getPath @tmp-root)]
+    (testing "carrying a line number reads as a location, not a mention"
+      (is (= ["loc.clj:42"]
+             (underlined-spans (links/decorate-row "at loc.clj:42 boom" base)))))
+    (testing "so does an absolute path, with or without a line"
+      (is (= [(.getPath f)]
+             (underlined-spans
+              (links/decorate-row (str "see " (.getPath f) " here") base)))))))
+
+(deftest urls-are-always-marked
+  (testing "URLs are rarer than paths and clicking is the only thing to do with
+            one, so they are not subject to the path selectivity rule"
+    (links/reset-decorate-cache!)
+    (is (= ["https://example.com/a"]
+           (underlined-spans
+            (links/decorate-row "read https://example.com/a now" "/nonexistent"))))))
+
+;; ---------------------------------------------------------------------------
+;; The mark is a theme token
+;; ---------------------------------------------------------------------------
+
+(deftest the-mark-follows-the-theme-and-the-cache-follows-the-mark
+  (let [saved (get (ansi/current-theme) :link/target)]
+    (try
+      (links/reset-decorate-cache!)
+      (let [row  "go https://example.com/a"
+            base "/nonexistent"
+            a    (links/decorate-row row base)]
+        (is (str/includes? a ansi/underline))
+        (testing "rebinding changes the mark on the very next call — the memo is
+                  keyed on the ROW, which does not change when a theme does"
+          (ansi/set-theme! {:link/target [:italic]})
+          (let [b (links/decorate-row row base)]
+            (is (not= a b) "a stale cache would have returned the old escapes")
+            (is (str/includes? b ansi/italic))
+            (is (not (str/includes? b ansi/underline)))
+            (testing "and it is ended precisely, not with a blanket reset"
+              (is (str/includes? b (str ansi/esc "23m")))
+              (is (not (str/includes? b ansi/reset)))))))
+      (finally
+        (ansi/set-theme! {:link/target saved})
+        (links/reset-decorate-cache!)))))
+
+(deftest an-unmarkable-binding-degrades-visibly-not-corruptingly
+  (testing "a colour has no clean off mid-row; rather than emit a reset that
+            would discard the surrounding row's styling, the mark simply does
+            not end"
+    (let [saved (get (ansi/current-theme) :link/target)]
+      (try
+        (ansi/set-theme! {:link/target [:bright-blue]})
+        (links/reset-decorate-cache!)
+        (is (= "" (ansi/link-mark-off))
+            "no off-code for a colour — documented limitation, not a crash")
+        (is (str/includes? (links/decorate-row "go https://example.com/a" "/x")
+                           (ansi/link-mark-on)))
+        (finally
+          (ansi/set-theme! {:link/target saved})
+          (links/reset-decorate-cache!))))))
+
 (deftest decoration-inserts-between-escapes-never-inside-one
   (links/reset-decorate-cache!)
   (let [row (str ESC "[2mat " ESC "[0m" ESC "[36mhttps://example.com/a" ESC "[0m done")

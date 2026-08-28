@@ -871,7 +871,14 @@
                               ;; Format: ` <label><marker?>`
                               ;; - active marker (* idle / ● running) is suffixed without space
                               ;; - unread marker `?` is also suffixed without space
-                              core (str " " full-label
+                              ;; The LABEL carries the clickable mark, not the
+                              ;; whole segment: the leading space and the
+                              ;; active/unread marker are chrome, and marking
+                              ;; them would read as a wider target than the one
+                              ;; the eye picks out. Width is measured off this
+                              ;; string, and `display-width` skips the escapes,
+                              ;; so the spans stay exact.
+                              core (str " " (ansi/link-mark full-label)
                                         (cond
                                           active?     (if running? "●" "*")
                                           has-unread? "?"

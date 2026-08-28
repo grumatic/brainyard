@@ -262,14 +262,45 @@ no URL detection for plain text — a bare `https://…` yields no annotation an
 hyperlink affordances are `Type`/`Copy` in the `MouseDown3Pane` menu, which
 `#{mouse_any_flag}` suppresses for us.
 
-#### The underline is a hint; the click is authoritative
+#### The mark is a hint; the click is authoritative
 
-Nothing on screen would otherwise say a path or URL does anything, so
-`links/decorate-row` underlines clickable targets and the app installs it via
-`layout/install-row-decorator!` — **only when mouse reporting is on**, since an
-underline promising a click the terminal will never deliver is worse than no
-underline at all. It rides `:enable-mouse` rather than adding a second knob for
-a sub-behaviour of the first.
+Nothing on screen would otherwise say a path, URL or tab does anything, so
+`links/decorate-row` marks clickable targets and the app installs it via
+`layout/install-row-decorator!` — **only when mouse reporting is on**, since a
+mark promising a click the terminal will never deliver is worse than no mark at
+all. It rides `:enable-mouse` rather than adding a second knob for a
+sub-behaviour of the first. `sessions/format-tab-strip` marks tab LABELS the
+same way (not the leading space or the active/unread glyph — those are chrome,
+and marking them reads as a wider target than the eye picks out).
+
+**What earns a mark is deliberately narrower than what is clickable**
+(`links/worth-marking?`). This TUI names files constantly — tool args, results,
+dossier paths, echoed commands — and marking every resolvable one turns prose
+into a field of underlines and devalues the mark where it matters. So a path is
+marked only when it reads as a LOCATION rather than a mention: it carries a
+`:line` suffix (the traceback case, where clicking saves the most work) or it is
+absolute. URLs are always marked — rarer, and clicking is the only reasonable
+thing to do with one. A bare `deps.edn` mid-sentence still OPENS on click; it is
+just not advertised.
+
+**The mark is the `:link/target` theme token**, which is the one lever for "too
+loud" and moves every call site at once. Only cleanly-toggleable mods belong in
+it — `:bold` `:dim` `:italic` `:underline` `:reverse`, per `mod->off-code`. A
+COLOUR has no "off": ending it needs a `reset`, which would discard whatever
+styling the surrounding row had set, and the mark is inserted MID-ROW into text
+we do not own. A colour binding therefore degrades to a mark that never ends —
+visible, not corrupting. (Note SGR 22 clears bold and dim together; the terminal
+has no separate code, so a `:dim` mark inside bold text ends the bold too.)
+`decorate-row`'s memo is keyed on the input row, which does not change when a
+theme does, so it tracks the mark separately and clears itself on a rebind.
+
+**Styled underlines (`ESC[4:4m` dotted, `4:5m` dashed) were rejected**, though
+they are the obvious "quieter" answer. Five production sites measure visible
+width by stripping `#"\033\[[0-9;]*m"` — `core.clj:360`, `render.clj:140`,
+`format.clj:539`, `task/format.clj:42` — and that class has no colon, so a
+colon-form SGR survives the strip and inflates every length by five. Same class
+of silent misalignment as the OSC-8 width bug. Roughly ten test helpers share
+the pattern. Quieting by SELECTIVITY costs nothing and has no blast radius.
 
 Three things this got wrong before it was right:
 

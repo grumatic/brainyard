@@ -45,3 +45,7 @@
 ;; Clipboard (OSC 52)
 (export-symbols ai.brainyard.agent.tui.ansi
                 osc bel osc52-copy)
+
+;; Clickable-target mark (the `:link/target` theme token)
+(export-symbols ai.brainyard.agent.tui.ansi
+                link-mark link-mark-on link-mark-off)
