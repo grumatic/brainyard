@@ -13,8 +13,14 @@
 
    On replay, `tail-bytes` returns the last N bytes across rotated and live
    files, joined oldest→newest.  This is what `by-ui` re-feeds into the pane
-   on attach to populate visible history."
-  (:require [ai.brainyard.agent-tui-persist.core.paths :as paths]
+   on attach to populate visible history.
+
+   Each stream may also carry a **descriptor sidecar** (`…​.desc.log`, one EDN
+   map per line) recording how to RE-RENDER selected emits rather than replay
+   them as frozen rows — see `append-descriptor!`."
+  (:require [ai.brainyard.agent-tui-persist.core.edn-io :as edn-io]
+            [ai.brainyard.agent-tui-persist.core.paths :as paths]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.io File FileOutputStream]
@@ -146,11 +152,91 @@
                    (- remaining read-bytes)
                    (conj! chunks (String. buf StandardCharsets/UTF_8)))))))))
 
+;; ============================================================================
+;; Descriptor sidecar
+;; ============================================================================
+
+(def default-max-descriptors
+  "How many descriptors survive a trim. Only a disk bound — see
+   `append-descriptor!` on why losing old ones is safe."
+  200)
+
+(def default-desc-max-bytes
+  "Sidecar size that triggers a trim (1 MiB). Checked with a `.length` call on
+   every append, so the common path stays O(1) and the O(file) rewrite is rare."
+  (* 1024 1024))
+
+(defn- desc-file
+  "Sidecar path for `tag` — `scrollback.stream.txt` → `scrollback.stream.desc.log`.
+   Deliberately NOT one of `stream-tag->filename`'s names, so `rotate-once!`
+   and `ordered-files` never touch it."
+  ^File [session-id tag]
+  (let [base (stream-tag->filename tag)
+        stem (subs base 0 (.lastIndexOf ^String base "."))]
+    (paths/session-file session-id (str stem ".desc.log"))))
+
+(defn- rewrite-lines!
+  "Replace `f` with `forms`, one EDN form per line, via tmp + rename so a crash
+   mid-trim cannot leave a half-written sidecar in place."
+  [^File f forms]
+  (let [tmp (File/createTempFile (str (.getName f) ".") ".tmp" (.getParentFile f))]
+    (try
+      (spit tmp (str/join (map #(str (pr-str %) "\n") forms)))
+      (.renameTo tmp f)
+      (finally (when (.exists tmp) (.delete tmp))))))
+
+(defn read-descriptors
+  "Every descriptor recorded for `tag`, oldest first.
+
+   An unparseable line is SKIPPED rather than thrown: the sidecar is an
+   optimisation over rows that are already on disk, so a torn last line must
+   cost the re-render of one emit, not the whole resume."
+  [session-id tag]
+  (let [^File f (desc-file session-id tag)]
+    (if-not (.exists f)
+      []
+      (with-open [r (io/reader f)]
+        (into []
+              (keep (fn [line]
+                      (let [t (str/trim line)]
+                        (when (seq t)
+                          (try (edn/read-string {:readers *data-readers*} t)
+                               (catch Throwable _ nil))))))
+              (doall (line-seq r)))))))
+
+(defn append-descriptor!
+  "Append `desc` (a map) to `tag`'s descriptor sidecar.
+
+   A descriptor records how to re-render one emit at an arbitrary width — the
+   values that produced the rendered bytes, which the ANSI stream itself cannot
+   carry. `resume` matches it back to the replayed rows BY CONTENT (see the
+   `:block` key convention in `docs/design/answer-descriptor-resume.md`), never
+   by offset: the stream is a byte tail across rotations, rotation renames its
+   files, and `repair-concat!` rewrites them in place, so no recorded position
+   survives all three.
+
+   That matching rule is also why trimming is safe with no bookkeeping. A
+   descriptor whose bytes have rotated out of the stream matches nothing and is
+   simply inert, so the sidecar is capped for disk alone and never has to rotate
+   in lockstep with the stream it describes."
+  ([session-id tag desc] (append-descriptor! session-id tag desc {}))
+  ([session-id tag desc {:keys [max-descriptors max-bytes]
+                         :or {max-descriptors default-max-descriptors
+                              max-bytes       default-desc-max-bytes}}]
+   (when (map? desc)
+     (let [^File f (desc-file session-id tag)
+           size    (edn-io/append-line! f desc)]
+       (when (> size max-bytes)
+         (rewrite-lines! f (take-last max-descriptors (read-descriptors session-id tag))))
+       size))))
+
 (defn truncate!
-  "Delete every rotation + live file for `tag`."
+  "Delete every rotation + live file for `tag`, and its descriptor sidecar —
+   the descriptors describe bytes that are going away."
   [session-id tag]
   (doseq [^File f (ordered-files session-id tag)]
-    (.delete f)))
+    (.delete f))
+  (.delete (desc-file session-id tag)))
 
 (defn total-bytes
   "Sum of bytes across all rotation files for `tag`."

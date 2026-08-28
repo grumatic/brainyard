@@ -57,9 +57,11 @@ it and each resume appends the whole transcript to itself.
    and `session/restore-sub-output-session!` rebuilds the tab and replays it.
    Fullscreen only: inline mode has no tab strip to restore onto.
 
-In fullscreen both replays go through `core/resume-tail-renderer`, which
-pre-wraps rows to the width being resumed onto and stays attached as the entry's
-`:render`, so they keep reflowing on later resizes. Inline prints the tail raw
+In fullscreen both replays go through `core/tail-segments`, which splits the tail
+into spans and emits one per span. Each carries a `:render` and stays attached as
+the entry's, so they keep reflowing on later resizes: `fit-rows` pre-wraps a
+span of ordinary rows to the width being resumed onto, and a span claimed by an
+answer descriptor is redrawn from its source instead. Inline prints the tail raw
 and wraps nothing — there, the terminal owns line breaking (see
 `layout/terminal-owns-line-breaking?`), and imposing our own breaks would
 replace a wrap the terminal can rejoin on copy with a permanent one.
@@ -81,16 +83,26 @@ per tick — `src-freeze-block!` / `freeze-live-block-in-session!` are already t
 single points where a block stops changing. Cost is modest, but it changes
 chat-tab resume too, so it is not a sub-output-only change.
 
-### Faithful re-wrapping
+### Faithful re-wrapping — except for answers
 
-Replayed rows are rows: `resume-tail-renderer` can make them *fit* a new width
-but cannot redraw a box at it, because the structured values that produced them
-are gone. A narrower resume gives ragged answer-box borders.
+Replayed rows are rows: `fit-rows` can make them *fit* a new width but cannot
+redraw a box at it, because the structured values that produced them are gone. A
+narrower resume gives ragged borders on any box-drawn output.
 
-*To close it:* persist a renderer **descriptor** (`{:kind :answer :text …}`) plus
-a registry that rebuilds the closure. Note the shape of the cost before
-attempting it — `:render` is a closure and closures do not serialise, so this is
-not a storage change but a format change:
+**Answers are the exception**, because they record a descriptor. See
+[docs/design/answer-descriptor-resume.md](../design/answer-descriptor-resume.md);
+in short, the answer emits tee `{:kind :answer :variant … :text …}` to a sidecar
+beside the ANSI stream, and `core/tail-segments` locates the rendered block back
+in the replayed tail by content, handing that span a renderer built from the
+source. So an answer written at 130 and resumed at 80 is *redrawn* at 80.
+
+Everything else — tables in tool results, the welcome banner, the frozen
+compaction summary — still comes back at the width it was written.
+
+*To close it generally:* a descriptor per renderer kind, plus a registry that
+rebuilds the closure. Note the shape of the cost before attempting it —
+`:render` is a closure and closures do not serialise, so this is not a storage
+change but a format change:
 
 - close to 60 `:render` sites, roughly half of them in `session.clj`, become
   descriptors.
@@ -100,19 +112,17 @@ not a storage change but a format change:
   (`:st-mem-atom`), a spinner frame, elapsed time computed against
   `System/currentTimeMillis`.
 
-The good trade, if the ragged borders matter, is the **narrow** version: a
-descriptor for the answer emits only (`format-answer` / `format-answer-plain`, 4
-call sites, closing over nothing but a string). Box-drawn output is exactly what
-re-wrapping mangles, and it leaves every live block — where all the
-unserialisable state is — alone.
+The answer case avoided all three by closing over nothing but a string. Weigh
+each further kind on that basis rather than generalising the mechanism.
 
 ### The reflow source
 
 `:scrollback-src` (the `{:render :n :block-id}` entry list) is in-memory only. It
 survives tab switches, because `!sessions` holds it alongside the rows, and
 nothing else — it is closures, and the session map is never serialised. Rows
-recovered from disk get a `(constantly …)` entry instead: correct, and
-non-reflowable beyond what `resume-tail-renderer` does for them.
+recovered from disk are re-attached to a renderer at replay time instead, one
+per segment: `fit-rows` for a span that can only be refitted, and the answer's
+own formatter for a span a descriptor claimed.
 
 ### Sibling root tabs
 

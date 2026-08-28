@@ -117,6 +117,43 @@
     (is (= "LINE-6\nLINE-7\n" (persist/tail-scrollback "agt-rot" :stream 14))
         "a partial tail still ends at the newest bytes")))
 
+(deftest scrollback-descriptor-test
+  (testing "descriptors round-trip in write order"
+    (persist/append-scrollback-descriptor! "agt-d" :stream {:kind :answer :text "one"})
+    (persist/append-scrollback-descriptor! "agt-d" :stream {:kind :answer :text "two"})
+    (is (= ["one" "two"] (mapv :text (persist/scrollback-descriptors "agt-d" :stream)))))
+  (testing "a session with no sidecar reads empty, not nil-punned or thrown"
+    (is (= [] (persist/scrollback-descriptors "agt-none" :stream))))
+  (testing "the sidecar is per stream tag"
+    (persist/append-scrollback-descriptor! "agt-d" :sub-output {:kind :answer :text "sub"})
+    (is (= ["one" "two"] (mapv :text (persist/scrollback-descriptors "agt-d" :stream))))
+    (is (= ["sub"] (mapv :text (persist/scrollback-descriptors "agt-d" :sub-output)))))
+  (testing "a torn line costs one descriptor, not the whole read"
+    ;; The sidecar is an optimisation over rows already on disk. Throwing here
+    ;; would turn a half-written last line into a failed resume.
+    (let [f (persist/session-file "agt-torn" "scrollback.stream.desc.log")]
+      (persist/append-scrollback-descriptor! "agt-torn" :stream {:kind :answer :text "good"})
+      (spit f "{:kind :answer :text \"trunc" :append true)
+      (is (= ["good"] (mapv :text (persist/scrollback-descriptors "agt-torn" :stream))))))
+  (testing "the sidecar is trimmed to the newest entries once it passes max-bytes"
+    ;; Bounded for disk alone — an evicted descriptor matches nothing on resume
+    ;; and is simply inert, so trimming needs no bookkeeping against the stream.
+    (dotimes [i 40]
+      (persist/append-scrollback-descriptor! "agt-cap" :stream {:kind :answer :text (str i)}
+                                             {:max-bytes 200 :max-descriptors 5}))
+    (let [texts (mapv :text (persist/scrollback-descriptors "agt-cap" :stream))]
+      ;; The count oscillates between the `max-descriptors` floor a trim leaves
+      ;; and the `max-bytes` ceiling that triggers the next one, so the
+      ;; invariant is the range, not a fixed number.
+      (is (< (count texts) 40) "trimmed — not every append survived")
+      (is (>= (count texts) 5) "a trim keeps max-descriptors, so it never empties")
+      (is (= "39" (last texts)) "and it is the NEWEST that survive")))
+  (testing "truncate! takes the descriptors with the bytes they describe"
+    (persist/append-scrollback! "agt-t" :stream "rows\n")
+    (persist/append-scrollback-descriptor! "agt-t" :stream {:kind :answer :text "x"})
+    (persist/truncate-scrollback! "agt-t" :stream)
+    (is (= [] (persist/scrollback-descriptors "agt-t" :stream)))))
+
 (deftest pending-dialogs-test
   (testing "add/remove pending dialogs survive process restart"
     (persist/add-pending-dialog! "agt-1" {:id "q1" :title "A"})

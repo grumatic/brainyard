@@ -761,20 +761,26 @@
    Pass `:render (fn [cols] -> string)` to make the emit re-wrap on terminal
    resize instead of staying hard-wrapped at the width it was formatted for.
    Only meaningful on the two terminal paths; the daemon out-sink owns its own
-   wrapping."
+   wrapping.
+
+   Pass `:desc` to additionally make it re-render on a later RESUME. `:render`
+   is a closure and dies with the process; `:desc` is the same intent written to
+   disk beside the bytes. See `docs/design/answer-descriptor-resume.md`."
   ([s] (emit! s nil nil))
   ([s session-idx] (emit! s session-idx nil))
-  ([s session-idx {:keys [keep-thinking? render]}]
+  ([s session-idx {:keys [keep-thinking? render desc]}]
    (when (and s (not (str/blank? s)))
      (when (and (render-active?) (not keep-thinking?)) (stop-thinking-indicator!))
      (let [target (or session-idx *render-session-idx*)
-           opts   (when render {:render render})]
+           opts   (cond-> nil
+                    render (assoc :render render)
+                    desc   (assoc :desc desc))]
        (cond
          target                  (sessions/emit-to-session! target s opts)
          (out-sink/route! s)     nil
          :else                   (do
                                    (when-let [asid (:agent-session-id (sessions/get-active-session))]
-                                     (persist-bridge/tee-scrollback! asid s))
+                                     (persist-bridge/tee-scrollback! asid s desc))
                                    (layout/write-output! s opts)))))))
 
 (defn emit-inline!
@@ -2790,14 +2796,22 @@
 
    `:persist? false` on the replay: these bytes came out of the root's
    `:sub-output` stream, and teeing them back would append the whole transcript
-   to itself on every resume."
-  [root-agent root-chat-sidx tail render]
+   to itself on every resume.
+
+   `segments` is the tail already split by `core/tail-segments` — spans of rows
+   that can only be re-wrapped, interleaved with answers that can be re-rendered
+   outright. Split by the CALLER because the splitter lives in `core`, which
+   requires this namespace. One emit per segment so each carries its own
+   renderer; row order across them is the tail's own."
+  [root-agent root-chat-sidx tail segments]
   (when (and root-agent (string? tail) (not (clojure.string/blank? tail)))
     (let [sidx (ensure-shared-sub-output-session! root-agent root-chat-sidx)
-          rows (render (or (:cols @layout/!layout) 80))]
-      (when (seq rows)
-        (sessions/emit-to-session! sidx (str/join "\n" rows)
-                                   {:render render :persist? false}))
+          cols (or (:cols @layout/!layout) 80)]
+      (doseq [{:keys [render]} segments]
+        (let [rows (render cols)]
+          (when (seq rows)
+            (sessions/emit-to-session! sidx (str/join "\n" rows)
+                                       {:render render :persist? false}))))
       ;; It holds history, not live output — an unread marker would claim a
       ;; sub-agent had just said something.
       (sessions/update-session! sidx assoc :has-unread? false :status :idle)
@@ -3033,15 +3047,25 @@
               ;; resize rather than staying broken at today's column. The soft
               ;; branch needs none: it emits no hard newlines, so the terminal
               ;; reflows it for free.
+              ;;
+              ;; `:desc` is that same intent written to DISK, so a resume can
+              ;; redraw the box instead of re-wrapping rows it cannot redraw.
+              ;; It records the variant chosen here, because the resume renders
+              ;; with what was emitted rather than re-deciding from the
+              ;; resuming process's display-format. The soft branch records
+              ;; none: it only runs where the terminal owns line breaking, and
+              ;; that replay is written raw.
               (emit! (cond
                        (quiet?) (fmt/format-answer-plain answer)
                        (layout/terminal-owns-line-breaking?) (fmt/format-answer-soft answer)
                        :else (fmt/format-answer answer))
                      nil
                      (cond
-                       (quiet?) {:render #(fmt/format-answer-plain answer %)}
+                       (quiet?) {:render #(fmt/format-answer-plain answer %)
+                                 :desc   {:kind :answer :variant :plain :text answer}}
                        (layout/terminal-owns-line-breaking?) nil
-                       :else {:render #(fmt/format-answer answer %)})))
+                       :else {:render #(fmt/format-answer answer %)
+                              :desc   {:kind :answer :variant :boxed :text answer}})))
             ;; In :quiet the box-less answer needs a blank line after it —
             ;; prepend one to the first of the goal / next-prompt lines.
             (when (and (some? goal-achieved) (not hide-final?))
@@ -3084,11 +3108,14 @@
                                          (quiet?) (fmt/format-answer-plain answer)
                                          (layout/terminal-owns-line-breaking?) (fmt/format-answer-soft answer)
                                          :else (fmt/format-answer answer))
-                                       ;; Reflow on resize — see the root path.
+                                       ;; Reflow on resize, re-render on resume
+                                       ;; — see the root path.
                                        (cond
-                                         (quiet?) {:render #(fmt/format-answer-plain answer %)}
+                                         (quiet?) {:render #(fmt/format-answer-plain answer %)
+                                                   :desc   {:kind :answer :variant :plain :text answer}}
                                          (layout/terminal-owns-line-breaking?) nil
-                                         :else {:render #(fmt/format-answer answer %)}))
+                                         :else {:render #(fmt/format-answer answer %)
+                                                :desc   {:kind :answer :variant :boxed :text answer}}))
             ;; In :quiet the box-less answer needs a blank line after it —
             ;; prepend one to the goal-status line (mirrors the root path).
             (when (some? goal-achieved)

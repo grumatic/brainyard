@@ -710,6 +710,11 @@
    OUTPUT-ONLY tab has no agent and therefore no session id of its own, so it
    tees to its root's `:sub-output` stream (see `sub-output-tee-target`).
 
+   `:desc` rides to the tee rather than to the terminal: it records how to
+   RE-RENDER this emit on a later resume, which `:render` can only do while the
+   closure is alive in this process. See
+   `docs/design/answer-descriptor-resume.md`.
+
    `opts` is forwarded to `layout/write-output!` — notably `:render`, which
    makes the emit re-wrap on terminal resize. It applies on BOTH paths: the
    background path stores the renderer next to the rows (see
@@ -726,9 +731,9 @@
    (when (and s (not (clojure.string/blank? s)))
      (when (not (false? (:persist? opts)))
        (if-let [asid (:agent-session-id (get-session idx))]
-         (persist-bridge/tee-scrollback! asid s)
+         (persist-bridge/tee-scrollback! asid s (:desc opts))
          (when-let [root-asid (sub-output-tee-target idx)]
-           (persist-bridge/tee-sub-output-scrollback! root-asid s))))
+           (persist-bridge/tee-sub-output-scrollback! root-asid s (:desc opts)))))
      (locking switch-lock
        (if (= idx (active-idx))
          ;; Active session — write to terminal (which also updates !scrollback)

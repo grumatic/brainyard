@@ -198,17 +198,32 @@
    producing a single concatenated line — and on resume, the replay would
    restore that concatenation back into `!scrollback`, e.g. the right-
    aligned per-ask usage line getting fused with the `Press Ctrl-C…`
-   hint."
-  [session-id ^String s]
-  (when (and session-id (string? s) (pos? (.length s)))
-    (let [terminated (if (.endsWith s "\n") s (str s "\n"))]
-      (swallow (persist/append-scrollback! session-id :stream terminated))
+   hint.
+
+   `desc` (optional) records how to RE-RENDER this emit at another width, for
+   emits whose rendered rows cannot be re-wrapped faithfully — an answer box
+   being the case that motivated it. `:block` is filled in here rather than by
+   the caller, from the exact string being written: it is what the resume
+   matches against to find these rows again, so deriving it anywhere else
+   invites the two halves to disagree. See
+   `docs/design/answer-descriptor-resume.md`."
+  ([session-id s] (tee-scrollback! session-id s nil))
+  ([session-id ^String s desc]
+   (when (and session-id (string? s) (pos? (.length s)))
+     (let [terminated (if (.endsWith s "\n") s (str s "\n"))]
+       (swallow (persist/append-scrollback! session-id :stream terminated))
+      ;; After the bytes, so a crash between the two leaves a block with no
+      ;; descriptor (replayed as rows, as today) rather than a descriptor with
+      ;; no block (which matches nothing and is inert anyway).
+       (when (map? desc)
+         (swallow (persist/append-scrollback-descriptor!
+                   session-id :stream (assoc desc :block s))))
       ;; Fire the `:display` hook so an ask-socket `:subscribe [:display]` mirrors
       ;; what the session renders, in real time — the socket counterpart of
       ;; tailing scrollback.stream.txt. Cheap when nobody is subscribed; never
       ;; throws into the emit path. See docs/design/session-channel-extensions.md §5b.
-      (try (agent/fire! :display {:session-id session-id :text s})
-           (catch Throwable _ nil)))))
+       (try (agent/fire! :display {:session-id session-id :text s})
+            (catch Throwable _ nil))))))
 
 (defn tee-sub-output-scrollback!
   "Tee a chunk of ANSI bytes into the root session's `:sub-output` scrollback —
@@ -226,11 +241,18 @@
    Deliberately does NOT fire the `:display` hook. That hook mirrors what THE
    SESSION renders for an ask-socket subscriber; interleaving a second surface's
    bytes into it under the same session-id would corrupt that stream rather than
-   enrich it."
-  [session-id ^String s]
-  (when (and session-id (string? s) (pos? (.length s)))
-    (let [terminated (if (.endsWith s "\n") s (str s "\n"))]
-      (swallow (persist/append-scrollback! session-id :sub-output terminated)))))
+   enrich it.
+
+   Takes a `desc` on the same terms as `tee-scrollback!` — a sub-agent's answer
+   box is drawn into this tab and resumes just as badly without one."
+  ([session-id s] (tee-sub-output-scrollback! session-id s nil))
+  ([session-id ^String s desc]
+   (when (and session-id (string? s) (pos? (.length s)))
+     (let [terminated (if (.endsWith s "\n") s (str s "\n"))]
+       (swallow (persist/append-scrollback! session-id :sub-output terminated))
+       (when (map? desc)
+         (swallow (persist/append-scrollback-descriptor!
+                   session-id :sub-output (assoc desc :block s))))))))
 
 ;; --- Lifecycle ---------------------------------------------------------------
 

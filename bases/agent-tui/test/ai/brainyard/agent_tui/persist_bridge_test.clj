@@ -10,8 +10,11 @@
    than through the live hook registry) so we exercise the bridge in isolation
    without touching other tests' hooks or background threads."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [clojure.string :as str]
             [ai.brainyard.agent-tui-persist.interface :as persist]
-            [ai.brainyard.agent-tui.persist-bridge :as bridge])
+            [ai.brainyard.agent-tui.core :as core]
+            [ai.brainyard.agent-tui.persist-bridge :as bridge]
+            [ai.brainyard.agent.interface.tui.format :as fmt])
   (:import [java.io File]
            [java.nio.file Files]))
 
@@ -199,6 +202,41 @@
     (bridge/tee-scrollback! "agt-tee" "")
     ;; no exception, no extra bytes
     (is (= "hello\nworld\n" (persist/read-scrollback "agt-tee" :stream)))))
+
+(deftest tee-records-a-descriptor-that-resumes-into-a-redrawn-answer
+  ;; The end-to-end seam. The unit tests either side of it build their own
+  ;; descriptors, so nothing there would notice if the `:block` the tee records
+  ;; drifted from the bytes it wrote — the match would just silently stop
+  ;; finding anything and every answer would quietly go back to being frozen
+  ;; rows. This drives the real tee and the real splitter against each other.
+  (persist/session-dir "agt-desc")
+  (let [answer "An answer long enough that the width it was drawn at is visible in the result."
+        emitted (fmt/format-answer answer 130)]
+    (bridge/tee-scrollback! "agt-desc" "❯ a question\n")
+    (bridge/tee-scrollback! "agt-desc" emitted
+                            {:kind :answer :variant :boxed :text answer})
+    (bridge/tee-scrollback! "agt-desc" "[done]\n")
+    (testing "the descriptor lands beside the bytes"
+      (is (= 1 (count (persist/scrollback-descriptors "agt-desc" :stream)))))
+    (let [tail  (persist/tail-scrollback "agt-desc" :stream 1000000)
+          descs (persist/scrollback-descriptors "agt-desc" :stream)
+          segs  (#'core/tail-segments tail descs)
+          out   (into [] (mapcat #((:render %) 80)) segs)]
+      (testing "the recorded block is found in the replayed tail"
+        (is (= 1 (count (filter #(= :answer (:kind %)) segs)))
+            "located — a `:block` that drifted from the written bytes would find nothing"))
+      (testing "and resumes as a box drawn at the RESUMED width"
+        (is (every? #(<= (fmt/display-width %) 80) out))
+        (doseq [row (str/split-lines (fmt/format-answer answer 80))
+                :when (str/starts-with? (fmt/strip-ansi row) "│")]
+          (is (some #{row} out) "each row of the fresh 80-column box is present")))
+      (testing "the surrounding transcript is still there, in order"
+        (let [plain (mapv fmt/strip-ansi out)]
+          (is (some #(str/includes? % "a question") plain))
+          (is (some #(str/includes? % "[done]") plain))
+          (is (< (count (take-while #(not (str/includes? % "a question")) plain))
+                 (count (take-while #(not (str/includes? % "[done]")) plain)))
+              "question before completion — the segments did not reorder the tail"))))))
 
 (deftest snap-survives-session-id-fallback-on-restore
   (testing "round-trip via restore-session-map yields the messages we logged"

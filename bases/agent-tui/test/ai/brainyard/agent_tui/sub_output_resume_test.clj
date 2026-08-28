@@ -126,7 +126,7 @@
     (let [root (root-agent :coact-agent/root-2)   ;; NEW instance id
           tail "── explore-agent · ask ──\n❯ a question\nOK\n"
           sidx (session/restore-sub-output-session!
-                root 0 tail (fn [_cols] (str/split-lines tail)))]
+                root 0 tail [{:render (fn [_cols] (str/split-lines tail))}])]
       (is (some? sidx) "the tab exists again")
       (is (= :output (:session-type (sessions/get-session sidx))))
       (is (= 0 (:sub-output-of (sessions/get-session sidx))))
@@ -148,7 +148,7 @@
     (let [root (root-agent :coact-agent/root-2)
           tail "prior transcript\n"
           sidx (session/restore-sub-output-session!
-                root 0 tail (fn [_cols] (str/split-lines tail)))]
+                root 0 tail [{:render (fn [_cols] (str/split-lines tail))}])]
       (is (= sidx (get @session/!root-output-sessions :coact-agent/root-2))
           "keyed by the resumed root's agent-id")
       (is (= 2 (sessions/session-count))
@@ -158,6 +158,6 @@
   (testing "a session that never dispatched a sub-agent gets no empty tab"
     (fake-tabs!)
     (let [root (root-agent :coact-agent/root-2)]
-      (is (nil? (session/restore-sub-output-session! root 0 "" (constantly []))))
-      (is (nil? (session/restore-sub-output-session! root 0 nil (constantly []))))
+      (is (nil? (session/restore-sub-output-session! root 0 "" [])))
+      (is (nil? (session/restore-sub-output-session! root 0 nil [])))
       (is (= 1 (sessions/session-count)) "no tab was created"))))

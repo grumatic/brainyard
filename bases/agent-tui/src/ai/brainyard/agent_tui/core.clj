@@ -948,7 +948,7 @@
 
 ;; Both live below the op handlers but are needed by `:resume-session`, which
 ;; brings a session in off disk exactly as `start!` does further down.
-(declare create-tui-agent! load-input-history-for-session! resume-tail-renderer)
+(declare create-tui-agent! load-input-history-for-session! tail-segments)
 
 (defn hydrate-persisted-session!
   "Load `sid`'s persisted agent-session off disk into the session store, ready
@@ -1147,8 +1147,13 @@
             (when-let [tail (persist/tail-scrollback
                              sid :stream (agent/get-config :resume-scrollback-bytes))]
               (when-not (str/blank? tail)
-                (sessions/emit-to-session! idx tail {:persist? false
-                                                     :render (resume-tail-renderer tail)})))
+                (let [descs (persist/scrollback-descriptors sid :stream)
+                      cols  (or (:cols @layout/!layout) (fmt/terminal-columns))]
+                  (doseq [{:keys [render]} (tail-segments tail descs)]
+                    (let [rows (render cols)]
+                      (when (seq rows)
+                        (sessions/emit-to-session! idx (str/join "\n" rows)
+                                                   {:persist? false :render render})))))))
             (catch Throwable e
               ;; A transcript that will not replay is not a reason to fail a
               ;; resume that otherwise worked — the session is live either way.
@@ -1528,15 +1533,16 @@
                        (when (and c l) "  ·  ")
                        (when l (str "lazy " (str/join ", " l))))))))
 
-(defn- resume-tail-renderer
-  "Build a `:render` for the replayed scrollback tail.
+(defn- fit-rows
+  "Make replayed scrollback rows FIT `cols`: wrap any row wider than it, pass
+   the rest through untouched.
 
-   The tail is rows that were HARD-WRAPPED at whatever width the previous
-   session ran at, and those rows are all that survives — the structured values
-   that produced them are gone, so unlike a live block's renderer this cannot
-   restore the author's original line breaks. What it CAN do is make them fit.
+   These rows were HARD-WRAPPED at whatever width the previous session ran at,
+   and for the spans no descriptor covers they are all that survives — the
+   structured values that produced them are gone, so unlike a live block's
+   renderer this cannot restore the author's original line breaks.
 
-   Resumed narrower than it was written, an unwrapped tail fails TWICE, and
+   Resumed narrower than it was written, an unfitted tail fails TWICE, and
    differently at each step:
 
    - At the replay itself there are no live blocks yet, so `write-output!`
@@ -1549,43 +1555,130 @@
    - On the next repaint `render-viewport!` clamps rows to `cols` instead, so
      the overflow stops corrupting the screen and starts disappearing from it.
 
-   Pre-wrapping fixes the first; registering this as the entry's `:render`
-   fixes the second and keeps it fixed across later resizes, instead of the
-   rows freezing at the width they were resumed onto.
+   Pre-fitting at replay time fixes the first; registering this as the entry's
+   `:render` fixes the second and keeps it fixed across later resizes, instead
+   of the rows freezing at the width they were resumed onto.
 
    Rows that already fit pass through untouched. That is deliberate: it leaves
-   box-drawn output (answer frames, tables) intact on the common
-   same-width-or-wider resume, and confines a ragged border to the narrower
-   case — where the alternative was not seeing the text at all."
-  [tail]
+   box-drawn output (tables, and any answer that recorded no descriptor) intact
+   on the common same-width-or-wider resume, and confines a ragged border to the
+   narrower case — where the alternative was not seeing the text at all."
+  [rows cols]
+  (let [w (max 1 (long (or cols 80)))]
+    (into []
+          (mapcat (fn [row]
+                    (if (> (fmt/display-width row) w)
+                      (fmt/ansi-aware-word-wrap row w)
+                      [row])))
+          rows)))
+
+;; ---------------------------------------------------------------------------
+;; Answer descriptors — re-rendering, not re-wrapping
+;; ---------------------------------------------------------------------------
+;;
+;; `fit-rows` can only make rows FIT. A box it did not draw it cannot redraw, so
+;; an answer frame written at 130 and resumed at 80 comes back as a wrapped
+;; 130-column frame. `tail-segments` closes that for the emits that
+;; recorded a descriptor: it locates the rendered block inside the tail and
+;; hands that span a renderer built from the answer's SOURCE, so the box is
+;; drawn afresh at whatever width is current.
+;;
+;; Matching is by content, on ANSI-STRIPPED rows. Stripping is what makes it
+;; survive a theme change between sessions — the stored block only locates the
+;; span; the re-render uses today's styling. Matching raw bytes would silently
+;; fall back to frozen rows the first time an answer-box colour was rebound.
+;;
+;; Everything degrades to today's behaviour: a descriptor whose block was cut by
+;; the byte tail, rotated out, or altered by `repair-concat!` simply matches
+;; nothing, and those rows stay in a plain fit-to-width segment.
+
+(defn- window-at
+  "Index ≥ `from` where `stripped` contains `needle` (both vectors of rows), or
+   nil. Answer boxes of equal width share a top border, so this deliberately
+   compares the WHOLE window rather than seeking on the first row."
+  [stripped needle from]
+  (let [n     (count needle)
+        limit (- (count stripped) n)]
+    (when (pos? n)
+      (loop [i (max 0 (long from))]
+        (cond
+          (> i limit)                          nil
+          (= needle (subvec stripped i (+ i n))) i
+          :else                                (recur (inc i)))))))
+
+(defn- descriptor-renderer
+  "A `:render` that draws `desc`'s answer at an arbitrary width.
+
+   Renders with the variant the emit RECORDED, never the resuming process's
+   current `display-format`: the tail is a transcript of what happened, and
+   reflow is about width, not about re-deciding presentation. So `quiet?` is
+   read at emit time only and must not be consulted here."
+  [{:keys [variant text]}]
   (fn [cols]
     (let [w (max 1 (long (or cols 80)))]
-      (into []
-            (mapcat (fn [row]
-                      (if (> (fmt/display-width row) w)
-                        (fmt/ansi-aware-word-wrap row w)
-                        [row])))
-            (str/split-lines tail)))))
+      (some-> (if (= :plain variant)
+                (fmt/format-answer-plain text w)
+                (fmt/format-answer text w))
+              str/split-lines))))
+
+(defn- tail-segments
+  "Split `tail` into `{:kind :rows|:answer :rows [...] :render (fn [cols])}`
+   segments, one per located descriptor plus the plain spans between them.
+
+   Descriptors are appended in stream order, so one forward pass with a cursor
+   that never rewinds is enough — and is what keeps two identically-sized boxes
+   from both resolving to the first one.
+
+   With no descriptors this returns a single `fit-rows` segment spanning the
+   whole tail — byte-identical to the replay before any of this existed, which
+   is the property that makes the feature inert until something records one."
+  [tail descriptors]
+  (let [rows     (vec (str/split-lines tail))
+        stripped (mapv fmt/strip-ansi rows)
+        plain    (fn [from to]
+                   (let [span (subvec rows from to)]
+                     {:kind :rows :rows span :render #(fit-rows span %)}))]
+    (loop [ds     (seq descriptors)
+           cursor 0
+           out    []]
+      (if-let [d (first ds)]
+        (let [needle (mapv fmt/strip-ansi (str/split-lines (or (:block d) "")))
+              at     (window-at stripped needle cursor)]
+          (if (and at (seq (:text d)))
+            (recur (next ds)
+                   (+ at (count needle))
+                   (-> (cond-> out (< cursor at) (conj (plain cursor at)))
+                       (conj {:kind   :answer
+                              :rows   (subvec rows at (+ at (count needle)))
+                              :render (descriptor-renderer d)})))
+            ;; Unlocatable — leave its rows to the surrounding plain span.
+            (recur (next ds) cursor out)))
+        (cond-> out
+          (< cursor (count rows)) (conj (plain cursor (count rows))))))))
 
 (defn- write-resume-tail!
   "Replay `tail` onto the active surface, wrapped only where this process owns
    the line breaking.
 
    In FULLSCREEN we own the grid, so the tail is pre-wrapped to the current
-   width and carries a `:render` to re-wrap on resize. INLINE is the opposite —
+   width and carries a `:render` to re-wrap on resize — one emit per segment,
+   so an answer that recorded a descriptor is REDRAWN at this width rather than
+   re-wrapped from rows drawn at the last one. INLINE is the opposite —
    the terminal advances the cursor itself and records a soft wrap it can
    rejoin on copy, so imposing our own hard breaks there would replace a
    recoverable wrap with a permanent one. Nothing to reflow either: reflow is a
    `!scrollback` concern and inline keeps no viewport. See
    `layout/terminal-owns-line-breaking?`."
-  [tail]
-  (when (and tail (not= "" tail))
-    (if (layout/terminal-owns-line-breaking?)
-      (layout/write-output! tail)
-      (let [render (resume-tail-renderer tail)
-            rows   (render (fmt/terminal-columns))]
-        (when (seq rows)
-          (layout/write-output! (str/join "\n" rows) {:render render}))))))
+  ([tail] (write-resume-tail! tail nil))
+  ([tail descriptors]
+   (when (and tail (not= "" tail))
+     (if (layout/terminal-owns-line-breaking?)
+       (layout/write-output! tail)
+       (let [cols (fmt/terminal-columns)]
+         (doseq [{:keys [render]} (tail-segments tail descriptors)]
+           (let [rows (render cols)]
+             (when (seq rows)
+               (layout/write-output! (str/join "\n" rows) {:render render})))))))))
 
 (defn- stash-startup-notice!
   "Queue `s` for emission after the banner (see `write-startup-notice!`).
@@ -1848,7 +1941,16 @@
                                 (catch Throwable e
                                   (mulog/warn ::resume-sub-output-failed
                                               :session-id agt-sess-id :error (ex-message e))
-                                  nil))]
+                                  nil))
+                  ;; How to REDRAW the answers inside those two tails, rather
+                  ;; than re-wrap rows drawn at the previous session's width.
+                  ;; Read alongside their streams and failed the same way: no
+                  ;; descriptors simply means the replay behaves as it always
+                  ;; did.
+                  descs (try (persist/scrollback-descriptors agt-sess-id :stream)
+                             (catch Throwable _ nil))
+                  sub-descs (try (persist/scrollback-descriptors agt-sess-id :sub-output)
+                                 (catch Throwable _ nil))]
               (try
                 ;; Restore the session map, stamp last-attached-at and prime the
                 ;; bridge's high-water mark — shared with `:resume-session`, so
@@ -1861,7 +1963,9 @@
                 (swap! tui-session/!tui-state assoc
                        :resumed? true
                        :resume-tail tail
-                       :resume-sub-output-tail sub-tail)
+                       :resume-descriptors descs
+                       :resume-sub-output-tail sub-tail
+                       :resume-sub-output-descriptors sub-descs)
                 (catch Throwable e
                   ;; `:resumed?` stays FALSE deliberately — nothing was
                   ;; restored, and a resume notice over an empty session would
@@ -2256,9 +2360,9 @@
         ;; callers that never reach `run!` and get no banner from it either.
           (when resumed?
             (when-let [tail (:resume-tail @tui-session/!tui-state)]
-              (try (write-resume-tail! tail)
+              (try (write-resume-tail! tail (:resume-descriptors @tui-session/!tui-state))
                    (catch Throwable _ nil)))
-            (swap! tui-session/!tui-state dissoc :resume-tail)
+            (swap! tui-session/!tui-state dissoc :resume-tail :resume-descriptors)
             ;; Bring back the shared sub-output tab. Only in FULLSCREEN: the tab
             ;; is a tab — inline mode has no tab strip and no second surface to
             ;; put it on, so there is nowhere for it to be restored TO.
@@ -2271,11 +2375,14 @@
               (when-let [sub-tail (:resume-sub-output-tail @tui-session/!tui-state)]
                 (try
                   (tui-session/restore-sub-output-session!
-                   ag (sessions/active-idx) sub-tail (resume-tail-renderer sub-tail))
+                   ag (sessions/active-idx) sub-tail
+                   (tail-segments sub-tail
+                                  (:resume-sub-output-descriptors @tui-session/!tui-state)))
                   (catch Throwable e
                     (mulog/warn ::resume-sub-output-restore-failed
                                 :error (ex-message e))))))
-            (swap! tui-session/!tui-state dissoc :resume-sub-output-tail))
+            (swap! tui-session/!tui-state dissoc
+                   :resume-sub-output-tail :resume-sub-output-descriptors))
         ;; Banner / resume notice via layout/write-output! (not
         ;; tui-session/emit!) so the bytes don't tee into the on-disk
         ;; scrollback file.

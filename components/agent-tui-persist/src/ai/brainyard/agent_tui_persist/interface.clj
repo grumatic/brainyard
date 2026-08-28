@@ -65,6 +65,12 @@
 (def repair-scrollback!     scrollback/repair-concat!)
 (def repair-all-scrollbacks! scrollback/repair-all!)
 
+;; How to RE-RENDER selected emits on resume, rather than replay them as rows
+;; frozen at the width they were written. See
+;; `docs/design/answer-descriptor-resume.md`.
+(def append-scrollback-descriptor! scrollback/append-descriptor!)
+(def scrollback-descriptors        scrollback/read-descriptors)
+
 ;; -- Snapshots ----------------------------------------------------------------
 
 (def read-snap     snapshots/read-snap)

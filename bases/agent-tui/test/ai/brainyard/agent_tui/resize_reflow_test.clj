@@ -378,19 +378,26 @@
 
 (defn- strip-ansi [s] (str/replace s #"\[[0-9;]*[A-Za-z]" ""))
 
-(deftest resume-tail-renderer-preserves-rows-that-fit
+(defn- tail-renderer
+  "What the replay attaches to a span of tail rows no descriptor covers — the
+   `fit-rows` half of `tail-segments`. See `answer_descriptor_test` for the
+   other half, where an answer is redrawn rather than refitted."
+  [tail]
+  (fn [cols] (#'core/fit-rows (str/split-lines tail) cols)))
+
+(deftest resume-tail-fitting-preserves-rows-that-fit
   (testing "a row within the width is passed through byte-identical"
-    ;; Box-drawn output (answer frames, tables) must survive the common
-    ;; same-width-or-wider resume untouched — wrapping it would ragged the
-    ;; borders for no gain.
+    ;; Box-drawn output (tables, and any answer that recorded no descriptor)
+    ;; must survive the common same-width-or-wider resume untouched — wrapping
+    ;; it would ragged the borders for no gain.
     (let [tail "┌────────┐\n│ hello  │\n└────────┘\n"
-          rows ((#'core/resume-tail-renderer tail) 80)]
+          rows ((tail-renderer tail) 80)]
       (is (= ["┌────────┐" "│ hello  │" "└────────┘"] rows)))))
 
-(deftest resume-tail-renderer-rescues-overflow-that-would-be-clipped
+(deftest resume-tail-fitting-rescues-overflow-that-would-be-clipped
   (testing "a row wider than the terminal is wrapped, not lost"
     (let [tail (str long-text "\n")
-          rows ((#'core/resume-tail-renderer tail) 40)]
+          rows ((tail-renderer tail) 40)]
       (is (< 1 (count rows)) "the over-wide row became several")
       (is (every? #(<= (fmt/display-width %) 40) rows)
           "every emitted row now fits, so nothing is clipped at paint time")
@@ -398,14 +405,14 @@
              (str/replace (strip-ansi (str/join " " rows)) #"\s+" " "))
           "and the words all survive the wrap"))))
 
-(deftest resume-tail-renderer-is-not-cumulative
+(deftest resume-tail-fitting-is-not-cumulative
   (testing "re-rendering wide after narrow returns the original rows"
-    ;; The renderer closes over the ORIGINAL tail rather than over its own last
+    ;; The renderer closes over the ORIGINAL rows rather than over its own last
     ;; output, so a narrow resize followed by a wide one is not lossy — the
     ;; second render re-derives from the source instead of trying to unwrap
     ;; what the first one produced.
     (let [tail   (str long-text "\n")
-          render (#'core/resume-tail-renderer tail)
+          render (tail-renderer tail)
           wide   (render 200)]
       (render 40)
       (is (= wide (render 200)) "the narrow pass left no residue")
