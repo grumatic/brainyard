@@ -607,6 +607,11 @@
                                            (keyword v) ::env-unset)
                                 :default :normal
                                 :doc "TUI display detail level (source of truth for the /display-format command and the -v flag): :quiet (think bullets + box-less answer) | :normal (iterations+tools+answer) | :verbose (+ BT traces). Env: BY_DISPLAY_FORMAT."}
+   :enable-mouse               {:type "boolean"
+                                :env-fn #(if-some [v (System/getenv "BY_MOUSE")]
+                                           (= "true" v) ::env-unset)
+                                :default true
+                                :doc "Enable TUI mouse reporting (DECSET ?1000h + SGR ?1006h): click a tab in the tab strip to switch sessions, click a collapsed/expanded block marker in scrollback to toggle it. On by default. The cost is that while reporting is on the terminal hands click-drag to the application, so selecting text needs the terminal's bypass modifier — Shift almost everywhere, Option in the xterm.js/--web path. Set false to restore plain-drag selection; the wheel then falls back to ?1007h alternate-scroll, which synthesises arrow keys. Fullscreen only — inline mode and `by ask` never emit mouse sequences, having no row model to resolve a click against. Env: BY_MOUSE."}
    :grapheme-width             {:type "keyword"
                                 :env-fn #(if-let [v (not-empty (System/getenv "BY_GRAPHEME_WIDTH"))]
                                            (keyword v) ::env-unset)

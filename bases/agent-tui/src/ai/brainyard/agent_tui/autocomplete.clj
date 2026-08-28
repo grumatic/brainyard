@@ -11,6 +11,7 @@
             [ai.brainyard.agent-tui.input :as input]
             [ai.brainyard.agent-tui.terminal :as terminal]
             [ai.brainyard.agent-tui.display-block-ui :as block-ui]
+            [ai.brainyard.agent-tui.links :as links]
             [ai.brainyard.agent.interface.tui.ansi :as ansi]
             [ai.brainyard.agent.interface.tui.format :as fmt]
             [ai.brainyard.agent.interface :as agent]
@@ -915,6 +916,77 @@
                             (vreset! selected-mark updated)
                             (refresh-highlight!)
                             new-delta)))
+        open-link!
+        (fn [styled-row col]
+          ;; A file location opens in $EDITOR; an http(s) URL goes to the OS
+          ;; opener. Neither prompts: the user clicked directly on the literal
+          ;; text of the target, so what they see IS what opens — there is no
+          ;; label/destination split for a confirm to protect against, and a
+          ;; modal on every link click would cost more than a stray browser tab.
+          ;; The guards that matter are elsewhere: an http(s)-only scheme
+          ;; allowlist, argv rather than a shell string, and — for files — the
+          ;; existence check that makes a loose detector safe.
+          (when-let [t (links/detect-in-row styled-row col)]
+            (case (:kind t)
+              :url
+              (when (links/open-url! (:text t))
+                (tui-session/emit! (ansi/muted (str "Opened " (:text t)))))
+
+              :file
+              (let [base (try (agent/working-dir) (catch Throwable _ nil))]
+                (when-let [f (links/resolve-file (:path t) base)]
+                  (block-ui/open-in-editor! (.getPath f) (:line t))
+                  (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
+
+              nil)))
+        click!
+        (fn [{:keys [button row col]}]
+          ;; Left button only. Right/middle are reserved and, more importantly,
+          ;; must not fall through to an action the user did not intend.
+          (when (= button :left)
+            (let [{:keys [tab-row]} @layout/!layout]
+              (cond
+                ;; Tab strip → switch session. `tab-at-column` only knows about
+                ;; tabs that were actually painted, so a click past a truncated
+                ;; strip's `…` resolves to nothing rather than to an off-screen
+                ;; tab.
+                (and tab-row (= (long row) (long tab-row)))
+                (when-let [idx (sessions/tab-at-column col)]
+                  (when (not= idx (sessions/active-idx))
+                    (dismiss-menu!)
+                    (sessions/switch-to! idx)
+                    (tui-session/update-status-bar!)
+                    (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
+
+                ;; Scroll region → the marker on the clicked line if there is
+                ;; one, else a link on it. Marker wins: it is hit-tested per
+                ;; LINE (the marker is nearly the whole line, and being
+                ;; forgiving about the trailing columns matches how Tab-cycling
+                ;; already selects markers), so a per-column link test on the
+                ;; same row could only ever disagree with it.
+                :else
+                (when-let [sb-idx (layout/row->scrollback-idx row)]
+                  (if-let [m (first (block-ui/find-markers-in-range
+                                     sb-idx (inc sb-idx)))]
+                    ;; ONE frame for the gesture — the toggle repaints the
+                    ;; viewport and `refresh-highlight!` repaints it again;
+                    ;; separately that is a visible double redraw. Same
+                    ;; reasoning as the :page-up handler.
+                    (layout/draw-frame!
+                     (fn []
+                       (block-ui/toggle! (:id m) (:line-idx m) (:kind m))
+                       ;; Leave the clicked block selected so the keyboard path
+                       ;; picks up where the mouse left off — Ctrl-O then opens
+                       ;; the block the user just clicked. Re-locate it first:
+                       ;; expanding splices lines in, so the pre-toggle
+                       ;; :line-idx is stale the moment toggle! returns.
+                       (vreset! selected-mark
+                                (first (filter #(= (:id %) (:id m))
+                                               (block-ui/find-markers-in-viewport))))
+                       (refresh-highlight!)
+                       (terminal/redraw-input-line! (.toString buf) @cursor-pos)))
+                    (open-link! (get @layout/!scrollback sb-idx) col))))))
+          nil)
         accept-sel!   (fn []
                         (when (and @menu-active?
                                    (>= @menu-selected 0)
@@ -998,6 +1070,14 @@
                   (string? key)      (.append pb ^String key)
                   (= key :alt-enter) (.append pb "\n")))
               (recur))
+
+          ;; Mouse events arrive as MAPS and must be intercepted ahead of the
+          ;; `case` below — its default branch treats `key` as a printable
+          ;; string and would throw on a map. (Wheel notches never reach here:
+          ;; `read-key!` maps them back to :scroll-up / :scroll-down.)
+          (map? key)
+          (do (click! key) (recur))
+
           :else
           (case key
             nil       (do (end-menu-hold!) nil)

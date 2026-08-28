@@ -80,15 +80,63 @@
       (zero? (.waitFor (.start pb))))
     (catch Exception _ false)))
 
+(def ^:private sgr-max-bytes
+  "Longest tail we will consume for an SGR mouse report (everything after the
+   opening `ESC [ <`). A real report is far shorter — `65;1920;1080M` is 14 —
+   so this is purely the backstop that stops a sequence which opens like a
+   mouse report and never terminates from consuming the input stream."
+  24)
+
+(defn- decode-sgr-mouse
+  "Decode the parameter run of an SGR mouse report (`btn;col;row`) into
+   something the key dispatch understands. `press?` distinguishes the `M`
+   (press) final byte from `m` (release).
+
+   Returns `:scroll-up` / `:scroll-down` for the wheel, a `{:type :mouse …}`
+   map for a button press, or nil for events the TUI has no use for (release,
+   motion, unparseable) — nil is turned into `:unknown` by the caller so it is
+   swallowed rather than reaching the printable-character branch.
+
+   The wheel mapping is load-bearing: with `?1000h` on, the terminal stops
+   synthesising the `ESC[A`/`ESC[B` that `?1007h` alternate-scroll used to
+   produce, and sends buttons 64/65 instead. Without this the wheel goes dead."
+  [^String params press?]
+  (let [parts (str/split params #";")]
+    (when (= 3 (count parts))
+      (let [[b x y] (map parse-long parts)]
+        (when (and b x y (pos? (long x)) (pos? (long y)))
+          (let [b       (long b)
+                wheel?  (pos? (bit-and b 64))
+                motion? (pos? (bit-and b 32))
+                btn     (bit-and b 3)]
+            (cond
+              wheel?     (when press?
+                           (case btn 0 :scroll-up 1 :scroll-down nil))
+              motion?    nil
+              (not press?) nil
+              :else      {:type   :mouse
+                          :button (case btn 0 :left 1 :middle 2 :right :unknown)
+                          :col    (long x)
+                          :row    (long y)
+                          :shift? (pos? (bit-and b 4))
+                          :alt?   (pos? (bit-and b 8))
+                          :ctrl?  (pos? (bit-and b 16))})))))))
+
 (defn read-key!
   "Read a single keystroke in raw mode.
    When the input reader thread is active, reads from the input queue.
    Otherwise reads directly from stdin (fallback).
-   Returns keyword for special keys, string for printable chars, or nil for EOF.
+   Returns keyword for special keys, string for printable chars, a mouse-event
+   MAP (see below), or nil for EOF.
    Special keys: :page-up, :page-down, :enter, :alt-enter, :backspace,
                  :ctrl-a, :ctrl-e, :ctrl-k, :ctrl-n, :ctrl-o, :ctrl-p, :ctrl-t, :ctrl-w,
                  :ctrl-d, :arrow-left, :arrow-right,
-                 :shift-arrow-left, :shift-arrow-right, :sigint, :unknown"
+                 :shift-arrow-left, :shift-arrow-right, :sigint, :unknown
+   Mouse (only when `ansi/enable-mouse` is in effect — see `layout/mouse-seq`):
+                 {:type :mouse :button :left|:middle|:right :row R :col C
+                  :shift? :alt? :ctrl?}  (1-based row/col, button PRESS only)
+   Callers that dispatch on `key` with `case` MUST intercept the map first —
+   it would otherwise fall through to the printable-character default."
   [^InputStream in]
   (let [;; Unified byte reader: from queue if reader thread active, else direct
         read-byte (fn [] (if @input/!input-reader-thread
@@ -148,6 +196,32 @@
 
                   (= b3 (long (int \~)))
                   :unknown
+
+                  ;; SGR mouse report: ESC [ < btn ; col ; row (M|m).
+                  ;;
+                  ;; Read the tail with BLOCKING reads rather than the
+                  ;; `available` peek used for the sequences above. The bytes
+                  ;; reach us one at a time through the reader thread's queue,
+                  ;; so a peek races the enqueue: it would bail mid-report and
+                  ;; spill the remaining digits into the input line as typed
+                  ;; text. `sgr-max-bytes` is what makes blocking safe.
+                  (= b3 (long (int \<)))
+                  (loop [acc "" n 0]
+                    (if (>= n sgr-max-bytes)
+                      (do (drain) :unknown)
+                      (let [c (long (read-byte))]
+                        (cond
+                          (= c (long (int \M)))
+                          (or (decode-sgr-mouse acc true) :unknown)
+
+                          (= c (long (int \m)))
+                          (or (decode-sgr-mouse acc false) :unknown)
+
+                          (or (and (>= c (long (int \0))) (<= c (long (int \9))))
+                              (= c (long (int \;))))
+                          (recur (str acc (char c)) (inc n))
+
+                          :else (do (drain) :unknown)))))
 
                   ;; ESC[1;2C = Shift+Right, ESC[1;2D = Shift+Left
                   (= b3 (long (int \1)))

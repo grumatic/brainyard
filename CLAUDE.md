@@ -152,6 +152,102 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   unmeasurable tmux — resolves to clustering **off**. Impl:
   `components/agent/…/tui/terminal_caps.clj`; negotiation runs once in
   `run-tui!` before the first render.
+- **`BY_MOUSE`** — TUI mouse clicks (`:enable-mouse`, default **true**).
+  Click a tab in the tab strip to switch sessions; click a collapsed/expanded
+  block marker in scrollback to toggle it. Fullscreen only — inline mode and
+  `by ask` never emit the sequences, having no row model to resolve a click
+  against.
+  Enabling `?1000h` **supersedes** `?1007h`: alternate-scroll only synthesises
+  arrow keys while mouse reporting is off, so the wheel arrives instead as SGR
+  buttons 64/65, which `terminal/read-key!` maps back to `:scroll-up` /
+  `:scroll-down`. Turning one on without the other silently kills scrolling.
+  `?1006h` (SGR) is likewise not optional — the default X10 encoding packs a
+  coordinate into `32 + n` and cannot address a column past 223.
+  The cost is that the terminal hands click-drag to the application, so text
+  selection needs its bypass modifier (Shift almost everywhere; Option in the
+  xterm.js/`--web` path, which `playground-server/proxy.clj` already widens to
+  accept both). `BY_MOUSE=false` restores plain-drag selection and falls back
+  to alternate-scroll.
+  **Inside tmux this works regardless of tmux's own `mouse` setting** —
+  measured on 3.6a, nested two deep, both servers `mouse off`: enabling
+  `?1000h` in the innermost app flips the outer pane's `#{mouse_any_flag}`
+  0→1, and an injected `ESC[<0;5;3M` arrives byte-identical at the innermost
+  process. With `mouse off` tmux passes the report straight through; with
+  `mouse on` its `MouseDown1Pane` binding is `select-pane -t = ; send-keys -M`,
+  which forwards it anyway, and `MouseDrag1Pane` / `DoubleClick1Pane` /
+  `TripleClick1Pane` all test `#{mouse_any_flag}` and hand the event to the
+  app instead of starting a tmux selection. So brainyard does not need — and
+  does not make — any tmux config change for this.
+  The one thing enabling mouse reporting *costs* under tmux: `MouseDown3Pane`
+  also checks `mouse_any_flag`, so tmux's right-click context menu (which
+  carries `Copy #{mouse_hyperlink}`) is suppressed for our pane.
+  Resolution is two mappings, each of which must stay honest with its
+  renderer: `layout/row->scrollback-idx` is `render-viewport!` read backwards
+  (bottom-anchored, so it depends on both scrollback length and viewport
+  offset), and `sessions/!tab-spans` is recorded *by* `format-tab-strip` so a
+  tab dropped past the `…` is on no column and cannot be clicked. Both measure
+  in `fmt/display-width`, never `count`. Impl: `ansi/enable-mouse`,
+  `terminal/read-key!` (`ESC[<b;x;yM`), the `click!` handler in
+  `autocomplete.clj`; tests in `bases/agent-tui/test/…/mouse_test.clj`.
+
+### Clickable links are DETECTED at click time, not registered by producers
+
+A click on a scroll-region row that carries no block marker falls through to
+`links/detect-in-row`: a `path[:line[:col]]` opens in `$EDITOR`, an http(s) URL
+goes to the OS opener. Both act immediately — the user clicked the literal text
+of the target, so what they see IS what opens, and there is no label/destination
+split for a confirm to protect against.
+
+Detection runs against the rendered row rather than a producer-side registry,
+which is what makes it work retroactively across all 22 emit sites, survive a
+resize for free (it re-runs against whatever is on screen), and stay incapable
+of going stale relative to the text on screen. The price is precision, and the
+file case pays it with an **existence check rather than a tight regex**:
+`path-candidate-re` is deliberately loose and a candidate that resolves to no
+real file is simply inert. `3.14` and `e.g.` are candidates; neither exists;
+nothing happens. Directories resolve to nil too — `.` and `..` are constant
+false positives and opening a directory is never what a path click meant.
+
+Three things that are load-bearing rather than incidental:
+
+- **`fmt/strip-ansi` skips OSC, not just SGR.** The row is stripped before
+  detection, so an OSC-8 annotation's hidden URL — which occupies no column —
+  can never be clicked. A `#"\033\[[0-9;]*m"` regex leaves that payload in the
+  "plain" text, and detection would then offer to open a target the user cannot
+  see. This is also why the dead private `strip-ansi` in `format.clj` had to go
+  rather than be reused: it was the SGR-only form, and being defined later in
+  the file it silently shadowed the real one.
+- **Parens are IN `url-re`, and trimmed afterwards.** `…/wiki/Foo_(bar)` is a
+  real URL shape; excluding `()` from the class truncates it to something that
+  still looks plausible. A class has no memory, so the wrapping case
+  (`(see https://x/a)`) is handled by `strip-url-junk` counting them and
+  dropping only an unbalanced trailing `)`.
+- **`sh-quote`, not `pr-str`.** `open-in-editor!` runs `$EDITOR` through
+  `sh -c`, and `pr-str` produces DOUBLE quotes, inside which the shell still
+  expands `$VAR` and backticks. Harmless while the only paths were our own
+  temp files; not harmless once a click feeds it model-authored text. URLs
+  never touch a shell at all — `open-url!` uses argv, with an http(s)-only
+  scheme allowlist so `file:`/`javascript:` and registered custom handlers stay
+  unreachable.
+
+**Scope limit:** detection runs on ONE rendered row, so a target hard-wrapped
+across two rows is not found. Rejoining an entry's rows via `!scrollback-src`
+sounds like the fix and is not — most output is boxed, so consecutive rows carry
+`│ ` borders and trailing pad that would splice into the middle of the target.
+Recovering a wrapped URL needs the box structure, not just the rows.
+
+**tmux gives none of this for free** (measured on 3.6a): it stores OSC-8
+annotations (`#{copy_cursor_hyperlink}`) and forwards them outward, but it has
+no URL detection for plain text — a bare `https://…` yields no annotation and
+`#{copy_cursor_word}` splits it — and no open action anywhere. Its only
+hyperlink affordances are `Type`/`Copy` in the `MouseDown3Pane` menu, which
+`#{mouse_any_flag}` suppresses for us.
+
+Impl: `bases/agent-tui/…/links.clj` (pure detection + resolution),
+`display_block_ui/open-in-editor!` (the shared suspend dance, also behind
+`view-in-editor!`), the `open-link!` closure in `autocomplete.clj`. Tests:
+`links_test.clj`.
+
 ### Line breaking belongs to whoever owns the grid
 
 A hard newline inserted to make text fit is permanent and lossy — the terminal

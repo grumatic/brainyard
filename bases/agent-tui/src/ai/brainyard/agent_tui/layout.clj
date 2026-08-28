@@ -45,6 +45,39 @@
 
 (def layout-lock (Object.))
 
+;; ----------------------------------------------------------------------------
+;; Mouse reporting
+;;
+;; Seeded from the `:enable-mouse` config at startup (see `core/run!`), kept here
+;; rather than read per-frame because `layout` sits below the config layer and
+;; every alt-screen (re)entry needs the answer on the hot path.
+;;
+;; ON is the default, and the tradeoff is real: while mouse reporting is on the
+;; terminal hands click-drag to us instead of selecting text, so selection needs
+;; the terminal's bypass modifier (Shift almost everywhere; Option in the
+;; xterm.js/`--web` path, which `playground-server/proxy.clj` already widens to
+;; accept both). `:enable-mouse false` restores plain-drag selection and falls
+;; back to `?1007h` alternate-scroll for the wheel.
+(defonce ^:private !mouse-enabled? (atom true))
+
+(defn set-mouse-enabled!
+  "Enable/disable mouse reporting for subsequent alt-screen entries and
+   repaints. Call BEFORE `init-fullscreen!`; flipping it mid-session only
+   takes effect on the next repaint that re-emits the mode sequences."
+  [enabled?]
+  (reset! !mouse-enabled? (boolean enabled?)))
+
+(defn mouse-enabled?
+  "True when mouse reporting is on (the default)."
+  []
+  @!mouse-enabled?)
+
+(defn- mouse-seq
+  "The mouse-enable sequence to splice into an alt-screen setup write, or \"\"
+   when reporting is off."
+  []
+  (if @!mouse-enabled? ansi/enable-mouse ""))
+
 ;; Scrollback buffer: stores all output lines written to the scroll region.
 ;; Dumped to normal screen on teardown so user can scroll back in terminal history.
 (defonce !scrollback (atom []))
@@ -845,6 +878,35 @@
                                                    (highlight-line line)
                                                    line)))))))
               (raw-write! w (.toString sb)))))))))
+
+(defn row->scrollback-idx
+  "Which `!scrollback` index is painted on 1-based terminal `row`?
+   nil for a row outside the scroll region, or one in the blank padding above
+   bottom-anchored content.
+
+   This is `render-viewport!` read backwards, and it lives directly beneath it
+   deliberately — the two must agree cell for cell. Content is bottom-anchored,
+   so the mapping depends on how much scrollback exists AND where the viewport
+   is; a click resolved against stale arithmetic lands on a different line than
+   the one under the pointer, which presents as 'the click did nothing' rather
+   than as a bug. `resize_reflow_test` pins them together."
+  [row]
+  (when (fullscreen?)
+    (let [{:keys [scroll-bottom viewport-offset]} @!layout
+          scroll-bottom (long (or scroll-bottom 0))
+          row           (long row)]
+      (when (and (>= row 1) (<= row scroll-bottom))
+        (let [total         (count @!scrollback)
+              end           (max 0 (- total (long (or viewport-offset 0))))
+              start         (max 0 (- end scroll-bottom))
+              visible-count (max 0 (- end start))
+              blank-rows    (max 0 (- scroll-bottom visible-count))
+              r             (dec row)]
+          (when (>= r blank-rows)
+            (let [idx (+ start (- r blank-rows))]
+              ;; Guard the tail the same way render-viewport!'s `get` does:
+              ;; rows past the last visible line paint nothing.
+              (when (< idx end) idx))))))))
 
 (defn scroll-page-up!
   "Scroll viewport up by one page. Clamps to max offset."
@@ -1730,6 +1792,7 @@
                 (raw-write! w (str ansi/clear-screen
                                    (ansi/set-scroll-region 1 scroll-bottom)
                                    ansi/enable-alt-scroll
+                                   (mouse-seq)
                                    (ansi/cursor-to 1 1)))))
             (render-viewport!)
             (draw-agent-activity-area!)
@@ -1806,6 +1869,7 @@
                                  ansi/hide-cursor
                                  (ansi/set-scroll-region 1 scroll-bottom)
                                  ansi/enable-alt-scroll
+                                 (mouse-seq)
                                  ;; Start at bottom of scroll region so content
                                  ;; anchors near the input area, not at row 1
                                  (ansi/cursor-to scroll-bottom 1))))))
@@ -1825,7 +1889,13 @@
         (let [w (get-writer)]
           (when w
             ;; Leave alt screen first, then dump scrollback to normal terminal
-            (raw-write! w (str ansi/disable-alt-scroll
+            ;; Disable mouse reporting UNCONDITIONALLY, not via `mouse-seq`:
+            ;; the flag may have been flipped off mid-session, and leaving a
+            ;; terminal in `?1000h` after exit makes every click in the user's
+            ;; shell emit escape garbage. Resetting a mode that was never set
+            ;; is a no-op.
+            (raw-write! w (str ansi/disable-mouse
+                               ansi/disable-alt-scroll
                                ansi/reset-scroll-region
                                ansi/show-cursor
                                ansi/leave-alt-screen))

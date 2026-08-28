@@ -2211,6 +2211,13 @@
           ;; keeps a daemon / piped run from emitting the DECRQM query at all.
           ;; Default config is :off, so this is a no-op unless opted in.
           _              (try (caps/negotiate! tty?) (catch Throwable _ nil))
+          ;; Settle mouse reporting BEFORE init-fullscreen!, which emits the
+          ;; enable sequence as part of the alt-screen setup write. Default is
+          ;; on; `:enable-mouse false` / BY_MOUSE=false keeps plain click-drag
+          ;; text selection working at the cost of clickable tabs and markers.
+          _              (try (layout/set-mouse-enabled!
+                               (not (false? (agent/get-config :enable-mouse))))
+                              (catch Throwable _ nil))
           fullscreen-ok? (and (not force-inline?)
                               tty?
                               (layout/init-fullscreen!))]

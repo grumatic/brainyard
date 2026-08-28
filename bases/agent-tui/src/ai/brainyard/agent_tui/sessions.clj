@@ -814,14 +814,48 @@
        (= :running (get-in @(:!state ag) [:status]))
        (catch Throwable _ false)))))
 
+(defonce ^:private !tab-spans
+  ;; Clickable column ranges for the tabs actually PAINTED by the last
+  ;; `format-tab-strip` call: `[{:id session-idx :col-start c :col-end c} …]`,
+  ;; 1-based and inclusive, in terminal columns on `:tab-row`.
+  ;;
+  ;; Recorded as a side effect of formatting rather than recomputed on click,
+  ;; because only the formatter knows which tabs survived truncation — a strip
+  ;; that ends in `…` has tabs in the session list that are on no column at
+  ;; all, and hit-testing against the list would switch to a tab the user
+  ;; cannot see. Reset on every format, so it can never outlive its paint.
+  (atom []))
+
+(defn tab-spans
+  "Clickable column ranges for the currently painted tab strip. See `!tab-spans`."
+  []
+  @!tab-spans)
+
+(defn tab-at-column
+  "Session index whose tab occupies 1-based terminal `col` on the tab row,
+   or nil. The leading space of each segment belongs to that segment — a click
+   just left of a label reads as that label, which is what it looks like."
+  [col]
+  (let [col (long col)]
+    (some (fn [{:keys [id col-start col-end]}]
+            (when (and (>= col (long col-start)) (<= col (long col-end))) id))
+          @!tab-spans)))
+
 (defn format-tab-strip
   "Build the ANSI string for the tab row from the current session list.
    Format per tab: ` label` where label is the session's short label.
    Active tab is bold + bright-cyan; tabs with unread output get a trailing
    `●`. Sub-output tabs get a trailing `↓` inside the label (added at
    creation time by `short-label` callers). Truncates the strip on the
-   right with `…` if it exceeds terminal width. Falls back to '(no sessions)'
-   when empty."
+   right with `…` if it exceeds terminal width.
+
+   Also records each painted tab's column range into `!tab-spans` so a click
+   on the tab row can be resolved back to a session (see `tab-at-column`).
+   Widths are measured with `fmt/display-width`, not `count`: a label with a
+   CJK or emoji glyph occupies more columns than it has characters, and a span
+   computed from character counts would drift right by the difference — every
+   tab after it then hit-tests to its neighbour. (The pre-span code had the
+   same bug in its truncation budget, where it merely mis-clipped.)"
   []
   (let [sessions (session-list)
         cur (active-idx)
@@ -842,29 +876,32 @@
                                           active?     (if running? "●" "*")
                                           has-unread? "?"
                                           :else       ""))]
-                          (if active?
-                            (ansi/style core ansi/bold ansi/bright-cyan)
-                            (if has-unread?
-                              (ansi/style core ansi/bright-yellow)
-                              (ansi/muted core)))))
-                      sessions)
-        joined (apply str segments)
-        plain (str/replace joined #"\033\[[0-9;]*m" "")
-        plain-len (count plain)]
-    (if (<= plain-len max-vis)
-      joined
-      ;; Over budget — best-effort truncate. Walk segments until we'd exceed,
-      ;; then append a muted '…'.
-      (loop [segs (seq segments) used 0 acc (StringBuilder.)]
-        (if (or (nil? segs) (>= used max-vis))
-          (str (.toString acc) (ansi/muted "…"))
-          (let [seg (first segs)
-                seg-plain (str/replace seg #"\033\[[0-9;]*m" "")
-                seg-len (count seg-plain)]
-            (if (> (+ used seg-len) max-vis)
-              (str (.toString acc) (ansi/muted "…"))
-              (do (.append acc seg)
-                  (recur (next segs) (+ used seg-len) acc)))))))))
+                          {:id    id
+                           :width (fmt/display-width core)
+                           :text  (if active?
+                                    (ansi/style core ansi/bold ansi/bright-cyan)
+                                    (if has-unread?
+                                      (ansi/style core ansi/bright-yellow)
+                                      (ansi/muted core)))}))
+                      sessions)]
+    ;; One walk builds the string and the spans together, so they cannot
+    ;; disagree about which tabs made it onto the row.
+    (loop [segs (seq segments) used 0 acc (StringBuilder.) spans []]
+      (let [{:keys [id text width]} (first segs)]
+        (cond
+          (nil? segs)
+          (do (reset! !tab-spans spans) (.toString acc))
+
+          (> (+ used (long width)) max-vis)
+          (do (reset! !tab-spans spans)
+              (str (.toString acc) (ansi/muted "…")))
+
+          :else
+          (do (.append acc ^String text)
+              (recur (next segs) (+ used (long width)) acc
+                     (conj spans {:id        id
+                                  :col-start (inc used)
+                                  :col-end   (+ used (long width))}))))))))
 
 (defn format-session-list
   "Format a list of all LIVE tabs for display (`/session tabs`).

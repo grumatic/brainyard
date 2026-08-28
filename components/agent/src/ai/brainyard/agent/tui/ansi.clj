@@ -283,9 +283,35 @@
 (def erase-line (str esc "2K"))
 
 ;; Alternate scroll mode — converts scroll wheel to arrow keys in alt screen.
-;; Leaves mouse clicks unintercepted so terminal text selection works normally.
+;; Leaves mouse clicks unintercepted, so it is what the TUI falls back to when
+;; mouse reporting is off (`:enable-mouse false`) and terminal text selection
+;; must keep working with no modifier.
 (def enable-alt-scroll  (str esc "?1007h"))
 (def disable-alt-scroll (str esc "?1007l"))
+
+;; Mouse reporting — button press/release, SGR-encoded coordinates.
+;;
+;; `?1000h` reports BUTTONS ONLY. 1002 (drag) and 1003 (any motion) additionally
+;; stream an event per cell the pointer crosses; the TUI acts on clicks, so that
+;; traffic buys nothing and costs a flooded input thread.
+;;
+;; `?1006h` is not optional. The default X10 encoding packs each coordinate into
+;; a single byte as `32 + n`, so it cannot address a column past 223 — past that
+;; a click silently reports the wrong cell. SGR sends decimal digits
+;; (`ESC [ < btn ; col ; row M`) and has no ceiling.
+;;
+;; NOTE this SUPERSEDES `?1007h` rather than joining it: alternate-scroll only
+;; synthesises arrow keys while mouse reporting is OFF. With 1000h on, the wheel
+;; instead arrives as buttons 64/65, which `terminal/read-key!` maps back to
+;; :scroll-up / :scroll-down. Enabling mouse reporting without that mapping
+;; silently breaks scrolling, so the two changes belong in one commit.
+;;
+;; Cost of having this on: the terminal stops treating a plain click-drag as a
+;; text selection, because the drag now belongs to the application. Every
+;; terminal keeps a bypass modifier (Shift on most; Option on macOS xterm.js) —
+;; which is why this is behind `:enable-mouse`.
+(def enable-mouse  (str esc "?1000h" esc "?1006h"))
+(def disable-mouse (str esc "?1006l" esc "?1000l"))
 
 ;; Bracketed paste mode — wraps pasted text with ESC[200~ ... ESC[201~.
 ;; Allows the application to distinguish typed Enter from pasted newlines.

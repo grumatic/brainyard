@@ -320,6 +320,57 @@
                    end0)]
         [(width-by-codepoint (subs s i end)) end]))))
 
+(defn strip-ansi
+  "`s` with every ANSI escape sequence removed, leaving exactly the characters
+   that occupy columns.
+
+   Walks with the same `skip-ansi-seq` that `display-width` uses, which is the
+   whole point of it existing rather than an SGR regex like
+   `#\"\\033\\[[0-9;]*m\"`: that pattern matches colour codes only, so it leaves
+   an OSC-8 hyperlink's `ESC ] 8 ; ; <url> BEL` payload sitting in the
+   supposedly-plain text. Anything that then searches that text — link
+   detection, a click's column mapping — finds a URL that is not on screen, at
+   columns that do not exist."
+  [^String s]
+  (if (or (nil? s) (neg? (.indexOf s (int 27))))
+    s
+    (let [len (.length s)
+          sb  (StringBuilder. len)]
+      (loop [i 0]
+        (if (>= i len)
+          (.toString sb)
+          (let [c (.charAt s i)]
+            (if (= 27 (int c))
+              (recur (long (skip-ansi-seq s i)))
+              (do (.append sb c)
+                  (recur (inc i))))))))))
+
+(defn column->index
+  "Char index in PLAIN `s` of the display unit covering 1-based `col`, or nil
+   when `col` falls past the end of the string.
+
+   Steps with `next-unit` for the reason given there: a click on the SECOND
+   column of a wide glyph must resolve to that glyph rather than to the
+   character after it, and a surrogate pair must never be split. Zero-width
+   units (combining marks, ZWJ joiners) are stepped over rather than returned —
+   they belong to the cluster before them and occupy no column of their own.
+
+   Feed this `strip-ansi` output: like `next-unit`, it measures escapes rather
+   than skipping them."
+  [^String s ^long col]
+  (when (and s (pos? col))
+    (let [len (.length s)]
+      (loop [i 0, c 1]
+        (if (>= i len)
+          nil
+          (let [[w e] (next-unit s i)
+                w     (long w)
+                ;; A zero-length unit would stall the walk; never let it.
+                e     (if (> (long e) i) (long e) (inc i))]
+            (if (and (pos? w) (< col (+ c w)))
+              i
+              (recur e (+ c w)))))))))
+
 (defn- char-index-at-width
   "Find the char index where cumulative display-width reaches limit.
    Returns the index of the first unit that would exceed the limit.
@@ -436,11 +487,6 @@
 ;; ============================================================================
 ;; Markdown → ANSI
 ;; ============================================================================
-
-(defn- strip-ansi
-  "Remove all ANSI escape sequences from a string."
-  [s]
-  (str/replace s #"\033\[[0-9;]*m" ""))
 
 ;; --- Inline markdown --------------------------------------------------
 
@@ -879,7 +925,12 @@
                 ["Ctrl-N / Ctrl-P"       "Next / previous session"]
                 ["Ctrl-T"                "Create new session"]
                 ["Ctrl-W"                "Close current session"]
-                ["Ctrl-O"                "Toggle TODO list expand/collapse"]]]
+                ["Ctrl-O"                "Toggle TODO list expand/collapse"]
+                ["Click tab"             "Switch session"]
+                ["Click [*Block:…*]"     "Expand / collapse that block"]
+                ["Click path:line"       "Open in $EDITOR at that line"]
+                ["Click a URL"           "Open in browser"]
+                ["Shift-drag"            "Select text (mouse mode owns plain drag)"]]]
     (str (ansi/header "Commands") "\n"
          (->> command-registry
               (map (fn [[cmd args desc]]

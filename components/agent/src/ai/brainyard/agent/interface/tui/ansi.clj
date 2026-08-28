@@ -39,6 +39,7 @@
                 enter-alt-screen leave-alt-screen clear-screen
                 reset-scroll-region erase-line
                 enable-alt-scroll disable-alt-scroll
+                enable-mouse disable-mouse
                 enable-bracketed-paste disable-bracketed-paste)
 
 ;; Clipboard (OSC 52)

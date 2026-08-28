@@ -550,6 +550,20 @@
     :lifecycle    :session
     :doc          "How emoji/CJK width is measured (DEC mode 2027 negotiation)."}
 
+   ;; Its own entry for the same reason as :ui/grapheme-width — `:ui/display`
+   ;; is `:live` and this key is not. `run!` installs the answer into
+   ;; `layout/set-mouse-enabled!` once, before `init-fullscreen!` emits the
+   ;; DECSET sequences; nothing re-reads the config, so a mid-session change
+   ;; does nothing until the next start.
+   :ui/mouse
+   {:title        "Mouse"
+    :family       :ui
+    :gate         nil
+    :presentation true
+    :keys         [:enable-mouse]
+    :lifecycle    :session
+    :doc          "Click a tab to switch sessions, click a block marker to expand/collapse (DECSET ?1000h + SGR ?1006h)."}
+
    :ui/blocks
    {:title        "Live blocks"
     :family       :ui

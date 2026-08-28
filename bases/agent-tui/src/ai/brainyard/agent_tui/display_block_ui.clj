@@ -16,8 +16,10 @@
    only the dependency on `agent-tui.layout` (scrollback / live-blocks)
    and the editor-suspend dance."
   (:require [ai.brainyard.agent-tui.layout :as layout]
+            [ai.brainyard.agent-tui.links :as links]
             [ai.brainyard.display-block.interface :as block]
-            [clojure.java.io :as io])
+            [clojure.java.io :as io]
+            [clojure.string :as str])
   (:import [java.io File]))
 
 ;; ============================================================================
@@ -152,59 +154,84 @@
 ;; Editor invocation
 ;; ============================================================================
 
-(defn view-in-editor!
-  "Suspend the TUI (leave alt-screen, restore cooked tty mode), then exec
-   $EDITOR (default `less`) on the block's `resource-path` via `sh -c`
-   with stdin/stdout/stderr wired to /dev/tty. On exit, re-enter alt-screen,
-   re-apply raw tty mode, and trigger a full redraw.
+(defn- sh-quote
+  "Single-quote `s` for `sh -c`, escaping embedded quotes the POSIX way
+   (`'` becomes `'\\''`).
 
-   Returns the path opened, or nil if the block has no resource path
-   (e.g. in-memory provider) or the file is missing.
+   Not `pr-str`: that produces DOUBLE quotes, inside which the shell still
+   expands `$VAR` and backticks. That was harmless while the only paths here
+   were our own temp files, and stopped being harmless when a click on a file
+   location in scrollback started feeding this model-authored text."
+  [^String s]
+  (str "'" (str/replace (str s) "'" "'\\''") "'"))
+
+(defn open-in-editor!
+  "Suspend the TUI (leave alt-screen, restore cooked tty mode), then exec
+   $EDITOR (default `less`) on `path` via `sh -c` with stdin/stdout/stderr
+   wired to /dev/tty. On exit, re-enter alt-screen, re-apply raw tty mode,
+   and trigger a full redraw. Returns `path`, or nil when the file is missing.
+
+   Optional `line` jumps the editor there; the per-editor argument convention
+   is `links/editor-argv-suffix`'s problem, not this function's.
 
    Why the shell wrapper? When the JVM's own stdin is already in raw mode
    from stty, ProcessBuilder/inheritIO passes that same descriptor to the
    editor, and the editor can't correctly read keystrokes. Redirecting
-   via /dev/tty gives the editor a clean controlling terminal."
-  [id]
-  (when-let [path (block/resource-path id)]
-    (when (.exists (File. ^String path))
-      (let [editor (or (System/getenv "EDITOR") "less")
-            fs? (layout/fullscreen?)
-            term-ns (requiring-resolve 'ai.brainyard.agent-tui.terminal/restore-cooked-mode!)
-            set-raw (requiring-resolve 'ai.brainyard.agent-tui.terminal/set-raw-mode!)
-            stop-input (requiring-resolve 'ai.brainyard.agent-tui.input/stop-input-reader!)
-            start-input (requiring-resolve 'ai.brainyard.agent-tui.input/start-input-reader!)]
-        (try
-          (when stop-input (stop-input))
-          (when fs?
-            (layout/draw-overlay!
-             (fn [w]
-               (.write ^java.io.Writer w "[r")
-               (.write ^java.io.Writer w "[?1049l")
-               (.write ^java.io.Writer w "[?25h")
-               (.write ^java.io.Writer w "[2J[H")
-               (.flush ^java.io.Writer w))))
+   via /dev/tty gives the editor a clean controlling terminal.
+
+   This is the shared suspend dance: `view-in-editor!` (a block's saved file)
+   and a click on a file location in scrollback both route through it, because
+   handing the terminal over and taking it back again is the delicate part and
+   there should be exactly one copy of it."
+  ([path] (open-in-editor! path nil))
+  ([path line]
+   (when (and path (.exists (File. ^String path)))
+     (let [editor (or (System/getenv "EDITOR") "less")
+           fs? (layout/fullscreen?)
+           term-ns (requiring-resolve 'ai.brainyard.agent-tui.terminal/restore-cooked-mode!)
+           set-raw (requiring-resolve 'ai.brainyard.agent-tui.terminal/set-raw-mode!)
+           stop-input (requiring-resolve 'ai.brainyard.agent-tui.input/stop-input-reader!)
+           start-input (requiring-resolve 'ai.brainyard.agent-tui.input/start-input-reader!)]
+       (try
+         (when stop-input (stop-input))
+         (when fs?
+           (layout/draw-overlay!
+            (fn [w]
+              (.write ^java.io.Writer w "[r")
+              (.write ^java.io.Writer w "[?1049l")
+              (.write ^java.io.Writer w "[?25h")
+              (.write ^java.io.Writer w "[2J[H")
+              (.flush ^java.io.Writer w))))
           ;; Handing the terminal to $EDITOR with the cursor shown — tell the
           ;; frame epilogue, or it will skip the hide it owes on return.
-          (layout/note-cursor-shown!)
-          (when term-ns (term-ns))
-          (let [cmd-str (str editor " "
-                             (pr-str path)
-                             " < /dev/tty > /dev/tty 2> /dev/tty")
-                pb (ProcessBuilder. ^java.util.List (vec ["/bin/sh" "-c" cmd-str]))]
-            (.waitFor (.start pb)))
-          (finally
-            (when set-raw (set-raw))
-            (when fs?
-              (layout/draw-overlay!
-               (fn [w]
-                 (.write ^java.io.Writer w "[?1049h")
-                 (.write ^java.io.Writer w "[?25l")
-                 (.flush ^java.io.Writer w)))
-              (layout/note-cursor-hidden!)
-              (try (layout/handle-resize!) (catch Exception _)))
-            (when start-input (start-input System/in))))
-        path))))
+         (layout/note-cursor-shown!)
+         (when term-ns (term-ns))
+         (let [args    (links/editor-argv-suffix editor path line)
+               cmd-str (str editor " "
+                            (str/join " " (map sh-quote args))
+                            " < /dev/tty > /dev/tty 2> /dev/tty")
+               pb (ProcessBuilder. ^java.util.List (vec ["/bin/sh" "-c" cmd-str]))]
+           (.waitFor (.start pb)))
+         (finally
+           (when set-raw (set-raw))
+           (when fs?
+             (layout/draw-overlay!
+              (fn [w]
+                (.write ^java.io.Writer w "[?1049h")
+                (.write ^java.io.Writer w "[?25l")
+                (.flush ^java.io.Writer w)))
+             (layout/note-cursor-hidden!)
+             (try (layout/handle-resize!) (catch Exception _)))
+           (when start-input (start-input System/in))))
+       path))))
+
+(defn view-in-editor!
+  "Open a block's saved `resource-path` in $EDITOR. Returns the path opened,
+   or nil if the block has no resource path (e.g. an in-memory provider) or
+   the file is missing. Thin wrapper over `open-in-editor!`."
+  [id]
+  (when-let [path (block/resource-path id)]
+    (open-in-editor! path)))
 
 ;; ============================================================================
 ;; Disposal
