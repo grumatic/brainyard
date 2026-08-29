@@ -159,3 +159,14 @@
   "First task to settle wins; the rest are cancelled."
   [& tasks]
   (apply m/race tasks))
+
+(defn delayed
+  "Run `task` after `ms`. The wait is cancellable, so cancelling before the
+   delay elapses means `task` never runs at all.
+
+   Exists so a caller that needs sleep-then-work does not have to reach for
+   `missionary.core` — one site needing a leading delay is not a reason to
+   give `ticking` a mode, nor to spread the coroutine macros into the TUI."
+  [ms task]
+  (m/sp (m/? (m/sleep ms))
+        (m/? task)))

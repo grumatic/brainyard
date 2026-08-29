@@ -127,6 +127,11 @@
   [& tasks]
   (apply policy/race tasks))
 
+(defn delayed
+  "Run `task` after `ms`. Cancelling during the wait means it never runs."
+  [ms task]
+  (policy/delayed ms task))
+
 (defn cancelled?
   "True when `e` is `missionary.Cancelled`."
   [e]
@@ -140,6 +145,13 @@
   "Discrete Flow of 0, 1, 2, … every `ms`. Replaces a daemon ticker thread."
   [ms]
   (flows/ticker ms))
+
+(defn ticking
+  "Task: call `tick!` on `m/blk`, sleep `ms`, repeat while `tick!` is truthy.
+   The self-stopping animation loop the TUI tickers hand-rolled. Pair with
+   `ensure!`."
+  [ms tick!]
+  (flows/ticking ms tick!))
 
 (defn sample-lines
   "Flow of newly-completed lines appended to a `StringWriter`, sampled."
@@ -165,6 +177,19 @@
    canceller."
   [label task]
   (supervisor/start! label task))
+
+(defn ensure!
+  "Start `task` under `label` only if nothing is running there. Returns true if
+   it started one. `start!` replaces an incumbent; `ensure!` leaves it alone —
+   the semantics a self-stopping ticker wants, and what its hand-rolled
+   `(when-not @!x-thread …)` guard was spelling out."
+  [label task]
+  (supervisor/ensure! label task))
+
+(defn running?
+  "Is a process registered under `label`?"
+  [label]
+  (supervisor/running? label))
 
 (defn stop!
   "Cancel the process under `label`. Idempotent."

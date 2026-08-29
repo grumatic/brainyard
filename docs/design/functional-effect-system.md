@@ -295,18 +295,17 @@ sites in the readline editor too — a cross-cutting change to interactive input
 handling — for no behavioural gain. Effects buy composition and cancellation;
 that code needs neither.
 
-### Phase 2 — the tickers
+### Phase 2 — the tickers *(done, §12)*
 
-Five daemon-thread tickers → five Flows, plus one shared clock. Purely additive
-and visually verifiable (the spinner either animates or it does not), which
-makes it the cheapest way to build confidence in the new brick under real TUI
-conditions — including under tmux and `--web`.
+Seven daemon-thread tickers → seven `fx/ticking` tasks under the supervisor.
+Purely additive and visually verifiable (the spinner either animates or it does
+not), which made it the cheapest way to build confidence in the brick under
+real TUI conditions.
 
-Watch for: the tickers are entangled with pause state (`think-root-paused?`
-pins elapsed time via `:paused-at`) and with session-origin routing
-(`finalize-think-block-in-session!`). Convert the *scheduling*, not the
-rendering. The renderer's width contract (`docs` — reflow, `:render` fns) is
-untouched.
+Converted the *scheduling*, not the rendering: every tick body is the old loop
+body lifted verbatim into a named `…-tick!` fn returning truthy-while-active.
+The renderer's width contract (reflow, `:render` fns) is untouched, and so is
+the pause-state and session-origin handling the loops carried.
 
 ### Phase 3 — the task subsystem
 
@@ -747,7 +746,82 @@ processes, so converting them *deletes* lifecycle code rather than reshaping a
 synchronous call path, and they touch nothing on the LLM path. Phase 1's real
 return was the brick defect it flushed out.
 
-## 11. Recommendation
+## 11. Phase 2 — as built
+
+All seven tickers now read the same way:
+
+```clojure
+(defn- iteration-block-tick! []
+  (let [active (filterv #(not= :done (:stage (val %))) @!iteration-blocks)]
+    (when (seq active)
+      (doseq [[[aid rid iter] _] active] …)
+      true)))                                   ; truthy => keep ticking
+
+(defn- start-iteration-block-ticker! []
+  (fx/ensure! ::iteration-block-ticker (fx/ticking 1000 iteration-block-tick!)))
+```
+
+What disappeared at each of the seven sites: a `Thread.`, `setDaemon`,
+`setName`, a `when-not @!x-thread` idempotence guard, a `catch
+InterruptedException`, a `reset!` to nil on exit, and the `defonce` atom
+holding the handle. The tick bodies moved across verbatim.
+
+**Two primitives the conversion earned.** `fx/ensure!` — start under a label
+only if nothing is running there — because `start!` means *replace* and these
+tickers are called on the event that creates the thing they animate, so
+`start!` semantics would cancel and relaunch mid-animation on every new block.
+Their hand-rolled `when-not` guard was `ensure!` spelled out. And `fx/delayed`,
+because idle-tip is the one ticker that must sleep before its first tick (its
+suggestion has just been painted); one such site is not a reason to give
+`ticking` a mode, nor to spread `missionary.core` into the TUI.
+
+**`tick!` runs on `m/blk`, deliberately.** After the first park the coroutine
+runs on the single process-wide `missionary scheduler`, which every timer
+shares — rendering a live block there would let one slow repaint delay every
+other ticker, task timeout and LLM backoff. That is Q5's concern, answered by
+construction rather than by measurement.
+
+**One semantic preserved on purpose:** task-activity's trailing 2 s
+"show the final state, then clear" is still fired *detached*
+(`fx/run-detached`) rather than being the tail of the ticker task. Inlining it
+would have let `stop-task-activity-ticker!` cancel the finalize, leaving the
+block frozen mid-animation — the old code's `stop` cancelled the loop but never
+that future.
+
+### Verification
+
+Unit: 543 tests / 2237 assertions in the `agent-tui` base, all green; 16 brick
+tests including new coverage for `ticking` (self-stops, paints before its first
+sleep, cancellable mid-sleep, a throwing tick fails rather than wedging) and
+`ensure!` vs `start!`. Headless lifecycle drive of a real ticker: starts, stays
+up while blocks are active, `ensure!` declines to double-start, explicit stop
+works, self-stops when the last block goes `:done`, and deregisters.
+
+**Live, in a real TUI under tmux** — the part no test can show. Captured once a
+second during a turn:
+
+```
+[+] Iteration 1 / 100  (2.0s)      [⠋] Deliberating... (2.9s · Reasoning…)
+[+] Iteration 1 / 100  (3.0s)      [⠦] Deliberating... (3.8s)
+[+] Iteration 1 / 100  (4.0s)      [⠸] Ruminating...   (4.9s)
+[+] Iteration 1 / 100  (5.0s)      [⠋] Reasoning...    (6.0s)
+```
+
+The 150 ms think ticker cycles its braille frame and rotates its word; the
+1000 ms iteration ticker advances elapsed by exactly 1.0 s per second. The turn
+finished, both blocks finalized, the status bar returned to `idle`, and `/quit`
+exited without hanging.
+
+**The deletion, measured on two live processes.** A TUI running the unconverted
+`main` still has a dedicated `idle-tip-ticker` OS thread alive at idle — that
+one runs for the process lifetime by design. The converted TUI has **no ticker
+threads at all**; `Thread.print` shows one `missionary scheduler` plus three
+pooled `missionary blk-N` workers shared by everything.
+
+Native: `by effect-smoke` green, `--help` / `agents` / `sessions list` /
+`models` pass, a real Bedrock round-trip returns `10`. `bb poly check` OK.
+
+## 12. Recommendation
 
 Phase 0 is landed and its gate passes on a real native binary, so the largest
 architecture risk is retired: missionary works in the shipped artifact, at no
@@ -757,19 +831,20 @@ has been demonstrated by removal.
 Phase 1 is done (§10) — with the caveat recorded there that its return was the
 brick defect it flushed out rather than any user-visible change.
 
-**Phase 2 (the TUI tickers) is the next step, and is where the deletions
-start.** There are seven, not the five this document first counted:
-think-block, iteration-block, task-activity, task-block, subagents, idle-tip
-and acp-block. Each carries the same ~20 lines of hand-rolled lifecycle — a
-`Thread.` + `setDaemon` + `when-not @!x` start guard + a self-stop check + a
-`reset!` to nil on exit — that a Flow plus `fx/start!`/`fx/stop!` removes
-outright. They are already async, so nothing on a synchronous path is
-reshaped; they touch nothing on the LLM path; and correctness is visible (the
-spinner animates or it does not). Budget for driving a real TUI under tmux to
-verify, and watch the two entanglements: pause state (`think-root-paused?`
-pins elapsed via `:paused-at`) and session-origin routing
-(`finalize-think-block-in-session!`). Convert the scheduling, not the
-rendering.
+Phase 2 is done (§11) and is the first phase with a user-visible payoff: seven
+dedicated OS threads and ~140 lines of lifecycle code gone, verified animating
+in a real TUI and verified absent from a live thread dump.
+
+**Phase 3 (the task subsystem) is next, and is the largest prize** — two
+polling loops and up to 400 ms of completion latency delete outright. It is
+also the first phase that changes something users can break, so the sequencing
+matters: `:fn` and `:tool` executors first, `:bash` last, and audit every
+`binding` on the way through (§8 Q4 — the failure is silent and
+timing-dependent, so a green test run is not evidence). Q3 should be settled in
+the same pass: `create-task-manager`'s fixed 4-thread pool is a real
+concurrency bound today, and moving executors to Tasks must make that bound
+explicit via `fx/bounded` rather than silently inherit `m/blk`'s unbounded
+cached pool.
 
 Q1 is answered (§8): the coroutine macros cannot work under SCI, effects
 exposed as functions work fully, and Phase 3's shape is unchanged. No known

@@ -20,6 +20,7 @@
             [ai.brainyard.agent-tui.persist-bridge :as persist-bridge]
             [ai.brainyard.agent-tui.sessions :as sessions]
             [ai.brainyard.agent.interface :as agent]
+            [ai.brainyard.effect.interface :as fx]
             [ai.brainyard.mulog.interface :as mulog]
             [ai.brainyard.clj-llm.interface :as clj-llm]
             [ai.brainyard.util.interface :as util]
@@ -183,7 +184,6 @@
 (def ^:private subagents-spinner-frames
   ["●" "○"])
 (defonce ^:private !subagents-spinner-idx (atom 0))
-(defonce ^:private !subagents-ticker-thread (atom nil))
 
 (defn- quiet?
   "True when the TUI is in :quiet display-format — only the final answer box
@@ -197,7 +197,6 @@
 ;; {task-id {:name str, :status :pending|:running|:completed|:failed|:cancelled,
 ;;           :start-time long, :output-lines [str ...] (last 2)}}
 (defonce !task-blocks (atom {}))
-(defonce ^:private !task-ticker-thread (atom nil))
 
 ;; Bridge: task-id → owning TUI session index, captured at `:task/created`
 ;; time (where the creating agent's `*current-agent*` binding is live) so the
@@ -227,7 +226,6 @@
 (defonce ^:private !think-blocks (atom {}))
 ;; Single shared animation ticker (150ms) iterating every root's think block —
 ;; mirrors the task/iteration tickers. nil when no think blocks are live.
-(defonce ^:private !think-ticker-thread (atom nil))
 
 (defn- think-block-id
   "Live-block id for a root agent's think spinner."
@@ -507,52 +505,47 @@
       (boolean (agent/paused? (:!state ag))))
     (catch Throwable _ false)))
 
-(defn- start-think-block-ticker!
-  "Start the single shared 150ms ticker that animates EVERY root's thinking
-   live block. Idempotent — does nothing if the ticker is already running.
-   Self-stops when no think blocks remain. Each block's spinner advances
-   independently (per-block `:spinner-idx`); only blocks whose session is
-   active actually re-render (see `update-think-block!`).
+(defn- think-tick!
+  "Advance one frame on EVERY root's thinking block. Truthy while any remain,
+   which is what stops the ticker.
 
    Pause-aware: while a root is parked, its block is frozen — the frame stops
    advancing, the elapsed timer is pinned (`:paused-at`), and a static `⏸ …
    paused` line is rendered exactly once. On resume the paused duration is
    added back to `:start-time` so the elapsed clock excludes the pause."
   []
-  (when-not @!think-ticker-thread
-    (let [thread (Thread.
-                  (fn []
-                    (try
-                      (loop []
-                        (let [blocks @!think-blocks]
-                          (when (seq blocks)
-                            (doseq [[root-aid state] blocks]
-                              (try
-                                (if (think-root-paused? root-aid)
-                                  ;; Parked: stamp :paused-at + render the static
-                                  ;; paused line once, then sit still.
-                                  (when-not (:paused-at state)
-                                    (swap! !think-blocks assoc-in [root-aid :paused-at]
-                                           (System/currentTimeMillis))
-                                    (update-think-block! root-aid))
-                                  ;; Running: clear any paused marker (rolling the
-                                  ;; pause out of elapsed), then advance + render.
-                                  (do
-                                    (when-let [pa (:paused-at state)]
-                                      (swap! !think-blocks update root-aid
-                                             (fn [s] (-> s
-                                                         (dissoc :paused-at)
-                                                         (update :start-time + (- (System/currentTimeMillis) pa))))))
-                                    (vswap! (:spinner-idx state) inc)
-                                    (update-think-block! root-aid)))
-                                (catch Throwable _)))
-                            (Thread/sleep (long 150))
-                            (recur))))
-                      (catch InterruptedException _))
-                    (reset! !think-ticker-thread nil)))]
-      (.setDaemon thread true)
-      (reset! !think-ticker-thread thread)
-      (.start thread))))
+  (let [blocks @!think-blocks]
+    (when (seq blocks)
+      (doseq [[root-aid state] blocks]
+        (try
+          (if (think-root-paused? root-aid)
+            ;; Parked: stamp :paused-at + render the static paused line once,
+            ;; then sit still.
+            (when-not (:paused-at state)
+              (swap! !think-blocks assoc-in [root-aid :paused-at]
+                     (System/currentTimeMillis))
+              (update-think-block! root-aid))
+            ;; Running: clear any paused marker (rolling the pause out of
+            ;; elapsed), then advance + render.
+            (do
+              (when-let [pa (:paused-at state)]
+                (swap! !think-blocks update root-aid
+                       (fn [s] (-> s
+                                   (dissoc :paused-at)
+                                   (update :start-time + (- (System/currentTimeMillis) pa))))))
+              (vswap! (:spinner-idx state) inc)
+              (update-think-block! root-aid)))
+          (catch Throwable _)))
+      true)))
+
+(defn- start-think-block-ticker!
+  "Ensure the single shared 150ms ticker animating EVERY root's thinking live
+   block is running. Idempotent; self-stops when no think blocks remain. Each
+   block's spinner advances independently (per-block `:spinner-idx`); only
+   blocks whose session is active actually re-render (see
+   `update-think-block!`)."
+  []
+  (fx/ensure! ::think-ticker (fx/ticking 150 think-tick!)))
 
 ;; Forward decl for spinner-idx volatile (used in atom — keep simple)
 (defn- new-spinner-idx [] (volatile! 0))
@@ -814,48 +807,43 @@
 ;; Idle-Tip Ticker (alternates suggestion / static tip on the idle prompt)
 ;; ============================================================================
 
-(defonce ^:private !idle-tip-ticker-thread (atom nil))
 
 (def ^:private idle-tip-interval-ms
   "How long each placeholder frame (suggestion vs. static tip) stays on screen."
   15000)
 
 (defn stop-idle-tip-ticker!
-  "Stop the idle-tip ticker thread. Idempotent."
+  "Stop the idle-tip ticker. Idempotent."
   []
-  (when-let [t @!idle-tip-ticker-thread]
-    (reset! !idle-tip-ticker-thread nil)
-    (try (.interrupt ^Thread t) (catch Exception _))))
+  (fx/stop! ::idle-tip-ticker))
+
+(defn- idle-tip-tick!
+  "One placeholder frame. Self-guards: only repaints when input is active,
+   empty, has no popover, and a suggestion is live — so it is a no-op during a
+   turn, while the user is typing, or when nothing has been captured. Always
+   truthy: unlike the block tickers this one has no completion condition and
+   runs for the process lifetime."
+  []
+  (when (and (help-tips/agent-suggestion (sessions/active-idx))
+             (layout/input-active?)
+             (layout/input-empty?)
+             (not (layout/popover-active?)))
+    (help-tips/tick-frame!)
+    (try (redraw-idle-prompt!) (catch Exception _)))
+  true)
 
 (defn start-idle-tip-ticker!
-  "Start a daemon thread that, while the user is sitting at an empty idle
-   prompt with a live agent suggestion, alternates the placeholder between the
+  "Ensure the idle-tip ticker is running: while the user sits at an empty idle
+   prompt with a live agent suggestion, alternate the placeholder between the
    suggestion and a rotating static help tip every `idle-tip-interval-ms`.
 
-   Self-guards on every tick (only repaints when input is active, empty, no
-   popover, and a suggestion is live), so it is a no-op during a turn, while
-   the user is typing, or when no suggestion has been captured. Runs for the
-   process lifetime; idempotent — won't start a second ticker."
+   Sleeps FIRST — the suggestion has just been painted, so ticking immediately
+   would replace it before it had been read. That is why this one does not use
+   `fx/ticking` (work-then-sleep) directly."
   []
-  (when-not @!idle-tip-ticker-thread
-    (let [t (Thread.
-             (fn []
-               (try
-                 (loop []
-                   (Thread/sleep (long idle-tip-interval-ms))
-                   (when (and (help-tips/agent-suggestion (sessions/active-idx))
-                              (layout/input-active?)
-                              (layout/input-empty?)
-                              (not (layout/popover-active?)))
-                     (help-tips/tick-frame!)
-                     (try (redraw-idle-prompt!) (catch Exception _)))
-                   (recur))
-                 (catch InterruptedException _))
-               (reset! !idle-tip-ticker-thread nil)))]
-      (.setDaemon t true)
-      (.setName t "idle-tip-ticker")
-      (.start t)
-      (reset! !idle-tip-ticker-thread t))))
+  (fx/ensure! ::idle-tip-ticker
+              (fx/delayed idle-tip-interval-ms
+                          (fx/ticking idle-tip-interval-ms idle-tip-tick!))))
 
 (defn capture-writer!
   "Capture current *out* as the output target."
@@ -1305,7 +1293,6 @@
 ;;                  :session-idx int|nil
 ;;                  :start-ms    long}}
 (defonce !iteration-blocks (atom {}))
-(defonce ^:private !iteration-ticker-thread (atom nil))
 
 (defn- iteration-block-id
   "Live block key for an iteration."
@@ -1888,7 +1875,6 @@
 
 (def ^:private bullet-frames ["○" "●"])
 
-(defonce ^:private !task-activity-ticker (atom nil)) ;; {:thread Thread :running atom<bool>}
 (defonce ^:private !ticker-frame-idx (atom 0))
 
 (defn- build-task-activity-lines
@@ -1976,42 +1962,38 @@
       (finalize-task-block! :task-activity))))
 
 (defn stop-task-activity-ticker!
-  "Stop the task activity ticker thread. Idempotent."
+  "Stop the task activity ticker. Idempotent."
   []
-  (when-let [{:keys [thread running]} @!task-activity-ticker]
-    (reset! running false)
-    (when thread
-      (try (.join ^Thread thread 1500) (catch Exception _)))
-    (reset! !task-activity-ticker nil)))
+  (fx/stop! ::task-activity-ticker))
+
+(defn- task-activity-tick!
+  "Animate one bullet frame. Truthy while any task is still running; on the
+   falsey tick it schedules the brief final-state display before clearing.
+
+   That trailing finalize is fired DETACHED rather than being the tail of this
+   task, which preserves today's semantics exactly: `stop-task-activity-ticker!`
+   cancelled the loop but never cancelled the 2s finalize, so a stop left the
+   block properly cleared rather than frozen mid-animation."
+  []
+  (let [idx    (swap! !ticker-frame-idx #(mod (inc %) 2))
+        bullet (nth bullet-frames idx)]
+    (if (some #(= :running (:status %)) (vals @agent/!tasks))
+      (do (refresh-task-activity! bullet) true)
+      (do (fx/run-detached
+           (fx/delayed 2000 (fx/task-of #(finalize-task-block! :task-activity)))
+           ::task-activity-finalize)
+          false))))
 
 (defn start-task-activity-ticker!
-  "Start daemon thread that animates task activity bullets every 1s
-   and refreshes output. Self-stops when no running tasks remain."
+  "(Re)start the ticker that animates task activity bullets every 1s and
+   refreshes output. Self-stops when no running tasks remain.
+
+   `start!`, not `ensure!` — this one deliberately REPLACES any incumbent, as
+   its old body did by calling stop first. It also resets the frame index, so
+   restarting is the point rather than something to guard against."
   []
-  (stop-task-activity-ticker!)
   (reset! !ticker-frame-idx 0)
-  (let [running (atom true)
-        thread (Thread.
-                (fn []
-                  (loop []
-                    (when @running
-                      (let [idx (swap! !ticker-frame-idx #(mod (inc %) 2))
-                            bullet (nth bullet-frames idx)
-                            tasks (vals @agent/!tasks)
-                            any-running? (some #(= :running (:status %)) tasks)]
-                        (if any-running?
-                          (do (refresh-task-activity! bullet)
-                              (Thread/sleep (long 1000))
-                              (recur))
-                          ;; No more running tasks — show final state briefly, then clear
-                          (do (reset! running false)
-                              (reset! !task-activity-ticker nil)
-                              (future
-                                (Thread/sleep (long 2000))
-                                (finalize-task-block! :task-activity)))))))))]
-    (.setDaemon thread true)
-    (.start thread)
-    (reset! !task-activity-ticker {:thread thread :running running})))
+  (fx/start! ::task-activity-ticker (fx/ticking 1000 task-activity-tick!)))
 
 ;; ============================================================================
 ;; Subagents Block — lifecycle helpers + ticker
@@ -2138,92 +2120,73 @@
         (swap! !subagents-blocks dissoc root-aid)))))
 
 (defn- stop-subagents-ticker!
-  "Stop the subagents-block ticker thread. Idempotent."
+  "Stop the subagents-block ticker. Idempotent."
   []
-  (when-let [t @!subagents-ticker-thread]
-    (reset! !subagents-ticker-thread nil)
-    (try (.interrupt ^Thread t) (catch Exception _))))
+  (fx/stop! ::subagents-ticker))
+
+(defn- subagents-tick!
+  "Advance the spinner on every root that still has a non-done sub-agent.
+   Truthy while any such root remains."
+  []
+  (let [active-roots
+        (->> @!subagents-blocks
+             (keep (fn [[rid st]]
+                     (when (some #(not (#{:done :error} (:status %)))
+                                 (vals (:sub-agents st)))
+                       rid))))]
+    (when (seq active-roots)
+      (swap! !subagents-spinner-idx
+             #(mod (inc %) (count subagents-spinner-frames)))
+      (doseq [rid active-roots]
+        (update-subagents-block! rid))
+      true)))
 
 (defn- start-subagents-ticker!
-  "Start daemon thread that animates the subagents-block spinners every
-   400ms. Self-stops when no root has any non-done sub-agents. Idempotent
-   — won't start a second ticker if one is already running."
+  "Ensure the 400ms subagents-block spinner ticker is running. Self-stops when
+   no root has any non-done sub-agents."
   []
-  (when-not @!subagents-ticker-thread
-    (let [t (Thread.
-             (fn []
-               (try
-                 (loop []
-                   (let [active-roots
-                         (->> @!subagents-blocks
-                              (keep (fn [[rid st]]
-                                      (when (some #(not (#{:done :error}
-                                                         (:status %)))
-                                                  (vals (:sub-agents st)))
-                                        rid))))]
-                     (when (seq active-roots)
-                       (swap! !subagents-spinner-idx
-                              #(mod (inc %) (count subagents-spinner-frames)))
-                       (doseq [rid active-roots]
-                         (update-subagents-block! rid))
-                       (Thread/sleep (long 400))
-                       (recur))))
-                 (catch InterruptedException _))
-               (reset! !subagents-ticker-thread nil)))]
-      (.setDaemon t true)
-      (.setName t "subagents-ticker")
-      (.start t)
-      (reset! !subagents-ticker-thread t))))
+  (fx/ensure! ::subagents-ticker (fx/ticking 400 subagents-tick!)))
 
 ;; ============================================================================
 ;; Task Block Ticker (spinner animation for per-task live blocks)
 ;; ============================================================================
 
 (defn- stop-task-block-ticker!
-  "Stop the task block ticker thread. Idempotent."
+  "Stop the task block ticker. Idempotent."
   []
-  (when-let [t @!task-ticker-thread]
-    (reset! !task-ticker-thread nil)
-    (try (.interrupt ^Thread t) (catch Exception _))))
+  (fx/stop! ::task-block-ticker))
+
+(defn- task-block-tick!
+  "Advance the spinner and refresh output lines for every running task block.
+   Truthy while any remain."
+  []
+  (let [blocks @!task-blocks
+        active (filterv #(= :running (:status (val %))) blocks)]
+    (when (seq active)
+      (swap! !subagents-spinner-idx #(mod (inc %) (count subagents-spinner-frames)))
+      ;; Refresh output lines from task atoms. Guard each task's update so a
+      ;; transient render error doesn't kill the ticker that animates every
+      ;; other task block.
+      (doseq [[tid _] active]
+        (try
+          (when-let [task (get @agent/!tasks tid)]
+            (let [output (when-let [ol (:output-lines task)]
+                           (if (instance? clojure.lang.IDeref ol) @ol ol))
+                  last-2 (vec (take-last 2 (or output [])))]
+              (swap! !task-blocks update tid assoc
+                     :output-lines last-2
+                     :output-count (count (or output [])))))
+          (update-task-block! tid)
+          (catch Throwable e
+            (mulog/log ::task-block-tick-error :task-id tid
+                       :error (ex-message e)))))
+      true)))
 
 (defn- start-task-block-ticker!
-  "Start daemon thread that animates task block spinners every 1000ms.
-   Also refreshes output lines from task atoms.
-   Self-stops when no running tasks remain. Idempotent."
+  "Ensure the 1000ms task-block ticker is running. Self-stops when no running
+   tasks remain."
   []
-  (when-not @!task-ticker-thread
-    (let [t (Thread.
-             (fn []
-               (try
-                 (loop []
-                   (let [blocks @!task-blocks
-                         active (filterv #(= :running (:status (val %))) blocks)]
-                     (when (seq active)
-                       (swap! !subagents-spinner-idx #(mod (inc %) (count subagents-spinner-frames)))
-                       ;; Refresh output lines from task atoms. Guard each
-                       ;; task's update so a transient render error doesn't kill
-                       ;; the ticker that animates every other task block.
-                       (doseq [[tid _] active]
-                         (try
-                           (when-let [task (get @agent/!tasks tid)]
-                             (let [output (when-let [ol (:output-lines task)]
-                                            (if (instance? clojure.lang.IDeref ol) @ol ol))
-                                   last-2 (vec (take-last 2 (or output [])))]
-                               (swap! !task-blocks update tid assoc
-                                      :output-lines last-2
-                                      :output-count (count (or output [])))))
-                           (update-task-block! tid)
-                           (catch Throwable e
-                             (mulog/log ::task-block-tick-error :task-id tid
-                                        :error (ex-message e)))))
-                       (Thread/sleep (long 1000))
-                       (recur))))
-                 (catch InterruptedException _))
-               (reset! !task-ticker-thread nil)))]
-      (.setDaemon t true)
-      (.setName t "task-block-ticker")
-      (.start t)
-      (reset! !task-ticker-thread t))))
+  (fx/ensure! ::task-block-ticker (fx/ticking 1000 task-block-tick!)))
 
 ;; ============================================================================
 ;; Iteration Block Ticker (elapsed-time refresh for per-iteration live blocks)
@@ -2240,37 +2203,29 @@
    from its own thread, so a ticker left running past its blocks is a
    background writer nobody can stop."
   []
-  (when-let [t @!iteration-ticker-thread]
-    (reset! !iteration-ticker-thread nil)
-    (try (.interrupt ^Thread t) (catch Exception _))))
+  (fx/stop! ::iteration-block-ticker))
+
+(defn- iteration-block-tick!
+  "Refresh the elapsed-time counter on every not-`:done` iteration block.
+   Truthy while any remain."
+  []
+  (let [blocks @!iteration-blocks
+        active (filterv #(not= :done (:stage (val %))) blocks)]
+    (when (seq active)
+      (doseq [[[aid rid iter] _] active]
+        (try (update-iteration-block! aid rid iter)
+             (catch Exception _)))
+      true)))
 
 (defn- start-iteration-block-ticker!
-  "Start daemon thread that refreshes iteration block elapsed-time counters
-   every 1000ms while any iteration is still running (`:stage` not `:done`).
-   Without this ticker the `(N.Ns)` counter freezes between event hooks —
-   during long quiet windows (a slow Thread/sleep, an LLM stream that flushes
-   infrequently) the user sees stale elapsed time. Self-stops when no
-   running iterations remain. Idempotent."
+  "Ensure the ticker refreshing iteration-block elapsed-time counters every
+   1000ms is running, while any iteration is still going (`:stage` not
+   `:done`). Without it the `(N.Ns)` counter freezes between event hooks —
+   during long quiet windows (a slow sleep, an LLM stream that flushes
+   infrequently) the user sees stale elapsed time. Self-stops when no running
+   iterations remain."
   []
-  (when-not @!iteration-ticker-thread
-    (let [t (Thread.
-             (fn []
-               (try
-                 (loop []
-                   (let [blocks @!iteration-blocks
-                         active (filterv #(not= :done (:stage (val %))) blocks)]
-                     (when (seq active)
-                       (doseq [[[aid rid iter] _] active]
-                         (try (update-iteration-block! aid rid iter)
-                              (catch Exception _)))
-                       (Thread/sleep (long 1000))
-                       (recur))))
-                 (catch InterruptedException _))
-               (reset! !iteration-ticker-thread nil)))]
-      (.setDaemon t true)
-      (.setName t "iteration-block-ticker")
-      (.start t)
-      (reset! !iteration-ticker-thread t))))
+  (fx/ensure! ::iteration-block-ticker (fx/ticking 1000 iteration-block-tick!)))
 
 ;; ============================================================================
 ;; Task Watch
@@ -3616,7 +3571,6 @@
 ;; ============================================================================
 
 (defonce !acp-blocks (atom {}))
-(defonce ^:private !acp-ticker-thread (atom nil))
 
 ;; Live message-tail / thought caps. `:acp-message-max-lines` (config) overrides
 ;; the message cap per agent; thoughts use a tighter fixed cap since reasoning is
@@ -3831,28 +3785,22 @@
           (sessions/update-live-block-in-session! origin-idx block-id lines
                                                   {:render render}))))))
 
-(defn- start-acp-block-ticker!
-  "Refresh ACP block elapsed/spinner every 1s while any block is still running.
-   Self-stops when none remain. Idempotent — one ticker covers all ACP blocks."
+(defn- acp-block-tick!
+  "Refresh elapsed/spinner on every not-`:done` ACP block. Truthy while any
+   remain."
   []
-  (when-not @!acp-ticker-thread
-    (let [t (Thread.
-             (fn []
-               (try
-                 (loop []
-                   (let [blocks @!acp-blocks
-                         active (filterv #(not= :done (:stage (val %))) blocks)]
-                     (when (seq active)
-                       (doseq [[[aid rid iter] _] active]
-                         (try (update-acp-block! aid rid iter) (catch Exception _)))
-                       (Thread/sleep (long 1000))
-                       (recur))))
-                 (catch InterruptedException _))
-               (reset! !acp-ticker-thread nil)))]
-      (.setDaemon t true)
-      (.setName t "acp-block-ticker")
-      (.start t)
-      (reset! !acp-ticker-thread t))))
+  (let [blocks @!acp-blocks
+        active (filterv #(not= :done (:stage (val %))) blocks)]
+    (when (seq active)
+      (doseq [[[aid rid iter] _] active]
+        (try (update-acp-block! aid rid iter) (catch Exception _)))
+      true)))
+
+(defn- start-acp-block-ticker!
+  "Ensure the 1s ACP-block ticker is running. Self-stops when no block is still
+   running. One ticker covers all ACP blocks."
+  []
+  (fx/ensure! ::acp-block-ticker (fx/ticking 1000 acp-block-tick!)))
 
 ;; --- Pure segment-vector transforms ----------------------------------------
 

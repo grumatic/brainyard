@@ -56,6 +56,33 @@
                                    :started-at (System/currentTimeMillis)})
     cancel))
 
+(defn running?
+  "Is a process currently registered under `label`?"
+  [label]
+  (contains? @!processes label))
+
+(defn ensure!
+  "Start `task` under `label` only if nothing is running there. Returns true
+   when it started one, false when an incumbent was left alone.
+
+   Distinct from `start!`, and the distinction is the whole reason both exist.
+   `start!` means *replace* — cancel the incumbent, run this. `ensure!` means
+   *make sure one is running* — leave the incumbent alone.
+
+   Every one of the seven TUI tickers wants `ensure!`: each is called on the
+   event that creates the thing it animates, so `start-think-block-ticker!`
+   fires on every new think block. Under `start!` semantics that would cancel
+   and relaunch the ticker mid-animation each time — a visible hiccup, and
+   pure churn. Their hand-rolled `(when-not @!x-thread …)` guard was `ensure!`
+   spelled out; this is the same idea without the thread atom.
+
+   `task` is only constructed by the caller either way, so passing a task that
+   is not started costs nothing — it is a value."
+  [label task]
+  (if (running? label)
+    false
+    (do (start! label task) true)))
+
 (defn stop!
   "Cancel the process registered under `label`, if any. Returns true when
    something was cancelled. Idempotent."

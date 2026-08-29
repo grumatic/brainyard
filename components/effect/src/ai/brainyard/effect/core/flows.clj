@@ -13,7 +13,33 @@
    A Flow has none of it, because the lifecycle inverts: the CONSUMER holds the
    canceller. Nothing needs to detect that it should stop — whoever started it
    stops it, and a Flow that nobody runs costs nothing."
-  (:require [missionary.core :as m]))
+  (:require [ai.brainyard.effect.core.prim :as prim]
+            [missionary.core :as m]))
+
+(defn ticking
+  "A Task that calls `tick!`, sleeps `ms`, and repeats for as long as `tick!`
+   returns truthy. Completes with nil once it returns falsey.
+
+   This is the shape all seven TUI tickers hand-rolled: do the work, sleep,
+   repeat, stop when there is nothing left to animate. What it removes at each
+   site is the lifecycle — a `Thread.`, `setDaemon`, `setName`, an
+   idempotence guard on a thread atom, and a `reset!` to nil on exit — none of
+   which was ever the point.
+
+   `tick!` runs on `m/blk`, NOT on the thread driving the coroutine. After the
+   first park that thread is the single process-wide `missionary scheduler`,
+   which every timer in the process shares; rendering a live block there would
+   let one slow repaint delay every other ticker, task timeout and LLM
+   backoff. The scheduler only ever enqueues.
+
+   Work-then-sleep, matching six of the seven. A ticker that wants to sleep
+   first should say so at its own call site rather than turn this into a
+   function with a mode."
+  [ms tick!]
+  (m/sp (loop []
+          (when (m/? (prim/task-of tick!))
+            (m/? (m/sleep ms))
+            (recur)))))
 
 (defn ticker
   "A discrete Flow emitting 0, 1, 2, … every `ms`, forever.

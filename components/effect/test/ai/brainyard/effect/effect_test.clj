@@ -142,6 +142,63 @@
       (is (= {:ok "alpha\nbeta\n"} r)
           "a partial trailing line must not be emitted twice"))))
 
+(deftest ticking-self-stops-and-is-cancellable
+  (testing "runs while tick! is truthy, then completes"
+    (let [!n (atom 0)]
+      (is (= {:ok nil} (fx/run!! (fx/ticking 5 #(< (swap! !n inc) 4)) 3000)))
+      (is (= 4 @!n) "one extra call — the falsey one that stopped it")))
+
+  (testing "work happens BEFORE the first sleep, so a ticker paints immediately
+            rather than after one interval of blank"
+    (let [!n (atom 0)]
+      (fx/run!! (fx/ticking 10000 (fn [] (swap! !n inc) false)) 2000)
+      (is (= 1 @!n))))
+
+  (testing "cancellable mid-sleep"
+    (let [!n (atom 0)
+          cancel (fx/run (fx/ticking 50 (fn [] (swap! !n inc) true))
+                         (fn [_]) (fn [_]))]
+      (Thread/sleep (long 120))
+      (cancel)
+      (let [after @!n]
+        (Thread/sleep (long 150))
+        (is (= after @!n) "a cancelled ticker must stop ticking"))))
+
+  (testing "a throwing tick! fails the task rather than wedging the loop"
+    (is (= "tick blew up"
+           (ex-message (:err (fx/run!! (fx/ticking 5 #(throw (ex-info "tick blew up" {})))
+                                       2000)))))))
+
+(deftest ensure-vs-start
+  (testing "ensure! leaves an incumbent alone — the ticker guard, without the atom"
+    (let [!a (atom 0) !b (atom 0)]
+      (is (true?  (fx/ensure! ::e (fx/ticking 10 (fn [] (swap! !a inc) true)))))
+      (is (false? (fx/ensure! ::e (fx/ticking 10 (fn [] (swap! !b inc) true)))))
+      (Thread/sleep (long 60))
+      (is (pos? @!a))
+      (is (zero? @!b) "the second task must never have started")
+      (fx/stop! ::e)))
+
+  (testing "start! REPLACES an incumbent"
+    (let [!a (atom 0) !b (atom 0)]
+      (fx/start! ::r (fx/ticking 10 (fn [] (swap! !a inc) true)))
+      (Thread/sleep (long 50))
+      (fx/start! ::r (fx/ticking 10 (fn [] (swap! !b inc) true)))
+      (Thread/sleep (long 60))
+      (let [a-then @!a]
+        (Thread/sleep (long 60))
+        (is (= a-then @!a) "the first task must have been cancelled")
+        (is (pos? @!b)))
+      (fx/stop! ::r)))
+
+  (testing "a self-stopped process deregisters, so ensure! can start a fresh one"
+    (let [!n (atom 0)]
+      (is (true? (fx/ensure! ::f (fx/ticking 5 #(< (swap! !n inc) 3)))))
+      (Thread/sleep (long 200))
+      (is (not (fx/running? ::f)) "completion must deregister")
+      (is (true? (fx/ensure! ::f (fx/ticking 5 (constantly false)))))
+      (fx/stop! ::f))))
+
 (deftest supervisor-lifecycle
   (testing "start is idempotent and stop actually stops"
     (let [!ticks (atom 0)
