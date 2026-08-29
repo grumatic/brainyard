@@ -22,7 +22,8 @@
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.remote-agent :as remote]
             [ai.brainyard.agent.task.executor :as executor]
-            [ai.brainyard.agent.task.protocol :as tp])
+            [ai.brainyard.agent.task.protocol :as tp]
+            [ai.brainyard.effect.interface :as fx])
   (:import [com.sun.net.httpserver HttpExchange HttpHandler HttpServer]
            [java.net InetSocketAddress]
            [java.nio.charset StandardCharsets]))
@@ -135,17 +136,17 @@
                                    #(swap! out conj %))]
         (testing "it detaches rather than blocking the pool thread"
           (is (= :detached (:status r)))
-          (is (fn? (:on-poll r)))
+          (is (fn? (:poll-once r)))
           (is (fn? (:on-cancel r))))
 
         (testing "polling reports still-running until the peer finishes"
-          (is (= tp/still-running ((:on-poll r))))
+          (is (= tp/still-running ((:poll-once r))))
           (Thread/sleep (long 5))
-          (is (= tp/still-running ((:on-poll r)))))
+          (is (= tp/still-running ((:poll-once r)))))
 
         (testing "a terminal state promotes with the answer"
           (Thread/sleep (long 5))
-          (let [final ((:on-poll r))]
+          (let [final ((:poll-once r))]
             (is (map? final))
             (is (= :completed (get-in final [:result :state])))
             (is (= "the answer" (get-in final [:result :answer])))))
@@ -154,22 +155,38 @@
           (is (some #(str/includes? % "state: working") @out))
           (is (some #(str/includes? % "state: completed") @out)))))))
 
-(deftest executor-throttles-polling-test
+(deftest executor-paces-polling-test
+  ;; This used to assert that 20 rapid `:on-poll` calls hit the peer once,
+  ;; because the shared watcher fired every ~250ms and a `!last-poll` timestamp
+  ;; throttled it down to the configured interval. Four HTTP requests per second
+  ;; per task at a third party would get us rate-limited.
+  ;;
+  ;; The executor now drives itself with `fx/poll-until`, so nothing external
+  ;; calls a poll fn and there is no timestamp to check: the interval IS the
+  ;; sleep between attempts. The guarantee got stronger — it is structural
+  ;; rather than enforced — so the test asserts it the way it now holds, by
+  ;; running the real Task and counting what the peer actually received.
   (let [!calls (atom 0)]
     (with-stub [s {"/a2a" (fn [ex]
                             (swap! !calls inc)
                             (respond! ex 200 (jsonrpc-result (task-obj "working"))))}]
       (connect-stub! s)
-      (let [r (tp/execute-job (executor/->A2ATaskJobExecutor)
-                              (a-task {:peer-name "b" :remote-task-id "t-1"
-                                       :poll-interval-ms 10000})
-                              (fn [_]))]
-        (testing "rapid on-poll calls do NOT each hit the peer"
-          ;; The manager's watcher fires ~every 250ms. Four HTTP requests
-          ;; per second per task at a third party would get us rate-limited.
-          (dotimes [_ 20] ((:on-poll r)))
-          (is (= 1 @!calls)
-              (str "expected 1 network poll within the interval, got " @!calls)))))))
+      (let [r      (tp/execute-job (executor/->A2ATaskJobExecutor)
+                                   (a-task {:peer-name "b" :remote-task-id "t-1"
+                                            :poll-interval-ms 200})
+                                   (fn [_]))
+            cancel (fx/run (:task r) (fn [_]) (fn [_]))]
+        (testing "the peer is polled at the configured interval, not faster"
+          (Thread/sleep (long 700))
+          (cancel)
+          ;; ~700ms at 200ms pacing: one immediate poll then ~3 more.
+          (is (<= 2 @!calls 5)
+              (str "expected ~4 polls in 700ms at a 200ms interval, got " @!calls)))
+
+        (testing "cancelling stops it asking"
+          (let [after @!calls]
+            (Thread/sleep (long 500))
+            (is (= after @!calls))))))))
 
 ;; =============================================================================
 ;; Executor — the states that are easy to get wrong
@@ -192,9 +209,9 @@
             ;; The peer is holding the task open for us; promoting it to a
             ;; terminal status would abandon resumable work.
             (Thread/sleep (long 5))
-            (is (= tp/still-running ((:on-poll r))))
+            (is (= tp/still-running ((:poll-once r))))
             (Thread/sleep (long 5))
-            (is (= tp/still-running ((:on-poll r)))))
+            (is (= tp/still-running ((:poll-once r)))))
 
           (testing (str state " tells the user what the peer wants")
             (is (some #(str/includes? % expect-word) @out)
@@ -214,7 +231,7 @@
                                        :poll-interval-ms 1})
                               (fn [_]))]
         (Thread/sleep (long 5))
-        (let [final ((:on-poll r))]
+        (let [final ((:poll-once r))]
           (testing (str state " is an error, carrying the peer's reason")
             (is (some? (:error final)))
             (is (str/includes? (:error final) state))
@@ -230,7 +247,7 @@
                                      :poll-interval-ms 1})
                             (fn [_]))]
       (Thread/sleep (long 5))
-      (let [final ((:on-poll r))]
+      (let [final ((:poll-once r))]
         (is (nil? (:error final)))
         (is (= :canceled (get-in final [:result :state])))))))
 
@@ -252,13 +269,13 @@
           ;; The peer may simply be restarting; the user can task$cancel if
           ;; it persists.
           (Thread/sleep (long 5))
-          (is (= tp/still-running ((:on-poll r))))
+          (is (= tp/still-running ((:poll-once r))))
           (Thread/sleep (long 5))
-          (is (= tp/still-running ((:on-poll r)))))
+          (is (= tp/still-running ((:poll-once r)))))
 
         (testing "it recovers once the peer comes back"
           (Thread/sleep (long 5))
-          (is (= :completed (get-in ((:on-poll r)) [:result :state]))))
+          (is (= :completed (get-in ((:poll-once r)) [:result :state]))))
 
         (testing "the failure is reported once, not on every retry"
           (is (= 1 (count (filter #(str/includes? % "poll failed") @out)))))))))

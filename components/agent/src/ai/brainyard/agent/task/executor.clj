@@ -295,19 +295,16 @@
           {:error msg})
 
         :else
-        (let [!last-poll  (atom 0)
-              !last-state (atom nil)
-              !announced  (atom #{})]
-          (on-output (str "Tracking remote A2A task " remote-task-id
-                          " on peer '" peer-name "' (poll " interval "ms)"))
-          {:status :detached
-           :on-poll
-           (fn []
-             (let [now (System/currentTimeMillis)]
-               (if (< (- now @!last-poll) interval)
-                 tp/still-running
-                 (do
-                   (reset! !last-poll now)
+        (let [!last-state (atom nil)
+              !announced  (atom #{})
+              ;; ONE `tasks/get` round-trip → a terminal result map, or
+              ;; `still-running`. The `!last-poll` timestamp throttle that
+              ;; used to wrap this is gone: `fx/poll-until` sleeps `interval`
+              ;; between attempts, so pacing is structural rather than
+              ;; re-derived on every one of the shared watcher's 300ms ticks
+              ;; (which wasted three wake-ups out of four).
+              poll-once
+              (fn []
                    (let [{:keys [state task error]} (a2a-client/task-state peer remote-task-id)]
                      (cond
                        ;; A transport blip must not fail the task — the peer
@@ -358,7 +355,21 @@
                                          :answer answer
                                          :artifacts (vec (:artifacts task))}}))
 
-                           :else tp/still-running))))))))
+                           :else tp/still-running)))))]
+          (on-output (str "Tracking remote A2A task " remote-task-id
+                          " on peer '" peer-name "' (poll " interval "ms)"))
+          {:status :detached
+           ;; The one executor that genuinely keeps polling: the only way to
+           ;; know whether a REMOTE task has finished is to ask the peer
+           ;; again. What `poll-until` changes is that the interval IS the
+           ;; pacing, and the wait is cancellable — the old form ran to the
+           ;; end of its interval before it could notice a cancel.
+           :task      (fx/poll-until interval tp/still-running poll-once)
+           ;; Exposed for unit tests, which exercise the state decisions
+           ;; (which states terminate, which announce, which announce exactly
+           ;; once) one step at a time. The manager never calls this — it runs
+           ;; `:task`. Closed over by the loop, it would be unreachable.
+           :poll-once poll-once
            :on-cancel
            (fn []
              (mulog/info ::a2a-task-cancel :task-id (:id task)

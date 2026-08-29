@@ -169,6 +169,36 @@
            (ex-message (:err (fx/run!! (fx/ticking 5 #(throw (ex-info "tick blew up" {})))
                                        2000)))))))
 
+(deftest poll-until-for-genuinely-remote-work
+  (testing "asks immediately, then paces — matching a throttle whose
+            last-polled-at starts at zero"
+    (let [!n (atom 0)
+          t0 (System/currentTimeMillis)
+          r  (fx/run!! (fx/poll-until 50 :pending
+                                      (fn [] (if (< (swap! !n inc) 4) :pending {:done @!n})))
+                       5000)]
+      (is (= {:ok {:done 4}} r))
+      (is (= 4 @!n))
+      ;; 4 attempts = 3 sleeps of 50ms. If it slept FIRST it would be 4.
+      (is (>= (- (System/currentTimeMillis) t0) 140))))
+
+  (testing "the wait is cancellable — the hand-rolled timestamp throttle it
+            replaces had to run to the end of its interval first"
+    (let [!n (atom 0)
+          cancel (fx/run (fx/poll-until 100 :pending (fn [] (swap! !n inc) :pending))
+                         (fn [_]) (fn [_]))]
+      (Thread/sleep (long 250))
+      (cancel)
+      (let [after @!n]
+        (Thread/sleep (long 300))
+        (is (= after @!n) "a cancelled poll must stop asking"))))
+
+  (testing "a throwing poll fails the task rather than looping forever"
+    (is (= "peer exploded"
+           (ex-message (:err (fx/run!! (fx/poll-until 10 :pending
+                                                      #(throw (ex-info "peer exploded" {})))
+                                       2000)))))))
+
 (deftest ensure-vs-start
   (testing "ensure! leaves an incumbent alone — the ticker guard, without the atom"
     (let [!a (atom 0) !b (atom 0)]

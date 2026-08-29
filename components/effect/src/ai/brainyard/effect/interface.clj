@@ -153,6 +153,14 @@
   [ms tick!]
   (flows/ticking ms tick!))
 
+(defn poll-until
+  "Task: call `f` every `ms` until it returns something other than `pending`,
+   then complete with that. For genuinely poll-shaped work — asking a remote
+   system whether it has finished. The throttle IS the sleep, and it is
+   cancellable."
+  [ms pending f]
+  (flows/poll-until ms pending f))
+
 (defn sample-lines
   "Flow of newly-completed lines appended to a `StringWriter`, sampled."
   [writer ms]

@@ -53,6 +53,27 @@
           (m/? (m/sleep ms))
           (m/amb i (recur (inc i))))))
 
+(defn poll-until
+  "A Task that calls `f` on `m/blk`, and keeps re-calling it every `ms` for as
+   long as it returns `pending`. Completes with the first value that is not
+   `pending`.
+
+   For work that is genuinely poll-shaped — asking a REMOTE system whether it
+   has finished yet. Unlike the local executors, there is nothing here to await:
+   the only way to know is to ask again. What the effect form buys is that the
+   throttle becomes the sleep, so the hand-rolled `!last-poll` timestamp check
+   disappears, and the wait is cancellable rather than running to the end of its
+   interval first.
+
+   `f` is called BEFORE the first sleep, matching a throttle whose
+   last-polled-at starts at zero: ask immediately, then pace."
+  [ms pending f]
+  (m/sp (loop []
+          (let [r (m/? (prim/task-of f))]
+            (if (= r pending)
+              (do (m/? (m/sleep ms)) (recur))
+              r)))))
+
 (defn sample-lines
   "A Flow of newly-completed lines appended to `writer` (a `StringWriter`),
    sampled every `ms`. Tracks its own read offset; emits only up to the last
