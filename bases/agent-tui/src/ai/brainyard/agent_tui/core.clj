@@ -1607,19 +1607,44 @@
           :else                                (recur (inc i)))))))
 
 (defn- descriptor-renderer
-  "A `:render` that draws `desc`'s answer at an arbitrary width.
+  "A `:render` that redraws `desc`'s emit at an arbitrary width.
 
-   Renders with the variant the emit RECORDED, never the resuming process's
-   current `display-format`: the tail is a transcript of what happened, and
-   reflow is about width, not about re-deciding presentation. So `quiet?` is
-   read at emit time only and must not be consulted here."
-  [{:keys [variant text]}]
-  (fn [cols]
-    (let [w (max 1 (long (or cols 80)))]
-      (some-> (if (= :plain variant)
-                (fmt/format-answer-plain text w)
-                (fmt/format-answer text w))
-              str/split-lines))))
+   Renders with the presentation the emit RECORDED, never the resuming
+   process's current `display-format`: the tail is a transcript of what
+   happened, and reflow is about width, not about re-deciding presentation. So
+   `quiet?` is read at emit time only (it is on the descriptor) and must not be
+   consulted here.
+
+   Two kinds, both keyed off `:kind` — `:answer` (an answer box, the original
+   case, also matching a descriptor written before `:kind` was dispatched on)
+   and `:acp-block` (a frozen ACP transcript block, which `session` redraws
+   from its stored segments because only it knows their shape).
+
+   `fallback` is the span's stored rows, fitted, and is what the renderer
+   returns when a redraw yields nothing. Without it a state that no longer
+   draws would resolve to an EMPTY span and those rows would vanish from the
+   replay — deleting transcript, where every other failure in this path merely
+   declines to improve it."
+  [{:keys [kind variant text state quiet?]} fallback]
+  (let [redraw (if (= :acp-block kind)
+                 (fn [w] (tui-session/render-acp-block-descriptor state quiet? w))
+                 (fn [w] (some-> (if (= :plain variant)
+                                   (fmt/format-answer-plain text w)
+                                   (fmt/format-answer text w))
+                                 str/split-lines)))]
+    (fn [cols]
+      (let [w (max 1 (long (or cols 80)))]
+        (or (seq (try (redraw w) (catch Throwable _ nil)))
+            (fit-rows fallback w))))))
+
+(defn- descriptor-renderable?
+  "Whether `desc` carries enough to redraw its span. A located descriptor that
+   fails this leaves its rows to the surrounding plain span — i.e. frozen rows,
+   which is what every emit got before descriptors existed."
+  [{:keys [kind text state]}]
+  (if (= :acp-block kind)
+    (map? state)
+    (boolean (seq text))))
 
 (defn- tail-segments
   "Split `tail` into `{:kind :rows|:answer :rows [...] :render (fn [cols])}`
@@ -1644,13 +1669,14 @@
       (if-let [d (first ds)]
         (let [needle (mapv fmt/strip-ansi (str/split-lines (or (:block d) "")))
               at     (window-at stripped needle cursor)]
-          (if (and at (seq (:text d)))
-            (recur (next ds)
-                   (+ at (count needle))
-                   (-> (cond-> out (< cursor at) (conj (plain cursor at)))
-                       (conj {:kind   :answer
-                              :rows   (subvec rows at (+ at (count needle)))
-                              :render (descriptor-renderer d)})))
+          (if (and at (descriptor-renderable? d))
+            (let [span (subvec rows at (+ at (count needle)))]
+              (recur (next ds)
+                     (+ at (count needle))
+                     (-> (cond-> out (< cursor at) (conj (plain cursor at)))
+                         (conj {:kind   :answer
+                                :rows   span
+                                :render (descriptor-renderer d span)}))))
             ;; Unlocatable — leave its rows to the surrounding plain span.
             (recur (next ds) cursor out)))
         (cond-> out

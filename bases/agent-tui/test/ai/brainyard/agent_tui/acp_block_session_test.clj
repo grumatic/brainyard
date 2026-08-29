@@ -18,6 +18,7 @@
   (:require [ai.brainyard.agent-tui.session :as session]
             [ai.brainyard.agent-tui.sessions :as sessions]
             [ai.brainyard.agent-tui.layout :as layout]
+            [ai.brainyard.agent-tui.persist-bridge :as persist-bridge]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]))
 
@@ -31,6 +32,26 @@
 (def ^:private resolve-tool #'session/acp-resolve-tool)
 (def ^:private render-lines #'session/render-acp-block-lines)
 (def ^:private update-block! #'session/update-acp-block!)
+(def ^:private freeze-block! #'session/acp-freeze-block!)
+
+(defn- capture-tees
+  "Run `f` with the disk tee stubbed, returning `[[session-id text desc] …]`.
+
+   Stubbing at `persist-bridge/tee-scrollback!` rather than at
+   `sessions/tee-to-session!` is deliberate: it is the LAST hop before bytes
+   reach the file, so both routes into it — the tee-only call and the one
+   `emit-to-session!` makes — are counted by the same probe. A stub one level
+   up would see only one of them and could not tell a double-write from a
+   single one."
+  [f]
+  (let [captured (atom [])]
+    (with-redefs [persist-bridge/tee-scrollback!
+                  (fn [sid s & [desc]] (swap! captured conj [sid s desc]) nil)]
+      (f))
+    @captured))
+
+(defn- freeze-event [] {:agent {:agent-id aid} :iteration iter
+                        :repeat-id rid :result :success})
 
 (defn- strip [s] (str/replace s #"\[[0-9;]*m" ""))
 (defn- render-plain [state] (mapv strip (render-lines state \space)))
@@ -248,3 +269,103 @@
           "origin session's saved scrollback shows the ACP block")
       (is (empty? (:scrollback (sessions/get-session 1)))
           "the active (foreground) session is untouched"))))
+
+;; ---------------------------------------------------------------------------
+;; Freeze reaches DISK
+;;
+;; The regression these guard: an ACP transcript renders exclusively through
+;; the live-block path, which writes the terminal and `!scrollback` and nothing
+;; else — the only writers of `scrollback.stream.txt` are on the `emit!` path.
+;; An acp turn also has no answer emit to compensate (`:acp-show-final-answer`
+;; is off by default because the block already showed the message). So before
+;; the freeze-time tee, an acp session persisted its prompt echoes and usage
+;; footers and NOTHING the agent said, and `--resume` restored a transcript
+;; with every reply missing.
+;;
+;; Each of the three routes must write the bytes exactly once. Counting is the
+;; whole point: a second write is not a cosmetic duplicate, it doubles the
+;; transcript on every resume.
+;; ---------------------------------------------------------------------------
+
+(defn- seed-block! [session-idx]
+  (reset! session/!acp-blocks
+          {[aid rid iter] (assoc base-state
+                                 :agent-id aid :repeat-id rid :iteration iter
+                                 :session-idx session-idx)}))
+
+(deftest freeze-tees-a-foreground-transcript-exactly-once
+  (testing "origin IS the active tab — the rows are already on screen, so the freeze tees WITHOUT re-emitting"
+    (reset! sessions/!sessions
+            {:active-idx 0
+             :next-id    1
+             :sessions   {0 {:id 0 :agent-session-id "agt-fg"
+                             :scrollback [] :live-blocks {}}}})
+    (seed-block! 0)
+    (let [teed (capture-tees #(freeze-block! (freeze-event)))]
+      (is (= 1 (count teed)) "written once")
+      (let [[sid text desc] (first teed)
+            plain (strip text)]
+        (is (= "agt-fg" sid) "to the origin tab's own session id")
+        (is (str/includes? plain "claude-code · sonnet") "header persisted")
+        (is (str/includes? plain "Done — timeout set to 30s.") "the assistant message persisted")
+        (is (str/includes? plain "Read") "tool calls persisted")
+        (is (= :acp-block (:kind desc)) "with a descriptor so resume can redraw it")))
+    ;; The freeze repaints the block's final frame before detaching it, so one
+    ;; copy on screen is correct. Two would mean the tee-only branch had gone
+    ;; through `emit-to-session!` and redrawn the whole transcript underneath
+    ;; the widget the user is already looking at.
+    (is (= 1 (count (filter #(str/includes? (strip %) "claude-code · sonnet")
+                            @layout/!scrollback)))
+        "on screen once — not redrawn under the frozen widget")))
+
+(deftest freeze-of-a-backgrounded-block-writes-once-through-the-emit
+  (testing "origin is backgrounded and never rendered there — one emit, which tees on the way"
+    (reset! sessions/!sessions
+            {:active-idx 1
+             :next-id    2
+             :sessions   {0 {:id 0 :agent-session-id "agt-bg"
+                             :scrollback [] :live-blocks {}}
+                          1 {:id 1 :agent-session-id "agt-other"
+                             :scrollback [] :live-blocks {}}}})
+    (seed-block! 0)
+    (let [teed (capture-tees #(freeze-block! (freeze-event)))]
+      (is (= 1 (count teed)) "written once — the emit tees, the tee-only branch must not also fire")
+      (is (= "agt-bg" (ffirst teed)) "to the ORIGIN tab, not the active one")
+      (is (= :acp-block (:kind (nth (first teed) 2)))))
+    (is (some #(str/includes? (strip %) "claude-code · sonnet")
+              (:scrollback (sessions/get-session 0)))
+        "and it also became visible in the backgrounded tab")))
+
+(deftest freeze-of-an-already-buffered-block-writes-once-and-does-not-redraw
+  (testing "origin backgrounded but ALREADY holding the block's rows — tee only"
+    (reset! sessions/!sessions
+            {:active-idx 1
+             :next-id    2
+             :sessions   {0 {:id 0 :agent-session-id "agt-buf"
+                             :scrollback [] :live-blocks {}}
+                          1 {:id 1 :agent-session-id "agt-other"
+                             :scrollback [] :live-blocks {}}}})
+    (seed-block! 0)
+    ;; Stream one live update first, so the block is buffered into origin's
+    ;; saved scrollback exactly as it would be had the user switched away
+    ;; mid-turn. This is the case that reached disk NEITHER way before.
+    (update-block! aid rid iter)
+    (let [teed (capture-tees #(freeze-block! (freeze-event)))
+          headers (filter #(str/includes? (strip %) "claude-code · sonnet")
+                          (:scrollback (sessions/get-session 0)))]
+      (is (= 1 (count teed)) "written once")
+      (is (= "agt-buf" (ffirst teed)))
+      (is (= 1 (count headers))
+          "the buffered rows were not appended a second time"))))
+
+(deftest disposed-blocks-are-not-teed
+  (testing ":dispose-acp-block drops the widget — persisting what was discarded would resurrect it on resume"
+    (reset! sessions/!sessions
+            {:active-idx 0
+             :next-id    1
+             :sessions   {0 {:id 0 :agent-session-id "agt-dis"
+                             :scrollback [] :live-blocks {}}}})
+    (seed-block! 0)
+    (with-redefs [ai.brainyard.agent.interface/get-config
+                  (fn [_ k] (when (= k :dispose-acp-block) true))]
+      (is (empty? (capture-tees #(freeze-block! (freeze-event))))))))

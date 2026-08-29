@@ -200,6 +200,9 @@ Existing suites that must stay green:
 - **Live blocks** (iteration widgets, think blocks, task blocks) still do not
   come back at all. That is the other gap in persistence.md and needs teeing a
   block's frozen state at `src-freeze-block!` — unrelated machinery.
+
+  **Superseded for the ACP transcript block** (see "Extended: `:acp-block`"
+  below). The rest of the live blocks are still out of scope.
 - **Other box-drawn output** — tables in tool results, the welcome banner, the
   frozen compaction summary — stays ragged on a narrow resume. Each would need
   its own descriptor kind. The registry generalises if that becomes worth doing;
@@ -251,3 +254,68 @@ The end-to-end test is the one to keep: the unit tests on either side build
 their own descriptors, so only that one would notice if the `:block` the tee
 records drifted from the bytes it writes. That drift fails silently — every
 answer simply goes back to being frozen rows.
+
+## Extended: `:acp-block`
+
+The mechanism above generalised to its first non-answer kind, for a bug that
+was not about width at all.
+
+**The bug.** An acp-agent renders its whole turn — thoughts, the assistant
+message, tool calls — into the ACP transcript live block. Live blocks reach the
+terminal and `!scrollback` through `layout/update-live-block!`, and neither
+writes `scrollback.stream.txt`; the only two writers are on the `emit!` path.
+An acp turn also has no answer emit to compensate, because
+`:acp-show-final-answer` defaults **false** precisely on the grounds that the
+block already showed the message. The two are individually reasonable and
+jointly total: an acp session persisted its prompt echoes and its usage
+footers and nothing the agent ever said, and `--resume` restored a transcript
+with every reply missing. Observed on a real session before the fix — 42 lines
+of scrollback for 8 turns, no answers among them.
+
+**The fix.** `acp-freeze-block!` writes the frozen transcript to disk, choosing
+its route by whether the rows are already on screen:
+
+```
+background, never rendered there  -> emit-to-session!  (renders AND tees)
+foreground, or already buffered   -> tee-to-session!   (tees only)
+```
+
+`sessions/tee-to-session!` is new and exists only for the second case; sending
+it through `emit-to-session!` would redraw the entire transcript underneath the
+frozen widget. Both routes must fire **exactly once** — a second write is not a
+cosmetic duplicate, it doubles the transcript on every subsequent resume, so
+the tests count writes rather than assert presence.
+
+Note the third case is the one that was invisible: a block buffered into a
+backgrounded tab was skipped by the old `already-buffered?` guard *and* never
+teed, so it reached neither surface's disk.
+
+**The descriptor** follows the `:answer` pattern with two differences:
+
+- `session` owns the redraw (`render-acp-block-descriptor`), because only it
+  knows the segment shape. `core` dispatches on `:kind` and stays ignorant.
+- It records `:quiet?` where an answer records `:variant` — same rule, same
+  reason: a resumed transcript may change width but must not re-decide its
+  presentation.
+
+`render-acp-block-lines` grew an explicit-`cols` arity for this. The live path
+still takes width from `!layout` (the live-block convention), but a resume
+redraws before `!layout` holds the new width.
+
+Two things worth keeping:
+
+- **A failed redraw falls back to the stored rows.** `descriptor-renderer` now
+  takes the located span and returns it fitted when the redraw yields nothing.
+  Without that, a state that no longer draws resolves to an empty span and
+  those rows *vanish* from the replay — deleting transcript, where every other
+  failure in this path merely declines to improve it.
+- **The state is `select-keys`-ed to what the renderer reads.** `:agent-id`,
+  `:repeat-id` and `:session-idx` are live-process routing that means nothing
+  to a later resume, and a descriptor is EDN on disk: the smaller and more
+  inert the payload, the fewer ways it fails to read back. A descriptor that
+  fails to read is skipped by `read-descriptors`, so the cost is silent — the
+  block simply stays frozen at its old width.
+
+Verified end-to-end against a live `claude-code` ACP session: the transcript
+lands in `scrollback.stream.txt` once, the sidecar's `:block` matches those
+bytes, and a resume at 90 columns redraws a block emitted at 140.

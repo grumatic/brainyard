@@ -3733,32 +3733,86 @@
    assistant message (markdown-rendered, tail-capped to `:message-max-lines`),
    and tool calls via the shared `render-iter-tool-line`. In :quiet
    display-format only the message segments render (answer-only markdown, no
-   header/thoughts/tools)."
-  [{:keys [segments show-thoughts? message-max-lines] :as state} spinner-char]
-  (let [cols (or (:cols @layout/!layout) 80)]
-    (if (quiet?)
-      (vec (mapcat
-            (fn [seg]
-              (when (= :message (:type seg))
-                (acp-message-lines (:text seg) cols (or message-max-lines 100))))
-            segments))
-      (let [header (render-acp-header state spinner-char)
-            seg-lines
-            (mapcat
+   header/thoughts/tools).
+
+   `cols` is normally taken from `!layout` — the live-block convention (a
+   block's `:render` ignores its width argument and reads the layout, which
+   `reflow-scrollback!` sets before invoking it). The explicit-`cols` arity
+   exists for the RESUME path, which redraws a frozen block from a descriptor
+   at a width `!layout` does not yet hold.
+
+   `:quiet?`, when the state carries it, likewise overrides the live
+   `display-format`. Only a descriptor sets it, and for the reason the answer
+   descriptors record their variant: a resumed transcript is a record of what
+   happened, so reflow may change its width but must not re-decide its
+   presentation."
+  ([state spinner-char] (render-acp-block-lines state spinner-char nil))
+  ([{:keys [segments show-thoughts? message-max-lines] :as state} spinner-char cols]
+   (let [cols        (or cols (:cols @layout/!layout) 80)
+         quiet-mode? (if (contains? state :quiet?) (:quiet? state) (quiet?))]
+     (if quiet-mode?
+       (vec (mapcat
              (fn [seg]
-               (case (:type seg)
-                 :thought (when show-thoughts?
-                            (acp-prefixed-block (:text seg)
-                                                {:head-prefix "  ● Thinking: " :cols cols
-                                                 :max-lines acp-thought-max-lines
-                                                 :collapse-ws? true
-                                                 :text-style-fn ansi/muted
-                                                 :prefix-style-fn ansi/muted}))
-                 :message (acp-message-lines (:text seg) cols (or message-max-lines 100))
-                 :tool    (render-iter-tool-line seg)
-                 nil))
-             segments)]
-        (vec (cons header seg-lines))))))
+               (when (= :message (:type seg))
+                 (acp-message-lines (:text seg) cols (or message-max-lines 100))))
+             segments))
+       (let [header (render-acp-header state spinner-char)
+             seg-lines
+             (mapcat
+              (fn [seg]
+                (case (:type seg)
+                  :thought (when show-thoughts?
+                             (acp-prefixed-block (:text seg)
+                                                 {:head-prefix "  ● Thinking: " :cols cols
+                                                  :max-lines acp-thought-max-lines
+                                                  :collapse-ws? true
+                                                  :text-style-fn ansi/muted
+                                                  :prefix-style-fn ansi/muted}))
+                  :message (acp-message-lines (:text seg) cols (or message-max-lines 100))
+                  :tool    (render-iter-tool-line seg)
+                  nil))
+              segments)]
+         (vec (cons header seg-lines)))))))
+
+(def ^:private acp-desc-state-keys
+  "The subset of an ACP block's state that `render-acp-block-lines` actually
+   reads. A descriptor stores only these: everything else on the block
+   (`:agent-id`, `:repeat-id`, `:session-idx`) is live-process routing that
+   means nothing to a later resume, and a descriptor is EDN on disk — the
+   smaller and more inert its payload, the fewer ways it can fail to read back."
+  [:backend :model-label :usage :result :stage :start-ms :end-ms
+   :segments :show-thoughts? :message-max-lines])
+
+(defn acp-block-descriptor
+  "Descriptor for a frozen ACP transcript block — how to REDRAW it at another
+   width on resume, the live-block counterpart of the `:answer` descriptors in
+   `docs/design/answer-descriptor-resume.md`.
+
+   Records `:quiet?` as resolved right now, so the replay renders the format
+   that was emitted rather than re-deciding from the resuming process's
+   `display-format` (the same rule as an answer descriptor's `:variant`).
+
+   `:block` is filled in by the tee, from the exact bytes being written — never
+   here. Deriving it in two places is how the sidecar silently stops matching."
+  [state]
+  {:kind   :acp-block
+   :quiet? (quiet?)
+   :state  (select-keys state acp-desc-state-keys)})
+
+(defn render-acp-block-descriptor
+  "Redraw a frozen ACP transcript block at `cols` from the `:state` an
+   `acp-block-descriptor` stored. Called from `core`'s resume replay, which is
+   why this is public where the renderer it wraps is not.
+
+   `\\space` for the spinner: a descriptor only ever describes a block that has
+   already frozen, so there is no live frame to animate. Returns nil rather
+   than throwing on a state that no longer renders — a descriptor that cannot
+   be drawn must cost its own span its re-render, not the whole resume."
+  [state quiet? cols]
+  (when (map? state)
+    (try
+      (seq (render-acp-block-lines (assoc state :quiet? (boolean quiet?)) \space cols))
+      (catch Throwable _ nil))))
 
 (defn- update-acp-block!
   "Re-render an ACP block through the iteration sink, or into the origin
@@ -4066,7 +4120,26 @@
 (defn- acp-freeze-block!
   "Handler for :agent.iteration/post on an acp instance — set the final result,
    freeze the widget into scrollback, and drop the in-memory entry. Mirrors
-   `iteration-post-handler`'s freeze + background-session buffering."
+   `iteration-post-handler`'s freeze + background-session buffering.
+
+   Freezing is also where the transcript reaches DISK. Everything the block
+   showed while it was live — thoughts, the assistant message, tool calls —
+   arrived through `layout/update-live-block!`, which writes the terminal and
+   `!scrollback` and nothing else; the only two writers of
+   `scrollback.stream.txt` are on the `emit!` path. And an acp turn has no
+   answer emit to compensate: `:acp-show-final-answer` is off by default
+   precisely BECAUSE the block already displayed the message. So without the
+   tee below, an acp session persisted only its prompt echoes and usage
+   footers, and `--resume` brought back a transcript with every reply missing.
+
+   Which of the two writes happens is decided by whether the rows are already
+   on screen, not by anything about persistence:
+
+     background, never rendered there  -> `emit-to-session!` (renders AND tees)
+     foreground, or already buffered   -> `tee-to-session!`  (tees only)
+
+   Sending the second case through `emit-to-session!` would draw the whole
+   transcript a second time directly under the frozen widget."
   [{:keys [agent iteration repeat-id result]}]
   (let [aid       (:agent-id agent)
         rid       (str (or repeat-id "_"))
@@ -4091,17 +4164,23 @@
           (let [final-state (assoc outgoing :stage :done :result result-kw
                                    :end-ms (System/currentTimeMillis))
                 already-buffered? (some-> (sessions/get-session origin-idx)
-                                          :live-blocks (get block-id))]
+                                          :live-blocks (get block-id))
+                ;; nil origin-idx means the block was never bound to a tab;
+                ;; `update-acp-block!` renders those into the active session,
+                ;; so that is also where their bytes belong.
+                tee-idx     (or origin-idx active-idx)
+                background? (and origin-idx (not= origin-idx active-idx))
+                lines       (render-acp-block-lines final-state \space)
+                text        (when (seq lines) (str/join "\n" lines))
+                desc        (when text (acp-block-descriptor final-state))]
             (iter-sink/freeze-widget! block-id)
-            (when (and origin-idx
-                       (not= origin-idx active-idx)
-                       (not already-buffered?))
-              (let [lines (render-acp-block-lines final-state \space)]
-                (when (seq lines)
-                  (sessions/emit-to-session! origin-idx (str/join "\n" lines)))))
+            (when text
+              (if (and background? (not already-buffered?))
+                (sessions/emit-to-session! origin-idx text {:desc desc})
+                (sessions/tee-to-session! tee-idx text desc)))
             ;; Via `freeze-live-block-in-session!` — see the iteration-block
             ;; counterpart: freezing must detach the reflow entry too.
-            (when (and origin-idx (not= origin-idx active-idx))
+            (when background?
               (sessions/freeze-live-block-in-session! origin-idx block-id)))))
       (swap! !acp-blocks dissoc k))
     (iter-clear-current! agent)))

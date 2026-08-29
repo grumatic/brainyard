@@ -699,6 +699,29 @@
     (when (= :output (:session-type session))
       (some-> (:sub-output-of session) get-session :agent-session-id))))
 
+(defn tee-to-session!
+  "Persist `s` to session `idx`'s scrollback stream WITHOUT rendering it.
+
+   The narrow case this exists for: content that is ALREADY on screen but got
+   there by a route that never reaches disk. A live block is the whole of that
+   category — it renders through `layout/update-live-block!`, which writes the
+   terminal and `!scrollback` and nothing else, so a block that freezes in the
+   FOREGROUND leaves no bytes behind and a later `--resume` comes back without
+   it. `emit-to-session!` cannot serve this: it would draw the rows a second
+   time under the frozen widget.
+
+   Same tee-target rule as `emit-to-session!` — a chat tab to its own
+   `:agent-session-id`, an output-only tab to its root's `:sub-output` stream —
+   because the two must agree about where a tab's bytes live or a resume
+   reassembles them in the wrong order."
+  ([idx s] (tee-to-session! idx s nil))
+  ([idx s desc]
+   (when (and s (not (clojure.string/blank? s)))
+     (if-let [asid (:agent-session-id (get-session idx))]
+       (persist-bridge/tee-scrollback! asid s desc)
+       (when-let [root-asid (sub-output-tee-target idx)]
+         (persist-bridge/tee-sub-output-scrollback! root-asid s desc))))))
+
 (defn emit-to-session!
   "Write output to a specific session's scrollback.
    If the session is active, also writes to the terminal via layout.
@@ -730,10 +753,7 @@
   ([idx s opts]
    (when (and s (not (clojure.string/blank? s)))
      (when (not (false? (:persist? opts)))
-       (if-let [asid (:agent-session-id (get-session idx))]
-         (persist-bridge/tee-scrollback! asid s (:desc opts))
-         (when-let [root-asid (sub-output-tee-target idx)]
-           (persist-bridge/tee-sub-output-scrollback! root-asid s (:desc opts)))))
+       (tee-to-session! idx s (:desc opts)))
      (locking switch-lock
        (if (= idx (active-idx))
          ;; Active session — write to terminal (which also updates !scrollback)

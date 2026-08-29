@@ -14,6 +14,7 @@
             [ai.brainyard.agent-tui-persist.interface :as persist]
             [ai.brainyard.agent-tui.core :as core]
             [ai.brainyard.agent-tui.persist-bridge :as bridge]
+            [ai.brainyard.agent-tui.session :as session]
             [ai.brainyard.agent.interface.tui.format :as fmt]
             [ai.brainyard.clj-llm.interface :as clj-llm])
   (:import [java.io File]
@@ -261,6 +262,64 @@
           (is (< (count (take-while #(not (str/includes? % "a question")) plain))
                  (count (take-while #(not (str/includes? % "[done]")) plain)))
               "question before completion — the segments did not reorder the tail"))))))
+
+(deftest acp-block-descriptor-resumes-into-a-redrawn-transcript
+  ;; The ACP counterpart of the seam above. An acp turn's whole transcript is a
+  ;; live block, so before the freeze-time tee none of it reached this file at
+  ;; all — and once it does, it arrives PRE-WRAPPED at the width it was drawn
+  ;; at, which is exactly what a descriptor exists to undo.
+  (persist/session-dir "agt-acp")
+  (let [state   {:backend :claude-code :model-label "sonnet"
+                 :stage :done :result :success :usage {:total 1200}
+                 :start-ms 0 :end-ms 4200
+                 :show-thoughts? true :message-max-lines 100
+                 :segments [{:type :message
+                             :text (str "A reply long enough that the column it was "
+                                        "originally wrapped at is plainly visible in "
+                                        "the rows this produces.")}]}
+        desc    (session/acp-block-descriptor state)
+        emitted (str/join "\n" (#'session/render-acp-block-lines state \space 130))]
+    (bridge/tee-scrollback! "agt-acp" "❯ a question\n")
+    (bridge/tee-scrollback! "agt-acp" emitted desc)
+    (bridge/tee-scrollback! "agt-acp" "[done]\n")
+    (let [tail  (persist/tail-scrollback "agt-acp" :stream 1000000)
+          descs (persist/scrollback-descriptors "agt-acp" :stream)
+          segs  (#'core/tail-segments tail descs)
+          out   (into [] (mapcat #((:render %) 60)) segs)]
+      (testing "the descriptor survives the EDN round-trip to disk"
+        (is (= 1 (count descs)))
+        (is (= :acp-block (:kind (first descs))))
+        (is (seq (:segments (:state (first descs))))
+            "with the segments the redraw needs — a state that failed to read back
+             would leave the block frozen at its old width, silently"))
+      (testing "the recorded block is located in the replayed tail"
+        (is (= 1 (count (filter #(= :answer (:kind %)) segs)))))
+      (testing "and redraws at the RESUMED width, not the emitted one"
+        (is (every? #(<= (fmt/display-width %) 60) out))
+        (is (some #(str/includes? (fmt/strip-ansi %) "claude-code · sonnet") out)
+            "the header is redrawn, not lost")
+        (is (< (count (str/split-lines emitted)) (count out))
+            "narrower means more rows — proof this is a redraw and not the stored rows"))
+      (testing "the surrounding transcript keeps its order"
+        (let [plain (mapv fmt/strip-ansi out)]
+          (is (< (count (take-while #(not (str/includes? % "a question")) plain))
+                 (count (take-while #(not (str/includes? % "[done]")) plain)))))))))
+
+(deftest acp-descriptor-with-an-unrenderable-state-falls-back-to-its-rows
+  ;; A descriptor is an optimisation over rows that are already on disk. If its
+  ;; state no longer draws, the span must degrade to those rows — returning an
+  ;; empty render would DELETE transcript from the replay, which is strictly
+  ;; worse than the ragged border the descriptor existed to fix.
+  (persist/session-dir "agt-acp-bad")
+  (let [rows "[✓] claude-code · sonnet\n  the reply"]
+    (bridge/tee-scrollback! "agt-acp-bad" rows
+                            {:kind :acp-block :quiet? false :state {:segments :not-a-vector}})
+    (let [tail  (persist/tail-scrollback "agt-acp-bad" :stream 1000000)
+          descs (persist/scrollback-descriptors "agt-acp-bad" :stream)
+          out   (into [] (mapcat #((:render %) 60)) (#'core/tail-segments tail descs))
+          plain (mapv fmt/strip-ansi out)]
+      (is (some #(str/includes? % "the reply") plain)
+          "the stored rows still reach the screen"))))
 
 (deftest snap-survives-session-id-fallback-on-restore
   (testing "round-trip via restore-session-map yields the messages we logged"
