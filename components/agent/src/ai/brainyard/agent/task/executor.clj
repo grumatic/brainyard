@@ -305,57 +305,57 @@
               ;; (which wasted three wake-ups out of four).
               poll-once
               (fn []
-                   (let [{:keys [state task error]} (a2a-client/task-state peer remote-task-id)]
-                     (cond
+                (let [{:keys [state task error]} (a2a-client/task-state peer remote-task-id)]
+                  (cond
                        ;; A transport blip must not fail the task — the peer
                        ;; may simply be restarting. Report it once and keep
                        ;; polling; the user can task$cancel if it persists.
-                       error
-                       (do (when-not (contains? @!announced [:error error])
-                             (swap! !announced conj [:error error])
-                             (on-output (str "poll failed (will retry): " error)))
-                           tp/still-running)
+                    error
+                    (do (when-not (contains? @!announced [:error error])
+                          (swap! !announced conj [:error error])
+                          (on-output (str "poll failed (will retry): " error)))
+                        tp/still-running)
 
-                       :else
-                       (do
-                         (when (not= state @!last-state)
-                           (reset! !last-state state)
-                           (on-output (str "state: " (name state))))
-                         (cond
+                    :else
+                    (do
+                      (when (not= state @!last-state)
+                        (reset! !last-state state)
+                        (on-output (str "state: " (name state))))
+                      (cond
                            ;; INTERRUPTED is not finished. The peer is
                            ;; holding the task open for us; promoting it to
                            ;; a terminal status here would abandon work we
                            ;; could still resume.
-                           (a2a/interrupted? state)
-                           (do (when-not (contains? @!announced state)
-                                 (swap! !announced conj state)
-                                 (on-output
-                                  (str "remote task is awaiting "
-                                       (if (= :auth-required state)
-                                         "credentials" "input")
-                                       " — reply via agent-registry$ask on the"
-                                       " remote instance, or task$cancel to give up")))
-                               tp/still-running)
+                        (a2a/interrupted? state)
+                        (do (when-not (contains? @!announced state)
+                              (swap! !announced conj state)
+                              (on-output
+                               (str "remote task is awaiting "
+                                    (if (= :auth-required state)
+                                      "credentials" "input")
+                                    " — reply via agent-registry$ask on the"
+                                    " remote instance, or task$cancel to give up")))
+                            tp/still-running)
 
-                           (a2a/terminal? state)
-                           (let [answer (or (some-> (get-in task [:status :message])
-                                                    a2a/message-text)
-                                            (->> (:artifacts task)
-                                                 (mapcat :parts)
-                                                 a2a/parts-text))]
-                             (on-output (str "remote task " (name state)))
-                             (when-not (str/blank? answer) (on-output answer))
-                             (if (contains? #{:failed :rejected} state)
-                               {:error (str "remote task " (name state)
-                                            (when-not (str/blank? answer)
-                                              (str ": " answer)))}
-                               {:result {:state state
-                                         :task-id remote-task-id
-                                         :peer peer-name
-                                         :answer answer
-                                         :artifacts (vec (:artifacts task))}}))
+                        (a2a/terminal? state)
+                        (let [answer (or (some-> (get-in task [:status :message])
+                                                 a2a/message-text)
+                                         (->> (:artifacts task)
+                                              (mapcat :parts)
+                                              a2a/parts-text))]
+                          (on-output (str "remote task " (name state)))
+                          (when-not (str/blank? answer) (on-output answer))
+                          (if (contains? #{:failed :rejected} state)
+                            {:error (str "remote task " (name state)
+                                         (when-not (str/blank? answer)
+                                           (str ": " answer)))}
+                            {:result {:state state
+                                      :task-id remote-task-id
+                                      :peer peer-name
+                                      :answer answer
+                                      :artifacts (vec (:artifacts task))}}))
 
-                           :else tp/still-running)))))]
+                        :else tp/still-running)))))]
           (on-output (str "Tracking remote A2A task " remote-task-id
                           " on peer '" peer-name "' (poll " interval "ms)"))
           {:status :detached
@@ -504,6 +504,33 @@
             (project-fn done-r))
           tp/still-running)))))
 
+(defn make-future-adopt
+  "Effect-shaped counterpart of `make-future-poll-fn`, for `adopt-detached!`.
+
+   Same split as the sandbox/nREPL executors: completion is a blocking `deref`
+   on `m/blk` rather than a polled `.isDone`, and the incremental drain becomes
+   an `:on-drain` the manager schedules. Returns
+   `{:task <Task> :make-on-drain (fn [on-output] -> (fn [flush?]))}`.
+
+   The `!drained` offset lives out here, shared by every drain call, so the
+   final flush picks up exactly where the last sampled one stopped."
+  [^java.util.concurrent.Future fut ^java.io.StringWriter eval-output code project-fn]
+  (let [!drained (atom 0)]
+    {:task (fx/task-of
+            (fn []
+              (let [done-r (try (deref fut)
+                                (catch java.util.concurrent.CancellationException _
+                                  {:error "cancelled" :code code
+                                   :output (.toString eval-output)})
+                                (catch Exception e
+                                  {:error (.getMessage e) :code code
+                                   :output (.toString eval-output)}))]
+                (project-fn done-r))))
+     :make-on-drain (fn [on-output]
+                      (fn [flush?]
+                        (drain-incremental-output! on-output eval-output
+                                                   !drained flush?)))}))
+
 (defn make-heartbeat-poll-fn
   "make-on-poll builder for adopted futures that produce NO incremental output
    of their own — i.e. :tool jobs (including subagent-as-tool calls), which
@@ -539,6 +566,32 @@
           (catch InterruptedException _ nil)
           (catch Throwable _ nil))))
     (make-future-poll-fn fut writer label identity)))
+
+(defn make-heartbeat-adopt
+  "Effect-shaped counterpart of `make-heartbeat-poll-fn`.
+
+   Identical liveness behaviour — a background heartbeat appends
+   `[label] running… elapsed Ns` to a shared StringWriter while `fut` runs, and
+   the drain pipe surfaces those lines through `task$detail`. Only the
+   completion half changes: `make-future-adopt` awaits the future instead of
+   polling `.isDone`.
+
+   The heartbeat still self-stops on `.isDone`, so it needs no cancellation of
+   its own: a cancel makes that true within one interval and the loop exits."
+  [^java.util.concurrent.Future fut label interval-ms t0]
+  (let [writer (java.io.StringWriter.)]
+    (when (pos? (long interval-ms))
+      (future
+        (try
+          (loop []
+            (Thread/sleep (long interval-ms))
+            (when-not (.isDone fut)
+              (let [elapsed-s (quot (- (System/currentTimeMillis) (long t0)) 1000)]
+                (.write writer (str "[" label "] running… elapsed " elapsed-s "s\n")))
+              (recur)))
+          (catch InterruptedException _ nil)
+          (catch Throwable _ nil))))
+    (make-future-adopt fut writer label identity)))
 
 (defrecord ClojureSandboxJobExecutor []
   tp/IJobExecutor

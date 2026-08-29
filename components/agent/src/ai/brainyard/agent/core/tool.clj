@@ -1345,7 +1345,7 @@
           tasks-atom  @(requiring-resolve 'ai.brainyard.agent.task.manager/!tasks)
           await-fn    @(requiring-resolve 'ai.brainyard.agent.task.commands/await-task)
           get-task-fn @(requiring-resolve 'ai.brainyard.agent.task.protocol/get-task)
-          hb-poll-fn  @(requiring-resolve 'ai.brainyard.agent.task.executor/make-heartbeat-poll-fn)
+          hb-adopt    @(requiring-resolve 'ai.brainyard.agent.task.executor/make-heartbeat-adopt)
           ;; Cascading cancel: when this task wraps a sub-agent, cancel-run its
           ;; state on cancel (cooperative :cancelled? flag + closes in-flight HTTP;
           ;; every descendant sub-agent sees it via the upward parent-chain
@@ -1369,7 +1369,7 @@
           task        (adopt-fn tname :tool
                                 {:tool-id tool-id :tool-args tool-args}
                                 {:metadata meta :started-at t0}
-                                (hb-poll-fn fut (str tool-name) heartbeat-ms t0)
+                                (hb-adopt fut (str tool-name) heartbeat-ms t0)
                                 (fn []
                                   (future-cancel fut)
                                   (when sub-agent-id

@@ -469,12 +469,18 @@
    the fast timeout, the already-running future is adopted into a tracked
    task without restarting work.
 
-   make-on-poll: (fn [on-output] -> poll-fn) — builder that receives the
-                 task's on-output callback and returns the :on-poll closure.
+   `adopt` is either shape, the same coexistence `register-detached!` uses:
+
+     {:task <Task> :make-on-drain (fn [on-output] -> (fn [flush?]))}
+                  — effect path. The Task reports completion; the drain, if
+                    any, is scheduled by the manager.
+     (fn [on-output] -> poll-fn)
+                  — legacy path, kept only for the watcher's own tests.
+
    on-cancel:    (fn [] ...) — cancel closure, registered as-is.
    opts may include :started-at (epoch ms) to backdate the task's start
    time to when the eval actually began (before the fast-eval window)."
-  [task-name job-type job-config opts make-on-poll on-cancel]
+  [task-name job-type job-config opts adopt on-cancel]
   (let [task    (make-task task-name job-type job-config opts)
         task-id (:id task)
         started (or (:started-at opts) (System/currentTimeMillis))
@@ -487,8 +493,13 @@
     (swap! !tasks assoc-in [task-id :status] :running)
     (persist/open-appender! nil (get @!tasks task-id))
     (register-detached! task-id
-                        {:on-poll   (make-on-poll on-output)
-                         :on-cancel on-cancel})
+                        (if (map? adopt)
+                          {:task      (:task adopt)
+                           :on-drain  (when-let [mk (:make-on-drain adopt)]
+                                        (mk on-output))
+                           :on-cancel on-cancel}
+                          {:on-poll   (adopt on-output)
+                           :on-cancel on-cancel}))
     (hooks/fire! :task/created {:task (get @!tasks task-id)})
     (get @!tasks task-id)))
 

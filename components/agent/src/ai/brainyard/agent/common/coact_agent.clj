@@ -72,6 +72,7 @@
             [ai.brainyard.agent.task.manager :as task-mgr]
             [ai.brainyard.agent.task.persist :as task-persist]
             [ai.brainyard.agent.task.protocol :as tp]
+            [ai.brainyard.effect.interface :as fx]
             [ai.brainyard.agent.tui.ansi :as ansi]
             [ai.brainyard.mulog.interface :as mulog]
             [ai.brainyard.util.interface :as util]
@@ -3271,37 +3272,47 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
       {:lang lang :code code :result nil :output ""
        :error (str (.getMessage e))})))
 
-(defn- make-process-poll-fn
-  "Build a make-on-poll for Process-based evals (bash/python/js).
-   Returns (fn [on-output] -> poll-fn) suitable for adopt-detached!."
+(defn- make-process-adopt
+  "Build the adopt map for Process-based evals (bash/python/js).
+
+   Effect-shaped, mirroring `BashJobExecutor`: `.waitFor` on `m/blk` replaces
+   polling `.isAlive`, so the eval finalizes the instant the process exits
+   rather than up to 300ms later. The incremental drain stays sampled and
+   becomes `:on-drain`.
+
+   `(deref reader-future 5000 nil)` before the final read is kept — the reader
+   thread may still be draining the last of stdout when the process exits, and
+   without the wait the tail of the output can be lost."
   [^Process proc reader-future eval-output]
   (let [!drained (atom 0)]
-    (fn [on-output]
-      (fn []
-        (executor/drain-incremental-output! on-output eval-output !drained false)
-        (if (not (.isAlive proc))
-          (do (deref reader-future 5000 nil)
-              (executor/drain-incremental-output! on-output eval-output !drained true)
+    {:task (fx/task-of
+            (fn []
+              (.waitFor proc)
+              (deref reader-future 5000 nil)
               (let [exit-code (.exitValue proc)]
                 (if (zero? exit-code)
                   {:exit-code 0}
-                  {:error (str "Exit code: " exit-code) :exit-code exit-code})))
-          tp/still-running)))))
+                  {:error (str "Exit code: " exit-code) :exit-code exit-code}))))
+     :make-on-drain (fn [on-output]
+                      (fn [flush?]
+                        (executor/drain-incremental-output! on-output eval-output
+                                                            !drained flush?)))}))
 
 (defn- adopt-and-await-task
   "Adopt a pre-existing eval into the task manager, then await up to
    the remaining auto-bg window. Returns an eval-entry (sync terminal or
-   :status :pending for the harvest path). Callers provide make-on-poll
-   and on-cancel closures appropriate to their eval backend."
+   :status :pending for the harvest path). Callers provide an `adopt`
+   map (or legacy make-on-poll fn) and an on-cancel closure appropriate to
+   their eval backend."
   [{:keys [task-name job-type job-config metadata
-           make-on-poll on-cancel
+           adopt on-cancel
            lang auto-bg-ms fast-eval-ms started-at tmp-file !task-ref]}]
   (try
     (let [code      (or (:coact/code metadata) "")
           task      (task-mgr/adopt-detached!
                      task-name job-type job-config
                      {:metadata metadata :started-at started-at}
-                     make-on-poll on-cancel)
+                     adopt on-cancel)
           _         (when !task-ref (proto/update-task-id! !task-ref (:id task)))
           mgr       (task-mgr/get-default-manager)
           remaining (max 0 (- auto-bg-ms fast-eval-ms))
@@ -3431,7 +3442,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                 :job-type     :bash
                 :job-config   {:command command :working-dir proj-dir}
                 :metadata     meta
-                :make-on-poll (make-process-poll-fn proc reader-future eval-output)
+                :adopt (make-process-adopt proc reader-future eval-output)
                 :on-cancel    (fn []
                                 (executor/destroy-process-tree! proc)
                                 (future-cancel reader-future))
@@ -3516,7 +3527,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
             :job-type     :clj-sandbox-eval
             :job-config   {:sandbox sandbox :code code}
             :metadata     meta
-            :make-on-poll (executor/make-future-poll-fn fut eval-output code
+            :adopt (executor/make-future-adopt fut eval-output code
                                                         executor/project-sandbox-result)
             :on-cancel    (fn [] (future-cancel fut))
             :lang         "clojure"
@@ -3594,7 +3605,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
               :job-config   (cond-> {:code wire-code :timeout-ms (* 1000 60 60)}
                               nrepl-session-id (assoc :session nrepl-session-id))
               :metadata     meta
-              :make-on-poll (executor/make-future-poll-fn fut eval-output code
+              :adopt (executor/make-future-adopt fut eval-output code
                                                           #(select-keys % [:code :output :result :error :ns]))
               :on-cancel    (fn [] (future-cancel fut))
               :lang         "clojure"
