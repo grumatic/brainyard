@@ -202,7 +202,7 @@
   "True for a stderr line that reads like a human-facing diagnostic, false
    for a fragment of a pretty-printed object dump.
 
-   Backends do not print one tidy error line. `claude-code-acp` prints the
+   Backends do not print one tidy error line. `claude-agent-acp` prints the
    cause in prose and THEN dumps the offending request and error object
    across a dozen lines:
 

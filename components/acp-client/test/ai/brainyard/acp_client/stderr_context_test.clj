@@ -7,7 +7,7 @@
    the request with a generic `Internal error`. These tests pin the join
    between the two halves.
 
-   Motivating case: `claude-code-acp` refuses to start inside another Claude
+   Motivating case: `claude-agent-acp` refuses to start inside another Claude
    Code session, prints the reason (and the fix — unset CLAUDECODE) on
    stderr, and returns `{-32603 Internal error}` on the wire. Before this,
    the user saw only \"ACP error: Internal error\" and had nothing to act on."
@@ -18,7 +18,7 @@
 
 (def ^:private NESTED-SESSION-ERROR
   "A backend that narrates a fatal condition on stderr, then answers the
-   first request with a bare `Internal error` — the shape claude-code-acp
+   first request with a bare `Internal error` — the shape claude-agent-acp
    produces when it detects a nested session.
 
    The trailing object dump is not decoration: it is what the real backend

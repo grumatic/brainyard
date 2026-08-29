@@ -24,7 +24,7 @@
    The tail exists because a backend routinely explains a failure on
    stderr and then answers the JSON-RPC request with a generic
    `Internal error`. Debug-level logs are off by default, so the only
-   actionable half of the failure was being discarded: `claude-code-acp`
+   actionable half of the failure was being discarded: `claude-agent-acp`
    printing \"Claude Code cannot be launched inside another Claude Code
    session\" surfaced to the user as an unexplained \"ACP error: Internal
    error\". Callers attach this tail when they render an ACP failure."
@@ -167,7 +167,7 @@
       ;; The child inherits this JVM's environment wholesale, including any
       ;; "you are inside a coding-agent session" marker set by whoever
       ;; started `by`. Drop those first (see `env/nested-session-markers` —
-      ;; an inherited CLAUDECODE=1 makes claude-code-acp refuse to spawn),
+      ;; an inherited CLAUDECODE=1 makes claude-agent-acp refuse to spawn),
       ;; then apply the spec's `:env` on top so an explicit override wins.
       (let [dropped (env/strip-nested-session-markers! (.environment pb))]
         (when (seq dropped)

@@ -12,7 +12,7 @@
 (def ^:const PROTOCOL_VERSION
   "ACP protocol version this client implements. Sent in `initialize`.
    The ACP spec versions the protocol as an integer (major version),
-   not a semver string — real agents (claude-code-acp, gemini, codex)
+   not a semver string — real agents (claude-agent-acp, gemini, codex)
    reject a string `protocolVersion` with `Invalid params`."
   1)
 

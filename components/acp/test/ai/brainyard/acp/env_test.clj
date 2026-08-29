@@ -160,7 +160,7 @@
 
 (deftest stdio-does-not-inherit-claudecode-test
   ;; The regression this guards: `by` started from inside a Claude Code
-  ;; terminal inherits CLAUDECODE=1, hands it to claude-code-acp, and the
+  ;; terminal inherits CLAUDECODE=1, hands it to claude-agent-acp, and the
   ;; backend dies with "cannot be launched inside another Claude Code
   ;; session". The assertion is exact where it matters (a test JVM that has
   ;; the marker) and vacuously true elsewhere, so it never flakes on CI.

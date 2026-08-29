@@ -472,7 +472,7 @@
 
    Warm contexts are the whole point of the registry, but they are also the
    reason this hook has to exist: a context can hold an EXTERNAL SUBPROCESS
-   (an exposed acp-agent is one `npx claude-code-acp` per context), and
+   (an exposed acp-agent is one `npx @agentclientprotocol/claude-agent-acp` per context), and
    `by a2a serve` parks the main thread forever, so the only ways out are
    Ctrl-C and SIGTERM. Without the hook those subprocesses are reparented to
    init and survive the server that spawned them — one orphan per warm
