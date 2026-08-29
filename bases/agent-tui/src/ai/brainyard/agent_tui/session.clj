@@ -3925,19 +3925,36 @@
    otherwise only a silent log warning (`::acp-model-unmatched`) and the flag
    would appear to have taken. Reads the descriptor, which exists only once the
    session has connected (first turn opens it lazily), so this fires from the
-   turn AFTER the first — the status bar already shows the served model meanwhile."
+   turn AFTER the first — the status bar already shows the served model meanwhile.
+
+   Two different failures reach here and they need different notices, because
+   only one of them is the user's to fix:
+
+   - `:model-mechanism :none` — the backend offers NO model selection, so no
+     spelling of `:model` could have worked and listing alternatives is
+     impossible. Naming the served model is also dishonest: nothing was pinned,
+     so we do not know what serves. Say the flag is inert and where the setting
+     actually lives.
+   - otherwise — a genuine miss against a list we HAVE, so name the served
+     model and the ids that would have matched."
   [agent aid]
   (let [desc (try (agent/descriptor agent) (catch Exception _ nil))]
     (when (and (false? (:model-matched? desc))
                (not (contains? @!acp-model-notified aid)))
       (swap! !acp-model-notified conj aid)
-      (let [avail (seq (:available-models desc))]
+      (let [avail (seq (:available-models desc))
+            served (:effective-model desc)]
         (layout/write-output!
          (str (ansi/muted
-               (str "⚠ acp: model '" (:model-label desc) "' unavailable — serving '"
-                    (:effective-model desc) "'"
-                    (when avail (str " (available: " (clojure.string/join ", " avail) ")"))
-                    "."))
+               (if (= :none (:model-mechanism desc))
+                 (str "⚠ acp: this backend does not support model selection — "
+                      "'" (:model-label desc) "' was ignored. "
+                      "Set the model in .claude/settings.json instead.")
+                 (str "⚠ acp: model '" (:model-label desc) "' unavailable"
+                      (when served (str " — serving '" served "'"))
+                      (when avail
+                        (str " (available: " (clojure.string/join ", " avail) ")"))
+                      ".")))
               "\n"))))))
 
 (defn- acp-create-block!

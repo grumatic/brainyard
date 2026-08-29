@@ -77,6 +77,9 @@
 (defn- new-session!*     [& args] (apply acp-client/new-session! args))
 (defn- set-model!*       [& args] (apply acp-client/set-model! args))
 (defn- resolve-model-id* [& args] (apply acp-client/resolve-model-id args))
+(defn- set-config-option!*   [& args] (apply acp-client/set-config-option! args))
+(defn- model-config-option*  [& args] (apply acp-client/model-config-option args))
+(defn- resolve-config-value* [& args] (apply acp-client/resolve-config-value args))
 (defn- prompt!*          [& args] (apply acp-client/prompt! args))
 (defn- cancel!*          [& args] (apply acp-client/cancel! args))
 (defn- close!*           [& args] (apply acp-client/close! args))
@@ -296,29 +299,67 @@
    — under `bb tui` that's the projects/agent-tui-app/ subdir, so the
    backend would resolve relative paths against the wrong tree.
 
-   Model: `:acp-backend-opts {:model \"sonnet\"}` → resolve against the
-   agent's advertised models and set it via ACP `session/set_model` (a
-   per-session concern; the launch spec / env can't carry a model).
-   Unmatched ⇒ warn and keep the agent's default model."
+   Model: `:acp-backend-opts {:model \"sonnet\"}` → resolve against
+   whatever the agent advertised and pin it (a per-session concern; the
+   launch spec / env can't carry a model). Unmatched ⇒ warn and keep the
+   agent's default model.
+
+   TWO mechanisms, because the protocol changed under us and both are
+   live in the wild:
+
+   - **config options** (current) — `session/new` returns
+     `configOptions[]`; the model selector is the `:category \"model\"`
+     entry and is pinned with `session/set_config_option`.
+   - **`:models` + `session/set_model`** (legacy) — what
+     claude-agent-acp 0.16.2 served.
+
+   Prefer config options when present. Do NOT try one and fall back on
+   error: an agent that has moved REMOVED `set_model` (0.70.0 answers
+   `-32601` for every id), so a speculative call is a guaranteed
+   round-trip to an error on the hot path of opening a session. Branch on
+   what was advertised instead — which is also the only way to tell
+   \"unmatched\" apart from \"this agent doesn't do model selection\"."
   [agent client backend-opts]
-  (let [backend (config/get-config agent :acp-backend)
-        sess    (new-session!* client {:cwd (config/project-dir agent)})
-        model   (:model backend-opts)
-        avail   (get-in sess [:models :availableModels])
-        current (get-in sess [:models :currentModelId])
+  (let [backend  (config/get-config agent :acp-backend)
+        sess     (new-session!* client {:cwd (config/project-dir agent)})
+        model    (:model backend-opts)
+        cfg-opts (:config-options sess)
+        model-opt (model-config-option* cfg-opts)
+        ;; Legacy shape, only consulted when there is no config option.
+        avail    (get-in sess [:models :availableModels])
+        current  (get-in sess [:models :currentModelId])
+        ;; Normalised view of the choices on offer, whichever mechanism.
+        choices  (if model-opt
+                   (mapv :value (:options model-opt))
+                   (mapv :modelId avail))
+        mechanism (cond model-opt   :config-option
+                        (seq avail) :set-model
+                        :else       :none)
         model-id
         (when model
-          (let [mid (resolve-model-id* avail model)]
-            (if mid
-              (do (set-model!* sess mid)
-                  (mulog/info ::acp-model-selected :requested model :model-id mid)
-                  mid)
+          (let [mid (if model-opt
+                      (resolve-config-value* model-opt model)
+                      (resolve-model-id* avail model))]
+            (cond
+              (nil? mid)
               (do (mulog/warn ::acp-model-unmatched :requested model
-                              :available (mapv :modelId avail))
-                  nil))))
+                              :mechanism mechanism :available choices)
+                  nil)
+
+              model-opt
+              (do (set-config-option!* sess (:id model-opt) mid)
+                  (mulog/info ::acp-model-selected :requested model
+                              :model-id mid :mechanism :config-option)
+                  mid)
+
+              :else
+              (do (set-model!* sess mid)
+                  (mulog/info ::acp-model-selected :requested model
+                              :model-id mid :mechanism :set-model)
+                  mid))))
         ;; What the session will ACTUALLY serve: the matched id, else the
         ;; backend's own default (unmatched requests keep it — see below).
-        effective (or model-id current)
+        effective (or model-id (:currentValue model-opt) current)
         ;; nil = no model requested; true = requested & matched; false =
         ;; requested but unmatched (running on the backend default instead).
         matched?  (cond (nil? model) nil
@@ -331,7 +372,8 @@
                         :model-id         model-id         ;; resolved match, or nil
                         :effective-model  effective        ;; what actually serves
                         :model-matched?   matched?
-                        :available-models (mapv :modelId avail)
+                        :model-mechanism  mechanism        ;; how selection works here
+                        :available-models choices
                         :session-id       (:session-id sess)
                         :spawned-at       (System/currentTimeMillis)})
     sess))

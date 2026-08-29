@@ -117,9 +117,29 @@
 
 (defn resolve-model-id
   "Fuzzy-match a user model string against a session's advertised
-   `:models :availableModels`; returns the matched `:modelId` or nil."
+   `:models :availableModels`; returns the matched `:modelId` or nil.
+   LEGACY shape — see `model-config-option` for the current one."
   [available-models model]
   (session/resolve-model-id available-models model))
+
+(defn set-config-option!
+  "Set one session config option via ACP `session/set_config_option`.
+   Returns `{:configOptions [...]}` — the complete updated set."
+  ([sess config-id value] (session/set-config-option! sess config-id value))
+  ([sess config-id value opts] (session/set-config-option! sess config-id value opts)))
+
+(defn model-config-option
+  "The model selector among a session's `:config-options`, or nil.
+   This is how agents advertise model choice since `session/set_model`
+   was removed."
+  [config-options]
+  (session/model-config-option config-options))
+
+(defn resolve-config-value
+  "Fuzzy-match a user string against a config option's `:options`;
+   returns the matched `:value` or nil."
+  [option wanted]
+  (session/resolve-config-value option wanted))
 
 (defn iteration-pre-event
   "Build an iteration/pre event descriptor for `prompt!` callers that
