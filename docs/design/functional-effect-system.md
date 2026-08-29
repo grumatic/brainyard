@@ -1415,6 +1415,10 @@ because HTTP is inherently uncancellable.** Converting the non-streaming path
 would be real but modest — it removes the closer from ordinary calls and leaves
 it exactly where the LLM stream is.
 
+### Pause holding a pool thread — FIXED, see below
+
+*(Originally written as an open finding; implemented in the same pass.)*
+
 ### Pause holding a pool thread is a defect §16 introduced
 
 `check-pause!` calls `await-resume` → `wait-if-paused` → `.await` on a
@@ -1439,8 +1443,43 @@ unwinds — which is what `signal-pause-condition!` does today. The semantics ar
 already worked out in `wait-if-paused`'s three outcomes; they just need
 re-expressing.
 
-### If both landed
+### Pause as a dfv — done
 
-`cancel-run` would reach **one** mechanism — cancel the effect — with the
-stream closer surviving only for streaming bodies, which is where it always
-belonged. That is the shape §14 said was unreachable.
+`runtime/await-resume-task` returns a Task with `wait-if-paused`'s three
+outcomes, parking on an `m/dfv` instead of a `Condition`. `pause-run` allocates
+a fresh dfv (they deliver once), `resume-run` settles it `:resumed`,
+`cancel-run` settles it `:cancelled`; both settles are guarded, because the two
+can race and the loser must be a no-op rather than a throw.
+
+Measured — the point of the exercise:
+
+```
+still waiting?                     true
+blk threads consumed by the wait   0      <- was 1, for the whole pause
+resume delivers                    :resumed
+cancel while paused                :cancelled
+not paused / already cancelled     :running / :cancelled   (ordering preserved)
+three pause/resume cycles          [:resumed :resumed :resumed]
+```
+
+One consequence worth knowing: `check-pause!` now returns a **Task**, because
+`m/?` on a dfv is only valid inside a coroutine, and its three call sites await
+it. The first attempt left it a plain `defn` and failed with
+`No matching clause: :resumed` — `m/?` outside a coroutine compiles to a park
+that has no fiber to park on. A good error to have seen once.
+
+The synchronous engine is untouched: it still calls `.await-resume` and the
+`Condition` remains for it. Only the effect path uses the dfv.
+
+Verified: 216 tests / 1156 assertions, `bb poly check`, `bb build:ata` with
+native smoke, `effect-smoke`, and live in a TUI on the effect engine — Esc
+parks, Ctrl-C while paused cancels, the next turn answers, `/quit` exits with
+no orphans.
+
+### Where cancel-run ends up
+
+Three mechanisms now, not four: the cooperative flag and the thread interrupt
+are unused on the effect path, and mechanism 4 is a dfv rather than a Condition.
+Converting the non-streaming HTTP path would take it to **two** — cancel the
+effect, plus `.close` for streaming bodies only, which is where it always
+belonged. That is close to the shape §14 said was unreachable.

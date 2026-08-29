@@ -394,6 +394,7 @@
   (check-run-cancelled? [_] (runtime/cancelled? !state))
   (check-run-paused? [_] (runtime/paused? !state))
   (await-resume [_] (runtime/wait-if-paused !state))
+  (await-resume-task [_] (runtime/await-resume-task !state))
   (apply-resume-note! [_] nil)
   (create-action-promise [_ action-id] (runtime/create-action-promise !state action-id))
   (get-action-permission [_ action-id] (runtime/get-action-permission !state action-id))

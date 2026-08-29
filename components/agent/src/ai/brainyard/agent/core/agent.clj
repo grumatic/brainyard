@@ -539,6 +539,9 @@
   (await-resume [_]
     (runtime/wait-if-paused !state))
 
+  (await-resume-task [_]
+    (runtime/await-resume-task !state))
+
   (apply-resume-note! [_]
     (inject-resume-note! !state !session agent-id))
 

@@ -697,12 +697,15 @@
    `apply-resume-note!` stays for the same reason it was always unconditional:
    a resume note must land whether or not the loop actually parked."
   [^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent depth id node-type]
-  (when agent
+  ;; Returns a TASK, because awaiting a resume is now `m/?` on a dfv and `m/?`
+  ;; is only valid inside a coroutine. Call sites `m/?` it.
+  (m/sp
+   (when agent
     (when (.check-run-paused? agent)
       (.update-session-data agent
                             {:trace {:agent-id (:agent-id agent) :depth depth
                                      :content (format "%s %s **paused**." id (name node-type))}})
-      (let [outcome (.await-resume agent)]
+      (let [outcome (m/? (.await-resume-task agent))]
         (when (= outcome :cancelled)
           (.update-session-data agent
                                 {:trace {:agent-id (:agent-id agent) :depth depth
@@ -712,7 +715,7 @@
         (.update-session-data agent
                               {:trace {:agent-id (:agent-id agent) :depth depth
                                        :content (format "%s %s **resumed**." id (name node-type))}})))
-    (.apply-resume-note! agent)))
+    (.apply-resume-note! agent))))
 
 (defn- leaf-task
   "Same seam as `core.nodes-task/leaf-task`: run the leaf on `m/blk`, through
@@ -771,7 +774,7 @@
    {:keys [st-memory ^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent] :as context}]
   (m/sp
    (let [id (or (:id opts) "?")
-         _ (check-pause! agent depth id :condition)
+         _ (m/? (check-pause! agent depth id :condition))
          context (assoc context :opts opts)
          result (if (m/? (leaf-task context #(condition-fn context)))
                   p/success
@@ -792,7 +795,7 @@
    {:keys [st-memory ^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent] :as context}]
   (m/sp
    (let [id (or (:id opts) "?")
-         _ (check-pause! agent depth id :action)
+         _ (m/? (check-pause! agent depth id :action))
          _ (when agent
              (.update-session-data agent {:trace {:agent-id (:agent-id agent) :depth depth :content (format "%s action **started**..." id)}}))
          ;; `lift` is what lets leaves convert one at a time: an action-fn may
@@ -834,7 +837,7 @@
                     (loop [n 0]
                       (if (< n max-n)
                         (let [iter-num     (inc n)
-                              _            (check-pause! agent depth id :repeat)
+                              _            (m/? (check-pause! agent depth id :repeat))
                               _            (when (and agent emit-iteration-events?)
                                              (hooks/fire! :agent.iteration/pre
                                                           {:agent agent :iteration iter-num

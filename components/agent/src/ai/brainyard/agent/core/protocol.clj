@@ -151,6 +151,12 @@
   (await-resume [this]
     "If paused, park the calling thread until resumed or cancelled.
      Returns :running | :resumed | :cancelled.")
+  (await-resume-task [this]
+    "§17: `await-resume` as a Task, for the effect BT engine. Same three
+     outcomes (:running | :resumed | :cancelled), but parks the coroutine on an
+     `m/dfv` instead of parking a thread on a Condition — under the effect
+     engine the blocking version holds an `m/blk` POOL thread for the whole
+     pause.")
   (apply-resume-note! [this]
     "Consume any pending resume note (set by `resume-run` with a note) and fold
      it into the running loop's active task so the next iteration is steered by

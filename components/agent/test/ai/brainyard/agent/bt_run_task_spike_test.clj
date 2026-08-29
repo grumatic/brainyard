@@ -24,6 +24,7 @@
   (check-run-cancelled? [_] (swap! !cancel-checks inc) false)
   (check-run-paused? [_] @!paused?)
   (await-resume [_] :resumed)
+  (await-resume-task [_] (fx/success :resumed))
   (apply-resume-note! [_] nil)
   (create-action-promise [_ _] (promise))
   (get-action-permission [_ _] nil)

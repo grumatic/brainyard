@@ -30,6 +30,7 @@
   (check-run-cancelled? [_] @!cancelled?)
   (check-run-paused? [_] @!paused?)
   (await-resume [_] (if @!cancelled? :cancelled :resumed))
+  (await-resume-task [_] (missionary.core/sp (if @!cancelled? :cancelled :resumed)))
   (apply-resume-note! [_] nil)
   (create-action-promise [_ _] (promise))
   (get-action-permission [_ _] nil)

@@ -12,7 +12,8 @@
    - Promise-based action permission system
    - Parent-agent relationship for sub-agents"
   (:require [ai.brainyard.mulog.interface :as mulog]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [missionary.core :as m])
   (:import [java.util.concurrent.locks ReentrantLock Condition]))
 
 ;; ============================================================================
@@ -111,6 +112,58 @@
   [!state]
   (swap! !state update :runtime dissoc :bt-cancel))
 
+;; `cancelled?` / `paused?` are defined below (they belong with the other
+;; predicates); the dfv pause needs them.
+(declare cancelled? paused?)
+
+;; ============================================================================
+;; Pause, as a dataflow variable (§17)
+;; ============================================================================
+;;
+;; The Condition below parks a THREAD. Under the synchronous engine that is the
+;; `send-off` thread doing its job. Under the effect engine it parks an `m/blk`
+;; POOL thread — shared with every task waiter in the process — for as long as
+;; the user leaves the turn paused. Thread count is unchanged, so nothing
+;; breaks; the kind of thread is worse.
+;;
+;; An `m/dfv` is precisely "a value that will arrive later": `resume-run`
+;; delivers it, and `(m/? dfv)` parks the COROUTINE holding no thread at all.
+;;
+;; A dfv can only be delivered once, so a fresh one is allocated per pause and
+;; dropped on resume/cancel. Delivery is guarded — `resume-run` and `cancel-run`
+;; can race, and the second delivery must be a no-op rather than a throw.
+
+(defn- fresh-pause-dfv!
+  "Allocate the dfv for a new pause, replacing any stale one."
+  [!state]
+  (let [d (m/dfv)]
+    (swap! !state assoc-in [:runtime :pause-dfv] d)
+    d))
+
+(defn- settle-pause-dfv!
+  "Deliver `outcome` to the pending pause dfv, if any, and drop it. Safe to
+   call twice — a dfv throws on a second delivery, and resume/cancel race."
+  [!state outcome]
+  (when-let [d (get-in @!state [:runtime :pause-dfv])]
+    (swap! !state update :runtime dissoc :pause-dfv)
+    (try (d outcome) (catch Throwable _))))
+
+(defn await-resume-task
+  "A Task completing with :cancelled | :running | :resumed — `wait-if-paused`'s
+   three outcomes, without holding a thread while it waits.
+
+   Same ordering as the blocking version: cancelled is checked FIRST, so a
+   cancelled run never parks, and not-paused returns immediately."
+  [!state]
+  (m/sp
+   (cond
+     (cancelled? !state)    :cancelled
+     (not (paused? !state)) :running
+     :else (m/? (or (get-in @!state [:runtime :pause-dfv])
+                    ;; Paused with no dfv: pause-run ran before this code did,
+                    ;; or the flag was set directly. Allocate one and wait.
+                    (fresh-pause-dfv! !state))))))
+
 (defn cancel-run
   "Cancel the current async execution. Four mechanisms, each covering a
    different way a run can be stuck, none of them redundant:
@@ -156,6 +209,7 @@
                       (assoc-in [:runtime :paused?] false)
                       (update :runtime dissoc :pre-pause-status :resume-note))))
   (signal-pause-condition! !state)
+  (settle-pause-dfv! !state :cancelled)
   (when-let [^java.io.Closeable http (get-in @!state [:runtime :active-http])]
     (try (.close http) (catch Throwable _)))
   ;; SPIKE §16: when the run is an effect, cancelling it is one call and needs
@@ -190,6 +244,9 @@
    runtime flag separately."
   [!state]
   (ensure-pause-condition !state)
+  ;; §17: allocate the dfv this pause will settle. Fresh per pause —
+  ;; a dfv delivers once.
+  (fresh-pause-dfv! !state)
   (swap! !state (fn [s]
                   (-> s
                       (assoc-in [:runtime :paused?] true)
@@ -218,6 +275,7 @@
                          (update :runtime dissoc :pre-pause-status)
                          (assoc :status prev)))))
    (signal-pause-condition! !state)
+   (settle-pause-dfv! !state :resumed)
    (mulog/info ::agent-run-resumed :with-note? (boolean (not (str/blank? (str note)))))))
 
 (defn take-resume-note!
