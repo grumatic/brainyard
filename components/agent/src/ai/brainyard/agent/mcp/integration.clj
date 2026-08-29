@@ -643,8 +643,9 @@
                                          :mcp-annotations annotations}
                                 fn-impl (make-mcp-wrapper-fn server-name name accepted-keys)
                                 v       (intern-mcp-tool-var id meta fn-impl)]
-                            (swap! tool/!tool-defs assoc id
-                                   {:id id :type :tool :fn v :meta meta})
+                            (tool/register-def!
+                             id {:id id :type :tool :fn v :meta meta}
+                             (str "mcp:" server-name))
                             id)
                           (catch Exception e
                             (mulog/warn ::mcp-tool-registration-failed

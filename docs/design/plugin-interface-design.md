@@ -61,7 +61,16 @@ need any of this document's machinery. They are tracked separately:
    `.edn` files declaring the same `:name`, in undefined file order.
    `skills.clj` is the one that already solved it: `qualified-skill-id`
    (`:1135`) exists for "a skill that lost the bare `:skill$<name>` id to a more
-   local backend". The fix is that precedent applied to the other five.
+   local backend".
+   **Fixed.** Not by applying that precedent to the other five but by removing
+   the five: there is now one writer, `tool/register-def!`, which every site
+   routes through. It warns `::tool-id-shadowed` when a *different* source
+   lands on an occupied id (a same-source replace — REPL reload, MCP reconnect,
+   `tool-agent$create` overwriting its own `.edn` — stays silent), and the
+   loaders sort their scans so the winner no longer depends on the filesystem.
+   Qualifying the loser was rejected outside skills: two user tools sharing a
+   `:name` also share the sandbox var `__ut_<name>`, so a second id would
+   dispatch to the same surviving body.
 2. **2 of 47 hook events are gated** (§2 gap 3) — counted exactly: 47 entries in
    `event-catalog`, `:gates? true` on `:agent.ask/finalize` (`hooks.clj:124`)
    and `:agent.tool-use/pre` (`:140`). The one capability MCP structurally
@@ -74,6 +83,11 @@ need any of this document's machinery. They are tracked separately:
    (`user_tools.clj:288`) carries a bare `:name` and `::load-user-hook-failed`
    (`user_hooks.clj:314`) a bare `:id`. So an EDN parse error is traceable to a
    file and an SCI body error is not.
+   **Fixed.** The root cause was that the record flowing read → install never
+   carried its source path; the loaders now `assoc` it (`:file` for tools and
+   hooks, `:dir` for agents) and both install-phase warnings report it. Done in
+   the **loader**, never in `def-store/read-def`, whose record is handed back
+   verbatim to the LLM by `read-user-tool` / `read-user-hook`.
 
 ### What would make this planned
 
@@ -123,17 +137,33 @@ uninstall, a namespace of its own, and a statement of what it is allowed to do.
 ## 2. The gaps, precisely
 
 1. **No package boundary.** Contributions are loose files under `.brainyard/`.
-   Nothing can be installed, versioned, updated, uninstalled, or attributed.
-   There is no answer to "where did this tool come from?"
-2. **Flat namespace, and collisions are silent.** `user$tool$deploy` is a
-   single global slot, and `user-tools/register!` is a plain
-   `(swap! !tool-defs assoc id …)` — its docstring says "register **or
-   replace**". Two sources shipping a `deploy` tool do not conflict; the second
-   one silently wins, and `.edn` file order is undefined. The only collision
-   signal anywhere is the advisory `:collision` flag on
-   `tool-agent$validate`, which an author has to opt into calling. Silent
-   last-write-wins is worse than a throw, and it is the single strongest
-   argument for namespacing.
+   Nothing can be installed, versioned, updated, or uninstalled. A registered
+   tool *can* now say where it came from — `tool/register-def!` stamps a
+   `:source` (a var, an `.edn` path, an agent dir, `mcp:<server>`,
+   `a2a:<peer>`) onto every entry — but that is provenance for one tool, not a
+   unit anything can act on: there is still nothing to uninstall, no version to
+   compare, and no owner to attribute a set of contributions to.
+2. **Flat namespace, and collisions still resolve to last-write-wins.**
+   `user$tool$deploy` is a single global slot. Two sources shipping a `deploy`
+   tool do not conflict; the second one wins.
+   What changed (issue #14 item 1) is that this is no longer *silent* or
+   *arbitrary*. Every writer into `!tool-defs` — `deftool`, user tools, user
+   agents, skills, MCP, A2A — routes through the one occupancy-aware
+   `tool/register-def!`, which warns `::tool-id-shadowed` naming both the
+   incumbent's `:source` and the incoming one; and the loaders sort their
+   directory scans, so which of two colliding `.edn` files wins follows from
+   the names rather than from `.listFiles`. Re-registration from the *same*
+   source stays silent, since a REPL reload, a `tool-agent$create` overwriting
+   its own `.edn` and an MCP reconnect are all legitimate replaces.
+   The shadow is reported, not vetoed, and deliberately does not mint a
+   qualified id for the loser the way `skills/qualified-skill-id` does: two
+   user tools sharing a `:name` also share the sandbox var `__ut_<name>`, so a
+   second registry id would dispatch to the same surviving body. The advisory
+   `:collision` flag on `tool-agent$validate` remains the only *pre-flight*
+   signal, and an author still has to opt into calling it.
+   A visible last-write-wins is better than a silent one, but it is still
+   last-write-wins — the argument for namespacing is unchanged, only its
+   urgency is lower.
 3. **User hooks are observe-only, and there is almost nothing to gate.** The
    catalog has 47 events and exactly **two** carry `:gates? true` —
    `:agent.tool-use/pre` (`hooks.clj:140`) and `:agent.ask/finalize`
@@ -602,13 +632,14 @@ on a name is wrong about names, not about intent, and failing the load turns a
 naming problem into an outage. It is also the difference between a plugin
 *adding* a command and a plugin *hijacking* one.
 
-The prefix rule applies to plugins only — but note it is *replacing* nothing,
-because today's user-def path has no collision handling at all (§2 gap 2). A
-plugin whose tool silently replaced a user's own `deploy` would be the same
-bug with a worse blast radius, since the user did not author the plugin and has
-no reason to suspect it. Namespacing plugins makes that structurally
-impossible; whether to also give the flat user-def path a warning is a separate
-question, and out of scope here.
+The prefix rule applies to plugins only. The user-def path has since gained the
+warning half of this — `::tool-id-shadowed` from `tool/register-def!` (§2 gap 2)
+— but only the warning half: it reports the shadow and still lets the incoming
+registration take the slot. That is acceptable when the user authored both
+sides. It would not be for a plugin, whose tool replacing a user's own `deploy`
+has a worse blast radius — the user did not write it and has no reason to
+suspect it. Namespacing plugins makes that structurally impossible rather than
+merely audible.
 
 ## 9. Trust and capabilities
 
@@ -887,9 +918,10 @@ Two smaller things that decide whether authoring is pleasant:
 - **`by plugins dev <dir>` should watch and reload**, because the loop is
   edit→invoke→read-error and anything that adds a manual step to it gets
   skipped.
-- **Errors must name the plugin.** `install-bodies!` logs
-  `::load-user-tool-failed` with a bare `:name`; with plugins in play that is
-  ambiguous across packages. Plugin attribution in the log line is the same
+- **Errors must name the plugin.** `install-bodies!` now logs
+  `::load-user-tool-failed` with `:file`, which is unambiguous for a loose
+  `.brainyard/` def but still only a path — with plugins in play the log line
+  should name the *package*, not just the file inside it. The same
   requirement §10 puts on supervision, and the same standard `::config-resolved`
   and `::tier-routed` already set.
 

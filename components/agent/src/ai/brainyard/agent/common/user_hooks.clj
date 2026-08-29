@@ -287,7 +287,16 @@
 (defn load-user-hooks!
   "Startup loader: re-eval every persisted body into the hooks sandbox and
    re-register it. Call once when an agent session boots. Returns the ids
-   loaded."
+   loaded.
+
+   Each record carries `:file`, the `.edn` it came from, so the INSTALL phase —
+   where SCI evaluates a body, and therefore the phase that actually fails — can
+   name a file the user can open, exactly as the read phase already does.
+   Attached here rather than in `def-store/read-def`, whose record is returned
+   verbatim to the LLM by `read-user-hook`.
+
+   The listing is SORTED: two `.edn` files can declare the same `:id` and one
+   then replaces the other's handler, and `.listFiles` order is undefined."
   [& {:keys [dirs extra-bindings]}]
   (hooks-sandbox extra-bindings)                    ;; ensure + refresh tool palette
   (let [dir-str (hooks-dir dirs)
@@ -295,12 +304,14 @@
     (if (.isDirectory dir)
       (let [recs (->> (.listFiles dir)
                       (filter #(str/ends-with? (.getName ^java.io.File %) ".edn"))
+                      (sort-by #(.getName ^java.io.File %))
                       (keep (fn [^java.io.File f]
                               (let [base (subs (.getName f) 0 (- (count (.getName f)) 4))]
-                                (try (def-store/read-def dir-str base)
+                                (try (some-> (def-store/read-def dir-str base)
+                                             (assoc :file (.getPath f)))
                                      (catch Exception e
                                        (mulog/warn ::load-user-hook-read-failed
-                                                   :file (.getName f) :error (ex-message e))
+                                                   :file (.getPath f) :error (ex-message e))
                                        nil)))))
                       vec)]
         (->> recs
@@ -312,7 +323,8 @@
                        (catch Exception e
                          (hooks/unregister-hook! (:event rec) (handler-id (:id rec)))
                          (mulog/warn ::load-user-hook-failed
-                                     :id (:id rec) :error (ex-message e))
+                                     :id (:id rec) :file (:file rec)
+                                     :error (ex-message e))
                          nil))))
              vec))
       [])))

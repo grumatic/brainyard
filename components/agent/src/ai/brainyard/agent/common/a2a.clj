@@ -185,7 +185,7 @@
                     (let [td (skill-tool-def
                               {:peer-name peer-name :skill skill :card card
                                :invoke (make-invoke peer-name skill card)})]
-                      (swap! tool/!tool-defs assoc (:id td) td)
+                      (tool/register-def! (:id td) td (str "a2a:" peer-name))
                       ;; Same-turn callability from a code block: bind the
                       ;; new symbol into the CURRENT sandbox now instead of
                       ;; waiting for next turn's auto-tool-bindings rebuild.

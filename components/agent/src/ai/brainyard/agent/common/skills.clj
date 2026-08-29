@@ -1210,8 +1210,12 @@
             meta    (dynamic-skill-meta id skill)
             fn-impl (make-dynamic-skill-fn name type scope)
             v       (intern-dynamic-skill-var id meta fn-impl)]
-        (swap! tool/!tool-defs assoc id
-               {:id id :type :skill :fn v :meta meta})
+        ;; `resolve-registrations` has already moved the losers of a name
+        ;; collision onto qualified ids, so this should never report a shadow —
+        ;; the source is carried anyway so every registry entry can answer
+        ;; "where did this come from?" uniformly.
+        (tool/register-def! id {:id id :type :skill :fn v :meta meta}
+                            (or (:path skill) (backend-label skill)))
         (swap! !registered-dynamic-skill-ids conj id)
         id)
       (catch Exception e

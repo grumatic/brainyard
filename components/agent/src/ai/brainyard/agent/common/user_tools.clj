@@ -162,8 +162,13 @@
 
    Also binds the symbol into the current agent's live code-eval sandbox so a
    create-then-call in the same turn resolves (see bind-into-live-sandbox!); at
-   boot there is no current agent and that is a no-op."
-  [{:keys [name description input-schema]}]
+   boot there is no current agent and that is a no-op.
+
+   `:file` is the `.edn` this record came from — the registry's attribution, so
+   two files declaring the same `:name` shadow VISIBLY instead of silently (see
+   tool/register-def!). Every caller has it: the loader threads it on in
+   `read-persisted`, `define-tool` passes the path `write-def!` just returned."
+  [{:keys [name description input-schema file]}]
   (let [id     (tool-id name)
         schema (or input-schema [:map])
         invoke (fn [args]
@@ -185,7 +190,7 @@
                          :output-schema [:map]
                          :category      :user
                          :user-defined  true}}]
-    (swap! tool/!tool-defs assoc id tool-def)
+    (tool/register-def! id tool-def file)
     ;; Same-turn callability from the LLM's clojure code blocks.
     (bind-into-live-sandbox! tool-def)
     id))
@@ -220,7 +225,11 @@
         rec   {:name name :description description
                :input-schema (or input-schema [:map]) :body body}
         {:keys [edn]} (def-store/write-def! dir name (dissoc rec :body) body)]
-    (let [id (register! rec)]
+    ;; Register under the path `write-def!` just wrote, which is byte-identical
+    ;; to what `read-persisted` will compute for the same file — so re-creating
+    ;; an existing tool is a same-source replace and stays silent, while a
+    ;; SECOND file claiming this `:name` is a shadow and does not.
+    (let [id (register! (assoc rec :file edn))]
       ;; `register!` is sandbox-free (it runs at boot too), so the peer symbol
       ;; other bodies compose by is bound here, next to the body install above.
       (bind-peer-symbol! name)
@@ -229,19 +238,31 @@
 
 (defn- read-persisted
   "Every persisted tool record under `dir-str`, as `{:name :description
-   :input-schema :body}` maps. An unreadable file is warned about and skipped —
-   one corrupt `.edn` must not cost the user every other tool."
+   :input-schema :body :file}` maps. An unreadable file is warned about and
+   skipped — one corrupt `.edn` must not cost the user every other tool.
+
+   `:file` is carried so BOTH later phases can name a file: registration uses it
+   to attribute the id (tool/register-def!) and `install-bodies!` reports it when
+   a body fails to eval. Attached here rather than in `def-store/read-def`
+   because that record is returned verbatim to the LLM by `read-user-tool`.
+
+   The listing is SORTED. Two `.edn` files can declare the same `:name` (the
+   file basename and the `:name` inside it are independent once a file is
+   hand-edited), and one then overwrites the other — `.listFiles` order is
+   undefined, so which one won was a property of the filesystem."
   [dir-str]
   (let [dir (io/file dir-str)]
     (if (.isDirectory dir)
       (->> (.listFiles dir)
            (filter #(str/ends-with? (.getName ^java.io.File %) ".edn"))
+           (sort-by #(.getName ^java.io.File %))
            (keep (fn [^java.io.File f]
                    (let [base (subs (.getName f) 0 (- (count (.getName f)) 4))]
-                     (try (def-store/read-def dir-str base)
+                     (try (some-> (def-store/read-def dir-str base)
+                                  (assoc :file (.getPath f)))
                           (catch Exception e
                             (mulog/warn ::load-user-tool-read-failed
-                                        :file (.getName f) :error (ex-message e))
+                                        :file (.getPath f) :error (ex-message e))
                             nil)))))
            vec)
       [])))
@@ -285,8 +306,12 @@
                       (:name rec)
                       (catch Exception e
                         (swap! tool/!tool-defs dissoc (tool-id (:name rec)))
+                        ;; Name the FILE, not just the tool: this is the phase
+                        ;; where SCI evaluates a body, so the failure is in
+                        ;; source the user can open and fix.
                         (mulog/warn ::load-user-tool-failed
-                                    :name (:name rec) :error (ex-message e))
+                                    :name (:name rec) :file (:file rec)
+                                    :error (ex-message e))
                         nil))))
          vec)))
 

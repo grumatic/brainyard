@@ -143,8 +143,10 @@
    `:type :agent`. The `:fn` splices the persisted instruction/tool-context into
    `run-coact-derived` and pins the CoAct BT — there is NO `:agent-tools`, so the
    agent rides coact-agent's inherited palette (see design §2). Mirrors
-   user-tools/register!. Returns the registry id."
-  [{:keys [name description instruction tool-context]}]
+   user-tools/register!, including `:dir` — the directory this record came from,
+   which is the registry's attribution so two dirs whose `agent.edn` declare the
+   same `:name` shadow VISIBLY (see tool/register-def!). Returns the registry id."
+  [{:keys [name description instruction tool-context dir]}]
   (let [id    (agent-id name)
         desc  (or description (str "User-defined agent " name))
         invoke (fn [opts]
@@ -174,7 +176,7 @@
                          :output-schema [:map [:answer [:string {:desc "Agent's answer"}]]]
                          :category      :user
                          :user-defined  true}}]
-    (swap! tool/!tool-defs assoc id tool-def)
+    (tool/register-def! id tool-def dir)
     ;; Same-turn callability from the LLM's clojure code blocks: bind the new
     ;; `user$agent$<name>` symbol into the current agent's live sandbox now,
     ;; instead of waiting for next turn's auto-tool-bindings rebuild. Reuses the
@@ -216,8 +218,13 @@
                    :created (or (:created existing) now)
                    :updated now}
                   instruction tool-context)
+    ;; Register under the dir just written, which is byte-identical to what
+    ;; `load-user-agents!` computes for it — so redefining an agent is a
+    ;; same-source replace and stays silent, while a SECOND dir whose agent.edn
+    ;; claims this `:name` is a shadow and does not.
     (let [id (register-agent! {:name name :description description
-                               :instruction instruction :tool-context tool-context})]
+                               :instruction instruction :tool-context tool-context
+                               :dir dir})]
       (mulog/info ::define-agent :id id :dir dir)
       {:id id :name name :persisted dir})))
 
@@ -230,20 +237,26 @@
    `.brainyard/agents/user$agent/`. Call once when an agent session boots.
    Returns the names loaded. One pass — there is no body to eval, so peer
    references (an instruction naming `user$agent$<peer>`) resolve regardless of
-   directory order."
+   directory order.
+
+   The listing is SORTED and each record carries its `:dir`: a directory's name
+   and the `:name` inside its `agent.edn` are independent once hand-edited, so
+   two dirs can claim one `user$agent$<name>` id — sorting makes the winner
+   stable and `:dir` makes the loss visible (tool/register-def!)."
   [& {:keys [dirs]}]
   (let [base (io/file (agents-dir dirs))]
     (if (.isDirectory base)
       (->> (.listFiles base)
            (filter #(.isDirectory ^java.io.File %))
+           (sort-by #(.getName ^java.io.File %))
            (keep (fn [^java.io.File d]
                    (try
                      (when-let [rec (read-agent (.getPath d))]
-                       (register-agent! rec)
+                       (register-agent! (assoc rec :dir (.getPath d)))
                        (:name rec))
                      (catch Exception e
                        (mulog/warn ::load-user-agent-failed
-                                   :dir (.getName d) :error (ex-message e))
+                                   :dir (.getPath d) :error (ex-message e))
                        nil))))
            vec)
       [])))

@@ -396,10 +396,58 @@
       (is (= args (tool/call-tool :tool-test-nine args
                                   :tools tools :tools-fn-map fn-map))))))
 
-;; Drop the throwaway tool AFTER the tests run, so a sibling test that
-;; enumerates the registry doesn't see it. (At load time this would remove it
-;; before the deftests above ever bind it.)
+;; ----------------------------------------------------------------------------
+;; register-def! — attributed registration (issue #14 item 1)
+;; ----------------------------------------------------------------------------
+;;
+;; There is no mulog capture sink in this workspace, so these assert the
+;; BEHAVIOURAL contract: attribution is recorded, last-write-wins is preserved
+;; (the shadow is a warning, never a veto), and an unattributed incumbent is
+;; tolerated. The warn itself is exercised end-to-end by the duplicate-`:name`
+;; tests in user_tools_test / user_agents_test.
+
+(def ^:private reg-id :tool-test$register-def)
+
+(defn- reg-def [n] {:id reg-id :type :tool :fn (constantly n) :meta {:id reg-id}})
+
+(deftest register-def-records-attribution
+  (testing "the source lands on the entry, and the id comes back"
+    (is (= reg-id (tool/register-def! reg-id (reg-def 1) "src-a")))
+    (is (= "src-a" (:source (get @tool/!tool-defs reg-id))))))
+
+(deftest register-def-same-source-replaces
+  (testing "re-registering from one source replaces it — the reload/reconnect case"
+    (tool/register-def! reg-id (reg-def 1) "src-a")
+    (tool/register-def! reg-id (reg-def 2) "src-a")
+    (is (= 2 ((:fn (get @tool/!tool-defs reg-id)))))
+    (is (= "src-a" (:source (get @tool/!tool-defs reg-id))))))
+
+(deftest register-def-shadow-still-writes
+  (testing "a differing source shadows the incumbent but does NOT lose the write:
+            the collision is reported, not vetoed"
+    (tool/register-def! reg-id (reg-def 1) "src-a")
+    (tool/register-def! reg-id (reg-def 2) "src-b")
+    (is (= 2 ((:fn (get @tool/!tool-defs reg-id)))))
+    (is (= "src-b" (:source (get @tool/!tool-defs reg-id))))))
+
+(deftest register-def-tolerates-unattributed-incumbent
+  (testing "an entry written by a bare assoc has no :source, so no claim is made
+            about it — the ~7 raw-assoc test call sites must not start warning"
+    (swap! tool/!tool-defs assoc reg-id (reg-def 1))
+    (is (nil? (:source (get @tool/!tool-defs reg-id))))
+    (is (= reg-id (tool/register-def! reg-id (reg-def 2) "src-a")))
+    (is (= "src-a" (:source (get @tool/!tool-defs reg-id))))))
+
+(deftest deftool-attributes-itself-to-its-var
+  (testing "deftool registers under its VAR, not its namespace: `def` interns per
+            ns+name, so a require :reload hands back the same var and a reload is
+            correctly a same-source replace"
+    (is (= (str #'tool-test$probe) (:source (get @tool/!tool-defs :tool-test$probe))))))
+
+;; Drop the throwaway tools AFTER the tests run, so a sibling test that
+;; enumerates the registry doesn't see them. (At load time this would remove
+;; them before the deftests above ever bind them.)
 (use-fixtures :once
   (fn [f]
     (try (f)
-         (finally (swap! tool/!tool-defs dissoc :tool-test$probe)))))
+         (finally (swap! tool/!tool-defs dissoc :tool-test$probe reg-id)))))

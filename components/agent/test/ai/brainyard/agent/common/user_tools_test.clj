@@ -105,6 +105,78 @@
       (is (contains? loaded "long-test")))
     (is (= {:long? true} (tool/call-tool :user$tool$long-test {:text "the quick brown fox jumps"})))))
 
+;; ----------------------------------------------------------------------------
+;; Attribution + duplicate `:name` (issue #14 items 1–2)
+;; ----------------------------------------------------------------------------
+
+(defn- write-raw-tool!
+  "Write a tool pair by hand under an arbitrary BASENAME, so the file's name and
+   the `:name` inside it can differ — which is the only way two persisted tools
+   can claim one `user$tool$<name>` id. define-tool always writes `<name>.edn`."
+  [basename tool-name body]
+  (let [dir (str (:project-dir test-dirs) "/.brainyard/tools")]
+    (.mkdirs (io/file dir))
+    (spit (io/file dir (str basename ".edn"))
+          (pr-str {:name tool-name :description (str "from " basename)
+                   :input-schema [:map]}))
+    (spit (io/file dir (str basename ".clj")) body)))
+
+(deftest registration-is-attributed-to-its-file
+  (testing "define-tool records the .edn it just wrote as the entry's :source"
+    (let [r (ut/define-tool :name "wc-test" :description "Count."
+              :input-schema [:map] :body "(fn [_] {:words 1})"
+              :dirs test-dirs)]
+      (is (= (:persisted r) (:source (get @tool/!tool-defs :user$tool$wc-test))))))
+  (testing "and a reload attributes it to the SAME path, so re-registering a tool
+            from its own file is a same-source replace rather than a shadow"
+    (ut/reset-tools-sandbox!)
+    (swap! tool/!tool-defs dissoc :user$tool$wc-test)
+    (ut/load-user-tools! :dirs test-dirs)
+    (is (str/ends-with? (:source (get @tool/!tool-defs :user$tool$wc-test))
+                        "/.brainyard/tools/wc-test.edn"))))
+
+(deftest duplicate-name-across-files-has-a-deterministic-winner
+  ;; Two files declaring one `:name` is the collision issue #14 item 1 is about.
+  ;; It stays last-write-wins — a qualified id would be a lie here, since both
+  ;; bodies also install into the SAME `__ut_<name>` sandbox var — but the winner
+  ;; must be a property of the NAMES, not of `.listFiles` order, and the loser
+  ;; must be nameable (:source) instead of silently gone.
+  (write-raw-tool! "aaa" "wc-test" "(fn [_] {:words :from-aaa})")
+  (write-raw-tool! "zzz" "wc-test" "(fn [_] {:words :from-zzz})")
+  (testing "the last file in sorted order wins, repeatably"
+    (dotimes [_ 3]
+      (ut/reset-tools-sandbox!)
+      (swap! tool/!tool-defs dissoc :user$tool$wc-test)
+      (ut/load-user-tools! :dirs test-dirs)
+      (is (str/ends-with? (:source (get @tool/!tool-defs :user$tool$wc-test))
+                          "/.brainyard/tools/zzz.edn"))
+      (is (= {:words :from-zzz} (tool/call-tool :user$tool$wc-test {})))))
+  (testing "both files are still read — the loser is shadowed, not skipped"
+    (is (= 2 (count (#'ut/read-persisted
+                     (str (:project-dir test-dirs) "/.brainyard/tools")))))))
+
+(deftest persisted-records-carry-their-file
+  ;; The value ::load-user-tool-failed reports when a body fails to eval
+  ;; (issue #14 item 2). The read phase already named the file; the install
+  ;; phase is where SCI actually fails, and it could not.
+  (ut/define-tool :name "wc-test" :description "Count."
+    :input-schema [:map] :body "(fn [_] {:words 1})" :dirs test-dirs)
+  (let [recs (#'ut/read-persisted (str (:project-dir test-dirs) "/.brainyard/tools"))]
+    (is (= 1 (count recs)))
+    (is (str/ends-with? (:file (first recs)) "/.brainyard/tools/wc-test.edn"))))
+
+(deftest a-broken-body-is-rolled-back-and-attributable
+  (testing "an uninstallable body leaves the registry clean, and its record
+            carried the file the failure should be reported against"
+    (write-raw-tool! "broken" "wc-test" "(fn [_] (no-such-fn-anywhere))")
+    (ut/reset-tools-sandbox!)
+    (swap! tool/!tool-defs dissoc :user$tool$wc-test)
+    (is (empty? (ut/load-user-tools! :dirs test-dirs)))
+    (is (not (contains? (tool/get-tool-defs) :user$tool$wc-test)))
+    (is (str/ends-with? (:file (first (#'ut/read-persisted
+                                       (str (:project-dir test-dirs) "/.brainyard/tools"))))
+                        "/.brainyard/tools/broken.edn"))))
+
 (deftest discoverable-via-list-tools
   (testing "user tools show up in list-tools with their schema"
     (ut/define-tool :name "wc-test" :description "Count words."

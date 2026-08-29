@@ -109,6 +109,42 @@
 
 (defonce !tool-defs (atom {}))
 
+(defn register-def!
+  "Write `tool-def` into !tool-defs under `id`, reporting a SHADOW instead of
+   taking an occupied slot silently. THE one writer into the registry — every
+   registration site (deftool, user tools, user agents, skills, MCP, A2A) routes
+   through here, so \"where did this tool come from?\" always has an answer.
+
+   `source` is that answer: a var (`#'ns/name`), an `.edn` path, an agent dir,
+   `mcp:<server>`, `a2a:<peer>`. Re-registering from the SAME source is the
+   normal case — a REPL `require :reload`, `tool-agent$create` overwriting its
+   own `.edn`, an MCP reconnect — and stays silent. A DIFFERENT source landing
+   on an occupied id is the bug this exists for: two `.brainyard/tools/*.edn`
+   declaring the same `:name`, one winning in undefined `.listFiles` order. An
+   incumbent with no recorded source is unattributable, so no claim is made.
+
+   Warns, never throws. An author colliding on a name is wrong about names, not
+   about intent (same reasoning as ::tier-clamped), and throwing at boot would
+   cost the user every other tool. Last-write-wins is preserved; what changes is
+   that it is now on the record — and that the loaders sort their directory
+   scans, so which one wins no longer depends on the filesystem.
+
+   Deliberately NOT a qualified id for the loser, which is what skills do
+   (`skills/qualified-skill-id`): a skill fn is parameterised by name+backend so
+   a qualified id reaches a different skill, whereas two user tools sharing a
+   `:name` also share the sandbox var `__ut_<name>` — a second registry id would
+   dispatch to the same surviving body and so would be a lie.
+
+   Returns `id`."
+  [id tool-def source]
+  (let [incumbent (get @!tool-defs id)]
+    (when (and (:source incumbent) source (not= (:source incumbent) source))
+      (mulog/warn ::tool-id-shadowed
+                  :id id :type (:type tool-def)
+                  :incumbent (:source incumbent) :incoming source)))
+  (swap! !tool-defs assoc id (assoc tool-def :source source))
+  id)
+
 ;; ============================================================================
 ;; Unified Tool Macro
 ;; ============================================================================
@@ -202,10 +238,15 @@
                                   (str "tool-fn must be a function in deftool: " '~tool-name)
                                   {:tool-name '~tool-name :type ~tool-type})))))]
        (def ~tool-name (with-meta wrap-fn# ~options))
-       (swap! !tool-defs assoc ~id {:id ~id
-                                    :type ~tool-type
-                                    :fn (var ~tool-name)
-                                    :meta ~options}))))
+       ;; The var, not the namespace, is the source: `def` interns per ns+name,
+       ;; so a `require :reload` hands back the SAME var and re-registration is
+       ;; correctly silent, while a second ns defining the same tool name is not.
+       (register-def! ~id
+                      {:id ~id
+                       :type ~tool-type
+                       :fn (var ~tool-name)
+                       :meta ~options}
+                      (str (var ~tool-name))))))
 
 ;; ============================================================================
 ;; Backwards-Compatible Wrapper Macros

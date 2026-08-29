@@ -129,6 +129,52 @@
       (is (contains? loaded "copy-editor")))
     (is (= :agent (:type (get @tool/!tool-defs :user$agent$tf-reviewer))))))
 
+;; ----------------------------------------------------------------------------
+;; Attribution + duplicate `:name` (issue #14 item 1)
+;; ----------------------------------------------------------------------------
+
+(defn- write-raw-agent!
+  "Write an agent directory by hand under an arbitrary DIRNAME, so the directory
+   name and the `:name` inside its agent.edn can differ — the only way two
+   persisted agents can claim one `user$agent$<name>` id, since define-agent
+   always writes `<name>/`."
+  [dirname agent-name]
+  (let [dir (io/file (str (:project-dir test-dirs) "/.brainyard/agents/user$agent/" dirname))]
+    (.mkdirs dir)
+    (spit (io/file dir "agent.edn")
+          (pr-str {:name agent-name :description (str "from " dirname)
+                   :scope :project :version 1}))
+    (spit (io/file dir "instruction.md") (str "Instruction from " dirname "."))
+    (spit (io/file dir "tool-context.md") "")))
+
+(deftest registration-is-attributed-to-its-directory
+  (testing "define-agent records the directory it just wrote as the :source"
+    (let [r (ua/define-agent :name "tf-reviewer" :instruction instr :dirs test-dirs)]
+      (is (= (:persisted r) (:source (get @tool/!tool-defs :user$agent$tf-reviewer))))))
+  (testing "and a reload attributes it to the SAME path, so redefining an agent
+            from its own directory is a same-source replace, not a shadow"
+    (apply swap! tool/!tool-defs dissoc our-ids)
+    (ua/reset-loaded!)
+    (ua/load-user-agents! :dirs test-dirs)
+    (is (str/ends-with? (:source (get @tool/!tool-defs :user$agent$tf-reviewer))
+                        "/.brainyard/agents/user$agent/tf-reviewer"))))
+
+(deftest duplicate-name-across-dirs-has-a-deterministic-winner
+  ;; Two directories declaring one `:name`: last-write-wins is preserved (the
+  ;; shadow is reported, not vetoed), but the winner must follow from the NAMES
+  ;; rather than from `.listFiles` order, and the loser must be nameable.
+  (write-raw-agent! "aaa" "tf-reviewer")
+  (write-raw-agent! "zzz" "tf-reviewer")
+  (testing "the last directory in sorted order wins, repeatably"
+    (dotimes [_ 3]
+      (apply swap! tool/!tool-defs dissoc our-ids)
+      (ua/reset-loaded!)
+      (is (= ["tf-reviewer" "tf-reviewer"] (ua/load-user-agents! :dirs test-dirs)))
+      (is (str/ends-with? (:source (get @tool/!tool-defs :user$agent$tf-reviewer))
+                          "/.brainyard/agents/user$agent/zzz"))
+      (is (= "from zzz"
+             (get-in @tool/!tool-defs [:user$agent$tf-reviewer :meta :description]))))))
+
 (deftest ensure-loaded-idempotent
   (testing "agents persist project-scoped under .brainyard/agents/user$agent"
     (let [r (ua/define-agent :name "tf-reviewer" :instruction instr :dirs test-dirs)]

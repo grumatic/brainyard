@@ -135,6 +135,62 @@
     (hooks/fire! :agent.iteration/post {:iteration 7 :max-iterations 100})
     (is (= [7] @sink))))
 
+;; ----------------------------------------------------------------------------
+;; Loader attribution + duplicate `:id` (issue #14 items 1 and 2)
+;; ----------------------------------------------------------------------------
+
+(defn- write-raw-hook!
+  "Write a hook sidecar pair by hand under an arbitrary BASENAME, so the file
+   name and the `:id` inside its .edn can differ — the only way two persisted
+   hooks can claim one `:user-hook/<id>`, since define-hook always writes
+   `<id>.edn`."
+  [basename id body]
+  (let [dir (hooks-dir-file)]
+    (.mkdirs dir)
+    (spit (io/file dir (str basename ".edn"))
+          (pr-str {:id id :event :agent.iteration/post
+                   :match {:global true} :priority 0}))
+    (spit (io/file dir (str basename ".clj")) body)))
+
+(deftest duplicate-id-across-files-has-a-deterministic-winner
+  ;; Two files declaring one `:id` share the sandbox var `__uh_<id>` AND the
+  ;; handler key, so one necessarily replaces the other. Last-write-wins is
+  ;; preserved (the shadow is reported, not vetoed) — what must not stand is a
+  ;; winner chosen by `.listFiles` order.
+  (write-raw-hook! "aaa" "dupe" "(fn [event] (record! :from-aaa))")
+  (write-raw-hook! "zzz" "dupe" "(fn [event] (record! :from-zzz))")
+  (testing "the last file in sorted order wins, repeatably"
+    (dotimes [_ 3]
+      (uh/reset-hooks-sandbox!)
+      (hooks/unregister-source! :user-hook)
+      (reset! sink [])
+      (is (= ["dupe" "dupe"] (vec (uh/load-user-hooks!
+                                   :dirs test-dirs
+                                   :extra-bindings (bindings-with-sink))))
+          "both files are read; the collision is on the id, not the read")
+      (hooks/fire! :agent.iteration/post {:iteration 1})
+      (is (= [:from-zzz] @sink)))))
+
+(deftest a-broken-body-is-skipped-and-attributable
+  ;; The INSTALL phase is where SCI evaluates a body and therefore the phase
+  ;; that actually fails; `::load-user-hook-failed` now names `:file` because
+  ;; the loader threads it onto every record. No mulog capture sink exists, so
+  ;; assert the behaviour that threading rides on: the record survives the read
+  ;; with its file attached, the install rolls the registration back, and the
+  ;; loader keeps going.
+  (write-raw-hook! "aaa" "broken" "(fn [event] (no-such-fn event))")
+  (write-raw-hook! "zzz" "fine" "(fn [event] (record! :ok))")
+  (reset! sink [])
+  (testing "the broken hook is dropped and the healthy one still loads"
+    (is (= ["fine"] (vec (uh/load-user-hooks!
+                          :dirs test-dirs
+                          :extra-bindings (bindings-with-sink))))))
+  (testing "and nothing is left registered for the hook that failed to install"
+    (is (not (some #(= :user-hook/broken (:id %))
+                   (hooks/list-hooks :agent.iteration/post))))
+    (hooks/fire! :agent.iteration/post {:iteration 1})
+    (is (= [:ok] @sink))))
+
 (deftest ensure-loaded-idempotent
   (testing "hooks persist project-scoped under .brainyard/hooks"
     (let [r (uh/define-hook :id "rec-iter" :event :agent.iteration/post
