@@ -5,6 +5,9 @@
 (ns ai.brainyard.behavior-tree.core.engine
   (:require [ai.brainyard.behavior-tree.interface.protocol :as p]
             [ai.brainyard.behavior-tree.core.nodes]
+            ;; SPIKE (§15): side-effecting require so `tick-task` methods are
+            ;; installed. Loading them costs nothing until `run-task` is called.
+            [ai.brainyard.behavior-tree.core.nodes-task]
             [malli.core :as m]))
 
 (defn build
@@ -22,6 +25,16 @@
   "Run the behavior tree with the given context."
   [{:keys [tree context] :as _bt}]
   (p/tick tree context))
+
+(defn run-task
+  "SPIKE (docs/design/functional-effect-system.md §15): run the behavior tree
+   as an EFFECT. Returns a missionary Task completing with :success / :failure
+   / :running, rather than returning the keyword directly.
+
+   Nothing calls this in production. It exists so the same built tree can be
+   driven through both engines and the results compared."
+  [{:keys [tree context] :as _bt}]
+  (p/tick-task tree context))
 
 ;; ## Custom Behavior Tree Conditions
 

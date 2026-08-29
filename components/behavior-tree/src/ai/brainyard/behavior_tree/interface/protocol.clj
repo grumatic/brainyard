@@ -12,6 +12,17 @@
   "Execute the node and return success, failure, or running."
   (fn [node _context] (:type node)))
 
+(defmulti tick-task
+  "SPIKE (docs/design/functional-effect-system.md §15): the effect-shaped
+   counterpart of `tick`. Returns a missionary Task completing with success,
+   failure or running, instead of returning the keyword directly.
+
+   Deliberately a SECOND multimethod rather than a change to `tick`. Both
+   dispatch on the same built tree, so the identical tree can be run through
+   each and the results compared — which is the only way to know the
+   translation preserves semantics rather than merely compiling."
+  (fn [node _context] (:type node)))
+
 (defmulti build
   "Build a behavior tree node based on its type."
   (fn [type _args] type))

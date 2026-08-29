@@ -45,6 +45,12 @@
   [bt]
   (engine/run bt))
 
+(defn run-task
+  "SPIKE (§15): run a built behavior tree as an effect, returning a Task that
+   completes with :success / :failure / :running. Not used in production."
+  [bt]
+  (engine/run-task bt))
+
 ;; ============================================================================
 ;; Memory helpers
 ;; ============================================================================

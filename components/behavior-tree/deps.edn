@@ -1,6 +1,10 @@
 {:paths ["src" "resources"]
  :deps {metosin/malli {:mvn/version "0.20.0"}
         ai.brainyard/mulog {:local/root "../mulog"}
-        ai.brainyard/clj-llm {:local/root "../clj-llm"}}
+        ai.brainyard/clj-llm {:local/root "../clj-llm"}
+        ;; Effect — SPIKE ONLY (docs/design/functional-effect-system.md §15).
+        ;; Used by the parallel `tick-task` engine in core/nodes_task.clj; the
+        ;; synchronous `p/tick` path does not touch it.
+        ai.brainyard/effect {:local/root "../effect"}}
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {}}}}

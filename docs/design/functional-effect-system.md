@@ -1169,9 +1169,95 @@ a phase of *this* migration — it changes the agent execution model, and it
 should be justified on its own terms (cancellation correctness plus the
 `:parallel` fix) with its own risk budget.
 
-The cheap first step is a spike, not a plan: convert the six node types behind
-a parallel `tick-task` multimethod, leave `p/tick` untouched, and run the
-existing BT suite through both. That is a day's work against a ~200-line
-surface, and it answers the two things this section can only reason about —
-whether `:running` survives the translation, and whether Q4 really does reduce
-to one binding site.
+The cheap first step is a spike, not a plan. **It was run — §16.**
+
+## 16. The spike — run, and what it found
+
+Branch `spike/bt-as-effects`. A `p/tick-task` multimethod alongside an
+untouched `p/tick`, both dispatching on the same built tree, plus a test that
+runs identical trees through each and compares. Implementation:
+`behavior-tree/core/nodes_task.clj` (~160 lines, six node types); test:
+`nodes_task_spike_test.clj` (12 tests / 55 assertions).
+
+**Both questions answered yes, and one new obstacle found that reasoning had
+missed.**
+
+### The translation is real
+
+12 tests / 55 assertions, passing first run. Sequence, fallback, condition,
+parallel, nesting, st-memory mutation and empty-children edge cases all agree
+between the two engines. Short-circuiting is asserted on *evaluation order*,
+not just return value — a translation that ran every child would still return
+`:failure` and look correct.
+
+The existing suites are untouched: behavior-tree 69 tests / 171 assertions,
+agent BT + examples 10 / 52.
+
+### Q1 — `:running` survives
+
+It settles the Task immediately, carrying `:running` as its value; it is not
+conflated with "the Task has not settled yet". Asserted for a bare leaf and
+propagating through sequence, fallback and nesting, plus a timing assertion
+(< 1s) that a `:running` tree completes rather than hanging.
+
+### Q2 — Q4 really does reduce to one site
+
+The control reproduces the hazard: with the binding established *around the
+run* and a leaf that genuinely parks, the reading leaf sees `:nobody`. With
+`:leaf-wrap` in the context, it sees `:agent-7`. One site, as predicted.
+
+One correction to the §15 sketch: the engine **cannot** bind `*current-agent*`
+itself, because `behavior-tree` sits below `agent` and cannot see
+`agent.core.protocol`. Inverting that dependency to reach one var would be far
+worse than the problem. So the context carries a `:leaf-wrap` fn and the agent
+supplies `(fn [thunk] (binding [proto/*current-agent* agent] (thunk)))`. The
+engine stays agnostic about what a leaf needs in scope, which is better than
+the original plan.
+
+### `:parallel` — confirmed, with a precision the sketch lacked
+
+A throwing child now aborts the fan-out: the slow sibling is cancelled and
+never completes. But **`:failure` does not cancel siblings**, because it is a
+value rather than an error — the threshold arithmetic is untouched and a
+`:failure` sibling still runs to completion. Both are asserted. §15 said
+"`m/join` fixes all three defects" without distinguishing these, which would
+have been a silent semantic change if anyone had implemented it from that
+description.
+
+### THE FINDING: the engine surface is double what §15 counted
+
+§15 measured `core.nodes` at 141 lines / six methods and called that the
+engine. It is not the engine production runs. **`agent.core.bt` overrides five
+of the six node types** — `:sequence`, `:fallback`, `:condition`, `:action`,
+`:repeat` — and only `:parallel` falls through to `core.nodes`.
+
+```
+core.nodes      7 defmethods / 141 lines   mostly shadowed in production
+agent.core.bt   5 defmethods / ~203 lines  ← what the real tree runs
+```
+
+So the surface is ~11 methods and ~340 lines, not six and ~200. And the agent's
+five are the harder ones: they carry depth tracking, `update-session-data`
+tracing on entry and exit, debug values, and `check-interrupt-cancel-pause!`.
+
+This cuts both ways. It roughly doubles the work — but those overrides exist
+largely to *thread cancellation and pause through a synchronous engine*, which
+is the thing the conversion removes. `check-interrupt-cancel-pause!`'s
+three-way checkpoint has no counterpart in the effect version; cancellation is
+structural and the call sites simply go. So the second half of the surface is
+where the deletions are, not just more translation.
+
+### Revised estimate
+
+Not a day. Roughly: the six base methods (done, ~160 lines), the five agent
+overrides (~200 lines, with the checkpoint logic coming *out*), converting the
+genuinely-blocking leaves (the LLM action, tool dispatch, code eval — the other
+~35 lift unchanged), `bt/run` returning a Task through `run-bt` and its ~4
+callers, and the `:leaf-wrap` wiring. Days rather than hours, on the most
+central path in the product.
+
+**Status: the spike says yes.** The translation preserves semantics, `:running`
+survives, Q4 reduces to one site, and `:parallel` gets strictly better. What it
+does not say is that the migration is cheap — the production engine is twice
+the size §15 assumed, and it is the half with the tracing in it. Worth doing;
+worth scoping honestly first.
