@@ -310,13 +310,22 @@
         (is (str/includes? plain "Done — timeout set to 30s.") "the assistant message persisted")
         (is (str/includes? plain "Read") "tool calls persisted")
         (is (= :acp-block (:kind desc)) "with a descriptor so resume can redraw it")))
-    ;; The freeze repaints the block's final frame before detaching it, so one
-    ;; copy on screen is correct. Two would mean the tee-only branch had gone
-    ;; through `emit-to-session!` and redrawn the whole transcript underneath
-    ;; the widget the user is already looking at.
-    (is (= 1 (count (filter #(str/includes? (strip %) "claude-code · sonnet")
-                            @layout/!scrollback)))
-        "on screen once — not redrawn under the frozen widget")))
+    ;; …and did NOT also re-emit. Sending the foreground case through
+    ;; `emit-to-session!` would draw the whole transcript a second time under
+    ;; the widget the user is already looking at; `emit-to-session!` appends to
+    ;; the session's saved scrollback, `tee-to-session!` deliberately does not
+    ;; ("persist WITHOUT rendering"), so an empty vector here IS the proof that
+    ;; the tee-only branch was taken.
+    ;;
+    ;; Deliberately NOT asserted against `layout/!scrollback`: the on-screen
+    ;; copy arrives via `update-acp-block!` → `iter-sink/write-widget!`, and the
+    ;; iteration sink defaults to `noop-sink` ("active when no TUI is wired —
+    ;; REPL, tests that don't exercise rendering"). No test installs one, so
+    ;; that vector is unconditionally empty and an assertion on it can only ever
+    ;; read 0 — it would fail identically whether or not the bug were present,
+    ;; which is the one thing a regression test must never do.
+    (is (empty? (:scrollback (sessions/get-session 0)))
+        "not redrawn under the frozen widget — the tee-only branch re-emits nothing")))
 
 (deftest freeze-of-a-backgrounded-block-writes-once-through-the-emit
   (testing "origin is backgrounded and never rendered there — one emit, which tees on the way"

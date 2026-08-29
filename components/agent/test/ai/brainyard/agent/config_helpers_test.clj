@@ -698,8 +698,21 @@
       ;; *tmp-project* lives under /tmp/by-config-test-... — /tmp itself
       ;; has no .git ancestor, so find-git-root returns nil and the
       ;; working-dir fallback fires.
-      (is (= non-repo
-             (ai.brainyard.agent.core.config/resolve-project-dir non-repo)))))
+      ;;
+      ;; …unless BY_PROJECT_DIR is exported, which is rule 1 of the same fn and
+      ;; outranks the fallback by design. `resolve-project-dir` reads it through
+      ;; `System/getenv`, a static method with no seam to redef, so the branch
+      ;; is selected here instead of pretended away: a `by`-spawned shell sets
+      ;; the variable, and asserting the fallback there reported a defect in a
+      ;; function that was behaving exactly as documented. Both arms assert real
+      ;; behaviour, so neither environment gets a test that merely passes.
+      (if-let [override (System/getenv "BY_PROJECT_DIR")]
+        (is (= override
+               (ai.brainyard.agent.core.config/resolve-project-dir non-repo))
+            "BY_PROJECT_DIR is rule 1 and outranks the working-dir fallback")
+        (is (= non-repo
+               (ai.brainyard.agent.core.config/resolve-project-dir non-repo))
+            "no override and no .git ancestor, so working-dir is used"))))
   (testing "inside a git repo, git-root wins over working-dir fallback"
     ;; Find this test file's git ancestor by walking up from its known
     ;; location. The test runs from somewhere inside the brainyard repo

@@ -28,6 +28,7 @@
             ;; matches nothing and every card is empty.
             [ai.brainyard.agent.interface]
             [ai.brainyard.agent.core.agent :as agent-core]
+            [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.remote-agent :as remote]
             [ai.brainyard.agent.core.tool :as tool]
@@ -298,9 +299,22 @@
   (testing "serve! refuses when A2A is disabled"
     ;; :enable-a2a defaults false, so an unconfigured process cannot
     ;; accidentally start listening.
-    (let [r (serve/serve! nil {:port 0})]
-      (is (some? (:error r)))
-      (is (str/includes? (:error r) "disabled"))))
+    ;;
+    ;; Pinned rather than left to the ambient default: `:enable-a2a` carries an
+    ;; `:env-fn`, so a shell exporting BY_ENABLE_A2A=1 — which is exactly the
+    ;; shell anyone actually serving A2A is running in — flips it and the guard
+    ;; under test is never reached. The suite then failed on the NEXT gate
+    ;; ("no skills exposed"), reporting a defect in a test whose subject was
+    ;; simply skipped. `serve!` reads the flag through `config/get-config`, so
+    ;; pinning that one key states the precondition the assertion depends on
+    ;; and leaves every other lookup to the real resolver.
+    (let [orig config/get-config]
+      (with-redefs [config/get-config
+                    (fn [& args]
+                      (if (= :enable-a2a (last args)) false (apply orig args)))]
+        (let [r (serve/serve! nil {:port 0})]
+          (is (some? (:error r)))
+          (is (str/includes? (:error r) "disabled"))))))
 
   (testing "start! refuses without a token"
     (let [r (a2a-server/start! {:card-fn (constantly {:name "x"})
