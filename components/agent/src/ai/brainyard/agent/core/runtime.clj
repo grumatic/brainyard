@@ -101,7 +101,7 @@
    different way a run can be stuck, none of them redundant:
 
      1. `:cancelled?` — cooperative. The BT checks it at every node tick
-        (`bt/check-node-interrupts`) and throws. This is what actually stops
+        (`bt/check-interrupt-cancel-pause!`) and throws. This is what actually stops
         the loop; the rest exist to make sure it gets *reached*.
      2. `.close` on `:active-http` — a thread blocked in a socket read is not
         interruptible on the JVM by any mechanism. Closing the stream under it
@@ -113,13 +113,16 @@
         which is waiting on a `Condition` and would otherwise never re-check
         the flag.
 
-   These do NOT reduce to an effect canceller, and the effect migration
-   deliberately stops short of here (docs/design/functional-effect-system.md
-   §14). Missionary cancels *effects*, propagating through `m/?` parks; the run
-   is a thread — `send-ask` hands the BT loop to a `send-off` pool thread and
-   it runs synchronously to completion. There is no park in the path to
-   propagate through, so structural cancellation has nothing to attach to
-   without rewriting the BT engine into a coroutine, which the design excludes.
+   These do NOT reduce to an effect canceller *as the run is structured today*
+   (docs/design/functional-effect-system.md §14). Missionary cancels *effects*,
+   propagating through `m/?` parks; the run is a thread — `send-ask` hands the
+   BT loop to a `send-off` pool thread and it runs synchronously to completion,
+   so there is no park for cancellation to attach to.
+
+   That is a property of the BT engine being synchronous, not a law. §15
+   works out what converting it would take and concludes it is tractable —
+   about 200 lines, mechanically — with the real cost living in the 39 action
+   leaves rather than the engine. Until that happens, these four stay.
 
    Formerly documented as cancelling 'either via future-cancel (run-async path)
    or direct Thread.interrupt'. The `run-async` path had no production callers

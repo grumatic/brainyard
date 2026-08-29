@@ -1048,4 +1048,130 @@ That is a redesign of the execution model with its own justification needed
 budget. It is not a phase of this migration, and filing it as one is what made
 this document promise something it had already excluded.
 
-**The effect migration is complete at Phase 3.**
+**The effect migration is complete at Phase 3** — with the caveat that §15
+revisits the reason Phase 4 was cancelled and finds it weaker than stated.
+
+## 15. Converting the BT loop to effects — what it would actually take
+
+§14 cancelled Phase 4 on the grounds that it "would mean rewriting the BT
+engine", treating that as self-evidently out of scope. Challenged on it, I
+measured the engine instead of asserting. **The scope claim was wrong.**
+
+### The engine is ~200 lines and the transformation is mechanical
+
+```
+behavior-tree/core/nodes.clj      141   six node types
+behavior-tree/core/engine.clj      38   build + run
+behavior-tree/interface/protocol   24   tick/build multimethods, 3 status keywords
+```
+
+`p/tick` is a multimethod returning `:success` / `:failure` / `:running`. Every
+node type has the same shape, and every one converts the same way — wrap the
+body in `m/sp`, `m/?` the recursive tick:
+
+```clojure
+;; today
+(defmethod p/tick :sequence [node context]
+  (loop [[child :as children] (:children node)]
+    (if-not child p/success
+      (case (p/tick child context)
+        :success (recur (rest children))
+        :failure p/failure
+        :running p/running))))
+
+;; as an effect — the diff is `m/sp` and one `m/?`
+(defmethod p/tick :sequence [node context]
+  (m/sp (loop [[child :as children] (:children node)]
+          (if-not child p/success
+            (case (m/? (p/tick child context))
+              :success (recur (rest children))
+              :failure p/failure
+              :running p/running)))))
+```
+
+That is not a rewrite in any threatening sense. It is six functions.
+
+### `:parallel` is currently broken, and converting it is a bug fix
+
+```clojure
+(defmethod p/tick :parallel [{:keys [children]} context]
+  (let [futures (mapv #(future (p/tick % context)) children)
+        results (mapv deref futures)] …))
+```
+
+Unbounded `future` per child, `deref` in order, no cancellation, and a failing
+child does not stop its siblings — the same three defects `pmap` had in the
+tool-dispatch path, which `fx/bounded` already fixed there (§1.4). `m/join`
+gives all three properties by construction. This alone is worth the conversion.
+
+### The cost is not the engine — it is 39 action leaves
+
+39 `:action` nodes, 36 `bt/success`/`bt/failure` returns. Each `action-fn`
+returns a status keyword today and would need to return a Task.
+
+**But not all at once.** The `:action` tick can lift a synchronous result,
+exactly the coexistence that carried Phases 1–3:
+
+```clojure
+(defmethod p/tick :action [{:keys [action-fn opts]} context]
+  (let [r (action-fn (assoc context :opts opts))]
+    (if (task? r) r (fx/success r))))     ; sync leaves unchanged
+```
+
+Only leaves that genuinely block — the LLM call in `dspy_action.clj`, tool
+dispatch, code eval — need converting. The other ~35 keep working untouched.
+
+### The real obstacle, and why it is smaller than it looks
+
+Q4: a dynamic var reverts at the first park, silently and timing-dependently.
+The run path reads `*current-agent*` in **123 places**, `*current-task*` in 14,
+`*call-depth*` in 19. Auditing 123 sites would be the project.
+
+It is not necessary, because **the BT already threads the agent lexically**:
+`build-bt` passes `{:st-memory … :agent agent}` and every `tick` receives it.
+So the binding can be re-established at the leaf, in one place, immune to
+whatever the tree did before it:
+
+```clojure
+(defmethod p/tick :action [{:keys [action-fn opts]} {:keys [agent] :as context}]
+  (fx/task-of (fn []
+                (binding [proto/*current-agent* agent]
+                  (action-fn (assoc context :opts opts))))))
+```
+
+One binding site rather than 123, because the data was already flowing where it
+needed to. `*current-task*` and `*subagent-capture*` are bound inside the tool
+path, which is already below a leaf, so they are unaffected.
+
+### What it buys
+
+`cancel-run` collapses from four mechanisms to two: cancel the tree, plus the
+`.close` on `:active-http` that no mechanism on the JVM can replace. The
+cooperative `:cancelled?` flag, the `.interrupt`, the pause `Condition` and
+`check-interrupt-cancel-pause!`'s three-way checkpoint all become consequences
+of structure. `runtime/cancelled?`'s parent-chain walk and `tool.clj`'s
+hand-wired cascading subagent cancel likewise.
+
+### What it costs, honestly
+
+- `bt/run` returns a Task; `run-bt` and its ~4 callers change shape.
+- **`:running` needs a decision.** Today it is a synchronous third status. Under
+  effects, "still going" and "not yet settled" are different ideas and the BT's
+  `:running` must not be conflated with an unsettled Task.
+- Pause stays cooperative. Parking a coroutine on user input is a different
+  design question from cancellation, and `m/dfv` is a fit but not a free one.
+- Every converted leaf needs the Q4 discipline, verified rather than assumed.
+
+### Recommendation
+
+This is worth doing and I was wrong to close it as out-of-scope. It is also not
+a phase of *this* migration — it changes the agent execution model, and it
+should be justified on its own terms (cancellation correctness plus the
+`:parallel` fix) with its own risk budget.
+
+The cheap first step is a spike, not a plan: convert the six node types behind
+a parallel `tick-task` multimethod, leave `p/tick` untouched, and run the
+existing BT suite through both. That is a day's work against a ~200-line
+surface, and it answers the two things this section can only reason about —
+whether `:running` survives the translation, and whether Q4 really does reduce
+to one binding site.
