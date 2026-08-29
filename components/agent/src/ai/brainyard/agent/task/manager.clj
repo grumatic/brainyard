@@ -376,12 +376,34 @@
    block remains visible. `await-task` is the only place that transitions it
    (`:foreground → :background` on `:on-timeout :detach` — the sync → async
    hand-off when the LLM waiter actually leaves)."
-  [task-id {:keys [task on-poll on-cancel]}]
+  [task-id {:keys [task on-drain on-poll on-cancel]}]
   (if task
-    (let [cancel-task-effect
+    (let [drain-label [::drain task-id]
+          drain! (fn [flush?]
+                   (when on-drain
+                     (try (on-drain flush?) (catch Throwable _ nil))))
+          ;; Incremental output stays SAMPLED, and that is not a compromise —
+          ;; sampling is the right model for a growing StringWriter, and it is
+          ;; the one thing the old `:on-poll` got right. What changes is that
+          ;; it no longer doubles as the completion check. An executor whose
+          ;; output arrives by its own route (bash, via its reader future)
+          ;; passes no `:on-drain` and gets no ticker.
+          _ (when on-drain
+              (fx/start! drain-label
+                         (fx/ticking detach-poll-interval-ms
+                                     (fn [] (drain! false) true))))
+          ;; Final drain BEFORE finalize: `finalize-task!` closes the disk
+          ;; appender and fires :task/completed, so anything drained after it
+          ;; would land after the log was closed and after every consumer had
+          ;; already read the task as finished.
+          finish! (fn [status result]
+                    (fx/stop! drain-label)
+                    (drain! true)
+                    (finalize-task! task-id status result))
+          cancel-task-effect
           (fx/run task
                   (fn [result]
-                    (finalize-task! task-id (result->status result) result))
+                    (finish! (result->status result) result))
                   ;; ^Throwable, or `(.. e getClass getName)` compiles to a
                   ;; reflective call — which `bb reflect:check` fails the build
                   ;; on, native-image being unable to see it.
@@ -399,11 +421,16 @@
                     ;; :cancelled and finalize-task! is idempotent, but the two
                     ;; run on different threads, so whichever lands first must
                     ;; be right on its own.
+                    ;; Through `finish!`, not `finalize-task!` — a failed or
+                    ;; cancelled task must still stop its drain ticker (else a
+                    ;; supervised process outlives the task it was draining for)
+                    ;; and still take a final drain, so whatever the work
+                    ;; printed before it died is on disk.
                     (if (or (fx/cancelled? e) (instance? InterruptedException e))
-                      (finalize-task! task-id :cancelled {:error "cancelled"})
-                      (finalize-task! task-id :failed
-                                      {:error (or (ex-message e)
-                                                  (.. e getClass getName))}))))]
+                      (finish! :cancelled {:error "cancelled"})
+                      (finish! :failed
+                               {:error (or (ex-message e)
+                                           (.. e getClass getName))}))))]
       (swap! !detached-handlers assoc task-id
              ;; Cancelling means BOTH: run the executor's own teardown (destroy
              ;; the proc tree, interrupt the future) AND stop waiting on the
@@ -421,9 +448,16 @@
              ;; parent, so interrupting the `.waitFor` first disturbs exactly
              ;; the state it reads. The waiter is how you observe the work;
              ;; retiring it first blinds the teardown that follows.
+             ;; The drain ticker is stopped here too, not only in `finish!`:
+             ;; `cancel-task` finalizes synchronously right after this returns,
+             ;; and finalize-task! is idempotent, so the effect's failure
+             ;; callback may find the task already terminal and never reach
+             ;; `finish!`. Without this the ticker would drain a finished task
+             ;; forever.
              {:on-cancel (fn []
                            (when on-cancel (on-cancel))
-                           (try (cancel-task-effect) (catch Throwable _)))})
+                           (try (cancel-task-effect) (catch Throwable _))
+                           (fx/stop! drain-label))})
       (mulog/info ::task-detached :task-id task-id :via :effect))
     (do (swap! !detached-handlers assoc task-id
                {:on-poll on-poll :on-cancel on-cancel})

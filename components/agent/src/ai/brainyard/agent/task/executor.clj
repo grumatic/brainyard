@@ -540,22 +540,25 @@
       (mulog/info ::sandbox-eval-detached
                   :task-id (:id task)
                   :code-preview (subs code 0 (min 80 (count code))))
+      ;; Effect path (design Phase 3). The old `:on-poll` did two jobs at once —
+      ;; sample the growing stdout AND check whether the eval had finished.
+      ;; They separate cleanly: `deref` on `m/blk` waits for completion (no
+      ;; polling), and `:on-drain` keeps the sampling the manager still
+      ;; schedules at the same ~300ms. Sampling was always right for a
+      ;; StringWriter; using it to detect completion was the accident.
       {:status    :detached
-       :on-poll   (fn []
-                    ;; Drain any new stdout since last poll (complete lines only).
-                    (drain-incremental-output! on-output eval-output !drained false)
-                    (if (.isDone ^java.util.concurrent.Future fut)
-                      (let [done-r (try (deref fut)
-                                        (catch java.util.concurrent.CancellationException _
-                                          {:error "cancelled" :code code
-                                           :output (.toString eval-output)})
-                                        (catch Exception e
-                                          {:error (.getMessage e) :code code
-                                           :output (.toString eval-output)}))]
-                        ;; Final drain: flush any remaining partial line.
-                        (drain-incremental-output! on-output eval-output !drained true)
-                        (project-sandbox-result done-r))
-                      tp/still-running))
+       :task      (fx/task-of
+                   (fn []
+                     (let [done-r (try (deref fut)
+                                       (catch java.util.concurrent.CancellationException _
+                                         {:error "cancelled" :code code
+                                          :output (.toString eval-output)})
+                                       (catch Exception e
+                                         {:error (.getMessage e) :code code
+                                          :output (.toString eval-output)}))]
+                       (project-sandbox-result done-r))))
+       :on-drain  (fn [flush?]
+                    (drain-incremental-output! on-output eval-output !drained flush?))
        :on-cancel (fn []
                     (future-cancel fut))}))
 
@@ -610,18 +613,20 @@
       (mulog/info ::nrepl-eval-detached
                   :task-id (:id task)
                   :code-preview (subs code 0 (min 80 (count code))))
+      ;; Effect path — same split as the sandbox executor directly above:
+      ;; completion is a blocking `deref` on `m/blk`, output sampling moves to
+      ;; `:on-drain`.
       {:status    :detached
-       :on-poll   (fn []
-                    (drain-incremental-output! on-output eval-output !drained false)
-                    (if (.isDone ^java.util.concurrent.Future fut)
-                      (let [done-r (try (deref fut)
-                                        (catch CancellationException _
-                                          {:error "cancelled" :code code :output ""})
-                                        (catch Exception e
-                                          {:error (.getMessage e) :code code :output ""}))]
-                        (drain-incremental-output! on-output eval-output !drained true)
-                        (select-keys done-r [:code :output :result :error :ns]))
-                      tp/still-running))
+       :task      (fx/task-of
+                   (fn []
+                     (let [done-r (try (deref fut)
+                                       (catch CancellationException _
+                                         {:error "cancelled" :code code :output ""})
+                                       (catch Exception e
+                                         {:error (.getMessage e) :code code :output ""}))]
+                       (select-keys done-r [:code :output :result :error :ns]))))
+       :on-drain  (fn [flush?]
+                    (drain-incremental-output! on-output eval-output !drained flush?))
        :on-cancel (fn []
                     (when session
                       (try (clj-nrepl/interrupt! session)
