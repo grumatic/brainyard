@@ -271,6 +271,73 @@
            :toolCall {:toolCallId "tc-1"
                       :status "in_progress"}})))))
 
+;; -----------------------------------------------------------------------------
+;; claude-agent-acp 0.70.0 two-phase tool input
+;;
+;; Payloads below are VERBATIM captures from adapter 0.70.0 (2026-08-29) for a
+;; single Bash call. 0.16.2 emitted `tool_call` twice — placeholder, then real
+;; input — so `/pre` fired twice and the TUI's `upsert-tool-call` merged the
+;; args. 0.70.0 emits one placeholder `tool_call` and moves the real input into
+;; status-less `tool_call_update`s, which used to translate to nil: the args
+;; were dropped and the call rendered as `Bash({})`.
+;; -----------------------------------------------------------------------------
+
+(deftest tool-call-070-placeholder-carries-no-args-test
+  (testing "0.70.0's initial tool_call is an empty-input placeholder"
+    (let [evt (events/translate-update
+               {:sessionId "s1"
+                :sessionUpdate "tool_call"
+                :_meta {:claudeCode {:toolName "Bash"}}
+                :toolCallId "toolu_01PkCz"
+                :rawInput {}
+                :status "pending"
+                :title "Terminal"
+                :kind "execute"
+                :content []})]
+      (is (= :agent.tool-use/pre (:event evt)))
+      ;; The real tool name still comes from _meta, not the "Terminal" title.
+      (is (= "Bash" (-> evt :data :tool-name)))
+      (is (= {} (-> evt :data :args))
+          "no args yet — they arrive in a later tool_call_update"))))
+
+(deftest tool-call-update-070-delivers-args-test
+  (testing "a status-less tool_call_update carrying rawInput re-fires /pre"
+    (let [evt (events/translate-update
+               {:sessionId "s1"
+                :sessionUpdate "tool_call_update"
+                :_meta {:claudeCode {:toolName "Bash"}}
+                :toolCallId "toolu_01PkCz"
+                :rawInput {:command "echo probe-args"}
+                :title "echo probe-args"
+                :kind "execute"
+                :content []})]
+      (is (= :agent.tool-use/pre (:event evt))
+          "same event as the placeholder, so upsert-tool-call merges by call-id")
+      (is (= "toolu_01PkCz" (-> evt :data :call-id))
+          "the call-id must match the placeholder or the merge appends instead")
+      (is (= {:command "echo probe-args"} (-> evt :data :args)))
+      (is (= "Bash" (-> evt :data :tool-name)))
+      (is (true? (-> evt :data :observer?))))))
+
+(deftest tool-call-update-070-progress-tick-is-silent-test
+  (testing "a status-less update with no rawInput stays observer-only"
+    ;; Verbatim 0.70.0 capture: the toolResponse tick. Firing /pre here would
+    ;; blank the merged args, since it carries none.
+    (is (nil?
+         (events/translate-update
+          {:sessionId "s1"
+           :sessionUpdate "tool_call_update"
+           :_meta {:claudeCode {:toolResponse {:stdout "probe-args"}
+                                :toolName "Bash"}}
+           :toolCallId "toolu_01PkCz"
+           :content []})))
+    (is (nil?
+         (events/translate-update
+          {:sessionId "s1"
+           :sessionUpdate "tool_call_update"
+           :toolCallId "toolu_01PkCz"
+           :rawInput {}})))))
+
 (deftest unknown-update-kind-test
   (testing "unknown sessionUpdate variant → nil"
     (is (nil?

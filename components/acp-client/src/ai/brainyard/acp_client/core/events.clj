@@ -223,7 +223,8 @@
 
 (defmethod dispatch-update "tool_call_update"
   [{:keys [toolCall sessionId] :as params}]
-  (let [{:keys [toolCallId status content rawOutput] :as src} (or toolCall params)]
+  (let [{:keys [toolCallId status content rawOutput rawInput] :as src}
+        (or toolCall params)]
     (case status
       ("completed" "failed")
       (let [{:keys [text diffs]} (normalize-tool-content content)]
@@ -250,10 +251,34 @@
                                (some? content)                   (assoc :acp/content content))
                  :session-id sessionId}})
 
-      ;; status pending or in_progress (or absent) — observer-only update,
-      ;; no hook fired. The dispatcher may still surface progress to UIs
-      ;; via the raw notification.
-      nil)))
+      ;; status pending or in_progress (or absent).
+      ;;
+      ;; A status-less update that carries `rawInput` is how the tool's
+      ;; ARGUMENTS arrive — it is not merely progress, and dropping it
+      ;; renders the call as `Bash({})`.
+      ;;
+      ;; claude-agent-acp 0.16.2 emitted `tool_call` TWICE (a placeholder
+      ;; with empty input, then the real input), so `/pre` fired twice and
+      ;; `upsert-tool-call` merged the args in. 0.70.0 emits ONE `tool_call`
+      ;; — still an empty-input placeholder, titled "Terminal" — and moves
+      ;; the real input into subsequent `tool_call_update`s. Same two-phase
+      ;; shape, different message type; this branch is where the second
+      ;; phase now lands.
+      ;;
+      ;; So fire `/pre` again rather than inventing a new event: the TUI's
+      ;; `upsert-tool-call` already merges on a non-nil `:call-id` and lets
+      ;; non-empty args win, which is precisely the 0.16.2 double-emit
+      ;; contract. An empty/absent `rawInput` stays observer-only, so a
+      ;; pure progress tick fires nothing.
+      (if (seq rawInput)
+        {:event event-tool-use-pre
+         :data  {:call-id    toolCallId
+                 :tool-name  (acp-tool-name src)
+                 :args       rawInput
+                 :status     (or status "in_progress")
+                 :session-id sessionId
+                 :observer?  true}}
+        nil))))
 
 ;; =============================================================================
 ;; Stop-reason translation

@@ -2,7 +2,7 @@
 
 Practical notes on how the ACP client adapter behaves: how a backend's
 `session/update` stream is translated into brainyard hook events, and the
-concrete quirks of the `claude-code-acp` backend observed in practice. Compiled
+concrete quirks of the `claude-agent-acp` backend observed in practice. Compiled
 while building the ACP transcript display block (the TUI surface for `acp-agent`
 turns; the `acp-*` block family in
 `bases/agent-tui/src/ai/brainyard/agent_tui/session.clj`).
@@ -48,7 +48,9 @@ dispatch is agnostic to nesting.
 | `agent_thought_chunk` | `:agent.dspy-action/chunk` | **`:meta {:kind :thought}`** — same event kw as message; disambiguate on `:meta :kind` |
 | `plan` | `:todo/updated` | entries → todo-list |
 | `tool_call` | `:agent.tool-use/pre` | `{:call-id :tool-name :args :status :observer? true}` |
-| `tool_call_update` (completed \| failed) | `:agent.tool-use/post` | status pending / in_progress → **nil** (observer-only) |
+| `tool_call_update` (completed \| failed) | `:agent.tool-use/post` | |
+| `tool_call_update` (no status, **non-empty `rawInput`**) | `:agent.tool-use/pre` | this is how 0.70.0 delivers tool ARGS — merged by `:call-id`; see quirks |
+| `tool_call_update` (no status, no `rawInput`) | — | **nil** (observer-only progress tick) |
 | `available_commands_update` | — | `nil` (ignored). claude-code sends this once per session with its slash-command list — see quirks below |
 | anything else | — | `nil` |
 
@@ -91,7 +93,7 @@ into an `acp-agent` defagent:
   **session recycle** (a new session = a new conversation). The `claude-code`
   model can also be set via `~/.claude/settings.json` `"model"`.
 
-## `claude-code-acp` quirks
+## `claude-agent-acp` quirks
 
 Verified by tapping the raw ACP wire (`spawn!` `:claude-code` with a recording
 `:on-event`, inspecting every `session/update` and the `session/prompt`
@@ -123,9 +125,28 @@ primes" prompt.
   to `default` (its description contains "Opus") — correct in effect, since
   `default` *is* Opus 4.6, but note the effective modelId is `"default"`, not an
   opus-named id.
-- May emit `tool_call` **twice for one `call-id`** (a placeholder with empty
-  input, then the real input). Consumers must **upsert/merge by `call-id`**, not
-  blindly append, or a single call shows as two lines.
+- **Tool input arrives in TWO phases, and the second phase moved.** The first
+  message for a call is always a placeholder with empty input; the real
+  arguments follow separately. Consumers must **upsert/merge by `call-id`**,
+  not blindly append, or a single call shows as two lines with the args on the
+  wrong one.
+  - **0.16.2** emitted `tool_call` **twice** — placeholder, then real input.
+  - **0.70.0** emits `tool_call` **once** (empty `rawInput`, generic title
+    `"Terminal"`) and moves the real input into subsequent
+    **`tool_call_update`** messages that carry `rawInput` but **no `:status`**.
+    Treating status-less updates as pure progress therefore DROPS the arguments
+    and renders `Bash({})`. `events.clj` fires `:agent.tool-use/pre` from any
+    update carrying a non-empty `rawInput`, which lands in the same
+    `upsert-tool-call` merge the double-emit needed. Captured sequence for one
+    Bash call (2026-08-29, verbatim):
+
+    ```
+    tool_call        rawInput {}                       status "pending"  title "Terminal"
+    tool_call_update rawInput {:command "echo x"}       (no status)       title "echo x"
+    tool_call_update rawInput {:command … :description} (no status)
+    tool_call_update _meta.claudeCode.toolResponse      (no status)       ← no rawInput
+    tool_call_update rawOutput "x"                      status "completed"
+    ```
 - Tool result content is nested, e.g.
   `{:status "completed" :content [{:type "content" :content {:type "text" :text "…"}}]}`.
 - Tool names arrive both bare (`Glob`) and MCP-prefixed (`mcp__acp__Read`) in the
