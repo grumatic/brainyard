@@ -77,6 +77,10 @@
          :input-active active?)
   (reset! layout/!scrollback (vec (map #(str "line " %) (range 60))))
   (reset! layout/!live-blocks {})
+  ;; Swapping the rows behind the renderer leaves its painted-row cache
+  ;; describing the previous test's screen. Reset here for the same reason the
+  ;; popover gate is: test vars run in map order, so it cannot be assumed.
+  (layout/invalidate-painted!)
   ;; The real precondition: the cursor is visible at the prompt the instant a
   ;; turn starts. Starting from "hidden" would hide the transition we assert.
   (layout/note-cursor-shown!))
@@ -267,6 +271,11 @@
       (is (= 21 input-row) "chrome recomputed for 24 rows")
       (testing "so the next frame parks on the NEW input row"
         (reset! !flushes [])
+        ;; The resize above already painted these rows, and a repaint that
+        ;; changes nothing now writes nothing — including no epilogue, which is
+        ;; correct (the cursor cannot have moved if no bytes were sent) but
+        ;; leaves nothing to assert against. Force a real paint.
+        (layout/invalidate-painted!)
         (layout/render-viewport!)
         (is (str/includes? (joined) (str ESC "[" input-row ";3H" SHOW))
             "epilogue falls back to (input-row, prompt col), not row 38")))))
@@ -398,6 +407,72 @@
     (layout/note-cursor-shown!)
     (layout/render-viewport!)
     (is (= 1 (occurrences HIDE (joined))))))
+
+;; ---------------------------------------------------------------------------
+;; Row diffing — the third thing that keeps a repaint from flickering
+;;
+;; Measured before this existed, on a 34-row region: a live block whose line
+;; COUNT changed rewrote every row when two differed, and a same-count tick
+;; rewrote all ~20 rows of the block so one spinner character could change.
+;; At streaming rates that is the screen being erased and refilled several
+;; times a second — visible wherever DEC 2026 is not in force, which includes
+;; tmux with a client whose terminfo lacks `Sync`.
+;; ---------------------------------------------------------------------------
+
+(defn- rows-addressed
+  "Which 1-based rows a captured frame actually wrote to."
+  [s]
+  (mapv (comp parse-long second) (re-seq #"\033\[(\d+);1H" s)))
+
+(deftest a-block-tick-repaints-only-the-rows-that-changed
+  (testing "one changed line in a 20-row block is one row of output"
+    (setup! false)
+    (let [block (fn [spin]
+                  (into [(str "[" spin "] acp-agent  12.3s")]
+                        (map #(str "  segment line " %)) (range 19)))]
+      (layout/update-live-block! :acp (block \|) {:render (fn [_] (block \|))})
+      (reset! !flushes [])
+      (layout/update-live-block! :acp (block \/) {:render (fn [_] (block \/))})
+      (let [all (joined)]
+        (is (= 1 (count (rows-addressed all)))
+            "19 of the block's 20 rows came back byte-identical")
+        (is (str/includes? all "[/]") "and the one that changed did get written")))))
+
+(deftest an-unchanged-repaint-writes-nothing
+  (testing "a no-op render is not a presentation"
+    (setup! false)
+    (layout/render-viewport!)
+    (reset! !flushes [])
+    (layout/render-viewport!)
+    (is (empty? @!flushes)
+        "nothing changed, so there is nothing for the terminal to present —
+         and no epilogue either, which is correct: bytes that were never sent
+         cannot have moved the cursor")))
+
+(deftest invalidating-forces-a-full-repaint
+  (testing "the escape hatch for anything that writes behind the renderer"
+    (setup! false)
+    (layout/render-viewport!)
+    (reset! !flushes [])
+    (layout/invalidate-painted!)
+    (layout/render-viewport!)
+    (is (= (:scroll-bottom @layout/!layout) (count (rows-addressed (joined))))
+        "every region row is addressed again")))
+
+(deftest rows-are-overwritten-in-place-never-blanked-first
+  (testing "erase follows the content, so there is no blank frame to present"
+    (setup! false)
+    (layout/invalidate-painted!)
+    (layout/render-viewport!)
+    (let [all (joined)]
+      (is (zero? (occurrences (str ESC "[2K") all))
+          "an erase-line BEFORE the content is exactly the two-phase paint that
+           DEC 2026 was papering over")
+      (is (pos? (occurrences (str ESC "[0K") all)) "erase-to-EOL is used instead")
+      ;; `reset` precedes the erase: erase honours BCE, so a row whose own
+      ;; escapes left a background set would otherwise colour its cleared tail.
+      (is (str/includes? all (str "line 59" ESC "[0m" ESC "[0K"))
+          "content, then reset, then erase — in that order"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Inline mode is untouched

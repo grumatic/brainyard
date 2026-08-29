@@ -114,6 +114,81 @@
 (defonce !live-blocks (atom {}))
 
 ;; ----------------------------------------------------------------------------
+;; Painted rows — what is believed to be on each scroll-region row right now
+;;
+;; The two paint paths used to emit every row they were asked about, whether or
+;; not its text had changed. Measured on a 34-row region: a live block whose
+;; line COUNT changed (an ACP transcript growing by a streamed chunk, an
+;; iteration block gaining a line) took the `render-viewport!` branch and
+;; rewrote all 34 rows when 2 differed; a same-count tick rewrote all ~20 rows
+;; of the block so a spinner character could change on one. At streaming rates
+;; that is the whole screen being erased and refilled several times a second,
+;; and it is visible as flicker wherever DEC 2026 is not in force — which
+;; includes tmux, whose synchronized-update wrapper is only emitted for clients
+;; whose terminfo advertises `Sync` (an attached `xterm-256color` client, e.g.
+;; the xterm.js one behind `--web`, does not).
+;;
+;; So the renderer remembers the exact string it last wrote to each row —
+;; post-clamp, post-`decorate`, which is what actually reached the terminal —
+;; and skips any row whose new string is `=`. Highlight and theme changes are
+;; part of that string, so they still repaint.
+;;
+;; Keyed on `[cols scroll-bottom]`: every row's content and position depends on
+;; both, so a geometry change invalidates the whole cache without anyone having
+;; to remember to. What it CANNOT see is bytes written to the scroll region by
+;; anything other than the two paint paths — a hardware scroll, an overlay, a
+;; clear-screen, a session switch swapping the scrollback wholesale. Those call
+;; `invalidate-painted!`, and the rule for adding one is simply: if it moves or
+;; overwrites a row in 1..scroll-bottom without going through `render-viewport!`
+;; / `render-block-rows!`, it invalidates.
+;;
+;; nil = nothing known; repaint everything. Never wrong, only slow.
+(defonce ^:private !painted (atom nil))
+
+(defn invalidate-painted!
+  "Forget what is on the scroll-region rows, forcing the next paint to write
+   every row. Call after anything writes to, scrolls, or replaces the scroll
+   region behind the renderer's back."
+  []
+  (reset! !painted nil))
+
+(defn- painted-rows
+  "The row strings believed to be on screen for the CURRENT geometry, or nil
+   when the cache is empty or was recorded at a different one."
+  [cols scroll-bottom]
+  (let [p @!painted]
+    (when (and p (= (:cols p) cols) (= (:scroll-bottom p) scroll-bottom))
+      (:rows p))))
+
+(defn- note-painted!
+  "Record the full set of row strings now on screen."
+  [cols scroll-bottom rows]
+  (reset! !painted {:cols cols :scroll-bottom scroll-bottom :rows rows}))
+
+(defn- note-painted-row!
+  "Record one row, leaving the rest of the cache alone. No-op when the cache is
+   already invalid — a partial paint cannot make it whole again, and guessing
+   would let a later diff skip a row that was never written."
+  [cols scroll-bottom row s]
+  (swap! !painted
+         (fn [p]
+           (if (and p (= (:cols p) cols) (= (:scroll-bottom p) scroll-bottom)
+                    (< row (count (:rows p))))
+             (assoc-in p [:rows row] s)
+             p))))
+
+(defn- paint-row
+  "Bytes that put `content` on 1-based terminal `row`.
+
+   Content FIRST, then `erase-eol`: the cells being changed are overwritten in
+   place and only the tail is cleared, so there is no blank-then-fill step for
+   the terminal to present. `reset` precedes the erase because erase honours
+   BCE — a row whose own escapes left a background set would otherwise have its
+   cleared tail painted in that colour."
+  ^String [row ^String content]
+  (str (ansi/cursor-to row 1) content ansi/reset ansi/erase-eol))
+
+;; ----------------------------------------------------------------------------
 ;; Reflow source — what lets a resize re-wrap what is already on screen
 ;;
 ;; !scrollback holds RENDERED ROWS, hard-wrapped at whatever the width was when
@@ -285,8 +360,15 @@
 
 (defn set-popover-active!
   "Toggle popover-active state. Caller should hold layout-lock for atomicity
-   with adjacent paint operations."
+   with adjacent paint operations.
+
+   Dismissal forgets the painted rows. Today's popovers reserve their rows
+   BELOW the scroll region (`menu-height` shrinks `scroll-bottom`, which the
+   cache is keyed on), so nothing overlaps — but an overlay that did paint over
+   content would otherwise leave the cache confidently wrong, and one full
+   repaint per menu dismissal is not a cost anyone can perceive."
   [active?]
+  (when-not active? (invalidate-painted!))
   (reset! !popover-active? (boolean active?)))
 
 (defn dirty?
@@ -572,19 +654,24 @@
                   ;; subsequent lines stay at the previous column and
                   ;; visually overlay each other at scroll-bottom — the
                   ;; "no newlines, multiple emits run together" symptom.
-                   (raw-write!
-                    w
-                    (apply str
-                           (mapcat (fn [line]
-                                     ;; Decorate here too, or a row is plain
-                                     ;; when it first appears and underlined
-                                     ;; the moment anything repaints it. These
-                                     ;; rows are formatted at the current width
-                                     ;; already, so unlike the other two paths
-                                     ;; there is no clamp to apply first.
-                                     [(ansi/cursor-to scroll-bottom 1) "\n"
-                                      (decorate line)])
-                                   new-lines))))))
+                   (do
+                     ;; Hardware scroll moves every painted row up by `n`. The
+                     ;; cache is addressed by row, so it now describes the wrong
+                     ;; ones; shifting it would also have to reconcile these
+                     ;; already-at-width rows with the clamped form the paint
+                     ;; paths cache, and this path only runs when there are NO
+                     ;; live blocks — i.e. not during a turn, which is where the
+                     ;; diff earns its keep.
+                     (invalidate-painted!)
+                     ;; Decorate here too, or a row is plain when it first
+                     ;; appears and underlined the moment anything repaints it.
+                     ;; These rows are formatted at the current width already,
+                     ;; so unlike the other two paths there is no clamp first.
+                     (raw-write!
+                      w
+                      (str/join (map #(str (ansi/cursor-to scroll-bottom 1)
+                                           "\n" (decorate %))
+                                     new-lines)))))))
              (raw-write! w (str s "\n")))))))))
 
 (defn write-inline!
@@ -598,6 +685,8 @@
         (when w
           (if (fullscreen?)
             (let [{:keys [scroll-bottom]} @!layout]
+              ;; Scrolls the region, same as the hardware-scroll emit path.
+              (invalidate-painted!)
               (raw-write! w (str (ansi/cursor-to scroll-bottom 1)
                                  "\n" s)))
             (raw-write! w (str s))))))))
@@ -610,6 +699,8 @@
     (locking layout-lock
       (let [w (get-writer)]
         (when w
+          ;; Wherever the cursor happens to be — possibly a scroll-region row.
+          (invalidate-painted!)
           (raw-write! w s))))))
 
 ;; ============================================================================
@@ -900,21 +991,35 @@
                                      line))
                                  line))]
           (when w
-            (let [sb (StringBuilder.)]
+            ;; What every region row SHOULD read, built first and in full: it is
+            ;; both what gets diffed and what gets cached, and the two must be
+            ;; the same value or the cache starts describing a screen that was
+            ;; never painted.
+            (let [contents
+                  (mapv (fn [row]
+                          (if (< row blank-rows)
+                            ""
+                            (let [sb-idx (+ start (- row blank-rows))]
+                              (if-let [line (get visible (- row blank-rows))]
+                                ;; Decorate AFTER clamping, never before: the
+                                ;; clamp is a width-aware truncate, and a span
+                                ;; marker inserted first can have its closing
+                                ;; `underline-off` cut away — leaving the
+                                ;; underline on for every row after it.
+                                (decorate (clamp (if (= sb-idx highlight-idx)
+                                                   (highlight-line line)
+                                                   line)))
+                                ""))))
+                        (range scroll-bottom))
+                  prev (painted-rows cols scroll-bottom)
+                  sb   (StringBuilder.)]
               (dotimes [row scroll-bottom]
-                (.append sb (ansi/cursor-to (inc row) 1))
-                (.append sb ^String ansi/erase-line)
-                (when (>= row blank-rows)
-                  (let [sb-idx (+ start (- row blank-rows))]
-                    (when-let [line (get visible (- row blank-rows))]
-                      ;; Decorate AFTER clamping, never before: the clamp is a
-                      ;; width-aware truncate, and a span marker inserted first
-                      ;; can have its closing `underline-off` cut away — leaving
-                      ;; the underline on for every row after it.
-                      (.append sb ^String (decorate
-                                           (clamp (if (= sb-idx highlight-idx)
-                                                    (highlight-line line)
-                                                    line))))))))
+                ;; The diff. `nil` from a stale/absent cache never equals a
+                ;; string, so an unknown row always repaints.
+                (let [content (nth contents row)]
+                  (when (not= content (get prev row))
+                    (.append sb ^String (paint-row (inc row) content)))))
+              (note-painted! cols scroll-bottom contents)
               (raw-write! w (.toString sb)))))))))
 
 (defn row->scrollback-idx
@@ -1107,17 +1212,25 @@
               vis-end    (min block-end view-end)]
           (when (and w (< vis-start vis-end))
             (let [sb (StringBuilder.)
-                  blank-rows (max 0 (- scroll-bottom (- view-end view-start)))]
+                  blank-rows (max 0 (- scroll-bottom (- view-end view-start)))
+                  prev (painted-rows cols scroll-bottom)]
               (doseq [idx (range vis-start vis-end)]
-                (let [row (+ 1 blank-rows (- idx view-start))]
-                  (.append sb (ansi/cursor-to row 1))
-                  (.append sb ^String ansi/erase-line)
-                  ;; Same clamp AND the same decoration as `render-viewport!`.
-                  ;; All three paint paths must agree: a row decorated on one
-                  ;; and not another changes appearance the moment something
-                  ;; repaints it, which reads as a rendering glitch.
-                  (.append sb ^String (decorate
-                                       (fmt/truncate-to-width (get lines idx "") cols)))))
+                (let [row (+ 1 blank-rows (- idx view-start))
+                      ;; Same clamp AND the same decoration as
+                      ;; `render-viewport!`. All three paint paths must agree: a
+                      ;; row decorated on one and not another changes appearance
+                      ;; the moment something repaints it, which reads as a
+                      ;; rendering glitch. It is also what makes the diff sound —
+                      ;; the two caches would otherwise disagree about a row
+                      ;; neither of them changed.
+                      content (decorate
+                               (fmt/truncate-to-width (get lines idx "") cols))]
+                  ;; A ticking block re-renders wholesale, so most of its rows
+                  ;; come back byte-identical; only the ones that moved are
+                  ;; worth the terminal's time.
+                  (when (not= content (get prev (dec row)))
+                    (.append sb ^String (paint-row row content))
+                    (note-painted-row! cols scroll-bottom (dec row) content))))
               ;; No cursor restore — the frame epilogue parks it at the input line.
               (raw-write! w (.toString sb)))))))))
 
@@ -1325,6 +1438,8 @@
   ;; and every piece of chrome. Separately these were seven presentations of a
   ;; half-drawn screen.
   (with-frame
+    ;; The scroll region moved; every row under it means something else now.
+    (invalidate-painted!)
     (let [w (get-writer)]
       (when w
         (raw-write! w (str (ansi/set-scroll-region 1 scroll-bottom)))))
@@ -1869,6 +1984,9 @@
           ;; One frame: clear, region, scrollback replay, sticky areas, chrome.
           ;; A resize that presents in seven steps is a visibly rebuilding screen.
           (with-frame
+            ;; `clear-screen` below wipes rows the cache still describes, and a
+            ;; reflow has rewritten their text anyway.
+            (invalidate-painted!)
             (let [w (get-writer)]
               (when w
                 (raw-write! w (str ansi/clear-screen
@@ -1914,6 +2032,7 @@
         (reset! !scrollback [])
         (reset! !live-blocks {})
         (reset! !scrollback-src [])
+        (invalidate-painted!)
         (swap! !layout assoc
                :mode :fullscreen
                :rows rows
@@ -1987,7 +2106,8 @@
               (raw-write! w (str (str/join "\n" final-lines) "\n"))))))
       (reset! !scrollback [])
       (reset! !live-blocks {})
-      (reset! !scrollback-src []))
+      (reset! !scrollback-src [])
+      (invalidate-painted!))
     (swap! !layout assoc
            :mode :inline
            :scroll-bottom nil

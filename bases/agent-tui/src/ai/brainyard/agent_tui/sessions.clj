@@ -218,7 +218,11 @@
 (defn- load-session-into-layout!
   "Load a session's state into the layout for display. Redraws in fullscreen mode."
   [session]
-  ;; Load scrollback
+  ;; Load scrollback. The rows on screen belong to the tab we are leaving, and
+  ;; the geometry is unchanged, so layout's painted-row cache would otherwise
+  ;; let the incoming tab skip every row that happens to match the outgoing
+  ;; one's — leaving the old tab's text on screen.
+  (layout/invalidate-painted!)
   (reset! layout/!scrollback (or (:scrollback session) []))
   ;; Restore live-blocks (start-idx values are valid for this session's scrollback)
   (reset! layout/!live-blocks (or (:live-blocks session) {}))

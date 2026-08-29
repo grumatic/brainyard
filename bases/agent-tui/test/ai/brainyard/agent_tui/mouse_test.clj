@@ -43,6 +43,12 @@
     (reset! layout/!scrollback (vec lines))
     (reset! layout/!live-blocks {})
     (reset! layout/!scrollback-src [])
+    ;; Same reason `!scrollback-src` is reset above: replacing the rows behind
+    ;; the renderer's back leaves its painted-row cache describing the PREVIOUS
+    ;; test's screen, and the diff would then skip every row that happens to
+    ;; match. Production callers that swap the rows wholesale (a session switch)
+    ;; invalidate for exactly this reason.
+    (layout/invalidate-painted!)
     (reset! layout/!layout
             {:mode :fullscreen :rows rows :cols 80
              :scroll-bottom scroll-bottom
@@ -59,13 +65,15 @@
 
 (defn- painted-rows
   "Parse what `render-viewport!` wrote into `sw` as {row -> text}. Matches the
-   `cursor-to` + `erase-line` + content triple the renderer emits per row; the
-   content capture stops at the next escape, which is the following row's
-   cursor move."
+   `cursor-to` + content pair the renderer emits per row; the content capture
+   stops at the next escape, which is the row's own trailing `reset` +
+   `erase-eol`. The erase moved AFTER the content (it used to be an
+   `erase-line` before it) so a repaint overwrites in place instead of blanking
+   the row first — see `ansi/erase-eol`."
   [^java.io.StringWriter sw]
   (into {}
         (map (fn [[_ row text]] [(parse-long row) text]))
-        (re-seq #"\033\[(\d+);1H\033\[2K([^\033]*)" (str sw))))
+        (re-seq #"\033\[(\d+);1H([^\033]*)" (str sw))))
 
 (use-fixtures :each
   (fn [t]

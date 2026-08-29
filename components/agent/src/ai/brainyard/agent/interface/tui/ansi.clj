@@ -37,7 +37,7 @@
                 save-cursor restore-cursor hide-cursor show-cursor
                 begin-sync end-sync
                 enter-alt-screen leave-alt-screen clear-screen
-                reset-scroll-region erase-line
+                reset-scroll-region erase-line erase-eol
                 enable-alt-scroll disable-alt-scroll
                 enable-mouse disable-mouse
                 enable-bracketed-paste disable-bracketed-paste)

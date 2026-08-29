@@ -41,6 +41,9 @@
   (reset! layout/!scrollback [])
   (reset! layout/!live-blocks {})
   (reset! layout/!scrollback-src [])
+  ;; Replacing the rows behind the renderer's back also invalidates its
+  ;; painted-row cache — see `layout/invalidate-painted!`.
+  (layout/invalidate-painted!)
   (reset! layout/!layout
           {:mode :fullscreen :rows 40 :cols cols
            :scroll-bottom 35 :separator-row 36 :input-row 37
@@ -347,6 +350,10 @@
   []
   (let [sw (java.io.StringWriter.)]
     (swap! layout/!layout assoc :writer (java.io.PrintWriter. sw))
+    ;; This helper asks what a FULL paint emits, and the renderer skips rows
+    ;; whose text already matches what it last wrote. The resize under test
+    ;; painted them already, so without this the capture is empty.
+    (layout/invalidate-painted!)
     (#'layout/render-viewport!)
     (->> (str/split (str sw) #"\[\d+;1H")
          (map #(str/replace % #"\[[0-9;]*[A-Za-z]" ""))

@@ -335,6 +335,23 @@
 (def reset-scroll-region (str esc "r"))
 (def erase-line (str esc "2K"))
 
+;; Erase from the cursor to end of line, leaving everything to its LEFT intact.
+;;
+;; The difference from `erase-line` is a flicker difference, not a cosmetic one.
+;; `erase-line` has to be emitted BEFORE a row's content, so every repaint is
+;; blank-then-fill: two states the terminal can present, on every row, whether
+;; or not the row's text actually changed. Emitting the content first and then
+;; `erase-eol` overwrites the cells in place and clears only the tail the new
+;; content is shorter than — one state, no blank frame. That matters because
+;; DEC 2026 synchronized output is not universally in effect (tmux only wraps
+;; output for clients whose terminfo advertises `Sync`), so the renderer cannot
+;; rely on it to hide a two-phase paint.
+;;
+;; Emit `reset` before it when the row's own escapes may have left a background
+;; colour set: erase honours BCE, and the cleared tail would otherwise be
+;; painted in that colour.
+(def erase-eol (str esc "0K"))
+
 ;; Alternate scroll mode — converts scroll wheel to arrow keys in alt screen.
 ;; Leaves mouse clicks unintercepted, so it is what the TUI falls back to when
 ;; mouse reporting is off (`:enable-mouse false`) and terminal text selection
