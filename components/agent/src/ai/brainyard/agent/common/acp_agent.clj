@@ -102,9 +102,14 @@
 ;; everything: the backend never asked, so `make-permission-callback` never ran.
 ;; That is a FAIL-OPEN, and closing it is the point of this mapping.
 ;;
-;; The mapping only ever TIGHTENS. `:deny-by-default` is pinned to `dontAsk`,
-;; which refuses without asking — matching the intent, adapter-side. The other
-;; two map to `default`, deliberately:
+;; The mapping only ever TIGHTENS. `:deny-by-default` is pinned to `dontAsk`.
+;; Measured in the TUI (2026-08-29) that means "deny anything NOT pre-approved,
+;; and run what is, without asking": the Write tool was refused, a
+;; `Bash(echo > file)` redirect was refused, and `git status --short` — which
+;; matches an allow rule in the user's own Claude Code config — RAN. So this is
+;; a real tightening rather than a seal: the backend's allow-list still
+;; executes silently. Before it, EVERYTHING executed. The other two map to
+;; `default`, deliberately:
 ;;
 ;;   - `:auto-approve` is NOT mapped to `bypassPermissions`. Our auto-approve
 ;;     means "stop prompting ME"; it is not a mandate to override deny rules

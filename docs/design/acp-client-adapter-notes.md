@@ -141,6 +141,20 @@ primes" prompt.
   is not a mandate to override deny rules the user wrote in their own backend
   config.
 
+  Verified end-to-end in the TUI (same session, same prompt, only
+  `:permission-mode` differing): `:auto-approve` pinned `default` and the file
+  was written; `:deny-by-default` pinned `dontAsk` and it was not, the backend
+  reporting *"running in 'don't ask' permission mode, so file writes are
+  blocked"*.
+
+  **`dontAsk` is a tightening, not a seal.** It means "deny what is NOT
+  pre-approved, run what is, without asking". Measured in the same session: the
+  Write tool refused, a `Bash` `>` redirect refused, but `git status --short`
+  — matching an allow rule in the user's own Claude Code config — RAN. So a
+  backend allow-list still executes silently under `:deny-by-default`. That is
+  far better than the previous behaviour, where everything executed, but it is
+  not "nothing runs", and brainyard cannot see that allow-list to warn about it.
+
   The limitation to keep in mind: **no mode forces escalation**, so
   `:ask-each-time` is best-effort against a permissive backend, and the
   protocol gives a client no way to observe the resolved policy — only the
