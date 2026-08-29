@@ -1332,15 +1332,49 @@ One caveat it does not fix: a leaf blocked in a *socket read* is still
 uninterruptible, which is why `.close` on `:active-http` survives every version
 of this design (§14, mechanism 2).
 
+### Fourth pass — wired in, behind a flag
+
+Done. `agent.core.agent/ask` branches on **`:enable-effect-bt`** (env
+`BY_ENABLE_EFFECT_BT`, default **false**). Off, the synchronous engine runs
+exactly as before. On, the turn is a Task: `run-bt-task` hands back a canceller,
+`set-bt-canceller!` registers it, and `cancel-run` uses it.
+
+`run!!` blocks the calling thread exactly as `run-bt` did, so the turn's shape
+and everything downstream reading `:answer` out of st-memory are untouched.
+What changes is only that someone now holds a handle on the running turn. The
+canceller is cleared in a `finally` — a stale one would fail to interrupt the
+thread on the next cancel, which is the failure that matters.
+
+A cancelled turn arrives as `InterruptedException` and is re-thrown as
+`ex-info "Cancelled"`, matching what the synchronous checkpoint threw, so the
+caller-visible shape is identical on both paths.
+
+**Verified against a live LLM, both engines:**
+
+| check | sync | effect |
+|---|---|---|
+| `17 × 3` | `51` | `51` |
+| shell + code eval in one turn | — | `effect-engine-ok`, `42` |
+| TUI: Ctrl-C mid-turn | cancels | **cancels** |
+| TUI: next turn after cancel | works | **works** |
+| clean `/quit`, no orphans | yes | yes |
+
+254 tests / 1261 assertions with the flag off (the default), `bb poly check`,
+`bb build:ata` end-to-end with its native smoke suite, `effect-smoke`.
+
 ### What is actually left
 
-1. **Wire it into `send-ask` / `ask`.** The seam exists and is tested; nothing
-   in production calls `run-bt-task`. This is the only remaining step with real
-   risk, because it changes how every turn executes.
-2. **Decide about pause.** Still a park on a `Condition`; still the honest
-   exception, since a paused turn waits on a person.
-3. **Optionally, the leaves** — for composition, not cancellation.
+1. **Flip the default**, once it has run on real work for a while. The flag is
+   the way back; that is the whole reason it exists.
+2. **Then delete mechanisms 1 and 3** from `cancel-run`. They are dead on the
+   effect path but still live on the synchronous one, so they cannot go until
+   the sync engine does.
+3. **Decide about pause.** Still a park on a `Condition`, still the honest
+   exception, since a paused turn waits on a person rather than an effect.
+4. **Optionally, the leaves** — for composition, not cancellation (third pass).
 
-Once (1) lands, `cancel-run` loses mechanisms 1 and 3 and keeps the `.close`
-and the pause signal. Two mechanisms, not four, and the two that remain are the
-two that were never reducible.
+`cancel-run` ends at two mechanisms rather than four, and the two that remain —
+`.close` on a blocked socket, and the pause signal — are the two that were
+never reducible. Phase 4 was cancelled in §14 as impossible without a rewrite;
+it turned out to be four passes, a ~200-line engine that was really ~340, and
+one config flag.

@@ -36,6 +36,7 @@
             [ai.brainyard.agent.core.context :as context]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.core.config :as config]
+            [ai.brainyard.effect.interface :as fx]
             [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.clj-llm.interface :as llm]
@@ -366,8 +367,44 @@
         ;; Normal processing
         (let [bt (:behavior-tree state)]
           (if bt
-            ;; BT-based processing
-            (let [result (agent-bt/run-bt this input)
+            ;; BT-based processing.
+            ;;
+            ;; Two engines (docs/design/functional-effect-system.md §16). The
+            ;; synchronous one is the default and is unchanged. Under
+            ;; `:enable-effect-bt` the turn is a Task instead: `run-bt-task`
+            ;; hands back a canceller, which `cancel-run` uses to stop the run
+            ;; structurally rather than via the cooperative flag plus a thread
+            ;; interrupt.
+            ;;
+            ;; `run!!` blocks this thread exactly as `run-bt` did, so the turn's
+            ;; shape — and everything downstream that reads `:answer` out of
+            ;; st-memory — is untouched. What changes is only that someone now
+            ;; holds a handle on the running turn.
+            ;;
+            ;; The canceller is cleared in a `finally`: leaving a stale one
+            ;; registered would make the NEXT `cancel-run` cancel an effect that
+            ;; already finished, which is harmless, and fail to interrupt the
+            ;; thread, which is not.
+            (let [result (if (config/get-config this :enable-effect-bt)
+                           (let [!out   (promise)
+                                 cancel (fx/run (agent-bt/run-bt-task this input)
+                                                #(deliver !out {:ok %})
+                                                #(deliver !out {:err %}))]
+                             (runtime/set-bt-canceller! !state cancel)
+                             (try
+                               (let [r @!out]
+                                 (if (contains? r :ok)
+                                   (:ok r)
+                                   ;; A cancelled turn arrives as
+                                   ;; InterruptedException (§16), which the
+                                   ;; synchronous engine surfaced by throwing
+                                   ;; ex-info "Cancelled" from the checkpoint.
+                                   ;; Keep the caller-visible shape identical.
+                                   (throw (ex-info "Cancelled"
+                                                   {:cause (ex-message (:err r))}))))
+                               (finally
+                                 (runtime/clear-bt-canceller! !state))))
+                           (agent-bt/run-bt this input))
                   st-mem (get-in @!state [:behavior-tree :context :st-memory])]
               {:result result
                :answer (some-> st-mem deref :answer)})
