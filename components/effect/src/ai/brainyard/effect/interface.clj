@@ -70,11 +70,21 @@
   (prim/from-promise p))
 
 (defn task-of
-  "Lift a plain thunk into a Task, evaluated on `m/blk`. The macro-free entry
-   into the effect world — this is what makes effects usable from the SCI
-   sandbox, where `m/sp`/`m/ap` cannot work (design §8 Q1)."
+  "Lift a plain thunk into a Task on `m/blk`, conveying the caller's dynamic
+   bindings — the drop-in shape of `(future …)`. The macro-free entry into the
+   effect world, which is what makes effects usable from the SCI sandbox where
+   `m/sp`/`m/ap` cannot work (design §8 Q1).
+
+   Read `conveying-note` before putting a dynamic var anywhere near an `m/sp`
+   body: conveyance into a thunk is not the same as surviving a park, and the
+   difference is timing-dependent and silent (§8 Q4)."
   [f]
   (prim/task-of f))
+
+(def conveying-note
+  "Why there is no general `conveying` wrapper, the measured mid-body binding
+   hazard inside `m/sp`, and the rule that avoids it. See §8 Q4."
+  prim/conveying-note)
 
 (defn success
   "A Task that immediately succeeds with `v`."

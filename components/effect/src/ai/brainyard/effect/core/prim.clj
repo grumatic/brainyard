@@ -99,7 +99,8 @@
   (m/via m/blk (deref p)))
 
 (defn task-of
-  "Lift a plain thunk into a Task, evaluated on `m/blk`.
+  "Lift a plain thunk into a Task, evaluated on `m/blk`, CONVEYING the caller's
+   dynamic bindings — the drop-in shape of `(future …)`.
 
    Small, and the reason the SCI sandbox question (design §8 Q1) has a happy
    answer. `m/sp` and `m/ap` cannot work under SCI — they expand into
@@ -116,9 +117,64 @@
 
    `m/blk`, not `m/cpu`: a thunk from a caller is presumed blocking. Running it
    on the compute pool would let one `Thread/sleep` starve a pool sized to the
-   core count."
+   core count.
+
+   WHY IT CONVEYS (design §8 Q4). `m/via` is `(via-call exec #(do body))` →
+   `Thunk/run`, which invokes the thunk on a pool thread with no
+   `binding-conveyor-fn` anywhere — so a bare `m/via` sees ROOT bindings.
+   `future` and `pmap` both convey, and this brick's whole purpose is to be
+   what those call sites migrate to. A `task-of` that silently dropped
+   `proto/*current-task*` would break subagent progress attribution with no
+   error — `append-task-output!` simply no-ops on an unknown task. Conveying
+   is the least-surprising default and the one that makes the port safe.
+
+   The frame is captured HERE, at construction, exactly as `future` captures at
+   creation. Re-running a stored Task therefore replays the frame it was built
+   with.
+
+   THIS DOES NOT AND CANNOT FIX READS ACROSS A PARK — see `conveying-note`."
   [f]
-  (m/via m/blk (f)))
+  (let [frame (get-thread-bindings)]
+    (m/via m/blk (with-bindings frame (f)))))
+
+(def conveying-note
+  "Why there is no general `(conveying bindings task)` wrapper, and what to do
+   instead. Kept as a var so it has somewhere to be cited from.
+
+   A wrapper only ever sees a Task's `(success, failure)` callbacks and its
+   canceller. It cannot reach inside an arbitrary Task's BODY to install a
+   binding frame there — wrapping the callbacks installs bindings for the
+   continuation, which is not what anyone means by 'convey'. Only a
+   constructor that owns its body (`task-of`) can honestly convey, so only
+   `task-of` does.
+
+   THE HAZARD, measured. Inside `m/sp`, a dynamic var can change value
+   MID-BODY, at the first park:
+
+     (binding [*tag* :outer]
+       (run!! (m/sp (let [before *tag*]
+                      (m/? (m/sleep 10))
+                      [before *tag*]))))
+     ;; => [:outer :root]   thread names: [\"main\" \"missionary scheduler\"]
+
+   A park releases the thread; the coroutine resumes on whichever thread
+   completed the awaited task, carrying that thread's (root) frame. Worse, it
+   is TIMING-DEPENDENT: parking on an already-completed task resumes
+   synchronously and yields [:outer :outer]. So the same code is
+   binding-stable or not depending on whether the inner task happened to be
+   done — passing under a fast test double and failing against a real LLM call.
+
+   THE RULE: never read a dynamic var after a park. Capture it lexically before
+   the first `m/?` and use the local:
+
+     (m/sp (let [tag *tag*]          ;; captured BEFORE any park
+             (m/? (m/sleep 10))
+             tag))                   ;; => :outer
+
+   Where a callee must see the var (a tool that reads `*current-task*`), bind
+   it inside the segment that calls it, which is also what the code does today:
+
+     (m/? (m/via m/blk (binding [*current-task* tid] (call-tool …))))")
 
 (defn success
   "A Task that immediately succeeds with `v`. (`m/sp` without a body needs a

@@ -330,6 +330,16 @@ Do `:fn` and `:tool` executors first (in-process, no proc tree), `:bash` last
 (process-tree teardown in `destroy-process-tree!` is subtle and worth leaving
 undisturbed while the surrounding machinery moves).
 
+**Audit every `binding` on the way through — this is where Q4 bites.** The
+`:tool` executor's `(binding [proto/*current-task* …] …)` and
+`call-tool-with-fast-eval`'s `(binding [proto/*current-task* !task-ref
+proto/*subagent-capture* !sub-capture] …)` must end up INSIDE the segment that
+calls the tool, not wrapped around a task that parks. The failure mode is
+silent (progress attribution stops; no error), and it is timing-dependent, so
+a green test run is not evidence. `fx/task-of` conveys, which makes the
+mechanical `future` → Task port safe; `m/sp` bodies do not, and no library
+change can make them.
+
 ### Phase 4 — cancellation unification
 
 `cancel-run`'s five mechanisms collapse to: cancel the tree, plus one explicit
@@ -534,13 +544,64 @@ Moving executors to Tasks without an explicit `(bounded n …)` would silently
 remove a bound the system relies on. Phase 3 must make the bound explicit rather
 than inherit it from a pool.
 
-**Q4 — does `binding` conveyance survive?** `proto/*current-task*` and
-`proto/*subagent-capture*` are bound around tool futures (`tool.clj:1474`) and
-relied upon across the `pmap` dispatch. Clojure's `future`/`pmap` convey
-bindings; missionary's `m/sp` runs on the calling thread and `m/via m/blk` hops
-pools. Binding conveyance across an `m/via` boundary must be verified, not
-assumed — and if it does not hold, the `*current-task*` mechanism (which is how
-subagent progress is attributed to a task at all) needs an explicit carrier.
+**Q4 — ANSWERED, and it is the sharpest hazard found so far.** Bindings do not
+convey, which was expected; the unexpected part is that a dynamic var can
+change value **mid-body**, and whether it does is **timing-dependent**.
+
+`m/via` is `(via-call exec #(do body))` → `Thunk/run`, which invokes the thunk
+on a pool thread with no `binding-conveyor-fn`. So a bare `m/via` sees ROOT
+bindings while `future` and `pmap` both convey. That much is a straightforward
+porting hazard.
+
+The real problem is inside `m/sp`:
+
+```clojure
+(binding [*tag* :outer]
+  (run!! (m/sp (let [before *tag*]
+                 (m/? (m/sleep 10))
+                 [before *tag*]))))
+;; => [:outer :root]      thread names: ["main" "missionary scheduler"]
+```
+
+Same lexical block, two different values. A park releases the thread and the
+coroutine resumes on whichever thread completed the awaited task, carrying that
+thread's root frame. And parking on an **already-completed** task resumes
+synchronously, yielding `[:outer :outer]` — so identical code is
+binding-stable or not depending on whether the inner task happened to be done.
+That is the shape of bug that passes against a fast test double and fails
+against a real LLM call.
+
+Measured on brainyard's actual pattern:
+
+| shape | `*current-task*` seen by the tool |
+|---|---|
+| today: `(future (binding [...] (call-tool …)))` | `:task-42` |
+| naive port: `(binding [...] (run (m/sp (m/? …) (call-tool …))))` | **`nil`** |
+| correct: `(m/? (m/via m/blk (binding [...] (call-tool …))))` | `:task-42` |
+
+The naive port fails **silently** — `append-task-output!` no-ops on an unknown
+task, so subagent progress attribution would just stop, with no error anywhere.
+
+What does not work: `with-bindings` around the `m/sp` *value*. It wraps
+construction of the Task, not its execution, and yields `[:root :root]`.
+
+**What landed as a result.** `fx/task-of` now conveys the caller's frame,
+captured at construction exactly as `future` captures at creation — because
+this brick is what those `future` call sites migrate to, and the least
+surprising default is the one that makes the port safe. There is deliberately
+**no general `(conveying bindings task)` wrapper**: a wrapper only sees a
+Task's callbacks and canceller, so it cannot reach inside an arbitrary Task's
+body; wrapping the callbacks would install bindings for the *continuation*,
+which is not what anyone means by conveyance. Only a constructor that owns its
+body can honestly convey, so only `task-of` does. The reasoning, the measured
+hazard and the rule live in `prim/conveying-note`, and the behaviour — including
+the mid-body revert and its synchronous-completion exception — is pinned by
+characterization tests, so if missionary ever changes the note is flagged as
+stale rather than quietly becoming wrong.
+
+**The rule: never read a dynamic var after a park.** Capture it lexically
+before the first `m/?`; where a callee must see the var, bind it inside the
+segment that calls it — which is what the code does today anyway.
 
 **Q5 — is `m/sleep`'s single scheduler thread enough?** One
 `missionary scheduler` thread services every timer in the process. Brainyard
@@ -615,12 +676,17 @@ Q1 is answered (§8): the coroutine macros cannot work under SCI, effects
 exposed as functions work fully, and Phase 3's shape is unchanged. No known
 blocker remains for any phase.
 
-The remaining open questions (Q2–Q5: `Cancelled` discipline, the pool bound
-that `create-task-manager` currently gets for free from a fixed 4-thread pool,
-`binding` conveyance across `m/via`, and scheduler-thread load) are all things
-to get right *during* a phase, not gates on starting one. Q4 in particular
-should be settled early in Phase 3, since `proto/*current-task*` conveyance is
-how subagent progress is attributed to a task at all.
+Q4 is also answered (§8), and it turned up the sharpest hazard in the whole
+investigation: a dynamic var can change value mid-`m/sp`-body at the first
+park, silently and timing-dependently. `fx/task-of` now conveys so the
+mechanical `future` → Task port is safe, the rule is documented in
+`prim/conveying-note`, and the behaviour is pinned by characterization tests.
+
+Remaining open: Q2 (`Cancelled` discipline at flow boundaries), Q3 (the
+concurrency bound `create-task-manager` currently gets for free from its fixed
+4-thread pool, which Phase 3 must make explicit rather than inherit), and Q5
+(scheduler-thread load). All are things to get right *during* a phase, not
+gates on starting one.
 
 The single most valuable phase is 3 (the task subsystem: two polling loops and
 ~400 ms of latency delete outright). The single most valuable *artifact* is

@@ -165,6 +165,64 @@
   (testing "a throwing thunk fails the Task rather than escaping"
     (is (= "boom" (ex-message (:err (fx/run!! (fx/task-of #(throw (ex-info "boom" {}))) 2000)))))))
 
+(def ^:dynamic *tag* :root)
+
+(deftest task-of-conveys-dynamic-bindings
+  (testing "matches (future …), which is what call sites migrate from"
+    (is (= {:ok :outer}
+           (binding [*tag* :outer] (fx/run!! (fx/task-of (fn [] *tag*)) 2000)))))
+
+  (testing "a bare m/via does NOT convey — this is the behaviour task-of exists
+            to paper over, pinned so nobody 'simplifies' task-of back to it"
+    (is (= {:ok :root}
+           (binding [*tag* :outer] (fx/run!! (m/via m/blk *tag*) 2000)))))
+
+  (testing "the frame is captured at CONSTRUCTION, like future"
+    (let [t (binding [*tag* :at-build] (fx/task-of (fn [] *tag*)))]
+      (is (= {:ok :at-build} (fx/run!! t 2000)))))
+
+  (testing "conveyance survives a join"
+    (is (= {:ok [:outer :outer]}
+           (binding [*tag* :outer]
+             (fx/run!! (fx/all [(fx/task-of (fn [] *tag*))
+                                (fx/task-of (fn [] *tag*))])
+                       3000))))))
+
+(deftest a-dynamic-var-changes-value-across-a-park
+  ;; NOT a wish — a characterization test for a missionary property that will
+  ;; silently corrupt *current-task* attribution if anyone forgets it. If this
+  ;; ever starts failing, missionary changed and prim/conveying-note is stale.
+  (testing "read either side of one park: the value REVERTS to root"
+    (is (= {:ok [:outer :root]}
+           (binding [*tag* :outer]
+             (fx/run!! (m/sp (let [before *tag*]
+                               (m/? (m/sleep 10))
+                               [before *tag*]))
+                       2000)))))
+
+  (testing "...but NOT when the awaited task completes synchronously — which is
+            what makes this timing-dependent, and so dangerous"
+    (is (= {:ok [:outer :outer]}
+           (binding [*tag* :outer]
+             (fx/run!! (m/sp (let [before *tag*]
+                               (m/? (m/sp 1))
+                               [before *tag*]))
+                       2000)))))
+
+  (testing "the rule that works: capture lexically before the first park"
+    (is (= {:ok :outer}
+           (binding [*tag* :outer]
+             (fx/run!! (m/sp (let [tag *tag*]
+                               (m/? (m/sleep 10))
+                               tag))
+                       2000)))))
+
+  (testing "and for a callee that must see the var, bind inside the segment"
+    (is (= {:ok :outer}
+           (fx/run!! (m/sp (m/? (m/sleep 10))
+                           (m/? (fx/task-of (fn [] (binding [*tag* :outer] *tag*)))))
+                     2000)))))
+
 (deftest from-future-adopts-a-running-future
   (testing "success"
     (let [fut (future (Thread/sleep (long 50)) :from-fut)]
