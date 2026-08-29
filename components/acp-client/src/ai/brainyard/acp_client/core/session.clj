@@ -120,19 +120,41 @@
                      {:timeout-ms timeout-ms})
     timeout-ms)))
 
-(defn model-config-option
-  "The model selector among a session's `:config-options`, or nil.
+(defn config-option
+  "The config option tagged `category` among a session's
+   `:config-options`, or nil.
 
-   Matches `:category \"model\"` first — the spec's tag for the PRIMARY
-   selector. Note `model_config` is a DIFFERENT category, for related
-   knobs like context size and speed/quality, so matching it here would
-   pick a secondary control and set the wrong thing. The `:id`/`:name`
-   fallback covers agents that ship the option without a category."
+   Matches `:category` EXACTLY, then falls back to an `:id`/`:name`
+   match for agents that ship an option without a category. The exact
+   match matters: `model_config` is a DIFFERENT category from `model`
+   — it tags secondary knobs like context size and speed/quality — so a
+   prefix or substring test would pick a secondary control and set the
+   wrong thing."
+  [config-options category]
+  (let [c (str/lower-case (str category))]
+    (or (first (filter #(= c (str/lower-case (str (:category %)))) config-options))
+        (first (filter #(or (= c (str/lower-case (str (:id %))))
+                            (= c (str/lower-case (str (:name %)))))
+                       config-options)))))
+
+(defn model-config-option
+  "The model selector among a session's `:config-options`, or nil."
   [config-options]
-  (or (first (filter #(= "model" (:category %)) config-options))
-      (first (filter #(or (= "model" (str/lower-case (str (:id %))))
-                          (= "model" (str/lower-case (str (:name %)))))
-                     config-options))))
+  (config-option config-options "model"))
+
+(defn mode-config-option
+  "The session-mode selector among a session's `:config-options`, or nil.
+
+   claude-agent-acp 0.70.0 offers `default` (inherit the agent's own
+   policy) / `acceptEdits` / `plan` / `dontAsk` / `bypassPermissions`.
+   This decides whether the agent EXECUTES a tool and whether it
+   escalates to the client at all — measured 2026-08-29: under `default`
+   and `bypassPermissions` a file write ran with NO
+   `session/request_permission`; under `plan` and `dontAsk` it did not
+   run. So the mode sits ABOVE a client's permission handler and can
+   render it decorative."
+  [config-options]
+  (config-option config-options "mode"))
 
 ;; =============================================================================
 ;; Fuzzy resolution — shared by both mechanisms

@@ -58,6 +58,9 @@
    {:id "agent" :name "Agent" :type "select" :currentValue "default"
     :options [{:value "default" :name "Default"}]}])
 
+(def ^:private config-options-070-no-mode
+  (vec (remove #(= "mode" (:category %)) config-options-070)))
+
 (deftest model-config-option-test
   (testing "picks the model selector out of the option set"
     (let [opt (acp-client/model-config-option config-options-070)]
@@ -75,6 +78,21 @@
   (testing "no selector → nil (backend does not support model selection)"
     (is (nil? (acp-client/model-config-option [])))
     (is (nil? (acp-client/model-config-option nil)))))
+
+(deftest mode-config-option-test
+  (testing "picks the mode selector, which gates the permission bridge"
+    (let [opt (acp-client/mode-config-option config-options-070)]
+      (is (= "mode" (:id opt)))
+      (is (= #{"default" "plan"} (set (map :value (:options opt)))))))
+  (testing "category match is EXACT — model_config must not satisfy model"
+    (is (nil? (acp-client/config-option
+               [{:id "ctx" :category "model_config" :options []}] "model")))
+    (is (= "ctx" (:id (acp-client/config-option
+                       [{:id "ctx" :category "model_config" :options []}]
+                       "model_config")))))
+  (testing "absent selector → nil (agent offers no mode control)"
+    (is (nil? (acp-client/mode-config-option [])))
+    (is (nil? (acp-client/mode-config-option config-options-070-no-mode)))))
 
 (deftest resolve-config-value-test
   (let [opt (acp-client/model-config-option config-options-070)]

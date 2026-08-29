@@ -118,6 +118,35 @@ primes" prompt.
   session carrying its slash-command list (`:availableCommands`). The translation
   table maps it to `nil` (ignored) — a candidate surface if command discovery is
   ever wanted.
+- **The session `mode` option sits ABOVE the permission bridge.** Measured
+  2026-08-29, asking 0.70.0 to write a file with a client handler that records
+  and denies:
+
+  | mode | `session/request_permission` | file written |
+  |---|---|---|
+  | `default` | none | **yes** |
+  | `bypassPermissions` | none | **yes** |
+  | `plan` | 1 (`"Ready to code?"`) | no |
+  | `dontAsk` | none | no |
+
+  **`default` does not mean "always prompt".** It inherits the backend's own
+  policy — for claude-code, `~/.claude/settings.json` `permissions.defaultMode`
+  plus its allow rules. On a host configured to auto-accept, a brainyard
+  session set to `:deny-by-default` therefore still executed everything: the
+  backend never asked, so `make-permission-callback` never ran. `open-session!`
+  now pins the mode from `:permission-mode` to close that fail-open
+  (`:deny-by-default` → `dontAsk`; the others → `default`, which never
+  escalates privilege). The mapping only ever tightens: `:auto-approve` is
+  deliberately NOT mapped to `bypassPermissions`, because "stop prompting me"
+  is not a mandate to override deny rules the user wrote in their own backend
+  config.
+
+  The limitation to keep in mind: **no mode forces escalation**, so
+  `:ask-each-time` is best-effort against a permissive backend, and the
+  protocol gives a client no way to observe the resolved policy — only the
+  option's value, never its effect. The permission bridge answers the requests
+  it receives; it is not a complete gate.
+
 - **Model selection MOVED between 0.16.2 and 0.70.0 — `session/set_model` was
   removed, not deprecated.** It now answers `-32601 Method not found` for every
   id, valid ones included, and `session/new` returns `:models nil`. Selection

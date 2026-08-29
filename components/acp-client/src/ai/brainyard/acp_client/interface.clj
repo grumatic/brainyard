@@ -128,12 +128,25 @@
   ([sess config-id value] (session/set-config-option! sess config-id value))
   ([sess config-id value opts] (session/set-config-option! sess config-id value opts)))
 
+(defn config-option
+  "The config option tagged `category` among a session's
+   `:config-options`, or nil. Exact category match."
+  [config-options category]
+  (session/config-option config-options category))
+
 (defn model-config-option
   "The model selector among a session's `:config-options`, or nil.
    This is how agents advertise model choice since `session/set_model`
    was removed."
   [config-options]
   (session/model-config-option config-options))
+
+(defn mode-config-option
+  "The session-mode selector among a session's `:config-options`, or
+   nil. The mode decides whether the agent executes a tool and whether
+   it escalates to the client's permission handler at all."
+  [config-options]
+  (session/mode-config-option config-options))
 
 (defn resolve-config-value
   "Fuzzy-match a user string against a config option's `:options`;

@@ -79,7 +79,57 @@
 (defn- resolve-model-id* [& args] (apply acp-client/resolve-model-id args))
 (defn- set-config-option!*   [& args] (apply acp-client/set-config-option! args))
 (defn- model-config-option*  [& args] (apply acp-client/model-config-option args))
+(defn- mode-config-option*   [& args] (apply acp-client/mode-config-option args))
 (defn- resolve-config-value* [& args] (apply acp-client/resolve-config-value args))
+
+;; =============================================================================
+;; Session mode — keeping :permission-mode from being decorative
+;;
+;; The ACP session `mode` config option sits ABOVE our permission bridge: it
+;; decides whether the backend EXECUTES a tool and whether it escalates to
+;; `session/request_permission` at all. Measured against claude-agent-acp
+;; 0.70.0 (2026-08-29), asking it to write a file:
+;;
+;;   default            no permission request   file WRITTEN
+;;   bypassPermissions  no permission request   file WRITTEN
+;;   plan               1 permission request    not written
+;;   dontAsk            no permission request   not written
+;;
+;; `default` does NOT mean "always prompt" — it inherits the backend's own
+;; policy (for claude-code, `~/.claude/settings.json` `permissions.defaultMode`
+;; plus its allow rules). On a host whose Claude Code config auto-accepts, a
+;; brainyard session set to `:deny-by-default` therefore still executed
+;; everything: the backend never asked, so `make-permission-callback` never ran.
+;; That is a FAIL-OPEN, and closing it is the point of this mapping.
+;;
+;; The mapping only ever TIGHTENS. `:deny-by-default` is pinned to `dontAsk`,
+;; which refuses without asking — matching the intent, adapter-side. The other
+;; two map to `default`, deliberately:
+;;
+;;   - `:auto-approve` is NOT mapped to `bypassPermissions`. Our auto-approve
+;;     means "stop prompting ME"; it is not a mandate to override deny rules
+;;     the user wrote in their own backend config. `default` already declines
+;;     to prompt us, so the intent is met without escalating privilege.
+;;   - `:ask-each-time` maps to `default` because THERE IS NO "always escalate"
+;;     mode. This is a real limitation, not an oversight: a permissive backend
+;;     policy will auto-accept without consulting brainyard, and the protocol
+;;     gives a client no way to demand otherwise or even to observe the
+;;     resolved policy (we see the option's value, never its effect).
+;; =============================================================================
+
+(def ^:private permission-mode->session-mode
+  "brainyard `:permission-mode` (resolved) → ACP session mode value.
+   Tightening-only; see the commentary above."
+  {:deny-by-default "dontAsk"
+   :auto-approve    "default"
+   :ask-each-time   "default"})
+
+(defn- bypasses-permission-bridge?
+  "True for session modes under which the backend acts without ever
+   reaching `make-permission-callback`. Used to warn on an explicit
+   override that silently disarms the permission bridge."
+  [mode-value]
+  (contains? #{"bypassPermissions" "acceptEdits"} mode-value))
 (defn- prompt!*          [& args] (apply acp-client/prompt! args))
 (defn- cancel!*          [& args] (apply acp-client/cancel! args))
 (defn- close!*           [& args] (apply acp-client/close! args))
@@ -133,7 +183,17 @@
    Only `:ask-each-time` reaches the interactive `:user-feedback-fn`, bounded by
    `:permission-timeout-ms` — the shared prompt timeout, not an ACP-specific one.
    No interactive session (or no options) → deny, the same posture as
-   acp-client's default handler."
+   acp-client's default handler.
+
+   IMPORTANT — this handler only decides the requests it actually RECEIVES, and
+   the session mode above it decides which those are. A backend in `default`
+   mode applies its OWN policy first and escalates only what that policy defers;
+   under a permissive one (claude-code's `permissions.defaultMode` / allow
+   rules) it may execute everything and call this zero times. `open-session!`
+   pins the mode from `:permission-mode` to stop that being a fail-open for
+   `:deny-by-default`, but no mode forces escalation, so `:ask-each-time`
+   remains best-effort against a permissive backend. Treat this as \"how
+   brainyard answers when asked\", never as a complete gate."
   [agent]
   (fn [{:keys [toolCall options] :as _params}]
     (let [options     (vec options)
@@ -357,6 +417,35 @@
                   (mulog/info ::acp-model-selected :requested model
                               :model-id mid :mechanism :set-model)
                   mid))))
+        ;; --- session mode -> permission bridge --------------------------
+        ;; Pinned from :permission-mode so the backend cannot sit in a mode
+        ;; that makes our permission handler decorative. An explicit
+        ;; :acp-backend-opts {:session-mode "plan"} wins, since a user asking
+        ;; for a specific backend mode means it.
+        mode-opt   (mode-config-option* cfg-opts)
+        req-mode   (:session-mode backend-opts)
+        perm-mode  (config/resolve-permission-mode agent)
+        want-mode  (when mode-opt
+                     (if req-mode
+                       (resolve-config-value* mode-opt req-mode)
+                       (get permission-mode->session-mode perm-mode)))
+        session-mode
+        (when want-mode
+          ;; Only write when it differs — set_config_option is a round-trip
+          ;; on the session-open path, and the common case already matches.
+          (when (not= want-mode (:currentValue mode-opt))
+            (set-config-option!* sess (:id mode-opt) want-mode))
+          (when (bypasses-permission-bridge? want-mode)
+            (mulog/warn ::acp-permission-bridge-bypassed
+                        :session-mode want-mode :permission-mode perm-mode))
+          (mulog/info ::acp-session-mode-set
+                      :mode want-mode
+                      :source (if req-mode :explicit :permission-mode)
+                      :permission-mode perm-mode)
+          want-mode)
+        _ (when (and req-mode mode-opt (nil? want-mode))
+            (mulog/warn ::acp-session-mode-unmatched :requested req-mode
+                        :available (mapv :value (:options mode-opt))))
         ;; What the session will ACTUALLY serve: the matched id, else the
         ;; backend's own default (unmatched requests keep it — see below).
         effective (or model-id (:currentValue model-opt) current)
@@ -374,6 +463,8 @@
                         :model-matched?   matched?
                         :model-mechanism  mechanism        ;; how selection works here
                         :available-models choices
+                        :session-mode     session-mode     ;; pinned backend mode, or nil
+                        :session-modes    (mapv :value (:options mode-opt))
                         :session-id       (:session-id sess)
                         :spawned-at       (System/currentTimeMillis)})
     sess))
