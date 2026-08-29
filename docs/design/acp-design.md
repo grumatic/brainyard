@@ -42,11 +42,17 @@
 >   (`{sessionId, update:{sessionUpdate, …}}`); the translator now normalizes
 >   both the nested (real) and flat (stub) shapes, else streamed text is dropped.
 > - Backend key `:claude-agent-acp` → **`:claude-code`** (canonical; no alias).
-> - **Model selection**: `:acp-backend-opts {:model "sonnet"}` (aliases
->   `default`/`opus`, `sonnet`, `haiku`) → resolved against the agent's
->   advertised models and applied per session via ACP `session/set_model`.
+> - **Model selection**: `:acp-backend-opts {:model "sonnet"}` → resolved
+>   against whatever the agent advertised and applied per session.
 >   `ANTHROPIC_MODEL` is *not* honored by the adapter; settings.json `model`
 >   also works globally.
+>   (**Updated 2026-08-29:** the mechanism moved. `session/set_model` was
+>   REMOVED at claude-agent-acp 0.70.0 — it answers `-32601` for every id — and
+>   selection now rides ACP **session config options**
+>   (`session/set_config_option`). `open-session!` branches on which of the two
+>   a session advertises and records it as `:model-mechanism`. Aliases are now
+>   `default` / `opus[1m]` / `claude-fable-5[1m]` / `sonnet` / `haiku`. See the
+>   quirks section of `acp-client-adapter-notes.md`.)
 >
 > Confirmed with the user before this doc was written:
 >

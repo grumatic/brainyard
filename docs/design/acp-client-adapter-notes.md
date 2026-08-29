@@ -89,7 +89,8 @@ into an `acp-agent` defagent:
 - **Permission bridge:** `session/request_permission` routes to the agent's
   `:user-feedback-fn` N-option picker; **deny-by-default** (selects a `reject_`
   option) when there is no interactive session or no options.
-- **Model** is pinned per ACP session (`session/set_model`); switching model is a
+- **Model** is pinned per ACP session (`session/set_config_option` on current
+  agents, `session/set_model` on legacy ones — see quirks); switching model is a
   **session recycle** (a new session = a new conversation). The `claude-code`
   model can also be set via `~/.claude/settings.json` `"model"`.
 
@@ -117,14 +118,33 @@ primes" prompt.
   session carrying its slash-command list (`:availableCommands`). The translation
   table maps it to `nil` (ignored) — a candidate surface if command discovery is
   ever wanted.
-- **Advertised models are generic tiers, not versioned ids.** `new-session!`
-  returns three: `default` (name "Default (recommended)", desc "Opus 4.6 · Most
-  capable for complex work"), `sonnet` ("Sonnet 4.5 · …"), `haiku` ("Haiku 4.5 ·
-  …"); `:currentModelId "default"`. Because `resolve-model-id` substring-matches
-  modelId **/ name / description**, `:acp-backend-opts {:model "opus"}` resolves
-  to `default` (its description contains "Opus") — correct in effect, since
-  `default` *is* Opus 4.6, but note the effective modelId is `"default"`, not an
-  opus-named id.
+- **Model selection MOVED between 0.16.2 and 0.70.0 — `session/set_model` was
+  removed, not deprecated.** It now answers `-32601 Method not found` for every
+  id, valid ones included, and `session/new` returns `:models nil`. Selection
+  lives in **session config options**: `session/new` returns `configOptions[]`
+  and the client pins with `session/set_config_option {sessionId configId
+  value}`, whose reply is the COMPLETE updated option set (setting one option
+  may change others). 0.70.0 serves three — `mode`, `model`, `agent`:
+
+  ```clojure
+  {:id "model" :name "Model" :category "model" :type "select"
+   :currentValue "default"
+   :options [{:value "default"            :description "Opus (1M context)"}
+             {:value "opus[1m]"           :name "Opus (1M context)"}
+             {:value "claude-fable-5[1m]" :name "Fable"}
+             {:value "sonnet"             :name "Sonnet"}
+             {:value "haiku"              :name "Haiku"}]}
+  ```
+
+  Two traps. **`model_config` is a different category** from `"model"` — it
+  tags secondary knobs (context size, speed/quality trade-off), so matching it
+  picks the wrong control; `model-config-option` matches `"model"`. And
+  **tier order decides "opus"**: it matches both the id `opus[1m]` and the
+  *description* of `default` ("Opus (1M context)"), so id-substring must
+  outrank description-substring or a request for opus silently lands on the
+  catch-all. Because a moved agent REMOVED the old method, callers must branch
+  on what the session advertised rather than try one and catch — see
+  `open-session!`'s `:model-mechanism` (`:config-option | :set-model | :none`).
 - **Tool input arrives in TWO phases, and the second phase moved.** The first
   message for a call is always a placeholder with empty input; the real
   arguments follow separately. Consumers must **upsert/merge by `call-id`**,
