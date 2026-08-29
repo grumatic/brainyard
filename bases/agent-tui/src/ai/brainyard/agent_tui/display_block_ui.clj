@@ -201,7 +201,14 @@
               (.write ^java.io.Writer w "[?1049l")
               (.write ^java.io.Writer w "[?25h")
               (.write ^java.io.Writer w "[2J[H")
-              (.flush ^java.io.Writer w))))
+              (.flush ^java.io.Writer w)))
+           ;; $EDITOR owns the screen from here until `handle-resize!` rebuilds
+           ;; it below, and the DECSTBM region was just reset. A ticker firing
+           ;; in that window must not believe it knows what is on any row: the
+           ;; renderer would skip rows it thinks are already right, and — worse
+           ;; — a scroll it thinks is safe would move the WHOLE screen, there
+           ;; being no region left to confine it.
+           (layout/invalidate-painted!))
           ;; Handing the terminal to $EDITOR with the cursor shown — tell the
           ;; frame epilogue, or it will skip the hide it owes on return.
          (layout/note-cursor-shown!)

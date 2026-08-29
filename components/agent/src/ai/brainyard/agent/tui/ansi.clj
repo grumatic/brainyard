@@ -352,6 +352,24 @@
 ;; painted in that colour.
 (def erase-eol (str esc "0K"))
 
+;; Scroll the DECSTBM region by n lines, discarding what falls off the far edge
+;; and exposing blank lines at the near one. The CURSOR DOES NOT MOVE, so a
+;; caller repaints the exposed rows by absolute position afterwards.
+;;
+;; This is how a renderer avoids rewriting a whole screen of text that merely
+;; MOVED. Bottom-anchored content shifts up by one whenever a line is appended,
+;; which changes what every row says while changing almost nothing about what
+;; the screen shows; asking the terminal to move it costs one escape instead of
+;; one rewrite per row.
+;;
+;; Both honour BCE — the exposed lines are filled with the current background —
+;; so emit `reset` first unless that background is wanted.
+;;
+;; Safe only while the region really is what the caller thinks it is; these
+;; move whatever DECSTBM currently spans, not a range passed in.
+(defn scroll-up   "Scroll the region up n lines (content moves toward row 1)."   [n] (str esc n "S"))
+(defn scroll-down "Scroll the region down n lines (content moves away from row 1)." [n] (str esc n "T"))
+
 ;; Alternate scroll mode — converts scroll wheel to arrow keys in alt screen.
 ;; Leaves mouse clicks unintercepted, so it is what the TUI falls back to when
 ;; mouse reporting is off (`:enable-mouse false`) and terminal text selection

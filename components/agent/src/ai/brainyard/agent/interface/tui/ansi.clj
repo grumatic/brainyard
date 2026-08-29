@@ -38,6 +38,7 @@
                 begin-sync end-sync
                 enter-alt-screen leave-alt-screen clear-screen
                 reset-scroll-region erase-line erase-eol
+                scroll-up scroll-down
                 enable-alt-scroll disable-alt-scroll
                 enable-mouse disable-mouse
                 enable-bracketed-paste disable-bracketed-paste)

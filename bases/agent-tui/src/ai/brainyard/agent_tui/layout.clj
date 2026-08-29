@@ -177,6 +177,78 @@
              (assoc-in p [:rows row] s)
              p))))
 
+(def ^:private max-detected-scroll
+  "How far a shift is looked for. A streamed chunk moves content by one or two
+   rows; past a screenful the terminal is repainting either way."
+  32)
+
+(def ^:private scroll-worth-it
+  "How many rows a scroll must SAVE before it is used. A scroll is an extra
+   escape and an extra thing to be wrong about, so it has to buy more than one
+   row of output."
+  2)
+
+(defn- rows-after-scroll
+  "What `rows` becomes on screen after scrolling the region by `k` — positive
+   up (content moves toward row 1), negative down. The rows that fall off the
+   far edge are gone and blank ones arrive at the near edge, which is exactly
+   what a blank row in the cache is: the empty string."
+  [rows k]
+  (let [n (count rows)
+        k (long k)]
+    (cond
+      (zero? k)      rows
+      (>= (abs k) n) (vec (repeat n ""))
+      (pos? k)       (into (subvec rows k n) (repeat k ""))
+      :else          (into (vec (repeat (- k) "")) (subvec rows 0 (+ n k))))))
+
+(defn- mismatches
+  "How many rows would still have to be written to turn `on-screen` into
+   `wanted`."
+  ^long [on-screen wanted]
+  (let [n (count wanted)]
+    (loop [i 0, acc 0]
+      (if (>= i n)
+        acc
+        (recur (inc i)
+               (if (= (nth wanted i) (get on-screen i)) acc (inc acc)))))))
+
+(defn- best-scroll
+  "How far to scroll the region before diffing, or 0 for not at all.
+
+   Bottom-anchored content shifts up by one whenever a line is appended, so a
+   block that grows by a streamed chunk changes what EVERY row says while
+   changing almost nothing about what the screen shows. Rewriting all of them
+   is the single largest repaint the renderer still does; asking the terminal
+   to move them is one escape.
+
+   Chosen by SIMULATION — `rows-after-scroll` says what each candidate would
+   leave on screen and the winner is whichever leaves the least to write. That
+   is the whole reason this is safe: both inputs are just vectors of strings,
+   so it is blind to viewport offset, sticky blocks and blank padding, the
+   three things that make \"did the content scroll?\" hard to answer from
+   layout state and none of which can misreport what is on the screen. A wrong
+   answer here cannot corrupt anything either — the diff that follows repaints
+   whatever the scroll failed to put in place.
+
+   Skipped entirely when the plain diff is already small, which is the common
+   case (a spinner tick is one row) and the one that must stay cheap."
+  ^long [on-screen wanted]
+  (let [base (mismatches on-screen wanted)]
+    (if (<= base scroll-worth-it)
+      0
+      (let [n     (count wanted)
+            limit (min max-detected-scroll (dec n))]
+        (loop [k 1, best-k 0, best base]
+          (if (> k limit)
+            (if (< best (- base scroll-worth-it)) best-k 0)
+            (let [up   (mismatches (rows-after-scroll on-screen k) wanted)
+                  down (mismatches (rows-after-scroll on-screen (- k)) wanted)
+                  [k* m*] (if (<= up down) [k up] [(- k) down])]
+              (if (< m* best)
+                (recur (inc k) k* m*)
+                (recur (inc k) best-k best)))))))))
+
 (defn- paint-row
   "Bytes that put `content` on 1-based terminal `row`.
 
@@ -1011,8 +1083,22 @@
                                                    line)))
                                 ""))))
                         (range scroll-bottom))
-                  prev (painted-rows cols scroll-bottom)
-                  sb   (StringBuilder.)]
+                  painted (painted-rows cols scroll-bottom)
+                  ;; Move what merely MOVED, then diff what is left. Zero
+                  ;; whenever there is no cache, so a cold paint is unaffected.
+                  k       (if painted (best-scroll painted contents) 0)
+                  prev    (if (zero? k) painted (rows-after-scroll painted k))
+                  sb      (StringBuilder.)]
+              (when-not (zero? k)
+                ;; `reset` first: the exposed rows are filled with the current
+                ;; background, and the last row painted is not ours to inherit.
+                ;; Legal only because DECSTBM spans exactly 1..scroll-bottom
+                ;; here — the same invariant `write-output!`'s hardware-scroll
+                ;; path already depends on.
+                (.append sb ^String ansi/reset)
+                (.append sb ^String (if (pos? k)
+                                      (ansi/scroll-up k)
+                                      (ansi/scroll-down (- k)))))
               (dotimes [row scroll-bottom]
                 ;; The diff. `nil` from a stale/absent cache never equals a
                 ;; string, so an unknown row always repaints.

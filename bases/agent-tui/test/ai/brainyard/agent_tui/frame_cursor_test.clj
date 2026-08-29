@@ -420,9 +420,14 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- rows-addressed
-  "Which 1-based rows a captured frame actually wrote to."
+  "Which SCROLL-REGION rows a captured frame wrote to. Chrome is excluded: a
+   composite frame also carries the separator, and counting that as content
+   makes every one of these assertions off by one."
   [s]
-  (mapv (comp parse-long second) (re-seq #"\033\[(\d+);1H" s)))
+  (let [bottom (:scroll-bottom @layout/!layout)]
+    (into [] (comp (map (comp parse-long second))
+                   (filter #(<= % bottom)))
+          (re-seq #"\033\[(\d+);1H" s))))
 
 (deftest a-block-tick-repaints-only-the-rows-that-changed
   (testing "one changed line in a 20-row block is one row of output"
@@ -473,6 +478,71 @@
       ;; escapes left a background set would otherwise colour its cleared tail.
       (is (str/includes? all (str "line 59" ESC "[0m" ESC "[0K"))
           "content, then reset, then erase — in that order"))))
+
+(defn- scroll-of
+  "The region scroll a captured frame asked for: positive up, negative down,
+   nil for none."
+  [s]
+  (when-let [[_ n d] (re-find #"\033\[(\d+)([ST])" s)]
+    (cond-> (parse-long n) (= d "T") -)))
+
+(deftest content-that-merely-moved-is-scrolled-not-rewritten
+  (testing "a block growing by one line is one scroll and one row, not 34"
+    (setup! false)
+    (let [block (fn [n] (into ["[|] acp-agent  12.3s"]
+                              (map #(str "  segment line " %)) (range n)))]
+      (layout/update-live-block! :acp (block 19) {:render (fn [_] (block 19))})
+      (reset! !flushes [])
+      (layout/update-live-block! :acp (block 20) {:render (fn [_] (block 20))})
+      (let [all (joined)]
+        (is (= 1 (scroll-of all)) "the region was scrolled up one")
+        (is (= 1 (count (rows-addressed all)))
+            "only the row the scroll could not supply was written")
+        (is (str/starts-with? all (str SYNC-ON ESC "[0m" ESC "[1S"))
+            "reset before the scroll — the exposed row inherits the background
+             otherwise — and after the frame prologue, which owns sync and the
+             cursor (already hidden by the paint that created the block)")))))
+
+(deftest a-tick-that-moved-nothing-does-not-scroll
+  (testing "a scroll has to buy more than a row or two of output"
+    (setup! false)
+    (let [block (fn [spin] (into [(str "[" spin "] acp-agent")]
+                                 (map #(str "  segment line " %)) (range 19)))]
+      (layout/update-live-block! :acp (block \|) {:render (fn [_] (block \|))})
+      (reset! !flushes [])
+      (layout/update-live-block! :acp (block \/) {:render (fn [_] (block \/))})
+      (is (nil? (scroll-of (joined)))
+          "one changed row is cheaper to write than to scroll around"))))
+
+(deftest scrolling-back-through-history-scrolls-the-other-way
+  (testing "a wheel scroll moves content down, and only the new rows are drawn"
+    (setup! false)
+    (layout/render-viewport!)
+    (reset! !flushes [])
+    (layout/scroll-lines-up! 3)
+    (let [all (joined)]
+      (is (= -3 (scroll-of all)) "three lines down")
+      (is (= 3 (count (rows-addressed all)))
+          "the three rows uncovered at the top, and nothing else"))))
+
+(deftest a-scroll-never-has-to-be-right
+  (testing "the diff repaints whatever the scroll failed to place"
+    ;; The scroll is chosen by simulating it against the painted rows, so the
+    ;; renderer is free to be wrong about it: every row is still compared to
+    ;; what the scroll would leave there. Pin that by scrolling and then
+    ;; asserting the cache describes the screen exactly.
+    (setup! false)
+    (layout/render-viewport!)
+    (layout/write-output! "a brand new line of output")
+    (reset! !flushes [])
+    (layout/invalidate-painted!)
+    (layout/render-viewport!)
+    (let [rows (rows-addressed (joined))]
+      (is (= (:scroll-bottom @layout/!layout) (count rows))
+          "a full repaint right after the scrolled one finds nothing stale —
+           every row is addressed because the cache was dropped, not because
+           the scroll left the screen wrong")
+      (is (nil? (scroll-of (joined))) "and with no cache there is nothing to scroll"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Inline mode is untouched
