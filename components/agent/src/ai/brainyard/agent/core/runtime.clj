@@ -96,6 +96,21 @@
       (.lock lock)
       (try (.signalAll cnd) (finally (.unlock lock))))))
 
+(defn set-bt-canceller!
+  "SPIKE §16: register the canceller of an in-flight effect-engine BT run, so
+   `cancel-run` can stop it structurally.
+
+   This is the seam Phase 4 needed and never had. `send-ask` hands the loop to
+   a thread and keeps only the thread; a Task hands back a canceller, and this
+   is where it lands."
+  [!state cancel]
+  (swap! !state assoc-in [:runtime :bt-cancel] cancel))
+
+(defn clear-bt-canceller!
+  "Drop the registered BT canceller (call in a finally)."
+  [!state]
+  (swap! !state update :runtime dissoc :bt-cancel))
+
 (defn cancel-run
   "Cancel the current async execution. Four mechanisms, each covering a
    different way a run can be stuck, none of them redundant:
@@ -143,6 +158,11 @@
   (signal-pause-condition! !state)
   (when-let [^java.io.Closeable http (get-in @!state [:runtime :active-http])]
     (try (.close http) (catch Throwable _)))
+  ;; SPIKE §16: when the run is an effect, cancelling it is one call and needs
+  ;; none of the three mechanisms above. Both paths coexist while only one of
+  ;; them is wired in production.
+  (when-let [cancel (get-in @!state [:runtime :bt-cancel])]
+    (try (cancel) (catch Throwable _)))
   (when-let [^Thread thread (get-in @!state [:runtime :thread])]
     (.interrupt thread))
   (mulog/info ::agent-run-cancelled))

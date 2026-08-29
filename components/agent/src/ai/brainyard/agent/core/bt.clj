@@ -872,3 +872,32 @@
          (.update-session-data agent
                                {:trace {:agent-id (:agent-id agent) :depth depth :content (format "<<< %s repeat **%s**." id result)}}))
        result))))
+
+(defn run-bt-task
+  "SPIKE §16: `run-bt` as an effect. Returns a Task completing with the BT
+   result, instead of running the tree to completion on the calling thread.
+
+   Same preamble as `run-bt` — the st-memory reset and question stamp are
+   side effects that must happen when the run STARTS, not when the Task is
+   built, so they sit inside the `m/sp`.
+
+   `:leaf-wrap` is installed here: every leaf re-establishes
+   `proto/*current-agent*` on whatever thread it lands on, which is the whole
+   of the Q4 mitigation (§16 Q2). One site, because `build-bt` already threads
+   the agent through context.
+
+   Nothing in production calls this yet — see the §16 'what is left' list. The
+   caller that eventually does must hand the canceller to
+   `runtime/set-bt-canceller!`, which is the point of the exercise."
+  [agent question]
+  (let [!state (:!state agent)
+        bt     (:behavior-tree @!state)]
+    (when-not bt
+      (throw (ex-info "No behavior tree configured" {:agent-id (proto/agent-id agent)})))
+    (let [bt (update bt :context assoc
+                     :leaf-wrap (fn [thunk]
+                                  (binding [proto/*current-agent* agent]
+                                    (thunk))))]
+      (m/sp
+       (reset-st-memory! !state bt question)
+       (m/? (bt/run-task bt))))))

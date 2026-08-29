@@ -1300,22 +1300,47 @@ end-to-end with its native smoke suite; `effect-smoke`; and a real agent turn on
 the native binary. Production still runs the synchronous ticks — nothing calls
 `run-task`.
 
-### What is left before this could ship
+### Third pass — `run-bt-task`, and item 1 turns out to be unnecessary
 
-The engine is done, both halves. What remains is not engine work:
+Step 2 is done: `abt/run-bt-task` returns a Task, `runtime/set-bt-canceller!`
+registers it, and `cancel-run` cancels it. 4 tests / 10 assertions.
 
-1. **The blocking leaves.** The LLM action (`dspy_action.clj`, 427 lines), tool
-   dispatch, and code eval return status keywords today. `lift` means they can
-   convert one at a time; until they do, the tree runs on `m/blk` per leaf and
-   nothing actually parks except where a leaf already returns a Task.
-2. **`bt/run` → `run-bt` → callers.** Returning a Task changes ~4 call sites
-   and `send-ask`'s shape — that is where the canceller has to end up for any
-   of this to reach `cancel-run`.
-3. **`:leaf-wrap` wiring.** `build-bt` must install
-   `(fn [thunk] (binding [proto/*current-agent* agent] (thunk)))`.
-4. **Deciding about pause.**
+**`cancel-run` now stops a run with the cooperative flag never consulted.** The
+test's mock *counts* calls to `check-run-cancelled?` and asserts zero. That is
+the claim §14 said could not be reached without a rewrite, demonstrated.
 
-Only after (2) does `cancel-run` actually collapse. Everything before it is
-preparation that changes no user-visible behaviour — which is the right shape
-for landing it incrementally, and also why it is not worth landing at all until
-someone commits to (2).
+`run-bt-task` installs `:leaf-wrap` itself, so `*current-agent*` survives a park
+with no caller involvement — item 3, absorbed.
+
+**Item 1 — converting the blocking leaves — is NOT required, and measuring it
+was the surprise of this pass.** A tree whose leaves are plain blocking
+functions returning keywords still cancels correctly:
+
+```
+[:action (fn [_] (Thread/sleep 4000) :success)]   ; no Task, no m/sleep
+  → cancelled, settles as InterruptedException
+  → the leaf never finished; the node after it never ran
+```
+
+Every leaf already runs through `leaf-task` → `fx/task-of` → `m/via m/blk`, so
+cancelling the tree interrupts the leaf's thread whether or not the leaf knows
+anything about effects. **Leaf conversion buys composition — a timeout or retry
+around the LLM call, expressed as a value — not cancellation.** §16's "what is
+left" list had it first and it belongs last, if at all.
+
+One caveat it does not fix: a leaf blocked in a *socket read* is still
+uninterruptible, which is why `.close` on `:active-http` survives every version
+of this design (§14, mechanism 2).
+
+### What is actually left
+
+1. **Wire it into `send-ask` / `ask`.** The seam exists and is tested; nothing
+   in production calls `run-bt-task`. This is the only remaining step with real
+   risk, because it changes how every turn executes.
+2. **Decide about pause.** Still a park on a `Condition`; still the honest
+   exception, since a paused turn waits on a person.
+3. **Optionally, the leaves** — for composition, not cancellation.
+
+Once (1) lands, `cancel-run` loses mechanisms 1 and 3 and keeps the `.close`
+and the pause signal. Two mechanisms, not four, and the two that remain are the
+two that were never reducible.
