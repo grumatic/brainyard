@@ -1378,3 +1378,69 @@ caller-visible shape is identical on both paths.
 never reducible. Phase 4 was cancelled in §14 as impossible without a rewrite;
 it turned out to be four passes, a ~200-line engine that was really ~340, and
 one config flag.
+
+## 17. Two follow-ups: HTTP cancellation, and pause as a dataflow variable
+
+Both raised after §16 landed. Investigated, not implemented.
+
+### `.close` on `:active-http` is only *half* irreducible
+
+Every version of this design has called mechanism 2 unreducible on any
+platform. That is true for the case that matters and false in general, and the
+distinction is worth writing down.
+
+`clj-http-native/core/client.clj:231` uses `**.send**` — the blocking call. The
+calling thread sits inside `HttpClient.send`, which no interrupt reaches, so
+closing the response stream from outside is the only exit. Hence
+`set-active-http!` at `agent.clj:826`.
+
+`HttpClient` also has `sendAsync`, returning a `CompletableFuture` — which
+implements `Future`, so `fx/from-future` adopts it directly — and on JDK 11+
+`.cancel(true)` genuinely aborts the exchange. So:
+
+| call shape | cancellable structurally? |
+|---|---|
+| non-streaming (`ofString`) | **yes** — `sendAsync` + cancel the Task |
+| streaming (`ofInputStream`) | **no** — see below |
+
+Streaming is the case brainyard actually cares about, and it does not reduce.
+`sendAsync` completes when *headers* arrive; the body is then read from an
+`InputStream` on the consuming thread. Cancelling the future after that does
+nothing to a read already in progress, because the JDK has handed the body over.
+The SSE path blocks in `InputStream.read`, and closing the stream remains the
+only way out.
+
+So the accurate claim is: **`.close` survives because of streaming bodies, not
+because HTTP is inherently uncancellable.** Converting the non-streaming path
+would be real but modest — it removes the closer from ordinary calls and leaves
+it exactly where the LLM stream is.
+
+### Pause holding a pool thread is a defect §16 introduced
+
+`check-pause!` calls `await-resume` → `wait-if-paused` → `.await` on a
+`Condition`. Under the synchronous engine that parked the `send-off` thread,
+which is that thread's job. **Under the effect engine it parks an `m/blk` pool
+thread**, and `m/blk` is shared with every task waiter in the process. A turn
+paused for minutes holds a pooled thread for minutes.
+
+Thread *count* is unchanged, so nothing breaks — but the kind of thread is
+worse, and §16 called pause "the honest exception" without noticing it had
+made pause more expensive rather than merely unconverted.
+
+`m/dfv` is the fit. A dataflow variable is precisely "a value that will arrive
+later": `resume-run` delivers it, `(m/? dfv)` parks the *coroutine* and holds
+no thread at all. That is strictly better than the Condition on the effect
+path, and it retires mechanism 4.
+
+The reason it is not a trivial swap: pause is driven from outside the effect
+world (a TUI keystroke), the dfv must be allocated per pause and replaced on
+resume, and `cancel-run` must settle it so a cancelled-while-paused turn
+unwinds — which is what `signal-pause-condition!` does today. The semantics are
+already worked out in `wait-if-paused`'s three outcomes; they just need
+re-expressing.
+
+### If both landed
+
+`cancel-run` would reach **one** mechanism — cancel the effect — with the
+stream closer surviving only for streaming bodies, which is where it always
+belonged. That is the shape §14 said was unreachable.
