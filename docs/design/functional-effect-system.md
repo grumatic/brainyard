@@ -457,17 +457,64 @@ and without missionary on the require path. Binary size +1.77 MB (+0.8%).
 
 ## 8. Open questions
 
-**Q1 — does missionary work inside the SCI code-eval sandbox?** This is the
-biggest unknown and it gates whether the coact code-eval surface can ever use
-effect values directly. `m/sp` / `m/ap` are macros over cloroutine's `cr`, which
-performs a CPS transform at macroexpansion time. SCI needs macro implementations
-supplied explicitly, and a macro that analyzes and rewrites its body is the
-hardest case. **Untested.** The probe: expose `m/sp`, `m/?`, `m/join` through
-`clj-sandbox`'s `sci-init-opts` and evaluate the tutorial's `hello-world` +
-`slowmo` + `join` examples inside a real sandbox. If it fails, the fallback is
-that the sandbox keeps its current `future`-based eval and only the *host* side
-(the executor that runs the sandbox) becomes a Task — which is still most of
-Phase 3's value. Answer this before Phase 3.
+**Q1 — ANSWERED. The coroutine macros do not survive SCI; the fallback does,
+and it is better than expected.** Probed in bare SCI and in a real
+`clj-sandbox` sandbox at `:restricted` interop.
+
+`m/sp` / `m/ap` fail, and the failure is an unbounded **regress**, not a
+missing require:
+
+```
+copy-ns missionary.core        -> Could not resolve symbol: cloroutine.core/cr
++ copy-ns cloroutine.core      -> Could not resolve symbol: cloroutine.impl/safe
+```
+
+Each copy exposes the next private helper the *generated state machine*
+references, and `cloroutine.impl` is 34 KB of them. Chasing it to the end would
+not help anyway: `cloroutine.impl.analyze-clj` analyzes with
+`clojure.tools.analyzer.jvm` against `clojure.lang.Compiler$LocalBinding`, and
+`cr` is handed `&env` — which under SCI holds SCI's own binding
+representations, not `Compiler$LocalBinding`. The CPS transform is written
+against the JVM compiler's environment; SCI does not have one. Treat this as
+closed.
+
+**It does not matter, because the sandbox never needed the macros.** Effects
+exposed as ordinary *functions* work completely. Verified inside a real
+sandbox:
+
+| sandboxed expression | result |
+|---|---|
+| `(fx-run (fx-task (fn [] (reduce + (range 100)))))` | `{:ok 4950}` |
+| `(fx-run (fx-join vector (fx-task slow) (fx-task slow)))` | `{:ok [:done :done]}`, **316 ms vs 607 ms serial** |
+| `(fx-run (fx-timeout (fx-task …) 150 :fell-back))` | `{:ok :fell-back}` |
+| `(fx-run (fx-bounded 3 …))` | `{:ok [0 1 2 3 4 5]}` — order preserved |
+| `(fx-run (fx-race (fx-sleep 50 :fast) (fx-sleep 2000 :slow)))` | `{:ok :fast}` |
+| `(fx-run (fx-reduce + (fx-seed (range 10))))` | `{:ok 45}` |
+
+The load-bearing piece is `fx-task` — `(fn [f] (m/via m/blk (f)))` — which
+turns a plain thunk into a Task on the host side. `m/sp` exists to let you
+write sequential code *containing* parks; sandboxed code does not need to park,
+it needs to hand back composable work. A thunk does that. Everything else
+(`join`, `timeout`, `race`, `bounded`, `reduce`, `seed`) is already a function
+in missionary and crosses the boundary untouched.
+
+Two supporting results: a **host-built** `m/sp` Task called from SCI works
+(`{:ok 42}`) — macroexpansion happens on the host, SCI only invokes the
+resulting function — and the sandbox's own `eval-code :timeout-ms` still
+cancels an effect correctly (`:timeout` at 806 ms on an 800 ms budget), so the
+existing eval-level safety net is not bypassed by handing the sandbox effect
+values.
+
+(`System/currentTimeMillis` is unavailable to sandboxed code, which is
+`:restricted` interop denying `System` **by design**, not an effect-system
+limitation. Timings above are host-measured for that reason.)
+
+**Consequence for Phase 3: unchanged and de-risked.** The host side — executors,
+`await-task`, the detach watcher — is ordinary AOT-compiled Clojure and uses
+`m/sp` freely. The sandbox gets a function-shaped binding set. The fallback the
+draft feared ("only the host side becomes a Task") is not a fallback at all; it
+is the correct architecture, and the sandbox gets *more* than the draft
+expected.
 
 **Q2 — `missionary.Cancelled` discipline at every boundary.** The tutorial's own
 D4 attempt failed exactly this way: an unabsorbed `Cancelled` from a
@@ -540,8 +587,10 @@ Also verified: `bb poly check` OK; the 11 brick tests / 34 assertions pass; the
 documented binary smoke tests (`--help`, `agents`, `sessions list`, `models`)
 still pass.
 
-**Q1 (missionary inside SCI) is still open.** Phase 0 did not probe it, because
-nothing before Phase 3 depends on the answer. It remains the gate on Phase 3.
+**Q1 (missionary inside SCI) is now answered** — see §8. The coroutine macros
+do not survive SCI and never will; effects exposed as functions work fully,
+including real parallelism, inside a real sandbox at `:restricted` interop.
+Phase 3 is unblocked.
 
 **One unrelated thing surfaced:** `bb build:ata` fails at `reflect:check` on a
 NEW reflection site in `bases/agent-tui/.../autocomplete.clj:944`
@@ -562,9 +611,16 @@ Phase 1 (retry/backoff in `clj-llm`, the five `promise`/`deref` pairs in
 `permissions.clj`) is the natural next step and is contained enough to pace
 against other work.
 
-**Do not start Phase 3 before answering Q1** (does `m/sp`/`m/ap` survive the
-SCI sandbox). It is the one remaining unknown that can change the shape of the
-task-subsystem migration rather than just its schedule.
+Q1 is answered (§8): the coroutine macros cannot work under SCI, effects
+exposed as functions work fully, and Phase 3's shape is unchanged. No known
+blocker remains for any phase.
+
+The remaining open questions (Q2–Q5: `Cancelled` discipline, the pool bound
+that `create-task-manager` currently gets for free from a fixed 4-thread pool,
+`binding` conveyance across `m/via`, and scheduler-thread load) are all things
+to get right *during* a phase, not gates on starting one. Q4 in particular
+should be settled early in Phase 3, since `proto/*current-task*` conveyance is
+how subagent progress is attributed to a task at all.
 
 The single most valuable phase is 3 (the task subsystem: two polling loops and
 ~400 ms of latency delete outright). The single most valuable *artifact* is

@@ -69,6 +69,13 @@
   [p]
   (prim/from-promise p))
 
+(defn task-of
+  "Lift a plain thunk into a Task, evaluated on `m/blk`. The macro-free entry
+   into the effect world — this is what makes effects usable from the SCI
+   sandbox, where `m/sp`/`m/ap` cannot work (design §8 Q1)."
+  [f]
+  (prim/task-of f))
+
 (defn success
   "A Task that immediately succeeds with `v`."
   [v]

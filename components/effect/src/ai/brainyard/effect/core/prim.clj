@@ -98,6 +98,28 @@
   [p]
   (m/via m/blk (deref p)))
 
+(defn task-of
+  "Lift a plain thunk into a Task, evaluated on `m/blk`.
+
+   Small, and the reason the SCI sandbox question (design §8 Q1) has a happy
+   answer. `m/sp` and `m/ap` cannot work under SCI — they expand into
+   cloroutine's CPS transform, which analyzes against the JVM compiler's
+   `&env`, and SCI does not have one. But the sandbox never needed them:
+   `m/sp` exists so you can write sequential code *containing parks*, and
+   sandboxed code does not park — it hands back composable work. A thunk does
+   that, and every other combinator (`join`, `timeout`, `race`, `bounded`,
+   `reduce`, `seed`) is already a function that crosses the boundary untouched.
+
+   Verified inside a real sandbox at `:restricted` interop: two 300 ms thunks
+   joined complete in 316 ms against 607 ms sequential, so this is genuine
+   parallelism and not a wrapper that serializes.
+
+   `m/blk`, not `m/cpu`: a thunk from a caller is presumed blocking. Running it
+   on the compute pool would let one `Thread/sleep` starve a pool sized to the
+   core count."
+  [f]
+  (m/via m/blk (f)))
+
 (defn success
   "A Task that immediately succeeds with `v`. (`m/sp` without a body needs a
    body; this reads better at call sites that branch into a constant.)"

@@ -148,6 +148,23 @@
     (is (<= 2 (fx/stop-all!)))
     (is (empty? (fx/running)))))
 
+(deftest task-of-is-the-macro-free-entry
+  (testing "a thunk becomes a Task"
+    (is (= {:ok 4950} (fx/run!! (fx/task-of #(reduce + (range 100))) 2000))))
+
+  (testing "thunks joined through task-of are GENUINELY parallel — this is what
+            makes the sandbox usable without m/sp, so a wrapper that quietly
+            serialized would defeat the whole Q1 answer"
+    (let [slow #(do (Thread/sleep (long 300)) :done)
+          t0   (System/currentTimeMillis)
+          r    (fx/run!! (fx/all [(fx/task-of slow) (fx/task-of slow)]) 5000)
+          el   (- (System/currentTimeMillis) t0)]
+      (is (= {:ok [:done :done]} r))
+      (is (< el 500) (str "took " el "ms; serial would be ~600"))))
+
+  (testing "a throwing thunk fails the Task rather than escaping"
+    (is (= "boom" (ex-message (:err (fx/run!! (fx/task-of #(throw (ex-info "boom" {}))) 2000)))))))
+
 (deftest from-future-adopts-a-running-future
   (testing "success"
     (let [fut (future (Thread/sleep (long 50)) :from-fut)]
