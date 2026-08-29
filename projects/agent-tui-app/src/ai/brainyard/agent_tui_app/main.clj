@@ -26,6 +26,15 @@
    [ai.brainyard.web-share.interface :as web-share]
    [ai.brainyard.os-sandbox.interface :as os-sandbox]
    [ai.brainyard.clj-llm.interface :as clj-llm]
+   ;; Effect — statically required, not requiring-resolve'd, for the same
+   ;; reason as the cognitect.aws block below: native-image strips what the
+   ;; static analyzer cannot see. It matters more here than usual, because
+   ;; AOT reachability is what causes `missionary/core__init.class` to be
+   ;; emitted at all — and that emission is the entire mechanism the §7
+   ;; carve-out exists to defuse. A lazily-resolved effect brick would produce
+   ;; a binary in which `by effect-smoke` fails for the boring reason (class
+   ;; absent) while proving nothing about the interesting one.
+   [ai.brainyard.effect.interface :as fx]
    ;; Force-include cognitect.aws + aws-client for the GraalVM native-image
    ;; static analyzer. clj-llm's bedrock.clj uses requiring-resolve to keep
    ;; AWS optional for non-Bedrock builds, but native-image then strips the
@@ -3288,6 +3297,15 @@
 ;; `-v` is taken by `run --verbose`, so the short version flag is capital `-V`.
 (def ^:private version-flags #{"--version" "-V"})
 
+;; Hidden self-check, deliberately NOT in `known-subcommands` and so absent
+;; from `--help` and from the did-you-mean suggestions: it is a build gate, not
+;; a user feature. Missionary keeps a scheduler Thread and its blk/cpu pools in
+;; static fields, so whether the effect system works at all is a property of
+;; native-image class initialization — invisible from the JVM, and therefore
+;; only answerable by running it in the real binary. See
+;; docs/design/functional-effect-system.md §7.
+(def ^:private effect-smoke-flags #{"effect-smoke" "--effect-smoke"})
+
 (defn- registered-agent-id?
   "True when `tok` names an agent in the registry.
 
@@ -3429,8 +3447,18 @@
   ;; `--version`/`-V` is a global flag: short-circuit before dotenv loading and
   ;; subcommand dispatch so it prints just the version (no `[dotenv]` noise) and
   ;; never gets rerouted into the default `run` subcommand.
-  (if (contains? version-flags (first args))
+  (cond
+    (contains? version-flags (first args))
     (println (str "by " app-version-long))
+
+    ;; Short-circuits for the same reason `--version` does: it must touch no
+    ;; dirs, load no dotenv and open no log. The gate is measuring missionary's
+    ;; class initialization, and anything else running first would muddy what a
+    ;; failure means.
+    (contains? effect-smoke-flags (first args))
+    (fx/smoke-main!)
+
+    :else
     (-dispatch args)))
 
 (defn- -dispatch [args]

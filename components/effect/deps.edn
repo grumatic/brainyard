@@ -1,0 +1,16 @@
+{:paths ["src" "resources"]
+ :deps {;; Missionary — the functional effect system. Tasks (one value) and
+        ;; Flows (many values over time) as composable, re-runnable values.
+        ;; See docs/design/functional-effect-system.md.
+        ;;
+        ;; NOTE for native-image: missionary.impl.Sleep starts a scheduler
+        ;; Thread from its static initializer, and missionary.impl.Thunk builds
+        ;; its blk/cpu pools (sizing cpu from Runtime.availableProcessors) from
+        ;; its own. Both MUST be deferred to run time — see the carve-out in
+        ;; projects/agent-tui-app/resources/META-INF/native-image/.../native-image.properties
+        ;; and design §7. Adding missionary to another brick without that
+        ;; carve-out in place will bake a dead thread into the image heap.
+        missionary/missionary {:mvn/version "b.44"}
+        ai.brainyard/mulog {:local/root "../mulog"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {}}}}

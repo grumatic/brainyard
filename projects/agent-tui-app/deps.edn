@@ -6,13 +6,15 @@
         cli-matic/cli-matic {:mvn/version "0.5.4"}
         org.clojure/data.json {:mvn/version "2.5.1"}
 
-        ;; GraalVM native-image: parked on the classpath, NOT yet active.
-        ;; Adding the InitClojureClasses feature here will eventually
-        ;; replace the deprecated bare `--initialize-at-build-time` form
-        ;; in native-image.properties; today it breaks the build on our
-        ;; defagent pattern (see design §14 "Empirical update" + task
-        ;; #20 in the work log). Kept on classpath so re-enabling is a
-        ;; one-line change once the deftool refactor lands.
+        ;; GraalVM native-image: ACTIVE. `native-image.properties` passes
+        ;; `--features=clj_easy.graal_build_time.InitClojureClasses` (the
+        ;; deftool refactor that used to block it has landed — see the
+        ;; "MODERN policy" header there). The feature scans the classpath
+        ;; for `**/__init.class` and registers their PACKAGES for
+        ;; build-time init, which is why every new dependency that holds
+        ;; live concurrency in a static field needs an explicit
+        ;; `--initialize-at-run-time` carve-out. Removing this dep would
+        ;; silently disable build-time init for first-party namespaces.
         com.github.clj-easy/graal-build-time {:mvn/version "1.0.5"}
 
         ;; Base
@@ -35,6 +37,11 @@
         ai.brainyard/a2a-server {:local/root "../../components/a2a-server"}
         ai.brainyard/analytics {:local/root "../../components/analytics"}
         ai.brainyard/behavior-tree {:local/root "../../components/behavior-tree"}
+        ;; Effect — missionary seam (docs/design/functional-effect-system.md).
+        ;; Declared by the project even though nothing requires it yet: Phase 0
+        ;; is precisely a native-image gate, so the brick has to be ON the image
+        ;; classpath and AOT-compiled for `by effect-smoke` to prove anything.
+        ai.brainyard/effect {:local/root "../../components/effect"}
         ai.brainyard/clj-llm {:local/root "../../components/clj-llm"}
         ai.brainyard/clj-oauth {:local/root "../../components/clj-oauth"}
         ai.brainyard/clj-http-native {:local/root "../../components/clj-http-native"}

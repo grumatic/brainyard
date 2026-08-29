@@ -11,6 +11,7 @@
                 ai.brainyard/clj-llm           {:local/root "components/clj-llm"}
                 ai.brainyard/clj-oauth         {:local/root "components/clj-oauth"}
                 ai.brainyard/behavior-tree     {:local/root "components/behavior-tree"}
+                ai.brainyard/effect            {:local/root "components/effect"}
                 ai.brainyard/memory            {:local/root "components/memory"}
                 ai.brainyard/clj-sandbox       {:local/root "components/clj-sandbox"}
                 ai.brainyard/clj-nrepl         {:local/root "components/clj-nrepl"}

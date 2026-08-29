@@ -1,0 +1,571 @@
+# Functional effect system (missionary) — design
+
+**Status:** Phase 0 implemented and verified on a native binary (§10). Phases
+1–4 designed, not started. Branch `feat/functional-effect`.
+
+**Thesis.** Brainyard has, over time, hand-rolled a small effect system out of
+`future` + `promise` + `Thread/sleep` + polling loops + a cooperative
+cancellation flag. It works, and every piece of it is individually justified —
+but the *composition* rules were never written down, so each new async surface
+re-derives them and gets a slightly different answer. Missionary supplies those
+rules as a library: an effect is a **value**, composition is by **function**,
+and cancellation is **structural**. This document proposes adopting missionary's
+`Task` (one value) and `Flow` (many values over time) as brainyard's effect
+representation, and maps the migration.
+
+---
+
+## 1. What brainyard hand-rolls today
+
+Counted across `components/`, `bases/`, `projects/`, excluding `test/`:
+
+| idiom | sites | what it stands in for |
+|---|---:|---|
+| `(future …)` | 74 | an effect that has already started |
+| `deref fut ms ::timeout` | 18 | `m/timeout` |
+| `future-cancel` | 28 | cancellation (best-effort, interrupt-based) |
+| `Thread/sleep` | 45 | `m/sleep`, and polling intervals |
+| `(promise)` + `deref p ms`| 13 | `m/dfv` + `m/timeout` |
+| `Thread.` + `.setDaemon true` | 27 | a supervised long-lived process |
+| `pmap` | 11 | bounded parallel fan-out |
+| `core.async` `alts!!` | 6 | `m/?<` / priority select |
+
+These are not evenly distributed. They cluster in six places, and those six are
+the actual subject of this design.
+
+### 1.1 The task subsystem is a polling runtime
+
+`components/agent/task/executor.clj` defines five job executors. Every one has
+the same shape: start a `future`, return `{:status :detached :on-poll … :on-cancel …}`,
+and let someone else notice when it finished. That someone is
+`manager/start-detach-watcher!` (`task/manager.clj:413`) — one global daemon
+thread that wakes every 300 ms and calls `.isDone` on every registered handler.
+Above it, `commands/await-task` (`task/commands.clj:293`) runs a *second* polling
+loop at 100 ms against `@!tasks`.
+
+So a task's completion travels: future completes → 300 ms poll notices →
+`finalize-task!` swaps an atom → 100 ms poll notices the atom → caller returns.
+Up to 400 ms of latency and two dedicated loops, to express "this finished."
+
+A `Task` already *is* the completion callback. `m/join`, `m/timeout` and
+`m/race` compose it directly. The two polling loops are not an optimization of
+that — they are a re-implementation of it with worse latency.
+
+Note what the polling design *is* good at, because the replacement must keep it:
+`:on-poll` also drains incremental stdout (`drain-incremental-output!`) and
+emits liveness heartbeats. That is genuinely a Flow — a `StringWriter` sampled
+over time — and it should stay a Flow. The mistake is only that *completion* is
+also expressed as polling.
+
+### 1.2 Cancellation is five mechanisms wearing a trenchcoat
+
+`core/runtime.clj:118` `cancel-run` does all of:
+
+1. sets `[:runtime :cancelled?]` in an atom (checked cooperatively at BT checkpoints),
+2. walks the parent chain so a child sees a parent's cancellation (`cancelled?`, line 146),
+3. `.close`s a registered in-flight HTTP stream (`:active-http`),
+4. `future-cancel`s a stored future **or** `.interrupt`s a stored thread,
+5. signals a `ReentrantLock`/`Condition` to wake a parked pause (`wait-if-paused`, line 215).
+
+Items 1, 2 and 4 are exactly what missionary gives for free: running a task
+returns its canceller, cancellation propagates into every nested `m/?`, and
+parents own children by construction. Item 5 is `m/dfv` or a `m/watch` on the
+pause flag consumed with `m/?<`.
+
+**Item 3 does not go away, and the design must say so plainly.** A thread
+blocked in `InputStream.read` is not interruptible on the JVM by any mechanism,
+missionary included. `mcp/client.clj:354` already documents this ("`future-cancel`
+can't unpark a blocked `readLine`"). What changes is *where the closer lives*:
+today it is a global `[:runtime :active-http]` slot on agent state; under
+missionary it is the canceller returned by the task that owns the socket, which
+is the only scope that can be correct.
+
+### 1.3 Five hand-rolled tickers in the TUI
+
+`bases/agent-tui/.../session.clj` has `!think-ticker-thread` (line 510),
+`!iteration-ticker-thread`, `!task-ticker-thread`, `!subagents-ticker-thread`,
+`!idle-tip-ticker-thread` — each a `Thread.` + `setDaemon` + `loop` +
+`Thread/sleep` + "self-stops when the block map is empty" + an idempotent
+`when-not @!ticker-thread` start guard + a `reset!` to nil on exit.
+
+That guard/self-stop/nil-out dance is start-stop lifecycle code, written five
+times. As a Flow it is one expression per ticker and no lifecycle code at all,
+because the *consumer* holds the canceller.
+
+### 1.4 `pmap` for parallel tool dispatch
+
+`common/coact_agent.clj:2944` dispatches the LLM's tool calls with
+`(doall (pmap …))`. `pmap` is the wrong tool three ways here: its parallelism is
+`availableProcessors + 2` and not configurable; it chunks in 32s; and it has no
+cancellation and no failure short-circuit. The block-detection immediately after
+(`(first (filter hook-blocked-result? results))`) shows the cost — a hook that
+blocks dispatch is discovered only *after* every other tool has run to
+completion. `m/join` cancels its siblings on the first failure; `m/?=` with an
+explicit bound gives configurable parallelism.
+
+### 1.5 The serialized ask queue
+
+`core/queue.clj` is a mailbox and a worker. Its two most interesting comments
+are both about the worker *dying*: `run-processing-loop!` has a per-item
+`Throwable` guard plus an outer `finally` that nils `:worker-future`, and
+`ensure-worker!` respawns on `future-done?` — because "a single unexpected throw
+would kill the future while leaving `:worker-future` pointing at the dead
+future, permanently wedging the queue."
+
+That entire failure mode exists because the worker is a *started process* whose
+death is invisible. A mailbox (`m/mbx`) consumed by a supervised `m/sp` loop has
+no such state: failure is a value returned to the supervisor, which decides.
+
+### 1.6 Retry / backoff / timeout, written per-layer
+
+`clj-llm/core/llm.clj:241` `retry-with-backoff` is ~50 lines of loop/recur with
+jitter, `retry-after` honouring, and a `*on-retry*` dynamic var so the layer
+below the agent can report a wait it is about to take. `permissions.clj` has
+five `(promise)` + `(deref p timeout :timeout)` pairs. `mcp/client.clj` has two
+`deref … ::timeout` + `future-cancel` pairs. Each is correct; none composes with
+the others.
+
+---
+
+## 2. What is actually being bought
+
+Not "async". Brainyard's async works. Three specific things:
+
+**Effects become values, so they become testable and re-runnable.** `(m/sp …)`
+does nothing until run. A retry policy, a timeout, a fan-out becomes a value you
+can pass, wrap and assert on without executing it. Today `retry-with-backoff`
+can only be tested by actually failing HTTP calls.
+
+**Cancellation becomes structural instead of cooperative.** The parent-chain
+walk in `runtime/cancelled?`, the `:cancelled?` flag checked at BT checkpoints,
+the cascading subagent cancel hand-wired in `tool.clj:1373` — all of it is
+brainyard implementing "parents own children" by hand. That is the one thing
+missionary is *for*.
+
+**Composition becomes associative.** `timeout`, `retry`, `race`, `join`,
+`debounce` nest arbitrarily. Today `await-task`'s three `:on-timeout` modes
+(`:kill` / `:detach` / `:snapshot`) are an enum precisely because timeout policy
+could not be expressed as a wrapper.
+
+### What is explicitly NOT being bought
+
+- **Not speed.** Missionary is not faster than a `future`. The 400 ms detach
+  latency goes away, which is a real UX win, but nothing else gets faster.
+- **Not a rewrite of the BT engine.** `behavior-tree` is synchronous by design
+  and stays that way.
+- **Not core.async's removal.** `memory/capture/sidecar.clj` and the Bedrock
+  stream reader (`clj-llm/core/bedrock.clj:405`) use channels well. They get a
+  *bridge*, not a rewrite (§6).
+
+---
+
+## 3. Architecture: a new `effect` component
+
+Missionary is not used directly from application code. One Polylith brick owns
+it:
+
+```
+components/effect/
+  src/ai/brainyard/effect/interface.clj      ; the only public surface
+  src/ai/brainyard/effect/core/prim.clj      ; run!!, from-future, from-promise
+  src/ai/brainyard/effect/core/policy.clj    ; timeout, retry, bounded, race
+  src/ai/brainyard/effect/core/flows.clj     ; ticker, sample-lines, watch, debounce
+  src/ai/brainyard/effect/core/supervisor.clj; the process registry (§3.2)
+  src/ai/brainyard/effect/core/smoke.clj     ; the native gate (§10)
+```
+
+A `bridge.clj` for core.async is **deferred to Phase 3**, when there is a
+consumer. The blocker is mechanical: the backpressure-preserving `chan->flow`
+adapter needs `a/alts!` inside `a/go` — both macros — so it cannot be written
+against a `requiring-resolve` soft dependency, and making `effect` depend on
+core.async would drag a channel library underneath every future consumer of a
+brick whose whole point is to be minimal. Phase 6's rule (§6) means the bridge
+belongs next to the code that owns the channel anyway.
+
+Depends on `mulog` + `util` only. Sits at the same tier as `behavior-tree` —
+below `agent` and below `clj-llm`, both of which are consumers.
+
+Three reasons it is a brick and not a bare `(:require [missionary.core :as m])`
+in each namespace:
+
+1. **The native-image carve-out has to live somewhere.** §7 is a hard build
+   constraint that must not be rediscovered by whoever adds the second call
+   site.
+2. **Executor policy is a decision, not a per-call-site preference.** `m/blk`
+   vs `m/cpu` vs "inline on the caller" is the single most common way to get
+   missionary wrong (the tutorial's case 4 — `m/join` of two `Thread/sleep`s
+   serializes without `m/via m/blk`). One brick, one answer.
+3. **Migration stays incremental.** A brick that nobody requires costs nothing.
+   Phase 0 can land, be verified against a native build, and sit there.
+
+### 3.1 The interface, sketched
+
+```clojure
+;; --- running ---
+(run!!    task)               ; block, return {:ok v} | {:err e}   — test/CLI seam
+(run      task success fail)  ; returns canceller — the raw contract
+(run-supervised task label)   ; registers with the supervisor (§3.2)
+
+;; --- policy combinators (task -> task) ---
+(timeout ms task)             ; m/timeout
+(retry-backoff opts task)     ; replaces llm/retry-with-backoff
+(bounded n tasks)             ; parallel fan-out with an explicit bound
+(race & tasks)
+
+;; --- bridges (§6) ---
+(from-future  fut)            ; adopt an already-started future
+(from-promise p)
+(chan->flow   ch)             ; backpressured; take-task + m/ap
+(flow->chan   flow buf)
+(watch->flow  atom path)      ; m/watch on an atom's derived value
+
+;; --- shapes brainyard needs repeatedly ---
+(ticker ms)                   ; continuous flow of ticks; consumer holds cancel
+(sample-lines writer)         ; StringWriter -> flow of complete lines
+(mailbox)                     ; m/mbx + a supervised consumer loop
+```
+
+`run!!` deliberately returns `{:ok}`/`{:err}` rather than throwing, matching the
+tutorial's runner and brainyard's existing `{:error …}` result convention.
+
+### 3.2 The supervisor is the part that pays for itself first
+
+27 `.setDaemon true` sites means 27 processes whose only shutdown story is "the
+JVM is a daemon-thread graveyard, and `tp/shutdown` hopefully found the ones
+that matter." The CLAUDE.md note on `create-task-manager` says this out loud:
+daemon-ness "does NOT kill subprocesses a task spawned via ProcessBuilder … An
+app's exit path MUST call `tp/shutdown`."
+
+`run-supervised` puts every long-lived process's canceller in one registry keyed
+by label. Shutdown becomes one call that cancels the tree, and `by`'s exit path
+stops depending on each subsystem having remembered to register its own hook.
+This is worth having even if no other phase ever lands.
+
+---
+
+## 4. Concept mapping
+
+| brainyard concept | today | effect value |
+|---|---|---|
+| a job executor | `future` + `:on-poll` + `:on-cancel` | **Task** |
+| task stdout | `StringWriter` + 300 ms drain | **Flow** of lines (discrete) |
+| liveness heartbeat | `future` + `Thread/sleep` loop | `ticker` **Flow**, or dropped (the Task's completion is the signal) |
+| `await-task :detach` | poll `@!tasks` at 100 ms | `(timeout ms task)` |
+| `await-task :kill` | poll, then `cancel-task` | `(timeout ms task)` + canceller |
+| fast-eval → adopt | `deref fut ms ::timeout` then re-wrap | `(timeout fast-ms task)`, same Task adopted |
+| tool-call fan-out | `pmap` | `(bounded n tasks)` |
+| LLM retry | `retry-with-backoff` loop | `(retry-backoff opts task)` |
+| TUI ticker | daemon `Thread` + self-stop guard | `ticker` Flow, cancelled by consumer |
+| permission prompt | `promise` + `deref timeout` | `m/dfv` + `timeout` |
+| ask queue | atom + self-healing worker future | `mailbox` + supervised `m/sp` loop |
+| scheduler tick | daemon thread + `Thread/sleep` | `ticker` Flow + `m/?>` |
+| pause/park | `ReentrantLock` + `Condition` | `m/watch` on the pause flag + `m/?<` |
+| `cancel-run` | 5 mechanisms | the tree's canceller + one explicit resource closer |
+| memory capture | core.async `thread` + `alts!!` | **unchanged** (§6) |
+
+---
+
+## 5. Migration phases
+
+Each phase is independently shippable and independently revertable. Nothing
+after Phase 0 is committed to until Phase 0's gate passes.
+
+### Phase 0 — the gate (no production code changes)
+
+Add the `effect` brick, add `missionary/missionary {:mvn/version "b.44"}`, add
+the native-image carve-outs from §7, and add a **native-binary** smoke test:
+`m/sleep` fires, `m/join` is actually parallel, a canceller actually cancels.
+
+This is a gate, not a formality. §7 is a verified hard constraint, and if it
+cannot be satisfied under `--strict-image-heap` the correct outcome is to stop
+here, having spent one afternoon. **Do not begin Phase 1 before a native binary
+has run a missionary task.** JVM-mode success proves nothing about this risk.
+
+### Phase 1 — leaf policy, zero semantic change
+
+Replace `clj-llm/retry-with-backoff` with `effect/retry-backoff`, and the five
+`permissions.clj` `promise`/`deref` pairs with `m/dfv` + `timeout`.
+
+Chosen first because both are leaves with a narrow contract and existing tests,
+and because retry is where "effects as values" pays visibly — a retry policy
+becomes assertable without failing a real HTTP call. `*on-retry*` stays exactly
+as it is; it is an observation seam, orthogonal to this.
+
+### Phase 2 — the tickers
+
+Five daemon-thread tickers → five Flows, plus one shared clock. Purely additive
+and visually verifiable (the spinner either animates or it does not), which
+makes it the cheapest way to build confidence in the new brick under real TUI
+conditions — including under tmux and `--web`.
+
+Watch for: the tickers are entangled with pause state (`think-root-paused?`
+pins elapsed time via `:paused-at`) and with session-origin routing
+(`finalize-think-block-in-session!`). Convert the *scheduling*, not the
+rendering. The renderer's width contract (`docs` — reflow, `:render` fns) is
+untouched.
+
+### Phase 3 — the task subsystem
+
+The real prize. `tp/IJobExecutor.execute-job` returns a **Task** instead of
+`{:status :detached :on-poll …}`. Consequences:
+
+- `start-detach-watcher!` and its 300 ms loop **delete**.
+- `poll-detached-once!` and `!detached-handlers` **delete**.
+- `await-task` becomes `(timeout ms task)`; the three `:on-timeout` modes become
+  three wrappers rather than an enum.
+- `finalize-task!` keeps existing — it is the atom/hook/persist transition, not
+  concurrency — but is now called from the task's completion, not from a poll.
+- Completion latency drops from up to 400 ms to ~0.
+
+Incremental stdout stays a Flow and keeps its ~300 ms sampling, because sampling
+is the *right* model for a `StringWriter` — that part was never the problem.
+
+The fast-eval/detach seam (`tool.clj:1486`) gets structurally simpler: today the
+future is started, `deref`'d with a timeout, and then *re-wrapped* into a task
+by `adopt-tool-into-task` with a reconstructed poll fn. With a Task, "wait 5 s
+then keep waiting in the background" is the same value under two different
+timeouts. `adopt-detached!` largely dissolves.
+
+Do `:fn` and `:tool` executors first (in-process, no proc tree), `:bash` last
+(process-tree teardown in `destroy-process-tree!` is subtle and worth leaving
+undisturbed while the surrounding machinery moves).
+
+### Phase 4 — cancellation unification
+
+`cancel-run`'s five mechanisms collapse to: cancel the tree, plus one explicit
+closer for the blocking socket. `runtime/cancelled?`'s parent-chain walk and
+`tool.clj`'s hand-wired cascading subagent cancel both become consequences of
+structure rather than code.
+
+Highest value, highest risk, therefore last. It touches pause/resume, the BT
+checkpoint contract, and subagent lifetime simultaneously.
+
+---
+
+## 6. What stays on core.async, and why
+
+`core.async` is already an `agent` component dependency (`components/agent/deps.edn`)
+and is used in three places that should **not** move:
+
+- `memory/capture/sidecar.clj` — a priority `alts!!` over two channels with a
+  FIFO barrier sentinel for `quiesce!`. This is CSP used precisely for what CSP
+  is good at: decoupling two producers from one consumer with a priority rule.
+  Missionary's answer would be less clear, not more.
+- `memory/capture/dispatcher.clj` — the channels themselves.
+- `clj-llm/core/bedrock.clj:405` — the AWS SDK *hands us* a core.async channel.
+  Not our choice to make.
+
+The bridge is `effect/chan->flow` (backpressure-preserving `take-task` + `m/ap`,
+per the tutorial's verified adapter — the `m/observe` variant is push-based and
+needs a sentinel + `m/buffer` + `take-while` to terminate, so it is the fallback
+for genuinely push-shaped sources only). Bedrock's stream becomes a Flow at the
+boundary; the sidecar keeps its channels and gains nothing it needs.
+
+Rule of thumb, from the tutorial's own comparison: **channel where producers and
+consumers must be decoupled and fanned in; effect value where the work is
+composed, cancelled or retried as a unit.**
+
+---
+
+## 7. The native-image constraint (verified, hard)
+
+This was checked against the actual artifacts, not assumed.
+
+`missionary-b.44.jar` ships precompiled Java classes for `missionary.impl.*` —
+good news generally (no reflection, nothing for `reflect-config.json`). But two
+of them hold live concurrency in static fields:
+
+```
+missionary.impl.Sleep        static final Sleep$Scheduler S
+missionary.impl.Sleep$Scheduler extends java.lang.Thread
+  Scheduler() { ... setDaemon(true); start(); }        // <-- starts in the ctor
+missionary.impl.Thunk        static final Executor cpu, blk
+missionary.impl.Thunk$Blk extends java.lang.Thread     // thread-pool factory
+```
+
+`Sleep`'s static initializer constructs `Sleep$Scheduler`, whose **constructor
+calls `.start()`**. So class-initializing `missionary.impl.Sleep` starts a
+thread.
+
+Now the build config. `native-image.properties` uses
+`--features=clj_easy.graal_build_time.InitClojureClasses`, which (verified by
+reading `clj_easy/graal_build_time/packages.clj` out of the jar) scans the
+application classpath for `**/__init.class` entries and registers their
+**packages** for build-time initialization. Missionary's jar ships no
+`__init.class` — but `bb compile:ata` AOT-compiles transitively, and
+`target/classes` already contains `__init.class` files for third-party deps
+(`nrepl/*__init.class` are there today). So `missionary/core__init.class` would
+be emitted, package `missionary` would be registered, and — because the feature
+drops sub-packages covered by a parent — `missionary.impl` with it.
+
+**Net: without a carve-out, the build initializes `missionary.impl.Sleep` at
+build time and tries to snapshot a running `java.lang.Thread` into the image
+heap.** Under GraalVM 25's `--strict-image-heap` that is a build failure naming
+the class, which is the *good* outcome — loud, not a binary where `m/sleep`
+silently never fires.
+
+**Verified carve-out** (now live in `native-image.properties`):
+
+```
+--initialize-at-run-time=missionary.impl.Sleep \
+--initialize-at-run-time=missionary.impl.Thunk \
+```
+
+Every part of the above was confirmed against real builds, and two predictions
+in the first draft of this document were wrong. Recording both, because the
+corrections are the useful part:
+
+**The mechanism fires exactly as described.** The build log's "Registering
+packages for build time initialization" line lists `missionary` and
+`cloroutine`, and `missionary/core__init.class` is present in the uberjar.
+
+**Sleep fails LOUDLY** — removing its line and rebuilding:
+
+```
+Fatal error: Detected a started Thread in the image heap.
+Thread name: missionary scheduler.
+  scanning root missionary.impl.Sleep$Scheduler@…:
+    Thread[#52,missionary scheduler,5,InnocuousForkJoinWorkerThreadGroup]
+```
+
+**Thunk fails SILENTLY** — removing its line and rebuilding produces a green
+build *and a fully green `by effect-smoke`*, because the gate machine and the
+build machine had the same core count. What would ship is a cpu pool sized by
+the build machine. There is no signal for this; the flag is the signal. A
+future maintainer trimming flags "because the build is still green" would
+remove exactly this one.
+
+**`missionary.core__init` is NOT needed — the draft was wrong.** The reasoning
+looked sound (`(def blk Thunk/blk)` reads a deferred class's static field at
+namespace-init time, so `core__init` should have to follow it to run time), and
+the build disproves it: green build, green gate without it. GraalVM propagates
+the run-time decision to the reading class itself. It was dropped rather than
+kept as insurance, so this list stays a set of load-bearing facts — a
+decorative flag in a file like this one teaches the next reader the wrong model.
+
+**No extra `missionary.impl.*` classes were needed.** The draft predicted one or
+two more (`Reactor`, `Pub`) would surface. None did.
+
+**Startup-time corollary, measured.** These classes now initialize lazily, so
+nothing on `by`'s startup path may touch a missionary var — the first `m/sleep`
+starts the scheduler thread. The concern was real (this repo treats startup as
+first-class; the terminal-caps DECRQM probe was called out at "~500 ms, roughly
+4x its entire startup") but the cost is nil: `by agents` measures 0.22 s with
+and without missionary on the require path. Binary size +1.77 MB (+0.8%).
+
+---
+
+## 8. Open questions
+
+**Q1 — does missionary work inside the SCI code-eval sandbox?** This is the
+biggest unknown and it gates whether the coact code-eval surface can ever use
+effect values directly. `m/sp` / `m/ap` are macros over cloroutine's `cr`, which
+performs a CPS transform at macroexpansion time. SCI needs macro implementations
+supplied explicitly, and a macro that analyzes and rewrites its body is the
+hardest case. **Untested.** The probe: expose `m/sp`, `m/?`, `m/join` through
+`clj-sandbox`'s `sci-init-opts` and evaluate the tutorial's `hello-world` +
+`slowmo` + `join` examples inside a real sandbox. If it fails, the fallback is
+that the sandbox keeps its current `future`-based eval and only the *host* side
+(the executor that runs the sandbox) becomes a Task — which is still most of
+Phase 3's value. Answer this before Phase 3.
+
+**Q2 — `missionary.Cancelled` discipline at every boundary.** The tutorial's own
+D4 attempt failed exactly this way: an unabsorbed `Cancelled` from a
+switched-away branch fails the whole flow. Brainyard has many places where a
+cancelled branch must be *dropped*, not propagated (a superseded ticker frame, a
+debounced keystroke). The `effect` brick should provide the
+`(catch missionary.Cancelled _ (m/amb))` idiom as a named combinator rather than
+leaving 20 call sites to remember it. Note `missionary.Cancelled` is a Java
+class — interop, not an `m/`-namespaced var — which also means it needs checking
+against `reflect-config.json` expectations.
+
+**Q3 — thread-pool accounting.** Brainyard currently runs a *fixed 4-thread*
+task pool (`create-task-manager`) as a deliberate concurrency bound: "the pool
+thread is held for the job's duration — which is what makes the fixed pool an
+actual concurrency bound." Missionary's `m/blk` is unbounded-ish by design.
+Moving executors to Tasks without an explicit `(bounded n …)` would silently
+remove a bound the system relies on. Phase 3 must make the bound explicit rather
+than inherit it from a pool.
+
+**Q4 — does `binding` conveyance survive?** `proto/*current-task*` and
+`proto/*subagent-capture*` are bound around tool futures (`tool.clj:1474`) and
+relied upon across the `pmap` dispatch. Clojure's `future`/`pmap` convey
+bindings; missionary's `m/sp` runs on the calling thread and `m/via m/blk` hops
+pools. Binding conveyance across an `m/via` boundary must be verified, not
+assumed — and if it does not hold, the `*current-task*` mechanism (which is how
+subagent progress is attributed to a task at all) needs an explicit carrier.
+
+**Q5 — is `m/sleep`'s single scheduler thread enough?** One
+`missionary scheduler` thread services every timer in the process. Brainyard
+would put ~5 TUI tickers, the scheduler tick, task timeouts and LLM retries on
+it. Almost certainly fine — timers only enqueue — but worth measuring under a
+loaded session rather than assuming.
+
+---
+
+## 9. Phase 0 — as built
+
+Landed: `components/effect` (interface + prim/policy/flows/supervisor/smoke),
+`missionary b.44`, the §7 carve-out, `effect` added to the project deps and to
+`workspace.edn`'s `:necessary` list, and a hidden `by effect-smoke` entry point.
+
+**`effect` is statically required by `main.clj`, not `requiring-resolve`d.**
+This looks like a needless coupling for a brick nothing else uses yet, and it
+is load-bearing: AOT reachability is what causes `missionary/core__init.class`
+to be emitted, and that emission is the entire mechanism §7 defuses. A lazily
+resolved brick would produce a binary where `by effect-smoke` fails for the
+boring reason (class stripped — the same failure the `cognitect.aws` force-
+include block in `main.clj` exists to prevent) while proving nothing about the
+interesting one.
+
+**`effect-smoke` is deliberately not in `known-subcommands`**, so it is absent
+from `--help` and from the did-you-mean suggestions. It is a build gate, not a
+user feature.
+
+Gate results on the native binary (`by effect-smoke`, all PASS):
+
+| check | evidence |
+|---|---|
+| `m/sleep` fires | 205 ms for a 200 ms sleep — the scheduler thread is alive at runtime |
+| `m/blk` pool is parallel | two 300 ms blocking sleeps joined in 306 ms, not ~600 |
+| `m/cpu` pool works | both branches computed; `availableProcessors=14` reported |
+| cancellation propagates | canceller on a nested park yields `missionary.Cancelled` |
+| timeout + fallback | 5 s task, 200 ms timeout → fallback value |
+| retry-backoff | fails twice, succeeds on 3rd; `on-retry` fired for attempts 1 and 2 |
+| bounded fan-out keeps order | reversed completion order, `[0 1 2 3 4 5]` out |
+| flow is a reusable value | same ticker consumed twice, `[0 1 2 3]` both times |
+| supervisor start/stop | ticks, stops, and is quiet afterwards |
+
+Also verified: `bb poly check` OK; the 11 brick tests / 34 assertions pass; the
+documented binary smoke tests (`--help`, `agents`, `sessions list`, `models`)
+still pass.
+
+**Q1 (missionary inside SCI) is still open.** Phase 0 did not probe it, because
+nothing before Phase 3 depends on the answer. It remains the gate on Phase 3.
+
+**One unrelated thing surfaced:** `bb build:ata` fails at `reflect:check` on a
+NEW reflection site in `bases/agent-tui/.../autocomplete.clj:944`
+(`(.getPath f)` where `links/resolve-file` returns an unhinted `File`). It is
+pre-existing on `main`, unrelated to this work, and was worked around here by
+running `bb uberjar:ata` + `bb native:ata` directly. It wants either a
+`^java.io.File` hint or `bb reflect:baseline`, by whoever owns the clickable-
+links work.
+
+## 10. Recommendation
+
+Phase 0 is landed and its gate passes on a real native binary, so the largest
+architecture risk is retired: missionary works in the shipped artifact, at no
+startup cost and +0.8% binary size, with a two-line carve-out whose necessity
+has been demonstrated by removal.
+
+Phase 1 (retry/backoff in `clj-llm`, the five `promise`/`deref` pairs in
+`permissions.clj`) is the natural next step and is contained enough to pace
+against other work.
+
+**Do not start Phase 3 before answering Q1** (does `m/sp`/`m/ap` survive the
+SCI sandbox). It is the one remaining unknown that can change the shape of the
+task-subsystem migration rather than just its schedule.
+
+The single most valuable phase is 3 (the task subsystem: two polling loops and
+~400 ms of latency delete outright). The single most valuable *artifact* is
+probably §3.2, the supervisor, which is worth having even standalone.
