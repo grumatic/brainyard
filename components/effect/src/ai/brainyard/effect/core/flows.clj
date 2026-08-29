@@ -67,9 +67,12 @@
    (let [!offset (atom 0)]
      (m/? (m/sleep ms))
      (loop []
+       ;; `long` hints: `@!offset` is an Object to the compiler, so the
+       ;; comparison and arithmetic below box and warn under the project's
+       ;; *warn-on-reflection*.
        (let [^String s (.toString writer)
-             offset    @!offset
-             len       (count s)]
+             offset    (long @!offset)
+             len       (long (count s))]
          (if (> len offset)
            (let [^String fresh (subs s offset)
                  last-nl       (.lastIndexOf fresh (int \newline))]

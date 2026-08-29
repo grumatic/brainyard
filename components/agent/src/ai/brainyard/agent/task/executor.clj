@@ -19,6 +19,7 @@
             [ai.brainyard.agent.stdio.client :as stdio-client]
             [ai.brainyard.clj-sandbox.interface :as clj-sandbox]
             [ai.brainyard.clj-nrepl.interface :as clj-nrepl]
+            [ai.brainyard.effect.interface :as fx]
             [ai.brainyard.mulog.interface :as mulog]
             [clojure.string :as str])
   (:import [java.io InputStreamReader]
@@ -112,11 +113,18 @@
                   {:exit-code 0}
                   {:error (str "Exit code: " exit-code) :exit-code exit-code})))]
         (mulog/info ::bash-detached :task-id (:id task))
+        ;; Effect path (design Phase 3): the Task IS the completion signal, so
+        ;; `finalize-task!` runs the instant the process exits instead of up to
+        ;; 300ms later when the shared watcher next looked. `.waitFor` blocks,
+        ;; which is exactly what `m/blk` is for — and it replaces polling
+        ;; `.isAlive` with the OS telling us.
+        ;;
+        ;; `:on-cancel` is NOT redundant with cancelling the Task. Measured:
+        ;; cancelling an `m/via` interrupts the waiting thread but leaves the
+        ;; process running. The effect cancel retires the waiter; only
+        ;; `destroy-process-tree!` kills the work. The manager runs both.
         {:status    :detached
-         :on-poll   (fn []
-                      (if (.isAlive ^Process proc)
-                        tp/still-running
-                        (finalize-result)))
+         :task      (fx/task-of (fn [] (.waitFor ^Process proc) (finalize-result)))
          :on-cancel (fn []
                       (destroy-process-tree! proc)
                       (future-cancel reader-future))})))

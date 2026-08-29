@@ -11,6 +11,7 @@
             [ai.brainyard.agent.task.protocol :as tp]
             [ai.brainyard.agent.task.executor :as executor]
             [ai.brainyard.agent.task.persist :as persist]
+            [ai.brainyard.effect.interface :as fx]
             [ai.brainyard.mulog.interface :as mulog])
   (:import [java.util.concurrent Executors ExecutorService ThreadFactory
             ThreadLocalRandom]
@@ -350,19 +351,83 @@
         (hooks/fire! :task/completed {:task updated})))))
 
 (defn- register-detached!
-  "Park an executor's :on-poll / :on-cancel closures for the shared watcher.
+  "Park a detached executor's handlers so its completion reaches
+   `finalize-task!`.
 
-   The pool thread *always* returns `:detached` immediately in the new
-   pure-async executor contract — this is an implementation detail, not a
-   UI signal. Display-mode is NOT flipped here; it stays `:foreground` so
-   the per-task block remains visible. `await-task` is the only place that
-   transitions display-mode (`:foreground → :background` on
-   `:on-timeout :detach` — i.e. the sync → async hand-off when the LLM
-   waiter actually leaves)."
-  [task-id {:keys [on-poll on-cancel]}]
-  (swap! !detached-handlers assoc task-id
-         {:on-poll on-poll :on-cancel on-cancel})
-  (mulog/info ::task-detached :task-id task-id))
+   TWO PATHS, deliberately coexisting (design Phase 3). An executor may return
+   either:
+
+     {:task <Task> :on-cancel f}     — effect path. The Task IS the completion
+                                       signal, so finalize runs the moment the
+                                       work ends.
+     {:on-poll f :on-cancel f}       — legacy path. The shared 300ms watcher
+                                       asks `:on-poll` whether it finished yet.
+
+   Coexistence is the point: executors convert one at a time and the watcher
+   stays for whichever have not, so no commit has to move all four at once.
+   The watcher deletes when the last `:on-poll` does.
+
+   What the effect path buys is not just tidiness. Under polling, a task that
+   finished had to wait up to 300ms for the watcher to notice and then up to
+   another 100ms for `await-task`'s own loop — ~400ms of latency to express
+   'this is done'. A Task calls back immediately.
+
+   Display-mode is NOT flipped here; it stays `:foreground` so the per-task
+   block remains visible. `await-task` is the only place that transitions it
+   (`:foreground → :background` on `:on-timeout :detach` — the sync → async
+   hand-off when the LLM waiter actually leaves)."
+  [task-id {:keys [task on-poll on-cancel]}]
+  (if task
+    (let [cancel-task-effect
+          (fx/run task
+                  (fn [result]
+                    (finalize-task! task-id (result->status result) result))
+                  ;; ^Throwable, or `(.. e getClass getName)` compiles to a
+                  ;; reflective call — which `bb reflect:check` fails the build
+                  ;; on, native-image being unable to see it.
+                  (fn [^Throwable e]
+                    ;; A cancelled Task is not a failed one.
+                    ;;
+                    ;; InterruptedException is checked for alongside
+                    ;; `missionary.Cancelled`, and it is the case that actually
+                    ;; fires: cancelling an `m/via` INTERRUPTS the evaluating
+                    ;; thread, so the thunk throws InterruptedException and
+                    ;; that — not Cancelled — is what reaches here. Measured:
+                    ;;   cancelled task-of -> java.lang.InterruptedException
+                    ;; Checking only `fx/cancelled?` would file every cancelled
+                    ;; task as :failed. `cancel-task` also finalizes as
+                    ;; :cancelled and finalize-task! is idempotent, but the two
+                    ;; run on different threads, so whichever lands first must
+                    ;; be right on its own.
+                    (if (or (fx/cancelled? e) (instance? InterruptedException e))
+                      (finalize-task! task-id :cancelled {:error "cancelled"})
+                      (finalize-task! task-id :failed
+                                      {:error (or (ex-message e)
+                                                  (.. e getClass getName))}))))]
+      (swap! !detached-handlers assoc task-id
+             ;; Cancelling means BOTH: run the executor's own teardown (destroy
+             ;; the proc tree, interrupt the future) AND stop waiting on the
+             ;; effect. Dropping either leaks — the effect cancel alone leaves
+             ;; the process running (measured: cancelling an `m/via` interrupts
+             ;; the waiting thread and nothing else), the teardown alone leaves
+             ;; a live callback.
+             ;;
+             ;; ORDER IS LOAD-BEARING: kill the work FIRST, then retire the
+             ;; waiter. Reversed, a nested process survives cancellation —
+             ;; measured on `sh -c "bash -c 'sleep 61' & wait"`, the grandchild
+             ;; was still alive 2s after cancel, where unconverted `main` kills
+             ;; it inside 200ms. `destroy-process-tree!` is guarded on
+             ;; `.isAlive` and snapshots `.descendants()` before destroying the
+             ;; parent, so interrupting the `.waitFor` first disturbs exactly
+             ;; the state it reads. The waiter is how you observe the work;
+             ;; retiring it first blinds the teardown that follows.
+             {:on-cancel (fn []
+                           (when on-cancel (on-cancel))
+                           (try (cancel-task-effect) (catch Throwable _)))})
+      (mulog/info ::task-detached :task-id task-id :via :effect))
+    (do (swap! !detached-handlers assoc task-id
+               {:on-poll on-poll :on-cancel on-cancel})
+        (mulog/info ::task-detached :task-id task-id :via :poll))))
 
 (defn adopt-detached!
   "Create a task in :running state wrapping a pre-existing eval future.
@@ -399,7 +464,11 @@
    the task as :failed so a broken executor closure can't park a task
    forever."
   []
-  (doseq [[task-id {:keys [on-poll]}] @!detached-handlers]
+  ;; `when on-poll` — effect-path entries carry only an :on-cancel, since their
+  ;; Task reports its own completion. Without the guard the watcher would NPE
+  ;; on every converted task and then finalize it as :failed.
+  (doseq [[task-id {:keys [on-poll]}] @!detached-handlers
+          :when on-poll]
     (try
       (let [r (on-poll)]
         (when-not (= r tp/still-running)

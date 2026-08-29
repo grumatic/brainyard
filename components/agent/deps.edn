@@ -10,6 +10,9 @@
         ;; Component dependencies (Polylith local refs)
         ai.brainyard/memory {:local/root "../memory"}
         ai.brainyard/behavior-tree {:local/root "../behavior-tree"}
+        ;; Effect — the task subsystem's completion path is an effect value
+        ;; rather than a 300ms poll. See docs/design/functional-effect-system.md.
+        ai.brainyard/effect {:local/root "../effect"}
         ai.brainyard/clj-llm {:local/root "../clj-llm"}
         ai.brainyard/clj-oauth {:local/root "../clj-oauth"}
         ai.brainyard/mulog {:local/root "../mulog"}

@@ -127,7 +127,7 @@
    reversed — the property `pmap`'s replacement must not lose."
   []
   (let [tasks (for [i (range 6)]
-                (m/sp (m/? (m/sleep (* 20 (- 6 i)))) i))
+                (m/sp (m/? (m/sleep (* 20 (- 6 (long i))))) i))
         [elapsed r] (ms-of #(prim/run!! (policy/bounded 3 tasks) 5000))]
     (check "bounded fan-out keeps order"
            (= [0 1 2 3 4 5] (:ok r))

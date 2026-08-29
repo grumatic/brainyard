@@ -16,6 +16,7 @@
             [ai.brainyard.agent.task.format :as task-fmt]
             [ai.brainyard.agent.core.tool :as tool]
             [ai.brainyard.agent.common.tools :as ctools]
+            [ai.brainyard.effect.interface :as fx]
             [malli.core :as m]))
 
 ;; ============================================================================
@@ -134,20 +135,34 @@
 ;; ============================================================================
 
 (defn- run-detached-to-terminal
-  "Drive a detached executor result to its terminal map. BashJobExecutor
-   follows the pure-async contract — execute-job returns :detached
-   immediately and the manager/watcher polls :on-poll until it yields a
-   terminal {:exit-code …}/{:error …} map. This helper mimics that poll
-   loop so the unit tests can exercise the executor without the manager."
+  "Drive a detached executor result to its terminal map, so the unit tests can
+   exercise an executor without the manager.
+
+   Handles BOTH detached shapes, because executors are converting to the effect
+   contract one at a time (design Phase 3):
+
+     {:task <Task>}    — the effect path. Run it and take the result; the Task
+                         IS the completion signal, so there is nothing to poll.
+     {:on-poll f}      — the legacy path. Loop until it stops saying
+                         `still-running`.
+
+   Keeping both means this helper does not have to change again as each
+   remaining executor converts."
   [exec task on-output]
   (let [r (tp/execute-job exec task on-output)]
-    (if (= :detached (:status r))
+    (cond
+      (:task r)
+      (let [res (fx/run!! (:task r) 30000)]
+        (if (contains? res :ok) (:ok res) {:error (str (:err res))}))
+
+      (= :detached (:status r))
       (loop [n 0]
         (let [pr ((:on-poll r))]
           (if (and (= pr tp/still-running) (< n 200))
             (do (Thread/sleep 20) (recur (inc n)))
             pr)))
-      r)))
+
+      :else r)))
 
 (deftest bash-executor-echo-test
   (testing "BashJobExecutor runs echo command and captures output"
