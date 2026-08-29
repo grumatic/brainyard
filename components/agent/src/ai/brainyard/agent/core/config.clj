@@ -517,7 +517,7 @@
    :memory-recall-snippet-chars {:type "integer" :default 600
                                  :doc "Per-hit char cap when rendering a recalled memory into the prompt."}
    :acp-backend                {:type "keyword" :default :claude-code
-                                :doc "ACP (agent-client-protocol) backend implementation. Defaults to :claude-code, which drives the local Claude CLI via npx @zed-industries/claude-code-acp and needs no API key. :stub is a TEST FIXTURE, not a fallback — it shells out to `clj -M -m ai.brainyard.acp-stub-agent.core` under <workspace>/projects/acp-stub-agent, located by walking up for workspace.edn, so it only runs inside a brainyard source checkout and throws \"workspace.edn not found\" anywhere else. Also :gemini, :codex."}
+                                :doc "ACP (agent-client-protocol) backend implementation. Defaults to :claude-code, which drives the local Claude CLI via npx @agentclientprotocol/claude-agent-acp and needs no API key. :stub is a TEST FIXTURE, not a fallback — it shells out to `clj -M -m ai.brainyard.acp-stub-agent.core` under <workspace>/projects/acp-stub-agent, located by walking up for workspace.edn, so it only runs inside a brainyard source checkout and throws \"workspace.edn not found\" anywhere else. Also :gemini, :codex."}
    :acp-client-fs              {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ACP_CLIENT_FS")]
                                            (= "true" v) ::env-unset)

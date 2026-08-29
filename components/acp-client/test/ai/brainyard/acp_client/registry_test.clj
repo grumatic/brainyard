@@ -61,7 +61,10 @@
     (let [spec (acp-client/resolve-backend :claude-code)]
       (is (= "npx" (first (:command spec))))
       (is (some #{"-y"} (:command spec)))
-      (is (some #(re-find #"claude-code-acp" %) (:command spec)))
+      ;; The adapter moved @zed-industries -> @agentclientprotocol; the old
+      ;; package is deprecated on npm and frozen, so assert the SCOPE too —
+      ;; a bare #"claude-agent-acp" would still pass against a stale fork.
+      (is (some #(= "@agentclientprotocol/claude-agent-acp" %) (:command spec)))
       (is (string? (:working-dir spec)))
       (is (map? (:env spec))))))
 
@@ -77,16 +80,28 @@
       (is (= "yes" (get-in spec [:env "EXTRA_VAR"]))))))
 
 (deftest gemini-spec-test
-  (testing ":gemini default spec invokes gemini --experimental-acp"
+  (testing ":gemini default spec invokes npx @google/gemini-cli --acp"
     (let [spec (acp-client/resolve-backend :gemini)]
-      (is (= "gemini" (first (:command spec))))
-      (is (some #(re-find #"acp" %) (:command spec))))))
+      (is (= "npx" (first (:command spec))))
+      (is (some #{"@google/gemini-cli"} (:command spec)))
+      ;; --acp, NOT the deprecated --experimental-acp spelling.
+      (is (some #{"--acp"} (:command spec)))
+      (is (not-any? #{"--experimental-acp"} (:command spec))))))
 
 (deftest codex-spec-test
-  (testing ":codex default spec invokes codex --acp"
+  (testing ":codex default spec invokes the npx adapter, not a codex CLI flag"
     (let [spec (acp-client/resolve-backend :codex)]
-      (is (= "codex" (first (:command spec))))
-      (is (some #{"--acp"} (:command spec))))))
+      (is (= "npx" (first (:command spec))))
+      (is (some #{"@agentclientprotocol/codex-acp"} (:command spec)))
+      ;; The codex CLI has no --acp flag; ACP is a separate package.
+      (is (not-any? #{"codex"} (:command spec))))))
+
+(deftest real-backends-need-only-npx-test
+  (testing "the three real backends gate on npx, not on a global CLI"
+    (let [backends (acp-client/list-backends)]
+      (doseq [k [:claude-code :gemini :codex]]
+        (is (= ["npx"] (-> backends k :prereqs))
+            (str k " requires only npx"))))))
 
 (deftest unknown-backend-throws-test
   (testing "unrecognized backends throw with a list of supported keys"

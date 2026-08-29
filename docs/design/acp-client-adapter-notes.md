@@ -23,7 +23,9 @@ backend registry. Built-in keys: `:stub` (in-tree, deterministic —
 `:codex`, plus any custom key. Each entry carries a default `:command` vector,
 overridable per instance via `:acp-backend-opts {:command [...]}`.
 
-- **`:claude-code`** default command = `npx -y @zed-industries/claude-code-acp`.
+- **`:claude-code`** default command = `npx -y @agentclientprotocol/claude-agent-acp`
+  (was `@zed-industries/claude-code-acp` until 2026-08-29; that package is now
+  deprecated on npm and frozen at 0.16.2).
   - **Prereq:** `npx` / Node.js on `PATH` (`:prereqs ["npx"]`). `npx -y`
     auto-fetches the adapter on first use.
   - Runs on a Claude **subscription** — no API key required.

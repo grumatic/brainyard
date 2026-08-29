@@ -31,8 +31,11 @@
 > against the real `@zed-industries/claude-code-acp` adapter (on a Claude
 > subscription, no API key) and fixed three defects the `:stub` backend had
 > masked, plus added model selection. Throughout the sections below, read
-> **`:claude-agent-acp` as `:claude-code`** — the backend key was renamed
-> (the command is unchanged: `npx -y @zed-industries/claude-code-acp`).
+> **`:claude-agent-acp` as `:claude-code`** — the backend key was renamed.
+> (**Superseded 2026-08-29:** the npm package has since moved to
+> `@agentclientprotocol/claude-agent-acp`; the Zed-scoped one is deprecated.
+> That 2026-07-06 verification was therefore against adapter 0.16.2 and does
+> not carry forward to 0.70.0 unexamined — see the §9.5 refresh note.)
 > - `PROTOCOL_VERSION` must be the integer `1`, not the string `"0.1.0"` —
 >   real agents reject the string with `Invalid params` at `initialize`.
 > - `session/update` payloads nest the discriminant under `:update`
@@ -495,8 +498,10 @@ a subprocess. Run via `bb acp-stub:run` (a new task).
 
    > **As-built:** Phase 6 shipped (not deferred). All three real backends are
    > registered alongside `:stub` in `acp-client/core/registry.clj`. The
-   > claude-agent-acp package landed as `@zed-industries/claude-code-acp` (not
-   > `@agentclientprotocol/claude-agent-acp`). See §9.5 for the exact specs.
+   > claude-agent-acp package originally landed as
+   > `@zed-industries/claude-code-acp` — but as of 2026 it moved to
+   > `@agentclientprotocol/claude-agent-acp` after all, and the Zed-scoped
+   > package is now deprecated. See §9.5 for the current specs.
 
 ## 8. Verification
 
@@ -646,9 +651,23 @@ the agent's `:acp-backend-opts` runtime config.
 | Backend | Default command | Prereqs | API key env (forwarded by default) |
 |---|---|---|---|
 | `:stub` | `clj -M -m ai.brainyard.acp-stub-agent.core --echo` | `clj` | none |
-| `:claude-agent-acp` | `npx -y @zed-industries/claude-code-acp` | `npx` (Node) | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` |
-| `:gemini` | `gemini --experimental-acp` | `gemini` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
-| `:codex` | `codex --acp` | `codex` | `OPENAI_API_KEY` |
+| `:claude-agent-acp` | `npx -y @agentclientprotocol/claude-agent-acp` | `npx` (Node) | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` |
+| `:gemini` | `npx -y @google/gemini-cli --acp` | `npx` (Node) | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| `:codex` | `npx -y @agentclientprotocol/codex-acp` | `npx` (Node) | `OPENAI_API_KEY` |
+
+> **Refreshed 2026-08-29 against the ACP registry**
+> (`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`),
+> which is now the authority on how a client spawns a given agent. All three
+> defaults above changed, and all three real backends now gate on `npx` alone
+> rather than on a globally-installed CLI:
+> - **`:claude-code`** — the adapter moved `@zed-industries/claude-code-acp` →
+>   `@agentclientprotocol/claude-agent-acp`. The old package is DEPRECATED on
+>   npm and frozen at 0.16.2 (published 2026-03-26) while the new one is at
+>   0.70.0, so `npx -y` on the old name silently pinned us 54 versions back.
+> - **`:gemini`** — `--experimental-acp` → `--acp` (old spelling deprecated),
+>   and launched via npx rather than assuming a global `gemini`.
+> - **`:codex`** — ACP is a SEPARATE adapter package, not a `--acp` flag on the
+>   codex CLI. The original spec assumed a flag that does not exist.
 
 **Override surface (per backend factory):**
 
@@ -675,7 +694,7 @@ the agent's `:acp-backend-opts` runtime config.
 ```clojure
 ;; Use a globally-installed binary instead of npx fetch-on-demand
 (acp-client/spawn! :claude-agent-acp
-                   {:backend-opts {:command ["claude-code-acp"]}})
+                   {:backend-opts {:command ["claude-agent-acp"]}})
 
 ;; Add a new backend at runtime (e.g. cline)
 (acp-client/register-backend!

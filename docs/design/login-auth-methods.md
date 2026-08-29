@@ -17,7 +17,7 @@ tree, unconnected to `/login`:
   device / paste / loopback / DCR), store at `~/.brainyard/oauth/<user>/<account>.json`.
   Wired to MCP servers via `:auth {:type :oauth …}` + `/mcp <srv> auth`.
 - **Claude subscription via the `claude` CLI** — the ACP `:claude-code` backend
-  (`npx @zed-industries/claude-code-acp`) reads Claude Code's *own* credential
+  (`npx @agentclientprotocol/claude-agent-acp`) reads Claude Code's *own* credential
   store, so a logged-in `claude` CLI authenticates it with no API key. Worked,
   but was invisible to `/login`.
 

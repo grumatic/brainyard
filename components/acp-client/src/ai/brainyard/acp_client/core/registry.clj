@@ -14,8 +14,14 @@
 
      :stub               In-tree deterministic agent (bases/acp-stub-agent).
      :claude-code        Claude Code over ACP, via npx (Anthropic).
-     :gemini             Google gemini-cli with ACP mode.
-     :codex              OpenAI codex CLI with ACP mode.
+     :gemini             Google gemini-cli in ACP mode, via npx.
+     :codex              OpenAI Codex over ACP, via npx (adapter package).
+
+   The three real backends all launch through `npx`; their default
+   commands track the ACP registry
+   (https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json),
+   which is the authority on how ACP clients are expected to spawn a
+   given agent. Verified against it 2026-08-29.
 
    Custom backends can be added at runtime via `register-backend!`."
   (:require [clojure.java.io :as io]
@@ -107,7 +113,15 @@
   "Launch Anthropic's Claude Code over ACP via npx.
 
    Default command:
-     npx -y @zed-industries/claude-code-acp
+     npx -y @agentclientprotocol/claude-agent-acp
+
+   The adapter moved from the `@zed-industries` scope to
+   `@agentclientprotocol` when the ACP registry took over distribution.
+   The old package is DEPRECATED on npm and frozen at 0.16.2 (last
+   published 2026-03-26) — `npx -y` on it silently keeps installing that
+   build forever, so this is a rename we cannot decline. The registry
+   entry (id `claude-acp`) pins 0.70.0 as of 2026-08-29; we deliberately
+   stay unpinned so `npx -y` tracks latest, as before.
 
    Override with `:command` (a vector of strings) when using a different
    adapter package, a globally-installed binary, or local development.
@@ -126,7 +140,7 @@
        (subscription / Pro / Max)."
   ([] (claude-code-launch-spec {}))
   ([{:keys [command working-dir env forward-env]
-     :or   {command     ["npx" "-y" "@zed-industries/claude-code-acp"]
+     :or   {command     ["npx" "-y" "@agentclientprotocol/claude-agent-acp"]
             forward-env ["ANTHROPIC_API_KEY" "ANTHROPIC_AUTH_TOKEN"
                          "PATH" "HOME"]}}]
    {:command     command
@@ -137,10 +151,17 @@
   "Launch Google's gemini-cli in ACP mode.
 
    Default command:
-     gemini --experimental-acp
+     npx -y @google/gemini-cli --acp
 
-   Override with `:command` when the flag changes or when running a
-   different gemini distribution.
+   Two changes from the original `gemini --experimental-acp`, both taken
+   from the ACP registry entry (id `gemini`, 0.57.0 as of 2026-08-29):
+   the flag dropped its `--experimental-` prefix (the old spelling still
+   works but is deprecated), and the registry launches via npx rather
+   than assuming a global install — which is also what makes the backend
+   usable on a machine that has Node but not gemini-cli.
+
+   Override with `:command` to use a globally-installed `gemini` binary
+   (`[\"gemini\" \"--acp\"]`) or a different distribution.
 
    Options:
      :command          Vector of command tokens (default above).
@@ -151,11 +172,11 @@
                         \"PATH\" \"HOME\"]).
 
    Required prereqs:
-     - `gemini` on PATH
-     - GEMINI_API_KEY (or GOOGLE_API_KEY) in env."
+     - `npx` on PATH (Node.js installed)
+     - GEMINI_API_KEY (or GOOGLE_API_KEY) in env, or a logged-in gemini CLI."
   ([] (gemini-launch-spec {}))
   ([{:keys [command working-dir env forward-env]
-     :or   {command     ["gemini" "--experimental-acp"]
+     :or   {command     ["npx" "-y" "@google/gemini-cli" "--acp"]
             forward-env ["GEMINI_API_KEY" "GOOGLE_API_KEY"
                          "PATH" "HOME"]}}]
    {:command     command
@@ -163,12 +184,18 @@
     :env         (merge-env (copy-env forward-env) env)}))
 
 (defn codex-launch-spec
-  "Launch OpenAI's codex CLI in ACP mode.
+  "Launch OpenAI's Codex over ACP via npx.
 
    Default command:
-     codex --acp
+     npx -y @agentclientprotocol/codex-acp
 
-   Override with `:command` if the flag differs in your installation.
+   ACP support is a SEPARATE adapter package, not a `--acp` flag on the
+   codex CLI — the original spec here assumed a flag the CLI does not
+   have. Registry entry id `codex-acp`, pinned 1.7.0 as of 2026-08-29;
+   we stay unpinned so `npx -y` tracks latest.
+
+   Override with `:command` for a globally-installed adapter or local
+   development.
 
    Options:
      :command          Vector of command tokens (default above).
@@ -178,11 +205,11 @@
                        [\"OPENAI_API_KEY\" \"PATH\" \"HOME\"]).
 
    Required prereqs:
-     - `codex` on PATH
-     - OPENAI_API_KEY in env."
+     - `npx` on PATH (Node.js installed)
+     - OPENAI_API_KEY in env, or a logged-in codex CLI."
   ([] (codex-launch-spec {}))
   ([{:keys [command working-dir env forward-env]
-     :or   {command     ["codex" "--acp"]
+     :or   {command     ["npx" "-y" "@agentclientprotocol/codex-acp"]
             forward-env ["OPENAI_API_KEY" "PATH" "HOME"]}}]
    {:command     command
     :working-dir (or working-dir (System/getProperty "user.dir"))
@@ -210,21 +237,21 @@
 
     :claude-code
     {:factory      claude-code-launch-spec
-     :description  "Claude Code over ACP (Anthropic) via npx @zed-industries/claude-code-acp."
+     :description  "Claude Code over ACP (Anthropic) via npx @agentclientprotocol/claude-agent-acp."
      :experimental true
      :prereqs      ["npx"]}
 
     :gemini
     {:factory      gemini-launch-spec
-     :description  "Google gemini-cli with --experimental-acp flag."
+     :description  "Google gemini-cli in ACP mode via npx @google/gemini-cli --acp."
      :experimental true
-     :prereqs      ["gemini"]}
+     :prereqs      ["npx"]}
 
     :codex
     {:factory      codex-launch-spec
-     :description  "OpenAI codex CLI with --acp flag."
+     :description  "OpenAI Codex over ACP via npx @agentclientprotocol/codex-acp."
      :experimental true
-     :prereqs      ["codex"]}}))
+     :prereqs      ["npx"]}}))
 
 ;; =============================================================================
 ;; Public API
