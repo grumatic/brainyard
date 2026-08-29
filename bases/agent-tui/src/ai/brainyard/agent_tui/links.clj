@@ -199,8 +199,15 @@
     (str (System/getProperty "user.home") (subs p 1))
     p))
 
-(defn resolve-file
+(defn ^java.io.File resolve-file
   "Absolute `File` for `path` when it names an EXISTING regular file, else nil.
+
+   Return type-hinted so callers can invoke `File` methods without reflection.
+   The hint belongs HERE rather than at each call site: a `:tag` on the var
+   fixes every caller at once, including ones not yet written. Unhinted, the
+   `(.getPath f)` in `autocomplete.clj`'s file-click handler reflected — which
+   `bb reflect:check` correctly flagged, since a reflective interop call is a
+   native-image hazard.
 
    Relative paths resolve against `base-dir` (the agent's working directory at
    the call site). Passed in rather than read here so this stays pure and
