@@ -137,12 +137,11 @@
       (runtime/deliver-action-response !state "action-1" :yes)
       (is (= :yes @p))))
 
-  (testing "Async execution"
-    (let [!state (atom {:runtime (runtime/create-runtime-state)})
-          result (atom nil)
-          fut (runtime/run-async !state (fn [] (reset! result :done) :done))]
-      (is (= :done @fut))
-      (is (= :done @result)))))
+  ;; The "Async execution" case that lived here exercised `runtime/run-async`,
+  ;; which had no production callers — it asserted that a future returns what
+  ;; its thunk returned, for a function nobody invoked. Removed with the fn.
+  ;; The live async path is `send-ask`, covered by the agent-level tests.
+  )
 
 ;; ============================================================================
 ;; New Tests: Context Building

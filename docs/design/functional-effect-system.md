@@ -1,7 +1,10 @@
 # Functional effect system (missionary) — design
 
-**Status:** Phase 0 implemented and verified on a native binary (§10). Phases
-1–4 designed, not started. Branch `feat/functional-effect`.
+**Status:** COMPLETE. Phases 0–3 implemented, verified on a native binary, and
+merged to `main` (§9–§12). Phase 4 was investigated and **cancelled** — its
+premise contradicted this document's own scope (§14). Later sections record
+what was built, what the plan got wrong, and why; where they disagree with the
+earlier design sections, the later ones are what happened.
 
 **Thesis.** Brainyard has, over time, hand-rolled a small effect system out of
 `future` + `promise` + `Thread/sleep` + polling loops + a cooperative
@@ -57,7 +60,7 @@ emits liveness heartbeats. That is genuinely a Flow — a `StringWriter` sampled
 over time — and it should stay a Flow. The mistake is only that *completion* is
 also expressed as polling.
 
-### 1.2 Cancellation is five mechanisms wearing a trenchcoat
+### 1.2 Cancellation is five mechanisms wearing a trenchcoat *(four, really — §14)*
 
 `core/runtime.clj:118` `cancel-run` does all of:
 
@@ -67,10 +70,15 @@ also expressed as polling.
 4. `future-cancel`s a stored future **or** `.interrupt`s a stored thread,
 5. signals a `ReentrantLock`/`Condition` to wake a parked pause (`wait-if-paused`, line 215).
 
-Items 1, 2 and 4 are exactly what missionary gives for free: running a task
-returns its canceller, cancellation propagates into every nested `m/?`, and
-parents own children by construction. Item 5 is `m/dfv` or a `m/watch` on the
-pause flag consumed with `m/?<`.
+Items 1, 2 and 4 look like exactly what missionary gives for free: running a
+task returns its canceller, cancellation propagates into every nested `m/?`,
+and parents own children by construction. Item 5 looks like `m/dfv` or a
+`m/watch` on the pause flag consumed with `m/?<`.
+
+**None of that survived contact (§14).** Missionary cancels *effects*,
+propagating through `m/?` parks, and the run has none — it is a thread. Item 4
+was also two branches of which one was dead: `run-async` had no production
+callers, so every real cancel took the `.interrupt`.
 
 **Item 3 does not go away, and the design must say so plainly.** A thread
 blocked in `InputStream.read` is not interruptible on the JVM by any mechanism,
@@ -171,7 +179,7 @@ components/effect/
   src/ai/brainyard/effect/core/policy.clj    ; timeout, retry, bounded, race
   src/ai/brainyard/effect/core/flows.clj     ; ticker, sample-lines, watch, debounce
   src/ai/brainyard/effect/core/supervisor.clj; the process registry (§3.2)
-  src/ai/brainyard/effect/core/smoke.clj     ; the native gate (§10)
+  src/ai/brainyard/effect/core/smoke.clj     ; the native gate (§9)
 ```
 
 A `bridge.clj` for core.async is **deferred to Phase 3**, when there is a
@@ -281,7 +289,7 @@ cannot be satisfied under `--strict-image-heap` the correct outcome is to stop
 here, having spent one afternoon. **Do not begin Phase 1 before a native binary
 has run a missionary task.** JVM-mode success proves nothing about this risk.
 
-### Phase 1 — leaf policy, zero semantic change *(retry: done, §11)*
+### Phase 1 — leaf policy, zero semantic change *(retry: done, §10)*
 
 `clj-llm/retry-with-backoff` now delegates to `effect/retry-backoff`. The three
 call sites and the public contract are untouched.
@@ -295,7 +303,7 @@ sites in the readline editor too — a cross-cutting change to interactive input
 handling — for no behavioural gain. Effects buy composition and cancellation;
 that code needs neither.
 
-### Phase 2 — the tickers *(done, §12)*
+### Phase 2 — the tickers *(done, §11)*
 
 Seven daemon-thread tickers → seven `fx/ticking` tasks under the supervisor.
 Purely additive and visually verifiable (the spinner either animates or it does
@@ -307,7 +315,7 @@ body lifted verbatim into a named `…-tick!` fn returning truthy-while-active.
 The renderer's width contract (reflow, `:render` fns) is untouched, and so is
 the pause-state and session-origin handling the loops carried.
 
-### Phase 3 — the task subsystem *(done, §13)*
+### Phase 3 — the task subsystem *(done, §12)*
 
 The real prize. `tp/IJobExecutor.execute-job` returns a **Task** instead of
 `{:status :detached :on-poll …}`. Consequences:
@@ -343,15 +351,19 @@ a green test run is not evidence. `fx/task-of` conveys, which makes the
 mechanical `future` → Task port safe; `m/sp` bodies do not, and no library
 change can make them.
 
-### Phase 4 — cancellation unification
+### Phase 4 — cancellation unification *(NOT DOING — see §14)*
 
-`cancel-run`'s five mechanisms collapse to: cancel the tree, plus one explicit
-closer for the blocking socket. `runtime/cancelled?`'s parent-chain walk and
-`tool.clj`'s hand-wired cascading subagent cancel both become consequences of
-structure rather than code.
+The plan was: `cancel-run`'s five mechanisms collapse to cancelling the effect
+tree plus one explicit closer for the blocking socket, and both
+`runtime/cancelled?`'s parent-chain walk and `tool.clj`'s cascading subagent
+cancel become consequences of structure rather than code.
 
-Highest value, highest risk, therefore last. It touches pause/resume, the BT
-checkpoint contract, and subagent lifetime simultaneously.
+It does not work, for a reason that was visible in this document all along:
+missionary cancels *effects*, propagating through `m/?` parks, and **the run
+has no parks** — it is a thread. Getting structural cancellation would mean
+rewriting the BT loop as a coroutine, which §2 of this same document rules out
+two pages earlier ("Not a rewrite of the BT engine"). §14 has the evidence and
+what remains worth doing.
 
 ---
 
@@ -858,7 +870,7 @@ pooled `missionary blk-N` workers shared by everything.
 Native: `by effect-smoke` green, `--help` / `agents` / `sessions list` /
 `models` pass, a real Bedrock round-trip returns `10`. `bb poly check` OK.
 
-## 13. Phase 3 — as built
+## 12. Phase 3 — as built
 
 Converted in five slices, each independently verified, with the legacy poll
 path kept alive between them so no commit had to move everything at once:
@@ -920,7 +932,7 @@ after the process exits -> :completed
 
 One thread, blocked in `.waitFor`, which is the work itself.
 
-## 14. Recommendation
+## 13. Recommendation
 
 Phase 0 is landed and its gate passes on a real native binary, so the largest
 architecture risk is retired: missionary works in the shipped artifact, at no
@@ -934,7 +946,7 @@ Phase 2 is done (§11) and is the first phase with a user-visible payoff: seven
 dedicated OS threads and ~140 lines of lifecycle code gone, verified animating
 in a real TUI and verified absent from a live thread dump.
 
-Phase 3 is done (§13): the polling runtime is gone and completion latency
+Phase 3 is done (§12): the polling runtime is gone and completion latency
 dropped from ~400ms to ~15–32ms.
 
 **Q3 turned out to be a false alarm, and the commit that closed Phase 3 says so
@@ -949,8 +961,8 @@ currently bounded for three executors, unbounded for four, and invisible in
 task status either way. Worth deciding deliberately, at `start-task`, as a
 task-manager concern rather than an effect-migration one.
 
-Phase 4 (unifying `cancel-run`'s five cancellation mechanisms) is the remaining
-migration.
+**Phase 4 is not the remaining migration — it is cancelled (§14).** The
+migration is complete at Phase 3.
 
 Q1 is answered (§8): the coroutine macros cannot work under SCI, effects
 exposed as functions work fully, and Phase 3's shape is unchanged. No known
@@ -971,3 +983,69 @@ not gates on starting one.
 The single most valuable phase is 3 (the task subsystem: two polling loops and
 ~400 ms of latency delete outright). The single most valuable *artifact* is
 probably §3.2, the supervisor, which is worth having even standalone.
+
+## 14. Phase 4 — cancelled, and why
+
+Phase 4 promised that `cancel-run`'s mechanisms would "collapse into the effect
+tree's canceller". Investigated before writing any code; the premise does not
+hold, and the reason is structural rather than a matter of effort.
+
+**Missionary cancels effects. The run is a thread.** `send-ask` hands the BT
+loop to a `send-off` pool thread (`runtime.clj`), and it runs synchronously to
+completion. Cancellation propagates through `m/?` parks — and there are none:
+
+```
+grep for missionary / fx/run / m/sp across runtime.clj, bt.clj, behavior-tree/
+  → (none — the run loop is entirely synchronous)
+```
+
+Structural cancellation has nothing to attach to. Getting it would mean
+rewriting the BT tick loop as a coroutine so every checkpoint became a park —
+which **§2 of this document rules out two pages earlier**: "Not a rewrite of the
+BT engine. `behavior-tree` is synchronous by design and stays that way." The
+plan contradicted its own scope and nobody noticed until it was time to build.
+
+Two further costs, had it gone ahead anyway. Q4's hazard applies at every park,
+and the run path binds `*current-agent*`, `*current-task*`,
+`*subagent-capture*` and `*attribution*` — each would need lexical-capture
+treatment, in the most central code path in the product, against a failure mode
+that is silent and timing-dependent. And it would touch pause/resume, the BT
+checkpoint contract and subagent lifetime simultaneously, which was already
+flagged as "highest risk, therefore last".
+
+### The four mechanisms are irreducible, not accidental
+
+Re-examined one at a time, none is redundant and none is replaceable without
+the rewrite:
+
+| mechanism | what it covers | why it stays |
+|---|---|---|
+| `:cancelled?` flag | the BT checks it every node tick and throws | this is what *stops* the loop; the rest exist to make sure it is reached |
+| `.close` on `:active-http` | a thread blocked in a socket read | uninterruptible on the JVM by any mechanism, missionary included |
+| `.interrupt` on the run thread | a sleep or blocking take between checkpoints | no effect to cancel — just a thread |
+| `signal-pause-condition!` | a thread parked in `wait-if-paused` | waiting on a `Condition`; would otherwise never re-check the flag |
+
+### What was actually wrong: there were four, not five
+
+`cancel-run` documented itself as interrupting "either via `future-cancel`
+(run-async path) or direct `Thread.interrupt` (send-ask/clj-agent path)".
+**The `run-async` path had no production callers.** `[:runtime :future]` was
+set nowhere else, so the `future-cancel` branch was dead and every real cancel
+took the interrupt. `run-async`'s only caller in the repository was a test
+asserting that a future returns what its thunk returned — a test for code
+nobody ran.
+
+Removed: `run-async`, the dead branch, and that test. `cancel-run`'s docstring
+now names the four live mechanisms and says why each is irreducible, so the
+next person to ask "can't missionary do this?" finds the answer next to the
+code instead of re-deriving it.
+
+### What would make Phase 4 possible
+
+Making the agent run an effect — the BT loop as `m/sp`, checkpoints as parks.
+That is a redesign of the execution model with its own justification needed
+(what does it buy beyond cancellation?), its own Q4 audit, and its own risk
+budget. It is not a phase of this migration, and filing it as one is what made
+this document promise something it had already excluded.
+
+**The effect migration is complete at Phase 3.**

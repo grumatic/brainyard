@@ -6,7 +6,8 @@
   "Async agent runtime with cancellation and permission management.
 
    Provides:
-   - Future-based async execution with cancellation
+   - Serialized async ask execution on a Clojure agent (`send-ask`)
+   - Cooperative cancellation, checked by the BT at every node tick
    - Cooperative pause/resume parked on a Condition
    - Promise-based action permission system
    - Parent-agent relationship for sub-agents"
@@ -21,33 +22,13 @@
 (defn create-runtime-state
   "Create initial runtime state map."
   []
-  {:future nil
-   :cancelled? false
+  {:cancelled? false
    :paused? false
    :pause-condition nil
    :active-http nil
    :action-permissions {}
    :action-promises {}
    :parent-agent nil})
-
-;; ============================================================================
-;; Async Execution
-;; ============================================================================
-
-(defn run-async
-  "Execute a function asynchronously, storing the future in state.
-   Returns the future."
-  [!state f]
-  (let [fut (future
-              (try
-                (f)
-                (catch InterruptedException _
-                  (mulog/info ::agent-execution-interrupted))
-                (catch Exception e
-                  (mulog/error ::agent-execution-failed :exception e)
-                  {:error (ex-message e)})))]
-    (swap! !state assoc-in [:runtime :future] fut)
-    fut))
 
 ;; ============================================================================
 ;; Clojure Agent-based Async Execution
@@ -116,12 +97,34 @@
       (try (.signalAll cnd) (finally (.unlock lock))))))
 
 (defn cancel-run
-  "Cancel the current async execution.
-   Sets the :cancelled? flag (checked by BT nodes), aborts any active HTTP
-   request (so a streaming LLM call unblocks promptly), wakes any thread
-   parked on the pause condition, and interrupts the executing thread —
-   either via future-cancel (run-async path) or direct Thread.interrupt
-   (send-ask/clj-agent path)."
+  "Cancel the current async execution. Four mechanisms, each covering a
+   different way a run can be stuck, none of them redundant:
+
+     1. `:cancelled?` — cooperative. The BT checks it at every node tick
+        (`bt/check-node-interrupts`) and throws. This is what actually stops
+        the loop; the rest exist to make sure it gets *reached*.
+     2. `.close` on `:active-http` — a thread blocked in a socket read is not
+        interruptible on the JVM by any mechanism. Closing the stream under it
+        is the only way, and without it a streaming LLM call would run to
+        completion before the flag was next checked.
+     3. `.interrupt` on `[:runtime :thread]` — unparks a `Thread/sleep` or a
+        blocking queue take between checkpoints.
+     4. `signal-pause-condition!` — wakes a thread parked in `wait-if-paused`,
+        which is waiting on a `Condition` and would otherwise never re-check
+        the flag.
+
+   These do NOT reduce to an effect canceller, and the effect migration
+   deliberately stops short of here (docs/design/functional-effect-system.md
+   §14). Missionary cancels *effects*, propagating through `m/?` parks; the run
+   is a thread — `send-ask` hands the BT loop to a `send-off` pool thread and
+   it runs synchronously to completion. There is no park in the path to
+   propagate through, so structural cancellation has nothing to attach to
+   without rewriting the BT engine into a coroutine, which the design excludes.
+
+   Formerly documented as cancelling 'either via future-cancel (run-async path)
+   or direct Thread.interrupt'. The `run-async` path had no production callers
+   at all — `[:runtime :future]` was never set outside it — so the
+   `future-cancel` branch was dead and every real cancel took the interrupt."
   [!state]
   ;; A cancelled run is no longer paused. Clear the pause flags (and any pending
   ;; resume note) in the same swap that sets :cancelled? — otherwise a paused
@@ -137,10 +140,8 @@
   (signal-pause-condition! !state)
   (when-let [^java.io.Closeable http (get-in @!state [:runtime :active-http])]
     (try (.close http) (catch Throwable _)))
-  (if-let [fut (get-in @!state [:runtime :future])]
-    (future-cancel fut)
-    (when-let [^Thread thread (get-in @!state [:runtime :thread])]
-      (.interrupt thread)))
+  (when-let [^Thread thread (get-in @!state [:runtime :thread])]
+    (.interrupt thread))
   (mulog/info ::agent-run-cancelled))
 
 (defn cancelled?
@@ -254,8 +255,7 @@
    Preserves the :pause-condition object — it is reusable across runs."
   [!state]
   (swap! !state update :runtime merge
-         {:future nil
-          :cancelled? false
+         {:cancelled? false
           :paused? false
           :resume-note nil
           :active-http nil
