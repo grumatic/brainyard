@@ -29,6 +29,8 @@
             [ai.brainyard.behavior-tree.interface :as bt]     ;; force nodes.clj to load BEFORE our overrides
             [ai.brainyard.behavior-tree.interface.protocol :as p]
             [clojure.string :as str]
+            [ai.brainyard.effect.interface :as fx]
+            [missionary.core :as m]
             [ai.brainyard.mulog.interface :as mulog]))
 
 ;; Session analytics is no longer fired per-turn. It is now an on-demand,
@@ -662,3 +664,211 @@
                 nil
                 (:children node))
         (:condition :action) (when (= node-id id) node)))))
+
+;; ============================================================================
+;; SPIKE — the five tracing overrides as effects
+;; ============================================================================
+;;
+;; docs/design/functional-effect-system.md §16. The agent overrides five of the
+;; six node types, so `core.nodes-task` alone never runs in production — these
+;; are the ticks the real tree executes, and converting them is what the spike
+;; needed to prove.
+;;
+;; Tracing, depth, hooks, todo-info and st-memory writes come across VERBATIM.
+;; The translation is the same as the base engine's: wrap in `m/sp`, `m/?` the
+;; recursive tick. What changes is the checkpoint.
+
+(defn- check-pause!
+  "The pause half of `check-interrupt-cancel-pause!`, and only that half.
+
+   The other two checks are gone, which is the entire payoff:
+
+     - `(Thread/interrupted)` — there is no thread to interrupt. The tree is a
+       value; whoever ran it holds a canceller.
+     - `check-run-cancelled?` — cancellation is structural. Cancelling the
+       tree's Task unwinds it at whatever `m/?` it is parked on, so a
+       cooperative flag re-checked at every node has nothing left to do.
+
+   Pause is NOT cancellation and does not reduce the same way. It is a genuine
+   wait for the user to resume, so it stays a park on the Condition. Making it
+   an `m/dfv` is a separate design question — a paused turn is waiting on a
+   human, not on an effect.
+
+   `apply-resume-note!` stays for the same reason it was always unconditional:
+   a resume note must land whether or not the loop actually parked."
+  [^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent depth id node-type]
+  (when agent
+    (when (.check-run-paused? agent)
+      (.update-session-data agent
+                            {:trace {:agent-id (:agent-id agent) :depth depth
+                                     :content (format "%s %s **paused**." id (name node-type))}})
+      (let [outcome (.await-resume agent)]
+        (when (= outcome :cancelled)
+          (.update-session-data agent
+                                {:trace {:agent-id (:agent-id agent) :depth depth
+                                         :content (format "%s %s **cancelled** (while paused)." id (name node-type))}
+                                 :exception (format "agent processing cancelled by user at %s so the processing agent aborted!" id)})
+          (throw (ex-info "Cancelled" {:node-type node-type, :node-id id})))
+        (.update-session-data agent
+                              {:trace {:agent-id (:agent-id agent) :depth depth
+                                       :content (format "%s %s **resumed**." id (name node-type))}})))
+    (.apply-resume-note! agent)))
+
+(defn- leaf-task
+  "Same seam as `core.nodes-task/leaf-task`: run the leaf on `m/blk`, through
+   the context's `:leaf-wrap` if it supplies one. This is where the agent
+   re-establishes `proto/*current-agent*` so it survives a park (§16 Q2)."
+  [context thunk]
+  (let [wrap (or (:leaf-wrap context) (fn [t] (t)))]
+    (fx/task-of #(wrap thunk))))
+
+(defn- lift [r] (if (fn? r) r (fx/success r)))
+
+(defmethod p/tick-task :sequence
+  [{:keys [id depth] :or {depth 0} :as node}
+   {:keys [^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent] :as context}]
+  (m/sp
+   (let [id (or id "?")
+         _ (when agent
+             (.update-session-data agent
+                                   {:trace {:agent-id (:agent-id agent) :depth depth :content (format ">>> %s sequence **started**." id)}}))
+         result (loop [[child-node :as children] (:children node)]
+                  (if-not child-node
+                    p/success
+                    (let [result (m/? (p/tick-task (assoc child-node :depth (inc depth)) context))]
+                      (case result
+                        :success (recur (rest children))
+                        :failure p/failure
+                        :running p/running))))]
+     (when agent
+       (.update-session-data agent
+                             {:trace {:agent-id (:agent-id agent) :depth depth :content (format "<<< %s sequence **%s**." id result)}}))
+     result)))
+
+(defmethod p/tick-task :fallback
+  [{:keys [id depth] :or {depth 0} :as node}
+   {:keys [^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent] :as context}]
+  (m/sp
+   (let [id (or id "?")
+         _ (when agent
+             (.update-session-data agent
+                                   {:trace {:agent-id (:agent-id agent) :depth depth :content (format ">>> %s fallback **started**." id)}}))
+         result (loop [[child-node :as children] (:children node)]
+                  (if-not child-node
+                    p/failure
+                    (let [result (m/? (p/tick-task (assoc child-node :depth (inc depth)) context))]
+                      (case result
+                        :success p/success
+                        :failure (recur (rest children))
+                        :running p/running))))]
+     (when agent
+       (.update-session-data agent
+                             {:trace {:agent-id (:agent-id agent) :depth depth :content (format "<<< %s fallback **%s**." id result)}}))
+     result)))
+
+(defmethod p/tick-task :condition
+  [{:keys [condition-fn opts depth] :or {depth 0} :as _node}
+   {:keys [st-memory ^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent] :as context}]
+  (m/sp
+   (let [id (or (:id opts) "?")
+         _ (check-pause! agent depth id :condition)
+         context (assoc context :opts opts)
+         result (if (m/? (leaf-task context #(condition-fn context)))
+                  p/success
+                  p/failure)
+         {:keys [source]} (:debug opts)
+         debug-value (case source
+                       :st-memory (format "<br/>[*] %s" (get-st-memory-value context))
+                       nil)]
+     (when agent
+       (.update-session-data agent
+                             {:trace {:agent-id (:agent-id agent) :depth depth :content (format "%s condition **%s**." id result) :debug debug-value}}))
+     (when (= result p/failure)
+       (swap! st-memory update :last-failure (constantly (format "%s condition **%s**." id result))))
+     result)))
+
+(defmethod p/tick-task :action
+  [{:keys [action-fn opts depth] :or {depth 0} :as _node}
+   {:keys [st-memory ^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent] :as context}]
+  (m/sp
+   (let [id (or (:id opts) "?")
+         _ (check-pause! agent depth id :action)
+         _ (when agent
+             (.update-session-data agent {:trace {:agent-id (:agent-id agent) :depth depth :content (format "%s action **started**..." id)}}))
+         ;; `lift` is what lets leaves convert one at a time: an action-fn may
+         ;; still return a status keyword, or already return a Task.
+         result (m/? (lift (m/? (leaf-task context #(action-fn (assoc context :opts opts :depth depth))))))
+         {:keys [source check-fn]} (:debug opts)
+         debug-value (case source
+                       :reasoning (when (and (= (:operation opts) :chain-of-thought)
+                                             (or (nil? check-fn) (check-fn context)))
+                                    (if-let [reasoning (some-> agent (.get-bt-st-memory) deref :last-reasoning)]
+                                      (format "<br/>[!] %s" reasoning)
+                                      (format "<br/>[!] no reasoning, something wrong!")))
+                       nil)]
+     (when-let [todo-update (:todo-update opts)]
+       (when-let [todo-list (:todo-list @st-memory)]
+         (when agent
+           (.update-session-data agent
+                                 {:todo-info {:action-id id :todo-update todo-update :todo-list todo-list}}))))
+     (when agent
+       (.update-session-data agent
+                             {:trace {:agent-id (:agent-id agent) :depth depth :content (format "%s action **%s**." id result) :debug debug-value}}))
+     (when (= result p/failure)
+       (swap! st-memory update :last-failure (constantly (format "%s action **%s**." id result))))
+     result)))
+
+(defmethod p/tick-task :repeat
+  [{:keys [id max-n condition-fn child depth emit-iteration-events?]
+    :or {id "?" depth 0 max-n 5
+         condition-fn (fn [_] true)
+         emit-iteration-events? true} :as _node}
+   {:keys [st-memory ^ai.brainyard.agent.core.protocol.IAgentBTIntegration agent] :as context}]
+  (m/sp
+   (let [max-n (or (if (fn? max-n) (max-n context) max-n) 5)]
+     (when agent
+       (.update-session-data agent
+                             {:trace {:agent-id (:agent-id agent) :depth depth :content (format ">>> %s repeat(max-n:%d) **started**." id max-n)}}))
+     (let [stop-reason (get @st-memory :stop-reason)
+           result (if child
+                    (loop [n 0]
+                      (if (< n max-n)
+                        (let [iter-num     (inc n)
+                              _            (check-pause! agent depth id :repeat)
+                              _            (when (and agent emit-iteration-events?)
+                                             (hooks/fire! :agent.iteration/pre
+                                                          {:agent agent :iteration iter-num
+                                                           :max-iterations max-n :repeat-id id}))
+                              child-result (m/? (p/tick-task (assoc child :depth (inc depth)) context))
+                              post-st      @st-memory
+                              _            (when (and agent emit-iteration-events?)
+                                             (hooks/fire! :agent.iteration/post
+                                                          {:agent agent :iteration iter-num
+                                                           :max-iterations max-n :repeat-id id
+                                                           :result child-result
+                                                           :observation (:observation post-st)
+                                                           :last-reasoning (:last-reasoning post-st)
+                                                           :notices (let [r (some-> (:iterations post-st) last)]
+                                                                      (when (= (:iteration r) iter-num)
+                                                                        (:notices r)))
+                                                           :goal-achieved (:goal-achieved post-st)}))]
+                          (condp = child-result
+                            p/success (if (check-condition-fn id depth (condition-fn context) agent)
+                                        p/success
+                                        (recur (inc n)))
+                            p/failure (do
+                                        (when (and agent stop-reason)
+                                          (.update-session-data agent
+                                                                {:trace {:agent-id (:agent-id agent) :depth depth :content (format "%s repeat **stopped** by %s." id stop-reason)}}))
+                                        p/failure)
+                            (throw (ex-info "unknown child-result" {:child-result child-result}))))
+                        (do
+                          (when agent
+                            (hooks/fire! :agent.iteration/exhausted
+                                         {:agent agent :iteration-count n :max-iterations max-n}))
+                          p/success)))
+                    p/success)]
+       (when agent
+         (.update-session-data agent
+                               {:trace {:agent-id (:agent-id agent) :depth depth :content (format "<<< %s repeat **%s**." id result)}}))
+       result))))

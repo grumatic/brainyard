@@ -1261,3 +1261,61 @@ survives, Q4 reduces to one site, and `:parallel` gets strictly better. What it
 does not say is that the migration is cheap — the production engine is twice
 the size §15 assumed, and it is the half with the tracing in it. Worth doing;
 worth scoping honestly first.
+
+### Second pass — the five agent overrides, converted
+
+Done. `agent.core.bt` now carries `tick-task` methods for all five, alongside
+the untouched `tick` ones: 9 tests / 35 assertions, passing.
+
+**Traces are compared, not just results.** These overrides exist *for* their
+tracing, depth threading, hooks and st-memory writes; a translation returning
+the right status while emitting different trace lines would have broken the TUI
+and passed a result-only test. Every case asserts trace equality between the
+two engines — sequence, fallback, condition, action, repeat (first-pass
+success, child-failure stop, and exhaustion), three-deep nesting for depth
+threading, and `:last-failure` landing in st-memory.
+
+**The checkpoint shrank, which is the payoff made concrete.**
+`check-interrupt-cancel-pause!` had three jobs; the task engine's `check-pause!`
+has one:
+
+| check | fate |
+|---|---|
+| `(Thread/interrupted)` | **gone** — no thread to interrupt; the tree is a value |
+| `check-run-cancelled?` | **gone** — cancellation is structural |
+| pause → `await-resume` | **stays** — a wait for a human, not an effect |
+
+Asserted directly: cancelling the tree's Task stops it mid-run *with
+`:cancelled?` never set*. The cooperative flag that §14 called "what actually
+stops the loop" is not consulted at all on this path.
+
+Pause is the honest exception. It does not reduce the same way, because a
+paused turn is waiting on a person rather than on an effect, so it stays a park
+on the Condition. Turning it into an `m/dfv` is a separate question this spike
+does not answer.
+
+Regression: agent BT + examples + coact + eval + task + manager, 178 tests /
+930 assertions; behavior-tree 20 / 66; `bb poly check`; `bb build:ata`
+end-to-end with its native smoke suite; `effect-smoke`; and a real agent turn on
+the native binary. Production still runs the synchronous ticks — nothing calls
+`run-task`.
+
+### What is left before this could ship
+
+The engine is done, both halves. What remains is not engine work:
+
+1. **The blocking leaves.** The LLM action (`dspy_action.clj`, 427 lines), tool
+   dispatch, and code eval return status keywords today. `lift` means they can
+   convert one at a time; until they do, the tree runs on `m/blk` per leaf and
+   nothing actually parks except where a leaf already returns a Task.
+2. **`bt/run` → `run-bt` → callers.** Returning a Task changes ~4 call sites
+   and `send-ask`'s shape — that is where the canceller has to end up for any
+   of this to reach `cancel-run`.
+3. **`:leaf-wrap` wiring.** `build-bt` must install
+   `(fn [thunk] (binding [proto/*current-agent* agent] (thunk)))`.
+4. **Deciding about pause.**
+
+Only after (2) does `cancel-run` actually collapse. Everything before it is
+preparation that changes no user-visible behaviour — which is the right shape
+for landing it incrementally, and also why it is not worth landing at all until
+someone commits to (2).
