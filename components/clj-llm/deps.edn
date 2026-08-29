@@ -4,6 +4,9 @@
         ai.brainyard/clj-http-native {:local/root "../clj-http-native"}
         ai.brainyard/clj-oauth {:local/root "../clj-oauth"}
         ai.brainyard/mulog {:local/root "../mulog"}
+        ;; Effect — retry/backoff is expressed as an effect value rather than a
+        ;; hand-rolled loop/recur. See docs/design/functional-effect-system.md.
+        ai.brainyard/effect {:local/root "../effect"}
         ai.brainyard/aws-client {:local/root "../aws-client"}
         ;; Bedrock Converse `cachePoint` member was added after 871.2.30.11
         ;; (Feb 2025); 871.2.42.29 carries it in the bundled service.edn.

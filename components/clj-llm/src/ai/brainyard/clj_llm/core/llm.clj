@@ -14,6 +14,7 @@
             [ai.brainyard.clj-llm.core.claude-code :as claude-code]
             [ai.brainyard.clj-llm.core.acp :as acp]
             [ai.brainyard.clj-llm.core.bedrock :as bedrock]
+            [ai.brainyard.effect.interface :as fx]
             [ai.brainyard.mulog.interface :as mulog])
   (:import [java.io BufferedReader]))
 
@@ -238,66 +239,94 @@
   (when-let [cb *on-retry*]
     (try (cb info) (catch Throwable _ nil))))
 
+(defn- llm-retryable?
+  "Should `e` be retried at the call layer?
+
+   `Exception`, never `Throwable`: an `Error` (StackOverflowError, or
+   native-image's MissingReflectionRegistrationError) is not a transient
+   network condition and retrying it wastes the backoff window before failing
+   anyway. The old loop got this by catching `ExceptionInfo`/`Exception` and
+   letting `Error` propagate; stated explicitly here because the effect layer's
+   `attempt` reifies `Throwable`."
+  [e]
+  (and (instance? Exception e)
+       (if (instance? clojure.lang.ExceptionInfo e)
+         (let [status (-> (ex-data e) :status)]
+           (when (exhausted-quota? e)
+             (mulog/warn ::llm-quota-exhausted
+                         :status status
+                         :message "429 reports exhausted quota/billing — not retrying"))
+           ;; A non-HTTP ExceptionInfo (no :status) is a generic throw and stays
+           ;; retryable, matching the old `catch Exception` fallthrough.
+           (if (some? status)
+             (boolean (retryable-status? status e))
+             true))
+         true)))
+
+(defn- llm-max-retries
+  "Per-error retry ceiling. A THROTTLING 429 earns extra attempts to ride out
+   the rate-limit window; an exhausted balance earns none — it is permanent,
+   and the extra retries turned a definitive first answer into ~90s of backoff
+   (1+2+4+8+16+32s) before failing anyway, on every single call."
+  [max-retries e]
+  (if (and (= 429 (-> (ex-data e) :status))
+           (not (exhausted-quota? e)))
+    (+ max-retries 3)
+    max-retries))
+
 (defn- retry-with-backoff
   "Execute f with exponential backoff retry on retryable errors.
    Respects retry-after header from 429 responses.
    For 429 rate limits, allows extra retries beyond max-retries.
    Each retry fires `*on-retry*` so the wait is visible to the user.
-   Returns the result of f or throws the last exception."
+   Returns the result of f or throws the last exception.
+
+   The policy is now an effect VALUE (`effect/retry-backoff`) rather than a
+   hand-rolled loop — see docs/design/functional-effect-system.md Phase 1. The
+   contract is unchanged and all three call sites are untouched. Two things
+   that are NOT merely cosmetic:
+
+     - The backoff sleep is `m/sleep`, which is cancellable. `Thread/sleep` was
+       only interruptible, and a cancel arriving mid-backoff had to wait for
+       the interrupt to land.
+     - `f` runs on `m/blk` rather than the calling thread, so an in-flight LLM
+       call now occupies a blk thread while the caller blocks in `run!!`. That
+       is one extra (I/O-blocked) thread per call. `cancel-run` is unaffected:
+       it aborts a live stream by `.close`ing the registered reader, which is
+       thread-independent, and its `.interrupt` now unparks the waiter instead
+       of a read that was never interruptible anyway.
+
+   `task-of`, not a bare task: it conveys the caller's dynamic frame, which is
+   load-bearing here. `*on-retry*`, `*attribution*` and
+   `*active-stream-register*` are all installed by callers ABOVE this fn, and a
+   task that did not convey would lose them (design §8 Q4)."
   [f {:keys [max-retries base-delay-ms]
       :or   {max-retries 3 base-delay-ms 1000}}]
-  (loop [attempt 0]
-    (let [result (try
-                   {:ok (f)}
-                   (catch clojure.lang.ExceptionInfo e
-                     (let [status (-> (ex-data e) :status)
-                           ;; 429 gets extra retries to ride out rate-limit
-                           ;; windows — but only a THROTTLING 429. An exhausted
-                           ;; balance is permanent, and the extra retries turned
-                           ;; a definitive first answer into ~90s of backoff
-                           ;; (1+2+4+8+16+32s) before failing anyway, on every
-                           ;; single call.
-                           quota-gone?   (exhausted-quota? e)
-                           effective-max (if (and (= 429 status) (not quota-gone?))
-                                           (+ max-retries 3)
-                                           max-retries)]
-                       (when quota-gone?
-                         (mulog/warn ::llm-quota-exhausted
-                                     :status status
-                                     :message "429 reports exhausted quota/billing — not retrying"))
-                       (if (and (retryable-status? status e)
-                                (< attempt effective-max))
-                         {:retry true :exception e :max effective-max}
-                         {:error e})))
-                   (catch Exception e
-                     (if (< attempt max-retries)
-                       {:retry true :exception e :max max-retries}
-                       {:error e})))]
-      (cond
-        (:ok result)    (:ok result)
-        (:error result) (throw (:error result))
-        (:retry result) (do
-                          (let [base (* base-delay-ms (long (Math/pow 2 attempt)))
-                                ;; Add up to 50% random jitter to avoid thundering herd
-                                jitter (long (* base (rand 0.5)))
-                                backoff-ms (+ base jitter)
-                                ;; Respect retry-after header when present (429 responses)
-                                retry-after-ms (or (parse-retry-after (:exception result)) 0)
-                                delay-ms (max backoff-ms retry-after-ms)]
-                            (mulog/info ::retry-llm-call :delay-ms delay-ms :attempt (inc attempt))
-                            ;; Surface the wait BEFORE sleeping — announcing it
-                            ;; afterwards would describe a pause the user has
-                            ;; already sat through.
-                            (notify-retry! {:attempt  (inc attempt)
-                                            :max      (:max result)
-                                            :delay-ms delay-ms
-                                            :status   (-> (ex-data (:exception result)) :status)
-                                            :reason   (:reason (classify-error (:exception result)))})
-                            ;; (long ...) required for native-image —
-                            ;; Thread/sleep dispatches via reflection
-                            ;; without it. See mode.clj note.
-                            (Thread/sleep (long delay-ms)))
-                          (recur (inc attempt)))))))
+  (let [r (fx/run!!
+           (fx/retry-backoff
+            {:max-retries     max-retries
+             :base-delay-ms   base-delay-ms
+             :retryable?      llm-retryable?
+             :max-retries-fn  (partial llm-max-retries max-retries)
+             :retry-after-ms  parse-retry-after
+             :on-retry        (fn [{:keys [attempt max delay-ms error]}]
+                                (mulog/info ::retry-llm-call
+                                            :delay-ms delay-ms :attempt attempt)
+                                ;; Surface the wait BEFORE sleeping — announcing
+                                ;; it afterwards would describe a pause the user
+                                ;; has already sat through. retry-backoff fires
+                                ;; this before its m/sleep, under the caller's
+                                ;; frame, so *on-retry* is visible on EVERY
+                                ;; attempt and not just the first.
+                                (notify-retry! {:attempt  attempt
+                                                :max      max
+                                                :delay-ms delay-ms
+                                                :status   (-> (ex-data error) :status)
+                                                :reason   (:reason (classify-error error))}))}
+            (fx/task-of f)))]
+    (if (contains? r :ok)
+      (:ok r)
+      (throw (:err r)))))
 
 ;; ============================================================================
 ;; Error classification (for the agent repair path)

@@ -13,6 +13,9 @@
             [ai.brainyard.effect.interface :as fx]
             [missionary.core :as m]))
 
+;; Used by both the retry-conveyance and the binding-across-a-park tests.
+(def ^:dynamic *tag* :root)
+
 (deftest effects-are-values
   (testing "nothing runs until something runs it"
     (let [!n   (atom 0)
@@ -81,6 +84,20 @@
                        5000)]
       (is (= "permanent" (ex-message (:err r))))
       (is (= 1 @!n) "a non-retryable error must be attempted exactly once")))
+
+  (testing ":on-retry sees the CALLER's dynamic frame on every attempt, not just
+            the first — it fires from inside the coroutine after an m/sleep park,
+            so without an explicit frame it silently reverts to root from attempt
+            2 on. This is how clj-llm installs *on-retry*, so the symptom would
+            be a TUI that reports the first retry and then goes quiet."
+    (let [!seen (atom [])]
+      (binding [*tag* :listener]
+        (fx/run!! (fx/retry-backoff
+                   {:max-retries 3 :base-delay-ms 5
+                    :on-retry (fn [_] (swap! !seen conj *tag*))}
+                   (m/sp (throw (ex-info "always" {}))))
+                  5000))
+      (is (= [:listener :listener :listener] @!seen))))
 
   (testing "an in-flight backoff is cancellable — the Thread/sleep it replaces is not"
     (let [!out   (promise)
@@ -164,8 +181,6 @@
 
   (testing "a throwing thunk fails the Task rather than escaping"
     (is (= "boom" (ex-message (:err (fx/run!! (fx/task-of #(throw (ex-info "boom" {}))) 2000)))))))
-
-(def ^:dynamic *tag* :root)
 
 (deftest task-of-conveys-dynamic-bindings
   (testing "matches (future …), which is what call sites migrate from"

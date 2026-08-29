@@ -87,22 +87,36 @@
   [{:keys [max-retries base-delay-ms retryable? retry-after-ms on-retry max-retries-fn]
     :or   {max-retries 3 base-delay-ms 1000 retryable? (constantly true)}}
    task]
-  (m/sp
-   (loop [n 0]
-     (let [{:keys [v e]} (m/? (attempt task))]
-       (if (nil? e)
-         v
-         (let [max-n (if max-retries-fn (max-retries-fn e) max-retries)]
-           (if-not (and (retryable? e) (< n max-n))
-             (throw e)
-             (let [delay (backoff-ms n base-delay-ms
-                                     (when retry-after-ms (retry-after-ms e)))]
-               (when on-retry
-                 (try (on-retry {:attempt (inc n) :max max-n
-                                 :delay-ms delay :error e})
-                      (catch Throwable _ nil)))
-               (m/? (m/sleep delay))
-               (recur (inc n))))))))))
+  ;; The caller's dynamic frame, captured at CONSTRUCTION so `on-retry` can be
+  ;; invoked under it. Every retry past the first fires from inside the
+  ;; coroutine AFTER an `m/sleep` park, i.e. on the scheduler thread with a
+  ;; root frame (design §8 Q4) — so without this the callback silently stops
+  ;; seeing its own binding from attempt 2 onward. That is exactly how
+  ;; `clj-llm` installs `*on-retry*` (`with-retry-listener*`), so the failure
+  ;; would have been: the TUI shows the first retry and then goes quiet, with
+  ;; the retries still happening. Measured before the fix:
+  ;;   [:listener-installed nil nil]
+  ;; The TASK is deliberately not run under this frame — it belongs to the
+  ;; caller, who chooses conveyance by building it with `prim/task-of`. The
+  ;; callback is ours to invoke, so we owe it the frame.
+  (let [frame (get-thread-bindings)]
+    (m/sp
+     (loop [n 0]
+       (let [{:keys [v e]} (m/? (attempt task))]
+         (if (nil? e)
+           v
+           (let [max-n (if max-retries-fn (max-retries-fn e) max-retries)]
+             (if-not (and (retryable? e) (< n max-n))
+               (throw e)
+               (let [delay (backoff-ms n base-delay-ms
+                                       (when retry-after-ms (retry-after-ms e)))]
+                 (when on-retry
+                   (try (with-bindings frame
+                          (on-retry {:attempt (inc n) :max max-n
+                                     :delay-ms delay :error e}))
+                        (catch Throwable _ nil)))
+                 (m/? (m/sleep delay))
+                 (recur (inc n)))))))))))
 
 ;; ============================================================================
 ;; Fan-out

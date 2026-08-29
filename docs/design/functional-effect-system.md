@@ -281,15 +281,19 @@ cannot be satisfied under `--strict-image-heap` the correct outcome is to stop
 here, having spent one afternoon. **Do not begin Phase 1 before a native binary
 has run a missionary task.** JVM-mode success proves nothing about this risk.
 
-### Phase 1 — leaf policy, zero semantic change
+### Phase 1 — leaf policy, zero semantic change *(retry: done, §11)*
 
-Replace `clj-llm/retry-with-backoff` with `effect/retry-backoff`, and the five
-`permissions.clj` `promise`/`deref` pairs with `m/dfv` + `timeout`.
+`clj-llm/retry-with-backoff` now delegates to `effect/retry-backoff`. The three
+call sites and the public contract are untouched.
 
-Chosen first because both are leaves with a narrow contract and existing tests,
-and because retry is where "effects as values" pays visibly — a retry policy
-becomes assertable without failing a real HTTP call. `*on-retry*` stays exactly
-as it is; it is an observation seam, orthogonal to this.
+**The `permissions.clj` half was dropped, deliberately.** Reviewing it, the
+`promise` + `deref timeout` pattern there is already correct: the wait is
+bounded, `!pending-feedback` is reset and the block hidden immediately after,
+the stdin reader is interrupted, and a `feedback-lock` means only one prompt
+runs at a time. Swapping in `m/dfv` would require changing the five `deliver`
+sites in the readline editor too — a cross-cutting change to interactive input
+handling — for no behavioural gain. Effects buy composition and cancellation;
+that code needs neither.
 
 ### Phase 2 — the tickers
 
@@ -661,16 +665,111 @@ running `bb uberjar:ata` + `bb native:ata` directly. It wants either a
 `^java.io.File` hint or `bb reflect:baseline`, by whoever owns the clickable-
 links work.
 
-## 10. Recommendation
+## 10. Phase 1 — as built
+
+`retry-with-backoff` keeps its name, signature and privacy; the ~50-line
+`loop`/`recur` becomes a call to `effect/retry-backoff` with three policy
+functions carrying the rules that were previously inline:
+
+- `llm-retryable?` — `Exception`, never `Throwable`. The old loop got this for
+  free by catching `ExceptionInfo`/`Exception` and letting `Error` propagate;
+  the effect layer's `attempt` reifies `Throwable`, so it had to become
+  explicit. A `StackOverflowError` is not a transient network condition.
+- `llm-max-retries` — the throttling-429-gets-three-extra-attempts rule, via
+  `:max-retries-fn`.
+- `parse-retry-after` — reused as `:retry-after-ms`, a floor on the delay.
+
+**Two things changed behaviourally, both stated rather than discovered later:**
+
+- The backoff sleep is now `m/sleep`, which is **cancellable**. `Thread/sleep`
+  was only interruptible.
+- `f` runs on `m/blk` rather than the calling thread, so an in-flight call
+  occupies a blk thread while the caller blocks in `run!!` — one extra
+  I/O-blocked thread per LLM call. `cancel-run` is unaffected: it aborts a live
+  stream by `.close`ing the registered reader, which is thread-independent, and
+  its `.interrupt` now unparks the waiter instead of a socket read that was
+  never interruptible anyway.
+
+**`fx/task-of`, not a bare task — this is load-bearing.** `*on-retry*`,
+`*attribution*` and `*active-stream-register*` are all installed by callers
+above this fn. A task that did not convey would lose them (§8 Q4).
+
+### The bug this phase found in the effect brick
+
+Pre-flighting the port against Q4 turned up a defect in `retry-backoff`
+itself: it invoked `:on-retry` from inside the coroutine **after** an
+`m/sleep` park, so the callback ran on the scheduler thread with a root frame.
+Measured before the fix:
+
+```
+*on-retry* visible inside the callback     [:listener-installed nil nil]
+```
+
+Since `clj-llm` installs `*on-retry*` exactly that way (`with-retry-listener*`),
+the symptom would have been a TUI that reports the first retry and then goes
+quiet while the retries keep happening — the silent-failure shape §8 Q4 warns
+about, reproduced in the brick's own code within a day of writing it. Fixed by
+capturing the caller's frame at construction and invoking the callback under
+it; pinned by a test. The task is deliberately *not* run under that frame — it
+belongs to the caller, who opts into conveyance with `task-of`.
+
+### Verification
+
+Unit, against the real private fn: transient 500 retries then succeeds;
+non-retryable 400 makes exactly one attempt; a `StackOverflowError` makes
+exactly one attempt; a throttling 429 makes 7 (1 + 3 + 3 extra); an
+exhausted-quota 429 makes exactly 1; `retry-after: 1` floors the delay
+(3008 ms over 4 attempts); and `*on-retry*` fires for attempts `[1 2 3]`
+through the public `with-retry-listener*` seam — the assertion that would have
+failed before the fix.
+
+Native binary: `by effect-smoke` green; a **real Bedrock round-trip** returns
+`4`; JVM-mode parity (`BY_JAR=1`) returns `6`, so no reflection-config gap.
+
+The luckiest check was unplanned: an OpenAI call hit a genuinely exhausted
+quota and returned `quota/credits exhausted (HTTP 429)` in **1.45 s**. That is
+the hardest branch in the whole function — the one whose bug was "a definitive
+first answer turned into ~90 s of backoff" — verified against a live provider
+in the shipped artifact.
+
+`bb poly check` OK. The clj-llm suite matches the unmodified tree exactly
+(144 tests / 699 assertions; the 5 errors are a soft-dep classpath artifact of
+running the brick outside Polylith, present identically on `main`).
+
+### What Phase 1 did not deliver, and why it matters
+
+Honest accounting: this port deletes ~50 lines and makes the policy a tested
+value, but the call sites are synchronous and stay synchronous, so **no
+user-visible behaviour improves yet**. The cancellable backoff only pays once a
+caller holds the canceller, which is Phase 3. In hindsight the TUI tickers
+(Phase 2) were the higher-value first migration — they are already async
+processes, so converting them *deletes* lifecycle code rather than reshaping a
+synchronous call path, and they touch nothing on the LLM path. Phase 1's real
+return was the brick defect it flushed out.
+
+## 11. Recommendation
 
 Phase 0 is landed and its gate passes on a real native binary, so the largest
 architecture risk is retired: missionary works in the shipped artifact, at no
 startup cost and +0.8% binary size, with a two-line carve-out whose necessity
 has been demonstrated by removal.
 
-Phase 1 (retry/backoff in `clj-llm`, the five `promise`/`deref` pairs in
-`permissions.clj`) is the natural next step and is contained enough to pace
-against other work.
+Phase 1 is done (§10) — with the caveat recorded there that its return was the
+brick defect it flushed out rather than any user-visible change.
+
+**Phase 2 (the TUI tickers) is the next step, and is where the deletions
+start.** There are seven, not the five this document first counted:
+think-block, iteration-block, task-activity, task-block, subagents, idle-tip
+and acp-block. Each carries the same ~20 lines of hand-rolled lifecycle — a
+`Thread.` + `setDaemon` + `when-not @!x` start guard + a self-stop check + a
+`reset!` to nil on exit — that a Flow plus `fx/start!`/`fx/stop!` removes
+outright. They are already async, so nothing on a synchronous path is
+reshaped; they touch nothing on the LLM path; and correctness is visible (the
+spinner animates or it does not). Budget for driving a real TUI under tmux to
+verify, and watch the two entanglements: pause state (`think-root-paused?`
+pins elapsed via `:paused-at`) and session-origin routing
+(`finalize-think-block-in-session!`). Convert the scheduling, not the
+rendering.
 
 Q1 is answered (§8): the coroutine macros cannot work under SCI, effects
 exposed as functions work fully, and Phase 3's shape is unchanged. No known
