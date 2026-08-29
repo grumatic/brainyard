@@ -539,13 +539,50 @@ leaving 20 call sites to remember it. Note `missionary.Cancelled` is a Java
 class — interop, not an `m/`-namespaced var — which also means it needs checking
 against `reflect-config.json` expectations.
 
-**Q3 — thread-pool accounting.** Brainyard currently runs a *fixed 4-thread*
-task pool (`create-task-manager`) as a deliberate concurrency bound: "the pool
-thread is held for the job's duration — which is what makes the fixed pool an
-actual concurrency bound." Missionary's `m/blk` is unbounded-ish by design.
-Moving executors to Tasks without an explicit `(bounded n …)` would silently
-remove a bound the system relies on. Phase 3 must make the bound explicit rather
-than inherit it from a pool.
+**Q3 — ANSWERED, and the question was wrong.** It read: brainyard runs a fixed
+4-thread task pool "as a deliberate concurrency bound", `m/blk` is unbounded,
+so Phase 3 must re-establish the bound with `fx/bounded` or silently lose it.
+
+Measured, that premise does not hold. **The pool never bounded the detached
+executors.** Only `:tool`, `:fn` and `:cli-client` hold a pool thread for the
+job's duration — the docstring that phrase comes from is `FnJobExecutor`'s, and
+it is accurate about `:fn`. `:bash`, `:sandbox`, `:nrepl` and `:a2a` all
+returned `:detached` immediately and ran their work elsewhere. Twelve
+concurrent bash tasks:
+
+```
+at rest:                  blk=0   task-pool=0
+12 concurrent bash tasks: blk=12  task-pool=4   running=12
+```
+
+All twelve ran while the pool sat at four. There was no bound on that path to
+lose. What Phase 3 changed is **+1 blocked waiter thread per in-flight detached
+task, −1 shared watcher thread**.
+
+**And bounding the waiters would be a bug, not a safeguard.** They block on I/O
+— a process exiting, a future completing, an HTTP response. Cap them at N with
+N+1 tasks in flight and task N+1's *completion cannot be observed* until one of
+the first N finishes: a task that ended, with nobody watching. That is the
+exact failure mode Phase 3 existed to remove, reintroduced through the back
+door. This is why missionary ships two pools rather than one knob — `m/cpu`
+fixed at core count because contention is the cost there, `m/blk` cached
+because blocking is the point. Waiters belong on `blk`, and `blk` stays
+unbounded. The cost is self-limiting: ~1MB of mostly-untouched virtual stack
+per blocked thread, reaped after 60s idle, and zero at rest.
+
+**The real question, which this displaces:** should task *admission* be
+bounded — how many tasks may run at once? That is a live policy question, and
+today the answer is incoherent rather than deliberate:
+
+- `:tool` / `:fn` / `:cli-client` — bounded at 4, by accident of a pool size
+- `:bash` / `:sandbox` / `:nrepl` / `:a2a` — unbounded, and always were
+- a task queued behind the pool reports `:running` regardless, so the bound is
+  **invisible** — twelve `:fn` tasks all showed `:running` while four executed
+
+If a bound is wanted it belongs at `start-task` as explicit admission control
+with a config knob, plus a `:queued` status distinct from `:running` so it can
+be observed. Not inherited from a thread pool that half the executors never
+touch. That is a task-manager decision, independent of the effect migration.
 
 **Q4 — ANSWERED, and it is the sharpest hazard found so far.** Bindings do not
 convey, which was expected; the unexpected part is that a dynamic var can
@@ -900,14 +937,20 @@ in a real TUI and verified absent from a live thread dump.
 Phase 3 is done (§13): the polling runtime is gone and completion latency
 dropped from ~400ms to ~15–32ms.
 
-**What remains is Q3, and it is now the outstanding risk.**
-`create-task-manager`'s fixed 4-thread pool was a real concurrency bound —
-its own docstring says holding the pool thread for the job's duration "is what
-makes the fixed pool an actual concurrency bound". Detached work now waits on
-`m/blk`, an unbounded cached pool, so that bound is weaker than it was. Nothing
-observed misbehaving, but it should be made explicit via `fx/bounded` rather
-than left implicit. Phase 4 (unifying `cancel-run`'s five cancellation
-mechanisms) is the remaining migration.
+**Q3 turned out to be a false alarm, and the commit that closed Phase 3 says so
+incorrectly.** `task: delete the detach watcher…` claims the fixed 4-thread
+pool's bound is "weaker than it was". It is not: measured, that pool never
+bounded the detached executors at all (§8 Q3). Nothing needs restoring, and
+wrapping the waiters in `fx/bounded` would actively break completion detection.
+The commit message is immutable; this paragraph is the correction.
+
+What Q3 did surface is a real but separate question — task *admission* is
+currently bounded for three executors, unbounded for four, and invisible in
+task status either way. Worth deciding deliberately, at `start-task`, as a
+task-manager concern rather than an effect-migration one.
+
+Phase 4 (unifying `cancel-run`'s five cancellation mechanisms) is the remaining
+migration.
 
 Q1 is answered (§8): the coroutine macros cannot work under SCI, effects
 exposed as functions work fully, and Phase 3's shape is unchanged. No known
@@ -919,11 +962,11 @@ park, silently and timing-dependently. `fx/task-of` now conveys so the
 mechanical `future` → Task port is safe, the rule is documented in
 `prim/conveying-note`, and the behaviour is pinned by characterization tests.
 
-Remaining open: Q2 (`Cancelled` discipline at flow boundaries), Q3 (the
-concurrency bound `create-task-manager` currently gets for free from its fixed
-4-thread pool, which Phase 3 must make explicit rather than inherit), and Q5
-(scheduler-thread load). All are things to get right *during* a phase, not
-gates on starting one.
+Remaining open: Q2 (`Cancelled` discipline at flow boundaries) and Q5
+(scheduler-thread load). Q3 is closed — the bound it worried about never
+existed on the path it worried about, and the waiters must stay unbounded
+(§8 Q3). Both remaining questions are things to get right *during* a phase,
+not gates on starting one.
 
 The single most valuable phase is 3 (the task subsystem: two polling loops and
 ~400 ms of latency delete outright). The single most valuable *artifact* is
