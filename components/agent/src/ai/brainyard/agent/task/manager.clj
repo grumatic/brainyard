@@ -27,12 +27,14 @@
 
 ;; Detached-task registry. After execute-job returns {:status :detached ...}
 ;; the pool thread is free but the work is still running. We park the
-;; executor's :on-poll / :on-cancel closures here, keyed by task-id; the
-;; shared watcher thread polls each entry every ~300ms and promotes the
-;; task to a terminal status when :on-poll returns a result map.
+;; executor's :on-cancel closure here, keyed by task-id, so `cancel-task` can
+;; reach it. Completion needs no entry: the executor's Task reports it.
 (defonce ^:private !detached-handlers (atom {}))
-(defonce ^:private !watcher-future    (atom nil))
-(def     ^:private detach-poll-interval-ms 300)
+;; Cadence for sampling a detached task's incremental output. This used to be
+;; how often a shared watcher thread ALSO asked every detached task whether it
+;; had finished; completion is now reported by the task's own effect, so it
+;; paces the drain and nothing else.
+(def ^:private detach-poll-interval-ms 300)
 
 ;; Structured per-task progress snapshot (Layer 3). task-id -> a small map
 ;; {:iteration :tools-completed :last-tool :last-tool-result :last-reasoning}
@@ -42,7 +44,7 @@
 ;; transition, so it can't leak.
 (defonce ^:private !task-progress (atom {}))
 
-(declare create-task-manager start-detach-watcher!)
+(declare create-task-manager)
 
 ;; ============================================================================
 ;; Task ID allocation
@@ -354,29 +356,26 @@
   "Park a detached executor's handlers so its completion reaches
    `finalize-task!`.
 
-   TWO PATHS, deliberately coexisting (design Phase 3). An executor may return
-   either:
+   An executor returns `{:task <Task> :on-drain f :on-cancel f}`. The Task IS
+   the completion signal, so finalize runs the moment the work ends.
 
-     {:task <Task> :on-cancel f}     — effect path. The Task IS the completion
-                                       signal, so finalize runs the moment the
-                                       work ends.
-     {:on-poll f :on-cancel f}       — legacy path. The shared 300ms watcher
-                                       asks `:on-poll` whether it finished yet.
+   This replaced a shared 300ms watcher thread that asked every detached task
+   whether it had finished yet. A task that completed waited up to 300ms for
+   the watcher to notice, then up to another 100ms for `await-task`'s own loop
+   to notice that — ~400ms to express 'this is done'. Measured after: ~32ms for
+   a bash task, ~15ms for a sandbox eval.
 
-   Coexistence is the point: executors convert one at a time and the watcher
-   stays for whichever have not, so no commit has to move all four at once.
-   The watcher deletes when the last `:on-poll` does.
-
-   What the effect path buys is not just tidiness. Under polling, a task that
-   finished had to wait up to 300ms for the watcher to notice and then up to
-   another 100ms for `await-task`'s own loop — ~400ms of latency to express
-   'this is done'. A Task calls back immediately.
+   A map without a `:task` is a programming error, and is failed LOUDLY below.
+   Registering only an `:on-cancel` would park the task at `:running` forever,
+   and every caller waiting on it — `await-task`, the harvest, the TUI block —
+   would wait with it. That is the invariant the watcher's
+   poll-failures-finalize rule existed to protect, kept here.
 
    Display-mode is NOT flipped here; it stays `:foreground` so the per-task
    block remains visible. `await-task` is the only place that transitions it
    (`:foreground → :background` on `:on-timeout :detach` — the sync → async
    hand-off when the LLM waiter actually leaves)."
-  [task-id {:keys [task on-drain on-poll on-cancel]}]
+  [task-id {:keys [task on-drain on-cancel]}]
   (if task
     (let [drain-label [::drain task-id]
           drain! (fn [flush?]
@@ -459,9 +458,10 @@
                            (try (cancel-task-effect) (catch Throwable _))
                            (fx/stop! drain-label))})
       (mulog/info ::task-detached :task-id task-id :via :effect))
-    (do (swap! !detached-handlers assoc task-id
-               {:on-poll on-poll :on-cancel on-cancel})
-        (mulog/info ::task-detached :task-id task-id :via :poll))))
+    (do (mulog/error ::detached-without-task :task-id task-id)
+        (finalize-task! task-id :failed
+                        {:error (str "executor returned :detached with no :task"
+                                     " — nothing would ever finalize this task")}))))
 
 (defn adopt-detached!
   "Create a task in :running state wrapping a pre-existing eval future.
@@ -469,13 +469,8 @@
    the fast timeout, the already-running future is adopted into a tracked
    task without restarting work.
 
-   `adopt` is either shape, the same coexistence `register-detached!` uses:
-
-     {:task <Task> :make-on-drain (fn [on-output] -> (fn [flush?]))}
-                  — effect path. The Task reports completion; the drain, if
-                    any, is scheduled by the manager.
-     (fn [on-output] -> poll-fn)
-                  — legacy path, kept only for the watcher's own tests.
+   `adopt` is `{:task <Task> :make-on-drain (fn [on-output] -> (fn [flush?]))}`.
+   The Task reports completion; the drain, if any, is scheduled by the manager.
 
    on-cancel:    (fn [] ...) — cancel closure, registered as-is.
    opts may include :started-at (epoch ms) to backdate the task's start
@@ -493,63 +488,13 @@
     (swap! !tasks assoc-in [task-id :status] :running)
     (persist/open-appender! nil (get @!tasks task-id))
     (register-detached! task-id
-                        (if (map? adopt)
-                          {:task      (:task adopt)
-                           :on-drain  (when-let [mk (:make-on-drain adopt)]
-                                        (mk on-output))
-                           :on-cancel on-cancel}
-                          {:on-poll   (adopt on-output)
-                           :on-cancel on-cancel}))
+                        {:task      (:task adopt)
+                         :on-drain  (when-let [mk (:make-on-drain adopt)]
+                                      (mk on-output))
+                         :on-cancel on-cancel})
     (hooks/fire! :task/created {:task (get @!tasks task-id)})
     (get @!tasks task-id)))
 
-(defn- poll-detached-once!
-  "Walk the detached-handlers snapshot, invoke each :on-poll, and finalize
-   any task whose handler returned a terminal map. Poll failures finalize
-   the task as :failed so a broken executor closure can't park a task
-   forever."
-  []
-  ;; `when on-poll` — effect-path entries carry only an :on-cancel, since their
-  ;; Task reports its own completion. Without the guard the watcher would NPE
-  ;; on every converted task and then finalize it as :failed.
-  (doseq [[task-id {:keys [on-poll]}] @!detached-handlers
-          :when on-poll]
-    (try
-      (let [r (on-poll)]
-        (when-not (= r tp/still-running)
-          (finalize-task! task-id (result->status r) r)))
-      (catch Throwable t
-        (mulog/error ::detach-poll-failed
-                     :task-id task-id :exception t)
-        (finalize-task! task-id :failed
-                        {:error (str "detach poll failed: " (ex-message t))})))))
-
-(defn- start-detach-watcher!
-  "Idempotently start the shared daemon thread that polls detached tasks.
-   One thread for the whole JVM (the registry is also global), CAS-guarded
-   so concurrent `create-task-manager` calls don't race-start two."
-  []
-  (when (nil? @!watcher-future)
-    (let [fut (future
-                (try
-                  (loop []
-                    (when (seq @!detached-handlers)
-                      (poll-detached-once!))
-                    (Thread/sleep (long detach-poll-interval-ms))
-                    (recur))
-                  (catch InterruptedException _
-                    (mulog/info ::detach-watcher-interrupted))))]
-      (when-not (compare-and-set! !watcher-future nil fut)
-        ;; Lost the race; cancel the future we just made.
-        (future-cancel fut)))))
-
-(defn- stop-detach-watcher!
-  "Cancel the watcher future (if any) and clear the handle. Called from
-   shutdown so a re-init can start a fresh watcher."
-  []
-  (when-let [f @!watcher-future]
-    (future-cancel f)
-    (reset! !watcher-future nil)))
 
 ;; ============================================================================
 ;; TaskManager Record
@@ -584,9 +529,9 @@
                                (try
                                  (let [result (tp/execute-job executor task on-output)]
                                    (if (= :detached (:status result))
-                                     ;; Pool thread done; work outlives it. Register handlers
-                                     ;; and DO NOT finalize — the watcher will when :on-poll
-                                     ;; eventually returns a terminal map.
+                                     ;; Pool thread done; work outlives it. Register the
+                                     ;; handlers and DO NOT finalize — the executor's own
+                                     ;; Task reports completion when the work ends.
                                      (do (register-detached! task-id result)
                                          (mulog/log ::task-execution
                                                     :task-id task-id
@@ -702,7 +647,6 @@
     (doseq [[task-id task] @!tasks]
       (when (= :running (:status task))
         (tp/cancel-task this task-id)))
-    (stop-detach-watcher!)
     (reset! !detached-handlers {})
     (reset! !task-progress {})
     (when-let [es @!executor-service]
@@ -853,7 +797,6 @@
   ;; or a second `by` process on the same project — can't reissue an existing
   ;; ID. The old startup ratchet over `max-existing-task-id` was exactly the
   ;; thing that made two concurrent sessions collide.
-  (start-detach-watcher!)
   (install-progress-hooks!)
   (->TaskManager {:bash             (executor/->BashJobExecutor)
                   :tool             (executor/->ToolJobExecutor)

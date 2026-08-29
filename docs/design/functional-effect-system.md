@@ -307,7 +307,7 @@ body lifted verbatim into a named `…-tick!` fn returning truthy-while-active.
 The renderer's width contract (reflow, `:render` fns) is untouched, and so is
 the pause-state and session-origin handling the loops carried.
 
-### Phase 3 — the task subsystem
+### Phase 3 — the task subsystem *(done, §13)*
 
 The real prize. `tp/IJobExecutor.execute-job` returns a **Task** instead of
 `{:status :detached :on-poll …}`. Consequences:
@@ -821,7 +821,69 @@ pooled `missionary blk-N` workers shared by everything.
 Native: `by effect-smoke` green, `--help` / `agents` / `sessions list` /
 `models` pass, a real Bedrock round-trip returns `10`. `bb poly check` OK.
 
-## 12. Recommendation
+## 13. Phase 3 — as built
+
+Converted in five slices, each independently verified, with the legacy poll
+path kept alive between them so no commit had to move everything at once:
+
+| slice | what changed | completion latency |
+|---|---|---|
+| bash | `.waitFor` on `m/blk` replaces polling `.isAlive` | ~400ms → **~32ms** |
+| sandbox + nREPL | blocking `deref`; drain split out to `:on-drain` | ~400ms → **~15ms** |
+| a2a | `fx/poll-until`; the interval IS the pacing | 3 of 4 watcher ticks were waste |
+| adopt-detached! | the fast-eval seam takes an adopt map | — |
+| watcher | `start-detach-watcher!`, `poll-detached-once!`, `!watcher-future` and both legacy builders **deleted** | — |
+
+**What deleted:** one daemon thread that woke 3.3×/second for the life of the
+process and asked every detached task whether it had finished; a 300ms poll
+loop; a 100ms poll loop's reason to exist; and ~90 lines including the two
+now-unreachable poll-fn builders.
+
+**What stayed, deliberately:** incremental output is still SAMPLED at 300ms.
+Sampling was always the right model for a growing `StringWriter` — using it to
+also detect completion was the accident. And `:on-cancel` is still separate
+from cancelling the Task: measured, cancelling an `m/via` interrupts the
+waiting thread and leaves the process running.
+
+### Rewriting the watcher's tests rather than deleting them
+
+`manager_test.clj` had 24 assertions testing the watcher *itself*. The
+mechanism is gone but every invariant it protected still holds, so each was
+re-expressed against the effect contract rather than dropped: promotion on
+success and on failure, independence across concurrent tasks (now settled
+out-of-order, which catches an implementation that assumed registration
+order), `:on-cancel` driven exactly once, and — the one that matters most —
+**a task can never be stranded at `:running`**.
+
+That last one changed shape. The watcher protected it by finalizing any task
+whose `:on-poll` threw. The equivalents now are a Task that throws (`:failed`
+with its message) and an executor returning `:detached` with no `:task`, which
+fails loudly rather than registering an `:on-cancel` nobody will ever call.
+Three tests are new: prompt promotion (asserting a bound the old design could
+not meet), the drain being sampled-then-flushed-once and stopping when the task
+does, and a cancelled task staying `:cancelled` rather than being re-finalized
+`:failed` by its own interrupt.
+
+### Verification
+
+229 tests / 1162 assertions across the task, a2a, coact, eval and exec-backend
+suites. `bb poly check`; `bb build:ata` end-to-end with its native smoke suite;
+`effect-smoke` green; real native turns through both the bash path (`echo
+watcher-gone`) and the sandbox path (`(* 6 7)` → 42).
+
+The proof the watcher is actually gone is a thread dump taken with a live
+detached task mid-flight:
+
+```
+task status while detached -> :running
+threads that could be a completion watcher -> []
+missionary threads -> ["missionary blk-0"]
+after the process exits -> :completed
+```
+
+One thread, blocked in `.waitFor`, which is the work itself.
+
+## 14. Recommendation
 
 Phase 0 is landed and its gate passes on a real native binary, so the largest
 architecture risk is retired: missionary works in the shipped artifact, at no
@@ -835,16 +897,17 @@ Phase 2 is done (§11) and is the first phase with a user-visible payoff: seven
 dedicated OS threads and ~140 lines of lifecycle code gone, verified animating
 in a real TUI and verified absent from a live thread dump.
 
-**Phase 3 (the task subsystem) is next, and is the largest prize** — two
-polling loops and up to 400 ms of completion latency delete outright. It is
-also the first phase that changes something users can break, so the sequencing
-matters: `:fn` and `:tool` executors first, `:bash` last, and audit every
-`binding` on the way through (§8 Q4 — the failure is silent and
-timing-dependent, so a green test run is not evidence). Q3 should be settled in
-the same pass: `create-task-manager`'s fixed 4-thread pool is a real
-concurrency bound today, and moving executors to Tasks must make that bound
-explicit via `fx/bounded` rather than silently inherit `m/blk`'s unbounded
-cached pool.
+Phase 3 is done (§13): the polling runtime is gone and completion latency
+dropped from ~400ms to ~15–32ms.
+
+**What remains is Q3, and it is now the outstanding risk.**
+`create-task-manager`'s fixed 4-thread pool was a real concurrency bound —
+its own docstring says holding the pool thread for the job's duration "is what
+makes the fixed pool an actual concurrency bound". Detached work now waits on
+`m/blk`, an unbounded cached pool, so that bound is weaker than it was. Nothing
+observed misbehaving, but it should be made explicit via `fx/bounded` rather
+than left implicit. Phase 4 (unifying `cancel-run`'s five cancellation
+mechanisms) is the remaining migration.
 
 Q1 is answered (§8): the coroutine macros cannot work under SCI, effects
 exposed as functions work fully, and Phase 3's shape is unchanged. No known

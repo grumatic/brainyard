@@ -270,11 +270,9 @@
 (def ^:const DEFAULT_A2A_POLL_MS
   "How often to actually hit the peer with `tasks/get`.
 
-   The manager's shared watcher calls `:on-poll` roughly every 250ms. That
-   cadence is fine for checking a local Process, but issuing four HTTP
-   requests per second per task at a third party is abusive and would get us
-   rate-limited by any sane server. `:on-poll` therefore throttles itself and
-   returns `still-running` without a network call in between."
+   Issuing four HTTP requests per second per task at a third party is abusive
+   and would get us rate-limited by any sane server, so this is the interval
+   `fx/poll-until` sleeps between attempts."
   2000)
 
 (defrecord A2ATaskJobExecutor []
@@ -484,28 +482,9 @@
                   (on-output line))
                 (reset! !drained-offset (+ offset (inc last-nl)))))))))))
 
-(defn make-future-poll-fn
-  "Build a make-on-poll for Future-based evals (sandbox/nREPL/tools).
-   Returns (fn [on-output] -> poll-fn) suitable for adopt-detached!."
-  [^java.util.concurrent.Future fut eval-output code project-fn]
-  (let [!drained (atom 0)]
-    (fn [on-output]
-      (fn []
-        (drain-incremental-output! on-output eval-output !drained false)
-        (if (.isDone fut)
-          (let [done-r (try (deref fut)
-                            (catch java.util.concurrent.CancellationException _
-                              {:error "cancelled" :code code
-                               :output (.toString eval-output)})
-                            (catch Exception e
-                              {:error (.getMessage e) :code code
-                               :output (.toString eval-output)}))]
-            (drain-incremental-output! on-output eval-output !drained true)
-            (project-fn done-r))
-          tp/still-running)))))
-
 (defn make-future-adopt
-  "Effect-shaped counterpart of `make-future-poll-fn`, for `adopt-detached!`.
+  "Build the adopt map for Future-based evals (sandbox/nREPL/tools), for
+   `adopt-detached!`.
 
    Same split as the sandbox/nREPL executors: completion is a blocking `deref`
    on `m/blk` rather than a polled `.isDone`, and the incremental drain becomes
@@ -531,46 +510,13 @@
                         (drain-incremental-output! on-output eval-output
                                                    !drained flush?)))}))
 
-(defn make-heartbeat-poll-fn
-  "make-on-poll builder for adopted futures that produce NO incremental output
-   of their own — i.e. :tool jobs (including subagent-as-tool calls), which
-   unlike sandbox/nREPL never bind *out* to a streamable writer, so their task
-   output is otherwise frozen at the initial 'Invoking…' line for the whole run.
-
-   A background heartbeat appends a liveness line to a shared StringWriter every
-   `interval-ms` while `fut` runs; the standard make-future-poll-fn drain pipe
-   then surfaces those lines through task$detail. This gives a polling LLM a
-   growing-output liveness signal so a long-running subagent isn't mistaken for
-   a wedged task and cancelled.
-
-   `t0` is the epoch-ms the underlying work actually started, so elapsed stays
-   accurate across the pre-adopt fast-eval window. The heartbeat self-stops when
-   `fut` finishes — cancel makes .isDone true within one interval, so the loop
-   exits and no thread leaks. The future's deref remains the terminal result
-   (project-fn identity); heartbeat lines live only on the streaming surface, not
-   in :result. Returns (fn [on-output] -> poll-fn) for adopt-detached!."
-  [^java.util.concurrent.Future fut label interval-ms t0]
-  (let [writer (java.io.StringWriter.)]
-    ;; interval-ms <= 0 disables the heartbeat: no liveness lines are written
-    ;; (the poll-fn just drains the — empty — writer). Used when the runtime's
-    ;; auto-task-notify owns liveness, so the LLM no longer polls for it.
-    (when (pos? (long interval-ms))
-      (future
-        (try
-          (loop []
-            (Thread/sleep (long interval-ms))
-            (when-not (.isDone fut)
-              (let [elapsed-s (quot (- (System/currentTimeMillis) (long t0)) 1000)]
-                (.write writer (str "[" label "] running… elapsed " elapsed-s "s\n")))
-              (recur)))
-          (catch InterruptedException _ nil)
-          (catch Throwable _ nil))))
-    (make-future-poll-fn fut writer label identity)))
-
 (defn make-heartbeat-adopt
-  "Effect-shaped counterpart of `make-heartbeat-poll-fn`.
+  "Adopt map for futures that produce NO incremental output of their own —
+   i.e. `:tool` jobs (including subagent-as-tool calls), which unlike
+   sandbox/nREPL never bind `*out*` to a streamable writer, so their task
+   output would otherwise stay frozen at the initial 'Invoking…' line.
 
-   Identical liveness behaviour — a background heartbeat appends
+   A background heartbeat appends
    `[label] running… elapsed Ns` to a shared StringWriter while `fut` runs, and
    the drain pipe surfaces those lines through `task$detail`. Only the
    completion half changes: `make-future-adopt` awaits the future instead of
