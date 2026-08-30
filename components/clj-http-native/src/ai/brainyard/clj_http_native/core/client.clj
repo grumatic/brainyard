@@ -9,7 +9,8 @@
   (:import [java.net URI ProxySelector InetSocketAddress]
            [java.net.http HttpClient HttpClient$Version HttpClient$Builder
             HttpRequest HttpRequest$Builder HttpRequest$BodyPublishers
-            HttpResponse HttpResponse$BodyHandlers]
+            HttpResponse HttpResponse$BodyHandlers HttpResponse$BodyHandler
+            HttpResponse$BodySubscribers]
            [java.time Duration]
            [java.io InputStream InputStreamReader BufferedReader]
            [java.nio.charset StandardCharsets]
@@ -158,6 +159,28 @@
     :else
     (HttpRequest$BodyPublishers/ofString (str body) StandardCharsets/UTF_8)))
 
+(defn- publisher-body-handler
+  "`:as :publisher` — the response body as a `Flow.Publisher<List<ByteBuffer>>`,
+   EXCEPT on an error status, where it is a realized String.
+
+   Why the status matters here rather than downstream. The error body is
+   diagnostic and the throw below reads it; a publisher handed back unread is
+   useless to a caller holding an exception, and that exact fall-through is
+   what once made a 429 carrying `insufficient_quota` indistinguishable from a
+   throttle (see the comment on the throw). Choosing the subscriber from
+   `ResponseInfo` means an error body is a String *by construction* — the throw
+   path needs no publisher-specific case and cannot regrow one.
+
+   Verified against a live local server: 200 yields a `Flow.Publisher`, 401
+   yields the error JSON as a String. The two branches return different
+   `BodySubscriber` types, which erasure makes a non-issue."
+  []
+  (reify HttpResponse$BodyHandler
+    (apply [_ info]
+      (if (>= (.statusCode info) 400)
+        (HttpResponse$BodySubscribers/ofString StandardCharsets/UTF_8)
+        (HttpResponse$BodySubscribers/ofPublisher)))))
+
 (defn- body-handler
   "Return a java.net.http HttpResponse$BodyHandler matching the :as option."
   [as]
@@ -166,6 +189,7 @@
     :stream       (HttpResponse$BodyHandlers/ofInputStream)
     :reader       (HttpResponse$BodyHandlers/ofInputStream)
     :byte-array   (HttpResponse$BodyHandlers/ofByteArray)
+    :publisher    (publisher-body-handler)
     (throw (ex-info (str "Unsupported :as " as) {:as as}))))
 
 (defn- coerce-body
@@ -178,7 +202,10 @@
     :reader       (-> ^InputStream body
                       (InputStreamReader. StandardCharsets/UTF_8)
                       (BufferedReader.))
-    :byte-array   body))
+    :byte-array   body
+    ;; Already the shape the caller asked for — or a String, if the status was
+    ;; an error and `publisher-body-handler` swapped the subscriber.
+    :publisher    body))
 
 ;; ============================================================================
 ;; Method

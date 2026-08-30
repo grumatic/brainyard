@@ -272,3 +272,49 @@
         (is (= 200 (:status r)))
         (is (instance? java.io.Reader (:body r))
             "a successful :as :reader response must stay lazy")))))
+
+;; ============================================================================
+;; :as :publisher — the pushed-body mode
+;; ============================================================================
+
+(deftest publisher-body-is-a-flow-publisher
+  (testing "a 2xx body arrives as Flow.Publisher<List<ByteBuffer>>, unread"
+    (with-server
+      (fn [exch] (write-response exch 200 "data: hi\n\n"))
+      (fn []
+        (let [r (http/get *base-url* {:as :publisher})]
+          (is (= 200 (:status r)))
+          (is (instance? java.util.concurrent.Flow$Publisher (:body r))))))))
+
+(deftest publisher-error-body-is-a-realized-string
+  (testing "THE POINT of choosing the subscriber from the status
+
+           A publisher handed back unread is useless to a caller holding an
+           exception, and that fall-through is what once made a 429 carrying
+           insufficient_quota indistinguishable from a throttle. Selecting
+           BodySubscribers/ofString on >= 400 makes the error body a String by
+           construction, so the throw path needs no publisher-specific case and
+           cannot regrow one."
+    (with-server
+      (fn [exch] (write-response exch 401 "{\"error\":\"bad key\"}"))
+      (fn []
+        (testing "thrown"
+          (let [e (try (http/get *base-url* {:as :publisher :throw-exceptions true})
+                       (catch clojure.lang.ExceptionInfo e e))]
+            (is (instance? clojure.lang.ExceptionInfo e))
+            (is (= 401 (:status (ex-data e))))
+            (is (= "{\"error\":\"bad key\"}" (:body (ex-data e)))
+                "the error body must be readable from ex-data, not a publisher")))
+        (testing "not thrown"
+          (let [r (http/get *base-url* {:as :publisher :throw-exceptions false})]
+            (is (= 401 (:status r)))
+            (is (string? (:body r)) "still a String — the status decided, not the throw")))))))
+
+(deftest publisher-mode-still-honours-headers-and-status
+  (testing ":publisher is a body mode only; nothing else about the request changes"
+    (with-server
+      (fn [exch] (write-response exch 201 "x"))
+      (fn []
+        (let [r (http/get *base-url* {:as :publisher :headers {"X-Test" "1"}})]
+          (is (= 201 (:status r)))
+          (is (instance? java.util.concurrent.Flow$Publisher (:body r))))))))
