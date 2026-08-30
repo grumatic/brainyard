@@ -115,10 +115,17 @@
           (is (re-find #"invalid_api_key" (:body flow))))
         (finally (.stop srv 0))))))
 
-(deftest gate-defaults-off
-  (testing "BY_STREAM_FLOW unset means the reader path — the shipping default"
-    (is (false? (llm/stream-via-flow?))
-        "nothing in this suite may flip the default for the whole process")))
+(deftest gate-defaults-on
+  (testing "BY_STREAM_FLOW unset means the PUSHED-BODY path — the shipping default
+
+           Flipped once run!! learned to cancel on interrupt: before that the
+           flow path had no working cancellation and defaulting to it would
+           have regressed against the reader path, where .close kills the
+           socket. BY_STREAM_FLOW=false still selects the reader."
+    (is (true? (llm/stream-via-flow?)))
+    (is (false? (with-redefs [llm/stream-via-flow? (constantly false)]
+                  (llm/stream-via-flow?)))
+        "and it stays overridable, which every differential here depends on")))
 
 (defn- truncating-server
   "A RAW socket server that sends a valid response head promising 4096 bytes,

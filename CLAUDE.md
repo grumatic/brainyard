@@ -83,6 +83,26 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   a model. Cached under `~/.brainyard/catalog/<provider>.edn`; `by models
   --refresh` forces one and `by models --drift` shows what changed. Off ⇒ the
   shipped catalog is used verbatim and no provider is contacted.
+- **`BY_STREAM_FLOW`** — how a streaming LLM body is consumed (**default on**).
+  On, `java.net.http` PUSHES the body (`BodyHandlers/ofPublisher`) and it is
+  consumed as a missionary Flow; `false` selects the original blocking
+  `BufferedReader` + `sse/read-sse-events` path, which remains fully supported.
+  Both paths reduce the SAME per-provider fold (`sse/openai-step`,
+  `anthropic-step`), so they cannot drift in how a delta is parsed — the
+  differential tests assert equal responses AND equal `on-chunk` sequences.
+  Which path served a call is recorded as `:body-mode :publisher|:reader` on
+  the `::openai-api-call` / `::anthropic-api-call` log events; without that the
+  gate is invisible from outside the process, and a flow run that silently fell
+  back to the reader would be indistinguishable from one that worked.
+  The reason to default it on is cancellation: a thread blocked in
+  `BufferedReader.readLine` is not interruptible on the JVM, which is why
+  `cancel-run` needs `.close` on `:active-http` at all. Cancelling a Flow
+  cancels the subscription and aborts the exchange instead. Note the ordering
+  that made this safe — until `fx/run!!` learned to cancel on **interrupt**
+  (not just on timeout) the flow path had NO working cancellation, and
+  defaulting to it would have left a cancelled turn streaming. See
+  `docs/design/functional-effect-system.md` §18.
+
 - **`BY_ENABLE_GRAPH_MEMORY`** — opt into the **context-graph memory** overlay
   (`:enable-graph-memory`, default **false**): a typed entity/relationship graph
   + vector index layered over the L1/L2/L3 FTS store as extra recall signals.

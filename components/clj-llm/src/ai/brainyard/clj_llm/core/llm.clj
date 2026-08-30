@@ -847,7 +847,8 @@
                                          {:result r})))))
 
 (defn stream-via-flow?
-  "Is the PUSHED-BODY streaming path enabled? `BY_STREAM_FLOW=true`, default off.
+  "Is the PUSHED-BODY streaming path enabled? Default ON; `BY_STREAM_FLOW=false`
+   falls back to the blocking reader.
 
    §18 step 3c. The reader path (`:as :reader` + `process-*-stream`) stays the
    default and stays fully supported; this gate selects the pushed-body path
@@ -858,16 +859,22 @@
    value is never baked into the native image, which is what `defonce` would
    do (see the GraalVM notes in CLAUDE.md).
 
-   KNOWN GAP while this is off-by-default, and the reason it stays off: the
-   flow path does NOT register `:active-http`, because there is no reader to
-   close. Structural cancellation is the whole point of the Flow, but it
-   requires the CALLER to hold the Task rather than block on it, and
-   `chat-completion` is synchronous today. So on this path, `cancel-run`'s
-   `.close` mechanism has nothing to close. Retiring `:active-http` (step 4)
-   therefore cannot happen by flipping this default — it needs the callers to
-   take the Task, which is a separate change."
+   WHAT MADE DEFAULTING ON SAFE, and it was not safe before. The flow path
+   does not register `:active-http` — there is no reader to close — so for a
+   while it had NO working cancellation: `run-stream-task!!` blocked in
+   `fx/run!!`, which cancelled its task on timeout but not on interrupt, so
+   interrupting the turn killed the caller and left the exchange running.
+   Measured: the server kept generating for as long as it was watched. That is
+   fixed in `run!!` (it now cancels and reports `{:interrupted true}`), so
+   `cancel-run` mechanism 3 — the thread interrupt — reaches the exchange and
+   aborts it. Flipping this default ahead of that fix would have been a
+   regression against the reader path, where `.close` kills the socket.
+
+   `:active-http` still cannot be deleted: mechanism 2 remains the only thing
+   that can break a thread blocked in `BufferedReader.readLine`, which is
+   exactly what `BY_STREAM_FLOW=false` still selects."
   []
-  (= "true" (System/getenv "BY_STREAM_FLOW")))
+  (not= "false" (System/getenv "BY_STREAM_FLOW")))
 
 (defn- openai-chat-completion-stream
   "Call an OpenAI-compatible chat completion API with streaming.
