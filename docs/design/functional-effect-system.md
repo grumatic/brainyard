@@ -2134,6 +2134,49 @@ owned subscriber → SSE events — with no `BufferedReader`, no thread blocked 
 the reader. The next slice is the `on-chunk` contract, then retiring
 `:active-http`.
 
+### Scoping the `on-chunk` slice: the contract already exists
+
+Worth stating plainly, because the name suggests otherwise: **`on-chunk` is not
+a new contract to design.** It is the shipping public API —
+`(chat-completion lm-config messages :on-chunk callback)`, documented in
+`interface.clj`, calling `{:type :content-delta :text …}` per delta and
+`{:type :done :usage …}` at the end. Providers already use it. The slice is
+swapping what FEEDS it, not what it is.
+
+The wiring point is two call sites, `llm.clj:835` and `llm.clj:865`:
+
+```
+process-openai-stream    ^BufferedReader -> read-sse-events -> fold -> response
+process-anthropic-stream ^BufferedReader -> read-sse-events -> fold -> response
+```
+
+**The prerequisite is a refactor, not new code.** Both functions take a
+`BufferedReader`, call `read-sse-events`, and fold over the resulting seq in an
+INLINE `loop`, accumulating content/role/finish-reason/usage while calling
+`on-chunk` for deltas. The Flow path produces the same `{:event :data}` maps —
+that is the whole point of slice 1's differential guarantee — but it cannot
+reuse a fold that is welded to a `loop` over a seq.
+
+So the shape of the work is:
+
+1. **Extract the fold into a reducing step** — `(step acc event) -> acc`, with
+   `on-chunk` called as its side effect and the response reconstructed from the
+   final accumulator. Pure refactor: `process-*-stream` becomes a `reduce` over
+   `read-sse-events`, and the existing suite protects it. This is the step that
+   makes both paths possible, and it is the one that must not be rushed —
+   it edits the code every streamed token in production passes through.
+2. **Add the Flow path** — the same step reduced over `publisher->event-flow`,
+   as a Task. No new parsing, no second copy of the delta logic.
+3. **Gate it**, default off, and diff the two paths against one provider.
+4. **Then** `:active-http` can go, since nothing is blocked in `read`.
+
+Sequencing note: step 1 is a behaviour-preserving refactor of live streaming
+code and deserves its own commit with the suite green before step 2 touches
+anything. Splitting it that way also keeps the differential test honest —
+comparing the Flow path against a reader path that has ALREADY been refactored
+and verified is a much stronger check than comparing against one being rewritten
+in the same commit.
+
 ### Three bugs, one seam — worth naming
 
 `m/subscribe` dropped the last delivered value. The infinite fork leaked a
