@@ -344,6 +344,17 @@
     :lifecycle :per-action
     :doc       "Holds the loop briefly for an in-flight task to settle."}
 
+   :exec/effect-bt
+   {:title     "Effect behavior-tree engine"
+    :family    :exec
+    :gate      :enable-effect-bt
+    :keys      []
+    ;; Read once per turn (`ask` branches on it), so a flip takes effect on the
+    ;; next turn without a restart — hence :per-action rather than :startup.
+    :lifecycle :per-action
+    :doc       "Runs the agent's behavior tree as a missionary Task rather than
+                the synchronous engine, making a turn structurally cancellable."}
+
    :exec/gc
    {:title     "Artifact GC"
     :family    :exec

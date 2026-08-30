@@ -11,8 +11,10 @@
    reason `.close` on `:active-http` survives every version of the effect
    design (§14, §17). `java.net.http` will instead PUSH the body:
    `BodyHandlers/ofPublisher` yields a `Flow.Publisher<List<ByteBuffer>>`,
-   `FlowAdapters/toPublisher` bridges it to reactive-streams, and missionary's
-   `m/subscribe` turns that into a Flow. Cancelling the Flow cancels the
+   `FlowAdapters/toPublisher` bridges it to reactive-streams, and
+   `sse-publisher` turns that into a Flow with a subscriber it owns — NOT
+   `m/subscribe`, which drops the last value against a publisher that completes
+   eagerly, as `java.net.http` does (§18). Cancelling the Flow cancels the
    subscription and aborts the exchange — structural cancellation of a
    streaming body.
 

@@ -11,7 +11,12 @@
 
        BodyHandlers/ofPublisher   → java.util.concurrent.Flow$Publisher
        FlowAdapters/toPublisher   → org.reactivestreams.Publisher
-       m/subscribe                → missionary Flow
+       a Subscriber we OWN        → missionary Flow
+
+   The last step is deliberately not `m/subscribe`: it discards a value that
+   has been delivered but not yet transferred when the flow terminates, which
+   against an eagerly-completing publisher — `java.net.http` — silently drops
+   the final SSE event of every stream. See `subscribe->queue!` and §18.
 
    No new dependency: `reactive-streams` arrives transitively with missionary.
 
