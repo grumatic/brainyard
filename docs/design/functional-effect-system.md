@@ -2697,3 +2697,37 @@ who reuses it.
 Worth noting the shape: this is the same terminal-boundary family as the other
 three in §18, mirrored again — there a final step DROPPED data, here two steps
 BOTH emitted it.
+
+## 10. clj-oauth device-e2e flake — HARDENED, NOT PROVEN FIXED
+
+Seen once in a full `bb test`: `OAuth discovery failed: no well-known document
+at issuer`, green 3/3 in isolation. A pre-existing, already-documented
+load-only flake in a component unrelated to this work.
+
+Two plausible mechanisms found by reading `test-server/start!`:
+
+- it called `.start` and returned immediately, so a caller could issue
+  discovery before the dispatch thread was serving;
+- `setExecutor nil` handles requests SERIALLY on the dispatch thread, and the
+  device flow polls the token endpoint while other requests are in flight, so
+  one slow handler can delay another past a client timeout.
+
+Both are now addressed: `start!` blocks until the server actually answers its
+discovery endpoint (ceiling, not a wait — it returns as soon as it answers),
+and the server gets a small daemon thread pool that `stop!` shuts down.
+
+**The honest status is HARDENED, not FIXED, and the distinction matters.**
+Every other fix in this document carries a negative control that fails when the
+fix is removed. This one does not: reverting it and running under deliberate
+load stayed green 3/3, so **I never reproduced the original failure and
+therefore cannot show the change prevents it.** The original was seen once in
+roughly five full-suite runs, so three clean reverted runs is weak evidence in
+either direction.
+
+What justifies keeping it anyway is that both changes are strictly more correct
+independent of the flake — a helper that returns before it can serve is a
+latent race for every test that uses it, and serial request handling is not
+what the device flow's concurrent polling wants. What is NOT justified is
+crossing this off. If it recurs, this note is the starting point, not the
+conclusion; the next step would be capturing the failing run's server-side
+timing rather than reasoning about it again.

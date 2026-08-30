@@ -213,26 +213,72 @@
       (try (json! ex 500 {:error "server_error" :message (.getMessage t)}) (catch Throwable _ nil)))
     (finally (.close ex))))
 
+(defn- await-serving!
+  "Block until the server actually ANSWERS its discovery endpoint, or give up.
+
+   `.start` returns before the dispatch thread is necessarily serving, so a
+   caller that proceeds immediately can issue discovery into a server that is
+   not answering yet. On an idle machine that window is invisible; under a full
+   `bb test` it is not, and the failure reads as
+   `OAuth discovery failed: no well-known document at issuer` — which looks
+   like a bug in discovery rather than a test that started too early.
+
+   The budget is a CEILING, not a wait: this returns the moment the server
+   answers, so a healthy start pays a millisecond or two."
+  [^String url]
+  (let [deadline (+ (System/currentTimeMillis) 15000)]
+    (loop []
+      (let [ok? (try
+                  (let [c (.openConnection
+                           (java.net.URL. (str url "/.well-known/openid-configuration")))]
+                    (doto ^java.net.HttpURLConnection c
+                      (.setConnectTimeout 500)
+                      (.setReadTimeout 500))
+                    (= 200 (.getResponseCode ^java.net.HttpURLConnection c)))
+                  (catch Exception _ false))]
+        (cond
+          ok?                                         true
+          (> (System/currentTimeMillis) deadline)     false
+          :else (do (Thread/sleep 20) (recur)))))))
+
 (defn start!
   "Start the provider. `port` 0 lets the OS pick. Returns
-   `{:server :port :base-url :state :approve! :stop!}`."
+   `{:server :port :base-url :state :approve! :stop!}`.
+
+   Does not return until the server is actually answering — see
+   `await-serving!`."
   ([] (start! 0))
   ([port]
    (let [state  (atom {:devices {} :valid-tokens #{} :refresh {}})
          base   (atom nil)
-         server (HttpServer/create (InetSocketAddress. (int port)) 0)]
+         server (HttpServer/create (InetSocketAddress. (int port)) 0)
+         ;; A real (small, daemon) pool rather than `nil`. The default executor
+         ;; handles requests SERIALLY on the dispatch thread, so under load a
+         ;; slow handler delays every other request behind it — long enough for
+         ;; a client's discovery timeout to expire. The device flow polls the
+         ;; token endpoint while other requests are in flight, so serial
+         ;; handling is not merely slower here, it is a source of timeouts.
+         pool   (java.util.concurrent.Executors/newFixedThreadPool
+                 4
+                 (reify java.util.concurrent.ThreadFactory
+                   (newThread [_ r]
+                     (doto (Thread. r "oauth-test-server")
+                       (.setDaemon true)))))]
      (.createContext server "/" (reify HttpHandler (handle [_ ex] (dispatch state base ex))))
-     (.setExecutor server nil)
+     (.setExecutor server pool)
      (.start server)
      (let [actual (.getPort (.getAddress server))
            url    (str "http://localhost:" actual)]
        (reset! base url)
+       (when-not (await-serving! url)
+         (throw (ex-info "test OAuth server never started serving"
+                         {:url url :port actual})))
        {:server   server
         :port     actual
         :base-url url
         :state    state
         :approve! (fn [user-code] (approve! state user-code))
-        :stop!    (fn [] (.stop server 0))}))))
+        :stop!    (fn [] (.stop server 0) (.shutdownNow pool))}))))
 
 (defn -main
   "Launcher for `bb oauth:test-server [port]` (default 7900). Blocks."
