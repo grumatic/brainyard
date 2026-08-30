@@ -64,6 +64,29 @@
         ([acc]
          ;; Completion = EOF. `read-sse-events` emits pending data here, unless
          ;; that data is [DONE].
+         ;;
+         ;; FIRST, though: a body may end MID-LINE, with no trailing newline.
+         ;; `.readLine` hands back that final partial line at EOF, so the
+         ;; reader parses it; splitting on \n does not, and it would sit in
+         ;; !buf forever. Dropping it loses the stream's last event whenever a
+         ;; server truncates or omits the final blank line — the same class of
+         ;; silent last-event loss as the m/subscribe bug (§18), found by
+         ;; slice 3 running against a real server.
+         (let [tail (strip-cr @!buf)]
+           (vreset! !buf "")
+           (when-not (or @!done (str/blank? tail))
+             (cond
+               (str/starts-with? tail "event:")
+               (vreset! !event (str/trim (subs tail 6)))
+
+               (str/starts-with? tail "data:")
+               (let [payload (str/trim (subs tail 5))]
+                 (if (= "[DONE]" payload)
+                   (vreset! !done true)
+                   (vswap! !parts conj payload)))
+
+               ;; comment or unknown prefix — skipped, as upstream
+               :else nil)))
          (let [acc (if (and (not @!done) (seq @!parts))
                      (let [d (str/join "\n" @!parts)]
                        (if (= "[DONE]" d) acc (unreduced (rf acc {:event @!event :data d}))))

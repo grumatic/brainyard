@@ -2085,6 +2085,60 @@ downstream of it, in `publisher->event-flow`'s `m/eduction`.
 
 **Next measurement, not next hypothesis:** determine whether `m/eduction`
 invokes the completion arity at all, and whether a value emitted during
-completion is honoured. If it is not, the EOF flush cannot live in a transducer
-and must move into the flow itself — the same move that fixed the fork, for the
-same reason: termination has to be owned, not delegated.
+completion is honoured.
+
+### Measured: `m/eduction` is blameless, and the bug was ours
+
+```
+clojure into (reference)                  [1 2 :FLUSHED]   completion-called=1
+m/eduction over m/seed                    [1 2 :FLUSHED]   completion-called=1
+m/eduction over m/ap+amb (our shape)      [0 1 :FLUSHED]   completion-called=1
+m/eduction over m/ap, 0 items             [:FLUSHED]       completion-called=1
+TWO stacked eductions (event-flow shape)  [1 2 :FLUSHED]   completion-called=1
+```
+
+Completion emissions are honoured in every shape, including ours. So the fault
+was in `sse-events-xf`, and reading it against the failing input made it
+obvious: `"data: tw"` has **no trailing newline**, so it never becomes a line.
+It sits in `!buf`, `!parts` stays empty, and the flush condition
+`(seq @!parts)` is false.
+
+`read-sse-events` does not have this problem because **`.readLine` returns the
+final partial line at EOF**. Splitting on `\n` does not. That asymmetry is the
+bug, and it is the same one the ns docstring already warns about for CRLF — the
+reader's line semantics are not `split`'s.
+
+The completion arity now parses the trailing partial line before flushing,
+through the same `event:` / `data:` / `[DONE]` / skip logic. Slice 1's suite
+could not have caught it: **every body in it ends with `\n`**. New cases cover
+truncated-mid-line, single-truncated-line, typed-then-truncated,
+accumulated-then-truncated, and truncated-`[DONE]` — all differential against
+`read-sse-events`, at five chunkings each.
+
+### Slice 3 LANDS
+
+With that fixed, all four slice 3 tests pass against a real local HTTP server,
+including the one asserting the server sees the connection drop when the Flow
+is cancelled. `bb test:component clj-llm`: **177 tests, 879 assertions, 0
+failures, 0 errors.**
+
+Negative control: removing the EOF flush produces **21 failures** across the new
+EOF cases and slice 3's truncation test; restoring it returns 0.
+
+So the pushed-body path now works end to end — `sendAsync` → `ofPublisher` →
+owned subscriber → SSE events — with no `BufferedReader`, no thread blocked in
+`read`, and cancellation that reaches the socket.
+
+**Still wired to no provider.** `llm.clj`'s streaming branches continue to use
+`sse/read-sse-events`; the fix above improves that reader's transducer twin, not
+the reader. The next slice is the `on-chunk` contract, then retiring
+`:active-http`.
+
+### Three bugs, one seam — worth naming
+
+`m/subscribe` dropped the last delivered value. The infinite fork leaked a
+branch past the terminal message. `sse-events-xf` dropped an unterminated final
+line. Every one is a terminal-boundary bug; every one was invisible to tests
+whose producers end tidily; and every one was found by making a producer end
+BADLY — eagerly, truncated, mid-line. That is the test axis this component was
+missing, and it is now covered in all three places.

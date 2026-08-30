@@ -87,6 +87,28 @@
     (is (= [{:event nil :data "no-trailing-blank"}]
            (equivalent "eof with pending" "data: no-trailing-blank\n")))))
 
+(deftest eof-mid-line-flushes-the-partial-line
+  (testing "a body ending MID-LINE, with no trailing newline
+
+           .readLine returns the final partial line at EOF; splitting on \\n
+           does not. Missing this dropped the last event of any truncated
+           stream — found by slice 3 against a real server, and invisible to
+           every body here that ends tidily with \\n."
+    (is (= [{:event nil :data "one"} {:event nil :data "tw"}]
+           (equivalent "truncated mid-line" "data: one\n\ndata: tw")))
+    (is (= [{:event nil :data "solo"}]
+           (equivalent "single truncated line" "data: solo")))
+    (is (= [{:event "m" :data "typed"}]
+           (equivalent "typed then truncated" "event: m\ndata: typed")))
+    (is (= [{:event nil :data "a\nb"}]
+           (equivalent "accumulated then truncated" "data: a\ndata: b")))))
+
+(deftest eof-mid-line-done-emits-nothing
+  (testing "[DONE] as the truncated final line"
+    (is (= [] (equivalent "truncated [DONE]" "data: [DONE]")))
+    (is (= [{:event nil :data "a"}]
+           (equivalent "data then truncated [DONE]" "data: a\n\ndata: [DONE]")))))
+
 (deftest eof-with-pending-done-emits-nothing
   (is (= [] (equivalent "eof on [DONE]" "data: [DONE]\n"))))
 

@@ -144,3 +144,26 @@
   [flow-publisher]
   (->> (publisher->chunk-flow flow-publisher)
        (m/eduction (sse-flow/sse-events-xf))))
+
+;; ============================================================================
+;; Slice 3 — a real exchange, still wired to nothing
+;; ============================================================================
+
+(defn request-event-flow
+  "Send `req` on `client` with the PUSH body handler, and yield its SSE events
+   as a Flow. Cancelling the Flow aborts the HTTP exchange.
+
+   The whole point in four lines: `sendAsync` returns a `CompletableFuture`
+   (which implements `Future`, so `fx/from-future` adopts it), `.body` is a
+   `Flow.Publisher`, and slice 2 turns that into events. No `BufferedReader`,
+   so no thread blocked in `read`, so no `.close` needed to escape one.
+
+   Deliberately NOT wired into any provider. `llm.clj`'s streaming branches
+   still use `sse/read-sse-events`; this is the third additive slice, and the
+   contract change (`on-chunk`) is the next one."
+  [^java.net.http.HttpClient client ^java.net.http.HttpRequest req]
+  (m/ap
+   (let [resp (m/? (fx/from-future
+                    (.sendAsync client req
+                                (java.net.http.HttpResponse$BodyHandlers/ofPublisher))))]
+     (m/?> (publisher->event-flow (.body ^java.net.http.HttpResponse resp))))))
