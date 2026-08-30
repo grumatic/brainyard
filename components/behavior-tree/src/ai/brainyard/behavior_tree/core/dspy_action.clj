@@ -36,6 +36,19 @@
 ;; Lazy-resolved so behavior-tree doesn't hard-depend on the agent component.
 ;; Wrapped in try so the delay is safe when the agent ns isn't on classpath
 ;; (behavior-tree standalone tests).
+(defn interrupted?
+  "Is `e`, or anything it wraps, an `InterruptedException`?
+
+   A cancelled turn reaches an LLM call as a thread interrupt, and by the time
+   it surfaces it may be wrapped (a Task's failure, an ex-info from the retry
+   wrapper). Depth-bounded because a cause chain can be cyclic."
+  [^Throwable e]
+  (loop [t e n 0]
+    (cond
+      (or (nil? t) (> n 16))            false
+      (instance? InterruptedException t) true
+      :else                             (recur (.getCause t) (inc n)))))
+
 (def ^:private !chunk-factory
   (delay (try (requiring-resolve 'ai.brainyard.agent.core.bt/chunk-factory-handler)
               (catch Throwable _ nil))))
@@ -405,6 +418,15 @@
                      (assoc pre-event :result p/failure :error "missing-inputs")))
             p/failure)))
       (catch Exception e
+        ;; A CANCELLED TURN IS NOT A MODEL FAILURE. It arrives here as an
+        ;; InterruptedException, and `catch Exception` catches it — so before
+        ;; this it was classified (falling to classify-error's "unknown =>
+        ;; malformed" default), turned into p/failure, and RE-PROMPTED. Live
+        ;; cancel showed exactly that: "Cancelled." followed by two spurious
+        ;; "Malformed model output — re-prompting" lines and iterations
+        ;; completing in 5-9ms, each an LLM call failing instantly on the still
+        ;; interrupted thread. Rethrow so the turn ends where it was cancelled.
+        (when (interrupted? e) (throw e))
         (let [data     (ex-data e)
               raw-text (:raw-text data)
               msg (cond-> (str (.getMessage e))
