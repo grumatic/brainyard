@@ -2389,3 +2389,58 @@ line. Every one is a terminal-boundary bug; every one was invisible to tests
 whose producers end tidily; and every one was found by making a producer end
 BADLY — eagerly, truncated, mid-line. That is the test axis this component was
 missing, and it is now covered in all three places.
+
+## Step 3c verified against a real socket, two ways
+
+**1. Live, against Ollama** (`gemma3:12b`, its OpenAI-compatible `/v1`, which is
+the exact path the gate switches):
+
+```
+BY_STREAM_FLOW=false   "Paris is the capital of France."   exit 0, 54.6s
+BY_STREAM_FLOW=true    "Paris is the capital of France."   exit 0, 49.2s
+```
+
+Both correct, both clean. What this does NOT establish, and must not be read as
+establishing: the matching text is not proof of equivalence — it is a short
+factual answer a model repeats anyway — and one sample each, dominated by local
+inference, is not a latency result.
+
+**2. Deterministic, against a recording raw-socket server**, which turned out to
+be the stronger test. `free-llm` takes `FREELLM_BASE_URL`, so the binary can be
+pointed at a server that records the request and replies with a canned SSE
+stream written in **7-byte TCP writes** — so every boundary lands mid-event:
+mid-JSON, mid-`data:` prefix, between the two newlines of an event boundary.
+
+```
+recorded request:  {"stream": true, "path": "/chat/completions"}   on BOTH settings
+LLM raw text:      "The quick brown fox."                          identical on both
+```
+
+Two things this settles that the live run could not:
+
+- **`by ask` really does stream.** That was INFERRED from `dspy-action` building
+  an `on-chunk` unconditionally, and an unstreamed call would have made the
+  whole live differential a false pass — the gate never reached, both outputs
+  trivially identical, looking exactly like success. `"stream": true` in the
+  recorded request is the proof. Worth the detour: this session has already
+  produced two wrong conclusions from inferring instead of looking.
+- **Adversarial chunk boundaries agree byte-for-byte.** This is the property
+  claimed to need a live provider, and a 7-byte splitter is harsher than any
+  provider's buffering while being deterministic and free.
+
+(The `Agent stopped: LLM response was plain text with no JSON object` in that
+run is expected — the canned reply is not the JSON the agent's BT wants. The
+transport is what was under test, and the raw text was reconstructed whole.)
+
+### Residual, honestly
+
+- The **Anthropic** path has no socket-level differential through the production
+  function at binary level — only the local-server unit test. `free-llm` is
+  OpenAI-format, so the recorder trick does not reach it without a provider
+  configured for `:message-format :anthropic`.
+- Ollama proves *an* OpenAI-compatible server, not OpenAI, Groq or the rest.
+- Neither exercises a long, many-thousand-chunk response, nor a mid-stream
+  server death against a real provider.
+
+None of these block the gate staying OFF and both paths shipping. All of them
+would need answering before the default flips.
