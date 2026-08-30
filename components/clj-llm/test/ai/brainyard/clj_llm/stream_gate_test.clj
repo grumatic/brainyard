@@ -173,3 +173,24 @@
             (str "a dead stream must throw, not return " (pr-str (:returned outcome))))
         (is (not= {:returned nil} outcome)
             "and specifically must not return nil, which reads as an empty answer")))))
+
+(deftest interrupted-llm-call-throws-interrupted-not-npe
+  (testing "a cancelled turn must not surface as a NullPointerException
+
+           run!! reports an interrupt as {:interrupted true} rather than
+           propagating InterruptedException, so retry-with-backoff's
+           (throw (:err r)) branch would throw NIL -- on the path EVERY LLM
+           call takes. Caught by auditing run!! callers, not by the suite."
+    (let [!outcome (atom :none)
+          t (doto (Thread.
+                   (fn []
+                     (reset! !outcome
+                             (try (#'llm/retry-with-backoff
+                                   (fn [] (Thread/sleep 30000) :never) {})
+                                  (catch Throwable e (.getSimpleName (class e)))))))
+              (.setDaemon true) (.start))]
+      (Thread/sleep 400)
+      (.interrupt t)
+      (.join t 5000)
+      (is (= "InterruptedException" @!outcome)
+          "an interrupted call reports interruption, not a NullPointerException"))))

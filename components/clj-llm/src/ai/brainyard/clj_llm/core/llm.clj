@@ -325,9 +325,16 @@
                                                 :status   (-> (ex-data error) :status)
                                                 :reason   (:reason (classify-error error))}))}
             (fx/task-of f)))]
-    (if (contains? r :ok)
-      (:ok r)
-      (throw (:err r)))))
+    (cond
+      (contains? r :ok) (:ok r)
+      ;; A cancelled turn interrupts this thread. `run!!` reports that as data
+      ;; (and has already cancelled the underlying call), so it must be handled
+      ;; explicitly — the `:err` branch would `(throw nil)` and turn a
+      ;; cancellation into a NullPointerException on the path EVERY LLM call
+      ;; takes. Re-thrown as InterruptedException, which is what it was before
+      ;; `run!!` learned to report interrupts instead of propagating them.
+      (:interrupted r)  (throw (InterruptedException. "LLM call interrupted"))
+      :else             (throw (:err r)))))
 
 ;; ============================================================================
 ;; Error classification (for the agent repair path)
