@@ -1503,3 +1503,82 @@ are unused on the effect path, and mechanism 4 is a dfv rather than a Condition.
 Converting the non-streaming HTTP path would take it to **two** — cancel the
 effect, plus `.close` for streaming bodies only, which is where it always
 belonged. That is close to the shape §14 said was unreachable.
+
+## 18. Streaming HTTP *is* reducible — the pull API was the problem
+
+§17 concluded that `.close` on `:active-http` survives "because of streaming
+bodies". Challenged on it, and wrong again — for a reason worth stating exactly,
+because it is the same mistake twice.
+
+**The irreducibility came from choosing a blocking-pull body handler, not from
+HTTP streaming.** `BodyHandlers/ofInputStream` hands back an `InputStream`, and
+a thread blocked in `read` cannot be interrupted — so of course only `.close`
+gets you out. That is a property of the API selected, not of the protocol.
+
+`java.net.http` also offers a **push** handler, and missionary already speaks
+the protocol it pushes into. Everything needed is on the classpath today:
+
+```
+HttpResponse$BodyHandlers/ofPublisher   → JDK Flow.Publisher<List<ByteBuffer>>   ✓ exists
+org.reactivestreams.FlowAdapters        → JDK Flow ⇄ reactive-streams            ✓ on cp
+missionary m/subscribe [pub]            → reactive-streams Publisher → Flow      ✓ exists
+missionary m/publisher [f]              → the reverse direction                  ✓ exists
+```
+
+`reactive-streams` arrives as a transitive dependency of missionary itself — it
+was in the dependency list from the very first `add-lib` in the tutorial. No new
+dependency is required.
+
+### The chain
+
+```
+(sendAsync req (BodyHandlers/ofPublisher))     ; CompletableFuture<HttpResponse<Flow.Publisher<…>>>
+  → fx/from-future                             ; CompletableFuture implements Future
+  → FlowAdapters/toPublisher                   ; JDK Flow → reactive-streams
+  → m/subscribe                                ; → a missionary Flow of List<ByteBuffer>
+  → SSE framing as a flow transformation       ; m/eduction over the byte chunks
+```
+
+Cancelling that Flow cancels the subscription; the JDK propagates
+`Subscription.cancel()` and aborts the exchange. **That is structural
+cancellation of a streaming body** — the case every previous section called
+impossible.
+
+### Two things it buys beyond cancellation
+
+- **Backpressure, for free.** `m/subscribe` yields a discrete flow driven by
+  `request(n)`. The current SSE reader consumes as fast as the socket delivers
+  and pushes into `on-chunk`; a slow consumer has no way to signal upstream.
+  §1 listed "backpressure by construction" as a reason to adopt missionary and
+  this is the first place in brainyard it would actually apply.
+- **The last mechanism goes.** With this and the non-streaming `sendAsync`
+  change, `cancel-run` reaches **one** mechanism: cancel the effect.
+  `:active-http`, `set-active-http!`, `clear-active-http!` and the
+  `with-active-stream*` registration all delete.
+
+### Why this is not done here
+
+It rewrites the SSE path — `clj-llm/core/sse.clj` plus every provider's
+streaming branch — which is the highest-traffic, highest-risk code in the
+product, and it is a genuine redesign rather than a translation: chunk framing,
+`[DONE]` handling, provider-specific event shapes and the `on-chunk` callback
+contract all have to be re-expressed as flow transformations.
+
+It deserves its own session and its own differential test (same SSE bytes
+through both paths, asserting identical chunk sequences), exactly as §16 did
+for the BT.
+
+### The pattern, recorded
+
+Three times now a mechanism was called irreducible and turned out to be a
+consequence of an API choice:
+
+| claim | what was actually true |
+|---|---|
+| "the BT can't be effects without a rewrite" | ~340 lines, mechanically translatable (§15, §16) |
+| "pause must park a thread" | `m/dfv` parks the coroutine (§17) |
+| "streaming HTTP can't be cancelled" | only `ofInputStream` can't; `ofPublisher` can (§18) |
+
+The common shape: an existing implementation choice was mistaken for a
+constraint. Worth remembering the next time this document says something is
+impossible.
