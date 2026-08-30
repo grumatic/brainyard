@@ -2170,9 +2170,48 @@ So the shape of the work is:
 3. **Gate it**, default off, and diff the two paths against one provider.
 4. **Then** `:active-http` can go, since nothing is blocked in `read`.
 
-**CORRECTION to step 3, found on opening the call sites.** The estimate above
-was wrong, and wrong in the direction that matters. Both streaming functions
-use **clj-http**, not `java.net.http`:
+**CORRECTION-OF-THE-CORRECTION — read this before the paragraph below it.**
+The "second HTTP client" analysis that follows is WRONG, and it was wrong
+because I read `http/post` and assumed the library. `http` resolves to
+`ai.brainyard.clj-http-native`, a FIRST-PARTY component that is *already* built
+on `java.net.http` — a minimal client exposing a clj-http-shaped API, with
+`:throw-exceptions` and one non-2xx `ex-info` site (`core/client.clj:237`).
+
+So there is no second client to introduce, no `ProxySelector` to re-derive, and
+no exception shape to reproduce: all of it exists, in one place, already
+covered by that component's own tests.
+
+**What step 3 actually is:** teach `clj-http-native` one more `:as` mode —
+`:publisher`, returning the `Flow.Publisher` from
+`BodyHandlers/ofPublisher` — and have the streaming path ask for it. Headers,
+proxy, timeouts, non-2xx handling and native-image config all come along
+unchanged, because it is the same client and the same request.
+
+**Consequence for 3a (`core/http_flow.clj`), committed one commit earlier:** it
+re-implements request construction and proxy resolution that `clj-http-native`
+already does, and it should be **superseded rather than built on** — deleted
+once the `:as :publisher` mode lands, or folded into that component if any of
+its tests prove useful there. Its one genuinely new finding survives the move
+and is worth carrying: `URI.getPort` returns -1 for a portless proxy URL, which
+`InetSocketAddress` rejects — whatever code resolves a proxy has to handle that.
+
+**Consequence for 3b:** mostly dissolves. Non-2xx parity is not a question when
+there is one client and one throw site. What remains is narrower and real: does
+the error path still behave when the body is a `Flow.Publisher` rather than a
+reader — i.e. does `client.clj` read and attach the error BODY before deciding
+to throw, or would a publisher-mode error response arrive with its body
+unconsumed? That is one measurement against a local 401, not a parity suite.
+
+Two scoping errors in a row here, both from reading a call site and inferring
+the machinery behind it instead of opening it. The pattern is the same one this
+whole section keeps re-learning: **look, do not infer.**
+
+---
+
+*(Superseded analysis, kept because the reasoning about what a second client
+would have to reproduce is still correct — it is simply not the situation.)*
+
+Both streaming functions use **clj-http**, not `java.net.http`:
 
 ```clojure
 (http/post url (merge {:headers headers :body (json/write-str body)
