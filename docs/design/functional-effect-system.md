@@ -1876,3 +1876,59 @@ provider uses this path.
 Whether `m/subscribe` is behaving to spec is a missionary question and not one
 this project needs to settle in order to proceed — the bridge can hold the
 final value itself.
+
+### `m/buffer` is not the one-line fix — it is strictly worse
+
+The obvious cheap fix is to decouple delivery from transfer with a buffer.
+Measured against the eager fake:
+
+```
+raw m/subscribe,  EAGER, 1 item      [:ok 0]
+m/buffer 128,     EAGER, 1 item      [:err NullPointerException "ps.iterator is null"]
+raw m/subscribe,  EAGER, 3 items     [:ok 2]
+m/buffer 128,     EAGER, 3 items     :HUNG
+m/buffer 128,     lazy,  3 items     [:ok 3]      <- lazy is fine
+m/buffer 1,       EAGER, 3 items     [:ok 1]
+m/buffer 128,     EAGER, 200 items   [:ok 72]
+```
+
+Silent loss of one value becomes an internal NPE, a hang, and a 200-item stream
+losing 128 of them. `m/buffer` over a lazily-completing publisher is perfectly
+fine, so buffer itself is not broken.
+
+**That NPE is diagnostically important and upgrades the finding.** It is thrown
+from missionary's own internals (`ps.iterator` is null), which means
+`m/subscribe`, over an eagerly-completing publisher, is not merely dropping a
+value — it is producing a flow that **violates missionary's flow protocol**.
+Raw `m/reduce` absorbs the violation as a lost value; `m/buffer` is a stricter
+consumer and breaks on it outright.
+
+So the conclusion is stronger than "hold the last value": **do not build on
+`m/subscribe` for a JDK body at all.** Anything layered on top inherits a
+protocol violation, and the failure mode of the next layer is unpredictable —
+which is precisely what a buffer that loses 128 of 200 items demonstrates.
+
+### The bridge to build instead
+
+Own the subscriber. A reactive-streams `Subscriber` writing into a queue, with
+demand issued one item at a time, and a flow that reads the queue — the leg
+already measured as **working** over the real body (probe 4, probe 6). It needs
+three properties, each of which has a test waiting for it:
+
+1. **Terminal messages are queued as values, not as flow termination.** The
+   `onComplete` / `onError` go into the queue behind the last `onNext`, so
+   ordering does the work and no value can be overtaken by its own completion.
+   This is what structurally prevents the whole class of bug.
+2. **Cancelling the flow must call `Subscription.cancel()`** — slice 2's
+   existing assertion, and the reason the slice exists.
+3. **Demand stays bounded** — request one, take one, request again. Backpressure
+   was §1's stated reason for adopting missionary here.
+
+The blocking `take` runs on `m/blk` and is interruptible, so it is strictly
+better than the `.readLine` it replaces: a blocked reader that no interrupt can
+reach is exactly what `:active-http`'s `.close` exists to work around.
+
+Test plan, unchanged by any of this: keep the lazy fake (a legitimate publisher
+shape), add an **eager** variant beside it, drive both through the same
+assertions, and require a negative control — reverting the bridge must make the
+eager tests fail.
