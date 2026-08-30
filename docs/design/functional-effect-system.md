@@ -1679,22 +1679,48 @@ Putting the slice-2 bridge over that same real body, with no `m/ap` and no
 | `publisher->chunk-flow` (adds `m/eduction`) | **hangs** |
 | `publisher->event-flow` | **hangs** |
 
-Two separate defects, neither of them in the composition:
+**Both explanations offered above were then tested, and both were wrong.**
+Recorded rather than quietly amended, because the sequence of four wrong
+hypotheses is the most useful thing this section contains.
 
-1. **`m/subscribe` loses the body.** The raw subscriber received one `onNext`;
-   the missionary flow over the identical publisher receives none and completes
-   empty. The likely cause is *when* the subscription happens: a missionary Flow
-   is a value, so `m/subscribe` does not subscribe until the flow is RUN, and
-   `ofPublisher`'s body appears not to survive that delay. The raw probe
-   subscribed immediately and got the data. **This is the effects-as-values
-   property biting a JDK API that assumes prompt subscription** — worth stating
-   plainly, because it is the first place in this whole migration where laziness
-   is a liability rather than the point.
-2. **An empty discrete flow plus `m/eduction` hangs** rather than completing
-   empty, which is a second bug sitting behind the first.
+*Not* prompt subscription:
 
-Next session starts by testing (1) directly: build the flow and run it
-*immediately* on response arrival versus after a delay, and see whether the
-data survives. If prompt subscription is the fix, `request-event-flow` must
-subscribe inside the `sendAsync` completion rather than lazily — which changes
-its shape, not just its combinators.
+```
+raw subscriber, immediate      [:ok 1]
+raw subscriber, after 300ms    [:ok 1]     <- delay does NOT lose the body
+m/subscribe, immediate         [:ok 0]     <- m/subscribe does
+```
+
+*Not* an empty-flow-plus-eduction hang either — against a synthetic publisher
+that completes with no items, both complete cleanly:
+
+```
+m/subscribe empty       [:ok 0]
+m/eduction over empty   [:ok 0]
+```
+
+### What is actually established
+
+`m/subscribe` over a real `ofPublisher` body yields **zero** items where a
+hand-written subscriber on the same publisher yields one. Nothing about timing,
+laziness, emptiness or composition explains it.
+
+The one concrete difference left between the two subscribers is **demand
+shape**. The raw probe calls `request(1024)` — bulk demand, up front. `m/subscribe`
+produces a *discrete* flow: it requests one item at a time, and only when the
+consumer pulls. That is a fact about the two, not another guess about cause, and
+it is where the next investigation should start:
+
+- does `FlowAdapters/toPublisher` correctly relay a `request(1)` to a JDK
+  `ofPublisher` body?
+- does the JDK body publisher behave differently under single-item demand?
+- does `m/subscribe`'s first `transfer` race the first `onNext`?
+
+Write a `Flow.Subscriber` that requests exactly **1** at a time and see whether
+it, too, receives nothing. If it does, the problem is the JDK publisher under
+incremental demand and missionary is blameless; if it receives the item, the
+problem is in `m/subscribe` or the adapter.
+
+That is one more ten-line measurement, and unlike the four hypotheses above it
+is derived from a measured difference rather than from reasoning about the
+code.
