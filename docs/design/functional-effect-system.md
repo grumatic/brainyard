@@ -1716,11 +1716,49 @@ it is where the next investigation should start:
 - does the JDK body publisher behave differently under single-item demand?
 - does `m/subscribe`'s first `transfer` race the first `onNext`?
 
-Write a `Flow.Subscriber` that requests exactly **1** at a time and see whether
-it, too, receives nothing. If it does, the problem is the JDK publisher under
-incremental demand and missionary is blameless; if it receives the item, the
-problem is in `m/subscribe` or the adapter.
+Measured, and demand shape is eliminated too:
 
-That is one more ten-line measurement, and unlike the four hypotheses above it
-is derived from a measured difference rather than from reasoning about the
-code.
+```
+JDK subscriber, request(1) once        [:ok 1]
+JDK subscriber, 1-at-a-time pull       [:ok 1]
+via FlowAdapters, 1-at-a-time pull     [:ok 1]   <- the adapter is fine
+m/subscribe (reference)                [:ok 0]
+```
+
+### The isolation is complete
+
+A reactive-streams subscriber, driven one item at a time, **through
+`FlowAdapters`, over the real JDK body** receives the item. Only `m/subscribe`
+does not. Every other layer is exonerated by measurement:
+
+| layer | verdict |
+|---|---|
+| JDK `ofPublisher` body | fine, bulk and incremental demand alike |
+| `FlowAdapters/toPublisher` | fine |
+| one-at-a-time demand | fine |
+| composition (`ap`/`?`/`?>`) | fine |
+| the transducer | fine |
+| **`m/subscribe`** | **loses the item** |
+
+That is where the bug is. Not a guess — everything else has been ruled out
+against the same publisher.
+
+### The one measured difference left, untested
+
+Slice 2's tests pass with `m/subscribe` over a *fake* publisher, so
+`m/subscribe` is not simply broken. The difference between that fake and the
+JDK's body is worth stating precisely because it is the only one left: **the
+fake emits from its own thread, asynchronously, after `request(n)` returns.**
+The JDK may deliver `onNext` synchronously, re-entrantly, from inside
+`request()`.
+
+If `m/subscribe` is not re-entrant-safe there, an item delivered during the
+`request` call would be dropped — which matches every observation, including
+why the fake works and the real body does not.
+
+**This is a hypothesis, and hypotheses have gone 0-for-4 in this section.** The
+measurement that would settle it: modify slice 2's fake publisher to call
+`onNext` synchronously inside `request` and see whether the previously-passing
+slice 2 tests start failing. If they do, the reproduction is captured in a unit
+test with no socket, and the fix is a missionary-usage question rather than an
+HTTP one.
