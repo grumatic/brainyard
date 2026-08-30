@@ -1582,3 +1582,42 @@ consequence of an API choice:
 The common shape: an existing implementation choice was mistaken for a
 constraint. Worth remembering the next time this document says something is
 impossible.
+
+
+### Slice 3 attempted — cancellation over a real socket WORKS; completion hangs
+
+Written, run against a loopback `HttpServer`, and **backed out** rather than
+committed. `main` stays at slices 1–2 (165 tests / 820 assertions green). The
+code is preserved outside the tree; the findings are here because they are the
+valuable part.
+
+`request-event-flow` is four lines: `sendAsync` with `ofPublisher`,
+`fx/from-future` on the returned `CompletableFuture`, then slice 2's
+`publisher->event-flow` over `.body`.
+
+**What passed — the claim this whole section exists for.** Cancelling the Flow
+mid-stream aborted a real HTTP exchange. The test server records a failed write
+as `:client-gone?`, and it saw the connection drop after the cancel, having
+written only part of the stream. **Nothing called `.close`.** That is
+`:active-http`'s job done structurally, over a socket, verified.
+
+**What failed — my composition, not the mechanism.** Both *completion* tests
+timed out. Events arrive correctly (`{"a":1}`, `{"b":2}` matched
+`read-sse-events` exactly), so framing and transport are fine over a real
+socket; the Flow simply never terminates when the body ends normally. Cancelling
+settles it, ending does not — which is precisely the signature of the outer
+`m/ap` not completing when the inner forked flow does.
+
+The suspect is the `m/?>` fork in `request-event-flow`: one response value
+forked into an inner flow, where the outer `ap` needs to terminate with the
+inner. Either a different combinator, or the transducer needs to signal
+termination on `[DONE]` rather than merely going quiet — `sse-events-xf` sets
+`!done` and stops emitting, but never `reduced?`-terminates the reduction, so
+`m/reduce` keeps pulling from a publisher that has stopped producing.
+
+That second possibility is worth checking first, because it would be a **slice 1
+bug that slices 1 and 2 could not detect**: with a `StringReader` and a fake
+publisher, the upstream always ends on its own and papers over a transducer that
+never terminates by itself.
+
+Next session starts there, not at the transport.
