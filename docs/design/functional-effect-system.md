@@ -2195,6 +2195,40 @@ its tests prove useful there. Its one genuinely new finding survives the move
 and is worth carrying: `URI.getPort` returns -1 for a portless proxy URL, which
 `InetSocketAddress` rejects — whatever code resolves a proxy has to handle that.
 
+**`:as :publisher` is NOT a two-line addition — the error path decides its
+shape.** `client.clj` realizes the error body before throwing (lines 251-258),
+handling `String` / `InputStream` / `Reader` with `:else b` as fallback. A
+`Flow.Publisher` hits `:else` and is handed back **unread**, which is exactly
+the bug the comment directly above that code documents: `:as :reader`/`:stream`
+used to fall through the same way, so a 429 carrying `insufficient_quota` could
+not be distinguished from a throttle and was retried for ~63s before failing.
+Adding `:publisher` naively reintroduces that bug, on the same streaming calls
+it bit the first time.
+
+Two ways out, and the second is better:
+
+1. Drain the publisher to a string in the error branch. Needs a blocking
+   subscriber inside `clj-http-native` — it sits BELOW `clj-llm` and cannot
+   reach `sse-publisher/buffers->string`.
+2. **A status-inspecting `BodyHandler`.** `HttpResponse$BodyHandler` receives
+   `ResponseInfo` and chooses its subscriber, so one handler can return
+   `BodySubscribers/ofString` when `statusCode >= 400` and the publisher
+   subscriber otherwise. The error body is then a plain string by construction
+   and the existing throw path needs no change at all. This is what the JDK
+   offers the hook for.
+
+Option 2 carries a wrinkle worth naming before someone writes it: the two
+branches have different body types, so the handler is
+`BodyHandler<Object>` (or the branches are unified via
+`BodySubscribers/mapping`), and a `reify` of a JDK functional interface in this
+component needs its native-image reflection config checked — `clj-http-native`
+is on the native path for every request the binary makes.
+
+**Not implemented here.** The design is settled but writing a generics-shaped
+`reify` into the HTTP client every request passes through, without room to test
+it, is how the careful part of this section gets undone. It is a small piece of
+work for someone with the context to verify it.
+
 **Consequence for 3b:** mostly dissolves. Non-2xx parity is not a question when
 there is one client and one throw site. What remains is narrower and real: does
 the error path still behave when the body is a `Flow.Publisher` rather than a
