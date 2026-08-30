@@ -1633,8 +1633,32 @@ relies purely on EOF, so its termination cannot involve the transducer's
 `[DONE]` handling in any way, and it still hangs. Whatever is wrong is in the
 composition, not the framing.
 
-Next session starts at `request-event-flow`'s four lines. Try `m/?<` or
-`m/reduce` over the inner flow directly rather than forking with `m/?>`, and
-test against the fake publisher of slice 2 (no socket needed) — a fake that
-calls `onComplete` reproduces the same termination question at a fraction of the
-setup.
+**Also checked, and also NOT the cause.** The composition was isolated with no
+HTTP at all, five ways — plain inner flow, `ap` + `?>`, `ap` + `?` task + `?>`,
+the same with `fx/from-future` over a completed `CompletableFuture`, and again
+with an `m/eduction` in between. **All five terminate correctly.** `m/ap` +
+`m/?` + `m/?>` is sound.
+
+So both named suspects are eliminated, and the remaining difference is narrow
+and specific:
+
+| layer | terminates? | evidence |
+|---|---|---|
+| `m/ap` + `m/?` + `m/?>` composition | **yes** | isolated probe, 5 variants |
+| `m/subscribe` + `FlowAdapters` + `onComplete` | **yes** | slice 2, fake publisher |
+| the transducer at `[DONE]` / EOF | **yes** | slice 1 + the `reduced` fix |
+| the same chain over a REAL JDK body publisher | **no** | slice 3 |
+
+Every part works in isolation; only the real `ofPublisher` body fails to
+terminate. That is now the whole question, and it is a JDK-behaviour question
+rather than a missionary one. Things to look at, in order: whether
+`com.sun.net.httpserver` with a chunked body (`sendResponseHeaders … 0`)
+actually completes the publisher on close; whether HTTP/2 negotiation against an
+HTTP/1.1-only test server leaves the body open; and whether `ofPublisher`
+requires the subscription to be taken up more promptly than the flow does.
+
+A better next probe than any of those: subscribe to the JDK body publisher
+**directly**, with a hand-written `Flow.Subscriber` that prints `onNext` /
+`onComplete` / `onError`, and see whether `onComplete` ever arrives. If it does
+not, nothing above missionary can help; if it does, the bridge is the place to
+look. That is ten lines and settles it.
