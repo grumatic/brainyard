@@ -238,8 +238,8 @@
    :enable-effect-bt           {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_EFFECT_BT")]
                                            (= "true" v) ::env-unset)
-                                :default false
-                                :doc "Run the agent's behavior tree through the EFFECT engine (p/tick-task) instead of the synchronous one. Off by default. When on, a turn is a missionary Task and `cancel-run` stops it structurally — the cooperative :cancelled? flag and the thread interrupt are not used on that path. Identical results and traces are asserted against the synchronous engine (docs/design/functional-effect-system.md §16). Read per turn, so it can be flipped mid-session. Env: BY_ENABLE_EFFECT_BT."}
+                                :default true
+                                :doc "Run the agent's behavior tree through the EFFECT engine (p/tick-task) instead of the synchronous one. ON by default since the effect engine became the primary path; set BY_ENABLE_EFFECT_BT=false to fall back to the synchronous engine, which remains fully supported. When on, a turn is a missionary Task and `cancel-run` stops it structurally — the cooperative :cancelled? flag and the thread interrupt are not used on that path. Identical results and traces are asserted against the synchronous engine (docs/design/functional-effect-system.md §16). Read per turn, so it can be flipped mid-session. Env: BY_ENABLE_EFFECT_BT."}
    :enable-graph-memory        {:type "boolean"
                                 :env-fn #(if-some [v (System/getenv "BY_ENABLE_GRAPH_MEMORY")]
                                            (= "true" v) ::env-unset)

@@ -1476,6 +1476,26 @@ native smoke, `effect-smoke`, and live in a TUI on the effect engine — Esc
 parks, Ctrl-C while paused cancels, the next turn answers, `/quit` exits with
 no orphans.
 
+### The effect engine is now the default
+
+`:enable-effect-bt` defaults to **true**. `BY_ENABLE_EFFECT_BT=false` falls back
+to the synchronous engine, which remains fully supported and fully tested.
+
+**Flipping it caught a defect the test suites did not.** `bb build:ata`'s native
+smoke suite failed the ACP round trip with `Error: Cancelled`. The cause was in
+the `ask` wiring: it reported EVERY failure as "Cancelled", not just
+cancellation. A genuine ACP error surfaced under a cancellation message, hiding
+its actual cause. The synchronous engine propagates the original exception, so
+the effect path must too — only `InterruptedException` and `missionary.Cancelled`
+now become "Cancelled", everything else is rethrown as itself.
+
+Worth noting how it was found. 216 unit assertions, a five-turn nREPL-driven TUI
+session, and repeated `by ask` runs all passed with the bug present, because
+none of them made a turn fail for a non-cancellation reason. The build's own
+smoke suite did it on the first run after the flip. Verified after the fix: a
+bad model id now reports `Bedrock invoke failed: The provided model identifier
+is invalid` rather than `Cancelled`.
+
 ### Where cancel-run ends up
 
 Three mechanisms now, not four: the cooperative flag and the thread interrupt

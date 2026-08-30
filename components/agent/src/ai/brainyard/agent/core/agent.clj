@@ -395,13 +395,27 @@
                                (let [r @!out]
                                  (if (contains? r :ok)
                                    (:ok r)
-                                   ;; A cancelled turn arrives as
-                                   ;; InterruptedException (§16), which the
-                                   ;; synchronous engine surfaced by throwing
-                                   ;; ex-info "Cancelled" from the checkpoint.
-                                   ;; Keep the caller-visible shape identical.
-                                   (throw (ex-info "Cancelled"
-                                                   {:cause (ex-message (:err r))}))))
+                                   ;; ONLY an actual cancellation becomes
+                                   ;; "Cancelled". A cancelled turn arrives as
+                                   ;; InterruptedException (§16) and the
+                                   ;; synchronous engine surfaced that by
+                                   ;; throwing ex-info "Cancelled" from the
+                                   ;; checkpoint, so that shape is preserved.
+                                   ;;
+                                   ;; Every OTHER failure is rethrown as
+                                   ;; itself. Reporting all of them as
+                                   ;; "Cancelled" masked the real error — the
+                                   ;; native smoke suite caught it as an ACP
+                                   ;; round trip failing with "Error:
+                                   ;; Cancelled" instead of its actual cause.
+                                   ;; The synchronous engine propagates the
+                                   ;; original exception and so must this.
+                                   (let [e (:err r)]
+                                     (if (or (instance? InterruptedException e)
+                                             (fx/cancelled? e))
+                                       (throw (ex-info "Cancelled"
+                                                       {:cause (ex-message e)}))
+                                       (throw e)))))
                                (finally
                                  (runtime/clear-bt-canceller! !state))))
                            (agent-bt/run-bt this input))
