@@ -1932,3 +1932,45 @@ Test plan, unchanged by any of this: keep the lazy fake (a legitimate publisher
 shape), add an **eager** variant beside it, drive both through the same
 assertions, and require a negative control — reverting the bridge must make the
 eager tests fail.
+
+### The bridge was built, and it fixes the bug — but only half the cases
+
+Written as specified: own subscriber, terminal signals queued as values behind
+the last `onNext`, demand re-issued one at a time by the consumer, blocking
+`.take` on `m/blk`. Measured:
+
+```
+EAGER publisher (the real JDK shape)   2 items in -> 2 out, nothing lost   FIXED
+lazy publisher, 2 items                :HUNG
+lazy publisher, 1 item                 :HUNG
+lazy publisher, 0 items                [:ok []]
+```
+
+**The root-cause bug is genuinely fixed** — eager completion no longer loses
+the last value, which is what the whole investigation was about. But the new
+bridge hangs on the shape `m/subscribe` handled fine, which is the exact
+inverse failure. Trading one publisher shape for the other is not a fix, so
+this is **parked, not shipped**: `main` is reverted to `m/subscribe` and the
+work sits beside slice 3 in the scratchpad (`bridge-src.clj.keep`,
+`bridge-test.clj.keep`).
+
+The discriminating difference is delivery mode, and it is precise: with an
+**eager** publisher every `onNext` happens synchronously inside `request`, on
+the consumer's own thread, so `.take` never actually blocks. With a **lazy**
+publisher the item arrives from the publisher's thread and `.take` blocks for
+real. Zero items works in both. So the fault is in the blocking-take path
+specifically — the `m/via m/blk` park, its interaction with the `m/?>` fork, or
+the demand re-issue that follows it — and not in the queue design, which is
+what makes eager correct.
+
+One error already found and fixed along the way, worth keeping because the
+shape recurs: a `try/finally` inside the `m/ap` looked like the natural place
+for `Subscription.cancel()` and is wrong — the fork runs the `finally` once per
+BRANCH, so it cancelled the subscription after the first item and failed every
+flow in the namespace, including ones that passed before. Cleanup belongs on
+the interrupt path, where `m/via m/blk`'s cancellation actually surfaces.
+
+**Do not resume this by guessing.** The pattern of this whole section is that
+reasoning about missionary's internals loses and instrumentation wins: hang or
+not, the next step is to log the fork/park/take sequence in the lazy case and
+read which of the three never completes.
