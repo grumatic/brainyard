@@ -1756,9 +1756,43 @@ If `m/subscribe` is not re-entrant-safe there, an item delivered during the
 `request` call would be dropped — which matches every observation, including
 why the fake works and the real body does not.
 
-**This is a hypothesis, and hypotheses have gone 0-for-4 in this section.** The
-measurement that would settle it: modify slice 2's fake publisher to call
-`onNext` synchronously inside `request` and see whether the previously-passing
-slice 2 tests start failing. If they do, the reproduction is captured in a unit
-test with no socket, and the fix is a missionary-usage question rather than an
-HTTP one.
+**This is a hypothesis, and hypotheses have gone 0-for-4 in this section.**
+
+### Refuted. 0-for-5.
+
+```
+async fake (slice 2's) — 3 items     [:ok 3]
+SYNC re-entrant fake  — 3 items      [:ok 3]
+async fake            — 1 item       [:ok 1]
+SYNC re-entrant fake  — 1 item       [:ok 1]
+```
+
+A publisher that calls `onNext` synchronously from inside `request()` — the
+worst re-entrancy case — feeds `m/subscribe` perfectly. Delivery timing is not
+the difference either.
+
+### Where that leaves it, stated as facts rather than as a story
+
+Everything below is measured, and the set is now contradictory enough to be
+worth writing down plainly:
+
+- `m/subscribe` + fake publisher, async delivery → **works**
+- `m/subscribe` + fake publisher, sync re-entrant delivery → **works**
+- reactive-streams subscriber + `FlowAdapters` + **real JDK body**, 1-at-a-time → **works**
+- `m/subscribe` + `FlowAdapters` + **real JDK body** → **0 items**
+
+Each leg works. Only the full combination fails. Five explanations for that
+have been proposed and all five were wrong, which is a strong signal that the
+fault is in something none of them modelled — most likely a property of the
+JDK's body publisher that no hand-written fake reproduces (subscriber-count
+rules, when the body is materialised relative to `sendAsync` completing, or
+what `ofPublisher` does with a subscription that arrives from a different
+thread than the one that got the `HttpResponse`).
+
+**No further hypothesis is offered here.** The next step is to instrument the
+failing combination directly — log every `onSubscribe` / `request` / `onNext` /
+`onComplete` / `onError` that crosses the adapter in the real-body case — and
+read what actually happens, rather than to propose a sixth theory. That is a
+mechanical measurement on the one configuration known to fail, and unlike the
+five refuted hypotheses it cannot come back empty: it either shows a callback
+sequence that explains the zero, or it shows missionary never subscribing.
