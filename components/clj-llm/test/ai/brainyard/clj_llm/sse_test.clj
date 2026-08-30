@@ -244,3 +244,38 @@
       (is (= [{:type :content-delta :text "a"}
               {:type :done :usage {:prompt_tokens 1 :completion_tokens 1}}]
              @!chunks)))))
+
+(deftest anthropic-fold-carries-a-non-default-stop-reason
+  (testing "stop_reason must come from message_delta, not the end_turn default
+
+           A negative control that dropped stop-reason accumulation passed the
+           whole suite — every existing Anthropic stream here either omits it
+           or uses \"end_turn\", which is also the default."
+    (let [input (str "event: message_start\ndata: {\"message\":{\"model\":\"m\"}}\n\n"
+                     "event: content_block_delta\ndata: {\"delta\":{\"text\":\"x\"}}\n\n"
+                     "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n"
+                     "event: message_stop\ndata: {}\n\n")
+          result (sse/process-anthropic-stream (str->reader input) nil)]
+      (is (= "max_tokens" (:stop_reason result))))))
+
+(deftest anthropic-message-stop-terminates-the-stream
+  (testing "events after message_stop are NOT processed
+
+           The Anthropic terminal arrives mid-stream, unlike OpenAI's. The
+           original loop returned from inside message_stop; the fold models
+           that with `reduced`. Nothing tested it — a control that made
+           message_stop non-terminating passed the suite — and this is the
+           exact seam that produced three separate bugs in the pushed-body
+           work: a terminal that does not actually terminate."
+    (let [input (str "event: message_start\ndata: {\"message\":{\"model\":\"m\"}}\n\n"
+                     "event: content_block_delta\ndata: {\"delta\":{\"text\":\"kept\"}}\n\n"
+                     "event: message_stop\ndata: {}\n\n"
+                     "event: content_block_delta\ndata: {\"delta\":{\"text\":\"IGNORED\"}}\n\n")
+          !chunks (atom [])
+          result (sse/process-anthropic-stream (str->reader input) #(swap! !chunks conj %))]
+      (is (= "kept" (get-in result [:content 0 :text]))
+          "text after message_stop must not reach the response")
+      (is (= [{:type :content-delta :text "kept"}
+              {:type :done :usage nil}]
+             @!chunks)
+          "nor reach on-chunk"))))

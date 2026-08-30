@@ -138,6 +138,75 @@
 ;; Anthropic Stream Processing
 ;; ============================================================================
 
+(defn anthropic-init
+  "Fresh accumulator for the Anthropic fold."
+  []
+  {:content (StringBuilder.) :model nil :stop-reason nil
+   :input-usage nil :output-usage nil})
+
+(defn anthropic-step
+  "One Anthropic SSE event folded into the accumulator; returns the step fn.
+
+   Same motive as `openai-step`: the delta logic must be drivable from either
+   the blocking reader's seq or the pushed-body Flow, without a second copy to
+   drift (docs/design/functional-effect-system.md §18).
+
+   `message_stop` returns `reduced`. That is load-bearing rather than
+   incidental: unlike the OpenAI stream, whose terminal coincides with the end
+   of the events, Anthropic's terminal arrives MID-STREAM and the original
+   `loop` returned from inside it — so anything after `message_stop` was never
+   examined. A step that merely went quiet would keep consuming, which over a
+   Flow means never completing. This is the same terminal-boundary seam that
+   produced three separate bugs in §18; it is modelled explicitly here."
+  [on-chunk]
+  (fn [acc evt]
+    (let [parsed (try
+                   (json/read-str (:data evt) :key-fn keyword)
+                   (catch Exception e
+                     (mulog/debug ::anthropic-sse-parse-error :message (.getMessage e))
+                     nil))]
+      (if-not parsed
+        acc
+        (case (:event evt)
+          "message_start"
+          (let [msg (:message parsed)]
+            (assoc acc :model (:model msg) :input-usage (:usage msg)))
+
+          "content_block_delta"
+          (let [delta-text (get-in parsed [:delta :text])]
+            (when (and delta-text on-chunk)
+              (on-chunk {:type :content-delta :text delta-text}))
+            (cond-> acc
+              delta-text (update :content #(.append ^StringBuilder % ^String delta-text))))
+
+          "message_delta"
+          (assoc acc :stop-reason (get-in parsed [:delta :stop_reason])
+                     :output-usage (:usage parsed))
+
+          ;; Terminal. See the docstring — this must STOP the reduction.
+          "message_stop"
+          (reduced acc)
+
+          ;; content_block_start, content_block_stop, ping — skip
+          acc)))))
+
+(defn anthropic-result
+  "Reconstruct the non-streaming response shape from a finished fold, and fire
+   the terminal `{:type :done}`.
+
+   Shared by both endings — `message_stop`, and a stream that simply runs out
+   without one. The original built the identical map in two places; they cannot
+   drift now."
+  [{:keys [content model stop-reason input-usage output-usage]} on-chunk]
+  (let [merged-usage (merge input-usage output-usage)
+        result {:content [{:type "text" :text (str content)}]
+                :model model
+                :stop_reason (or stop-reason "end_turn")
+                :usage merged-usage}]
+    (when on-chunk
+      (on-chunk {:type :done :usage merged-usage}))
+    result))
+
 (defn process-anthropic-stream
   "Process an Anthropic SSE stream. Calls on-chunk for each content delta.
    Returns a reconstructed response identical to non-streaming format:
@@ -145,75 +214,5 @@
       :usage {:input_tokens N :output_tokens N ...}
       :model \"...\" :stop_reason \"end_turn\"}"
   [^BufferedReader reader on-chunk]
-  (let [events (read-sse-events reader)]
-    (loop [evts events
-           content (StringBuilder.)
-           model nil
-           stop-reason nil
-           input-usage nil
-           output-usage nil]
-      (if-let [evt (first evts)]
-        (let [event-type (:event evt)
-              parsed (try
-                       (json/read-str (:data evt) :key-fn keyword)
-                       (catch Exception e
-                         (mulog/debug ::anthropic-sse-parse-error :message (.getMessage e))
-                         nil))]
-          (if parsed
-            (case event-type
-              ;; message_start: contains model, usage (input_tokens)
-              "message_start"
-              (let [msg (:message parsed)]
-                (recur (rest evts)
-                       content
-                       (:model msg)
-                       stop-reason
-                       (:usage msg)
-                       output-usage))
-
-              ;; content_block_delta: contains text deltas
-              "content_block_delta"
-              (let [delta-text (get-in parsed [:delta :text])]
-                (when (and delta-text on-chunk)
-                  (on-chunk {:type :content-delta :text delta-text}))
-                (recur (rest evts)
-                       (if delta-text (.append content delta-text) content)
-                       model
-                       stop-reason
-                       input-usage
-                       output-usage))
-
-              ;; message_delta: contains stop_reason and output usage
-              "message_delta"
-              (recur (rest evts)
-                     content
-                     model
-                     (get-in parsed [:delta :stop_reason])
-                     input-usage
-                     (:usage parsed))
-
-              ;; message_stop: stream complete
-              "message_stop"
-              (let [merged-usage (merge input-usage output-usage)
-                    result {:content [{:type "text" :text (str content)}]
-                            :model model
-                            :stop_reason (or stop-reason "end_turn")
-                            :usage merged-usage}]
-                (when on-chunk
-                  (on-chunk {:type :done :usage merged-usage}))
-                result)
-
-              ;; content_block_start, content_block_stop, ping — skip
-              (recur (rest evts)
-                     content model stop-reason input-usage output-usage))
-            ;; Unparseable event, skip
-            (recur (rest evts) content model stop-reason input-usage output-usage)))
-        ;; Stream ended without message_stop (unusual, but handle gracefully)
-        (let [merged-usage (merge input-usage output-usage)
-              result {:content [{:type "text" :text (str content)}]
-                      :model model
-                      :stop_reason (or stop-reason "end_turn")
-                      :usage merged-usage}]
-          (when on-chunk
-            (on-chunk {:type :done :usage merged-usage}))
-          result)))))
+  (-> (reduce (anthropic-step on-chunk) (anthropic-init) (read-sse-events reader))
+      (anthropic-result on-chunk)))
