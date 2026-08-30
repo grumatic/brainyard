@@ -1974,3 +1974,75 @@ the interrupt path, where `m/via m/blk`'s cancellation actually surfaces.
 reasoning about missionary's internals loses and instrumentation wins: hang or
 not, the next step is to log the fork/park/take sequence in the lazy case and
 read which of the three never completes.
+
+### FIXED: the loop must terminate itself
+
+Instrumenting the lazy case showed every message arriving correctly — both
+items, then the terminal — and then this:
+
+```
+ap: emitting [:done]
+ap: branch entered, parking on take     <- forks AGAIN, parks forever
+```
+
+The fork was infinite (`m/?>` over `(m/seed (repeat nil))`) and termination was
+delegated to a downstream `reduced`. So after the terminal message the loop
+parks one more branch on `.take` and leaves it there, holding a blocked `m/blk`
+thread. With a SINGLE `m/eduction` the reduction still settles and the leak is
+invisible — which is why the standalone probe passed. Layer a second one
+(`sse-events-xf`, which is exactly what `publisher->event-flow` does) and
+termination never propagates: the flow hangs.
+
+The fix is for the loop to own its own termination rather than borrowing it:
+
+```clojure
+(loop []
+  (let [msg (m/? (fx/task-of #(take-message! q !sub)))]
+    (case (nth msg 0)
+      :item  (m/amb (nth msg 1) (recur))
+      :done  (m/amb)
+      :error (throw (nth msg 1)))))
+```
+
+Measured across both publisher shapes, with a park counter:
+
+```
+lazy 2 items      [:ok [0 1]]     forks=3      EAGER 2 items    [:ok [0 1]]  forks=3
+lazy 1 item       [:ok [0]]       forks=2      EAGER 1 item     [:ok [0]]    forks=2
+lazy 0 items      [:ok []]        forks=1      EAGER 0 items    [:ok []]     forks=1
+EAGER 200 items   all 200, in order            lazy 50, take 3  [:ok [0 1 2]] forks=4
+```
+
+`forks = n+1` exactly — one park per item plus one terminal, no leaked branch.
+The `take 3` case parks 4 times over a 50-item stream rather than 51, so owning
+termination also makes cancellation prompt.
+
+**Result: `bb test:component clj-llm` — 172 tests, 836 assertions, 0 failures,
+0 errors**, with both the lazy and the eager fake driven through the same
+assertions.
+
+Negative control, which after six refuted hypotheses is not optional. Reverting
+`publisher->chunk-flow` to `m/subscribe` and leaving everything else in place:
+
+```
+reverted to m/subscribe    10 tests, 19 assertions, 6 errors   (5 in the eager tests)
+restored                   10 tests, 26 assertions, 0 errors
+```
+
+The tests have teeth: they fail for the original reason when the fix is removed,
+and the assertion count drops because an error aborts the rest of a namespace.
+
+### What this cost and what it bought
+
+Seven probes and six refuted hypotheses to find a bug that is one sentence
+long: **a value delivered but not yet transferred is discarded when the flow
+terminates.** Every wrong hypothesis was reasoning about how missionary must
+work; every piece of progress came from instrumenting what it actually did.
+Both defects found here — `m/subscribe`'s lost last value and the infinite
+fork's leaked branch — are terminal-boundary bugs invisible to any test whose
+producer ends politely, which is why the lazy fake alone could never have found
+either.
+
+Still not wired to any provider: `publisher->event-flow` has no caller. The
+next slice is `sendAsync` + `ofPublisher` behind a flag, then the `on-chunk`
+contract, then retiring `:active-http`.

@@ -62,6 +62,44 @@
           (.setDaemon true)
           (.start)))))))
 
+(defn- eager-publisher
+  "A publisher that completes EAGERLY: it calls `onComplete` as soon as the
+   items run out, in the SAME `request` call that delivered the last one,
+   without waiting for further demand.
+
+   This is what `java.net.http` does, and reproducing it is the entire reason
+   this fake exists. `fake-publisher` above completes LAZILY — it only
+   completes when demand arrives for the item past the end, which guarantees
+   the consumer transferred the previous value first. That difference is
+   invisible in every assertion slices 1 and 2 make, and it is where a real
+   bug lived: `m/subscribe` silently dropped the last value, so every SSE
+   stream over a real socket would have lost its final event (§18).
+
+   Completion is deliberately NOT demand-gated. Reactive streams gates
+   `onNext` on demand; a publisher may complete whenever it likes, so this
+   fake is legal and the bridge must cope with it."
+  [chunks !state]
+  (reify Flow$Publisher
+    (subscribe [_ sub]
+      (let [!idx (atom 0) done? (atom false)]
+        (.onSubscribe
+         sub
+         (reify Flow$Subscription
+           (request [_ n]
+             (swap! !state update :requested + n)
+             (dotimes [_ n]
+               (when-not @done?
+                 (let [i @!idx]
+                   (if (< i (count chunks))
+                     (do (swap! !idx inc)
+                         (swap! !state update :emitted inc)
+                         (.onNext sub (->item (nth chunks i)))
+                         (when (= @!idx (count chunks))
+                           (reset! done? true)
+                           (.onComplete sub)))
+                     (do (reset! done? true) (.onComplete sub)))))))
+           (cancel [_] (swap! !state assoc :cancelled? true) (reset! done? true))))))))
+
 (defn- new-state [] (atom {:cancelled? false :requested 0 :emitted 0}))
 
 (defn- drain
@@ -149,3 +187,60 @@
           body "data: héllo — wörld\n\n"]
       (is (= [{:event nil :data "héllo — wörld"}]
              (drain (sse-pub/publisher->event-flow (fake-publisher [body] !s))))))))
+
+;; ============================================================================
+;; The eager-completion case — what slices 1 and 2 were structurally blind to
+;; ============================================================================
+
+(deftest eager-completion-does-not-lose-the-last-event
+  (testing "onComplete arriving in the same request() as the last onNext must
+            not discard that value
+
+           This is the §18 root cause. m/subscribe loses exactly one value —
+           always the last — when completion is not demand-gated, which is how
+           the real JDK body behaves. Over a socket that means every SSE stream
+           silently drops its final event; harmless when it is [DONE], token
+           loss when it is a content delta."
+    (doseq [n [1 2 3 50]]
+      (let [!s (new-state)
+            chunks (vec (for [i (range n)] (str "data: " i "\n\n")))
+            events (drain (sse-pub/publisher->event-flow (eager-publisher chunks !s)))]
+        (is (= n (count events)) (str n " events in, " n " out"))
+        (is (= (mapv str (range n)) (mapv :data events))
+            "and in order, with none missing")))))
+
+(deftest eager-completion-agrees-with-the-blocking-reader
+  (testing "same differential assertion as the lazy case, against the eager
+            publisher and at several chunkings"
+    (let [body (str "event: message_start\ndata: {\"a\":1}\n\n"
+                    "data: {\"b\":2}\n\n")
+          expected (doall (sse/read-sse-events (BufferedReader. (StringReader. body))))]
+      (doseq [[label chunks] {"whole"     [body]
+                              "by-9"      (mapv #(apply str %) (partition-all 9 body))
+                              "by-1-byte" (mapv str body)}]
+        (let [!s (new-state)]
+          (is (= expected
+                 (drain (sse-pub/publisher->event-flow (eager-publisher chunks !s))))
+              (str "eager, chunked " label)))))))
+
+(deftest eager-empty-stream-completes
+  (testing "no items at all, completing immediately"
+    (let [!s (new-state)]
+      (is (= [] (drain (sse-pub/publisher->event-flow (eager-publisher [] !s))))))))
+
+(deftest eager-stream-ending-in-done
+  (testing "[DONE] as the final event is the case that HID this bug — the lost
+            value was one nobody would miss"
+    (let [!s (new-state)
+          chunks ["data: a\n\n" "data: b\n\n" "data: [DONE]\n\n"]]
+      (is (= [{:event nil :data "a"} {:event nil :data "b"}]
+             (drain (sse-pub/publisher->event-flow (eager-publisher chunks !s))))))))
+
+(deftest demand-is-bounded-against-the-eager-publisher
+  (testing "the bridge must not request unboundedly just because the publisher
+            answers synchronously"
+    (let [!s (new-state)
+          chunks (vec (for [i (range 20)] (str "data: " i "\n\n")))]
+      (drain (sse-pub/publisher->event-flow (eager-publisher chunks !s)))
+      (is (<= (:emitted @!s) (:requested @!s))
+          "never emitted more than was requested"))))

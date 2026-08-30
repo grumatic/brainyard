@@ -24,11 +24,13 @@
    Still wired to nothing: no provider code and no transport change. The next
    slice is `sendAsync` + `ofPublisher` behind a flag."
   (:require [ai.brainyard.clj-llm.core.sse-flow :as sse-flow]
+            [ai.brainyard.effect.interface :as fx]
             [missionary.core :as m])
   (:import [java.nio ByteBuffer]
            [java.nio.charset StandardCharsets]
            [java.util List]
-           [org.reactivestreams FlowAdapters]))
+           [java.util.concurrent LinkedBlockingQueue]
+           [org.reactivestreams FlowAdapters Subscriber Subscription]))
 
 (defn buffers->string
   "Decode one pushed item — `List<ByteBuffer>` — into a String.
@@ -45,11 +47,87 @@
       (.append sb (.decode StandardCharsets/UTF_8 (.duplicate b))))
     (.toString sb)))
 
+(defn- subscribe->queue!
+  "Subscribe to `flow-publisher`, pushing every signal into `q` AS A VALUE.
+
+   THE POINT — and the whole reason `m/subscribe` is not used here (§18):
+   `onComplete` is enqueued BEHIND the last `onNext`, so completion cannot
+   overtake a value that has been delivered but not yet consumed. Queue
+   ordering, not timing, decides what the consumer sees.
+
+   `m/subscribe` gets this wrong against a publisher that completes EAGERLY —
+   one that says `onComplete` as soon as the body is exhausted, without waiting
+   for further demand, which is exactly what `java.net.http` does and what no
+   hand-written fake did. Measured: the final value is silently dropped, and
+   under a stricter consumer (`m/buffer`) the flow violates missionary's
+   protocol outright — an internal NPE, a hang, 128 of 200 items lost.
+
+   Demand is one item at a time and is re-issued by the CONSUMER after a take,
+   so at most one item is ever in flight. That is the backpressure the blocking
+   SSE reader has no way to express."
+  [flow-publisher ^LinkedBlockingQueue q]
+  (let [!sub (atom nil)]
+    (.subscribe (FlowAdapters/toPublisher flow-publisher)
+                (reify Subscriber
+                  (onSubscribe [_ s] (reset! !sub s) (.request ^Subscription s 1))
+                  (onNext     [_ item] (.put q [:item item]))
+                  (onError    [_ t]    (.put q [:error t]))
+                  (onComplete [_]      (.put q [:done]))))
+    !sub))
+
+(defn- take-message!
+  "Block for the next signal, then ask for one more. Runs on `m/blk`.
+
+   Interruptible, unlike the `.readLine` this replaces — a reader blocked in
+   `read` that no interrupt can reach is precisely what `.close` on
+   `:active-http` exists to work around (§14, §17).
+
+   CANCELLATION REACHES THE JDK HERE, and this is the only place it can.
+   `m/via m/blk` cancels by interrupting the thread, so a cancelled flow
+   surfaces as an `InterruptedException` out of `.take` — at which point the
+   subscription is cancelled and the exception rethrown. It covers external
+   cancellation and downstream `reduced` alike, since both cancel the pending
+   task.
+
+   A `try/finally` inside the `m/ap` looks like the obvious place for this and
+   is WRONG: the fork means the finally runs once per branch, so it cancelled
+   the subscription after the very first item. Every flow in this namespace
+   failed and `:cancelled?` was true before the test even looked."
+  [^LinkedBlockingQueue q !sub]
+  (try
+    (let [msg (.take q)]
+      (when (= :item (nth msg 0))
+        (some-> ^Subscription @!sub (.request 1)))
+      msg)
+    (catch InterruptedException e
+      (some-> ^Subscription @!sub (.cancel))
+      (throw e))))
+
 (defn publisher->chunk-flow
-  "A JDK `Flow.Publisher<List<ByteBuffer>>` as a missionary Flow of Strings."
+  "A JDK `Flow.Publisher<List<ByteBuffer>>` as a missionary Flow of Strings.
+
+   Owns its subscriber rather than delegating to `m/subscribe`; see
+   `subscribe->queue!` for why that is a correctness requirement, not an
+   optimisation.
+
+   THE LOOP TERMINATES ITSELF on `:done`. The obvious alternative — fork
+   forever over `(m/seed (repeat nil))` and let a downstream transducer return
+   `reduced` — parks one more branch on `.take` AFTER the terminal message and
+   leaves it there. With a single `m/eduction` the reduction still settles and
+   the leak is invisible; layer a second one (`sse-events-xf`) and termination
+   never propagates, so the flow hangs while holding a blocked `m/blk` thread.
+   Measured both ways. Owning termination here also makes cancellation prompt:
+   `(m/eduction (take 3) …)` over a 50-item stream parks 4 times, not 51."
   [flow-publisher]
-  (->> (FlowAdapters/toPublisher flow-publisher)
-       (m/subscribe)
+  (->> (m/ap
+        (let [q    (LinkedBlockingQueue.)
+              !sub (subscribe->queue! flow-publisher q)]
+          (loop []
+            (let [msg (m/? (fx/task-of #(take-message! q !sub)))]
+              (case (nth msg 0)
+                :item  (m/amb (nth msg 1) (recur))
+                :done  (m/amb)
+                :error (throw (nth msg 1)))))))
        (m/eduction (map buffers->string))))
 
 (defn publisher->event-flow
