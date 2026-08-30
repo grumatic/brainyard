@@ -2046,3 +2046,45 @@ either.
 Still not wired to any provider: `publisher->event-flow` has no caller. The
 next slice is `sendAsync` + `ofPublisher` behind a flag, then the `on-chunk`
 contract, then retiring `:active-http`.
+
+## Slice 3 retried: the hang is gone, and it exposed a THIRD terminal bug
+
+With the bridge fixed, slice 3 was restored and run against a real local HTTP
+server. **The hang is gone** — 3 of its 4 tests pass, including the one
+asserting that cancelling the Flow drops the connection, which is the whole
+justification for the slice. `sendAsync` + `ofPublisher` works.
+
+The fourth fails, and it is a real defect rather than a stale expectation. A
+stream that ends WITHOUT a trailing blank line loses its pending data:
+
+```
+reader (reference):  ({:data "one"} {:data "tw"})            both
+our flow, eager:     [:ok [{:data "one"}]]                   "tw" LOST
+trailing complete:   [:ok [{:data "one"} {:data "two"}]]     fine
+```
+
+Reproduced with no HTTP at all, so it is not a transport issue: the
+**transducer's completion arity never delivers its value**. `sse-events-xf`
+emits pending data at EOF — that is how it matches `read-sse-events`, which
+flushes on EOF — and that emission is lost somewhere between the transducer and
+the reduction.
+
+This is the THIRD bug in this section at exactly the same seam: what happens at
+the terminal boundary. `m/subscribe` dropped the last delivered value; the
+infinite fork leaked a branch past the terminal message; now a transducer's
+completion emission vanishes. Different mechanisms, one blind spot — and every
+one of them was invisible to tests whose producers end tidily.
+
+**Impact if shipped unfixed:** an SSE stream truncated by a server, or one whose
+final event lacks its blank line, silently loses its last event. Same class as
+the bug this section started with.
+
+Slice 3 is parked again (`slice3-src.clj.keep`, `slice3-test.clj.keep`); `main`
+stays green. The bridge itself is committed and unaffected — this failure is
+downstream of it, in `publisher->event-flow`'s `m/eduction`.
+
+**Next measurement, not next hypothesis:** determine whether `m/eduction`
+invokes the completion arity at all, and whether a value emitted during
+completion is honoured. If it is not, the EOF flush cannot live in a transducer
+and must move into the flow itself — the same move that fixed the fork, for the
+same reason: termination has to be owned, not delegated.
