@@ -27,8 +27,10 @@
 
 (defn run!!
   "Run `task` and BLOCK until it settles. Returns `{:ok v}` or `{:err e}`;
-   with `timeout-ms`, `{:timeout true}` once elapsed (and the task is cancelled
-   on the way out, so a timed-out `run!!` leaks nothing).
+   with `timeout-ms`, `{:timeout true}` once elapsed; `{:interrupted true}` if
+   the waiting thread is interrupted. The task is cancelled on the way out of
+   BOTH non-settling exits, so neither a timeout nor an interrupt leaks a
+   running effect.
 
    Never throws. Brainyard's result convention is a map with `:error`, not an
    exception — an effect that failed is data, and the caller decides.
@@ -44,10 +46,28 @@
          cancel (run task
                      (fn [v] (deliver p {:ok v}))
                      (fn [e] (deliver p {:err e})))
-         r      (if timeout-ms
-                  (deref p timeout-ms {:timeout true})
-                  (deref p))]
-     (when (:timeout r) (cancel))
+         r      (try
+                  (if timeout-ms
+                    (deref p timeout-ms {:timeout true})
+                    (deref p))
+                  (catch InterruptedException _
+                    ;; INTERRUPT LEAKS UNLESS IT CANCELS. `deref` throws when
+                    ;; the waiting thread is interrupted, and before this the
+                    ;; exception propagated straight out — past `cancel`,
+                    ;; leaving the effect running with nobody holding its
+                    ;; canceller. Measured against a streaming HTTP body: the
+                    ;; caller died on the interrupt and the server kept sending
+                    ;; for as long as it was watched. Same class of leak the
+                    ;; `:timeout` branch already guarded, on the path far more
+                    ;; likely to be taken — cancelling a turn interrupts the
+                    ;; thread, it does not wait for a timeout.
+                    ;;
+                    ;; Restore the flag rather than swallow it: `deref` clears
+                    ;; the interrupt status, and the caller's own loop still
+                    ;; needs to see that it was told to stop.
+                    (.interrupt (Thread/currentThread))
+                    {:interrupted true}))]
+     (when (or (:timeout r) (:interrupted r)) (cancel))
      r)))
 
 (defn run-detached

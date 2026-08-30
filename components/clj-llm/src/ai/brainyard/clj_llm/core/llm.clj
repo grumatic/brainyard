@@ -831,6 +831,11 @@
     (cond
       (contains? r :ok)  (:ok r)
       (contains? r :err) (throw (:err r))
+      ;; Interrupt is how a cancelled turn reaches a blocked caller. run!! has
+      ;; already cancelled the Task (and so the HTTP exchange) and re-set the
+      ;; thread's interrupt flag; this turns it into the exception the BT's
+      ;; cancellation path expects.
+      (:interrupted r)   (throw (InterruptedException. "streaming call interrupted"))
       :else              (throw (ex-info "streaming task did not settle"
                                          {:result r})))))
 

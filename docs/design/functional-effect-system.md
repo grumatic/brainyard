@@ -2499,3 +2499,52 @@ nothing only because each was cross-checked against a second signal — the log
 line, the exception text — rather than taken at face value. Same shape as the
 `HttpServer` test that "passed" because the transport threw before its
 assertion could mean anything.
+
+## Step 4 attempted: still blocked, and it surfaced a leak in `run!!`
+
+Step 4 is retiring `.close` on `:active-http` — `cancel-run` mechanism 2, which
+exists because **a thread blocked in a socket read is not interruptible on the
+JVM**. Reading `cancel-run` confirms the recorded blocker rather than removing
+it: the reader path is still the default, so deleting mechanism 2 now would
+leave the DEFAULT path with no way to break a blocked `readLine`. Step 4 needs
+the flow path to be the default first, which needs callers to hold the Task
+rather than block on it.
+
+But pursuing it surfaced something worse, and unblocked:
+
+### The flow path leaked an in-flight exchange on cancel
+
+`run-stream-task!!` blocks on `fx/run!!`, and `fx/run!!` cancelled its task on
+**timeout** but not on **interrupt** — `deref` throws when the waiting thread is
+interrupted, and that exception propagated straight out, past `cancel`, leaving
+the effect running with nobody holding its canceller.
+
+Measured against a slow streaming body, interrupting the caller mid-stream:
+
+```
+before:  interrupted at write 27  ->  75 writes 2s later,  server-saw-disconnect false
+after:   interrupted at write 27  ->  28 writes,           server-saw-disconnect TRUE
+```
+
+The caller thread died in both cases. Before the fix the server kept generating
+for as long as it was watched — so a cancelled turn left the provider streaming
+and billing. That is **worse than the reader path**, where `.close` kills the
+exchange, and it would have been a regression the moment anyone enabled
+`BY_STREAM_FLOW`.
+
+Fixed in `run!!` rather than at the call site, because it is a defect in the
+primitive and every caller inherits it: catch `InterruptedException`, cancel,
+restore the interrupt flag (`deref` clears it, and the caller's loop still needs
+to see it), and return `{:interrupted true}`. That keeps the "never throws"
+contract — an interrupt is data, like `:timeout` — and `run-stream-task!!` turns
+it back into an `InterruptedException`, which is what the BT's cancellation
+path expects.
+
+Worth noting the docstring was already asserting the property it lacked: *"the
+task is cancelled on the way out, so a timed-out `run!!` leaks nothing"* — true
+of timeouts, false of interrupts, on the path far more likely to be taken, since
+cancelling a turn interrupts a thread rather than waiting for a timeout.
+
+Regression tests in `effect_test.clj` (cancels on interrupt; still cancels on
+timeout; does NOT cancel a task that settled), with a negative control:
+removing the `:interrupted` guard fails the suite.

@@ -349,3 +349,49 @@
             in the check itself"
     (let [{:keys [pass? checks]} (fx/smoke-report)]
       (is pass? (pr-str (remove :pass? checks))))))
+
+;; ============================================================================
+;; run!! must not leak the effect when the waiting thread is interrupted
+;; ============================================================================
+
+(deftest run-bang-bang-cancels-on-interrupt
+  (testing "interrupting the waiting thread cancels the task
+
+           `deref` THROWS when the waiting thread is interrupted, and that
+           exception used to propagate straight out of run!! — past the
+           canceller — leaving the effect running with nobody holding it. The
+           :timeout branch already guarded this; interrupt is the path far more
+           likely to be taken, since cancelling a turn interrupts a thread
+           rather than waiting for a timeout.
+
+           Measured against a streaming HTTP body before the fix: the caller
+           died on the interrupt and the server kept sending."
+    (let [!cancelled (atom false)
+          ;; A task that never settles, and records that it was cancelled.
+          forever (fn [_success _failure] (fn [] (reset! !cancelled true)))
+          !result (atom :none)
+          t (doto (Thread. (fn [] (reset! !result (fx/run!! forever))))
+              (.setDaemon true) (.start))]
+      (Thread/sleep 300)
+      (is (false? @!cancelled) "not cancelled while still waiting")
+      (.interrupt t)
+      (.join t 3000)
+      (is (true? @!cancelled)
+          "THE POINT: the canceller must run, or the effect outlives its caller")
+      (is (= {:interrupted true} @!result)
+          "and the interrupt is reported as data, not thrown"))))
+
+(deftest run-bang-bang-still-cancels-on-timeout
+  (testing "the pre-existing guard is intact"
+    (let [!cancelled (atom false)
+          forever (fn [_s _f] (fn [] (reset! !cancelled true)))
+          r (fx/run!! forever 200)]
+      (is (= {:timeout true} r))
+      (is (true? @!cancelled)))))
+
+(deftest run-bang-bang-normal-settle-does-not-cancel
+  (testing "a task that settles is not cancelled on the way out"
+    (let [!cancelled (atom false)
+          quick (fn [success _f] (success 42) (fn [] (reset! !cancelled true)))]
+      (is (= {:ok 42} (fx/run!! quick)))
+      (is (false? @!cancelled)))))
