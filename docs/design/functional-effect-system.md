@@ -1657,8 +1657,44 @@ actually completes the publisher on close; whether HTTP/2 negotiation against an
 HTTP/1.1-only test server leaves the body open; and whether `ofPublisher`
 requires the subscription to be taken up more promptly than the flow does.
 
-A better next probe than any of those: subscribe to the JDK body publisher
-**directly**, with a hand-written `Flow.Subscriber` that prints `onNext` /
-`onComplete` / `onError`, and see whether `onComplete` ever arrives. If it does
-not, nothing above missionary can help; if it does, the bridge is the place to
-look. That is ten lines and settles it.
+**Both probes run. The JDK is fine; the bridge is not.**
+
+A hand-written `Flow.Subscriber` on a real body, requesting 1024 up front:
+
+```
+response status: 200  version: HTTP_1_1
+outcome -> :complete
+signals -> [:onSubscribe [:onNext 1] :onComplete]
+```
+
+So `onComplete` does arrive, and nothing below missionary is at fault — the
+third hypothesis dies with the other two.
+
+Putting the slice-2 bridge over that same real body, with no `m/ap` and no
+`from-future` around it, isolates it exactly:
+
+| chain over a real body | result |
+|---|---|
+| `m/subscribe` (raw, via `FlowAdapters`) | `{:ok []}` — **completes EMPTY** |
+| `publisher->chunk-flow` (adds `m/eduction`) | **hangs** |
+| `publisher->event-flow` | **hangs** |
+
+Two separate defects, neither of them in the composition:
+
+1. **`m/subscribe` loses the body.** The raw subscriber received one `onNext`;
+   the missionary flow over the identical publisher receives none and completes
+   empty. The likely cause is *when* the subscription happens: a missionary Flow
+   is a value, so `m/subscribe` does not subscribe until the flow is RUN, and
+   `ofPublisher`'s body appears not to survive that delay. The raw probe
+   subscribed immediately and got the data. **This is the effects-as-values
+   property biting a JDK API that assumes prompt subscription** — worth stating
+   plainly, because it is the first place in this whole migration where laziness
+   is a liability rather than the point.
+2. **An empty discrete flow plus `m/eduction` hangs** rather than completing
+   empty, which is a second bug sitting behind the first.
+
+Next session starts by testing (1) directly: build the flow and run it
+*immediately* on response arrival versus after a delay, and see whether the
+data survives. If prompt subscription is the fix, `request-event-flow` must
+subscribe inside the `sendAsync` completion rather than lazily — which changes
+its shape, not just its combinators.
