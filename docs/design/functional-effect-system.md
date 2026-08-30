@@ -2580,7 +2580,7 @@ recorder trick rides `FREELLM_BASE_URL` and `free-llm` is OpenAI-shaped.
 Unblocking: a provider entry with `:message-format :anthropic` whose base URL
 can be pointed at a recorder. Not hard, just not done.
 
-## 3. `cancel-run` mechanisms 1 and 3 — BLOCKED on the sync BT engine
+## 3. `cancel-run` mechanisms 1 and 3 — BLOCKED (docstring now corrected)
 
 Deleting the cooperative `:cancelled?` flag and the thread interrupt requires
 the synchronous BT engine to go, since they are what cancels a turn on that
@@ -2589,6 +2589,12 @@ path. `:enable-effect-bt` defaults on, but the sync engine remains supported.
 Note mechanism 3 got *more* load-bearing, not less: on the flow path the thread
 interrupt is now what reaches the HTTP exchange (via `run!!` cancelling). It
 cannot be deleted on the grounds that the effect canceller supersedes it.
+
+**Done:** `cancel-run`'s docstring now says which mechanisms the effect engine
+actually retires, which is narrower than "these four stay until §15 lands" —
+1 and 4 are redundant only ON the effect path, 2 lives as long as the reader
+fallback is honoured, and 3 does not go away even if the synchronous engine
+does. The remaining work is the deletion itself, still blocked.
 
 ## 4. Pause is still a `dfv` bolted beside a flag — UNDECIDED
 
@@ -2627,10 +2633,42 @@ Worth stating so nobody reads "verified live" as broader than it is:
   observed working in the TUI, but never diffed against a real provider's
   token-by-token stream.
 
-## 8. Doc rot found in passing, not yet fixed
+## 8. Doc rot found in passing — FIXED
 
-`agent.clj`'s comment around the effect-BT branch says `run!!` blocks the turn
-thread. It does not use `run!!` at all — it uses `fx/run` plus a promise deref
-and registers its canceller separately. The code is correct; the comment is
-not. (Second instance today of a comment being ahead of the code; the first was
-`sse_flow.clj` still describing `m/subscribe` as the design.)
+`agent.clj`'s comment claimed `run!!`; the code uses `fx/run` plus a promise
+deref. Corrected, and it now records WHY the difference matters rather than
+just naming the right function: the canceller must be REGISTERED before
+anything blocks, and `run!!` keeps its canceller private — and `run!!` reports
+an interrupt as `{:interrupted true}` after cancelling internally, whereas this
+path needs the `InterruptedException` to propagate so the turn ends as
+"Cancelled".
+
+## 9. `sync-completion-captures-stdout` duplicates a line under load — NOT a test bug to paper over
+
+Seen once in a full `bb test` run:
+
+```
+expected: ["hello" "world"]
+actual:   ["hello" "hello" "world"]
+```
+
+Green 8/8 in isolation (5 with unrelated edits, 3 without), so it is
+load-dependent — but the symptom is CONTENT, not timing, and that makes it
+different from the two flakes fixed today. Those asserted on a timing outcome
+and were fixed by waiting for the state the assertion needed. **This one must
+not be "fixed" by loosening the assertion**, because a duplicated output line
+would be a real defect in production — doubled output in the TUI — and the test
+is the only thing currently reporting it.
+
+Where to look: `task/executor.clj` fans output out in a newline-splitting loop
+(`(on-output (subs s 0 nl))`, ~line 80) and then flushes the trailing partial
+(`(on-output remainder)`, ~line 110). A buffer/offset race between the loop and
+the flush would re-emit the first line exactly as observed. That is the MIRROR
+of the terminal-boundary family this document already records three times —
+`m/subscribe` dropping the last value, the fork leaking a branch past the
+terminal, `sse-events-xf` dropping an unterminated line. Here a final flush
+re-emits instead of dropping.
+
+Unreproduced, so undiagnosed. Do not guess at it; reproduce it under load
+first — the pattern in §18 is that every hypothesis about this class of bug was
+wrong and every instrumented measurement was right.

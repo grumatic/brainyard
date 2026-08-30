@@ -176,7 +176,13 @@
         is the only way, and without it a streaming LLM call would run to
         completion before the flag was next checked.
      3. `.interrupt` on `[:runtime :thread]` — unparks a `Thread/sleep` or a
-        blocking queue take between checkpoints.
+        blocking queue take between checkpoints, AND — since streaming defaults
+        to the pushed-body path — is what aborts an in-flight HTTP exchange.
+        `run-stream-task!!` blocks in `fx/run!!`, which cancels its Task when
+        the waiting thread is interrupted; cancelling the Flow cancels the
+        subscription, which drops the connection. That is a SECOND reason for
+        this mechanism, independent of the BT engine, and it means 3 cannot be
+        retired on the grounds that an effect canceller supersedes it.
      4. `signal-pause-condition!` — wakes a thread parked in `wait-if-paused`,
         which is waiting on a `Condition` and would otherwise never re-check
         the flag.
@@ -191,6 +197,18 @@
    works out what converting it would take and concludes it is tractable —
    about 200 lines, mechanically — with the real cost living in the 39 action
    leaves rather than the engine. Until that happens, these four stay.
+
+   Which of them the effect BT engine actually retires is narrower than that
+   framing suggests, and worth being precise about now that it is the default:
+
+     - 1 and 4 become redundant ON THE EFFECT PATH — `:bt-cancel` stops the run
+       structurally, so nothing needs to reach a cooperative checkpoint. They
+       stay because the synchronous engine remains supported.
+     - 2 stays for as long as `BY_STREAM_FLOW=false` is honoured: a thread
+       blocked in `BufferedReader.readLine` is unreachable by any other means,
+       and that is precisely what the reader fallback selects.
+     - 3 does NOT go away even if the synchronous engine does. See above: it is
+       now the path by which a cancel reaches the socket.
 
    Formerly documented as cancelling 'either via future-cancel (run-async path)
    or direct Thread.interrupt'. The `run-async` path had no production callers

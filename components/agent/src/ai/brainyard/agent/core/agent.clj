@@ -376,10 +376,19 @@
             ;; structurally rather than via the cooperative flag plus a thread
             ;; interrupt.
             ;;
-            ;; `run!!` blocks this thread exactly as `run-bt` did, so the turn's
+            ;; This blocks the thread exactly as `run-bt` did, so the turn's
             ;; shape — and everything downstream that reads `:answer` out of
             ;; st-memory — is untouched. What changes is only that someone now
             ;; holds a handle on the running turn.
+            ;;
+            ;; Deliberately `fx/run` + a promise deref rather than `fx/run!!`:
+            ;; the canceller has to be REGISTERED (`set-bt-canceller!`) before
+            ;; anything blocks, and `run!!` keeps its canceller private. An
+            ;; earlier version of this comment claimed `run!!` was used here; it
+            ;; never was, and the difference matters — `run!!` reports an
+            ;; interrupt as `{:interrupted true}` after cancelling internally,
+            ;; whereas this path wants the InterruptedException to propagate so
+            ;; the turn ends as "Cancelled".
             ;;
             ;; The canceller is cleared in a `finally`: leaving a stale one
             ;; registered would make the NEXT `cancel-run` cancel an effect that
