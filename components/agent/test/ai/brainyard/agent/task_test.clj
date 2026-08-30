@@ -296,10 +296,24 @@
       (manager/set-default-manager! tm)
       (let [task (tp/create-task tm "slow" :bash {:command "sleep 30"})]
         (tp/start-task tm (:id task))
-        (Thread/sleep 200) ;; let it start
-        (let [cancelled (tp/cancel-task tm (:id task))]
-          (is (some? cancelled))
-          (is (= :cancelled (:status cancelled))))))))
+        ;; WAIT FOR THE PRECONDITION, do not assume it. `cancel-task`
+        ;; finalizes as :cancelled only when the task is already :running;
+        ;; otherwise the completion path finalizes it :failed. A fixed
+        ;; `(Thread/sleep 200)` was enough on an idle machine and not enough
+        ;; under full-suite load, where spawning the bash process takes longer
+        ;; — so this test failed only in `bb test`, never in isolation, which
+        ;; is the most expensive kind of flake to chase.
+        ;;
+        ;; The budget is a ceiling, not a wait: this exits as soon as the task
+        ;; is running, so a passing run is no slower.
+        (let [running? (loop [n 0]
+                         (cond (= :running (:status (tp/get-task tm (:id task)))) true
+                               (> n 100) false
+                               :else (do (Thread/sleep 50) (recur (inc n)))))]
+          (is running? "the task must actually be running before we cancel it")
+          (let [cancelled (tp/cancel-task tm (:id task))]
+            (is (some? cancelled))
+            (is (= :cancelled (:status cancelled)))))))))
 
 (deftest task-manager-remove-test
   (testing "Remove a task from registry"
