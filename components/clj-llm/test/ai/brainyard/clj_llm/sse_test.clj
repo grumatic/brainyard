@@ -201,3 +201,46 @@
       (is (= "abc" (get-in result [:choices 0 :message :content])))
       (is (= ["a" "b" "c"]
              (mapv :text (filter #(= :content-delta (:type %)) @chunks)))))))
+
+;; ============================================================================
+;; Accumulator coverage — added after a negative control found this UNTESTED
+;; ============================================================================
+
+(deftest openai-fold-accumulates-role-finish-reason-and-usage
+  (testing "the non-content fields the fold carries across events
+
+           Six existing call sites exercise process-openai-stream, and NONE of
+           them would fail if role, finish_reason or usage stopped
+           accumulating: they either assert only on content, or use streams
+           whose values happen to match the defaults (role \"assistant\",
+           finish_reason \"stop\"). A negative control that broke finish-reason
+           accumulation passed the whole suite. These assert the fold actually
+           carries them."
+    (let [input (str "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"}}]}\n\n"
+                     "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}],"
+                     "\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n\n"
+                     "data: [DONE]\n\n")
+          result (sse/process-openai-stream (str->reader input) nil)]
+      (is (= "length" (get-in result [:choices 0 :finish_reason]))
+          "finish_reason must come from the stream, not the \"stop\" default")
+      (is (= {:prompt_tokens 7 :completion_tokens 3} (:usage result))
+          "usage must be carried out of the fold")
+      (is (= "hi" (get-in result [:choices 0 :message :content]))))))
+
+(deftest openai-fold-carries-a-non-default-role
+  (testing "role is taken from the delta rather than defaulted"
+    (let [input (str "data: {\"choices\":[{\"delta\":{\"role\":\"developer\",\"content\":\"x\"}}]}\n\n"
+                     "data: [DONE]\n\n")
+          result (sse/process-openai-stream (str->reader input) nil)]
+      (is (= "developer" (get-in result [:choices 0 :message :role]))))))
+
+(deftest openai-done-chunk-carries-usage
+  (testing "the terminal {:type :done} reports the usage the fold collected"
+    (let [input (str "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}],"
+                     "\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n"
+                     "data: [DONE]\n\n")
+          !chunks (atom [])]
+      (sse/process-openai-stream (str->reader input) #(swap! !chunks conj %))
+      (is (= [{:type :content-delta :text "a"}
+              {:type :done :usage {:prompt_tokens 1 :completion_tokens 1}}]
+             @!chunks)))))

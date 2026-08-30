@@ -68,49 +68,71 @@
 ;; OpenAI-Compatible Stream Processing
 ;; ============================================================================
 
+(defn openai-init
+  "Fresh accumulator for the OpenAI fold."
+  []
+  {:content (StringBuilder.) :role nil :finish-reason nil :usage nil})
+
+(defn openai-step
+  "One SSE event folded into the accumulator; returns the step fn.
+
+   Factored out of `process-openai-stream`'s inline loop so the SAME delta
+   logic can be driven by either source of events — the blocking reader's seq
+   or the pushed-body Flow (docs/design/functional-effect-system.md §18). A
+   second copy of this logic would be a second place for the two paths to
+   disagree, which is exactly what the differential guarantee exists to
+   prevent.
+
+   `on-chunk` is the side effect: called `{:type :content-delta :text …}` per
+   delta, as the public contract in `interface.clj` promises. An unparseable
+   event is skipped, not fatal — a provider may interleave keep-alives or
+   comments, and one bad frame must not abort a stream mid-answer.
+
+   The accumulator carries a mutable `StringBuilder`, so the fold is
+   single-threaded by construction. It is reduced over a seq or a Flow, both of
+   which are sequential; do not fan it out."
+  [on-chunk]
+  (fn [acc evt]
+    (let [parsed (try
+                   (json/read-str (:data evt) :key-fn keyword)
+                   (catch Exception e
+                     (mulog/debug ::sse-parse-error :message (.getMessage e))
+                     nil))]
+      (if parsed
+        (let [delta         (get-in parsed [:choices 0 :delta])
+              delta-content (:content delta)
+              delta-role    (:role delta)
+              fr            (get-in parsed [:choices 0 :finish_reason])
+              evt-usage     (:usage parsed)]
+          (when (and delta-content on-chunk)
+            (on-chunk {:type :content-delta :text delta-content}))
+          (cond-> acc
+            delta-content (update :content #(.append ^StringBuilder % ^String delta-content))
+            delta-role    (assoc :role delta-role)
+            fr            (assoc :finish-reason fr)
+            evt-usage     (assoc :usage evt-usage)))
+        acc))))
+
+(defn openai-result
+  "Reconstruct the non-streaming response shape from a finished fold, and fire
+   the terminal `{:type :done}`."
+  [{:keys [content role finish-reason usage]} on-chunk]
+  (let [result {:choices [{:message {:role (or role "assistant")
+                                     :content (str content)}
+                           :finish_reason (or finish-reason "stop")}]}
+        result (if usage (assoc result :usage usage) result)]
+    (when on-chunk
+      (on-chunk {:type :done :usage usage}))
+    result))
+
 (defn process-openai-stream
   "Process an OpenAI-compatible SSE stream. Calls on-chunk for each content delta.
    Returns a reconstructed response identical to non-streaming format:
      {:choices [{:message {:role \"assistant\" :content \"full text\"} :finish_reason \"stop\"}]
       :usage {...}}"
   [^BufferedReader reader on-chunk]
-  (let [events (read-sse-events reader)]
-    (loop [evts events
-           content (StringBuilder.)
-           role nil
-           finish-reason nil
-           usage nil]
-      (if-let [evt (first evts)]
-        (let [parsed (try
-                       (json/read-str (:data evt) :key-fn keyword)
-                       (catch Exception e
-                         (mulog/debug ::sse-parse-error :message (.getMessage e))
-                         nil))]
-          (if parsed
-            (let [delta (get-in parsed [:choices 0 :delta])
-                  delta-content (:content delta)
-                  delta-role (:role delta)
-                  fr (get-in parsed [:choices 0 :finish_reason])
-                  evt-usage (:usage parsed)]
-              ;; Call on-chunk for content deltas
-              (when (and delta-content on-chunk)
-                (on-chunk {:type :content-delta :text delta-content}))
-              (recur (rest evts)
-                     (if delta-content (.append content delta-content) content)
-                     (or delta-role role)
-                     (or fr finish-reason)
-                     (or evt-usage usage)))
-            ;; Unparseable event, skip
-            (recur (rest evts) content role finish-reason usage)))
-        ;; Stream complete
-        (let [full-text (str content)
-              result {:choices [{:message {:role (or role "assistant")
-                                           :content full-text}
-                                 :finish_reason (or finish-reason "stop")}]}
-              result (if usage (assoc result :usage usage) result)]
-          (when on-chunk
-            (on-chunk {:type :done :usage usage}))
-          result)))))
+  (-> (reduce (openai-step on-chunk) (openai-init) (read-sse-events reader))
+      (openai-result on-chunk)))
 
 ;; ============================================================================
 ;; Anthropic Stream Processing
