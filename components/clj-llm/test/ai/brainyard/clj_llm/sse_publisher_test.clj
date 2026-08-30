@@ -244,3 +244,61 @@
       (drain (sse-pub/publisher->event-flow (eager-publisher chunks !s)))
       (is (<= (:emitted @!s) (:requested @!s))
           "never emitted more than was requested"))))
+
+;; ============================================================================
+;; Slice 4 — the Flow path must agree with the reader path, byte for byte
+;; ============================================================================
+
+(defn- task-value [task]
+  (let [p (promise)]
+    (task #(deliver p {:ok %}) #(deliver p {:err %}))
+    (let [r (deref p 10000 {:timeout true})]
+      (if (contains? r :ok) (:ok r) (throw (ex-info "task failed" r))))))
+
+(deftest openai-flow-path-agrees-with-the-reader
+  (testing "same bytes, same response, same on-chunk sequence — the whole
+            justification for extracting the fold before wiring the Flow"
+    (let [body (str "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"He\"}}]}\n\n"
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"llo\"}}],"
+                    "\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n"
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n"
+                    "data: [DONE]\n\n")
+          !reader-chunks (atom [])
+          expected (sse/process-openai-stream
+                    (BufferedReader. (StringReader. body))
+                    #(swap! !reader-chunks conj %))]
+      (doseq [[label chunks] {"whole"     [body]
+                              "by-11"     (mapv #(apply str %) (partition-all 11 body))
+                              "by-1-byte" (mapv str body)}]
+        (let [!s (new-state)
+              !flow-chunks (atom [])
+              actual (task-value (sse-pub/openai-response-task
+                                  (eager-publisher chunks !s)
+                                  #(swap! !flow-chunks conj %)))]
+          (is (= expected actual) (str "response, chunked " label))
+          (is (= @!reader-chunks @!flow-chunks) (str "on-chunk seq, chunked " label)))))))
+
+(deftest anthropic-flow-path-agrees-with-the-reader
+  (testing "including the mid-stream terminal: events after message_stop must
+            be ignored on BOTH paths"
+    (let [body (str "event: message_start\ndata: {\"message\":{\"model\":\"m\",\"usage\":{\"input_tokens\":4}}}\n\n"
+                    "event: content_block_delta\ndata: {\"delta\":{\"text\":\"hi\"}}\n\n"
+                    "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"max_tokens\"},"
+                    "\"usage\":{\"output_tokens\":2}}\n\n"
+                    "event: message_stop\ndata: {}\n\n"
+                    "event: content_block_delta\ndata: {\"delta\":{\"text\":\"IGNORED\"}}\n\n")
+          !reader-chunks (atom [])
+          expected (sse/process-anthropic-stream
+                    (BufferedReader. (StringReader. body))
+                    #(swap! !reader-chunks conj %))]
+      (is (= "hi" (get-in expected [:content 0 :text])) "sanity: reader ignored it too")
+      (doseq [[label chunks] {"whole"     [body]
+                              "by-13"     (mapv #(apply str %) (partition-all 13 body))
+                              "by-1-byte" (mapv str body)}]
+        (let [!s (new-state)
+              !flow-chunks (atom [])
+              actual (task-value (sse-pub/anthropic-response-task
+                                  (eager-publisher chunks !s)
+                                  #(swap! !flow-chunks conj %)))]
+          (is (= expected actual) (str "response, chunked " label))
+          (is (= @!reader-chunks @!flow-chunks) (str "on-chunk seq, chunked " label)))))))

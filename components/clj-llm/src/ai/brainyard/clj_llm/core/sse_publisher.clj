@@ -28,7 +28,8 @@
 
    Still wired to nothing: no provider code and no transport change. The next
    slice is `sendAsync` + `ofPublisher` behind a flag."
-  (:require [ai.brainyard.clj-llm.core.sse-flow :as sse-flow]
+  (:require [ai.brainyard.clj-llm.core.sse :as sse]
+            [ai.brainyard.clj-llm.core.sse-flow :as sse-flow]
             [ai.brainyard.effect.interface :as fx]
             [missionary.core :as m])
   (:import [java.nio ByteBuffer]
@@ -167,3 +168,38 @@
                     (.sendAsync client req
                                 (java.net.http.HttpResponse$BodyHandlers/ofPublisher))))]
      (m/?> (publisher->event-flow (.body ^java.net.http.HttpResponse resp))))))
+
+;; ============================================================================
+;; Slice 4 — the provider folds, driven by the Flow instead of the reader
+;; ============================================================================
+
+(defn openai-response-task
+  "A pushed OpenAI body as a Task of the reconstructed non-streaming response.
+
+   The SAME `openai-step` the blocking reader uses (`sse/process-openai-stream`
+   is `reduce` over `read-sse-events`; this is `m/reduce` over the event Flow).
+   No second copy of the delta logic — that was the entire point of extracting
+   the fold first, and it is what makes the two paths comparable rather than
+   merely similar.
+
+   `m/reduce` honours a `reduced` step identically to `clojure.core/reduce`,
+   measured across every flow shape, so the terminal behaves the same on both
+   paths. `on-chunk` fires exactly as it does today, per the public contract."
+  [flow-publisher on-chunk]
+  (m/sp
+   (-> (m/? (m/reduce (sse/openai-step on-chunk) (sse/openai-init)
+                      (publisher->event-flow flow-publisher)))
+       (sse/openai-result on-chunk))))
+
+(defn anthropic-response-task
+  "A pushed Anthropic body as a Task of the reconstructed response.
+
+   As `openai-response-task`, and the terminal matters more here:
+   `message_stop` arrives MID-STREAM, so `anthropic-step` returns `reduced` and
+   the reduction must actually stop — over a Flow, a terminal that only goes
+   quiet never completes."
+  [flow-publisher on-chunk]
+  (m/sp
+   (-> (m/? (m/reduce (sse/anthropic-step on-chunk) (sse/anthropic-init)
+                      (publisher->event-flow flow-publisher)))
+       (sse/anthropic-result on-chunk))))
