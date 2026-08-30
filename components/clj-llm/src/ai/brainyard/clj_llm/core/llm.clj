@@ -8,6 +8,7 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [ai.brainyard.clj-llm.core.sse :as sse]
+            [ai.brainyard.clj-llm.core.sse-publisher :as sse-pub]
             [ai.brainyard.clj-llm.core.usage :as usage]
             [ai.brainyard.clj-llm.core.providers :as providers]
             [ai.brainyard.clj-llm.core.schema :as schema]
@@ -810,6 +811,52 @@
 ;; Streaming API
 ;; ============================================================================
 
+(defn- run-stream-task!!
+  "Block on a streaming Task and restore THIS namespace's contract: the bare
+   response, or a THROWN exception.
+
+   `fx/run!!` deliberately never throws — it returns `{:ok v}` / `{:err e}`,
+   because brainyard's effect convention is that a failure is data and the
+   caller decides. The streaming functions cannot adopt that convention: their
+   callers catch `ExceptionInfo` and classify it (`retry-with-backoff` reads
+   `retry-after` out of `ex-data`), so a failure that arrived as a map would
+   silently stop being retried and a success would arrive wrapped.
+
+   Found by the step-3c differential on its FIRST run: the flow path returned
+   `{:ok {:choices …}}` where the reader path returned `{:choices …}`. Every
+   isolated test missed it, because they drove `m/reduce` directly rather than
+   through `run!!` — the wrapper only exists at this edge."
+  [task]
+  (let [r (fx/run!! task)]
+    (cond
+      (contains? r :ok)  (:ok r)
+      (contains? r :err) (throw (:err r))
+      :else              (throw (ex-info "streaming task did not settle"
+                                         {:result r})))))
+
+(defn stream-via-flow?
+  "Is the PUSHED-BODY streaming path enabled? `BY_STREAM_FLOW=true`, default off.
+
+   §18 step 3c. The reader path (`:as :reader` + `process-*-stream`) stays the
+   default and stays fully supported; this gate selects the pushed-body path
+   (`:as :publisher` + a Flow reduced by the SAME fold) so the two can be
+   compared on a live provider before either becomes the default.
+
+   A function rather than a `defonce`, so a test can redef it — and so the
+   value is never baked into the native image, which is what `defonce` would
+   do (see the GraalVM notes in CLAUDE.md).
+
+   KNOWN GAP while this is off-by-default, and the reason it stays off: the
+   flow path does NOT register `:active-http`, because there is no reader to
+   close. Structural cancellation is the whole point of the Flow, but it
+   requires the CALLER to hold the Task rather than block on it, and
+   `chat-completion` is synchronous today. So on this path, `cancel-run`'s
+   `.close` mechanism has nothing to close. Retiring `:active-http` (step 4)
+   therefore cannot happen by flipping this default — it needs the callers to
+   take the Task, which is a separate change."
+  []
+  (= "true" (System/getenv "BY_STREAM_FLOW")))
+
 (defn- openai-chat-completion-stream
   "Call an OpenAI-compatible chat completion API with streaming.
    Calls on-chunk for each content delta when on-chunk is non-nil; a nil
@@ -819,6 +866,7 @@
   (let [url      (str (:base-url lm-config) "/chat/completions")
         headers  (build-openai-headers lm-config)
         body     (build-openai-body lm-config messages (assoc opts :stream? true))
+        flow?    (stream-via-flow?)
         start-ns (System/nanoTime)]
     (mulog/log ::openai-api-call
                :provider (:provider lm-config) :model (:model lm-config) :url url
@@ -827,12 +875,15 @@
     (let [response (http/post url
                               (merge {:headers            headers
                                       :body               (json/write-str body)
-                                      :as                 :reader
+                                      :as                 (if flow? :publisher :reader)
                                       :throw-exceptions   true}
                                      (proxy-opts)))
-          result (with-open [^BufferedReader rdr (:body response)]
-                   (with-active-stream* rdr
-                     (fn [] (sse/process-openai-stream rdr on-chunk))))]
+          result (if flow?
+                   ;; Same fold, driven by the pushed body instead of a reader.
+                   (run-stream-task!! (sse-pub/openai-response-task (:body response) on-chunk))
+                   (with-open [^BufferedReader rdr (:body response)]
+                     (with-active-stream* rdr
+                       (fn [] (sse/process-openai-stream rdr on-chunk)))))]
       (mulog/log ::openai-api-call-result
                  :provider (:provider lm-config) :model (:model lm-config) :url url
                  :stream true
@@ -849,6 +900,7 @@
   (let [url      (str (:base-url lm-config) "/messages")
         headers  (build-anthropic-headers lm-config)
         body     (build-anthropic-body lm-config messages (assoc opts :stream? true))
+        flow?    (stream-via-flow?)
         start-ns (System/nanoTime)]
     (mulog/log ::anthropic-api-call
                :provider :anthropic :model (:model lm-config) :url url
@@ -857,12 +909,14 @@
     (let [response (http/post url
                               (merge {:headers            headers
                                       :body               (json/write-str body)
-                                      :as                 :reader
+                                      :as                 (if flow? :publisher :reader)
                                       :throw-exceptions   true}
                                      (proxy-opts)))
-          result (with-open [^BufferedReader rdr (:body response)]
-                   (with-active-stream* rdr
-                     (fn [] (sse/process-anthropic-stream rdr on-chunk))))]
+          result (if flow?
+                   (run-stream-task!! (sse-pub/anthropic-response-task (:body response) on-chunk))
+                   (with-open [^BufferedReader rdr (:body response)]
+                     (with-active-stream* rdr
+                       (fn [] (sse/process-anthropic-stream rdr on-chunk)))))]
       (mulog/log ::anthropic-api-call-result
                  :provider :anthropic :model (:model lm-config) :url url
                  :stream true
