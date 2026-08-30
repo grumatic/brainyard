@@ -2170,6 +2170,57 @@ So the shape of the work is:
 3. **Gate it**, default off, and diff the two paths against one provider.
 4. **Then** `:active-http` can go, since nothing is blocked in `read`.
 
+### Step 1 done, and step 2's one prerequisite measured
+
+Both providers are folds now (`openai-*`, `anthropic-*`). The Anthropic terminal
+was the interesting half: `message_stop` arrives **mid-stream**, and the
+original `loop` returned from inside it, so the step returns `reduced`. Over a
+Flow that is not a nicety — a step that merely went quiet would keep consuming
+and never complete, which is the failure this section has now seen three times.
+
+So before writing the Flow path, the question worth measuring was whether
+`m/reduce` honours a `reduced` step at all:
+
+```
+clojure reduce (reference)             [:a]      saw=[:a :STOP]
+m/reduce over m/seed                   [:a]      saw=[:a :STOP]
+m/reduce over m/ap+amb                 [:a]      saw=[:a :STOP]
+m/reduce over eduction (our shape)     [:a]      saw=[:a :STOP]
+terminal LAST (openai shape)           [:a :b]   saw=[:a :b :STOP]
+```
+
+It does, identically to `clojure.core/reduce`, in every shape — and the item
+after the terminal is never passed to the step. Both provider terminals are
+therefore expressible over a Flow, and step 2 is:
+
+```clojure
+(m/sp (-> (m/? (m/reduce (openai-step on-chunk) (openai-init) event-flow))
+          (openai-result on-chunk)))
+```
+
+No new parsing and no second copy of the delta logic — which is the whole
+reason step 1 was done first.
+
+### The coverage lesson, since it now has two data points
+
+Both refactors were "protected by the existing suite", and both were not:
+
+| | controls run | silently uncovered |
+|---|---|---|
+| OpenAI | 3 | `finish_reason` |
+| Anthropic | 5 | `stop_reason`, **`message_stop` terminating at all** |
+
+Six call sites exercised `process-openai-stream`; none would have failed if the
+fold stopped accumulating `finish_reason`. Nothing whatsoever checked that
+Anthropic's terminal terminates. In both cases the streams in the suite used
+values that happen to equal the defaults, so a dropped field changed nothing
+observable.
+
+**A negative control was the only thing that distinguished a protected refactor
+from an unprotected one.** Test count, call-site count and a green suite all
+said "covered" and all three were wrong. Run the control per FIELD, not per
+function.
+
 Sequencing note: step 1 is a behaviour-preserving refactor of live streaming
 code and deserves its own commit with the suite green before step 2 touches
 anything. Splitting it that way also keeps the differential test honest —
