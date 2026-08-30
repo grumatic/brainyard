@@ -2548,3 +2548,89 @@ cancelling a turn interrupts a thread rather than waiting for a timeout.
 Regression tests in `effect_test.clj` (cancels on interrupt; still cancels on
 timeout; does NOT cancel a task that settled), with a negative control:
 removing the `:interrupted` guard fails the suite.
+
+---
+
+# STILL OPEN
+
+Consolidated as of the pushed state (`27a7574`). Each item says what blocks it
+and what would unblock it, because "deferred" and "blocked" are different and
+this document has conflated them before.
+
+## 1. Retire `:active-http` (step 4) — BLOCKED, not deferred
+
+`cancel-run` mechanism 2 (`.close` on `:active-http`) is the only thing that can
+break a thread blocked in `BufferedReader.readLine`, and **`BY_STREAM_FLOW=false`
+still selects exactly that reader**. Defaulting the flow path on did not remove
+the need for it; it removed the need for it *on the default path*.
+
+Unblocking needs a decision, not more code: either **retire the reader fallback**
+(and with it the only escape hatch if the pushed-body path misbehaves against a
+provider we have not tested), or **accept `:active-http` permanently** as the
+fallback's cancellation mechanism and stop calling its removal a goal. The
+second is cheap and honest; the first should not happen until item 2 is done.
+
+## 2. The Anthropic path has no socket-level live differential
+
+Everything asserting reader/flow equivalence for Anthropic runs against a local
+`HttpServer` in unit tests. The binary-level checks — the 7-byte adversarial
+splitter and the live TUI runs — are all **OpenAI-format**, because the
+recorder trick rides `FREELLM_BASE_URL` and `free-llm` is OpenAI-shaped.
+
+Unblocking: a provider entry with `:message-format :anthropic` whose base URL
+can be pointed at a recorder. Not hard, just not done.
+
+## 3. `cancel-run` mechanisms 1 and 3 — BLOCKED on the sync BT engine
+
+Deleting the cooperative `:cancelled?` flag and the thread interrupt requires
+the synchronous BT engine to go, since they are what cancels a turn on that
+path. `:enable-effect-bt` defaults on, but the sync engine remains supported.
+
+Note mechanism 3 got *more* load-bearing, not less: on the flow path the thread
+interrupt is now what reaches the HTTP exchange (via `run!!` cancelling). It
+cannot be deleted on the grounds that the effect canceller supersedes it.
+
+## 4. Pause is still a `dfv` bolted beside a flag — UNDECIDED
+
+`pause-run`/`resume-run` set `[:runtime :paused?]` and settle a `m/dfv`, and
+`wait-if-paused` parks on a `Condition`. Verified working on the flow path
+(`:paused` held, resumed, turn completed). The open question is whether pause
+should be expressed as an effect at all, or whether the flag is the honest
+model for something the BT checks between nodes. No forcing function; leaving
+it is defensible.
+
+## 5. Q3: task admission is unbounded
+
+Still no bound on concurrently-admitted tasks. The earlier discussion settled
+that unbounded suits brainyard's workload; what was never done is deciding
+whether that is a *policy* worth stating in config rather than an absence.
+
+## 6. `core/http_flow.clj` (step 3a) is superseded and should go
+
+It re-implements request construction and proxy resolution that
+`clj-http-native` already does — written before I opened that component and
+found it was already `java.net.http`. Delete it, or fold its tests into
+`clj-http-native`. One finding must survive the move: **`URI.getPort` returns
+-1 for a portless proxy URL** (`https_proxy=http://proxy.corp`) and
+`InetSocketAddress` rejects it, so whatever resolves a proxy has to handle it.
+`llm.clj`'s `proxy-opts` passes that -1 straight through today.
+
+## 7. Coverage the live runs do NOT provide
+
+Worth stating so nobody reads "verified live" as broader than it is:
+
+- Ollama proves *an* OpenAI-compatible server. Not OpenAI, Groq, or the rest.
+- No many-thousand-chunk response has been exercised end to end.
+- No mid-stream server death against a *real* provider (only the raw-socket
+  truncation test).
+- The `on-chunk` sequence is asserted equal between paths in tests, and
+  observed working in the TUI, but never diffed against a real provider's
+  token-by-token stream.
+
+## 8. Doc rot found in passing, not yet fixed
+
+`agent.clj`'s comment around the effect-BT branch says `run!!` blocks the turn
+thread. It does not use `run!!` at all — it uses `fx/run` plus a promise deref
+and registers its canceller separately. The code is correct; the comment is
+not. (Second instance today of a comment being ahead of the code; the first was
+`sse_flow.clj` still describing `m/subscribe` as the design.)
