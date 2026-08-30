@@ -451,36 +451,56 @@
     (:final-value r)  (assoc :final-value (:final-value r))
     (not (:error r))  (assoc :result (:result r))))
 
-(defn- emit-captured-output!
-  "Split the captured StringWriter output into lines and fan out to on-output,
-   so `task$detail :last-n N` callers see streaming-style lines (the sandbox itself
-   only flushes at the end of an eval, so this is end-of-eval bulk fanout)."
-  [on-output captured]
-  (when (and on-output (string? captured) (pos? (count captured)))
-    (doseq [line (str/split-lines captured)]
-      (on-output line))))
+
+;; NOTE: a private `emit-captured-output!` lived here — a bulk fan-out of the
+;; WHOLE captured buffer, with no offset tracking. It had no callers, and it is
+;; deleted rather than left available because it is exactly the duplication bug
+;; `drain-incremental-output!` below now guards against: anything that emits
+;; from position 0 while the sampler is also draining will replay lines the
+;; user has already seen. Same reasoning as the dead SGR-only `strip-ansi` in
+;; the TUI formatter — dead code that looks reusable is worse than absent.
 
 (defn drain-incremental-output!
   "Drain new stdout from a live StringWriter into on-output, line by line.
    Tracks chars-already-emitted via !drained-offset atom.  Intermediate
    polls emit only complete lines (up to last \\n); the final drain
-   (flush? true) emits any trailing partial line too."
+   (flush? true) emits any trailing partial line too.
+
+   CONCURRENT-SAFE BY CLAIMING THE RANGE, and it has to be. The manager runs a
+   periodic sampler (~300ms) AND a final flush at completion, and they can
+   overlap. This was `offset @!drained-offset` … emit … `reset!` — read, emit,
+   write, non-atomically — so two drains both read offset 0 and both emitted
+   the same lines. Reproduced without any load by firing a sampler and a flush
+   simultaneously: 156 of 400 trials duplicated, e.g.
+   `[\"hello\" \"hello\" \"world\" \"world\"]`. In the wild it showed up once as
+   `[\"hello\" \"hello\" \"world\"]` in a loaded `bb test` run.
+
+   `compare-and-set!` makes the offset advance the ACT of claiming, so exactly
+   one caller owns any given region and a loser re-reads and emits only what is
+   left. Emission happens after the claim, deliberately: holding a lock across
+   `on-output` would let a slow consumer stall the sampler."
   [on-output eval-output !drained-offset flush?]
   (when on-output
     (let [^String s (.toString eval-output)
-          offset @!drained-offset
-          len (count s)]
-      (when (> len offset)
-        (let [^String new-text (subs s offset)]
-          (if flush?
-            (do (doseq [line (str/split-lines new-text)]
-                  (on-output line))
-                (reset! !drained-offset len))
-            (let [last-nl (.lastIndexOf new-text (int \newline))]
-              (when (>= last-nl 0)
-                (doseq [line (str/split-lines (subs new-text 0 (inc last-nl)))]
-                  (on-output line))
-                (reset! !drained-offset (+ offset (inc last-nl)))))))))))
+          len       (count s)
+          ;; Claim [start end) atomically; [x x) means nothing to do.
+          [start end]
+          (loop []
+            (let [offset @!drained-offset]
+              (if (>= offset len)
+                [offset offset]
+                (let [^String new-text (subs s offset)
+                      end (if flush?
+                            len
+                            (let [last-nl (.lastIndexOf new-text (int \newline))]
+                              (if (>= last-nl 0) (+ offset (inc last-nl)) offset)))]
+                  (cond
+                    (= end offset)                              [offset offset]
+                    (compare-and-set! !drained-offset offset end) [offset end]
+                    :else                                        (recur))))))]
+      (when (> end start)
+        (doseq [line (str/split-lines (subs s start end))]
+          (on-output line))))))
 
 (defn make-future-adopt
   "Build the adopt map for Future-based evals (sandbox/nREPL/tools), for

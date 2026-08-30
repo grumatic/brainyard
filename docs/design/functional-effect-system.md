@@ -2643,7 +2643,7 @@ an interrupt as `{:interrupted true}` after cancelling internally, whereas this
 path needs the `InterruptedException` to propagate so the turn ends as
 "Cancelled".
 
-## 9. `sync-completion-captures-stdout` duplicates a line under load — NOT a test bug to paper over
+## 9. Duplicate output line under load — FIXED (was a real race, not a flaky test)
 
 Seen once in a full `bb test` run:
 
@@ -2669,6 +2669,31 @@ of the terminal-boundary family this document already records three times —
 terminal, `sse-events-xf` dropping an unterminated line. Here a final flush
 re-emits instead of dropping.
 
-Unreproduced, so undiagnosed. Do not guess at it; reproduce it under load
-first — the pattern in §18 is that every hypothesis about this class of bug was
-wrong and every instrumented measurement was right.
+**Reproduced without any load, and it was a real race.** Both guesses about the
+mechanism were wrong — it was not the bulk `emit-captured-output!` (dead code,
+no callers) and not the bash executor's flush. `drain-incremental-output!` did
+`offset @!drained-offset` → emit → `reset!`, non-atomically, and the manager
+runs a periodic sampler AND a final flush that can overlap. Firing both
+simultaneously over one writer:
+
+```
+before:  156 / 400 trials duplicated   e.g. ["hello" "hello" "world" "world"]
+after:     0 / 400
+```
+
+Fixed with `compare-and-set!` so advancing the offset IS the act of claiming a
+region: exactly one caller owns any range, and a loser re-reads and emits only
+what is left. Emission happens after the claim rather than under a lock, so a
+slow consumer cannot stall the sampler.
+
+Regression tests cover the race (200 trials), the ordinary sequential
+stream-then-flush, and repeated drains over unchanged output. Negative control:
+restoring read-then-reset fails them.
+
+The dead `emit-captured-output!` was deleted in the same commit — a bulk
+fan-out from position 0 is this exact bug waiting to be reintroduced by anyone
+who reuses it.
+
+Worth noting the shape: this is the same terminal-boundary family as the other
+three in §18, mirrored again — there a final step DROPPED data, here two steps
+BOTH emitted it.
