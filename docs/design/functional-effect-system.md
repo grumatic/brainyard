@@ -2170,6 +2170,57 @@ So the shape of the work is:
 3. **Gate it**, default off, and diff the two paths against one provider.
 4. **Then** `:active-http` can go, since nothing is blocked in `read`.
 
+**CORRECTION to step 3, found on opening the call sites.** The estimate above
+was wrong, and wrong in the direction that matters. Both streaming functions
+use **clj-http**, not `java.net.http`:
+
+```clojure
+(http/post url (merge {:headers headers :body (json/write-str body)
+                       :as :reader :throw-exceptions true}
+                      (proxy-opts)))
+```
+
+The Flow bridge is built on `java.net.http`'s `HttpClient` +
+`BodyHandlers/ofPublisher`. So step 3 is not "swap the body handler behind a
+flag" — it is **introducing a second HTTP client** into the exact code path
+every streamed token in production passes through. What has to be reproduced,
+not merely called:
+
+- header construction (`build-*-headers` returns a clj-http header map)
+- `proxy-opts` → a `ProxySelector`; the two libraries configure proxies
+  completely differently, and a silently-ignored proxy is an outage for anyone
+  behind one
+- `:throw-exceptions true` → clj-http throws a specific `ex-info` shape on
+  non-2xx that callers upstream already catch and classify (see the DSPy error
+  classification note); a `java.net.http` path returns a status instead and
+  must raise the SAME shape or error handling changes silently
+- error-response BODIES, which providers return as JSON and which the current
+  path surfaces through that exception
+- `with-active-stream*`, which is what registers `:active-http` — the Flow path
+  does not need it, but the gate must leave the reader path's registration
+  exactly as it is
+
+None of that is hard; all of it is easy to get subtly wrong, and the failure
+mode is per-provider and only visible in production. It also means step 4 is
+NOT unlocked by step 3 alone: `:active-http` can only go once EVERY streaming
+caller is off the reader path, not once one is.
+
+**Revised sequencing.** Step 3 splits:
+
+  3a. an HTTP-client seam — build the `java.net.http` request from the same
+      `lm-config` the clj-http one uses, and assert the two produce equivalent
+      requests (headers, body, proxy) WITHOUT sending anything. Testable
+      offline, and it is where the subtle mistakes live.
+  3b. non-2xx parity: same exception type, same data, same body, asserted
+      against a local server returning 401/429/500.
+  3c. only then the gate, defaulting off, with a live differential against one
+      provider.
+
+The four slices so far were additive and could not break anything; 3a–3c are
+the first that can. They deserve to be sequenced and verified as carefully as
+the fold extraction was — more so, since a fake publisher cannot stand in for a
+provider's error behaviour.
+
 ### Step 1 done, and step 2's one prerequisite measured
 
 Both providers are folds now (`openai-*`, `anthropic-*`). The Anthropic terminal
