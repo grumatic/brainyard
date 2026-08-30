@@ -31,7 +31,13 @@
      - a blank line is the event boundary
      - `[DONE]` ends the stream, but any data accumulated BEFORE it on the same
        event is still emitted first
-     - EOF emits whatever is pending, unless that pending data is `[DONE]`"
+     - EOF emits whatever is pending, unless that pending data is `[DONE]`
+
+   `[DONE]` returns `reduced`, not merely a flag. Going quiet is enough when the
+   upstream ends on its own — a `StringReader`, or a fake publisher with a
+   finite chunk list. It is NOT enough over a real socket, where the reduction
+   must actively stop or it keeps pulling from a body that has finished. Slices
+   1 and 2 could not detect the difference; §18's slice 3 did, by hanging."
   (:require [clojure.string :as str]))
 
 (defn- strip-cr
@@ -63,7 +69,7 @@
            (rf acc)))
         ([acc chunk]
          (if @!done
-           acc
+           (reduced acc)
            (do
              (vswap! !buf str chunk)
              (loop [acc acc]
@@ -80,7 +86,7 @@
                          (let [d (str/join "\n" @!parts)]
                            (vreset! !parts [])
                            (if (= "[DONE]" d)
-                             (do (vreset! !done true) acc)
+                             (do (vreset! !done true) (reduced acc))
                              (let [acc' (rf acc {:event @!event :data d})]
                                (vreset! !event nil)
                                (if (reduced? acc') (do (vreset! !done true) @acc')
@@ -96,11 +102,12 @@
                            ;; [DONE] ends the stream, but data accumulated
                            ;; before it on this event is emitted first.
                            (do (vreset! !done true)
-                               (if (seq @!parts)
-                                 (let [d (str/join "\n" @!parts)]
-                                   (vreset! !parts [])
-                                   (unreduced (rf acc {:event @!event :data d})))
-                                 acc))
+                               (reduced
+                                (if (seq @!parts)
+                                  (let [d (str/join "\n" @!parts)]
+                                    (vreset! !parts [])
+                                    (unreduced (rf acc {:event @!event :data d})))
+                                  acc)))
                            (do (vswap! !parts conj payload) (recur acc))))
 
                        ;; Comment or unknown prefix — skipped, as upstream.

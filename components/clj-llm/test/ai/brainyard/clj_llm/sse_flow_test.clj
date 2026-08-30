@@ -136,3 +136,31 @@
     (let [body (apply str (for [i (range 500)] (str "data: " i "\n\n")))]
       (is (= [{:event nil :data "0"}]
              (take 1 (sse-flow/events-from-chunks [body])))))))
+
+;; ============================================================================
+;; The case slices 1 and 2 structurally could not detect
+;; ============================================================================
+
+(deftest terminates-on-done-even-when-upstream-never-ends
+  (testing "[DONE] must END the reduction, not merely stop emitting
+
+           A StringReader and a fake publisher both END on their own, so a
+           transducer that goes quiet without terminating looks correct. Over a
+           real socket the reduction keeps pulling from a finished body and the
+           flow never completes — which is exactly how §18 slice 3 hung. This
+           drives an INFINITE chunk seq: if the xf does not return `reduced`,
+           `into` never returns."
+    (let [infinite (cons "data: a\n\ndata: [DONE]\n\n" (repeat "data: more\n\n"))
+          f (future (into [] (sse-flow/sse-events-xf) infinite))
+          r (deref f 5000 ::hung)]
+      (when (= ::hung r) (future-cancel f))
+      (is (= [{:event nil :data "a"}] r)
+          "must terminate at [DONE] rather than consuming forever"))))
+
+(deftest terminates-on-done-mid-chunk-when-upstream-never-ends
+  (testing "same, with [DONE] arriving inline after accumulated data"
+    (let [infinite (cons "data: partial\ndata: [DONE]\n\n" (repeat "data: more\n\n"))
+          f (future (into [] (sse-flow/sse-events-xf) infinite))
+          r (deref f 5000 ::hung)]
+      (when (= ::hung r) (future-cancel f))
+      (is (= [{:event nil :data "partial"}] r)))))
