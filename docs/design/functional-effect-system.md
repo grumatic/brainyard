@@ -1796,3 +1796,83 @@ read what actually happens, rather than to propose a sixth theory. That is a
 mechanical measurement on the one configuration known to fail, and unlike the
 five refuted hypotheses it cannot come back empty: it either shows a callback
 sequence that explains the zero, or it shows missionary never subscribing.
+
+## FOUND: `m/subscribe` drops the last value on an eager `onComplete`
+
+The instrumentation showed the two paths producing **byte-identical** callback
+sequences and different answers:
+
+```
+Publisher.subscribe (FlowToReactiveSubscriber)
+  <- onSubscribe
+  -> request 1
+  <- onNext (1 buffer)
+  <- onComplete
+                       m/subscribe          RESULT [:ok 0]
+                       plain rs-subscriber  RESULT [:ok 1]
+```
+
+The item **is** delivered to missionary. `onNext` fires. `m/reduce` still sees
+zero. And the sequence names the difference no fake reproduced: `onComplete`
+arrives **immediately after `onNext`, without waiting for further demand.**
+
+Every fake I wrote completed *lazily* — it only called `onComplete` when demand
+arrived for the item past the end, so the consumer had necessarily transferred
+the previous value first. The JDK completes **eagerly**: the body is finished,
+so it says so, and completion is not demand-gated (which is legal — reactive
+streams gates `onNext` on demand, not `onComplete`).
+
+Reproduced socket-free in 25 lines:
+
+```
+lazy complete (my fakes)   1 item     [:ok 1]
+EAGER complete (the JDK)   1 item     [:ok 0]
+lazy complete (my fakes)   3 items    [:ok 3]
+EAGER complete (the JDK)   3 items    [:ok 2]
+```
+
+**Exactly one value is lost, and it is always the last one.** A value that has
+been delivered but not yet transferred is discarded when the flow terminates.
+
+### Why this was worth five wrong hypotheses
+
+Every leg genuinely worked, which is why isolating by layer kept exonerating
+everything: the JDK is correct, `FlowAdapters` is correct, the demand shape is
+correct, the composition is correct, the transducer is correct. The fault is in
+a *timing relationship between two callbacks*, which no single-layer test can
+see and which every fake accidentally avoided by being written the obvious way.
+
+The five refutations were not wasted — they are what made the instrumentation
+narrow enough to read.
+
+### The more serious consequence, which the hang was hiding
+
+The visible symptom was slice 3 hanging. The actual defect is **silent data
+loss**: over a real body, every SSE stream drops its final event. When that
+event is `data: [DONE]` the loss is invisible and harmless, which is precisely
+why slices 1 and 2 could pass and why a casual end-to-end test would look fine.
+When a provider's last content delta arrives in the same read as the close,
+**tokens disappear from the answer** with no error anywhere.
+
+That reframes the priority. This is not "slice 3 needs finishing" — it is a
+correctness bug that would have shipped quietly had the hang not forced an
+investigation. Nothing is affected today: slice 3 is not in the tree and no
+provider uses this path.
+
+### What must be true of the fix, before choosing one
+
+- **The last value must survive a terminate-before-transfer.** Whatever bridge
+  replaces `m/subscribe` here has to buffer a delivered-but-untransferred item
+  and hand it over before signalling completion.
+- **It must be tested with an EAGERLY-completing fake.** The lazy fake in
+  `sse_publisher_test.clj` cannot detect this class of bug and passed
+  throughout. That fake should be *kept* (it is a legitimate publisher shape)
+  and an eager variant added beside it, with both driven through the same
+  assertions.
+- **A negative control is mandatory here.** Given five wrong hypotheses, a fix
+  that makes the tests pass is not by itself evidence; reverting the fix must
+  make the new eager-completion test fail.
+
+Whether `m/subscribe` is behaving to spec is a missionary question and not one
+this project needs to settle in order to proceed — the bridge can hold the
+final value itself.
