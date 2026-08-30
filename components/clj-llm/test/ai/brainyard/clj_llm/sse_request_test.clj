@@ -95,11 +95,19 @@
           (cancel)
           (is (not= :TIMEOUT (deref p 5000 :TIMEOUT)) "cancel must settle the flow")
 
-          ;; The server only learns the peer is gone on its next write, so give
-          ;; it a few write attempts.
+          ;; The server only learns the peer is gone on its NEXT WRITE, so this
+          ;; waits for write attempts, not for a fixed duration.
+          ;;
+          ;; The cap is a CEILING, not a wait: the loop exits the moment the
+          ;; server notices, so a generous budget costs a passing run nothing
+          ;; and only changes how long a genuinely broken one takes to fail.
+          ;; It was 3s and produced one intermittent failure under load — the
+          ;; server's write cadence is not something this test controls, and a
+          ;; tight budget on someone else's scheduler is a flake generator.
+          ;; A flaky test is worse than a slow one: it trains people to re-run.
           (let [gone? (loop [n 0]
                         (cond (:client-gone? @!s) true
-                              (> n 60) false
+                              (> n 200) false
                               :else (do (Thread/sleep 50) (recur (inc n)))))]
             (is gone?
                 "the server must have seen the connection drop — this is what

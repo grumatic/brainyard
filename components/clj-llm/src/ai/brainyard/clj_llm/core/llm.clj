@@ -871,6 +871,12 @@
     (mulog/log ::openai-api-call
                :provider (:provider lm-config) :model (:model lm-config) :url url
                :stream true
+               ;; WHICH streaming path served this call. Without it the gate is
+               ;; invisible from outside the process: a differential where the
+               ;; flow path silently never ran looks identical to one where it
+               ;; ran and agreed. That near-false-pass is why this field exists
+               ;; (docs/design/functional-effect-system.md §18).
+               :body-mode (if flow? :publisher :reader)
                :request-body body)
     (let [response (http/post url
                               (merge {:headers            headers
@@ -905,6 +911,7 @@
     (mulog/log ::anthropic-api-call
                :provider :anthropic :model (:model lm-config) :url url
                :stream true
+               :body-mode (if flow? :publisher :reader)
                :request-body body)
     (let [response (http/post url
                               (merge {:headers            headers
