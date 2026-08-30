@@ -2224,10 +2224,39 @@ branches have different body types, so the handler is
 component needs its native-image reflection config checked — `clj-http-native`
 is on the native path for every request the binary makes.
 
-**Not implemented here.** The design is settled but writing a generics-shaped
-`reify` into the HTTP client every request passes through, without room to test
-it, is how the careful part of this section gets undone. It is a small piece of
-work for someone with the context to verify it.
+**VERIFIED before implementing.** A `reify` of `HttpResponse$BodyHandler`
+choosing its subscriber from `(.statusCode info)`, against a local server:
+
+```
+200 -> body IS a Flow.Publisher                       (instance? check true)
+401 -> body is a realized java.lang.String, JSON intact
+```
+
+So all three uncertainties resolve favourably:
+
+- **The `reify` works from Clojure.** Generic erasure is a non-issue — the two
+  branches return different `BodySubscriber` types and nothing complains at
+  runtime. No `BodySubscribers/mapping` needed.
+- **The error body arrives ALREADY REALIZED, as a String.** That is the part
+  that matters: it hits the existing `(string? b)` branch at `client.clj:251`,
+  so the throw path needs **no change whatsoever** and the
+  `insufficient_quota`-vs-throttle bug cannot recur by construction rather than
+  by remembering to drain something.
+- **The success body is a real `Flow.Publisher`**, which is what
+  `publisher->event-flow` already consumes and what slice 3 already proved
+  against a live socket.
+
+**The one thing NOT verified, and it cannot be from a REPL:** native-image
+reflection config. `clj-http-native` is on the native path for every request the
+binary makes, and this adds a `reify` of a JDK functional interface. `bb
+build:ata` runs `check:ata` (the native-image config drift gate) and its own
+native smoke suite, so the build is the test — but it is a ~3 minute build, and
+it is the gate that has already caught one bug in this effort that unit tests
+and a live TUI session both missed.
+
+Implementation is therefore de-risked to: add `:publisher` to `body-handler`
+(returning the status-aware handler), pass `:publisher` through `coerce-body`
+unchanged, leave the throw path alone, and run `bb build:ata`.
 
 **Consequence for 3b:** mostly dissolves. Non-2xx parity is not a question when
 there is one client and one throw site. What remains is narrower and real: does
