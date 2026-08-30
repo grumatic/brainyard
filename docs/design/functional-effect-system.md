@@ -1620,4 +1620,21 @@ bug that slices 1 and 2 could not detect**: with a `StringReader` and a fake
 publisher, the upstream always ends on its own and papers over a transducer that
 never terminates by itself.
 
-Next session starts there, not at the transport.
+**Checked, and it was NOT the cause.** The transducer bug was real — `[DONE]`
+went quiet without returning `reduced`, fixed and pinned by two infinite-input
+tests — but restoring slice 3 on top of that fix leaves both completion tests
+failing exactly as before. One hypothesis eliminated, one left.
+
+The remaining suspect is now the only one: **the `m/?>` fork in
+`request-event-flow`**, where the outer `m/ap` must terminate when its inner
+flow does. The decisive evidence is that
+`server-closing-early-completes-the-flow` contains **no `[DONE]` at all** — it
+relies purely on EOF, so its termination cannot involve the transducer's
+`[DONE]` handling in any way, and it still hangs. Whatever is wrong is in the
+composition, not the framing.
+
+Next session starts at `request-event-flow`'s four lines. Try `m/?<` or
+`m/reduce` over the inner flow directly rather than forking with `m/?>`, and
+test against the fake publisher of slice 2 (no socket needed) — a fake that
+calls `onComplete` reproduces the same termination question at a fraction of the
+setup.
