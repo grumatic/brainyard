@@ -2444,3 +2444,58 @@ transport is what was under test, and the raw text was reconstructed whole.)
 
 None of these block the gate staying OFF and both paths shipping. All of them
 would need answering before the default flips.
+
+### And through the real TUI, with the path CONFIRMED rather than assumed
+
+`by ask` exercises the agent loop but not the TUI's streaming machinery. A
+full nrepl-verify run — `bb tui` in tmux, nREPL for state, prompt driven by
+`send-keys`, `:status` polled to `:idle` — against `ollama/gemma3:12b`:
+
+```
+                 BY_STREAM_FLOW=false      BY_STREAM_FLOW=true
+:body-mode        :reader  (x2)             :publisher  (x2)      <- from the log
+:st-answer        "Paris is the capital of France."  (identical)
+outcome           OK Goal achieved, idle    OK Goal achieved, idle
+tokens            14,043                    14,039
+```
+
+Three things this establishes that nothing earlier did:
+
+- **The gate provably engaged.** `:body-mode :publisher` is read out of the
+  log, not inferred from behaviour. This is the field added after the
+  near-false-pass, and its first real use is this comparison — the whole risk
+  was that a flow run which silently fell back to the reader would look
+  exactly like a flow run that worked.
+- **`on-chunk` reaches the TUI on the pushed-body path.** The flow run's
+  scrollback carries a rendered `Think:` block, which only exists because
+  content deltas flowed through `chunk-factory-handler` into
+  `:llm-streaming-text` and the live-block renderer. The streaming CALLBACK
+  contract, not just the response reconstruction, works end to end.
+- **The agent completed normally** — goal achieved, idle, no error, comparable
+  token accounting.
+
+Not claimed: one prompt, one model, one run each is not a statistical result;
+the 4-token difference is recall-context noise, not a measurement; and the
+`Think:` line appearing in one scrollback window and not the other is an
+artifact of capturing the last six non-blank lines, not a behavioural
+difference.
+
+### Harness lessons from this run, all self-inflicted
+
+Three bugs in the measurement apparatus, none in the code under test, and two
+of the three failed SILENTLY:
+
+- **`!` in nREPL code.** `:!state` and `!scrollback` get escaped to `\!` by
+  the sandbox; the fix is `load-file` with a temp `.clj`, which this repo's own
+  notes already prescribe.
+- **`2>/dev/null` on the nREPL call**, which turned that escaping error into a
+  plausible-looking empty answer. Discarding stderr converted a loud failure
+  into a quiet wrong result.
+- **`(subs s 0 200)` on a 31-char answer**, which throws rather than
+  truncating, and aborted the whole result map so the scrollback vanished too.
+
+Each one produced a confident-looking result that measured nothing. They cost
+nothing only because each was cross-checked against a second signal — the log
+line, the exception text — rather than taken at face value. Same shape as the
+`HttpServer` test that "passed" because the transport threw before its
+assertion could mean anything.
