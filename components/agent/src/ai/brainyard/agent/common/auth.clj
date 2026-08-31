@@ -37,7 +37,13 @@
   "Ordered login targets surfaced by /login. Each: {:id :method :label + method
    fields}. Keep curated (not the full clj-llm catalog) so the table stays short."
   [{:id :anthropic :method :api-key
-    :label "Anthropic (API key)" :env "ANTHROPIC_API_KEY"}
+    :label "Anthropic (API key)" :env "ANTHROPIC_API_KEY"
+    ;; A gateway bearer token authenticates just as well (clj-llm's
+    ;; :auth-token-env for :anthropic), so an environment carrying only it must
+    ;; report signed-in rather than sending the user to set a key they do not
+    ;; need. The INSTRUCTION still names :env alone — that is the credential to
+    ;; recommend to someone who has neither.
+    :env-alts ["ANTHROPIC_AUTH_TOKEN"]}
    {:id :openai :method :api-key
     :label "OpenAI (API key)" :env "OPENAI_API_KEY"}
    {:id :bedrock :method :api-key
@@ -93,10 +99,11 @@
   "Sign-in status for a target, dispatched on :method. Never throws."
   :method)
 
-(defmethod auth-status :api-key [{:keys [env probe]}]
+(defmethod auth-status :api-key [{:keys [env env-alts probe]}]
   (cond
     (= probe :aws) (if (clj-llm/aws-credentials-detected?) :signed-in :not-signed-in)
-    env            (if (str/blank? (getenv env)) :not-signed-in :signed-in)
+    env            (if (some #(not (str/blank? (getenv %))) (cons env env-alts))
+                     :signed-in :not-signed-in)
     :else          :unknown))
 
 (defmethod auth-status :oauth [{:keys [account-id]}]

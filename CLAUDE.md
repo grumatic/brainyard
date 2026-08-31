@@ -44,6 +44,37 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   git-root walk, unless **`BY_PROJECT_DIR`** explicitly overrides the project root.
   The `--web`/`--sandbox` launchers forward `-C` into the re-exec'd child.
 - **`AWS_PROFILE`** — Bedrock credential profile (`AWS_DEFAULT_PROFILE` is **not** honored).
+- **`ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`** — the gateway path for the
+  `:anthropic` provider. The token is a bearer credential sent as
+  `Authorization: Bearer` rather than `x-api-key` (the same variable the Claude
+  Code CLI uses), consulted only when `ANTHROPIC_API_KEY` resolves nothing — so
+  this can add an auth path, never change an environment that already worked.
+  Registry-driven (`:auth-token-env` / `:base-url-env` in
+  `clj-llm/core/providers.clj`), and only `:anthropic` declares them today.
+  Two things worth knowing:
+  - **Exactly one auth header is ever sent.** Gateways disagree about which of
+    `x-api-key` and `Authorization` wins, so a request carrying both
+    authenticates as whichever credential that hop happens to prefer — a
+    security question, not a compatibility one. `:auth-type` (`:oauth` |
+    `:bearer` | absent) picks the shape in `build-anthropic-headers`. The
+    `:oauth` path stays separate because a subscription token is resolved
+    per-call from the OAuth store (it expires mid-session); a gateway token is
+    static and rides `:api-key`, which is what lets `lm-initialized?`, the
+    missing-credential warning and status masking stay ignorant of it.
+  - **A `:base-url-env` now outranks the static default**, and an origin-only
+    override inherits the default's path — `https://gw.example.com` becomes
+    `.../v1`, because every call site appends only `/messages` and the bare
+    origin would 404 in a way that reads as a broken gateway. An override that
+    already carries a path is honored verbatim (a gateway mounted under a
+    prefix is exactly the case an override exists for). Nothing pre-existing
+    moved: `:free-llm` was the only other `:base-url-env` and its static
+    default is nil.
+
+  The credential tables that gate a run had to learn this too, or the pre-flight
+  aborts a token-only setup before `create-lm` ever sees it: `helpers/provider-key-env`
+  (values are now vectors, primary first), `env-detect`'s `provider-env-vars`,
+  and `auth-targets`' `:env-alts`. All three report the **primary** name when
+  nothing is set — that is the credential to recommend to someone who has neither.
 - **`BY_JAR=1`** — run the uberjar instead of the native binary (reflection-config debugging).
 - **`BY_ENV_FILE`** / **`BY_NO_DOTENV=1`** — force a specific `.env`, or skip `.env` discovery.
 - **`BY_MEMORY_SELF`** — override for how the interactive TUI re-execs itself to

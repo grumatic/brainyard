@@ -7,20 +7,24 @@
   (:require [clojure.string :as str])
   (:import [java.net HttpURLConnection URL]))
 
-;; Hardcoded provider → env-var map (mirrors clj-llm providers registry).
-;; Avoids compile-time dependency on clj-llm.
+;; Hardcoded provider → accepted env vars (mirrors clj-llm providers registry).
+;; Avoids compile-time dependency on clj-llm. Vectors, primary first: a provider
+;; may accept more than one credential shape — :anthropic takes its native API
+;; key or a gateway bearer token (ANTHROPIC_AUTH_TOKEN, matching clj-llm's
+;; :auth-token-env). Detection reports whichever one is actually set, so a
+;; token-only environment reads as configured instead of as missing a key.
 (def ^:private provider-env-vars
-  {:openai     "OPENAI_API_KEY"
-   :anthropic  "ANTHROPIC_API_KEY"
-   :google     "GOOGLE_API_KEY"
-   :azure      "AZURE_OPENAI_API_KEY"
-   :groq       "GROQ_API_KEY"
-   :together   "TOGETHER_API_KEY"
-   :fireworks  "FIREWORKS_API_KEY"
-   :openrouter "OPENROUTER_API_KEY"
-   :mistral    "MISTRAL_API_KEY"
-   :deepseek   "DEEPSEEK_API_KEY"
-   :free-llm   "FREELLM_API_KEY"})
+  {:openai     ["OPENAI_API_KEY"]
+   :anthropic  ["ANTHROPIC_API_KEY" "ANTHROPIC_AUTH_TOKEN"]
+   :google     ["GOOGLE_API_KEY"]
+   :azure      ["AZURE_OPENAI_API_KEY"]
+   :groq       ["GROQ_API_KEY"]
+   :together   ["TOGETHER_API_KEY"]
+   :fireworks  ["FIREWORKS_API_KEY"]
+   :openrouter ["OPENROUTER_API_KEY"]
+   :mistral    ["MISTRAL_API_KEY"]
+   :deepseek   ["DEEPSEEK_API_KEY"]
+   :free-llm   ["FREELLM_API_KEY"]})
 
 (def provider-priority
   "Preference order when multiple API-key providers are reachable.
@@ -46,13 +50,20 @@
 
 (defn detect-api-key-providers
   "Check env vars for all API-key-based providers.
-   Returns vec of {:provider kw :available? bool :env-var str :masked-key str-or-nil :method :api-key}"
+   Returns vec of {:provider kw :available? bool :env-var str :masked-key str-or-nil :method :api-key}
+
+   `:env-var` names the var that actually supplied the credential, so status
+   output tells the user which one is in play; when none is set it falls back to
+   the primary, which is the one the setup guidance should name."
   []
-  (mapv (fn [[provider env-var]]
-          (let [key-val (env-or-prop env-var)]
+  (mapv (fn [[provider env-vars]]
+          (let [found   (some (fn [v] (let [val (env-or-prop v)]
+                                        (when-not (str/blank? val) [v val])))
+                              env-vars)
+                key-val (second found)]
             {:provider   provider
-             :available? (and (some? key-val) (not (str/blank? key-val)))
-             :env-var    env-var
+             :available? (some? key-val)
+             :env-var    (or (first found) (first env-vars))
              :masked-key (mask-key key-val)
              :method     :api-key}))
         (sort-by key provider-env-vars)))

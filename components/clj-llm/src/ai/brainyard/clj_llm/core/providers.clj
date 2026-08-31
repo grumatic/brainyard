@@ -20,7 +20,14 @@
                  :supports-json-schema? true
                  :message-format       :openai}
    :anthropic   {:base-url             "https://api.anthropic.com/v1"
+                 :base-url-env         "ANTHROPIC_BASE_URL"
                  :api-key-env          "ANTHROPIC_API_KEY"
+                 ;; Bearer-token alternative to the API key, for gateways and
+                 ;; proxies that speak the Messages API but authenticate with
+                 ;; `Authorization: Bearer` instead of `x-api-key`. Same variable
+                 ;; the Claude Code CLI uses, so an env already set up for that
+                 ;; works here. Checked only when :api-key-env resolves nothing.
+                 :auth-token-env       "ANTHROPIC_AUTH_TOKEN"
                  :auth-header          "x-api-key"
                  :supports-json-schema? false
                  :message-format       :anthropic
@@ -699,14 +706,59 @@
       prov            (name prov)
       :else           "?")))
 
+(defn- env-or-prop
+  "Read `env-var` from the process environment, falling back to the JVM system
+   property of the same name. The property fallback is what lets the dotenv
+   loader surface a value without mutating the (immutable) JVM env map — see
+   projects/agent-tui-app/.../dotenv.clj. Blank is treated as unset: an exported
+   -but-empty `ANTHROPIC_API_KEY=` is a common shell accident, and letting it
+   resolve would mask the token that should have been used next in the chain."
+  [env-var]
+  (when env-var
+    (let [v (or (System/getenv env-var) (System/getProperty env-var))]
+      (when-not (str/blank? v) v))))
+
+(defn- merge-base-url-path
+  "Resolve a `:base-url-env` override against the provider's static base URL.
+
+   A gateway is conventionally configured as a bare origin
+   (`ANTHROPIC_BASE_URL=https://gw.example.com`), while the registry's static
+   base URL carries the API's version path (`https://api.anthropic.com/v1`) and
+   every call site appends only the endpoint (`\"/messages\"`). Taken literally,
+   an origin-only override would POST to `https://gw.example.com/messages` and
+   404 — a failure that reads as \"the gateway is broken\" rather than \"the URL
+   lost its /v1\". So when the override supplies no path of its own, it inherits
+   the static URL's path.
+
+   An override that DOES carry a path (`https://gw.example.com/anthropic/v1`) is
+   honored verbatim — a gateway mounted under a prefix is exactly the case an
+   override exists for, and second-guessing it would make that unreachable.
+   Derived entirely from the two URLs, so no provider needs a key describing
+   what its base URL already says; a provider whose static base URL is nil or
+   path-less (`:free-llm`) is unaffected."
+  [override static-url]
+  (let [trimmed (str/replace (str/trim override) #"/+$" "")
+        path-of (fn [u] (try (some-> u (java.net.URI.) (.getPath))
+                             (catch Exception _ nil)))]
+    (if (str/blank? (path-of trimmed))
+      (let [static-path (path-of static-url)]
+        (str trimmed (when-not (str/blank? static-path) static-path)))
+      trimmed)))
+
 (defn create-lm
   "Create an LM configuration map.
    Options:
      :model        - Model name string (required)
-     :api-key      - API key (optional, falls back to env var)
+     :api-key      - API key (optional, falls back to the provider's
+                     :api-key-env, then its :auth-token-env — a bearer
+                     credential for gateways, e.g. ANTHROPIC_AUTH_TOKEN, which
+                     sets :auth-type :bearer)
      :temperature  - Sampling temperature (default 0.0)
      :max-tokens   - Max output tokens (optional)
-     :base-url     - Override provider base URL (optional)
+     :base-url     - Override provider base URL (optional). Falls back to the
+                     provider's :base-url-env (ANTHROPIC_BASE_URL,
+                     FREELLM_BASE_URL) before the static default; an
+                     origin-only override inherits the default's version path.
      :provider     - Override auto-detected provider (optional)
                      Use :anthropic-max for Max/Pro plan subscription auth (no API key)
      :prompt-cache - Enable prompt caching (default: provider-specific, true for Anthropic)
@@ -783,14 +835,18 @@
         ;; For OAuth providers (anthropic-max), api-key is resolved dynamically at call time
         oauth?            (= :oauth (:auth-type provider-config))
         bedrock?          (= :bedrock detected-provider)
-        resolved-api-key  (when-not (or oauth? bedrock?)
+        keyed?            (not (or oauth? bedrock?))
+        resolved-api-key  (when keyed?
                             (or api-key
-                                (when-let [env-var (:api-key-env provider-config)]
-                                  ;; getProperty fallback lets a dotenv loader
-                                  ;; surface keys without mutating JVM env
-                                  ;; (see projects/agent-tui-app/dotenv.clj).
-                                  (or (System/getenv env-var)
-                                      (System/getProperty env-var)))))
+                                (env-or-prop (:api-key-env provider-config))))
+        ;; Bearer-token fallback (`:auth-token-env`, e.g. ANTHROPIC_AUTH_TOKEN):
+        ;; a gateway credential sent as `Authorization: Bearer` rather than the
+        ;; provider's native key header. Only consulted when the API key
+        ;; resolved to nothing, so an environment that already had both set
+        ;; keeps working exactly as it did — this can add an auth path, never
+        ;; change one. An explicit `:api-key` arg outranks both, as before.
+        bearer-token      (when (and keyed? (nil? resolved-api-key))
+                            (env-or-prop (:auth-token-env provider-config)))
         ;; prompt-cache: explicit setting > Bedrock model-aware default > provider default > false.
         ;; Bedrock defaults on for Anthropic and Nova models (the ones that
         ;; accept cachePoint) and off for every other foundation model.
@@ -820,14 +876,16 @@
                             (or aws-profile
                                 (System/getenv "AWS_PROFILE")
                                 (System/getenv "AWS_DEFAULT_PROFILE")))
-        ;; base-url: explicit arg → static provider default → env var (e.g.
-        ;; FREELLM_BASE_URL). getProperty fallback lets a dotenv loader surface
-        ;; the value without mutating the immutable JVM env map.
+        ;; base-url: explicit arg → env var (e.g. ANTHROPIC_BASE_URL,
+        ;; FREELLM_BASE_URL) → static provider default. The env var precedes the
+        ;; static default because a base-URL override that cannot override is
+        ;; decorative — pointing a provider at a gateway is the entire point of
+        ;; having one. Nothing existing changes: `:free-llm` was the only
+        ;; provider with a `:base-url-env`, and its static default is nil.
         resolved-base-url (or base-url
-                              (:base-url provider-config)
-                              (when-let [env-var (:base-url-env provider-config)]
-                                (or (System/getenv env-var)
-                                    (System/getProperty env-var))))
+                              (when-let [override (env-or-prop (:base-url-env provider-config))]
+                                (merge-base-url-path override (:base-url provider-config)))
+                              (:base-url provider-config))
         acp?              (= :acp detected-provider)
         ;; ACP client fs capability (headless path): explicit arg →
         ;; BY_ACP_CLIENT_FS env → default true. Mirrors the agent component's
@@ -840,13 +898,18 @@
                                 (= "true" v) true)))]
     (cond-> {:model       resolved-model
              :provider    detected-provider
-             :api-key     resolved-api-key
+             ;; A bearer token rides :api-key so every downstream reader — the
+             ;; missing-credential warning, lm-initialized?, the masking in
+             ;; status output — keeps working without learning a second field.
+             ;; :auth-type is what tells the header builder how to send it.
+             :api-key     (or resolved-api-key bearer-token)
              :temperature (or temperature 0.0)
              :base-url    resolved-base-url
              :auth-header (:auth-header provider-config)
              :message-format (:message-format provider-config)
              :supports-json-schema? (:supports-json-schema? provider-config)}
       oauth?          (assoc :auth-type :oauth)
+      bearer-token    (assoc :auth-type :bearer)
       max-tokens      (assoc :max-tokens max-tokens)
       resolved-cache  (assoc :prompt-cache true)
       cache-ttl       (assoc :cache-ttl cache-ttl)

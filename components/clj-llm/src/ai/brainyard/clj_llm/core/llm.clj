@@ -751,8 +751,26 @@
       (assoc :stream true))))
 
 (defn- build-anthropic-headers
-  "Build HTTP headers for Anthropic API calls.
-   Supports both API key auth (x-api-key) and OAuth bearer token (Authorization).
+  "Build HTTP headers for Anthropic API calls. Three auth shapes, keyed off
+   `:auth-type`:
+
+     :oauth   — Max/Pro subscription. The bearer token is resolved DYNAMICALLY
+                per call from the OAuth store, because it expires and refreshes
+                mid-session; baking it into the lm-config would pin a token that
+                goes stale.
+     :bearer  — a static gateway credential (`:auth-token-env`, e.g.
+                ANTHROPIC_AUTH_TOKEN) sent as `Authorization: Bearer`.
+     otherwise — the native API key, sent as `x-api-key`.
+
+   The two bearer paths deliberately do NOT collapse into one: they differ in
+   where the token comes from and in whether a missing one is an error here.
+
+   Exactly one auth header is ever emitted. Sending both `x-api-key` and
+   `Authorization` is not additive — Anthropic-compatible gateways differ on
+   which they honor, so a request carrying both authenticates as whichever
+   credential that particular hop happens to prefer, which is the wrong one
+   often enough to be a security question rather than a compatibility one.
+
    A :cache-ttl of \"1h\" in lm-config adds the extended-cache-ttl beta
    header required for 1-hour cache_control blocks."
   [lm-config]
@@ -760,7 +778,8 @@
                               "anthropic-version"  "2023-06-01"}
                        (= "1h" (:cache-ttl lm-config))
                        (assoc "anthropic-beta" "extended-cache-ttl-2025-04-11"))]
-    (if (= :oauth (:auth-type lm-config))
+    (case (:auth-type lm-config)
+      :oauth
       ;; OAuth: resolve bearer token dynamically
       (let [oauth-ns (try (require 'ai.brainyard.clj-llm.core.oauth) true
                           (catch Exception _ false))
@@ -770,6 +789,10 @@
         (when-not token
           (throw (ex-info "OAuth authentication required. Run (oauth/authenticate!) first." {})))
         (assoc base-headers "Authorization" (str "Bearer " token)))
+
+      :bearer
+      (assoc base-headers "Authorization" (str "Bearer " (:api-key lm-config)))
+
       ;; Standard API key auth
       (assoc base-headers "x-api-key" (:api-key lm-config)))))
 
