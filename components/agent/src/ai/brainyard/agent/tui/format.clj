@@ -264,17 +264,52 @@
                   end (if (= nxt java.text.BreakIterator/DONE) len nxt)]
               (recur end (+ w (min 2 (width-by-codepoint (subs s i end))))))))))))
 
+(defonce ^:private ^java.util.concurrent.ConcurrentHashMap width-cache
+  ;; Measuring a string is pure in (string, clustering-mode) and the SAME
+  ;; strings are measured over and over: every re-wrap of the scrollback walks
+  ;; each line again, and a tab switch re-wraps the whole tab. The walk itself
+  ;; is the cost — BreakIterator segmentation per cluster — so the only way to
+  ;; make it cheap is not to repeat it.
+  (java.util.concurrent.ConcurrentHashMap.))
+
+(def ^:private width-cache-max
+  "Entries kept before the cache is dropped wholesale.
+
+   Dropped, not evicted: the cache is a pure-function memo, so throwing all of
+   it away is always CORRECT and costs only the next re-measure — whereas an
+   LRU would need per-entry bookkeeping on the hot path we are trying to make
+   cheap. The bound exists to cap memory, not to maximise hit rate."
+  50000)
+
+(defn- measure-width ^long [^String s]
+  (if (caps/grapheme-clustering?)
+    (width-by-cluster s)
+    (width-by-codepoint s)))
+
 (defn display-width
   "Terminal display width of `s` in columns, ANSI escapes excluded.
 
    WHICH width regime applies is the terminal's to decide, not ours — see
    `agent.tui.terminal-caps`.  Unnegotiated (the default) this is the
    per-codepoint model, byte-identical to the behavior that predates
-   mode-2027 support."
+   mode-2027 support.
+
+   Memoized on (mode, string). The mode is part of the key rather than a reason
+   to invalidate: clustering can be negotiated mid-session, and both answers
+   stay valid for their own regime, so the two simply live side by side.
+   Strings shorter than two chars are measured directly — they cannot be a
+   cluster, and a one-char key would cost more to store than to compute."
   [^String s]
-  (if (caps/grapheme-clustering?)
-    (width-by-cluster s)
-    (width-by-codepoint s)))
+  (if (and s (>= (.length s) 2))
+    (let [k (str (if (caps/grapheme-clustering?) \c \p) s)]
+      (if-let [hit (.get width-cache k)]
+        (long hit)
+        (let [w (long (measure-width s))]
+          (when (> (.size width-cache) (long width-cache-max))
+            (.clear width-cache))
+          (.put width-cache k w)
+          w)))
+    (measure-width s)))
 
 (defn next-unit
   "The display unit starting at char index `i` in `s`, as `[width end-index]`.

@@ -206,12 +206,17 @@
             ;; non-reflowable — correct, but the tab quietly stops reflowing.
             ;; These are closures; `!sessions` is in-memory only (it already
             ;; holds the Agent record), so nothing here is ever serialised.
-            current-src (deref layout/!scrollback-src)]
+            current-src (deref layout/!scrollback-src)
+            ;; The width these rows were formatted at, recorded with them. It
+            ;; is what lets the load side tell "this tab missed a resize" from
+            ;; "nothing changed" — see `load-session-into-layout!`.
+            current-cols (:cols @layout/!layout)]
         (swap! !sessions update-in [:sessions current-idx] merge
                {:scrollback      current-scrollback
                 :viewport-offset current-viewport
                 :live-blocks     current-live-blocks
-                :scrollback-src  current-src})))))
+                :scrollback-src  current-src
+                :cols            current-cols})))))
 
 (declare snapshot-src)
 
@@ -244,7 +249,15 @@
   ;; active tab — so without this they are painted at whatever width they were
   ;; formatted for and clipped. Runs after the offset is restored: the reflow
   ;; anchors on it.
-  (layout/reflow-to-current-width!)
+  ;;
+  ;; Only when the width actually changed. Reflowing rows that are ALREADY at
+  ;; the current width re-renders every entry to re-derive the rows we just
+  ;; restored — seconds of grapheme measurement on a large output tab, for a
+  ;; result identical to its input. A snapshot with no `:cols` makes no claim
+  ;; about its width (an older session, or rows buffered before the first
+  ;; save), so it still reflows, as before.
+  (when-not (= (:cols session) (:cols @layout/!layout))
+    (layout/reflow-to-current-width!))
   ;; Clear unread flag
   (swap! !sessions assoc-in [:sessions (:id session) :has-unread?] false)
   ;; Redraw terminal
