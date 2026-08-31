@@ -202,6 +202,34 @@
     (.setDaemon true)
     (.start)))
 
+(def ^:private env-ref-pattern
+  "`${VAR}`, with the NAME captured so only it is ever looked up."
+  #"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+(defn- expand-env-refs
+  "Expand `${VAR}` in `s` from the environment, then from JVM system properties.
+
+   Both, in that order, because that is what every other setting in this
+   codebase resolves through — and the property half is load-bearing rather than
+   symmetry. dotenv.clj bridges `.env` keys into PROPERTIES, not into the
+   environment, so a spawned process — which inherits the environment and never
+   the properties — could not otherwise see a secret placed in `.env`. The MCP
+   catalog has been instructing people to put secrets exactly there, and to
+   reference them exactly like this, for as long as it has existed; nothing was
+   expanding them, so the reference arrived at the server as its own text.
+
+   An unresolved reference is left AS ITS OWN TEXT rather than blanked. Both are
+   broken, but `${POSTGRES_CONNECTION_STRING}` in a connection error names the
+   thing that was missing, where an empty string produces a failure that reads
+   as a malformed URL and says nothing about why."
+  [s]
+  (str/replace (str s) env-ref-pattern
+               (fn [[whole var-name]]
+                 (or (System/getenv var-name)
+                     (System/getProperty var-name)
+                     (do (mulog/warn ::unresolved-env-ref :var var-name)
+                         whole)))))
+
 (defrecord StdioMCPClient [process stdin stdout stderr server-info capabilities pending-requests]
   MCPClient
 
@@ -213,17 +241,36 @@
           ;; generous — OAuth bridges (mcp-remote) need time for the browser
           ;; flow. Overridable per server via :connect-timeout-ms.
           connect-timeout-ms (or (:connect-timeout-ms config) 120000)
-          process-builder (ProcessBuilder. ^"[Ljava.lang.String;" (into-array String (cons command args)))
+          ;; `${VAR}` is expanded HERE, at spawn, across BOTH argv and :env.
+          ;; Covering only one would leave half the catalog unable to receive a
+          ;; secret: the github server reads an environment variable, while
+          ;; server-postgres refuses anything but a positional argument
+          ;; ("Please provide a database URL as a command-line argument", even
+          ;; with POSTGRES_CONNECTION_STRING set).
+          ;;
+          ;; Expanding into argv does put a credential where `ps` can read it.
+          ;; That is inherent to a server whose interface is a URL in argv — it
+          ;; is equally true of a hand-written connection string — and is a
+          ;; reason to prefer servers that take environment variables, not a
+          ;; reason for this to expand only half of what it is given.
+          expanded-args (mapv expand-env-refs args)
+          process-builder (ProcessBuilder. ^"[Ljava.lang.String;" (into-array String (cons command expanded-args)))
           _ (when working-dir (.directory process-builder (io/file working-dir)))
           _ (when env
               (let [env-map (.environment process-builder)]
                 (doseq [[k v] env]
-                  (.put env-map (str k) (str v)))))
+                  (.put env-map (str k) (expand-env-refs v)))))
           proc (.start process-builder)
           stdin (OutputStreamWriter. (.getOutputStream proc))
           stdout (BufferedReader. (InputStreamReader. (.getInputStream proc)))
           stderr (BufferedReader. (InputStreamReader. (.getErrorStream proc)))]
 
+      ;; The UNEXPANDED args, and that is now load-bearing rather than
+      ;; incidental. Expansion is what puts a real connection string — password
+      ;; and all — into `expanded-args`, and server-postgres takes its secret as
+      ;; argv, so logging that form would write the credential to every sink
+      ;; this publishes to. `${POSTGRES_CONNECTION_STRING}` is also simply the
+      ;; more useful thing to read back out of a log.
       (mulog/info ::server-process-started :command command :args args)
 
       ;; Drain the child's stderr on a daemon thread so its pipe can't fill and

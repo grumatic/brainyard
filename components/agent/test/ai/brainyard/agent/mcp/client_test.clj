@@ -51,3 +51,48 @@
               "Done"]
              @collected)
           "all stderr lines drained, including the auth URL; loop exits at EOF"))))
+
+(deftest env-refs-expand-from-environment-and-properties
+  (let [expand @#'mcp-client/expand-env-refs]
+
+    (testing "a JVM system property resolves a reference"
+      ;; THE CASE THE WHOLE CHANGE EXISTS FOR. dotenv.clj puts `.env` keys into
+      ;; PROPERTIES, not the environment, and a spawned server inherits only the
+      ;; environment — so without this half, the `.env` route the MCP catalog
+      ;; documents cannot reach a server at all.
+      (System/setProperty "BY_TEST_PG_URL" "postgresql://u:pw@localhost/db")
+      (try
+        (is (= "postgresql://u:pw@localhost/db" (expand "${BY_TEST_PG_URL}")))
+        (finally (System/clearProperty "BY_TEST_PG_URL"))))
+
+    (testing "an environment variable resolves a reference"
+      ;; HOME rather than a fixture: a test cannot set an env var in its own JVM.
+      (is (= (System/getenv "HOME") (expand "${HOME}"))))
+
+    (testing "the environment wins over a property of the same name"
+      (System/setProperty "HOME" "/property/side")
+      (try
+        (is (= (System/getenv "HOME") (expand "${HOME}"))
+            "getenv is consulted first, matching every other setting here")
+        (finally (System/clearProperty "HOME"))))
+
+    (testing "an unresolved reference is left as its own text, not blanked"
+      ;; An empty string would read as a malformed URL and say nothing about
+      ;; why; the literal names the variable that was missing.
+      (is (= "${BY_TEST_DEFINITELY_UNSET}" (expand "${BY_TEST_DEFINITELY_UNSET}"))))
+
+    (testing "surrounding text survives, and every reference in a string expands"
+      (System/setProperty "BY_TEST_HOST" "db.internal")
+      (System/setProperty "BY_TEST_PORT" "5432")
+      (try
+        (is (= "postgresql://db.internal:5432/app"
+               (expand "postgresql://${BY_TEST_HOST}:${BY_TEST_PORT}/app")))
+        (finally (System/clearProperty "BY_TEST_HOST")
+                 (System/clearProperty "BY_TEST_PORT"))))
+
+    (testing "text with no reference is returned unchanged"
+      (is (= "@modelcontextprotocol/server-postgres"
+             (expand "@modelcontextprotocol/server-postgres")))
+      ;; A bare `$` or an unbraced `$FOO` is not a reference — only `${…}` is,
+      ;; so a password containing `$` passes through untouched.
+      (is (= "p@ss$word$FOO" (expand "p@ss$word$FOO"))))))
