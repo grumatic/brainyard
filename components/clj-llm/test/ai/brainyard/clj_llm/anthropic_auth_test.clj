@@ -143,10 +143,73 @@
         (is (= "2023-06-01" (get h "anthropic-version")))
         (is (= "extended-cache-ttl-2025-04-11" (get h "anthropic-beta"))))))
 
+  (testing "no beta header at all when nothing asks for one"
+    (is (nil? (get (build-headers {:api-key "k"}) "anthropic-beta"))))
+
   (testing "end to end: a token-only env produces a Bearer request"
     (System/setProperty "ANTHROPIC_AUTH_TOKEN" "sk-gw-abc")
     (let [lm (providers/create-lm {:model "claude-opus-5" :provider :anthropic})]
       (is (= "Bearer sk-gw-abc" (get (build-headers lm) "Authorization"))))))
+
+;; =============================================================================
+;; The oauth beta flag — which validator Anthropic uses for a bearer token
+;; =============================================================================
+
+(def ^:private anthropic-url "https://api.anthropic.com/v1")
+
+(defn- betas
+  "The anthropic-beta header split back into a set of flags."
+  [headers]
+  (set (some-> (get headers "anthropic-beta") (str/split #","))))
+
+(deftest oauth-beta-flag-test
+  ;; Measured against the live API with a deliberately invalid token:
+  ;;   Bearer <bogus>                      -> "invalid x-api-key"
+  ;;   Bearer <bogus> + oauth-2025-04-20   -> "OAuth access token is invalid."
+  ;; The flag is what picks the validator, so getting it wrong is a guaranteed
+  ;; 401 with a correct credential.
+  (testing ":oauth always carries the flag — its token IS an OAuth token"
+    ;; Regression: this path shipped without the flag, so anthropic-max sent a
+    ;; valid subscription token to the API-key validator and could only 401.
+    (with-redefs [llm/oauth-access-token (constantly "sk-ant-oat01-live")]
+      (is (contains? (betas (build-headers {:auth-type :oauth})) "oauth-2025-04-20"))))
+
+  (testing ":bearer carries it for an OAuth-shaped token at Anthropic's own host"
+    (is (contains? (betas (build-headers {:auth-type :bearer
+                                          :api-key "sk-ant-oat01-abc"
+                                          :base-url anthropic-url}))
+                   "oauth-2025-04-20")))
+
+  (testing ":bearer does NOT carry it for a gateway key at Anthropic's host"
+    (is (not (contains? (betas (build-headers {:auth-type :bearer
+                                               :api-key "sk-gw-abc"
+                                               :base-url anthropic-url}))
+                        "oauth-2025-04-20"))))
+
+  (testing ":bearer does NOT carry it off-host, even for an OAuth-shaped token"
+    ;; A provider-specific flag sent to a host that isn't that provider is a
+    ;; guess about someone else's server; a strict gateway may reject it.
+    (doseq [url ["https://gw.example.com/v1"
+                 "http://127.0.0.1:8080/v1"
+                 nil]]
+      (is (not (contains? (betas (build-headers {:auth-type :bearer
+                                                 :api-key "sk-ant-oat01-abc"
+                                                 :base-url url}))
+                          "oauth-2025-04-20"))
+          (str "off-host base-url: " (pr-str url)))))
+
+  (testing "the plain x-api-key path never carries it"
+    (is (not (contains? (betas (build-headers {:api-key "sk-ant-oat01-abc"
+                                               :base-url anthropic-url}))
+                        "oauth-2025-04-20"))))
+
+  (testing "beta flags COMBINE — one header, comma-separated"
+    ;; Two `assoc`s of "anthropic-beta" would silently drop the first flag.
+    (let [flags (betas (build-headers {:auth-type :bearer
+                                       :api-key "sk-ant-oat01-abc"
+                                       :base-url anthropic-url
+                                       :cache-ttl "1h"}))]
+      (is (= #{"oauth-2025-04-20" "extended-cache-ttl-2025-04-11"} flags)))))
 
 ;; =============================================================================
 ;; Base URL

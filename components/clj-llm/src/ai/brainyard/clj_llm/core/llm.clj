@@ -750,6 +750,62 @@
       stream?
       (assoc :stream true))))
 
+(def ^:private oauth-beta
+  "The beta flag that selects Anthropic's OAuth validator for a bearer token.
+
+   `Authorization: Bearer` carries TWO different credential types, and this flag
+   is the only thing that says which. Measured against the live API with a
+   deliberately invalid token:
+
+     Bearer <bogus>                          -> \"invalid x-api-key\"
+     Bearer <bogus> + oauth-2025-04-20       -> \"OAuth access token is invalid.\"
+
+   So the flag is not cosmetic and not optional: without it an OAuth token is
+   handed to the API-key validator, which can only ever 401. That was the
+   pre-existing state of the `:oauth` (anthropic-max) path — the subscription
+   token was correct and the request was still unauthenticated."
+  "oauth-2025-04-20")
+
+(defn- oauth-access-token
+  "Current OAuth access token from the store, or nil.
+
+   Resolved dynamically rather than by `:require` because `oauth` sits above
+   this namespace and loading it eagerly would cycle. Extracted from the header
+   builder so the token source is one redefinable seam — otherwise the only way
+   to test the OAuth header shape is to have a real subscription logged in."
+  []
+  (let [loaded? (try (require 'ai.brainyard.clj-llm.core.oauth) true
+                     (catch Exception _ false))]
+    (when-let [get-token (when loaded?
+                           (resolve 'ai.brainyard.clj-llm.core.oauth/get-valid-access-token))]
+      ((deref get-token)))))
+
+(defn- oauth-bearer?
+  "True when a `:bearer` credential should be sent as an OAuth token rather than
+   an API key. Requires BOTH signals, because either alone gets a real case
+   wrong:
+
+   - the token is OAuth-SHAPED (`sk-ant-oat…`). A gateway key is not, and
+     mislabelling one as OAuth sends it to the wrong validator.
+   - the endpoint is ANTHROPIC'S OWN. Only there does the flag mean anything;
+     `ANTHROPIC_AUTH_TOKEN` exists mostly to reach third-party gateways, and a
+     strict gateway may reject an `anthropic-beta` value it does not recognise.
+     Sending a provider-specific flag to a host that is not that provider is a
+     guess about someone else's server.
+
+   Deliberately a heuristic over a config key: the two facts are already in the
+   lm-config, and a knob for \"is this an OAuth token\" would only ask the user
+   to restate what the token's own prefix says. Guessing wrong is also bounded —
+   it costs a 401 at a validator, never a request sent to the wrong place. The
+   `:oauth` path needs no sniffing: its token comes from an OAuth store, so it
+   is one by construction."
+  [token base-url]
+  (boolean
+   (and (some-> token str/trim (str/starts-with? "sk-ant-oat"))
+        (= "api.anthropic.com"
+           (try (some-> base-url (java.net.URI.) (.getHost))
+                (catch Exception _ nil))))))
+
 (defn- build-anthropic-headers
   "Build HTTP headers for Anthropic API calls. Three auth shapes, keyed off
    `:auth-type`:
@@ -771,21 +827,34 @@
    credential that particular hop happens to prefer, which is the wrong one
    often enough to be a security question rather than a compatibility one.
 
-   A :cache-ttl of \"1h\" in lm-config adds the extended-cache-ttl beta
-   header required for 1-hour cache_control blocks."
+   Beta flags accumulate into ONE comma-separated `anthropic-beta` header
+   (`beta-flags`): a :cache-ttl of \"1h\" adds extended-cache-ttl, and an OAuth
+   credential adds oauth-2025-04-20 — assoc-ing the header twice would silently
+   drop whichever flag was written first."
   [lm-config]
-  (let [base-headers (cond-> {"Content-Type"      "application/json"
+  (let [auth-type (:auth-type lm-config)
+        oauth?    (= :oauth auth-type)
+        ;; A bearer token may be EITHER an Anthropic OAuth access token or a
+        ;; gateway API key, and the two are checked by different validators on
+        ;; the same header — see `oauth-bearer?` for why the flag is what picks
+        ;; one, and why the gate is deliberately narrow.
+        bearer-oauth? (and (= :bearer auth-type)
+                           (oauth-bearer? (:api-key lm-config) (:base-url lm-config)))
+        betas     (cond-> []
+                    (= "1h" (:cache-ttl lm-config))
+                    (conj "extended-cache-ttl-2025-04-11")
+
+                    (or oauth? bearer-oauth?)
+                    (conj oauth-beta))
+        base-headers (cond-> {"Content-Type"      "application/json"
                               "anthropic-version"  "2023-06-01"}
-                       (= "1h" (:cache-ttl lm-config))
-                       (assoc "anthropic-beta" "extended-cache-ttl-2025-04-11"))]
-    (case (:auth-type lm-config)
+                       (seq betas)
+                       (assoc "anthropic-beta" (str/join "," betas)))]
+    (case auth-type
       :oauth
-      ;; OAuth: resolve bearer token dynamically
-      (let [oauth-ns (try (require 'ai.brainyard.clj-llm.core.oauth) true
-                          (catch Exception _ false))
-            get-token (when oauth-ns
-                        (resolve 'ai.brainyard.clj-llm.core.oauth/get-valid-access-token))
-            token (when get-token ((deref get-token)))]
+      ;; OAuth: resolve bearer token dynamically — it expires and refreshes
+      ;; mid-session, so it cannot be baked into the lm-config.
+      (let [token (oauth-access-token)]
         (when-not token
           (throw (ex-info "OAuth authentication required. Run (oauth/authenticate!) first." {})))
         (assoc base-headers "Authorization" (str "Bearer " token)))

@@ -61,6 +61,25 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
     per-call from the OAuth store (it expires mid-session); a gateway token is
     static and rides `:api-key`, which is what lets `lm-initialized?`, the
     missing-credential warning and status masking stay ignorant of it.
+  - **`Authorization: Bearer` carries TWO credential types, and
+    `anthropic-beta: oauth-2025-04-20` is the only thing that says which.**
+    Measured against the live API with a deliberately invalid token: without
+    the flag the error is `invalid x-api-key`, with it `OAuth access token is
+    invalid.` — two different validators on one header. So the flag is not
+    cosmetic: omitting it hands an OAuth token to the API-key validator, which
+    can only ever 401. That was the pre-existing state of the `:oauth`
+    (`anthropic-max`) path — a correct subscription token, an unauthenticated
+    request. `:oauth` now always sets it; `:bearer` sets it only when the token
+    is OAuth-*shaped* (`sk-ant-oat…`) **and** the host is `api.anthropic.com`,
+    since `ANTHROPIC_AUTH_TOKEN` mostly exists to reach third-party gateways
+    and a provider-specific flag sent to a host that is not that provider is a
+    guess about someone else's server. Guessing wrong costs a 401 at a
+    validator, never a request sent to the wrong place — which is why this is a
+    heuristic over the two facts already in the lm-config rather than a config
+    key asking the user to restate what the token's own prefix says.
+  - **Beta flags accumulate into one comma-separated header.** `extended-cache-ttl`
+    and `oauth-2025-04-20` can both apply to the same request; two `assoc`s of
+    `anthropic-beta` would silently drop whichever was written first.
   - **A `:base-url-env` now outranks the static default**, and an origin-only
     override inherits the default's path — `https://gw.example.com` becomes
     `.../v1`, because every call site appends only `/messages` and the bare
