@@ -62,8 +62,13 @@
   "Return true if Unicode codepoint occupies 2 terminal columns
    (CJK, fullwidth, or emoji presentation)."
   [^long cp]
-  (or ;; — CJK / Fullwidth —
-   (<= 0x1100 cp 0x115F)      ;; Hangul Jamo
+  ;; GUARD FIRST. Nothing below U+1100 is wide — the lowest range below starts
+  ;; there — so every Latin/Greek/Cyrillic codepoint used to walk the whole
+  ;; or-chain to reach `false`. One comparison replaces ~30.
+  (and
+   (>= cp 0x1100)
+   (or ;; — CJK / Fullwidth —
+    (<= 0x1100 cp 0x115F)      ;; Hangul Jamo
    (<= 0x2E80 cp 0x303F)      ;; CJK Radicals, Kangxi, CJK Symbols
    (<= 0x3040 cp 0x33FF)      ;; Hiragana, Katakana, Bopomofo, CJK Compat
    (<= 0x3400 cp 0x4DBF)      ;; CJK Extension A
@@ -117,7 +122,7 @@
    (= cp 0x3299)              ;; ㊙
    (<= 0x1F000 cp 0x1FAFF)    ;; Supplementary emoji blocks (incl. flags,
                               ;; symbols, pictographs, transport, supplemental)
-   (<= 0x1FC00 cp 0x1FFFD)))  ;; Symbols for Legacy Computing + rest
+    (<= 0x1FC00 cp 0x1FFFD))))  ;; Symbols for Legacy Computing + rest
 
 (defn- zero-width-codepoint?
   "Return true if codepoint is zero-width (combining marks, variation selectors,
@@ -181,9 +186,30 @@
     (loop [i 0, w 0]
       (if (>= i len)
         w
-        (let [ch (.charAt s i)]
-          (if (= ch \u001b)
-            (recur (skip-ansi-seq s i) w)
+        (let [ch (.charAt s i)
+              c  (int ch)]
+          (cond
+            (= ch \u001b) (recur (skip-ansi-seq s i) w)
+
+            ;; FAST PATH — the ~95% case. Nothing below U+0300 is wide or
+            ;; zero-width (verified by scanning the whole range against the two
+            ;; predicates), and nothing below U+0300 is a surrogate, so the
+            ;; codepoint IS the char and its width is 1. This skips
+            ;; `Character/getType` — a real table lookup that
+            ;; `zero-width-codepoint?` pays for every character — plus the
+            ;; wide-range chain.
+            ;;
+            ;; The VS16 look-ahead is NOT optional here, and dropping it is the
+            ;; trap this guard invites: a keycap is U+0031 U+FE0F U+20E3, whose
+            ;; base is ASCII and must still count 2. A whole-string "is it all
+            ;; ASCII" test avoids the trap by accident; a per-character one has
+            ;; to check.
+            (and (< c 0x0300)
+                 (or (>= (inc i) len)
+                     (not= 0xFE0F (int (.charAt s (inc i))))))
+            (recur (inc i) (inc w))
+
+            :else
             (let [cp (Character/codePointAt s (int i))
                   cw (cond
                        (zero-width-codepoint? cp) 0
@@ -245,6 +271,18 @@
         (>= (int (.charAt s i)) 0x0300) true
         :else                           (recur (inc i))))))
 
+(defn- vs16-within?
+  "Does U+FE0F appear in `s` between `from` and `to`?
+
+   Scoped to the cluster deliberately: a VS16 belonging to the NEXT cluster
+   must not promote this one."
+  [^String s ^long from ^long to]
+  (loop [k from]
+    (cond
+      (>= k to)                            false
+      (= 0xFE0F (int (.charAt s (int k)))) true
+      :else                                (recur (inc k)))))
+
 (defn- width-by-cluster
   "Per-grapheme-cluster width — what a terminal WITH DEC mode 2027 does."
   [^String s]
@@ -262,7 +300,30 @@
             (recur (skip-ansi-seq s i) w)
             (let [nxt (.following bi (int i))
                   end (if (= nxt java.text.BreakIterator/DONE) len nxt)]
-              (recur end (+ w (min 2 (width-by-codepoint (subs s i end))))))))))))
+              ;; Measure the cluster WITHOUT allocating a substring for it.
+              ;; The old form was `(min 2 (width-by-codepoint (subs s i end)))`,
+              ;; which allocated a String per cluster and re-walked it only to
+              ;; clamp the answer to 2.
+              ;;
+              ;; The base codepoint decides the cluster's width: everything a
+              ;; cluster may append is zero-width (combining marks, ZWJ,
+              ;; variation selectors, tags) or is itself a wide base whose sum
+              ;; the clamp discards anyway. The one case the base alone gets
+              ;; wrong is VS16 promotion — U+0031 U+FE0F U+20E3 has an ASCII
+              ;; base and renders 2 — so VS16 is looked for inside the cluster.
+              ;;
+              ;; This equivalence is asserted against the previous
+              ;; implementation over an 89k-row golden corpus, not derived from
+              ;; the spec; a cluster whose width is decided by a later
+              ;; non-VS16, non-zero-width codepoint would break it, and none is
+              ;; known to exist.
+              (let [cp (Character/codePointAt s (int i))
+                    cw (cond
+                         (zero-width-codepoint? cp) 0
+                         (wide-codepoint? cp)       2
+                         (vs16-within? s (+ i (Character/charCount cp)) end) 2
+                         :else                      1)]
+                (recur end (+ w cw))))))))))
 
 (defonce ^:private ^java.util.concurrent.ConcurrentHashMap width-cache
   ;; Measuring a string is pure in (string, clustering-mode) and the SAME
