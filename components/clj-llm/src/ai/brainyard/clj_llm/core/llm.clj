@@ -745,7 +745,16 @@
               (array-map :model      (:model lm-config)
                          :messages   messages
                          :max_tokens (or (:max-tokens lm-config) 4096)))
-      (:temperature lm-config) (assoc :temperature (:temperature lm-config))
+      ;; Honors `:drop-params`, as the OpenAI and Bedrock body builders already
+      ;; do. Every current Anthropic model (Sonnet 5, Opus 5/4.8/4.7, Fable 5)
+      ;; REJECTS `temperature` outright — `invalid_request_error: temperature is
+      ;; deprecated for this model` — so without this the direct :anthropic
+      ;; provider cannot drive any of them at all, no matter how it authenticates.
+      ;; `create-lm` already resolves the set from the catalog via
+      ;; `drops-temperature?`; this builder was simply not reading it.
+      (and (:temperature lm-config)
+           (not (contains? (or (:drop-params lm-config) #{}) :temperature)))
+      (assoc :temperature (:temperature lm-config))
 
       stream?
       (assoc :stream true))))

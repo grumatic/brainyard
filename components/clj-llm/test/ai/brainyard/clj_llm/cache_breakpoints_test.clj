@@ -8,6 +8,7 @@
    `:cache-zones` (from the BT dspy-action) into Anthropic structured
    `:system` blocks with `cache_control: ephemeral` markers."
   (:require [ai.brainyard.clj-llm.core.llm :as llm]
+            [ai.brainyard.clj-llm.core.providers :as providers]
             [clojure.test :refer [deftest is testing]]))
 
 ;; ============================================================================
@@ -95,6 +96,39 @@
 (def ^:private sample-zones
   [{:key :system-context :text "## system-context\nstable text"}
    {:key :user-context :text "## user-context\nvolatile text"}])
+
+(deftest body-honors-drop-params-test
+  ;; Regression: this builder ignored :drop-params while the OpenAI and Bedrock
+  ;; builders honored it, so the direct :anthropic provider always sent
+  ;; `temperature` — which every current Anthropic model rejects outright
+  ;; ("`temperature` is deprecated for this model"). Verified against the live
+  ;; API: with temperature the request 400s before it is ever evaluated.
+  (testing "temperature is omitted when :drop-params says to drop it"
+    (let [body (build-body (assoc base-lm-config
+                                  :temperature 0.0
+                                  :drop-params #{:temperature})
+                           sample-messages {})]
+      (is (not (contains? body :temperature)))))
+
+  (testing "temperature is still sent when nothing drops it"
+    (let [body (build-body (assoc base-lm-config :temperature 0.7)
+                           sample-messages {})]
+      (is (= 0.7 (:temperature body)))))
+
+  (testing "an unrelated dropped param leaves temperature alone"
+    (let [body (build-body (assoc base-lm-config
+                                  :temperature 0.7
+                                  :drop-params #{:top_p})
+                           sample-messages {})]
+      (is (= 0.7 (:temperature body)))))
+
+  (testing "create-lm auto-detects the drop for current models — no manual opt-in"
+    ;; The catalog already knew; only this builder wasn't reading it.
+    (doseq [model ["claude-sonnet-5" "claude-opus-5" "claude-opus-4-8"]]
+      (let [lm   (providers/create-lm {:model model :provider :anthropic})
+            body (build-body lm sample-messages {})]
+        (is (contains? (:drop-params lm) :temperature) (str model " catalog entry"))
+        (is (not (contains? body :temperature)) (str model " request body"))))))
 
 (deftest body-no-prompt-cache-yields-string-system
   (testing "prompt-cache disabled → system is a plain string even when zones are passed"
