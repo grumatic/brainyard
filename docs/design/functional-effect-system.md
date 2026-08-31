@@ -2731,3 +2731,51 @@ what the device flow's concurrent polling wants. What is NOT justified is
 crossing this off. If it recurs, this note is the starting point, not the
 conclusion; the next step would be capturing the failing run's server-side
 timing rather than reasoning about it again.
+
+## 11. `background-test/single-flight-per-kind-and-key` flakes — real finding, unexplained intermittency
+
+Seen once in a full `bb test`; green 6/6 in isolation. Unrelated to the
+streaming work (it exercises background single-flighting).
+
+**The real finding, worth fixing on its own merits:** `create-task-manager`
+takes `:pool-size` but only builds the executor `(when-not @!executor-service)`,
+and `!executor-service` is a process-global `defonce` atom cleared only by
+`shutdown`. So **a requested `:pool-size` is silently ignored whenever any
+earlier code in the JVM already created the executor.** This test asks for
+`:pool-size 2` and, in a full-suite JVM, almost certainly gets whatever the
+first caller made — the default 4. That is a latent footgun independent of any
+flake: a caller that needs a bounded pool cannot get one, and gets no error
+saying so.
+
+**What I could NOT explain, stated because the tidy story is wrong.** The test
+parks two jobs on `(deref gate 3000)` and then asserts a third reaches the
+worker inside `wait-for … 3000` — two equal 3s timers racing. If the pool really
+were 2, the third job could never start before the gate released and the test
+would fail CONSISTENTLY in isolation. It passes 6/6 there. So the pool-size
+story predicts the opposite of the observation, and the mechanism behind the
+intermittency remains unknown.
+
+Do not "fix" this by widening the `wait-for` budget until that is understood —
+the equal-timer race and the ignored `:pool-size` are both real, and widening
+the budget would hide whichever one actually bites. Next step is measurement,
+not reasoning: log the executor's actual pool size and its active-thread count
+at the moment of the failing assertion, in a full-suite run.
+
+### The flake tally is itself the finding
+
+Five load-dependent failures surfaced in one day's work:
+
+| test | verdict |
+|---|---|
+| `task-manager-cancel-test` | test asserted a timing outcome — fixed by waiting for `:running` |
+| `cancelling-the-flow-aborts-the-real-exchange` | same shape — budget widened, it exits on success |
+| clj-oauth `device-e2e` | hardened (start-up race + serial executor); **never reproduced** |
+| `sync-completion-captures-stdout` | **a REAL race** — concurrent drains double-emitted |
+| `background-test/single-flight` | unexplained; a real `:pool-size` bug found alongside |
+
+Four of five were tests asserting a timing outcome instead of waiting for the
+state the assertion needs. **One was a genuine concurrency bug wearing that
+costume**, and loosening its assertion would have shipped duplicated output.
+That ratio is the argument against treating this class as noise: the cost of
+investigating four false alarms was one real defect that nothing else was
+reporting.
