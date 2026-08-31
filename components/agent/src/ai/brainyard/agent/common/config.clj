@@ -449,10 +449,37 @@
                                         :after  (get only-after k)}]))
                        (into {}))))}))
 
+(defn- deep-merge
+  "Recursive map merge. Non-map values from `b` win; vectors are replaced
+   wholesale (not concatenated) so :permissions.allowed-dirs has predictable
+   semantics.
+
+   Defined HERE, above config$diff, rather than beside config$apply where it is
+   also used. That is the whole point: the preview and the write must be the
+   same function, and they were not. config$diff merged with
+
+     (merge-with (fn [a b] (if (and (map? a) (map? b)) (merge a b) b)) …)
+
+   which recurses exactly ONE level. For {:mcp {:servers {:clickhouse …}}} the
+   :mcp maps merge shallowly, so the proposed :servers REPLACED the existing
+   one and every other server vanished — from the diff. config$apply deep-merged
+   the same input and kept them all.
+
+   So the preview accused the write of something it does not do. An agent
+   installing one MCP server saw its four siblings marked for deletion and
+   refused; the same input applied cleanly. A preview that disagrees with the
+   write is worse than no preview, because it is trusted."
+  [a b]
+  (cond
+    (and (map? a) (map? b))
+    (merge-with deep-merge a b)
+    :else b))
+
 (defcommand config$diff
   "Compute a unified diff and structural delta between current config.edn
    (at the requested scope) and a proposed (deep-merged) map.
-   Pure read; no side effects."
+   Pure read; no side effects. The merge is the SAME `deep-merge` config$apply
+   writes with, so this diff is what applying would produce."
   (fn [& {:keys [proposed scope project-dir] :or {scope :auto}}]
     (cond
       (not (map? proposed))
@@ -465,8 +492,7 @@
           {:error (:error scope*) :requested-scope (:requested scope*)}
           (let [resolved-scope (:scope scope*)
                 current        (core-config/read-edn-config dirs resolved-scope)
-                merged         (merge-with (fn [a b] (if (and (map? a) (map? b)) (merge a b) b))
-                                           current proposed)
+                merged         (deep-merge current proposed)
                 before         (pp-str current)
                 after          (pp-str merged)
                 text           (or (git-text-diff before after)
@@ -895,16 +921,6 @@
 ;; ============================================================================
 ;; config$apply — the transactional write
 ;; ============================================================================
-
-(defn- deep-merge
-  "Recursive map merge. Non-map values from `b` win; vectors are replaced
-   wholesale (not concatenated) so :permissions.allowed-dirs has predictable
-   semantics."
-  [a b]
-  (cond
-    (and (map? a) (map? b))
-    (merge-with deep-merge a b)
-    :else b))
 
 (defn- ensure-vec [x]
   (cond
