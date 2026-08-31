@@ -35,9 +35,39 @@
           (> (System/currentTimeMillis) deadline) nil
           :else (do (Thread/sleep 25) (recur)))))))
 
-(defn- start-manager! []
-  (let [mgr (manager/create-task-manager :pool-size 2)]
+(def ^:private test-pool-size
+  "Threads the background tests need to run CONCURRENTLY.
+
+   3, not 2. `single-flight-per-kind-and-key` parks two jobs on a gate and then
+   asserts a third one runs — which at pool-size 2 it cannot, because both
+   threads are held. It used to pass anyway, for the wrong reason: the parked
+   jobs' `(deref gate 3000)` timed out and freed a thread at ~3010ms, and the
+   third job's `wait-for` deadline was 3000ms measured from ITS submission
+   (~50-100ms in), so the assertion won by however long the earlier
+   submissions happened to take. Measured: third job started at 3015ms,
+   deadline 3220ms. Tens of milliseconds of margin, and under load it inverts.
+
+   With a thread actually free the third job starts immediately and no timer
+   races any other."
+  3)
+
+(defn- start-manager!
+  "A manager whose pool really has `test-pool-size` threads.
+
+   The executor is process-global and built once, so a plain
+   `create-task-manager :pool-size N` silently keeps whatever pool already
+   exists — which is exactly how this namespace asked for 2 and ran on
+   something else. Shut down first, then ASSERT what we got rather than
+   assume it."
+  []
+  (when-let [prev (manager/create-task-manager)]
+    (when (not= test-pool-size (manager/effective-pool-size))
+      (tp/shutdown prev)))
+  (let [mgr (manager/create-task-manager :pool-size test-pool-size)]
     (manager/set-default-manager! mgr)
+    (assert (= test-pool-size (manager/effective-pool-size))
+            (str "background tests need a pool of " test-pool-size
+                 " but the live executor has " (manager/effective-pool-size)))
     mgr))
 
 ;; ============================================================================

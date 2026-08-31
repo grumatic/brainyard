@@ -2732,7 +2732,7 @@ crossing this off. If it recurs, this note is the starting point, not the
 conclusion; the next step would be capturing the failing run's server-side
 timing rather than reasoning about it again.
 
-## 11. `background-test/single-flight-per-kind-and-key` — pool-size FIXED, intermittency still open
+## 11. `background-test/single-flight-per-kind-and-key` — FIXED (both halves)
 
 Seen once in a full `bb test`; green 6/6 in isolation. Unrelated to the
 streaming work (it exercises background single-flighting).
@@ -2754,19 +2754,42 @@ remedy, and `effective-pool-size` lets a caller ask what it really got instead
 of assuming it got what it asked for. Cleared by `shutdown` alongside the pool
 it describes, or the next create would compare against a stale number.
 
-**What I could NOT explain, stated because the tidy story is wrong.** The test
-parks two jobs on `(deref gate 3000)` and then asserts a third reaches the
-worker inside `wait-for … 3000` — two equal 3s timers racing. If the pool really
-were 2, the third job could never start before the gate released and the test
-would fail CONSISTENTLY in isolation. It passes 6/6 there. So the pool-size
-story predicts the opposite of the observation, and the mechanism behind the
-intermittency remains unknown.
+**The intermittency, measured rather than reasoned about.** Instrumenting a
+faithful replica (which `effective-pool-size` above made possible) gave the
+whole mechanism:
 
-Do not "fix" this by widening the `wait-for` budget until that is understood —
-the equal-timer race and the ignored `:pool-size` are both real, and widening
-the budget would hide whichever one actually bites. Next step is measurement,
-not reasoning: log the executor's actual pool size and its active-thread count
-at the moment of the failing assertion, in a full-suite run.
+```
+effective-pool-size = 2
+t=10ms    distill/sess-1 starts -> blocks on the gate, holds thread 1
+t=217ms   distill/sess-2 starts -> blocks on the gate, holds thread 2
+t=3015ms  refine/sess-1 starts  <- ONLY after job 1's (deref gate 3000) expires
+          count==3 at 3045ms
+```
+
+At pool-size 2 the third job **cannot run concurrently at all** — both threads
+are held. It ran only because a parked job gave up. The test passed anyway
+because `wait-for`'s 3000ms deadline is measured from the THIRD submission
+(~50-100ms in), so it won by however long the earlier submissions happened to
+take. Tens of milliseconds of margin; under load it inverts.
+
+So the assertion "a different kind with the same key is independent" was never
+being tested. What was being tested is "a thread eventually frees up".
+
+Fixed by giving the pool enough threads to actually run the three jobs (3, not
+2) and — using the fix above — ASSERTING the pool it got rather than assuming,
+since a plain request is silently ignored when an executor already exists.
+Proof that the mechanism is gone rather than the symptom masked:
+
+```
+POOL=2   third job starts 3014ms   count==3 at 3024ms
+POOL=3   third job starts  430ms   count==3 at  456ms
+```
+
+Margin moves from tens of milliseconds to ~2.7 seconds, and no two timers race.
+
+Note the *first* fix is what made the second possible: without
+`effective-pool-size` the test could not tell whether it had the pool it asked
+for, and the instrumentation could not report what it was measuring.
 
 ### The flake tally is itself the finding
 
