@@ -2732,20 +2732,27 @@ crossing this off. If it recurs, this note is the starting point, not the
 conclusion; the next step would be capturing the failing run's server-side
 timing rather than reasoning about it again.
 
-## 11. `background-test/single-flight-per-kind-and-key` flakes — real finding, unexplained intermittency
+## 11. `background-test/single-flight-per-kind-and-key` — pool-size FIXED, intermittency still open
 
 Seen once in a full `bb test`; green 6/6 in isolation. Unrelated to the
 streaming work (it exercises background single-flighting).
 
-**The real finding, worth fixing on its own merits:** `create-task-manager`
+**The real finding — now FIXED.** `create-task-manager`
 takes `:pool-size` but only builds the executor `(when-not @!executor-service)`,
 and `!executor-service` is a process-global `defonce` atom cleared only by
 `shutdown`. So **a requested `:pool-size` is silently ignored whenever any
 earlier code in the JVM already created the executor.** This test asks for
 `:pool-size 2` and, in a full-suite JVM, almost certainly gets whatever the
-first caller made — the default 4. That is a latent footgun independent of any
-flake: a caller that needs a bounded pool cannot get one, and gets no error
-saying so.
+first caller made — the default 4. A caller that needed a bounded pool could
+not get one and got no error saying so.
+
+The pool stays global — that is deliberate, and `shutdown` owns its lifecycle —
+so the fix makes the discard LOUD rather than changing the sharing:
+`!executor-pool-size` records what the live pool was actually built with, a
+mismatched later request logs `::pool-size-ignored` with both numbers and the
+remedy, and `effective-pool-size` lets a caller ask what it really got instead
+of assuming it got what it asked for. Cleared by `shutdown` alongside the pool
+it describes, or the next create would compare against a stale number.
 
 **What I could NOT explain, stated because the tidy story is wrong.** The test
 parks two jobs on `(deref gate 3000)` and then asserts a third reaches the

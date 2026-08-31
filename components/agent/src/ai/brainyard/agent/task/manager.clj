@@ -25,6 +25,16 @@
 (defonce ^:private !default-manager (atom nil))
 (defonce ^:private !executor-service (atom nil))
 
+(defonce ^:private !executor-pool-size
+  ;; The size the live executor was ACTUALLY created with.
+  ;;
+  ;; `create-task-manager` builds the pool only `(when-not @!executor-service)`,
+  ;; and this atom is process-global, so the SECOND caller's `:pool-size` has
+  ;; never applied — it was silently discarded. A caller that needs a bounded
+  ;; pool could not get one and got no error saying so. Recording the effective
+  ;; size lets `create-task-manager` say so, and lets a caller ask.
+  (atom nil))
+
 ;; Detached-task registry. After execute-job returns {:status :detached ...}
 ;; the pool thread is free but the work is still running. We park the
 ;; executor's :on-cancel closure here, keyed by task-id, so `cancel-task` can
@@ -651,8 +661,21 @@
     (reset! !task-progress {})
     (when-let [es @!executor-service]
       (.shutdownNow ^ExecutorService es)
-      (reset! !executor-service nil))
+      (reset! !executor-service nil)
+      ;; Clear the recorded size with the pool it describes, or the next
+      ;; create would compare against a stale number.
+      (reset! !executor-pool-size nil))
     (reset! !tasks {})))
+
+(defn effective-pool-size
+  "The size the live task executor was actually created with, or nil when no
+   executor exists.
+
+   Exists because `:pool-size` is honoured only by the FIRST caller — the pool
+   is process-global — so this is the only way to know what a manager really
+   got as opposed to what it asked for."
+  []
+  @!executor-pool-size)
 
 (defn remove-task-and-artifacts!
   "Remove the in-memory registry entry AND the on-disk
@@ -788,10 +811,20 @@
    hook) so each detached task's :on-cancel destroys its proc tree;
    otherwise `npm run dev`-style tasks orphan."
   [& {:keys [pool-size] :or {pool-size 4}}]
-  (when-not @!executor-service
-    (reset! !executor-service
-            (Executors/newFixedThreadPool (int pool-size)
-                                          (daemon-thread-factory))))
+  (if-let [_existing @!executor-service]
+    ;; The pool is process-global and built once. A later caller asking for a
+    ;; DIFFERENT size does not get it — say so rather than discarding it
+    ;; silently, which is how a test asking for `:pool-size 2` quietly ran on
+    ;; the default 4 and its concurrency assumptions stopped meaning anything.
+    (when (not= (long pool-size) (long (or @!executor-pool-size pool-size)))
+      (mulog/warn ::pool-size-ignored
+                  :requested pool-size
+                  :in-effect @!executor-pool-size
+                  :reason "the task executor is process-global and already built; call tp/shutdown first to resize"))
+    (do (reset! !executor-service
+                (Executors/newFixedThreadPool (int pool-size)
+                                              (daemon-thread-factory)))
+        (reset! !executor-pool-size (long pool-size))))
   ;; No ID-counter seeding here any more: `next-task-id` derives each ID from
   ;; the clock plus randomness and probes disk per allocation, so a restart —
   ;; or a second `by` process on the same project — can't reissue an existing

@@ -190,3 +190,38 @@
           n  (bg/await-quiet! 300)]
       (is (= 1 n) "still running when the wait ended")
       (is (< (- (System/currentTimeMillis) t0) 3000) "returned near the deadline"))))
+
+;; ============================================================================
+;; :pool-size is honoured only by the FIRST caller (the executor is global)
+;; ============================================================================
+
+(deftest pool-size-is-honoured-only-by-the-first-caller
+  (testing "a later :pool-size is reported, not silently discarded
+
+           The executor is a process-global defonce built only
+           `(when-not @!executor-service)`, so the second caller's :pool-size
+           never applied. It used to vanish without a word, which is how this
+           very namespace asked for :pool-size 2 and ran on whatever the first
+           caller made — its concurrency assumptions quietly meaning nothing.
+
+           Runs last and shuts the pool down on the way in and out, because the
+           thing under test IS the global."
+    (let [mgr0 (manager/create-task-manager)]
+      (tp/shutdown mgr0))
+    (is (nil? (manager/effective-pool-size)) "clean slate")
+
+    (let [_m1 (manager/create-task-manager :pool-size 2)]
+      (is (= 2 (manager/effective-pool-size)) "the first caller's size applies")
+
+      (let [_m2 (manager/create-task-manager :pool-size 7)]
+        (is (= 2 (manager/effective-pool-size))
+            "a second, different request does NOT resize the live pool"))
+
+      (let [_m3 (manager/create-task-manager :pool-size 2)]
+        (is (= 2 (manager/effective-pool-size))
+            "and asking for the size already in effect is a no-op, not a warning")))
+
+    (let [mgr (manager/create-task-manager)]
+      (tp/shutdown mgr))
+    (is (nil? (manager/effective-pool-size))
+        "shutdown clears the recorded size with the pool it describes")))
