@@ -216,7 +216,11 @@
                 :viewport-offset current-viewport
                 :live-blocks     current-live-blocks
                 :scrollback-src  current-src
-                :cols            current-cols})))))
+                :cols            current-cols
+                ;; Hits are indices into THIS tab's rows, so they travel with
+                ;; them. Saved rather than dropped so switching away and back
+                ;; does not lose a search the user is mid-way through.
+                :search          (:search @layout/!layout)})))))
 
 (declare snapshot-src)
 
@@ -228,6 +232,11 @@
   ;; let the incoming tab skip every row that happens to match the outgoing
   ;; one's — leaving the old tab's text on screen.
   (layout/invalidate-painted!)
+  ;; Search hits are scrollback INDICES, so they belong to one tab's rows.
+  ;; Install the INCOMING tab's search (nil for a tab that has none) rather
+  ;; than carrying the outgoing tab's across, which would highlight arbitrary
+  ;; text here and anchor the viewport to a line unrelated to the query.
+  (swap! layout/!layout assoc :search (:search session))
   (reset! layout/!scrollback (or (:scrollback session) []))
   ;; Restore live-blocks (start-idx values are valid for this session's scrollback)
   (reset! layout/!live-blocks (or (:live-blocks session) {}))

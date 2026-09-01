@@ -260,6 +260,65 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   `terminal/read-key!` (`ESC[<b;x;yM`), the `click!` handler in
   `autocomplete.clj`; tests in `bases/agent-tui/test/…/mouse_test.clj`.
 
+### Scrollback search anchors on an INDEX, because the offset counts from the tail
+
+`Ctrl-F` searches the active session's scrollback; ↑/↓ step hits, Enter keeps
+the position and the marks, Esc clears them. A leading `/` makes the query a
+regex (`//` escapes it, so a literal `/foo` is `//foo`); an uncompilable
+pattern is a VALUE, not a throw, because every prefix of a real regex is broken
+on the way in — and the bar says "bad pattern" rather than "no matches", which
+is a different answer. Fullscreen only, no config key. Design + as-built map:
+`docs/design/scrollback-search-design.md`.
+
+Four things that are load-bearing rather than incidental:
+
+- **A hit is held as a scrollback index and the offset is re-derived from it.**
+  `:viewport-offset` counts ROWS BACK FROM THE TAIL, which is why
+  `write-output!` snaps it to 0 on every emit — and why a search result was
+  otherwise yanked back to live on the next streamed chunk, i.e. exactly when a
+  long scrollback is worth searching. While anchored, the auto-snap is
+  suppressed and `seat-index!` recomputes the offset after each insert. That
+  also forces the `render-viewport!` branch: the hardware-scroll path appends at
+  the BOTTOM and is only correct when the viewport is at the tail, which an
+  anchor is precisely the case against. Same index-not-offset conclusion
+  `viewport-anchor` reaches for a resize.
+- **Search runs on the STRIPPED row, and spans are plain indices.** A query
+  spanning a style boundary never matches the styled string, escape bodies
+  contribute phantom hits (`m`, `1`, `38;5`), and the spans could not be handed
+  to a painter that must insert BETWEEN escapes. Same conclusion as
+  `links/detect-in-row`, and the same known limit: a query broken across a hard
+  wrap is in no single row and is not found.
+- **All three paint paths finish a row through `layout/finish-row`.** The link
+  decoration and the search highlight are now one pass, applied by
+  `render-viewport!`, `render-block-rows!` AND `write-output!`'s hardware-scroll
+  path — a row finished on one but not another changes appearance the moment
+  anything repaints it, and the painted-row diff would disagree about a row
+  neither changed. It runs AFTER the width clamp, since a truncate can cut away
+  a closing off-code and leave the attribute on for every row below.
+- **Three events invalidate the hit list and each wants a different answer.** A
+  live-block tick gets `shift-search!` — index surgery, no rescan, because a
+  streamed chunk IS a splice and rescanning at streaming rates is not
+  affordable; it is exact for what it covers and deliberately blind to matches
+  in the new rows, so a block re-rendering under the reader cannot renumber
+  their `3/17`. Expand/collapse gets `resync-search-after-splice!` (shift *then*
+  rescan — the revealed rows are the text they expanded the block to search).
+  A resize gets `rescan-search! :ordinal`: every index moved, but a reflow
+  changes where lines break and never what text exists, so the **Nth match is
+  still the Nth**. Session switch saves/restores per tab beside
+  `:viewport-offset`. Two shared rules: surgery follows the current hit's
+  IDENTITY, not its ordinal (which shifts when an earlier hit is dropped), and
+  no path re-anchors a search that let go — `end-search-typing!` drops
+  `:cur-idx` on purpose, and restoring it silently re-enables the auto-snap
+  suppression after the user has left the bar.
+
+`:search/match` (`[:underline]`) and `:search/current` (`[:reverse]`) carry the
+same restriction as `:link/target` — only `mod->off-code` mods, since the mark
+is inserted mid-row into text we do not own. Reverse goes to the CURRENT hit
+because it is the loud one and is exactly reversible (27); a background colour
+is neither. Wrapping past the last hit is reported on the separator's counter
+rather than emitted as a line — an emit lands at the tail, which is where the
+reader is not.
+
 ### Clickable links are DETECTED at click time, not registered by producers
 
 A click on a scroll-region row that carries no block marker falls through to

@@ -150,7 +150,19 @@
          ;; whatever styling the surrounding row had set, and the mark is
          ;; inserted MID-ROW into text we do not own. Bind a colour here and
          ;; `link-mark-off` cannot restore what came before it.
-         :link/target         [:underline]}))
+         :link/target         [:underline]
+         ;; Scrollback search (Ctrl-F). Same restriction as `:link/target` and
+         ;; for the same reason — these are inserted MID-ROW into text we do
+         ;; not own, so only the cleanly-toggleable mods are legal.
+         ;;
+         ;; The two must be tellable apart at a glance: `:search/match` is the
+         ;; quiet "there is one here", `:search/current` is where the viewport
+         ;; is actually parked. Reverse is the loud one, so it goes to the
+         ;; current hit rather than to all of them — and it is exactly
+         ;; reversible (27), unlike a background colour, which is what makes it
+         ;; usable mid-row at all.
+         :search/match        [:underline]
+         :search/current      [:reverse]}))
 
 (defn set-theme!
   "Merge `bindings` (a {token-id mods-vec} map) into the theme atom.
@@ -182,24 +194,40 @@
    being the one attribute that is both quiet and exactly reversible."
   {:bold "22" :dim "22" :italic "23" :underline "24" :reverse "27"})
 
-(defn link-mark-on
-  "SGR that starts the clickable-target mark, per the `:link/target` theme
-   binding. \"\" when colour is off or the token is unbound."
-  []
-  (let [mods (get @!theme :link/target)]
+(defn mark-on
+  "SGR that starts the mark bound to `token-id`. \"\" when colour is off or the
+   token is unbound.
+
+   A MARK is not the same thing as a style: it is one half of a pair, inserted
+   into the middle of a row whose surrounding styling belongs to whoever wrote
+   it. Only tokens bound to `mod->off-code` mods can be used this way — see the
+   `:link/target` comment on the theme map."
+  [token-id]
+  (let [mods (get @!theme token-id)]
     (if (and @!color-enabled (seq mods)) (mods->ansi mods) "")))
 
-(defn link-mark-off
-  "SGR that ends the mark `link-mark-on` started, turning off exactly those
-   attributes and leaving the surrounding row's styling alone. Unknown mods
-   contribute nothing rather than forcing a `reset`, so a mis-bound theme
+(defn mark-off
+  "SGR that ends the mark `mark-on` started for `token-id`, turning off exactly
+   those attributes and leaving the surrounding row's styling alone. Unknown
+   mods contribute nothing rather than forcing a `reset`, so a mis-bound theme
    degrades to a mark that does not end — visible, not corrupting."
-  []
-  (let [mods (get @!theme :link/target)
+  [token-id]
+  (let [mods (get @!theme token-id)
         offs (distinct (keep mod->off-code mods))]
     (if (and @!color-enabled (seq offs))
       (str esc (str/join ";" offs) "m")
       "")))
+
+(defn link-mark-on
+  "SGR that starts the clickable-target mark, per the `:link/target` theme
+   binding."
+  []
+  (mark-on :link/target))
+
+(defn link-mark-off
+  "SGR that ends the mark `link-mark-on` started."
+  []
+  (mark-off :link/target))
 
 (defn link-mark
   "Wrap `s` in the clickable-target mark. For whole strings a caller owns

@@ -47,6 +47,10 @@
 (export-symbols ai.brainyard.agent.tui.ansi
                 osc bel osc52-copy)
 
-;; Clickable-target mark (the `:link/target` theme token)
+;; Mid-row marks — one half of a pair inserted into text the caller does not
+;; own. `mark-on`/`mark-off` are the general form (used by scrollback search
+;; via `:search/match` / `:search/current`); the `link-mark*` trio is the
+;; `:link/target` special case.
 (export-symbols ai.brainyard.agent.tui.ansi
+                mark-on mark-off
                 link-mark link-mark-on link-mark-off)

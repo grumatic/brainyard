@@ -77,6 +77,11 @@
                                 (update b :start-idx + delta)
                                 b)))
                 {} blocks))))
+    ;; Search hits are scrollback indices, so this splice moved them. Unlike a
+    ;; live-block tick this RESCANS as well as shifts: the rows an expand
+    ;; reveals are exactly the text the user could not search a moment ago, and
+    ;; not picking up matches in them is the case they expanded the block for.
+    (layout/resync-search-after-splice! start delete-count delta)
     delta))
 
 ;; Per-id memo of expand state so collapse can restore the pre-expand

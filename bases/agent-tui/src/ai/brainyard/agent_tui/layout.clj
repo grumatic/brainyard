@@ -9,7 +9,8 @@
    - :inline     — pass-through (current behavior, used by REPL start!/ask/stop!)
 
    All write functions acquire `layout-lock` for thread safety."
-  (:require [ai.brainyard.agent.interface.tui.ansi :as ansi]
+  (:require [ai.brainyard.agent-tui.search :as search]
+            [ai.brainyard.agent.interface.tui.ansi :as ansi]
             [ai.brainyard.agent.interface.tui.format :as fmt]
             [clojure.string :as str]))
 
@@ -30,6 +31,7 @@
          :status-row     nil       ;; status bar row (right-aligned)
          :status-text    ""        ;; last rendered status bar text
          :viewport-offset 0        ;; 0 = live (showing latest), >0 = scrolled up N lines
+         :search          nil     ;; scrollback search — see the Search section below
          :task-activity-height 0  ;; current task activity area height (0 = hidden)
          :task-activity-data nil  ;; vector of task snapshots for rendering
          :agent-activity-height 0  ;; current agent activity panel height (0 = hidden)
@@ -104,6 +106,47 @@
     (try (or (f row) row) (catch Throwable _ row))
     row))
 
+(defn- search-spans-at
+  "The active search's spans that fall on scrollback index `idx`, each tagged
+   with whether it is the CURRENT hit. nil when none do."
+  [search idx]
+  (when-let [hits (seq (:hits search))]
+    (let [cur (:cur search)
+          idx (long idx)]
+      (seq (keep-indexed
+            (fn [i h]
+              (when (= (long (:idx h)) idx)
+                {:start (:start h) :end (:end h) :current? (= i cur)}))
+            hits)))))
+
+(defn- finish-row
+  "The last two passes over a row before it reaches the terminal: the
+   clickable-target decoration and the scrollback-search highlight.
+
+   THE THREE PAINT PATHS MUST ALL CALL THIS. `render-viewport!`,
+   `render-block-rows!` (live-block ticks) and `write-output!`'s
+   hardware-scroll path each paint rows, and a row finished on one but not
+   another changes appearance the moment anything repaints it — which reads as
+   a rendering glitch rather than as a bug. It is also what keeps the painted-
+   row diff sound: the two caches would otherwise disagree about a row neither
+   of them changed. Funnelling both passes through one function is what makes
+   that invariant structural instead of remembered.
+
+   MUST RUN AFTER THE WIDTH CLAMP. Both passes only ever ADD escapes, so they
+   preserve display width; the clamp is a width-aware truncate, and running it
+   second can cut away a closing off-code — leaving the underline or the
+   reverse-video on for every row below, since SGR state survives a cursor
+   move.
+
+   Decoration goes first so the link decorator's memo stays keyed on stable row
+   strings. Highlighting first would make every matching row a fresh cache key
+   on every navigation step, since the current-hit mark differs from the rest."
+  [^String row idx search]
+  (let [row (decorate row)]
+    (if-let [spans (and search (search-spans-at search idx))]
+      (try (search/highlight-row row spans) (catch Throwable _ row))
+      row)))
+
 ;; Scrollback buffer: stores all output lines written to the scroll region.
 ;; Dumped to normal screen on teardown so user can scroll back in terminal history.
 (defonce !scrollback (atom []))
@@ -112,6 +155,44 @@
 ;; Live blocks are always at the tail of !scrollback. Normal output inserts before them.
 ;; {block-id {:start-idx int, :line-count int}}
 (defonce !live-blocks (atom {}))
+
+;; ----------------------------------------------------------------------------
+;; Search anchoring
+;;
+;; `:viewport-offset` counts ROWS BACK FROM THE TAIL, so every append moves what
+;; it points at. That is why `write-output!` snaps it to 0 on any emit: holding
+;; a row number steady while the tail moves would drift the reader through the
+;; text. It is also why a search hit cannot be held as an offset — the next
+;; streamed chunk would walk the user off it, i.e. exactly when a long
+;; scrollback is worth searching.
+;;
+;; So a search holds a scrollback INDEX and the offset is DERIVED from it after
+;; every insert. Same reasoning as `viewport-anchor` for a resize, and the same
+;; conclusion: the index is what survives, the offset is what gets recomputed.
+
+(defn- search-anchor-index
+  "The scrollback index the active search is parked on, or nil when nothing is
+   anchored (no search, or a search with no hits)."
+  []
+  (get-in @!layout [:search :cur-idx]))
+
+(defn- offset-for-index
+  "The `:viewport-offset` that puts scrollback index `idx` about a third of the
+   way down the scroll region — context above the hit as well as below it,
+   rather than pinning it to an edge. Clamped to the scrollable range, which is
+   what handles a hit near either end."
+  ^long [idx]
+  (let [sb      (long (or (:scroll-bottom @!layout) 1))
+        total   (count @!scrollback)
+        k       (quot sb 3)
+        max-off (max 0 (- total sb))]
+    (max 0 (min max-off (- total (long idx) (- sb k))))))
+
+(defn- seat-index!
+  "Put scrollback index `idx` in view by re-deriving `:viewport-offset` from it.
+   State only — the caller repaints."
+  [idx]
+  (swap! !layout assoc :viewport-offset (offset-for-index idx)))
 
 ;; ----------------------------------------------------------------------------
 ;; Painted rows — what is believed to be on each scroll-region row right now
@@ -647,6 +728,7 @@
 (declare earliest-live-block-idx)
 (declare render-viewport!)
 (declare sticky-bottom-entry)
+(declare shift-search!)
 
 (defn write-output!
   "Write a line of output.
@@ -679,9 +761,15 @@
                    insert-at (if sticky-bot
                                (:start-idx (second sticky-bot))
                                (count @!scrollback))
-                   needs-shift? (some? sticky-bot)]
-              ;; Auto-snap to bottom if scrolled up
-               (when (pos? (:viewport-offset @!layout))
+                   needs-shift? (some? sticky-bot)
+                   ;; A search parked on a hit is the user having taken the
+                   ;; viewport deliberately. Snapping them to live on the next
+                   ;; streamed chunk would make search useless during a turn,
+                   ;; which is when there is most to search. Re-derive the
+                   ;; offset from the anchor after the insert instead.
+                   anchor-idx (search-anchor-index)]
+              ;; Auto-snap to bottom if scrolled up (unless anchored, above)
+               (when (and (nil? anchor-idx) (pos? (:viewport-offset @!layout)))
                  (swap! !layout assoc :viewport-offset 0))
               ;; Record how to re-render this emit at another width BEFORE the
               ;; rows land, so `src-insert!` still sees the pre-insert list and
@@ -698,6 +786,12 @@
                             (fn [sb]
                               (into (into (subvec sb 0 insert-at) new-lines)
                                     (subvec sb insert-at))))
+                     ;; Hits at or after the insertion point moved, for the
+                     ;; same reason the live blocks below did. Only on this
+                     ;; branch: the plain-append path inserts AT the tail, past
+                     ;; which no hit index can exist, so iterating them there
+                     ;; would cost the hot path something to prove nothing.
+                     (when (pos? n) (shift-search! insert-at 0 n))
                      (when (pos? n)
                        (swap! !live-blocks
                               (fn [blocks]
@@ -709,14 +803,22 @@
                                             block)))
                                  {} blocks)))))
                  (swap! !scrollback into new-lines))
+              ;; The tail just moved, so the offset that was pointing at the
+              ;; anchored hit is now pointing one screenful of new text away
+              ;; from it. Re-derive.
+               (when anchor-idx (seat-index! anchor-idx))
               ;; When live blocks exist, use render-viewport! to avoid ghost
               ;; duplication from hardware scroll conflicting with cursor-positioned
               ;; block rendering. Without live blocks, use fast hardware scroll.
+              ;; An anchored search takes the same branch for a different
+              ;; reason: the hardware path scrolls the region and appends at
+              ;; the BOTTOM, which is only correct when the viewport is at the
+              ;; tail — and an anchor is precisely the case where it is not.
               ;; When a popover is active, defer the terminal write — scrollback
               ;; data above is already updated; the popover dismissal flushes via render-viewport!.
                (if (popover-active?)
                  (mark-dirty!)
-                 (if (seq @!live-blocks)
+                 (if (or (seq @!live-blocks) anchor-idx)
                    (render-viewport!)
                   ;; Hardware-scroll path. Position cursor at column 1 of
                   ;; the scroll-bottom row BEFORE each line so embedded
@@ -735,15 +837,17 @@
                      ;; live blocks — i.e. not during a turn, which is where the
                      ;; diff earns its keep.
                      (invalidate-painted!)
-                     ;; Decorate here too, or a row is plain when it first
-                     ;; appears and underlined the moment anything repaints it.
+                     ;; Finish here too, or a row is plain when it first
+                     ;; appears and decorated the moment anything repaints it.
                      ;; These rows are formatted at the current width already,
                      ;; so unlike the other two paths there is no clamp first.
-                     (raw-write!
-                      w
-                      (str/join (map #(str (ansi/cursor-to scroll-bottom 1)
-                                           "\n" (decorate %))
-                                     new-lines)))))))
+                     (let [search (:search @!layout)]
+                       (raw-write!
+                        w
+                        (str/join (map-indexed
+                                   #(str (ansi/cursor-to scroll-bottom 1) "\n"
+                                         (finish-row %2 (+ insert-at (long %1)) search))
+                                   new-lines))))))))
              (raw-write! w (str s "\n")))))))))
 
 (defn write-inline!
@@ -797,10 +901,42 @@
       (if (popover-active?)
         (mark-dirty!)
         (let [w (get-writer)
-              {:keys [separator-row cols viewport-offset scroll-bottom]} @!layout]
+              {:keys [separator-row cols viewport-offset scroll-bottom search]} @!layout]
           (when (and w separator-row)
-            (if (and viewport-offset (pos? viewport-offset))
+            (cond
+              ;; Searching — the separator carries the counter and the keys,
+              ;; the input line carries the query (it has the cursor). The
+              ;; label is CLAMPED: unlike the scroll indicator it embeds user
+              ;; text of arbitrary length, which would otherwise wrap onto the
+              ;; input row.
+              (:typing? search)
+              (let [n     (count (:hits search))
+                    ;; A half-typed regex is not the same answer as "this text
+                    ;; is not here", and saying "no matches" for `/a(` sends
+                    ;; the user looking for the wrong problem.
+                    bad?  (:invalid? search)
+                    label (str " ⌕ \"" (:query search) "\" "
+                               (cond
+                                 bad?      "— bad pattern "
+                                 (zero? n) "— no matches "
+                                 :else
+                                 (str (inc (long (or (:cur search) 0))) "/" n
+                                      (when (:wrapped? search) " ↩ wrapped")
+                                      " · ↑↓ next · Enter keep · Esc cancel ")))
+                    label (fmt/truncate-to-width label (max 0 (- cols 6)))
+                    label-len (fmt/display-width label)
+                    left-len  (max 3 (quot (- cols label-len) 2))
+                    right-len (max 3 (- cols label-len left-len))]
+                (raw-write! w (str (ansi/cursor-to separator-row 1)
+                                   ansi/erase-line
+                                   (ansi/muted (apply str (repeat left-len ansi/h-line)))
+                                   (if (or bad? (zero? n))
+                                     (ansi/failure label)
+                                     (ansi/warning label))
+                                   (ansi/muted (apply str (repeat right-len ansi/h-line))))))
+
               ;; Scrolled up — show position indicator
+              (and viewport-offset (pos? viewport-offset))
               (let [total  (count @!scrollback)
                     end    (- total viewport-offset)
                     start  (max 0 (- end scroll-bottom))
@@ -815,7 +951,9 @@
                                    (ansi/muted left)
                                    (ansi/warning label)
                                    (ansi/muted right))))
+
               ;; At live position — plain dim line
+              :else
               (draw-plain-separator! w separator-row cols))))))))
 
 (defn draw-bottom-separator!
@@ -1024,7 +1162,7 @@
       (if (popover-active?)
         (mark-dirty!)
         (let [w (get-writer)
-              {:keys [scroll-bottom viewport-offset collapse-highlight cols]} @!layout
+              {:keys [scroll-bottom viewport-offset collapse-highlight cols search]} @!layout
               lines @!scrollback
               total (count lines)
               ;; viewport-offset 0 = show latest (tail), N = scrolled up N lines
@@ -1073,14 +1211,12 @@
                             ""
                             (let [sb-idx (+ start (- row blank-rows))]
                               (if-let [line (get visible (- row blank-rows))]
-                                ;; Decorate AFTER clamping, never before: the
-                                ;; clamp is a width-aware truncate, and a span
-                                ;; marker inserted first can have its closing
-                                ;; `underline-off` cut away — leaving the
-                                ;; underline on for every row after it.
-                                (decorate (clamp (if (= sb-idx highlight-idx)
-                                                   (highlight-line line)
-                                                   line)))
+                                ;; Finish AFTER clamping, never before — see
+                                ;; `finish-row`.
+                                (finish-row (clamp (if (= sb-idx highlight-idx)
+                                                     (highlight-line line)
+                                                     line))
+                                            sb-idx search)
                                 ""))))
                         (range scroll-bottom))
                   painted (painted-rows cols scroll-bottom)
@@ -1235,9 +1371,236 @@
   []
   (when (and (fullscreen?) (pos? (:viewport-offset @!layout)))
     (with-frame
-      (swap! !layout assoc :viewport-offset 0)
+      ;; Returning to live is the user saying they are done with wherever they
+      ;; were, which includes a search they left highlighted. Highlights
+      ;; deliberately outlive the search MODE (so a match stays visible while
+      ;; the follow-up prompt is typed) — this is the gesture that ends them,
+      ;; along with Esc, a new search and a session switch.
+      (swap! !layout assoc :viewport-offset 0 :search nil)
       (render-viewport!)
       (draw-separator!))))
+
+;; ============================================================================
+;; Scrollback search (Ctrl-F)
+;;
+;; The stateful half of `search`. Two states worth telling apart:
+;;
+;;   :typing? true   — the search bar owns the input line and the separator.
+;;   :typing? false  — the mode is over, the HIGHLIGHTS remain. That is what
+;;                     lets a user find a line, press Enter, and type their
+;;                     next prompt with the match still marked on screen.
+;;
+;; Highlights are cleared by Esc (`clear-search!`), by a new search, by a
+;; session switch, and by `scroll-to-bottom!` — never by ordinary output.
+;; ============================================================================
+
+(defn search-typing?
+  "True while the search bar owns the input line."
+  []
+  (boolean (:typing? (:search @!layout))))
+
+(defn search-state
+  "The current search map, or nil. Read-only; for chrome and tests."
+  []
+  (:search @!layout))
+
+(defn search-prompt-parts
+  "Input-line prompt look while searching, in the shape
+   `terminal/redraw-input-line!` expects from `session/feedback-prompt-parts`.
+
+   The prompt MUST be 2 visible columns — `redraw-input-line!` hard-codes
+   `prompt-w 2` and all of its cursor arithmetic depends on it, the same
+   constraint the idle `\"> \"` and feedback `\"? \"` prompts meet."
+  []
+  {:prompt      (ansi/style "/ " ansi/bold ansi/bright-yellow)
+   :placeholder "Search scrollback — ↑↓ next, Enter keep, Esc cancel"})
+
+(defn- viewport-end
+  "One past the last scrollback index currently visible."
+  ^long []
+  (max 0 (- (count @!scrollback) (long (or (:viewport-offset @!layout) 0)))))
+
+(defn- apply-search!
+  "Install `search` and repaint. Caller supplies the whole map so seat/paint
+   ordering is in one place."
+  [search]
+  (with-frame
+    (swap! !layout assoc :search search)
+    (when-let [idx (:cur-idx search)] (seat-index! idx))
+    (render-viewport!)
+    (draw-separator!)))
+
+(defn begin-search!
+  "Open the search bar with an empty query. Highlights nothing yet."
+  []
+  (when (fullscreen?)
+    (apply-search! {:query "" :hits [] :cur -1 :cur-idx nil :typing? true})))
+
+(defn set-search!
+  "Rescan for `query` and park on a hit. Returns the number of hits.
+
+   Which hit: the last one at or before what is currently on screen. Searching
+   a scrollback is nearly always \"find the thing that scrolled past\", so it
+   works BACKWARDS from where the user is looking; at the live tail that is the
+   most recent occurrence."
+  [query]
+  (if-not (fullscreen?)
+    0
+    ;; Compiled once and passed to `scan`, so an unfinishable regex is
+    ;; reportable as such rather than indistinguishable from "no matches".
+    (let [spec (search/compile-query query)
+          hits (search/scan @!scrollback spec)
+          cur  (search/hit-at-or-before hits (dec (viewport-end)))]
+      (apply-search! {:query    (str query)
+                      :hits     hits
+                      :cur      cur
+                      :cur-idx  (when (nat-int? cur) (:idx (nth hits cur)))
+                      :invalid? (= :invalid (:kind spec))
+                      :typing?  true})
+      (count hits))))
+
+(defn search-step!
+  "Move to the previous (`:prev`, older) or next (`:next`, newer) hit.
+   Returns `{:cur :total :wrapped?}`, or nil when there is nothing to step.
+
+   WRAPPING IS REPORTED, on the separator's counter rather than as an emitted
+   line — an emit lands at the tail, which is exactly where the reader is NOT
+   while anchored on a hit, so the notice would scroll by unseen. Silently
+   returning to the top is how a user concludes the search is broken."
+  [dir]
+  (when-let [{:keys [hits cur] :as s} (:search @!layout)]
+    (when (seq hits)
+      (let [n    (count hits)
+            cur  (long (if (nat-int? cur) cur 0))
+            nxt  (if (= dir :prev) (dec cur) (inc cur))
+            wrap (or (neg? nxt) (>= nxt n))
+            nxt  (mod nxt n)]
+        (apply-search! (assoc s :cur nxt :cur-idx (:idx (nth hits nxt))
+                              :wrapped? wrap))
+        {:cur nxt :total n :wrapped? wrap}))))
+
+(defn end-search-typing!
+  "Leave the search bar, keeping the highlights and the current view.
+
+   DROPS THE ANCHOR, which the highlights outlive. The two have opposite
+   lifetimes on purpose: the marks are worth keeping so the match is still
+   visible while the follow-up prompt is typed, but an anchor that survived
+   would go on suppressing the auto-snap — and the user has just returned to
+   the input line to submit something, so the next answer must scroll into
+   view. Keeping both would leave them watching an old match while the reply
+   streamed past underneath it."
+  []
+  (when (:search @!layout)
+    (with-frame
+      (swap! !layout update :search assoc :typing? false :cur-idx nil)
+      (draw-separator!))))
+
+(defn clear-search!
+  "Drop the search entirely — highlights, anchor and bar. The viewport STAYS
+   where it is: throwing away the position the user just searched for is the
+   one thing cancelling must not do."
+  []
+  (when (:search @!layout)
+    (with-frame
+      (swap! !layout assoc :search nil)
+      (render-viewport!)
+      (draw-separator!))))
+
+;; ----------------------------------------------------------------------------
+;; Keeping the hit list true as the scrollback changes underneath it
+;;
+;; `:hits` are scrollback INDICES, so anything that inserts, removes or
+;; re-wraps rows invalidates them. There are three such events and they want
+;; three different answers, which is why this is not one function:
+;;
+;;   live-block tick   -> shift-search!    (index surgery, no rescan)
+;;   expand / collapse -> resync-search-after-splice!  (shift, then rescan)
+;;   resize reflow     -> rescan-search! :ordinal
+;;
+;; Getting this wrong is quiet rather than loud: the marks drift onto text that
+;; does not match, and the anchor holds the viewport on the wrong line.
+
+(defn shift-search!
+  "Adjust hit indices for a splice that replaced `delete-count` rows at `start`
+   with rows that changed the total by `delta`. State only.
+
+   INDEX SURGERY, NOT A RESCAN, because this runs on every live-block tick — a
+   streamed chunk is a splice — and rescanning a long scrollback at streaming
+   rates is not affordable. It is exact for what it covers: rows after the
+   splice moved by a known amount, and rows inside it were replaced wholesale,
+   so their hits are gone rather than moved.
+
+   What it deliberately cannot see is a match in the NEW rows. The hit list is
+   a snapshot of one query, and a live block re-rendering under the reader
+   should not silently renumber their `3/17` while they navigate it."
+  [start delete-count delta]
+  (when-let [s (:search @!layout)]
+    (when (seq (:hits s))
+      (let [start (long start)
+            end   (+ start (long delete-count))
+            delta (long delta)
+            cur   (long (or (:cur s) -1))
+            kept  (into []
+                        (keep (fn [h]
+                                (let [i (long (:idx h))]
+                                  (cond
+                                    (< i start) h
+                                    (< i end)   nil        ; replaced wholesale
+                                    :else       (assoc h :idx (+ i delta))))))
+                        (map-indexed (fn [i h] (assoc h ::cur? (= i cur)))
+                                     (:hits s)))
+            ;; Follow the CURRENT hit through the surgery rather than trusting
+            ;; its ordinal, which shifts whenever an earlier hit is dropped.
+            cur'  (or (first (keep-indexed (fn [i h] (when (::cur? h) i)) kept))
+                      (when (seq kept) (search/nearest-hit kept start)))
+            kept  (mapv #(dissoc % ::cur?) kept)]
+        (swap! !layout assoc :search
+               (assoc s
+                      :hits kept
+                      :cur (if cur' cur' -1)
+                      ;; Only re-anchor if it WAS anchored: `end-search-typing!`
+                      ;; drops `:cur-idx` on purpose, and restoring it here
+                      ;; would silently re-enable the auto-snap suppression
+                      ;; after the user had left the search bar.
+                      :cur-idx (when (and cur' (:cur-idx s))
+                                 (:idx (nth kept cur')))))))))
+
+(defn rescan-search!
+  "Re-scan the current query against the scrollback as it is now. State only;
+   the caller repaints.
+
+   `anchor` picks which hit becomes current:
+     `:ordinal`  — keep the Nth match. Correct for a REFLOW: the text is
+                   unchanged and only its wrapping moved, so the Nth match is
+                   still the Nth.
+     an index    — the match nearest that scrollback index. Correct for a
+                   SPLICE, where new text appeared and the ordinals really did
+                   move."
+  [anchor]
+  (when-let [s (:search @!layout)]
+    (when (seq (:query s))
+      (let [spec (search/compile-query (:query s))
+            hits (search/scan @!scrollback spec)
+            cur  (cond
+                   (empty? hits)       -1
+                   (= :ordinal anchor) (min (long (or (:cur s) 0)) (dec (count hits)))
+                   :else               (search/nearest-hit hits anchor))]
+        (swap! !layout assoc :search
+               (assoc s
+                      :hits hits
+                      :cur cur
+                      :cur-idx (when (and (nat-int? cur) (:cur-idx s))
+                                 (:idx (nth hits cur)))
+                      :invalid? (= :invalid (:kind spec))))))))
+
+(defn resync-search-after-splice!
+  "Shift indices for a splice, then rescan — for expand/collapse, where rows
+   the user just revealed may themselves contain matches, which is the whole
+   reason they expanded the block."
+  [start delete-count delta]
+  (when (:search @!layout)
+    (shift-search! start delete-count delta)
+    (rescan-search! (or (get-in @!layout [:search :cur-idx]) start))))
 
 ;; ============================================================================
 ;; Live Blocks — in-scrollback regions that update in-place
@@ -1254,6 +1617,9 @@
            (fn [sb]
              (into (into (subvec sb 0 start-idx) new-lines)
                    (subvec sb (+ start-idx delete-count)))))
+    ;; Hits are indices into the rows we just moved. Surgery, not a rescan —
+    ;; this is the streamed-chunk path. See `shift-search!`.
+    (shift-search! start-idx delete-count delta)
     delta))
 
 (defn- adjust-blocks-after!
@@ -1288,7 +1654,7 @@
       (if (popover-active?)
         (mark-dirty!)
         (let [w (get-writer)
-              {:keys [scroll-bottom viewport-offset cols]} @!layout
+              {:keys [scroll-bottom viewport-offset cols search]} @!layout
               lines @!scrollback
               total (count lines)
               view-end   (- total viewport-offset)
@@ -1302,15 +1668,11 @@
                   prev (painted-rows cols scroll-bottom)]
               (doseq [idx (range vis-start vis-end)]
                 (let [row (+ 1 blank-rows (- idx view-start))
-                      ;; Same clamp AND the same decoration as
-                      ;; `render-viewport!`. All three paint paths must agree: a
-                      ;; row decorated on one and not another changes appearance
-                      ;; the moment something repaints it, which reads as a
-                      ;; rendering glitch. It is also what makes the diff sound —
-                      ;; the two caches would otherwise disagree about a row
-                      ;; neither of them changed.
-                      content (decorate
-                               (fmt/truncate-to-width (get lines idx "") cols))]
+                      ;; Same clamp AND the same finish as `render-viewport!` —
+                      ;; see `finish-row` for why all three paths must agree.
+                      content (finish-row
+                               (fmt/truncate-to-width (get lines idx "") cols)
+                               idx search)]
                   ;; A ticking block re-renders wholesale, so most of its rows
                   ;; come back byte-identical; only the ones that moved are
                   ;; worth the terminal's time.
@@ -1975,6 +2337,15 @@
       ;; Put the reader back on the text they were reading rather than on the
       ;; row number they happened to be at.
       (restore-viewport-anchor! (mapv #(dissoc % :rows) rendered) anchor)
+      ;; Every hit index was a row number in the OLD wrapping. Rescan by
+      ;; ORDINAL: a resize changes where lines break, never what text exists,
+      ;; so the Nth match is still the Nth — which survives a rewrap that moved
+      ;; every index, in a way that matching on the old index cannot.
+      (rescan-search! :ordinal)
+      ;; Re-seat last, and only when the search still holds a position: the
+      ;; hit's own row is a better answer than the viewport anchor, which was
+      ;; derived from it a moment ago and is now one rewrap out of date.
+      (when-let [i (search-anchor-index)] (seat-index! i))
       true)))
 
 (defn reflow-to-current-width!

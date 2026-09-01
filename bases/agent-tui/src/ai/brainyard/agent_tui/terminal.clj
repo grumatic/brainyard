@@ -129,7 +129,8 @@
    Returns keyword for special keys, string for printable chars, a mouse-event
    MAP (see below), or nil for EOF.
    Special keys: :page-up, :page-down, :enter, :alt-enter, :backspace,
-                 :ctrl-a, :ctrl-e, :ctrl-k, :ctrl-n, :ctrl-o, :ctrl-p, :ctrl-t, :ctrl-w,
+                 :ctrl-a, :ctrl-e, :ctrl-f, :ctrl-k, :ctrl-n, :ctrl-o, :ctrl-p,
+                 :ctrl-t, :ctrl-w,
                  :ctrl-d, :arrow-left, :arrow-right,
                  :shift-arrow-left, :shift-arrow-right, :sigint, :unknown
    Mouse (only when `ansi/enable-mouse` is in effect — see `layout/mouse-seq`):
@@ -161,6 +162,7 @@
       (= b 4)   :ctrl-d                ;; Ctrl-D
       (= b 1)   :ctrl-a                ;; Ctrl-A (beginning of line)
       (= b 5)   :ctrl-e                ;; Ctrl-E (end of line)
+      (= b 6)   :ctrl-f                ;; Ctrl-F (scrollback search; next hit while searching)
       (= b 11)  :ctrl-k                ;; Ctrl-K (kill to end of line)
       (= b 14)  :ctrl-n                ;; Ctrl-N (next session)
       (= b 15)  :ctrl-o                ;; Ctrl-O (open selected marker in $EDITOR, scroll mode)
@@ -420,7 +422,13 @@
         ;; new turn — flag it with a distinct yellow "? " prompt + a per-kind
         ;; hint (shared with permissions' open/close refresh via session). Both
         ;; prompts are 2 visible columns so the cursor math below is unchanged.
-        {:keys [prompt placeholder]} (tui-session/feedback-prompt-parts)
+        ;; While the search bar is open it OWNS this line — `buffer` is the
+        ;; query, not the user's input, which the editor saved and restores on
+        ;; exit. Checked first: a search opened over a pending feedback prompt
+        ;; must still look like a search.
+        {:keys [prompt placeholder]} (if (layout/search-typing?)
+                                       (layout/search-prompt-parts)
+                                       (tui-session/feedback-prompt-parts))
         prompt-w 2                          ;; visible columns of the prompt
         indent (apply str (repeat prompt-w \space))
         buf-empty? (empty? buffer)

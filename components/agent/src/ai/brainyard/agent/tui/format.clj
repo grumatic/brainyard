@@ -1029,6 +1029,7 @@
                  (let [n (max 1 (- col (count cmd-str)))]
                    (apply str (repeat n " "))))
         keys   [["PgUp / PgDn"            "Scroll output history (fullscreen mode)"]
+                ["Ctrl-F"                "Search scrollback (↑↓ next, Enter keep, Esc cancel)"]
                 ["Shift+\u2190 / Shift+\u2192" "Navigate input prompt history"]
                 ["Ctrl-N / Ctrl-P"       "Next / previous session"]
                 ["Ctrl-T"                "Create new session"]

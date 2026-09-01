@@ -598,6 +598,13 @@
         ;; When viewport-offset > 0 and Tab is pressed, step through visible
         ;; [*Collapsed:<id>*] and [*Expanded:<id>*] markers. Enter toggles.
         selected-mark (volatile! nil)       ;; {:id :line-idx :kind} or nil
+        ;; Scrollback search (Ctrl-F). A SUB-MODE of this loop, not a nested
+        ;; read loop: a nested one would have to re-implement bracketed paste,
+        ;; mouse decoding, SIGINT and the pending-feedback intercept, and would
+        ;; drift from them the first time any of the four changed.
+        search-mode?  (volatile! false)
+        search-query  (volatile! "")        ;; what the search bar holds
+        search-saved  (volatile! nil)       ;; [buffer cursor-pos] to restore on exit
         ;; Autocomplete menu state
         menu-active?  (volatile! false)
         menu-items    (volatile! [])        ;; current filtered [[cmd desc] ...]
@@ -888,8 +895,89 @@
             (swap! layout/!layout dissoc :collapse-highlight)
             (try (layout/render-viewport!) (catch Exception _))
             (try (layout/draw-separator!) (catch Exception _))))
+        ;; --- Scrollback search (Ctrl-F) ---------------------------------
+        search-redraw!
+        (fn []
+          ;; The search bar reuses the input line, so it goes through the same
+          ;; redraw — `redraw-input-line!` picks the `/ ` prompt itself off
+          ;; `layout/search-typing?`. Cursor parks at the end of the query.
+          (terminal/redraw-input-line! @search-query (count @search-query)))
+        enter-search!
+        (fn []
+          ;; Marker selection and search are two reverse-video highlights over
+          ;; the same rows; having both live at once is not a state worth
+          ;; supporting, so each entry point clears the other.
+          (dismiss-menu!)
+          (vreset! selected-mark nil)
+          (swap! layout/!layout dissoc :collapse-highlight)
+          (vreset! search-saved [(.toString buf) @cursor-pos])
+          (vreset! search-mode? true)
+          (vreset! search-query "")
+          (layout/begin-search!)
+          (search-redraw!))
+        exit-search!
+        (fn [keep?]
+          ;; keep? = Enter: the mode ends, the highlights and the position
+          ;; stay, so the user can type their follow-up with the match still
+          ;; marked. Esc drops the lot but NOT the viewport position.
+          (vreset! search-mode? false)
+          (if keep? (layout/end-search-typing!) (layout/clear-search!))
+          (let [[b p] (or @search-saved ["" 0])]
+            (vreset! search-saved nil)
+            ;; The editor's buffer was never touched while searching; this
+            ;; only puts it back on screen under the restored prompt.
+            (terminal/redraw-input-line! b p)))
+        ;; ONE frame per keystroke. Unframed, the viewport repaint, the
+        ;; separator and the input redraw are three flushes with three
+        ;; show-cursors — which is the flicker, not the searching. Same
+        ;; reasoning as the :scroll-up handler.
+        apply-query!  (fn []
+                        (layout/draw-frame!
+                         (fn [] (layout/set-search! @search-query)
+                           (search-redraw!))))
+        step-search!  (fn [dir]
+                        (layout/draw-frame!
+                         (fn [] (layout/search-step! dir)
+                           (search-redraw!))))
+        handle-search-key!
+        (fn [key]
+          (cond
+            (or (= key :escape) (= key :sigint) (= key :ctrl-d))
+            (exit-search! false)
+
+            (= key :enter) (exit-search! true)
+
+            (= key :backspace)
+            (when (pos? (count @search-query))
+              (vreset! search-query (subs @search-query 0
+                                          (dec (count @search-query))))
+              (apply-query!))
+
+            ;; ↑/↓ arrive as :scroll-up/:scroll-down — `read-key!` maps
+            ;; ESC[A/ESC[B that way because alternate-scroll sends them for the
+            ;; wheel, and with mouse reporting on the wheel arrives as SGR
+            ;; 64/65 and lands on the same two keywords. They are
+            ;; indistinguishable by construction, so the wheel steps hits too.
+            (or (= key :scroll-up) (= key :page-up))   (step-search! :prev)
+            (or (= key :scroll-down) (= key :page-down)) (step-search! :next)
+            (= key :ctrl-f) (step-search! :next)
+
+            ;; Printable only. A control byte with no binding above is consumed
+            ;; rather than typed into the query, where it would be invisible
+            ;; and would silently stop every subsequent match.
+            (and (string? key) (seq key) (>= (int (.charAt ^String key 0)) 32))
+            (do (vswap! search-query str key)
+                (apply-query!))
+
+            :else nil))
         step-mark!    (fn [dir]
                         ;; Cycle through visible markers. dir = :next or :prev.
+                        ;; Marker selection and search are two reverse-video
+                        ;; highlights over the same rows; entering either ends
+                        ;; the other (`enter-search!` is the mirror of this).
+                        ;; State only — `refresh-highlight!` below repaints
+                        ;; once, rather than this opening a frame of its own.
+                        (swap! layout/!layout assoc :search nil)
                         (let [marks (block-ui/find-markers-in-viewport)]
                           (if (empty? marks)
                             (do (vreset! selected-mark nil)
@@ -1060,8 +1148,12 @@
             ;; (single-key fast-path), an invalid one is rejected (consumed,
             ;; never echoed into the line). :text falls through to normal line
             ;; editing and is delivered at the Enter/submit branch below.
+            ;; Not while the search bar is open — it owns the input line, and
+            ;; the intercept DELIVERS on a valid key, so letting it run would
+            ;; answer the agent's question with a character the user was
+            ;; typing into a search.
             handled-feedback?
-            (when (and (string? key) (seq key))
+            (when (and (not @search-mode?) (string? key) (seq key))
               (when-let [fb @tui-session/!pending-feedback]
                 (input/handle-feedback-key! fb key)))]
         (cond
@@ -1083,6 +1175,12 @@
           ;; `read-key!` maps them back to :scroll-up / :scroll-down.)
           (map? key)
           (do (click! key) (recur))
+
+          ;; Search bar open — every key belongs to it. Consuming the ones it
+          ;; has no binding for is deliberate: half-live line editing beneath a
+          ;; modal bar is worse than an inert keystroke.
+          @search-mode?
+          (do (handle-search-key! key) (recur))
 
           :else
           (case key
@@ -1327,6 +1425,12 @@
                 (terminal/redraw-input-line! (.toString buf) @cursor-pos)
                 (recur))
               :else (recur))
+
+            ;; Fullscreen only — inline mode has no viewport to move and no
+            ;; scroll region to highlight in.
+            :ctrl-f
+            (do (when (layout/fullscreen?) (enter-search!))
+                (recur))
 
             :ctrl-a
             (do (logical-line-start) (recur))
