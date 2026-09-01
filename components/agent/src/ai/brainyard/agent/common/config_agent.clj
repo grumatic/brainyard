@@ -275,6 +275,22 @@ ALLOWLIST — keys you may write through config$apply
 If config$apply returns :allowlist-violation, READ the :hint field — it
 tells you the right call. Don't retry with a slightly-different bad call.
 
+Two shape rules the allowlist itself cannot enforce:
+
+R9. A runtime knob goes under [:agent :config], NEVER at the top level.
+    Only [:agent :config] is read at startup, so a schema key written one
+    level up sits in the file and is read by nothing — /config then shows
+    the schema default with no error anywhere. Write
+      {:agent {:config {:mcp-allow-tools [\"clickhouse/*\"]}}}
+    not
+      {:mcp-allow-tools [\"clickhouse/*\"]}
+
+R10. In an MCP server's [:config :env], use STRING keys —
+     {\"API_TOKEN\" \"${API_TOKEN}\"}, not {:API_TOKEN \"...\"}. These are
+     literal environment-variable names for the spawned process; string is
+     the form the catalog defaults and the AWS profile/region override both
+     match on. (Values still follow R7 — reference, never inline.)
+
 ────────────────────────────────────────────────────────────────────────────
 FINAL-STEP CHECKLIST (every turn that produced a persisted change)
 ────────────────────────────────────────────────────────────────────────────

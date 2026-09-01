@@ -230,6 +230,27 @@
                      (do (mulog/warn ::unresolved-env-ref :var var-name)
                          whole)))))
 
+(defn- env-var-name
+  "The environment-variable name for an `:env` map key.
+
+   `(str :CLICKHOUSE_HOST)` keeps the colon, so a keyword key used to spawn the
+   child with a variable literally named `:CLICKHOUSE_HOST` — which no process
+   reads. Nothing errored: the child started, `os.environ[\"CLICKHOUSE_HOST\"]`
+   missed, and the server fell back to its default host. Same shape as the
+   unexpanded `${VAR}` bug — the value is right there in config.edn and the
+   server behaves as though it were never set.
+
+   String keys are the documented form (the MCP catalog defaults, and
+   `update-aws-env-vars!`, which matches on `(contains? env \"AWS_PROFILE\")`),
+   so this changes nothing for a correctly-written config. It exists so the
+   other spelling works instead of failing silently.
+
+   `str` for the remaining cases rather than a throw: an odd key is still a
+   name the caller can see in the child's environment, and refusing to spawn a
+   server over it would turn a cosmetic mistake into an outage."
+  [k]
+  (if (or (keyword? k) (symbol? k)) (name k) (str k)))
+
 (defrecord StdioMCPClient [process stdin stdout stderr server-info capabilities pending-requests]
   MCPClient
 
@@ -259,7 +280,7 @@
           _ (when env
               (let [env-map (.environment process-builder)]
                 (doseq [[k v] env]
-                  (.put env-map (str k) (expand-env-refs v)))))
+                  (.put env-map (env-var-name k) (expand-env-refs v)))))
           proc (.start process-builder)
           stdin (OutputStreamWriter. (.getOutputStream proc))
           stdout (BufferedReader. (InputStreamReader. (.getInputStream proc)))

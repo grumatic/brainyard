@@ -8,6 +8,8 @@
    must be able to raise the 30s `send-request!` default through its
    `:config :timeout`, mirroring the HTTP transport."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.java.io :as io]
+            [clojure.string :as str]
             [ai.brainyard.agent.mcp.client :as mcp-client]))
 
 (deftest stdio-client-carries-timeout
@@ -96,3 +98,44 @@
       ;; A bare `$` or an unbraced `$FOO` is not a reference — only `${…}` is,
       ;; so a password containing `$` passes through untouched.
       (is (= "p@ss$word$FOO" (expand "p@ss$word$FOO"))))))
+
+(deftest env-var-names-drop-the-keyword-colon
+  (let [env-name @#'mcp-client/env-var-name]
+    (testing "a keyword key yields the bare name, not \":NAME\""
+      ;; `(str :CLICKHOUSE_HOST)` keeps the colon, so this used to spawn the
+      ;; child with a variable no process reads: the server started, its
+      ;; lookup missed, and it fell back to a default host.
+      (is (= "CLICKHOUSE_HOST" (env-name :CLICKHOUSE_HOST)))
+      (is (not= ":CLICKHOUSE_HOST" (env-name :CLICKHOUSE_HOST))))
+
+    (testing "a string key — the documented form — is unchanged"
+      (is (= "CLICKHOUSE_HOST" (env-name "CLICKHOUSE_HOST"))))
+
+    (testing "a symbol key resolves the same way"
+      (is (= "CLICKHOUSE_HOST" (env-name 'CLICKHOUSE_HOST))))
+
+    (testing "an odd key degrades to its printed form rather than throwing"
+      ;; Refusing to spawn over a cosmetic key mistake would turn it into an
+      ;; outage; the name is still visible in the child's environment.
+      (is (= "42" (env-name 42))))))
+
+(deftest spawned-child-receives-usable-env-var-names
+  ;; End to end through ProcessBuilder, because the defect was never in the
+  ;; name-building — it was in what the CHILD ended up seeing.
+  (testing "both key spellings arrive as names the child can read"
+    (let [env-name @#'mcp-client/env-var-name
+          expand   @#'mcp-client/expand-env-refs
+          env      {"BY_TEST_ENV_STR" "from-string-key"
+                    :BY_TEST_ENV_KW   "from-keyword-key"}
+          pb       (ProcessBuilder. ^"[Ljava.lang.String;"
+                    (into-array String ["env"]))
+          _        (let [m (.environment pb)]
+                     (doseq [[k v] env]
+                       (.put m (env-name k) (expand v))))
+          seen     (with-open [r (io/reader (.getInputStream (.start pb)))]
+                     (into #{} (filter #(str/starts-with? % "BY_TEST_ENV"))
+                           (line-seq r)))]
+      (is (contains? seen "BY_TEST_ENV_STR=from-string-key"))
+      (is (contains? seen "BY_TEST_ENV_KW=from-keyword-key"))
+      (is (not (contains? seen ":BY_TEST_ENV_KW=from-keyword-key"))
+          "the colon-prefixed name is what the child used to get"))))
