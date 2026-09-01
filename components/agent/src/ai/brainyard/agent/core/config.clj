@@ -1441,6 +1441,22 @@
       (contains? perm :allowed-dirs) (assoc :allowed-dirs (:allowed-dirs perm))
       (contains? perm :mode)         (assoc :permission-mode (:mode perm)))))
 
+(defn misplaced-top-level-keys
+  "Schema keys sitting at the TOP level of the persisted EDN, where nothing
+   reads them. `load-global-config!` only consults `[:agent :config]`, so a
+   key written one level up is not a retired key — it is a MISPLACED live one,
+   and the `unknown` scan below cannot see it because that scan only walks
+   inside `[:agent :config]`. The failure mode is the worse of the two: the
+   file says `:mcp-allow-tools [\"clickhouse/*\"]`, `/config` says `[]`, and
+   nothing anywhere says why.
+
+   Unambiguous by construction: none of the structural top-level keys
+   (`:agent` `:mcp` `:llm` `:permissions` `:environment` `:bootstrap`
+   `:updated-at`) is itself a `config-schema` key, so a hit here is always a
+   misplacement rather than a legitimate section."
+  [edn]
+  (sort (filter config-keys (keys edn))))
+
 (defn load-global-config!
   "Read `.brainyard/config.edn` (`:auto` scope), pick its `[:agent :config]`
    subtree intersected with `config-keys`, merge over `default-config`, reset
@@ -1469,6 +1485,7 @@
          ;; Someone who set those believes they took effect; nothing told them
          ;; otherwise until now.
          unknown   (sort (remove config-keys (keys declared)))
+         misplaced (misplaced-top-level-keys migrated)
          bridged   (bridge-permissions-section migrated)
          ;; `:feature-profile` is itself config, so resolve it from the same
          ;; two sources that can be known this early: BY_PROFILE, else the
@@ -1495,6 +1512,12 @@
                    :keys (vec unknown)
                    :path (str (project-config-dir dirs) "/config.edn")
                    :effect "ignored — not in config-schema (retired or misspelled)"))
+     (when (seq misplaced)
+       (mulog/warn ::misplaced-config-keys
+                   :keys (vec misplaced)
+                   :path (str (project-config-dir dirs) "/config.edn")
+                   :effect "ignored — a config-schema key is only read under [:agent :config]"
+                   :fix "move each key into the [:agent :config] map"))
      (reset! !global-config merged)
      merged)))
 

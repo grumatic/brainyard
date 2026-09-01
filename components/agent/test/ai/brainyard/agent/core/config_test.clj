@@ -278,6 +278,29 @@
     (is (= 42 (:max-iterations m)))
     (is (not (contains? m :not-a-real-key)))))
 
+(deftest misplaced-top-level-schema-keys-are-flagged
+  (testing "a schema key at the top level is reported, not silently dropped"
+    ;; The shape a hand-edit (or an out-of-band write) produces: the key is in
+    ;; the file, but only [:agent :config] is ever read, so /config shows the
+    ;; schema default and nothing says why.
+    (is (= [:mcp-allow-tools]
+           (cfg/misplaced-top-level-keys
+            {:mcp {:servers {:clickhouse {:enabled true}}}
+             :mcp-allow-tools ["clickhouse/*"]
+             :updated-at "2026-09-01T02:51:30.412434Z"}))))
+  (testing "structural top-level sections are not schema keys → no false positives"
+    (is (empty? (cfg/misplaced-top-level-keys
+                 {:agent {:config {:max-iterations 7}}
+                  :mcp {:servers {}}
+                  :llm {:available-providers [:bedrock]}
+                  :permissions {:mode :auto-approve}
+                  :environment {:sandbox-mode :standard}
+                  :bootstrap {}
+                  :updated-at "2026-09-01T02:51:30.412434Z"}))))
+  (testing "the misplaced value stays ignored — this warns, it does not rescue"
+    (seed-project-config! {:mcp-allow-tools ["clickhouse/*"]})
+    (is (= [] (:mcp-allow-tools (cfg/load-global-config!))))))
+
 (deftest invalidate-clears-cache
   (seed-project-config! {:agent {:config {:max-iterations 7}}})
   (cfg/load-global-config!)
