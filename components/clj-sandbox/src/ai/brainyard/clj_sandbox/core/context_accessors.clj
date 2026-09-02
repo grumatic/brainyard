@@ -210,28 +210,35 @@
                (truncate-value v {:limit limit :str-limit str-limit}))))
 
          'context-keys
-         (fn [path]
-           (let [base (if (or (empty? path)
-                              (and (vector? path)
-                                   (contains? synthetic-keys (first path))))
-                        (with-synth)
-                        context)
-                 v (get-in-path base path)]
-             (cond
-               (nil? v)        {:type :nil}
-               (map? v)        (vec (keys v))
-               (vector? v)     {:type :vector
-                                :count (count v)
-                                :indices (vec (take 50 (range (count v))))}
-               (sequential? v) {:type :seq
-                                :count (safe-count v)
-                                :indices (vec (take 50 (range (safe-count v))))}
-               (set? v)        {:type :set :count (count v) :items (vec (take 50 v))}
-               (string? v)     {:type :string :length (count v)}
-               (number? v)     {:type :number :value v}
-               (boolean? v)    {:type :boolean :value v}
-               (keyword? v)    {:type :keyword :value v}
-               :else           {:type :other :class (str (type v))})))
+         ;; 0-arity means the top level, same as `(context-keys [])`. The body
+         ;; already has an `(empty? path)` branch for exactly that, but the
+         ;; missing arity turned the obvious "list the keys" call into a raw
+         ;; SCI arity error naming an anonymous fn — unactionable, and it costs
+         ;; the model a whole iteration to recover from.
+         (fn
+           ([] (vec (keys (with-synth))))
+           ([path]
+            (let [base (if (or (empty? path)
+                               (and (vector? path)
+                                    (contains? synthetic-keys (first path))))
+                         (with-synth)
+                         context)
+                  v (get-in-path base path)]
+              (cond
+                (nil? v)        {:type :nil}
+                (map? v)        (vec (keys v))
+                (vector? v)     {:type :vector
+                                 :count (count v)
+                                 :indices (vec (take 50 (range (count v))))}
+                (sequential? v) {:type :seq
+                                 :count (safe-count v)
+                                 :indices (vec (take 50 (range (safe-count v))))}
+                (set? v)        {:type :set :count (count v) :items (vec (take 50 v))}
+                (string? v)     {:type :string :length (count v)}
+                (number? v)     {:type :number :value v}
+                (boolean? v)    {:type :boolean :value v}
+                (keyword? v)    {:type :keyword :value v}
+                :else           {:type :other :class (str (type v))}))))
 
          'context-sample
          (fn [path n & {:keys [strategy]

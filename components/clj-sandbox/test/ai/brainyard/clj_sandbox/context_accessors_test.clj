@@ -165,6 +165,17 @@
           accs (ctx-acc/make-context-accessors ctx)]
       (is (= #{:a :b :c} (set (call accs 'context-keys []))))))
 
+  (testing "0-arity is the top level, same as []"
+    ;; Regression: the missing arity turned the obvious "list the keys" call
+    ;; into a raw SCI arity error naming an anonymous fn.
+    (let [ctx  {:a 1 :b 2}
+          accs (ctx-acc/make-context-accessors
+                ctx :synthetic-keys {:notes (fn [] {:x 1})})]
+      (is (= (call accs 'context-keys [])
+             ((get accs 'context-keys))))
+      (is (contains? (set ((get accs 'context-keys))) :notes)
+          "and it sees synthetic keys, like the [] path does")))
+
   (testing "nested map keys"
     (let [ctx  {:config {:db {:host "h" :port 5432} :cache {:ttl 300}}}
           accs (ctx-acc/make-context-accessors ctx)]
