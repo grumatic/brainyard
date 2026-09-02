@@ -133,6 +133,30 @@
            (= [0 1 2 3 4 5] (:ok r))
            (str (pr-str r) " in " elapsed "ms"))))
 
+(defn- check-watch-until
+  "An atom watch settles the waiter, in the real artifact.
+
+   This is on the path of EVERY task await — `await-task` replaced its
+   `Thread/sleep 100` poll with `watch-until`, so if `m/watch` misbehaves in
+   the image then every code block and tool call promoted to a task stops
+   waiting correctly. It is a distinct native surface from the checks above:
+   `m/watch` + `m/reduce` over a CONTINUOUS flow, terminated by `reduced`.
+
+   Both directions matter. Settling on a write is the feature; NOT settling
+   while the predicate is false is the contract that makes it safe to race,
+   and a `watch-until` that completed spuriously would turn every await into
+   an instant false 'done'."
+  []
+  (let [!a (atom 0)
+        _  (future (Thread/sleep (long 150)) (reset! !a 42))
+        gt    (fn [n] (fn [v] (> (long v) (long n))))
+        [elapsed r] (ms-of (fn [] (prim/run!! (flows/watch-until !a (gt 2)) 5000)))
+        never (prim/run!! (flows/watch-until (atom 0) (gt 99)) 300)]
+    (check "watch-until settles on a write"
+           (and (= 42 (:ok r)) (>= elapsed 100) (:timeout never))
+           (str (pr-str r) " in " elapsed "ms (expect ~150); "
+                "never-satisfied=" (pr-str never) " (expect timeout)"))))
+
 (defn- check-flow
   "A Flow is a re-runnable VALUE: the ticker below is consumed twice from the
    same value, and the consumer's `take` terminates it — no self-stop check,
@@ -179,6 +203,7 @@
                       check-timeout
                       check-retry
                       check-bounded-order
+                      check-watch-until
                       check-flow
                       check-supervisor])]
     {:pass? (every? :pass? checks) :checks checks}))
