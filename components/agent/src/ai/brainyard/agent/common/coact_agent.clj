@@ -3460,9 +3460,26 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                           (recur))))
                     (catch java.io.IOException _)
                     (catch Throwable _))))
-              completed? (.waitFor proc
-                                   (long fast-eval-ms)
-                                   java.util.concurrent.TimeUnit/MILLISECONDS)]
+              ;; A CANCELLED TURN MUST TAKE THE PROCESS WITH IT. Interrupting
+              ;; the waiter only unblocks THIS thread — the child keeps running
+              ;; to completion, unwatched, with its scratch file left behind.
+              ;; Measured before this: cancel a turn mid-block and the `sleep`
+              ;; survived, in SEQUENTIAL mode as much as parallel, because the
+              ;; interrupt lands here rather than on any fan-out. The adopted
+              ;; branch below already had exactly this cleanup as its
+              ;; `:on-cancel`; the inline branch simply never ran it.
+              ;;
+              ;; Rethrown, not swallowed: the caller's own loop still has to
+              ;; learn the turn was cancelled.
+              completed? (try
+                           (.waitFor proc
+                                     (long fast-eval-ms)
+                                     java.util.concurrent.TimeUnit/MILLISECONDS)
+                           (catch InterruptedException e
+                             (executor/destroy-process-tree! proc)
+                             (future-cancel reader-future)
+                             (delete-coact-tmp-file! tmp-file)
+                             (throw e)))]
           (if completed?
             (do (deref reader-future 2000 nil)
                 (delete-coact-tmp-file! tmp-file)
@@ -3902,21 +3919,39 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                                 :parallel? true))])
                 script-indexed))
 
-        ;; Clojure partition: the sequential dispatch, in source order, on the
-        ;; shared sandbox. Same fn sequential mode calls, so there is exactly
-        ;; one clojure code path and the two modes cannot drift.
-        clj-results
-        (mapv (fn [[idx block]]
-                [idx (assoc (run-single-block sandbox block dispatch-opts)
-                            :parallel? true)])
-              clj-indexed)
+        cancel-scripts!
+        (fn [] (doseq [[_ fut] script-futures] (future-cancel fut)))]
+    ;; Anything that escapes from here has abandoned the fan-out, and the
+    ;; futures are the only handle on it. `future-cancel` interrupts each
+    ;; worker where it sits — inside `.waitFor` — which is exactly the path
+    ;; `run-script-block` now cleans up on, so the children die with the turn
+    ;; instead of running on unwatched.
+    ;;
+    ;; Throwable rather than InterruptedException: a cancel arrives as an
+    ;; interrupt from either the join OR the clojure loop above it, and any
+    ;; other escape leaves the same orphans behind. Cancelling siblings when
+    ;; one branch fails is also `fx/bounded`'s semantics, which this fan-out
+    ;; should match when it moves onto it.
+    (try
+      (let [;; Clojure partition: the sequential dispatch, in source order, on
+            ;; the shared sandbox. Same fn sequential mode calls, so there is
+            ;; exactly one clojure code path and the two modes cannot drift.
+            clj-results
+            (mapv (fn [[idx block]]
+                    [idx (assoc (run-single-block sandbox block dispatch-opts)
+                                :parallel? true)])
+                  clj-indexed)
 
-        script-results
-        (mapv (fn [[idx fut]] [idx @fut]) script-futures)
+            script-results
+            (mapv (fn [[idx fut]] [idx @fut]) script-futures)
 
-        ;; Re-order into source position
-        all-by-idx (into {} (concat fence-err-results clj-results script-results))]
-    (mapv all-by-idx (range (count blocks)))))
+            ;; Re-order into source position
+            all-by-idx (into {} (concat fence-err-results clj-results
+                                        script-results))]
+        (mapv all-by-idx (range (count blocks))))
+      (catch Throwable t
+        (cancel-scripts!)
+        (throw t)))))
 
 (defn coact-code-eval-action
   "BT action: parse :code-blocks, execute each fenced block, and populate

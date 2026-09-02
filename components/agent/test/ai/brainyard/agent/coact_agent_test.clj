@@ -12,6 +12,7 @@
    docs/CoAct.md §9 Phase 5 for the benchmark harness plan."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.java.io :as io]
+            [clojure.java.shell]
             [clojure.set]
             [clojure.string :as str]
             [ai.brainyard.agent.common.coact-agent :as rca]
@@ -2691,3 +2692,56 @@
       (is (str/includes?
            ai.brainyard.agent.common.commands/operational-recall-guidance
            "trajectory$search")))))
+
+;; --- a cancelled turn must take its child processes with it ---------------
+
+(defn- ^:private sleep-proc-alive? [tag]
+  (let [{:keys [out]} (clojure.java.shell/sh
+                       "bash" "-c"
+                       (str "pgrep -fl 'sleep " tag "' | grep -v pgrep || true"))]
+    (boolean (seq (str/trim (str out))))))
+
+(defn- ^:private cancel-mid-block
+  "Run `body-fn` on its own thread, interrupt it once the child has started,
+   and report whether the child survived. Returns nil when the child never
+   started, so a slow machine skips rather than fails."
+  [tag body-fn]
+  (clojure.java.shell/sh "bash" "-c" (str "pkill -f 'sleep " tag "' || true"))
+  (let [th (Thread. ^Runnable (fn [] (try (body-fn) (catch Throwable _ nil))))]
+    (.start th)
+    (Thread/sleep 1500)
+    (let [started? (sleep-proc-alive? tag)]
+      (.interrupt th)
+      (.join th 5000)
+      (Thread/sleep 1000)
+      (let [survived (sleep-proc-alive? tag)]
+        (clojure.java.shell/sh "bash" "-c" (str "pkill -f 'sleep " tag "' || true"))
+        (when started? {:survived survived})))))
+
+(deftest cancelled-turn-kills-its-child-processes-test
+  ;; REGRESSION. Interrupting the waiter only unblocked the waiting thread —
+  ;; the child ran to completion unwatched, with its scratch file left behind.
+  ;; Measured before the fix: the sleep survived a cancel in BOTH modes, since
+  ;; the interrupt lands on run-script-block's .waitFor rather than on any
+  ;; fan-out. The adopted branch already had this cleanup as its :on-cancel;
+  ;; the inline branch never ran it.
+  (let [run-script-block  #'rca/run-script-block
+        run-concurrently  #'rca/run-blocks-concurrently
+        opts {:agent nil :auto-bg-ms 60000 :fast-eval-ms 30000}]
+
+    (testing "sequential: the inline path destroys its process on interrupt"
+      (when-let [r (cancel-mid-block
+                    "53.7"
+                    #(run-script-block "bash" "sleep 53.7" 60000 :fast-eval-ms 30000))]
+        (is (false? (:survived r))
+            "a cancelled turn must not leave the child running")))
+
+    (testing "parallel: the fan-out cancels its siblings too"
+      (when-let [r (cancel-mid-block
+                    "54.9"
+                    #(run-concurrently (clj-sandbox/create-sandbox)
+                                       [{:lang "bash" :code "sleep 54.9"}
+                                        {:lang "bash" :code "sleep 54.9"}]
+                                       opts))]
+        (is (false? (:survived r))
+            "abandoning the fan-out must not orphan its workers")))))
