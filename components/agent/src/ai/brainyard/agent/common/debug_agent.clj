@@ -637,10 +637,13 @@
      that holds your bound tools (`by.tools.…`) with `clojure.core` referred, so
      fully-qualify everything else (`clojure.pprint/pprint`, not bare `pprint`);
      slice big values (`(take 20 …)`, `(keys …)`) instead of dumping.
-   - No parallel mode: do NOT emit `<!-- ParallelBlock -->` markers. The live
-     session can't be forked, so multiple ```clojure fences in one turn run
-     SEQUENTIALLY in the SAME session (each sees the prior blocks' defs/state).
-     Lean into that — probe, bind a var, reuse it in the next block.")
+   - No parallel mode: do NOT emit `<!-- ParallelBlock -->` markers — the
+     marker only parallelizes bash/python/js blocks, never clojure. Multiple
+     ```clojure fences in one turn run SEQUENTIALLY in the SAME session (each
+     sees the prior blocks' defs/state). Lean into that — probe, bind a var,
+     reuse it in the next block. To actually fan out, use `(pmap f xs)` or
+     `(mapv deref (mapv #(future (f %)) xs))` inside ONE fence: you are on a
+     real JVM, so both work. Join before the fence returns.")
 
 ;; debug-only preamble — prepended to the :nrepl guide in this agent's
 ;; tool-context. The lifecycle tools below are gated to debug-* and are not
@@ -690,15 +693,21 @@ reachable. nREPL is full-trust — the only eval-path check is the deny-list
 (System/exit, Runtime/.exec, credential namespaces). For ISOLATED eval, use the
 SCI sandbox instead — see `(usage$guide :topic :sandbox)`.
 
-### Parallel blocks are not supported here — just emit blocks normally
-The `:nrepl` backend has NO parallel mode: a single live session is stateful and
-cannot be forked across concurrent evals. Do NOT emit `<!-- ParallelBlock -->`
-markers — if you do, the blocks are simply run SEQUENTIALLY against the live JVM
-(with a short notice in the output) rather than rejected, so it costs you
-nothing but buys you nothing either. Multiple ```clojure fences in one turn
-already evaluate in order in the SAME session, so each block sees the `def`s,
-requires, and state the previous blocks established. Sequence is the only mode;
-lean into it (probe → bind a var → reuse it in the next block).
+### Parallel blocks do nothing for clojure — fan out inside ONE fence
+`<!-- ParallelBlock -->` only parallelizes bash/python/js blocks. Emitting it
+is not rejected and costs nothing; it just buys nothing, silently. Multiple
+```clojure fences in one turn evaluate in order in the SAME session, so each
+block sees the `def`s, requires, and state the previous blocks established —
+lean into that (probe → bind a var → reuse it in the next block).
+
+The obstacle is the RUNTIME, not the session: a cloned session would let
+concurrent evals run, but `def` writes to the process-global namespace, so
+parallel fences would race over one live image with no isolation to fall back
+on. When you do want real concurrency you already have it — you are on a real
+JVM, so `(pmap f xs)` and `(mapv deref (mapv #(future (f %)) xs))` both work
+inside a single fence. (The SCI sandbox has neither, and uses `par-map`
+instead.) Always join before the fence returns: a detached `future` outlives
+the eval and escapes both the timeout and cancellation.
 
    ## Inspecting the live brainyard image (read-only, safe)
 

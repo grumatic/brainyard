@@ -14,11 +14,16 @@ deliberate, permanent gap — re-tag the contract with a rationale), or
 ## Functional gaps — worth closing
 
 **T-3 · nREPL demoted to SCI in parallel blocks** — `CR-RSN-06` /
-`CR-BT-08b` (Partial). Inside `<!-- ParallelBlock -->`, a `:nrepl`-backend
-agent is silently demoted to the SCI sandbox (the fork+merge runner
-doesn't support `:nrepl` session sharing — "Phase 1"). Live-JVM interop is
-lost. *Close:* implement nREPL session sharing in the parallel runner.
-*Or at minimum:* surface the demotion to the user more loudly. **Medium.**
+`CR-BT-08b`. **RESOLVED — the premise dissolved rather than the gap being
+closed.** The demotion described here had already stopped happening (the
+blocks were serialized through the live nREPL, not run in SCI). It is now
+moot on both backends: `<!-- ParallelBlock -->` no longer applies to clojure
+at all, so there is no parallel runner for a `:nrepl` session to be shared
+into. Clojure fans out inside ONE block instead — `par-map` in the SCI
+sandbox, `pmap`/`future` on nREPL, which is real parallelism the marker
+never delivered on either backend. Session sharing was never the obstacle:
+a cloned session would run concurrently, but `def` writes to the
+process-global namespace, so parallel fences would race over one live image.
 
 **T-4 · `:parallel` BT node is uncancellable and untraced** — `CR-BT-08b`
 (Partial). Unlike the other node types, `:parallel` has no

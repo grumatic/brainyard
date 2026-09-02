@@ -445,7 +445,7 @@ Aliases persist across `eval-code` calls *and* into `fork-sandbox` forks.
 Replace all four with the idiom:
 
 > Alias once per session: `(require '[clojure.string :as str])`. The alias
-> persists across iterations and into parallel forks.
+> persists across iterations.
 
 This will not move the error rate. It shortens every string-handling block the
 model writes, which is a cost this measurement method cannot see (§1.4).

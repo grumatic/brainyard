@@ -158,9 +158,14 @@
       (is (str/includes? instruction "MCP"))
       (is (str/includes? instruction "SKILLS"))
 
-      ;; Decision flow + parallel probe
+      ;; Decision flow + parallel probe. The probe fans out INSIDE one clojure
+      ;; fence via par-map — `<!-- ParallelBlock -->` is processes-only and
+      ;; does nothing for clojure blocks, so instructing it here taught a
+      ;; pattern that silently ran sequentially.
       (is (str/includes? instruction "DECISION FLOW"))
-      (is (str/includes? instruction "ParallelBlock"))
+      (is (str/includes? instruction "par-map"))
+      (is (not (str/includes? instruction "ParallelBlock"))
+          "the retired marker must not come back into the probe instruction")
 
       ;; STEP 0 reuse gate (the new pillar)
       (is (str/includes? instruction "STEP 0"))

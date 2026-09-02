@@ -26,7 +26,7 @@ Primary files:
 | Loop mode | Single-call (`ThinkActAndEvaluate`, 1 call / iter) | three-channel single-call loop |
 | Composition / `def` state | None | Persistent across iterations (clojure fence in shared SCI sandbox) |
 | Raw scripts | Tool arg (verbatim) | `` ```bash `` / `` ```python `` / `` ```javascript `` fence (verbatim, no escaping) |
-| Parallel fan-out | Per-call orchestration | `<!-- ParallelBlock -->` marker inside `code-blocks` |
+| Parallel fan-out | Per-call orchestration | `(par-map f coll)` inside a clojure fence; `<!-- ParallelBlock -->` for concurrent bash/python/js blocks |
 | Best for | Crisp tools, simple args, opaque payloads | Composition, filtering, persistence, parallel sub-queries, raw scripts |
 
 ---
@@ -166,10 +166,12 @@ blocks with language tags:
 | `` ```python `` / `` ```py `` | fresh subprocess, `python3` | raw | stateless |
 | `` ```javascript `` / `` ```js `` | fresh subprocess, `node` | raw | stateless |
 
-Insert a line `<!-- ParallelBlock -->` anywhere in `code-blocks` to run
-ALL fenced blocks concurrently (forked sandbox per clojure block; fresh
-process per shell/python/js block). Absent the marker, blocks run
-sequentially in source order.
+Insert a line `<!-- ParallelBlock -->` anywhere in `code-blocks` to run the
+shell/python/js blocks concurrently, each in a fresh process. It does NOT
+apply to clojure blocks: those always run sequentially in source order,
+sharing the sandbox, so each sees the previous blocks' `def`s. Clojure fans
+out INSIDE a block with `(par-map f coll)` — the sandbox binds neither
+`future` nor `pmap`.
 
 For a mixed pipeline (A sequential → B+C parallel → D), the LLM uses
 multiple iterations.

@@ -59,7 +59,7 @@ CoAct (`docs/CoAct.md`) already provides every primitive needed to express this 
 | Single-shot sub-LLM call | `(query$llm :prompt "...")` (auto-bound from `defcommand query$llm`) |
 | Batched concurrent sub-LLM calls (`llm_query_batched`) | `(query$llm :prompts [..] :sub-context "...")` (max 20 concurrent) |
 | Code-side composition / aggregation | `clojure` fence with `def` persistence across iterations |
-| Parallel fan-out of heterogeneous work | `<!-- ParallelBlock -->` separator |
+| Parallel fan-out of heterogeneous work | `(par-map (fn [g] (g)) [#(…) #(…)])` in one clojure fence |
 | Long-running fan-out | `task$run` (`:job-type :tool|:bash`) |
 | Final markdown answer | `answer` output channel |
 

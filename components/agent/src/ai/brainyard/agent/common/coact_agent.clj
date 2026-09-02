@@ -105,7 +105,7 @@
    ;; `::acs/tool-calls` directly rather than redefining them here. `tool-args`
    ;; is a plain JSON object (map), not a name/value pair-list.
 
-   ::code-blocks [:string {:desc "Markdown text containing fenced code blocks with language tags (clojure, bash, python, javascript). Blocks separated by a line containing only `<!-- ParallelBlock -->` run concurrently in forked sandboxes. Otherwise blocks run sequentially in source order. Four-backtick fences tagged markdown/text/html are verbatim content blocks: saved to a file (path returned), not executed. Empty when using tool-calls or answer."}]
+   ::code-blocks [:string {:desc "Markdown text containing fenced code blocks with language tags (clojure, bash, python, javascript). Blocks run sequentially in source order. A line containing only `<!-- ParallelBlock -->` makes the bash/python/javascript blocks run concurrently, each in a fresh process; clojure blocks always run sequentially in the shared sandbox — fan out inside one block with `(par-map f coll)` instead. Four-backtick fences tagged markdown/text/html are verbatim content blocks: saved to a file (path returned), not executed. Empty when using tool-calls or answer."}]
 
    ;; Answer-channel self-assessment (replaces the old standalone FinalizeAnswer
    ;; DSPy call). Optional outputs — populated only when `answer` is non-blank;
@@ -175,9 +175,10 @@
    twice more in `coact-channel-routing` / `execution-model-sandbox` — four
    copies of one 180s deadline, all always-on. It is an execution fact, so it
    lives in the execution-model section alone. Likewise the worked examples:
-   only the parallel one survives, because `<!-- ParallelBlock -->` is pure
-   convention and unguessable, whereas `filter`/`pprint` and `grep | awk`
-   taught a capable model nothing it did not already know.
+   only the two fan-out ones survive, because `<!-- ParallelBlock -->` and
+   `par-map` are both pure convention and unguessable, whereas
+   `filter`/`pprint` and `grep | awk` taught a capable model nothing it did
+   not already know.
 
    NB the instruction text contains no `{{`, `{%` or `{#` sequences, so it
    needs no `{% verbatim %}` guards; a test pins that too, since a future edit
@@ -228,29 +229,35 @@ a temp file and executed), `python` (temp file + python3), `javascript`
   - `def` persistence across iterations (use a `clojure` block).
   - Raw scripts with nested quotes or regex backslashes — use a `bash` or
     `python` block. The block content is passed verbatim; no SCI escaping.
-  - Parallel fan-out: separate independent blocks with a line containing only
-    `<!-- ParallelBlock -->`. Each block in a parallel partition runs
-    concurrently (forked sandbox for clojure; fresh process for shell/python/js).
+  - Parallel fan-out IN clojure: `(par-map f coll)` inside ONE block. Not
+    `<!-- ParallelBlock -->`, which does nothing for clojure, and not
+    `future`/`pmap`, which the sandbox does not bind.
+  - Parallel fan-out across PROCESSES: separate independent `bash`/`python`/
+    `javascript` blocks with a line containing only `<!-- ParallelBlock -->`.
+    Those run concurrently, each in a fresh process; `clojure` blocks in the
+    same partition still run sequentially in source order.
   - Producing document content (markdown/HTML/text report): use a FOUR-backtick
     verbatim fence (```` ````markdown name.md ````). The body is saved verbatim
     to a file and you get the path back — never hand-escape large content into a
     string literal. See the code-blocks format help for details.
 
-  Parallel example (the delimiter line is the only non-obvious part):
+  Parallel examples — clojure fans out INSIDE a block:
     ```clojure
-    (println (search :query \"topic A\"))
+    (par-map (fn [q] (search :query q)) [\"topic A\" \"topic B\" \"topic C\"])
     ```
-    <!-- ParallelBlock -->
-    ```clojure
-    (println (search :query \"topic B\"))
-    ```
-    <!-- ParallelBlock -->
+
+  Processes fan out ACROSS blocks (the delimiter line is the only
+  non-obvious part):
     ```bash
     curl -s https://api.example.com/status
     ```
+    <!-- ParallelBlock -->
+    ```bash
+    curl -s https://api.example.com/health
+    ```
 
   Output shape:
-    code-blocks: \"```clojure\\n...\\n```\\n<!-- ParallelBlock -->\\n```bash\\n...\\n```\\n\"
+    code-blocks: \"```bash\\n...\\n```\\n<!-- ParallelBlock -->\\n```bash\\n...\\n```\\n\"
     {% if tool-channel %}tool-calls: []   {% endif %}answer: \"\"
 
 {% endif %}ANSWER CHANNEL — use when:
@@ -298,7 +305,7 @@ CHANNEL DECISION HEURISTICS
 {% if tool-channel %}1. One registered tool, no post-processing                    → TOOL
 2. Background/long-running task                               → TOOL
 {% endif %}{% if code-channel %}{{h-compose}}. Compose, filter, transform, pprint                         → CODE (clojure)
-{{h-parallel}}. Parallel independent sub-queries                           → CODE (<!-- ParallelBlock -->)
+{{h-parallel}}. Parallel independent sub-queries                           → CODE (clojure, par-map)
 {{h-raw}}. Raw shell/Python with nested quotes or regex backslashes   → CODE (bash/python fence)
 {{h-def}}. Need cross-iteration `def` state                           → CODE (clojure)
 {% endif %}{{h-answer}}. Ready to answer (or cannot proceed, or need clarification) → ANSWER
@@ -469,11 +476,20 @@ path. 4+ backticks so any ordinary ``` inside the content passes through. Scratc
 files are GC'd ~24h — promote with a `cp` in a bash fence, since `slurp`/`spit`
 are NOT bound in the SCI sandbox.
 
-### Parallel execution (all-or-nothing)
-Insert `<!-- ParallelBlock -->` anywhere in `code-blocks` to run ALL fenced blocks
-concurrently; absent, they run sequentially in source order. Parallel clojure blocks run in
-**forked sandboxes** — new `def`s merge back after all finish (last-block-wins on conflict).
-For mixed pipelines (\"A then B+C parallel then D\"), span multiple iterations.
+### Parallel execution
+Two different things, and picking the wrong one costs an iteration:
+
+- **clojure → `(par-map f coll)`, inside one block.** Runs the branches
+  concurrently and returns results in INPUT order; `{:max-concurrency n}` to
+  tune (default 8, max 16). For heterogeneous work pass thunks:
+  `(par-map (fn [g] (g)) [#(search :query \"A\") #(search :query \"B\")])`.
+  Because it is ordinary code it composes — \"A, then B+C in parallel, then D\"
+  is ONE block. `future` and `pmap` are NOT bound in the sandbox.
+- **bash / python / javascript → `<!-- ParallelBlock -->`.** A line containing
+  only that marker makes the SCRIPT blocks run concurrently, each in a fresh
+  process. It does nothing for `clojure` blocks: those always run sequentially
+  in source order, sharing the sandbox, so each sees the previous blocks'
+  `def`s.
 
 ### Rules
 - One channel per iteration: `tool-calls` OR `code-blocks`, never both. No XML tool-calling.
@@ -492,7 +508,7 @@ For mixed pipelines (\"A then B+C parallel then D\"), span multiple iterations.
   shell strings needs doubled backslashes (`\"grep '\\\\d+' …\"`). For multi-line shell, here-docs,
   or template literals use a raw ```bash / ```python fence — content is passed verbatim.
 - `(parse-json s)` is built-in (no require). Alias once — `(require '[clojure.string :as str])`
-  persists across iterations and into parallel forks, so `str/join` works in every later block.
+  persists across iterations, so `str/join` works in every later block.
 
 Escaping recipes, kwargs-vs-map calling, macros, interop policy: `(usage$guide :topic :sandbox)`.")
 
@@ -3770,13 +3786,39 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                                        :owner-agent-id owner-agent-id)))))
 
 (defn- run-blocks-concurrently
-  "All-or-nothing parallel runner. Splits blocks three ways: fence-errored
-   blocks (short-circuit to an error entry), clojure blocks (go through
-   clj-sandbox/eval-code-blocks-parallel — fork + merge-defs semantics,
-   FINAL disallowed), and the rest — shell/python/js plus verbatim
-   markdown/text/html — each in its own future via `run-single-block` (a
-   separate temp file per script; a synchronous file write per verbatim
-   block). Results are re-ordered to source position."
+  "Runner for a `<!-- ParallelBlock -->` partition. Splits blocks three ways:
+   fence-errored blocks (short-circuit to an error entry), clojure blocks
+   (SEQUENTIAL, source order, sharing the one sandbox), and the rest —
+   shell/python/js plus verbatim markdown/text/html — each in its own future
+   via `run-single-block`. Results are re-ordered to source position.
+
+   CLOJURE IS DELIBERATELY NOT PARALLEL HERE. The marker parallelizes
+   PROCESSES, which is the unit shell/python/js actually have. Clojure's unit
+   is `par-map` INSIDE a block, which composes with ordinary code — \"A, then
+   B+C in parallel, then D\" is one block — where the marker is all-or-nothing
+   across the whole iteration and had to be spread over several instead.
+
+   What this retired, per backend:
+
+     :sandbox — fork + merge-defs (`eval-code-blocks-parallel`, still used by
+       clj-sandbox's own chat path). Forked blocks were isolated and their
+       defs merged last-block-wins only after ALL finished, so a block could
+       not see a sibling's def, FINAL reported a different error than
+       everywhere else, and the batch was capped at 10 — over which the runner
+       returned ONE error entry that this fn zipped against N blocks with a
+       two-collection `mapv`, silently yielding `nil` entries for the rest
+       (measured: 11 blocks in, 1 error + 10 nils out, straight into
+       `:last-code-results`).
+
+     :nrepl — nothing. It was already sequential; see the
+       `execution-model-nrepl` prompt bullet.
+
+   What it gains: clojure blocks take the SAME path as sequential mode, so
+   fast-eval / detach / backend semantics cannot drift between the two modes,
+   blocks see each other's defs in source order, and they can auto-detach into
+   a background task. In-process SCI forks never could — which is why the
+   deadline used to be a hard kill for clojure and a detach for bash in the
+   same partition."
   [sandbox blocks dispatch-opts]
   (let [indexed         (map-indexed vector blocks)
         fence-err-indexed (filter (comp :fence-error second) indexed)
@@ -3789,69 +3831,13 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                       :error fence-error :parallel? true}])
               fence-err-indexed)
 
-        ;; Clojure partition: delegate to the existing parallel runner
-        ;; (fork-and-merge). FINAL inside these blocks surfaces as an error
-        ;; entry with :error "FINAL is not allowed in parallel blocks" per
-        ;; clj-sandbox semantics — we do NOT promote those to :answer.
-        ;;
-        ;; Parallel SCI forks are in-process futures, not task-manager
-        ;; tasks, so they cannot detach into the background. The deadline
-        ;; (`:auto-bg-ms`) is enforced as a hard kill — at the deadline the
-        ;; fork is cancelled and the entry surfaces :status :timeout.
-        ;;
-        ;; nREPL backend: `<!-- ParallelBlock -->` does not apply to Clojure
-        ;; here, and the reason is the RUNTIME, not the session. A cloned
-        ;; session (`clj-nrepl/new-session`, already used by debug-agent) would
-        ;; happily let concurrent evals run — but on a real JVM `def` writes to
-        ;; the namespace, which is process-global, so parallel blocks would race
-        ;; over one live image with no isolation to fall back on. Demoting to
-        ;; the SCI sandbox is not an out either: that is the WRONG runtime (not
-        ;; the live brainyard JVM this agent exists to inspect). So the blocks
-        ;; run sequentially through the live nREPL via `run-single-block` —
-        ;; live-runtime semantics preserved, session state accumulating
-        ;; naturally, and detach/fast-eval semantics identical to sequential
-        ;; mode because it IS the sequential dispatch.
-        ;;
-        ;; Deliberately NO per-entry notice. The model is told up front
-        ;; (`execution-model-nrepl`) that the marker is sandbox-only and that
-        ;; `pmap` / `future` inside one block are the way to fan out here —
-        ;; which is real parallelism, unlike the marker. Prompt guidance is paid
-        ;; once and rides the prefix cache; a stamp was paid on every entry,
-        ;; after the fact, to explain something that had already not happened.
-        nrepl-backend? (= :nrepl (agent-clj-backend (:agent dispatch-opts)))
-        clj-results
-        (when (seq clj-indexed)
-          (if nrepl-backend?
-            ;; Sequential nREPL path — reuse the same per-block dispatch the
-            ;; sequential mode uses, so detach/fast-eval/session semantics match.
-            (mapv (fn [[idx block]]
-                    [idx (assoc (run-single-block sandbox block dispatch-opts)
-                                :parallel? true)])
-                  clj-indexed)
-            ;; SCI sandbox path — fork+merge parallel runner.
-            (let [codes (mapv (comp :code second) clj-indexed)
-                  ;; clj-sandbox's eval API returns {:eval-results [...]} — bind it
-                  ;; to the local `code-results` (the agent-side name for the
-                  ;; code channel; the sandbox component keeps its own key).
-                  {code-results :eval-results}
-                  (clj-sandbox/eval-code-blocks-parallel
-                   sandbox codes
-                   :timeout-ms (:auto-bg-ms dispatch-opts))]
-              (mapv (fn [[idx _block] r]
-                      [idx
-                       (cond-> {:lang "clojure"
-                                :code (or (:code r) "")
-                                :result (when-let [v (:result r)] (pr-str v))
-                                :output (or (:output r) "")
-                                :error (or (:error r) "")
-                                :parallel? true}
-                         ;; Preserve :status :timeout (hard-cancel branch).
-                         (= :timeout (:status r))
-                         (assoc :status :timeout))])
-                    clj-indexed
-                    code-results))))
-
-        ;; Non-clojure partition: each block runs as a future
+        ;; Scripts start FIRST, so they overlap the clojure run below. This
+        ;; `let` is sequential, so under fork+merge the two partitions were
+        ;; each parallel internally but still ran one AFTER the other —
+        ;; nothing ever overlapped across languages. Hoisting the futures
+        ;; above the clojure loop is what makes a mixed partition genuinely
+        ;; concurrent, and it is the reason sequential clojure costs no
+        ;; wall-clock against a bash sibling.
         script-futures
         (when (seq script-indexed)
           (mapv (fn [[idx block]]
@@ -3859,6 +3845,16 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                          (assoc (run-single-block sandbox block dispatch-opts)
                                 :parallel? true))])
                 script-indexed))
+
+        ;; Clojure partition: the sequential dispatch, in source order, on the
+        ;; shared sandbox. Same fn sequential mode calls, so there is exactly
+        ;; one clojure code path and the two modes cannot drift.
+        clj-results
+        (mapv (fn [[idx block]]
+                [idx (assoc (run-single-block sandbox block dispatch-opts)
+                            :parallel? true)])
+              clj-indexed)
+
         script-results
         (mapv (fn [[idx fut]] [idx @fut]) script-futures)
 
@@ -3899,10 +3895,10 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 
           parallel?
           (let [batch-total (count blocks)
-                ;; Clojure blocks run on the agent's configured backend; with
-                ;; :nrepl, `run-blocks-concurrently` serializes them through the
-                ;; live nREPL (parallel SCI fork+merge can't share a session).
-                ;; All non-clojure blocks always run in the SCI sandbox.
+                ;; Clojure blocks run on the agent's configured backend, and
+                ;; run SEQUENTIALLY on both — the marker only parallelizes the
+                ;; script blocks (see `run-blocks-concurrently`). All
+                ;; non-clojure blocks always run in the SCI sandbox.
                 clj-backend (agent-clj-backend agent)
                 block-backend (fn [lang]
                                 (if (= "clojure" lang) clj-backend :sandbox))]

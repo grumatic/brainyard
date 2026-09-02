@@ -1154,6 +1154,47 @@
       (is (= :code (:last-channel @st)))
       (is (every? :parallel? (:last-code-results @st))))))
 
+;; --- ParallelBlock is processes-only; clojure fans out via par-map ---
+
+(deftest parallel-partition-clojure-is-sequential-test
+  (testing "clojure blocks in a parallel partition SHARE the sandbox, in source order"
+    ;; Under the retired fork+merge runner each block ran in an isolated fork
+    ;; and new defs merged back only after ALL had finished — so a block could
+    ;; never see a sibling's def. They now take the sequential dispatch, so it
+    ;; does. This is the behavioural difference the marker's retirement buys.
+    (let [sb (make-minimal-sandbox)
+          st (fresh-st-memory
+              :sandbox sb
+              :code-blocks (str "```clojure\n(def shared 41)\n```\n"
+                                "<!-- ParallelBlock -->\n"
+                                "```clojure\n(inc shared)\n```"))]
+      (rca/coact-code-eval-action {:st-memory st :agent nil})
+      (let [entries (:last-code-results @st)]
+        (is (= 2 (count entries)))
+        (is (every? #(str/blank? (str (:error %))) entries)
+            "the second block must resolve the first block's def")
+        (is (= "42" (:result (second entries))))))))
+
+(deftest parallel-partition-over-ten-clojure-blocks-test
+  (testing "more than 10 clojure blocks produce one entry each, never nils"
+    ;; REGRESSION. eval-code-blocks-parallel capped a batch at 10 and returned
+    ;; a SINGLE error entry above it; run-blocks-concurrently then zipped that
+    ;; against N blocks with a two-collection mapv, which stops at the shorter.
+    ;; Measured before the fix: 11 blocks in, 1 error + 10 nils out, straight
+    ;; into :last-code-results and on to the formatters.
+    (let [sb (make-minimal-sandbox)
+          n  11
+          st (fresh-st-memory
+              :sandbox sb
+              :code-blocks (str/join "\n<!-- ParallelBlock -->\n"
+                                     (map #(str "```clojure\n(+ " % " 1)\n```") (range n))))]
+      (rca/coact-code-eval-action {:st-memory st :agent nil})
+      (let [entries (:last-code-results @st)]
+        (is (= n (count entries)))
+        (is (every? some? entries) "no nil entries")
+        (is (= (mapv #(str (inc %)) (range n)) (mapv :result entries))
+            "results stay in source order")))))
+
 ;; --- Parallel-mode detection ---
 
 (deftest parallel-mode-detection-test
