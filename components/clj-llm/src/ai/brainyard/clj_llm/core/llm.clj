@@ -39,6 +39,31 @@
     (finally
       (when *active-stream-register* (*active-stream-register* nil)))))
 
+(defn- timeout-opts
+  "Return `{:timeout-ms n}` for a non-streaming provider call, or an empty map.
+
+   Resolution is per-call `opts` > `lm-config` > absent. Absent MATTERS and is
+   why this returns a map rather than a number: `clj-http-native`'s `request`
+   supplies its 60s default via `:or`, which fires only when the key is
+   MISSING — an explicit `:timeout-ms nil` reaches `(long nil)` and NPEs. So
+   the unconfigured path must not carry the key at all.
+
+   That 60s default was the real ceiling on a slow sub-LLM call: neither
+   `openai-chat-completion` nor `anthropic-chat-completion` passed a timeout,
+   so a long generation was cut at 60s and — since an `HttpTimeoutException`
+   is not an `ExceptionInfo` and `llm-retryable?` falls through to true —
+   retried three more times before failing. Reading `lm-config` here is what
+   makes `create-lm`'s `:timeout-ms` reach the wire; reading `opts` first is
+   what lets `query$llm` set it per call without touching the LM.
+
+   Streaming paths take no timeout: `http_flow/post-request` pins its own
+   10-minute request deadline, and a stream's useful bound is time-to-first-
+   byte, not total duration."
+  [lm-config opts]
+  (if-let [ms (or (:timeout-ms opts) (:timeout-ms lm-config))]
+    {:timeout-ms ms}
+    {}))
+
 (defn- proxy-opts
   "Return clj-http proxy options from https_proxy env var, or empty map."
   []
@@ -578,6 +603,7 @@
                                         :body               (json/write-str body)
                                         :as                 :string
                                         :throw-exceptions   true}
+                                       (timeout-opts lm-config opts)
                                        (proxy-opts)))
             parsed   (json/read-str (:body response) :key-fn keyword)
             usage    (:usage parsed)
@@ -890,6 +916,7 @@
                                         :body               (json/write-str body)
                                         :as                 :string
                                         :throw-exceptions   true}
+                                       (timeout-opts lm-config opts)
                                        (proxy-opts)))
             parsed   (json/read-str (:body response) :key-fn keyword)
             usage    (:usage parsed)
@@ -1173,26 +1200,36 @@
 
    Parameters:
      lm-config      - LM configuration for sub-calls
-     usage-tracker  - Shared usage tracker atom (may be nil)"
-  [lm-config usage-tracker]
-  (fn llm-query
-    ([prompt] (llm-query prompt nil))
-    ([prompt sub-context]
-     (mulog/debug ::llm-query-sub-call
-                  :prompt-len (count prompt)
-                  :sub-context-len (when sub-context (count (str sub-context))))
-     (let [content (if sub-context
-                     (let [ctx-str (str sub-context)
-                           truncated (subs ctx-str 0 (min max-sub-context-chars (count ctx-str)))]
-                       (str "Context:\n" truncated "\n\nQuery: " prompt))
-                     prompt)
-           messages [{:role "system"
-                      :content "Answer the query based on the provided context. Be concise and accurate."}
-                     {:role "user"
-                      :content content}]
-           response (chat-completion lm-config messages
-                                     :usage-tracker usage-tracker)]
-       (extract-content response lm-config)))))
+     usage-tracker  - Shared usage tracker atom (may be nil)
+     opts           - Optional {:timeout-ms n} per-request deadline, outranking
+                      the lm-config's own. Rides `chat-completion`'s opts map,
+                      which is the one channel every provider already reads:
+                      the HTTP paths via `timeout-opts`, :claude-code and :acp
+                      via their own `(:timeout-ms opts)`. Setting it on the
+                      lm-config instead would miss nothing, but would make a
+                      per-call timeout require minting a new LM."
+  ([lm-config usage-tracker] (create-llm-query-fn lm-config usage-tracker nil))
+  ([lm-config usage-tracker {:keys [timeout-ms]}]
+   (fn llm-query
+     ([prompt] (llm-query prompt nil))
+     ([prompt sub-context]
+      (mulog/debug ::llm-query-sub-call
+                   :prompt-len (count prompt)
+                   :sub-context-len (when sub-context (count (str sub-context)))
+                   :timeout-ms timeout-ms)
+      (let [content (if sub-context
+                      (let [ctx-str (str sub-context)
+                            truncated (subs ctx-str 0 (min max-sub-context-chars (count ctx-str)))]
+                        (str "Context:\n" truncated "\n\nQuery: " prompt))
+                      prompt)
+            messages [{:role "system"
+                       :content "Answer the query based on the provided context. Be concise and accurate."}
+                      {:role "user"
+                       :content content}]
+            response (chat-completion lm-config messages
+                                      :usage-tracker usage-tracker
+                                      :timeout-ms timeout-ms)]
+        (extract-content response lm-config))))))
 
 (defn create-llm-query-batched-fn
   "Create a concurrent sub-LLM query function.
@@ -1202,44 +1239,57 @@
 
    Parameters:
      lm-config      - LM configuration for sub-calls
-     usage-tracker  - Shared usage tracker atom (may be nil)"
-  [lm-config usage-tracker]
-  (let [single-fn (create-llm-query-fn lm-config usage-tracker)]
-    (fn llm-query-batched
-      ([prompts] (llm-query-batched prompts nil))
-      ([prompts sub-context]
-       (when-not (sequential? prompts)
-         (throw (ex-info "llm-query-batched requires a vector/list of prompts"
-                         {:got (type prompts)})))
-       (when (> (count prompts) 20)
-         (throw (ex-info "llm-query-batched: max 20 prompts per call"
-                         {:count (count prompts)})))
-       (mulog/debug ::llm-query-batched :prompt-count (count prompts))
-       ;; Per-future deadline so one stuck sub-LLM future can't block the whole
-       ;; batch (the reduce/MAP step) indefinitely. Generous default (3 min) so
-       ;; a slow-but-valid LLM call isn't cut; override via lm-config :timeout-ms.
-       (let [timeout-ms (or (:timeout-ms lm-config) 180000)
-             ;; Absolute deadline: futures run concurrently, so each deref
-             ;; waits only until the shared deadline — total wall-clock is
-             ;; bounded by timeout-ms even if every call hangs (not N×timeout).
-             deadline (+ (System/currentTimeMillis) (long timeout-ms))
-             futures (mapv (fn [prompt]
-                             (future
-                               (try
-                                 (if sub-context
-                                   (single-fn prompt sub-context)
-                                   (single-fn prompt))
-                                 (catch Exception e
-                                   (str "Error: " (.getMessage e))))))
-                           prompts)]
-         (mapv (fn [f]
-                 (let [remaining (max 0 (- deadline (System/currentTimeMillis)))
-                       r (deref f remaining ::timeout)]
-                   (if (= r ::timeout)
-                     (do (future-cancel f)
-                         (str "Error: sub-LLM call timed out after " timeout-ms "ms"))
-                     r)))
-               futures))))))
+     usage-tracker  - Shared usage tracker atom (may be nil)
+     opts           - Optional {:timeout-ms n}, which here bounds BOTH the
+                      batch's wall clock and each call's own request deadline.
+                      One number for both is the honest reading of \"this batch
+                      must finish within n\": a per-call timeout above the batch
+                      deadline can only produce slots reported as timed out
+                      while their futures are still in flight, which is the
+                      shape of the pre-existing 60s-HTTP-vs-180s-batch mismatch
+                      (a call could retry past the deadline and be reported
+                      timed out mid-retry)."
+  ([lm-config usage-tracker] (create-llm-query-batched-fn lm-config usage-tracker nil))
+  ([lm-config usage-tracker opts]
+   ;; Per-future deadline so one stuck sub-LLM future can't block the whole
+   ;; batch (the reduce/MAP step) indefinitely. Generous default (3 min) so a
+   ;; slow-but-valid LLM call isn't cut; override per call via `opts`, or per
+   ;; LM via lm-config :timeout-ms.
+   (let [timeout-ms (or (:timeout-ms opts) (:timeout-ms lm-config) 180000)
+         single-fn  (create-llm-query-fn lm-config usage-tracker {:timeout-ms timeout-ms})]
+     (fn llm-query-batched
+       ([prompts] (llm-query-batched prompts nil))
+       ([prompts sub-context]
+        (when-not (sequential? prompts)
+          (throw (ex-info "llm-query-batched requires a vector/list of prompts"
+                          {:got (type prompts)})))
+        (when (> (count prompts) 20)
+          (throw (ex-info "llm-query-batched: max 20 prompts per call"
+                          {:count (count prompts)})))
+        (mulog/debug ::llm-query-batched
+                     :prompt-count (count prompts)
+                     :timeout-ms timeout-ms)
+        ;; Absolute deadline: futures run concurrently, so each deref waits
+        ;; only until the shared deadline — total wall-clock is bounded by
+        ;; timeout-ms even if every call hangs (not N×timeout).
+        (let [deadline (+ (System/currentTimeMillis) (long timeout-ms))
+              futures (mapv (fn [prompt]
+                              (future
+                                (try
+                                  (if sub-context
+                                    (single-fn prompt sub-context)
+                                    (single-fn prompt))
+                                  (catch Exception e
+                                    (str "Error: " (.getMessage e))))))
+                            prompts)]
+          (mapv (fn [f]
+                  (let [remaining (max 0 (- deadline (System/currentTimeMillis)))
+                        r (deref f remaining ::timeout)]
+                    (if (= r ::timeout)
+                      (do (future-cancel f)
+                          (str "Error: sub-LLM call timed out after " timeout-ms "ms"))
+                      r)))
+                futures)))))))
 
 (defn split-lm-str
   "Split an LM identifier string into `[provider model]`, preferring the

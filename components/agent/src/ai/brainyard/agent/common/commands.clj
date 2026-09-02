@@ -873,23 +873,32 @@ results are intentionally kept out of semantic recall so it stays focused on kno
 
 (defcommand query$llm
   "Query a sub-LLM (no tools, no iteration). Pass :prompt (single) or :prompts (concurrent batch)."
-  (fn [& {:keys [prompt prompts sub-context]}]
+  (fn [& {:keys [prompt prompts sub-context timeout]}]
     (let [has-prompt?  (not (str/blank? (str prompt)))
-          has-prompts? (and (sequential? prompts) (seq prompts))]
+          has-prompts? (and (sequential? prompts) (seq prompts))
+          ;; Seconds at the tool boundary, ms underneath: every other timeout an
+          ;; LLM writes here is a wall-clock wait it is choosing for itself, and
+          ;; a model that means "five minutes" writes 300 far more reliably than
+          ;; 300000. Coerced to nil when absent so the LM's own :timeout-ms — and
+          ;; failing that the provider default — still decides.
+          timeout-ms   (when (and (number? timeout) (pos? timeout))
+                         (long (* 1000 timeout)))]
       (cond
         (and has-prompt? has-prompts?)
         {:error "supply :prompt OR :prompts, not both"}
 
         has-prompts?
         (try
-          (let [f (clj-llm/create-llm-query-batched-fn (config/resolve-sub-lm) (resolve-usage-tracker))]
+          (let [f (clj-llm/create-llm-query-batched-fn (config/resolve-sub-lm) (resolve-usage-tracker)
+                                                       {:timeout-ms timeout-ms})]
             {:results (if sub-context (f (vec prompts) sub-context) (f (vec prompts)))})
           (catch Exception e
             {:error (str "query$llm error (batched): " (.getMessage e))}))
 
         has-prompt?
         (try
-          (let [f (clj-llm/create-llm-query-fn (config/resolve-sub-lm) (resolve-usage-tracker))]
+          (let [f (clj-llm/create-llm-query-fn (config/resolve-sub-lm) (resolve-usage-tracker)
+                                               {:timeout-ms timeout-ms})]
             {:result (if sub-context (f prompt sub-context) (f prompt))})
           (catch Exception e
             {:error (str "query$llm error: " (.getMessage e))}))
@@ -899,7 +908,8 @@ results are intentionally kept out of semantic recall so it stays focused on kno
   :input-schema  [:map
                   [:prompt {:optional true} [:string {:desc "Single prompt to send to the sub-LLM (omit when using :prompts)"}]]
                   [:prompts {:optional true} [:vector {:desc "Multiple prompts to dispatch concurrently (max 20). Omit when using :prompt."} :string]]
-                  [:sub-context {:optional true} [:string {:desc "Optional supplementary context (max ~500K chars). Shared across all prompts in batched mode."}]]]
+                  [:sub-context {:optional true} [:string {:desc "Optional supplementary context (max ~500K chars). Shared across all prompts in batched mode."}]]
+                  [:timeout {:optional true} [:int {:desc "Seconds to allow the call (default 60; batched: bounds the whole batch, default 180). Raise for long generations."}]]]
   :output-schema [:map
                   [:result {:optional true} [:string {:desc "Sub-LLM response (single-prompt mode)"}]]
                   [:results {:optional true} [:vector {:desc "Vector of sub-LLM responses in input order (batched mode)"} :string]]

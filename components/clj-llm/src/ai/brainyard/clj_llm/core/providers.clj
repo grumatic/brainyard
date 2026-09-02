@@ -755,6 +755,14 @@
                      sets :auth-type :bearer)
      :temperature  - Sampling temperature (default 0.0)
      :max-tokens   - Max output tokens (optional)
+     :timeout-ms   - Per-request deadline for NON-streaming calls (optional).
+                     Omitted ⇒ clj-http-native's 60s default for HTTP
+                     providers, 5min for :claude-code, 10min for :acp. Also
+                     bounds a `query$llm :prompts` batch. Streaming calls are
+                     unaffected (their own 10min request deadline stands).
+                     Must be listed here to survive: create-lm returns a fixed
+                     key set, so a key it does not destructure is dropped and
+                     the reader downstream silently sees nil.
      :base-url     - Override provider base URL (optional). Falls back to the
                      provider's :base-url-env (ANTHROPIC_BASE_URL,
                      FREELLM_BASE_URL) before the static default; an
@@ -789,7 +797,7 @@
      :acp-client-fs - (ACP) advertise the client filesystem capability
                      (default true; BY_ACP_CLIENT_FS overrides when unset).
                      false → the backend does its own direct disk I/O."
-  [{:keys [model api-key temperature max-tokens base-url provider prompt-cache cache-ttl
+  [{:keys [model api-key temperature max-tokens timeout-ms base-url provider prompt-cache cache-ttl
            prompt-cache-key drop-params region aws-profile credentials-provider
            backend acp-client-fs]}]
   (let [;; `:provider` is a keyword internally, but callers at the boundary may
@@ -911,6 +919,7 @@
       oauth?          (assoc :auth-type :oauth)
       bearer-token    (assoc :auth-type :bearer)
       max-tokens      (assoc :max-tokens max-tokens)
+      timeout-ms      (assoc :timeout-ms timeout-ms)
       resolved-cache  (assoc :prompt-cache true)
       cache-ttl       (assoc :cache-ttl cache-ttl)
       prompt-cache-key (assoc :prompt-cache-key prompt-cache-key)

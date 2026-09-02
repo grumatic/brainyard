@@ -324,11 +324,14 @@
 
 (def create-llm-query-fn
   "Create a single-shot sub-LLM query function.
+   (create-llm-query-fn lm-config usage-tracker [{:timeout-ms n}])
    Returns a fn (prompt [sub-context]) → answer-string. See llm/create-llm-query-fn."
   llm/create-llm-query-fn)
 
 (def create-llm-query-batched-fn
   "Create a concurrent sub-LLM query function (max 20 prompts).
+   (create-llm-query-batched-fn lm-config usage-tracker [{:timeout-ms n}]) —
+   the timeout bounds both the batch wall clock and each call's request.
    Returns a fn (prompts [sub-context]) → vector of answers. See llm/create-llm-query-batched-fn."
   llm/create-llm-query-batched-fn)
 
