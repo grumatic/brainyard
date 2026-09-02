@@ -330,16 +330,58 @@
                              (str "INPUT READER CRASH: " (.getMessage e) "\n"
                                   (with-out-str (.printStackTrace e (java.io.PrintWriter. *out*))))))
                      (catch Exception _))))
-               (.put ^LinkedBlockingQueue !raw-input-queue :eof))
+               ;; Announce EOF only if this thread is STILL the installed
+               ;; reader. `stop-input-reader!` nils the atom before it
+               ;; interrupts, so a reader we deliberately deposed cannot claim
+               ;; the terminal ended — a suspend is not an EOF. Without the
+               ;; check, suspending input while anything was parked in
+               ;; `read-key!` ended the session: `:eof` → -1 → `:ctrl-d` →
+               ;; `read-line-raw!` returns nil on an empty buffer → the loop
+               ;; exits → `System/exit 0`. A clean, unrequested quit. The
+               ;; `.clear` in `stop-input-reader!` cannot prevent that: a
+               ;; parked `.take` receives an item the instant it is enqueued,
+               ;; so no clear can beat it.
+               ;;
+               ;; The try is not decorative either. This put used to sit
+               ;; outside the try above, and whether it threw decided which
+               ;; failure you got: interrupted inside `Thread/sleep`, the
+               ;; exception clears the interrupt flag and the put SUCCEEDS
+               ;; (spurious quit); interrupted while runnable, the flag is
+               ;; still set, `.put` throws immediately and the thread dies
+               ;; with an uncaught exception the crash-log catch never sees
+               ;; (silent hang instead). One 5 ms poll loop decided which.
+               (try
+                 (when (identical? (Thread/currentThread) @!input-reader-thread)
+                   (.put ^LinkedBlockingQueue !raw-input-queue :eof))
+                 (catch InterruptedException _)))
              "tui-input-reader")]
     (reset! !tty-stream tty)
     (.setDaemon t true)
-    (.start t)
-    (reset! !input-reader-thread t)))
+    ;; Install BEFORE starting: the thread's own exit path reads this atom to
+    ;; decide whether it may announce EOF, and a reader that died before it was
+    ;; installed would otherwise be unable to report a tty that really had
+    ;; closed.
+    (reset! !input-reader-thread t)
+    (.start t)))
 
 (defn stop-input-reader!
   "Stop the input reader thread via interrupt (the polling loop checks it).
-   Then close the /dev/tty stream."
+   Then close the /dev/tty stream.
+
+   This is a SUSPEND, not a shutdown: it says nothing about the terminal, and
+   the deposed thread is barred from enqueueing `:eof` (see the comment on its
+   exit path above). Anything parked in `read-key!` therefore stays parked
+   until `start-input-reader!` feeds the queue again — which is what a suspend
+   should look like, and is why the editor handover in `display-block-ui` can
+   bracket its `$EDITOR` call with this pair.
+
+   A caller that needs to WAKE a parked reader rather than leave it waiting can
+   enqueue any keyword other than `:eof` / `:sigint`: `read-key!` maps those to
+   `:unknown`, which the readline loop recurs on harmlessly.
+
+   The queue clear drops half-typed bytes, which is right for a suspend — but
+   it is not a guard against a stale sentinel: a taker parked in `.take`
+   receives an item the instant it is enqueued, so no clear can outrun it."
   []
   (when-let [^Thread t @!input-reader-thread]
     (reset! !input-reader-thread nil)
