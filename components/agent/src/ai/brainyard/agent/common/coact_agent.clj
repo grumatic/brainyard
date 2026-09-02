@@ -806,6 +806,12 @@ and the results (return value, stdout, or error) are sent back for the next iter
 - **State persists**: `def` variables survive across iterations.
 - **Captured output**: `println`/`pprint` output is captured and returned to you.
 - **Errors are non-fatal**: Exceptions show the error message; sandbox state is preserved.
+- **Concurrency is `par-map`, NOT `future`/`pmap`**: SCI bundles neither, at any
+  interop level — reaching for them costs you an iteration on
+  `Could not resolve symbol`. `(par-map f coll)` runs branches concurrently and
+  returns results in INPUT order; for heterogeneous work pass thunks,
+  `(par-map (fn [g] (g)) [#(probe-a) #(probe-b)])`. It joins before returning,
+  so the block's timeout still bounds it.
 "
        (if (= interop :full)
          (str "- **Full Java interop**: arbitrary Java interop is available (System, Runtime, ProcessBuilder, reflection, etc.) — running in a container sandbox.\n"
@@ -857,6 +863,14 @@ reflection, every loaded namespace, and arbitrary interop are all reachable.
   inspect. Library fns still need their full namespace
   (`clojure.pprint/pprint`, not bare `pprint`): only `clojure.core` is referred
   into your namespace.
+- **`<!-- ParallelBlock -->` does not apply here**: it forks the SCI sandbox,
+  which your Clojure blocks never reach, so on this backend it buys nothing
+  and the blocks run sequentially anyway. For real fan-out write concurrent
+  Clojure INSIDE one block — `(pmap f xs)`, or
+  `(mapv deref (mapv #(future (f %)) xs))` — which the live JVM runs genuinely
+  in parallel. Keep it bounded, and always join (`deref` / `doall`) before the
+  block returns: a detached `future` outlives the eval and escapes both the
+  timeout and cancellation.
 - **Auto-background detach**: a block that hasn't returned by the agent's
   `:auto-background-timeout-ms` (default 180s) detaches into the background;
   the underlying nREPL session keeps running and the resolved result is
@@ -3785,34 +3799,34 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         ;; (`:auto-bg-ms`) is enforced as a hard kill — at the deadline the
         ;; fork is cancelled and the entry surfaces :status :timeout.
         ;;
-        ;; nREPL backend: the fork+merge SCI runner can't share an nREPL
-        ;; session safely across concurrent evals, and demoting to the SCI
-        ;; sandbox would run the blocks in the WRONG runtime (not the live
-        ;; brainyard JVM the agent exists to inspect). So when the agent's
-        ;; :clj-backend is :nrepl (e.g. debug-agent), we serialize the clojure
-        ;; blocks through the live nREPL via `run-single-block` instead —
-        ;; live-runtime semantics are preserved and session state accumulates
-        ;; naturally across the sequential evals. A short per-entry notice
-        ;; tells the LLM ordering was serialized, so it does NOT need to
-        ;; re-emit in sequential mode (which the old demotion marker prompted,
-        ;; costing an extra iteration).
+        ;; nREPL backend: `<!-- ParallelBlock -->` does not apply to Clojure
+        ;; here, and the reason is the RUNTIME, not the session. A cloned
+        ;; session (`clj-nrepl/new-session`, already used by debug-agent) would
+        ;; happily let concurrent evals run — but on a real JVM `def` writes to
+        ;; the namespace, which is process-global, so parallel blocks would race
+        ;; over one live image with no isolation to fall back on. Demoting to
+        ;; the SCI sandbox is not an out either: that is the WRONG runtime (not
+        ;; the live brainyard JVM this agent exists to inspect). So the blocks
+        ;; run sequentially through the live nREPL via `run-single-block` —
+        ;; live-runtime semantics preserved, session state accumulating
+        ;; naturally, and detach/fast-eval semantics identical to sequential
+        ;; mode because it IS the sequential dispatch.
+        ;;
+        ;; Deliberately NO per-entry notice. The model is told up front
+        ;; (`execution-model-nrepl`) that the marker is sandbox-only and that
+        ;; `pmap` / `future` inside one block are the way to fan out here —
+        ;; which is real parallelism, unlike the marker. Prompt guidance is paid
+        ;; once and rides the prefix cache; a stamp was paid on every entry,
+        ;; after the fact, to explain something that had already not happened.
         nrepl-backend? (= :nrepl (agent-clj-backend (:agent dispatch-opts)))
-        nrepl-notice
-        (str "[note: the nREPL backend does not support parallel evaluation;"
-             " these Clojure blocks ran sequentially against the live brainyard"
-             " JVM. No re-emission needed.]")
         clj-results
         (when (seq clj-indexed)
           (if nrepl-backend?
             ;; Sequential nREPL path — reuse the same per-block dispatch the
             ;; sequential mode uses, so detach/fast-eval/session semantics match.
             (mapv (fn [[idx block]]
-                    (let [r (run-single-block sandbox block dispatch-opts)
-                          raw-output (or (:output r) "")
-                          stamped-output (str nrepl-notice
-                                              (when-not (str/blank? raw-output) "\n")
-                                              raw-output)]
-                      [idx (assoc r :output stamped-output :parallel? true)]))
+                    [idx (assoc (run-single-block sandbox block dispatch-opts)
+                                :parallel? true)])
                   clj-indexed)
             ;; SCI sandbox path — fork+merge parallel runner.
             (let [codes (mapv (comp :code second) clj-indexed)

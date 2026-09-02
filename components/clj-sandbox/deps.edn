@@ -2,6 +2,15 @@
  :deps {org.babashka/sci {:mvn/version "0.10.49"}
         org.clojure/data.json {:mvn/version "2.5.1"}
         ai.brainyard/clj-llm {:local/root "../clj-llm"}
+        ;; Effect — backs the `par-map` sandbox binding (bounded parallel map
+        ;; over SCI closures). `fx/task-of` is the only shape that can cross
+        ;; into SCI: `m/sp`/`m/ap` expand through cloroutine's CPS transform,
+        ;; which needs the JVM compiler's `&env`, and SCI has none. Sandboxed
+        ;; code never parks, so a thunk is all it needs. See effect's own
+        ;; deps.edn for the native-image carve-out missionary requires — it is
+        ;; declared once at the agent-tui-app project level and already covers
+        ;; this brick, so no new carve-out is needed here.
+        ai.brainyard/effect {:local/root "../effect"}
         ai.brainyard/mulog {:local/root "../mulog"}}
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {}}}}

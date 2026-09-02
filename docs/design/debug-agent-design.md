@@ -290,9 +290,19 @@ The `:nrepl`-backend Execution Model section is selected by
 - **No SCI shortcuts**: `context-get`, `(usage :foo)`, and bare
   tool-name-as-fn are SCI-only. From here, invoke registered tools via
   `call-tool` (§10) and use fully-qualified symbols.
-- **No parallel mode**: the single live session cannot be forked, so multiple
-  ` ```clojure ` fences in one turn run **sequentially** in the same session
-  (each sees the prior blocks' defs/state). Do not emit `<!-- ParallelBlock -->`.
+- **No parallel mode**: multiple ` ```clojure ` fences in one turn run
+  **sequentially** in the same session (each sees the prior blocks'
+  defs/state). Do not emit `<!-- ParallelBlock -->` — it forks the SCI sandbox,
+  which these fences never reach, so on this backend the marker buys nothing.
+  The obstacle is the RUNTIME, not the session: a cloned session
+  (`clj-nrepl/new-session`) would let concurrent evals run, but on a real JVM
+  `def` writes to the process-global namespace, so parallel fences would race
+  over one live image with no isolation to fall back on.
+  For genuine fan-out, write concurrent Clojure **inside one fence** —
+  `(pmap f xs)` or `(mapv deref (mapv #(future (f %)) xs))` — which the live
+  JVM actually parallelizes, and which the SCI sandbox cannot offer at all
+  (`future`/`pmap` are unresolvable there at every interop level). Join before
+  the fence returns; a detached `future` escapes the timeout and cancellation.
 
 The full authoritative text lives in `debug_agent.clj`'s `debug-instruction`
 and the `nrepl-guide` (registered into `agent.core.usage` as topic `:nrepl`,

@@ -565,3 +565,91 @@
     ;; Backslash in code outside of strings should not be touched
     (let [code "(re-find #\"\\d+\" \"123\")"]
       (is (nil? (sandbox/try-repair-escapes code))))))
+
+;; ============================================================================
+;; par-map — the sandbox's only concurrency primitive
+;; ============================================================================
+
+(deftest par-map-test
+  (testing "SCI bundles no future/pmap — par-map is the only way to fan out"
+    ;; Guards the premise behind par-map AND behind the prompt's claim that
+    ;; reaching for future/pmap costs an iteration. If SCI ever starts
+    ;; bundling either, both need revisiting.
+    ;;
+    ;; Deliberately only these two. `promise` DOES resolve — but with no way
+    ;; to deliver from another thread it is inert on its own, so it is not
+    ;; part of the claim.
+    (let [sb (sandbox/create-sandbox)]
+      (doseq [sym ["future" "pmap"]]
+        (is (str/includes? (str (:error (sandbox/eval-code sb (str "(" sym " identity)"))))
+                           "Could not resolve symbol")
+            (str sym " should not resolve in the sandbox")))))
+
+  (testing "results come back in INPUT order, not completion order"
+    (let [sb (sandbox/create-sandbox)
+          r  (sandbox/eval-code sb "(par-map (fn [x] (* x 10)) [1 2 3 4 5])"
+                                :timeout-ms 30000)]
+      (is (nil? (:error r)))
+      (is (= [10 20 30 40 50] (:result r)))))
+
+  (testing "branch output is replayed in input order with lines intact"
+    ;; REGRESSION: sharing the eval's writer is memory-safe but shreds output
+    ;; mid-line — three branches printing produced "E E 3E 1\n\n2\n", because
+    ;; println is several writes holding no lock across them. Per-branch
+    ;; writers replayed after the join are what make this deterministic.
+    (let [sb (sandbox/create-sandbox)
+          r  (sandbox/eval-code sb "(par-map (fn [x] (println \"line\" x) x) [1 2 3])"
+                                :timeout-ms 30000)]
+      (is (nil? (:error r)))
+      (is (= "line 1\nline 2\nline 3\n" (:output r)))))
+
+  (testing "printing inside a branch does not blow up on sci/out"
+    ;; REGRESSION: fx/task-of conveys Clojure's dynamic frame, but sci/out is a
+    ;; sci.lang.Var with its own binding stack that the frame does not carry.
+    ;; Without an explicit rebind per branch this died with
+    ;; "class sci.impl.vars.SciUnbound cannot be cast to class java.io.Writer".
+    (let [sb (sandbox/create-sandbox)
+          r  (sandbox/eval-code sb "(par-map (fn [x] (println x) x) [1 2 3])"
+                                :timeout-ms 30000)]
+      (is (nil? (:error r)))
+      (is (not (str/includes? (str (:error r)) "SciUnbound")))))
+
+  (testing "a throwing branch propagates, and prior output survives"
+    (let [sb (sandbox/create-sandbox)
+          r  (sandbox/eval-code
+              sb
+              "(par-map (fn [x] (println \"pre\" x) (if (= x 2) (throw (ex-info \"boom\" {})) x)) [1 2 3])"
+              :timeout-ms 30000)]
+      (is (str/includes? (str (:error r)) "boom"))
+      (is (str/includes? (str (:output r)) "pre 1"))))
+
+  (testing ":max-concurrency is clamped, never a cap on collection size"
+    (let [sb (sandbox/create-sandbox)
+          r  (sandbox/eval-code sb "(par-map (fn [x] x) (range 40) {:max-concurrency 9999})"
+                                :timeout-ms 30000)]
+      (is (nil? (:error r)))
+      (is (= 40 (count (:result r))) "all 40 items run, 16 at a time")))
+
+  (testing "degenerate inputs and a non-numeric opt do not throw"
+    (let [sb (sandbox/create-sandbox)]
+      (is (= [] (:result (sandbox/eval-code sb "(par-map (fn [x] x) [])"))))
+      (is (= [nil nil nil]
+             (:result (sandbox/eval-code sb "(par-map (fn [_] nil) [1 2 3])"
+                                         :timeout-ms 30000))))
+      (is (= [1 2 3]
+             (:result (sandbox/eval-code sb "(par-map (fn [x] x) [1 2 3] {:max-concurrency :nonsense})"
+                                         :timeout-ms 30000))))))
+
+  (testing "concurrent SCI closures over a shared ctx stay correct"
+    (let [sb (sandbox/create-sandbox)
+          r  (sandbox/eval-code sb "(reduce + (par-map (fn [x] (* x x)) (range 300)))"
+                                :timeout-ms 30000)]
+      (is (nil? (:error r)))
+      (is (= (reduce + (map #(* % %) (range 300))) (:result r)))))
+
+  (testing "a fork inherits the binding"
+    (let [sb (sandbox/create-sandbox)
+          f  (sandbox/fork-sandbox sb)
+          r  (sandbox/eval-code f "(par-map inc [1 2 3])" :timeout-ms 30000)]
+      (is (nil? (:error r)))
+      (is (= [2 3 4] (:result r))))))

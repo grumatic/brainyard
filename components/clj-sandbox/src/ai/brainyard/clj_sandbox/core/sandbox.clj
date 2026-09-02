@@ -23,6 +23,7 @@
             [clojure.java.io]
             [clojure.java.shell]
             [ai.brainyard.mulog.interface :as mulog]
+            [ai.brainyard.effect.interface :as fx]
             [edamame.core :as edamame]
             [ai.brainyard.clj-sandbox.core.context-accessors :as ctx-acc])
   (:import [java.io StringWriter]
@@ -260,6 +261,90 @@
             sys-info-properties)
       (assoc :timezone (str (java.time.ZoneId/systemDefault)))))
 
+;; ============================================================================
+;; Bounded parallel map
+;; ============================================================================
+
+(def ^:private default-par-concurrency
+  "Branches `par-map` runs at once when not given `:max-concurrency`."
+  8)
+
+(def ^:private max-par-concurrency
+  "Hard ceiling on `par-map` fan-out. The cap is on CONCURRENCY, not on
+   collection size — `par-map` over 10k items is fine, 16 at a time. It bounds
+   thread pressure from nested `par-map` calls, which multiply."
+  16)
+
+(defn- sci-writer-or
+  "`sci/out`'s current value when it is a real Writer, else `fallback`.
+   Outside an eval it derefs to `SciUnbound`, which is not a Writer and must
+   never be written to — see `par-map*`'s note 1."
+  [fallback]
+  (let [w (deref sci/out)]
+    (if (instance? java.io.Writer w) w fallback)))
+
+(defn- par-map*
+  "Bounded parallel map over SCI closures, on `fx/bounded`. Backs the `par-map`
+   sandbox binding — the sandbox's only concurrency primitive, since SCI
+   bundles neither `future` nor `pmap` and neither becomes reachable at `:full`
+   interop (that level widens the CLASS palette, and these are `clojure.core`
+   symbols SCI never copied in).
+
+   `fx/task-of` is the only effect shape that can cross into SCI: `m/sp`/`m/ap`
+   expand through cloroutine's CPS transform, which analyzes against the JVM
+   compiler's `&env`, and SCI has none. Sandboxed code never parks, so a thunk
+   is all it needs.
+
+   Two things here are load-bearing, both established by measurement:
+
+   1. **Each branch REBINDS `*out*` AND `sci/out`.** `fx/task-of` conveys
+      Clojure's dynamic frame, so `*out*` alone would survive — but `sci/out`
+      is a `sci.lang.Var` with its own binding stack that the conveyed frame
+      does not carry. A branch inheriting only the Clojure frame died on its
+      first `println` with `class sci.impl.vars.SciUnbound cannot be cast to
+      class java.io.Writer`. Loud rather than silently discarded, at least.
+
+   2. **Each branch gets its OWN writer, replayed in input order after the
+      join.** Sharing the eval's writer is memory-safe (StringBuffer is
+      synchronized) but shreds output MID-LINE: three branches printing
+      `E <n>` produced `\"E E 3E 1\\n\\n2\\n\"`, because `println` is several
+      writes and holds no lock across them. Per-branch buffers make the
+      transcript deterministic and readable, at the cost of branch output not
+      appearing until the join — the right trade for something an LLM reads
+      back.
+
+   Replay runs even when a branch threw, so partial progress survives the
+   failure. A throw cancels the siblings (`fx/bounded`) and propagates, which
+   is `pmap`'s semantics and the sandbox's: `eval-code` renders it as `:error`."
+  ([f coll] (par-map* f coll nil))
+  ([f coll opts]
+   (let [items (vec coll)]
+     (if (empty? items)
+       []
+       (let [req      (:max-concurrency opts)
+             n        (-> (if (number? req) (long req) default-par-concurrency)
+                          (max 1)
+                          (min max-par-concurrency))
+             parent-w (sci-writer-or *out*)
+             sinks    (mapv (fn [_] (StringWriter.)) items)
+             tasks    (mapv (fn [x ^StringWriter w]
+                              (fx/task-of
+                               (fn []
+                                 (binding [*out* w]
+                                   (sci/binding [sci/out w]
+                                     (f x))))))
+                            items sinks)
+             r        (fx/run!! (fx/bounded n tasks))]
+         (doseq [^StringWriter w sinks]
+           (let [s (.toString w)]
+             (when (seq s) (.write ^java.io.Writer parent-w s))))
+         (cond
+           (contains? r :ok) (:ok r)
+           (:interrupted r)  (throw (ex-info "par-map interrupted"
+                                             {:items (count items)}))
+           :else             (throw (or (:err r)
+                                        (ex-info "par-map failed" {:result r})))))))))
+
 (defn- build-sci-namespaces
   "Build the full SCI namespace map: whitelisted library namespaces plus the
    user namespace with core bindings (FINAL, parse-json, to-json, pprint)
@@ -295,6 +380,10 @@
                                  {:doc "Pretty-print any value to stdout"
                                   :arglists '([object])
                                   :category :core})
+                       'par-map (with-meta par-map*
+                                  {:doc "Parallel map — runs (f x) over coll concurrently, results in INPUT order. The sandbox has no future/pmap; this is the way to fan out. Opts: :max-concurrency (default 8, max 16). Each branch's printed output is replayed in input order once all finish. A throw in any branch cancels the siblings and propagates. For heterogeneous work pass thunks: (par-map (fn [g] (g)) [#(a) #(b)])."
+                                   :arglists '([f coll] [f coll opts])
+                                   :category :core})
                        ;; The capability, not the class. `System` stays denied
                        ;; at :restricted: allowlisting it would expose
                        ;; `(System/getenv)` and `(System/getProperties)`, whose
