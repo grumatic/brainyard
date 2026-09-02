@@ -3604,8 +3604,16 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                 task (tp/create-task mgr
                                      (task-label "nrepl-clj: " code)
                                      :clj-nrepl-eval
+                                     ;; :host/:port must ride the job-config —
+                                     ;; the executor defaults to loopback, so
+                                     ;; without them a remote-endpoint agent
+                                     ;; with fast-eval disabled silently
+                                     ;; evaluated on the LOCAL server, i.e. the
+                                     ;; wrong runtime, reported as success.
                                      (cond-> {:code wire-code :timeout-ms (* 1000 60 60)}
-                                       nrepl-session-id (assoc :session nrepl-session-id))
+                                       nrepl-session-id (assoc :session nrepl-session-id)
+                                       nrepl-host (assoc :host nrepl-host)
+                                       nrepl-port (assoc :port nrepl-port))
                                      {:metadata (coact-task-metadata
                                                  {:lang "clojure" :backend :nrepl
                                                   :nrepl-session-id nrepl-session-id
@@ -3617,12 +3625,22 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 
       :else
       (let [t0        (System/currentTimeMillis)
+            ;; The session actually used, which is NOT always
+            ;; `nrepl-session-id` — an agent that pins none gets one cloned
+            ;; per call, and that id is the only handle on a running eval.
+            ;; `:on-session` lands it here before the eval is sent; the
+            ;; `:on-cancel` below reads whatever arrived.
+            !live-session (atom nrepl-session-id)
+            endpoint  (cond-> nil
+                        nrepl-host (assoc :host nrepl-host)
+                        nrepl-port (assoc :port nrepl-port))
             [thunk eval-output] (clj-nrepl/eval-nrepl-thunk
                                  wire-code
                                  :session    nrepl-session-id
                                  :timeout-ms (* 1000 60 60)
                                  :host       nrepl-host
-                                 :port       nrepl-port)
+                                 :port       nrepl-port
+                                 :on-session #(reset! !live-session %))
             !task-ref (atom :inline-code-eval)
             fut (future (binding [proto/*current-task* !task-ref] (thunk)))
             r   (deref fut fast-eval-ms ::timeout)]
@@ -3637,11 +3655,34 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
              {:task-name    (task-label "nrepl-clj: " code)
               :job-type     :clj-nrepl-eval
               :job-config   (cond-> {:code wire-code :timeout-ms (* 1000 60 60)}
-                              nrepl-session-id (assoc :session nrepl-session-id))
+                              nrepl-session-id (assoc :session nrepl-session-id)
+                              nrepl-host (assoc :host nrepl-host)
+                              nrepl-port (assoc :port nrepl-port))
               :metadata     meta
               :adopt (executor/make-future-adopt fut eval-output code
                                                  #(select-keys % [:code :output :result :error :ns]))
-              :on-cancel    (fn [] (future-cancel fut))
+              ;; NEITHER HALF OF THIS RELIABLY STOPS THE EVAL, and that is
+              ;; worth stating rather than discovering. `future-cancel` cannot:
+              ;; the thread is blocked in a socket read inside nrepl/message,
+              ;; which no interrupt reaches (design §17's case), so it only
+              ;; unparks our own waiter. `interrupt!` is the right shape — an
+              ;; out-of-band op on a second connection — but is MEASURED not to
+              ;; stop an eval on nREPL 1.3.0 (see its docstring); the server
+              ;; accepts it and keeps evaluating.
+              ;;
+              ;; So a cancelled nREPL block abandons the waiter and the server
+              ;; runs the work to completion, up to the one-hour ceiling above.
+              ;; What this DID fix is that the interrupt now goes to the right
+              ;; place at all: it was previously omitted here entirely (only
+              ;; `future-cancel`), and it could not have been added, because an
+              ;; agent that pins no session had no id to name — that is what
+              ;; `:on-session` above exists for. Best-effort, in the order that
+              ;; would matter if the server side improves.
+              :on-cancel    (fn []
+                              (when-let [sid @!live-session]
+                                (try (clj-nrepl/interrupt! sid endpoint)
+                                     (catch Exception _ nil)))
+                              (future-cancel fut))
               :lang         "clojure"
               :auto-bg-ms   auto-bg-ms
               :fast-eval-ms fast-eval-ms

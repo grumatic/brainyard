@@ -124,11 +124,20 @@
      :timeout-ms  — round-trip ceiling (default 30000)
      :host        — endpoint host (default 127.0.0.1 = the in-process server)
      :port        — endpoint port (default = the local server's port)
+     :on-session  — (fn [session-id]) called as soon as the session is known,
+                    BEFORE the eval is sent. This is the only way a caller can
+                    learn the id of a session it did not pin, and it has to
+                    arrive early: the id is for addressing an eval that is
+                    STILL RUNNING, so returning it in the result map would hand
+                    it over exactly one moment too late. Throwing from it
+                    cannot fail the eval. (Note the id lets you ADDRESS a
+                    running eval, not necessarily stop one — `interrupt!` is
+                    measured ineffective on nREPL 1.3.0; see its docstring.)
 
    The default endpoint is the local loopback server (today's behavior). Pass a
    remote `:host` + `:port` to run on a remote nREPL server — FULL-TRUST, so only
    a server you own (R4). Returns {:code :result :output :error :ns}."
-  [code & {:keys [session timeout-ms output-writer host port]
+  [code & {:keys [session timeout-ms output-writer host port on-session]
            :or {timeout-ms default-timeout-ms}}]
   (let [host*  (or host "127.0.0.1")
         local? (contains? loopback-hosts host*)
@@ -143,12 +152,19 @@
           (if-let [why (reachable? host* port* (min timeout-ms max-connect-ms))]
             (err-result code (str "nREPL transport error: " why))
             (with-open [conn (nrepl/connect :host host* :port port*)]
+              ;; Resolve the session id HERE rather than letting client-session
+              ;; clone one out of sight. Behaviour-identical — client-session
+              ;; calls new-session itself when not given one, so this is the
+              ;; same round-trip — but the id now exists as a value we can hand
+              ;; to `on-session` before the eval starts. Without that, an eval
+              ;; on an unpinned session was uninterruptible by construction:
+              ;; the only handle on it lived inside a closure in nrepl.core.
               (let [base    (nrepl/client conn timeout-ms)
-                    client* (if session
-                              (nrepl/client-session base :session session)
-                              (nrepl/client-session base))
-                    msg     (cond-> {:op "eval" :code code}
-                              session (assoc :session session))
+                    sid     (or session (nrepl/new-session base))
+                    _       (when on-session
+                              (try (on-session sid) (catch Throwable _ nil)))
+                    client* (nrepl/client-session base :session sid)
+                    msg     {:op "eval" :code code :session sid}
                     harvested (harvest-responses (nrepl/message client* msg)
                                                  :output-writer output-writer)]
                 (assoc harvested :code code))))
@@ -161,7 +177,11 @@
    Caller owns the future + timeout (used by NreplEvalJobExecutor).
    Returns [thunk eval-output]. The StringWriter receives :out/:err
    chunks incrementally as they arrive from nREPL, enabling progressive
-   output polling via drain-incremental-output!."
+   output polling via drain-incremental-output!.
+
+   Pass `:on-session` through `opts` when the caller needs to cancel: the
+   thunk blocks in a socket read, so `future-cancel` cannot stop the eval and
+   `interrupt!` on the session id is the only mechanism that can."
   [code & {:as opts}]
   (let [eval-output (java.io.StringWriter.)]
     [(fn [] (apply eval-string code

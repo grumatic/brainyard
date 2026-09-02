@@ -451,7 +451,6 @@
     (:final-value r)  (assoc :final-value (:final-value r))
     (not (:error r))  (assoc :result (:result r))))
 
-
 ;; NOTE: a private `emit-captured-output!` lived here — a bulk fan-out of the
 ;; WHOLE captured buffer, with no offset tracking. It had no callers, and it is
 ;; deleted rather than left available because it is exactly the duplication bug
@@ -632,11 +631,22 @@
 (defrecord NreplEvalJobExecutor []
   tp/IJobExecutor
   (execute-job [_ task on-output]
-    (let [{:keys [code session timeout-ms]
+    (let [{:keys [code session timeout-ms host port]
            :or {timeout-ms 3600000}} (:job-config task)
+          ;; The session actually used. `session` is nil for any agent that
+          ;; does not pin one, and the old :on-cancel below was guarded on it
+          ;; — so an unpinned eval got NO interrupt at all, only a
+          ;; future-cancel that cannot reach a blocked socket read.
+          !live-session (atom session)
+          endpoint (cond-> nil
+                     host (assoc :host host)
+                     port (assoc :port port))
           [thunk eval-output] (clj-nrepl/eval-nrepl-thunk code
                                                           :session session
-                                                          :timeout-ms timeout-ms)
+                                                          :timeout-ms timeout-ms
+                                                          :host host
+                                                          :port port
+                                                          :on-session #(reset! !live-session %))
           tid (:id task)
           fut (future (binding [proto/*current-task* (atom tid)] (thunk)))
           !drained (atom 0)]
@@ -657,9 +667,15 @@
                        (select-keys done-r [:code :output :result :error :ns]))))
        :on-drain  (fn [flush?]
                     (drain-incremental-output! on-output eval-output !drained flush?))
+       ;; Best-effort, and neither half reliably stops the eval: future-cancel
+       ;; cannot reach a thread blocked in a socket read, and `interrupt!` is
+       ;; measured not to stop an eval on nREPL 1.3.0 (see its docstring). What
+       ;; changed here is that the interrupt now fires for an UNPINNED session
+       ;; too — it used to be guarded on `session`, which is nil for every
+       ;; agent that does not pin one, so the common case sent nothing at all.
        :on-cancel (fn []
-                    (when session
-                      (try (clj-nrepl/interrupt! session)
+                    (when-let [sid @!live-session]
+                      (try (clj-nrepl/interrupt! sid endpoint)
                            (catch Exception _ nil)))
                     (future-cancel fut))}))
 

@@ -46,6 +46,31 @@
         (n/close-session s1)
         (n/close-session s2)))))
 
+(deftest on-session-surfaces-the-id
+  ;; The id of a session the caller did NOT pin used to be unreachable: it was
+  ;; cloned inside nrepl.core/client-session and never escaped, so anything
+  ;; wanting to address a running eval (interrupt, inspect) had nothing to name
+  ;; it by. It must arrive BEFORE the eval settles — in the result map it would
+  ;; be one moment too late to be useful.
+  (testing "an unpinned eval reports the session it cloned"
+    (let [seen (atom nil)
+          r    (n/eval-string "(+ 20 22)" :on-session #(reset! seen %))]
+      (is (= "42" (:result r)))
+      (is (string? @seen) "the cloned session id is surfaced")))
+
+  (testing "a pinned session is reported unchanged"
+    (let [sid  (n/new-session)
+          seen (atom nil)]
+      (try
+        (n/eval-string "(+ 1 1)" :session sid :on-session #(reset! seen %))
+        (is (= sid @seen))
+        (finally (n/close-session sid)))))
+
+  (testing "a throwing on-session cannot fail the eval"
+    (let [r (n/eval-string "(+ 2 3)" :on-session (fn [_] (throw (ex-info "boom" {}))))]
+      (is (= "5" (:result r)))
+      (is (nil? (:error r))))))
+
 ;; --- gate: deny-list is the only check -----------------------------------
 
 (deftest deny-list-rejected
