@@ -1878,6 +1878,18 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                                     sandbox-state
                                     enable-sandbox-persistence)
                            (clj-sandbox/build-restore-bindings sandbox-state))
+        ;; The TUI's `--resume` path materializes a seed sandbox eagerly (so
+        ;; `/sandbox eval` works before the first ask) and leaves the names it
+        ;; restored here. Without this, that eager sandbox makes
+        ;; `existing-sandbox` non-nil, the guard above returns nil, and the
+        ;; restore is never ADVERTISED: `[:restored-vars]` stays absent and the
+        ;; model is told nothing about defs that are sitting right there. Read
+        ;; once and cleared — after this turn they are ordinary user vars and
+        ;; `[:user-vars]` covers them.
+        seeded-restored (when (and agent existing-sandbox)
+                          (seq (get-in @(:!state agent) [:sandbox-restored-vars])))
+        _ (when seeded-restored
+            (swap! (:!state agent) dissoc :sandbox-restored-vars))
 
         ;; Session boot: load this project's persisted user-defined tools
         ;; (idempotent per process) BEFORE make-tool-bindings, so they register
@@ -1914,8 +1926,11 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         ;; legacy notes API was removed in the L1 simplification refactor.
         ;; Wall-clock access is the `time$now` tool (core.timeutil), auto-bound
         ;; into the sandbox like any other tool — no special-cased `(now)`.
-        bindings (merge (sb-bind/make-tool-bindings agent)
-                        (or restore-bindings {}))
+        ;; Restore-bindings deliberately do NOT ride `bindings` — they go to
+        ;; create-sandbox's `:restored-vars` below, which keeps them visible to
+        ;; `extract-user-vars` so they are re-persisted at turn end instead of
+        ;; being filtered out and dropped from the snapshot.
+        bindings (sb-bind/make-tool-bindings agent)
 
         ;; :nrepl backend — intern that SAME map into the live image, so the
         ;; function directory the prompt renders below is callable there too
@@ -1923,16 +1938,22 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
         ;; SCI sandbox this agent's clojure fences never reach. Per-turn, so
         ;; tools registered mid-session bind exactly like they do in the
         ;; sandbox. No-ops for a remote :nrepl-host; never fails the turn.
+        ;; Restored vars are merged back in here only: the nREPL image should
+        ;; see the same names the SCI sandbox does, and this path has no
+        ;; user-var extraction to confuse.
         _ (when (and agent (= :nrepl (config/resolve-clj-backend agent)))
-            (nrepl-bind/install! agent bindings))
+            (nrepl-bind/install! agent (merge bindings (or restore-bindings {}))))
 
         ;; Sandbox-side context map for context-accessors (context-get, etc.).
         ;; `:recalled-memory` is wired as a direct DSPy signature input;
         ;; `:previous-turns` is rendered into :user-context (system message),
         ;; so neither needs to be exposed via sandbox `context-get`.
+        restored-names (cond
+                         (seq restore-bindings) (mapv name (keys restore-bindings))
+                         seeded-restored        (vec seeded-restored))
         sandbox-context (cond-> {}
-                          (seq restore-bindings)
-                          (assoc :restored-vars (mapv name (keys restore-bindings)))
+                          (seq restored-names)
+                          (assoc :restored-vars restored-names)
                           agent (assoc :agent-state
                                        (sb-bind/build-agent-state-snapshot agent)))
 
@@ -1948,6 +1969,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                   (clj-sandbox/create-sandbox
                    :context        sandbox-context
                    :bindings       bindings
+                   :restored-vars  (or restore-bindings {})
                    :synthetic-keys synthetic-keys
                    :interop        (config/resolve-sandbox-interop agent)))
 
@@ -5022,9 +5044,18 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                 kept     (:kept survival)
                 lost     (:lost survival)]
             (when (or (seq kept) (seq lost))
-              (swap! (:!session agent) assoc
-                     :sandbox-state kept
-                     :sandbox-lost-defs (vec lost)))))))
+              (swap! (:!session agent)
+                     (fn [s]
+                       (cond-> (assoc s :sandbox-lost-defs (vec lost))
+                         ;; An empty `kept` beside a NON-empty `lost` is the
+                         ;; ambiguous case — the extraction pruned everything it
+                         ;; saw — and overwriting the snapshot with `{}` there is
+                         ;; how a resumed session used to delete the very defs it
+                         ;; had just restored. Only an extraction that saw
+                         ;; nothing at all (`lost` empty too) is evidence the
+                         ;; user really has no vars left.
+                         (or (seq kept) (empty? lost))
+                         (assoc :sandbox-state kept)))))))))
 
     (mulog/log ::store-results
                :agent-id (when agent (:agent-id agent))

@@ -5,7 +5,8 @@
 (ns ai.brainyard.clj-sandbox.sandbox-test
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
-            [ai.brainyard.clj-sandbox.core.sandbox :as sandbox]))
+            [ai.brainyard.clj-sandbox.core.sandbox :as sandbox]
+            [ai.brainyard.clj-sandbox.core.sandbox-state :as sandbox-state]))
 
 (deftest create-sandbox-test
   (testing "creates sandbox with map context"
@@ -682,3 +683,88 @@
           r  (sandbox/eval-code f "(pmap inc [1 2 3])" :timeout-ms 30000)]
       (is (nil? (:error r)))
       (is (= [2 3 4] (:result r))))))
+
+(deftest user-var-extraction-boundary-test
+  (testing ":bindings are machinery — never reported as user state"
+    (let [sb (sandbox/create-sandbox :bindings {'read-file (fn [& _] :stub)
+                                                'task$list (fn [& _] :stub)})
+          s  (sandbox/extract-user-vars-with-survival sb)]
+      (is (empty? (:kept s)))
+      (is (empty? (:lost s)))))
+
+  (testing "bindings installed AFTER creation are machinery too"
+    ;; Regression: coact reuses one sandbox across turns and re-installs the
+    ;; whole tool table through update-bindings! each turn. Filtering only on
+    ;; the create-time :initial-vars snapshot made every tool closure look
+    ;; like a user def — a resumed session reported 311 lost :non-edn vars.
+    (let [sb (sandbox/create-sandbox :restored-vars {'shared-x 41})]
+      (sandbox/update-bindings! sb {'read-file (fn [& _] :stub)
+                                    'task$list (fn [& _] :stub)})
+      (let [s (sandbox/extract-user-vars-with-survival sb)]
+        (is (empty? (:lost s))
+            "tool closures bound mid-session must not be reported as lost user defs")
+        (is (= #{"shared-x"} (set (keys (:kept s))))))))
+
+  (testing ":restored-vars stay user state, so they survive the NEXT persist"
+    ;; Regression: routed through :bindings, a restored def landed in
+    ;; :initial-vars, extraction filtered it out, and the turn-end save
+    ;; overwrote the snapshot without it — the restore erased itself one
+    ;; turn later.
+    (let [sb (sandbox/create-sandbox :restored-vars {'shared-x 41 'note "hi"})]
+      (is (= 42 (:result (sandbox/eval-code sb "(inc shared-x)")))
+          "restored vars are live in the sandbox")
+      (is (= {"shared-x" {:value "41" :type "inferred"}
+              "note"     {:value "\"hi\"" :type "inferred"}}
+             (:kept (sandbox/extract-user-vars-with-survival sb)))
+          "and are re-extracted, so the next save keeps them")))
+
+  (testing "a genuine user def is still captured and a fn still pruned"
+    (let [sb (sandbox/create-sandbox :bindings {'read-file (fn [& _] :stub)})]
+      (sandbox/eval-code sb "(def answer 42)")
+      (sandbox/eval-code sb "(defn helper [x] x)")
+      (let [s (sandbox/extract-user-vars-with-survival sb)]
+        (is (= {"answer" {:value "42" :type "inferred"}} (:kept s)))
+        (is (= [{:name "helper" :reason :non-edn}] (:lost s))))))
+
+  (testing "a fork inherits the machinery set rather than re-deriving it"
+    (let [sb (sandbox/create-sandbox :bindings {'read-file (fn [& _] :stub)})]
+      (sandbox/update-bindings! sb {'task$list (fn [& _] :stub)})
+      (let [f (sandbox/fork-sandbox sb)]
+        (is (empty? (:lost (sandbox/extract-user-vars-with-survival f))))))))
+
+(deftest resume-round-trip-test
+  ;; Replays the full `--resume` sequence that used to lose everything:
+  ;; the TUI seeds a sandbox from the persisted snapshot (no :context), coact's
+  ;; existing-sandbox branch then runs update-context! + update-bindings! with
+  ;; the whole tool table, and the turn-end extraction decides what survives.
+  ;; Before the fix that extraction reported kept {} / lost 311 and the save
+  ;; overwrote :sandbox-state with {} — a second resume restored 0.
+  (let [snapshot {"shared-x" {:value "41" :type "inferred"}
+                  "my-note"  {:value "\"hi\"" :type "inferred"}
+                  "counts"   {:value "[1 2 3]" :type "inferred"}
+                  "cfg"      {:value "{:a 1}" :type "inferred"}}
+        restore  (sandbox-state/build-restore-bindings snapshot)
+        sb       (sandbox/create-sandbox :restored-vars restore)]
+    (is (= 4 (count restore)) "the banner's count")
+
+    (sandbox/update-context! sb {:restored-vars (mapv name (keys restore))
+                                 :agent-state {:info {:session-id "agt-1"}}})
+    (sandbox/update-bindings! sb (into {} (for [i (range 50)]
+                                            [(symbol (str "tool$" i)) (fn [& _] :stub)])))
+
+    (testing "the model can see AND use what the banner announced"
+      (is (= ["shared-x" "my-note" "counts" "cfg"]
+             (:result (sandbox/eval-code sb "(context-get [:restored-vars])"))))
+      (is (= 4 (:result (sandbox/eval-code sb "(count (context-get [:user-vars]))"))))
+      (is (= 42 (:result (sandbox/eval-code sb "(inc shared-x)")))))
+
+    (sandbox/eval-code sb "(def fresh 99)")
+
+    (testing "the turn-end extraction keeps the restored defs and the new one"
+      (let [s (sandbox/extract-user-vars-with-survival sb)]
+        (is (= ["cfg" "counts" "fresh" "my-note" "shared-x"] (sort (keys (:kept s)))))
+        (is (empty? (:lost s))
+            "no tool closure or context accessor may be reported as a lost user def")
+
+        (testing "so a SECOND resume off that snapshot restores them again"
+          (is (= 5 (count (sandbox-state/build-restore-bindings (:kept s))))))))))

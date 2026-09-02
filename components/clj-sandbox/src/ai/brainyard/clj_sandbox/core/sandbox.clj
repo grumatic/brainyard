@@ -441,6 +441,22 @@
     @v
     v))
 
+(defn- known-vars
+  "The symbol set that is NOT user state: everything the sandbox itself put
+   in the `user` namespace.
+
+   Two sources, and both are needed. `:initial-vars` is the create-time
+   snapshot; `:!injected-vars` accumulates what `update-bindings!` installs
+   AFTER creation. Filtering on the create-time set alone is what made a
+   resumed session report all ~311 tool closures as lost `:non-edn` user
+   defs: coact reuses a sandbox across turns and re-installs the whole tool
+   table through `update-bindings!` every turn, so on a sandbox seeded with
+   only the restored defs, every tool looked like something the user had
+   typed."
+  [sandbox]
+  (into (or (:initial-vars sandbox) #{})
+        (some-> (:!injected-vars sandbox) deref)))
+
 (defn- extract-user-vars-from-ctx
   "Implementation: pull user vars from a live SCI ctx, filtering against the
    `initial` symbol set captured at sandbox creation. Returns the same shape
@@ -518,7 +534,17 @@
                         there is no input data. Non-map values throw.
      :bindings        - Additional vars to expose {symbol value}. Supply sub-LLM
                         callables (llm-query, llm-query-batched, rlm-query) here
-                        when needed.
+                        when needed. These are sandbox machinery, not user
+                        state: they are excluded from `extract-user-vars`.
+     :restored-vars   - {symbol value} installed exactly like `:bindings` but
+                        deliberately NOT recorded as machinery, so
+                        `extract-user-vars` still reports them. This is how a
+                        snapshot restored from a previous session survives the
+                        NEXT persist: routed through `:bindings` instead, a
+                        restored `def` lands in `:initial-vars`, extraction
+                        filters it out, and the turn-end save overwrites the
+                        snapshot with a set that no longer contains it — the
+                        restore erasing itself one turn later.
      :synthetic-keys  - Caller-supplied {keyword (fn [] ...)} thunks merged
                         with the built-in `:user-vars` thunk. Each thunk is
                         called lazily by context-accessors to expose live
@@ -540,13 +566,14 @@
    branch. That registry was unified into the agent task manager (see
    ai.brainyard.agent.task.commands/await-task); eval-code is now
    hard-only and the sandbox no longer owns any pending-eval state."
-  [& {:keys [context bindings synthetic-keys interop] :or {interop :restricted}}]
+  [& {:keys [context bindings restored-vars synthetic-keys interop] :or {interop :restricted}}]
   (when (and (some? context) (not (map? context)))
     (throw (ex-info "create-sandbox :context must be a map (or nil) — path-based context-accessors require a map shape"
                     {:context-type (str (type context))})))
   (let [output (StringWriter.)
         sci-ctx-atom (atom nil)
         initial-vars-atom (atom #{})
+        injected-vars-atom (atom #{})
         final-fn (make-final-fn)
         ;; Strip protocol metadata (JDBC rows carry clojure.core.protocols/datafy)
         ;; once, then reuse for accessors
@@ -557,7 +584,8 @@
         ;; current state (after later iterations add more `def`s).
         user-vars-fn (fn []
                        (when-some [ctx @sci-ctx-atom]
-                         (extract-user-vars-from-ctx ctx @initial-vars-atom)))
+                         (extract-user-vars-from-ctx
+                          ctx (into @initial-vars-atom @injected-vars-atom))))
         synthetic-keys (merge {:user-vars user-vars-fn}
                               (or synthetic-keys {}))
         ;; Build context accessor functions for selective retrieval
@@ -567,18 +595,27 @@
                              :synthetic-keys synthetic-keys))
         extra-bindings (cond-> (or bindings {})
                          ;; Merge accessor functions (context-index, context-get, etc.)
-                         (some? context-accessors) (merge context-accessors))
+                         (some? context-accessors) (merge context-accessors)
+                         ;; Restored user state installs the same way, but is
+                         ;; subtracted from :initial-vars below so extraction
+                         ;; keeps seeing it as user state.
+                         (seq restored-vars) (merge restored-vars))
         namespaces (build-sci-namespaces final-fn extra-bindings interop)
         sci-ctx (sci/init (merge {:namespaces namespaces}
                                  (sci-init-opts interop)))
-        ;; Capture initial user-namespace symbols for extract-user-vars filtering
-        initial-vars (set (keys (sci/eval-string* sci-ctx "(ns-publics 'user)")))]
+        ;; Capture initial user-namespace symbols for extract-user-vars
+        ;; filtering — minus anything the caller declared to be restored user
+        ;; state rather than machinery.
+        initial-vars (reduce disj
+                             (set (keys (sci/eval-string* sci-ctx "(ns-publics 'user)")))
+                             (keys restored-vars))]
     (reset! sci-ctx-atom sci-ctx)
     (reset! initial-vars-atom initial-vars)
     {:sci-ctx sci-ctx-atom
      :output output
      :history (atom [])
      :initial-vars initial-vars
+     :!injected-vars injected-vars-atom
      :synthetic-keys synthetic-keys
      :interop interop}))
 
@@ -1008,8 +1045,7 @@
    suitable for persistence via sandbox-state. Skips non-serializable values
    and values exceeding 2000 chars when serialized."
   [sandbox]
-  (extract-user-vars-from-ctx @(:sci-ctx sandbox)
-                              (or (:initial-vars sandbox) #{})))
+  (extract-user-vars-from-ctx @(:sci-ctx sandbox) (known-vars sandbox)))
 
 (defn extract-user-vars-with-survival
   "Like `extract-user-vars` but additionally reports which vars were pruned
@@ -1018,8 +1054,7 @@
    (>= 2000 chars serialized), or `:resolve-failed`. Used by the TUI resume
    path so the banner can say \"N defs restored, M lost (functions)\"."
   [sandbox]
-  (extract-user-vars-with-survival-from-ctx @(:sci-ctx sandbox)
-                                            (or (:initial-vars sandbox) #{})))
+  (extract-user-vars-with-survival-from-ctx @(:sci-ctx sandbox) (known-vars sandbox)))
 
 (defn get-history
   "Get the evaluation history from the sandbox."
@@ -1059,18 +1094,36 @@
         accessors (ctx-acc/make-context-accessors
                    clean-context
                    :synthetic-keys (:synthetic-keys sandbox))]
-    ;; Update each accessor binding in the user namespace
+    ;; Update each accessor binding in the user namespace, recording them as
+    ;; machinery for the same reason `update-bindings!` does. It matters most
+    ;; on the resume seed, which is created with no `:context` at all: the
+    ;; accessor symbols are absent from `:initial-vars`, so the first
+    ;; `update-context!` would otherwise leave `context-get` and friends
+    ;; looking like five user `def`s the persist layer has to prune.
     (doseq [[sym f] accessors]
       (sci-set-var! ctx sym f))
+    (when-some [!injected (:!injected-vars sandbox)]
+      (swap! !injected into (keys accessors)))
     sandbox))
 
 (defn update-bindings!
   "Add or update bindings in a live sandbox without destroying existing user vars.
-   Used to refresh tool closures, agent state accessors, etc. between turns."
+   Used to refresh tool closures, agent state accessors, etc. between turns.
+
+   Records the symbols as sandbox machinery (`:!injected-vars`) so
+   `extract-user-vars` keeps excluding them. A binding installed here is by
+   definition NOT user state — it is a tool closure, an agent-state accessor
+   or a context accessor — and without the record only the create-time
+   `:initial-vars` snapshot is consulted, so anything bound mid-session (the
+   whole tool table on a reused sandbox, a late-connecting MCP server, a
+   `tool-agent$create` closure) is misread as a user `def` and reported as a
+   lost `:non-edn` var at persist time."
   [sandbox bindings]
   (let [ctx @(:sci-ctx sandbox)]
     (doseq [[sym val] bindings]
       (sci-set-var! ctx sym val))
+    (when-some [!injected (:!injected-vars sandbox)]
+      (swap! !injected into (keys bindings)))
     sandbox))
 
 (defn clear-history!
@@ -1109,6 +1162,9 @@
      :output (StringWriter.)
      :history (atom [])
      :initial-vars (:initial-vars sandbox)
+     ;; Snapshot, not the parent's atom: a fork must not widen the parent's
+     ;; machinery set, and its own env is a copy anyway.
+     :!injected-vars (atom (or (some-> (:!injected-vars sandbox) deref) #{}))
      :interop interop}))
 
 (def ^:private max-parallel-blocks

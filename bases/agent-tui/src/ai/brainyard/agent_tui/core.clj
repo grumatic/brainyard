@@ -2043,9 +2043,20 @@
                   bindings (when (seq state) (clj-sandbox/build-restore-bindings state))]
               (when (seq bindings)
                 (let [sandbox (clj-sandbox/create-sandbox
-                               :bindings bindings
+                               ;; `:restored-vars`, not `:bindings` — these are
+                               ;; the user's own defs, so they must stay visible
+                               ;; to `extract-user-vars` or the first turn's
+                               ;; persist writes them back out of existence.
+                               :restored-vars bindings
                                :interop (agent/resolve-sandbox-interop ag))]
-                  (swap! (:!state ag) assoc :sandbox sandbox)
+                  ;; Hand the names to coact. This seed makes `existing-sandbox`
+                  ;; non-nil, which suppresses coact's own restore path — so
+                  ;; without this the defs are live but never announced in
+                  ;; `[:restored-vars]`, and the model reports 0 restored while
+                  ;; the banner says N.
+                  (swap! (:!state ag) assoc
+                         :sandbox sandbox
+                         :sandbox-restored-vars (mapv name (keys bindings)))
                   (count bindings))))
             (catch Throwable _ nil)))
         lost-defs-count
