@@ -810,7 +810,11 @@ and the results (return value, stdout, or error) are sent back for the next iter
        (if (= interop :full)
          (str "- **Full Java interop**: arbitrary Java interop is available (System, Runtime, ProcessBuilder, reflection, etc.) — running in a container sandbox.\n"
               "- **File/shell libraries**: `slurp`, `spit`, `sh` (`(sh \"ls\" \"-l\")`), plus `clojure.java.io/*` and `clojure.java.shell/*` are available.")
-         "- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied.")
+         (str "- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied. "
+              "Date/time needs none — `java.time` is whitelisted "
+              "(`(java.time.LocalDate/now)`, `(java.time.ZonedDateTime/now)`, "
+              "`java.time.format.DateTimeFormatter`); host facts via `(sys-info)`; "
+              "environment and anything else via `(bash :command \"…\")`."))
        "
 - **Auto-background detach** (the ONLY statement of this — it is not repeated
   elsewhere in the prompt): blocks run synchronously in the foreground; one that
@@ -3528,7 +3532,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
             :job-config   {:sandbox sandbox :code code}
             :metadata     meta
             :adopt (executor/make-future-adopt fut eval-output code
-                                                        executor/project-sandbox-result)
+                                               executor/project-sandbox-result)
             :on-cancel    (fn [] (future-cancel fut))
             :lang         "clojure"
             :auto-bg-ms   auto-bg-ms
@@ -3606,7 +3610,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                               nrepl-session-id (assoc :session nrepl-session-id))
               :metadata     meta
               :adopt (executor/make-future-adopt fut eval-output code
-                                                          #(select-keys % [:code :output :result :error :ns]))
+                                                 #(select-keys % [:code :output :result :error :ns]))
               :on-cancel    (fn [] (future-cancel fut))
               :lang         "clojure"
               :auto-bg-ms   auto-bg-ms

@@ -40,7 +40,11 @@ and the results (return value, stdout, or error) are sent back for the next iter
          (str "- **Full Java interop**: arbitrary Java interop is available (System, Runtime, ProcessBuilder, reflection, etc.) — you are running in a container sandbox.\n"
               "- **File/shell libraries**: `slurp`, `spit`, `sh` (`(sh \"ls\" \"-l\")`), plus `clojure.java.io/*` (file, copy, reader…) and `clojure.java.shell/*` are available.")
          (str "- **No interop**: System, Runtime, ProcessBuilder, ClassLoader access denied. "
-              "For what they are usually reached for: working dir / allowed dirs via "
+              "For what they are usually reached for: **date and time** via `java.time`, which is "
+              "whitelisted and needs no interop — `(java.time.LocalDate/now)`, "
+              "`(java.time.ZonedDateTime/now)`, formatted with "
+              "`java.time.format.DateTimeFormatter`; OS/JVM facts via `(sys-info)`; "
+              "working dir / allowed dirs via "
               "`(context-get [:agent-state :config])`, environment and anything else via `(bash :command \"…\")`."))
        "
 - **Timeout**: 30s per code block."))

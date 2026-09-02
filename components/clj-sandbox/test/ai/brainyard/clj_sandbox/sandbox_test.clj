@@ -85,6 +85,39 @@
     (is (= :restricted (:interop (sandbox/fork-sandbox
                                   (sandbox/create-sandbox)))))))
 
+(deftest sys-info-is-a-capability-not-a-getproperty
+  ;; `sys-info` exists so the two things System was reached for at :restricted
+  ;; — the date and a few host facts — have an answer that is not the class.
+  ;; Allowlisting System instead would expose `(System/getenv)` and
+  ;; `(System/getProperties)`, whose java.util.Map return values are readable
+  ;; with plain get/keys (SCI's method gating never applies to that), and in
+  ;; `by` the property table holds the .env credentials.
+  (let [sb (sandbox/create-sandbox)]
+    (testing "it reports host facts at :restricted"
+      (let [{:keys [error result]} (sandbox/eval-code sb "(sys-info)")]
+        (is (nil? error))
+        (is (map? result))
+        (is (every? #(contains? result %) [:os-name :os-arch :java-version :timezone]))
+        (is (every? string? (vals result)))))
+
+    (testing "the property list is closed — a credential-shaped key is not in it"
+      (let [k "BY_SANDBOX_TEST_FAKE_CREDENTIAL"
+            sentinel "sk-fake-should-never-be-readable"]
+        (try
+          (System/setProperty k sentinel)
+          (let [{:keys [result]} (sandbox/eval-code sb "(pr-str (sys-info))")]
+            (is (not (str/includes? (str result) sentinel))
+                "sys-info must never become a getProperty primitive with a nicer name"))
+          (finally (System/clearProperty k)))))
+
+    (testing "and the class it replaces is still denied"
+      (is (some? (:error (sandbox/eval-code sb "(System/getProperty \"os.name\")"))))
+      (is (some? (:error (sandbox/eval-code sb "(get (System/getenv) \"HOME\")")))))
+
+    (testing "date and time need no interop — the reason System is not missed"
+      (is (nil? (:error (sandbox/eval-code sb "(str (java.time.LocalDate/now))"))))
+      (is (nil? (:error (sandbox/eval-code sb "(str (java.time.ZonedDateTime/now))")))))))
+
 (deftest eval-code-basic-test
   (testing "evaluates simple expressions"
     (let [sb (sandbox/create-sandbox)

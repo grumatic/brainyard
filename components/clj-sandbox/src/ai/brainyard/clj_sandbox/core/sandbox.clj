@@ -220,6 +220,46 @@
             {:doc "Run a shell command, return {:exit :out :err}. e.g. (sh \"ls\" \"-l\"). (:full interop only.)"
              :arglists '([& args]) :category :io})})
 
+(def ^:private sys-info-properties
+  "The JVM system properties `sys-info` reports, as [key property] pairs.
+
+   A CLOSED list, and it has to stay one — this is a capability, not a
+   `getProperty` primitive with a nicer name. In `by` the property table IS the
+   credential store: the dotenv loader writes every parsed `.env` key into it
+   (`agent-tui-app.dotenv/load-from-dotenv!`) precisely so provider config can
+   read `(or (System/getenv k) (System/getProperty k))`. So a key argument, or
+   a leaked `System/getProperties` handle, hands out API keys — and it does not
+   even need a network call to escape: the value lands in the eval result, and
+   from there in the transcript, memory and the next request to the model.
+
+   Note what is deliberately ABSENT. `user.dir` is not the agent's working
+   directory — there is no real JVM chdir, the effective one is threaded
+   through config (`BY_WORKING_DIR` / `-C`), so reporting it here would answer
+   a question the agent did not ask with a value that is often wrong. It reads
+   the working dir from `(context-get [:agent-state :config])`, as the sandbox
+   prompt says. `user.name` / `user.home` are identity and paths, and nothing
+   the agent legitimately needs is expressed in them."
+  [[:os-name        "os.name"]
+   [:os-arch        "os.arch"]
+   [:os-version     "os.version"]
+   [:java-version   "java.version"]
+   [:file-separator "file.separator"]
+   [:path-separator "path.separator"]
+   [:line-separator "line.separator"]])
+
+(defn- sys-info
+  "Curated snapshot of the host/JVM facts an agent plausibly needs.
+
+   The timezone comes from `java.time.ZoneId/systemDefault` rather than the
+   `user.timezone` property, which is empty until something forces it to be
+   computed — a blank answer to the one question here whose answer changes by
+   machine."
+  []
+  (-> (into {} (keep (fn [[k prop]]
+                       (when-let [v (System/getProperty prop)] [k v])))
+            sys-info-properties)
+      (assoc :timezone (str (java.time.ZoneId/systemDefault)))))
+
 (defn- build-sci-namespaces
   "Build the full SCI namespace map: whitelisted library namespaces plus the
    user namespace with core bindings (FINAL, parse-json, to-json, pprint)
@@ -254,7 +294,20 @@
                        'pprint (with-meta pprint/pprint
                                  {:doc "Pretty-print any value to stdout"
                                   :arglists '([object])
-                                  :category :core})}
+                                  :category :core})
+                       ;; The capability, not the class. `System` stays denied
+                       ;; at :restricted: allowlisting it would expose
+                       ;; `(System/getenv)` and `(System/getProperties)`, whose
+                       ;; returned java.util.Maps are readable with plain
+                       ;; `get`/`keys` — SCI's method gating never applies — and
+                       ;; in `by` the property table holds the .env credentials.
+                       ;; Also `exit` (ends the session), `setProperty` (points
+                       ;; ANTHROPIC_BASE_URL or the JVM proxy/truststore
+                       ;; elsewhere) and `load` (native code, in-process).
+                       'sys-info (with-meta sys-info
+                                   {:doc "OS / JVM facts as a map: :os-name :os-arch :os-version :java-version :timezone :file-separator :path-separator :line-separator. For the current date/time use java.time; for the working dir use (context-get [:agent-state :config])."
+                                    :arglists '([])
+                                    :category :core})}
         full? (= interop :full)
         base-namespaces (cond-> library-namespaces
                           full? (merge full-namespaces))
