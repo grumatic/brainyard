@@ -190,6 +190,8 @@
                                 :doc "Auto-background deadline (ms) for an LLM-emitted code block: if a foreground task exceeds it, await-task detaches into background mode and returns a :pending snapshot; a later iteration harvests the result."}
    :fast-eval-timeout-ms       {:type "integer" :default 30000
                                 :doc "Fast-eval threshold (ms) for BOTH tool calls and Clojure code: the work runs inline first and is promoted to a tracked background task only if it exceeds this (0 = always create a task; not applied to bash). Applies to every tool call — including a subagent invoked as a tool — via tool/call-tool-with-fast-eval, so it stays live even with :code-channel? false."}
+   :user-tool-timeout-ms       {:type "integer" :default 180000
+                                :doc "Hard evaluation budget (ms) for a USER-AUTHORED tool body (tool-agent$create), enforced by the SCI sandbox. This is a runaway backstop, not the operative limit: the operative limit is :fast-eval-timeout-ms, at which tool/call-tool-with-fast-eval adopts the still-running call into a background task. The backstop must therefore sit ABOVE that, and user-tools raises it to max(this, :fast-eval-timeout-ms, :auto-background-timeout-ms) at the read site so a mis-set value cannot preempt the layer that is supposed to decide."}
    :enable-iteration-hold       {:type "boolean" :default false
                                  :doc "When true the BT loop blocks up to :hold-max-wait-ms waiting for in-flight tasks; when false (default) pending tasks flow to the next iteration and the LLM polls via task$wait."}
    :hold-max-wait-ms            {:type "integer" :default 300000

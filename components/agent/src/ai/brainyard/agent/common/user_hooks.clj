@@ -138,12 +138,29 @@
 ;; Sandbox eval / event view / kill-switch
 ;; ============================================================================
 
+(def ^:const hook-body-timeout-ms
+  "Hard evaluation budget for a user hook body — every `sb/eval-code` in this
+   namespace passes it, so none of them relies on `eval-code`'s own default.
+
+   Deliberately short, and deliberately NOT the user-TOOL budget. A hook is an
+   observer on the `fire!` path: it runs inline on whatever thread raised the
+   event, and there is no tasking layer to adopt a slow one into the background
+   the way `call-tool-with-fast-eval` does for tools. A generous budget here
+   would wedge the path being observed, so the answer that is right for a tool
+   body is the wrong one here.
+
+   The VALUE is unchanged — 30 s is what handlers have always had. What changes
+   is that it is now a decision rather than an inherited default, which is the
+   whole reason the tool-side budget went unnoticed for so long."
+  30000)
+
 (defn- install-body!
   "Eval `(def __uh_<id> <body>)` into the hooks sandbox so it is a callable SCI
    var. Throws if the body fails to parse/eval."
   [id body-str]
   (let [r (sb/eval-code (hooks-sandbox)
-                        (str "(def __uh_" id " " body-str ")"))]
+                        (str "(def __uh_" id " " body-str ")")
+                        :timeout-ms hook-body-timeout-ms)]
     (when-let [err (:error r)]
       (throw (ex-info (str "hook body failed to eval: " err)
                       {:id id :body body-str})))
@@ -210,7 +227,8 @@
                (user-hooks-enabled? event-map))
       (let [fork (sb/fork-sandbox (hooks-sandbox))]
         (sb/set-var! fork 'event (sanitize-event event-key event-map))
-        (sb/eval-code fork (str "(__uh_" id " event)"))
+        (sb/eval-code fork (str "(__uh_" id " event)")
+                      :timeout-ms hook-body-timeout-ms)
         nil))))
 
 (defn- register!
@@ -459,11 +477,15 @@
             collision   (boolean (and id (find-registered-event id)))
             fork        (sb/fork-sandbox (hooks-sandbox (current-extra-bindings)))
             evald       (when (string? body)
-                          (sb/eval-code fork (str "(def __probe " body ")")))
+                          (sb/eval-code fork (str "(def __probe " body ")")
+                                        :timeout-ms hook-body-timeout-ms))
             body-ok     (boolean (and (string? body) (nil? (:error evald))))
+            ;; Same budget the `fire!` path gives it, so validate and runtime
+            ;; cannot disagree about whether a handler fits.
             sample-res  (when (and body-ok (map? sample))
                           (sb/set-var! fork 'event sample)
-                          (let [r (sb/eval-code fork "(__probe event)")]
+                          (let [r (sb/eval-code fork "(__probe event)"
+                                                :timeout-ms hook-body-timeout-ms)]
                             (if (:error r) {:error (:error r)} (:result r))))
             errors      (cond-> []
                           (false? id-ok)                 (conj "id must match ^[a-z][a-z0-9-]*$")

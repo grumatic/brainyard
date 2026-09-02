@@ -14,8 +14,11 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [ai.brainyard.agent.common.user-tools :as ut]
+            [ai.brainyard.agent.common.user-hooks :as uh]
             [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
+            [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.tool :as tool]
+            [ai.brainyard.clj-sandbox.interface :as sb]
             [malli.core :as m]))
 
 (def ^:private test-dirs
@@ -23,7 +26,8 @@
 
 (def ^:private our-ids
   [:user$tool$wc-test :user$tool$long-test :user$tool$echo-test
-   :user$tool$shout-test :user$tool$bad-schema-test :user$tool$unreadable-test])
+   :user$tool$shout-test :user$tool$bad-schema-test :user$tool$unreadable-test
+   :user$tool$slow-test])
 
 (defn- rm-rf! [^java.io.File f]
   (when (.isDirectory f) (doseq [c (.listFiles f)] (rm-rf! c)))
@@ -409,3 +413,123 @@
         (is (not (rejected? r)) "the arg schema still accepts any vector")
         (is (false? (:schema-ok r)) "but it is not a valid [:map ...] schema")
         (is (some #(re-find #"\[:map" %) (:errors r)) "with a clear error")))))
+
+;; ---------------------------------------------------------------------------
+;; Evaluation budget for a tool body
+;;
+;; The body is evaluated by clj-sandbox, which hard-kills it at :timeout-ms.
+;; That budget used to be left implicit, so it took `eval-code`'s own 30 000 ms
+;; default — the same number as :fast-eval-timeout-ms, and the inner deadline
+;; starts marginally later. So the sequence was: call-tool-with-fast-eval times
+;; out at ~30 000 and ADOPTS the still-running future into a background task,
+;; the sandbox kills the body milliseconds afterwards, and the adopted task
+;; completes with "Evaluation timed out" instead of the answer. A user tool
+;; could not outlive 30 s under any configuration.
+;; ---------------------------------------------------------------------------
+
+(defn- with-config
+  "Run `f` with `overrides` layered over the real config resolution. Falls
+   through to the original for every other key — `tools-sandbox` resolves
+   :sandbox-interop on the same path and must keep working."
+  [overrides f]
+  (let [orig config/get-config]
+    (with-redefs [config/get-config
+                  (fn ([k]   (if (contains? overrides k) (get overrides k) (orig k)))
+                    ([a k] (if (contains? overrides k) (get overrides k) (orig a k))))]
+      (f))))
+
+(deftest body-budget-outranks-the-deadline-that-should-fire-first
+  (testing "the backstop is raised to whichever deadline is supposed to fire
+            first, so a mis-set value cannot preempt the fast-eval/detach layer"
+    (with-config {:user-tool-timeout-ms 1000
+                  :fast-eval-timeout-ms 90000
+                  :auto-background-timeout-ms 5000}
+      (fn [] (is (= 90000 (#'ut/body-timeout-ms nil))
+                 "a :user-tool-timeout-ms below :fast-eval-timeout-ms is raised")))
+    (with-config {:user-tool-timeout-ms 1000
+                  :fast-eval-timeout-ms 200
+                  :auto-background-timeout-ms 250000}
+      (fn [] (is (= 250000 (#'ut/body-timeout-ms nil))
+                 "…and below the auto-background horizon it is raised too")))
+    (with-config {:user-tool-timeout-ms 300000
+                  :fast-eval-timeout-ms 200
+                  :auto-background-timeout-ms 250000}
+      (fn [] (is (= 300000 (#'ut/body-timeout-ms nil))
+                 "an explicitly raised budget is honoured")))))
+
+(deftest body-budget-never-throws
+  (testing "a tool can be invoked before config is resolvable (process boot),
+            so budget resolution degrades to the default instead of failing
+            the call"
+    (with-redefs [config/get-config (fn [& _] (throw (ex-info "no config" {})))]
+      (is (= ut/default-body-timeout-ms (#'ut/body-timeout-ms nil))))))
+
+(deftest a-body-outliving-the-fast-eval-deadline-is-not-killed
+  (testing "with the operative deadline set below the body's runtime, the body
+            still returns its real value — the sandbox budget is a backstop,
+            not the limit"
+    (with-config {:fast-eval-timeout-ms 100
+                  :auto-background-timeout-ms 100
+                  :user-tool-timeout-ms 20000}
+      (fn []
+        (ut/define-tool
+          :name "slow-test"
+          :description "sleeps past the fast-eval deadline"
+          :input-schema [:map]
+          :body "(fn [args] (Thread/sleep (long 900)) :slept)"
+          :dirs test-dirs)
+        (let [t0 (System/currentTimeMillis)
+              r  (tool/call-tool :user$tool$slow-test {})
+              ms (- (System/currentTimeMillis) t0)]
+          (is (= :slept r) (str "body was killed by the sandbox budget: " (pr-str r)))
+          (is (>= ms 900) "and it really did run to completion"))))))
+
+(deftest a-runaway-body-is-still-bounded
+  (testing "the backstop is a backstop — it still fires, it just no longer
+            fires before the layer that is supposed to decide"
+    (with-config {:fast-eval-timeout-ms 0
+                  :auto-background-timeout-ms 0
+                  :user-tool-timeout-ms 300}
+      (fn []
+        (ut/define-tool
+          :name "slow-test"
+          :description "runs far past the backstop"
+          :input-schema [:map]
+          :body "(fn [args] (Thread/sleep (long 30000)) :never)"
+          :dirs test-dirs)
+        (let [t0 (System/currentTimeMillis)
+              r  (tool/call-tool :user$tool$slow-test {})
+              ms (- (System/currentTimeMillis) t0)]
+          (is (str/includes? (str r) "timed out") (str "expected a timeout, got " (pr-str r)))
+          (is (< ms 5000) "and it fired at the configured budget, not 30 s"))))))
+
+(deftest the-invoke-path-passes-an-explicit-budget
+  (testing "the body eval never falls back to eval-code's own 30 000 ms default.
+            This is the pin: a timing test cannot tell the two apart without
+            actually sleeping past 30 s, and the defect was precisely that the
+            budget was INVISIBLE at the call site."
+    (let [seen (atom [])
+          orig sb/eval-code]
+      (with-redefs [sb/eval-code
+                    (fn [sbx code & {:as opts}]
+                      (swap! seen conj {:code code :timeout-ms (:timeout-ms opts)})
+                      (apply orig sbx code (mapcat identity opts)))]
+        (ut/define-tool
+          :name "slow-test"
+          :description "trivial"
+          :input-schema [:map]
+          :body "(fn [args] :ok)"
+          :dirs test-dirs)
+        (is (= :ok (tool/call-tool :user$tool$slow-test {})))
+        (is (every? (comp some? :timeout-ms) @seen)
+            (str "some eval-code call passed no :timeout-ms: "
+                 (pr-str (remove (comp some? :timeout-ms) @seen))))
+        (let [invoke (last (filter #(str/includes? (:code %) "(__ut_slow-test args)") @seen))]
+          (is (some? invoke) "the invoke eval was not observed")
+          (is (= (#'ut/body-timeout-ms nil) (:timeout-ms invoke))
+              "invoke must use the derived body budget, not a bare config read"))))))
+
+(deftest a-hook-body-is-bounded-more-tightly-than-a-tool-body
+  (testing "a hook runs inline on the fire! path with no tasking layer to adopt
+            it, so the answer that is right for a tool body is wrong here"
+    (is (< uh/hook-body-timeout-ms ut/default-body-timeout-ms))))

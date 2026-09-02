@@ -62,6 +62,52 @@
        (sb/update-bindings! sbx extra-bindings))
      sbx)))
 
+;; ----------------------------------------------------------------------------
+;; Evaluation budgets
+;;
+;; EVERY `sb/eval-code` call in this namespace passes one explicitly. The
+;; default (`eval-code`'s own `:or {timeout-ms 30000}`) is never relied on
+;; again, because relying on it is precisely what broke: an implicit budget is
+;; invisible at the call site, so nobody notices it is the thing deciding.
+
+(def ^:const install-timeout-ms
+  "Budget for evaluating a `(def __ut_<name> <body>)` DEFINITION — installing or
+   probing a body, not running one. Short on purpose: this evaluates a `fn`
+   form, so anything slow here is a body doing work at definition time."
+  30000)
+
+(def ^:const default-body-timeout-ms
+  "Fallback for `:user-tool-timeout-ms` when config is unavailable (process
+   boot, standalone use)."
+  180000)
+
+(defn- body-timeout-ms
+  "Hard evaluation budget for RUNNING a user tool body.
+
+   This is a runaway backstop, NOT the operative limit. The operative limit is
+   `tool/call-tool-with-fast-eval`, which derefs the call at
+   `:fast-eval-timeout-ms` and ADOPTS the still-running future into a background
+   task so a slow tool is promoted rather than killed.
+
+   So the backstop has to sit ABOVE that layer, or it preempts it — which is
+   exactly what the implicit 30 000 ms default did. Both deadlines were 30 000
+   and the inner one starts marginally later, so the sequence was: the outer
+   deref times out and adopts the future into a task, the inner `eval-code`
+   kills the body milliseconds afterwards, and the adopted task completes with
+   `Evaluation timed out` instead of the answer. A user tool could not outlive
+   30 s under any configuration, and the promote-to-background design was dead
+   for user-defined tools specifically.
+
+   Hence the `max` rather than a bare lookup: whatever the three keys are set
+   to, the backstop can never fall below a deadline that is supposed to fire
+   first. Deriving it here rather than asking the user to keep three numbers
+   ordered is the same reasoning as everywhere else in the config layer."
+  [agent]
+  (let [cfg (fn [k] (try (config/get-config agent k) (catch Throwable _ nil)))]
+    (max (long (or (cfg :user-tool-timeout-ms) default-body-timeout-ms))
+         (long (or (cfg :fast-eval-timeout-ms) 0))
+         (long (or (cfg :auto-background-timeout-ms) 0)))))
+
 (defonce ^{:doc "Set of tools-dirs whose METADATA is registered in !tool-defs this
   process (phase 1). Guards `ensure-registered!`, which runs at process boot
   before any agent exists."}
@@ -107,7 +153,8 @@
    SCI var. Throws if the body fails to parse/eval."
   [name body-str]
   (let [r (sb/eval-code (tools-sandbox)
-                        (str "(def __ut_" name " " body-str ")"))]
+                        (str "(def __ut_" name " " body-str ")")
+                        :timeout-ms install-timeout-ms)]
     (when-let [err (:error r)]
       (throw (ex-info (str "tool body failed to eval: " err)
                       {:name name :body body-str})))
@@ -176,9 +223,15 @@
                                      :_deftool$id :_deftool$type
                                      :_deftool$description :_deftool$input-schema
                                      :_deftool$output-schema)
-                       fork  (sb/fork-sandbox (tools-sandbox))]
+                       fork  (sb/fork-sandbox (tools-sandbox))
+                       ;; Explicit, and resolved per call against the CALLING
+                       ;; agent's config — `:agent` rides in on args and is
+                       ;; dropped from `clean` just above. See `body-timeout-ms`
+                       ;; for why this must outrank :fast-eval-timeout-ms.
+                       budget (body-timeout-ms (:agent args))]
                    (sb/set-var! fork 'args clean)
-                   (let [r (sb/eval-code fork (str "(__ut_" name " args)"))]
+                   (let [r (sb/eval-code fork (str "(__ut_" name " args)")
+                                         :timeout-ms budget)]
                      (if-let [err (:error r)] {:error err} (:result r)))))
         tool-def {:id   id
                   :type :tool
@@ -520,11 +573,18 @@
             ;; The fork is discarded on return — nothing leaks into the live sandbox.
             fork       (sb/fork-sandbox (tools-sandbox (current-extra-bindings)))
             evald      (when (string? body)
-                         (sb/eval-code fork (str "(def __probe " body ")")))
+                         (sb/eval-code fork (str "(def __probe " body ")")
+                                       :timeout-ms install-timeout-ms))
             body-ok    (boolean (and (string? body) (nil? (:error evald))))
+            ;; The sample run gets the SAME budget a registered call would, so
+            ;; validate and runtime cannot disagree about whether a body fits.
+            ;; A validate that passes a body the runtime then kills is the
+            ;; actively misleading outcome, and it is the one the old implicit
+            ;; 30 s produced once the runtime budget moved.
             sample-res (when (and body-ok (map? sample))
                          (sb/set-var! fork 'args sample)
-                         (let [r (sb/eval-code fork "(__probe args)")]
+                         (let [r (sb/eval-code fork "(__probe args)"
+                                               :timeout-ms (body-timeout-ms nil))]
                            (if (:error r) {:error (:error r)} (:result r))))
             errors     (cond-> []
                          (false? name-ok)   (conj "name must match ^[a-z][a-z0-9-]*$")
