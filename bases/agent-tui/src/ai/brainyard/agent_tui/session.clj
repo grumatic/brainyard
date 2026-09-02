@@ -1304,12 +1304,41 @@
            (str (clojure.core/name agent-id) ":"
                 (clojure.core/name (or repeat-id :_)) ":" iteration)))
 
+(defn- iter-rid
+  "The repeat-scope component of an iteration's block key, qualified by turn.
+
+   `repeat-id` is the BT node id (`bt/repeat` passes its own `id`), which is
+   STRUCTURAL — byte-identical on every turn. So `[agent-id repeat-id
+   iteration]` carries nothing that distinguishes turn 7's iteration 3 from
+   turn 1's, and the display-block provider ids derived from it collide in a
+   process-global registry whose `-register!` is a plain `assoc`. The older
+   turn's collapsed `[*Block:…*]` marker then expands the NEWER turn's
+   content — the rows on screen and the rows behind the marker disagree.
+
+   `:turn-id` is bumped once per `ask` in `agent/ask` before the BT runs, so
+   it is constant for every handler within one turn: pre and post cannot
+   disagree and strand a block unfrozen. Absent (a non-standard agent, or an
+   iteration outside a turn) degrades to the old shared key rather than
+   inventing one — collision is cosmetic, a mismatched key is a stuck block."
+  [agent repeat-id]
+  (let [turn (try (some-> (agent/get-bt-st-memory agent) deref :turn-id)
+                  (catch Throwable _ nil))]
+    (str (or repeat-id "_") (when turn (str "#" turn)))))
+
 (defn- iter-id-prefix
   "Stable lowercase-alphanumeric id-prefix for the display-block providers
    registered by an iteration's eval sections. Compact (~6-13 chars) base-36
    encoding of a hash so that re-renders under the same (agent-id, repeat-id,
    iteration) key reuse the same provider ids and overwrite content rather
-   than duplicate it."
+   than duplicate it.
+
+   Turn-uniqueness rides in via `repeat-id` (see `iter-rid`) — every caller
+   passes the qualified rid, so this stays a pure function of its key.
+
+   Providers are deliberately NOT disposed when their block freezes: the
+   frozen rows keep their `[*Block:…*]` marker and must stay expandable for
+   as long as they are in scrollback, which is unbounded. The registry is a
+   cache whose lifetime tracks scrollback's, not a leak."
   [agent-id repeat-id iteration]
   (let [h (Math/abs (long (hash [agent-id repeat-id iteration])))]
     (str "i" (Long/toString h 36))))
@@ -3196,7 +3225,7 @@
              agent
              (str "Iter " iteration (when max-iterations (str "/" max-iterations))))
           aid (:agent-id agent)
-          rid (str (or repeat-id "_"))
+          rid (iter-rid agent repeat-id)
           sidx (:id (find-session-for-agent agent))]
       ;; The think-block lives ONE-PER-TURN, not per-iter. Its `!think-block`
       ;; state (incl. :start-time used by the elapsed counter) was stamped
@@ -3255,7 +3284,7 @@
   (when (acp-agent-instance? agent)
     (acp-freeze-block! ev))
   (let [aid (:agent-id agent)
-        rid (str (or repeat-id "_"))
+        rid (iter-rid agent repeat-id)
         k [aid rid iteration]
         outgoing (get @!iteration-blocks k)
         result-kw (cond
@@ -3913,7 +3942,7 @@
    transcript block for this turn and starts the ticker."
   [{:keys [agent iteration repeat-id]}]
   (let [aid     (:agent-id agent)
-        rid     (str (or repeat-id "_"))
+        rid     (iter-rid agent repeat-id)
         sidx    (:id (find-session-for-agent agent))
         backend (or (agent/get-config agent :acp-backend) :acp)]
     (maybe-notify-unmatched-model! agent aid)
@@ -4110,7 +4139,7 @@
    transcript a second time directly under the frozen widget."
   [{:keys [agent iteration repeat-id result]}]
   (let [aid       (:agent-id agent)
-        rid       (str (or repeat-id "_"))
+        rid       (iter-rid agent repeat-id)
         k         [aid rid iteration]
         outgoing  (get @!acp-blocks k)
         result-kw (cond

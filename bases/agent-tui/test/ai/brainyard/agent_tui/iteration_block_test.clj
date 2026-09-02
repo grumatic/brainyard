@@ -1066,3 +1066,57 @@
                  (s/upsert-tool-call {:call-id nil :tool-name "a" :args {} :now 1})
                  (s/upsert-tool-call {:call-id nil :tool-name "b" :args {} :now 2}))]
       (is (= 2 (count tb))))))
+
+;; ----------------------------------------------------------------------------
+;; Turn-qualified block keys
+;; ----------------------------------------------------------------------------
+
+(deftest iteration-keys-are-turn-qualified
+  ;; Regression: `repeat-id` is the BT node id — a STRUCTURAL id, identical on
+  ;; every turn — so [agent-id repeat-id iteration] carried nothing that
+  ;; distinguished turn 7's iteration 3 from turn 1's. The display-block
+  ;; provider ids derived from it therefore collided in a process-global
+  ;; registry whose -register! is a plain `assoc`, and an older turn's
+  ;; collapsed [*Block:…*] marker expanded the NEWER turn's content.
+  (let [rid #'s/iter-rid
+        pfx #'s/iter-id-prefix
+        bid #'s/iteration-block-id
+        at  (fn [turn] (let [a (stub-agent)]
+                         (reset! (:stub-st a) {:turn-id turn})
+                         a))]
+    (testing "the same repeat-id on two turns yields distinct keys"
+      (with-redefs [agent/get-bt-st-memory :stub-st]
+        (let [r1 (rid (at 1) "main")
+              r7 (rid (at 7) "main")]
+          (is (not= r1 r7))
+          (doseq [iteration [1 2 3]]
+            (is (not= (pfx :test-agent r1 iteration)
+                      (pfx :test-agent r7 iteration))
+                "display-block provider ids must not collide across turns")
+            (is (not= (bid :test-agent r1 iteration)
+                      (bid :test-agent r7 iteration))
+                "live-block ids must not collide across turns")))))
+
+    (testing "no turn-id degrades to the old shared key, never a mismatched one"
+      ;; A key that differed between the pre and post handler would strand the
+      ;; block unfrozen — strictly worse than a collision, which is cosmetic.
+      (with-redefs [agent/get-bt-st-memory (constantly nil)]
+        (is (= "main" (rid (stub-agent) "main")))
+        (is (= "_" (rid (stub-agent) nil)))))))
+
+(deftest iteration-block-lifecycle-survives-turn-qualification
+  ;; The pre/post handlers must derive the SAME key, or /post can never find
+  ;; the entry that /pre created and every block stays live forever.
+  (let [a (stub-agent)]
+    (reset! (:stub-st a) {:turn-id 4})
+    (with-stub-agent a
+      (fn []
+        (s/iteration-pre-handler {:agent a :iteration 1 :max-iterations 5
+                                  :repeat-id "main"})
+        (let [[k _] (first @@#'s/!iteration-blocks)]
+          (is (= [:test-agent "main#4" 1] k)
+              "the stored key carries the turn"))
+        (s/iteration-post-handler {:agent a :iteration 1 :repeat-id "main"
+                                   :result :success})
+        (is (zero? (count @@#'s/!iteration-blocks))
+            "/post resolved the same key and cleared the entry")))))
