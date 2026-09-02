@@ -5,7 +5,8 @@
 (ns ai.brainyard.agent.task.commands
   "LLM-accessible task management commands.
    Registered via defcommand into !tool-defs for discovery by react-agent and coact-agent."
-  (:require [ai.brainyard.agent.core.config :as config]
+  (:require [ai.brainyard.effect.interface :as fx]
+            [ai.brainyard.agent.core.config :as config]
             [ai.brainyard.agent.core.protocol :as proto]
             [ai.brainyard.agent.core.tool :refer [defcommand]]
             [ai.brainyard.agent.gc :as gc]
@@ -291,8 +292,20 @@
 (def ^:private terminal-statuses #{:completed :failed :cancelled})
 
 (defn await-task
-  "Poll a task until terminal, timeout, or external detach. Returns a
+  "Wait for a task until terminal, timeout, or external detach. Returns a
    consolidated result map shaped like the per-job sync result.
+
+   WAITS ON AN ATOM WATCH, NOT A POLL. This was a `Thread/sleep 100` loop, and
+   the interval was paid on every awaited unit of work: completion times
+   quantized to the grid, measured returning at 303/403/504 ms for tasks that
+   actually finished anywhere in between — uniform 0–100 ms of dead time,
+   ~50 ms mean, on every code block and tool call promoted to a task. It now
+   races three conditions and settles on whichever fires first.
+
+   What the conversion does NOT buy, since the old comment invited the
+   assumption: no thread is saved. This runs on the CALLER's thread and the
+   API is synchronous, so the caller blocks either way — the win is latency
+   alone.
 
    Three early-return conditions:
 
@@ -316,7 +329,30 @@
       harvested in a later iteration."
   [mgr task-id timeout-ms & {:keys [on-timeout] :or {on-timeout :detach}}]
   {:pre [(#{:kill :detach :snapshot} on-timeout)]}
-  (let [snapshot
+  (let [terminal-now?
+        (fn [tasks] (terminal-statuses (:status (get tasks task-id))))
+        ;; `tp/get-task` IS `(get @!tasks task-id)` (manager.clj), so watching
+        ;; that atom observes exactly the state this fn used to poll.
+        await-settled
+        (fn [ms]
+          (let [!waiter (some-> (tp/get-task mgr task-id)
+                                :metadata :!sync-waiter?)
+                ;; Only conditions that can actually fire. A task with no
+                ;; sync-waiter atom must not contribute a branch that never
+                ;; settles — `race` would still work, but the intent is
+                ;; clearer when the arm simply is not there.
+                arms    (cond-> [(fx/watch-until manager/!tasks terminal-now?)]
+                          !waiter (conj (fx/watch-until !waiter false?)))
+                r       (fx/run!! (fx/timeout (apply fx/race arms) ms ::deadline))]
+            ;; Preserve the pre-effect cancellation shape. The old loop sat in
+            ;; `Thread/sleep`, so cancelling the run threw InterruptedException
+            ;; straight out of here and callers catch it. `run!!` absorbs the
+            ;; interrupt into a value (re-setting the flag), which would
+            ;; otherwise turn a cancelled turn into an ordinary snapshot.
+            (when (:interrupted r)
+              (throw (InterruptedException. "await-task interrupted")))
+            r))
+        snapshot
         (fn [task extra]
           (let [task   (or (tp/get-task mgr task-id) task)
                 jt     (:job-type task)
@@ -332,45 +368,41 @@
                     :output    out
                     :result    (:result task)}
                    extra)))]
-    (loop [elapsed 0]
-      (let [task   (tp/get-task mgr task-id)
-            status (:status task)
-            sync?  (some-> task :metadata :!sync-waiter? deref)]
-        (cond
-          (terminal-statuses status)
-          (snapshot task nil)
+    ;; ONE wait, then re-decide. The race only reports THAT something settled;
+    ;; the branch is chosen by re-reading state through the same cond as
+    ;; before, so the precedence (terminal > external detach > deadline) is
+    ;; unchanged and there is no second copy of it to drift.
+    (await-settled timeout-ms)
+    (let [task   (tp/get-task mgr task-id)
+          status (:status task)
+          sync?  (some-> task :metadata :!sync-waiter? deref)]
+      (cond
+        (terminal-statuses status)
+        (snapshot task nil)
 
-          (false? sync?)
-          (snapshot task {:status "running" :detached true})
+        (false? sync?)
+        (snapshot task {:status "running" :detached true})
 
-          (>= elapsed timeout-ms)
-          (case on-timeout
-            :kill
-            ;; Cancel, wait briefly for terminal, return :timeout.
-            (do (tp/cancel-task mgr task-id)
-                (loop [waited 0]
-                  (let [t (tp/get-task mgr task-id)]
-                    (if (or (terminal-statuses (:status t)) (>= waited 2000))
-                      (snapshot t {:status "timeout" :timeout-ms timeout-ms})
-                      (do (Thread/sleep (long 100))
-                          (recur (+ waited 100)))))))
-            :detach
-            ;; Sync → async hand-off: the waiter is leaving, the task keeps
-            ;; running. Flip display-mode to :background so the TUI per-task
-            ;; block disposes (and emits its marker). Return :pending snapshot.
-            (do (manager/set-display-mode! mgr task-id :background)
-                (snapshot task {:status "pending" :timeout-ms timeout-ms}))
-            :snapshot
-            ;; Pure observation: return current status + output tail without
-            ;; any side effects (no display-mode flip, no cancellation).
-            (snapshot task {:status "still-running" :timeout-ms timeout-ms}))
+        :else
+        (case on-timeout
+          :kill
+          ;; Cancel, wait briefly for terminal, return :timeout.
+          (do (tp/cancel-task mgr task-id)
+              (await-settled 2000)
+              (snapshot (tp/get-task mgr task-id)
+                        {:status "timeout" :timeout-ms timeout-ms}))
 
-          :else
-          ;; Atom-read polling is cheap; the per-task overhead is negligible
-          ;; even for long waits. 100ms strikes a balance between responsiveness
-          ;; (short waiter deadlines) and CPU use.
-          (do (Thread/sleep (long 100))
-              (recur (+ elapsed 100))))))))
+          :detach
+          ;; Sync → async hand-off: the waiter is leaving, the task keeps
+          ;; running. Flip display-mode to :background so the TUI per-task
+          ;; block disposes (and emits its marker). Return :pending snapshot.
+          (do (manager/set-display-mode! mgr task-id :background)
+              (snapshot task {:status "pending" :timeout-ms timeout-ms}))
+
+          :snapshot
+          ;; Pure observation: return current status + output tail without
+          ;; any side effects (no display-mode flip, no cancellation).
+          (snapshot task {:status "still-running" :timeout-ms timeout-ms}))))))
 
 ;; ============================================================================
 ;; Polymorphic command — preferred surface

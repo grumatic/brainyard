@@ -115,6 +115,30 @@
   ([!atom] (m/watch !atom))
   ([!atom f] (m/latest f (m/watch !atom))))
 
+(defn watch-until
+  "A Task completing with the first value of `!atom` for which `pred` holds.
+
+   The event-driven replacement for
+   `(loop [] (if (pred @!a) … (do (Thread/sleep n) (recur))))`. `m/watch`
+   registers an atom watch, so this settles on the WRITE that makes `pred`
+   true rather than at the next poll boundary. The difference is visible from
+   outside: a polled waiter's completion times cluster on its interval's grid
+   — `await-task` was measured returning at 303/403/504 ms for work that
+   finished anywhere in between, a uniform 0–100 ms of dead time with a ~50 ms
+   mean.
+
+   Checks the CURRENT value first, so an atom already satisfying `pred`
+   completes without waiting.
+
+   IT NEVER COMPLETES WHILE `pred` STAYS FALSE, by design — this is a
+   RACE PARTICIPANT, not something to await alone. Pair it with `timeout` or
+   `race` so there is always a branch that can settle.
+
+   `reduced` is what stops it: `m/reduce` over a continuous flow otherwise
+   consumes forever."
+  [!atom pred]
+  (m/reduce (fn [_ v] (if (pred v) (reduced v) nil)) nil (m/watch !atom)))
+
 (defn debounce
   "Emit a value from `flow` only once `ms` has passed with no newer value.
 

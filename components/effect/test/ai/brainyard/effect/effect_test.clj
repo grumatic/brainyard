@@ -395,3 +395,47 @@
           quick (fn [success _f] (success 42) (fn [] (reset! !cancelled true)))]
       (is (= {:ok 42} (fx/run!! quick)))
       (is (false? @!cancelled)))))
+
+;; ============================================================================
+;; watch-until — the poll-loop replacement
+;; ============================================================================
+
+(deftest watch-until-settles-on-the-write-not-a-poll-boundary
+  (testing "an atom already satisfying pred completes without waiting"
+    (is (= {:ok 9} (fx/run!! (fx/watch-until (atom 9) #(> % 2)) 2000))))
+
+  (testing "completes when a later write satisfies pred"
+    (let [!a (atom 0)]
+      (future (Thread/sleep 100) (reset! !a 7))
+      (is (= {:ok 7} (fx/run!! (fx/watch-until !a #(> % 2)) 3000)))))
+
+  (testing "never settles while pred stays false — it is a race participant"
+    ;; The contract that makes it safe to put in a race and unsafe to await
+    ;; alone. run!! reports the timeout rather than a value.
+    (is (= {:timeout true}
+           (fx/run!! (fx/watch-until (atom 0) #(> % 100)) 400))))
+
+  (testing "raced against a deadline, either side can win"
+    (is (= {:ok :deadline}
+           (fx/run!! (fx/race (fx/watch-until (atom 0) #(> % 100))
+                              (m/sleep 200 :deadline))
+                     3000)))
+    (let [!c (atom 0)]
+      (future (Thread/sleep 50) (reset! !c 42))
+      (is (= {:ok 42}
+             (fx/run!! (fx/race (fx/watch-until !c #(> % 2))
+                                (m/sleep 3000 :deadline))
+                       5000)))))
+
+  (testing "the win over polling is that completion is not quantized"
+    ;; await-task's Thread/sleep 100 loop returned on a 100ms grid regardless
+    ;; of when the work finished (measured: 303/403/504ms). An atom watch
+    ;; settles on the write, so the observed delay tracks the actual event.
+    (let [!a (atom 0)
+          t0 (System/nanoTime)]
+      (future (Thread/sleep 220) (reset! !a 1))
+      (fx/run!! (fx/watch-until !a pos?) 3000)
+      (let [elapsed (/ (- (System/nanoTime) t0) 1e6)]
+        (is (< elapsed 300)
+            (str "settled in " (Math/round ^double elapsed)
+                 "ms; a 100ms-quantized waiter would have taken ~300"))))))

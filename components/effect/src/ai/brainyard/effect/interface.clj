@@ -171,6 +171,14 @@
   ([!atom] (flows/watch-flow !atom))
   ([!atom f] (flows/watch-flow !atom f)))
 
+(defn watch-until
+  "Task completing with the first value of `!atom` satisfying `pred` — the
+   event-driven replacement for a `Thread/sleep` poll loop over an atom.
+   Never settles while `pred` is false, so it must be RACED or given a
+   `timeout`."
+  [!atom pred]
+  (flows/watch-until !atom pred))
+
 (defn debounce
   "Emit only after `ms` of quiet; supersede-and-cancel semantics."
   [ms flow]
