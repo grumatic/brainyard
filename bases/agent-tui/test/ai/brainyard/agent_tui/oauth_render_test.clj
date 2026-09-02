@@ -143,11 +143,21 @@
       (Thread/sleep 80)
       (testing "the provider parks, marking a pending paste"
         (is (true? (r/pending-code?))))
-      (testing "consume-code! delivers the next line and clears pending"
-        (is (true? (r/consume-code! "  ABC-123  ")))
-        (is (false? (r/pending-code?))))
+      (testing "consume-code! delivers the next line"
+        (is (true? (r/consume-code! "  ABC-123  "))))
+      ;; Join BEFORE asserting the flag cleared. consume-code! only delivers
+      ;; the promise (oauth_render.clj:330-334); it is the parked provider
+      ;; that resets !pending-code once deref returns (L315). Asserting
+      ;; `(false? (pending-code?))` straight after consume-code! therefore
+      ;; races the worker's wake-up with nothing synchronising the two — it
+      ;; passed whenever the scheduler was prompt and failed under load, which
+      ;; is exactly how it showed up: green on five consecutive suite runs,
+      ;; red on the sixth with a REPL and a second nREPL server competing for
+      ;; the machine.
       @worker
-      (is (= "ABC-123" @result) "trimmed code returned to the blocked login"))))
+      (is (= "ABC-123" @result) "trimmed code returned to the blocked login")
+      (is (false? (r/pending-code?))
+          "the provider cleared pending on its way out"))))
 
 (deftest consume-code-no-op-when-nothing-pending
   (is (nil? (r/consume-code! "hello"))))
