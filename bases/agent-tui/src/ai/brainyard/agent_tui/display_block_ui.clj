@@ -59,30 +59,15 @@
 
 (defn- splice-scrollback!
   "Replace [start, start+delete-count) lines in scrollback with new-lines.
-   Shifts live-block start-idx by the delta for any block after `start`.
-   Returns delta = (count new-lines - delete-count)."
+   Returns delta = (count new-lines - delete-count).
+
+   Thin alias for `layout/splice-rows!`, which owns the bookkeeping — the
+   containing live block's `:line-count`, the `!scrollback-src` entry, and the
+   search hits. That used to live here and only shifted the blocks starting
+   AFTER the splice, which orphaned rows whenever a marker was expanded inside
+   a live block's span. Scrollback invariants belong to `layout`."
   [start delete-count new-lines]
-  (let [new-count (count new-lines)
-        delta (- new-count delete-count)]
-    (swap! layout/!scrollback
-           (fn [sb]
-             (into (into (subvec sb 0 start) new-lines)
-                   (subvec sb (+ start delete-count)))))
-    (when (not= delta 0)
-      (swap! layout/!live-blocks
-             (fn [blocks]
-               (reduce-kv
-                (fn [m id b]
-                  (assoc m id (if (> (:start-idx b) start)
-                                (update b :start-idx + delta)
-                                b)))
-                {} blocks))))
-    ;; Search hits are scrollback indices, so this splice moved them. Unlike a
-    ;; live-block tick this RESCANS as well as shifts: the rows an expand
-    ;; reveals are exactly the text the user could not search a moment ago, and
-    ;; not picking up matches in them is the case they expanded the block for.
-    (layout/resync-search-after-splice! start delete-count delta)
-    delta))
+  (layout/splice-rows! start delete-count new-lines))
 
 ;; Per-id memo of expand state so collapse can restore the pre-expand
 ;; visual. Stores:

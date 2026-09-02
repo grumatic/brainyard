@@ -5,7 +5,8 @@
 (ns ai.brainyard.agent.tui.format-test
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
-            [ai.brainyard.agent.tui.format :as fmt]))
+            [ai.brainyard.agent.tui.format :as fmt]
+            [ai.brainyard.display-block.interface :as block]))
 
 (defn- strip-ansi [s]
   (str/replace (or s "") #"\[[;\d]*[A-Za-z]" ""))
@@ -559,13 +560,13 @@
   (testing "box is fit to content but capped at the pane width"
     (doseq [cols [30 60 90 200]]
       (at-cols cols
-        (fn []
-          (let [b (fmt/format-welcome-banner
-                   {:agent-id :coact-agent
-                    :session-id "agt-1786861946759-7726"
-                    :lm-provider :claude-code :lm-model "opus"})]
-            (is (every? #(<= % cols) (line-widths b))
-                (str "banner overflows at " cols " columns: " (vec (line-widths b))))))))))
+               (fn []
+                 (let [b (fmt/format-welcome-banner
+                          {:agent-id :coact-agent
+                           :session-id "agt-1786861946759-7726"
+                           :lm-provider :claude-code :lm-model "opus"})]
+                   (is (every? #(<= % cols) (line-widths b))
+                       (str "banner overflows at " cols " columns: " (vec (line-widths b))))))))))
 
 (deftest welcome-banner-still-shrinks-to-content-when-there-is-room
   (testing "the cap is a ceiling, not a target — a wide pane does not stretch the box"
@@ -581,11 +582,77 @@
                  "sixty squares as well")]
       (doseq [cols [40 68 120]]
         (at-cols cols
-          (fn []
-            (let [ws (line-widths (fmt/format-next-prompt s))]
-              (is (every? #(<= % cols) ws)
-                  (str "next-prompt overflows at " cols " columns: " (vec ws))))))))))
+                 (fn []
+                   (let [ws (line-widths (fmt/format-next-prompt s))]
+                     (is (every? #(<= % cols) ws)
+                         (str "next-prompt overflows at " cols " columns: " (vec ws))))))))))
 
 (deftest next-prompt-still-nil-on-blank
   (is (nil? (fmt/format-next-prompt nil)))
   (is (nil? (fmt/format-next-prompt "   "))))
+
+;; ---------------------------------------------------------------------------
+;; Collapsible eval sections: the head in scrollback and the tail spliced in on
+;; expand have to agree, because a difference between them reads as a rendering
+;; bug — the user sees a truncated line, presses Ctrl-O, and the editor shows a
+;; line the pane never did.
+;; ---------------------------------------------------------------------------
+
+(defn- long-body
+  "60 numbered lines with one deliberately over-wide line in the head (line 16)
+   and one in the tail (line 31)."
+  []
+  (str/join "\n"
+            (concat (for [i (range 1 16)] (str "line-" i))
+                    [(str "HEADLONG " (apply str (repeat 300 \h)))]
+                    (for [i (range 17 31)] (str "line-" i))
+                    [(str "TAILLONG " (apply str (repeat 300 \t)))]
+                    (for [i (range 32 61)] (str "line-" i)))))
+
+(defn- eval-section-rows [label body opts]
+  (vec (str/split-lines
+        (apply (resolve 'ai.brainyard.agent.tui.format/format-eval-section)
+               label body identity opts))))
+
+(deftest expanded-tail-wraps-to-the-same-width-as-the-head
+  (testing "the provider's :line-decorator word-wraps, so a long tail line is
+            several rows rather than one over-wide row the renderer's width
+            clamp would truncate"
+    (doseq [cols [80 120 204]]
+      (at-cols cols
+               (fn []
+                 (let [id   (str "wrapt" cols)
+                       head (eval-section-rows "Output" (long-body) [:class "eval-output" :id id])
+                       tail (block/expand-lines id)
+                       ;; Marker rows are exempt: they bypass wrapping so the
+                       ;; closing `]` survives on one row for `marker-re`, and
+                       ;; a split marker would be untoggleable. A narrow pane
+                       ;; clips the hint's tail, which costs nothing — the scan
+                       ;; runs against `!scrollback`, not the painted row.
+                       content (remove #(re-find block/marker-re %) tail)]
+                   (is (every? #(<= (fmt/display-width %) cols) head)
+                       (str "head overflows at " cols))
+                   (is (seq content))
+                   (is (every? #(<= (fmt/display-width %) cols) content)
+                       (str "expanded tail overflows at " cols ": "
+                            (vec (remove #(<= % cols)
+                                         (map fmt/display-width content)))))
+                   (is (= 1 (count (filter #(re-find block/marker-re %) tail)))
+                       "the expanded form ends in exactly one marker row")))))))
+
+(deftest the-collapsed-marker-is-decorated-exactly-once
+  (testing "text-block already ran :line-decorator over the marker it appended;
+            running it again boxed the marker twice and shifted it six columns
+            past the body and past the expanded marker it toggles into"
+    (at-cols 120
+             (fn []
+               (let [id        "oncet"
+                     head      (eval-section-rows "Output" (long-body) [:class "eval-output" :id id])
+                     collapsed (first (filter #(re-find block/marker-re %) head))
+                     expanded  (last (block/expand-lines id))
+                     lead      (fn [s] (re-find #"^\W*" (strip-ansi s)))]
+                 (is (some? collapsed))
+                 (is (= 1 (count (re-seq #"│" (strip-ansi collapsed))))
+                     (str "marker boxed more than once: " (pr-str (strip-ansi collapsed))))
+                 (is (= (lead collapsed) (lead expanded))
+                     "collapsed and expanded markers must sit at the same indent"))))))

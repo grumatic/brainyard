@@ -455,6 +455,20 @@
       (>= i (count entries)) nil
       :else                  (recur (inc i) (+ acc (long (:n (nth entries i))))))))
 
+(defn- entry-index-covering
+  "Index of the entry whose rows CONTAIN scrollback row `row` — as opposed to
+   `entry-index-at-row`, which only answers for a row that begins one. An edit
+   made inside somebody else's span (a display-block expand) has to find that
+   owner, since the row it lands on is generally not a boundary."
+  [entries row]
+  (let [row (long row)]
+    (loop [i 0, acc 0]
+      (when (< i (count entries))
+        (let [n (long (:n (nth entries i)))]
+          (if (< row (+ acc n))
+            i
+            (recur (inc i) (+ acc n))))))))
+
 (defn- src-insert!
   "Record `entry` as beginning at scrollback row `row`. Falls back to a rebuild
    when `row` is not an entry boundary — the caller's row math and this list
@@ -1601,6 +1615,63 @@
   (when (:search @!layout)
     (shift-search! start delete-count delta)
     (rescan-search! (or (get-in @!layout [:search :cur-idx]) start))))
+
+(defn splice-rows!
+  "Replace scrollback rows [start, start+delete-count) with `new-rows`, keeping
+   every structure derived from those rows in step. Returns delta.
+
+   This is the display-block expand/collapse path, and it is a THIRD kind of
+   scrollback mutation: not an append (`write-output!`) and not a replacement of
+   a block's whole span (`update-live-block!`), but an edit made INSIDE rows
+   some other producer already owns. Three things move with it, and the one that
+   is easy to miss corrupts rather than degrades:
+
+   - **The live block whose span CONTAINS the splice grows by delta.** Shifting
+     only the blocks that START AFTER it is the obvious reading and is wrong:
+     the containing block then under-counts its own rows, so its next tick
+     rewrites only `line-count` of them and orphans the rest — leaving a second
+     copy of the body and a second marker for the same block sitting below the
+     block, which is what an expand-then-tick looked like before this existed.
+   - **The `!scrollback-src` entry covering the splice grows the same way**, or
+     the entry list stops accounting for the rows on screen and the next
+     `ensure-src!` discards every renderer in it. On a later reflow that entry
+     re-renders to the COLLAPSED form and `:n` is recomputed from the result, so
+     an expansion simply does not survive a resize — correct, since the marker
+     is what the renderer emits.
+   - **Search hits**, which are scrollback indices. Expand/collapse rescans as
+     well as shifts: the revealed rows are the text the user expanded to search."
+  [start delete-count new-rows]
+  (locking layout-lock
+    (let [entries   (ensure-src!)
+          start     (long start)
+          new-rows  (vec new-rows)
+          delta     (- (count new-rows) (long delete-count))]
+      (swap! !scrollback
+             (fn [sb]
+               (into (into (subvec sb 0 start) new-rows)
+                     (subvec sb (+ start (long delete-count))))))
+      (when (not= delta 0)
+        (reset! !scrollback-src
+                (if-let [i (entry-index-covering entries start)]
+                  (update-in entries [i :n] + delta)
+                  ;; No entry owns the row: the list had already drifted. Empty
+                  ;; it so `ensure-src!` rebuilds from what is actually on
+                  ;; screen, rather than leaving a list that describes neither.
+                  []))
+        (swap! !live-blocks
+               (fn [blocks]
+                 (reduce-kv
+                  (fn [m id b]
+                    (let [s (long (:start-idx b))
+                          n (long (:line-count b))]
+                      (assoc m id
+                             (cond
+                               (> s start)                          (update b :start-idx + delta)
+                               (and (<= s start) (< start (+ s n))) (update b :line-count + delta)
+                               :else                                b))))
+                  {} blocks))))
+      (resync-search-after-splice! start delete-count delta)
+      delta)))
 
 ;; ============================================================================
 ;; Live Blocks — in-scrollback regions that update in-place

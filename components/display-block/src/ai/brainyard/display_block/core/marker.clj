@@ -58,6 +58,38 @@
   [id summary & {:keys [hint]}]
   (build-line id :expanded summary :hint hint))
 
+;; ----------------------------------------------------------------------------
+;; :line-decorator output shapes
+;;
+;; A provider's `:line-decorator` maps one logical line of block content to what
+;; should appear in scrollback. Producers use it to keep the tail spliced in on
+;; expand visually consistent with the head they already emitted — which means
+;; it must be allowed to be 1→N, not just 1→1: the head was WORD-WRAPPED to the
+;; pane, and a tail line that is not gets truncated at the right edge by the
+;; renderer's width clamp. That loses text silently, and `Ctrl-O` then shows the
+;; full line from the backing file — expand and edit disagreeing about the same
+;; content, with no hint that anything was dropped.
+;;
+;; So providers normalise through these two: `decorated-rows` wherever content
+;; lines are emitted, `decorated-line` for the marker lines, which must stay on
+;; ONE scrollback row for `marker-re` to find them.
+
+(defn decorated-rows
+  "Normalise a `:line-decorator` result (string, seq of strings, or nil) into a
+   row vector."
+  [x]
+  (cond
+    (nil? x)    []
+    (string? x) [x]
+    :else       (vec x)))
+
+(defn decorated-line
+  "A `:line-decorator` result collapsed back to ONE row, for marker lines.
+   Safe because every wrapping decorator passes marker lines through unwrapped —
+   a split marker would be unfindable and so untoggleable."
+  [x]
+  (or (first (decorated-rows x)) ""))
+
 (defn parse
   "Parse a single line. Returns {:id :state :summary :hint} or nil if no match.
    When the body has no `|` separator, :hint is nil."

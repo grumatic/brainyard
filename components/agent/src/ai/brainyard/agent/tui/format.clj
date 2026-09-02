@@ -69,58 +69,58 @@
    (>= cp 0x1100)
    (or ;; — CJK / Fullwidth —
     (<= 0x1100 cp 0x115F)      ;; Hangul Jamo
-   (<= 0x2E80 cp 0x303F)      ;; CJK Radicals, Kangxi, CJK Symbols
-   (<= 0x3040 cp 0x33FF)      ;; Hiragana, Katakana, Bopomofo, CJK Compat
-   (<= 0x3400 cp 0x4DBF)      ;; CJK Extension A
-   (<= 0x4E00 cp 0x9FFF)      ;; CJK Unified Ideographs
-   (<= 0xAC00 cp 0xD7AF)      ;; Hangul Syllables
-   (<= 0xF900 cp 0xFAFF)      ;; CJK Compatibility Ideographs
-   (<= 0xFE30 cp 0xFE4F)      ;; CJK Compatibility Forms
-   (<= 0xFF01 cp 0xFF60)      ;; Fullwidth Forms
-   (<= 0xFFE0 cp 0xFFE6)      ;; Fullwidth Signs
+    (<= 0x2E80 cp 0x303F)      ;; CJK Radicals, Kangxi, CJK Symbols
+    (<= 0x3040 cp 0x33FF)      ;; Hiragana, Katakana, Bopomofo, CJK Compat
+    (<= 0x3400 cp 0x4DBF)      ;; CJK Extension A
+    (<= 0x4E00 cp 0x9FFF)      ;; CJK Unified Ideographs
+    (<= 0xAC00 cp 0xD7AF)      ;; Hangul Syllables
+    (<= 0xF900 cp 0xFAFF)      ;; CJK Compatibility Ideographs
+    (<= 0xFE30 cp 0xFE4F)      ;; CJK Compatibility Forms
+    (<= 0xFF01 cp 0xFF60)      ;; Fullwidth Forms
+    (<= 0xFFE0 cp 0xFFE6)      ;; Fullwidth Signs
       ;; — Emoji (only EAW=W codepoints; W=Wide chars in mixed-width
       ;;   ranges like 0x2600..0x27BF that are NOT wide — e.g. ✓ ✗ ★ —
       ;;   stay narrow and don't get over-counted in padding) —
-   (<= 0x231A cp 0x231B)      ;; ⌚⌛
-   (<= 0x23E9 cp 0x23F3)      ;; ⏩-⏳
-   (<= 0x23F8 cp 0x23FA)      ;; ⏸⏹⏺
-   (<= 0x25FD cp 0x25FE)      ;; ◽◾
+    (<= 0x231A cp 0x231B)      ;; ⌚⌛
+    (<= 0x23E9 cp 0x23F3)      ;; ⏩-⏳
+    (<= 0x23F8 cp 0x23FA)      ;; ⏸⏹⏺
+    (<= 0x25FD cp 0x25FE)      ;; ◽◾
       ;; --- Misc Symbols (0x2600–0x26FF): only EAW=W ---
-   (<= 0x2614 cp 0x2615)      ;; ☔☕
-   (<= 0x2648 cp 0x2653)      ;; zodiac signs
-   (= cp 0x267F)              ;; ♿
-   (= cp 0x2693)              ;; ⚓
-   (= cp 0x26A1)              ;; ⚡
-   (<= 0x26AA cp 0x26AB)      ;; ⚪⚫
-   (<= 0x26BD cp 0x26BE)      ;; ⚽⚾
-   (<= 0x26C4 cp 0x26C5)      ;; ⛄⛅
-   (= cp 0x26CE)              ;; ⛎
-   (= cp 0x26D4)              ;; ⛔
-   (= cp 0x26EA)              ;; ⛪
-   (<= 0x26F2 cp 0x26F3)      ;; ⛲⛳
-   (= cp 0x26F5)              ;; ⛵
-   (= cp 0x26FA)              ;; ⛺
-   (= cp 0x26FD)              ;; ⛽
+    (<= 0x2614 cp 0x2615)      ;; ☔☕
+    (<= 0x2648 cp 0x2653)      ;; zodiac signs
+    (= cp 0x267F)              ;; ♿
+    (= cp 0x2693)              ;; ⚓
+    (= cp 0x26A1)              ;; ⚡
+    (<= 0x26AA cp 0x26AB)      ;; ⚪⚫
+    (<= 0x26BD cp 0x26BE)      ;; ⚽⚾
+    (<= 0x26C4 cp 0x26C5)      ;; ⛄⛅
+    (= cp 0x26CE)              ;; ⛎
+    (= cp 0x26D4)              ;; ⛔
+    (= cp 0x26EA)              ;; ⛪
+    (<= 0x26F2 cp 0x26F3)      ;; ⛲⛳
+    (= cp 0x26F5)              ;; ⛵
+    (= cp 0x26FA)              ;; ⛺
+    (= cp 0x26FD)              ;; ⛽
       ;; --- Dingbats (0x2700–0x27BF): only EAW=W ---
-   (= cp 0x2705)              ;; ✅
-   (<= 0x270A cp 0x270B)      ;; ✊✋
-   (= cp 0x2728)              ;; ✨
-   (= cp 0x274C)              ;; ❌
-   (= cp 0x274E)              ;; ❎
-   (<= 0x2753 cp 0x2755)      ;; ❓❔❕
-   (= cp 0x2757)              ;; ❗
-   (<= 0x2795 cp 0x2797)      ;; ➕➖➗
-   (= cp 0x27B0)              ;; ➰
-   (= cp 0x27BF)              ;; ➿
+    (= cp 0x2705)              ;; ✅
+    (<= 0x270A cp 0x270B)      ;; ✊✋
+    (= cp 0x2728)              ;; ✨
+    (= cp 0x274C)              ;; ❌
+    (= cp 0x274E)              ;; ❎
+    (<= 0x2753 cp 0x2755)      ;; ❓❔❕
+    (= cp 0x2757)              ;; ❗
+    (<= 0x2795 cp 0x2797)      ;; ➕➖➗
+    (= cp 0x27B0)              ;; ➰
+    (= cp 0x27BF)              ;; ➿
       ;; --- Other blocks ---
-   (<= 0x2B1B cp 0x2B1C)      ;; ⬛⬜
-   (= cp 0x2B50)              ;; ⭐
-   (= cp 0x2B55)              ;; ⭕
-   (= cp 0x3030)              ;; 〰
-   (= cp 0x303D)              ;; 〽
-   (= cp 0x3297)              ;; ㊗
-   (= cp 0x3299)              ;; ㊙
-   (<= 0x1F000 cp 0x1FAFF)    ;; Supplementary emoji blocks (incl. flags,
+    (<= 0x2B1B cp 0x2B1C)      ;; ⬛⬜
+    (= cp 0x2B50)              ;; ⭐
+    (= cp 0x2B55)              ;; ⭕
+    (= cp 0x3030)              ;; 〰
+    (= cp 0x303D)              ;; 〽
+    (= cp 0x3297)              ;; ㊗
+    (= cp 0x3299)              ;; ㊙
+    (<= 0x1F000 cp 0x1FAFF)    ;; Supplementary emoji blocks (incl. flags,
                               ;; symbols, pictographs, transport, supplemental)
     (<= 0x1FC00 cp 0x1FFFD))))  ;; Symbols for Legacy Computing + rest
 
@@ -1344,10 +1344,14 @@
           ;; Long lines are word-wrapped at `max-w` display columns
           ;; (ANSI-aware) so trailing content never falls off the right edge.
           ;; Display-block marker lines bypass wrapping so the closing `]`
-          ;; survives for `block/marker-re` to match. `decorate-one` is the
-          ;; per-row decorator passed to the display-block provider as
-          ;; `:line-decorator` — the tail lines spliced in on expand stay
-          ;; visually consistent with the head already in scrollback.
+          ;; survives for `block/marker-re` to match.
+          ;;
+          ;; `decorate` — the WRAPPING one — is what goes to the provider as
+          ;; `:line-decorator`, so the tail lines spliced in on expand are
+          ;; wrapped the same way as the head already in scrollback. Passing the
+          ;; 1→1 `decorate-one` instead left every long tail line on a single
+          ;; over-wide row, which `render-viewport!`'s width clamp then
+          ;; truncated — text lost on expand that `Ctrl-O` still showed in full.
           decorate-one (fn [line]
                          (str indent (ansi/muted "│ ") (style-fn line)))
           decorate (fn [line]
@@ -1367,12 +1371,22 @@
                                           (cond-> {:max-collapsed-lines (config/get-config :max-collapsed-lines)
                                                    :max-expanded-lines  (config/get-config :max-expanded-lines)
                                                    :label               label
-                                                   :line-decorator      decorate-one}
+                                                   :line-decorator      decorate}
                                             id (assoc :id id)))
-          lines    (str/split-lines text)]
+          all-lines (vec (str/split-lines text))
+          ;; When the body was over threshold, `text-block` appended its own
+          ;; collapsed marker — and the provider ALREADY ran `:line-decorator`
+          ;; over it. Feeding it back through `decorate` boxed it a second time
+          ;; (`│ │ [*Block:…*]`), leaving the collapsed marker indented six
+          ;; columns past the body and past the expanded marker it toggles into.
+          marker-row (let [l (peek all-lines)]
+                       (when (and l (re-find block/marker-re l)) l))
+          body-lines (if marker-row (pop all-lines) all-lines)
+          rows     (cond-> (into [] (mapcat decorate) body-lines)
+                     marker-row (conj marker-row))]
       (str "  " (ansi/muted (str ansi/bullet " " label ":")) "\n"
            indent (ansi/muted "┌─") "\n"
-           (->> lines (mapcat decorate) (str/join "\n"))
+           (str/join "\n" rows)
            "\n"
            indent (ansi/muted "└─")))))
 

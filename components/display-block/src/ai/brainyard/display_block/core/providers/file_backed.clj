@@ -72,6 +72,12 @@
   "Default marker hint shown when the block is in expanded state."
   "Enter: collapse, Ctrl-O: edit")
 
+;; `:line-decorator` may be 1→1 or 1→N (styling plus a width-aware word wrap).
+;; `marker/decorated-rows` and `marker/decorated-line` normalise both shapes;
+;; the commentary there explains why 1→N has to be allowed. Called through the
+;; alias rather than value-copied into a local `def` — an eager `(def x ns/x)`
+;; freezes unbound under native-image.
+
 (defrecord FileBackedProvider [meta-map file-path]
   p/BlockProvider
   (-meta [_] meta-map)
@@ -81,7 +87,8 @@
           summary  (str "+" (or hidden-lines 0) " lines")
           decorate (or line-decorator identity)
           hint     (or hint-collapsed default-hint-collapsed)]
-      (decorate (marker/collapsed-line id summary :hint hint))))
+      (marker/decorated-line
+       (decorate (marker/collapsed-line id summary :hint hint)))))
 
   (-expanded-lines [_]
     (let [{:keys [id max-expanded-lines hint-expanded line-decorator
@@ -104,14 +111,18 @@
                              (str (count visible) " of " tail-count " hidden lines")
                              (str tail-count " hidden lines"))
               expanded-marker (marker/expanded-line id tail-summary :hint hint)]
-          (vec (concat (mapv decorate visible)
-                       (when trailer [(decorate trailer)])
-                       [(decorate expanded-marker)])))
+          ;; `mapcat`, not `mapv`: a wrapping decorator turns one long logical
+          ;; line into several rows. See `marker/decorated-rows`.
+          (vec (concat (into [] (mapcat #(marker/decorated-rows (decorate %))) visible)
+                       (when trailer (marker/decorated-rows (decorate trailer)))
+                       [(marker/decorated-line (decorate expanded-marker))])))
         ;; File missing — surface a notice line that still parses as a
         ;; collapsed marker (so the user can see something is wrong but
         ;; the marker still survives a re-collapse).
-        [(p/-collapsed-marker-line _)
-         (decorate (str "(file missing for block " (:id meta-map) ": " file-path ")"))])))
+        (into [(p/-collapsed-marker-line _)]
+              (marker/decorated-rows
+               (decorate (str "(file missing for block " (:id meta-map)
+                              ": " file-path ")")))))))
 
   (-resource-path [_] file-path)
 

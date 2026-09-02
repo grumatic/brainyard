@@ -26,9 +26,10 @@
     (let [{:keys [id hidden-lines hint-collapsed line-decorator]} meta-map
           decorate (or line-decorator identity)
           hint     (or hint-collapsed default-hint-collapsed)]
-      (decorate (marker/collapsed-line id
-                                       (str "+" (or hidden-lines 0) " lines")
-                                       :hint hint))))
+      (marker/decorated-line
+       (decorate (marker/collapsed-line id
+                                        (str "+" (or hidden-lines 0) " lines")
+                                        :hint hint)))))
 
   (-expanded-lines [_]
     (let [{:keys [id max-expanded-lines hint-expanded line-decorator
@@ -48,9 +49,11 @@
                          (str (count visible) " of " tail-count " hidden lines")
                          (str tail-count " hidden lines"))
           expanded-marker (marker/expanded-line id tail-summary :hint hint)]
-      (vec (concat (mapv decorate visible)
-                   (when trailer [(decorate trailer)])
-                   [(decorate expanded-marker)]))))
+      ;; `mapcat`, not `mapv` — a `:line-decorator` may word-wrap one logical
+      ;; line into several rows. See `marker/decorated-rows`.
+      (vec (concat (into [] (mapcat #(marker/decorated-rows (decorate %))) visible)
+                   (when trailer (marker/decorated-rows (decorate trailer)))
+                   [(marker/decorated-line (decorate expanded-marker))]))))
 
   (-resource-path [_] nil)
   (-dispose! [_] nil))
