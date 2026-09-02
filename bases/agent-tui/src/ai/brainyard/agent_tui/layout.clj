@@ -547,6 +547,54 @@
 
 (defn- mark-dirty! [] (reset! !dirty? true))
 
+;; Terminal handover: while an EXTERNAL program owns the screen — $EDITOR, via
+;; Ctrl-O on a block marker or a click on a file location — nothing of ours may
+;; reach the terminal at all.
+;;
+;; This is strictly stronger than the popover gate above, which defers only the
+;; background writers. Here the input line, the chrome and the frame epilogue
+;; are equally wrong: the bytes land in a screen we do not own. The symptom was
+;; the idle prompt — repainted by the 15s idle-tip ticker, by a turn finishing
+;; in the background, by any status refresh — drawn straight across the middle
+;; of the editor's output, on a row it had no way to know was no longer ours.
+;;
+;; The owner is recorded as a THREAD, not a boolean, because the handover dance
+;; itself must write: the alt-screen leave on the way out and the full repaint
+;; on the way back are both paints, and gating them would leave the editor
+;; inside our alt-screen and the screen unrebuilt on return. So the thread
+;; performing the handover is exempt while every other thread is gated.
+;;
+;; Nothing is queued. In fullscreen the dropped paints are recoverable by
+;; construction: writers still update `!scrollback` / `!live-blocks` (only the
+;; terminal write is gated, exactly as with a popover), and the handover's own
+;; `handle-resize!` on return replays all of it at the current width. Inline
+;; mode has no such repaint — but those bytes were already being written into
+;; the editor's alt-screen and discarded when it exited, so nothing that
+;; survived before is lost now.
+(defonce ^:private !external-owner (atom nil))
+
+(defn external-owner?
+  "True when an external program owns the terminal and our paints must be
+   dropped. False on the thread that performed the handover, which still has to
+   write to hand the screen over and to rebuild it afterwards."
+  []
+  (let [t @!external-owner]
+    (and (some? t) (not (identical? t (Thread/currentThread))))))
+
+(defn set-external-owner!
+  "Latch (`true`, recording the CALLING thread as the owner) or release
+   (`false`) the terminal-handover gate.
+
+   Release also forgets the painted rows: a paint the gate dropped was still
+   recorded by `note-painted!` as having reached the screen, and that row would
+   then stay stale until its content next changed. The cost is one extra full
+   repaint — the same trade `set-popover-active!` makes."
+  [owned?]
+  (if owned?
+    (reset! !external-owner (Thread/currentThread))
+    (do (reset! !external-owner nil)
+        (invalidate-painted!))))
+
 ;; ============================================================================
 ;; Predicates
 ;; ============================================================================
@@ -596,9 +644,14 @@
   "Write string to writer, flush. Caller must hold layout-lock.
    The ONLY place bytes actually reach the terminal — every flush here is one
    thing the terminal can present, so anything that flushes twice for one user
-   gesture is a visible two-step. Prefer `with-frame`."
+   gesture is a visible two-step. Prefer `with-frame`.
+
+   Being the only exit is also why the terminal-handover gate lives here rather
+   than at the paint sites: it catches every writer — the 22 emit paths, the
+   input line, the chrome, the tickers — without any of them having to know
+   that an editor currently owns the screen."
   [^java.io.Writer w ^String s]
-  (when w
+  (when (and w (not (external-owner?)))
     (try
       (.write w s)
       (.flush w)

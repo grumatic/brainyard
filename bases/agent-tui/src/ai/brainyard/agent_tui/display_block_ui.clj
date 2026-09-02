@@ -183,6 +183,14 @@
            stop-input (requiring-resolve 'ai.brainyard.agent-tui.input/stop-input-reader!)
            start-input (requiring-resolve 'ai.brainyard.agent-tui.input/start-input-reader!)]
        (try
+         ;; Latch the handover gate FIRST — before the alt-screen leave below,
+         ;; which is the moment the screen stops being ours. From here until the
+         ;; release in the `finally`, this thread is the only one whose paints
+         ;; reach the terminal; every ticker, background emit and idle-prompt
+         ;; repaint is dropped instead of being drawn over the editor. Stopping
+         ;; the input reader is not enough on its own: the writers that painted
+         ;; over $EDITOR were never keystroke-driven.
+         (layout/set-external-owner! true)
          (when stop-input (stop-input))
          (when fs?
            (layout/draw-overlay!
@@ -218,8 +226,13 @@
                 (.write ^java.io.Writer w "[?25l")
                 (.flush ^java.io.Writer w)))
              (layout/note-cursor-hidden!)
+             ;; Still gated, still on the owning thread: this is the repaint
+             ;; that recovers everything the gate dropped, replayed from
+             ;; `!scrollback` at the current width. Releasing before it would
+             ;; let a ticker paint into a screen that has not been rebuilt yet.
              (try (layout/handle-resize!) (catch Exception _)))
-           (when start-input (start-input System/in))))
+           (when start-input (start-input System/in))
+           (layout/set-external-owner! false)))
        path))))
 
 (defn view-in-editor!

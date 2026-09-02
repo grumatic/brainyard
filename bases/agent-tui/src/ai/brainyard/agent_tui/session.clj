@@ -617,8 +617,12 @@
       (try (.join ^Thread thread 200) (catch Exception _)))
     (when-not (layout/fullscreen?)
       (locking output-lock
+        ;; The two inline spinner writes are the only paints that do not go
+        ;; through `layout/raw-write-direct!`, so they check the handover gate
+        ;; themselves — a spinner erased into $EDITOR's screen is the same bug
+        ;; as a prompt drawn over it.
         (let [w (if (thread-bound? #'*out*) *out* (:writer @!tui-state))]
-          (when w
+          (when (and w (not (layout/external-owner?)))
             (.write ^java.io.Writer w "\r                         \r")
             (.flush ^java.io.Writer w)))))))
 
@@ -683,7 +687,7 @@
          (do
            (locking output-lock
              (let [w (if (thread-bound? #'*out*) *out* (:writer @!tui-state))]
-               (when w
+               (when (and w (not (layout/external-owner?)))
                  (.write ^java.io.Writer w
                          (str "\r" (ansi/muted static-line) "  "))
                  (.flush ^java.io.Writer w))))
@@ -806,7 +810,6 @@
 ;; ============================================================================
 ;; Idle-Tip Ticker (alternates suggestion / static tip on the idle prompt)
 ;; ============================================================================
-
 
 (def ^:private idle-tip-interval-ms
   "How long each placeholder frame (suggestion vs. static tip) stays on screen."
