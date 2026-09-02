@@ -307,7 +307,16 @@
    {:title     "nREPL server"
     :family    :exec
     :gate      :nrepl-enabled?
-    :keys      [:nrepl-port :nrepl-host]
+    ;; :nrepl-eval-timeout-ms sits with the endpoint keys rather than in
+    ;; :exec/tasks with the other timeouts. The precedent there —
+    ;; :user-tool-timeout-ms — is filed by which layer DECIDES, and that
+    ;; argument lands here too: this is the response timeout on the nREPL
+    ;; client socket, a property of the same connection :nrepl-host and
+    ;; :nrepl-port address. It is also wholly inert for the default :sandbox
+    ;; backend, so filing it beside the cross-backend promotion thresholds
+    ;; would present it as a knob every agent tunes when most cannot use it
+    ;; at all. Being under this gate says exactly when it applies.
+    :keys      [:nrepl-port :nrepl-host :nrepl-eval-timeout-ms]
     :requires  #{:exec/code-channel}
     :lifecycle :session
     :doc       "In-process nREPL for live inspection."}

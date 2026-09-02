@@ -87,6 +87,27 @@
       (is (and (string? doc) (not (str/blank? doc)))
           (str "schema entry " k " has no :doc")))))
 
+(deftest eval-ceiling-sits-above-the-detach-deadline
+  (testing ":nrepl-eval-timeout-ms must exceed :auto-background-timeout-ms"
+    ;; These two are ordered, not independent. :auto-background-timeout-ms is
+    ;; when a still-running foreground block DETACHES and the eval carries on
+    ;; in the background; :nrepl-eval-timeout-ms is when the eval itself is
+    ;; given up on. Set the ceiling at or below the detach deadline and the
+    ;; eval expires before the block can ever detach, so the auto-background
+    ;; path becomes unreachable on the nREPL backend — a behaviour change with
+    ;; no error anywhere to explain it.
+    ;;
+    ;; Pinned because the ceiling is now tunable and was just lowered from an
+    ;; hour to 5 minutes; the next reduction is the one that would cross the
+    ;; line silently.
+    (let [ceiling (:default (get cfg/config-schema :nrepl-eval-timeout-ms))
+          detach  (:default (get cfg/config-schema :auto-background-timeout-ms))]
+      (is (integer? ceiling))
+      (is (integer? detach))
+      (is (> ceiling detach)
+          (str "eval ceiling " ceiling "ms must exceed the detach deadline "
+               detach "ms")))))
+
 ;; ============================================================================
 ;; search-config-keys (agent-runtime$config :query mode)
 ;; ============================================================================

@@ -46,6 +46,32 @@
         (n/close-session s1)
         (n/close-session s2)))))
 
+(deftest timed-out-eval-reports-an-error
+  ;; REGRESSION: on a client timeout nrepl.core just ends the response seq —
+  ;; no error, no terminal status — so the fold returned {:result nil :error
+  ;; nil} and a timed-out eval was indistinguishable from an expression that
+  ;; legitimately returned nil. The LLM got a blank entry. Harmless while the
+  ;; ceiling was a hardcoded hour; reachable now that :nrepl-eval-timeout-ms
+  ;; makes it tunable.
+  (testing "a truncated round-trip is an error, naming the deadline"
+    (let [r (n/eval-string "(Thread/sleep 20000)" :timeout-ms 1000)]
+      (is (some? (:error r)) "a timeout must not look like a nil result")
+      (is (re-find #"did not complete" (:error r)))
+      (is (re-find #"1000ms" (:error r)) "the deadline is named")))
+
+  (testing "a completed eval is untouched"
+    (let [r (n/eval-string "(+ 1 1)" :timeout-ms 10000)]
+      (is (= "2" (:result r)))
+      (is (nil? (:error r)))))
+
+  (testing "a real eval error keeps its own message, not the timeout one"
+    ;; A failing eval still arrives with "done", so the timeout branch must
+    ;; not fire and mask it.
+    (let [r (n/eval-string "(throw (ex-info \"kaboom\" {}))" :timeout-ms 10000)]
+      (is (some? (:error r)))
+      (is (not (re-find #"did not complete" (:error r))))
+      (is (re-find #"kaboom" (str (:error r) (:output r)))))))
+
 (deftest on-session-surfaces-the-id
   ;; The id of a session the caller did NOT pin used to be unreachable: it was
   ;; cloned inside nrepl.core/client-session and never escaped, so anything

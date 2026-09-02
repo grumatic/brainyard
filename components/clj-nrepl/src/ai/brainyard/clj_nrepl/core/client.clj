@@ -34,25 +34,47 @@
    :output accumulates :out + :err in arrival order.
    Last :value wins for :result. Status \"error\" sets :error.
    When output-writer is non-nil, :out/:err chunks are also written to it
-   as they arrive, enabling incremental polling from another thread."
-  [responses & {:keys [output-writer]}]
-  (reduce
-   (fn [acc msg]
-     (let [{:keys [value out err ex root-ex ns status]} msg]
-       (when output-writer
-         (when out (.write ^java.io.Writer output-writer ^String out))
-         (when err (.write ^java.io.Writer output-writer ^String err)))
-       (cond-> acc
-         value (assoc :result value)
-         ns    (assoc :ns ns)
-         out   (update :output str out)
-         err   (update :output str err)
-         (or ex root-ex) (update :error
-                                 (fn [e] (or e (str (or root-ex ex)))))
-         (some #{"error"} status)
-         (update :error (fn [e] (or e "nREPL eval error"))))))
-   {:result nil :output "" :error nil :ns nil}
-   responses))
+   as they arrive, enabling incremental polling from another thread.
+
+   A MISSING \"done\" IS A FAILURE, and has to be reported as one. When the
+   client's response timeout elapses, nrepl.core simply ends the lazy seq —
+   there is no error message and no terminal status, so this fold used to
+   return `{:result nil :error nil}`: a timed-out eval was byte-identical to
+   an expression that legitimately returned nil. Measured with a 20s sleep
+   under a 1.5s ceiling, the caller got `{:result nil, :error \"\"}` and the
+   LLM was handed a blank entry with nothing to act on. That mattered little
+   while the ceiling was a hardcoded hour and effectively never hit; it
+   matters now that :nrepl-eval-timeout-ms makes it tunable and therefore
+   reachable."
+  [responses & {:keys [output-writer timeout-ms]}]
+  (let [acc (reduce
+             (fn [acc msg]
+               (let [{:keys [value out err ex root-ex ns status]} msg]
+                 (when output-writer
+                   (when out (.write ^java.io.Writer output-writer ^String out))
+                   (when err (.write ^java.io.Writer output-writer ^String err)))
+                 (cond-> acc
+                   value (assoc :result value)
+                   ns    (assoc :ns ns)
+                   out   (update :output str out)
+                   err   (update :output str err)
+                   (or ex root-ex) (update :error
+                                           (fn [e] (or e (str (or root-ex ex)))))
+                   (some #{"done"} status) (assoc :done? true)
+                   (some #{"error"} status)
+                   (update :error (fn [e] (or e "nREPL eval error"))))))
+             {:result nil :output "" :error nil :ns nil :done? false}
+             responses)]
+    (cond-> (dissoc acc :done?)
+      ;; Only when nothing else already explained the failure — a real eval
+      ;; error also arrives with "done", so this cannot mask one.
+      (and (not (:done? acc)) (nil? (:error acc)))
+      (assoc :error
+             (str "nREPL eval did not complete"
+                  (when timeout-ms (str " within " timeout-ms "ms"))
+                  " (no 'done' response). The server was NOT stopped — an"
+                  " nREPL eval cannot be cancelled, so it keeps running there."
+                  " Any output above is what arrived before the deadline.")))))
 
 (defn- err-result [code msg]
   {:code code :result nil :output "" :error msg :ns nil})
@@ -75,7 +97,8 @@
    The effective budget is `(min timeout-ms max-connect-ms)`: deriving it from
    the caller's own timeout avoids a second knob that could drift out of sync
    with the first, while this ceiling keeps a generous message timeout (the eval
-   path uses an hour) from re-inheriting the OS default."
+   path uses `:nrepl-eval-timeout-ms`, minutes) from re-inheriting the OS
+   default."
   5000)
 
 (defn- reachable?
@@ -166,7 +189,8 @@
                     client* (nrepl/client-session base :session sid)
                     msg     {:op "eval" :code code :session sid}
                     harvested (harvest-responses (nrepl/message client* msg)
-                                                 :output-writer output-writer)]
+                                                 :output-writer output-writer
+                                                 :timeout-ms timeout-ms)]
                 (assoc harvested :code code))))
           (catch Exception e
             (err-result code

@@ -606,15 +606,21 @@
 ;; Job config:
 ;;   {:code        <string>               — required
 ;;    :session     <string or nil>        — optional nREPL session id
-;;    :timeout-ms  <int, default 3600000> — nREPL CLIENT read timeout (default
-;;                                          1 hour). MUST exceed the LLM-facing
+;;    :timeout-ms  <int, default 300000>  — nREPL CLIENT read timeout, from
+;;                                          :nrepl-eval-timeout-ms (5 min).
+;;                                          MUST exceed the LLM-facing
 ;;                                          auto-background deadline in
 ;;                                          await-task so detach wins; a short
 ;;                                          value here would make the client
 ;;                                          give up before the eval finishes
-;;                                          server-side, returning a partial /
-;;                                          misleading result while the actual
-;;                                          work continues as zombie state.}
+;;                                          server-side, returning a partial
+;;                                          result while the actual work
+;;                                          continues as zombie state. That
+;;                                          zombie is now NAMED rather than
+;;                                          silent — harvest-responses reports
+;;                                          a missing "done" as an error
+;;                                          saying the server was not stopped.
+;;    :host/:port  <optional>             — remote endpoint; absent = loopback}
 ;;
 ;; Symmetric to ClojureSandboxJobExecutor in lifecycle (kicks the eval in a
 ;; daemon future, returns :detached immediately, exposes :on-poll / :on-cancel)
@@ -632,7 +638,7 @@
   tp/IJobExecutor
   (execute-job [_ task on-output]
     (let [{:keys [code session timeout-ms host port]
-           :or {timeout-ms 3600000}} (:job-config task)
+           :or {timeout-ms 300000}} (:job-config task)
           ;; The session actually used. `session` is nil for any agent that
           ;; does not pin one, and the old :on-cancel below was guarded on it
           ;; — so an unpinned eval got NO interrupt at all, only a

@@ -3583,14 +3583,23 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
    metadata stays the model's own text, so nothing injected shows up in the
    iteration record or the TUI."
   [code auto-bg-ms & {:keys [from-iteration nrepl-session-id fast-eval-ms subagent? owner-agent-id
-                             nrepl-host nrepl-port tool-ns]}]
-  (let [wire-code (if tool-ns (nrepl-bind/prefix-code tool-ns code) code)]
+                             nrepl-host nrepl-port tool-ns nrepl-timeout-ms]}]
+  (let [wire-code (if tool-ns (nrepl-bind/prefix-code tool-ns code) code)
+        ;; The ceiling on ONE eval (:nrepl-eval-timeout-ms). It is the only
+        ;; hard bound on a runaway block, because neither future-cancel nor
+        ;; nREPL's interrupt actually stops an eval — see the :on-cancel note
+        ;; below. The literal tracks the schema default; it is 5 minutes rather
+        ;; than the hour this was hardcoded at, because an uncancellable eval
+        ;; holds its thread and connection until the ceiling expires. Must stay
+        ;; above :auto-background-timeout-ms (180000) or the eval would die
+        ;; before the block ever detaches.
+        eval-timeout-ms (or nrepl-timeout-ms (* 1000 60 5))]
     (cond
       (or (proto/in-task-context?) subagent?)
       (let [[thunk _] (clj-nrepl/eval-nrepl-thunk
                        wire-code
                        :session    nrepl-session-id
-                       :timeout-ms (* 1000 60 60)
+                       :timeout-ms eval-timeout-ms
                        :host       nrepl-host
                        :port       nrepl-port)]
         (run-inline-clj-eval code :nrepl thunk))
@@ -3610,7 +3619,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
                                      ;; with fast-eval disabled silently
                                      ;; evaluated on the LOCAL server, i.e. the
                                      ;; wrong runtime, reported as success.
-                                     (cond-> {:code wire-code :timeout-ms (* 1000 60 60)}
+                                     (cond-> {:code wire-code :timeout-ms eval-timeout-ms}
                                        nrepl-session-id (assoc :session nrepl-session-id)
                                        nrepl-host (assoc :host nrepl-host)
                                        nrepl-port (assoc :port nrepl-port))
@@ -3637,7 +3646,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
             [thunk eval-output] (clj-nrepl/eval-nrepl-thunk
                                  wire-code
                                  :session    nrepl-session-id
-                                 :timeout-ms (* 1000 60 60)
+                                 :timeout-ms eval-timeout-ms
                                  :host       nrepl-host
                                  :port       nrepl-port
                                  :on-session #(reset! !live-session %))
@@ -3654,7 +3663,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
             (adopt-and-await-task
              {:task-name    (task-label "nrepl-clj: " code)
               :job-type     :clj-nrepl-eval
-              :job-config   (cond-> {:code wire-code :timeout-ms (* 1000 60 60)}
+              :job-config   (cond-> {:code wire-code :timeout-ms eval-timeout-ms}
                               nrepl-session-id (assoc :session nrepl-session-id)
                               nrepl-host (assoc :host nrepl-host)
                               nrepl-port (assoc :port nrepl-port))
@@ -3808,6 +3817,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
      (case backend
        :nrepl   (run-clj-nrepl-block code auto-bg-ms
                                      :from-iteration   from-iteration
+                                     :nrepl-timeout-ms (config/get-config agent :nrepl-eval-timeout-ms)
                                      :nrepl-session-id session-id
                                      :nrepl-host       (when remote? host)
                                      :nrepl-port       (when remote? (config/get-config agent :nrepl-port))
