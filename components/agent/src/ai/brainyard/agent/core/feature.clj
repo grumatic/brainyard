@@ -316,16 +316,26 @@
    {:title     "Task lifecycle thresholds"
     :family    :exec
     :gate      nil
-    ;; The three thresholds in the order they apply: fast-eval decides whether
-    ;; work is promoted to a tracked task at all, task-timeout bounds it, and
+    ;; The thresholds in the order they apply: fast-eval decides whether work
+    ;; is promoted to a tracked task at all, task-timeout bounds it, and
     ;; auto-background decides when a still-running foreground task detaches.
     ;; :fast-eval-timeout-ms lives here rather than under code-channel because
     ;; it governs EVERY tool call, not just code — so it stays live even with
     ;; :code-channel? false.
+    ;;
+    ;; :user-tool-timeout-ms is here for the same reason, and it is not a
+    ;; promotion threshold: it is the runaway backstop on a user-authored tool
+    ;; body, enforced by the SCI sandbox. It belongs beside the other two
+    ;; because its value is only meaningful RELATIVE to them — user-tools reads
+    ;; it as (max this :fast-eval-timeout-ms :auto-background-timeout-ms), so a
+    ;; backstop set below the layer that is supposed to decide cannot preempt
+    ;; it. Filing it under the tools family would put a key whose whole meaning
+    ;; is this ordering somewhere the ordering is not written down.
     :keys      [:task-timeout-ms :task-heartbeat-interval-ms
-                :fast-eval-timeout-ms :auto-background-timeout-ms]
+                :fast-eval-timeout-ms :auto-background-timeout-ms
+                :user-tool-timeout-ms]
     :lifecycle :live
-    :doc       "Thresholds governing a unit of work's promotion to a task."}
+    :doc       "Thresholds governing a unit of work's promotion to a task, plus the hard backstop on a user-authored tool body."}
 
    :exec/task-notify
    {:title     "Auto task notification"
