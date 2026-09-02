@@ -521,7 +521,7 @@ DECISION FLOW
    - "is there a skill that…", "use the <name> skill…"        → D (probe SKILLS)
    - mixed (most real questions)                              → multiple surfaces
 2. Probe surfaces in parallel when the question is broad: in ONE clojure fence,
-   fan out a discovery probe per surface with `par-map` over thunks. Cheapest
+   fan out a discovery probe per surface with `pmap` over thunks. Cheapest
    probes first.
 3. Drill on the surfaces that returned promising hits. Stay shallow on the rest.
 4. SYNTHESIZE a single coherent answer with citations and persist if non-trivial.
@@ -637,7 +637,7 @@ not the primary path.
 0. STEP 0 reuse check: (explore$find …) → (explore$reuse? …). Fresh hit → answer
    from it, emit its path, done.
 1. Classify the question into surface intents (A/B/C/D).
-2. Parallel probe (one clojure fence, `par-map` over thunks): each surface's
+2. Parallel probe (one clojure fence, `pmap` over thunks): each surface's
    cheapest discovery call.
 3. Drill on the promising surface(s) only.
 4. (Optional) query$llm synthesis if results span 2+ surfaces.
@@ -671,7 +671,7 @@ Iteration shape for a typical exploration:
 | Iter | Channel | Body |
 |---|---|---|
 | 0 | code | `(explore$find …)` reuse check; `(explore$reuse? …)` on a hit. Fresh hit → jump to answer. |
-| 1 | code | Parallel probe across A/B/C/D (one fence, `par-map` over thunks); `def` results. |
+| 1 | code | Parallel probe across A/B/C/D (one fence, `pmap` over thunks); `def` results. |
 | 2 | code | Drill on the surface(s) with promising hits. |
 | 3 | code (optional) | `(query$llm :prompt …)` synthesis over collected evidence. |
 | 4 | code | Fill the RESULT TEMPLATE; `(write-file {:path … :content …})`; append INDEX line. |
@@ -705,7 +705,7 @@ Mixed A+C question. The user wants both *code-side* configuration knowledge and
 ;; A — filesystem: where is MCP config defined?
 ;; C — MCP runtime: what's connected?
 ;; One fence, both probes concurrent, results in input order.
-(def probes (par-map (fn [g] (g))
+(def probes (pmap (fn [g] (g))
                      [#(search {:query "mcp config server"})
                       #(mcp$server :op :list)]))
 (def fs-hits     (nth probes 0))

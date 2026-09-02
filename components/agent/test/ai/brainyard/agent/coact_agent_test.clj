@@ -1154,7 +1154,7 @@
       (is (= :code (:last-channel @st)))
       (is (every? :parallel? (:last-code-results @st))))))
 
-;; --- ParallelBlock is processes-only; clojure fans out via par-map ---
+;; --- ParallelBlock is processes-only; clojure fans out via pmap ---
 
 (deftest parallel-partition-clojure-is-sequential-test
   (testing "clojure blocks in a parallel partition SHARE the sandbox, in source order"

@@ -567,27 +567,53 @@
       (is (nil? (sandbox/try-repair-escapes code))))))
 
 ;; ============================================================================
-;; par-map — the sandbox's only concurrency primitive
+;; pmap — the sandbox's only concurrency primitive
 ;; ============================================================================
 
-(deftest par-map-test
-  (testing "SCI bundles no future/pmap — par-map is the only way to fan out"
-    ;; Guards the premise behind par-map AND behind the prompt's claim that
-    ;; reaching for future/pmap costs an iteration. If SCI ever starts
-    ;; bundling either, both need revisiting.
-    ;;
-    ;; Deliberately only these two. `promise` DOES resolve — but with no way
-    ;; to deliver from another thread it is inert on its own, so it is not
-    ;; part of the claim.
+(deftest pmap-test
+  (testing "pmap is OURS — SCI bundles none, so the name was free to take"
+    ;; The binding takes clojure.core's name on the grounds that SCI does not
+    ;; supply one, so there is no shadowing and a model can call it from
+    ;; memory. If SCI ever starts bundling pmap this stops being true and the
+    ;; binding would silently shadow it — hence the assertion on the shape
+    ;; rather than merely on resolvability: ours is EAGER, so a plain call
+    ;; returns a vector where core's would return a LazySeq.
+    (let [sb (sandbox/create-sandbox)
+          r  (sandbox/eval-code sb "[(vector? (pmap inc [1 2])) (class (pmap inc [1 2]))]"
+                                :timeout-ms 30000)]
+      (is (nil? (:error r)))
+      (is (true? (first (:result r)))
+          "pmap resolves to the sandbox binding (eager vector), not a lazy core pmap")))
+
+  (testing "future is still absent, so pmap is the only way to fan out"
+    ;; Backs the prompt's claim that reaching for `future` costs an iteration.
+    ;; `promise` DOES resolve — but with no way to deliver from another thread
+    ;; it is inert alone, so it is not part of the claim.
     (let [sb (sandbox/create-sandbox)]
-      (doseq [sym ["future" "pmap"]]
-        (is (str/includes? (str (:error (sandbox/eval-code sb (str "(" sym " identity)"))))
-                           "Could not resolve symbol")
-            (str sym " should not resolve in the sandbox")))))
+      (is (str/includes? (str (:error (sandbox/eval-code sb "(future 1)")))
+                         "Could not resolve symbol"))))
+
+  (testing "core's arities: multiple collections, stopping at the shortest"
+    ;; The reason the binding is called pmap at all is that a model can write
+    ;; it from memory — which only pays off while the call it writes BEHAVES.
+    ;; An earlier version took [f coll opts], so (pmap f xs ys) read ys as
+    ;; options and silently mapped over xs alone.
+    (let [sb (sandbox/create-sandbox)]
+      (is (= [11 22 33] (:result (sandbox/eval-code sb "(pmap + [1 2 3] [10 20 30])"
+                                                    :timeout-ms 30000))))
+      (is (= [11 22] (:result (sandbox/eval-code sb "(pmap + [1 2 3] [10 20])"
+                                                 :timeout-ms 30000)))
+          "stops at the shortest collection, like map")
+      (is (= [111 222] (:result (sandbox/eval-code sb "(pmap + [1 2] [10 20] [100 200])"
+                                                   :timeout-ms 30000))))
+      (is (= (vec (clojure.core/pmap + [1 2 3] [10 20]))
+             (vec (:result (sandbox/eval-code sb "(pmap + [1 2 3] [10 20])"
+                                              :timeout-ms 30000))))
+          "agrees with clojure.core/pmap on the same inputs")))
 
   (testing "results come back in INPUT order, not completion order"
     (let [sb (sandbox/create-sandbox)
-          r  (sandbox/eval-code sb "(par-map (fn [x] (* x 10)) [1 2 3 4 5])"
+          r  (sandbox/eval-code sb "(pmap (fn [x] (* x 10)) [1 2 3 4 5])"
                                 :timeout-ms 30000)]
       (is (nil? (:error r)))
       (is (= [10 20 30 40 50] (:result r)))))
@@ -598,7 +624,7 @@
     ;; println is several writes holding no lock across them. Per-branch
     ;; writers replayed after the join are what make this deterministic.
     (let [sb (sandbox/create-sandbox)
-          r  (sandbox/eval-code sb "(par-map (fn [x] (println \"line\" x) x) [1 2 3])"
+          r  (sandbox/eval-code sb "(pmap (fn [x] (println \"line\" x) x) [1 2 3])"
                                 :timeout-ms 30000)]
       (is (nil? (:error r)))
       (is (= "line 1\nline 2\nline 3\n" (:output r)))))
@@ -609,7 +635,7 @@
     ;; Without an explicit rebind per branch this died with
     ;; "class sci.impl.vars.SciUnbound cannot be cast to class java.io.Writer".
     (let [sb (sandbox/create-sandbox)
-          r  (sandbox/eval-code sb "(par-map (fn [x] (println x) x) [1 2 3])"
+          r  (sandbox/eval-code sb "(pmap (fn [x] (println x) x) [1 2 3])"
                                 :timeout-ms 30000)]
       (is (nil? (:error r)))
       (is (not (str/includes? (str (:error r)) "SciUnbound")))))
@@ -618,31 +644,34 @@
     (let [sb (sandbox/create-sandbox)
           r  (sandbox/eval-code
               sb
-              "(par-map (fn [x] (println \"pre\" x) (if (= x 2) (throw (ex-info \"boom\" {})) x)) [1 2 3])"
+              "(pmap (fn [x] (println \"pre\" x) (if (= x 2) (throw (ex-info \"boom\" {})) x)) [1 2 3])"
               :timeout-ms 30000)]
       (is (str/includes? (str (:error r)) "boom"))
       (is (str/includes? (str (:output r)) "pre 1"))))
 
-  (testing ":max-concurrency is clamped, never a cap on collection size"
+  (testing "the concurrency bound caps parallelism, never collection size"
+    ;; 8 at a time, but all 40 items run. The bound is deliberately NOT an
+    ;; option: core's pmap takes no concurrency argument either, and a
+    ;; positional opts map would collide with the multi-collection arity
+    ;; asserted above.
     (let [sb (sandbox/create-sandbox)
-          r  (sandbox/eval-code sb "(par-map (fn [x] x) (range 40) {:max-concurrency 9999})"
-                                :timeout-ms 30000)]
+          r  (sandbox/eval-code sb "(pmap identity (range 40))" :timeout-ms 30000)]
       (is (nil? (:error r)))
-      (is (= 40 (count (:result r))) "all 40 items run, 16 at a time")))
+      (is (= 40 (count (:result r))))))
 
-  (testing "degenerate inputs and a non-numeric opt do not throw"
+  (testing "degenerate inputs do not throw"
     (let [sb (sandbox/create-sandbox)]
-      (is (= [] (:result (sandbox/eval-code sb "(par-map (fn [x] x) [])"))))
+      (is (= [] (:result (sandbox/eval-code sb "(pmap (fn [x] x) [])"))))
       (is (= [nil nil nil]
-             (:result (sandbox/eval-code sb "(par-map (fn [_] nil) [1 2 3])"
+             (:result (sandbox/eval-code sb "(pmap (fn [_] nil) [1 2 3])"
                                          :timeout-ms 30000))))
-      (is (= [1 2 3]
-             (:result (sandbox/eval-code sb "(par-map (fn [x] x) [1 2 3] {:max-concurrency :nonsense})"
-                                         :timeout-ms 30000))))))
+      (is (= [] (:result (sandbox/eval-code sb "(pmap + [] [1 2 3])"
+                                            :timeout-ms 30000)))
+          "an empty collection in a multi-coll call yields nothing")))
 
   (testing "concurrent SCI closures over a shared ctx stay correct"
     (let [sb (sandbox/create-sandbox)
-          r  (sandbox/eval-code sb "(reduce + (par-map (fn [x] (* x x)) (range 300)))"
+          r  (sandbox/eval-code sb "(reduce + (pmap (fn [x] (* x x)) (range 300)))"
                                 :timeout-ms 30000)]
       (is (nil? (:error r)))
       (is (= (reduce + (map #(* % %) (range 300))) (:result r)))))
@@ -650,6 +679,6 @@
   (testing "a fork inherits the binding"
     (let [sb (sandbox/create-sandbox)
           f  (sandbox/fork-sandbox sb)
-          r  (sandbox/eval-code f "(par-map inc [1 2 3])" :timeout-ms 30000)]
+          r  (sandbox/eval-code f "(pmap inc [1 2 3])" :timeout-ms 30000)]
       (is (nil? (:error r)))
       (is (= [2 3 4] (:result r))))))

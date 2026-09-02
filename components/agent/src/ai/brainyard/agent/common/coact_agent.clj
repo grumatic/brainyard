@@ -105,7 +105,7 @@
    ;; `::acs/tool-calls` directly rather than redefining them here. `tool-args`
    ;; is a plain JSON object (map), not a name/value pair-list.
 
-   ::code-blocks [:string {:desc "Markdown text containing fenced code blocks with language tags (clojure, bash, python, javascript). Blocks run sequentially in source order. A line containing only `<!-- ParallelBlock -->` makes the bash/python/javascript blocks run concurrently, each in a fresh process; clojure blocks always run sequentially in the shared sandbox — fan out inside one block with `(par-map f coll)` instead. Four-backtick fences tagged markdown/text/html are verbatim content blocks: saved to a file (path returned), not executed. Empty when using tool-calls or answer."}]
+   ::code-blocks [:string {:desc "Markdown text containing fenced code blocks with language tags (clojure, bash, python, javascript). Blocks run sequentially in source order. A line containing only `<!-- ParallelBlock -->` makes the bash/python/javascript blocks run concurrently, each in a fresh process; clojure blocks always run sequentially in the shared sandbox — fan out inside one block with `(pmap f coll)` instead. Four-backtick fences tagged markdown/text/html are verbatim content blocks: saved to a file (path returned), not executed. Empty when using tool-calls or answer."}]
 
    ;; Answer-channel self-assessment (replaces the old standalone FinalizeAnswer
    ;; DSPy call). Optional outputs — populated only when `answer` is non-blank;
@@ -176,7 +176,7 @@
    copies of one 180s deadline, all always-on. It is an execution fact, so it
    lives in the execution-model section alone. Likewise the worked examples:
    only the two fan-out ones survive, because `<!-- ParallelBlock -->` and
-   `par-map` are both pure convention and unguessable, whereas
+   `pmap` are both pure convention and unguessable, whereas
    `filter`/`pprint` and `grep | awk` taught a capable model nothing it did
    not already know.
 
@@ -229,9 +229,9 @@ a temp file and executed), `python` (temp file + python3), `javascript`
   - `def` persistence across iterations (use a `clojure` block).
   - Raw scripts with nested quotes or regex backslashes — use a `bash` or
     `python` block. The block content is passed verbatim; no SCI escaping.
-  - Parallel fan-out IN clojure: `(par-map f coll)` inside ONE block. Not
-    `<!-- ParallelBlock -->`, which does nothing for clojure, and not
-    `future`/`pmap`, which the sandbox does not bind.
+  - Parallel fan-out IN clojure: `(pmap f coll)` inside ONE block — NOT
+    `<!-- ParallelBlock -->`, which does nothing for clojure. (`future` is
+    not bound; `pmap` is.)
   - Parallel fan-out across PROCESSES: separate independent `bash`/`python`/
     `javascript` blocks with a line containing only `<!-- ParallelBlock -->`.
     Those run concurrently, each in a fresh process; `clojure` blocks in the
@@ -243,7 +243,7 @@ a temp file and executed), `python` (temp file + python3), `javascript`
 
   Parallel examples — clojure fans out INSIDE a block:
     ```clojure
-    (par-map (fn [q] (search :query q)) [\"topic A\" \"topic B\" \"topic C\"])
+    (pmap (fn [q] (search :query q)) [\"topic A\" \"topic B\" \"topic C\"])
     ```
 
   Processes fan out ACROSS blocks (the delimiter line is the only
@@ -305,7 +305,7 @@ CHANNEL DECISION HEURISTICS
 {% if tool-channel %}1. One registered tool, no post-processing                    → TOOL
 2. Background/long-running task                               → TOOL
 {% endif %}{% if code-channel %}{{h-compose}}. Compose, filter, transform, pprint                         → CODE (clojure)
-{{h-parallel}}. Parallel independent sub-queries                           → CODE (clojure, par-map)
+{{h-parallel}}. Parallel independent sub-queries                           → CODE (clojure, pmap)
 {{h-raw}}. Raw shell/Python with nested quotes or regex backslashes   → CODE (bash/python fence)
 {{h-def}}. Need cross-iteration `def` state                           → CODE (clojure)
 {% endif %}{{h-answer}}. Ready to answer (or cannot proceed, or need clarification) → ANSWER
@@ -479,12 +479,14 @@ are NOT bound in the SCI sandbox.
 ### Parallel execution
 Two different things, and picking the wrong one costs an iteration:
 
-- **clojure → `(par-map f coll)`, inside one block.** Runs the branches
-  concurrently and returns results in INPUT order; `{:max-concurrency n}` to
-  tune (default 8, max 16). For heterogeneous work pass thunks:
-  `(par-map (fn [g] (g)) [#(search :query \"A\") #(search :query \"B\")])`.
+- **clojure → `(pmap f coll)`, inside one block.** Works as you know it,
+  multiple collections included (`(pmap + xs ys)`), results in INPUT order,
+  8 branches at a time. It is EAGER rather than lazy — `(take 5 (pmap f huge))`
+  still processes everything — and takes no concurrency argument. For
+  heterogeneous work pass thunks:
+  `(pmap (fn [g] (g)) [#(search :query \"A\") #(search :query \"B\")])`.
   Because it is ordinary code it composes — \"A, then B+C in parallel, then D\"
-  is ONE block. `future` and `pmap` are NOT bound in the sandbox.
+  is ONE block. `future` is NOT bound in the sandbox.
 - **bash / python / javascript → `<!-- ParallelBlock -->`.** A line containing
   only that marker makes the SCRIPT blocks run concurrently, each in a fresh
   process. It does nothing for `clojure` blocks: those always run sequentially
@@ -822,12 +824,15 @@ and the results (return value, stdout, or error) are sent back for the next iter
 - **State persists**: `def` variables survive across iterations.
 - **Captured output**: `println`/`pprint` output is captured and returned to you.
 - **Errors are non-fatal**: Exceptions show the error message; sandbox state is preserved.
-- **Concurrency is `par-map`, NOT `future`/`pmap`**: SCI bundles neither, at any
-  interop level — reaching for them costs you an iteration on
-  `Could not resolve symbol`. `(par-map f coll)` runs branches concurrently and
-  returns results in INPUT order; for heterogeneous work pass thunks,
-  `(par-map (fn [g] (g)) [#(probe-a) #(probe-b)])`. It joins before returning,
-  so the block's timeout still bounds it.
+- **Concurrency is `pmap`**: it works as you expect — `(pmap f coll)`, and
+  `(pmap f xs ys)` over several collections — returning results in INPUT
+  order, 8 branches at a time. Two differences from `clojure.core`: it is
+  EAGER (no laziness, so `(take 5 (pmap f huge))` still does all the work),
+  and it takes no concurrency argument. It joins before returning, so the
+  block's timeout bounds it. For heterogeneous work pass thunks:
+  `(pmap (fn [g] (g)) [#(probe-a) #(probe-b)])`.
+  `future` is NOT bound at any interop level — reaching for it costs you an
+  iteration on `Could not resolve symbol`.
 "
        (if (= interop :full)
          (str "- **Full Java interop**: arbitrary Java interop is available (System, Runtime, ProcessBuilder, reflection, etc.) — running in a container sandbox.\n"
@@ -3845,7 +3850,7 @@ Runtime keys and worked patterns: `(usage$guide :topic :agent-state)`.")
 
    CLOJURE IS DELIBERATELY NOT PARALLEL HERE. The marker parallelizes
    PROCESSES, which is the unit shell/python/js actually have. Clojure's unit
-   is `par-map` INSIDE a block, which composes with ordinary code — \"A, then
+   is `pmap` INSIDE a block, which composes with ordinary code — \"A, then
    B+C in parallel, then D\" is one block — where the marker is all-or-nothing
    across the whole iteration and had to be spread over several instead.
 

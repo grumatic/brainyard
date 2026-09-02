@@ -26,7 +26,7 @@ Primary files:
 | Loop mode | Single-call (`ThinkActAndEvaluate`, 1 call / iter) | three-channel single-call loop |
 | Composition / `def` state | None | Persistent across iterations (clojure fence in shared SCI sandbox) |
 | Raw scripts | Tool arg (verbatim) | `` ```bash `` / `` ```python `` / `` ```javascript `` fence (verbatim, no escaping) |
-| Parallel fan-out | Per-call orchestration | `(par-map f coll)` inside a clojure fence; `<!-- ParallelBlock -->` for concurrent bash/python/js blocks |
+| Parallel fan-out | Per-call orchestration | `(pmap f coll)` inside a clojure fence; `<!-- ParallelBlock -->` for concurrent bash/python/js blocks |
 | Best for | Crisp tools, simple args, opaque payloads | Composition, filtering, persistence, parallel sub-queries, raw scripts |
 
 ---
@@ -170,8 +170,10 @@ Insert a line `<!-- ParallelBlock -->` anywhere in `code-blocks` to run the
 shell/python/js blocks concurrently, each in a fresh process. It does NOT
 apply to clojure blocks: those always run sequentially in source order,
 sharing the sandbox, so each sees the previous blocks' `def`s. Clojure fans
-out INSIDE a block with `(par-map f coll)` — the sandbox binds neither
-`future` nor `pmap`.
+out INSIDE a block with `(pmap f coll)`. SCI bundles no `pmap`, so the
+sandbox supplies one under core's name and signature (multiple collections
+included); it differs only in being eager rather than lazy, and in taking no
+concurrency argument. `future` is not bound at all.
 
 For a mixed pipeline (A sequential → B+C parallel → D), the LLM uses
 multiple iterations.

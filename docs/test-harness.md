@@ -135,7 +135,7 @@ inherits:
   dispatched in parallel, with pre/post hooks.
 - **Code-as-action** — markdown-fenced blocks: `clojure` in a persistent SCI
   sandbox (`def` survives across iterations/turns), `bash`/`python`/`javascript`
-  in fresh subprocesses, `(par-map f coll)` for clojure fan-out inside a block,
+  in fresh subprocesses, `(pmap f coll)` for clojure fan-out inside a block,
   `<!-- ParallelBlock -->` for concurrent bash/python/js blocks, and
   four-backtick verbatim fences that write to a file instead of executing.
 - **Auto-background tasks** — a block over `:auto-background-timeout-ms` (120s)
@@ -189,7 +189,7 @@ Cover each runtime and the state model:
 - **ParallelBlock:** two independent `bash` blocks with the marker; assert both
   results come back and that wall-clock is max() not sum(). The marker does
   nothing for `clojure` blocks — those run sequentially in the shared sandbox.
-- **par-map:** clojure fan-out inside ONE block; assert results in input order
+- **pmap:** clojure fan-out inside ONE block; assert results in input order
   and that a throwing branch propagates.
 - **Verbatim fence:** a four-backtick `markdown name.md` block writes the file
   and returns its path; assert the file exists with the exact bytes and that it

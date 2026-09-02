@@ -24,13 +24,13 @@ as a first-class action space.
 | CR-RSN-04 | The loop MUST terminate when `:answer` is non-blank or `:terminated` is true; stamping an answer MUST set `:terminated-by :answer-channel`. | Implemented | `coact-stamp-answer-action`, `coact_agent.clj` |
 | CR-RSN-05 | Field-consistency repair MUST nudge on the 1st/2nd consecutive no-channel (`:none`) iteration and escalate to a loop-guard termination on the 3rd+ (`:terminated-by :none-channel-loop-guard`). | Implemented | `coact-repair-action`, `coact_agent.clj` |
 | CR-RSN-05b | Tool dispatch from CoAct MUST cap at `:max-tool-calls` (default 30) and terminate early if a tool returns a `{:hook-blocked true}` sentinel, lifting its `:answer`. | Implemented | `coact-tool-dispatch-action`, `coact_agent.clj` |
-| CR-RSN-06 | Parallel code blocks (marked `<!-- ParallelBlock -->`) MUST run shell/py/js via futures; clojure blocks run sequentially in the shared sandbox on both backends, and fan out inside a block via `par-map`. | **Yes** | `parallel-mode?`, `run-blocks-concurrently`, `coact_agent.clj`, `sandbox/par-map*` |
+| CR-RSN-06 | Parallel code blocks (marked `<!-- ParallelBlock -->`) MUST run shell/py/js via futures; clojure blocks run sequentially in the shared sandbox on both backends, and fan out inside a block via `pmap`. | **Yes** | `parallel-mode?`, `run-blocks-concurrently`, `coact_agent.clj`, `sandbox/pmap*` |
 
 **CR-RSN-06:** the demotion this clause used to describe is gone, and so is
 the parallel clojure runner it referred to. `<!-- ParallelBlock -->` now
 parallelizes only shell/py/js; clojure blocks run sequentially in the
 shared sandbox on BOTH backends, so they see each other's `def`s and can
-auto-detach like any other block. Fan-out moved inside a block: `par-map`
+auto-detach like any other block. Fan-out moved inside a block: `pmap`
 in SCI, `pmap`/`future` on nREPL — real parallelism, which the marker never
 gave clojure on the nREPL path at all. Session sharing was never the
 obstacle: a cloned session would run concurrently, but `def` writes to the
@@ -93,7 +93,7 @@ by-design, not a gap — recorded here so it isn't mistaken for one.
 - ~~**CR-RSN-06 — nREPL demoted to SCI in parallel blocks.**~~ **Closed.**
   The parallel clojure runner it wanted session-sharing for no longer
   exists; the marker is processes-only and fan-out moved inside a block
-  (`par-map` in SCI, `pmap`/`future` on nREPL). See CR-RSN-06 above.
+  (`pmap` in SCI, `pmap`/`future` on nREPL). See CR-RSN-06 above.
 - **CR-RSN-03 (doc) — router-precedence docstring is wrong.** The
   `ThinkActCode` docstring says *code > tool > answer*; the live router
   is *answer > code > tool*. Fix the docstring. *(Doc-only.)*

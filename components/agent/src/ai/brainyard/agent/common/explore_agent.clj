@@ -93,7 +93,7 @@ DECISION FLOW
 
 2. Probe surfaces in parallel when the question is broad or unclear:
    - In ONE clojure fence, fan out a discovery probe per surface with
-     `(par-map (fn [g] (g)) [#(probe-a) #(probe-b) …])` — results come back in
+     `(pmap (fn [g] (g)) [#(probe-a) #(probe-b) …])` — results come back in
      input order. Cheapest probes first:
        • A: `(grep :pattern \"<keyword>\" :path \".brainyard\")`
             or `(search :query \"<keyword>\")`
@@ -393,7 +393,7 @@ The results/ path you wrote is what you emit on the
 1. STEP 0 — `explore$find` (+ `explore$reuse?` on a hit). Fresh hit → answer
    from it, emit `Reused:` + `Saved exploration:`, done.
 2. Classify the question into surface intents (A/B/C/D).
-3. Parallel probe (one clojure fence, `par-map` over thunks): each surface's
+3. Parallel probe (one clojure fence, `pmap` over thunks): each surface's
    cheapest discovery call.
 4. Drill on the promising surface(s) only.
 5. (Optional) `query$llm` synthesis if results span 2+ surfaces.

@@ -265,30 +265,53 @@
 ;; Bounded parallel map
 ;; ============================================================================
 
-(def ^:private default-par-concurrency
-  "Branches `par-map` runs at once when not given `:max-concurrency`."
-  8)
+(def ^:private pmap-concurrency
+  "Branches `pmap` runs at once. A constant, NOT a tunable option, and that is
+   a compatibility decision rather than a shortcut. `clojure.core/pmap` takes
+   no concurrency argument either — it fixes its own at
+   `availableProcessors + 2` — so a positional opts map would be the one part
+   of this binding's signature the model could not predict from the name. It
+   would also be ambiguous with the real thing: `(pmap f xs ys)` is a
+   two-collection map in core, and reading a third argument as options makes
+   that call silently drop `ys`.
 
-(def ^:private max-par-concurrency
-  "Hard ceiling on `par-map` fan-out. The cap is on CONCURRENCY, not on
-   collection size — `par-map` over 10k items is fine, 16 at a time. It bounds
-   thread pressure from nested `par-map` calls, which multiply."
-  16)
+   Add tuning back only with a case for it, and under a different name."
+  8)
 
 (defn- sci-writer-or
   "`sci/out`'s current value when it is a real Writer, else `fallback`.
    Outside an eval it derefs to `SciUnbound`, which is not a Writer and must
-   never be written to — see `par-map*`'s note 1."
+   never be written to — see `pmap*`'s note 1."
   [fallback]
   (let [w (deref sci/out)]
     (if (instance? java.io.Writer w) w fallback)))
 
-(defn- par-map*
-  "Bounded parallel map over SCI closures, on `fx/bounded`. Backs the `par-map`
-   sandbox binding — the sandbox's only concurrency primitive, since SCI
-   bundles neither `future` nor `pmap` and neither becomes reachable at `:full`
-   interop (that level widens the CLASS palette, and these are `clojure.core`
-   symbols SCI never copied in).
+(defn- pmap*
+  "Bounded parallel map over SCI closures, on `fx/bounded`. Bound as `pmap` —
+   the sandbox's only concurrency primitive, since SCI bundles neither `pmap`
+   nor `future` and neither becomes reachable at `:full` interop (that level
+   widens the CLASS palette, and these are `clojure.core` symbols SCI never
+   copied in).
+
+   IT TAKES CORE'S NAME, SO IT OWES CORE'S SHAPE. The name is the whole point:
+   a model already knows `pmap` and needs no prompt budget to learn it. That
+   only pays off while the call it writes from memory behaves — so the
+   signature is core's, `([f coll] [f coll & colls])`, multiple collections
+   included, stopping at the shortest. An earlier version of this took
+   `[f coll opts]`, which reads `(pmap f xs ys)` — a legal two-collection map —
+   as options and silently maps over `xs` alone. A familiar name with an
+   unfamiliar signature is worse than an unfamiliar name.
+
+   THE ONE DELIBERATE DIVERGENCE IS LAZINESS. `clojure.core/pmap` returns a
+   lazy seq; this is eager. Three reasons, all specific to running inside a
+   sandboxed eval with a deadline: a lazy seq escaping the block would realize
+   outside the `*out*`/`sci/out` bindings that capture its output, work would
+   land outside the timeout that is supposed to bound it, and per-branch
+   output could not be replayed in input order (note 2) because the branches
+   would not all have run. The visible cost is that
+   `(take 5 (pmap f huge-coll))` does all the work rather than ~7 items'
+   worth; the docstring says so, and a bounded eval is the wrong place for an
+   unbounded lazy fan-out anyway.
 
    `fx/task-of` is the only effect shape that can cross into SCI: `m/sp`/`m/ap`
    expand through cloroutine's CPS transform, which analyzes against the JVM
@@ -314,36 +337,38 @@
       back.
 
    Replay runs even when a branch threw, so partial progress survives the
-   failure. A throw cancels the siblings (`fx/bounded`) and propagates, which
-   is `pmap`'s semantics and the sandbox's: `eval-code` renders it as `:error`."
-  ([f coll] (par-map* f coll nil))
-  ([f coll opts]
-   (let [items (vec coll)]
+   failure. A throw cancels the siblings (`fx/bounded`) and propagates — the
+   sandbox's convention, and `eval-code` renders it as `:error`."
+  ([f coll] (pmap* f coll nil nil))
+  ([f c1 & colls]
+   ;; Argument tuples, exactly as `map` builds them: one collection gives
+   ;; 1-tuples, several zip and stop at the shortest. `colls` may be `(nil)`
+   ;; from the 2-arity above, hence the filter rather than a `seq` check.
+   (let [colls (remove nil? colls)
+         items (vec (if (seq colls)
+                      (apply map vector c1 colls)
+                      (map vector c1)))]
      (if (empty? items)
        []
-       (let [req      (:max-concurrency opts)
-             n        (-> (if (number? req) (long req) default-par-concurrency)
-                          (max 1)
-                          (min max-par-concurrency))
-             parent-w (sci-writer-or *out*)
+       (let [parent-w (sci-writer-or *out*)
              sinks    (mapv (fn [_] (StringWriter.)) items)
-             tasks    (mapv (fn [x ^StringWriter w]
+             tasks    (mapv (fn [args ^StringWriter w]
                               (fx/task-of
                                (fn []
                                  (binding [*out* w]
                                    (sci/binding [sci/out w]
-                                     (f x))))))
+                                     (apply f args))))))
                             items sinks)
-             r        (fx/run!! (fx/bounded n tasks))]
+             r        (fx/run!! (fx/bounded pmap-concurrency tasks))]
          (doseq [^StringWriter w sinks]
            (let [s (.toString w)]
              (when (seq s) (.write ^java.io.Writer parent-w s))))
          (cond
            (contains? r :ok) (:ok r)
-           (:interrupted r)  (throw (ex-info "par-map interrupted"
+           (:interrupted r)  (throw (ex-info "pmap interrupted"
                                              {:items (count items)}))
            :else             (throw (or (:err r)
-                                        (ex-info "par-map failed" {:result r})))))))))
+                                        (ex-info "pmap failed" {:result r})))))))))
 
 (defn- build-sci-namespaces
   "Build the full SCI namespace map: whitelisted library namespaces plus the
@@ -380,10 +405,10 @@
                                  {:doc "Pretty-print any value to stdout"
                                   :arglists '([object])
                                   :category :core})
-                       'par-map (with-meta par-map*
-                                  {:doc "Parallel map — runs (f x) over coll concurrently, results in INPUT order. The sandbox has no future/pmap; this is the way to fan out. Opts: :max-concurrency (default 8, max 16). Each branch's printed output is replayed in input order once all finish. A throw in any branch cancels the siblings and propagates. For heterogeneous work pass thunks: (par-map (fn [g] (g)) [#(a) #(b)])."
-                                   :arglists '([f coll] [f coll opts])
-                                   :category :core})
+                       'pmap (with-meta pmap*
+                               {:doc "Parallel map, as clojure.core/pmap — runs (f x) over coll concurrently, 8 at a time, results in INPUT order. Takes multiple collections like map ((pmap + xs ys)), stopping at the shortest. EAGER, not lazy: the whole collection is processed, so (take 5 (pmap f huge)) still does all the work. Each branch's printed output is replayed in input order once all finish. A throw in any branch cancels the siblings and propagates. For heterogeneous work pass thunks: (pmap (fn [g] (g)) [#(a) #(b)])."
+                                :arglists '([f coll] [f coll & colls])
+                                :category :core})
                        ;; The capability, not the class. `System` stays denied
                        ;; at :restricted: allowlisting it would expose
                        ;; `(System/getenv)` and `(System/getProperties)`, whose

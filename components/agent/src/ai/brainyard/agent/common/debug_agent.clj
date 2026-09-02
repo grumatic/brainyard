@@ -705,9 +705,9 @@ concurrent evals run, but `def` writes to the process-global namespace, so
 parallel fences would race over one live image with no isolation to fall back
 on. When you do want real concurrency you already have it — you are on a real
 JVM, so `(pmap f xs)` and `(mapv deref (mapv #(future (f %)) xs))` both work
-inside a single fence. (The SCI sandbox has neither, and uses `par-map`
-instead.) Always join before the fence returns: a detached `future` outlives
-the eval and escapes both the timeout and cancellation.
+inside a single fence — the real, lazy `clojure.core/pmap` here, not the
+sandbox's eager stand-in. Always join before the fence returns: a detached
+`future` outlives the eval and escapes both the timeout and cancellation.
 
    ## Inspecting the live brainyard image (read-only, safe)
 

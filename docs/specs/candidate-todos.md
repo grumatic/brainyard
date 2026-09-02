@@ -19,7 +19,7 @@ closed.** The demotion described here had already stopped happening (the
 blocks were serialized through the live nREPL, not run in SCI). It is now
 moot on both backends: `<!-- ParallelBlock -->` no longer applies to clojure
 at all, so there is no parallel runner for a `:nrepl` session to be shared
-into. Clojure fans out inside ONE block instead — `par-map` in the SCI
+into. Clojure fans out inside ONE block instead — `pmap` in the SCI
 sandbox, `pmap`/`future` on nREPL, which is real parallelism the marker
 never delivered on either backend. Session sharing was never the obstacle:
 a cloned session would run concurrently, but `def` writes to the
