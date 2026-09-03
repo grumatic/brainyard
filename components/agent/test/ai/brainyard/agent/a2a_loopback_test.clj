@@ -366,7 +366,28 @@
 
     (testing "the fallback still applies when NOTHING is named"
       ;; With one exposed skill and no prefix, routing is unambiguous.
-      ;; (It reaches instantiation, which is as far as this test goes —
-      ;; the point is that it is not a routing error.)
-      (let [r (ask {:text "plain question with no skill prefix"})]
-        (is (not (and (:error r) (str/includes? (:error r) "no such skill"))))))))
+      ;;
+      ;; THE TURN IS STUBBED, and the comment this replaces is why it has to
+      ;; be: it claimed the test "reaches instantiation, which is as far as
+      ;; this test goes". It did not stop there. `make-ask-fn` runs the whole
+      ;; turn, so this reached `agent-core/ask` and parked on the unbounded
+      ;; promise in `Agent.process` — wedging `bb test` FOREVER, 28 namespaces
+      ;; in, on any machine where a real LLM call does not come back. It
+      ;; passed in a dev REPL, which is exactly what made it look innocent.
+      ;;
+      ;; Instantiation stays REAL, because reaching it is what distinguishes
+      ;; "routing resolved" from "lookup failed" — the actual subject. Only
+      ;; the LLM turn is stubbed, at the same seam and for the same reason
+      ;; `a2a-context-reuse-test/with-stubs` stubs it, and consistent with
+      ;; this namespace's own rule that a real agent here would make the
+      ;; suite slow and non-hermetic.
+      (with-redefs [agent-core/ask (fn [_inst prompt] {:answer (str "stub: " prompt)})]
+        (let [r (ask {:text "plain question with no skill prefix"})]
+          (is (not (and (:error r) (str/includes? (:error r) "no such skill"))))
+          ;; Positive form too. The double negative above passes when NOTHING
+          ;; resolves and some other error is returned, which is how a routing
+          ;; regression could hide here.
+          (is (nil? (:error r))
+              "routing resolved to the single exposed skill and the turn ran")
+          (is (= "stub: plain question with no skill prefix" (:answer r))
+              "the prompt reached the agent with no skill prefix to strip"))))))
