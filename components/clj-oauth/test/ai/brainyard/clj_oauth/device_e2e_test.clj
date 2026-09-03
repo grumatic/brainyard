@@ -116,6 +116,32 @@
           (is (= 200 (:status (mcp-init base-url (oauth/bearer-headers "brainyard-lb"))))))
         (finally (stop!))))))
 
+(deftest server-binds-loopback-not-the-wildcard
+  ;; Regression: this ns runs 257th of 307 namespaces in one shared JVM under
+  ;; `bb test`, and it intermittently died in `ts/start!` with "test OAuth
+  ;; server never started serving".
+  ;;
+  ;; The provider was serving fine. It was the only server in the workspace
+  ;; binding the WILDCARD address, and a wildcard bind does not conflict with
+  ;; another socket's loopback bind on the same port — the OS allows both. So
+  ;; when port 0 handed us a port an earlier test's leaked loopback server
+  ;; still held, `create` succeeded silently and every client reaching us via
+  ;; `localhost` (which resolves 127.0.0.1 first) was routed to that OTHER
+  ;; server. Measured at the point of failure: 618 consecutive HTTP 401s from
+  ;; a server that was not ours, then a 15s timeout.
+  (let [{:keys [server port base-url stop!]} (ts/start! 0)]
+    (try
+      (let [bound (.getAddress (.getAddress server))]
+        (is (.isLoopbackAddress bound)
+            "must bind the loopback address")
+        (is (not (.isAnyLocalAddress bound))
+            "a wildcard bind coexists with another server's loopback bind on the same port"))
+      (is (str/starts-with? base-url "http://127.0.0.1:")
+          "clients get the literal loopback IP, so name resolution cannot select a different server")
+      (testing "a second server on the same port is refused LOUDLY, not silently coexisted with"
+        (is (thrown? java.net.BindException (ts/start! port))))
+      (finally (stop!)))))
+
 (deftest device-flow-poll-waits-for-approval
   (testing "token endpoint returns authorization_pending until approved"
     (let [{:keys [base-url approve! stop!]} (ts/start! 0)]

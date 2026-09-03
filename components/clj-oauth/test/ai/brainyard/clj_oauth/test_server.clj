@@ -12,7 +12,9 @@
    native binary. Built on the JDK `com.sun.net.httpserver.HttpServer`, so it
    needs no HTTP-server dependency.
 
-   Endpoints (issuer = http://localhost:<port>):
+   Binds the LOOPBACK address only (see `loopback`) — not reachable off-box.
+
+   Endpoints (issuer = http://127.0.0.1:<port>):
      GET  /.well-known/openid-configuration  → discovery (advertises device flow)
      POST /device                            → { device_code, user_code, … }
      GET  /                  ?code=<user>    → approve a code (one-click / form)
@@ -213,6 +215,34 @@
       (try (json! ex 500 {:error "server_error" :message (.getMessage t)}) (catch Throwable _ nil)))
     (finally (.close ex))))
 
+(defn- probe-serving
+  "One discovery probe. Returns `:ok`, or a SHORT STRING naming why it failed —
+   never throws.
+
+   Naming the reason is the point. The previous version collapsed every failure
+   into `false`, so a startup that gave up could only ever report \"never
+   started serving\" after the whole budget had elapsed — with no way to tell a
+   connection refused from a read timeout from an HTTP 500, which are three
+   different bugs. That is a poor trade in a helper whose entire job is to
+   diagnose a race.
+
+   The connection is consumed and disconnected in a `finally`: an
+   HttpURLConnection whose response body is never read holds its socket out of
+   the keep-alive cache, and this runs in a retry loop."
+  [^String url]
+  (let [c ^java.net.HttpURLConnection
+        (.openConnection (java.net.URL. (str url "/.well-known/openid-configuration")))]
+    (try
+      (doto c (.setConnectTimeout 500) (.setReadTimeout 500))
+      (let [code (.getResponseCode c)]
+        (if (= 200 code) :ok (str "HTTP " code)))
+      (catch Exception e
+        (str (.getSimpleName (class e))
+             (when-let [m (ex-message e)] (str ": " m))))
+      (finally
+        (try (some-> (.getInputStream c) .close) (catch Exception _ nil))
+        (try (.disconnect c) (catch Exception _ nil))))))
+
 (defn- await-serving!
   "Block until the server actually ANSWERS its discovery endpoint, or give up.
 
@@ -224,26 +254,63 @@
    like a bug in discovery rather than a test that started too early.
 
    The budget is a CEILING, not a wait: this returns the moment the server
-   answers, so a healthy start pays a millisecond or two."
+   answers, so a healthy start pays a millisecond or two.
+
+   Returns nil when serving, or a DIAGNOSIS map when it gave up: which reasons
+   were seen and how often, how many probes were made, how long it waited, and
+   the JVM's live thread count. The thread count is there because this ns runs
+   257th of 257 namespaces under `bb test`, sharing one JVM with everything
+   before it — so \"the machine was exhausted\" is a real candidate and was
+   previously indistinguishable from \"the server is broken\"."
   [^String url]
-  (let [deadline (+ (System/currentTimeMillis) 15000)]
-    (loop []
-      (let [ok? (try
-                  (let [c (.openConnection
-                           (java.net.URL. (str url "/.well-known/openid-configuration")))]
-                    (doto ^java.net.HttpURLConnection c
-                      (.setConnectTimeout 500)
-                      (.setReadTimeout 500))
-                    (= 200 (.getResponseCode ^java.net.HttpURLConnection c)))
-                  (catch Exception _ false))]
+  (let [t0       (System/currentTimeMillis)
+        deadline (+ t0 15000)]
+    (loop [attempts 1
+           reasons  {}]
+      (let [r (probe-serving url)]
         (cond
-          ok?                                         true
-          (> (System/currentTimeMillis) deadline)     false
-          :else (do (Thread/sleep 20) (recur)))))))
+          (= :ok r) nil
+
+          (> (System/currentTimeMillis) deadline)
+          {:attempts     attempts
+           :waited-ms    (- (System/currentTimeMillis) t0)
+           :reasons      (update reasons r (fnil inc 0))
+           :live-threads (Thread/activeCount)}
+
+          :else (do (Thread/sleep 20)
+                    (recur (inc attempts) (update reasons r (fnil inc 0)))))))))
+
+(def ^:const loopback
+  "The address this provider binds, and the host every URL it hands out uses.
+
+   Binding the LOOPBACK ADDRESS EXPLICITLY rather than the wildcard is what
+   makes a port collision impossible, and this ns was the only server in the
+   workspace getting it wrong — every other test server already binds
+   \"127.0.0.1\".
+
+   A wildcard bind does NOT conflict with a loopback bind on the same port: the
+   OS considers them different sockets and lets both exist. So when the OS
+   handed `InetSocketAddress(0)` a port that some earlier test's leaked
+   loopback-bound server still held, `create` succeeded silently — and every
+   client reaching us through `localhost` (which resolves 127.0.0.1 FIRST) was
+   routed to THAT server instead. Measured: the startup probe got 618
+   consecutive HTTP 401s from an unrelated server and timed out after 15s,
+   reported as \"test OAuth server never started serving\" — a provider that
+   was in fact serving perfectly, on a socket nothing was talking to.
+
+   With a loopback bind the OS will never hand out a port already bound on that
+   address, and a genuine collision (a fixed `port` argument) throws
+   BindException immediately instead of misrouting every request.
+
+   Using the literal IP for the URL, not the name \"localhost\", also keeps
+   resolution and dual-stack ordering out of the picture entirely."
+  "127.0.0.1")
 
 (defn start!
   "Start the provider. `port` 0 lets the OS pick. Returns
    `{:server :port :base-url :state :approve! :stop!}`.
+
+   Binds the loopback address only — see `loopback`.
 
    Does not return until the server is actually answering — see
    `await-serving!`."
@@ -251,7 +318,7 @@
   ([port]
    (let [state  (atom {:devices {} :valid-tokens #{} :refresh {}})
          base   (atom nil)
-         server (HttpServer/create (InetSocketAddress. (int port)) 0)
+         server (HttpServer/create (InetSocketAddress. ^String loopback (int port)) 0)
          ;; A real (small, daemon) pool rather than `nil`. The default executor
          ;; handles requests SERIALLY on the dispatch thread, so under load a
          ;; slow handler delays every other request behind it — long enough for
@@ -268,11 +335,12 @@
      (.setExecutor server pool)
      (.start server)
      (let [actual (.getPort (.getAddress server))
-           url    (str "http://localhost:" actual)]
+           url    (str "http://" loopback ":" actual)]
        (reset! base url)
-       (when-not (await-serving! url)
-         (throw (ex-info "test OAuth server never started serving"
-                         {:url url :port actual})))
+       (when-let [why (await-serving! url)]
+         (throw (ex-info (str "test OAuth server never started serving — "
+                              (pr-str (:reasons why)))
+                         (assoc why :url url :port actual))))
        {:server   server
         :port     actual
         :base-url url
