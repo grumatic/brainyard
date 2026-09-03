@@ -260,6 +260,62 @@ full annotated template and `projects/agent-tui-app/src/.../dotenv.clj` /
   `terminal/read-key!` (`ESC[<b;x;yM`), the `click!` handler in
   `autocomplete.clj`; tests in `bases/agent-tui/test/…/mouse_test.clj`.
 
+### A non-zero viewport offset holds the view; the STATUS carries the live update
+
+`:viewport-offset` counts ROWS BACK FROM THE TAIL, so anything that changes the
+row total moves what it points at. That produced two separate failures, and one
+sentence fixes both: **a non-zero offset is the user having taken the viewport
+deliberately — scroll mode, search mode, a search whose bar was left but whose
+highlights remain — so live output holds the TEXT still and moves the NUMBER.**
+Offset 0 is unchanged: the reader is following live output and still is.
+
+- `write-output!` used to SNAP the offset to 0 on every emit, so a scrolled-up
+  reader was yanked to live by the next streamed chunk.
+- Every other mutation site left the offset alone and so DRIFTED the view
+  silently: a live block growing by a line per tick scrolled the reader down a
+  line per tick, which reads as the terminal misbehaving rather than as a bug.
+  Measured on a 30-row region: 13 growth ticks moved the view 14 rows.
+
+`hold-viewport!` is the one primitive — call it AFTER the scrollback mutation
+with `[start delta]`, and it absorbs `delta` into the offset when the splice was
+at or below the top visible row (rows spliced in ABOVE it move that row's
+content and the tail by the same amount, so the offset already describes it).
+It is wired into `write-output!`, `splice-scrollback!` (every live-block tick),
+the new-block and dispose paths, and `splice-rows!` (expand/collapse, where
+holding the top row is what "expand this block" means). Three consequences:
+
+- **`set-offset!` is the single funnel** for writing the offset. Returning to
+  the live tail is what clears `:follow-mark`, and an invariant maintained in
+  one place cannot be forgotten at the eighth call site.
+- **A held viewport forces the `render-viewport!` branch**, for the reason an
+  anchored search always did: the hardware-scroll path appends at the BOTTOM
+  and is only correct at the tail. It costs almost nothing — the visible text
+  did not change, so the painted-row diff finds no row to repaint.
+- **The separator is where the news goes instead.** `of N` tracks the growing
+  total and `↓ N new` counts rows appended since the reader stopped following
+  (`:follow-mark`, set on the first emit while parked). Deliberately NOT
+  `viewport-offset`, which also counts rows scrolled past on purpose — a
+  different number, and not news. Redrawn from `write-output!` only when held,
+  and from the ~18/sec same-count tick path only when `search-counter-sig`
+  changed, so the live-tail hot path pays nothing.
+- **Only OUTPUT ARRIVING is news** — `hold-viewport!`'s `news?` arg. Expanding a
+  display block is a splice the reader ASKED for and is looking at, so counting
+  its rows as waiting below them is wrong twice over (measured live: a 24-line
+  expand reported `↓ 24 new` with most of those rows on screen). A non-news
+  splice shifts an existing mark by `delta` instead of starting or feeding a
+  tally, so an expand/collapse round trip leaves a running count exactly where
+  it was. The tally is additionally clamped to `viewport-offset` — `↓` claims
+  the rows are down there, and counting any that already scrolled into view is
+  a promise the screen contradicts.
+
+The mirror-image guard matters as much as the rule: `reseat-search-if-lost!`
+does nothing at offset 0, or a stale `:cur-idx` from a search the reader had
+scrolled away from hijacks the viewport on the next live-block create — the
+blocks land off screen and their ticks then paint nothing, so a streaming turn
+renders as a frozen display. Background tabs get the same treatment in
+`sessions/buffer-background-emit`, which absorbs its appended rows into the
+tab's saved offset. Tests: `bases/agent-tui/test/…/viewport_hold_test.clj`.
+
 ### Scrollback search anchors on an INDEX, because the offset counts from the tail
 
 `Ctrl-F` searches the active session's scrollback; ↑/↓ step hits, Enter keeps
@@ -273,15 +329,14 @@ is a different answer. Fullscreen only, no config key. Design + as-built map:
 Four things that are load-bearing rather than incidental:
 
 - **A hit is held as a scrollback index and the offset is re-derived from it.**
-  `:viewport-offset` counts ROWS BACK FROM THE TAIL, which is why
-  `write-output!` snaps it to 0 on every emit — and why a search result was
-  otherwise yanked back to live on the next streamed chunk, i.e. exactly when a
-  long scrollback is worth searching. While anchored, the auto-snap is
-  suppressed and `seat-index!` recomputes the offset after each insert. That
-  also forces the `render-viewport!` branch: the hardware-scroll path appends at
-  the BOTTOM and is only correct when the viewport is at the tail, which an
-  anchor is precisely the case against. Same index-not-offset conclusion
-  `viewport-anchor` reaches for a resize.
+  `:viewport-offset` counts ROWS BACK FROM THE TAIL, so every append moves what
+  it points at — which is why a search result was otherwise yanked back to live
+  on the next streamed chunk, i.e. exactly when a long scrollback is worth
+  searching. The general fix is the uniform hold rule below; a search
+  additionally keeps an INDEX, because its own navigation has to be able to move
+  the viewport on purpose, and `reseat-search-if-lost!` reclaims the viewport
+  only when a splice pushed the anchored hit off screen. Same index-not-offset
+  conclusion `viewport-anchor` reaches for a resize.
 - **Search runs on the STRIPPED row, and spans are plain indices.** A query
   spanning a style boundary never matches the styled string, escape bodies
   contribute phantom hits (`m`, `1`, `38;5`), and the spans could not be handed

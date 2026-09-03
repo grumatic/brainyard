@@ -157,24 +157,100 @@
 (defonce !live-blocks (atom {}))
 
 ;; ----------------------------------------------------------------------------
-;; Search anchoring
+;; Viewport holding and search anchoring
 ;;
 ;; `:viewport-offset` counts ROWS BACK FROM THE TAIL, so every append moves what
-;; it points at. That is why `write-output!` snaps it to 0 on any emit: holding
-;; a row number steady while the tail moves would drift the reader through the
-;; text. It is also why a search hit cannot be held as an offset — the next
-;; streamed chunk would walk the user off it, i.e. exactly when a long
-;; scrollback is worth searching.
+;; it points at: holding a row NUMBER steady while the tail moves drifts the
+;; reader through the text. `write-output!` used to answer that by snapping the
+;; offset to 0 on any emit, which made scrolling useless during a turn — the one
+;; time there is something worth scrolling back to.
 ;;
-;; So a search holds a scrollback INDEX and the offset is DERIVED from it after
-;; every insert. Same reasoning as `viewport-anchor` for a resize, and the same
-;; conclusion: the index is what survives, the offset is what gets recomputed.
+;; THE RULE IS UNIFORM AND MODE-INDEPENDENT: a non-zero `:viewport-offset` is
+;; the user having taken the viewport deliberately. Scroll mode, search mode, a
+;; search whose bar has been left but whose highlights remain — none of them
+;; differ. Live output holds the TEXT still and moves the NUMBER
+;; (`hold-viewport!`); what changes instead is the status line, which is where
+;; the news that output arrived belongs (`draw-separator!`).
+;;
+;; A search additionally holds a scrollback INDEX, because its own navigation
+;; has to be able to move the viewport on purpose. That index is what survives a
+;; splice; the offset is re-derived from it. Same conclusion `viewport-anchor`
+;; reaches for a resize.
 
 (defn- search-anchor-index
   "The scrollback index the active search is parked on, or nil when nothing is
    anchored (no search, or a search with no hits)."
   []
   (get-in @!layout [:search :cur-idx]))
+
+(defn- set-offset!
+  "Write `:viewport-offset`, clamped to the scrollable range. Returns it.
+
+   THE SINGLE FUNNEL, and that is the point: returning to the live tail is what
+   clears `:follow-mark` (the row count at the moment output first arrived while
+   the reader was parked, which is what lets the separator say how much is new),
+   and an invariant maintained in one place cannot be forgotten at the eighth
+   call site."
+  ^long [offset]
+  (let [sb      (long (or (:scroll-bottom @!layout) 0))
+        max-off (max 0 (- (count @!scrollback) sb))
+        off     (max 0 (min max-off (long offset)))]
+    (swap! !layout (fn [l] (cond-> (assoc l :viewport-offset off)
+                             (zero? off) (dissoc :follow-mark))))
+    off))
+
+(defn- viewport-top
+  "Scrollback index on the TOP row of the viewport, given a row total. Callers
+   that have just mutated the scrollback pass the PRE-mutation total."
+  ^long [^long total]
+  (let [sb     (long (or (:scroll-bottom @!layout) 0))
+        offset (long (or (:viewport-offset @!layout) 0))]
+    (max 0 (- total offset sb))))
+
+(defn- index-visible?
+  "Is scrollback index `idx` on screen right now?"
+  [idx]
+  (let [total (count @!scrollback)
+        end   (- total (long (or (:viewport-offset @!layout) 0)))]
+    (and idx (<= (viewport-top total) (long idx)) (< (long idx) end))))
+
+(defn- hold-viewport!
+  "Keep the visible text where it is across a splice that changed the row total
+   by `delta` at index `start`. State only — the caller repaints. A no-op at the
+   live tail (offset 0), which still follows output as it always has.
+
+   CALL AFTER THE SCROLLBACK HAS BEEN MUTATED: the pre-splice total is read back
+   out of `delta`, and the clamp needs the post-splice one.
+
+   Rows spliced in ABOVE the top visible row move that row's content down by
+   exactly as much as they move the tail, so the offset already describes where
+   it went and must not change. Rows spliced in at or below it move only the
+   tail, so the offset has to absorb the whole delta. Both cases are the same
+   statement — hold the top row's TEXT — and the second is the one that matters:
+   it is every streamed chunk and every live-block tick.
+
+   `news?` says whether these rows are OUTPUT ARRIVING, which is the only thing
+   the separator's `↓ N new` should ever count. Expanding a display block adds
+   rows the reader asked for and is looking at — reporting those as news waiting
+   below them is wrong twice over. A non-news splice therefore SHIFTS an
+   existing mark by `delta` rather than starting or feeding a tally, which keeps
+   the mark meaning what it says: the row total, in current coordinates, at the
+   moment the reader stopped following."
+  ([start delta] (hold-viewport! start delta true))
+  ([start delta news?]
+   (let [delta  (long delta)
+         offset (long (or (:viewport-offset @!layout) 0))]
+     (when (and (pos? offset) (:scroll-bottom @!layout))
+       (let [pre-total (- (count @!scrollback) delta)]
+         (if news?
+           ;; First output to arrive while parked starts the "new below" count.
+           (when (and (pos? delta) (nil? (:follow-mark @!layout)))
+             (swap! !layout assoc :follow-mark pre-total))
+           (when-let [m (:follow-mark @!layout)]
+             (swap! !layout assoc :follow-mark (+ (long m) delta))))
+         (set-offset! (if (>= (long start) (viewport-top pre-total))
+                        (+ offset delta)
+                        offset)))))))
 
 (defn- offset-for-index
   "The `:viewport-offset` that puts scrollback index `idx` about a third of the
@@ -192,7 +268,43 @@
   "Put scrollback index `idx` in view by re-deriving `:viewport-offset` from it.
    State only — the caller repaints."
   [idx]
-  (swap! !layout assoc :viewport-offset (offset-for-index idx)))
+  (set-offset! (offset-for-index idx)))
+
+(defn- reseat-search-if-lost!
+  "Re-seat the viewport on the anchored search hit, but ONLY when the splice
+   just pushed it off screen.
+
+   `hold-viewport!` already keeps the hit visible in the ordinary case, and it
+   does so without moving anything — so re-seating unconditionally would take a
+   stable screen and jump it a third of a region on every streamed chunk. What
+   it cannot cover is a splice INSIDE the viewport above the hit, which pushes
+   the hit off the bottom while the top row correctly stays put; and a
+   `shift-search!` that dropped the current hit and re-seated `:cur` onto a
+   different one, which is a real move the viewport should follow.
+
+   AT THE LIVE TAIL THIS DOES NOTHING, and that is the whole rule again read in
+   the other direction: offset 0 is the reader FOLLOWING output, so an anchor
+   left over from a search they have scrolled away from must not drag them
+   backwards to it. Without this guard a stale `:cur-idx` hijacked the viewport
+   on the next live-block create — the blocks scrolled off screen and their
+   ticks then painted nothing at all."
+  []
+  (when (pos? (long (or (:viewport-offset @!layout) 0)))
+    (when-let [i (search-anchor-index)]
+      (when-not (index-visible? i)
+        (seat-index! i)))))
+
+(defn- search-counter-sig
+  "What the separator's `3/17` is derived from, as a comparable value.
+
+   A live-block tick replaces the block's rows wholesale, and `shift-search!`
+   drops every hit inside them — so the counter can change without one visible
+   row changing, and a stale `3/17` is the kind of wrong that sends a user
+   looking for matches that are no longer claimed to exist. This is the ~18/sec
+   path, so the separator is redrawn only when this differs."
+  []
+  (when-let [s (:search @!layout)]
+    [(:cur s) (count (:hits s)) (:query s) (:invalid? s)]))
 
 ;; ----------------------------------------------------------------------------
 ;; Painted rows — what is believed to be on each scroll-region row right now
@@ -796,6 +908,7 @@
 (declare render-viewport!)
 (declare sticky-bottom-entry)
 (declare shift-search!)
+(declare draw-separator!)
 
 (defn write-output!
   "Write a line of output.
@@ -829,15 +942,13 @@
                                (:start-idx (second sticky-bot))
                                (count @!scrollback))
                    needs-shift? (some? sticky-bot)
-                   ;; A search parked on a hit is the user having taken the
-                   ;; viewport deliberately. Snapping them to live on the next
-                   ;; streamed chunk would make search useless during a turn,
-                   ;; which is when there is most to search. Re-derive the
-                   ;; offset from the anchor after the insert instead.
-                   anchor-idx (search-anchor-index)]
-              ;; Auto-snap to bottom if scrolled up (unless anchored, above)
-               (when (and (nil? anchor-idx) (pos? (:viewport-offset @!layout)))
-                 (swap! !layout assoc :viewport-offset 0))
+                   ;; A non-zero offset is the user having taken the viewport
+                   ;; deliberately — scrolled up, searching, or reading a match
+                   ;; they kept. Snapping them to live on the next streamed
+                   ;; chunk makes scrollback useless during a turn, which is
+                   ;; exactly when there is most to read. Hold the text and
+                   ;; re-derive the offset after the insert instead.
+                   held?      (pos? (long (or (:viewport-offset @!layout) 0)))]
               ;; Record how to re-render this emit at another width BEFORE the
               ;; rows land, so `src-insert!` still sees the pre-insert list and
               ;; `insert-at` is a boundary in it.
@@ -870,23 +981,35 @@
                                             block)))
                                  {} blocks)))))
                  (swap! !scrollback into new-lines))
-              ;; The tail just moved, so the offset that was pointing at the
-              ;; anchored hit is now pointing one screenful of new text away
-              ;; from it. Re-derive.
-               (when anchor-idx (seat-index! anchor-idx))
+              ;; The tail just moved, so the offset that was holding the
+              ;; reader's place is now pointing that much earlier in the text.
+              ;; Re-derive, then let an anchored search reclaim the viewport if
+              ;; the insert pushed its hit off screen.
+               (when held?
+                 (hold-viewport! insert-at n)
+                 (reseat-search-if-lost!))
               ;; When live blocks exist, use render-viewport! to avoid ghost
               ;; duplication from hardware scroll conflicting with cursor-positioned
               ;; block rendering. Without live blocks, use fast hardware scroll.
-              ;; An anchored search takes the same branch for a different
-              ;; reason: the hardware path scrolls the region and appends at
-              ;; the BOTTOM, which is only correct when the viewport is at the
-              ;; tail — and an anchor is precisely the case where it is not.
+              ;; A held viewport takes the same branch for a different reason:
+              ;; the hardware path scrolls the region and appends at the BOTTOM,
+              ;; which is only correct when the viewport is at the tail — and
+              ;; being held is precisely the case where it is not. The cost is
+              ;; near nothing: the visible text did not change, so the
+              ;; painted-row diff finds no row to repaint and emits an empty
+              ;; string.
               ;; When a popover is active, defer the terminal write — scrollback
               ;; data above is already updated; the popover dismissal flushes via render-viewport!.
                (if (popover-active?)
                  (mark-dirty!)
-                 (if (or (seq @!live-blocks) anchor-idx)
-                   (render-viewport!)
+                 (if (or (seq @!live-blocks) held?)
+                   (do
+                     (render-viewport!)
+                     ;; The reader is parked, so the separator is the only place
+                     ;; this emit can announce itself — the row counter and the
+                     ;; "new below" tally both just changed. Skipped entirely at
+                     ;; the tail, where the text speaks for itself.
+                     (when held? (draw-separator!)))
                   ;; Hardware-scroll path. Position cursor at column 1 of
                   ;; the scroll-bottom row BEFORE each line so embedded
                   ;; `\n`s in multi-line `s` don't rely on tty `ONLCR`
@@ -1002,13 +1125,34 @@
                                      (ansi/warning label))
                                    (ansi/muted (apply str (repeat right-len ansi/h-line))))))
 
-              ;; Scrolled up — show position indicator
+              ;; Scrolled up — show position indicator.
+              ;;
+              ;; This is the OTHER half of holding the viewport. Live output no
+              ;; longer moves the text, so this line is the only thing that can
+              ;; report that it arrived: `of N` grows, and `↓ N new` counts the
+              ;; rows appended since the reader stopped following (`:follow-mark`,
+              ;; set by `hold-viewport!` on the first emit while parked). It is
+              ;; deliberately not `viewport-offset`, which also counts rows the
+              ;; user scrolled past on purpose — a different number, and not news.
+              ;;
+              ;; Measured with `display-width` and CLAMPED like the search label:
+              ;; it is no longer pure ASCII, and a narrow pane must not wrap this
+              ;; onto the input row.
               (and viewport-offset (pos? viewport-offset))
               (let [total  (count @!scrollback)
                     end    (- total viewport-offset)
                     start  (max 0 (- end scroll-bottom))
-                    label  (str " lines " (inc start) "-" end " of " total " (PgUp/PgDn) ")
-                    label-len (count label)
+                    ;; Clamped to `viewport-offset`, which IS the number of rows
+                    ;; below the viewport: the arrow claims the rows are down
+                    ;; there, so counting any that already scrolled into view
+                    ;; would be a promise the screen contradicts.
+                    fresh  (min (max 0 (- total (long (or (:follow-mark @!layout) total))))
+                                (long viewport-offset))
+                    label  (str " lines " (inc start) "-" end " of " total
+                                (when (pos? fresh) (str " · ↓ " fresh " new"))
+                                " (PgUp/PgDn) ")
+                    label (fmt/truncate-to-width label (max 0 (- cols 6)))
+                    label-len (fmt/display-width label)
                     left-len  (max 3 (quot (- cols label-len) 2))
                     right-len (max 3 (- cols label-len left-len))
                     left  (apply str (repeat left-len ansi/h-line))
@@ -1380,16 +1524,19 @@
                   (catch Throwable _ nil)))
               (recur (inc i) (+ acc n)))))))))
 
+;; The four scroll gestures and `scroll-to-bottom!` all write the offset through
+;; `set-offset!`, which clamps and — the part that matters — clears
+;; `:follow-mark` the moment the reader lands back on the live tail. Scrolling
+;; down to live and then away again must start the "new below" count over, not
+;; resume one from the last time output arrived.
+
 (defn scroll-page-up!
   "Scroll viewport up by one page. Clamps to max offset."
   []
   (when (fullscreen?)
     (with-frame
-      (let [{:keys [scroll-bottom]} @!layout
-            total (count @!scrollback)
-            max-offset (max 0 (- total scroll-bottom))]
-        (swap! !layout update :viewport-offset
-               (fn [off] (min max-offset (+ off scroll-bottom))))
+      (let [{:keys [scroll-bottom viewport-offset]} @!layout]
+        (set-offset! (+ (long (or viewport-offset 0)) (long scroll-bottom)))
         (render-viewport!)
         (draw-separator!)))))
 
@@ -1398,9 +1545,8 @@
   []
   (when (fullscreen?)
     (with-frame
-      (let [{:keys [scroll-bottom]} @!layout]
-        (swap! !layout update :viewport-offset
-               (fn [off] (max 0 (- off scroll-bottom))))
+      (let [{:keys [scroll-bottom viewport-offset]} @!layout]
+        (set-offset! (- (long (or viewport-offset 0)) (long scroll-bottom)))
         (render-viewport!)
         (draw-separator!)))))
 
@@ -1410,13 +1556,9 @@
   ([n]
    (when (fullscreen?)
      (with-frame
-       (let [{:keys [scroll-bottom]} @!layout
-             total (count @!scrollback)
-             max-offset (max 0 (- total scroll-bottom))]
-         (swap! !layout update :viewport-offset
-                (fn [off] (min max-offset (+ off n))))
-         (render-viewport!)
-         (draw-separator!))))))
+       (set-offset! (+ (long (or (:viewport-offset @!layout) 0)) (long n)))
+       (render-viewport!)
+       (draw-separator!)))))
 
 (defn scroll-lines-down!
   "Scroll viewport down by n lines (default 3). Clamps to 0 (live)."
@@ -1424,8 +1566,7 @@
   ([n]
    (when (fullscreen?)
      (with-frame
-       (swap! !layout update :viewport-offset
-              (fn [off] (max 0 (- off n))))
+       (set-offset! (- (long (or (:viewport-offset @!layout) 0)) (long n)))
        (render-viewport!)
        (draw-separator!)))))
 
@@ -1443,7 +1584,8 @@
       ;; deliberately outlive the search MODE (so a match stays visible while
       ;; the follow-up prompt is typed) — this is the gesture that ends them,
       ;; along with Esc, a new search and a session switch.
-      (swap! !layout assoc :viewport-offset 0 :search nil)
+      (swap! !layout assoc :search nil)
+      (set-offset! 0)
       (render-viewport!)
       (draw-separator!))))
 
@@ -1723,7 +1865,15 @@
                                (and (<= s start) (< start (+ s n))) (update b :line-count + delta)
                                :else                                b))))
                   {} blocks))))
+      ;; Expanding a block is the one splice the user asked for, so holding the
+      ;; TOP row is what they mean by it: the marker they toggled stays put and
+      ;; the revealed rows grow downward from it, instead of the whole screen
+      ;; sliding up by however many lines the block turned out to be. NOT news —
+      ;; these are rows the reader just revealed and is looking at, so they must
+      ;; not land in the separator's `↓ N new`.
+      (hold-viewport! start delta false)
       (resync-search-after-splice! start delete-count delta)
+      (reseat-search-if-lost!)
       delta)))
 
 ;; ============================================================================
@@ -1744,6 +1894,13 @@
     ;; Hits are indices into the rows we just moved. Surgery, not a rescan —
     ;; this is the streamed-chunk path. See `shift-search!`.
     (shift-search! start-idx delete-count delta)
+    ;; And so is the viewport, for the same reason and on the same rows. A block
+    ;; that grows by a line per tick would otherwise scroll a parked reader down
+    ;; a line per tick — the drift is small enough per tick to read as the
+    ;; terminal misbehaving rather than as a bug. No-op when `delta` is 0, which
+    ;; is the common tick.
+    (hold-viewport! start-idx delta)
+    (reseat-search-if-lost!)
     delta))
 
 (defn- adjust-blocks-after!
@@ -1847,6 +2004,7 @@
                ;; they still match — afterwards the row count has changed and it
                ;; would rebuild, discarding this block's renderer.
                _ (src-update-block! block-id new-count render (boolean sticky-bottom?))
+               sig0  (search-counter-sig)
                delta (splice-scrollback! start-idx old-count new-lines)]
            (swap! !live-blocks assoc block-id
                   {:start-idx start-idx
@@ -1855,7 +2013,12 @@
            (when (not= delta 0)
              (adjust-blocks-after! start-idx delta))
            (if (= old-count new-count)
-             (render-block-rows! start-idx new-count)
+             (do (render-block-rows! start-idx new-count)
+                 ;; A same-count tick moves no row and changes no total, so the
+                 ;; separator has nothing to say — unless the splice moved the
+                 ;; search counter, which it does the first time it replaces
+                 ;; rows a hit was sitting on. See `search-counter-sig`.
+                 (when (not= sig0 (search-counter-sig)) (draw-separator!)))
              (do (render-viewport!)
                  (draw-separator!))))
          ;; New block: anchor sticky bottoms below all other blocks
@@ -1874,6 +2037,12 @@
                   (fn [sb]
                     (into (into (subvec sb 0 insert-at) new-lines)
                           (subvec sb insert-at))))
+           ;; A block appearing mid-turn (an iteration widget, a task block) is
+           ;; an insert like any other, and moves the tail like any other.
+           (when (pos? new-count)
+             (shift-search! insert-at 0 new-count)
+             (hold-viewport! insert-at new-count)
+             (reseat-search-if-lost!))
            ;; Record the new block AND shift any block whose start-idx is
            ;; >= insert-at (i.e. the sticky bottom, if we pushed it forward).
            (swap! !live-blocks
@@ -1918,6 +2087,12 @@
                      (subvec sb (+ start-idx line-count)))))
       ;; Remove the block entry
       (swap! !live-blocks dissoc block-id)
+      ;; Rows vanishing below a parked reader move the tail just as rows
+      ;; arriving do, only the other way.
+      (when (pos? line-count)
+        (shift-search! start-idx line-count (- line-count))
+        (hold-viewport! start-idx (- line-count))
+        (reseat-search-if-lost!))
       ;; Shift any later live blocks up by line-count
       (when (pos? line-count)
         (swap! !live-blocks
@@ -2413,7 +2588,7 @@
                         top    (+ before (min (long k) (max 0 (dec n-i))))]
                     (- total top scroll-bottom))
                   0)]
-    (swap! !layout assoc :viewport-offset (max 0 (min max-off offset)))))
+    (set-offset! (max 0 (min max-off offset)))))
 
 (defn- reflow-scrollback!
   "Re-render every scrollback entry at `cols` and rebuild the rows and the

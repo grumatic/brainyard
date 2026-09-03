@@ -214,6 +214,11 @@
         (swap! !sessions update-in [:sessions current-idx] merge
                {:scrollback      current-scrollback
                 :viewport-offset current-viewport
+                ;; Travels with the offset it qualifies: "how much arrived since
+                ;; you stopped following" is a fact about THIS tab's tail, and
+                ;; dropping it would reset the separator's `↓ N new` to nothing
+                ;; every time the user glanced at another tab.
+                :follow-mark     (:follow-mark @layout/!layout)
                 :live-blocks     current-live-blocks
                 :scrollback-src  current-src
                 :cols            current-cols
@@ -251,8 +256,13 @@
   ;; `ensure-src!`, whose only repair is a full rebuild — and that costs the
   ;; tab every renderer it has, not just the stale one.
   (reset! layout/!scrollback-src (snapshot-src session))
-  ;; Restore viewport offset
-  (swap! layout/!layout assoc :viewport-offset (or (:viewport-offset session) 0))
+  ;; Restore viewport offset, and the "new below" mark that qualifies it. Both
+  ;; belong to this tab's rows; `dissoc` rather than a nil `assoc` so the
+  ;; separator's `(or … total)` fallback sees an absent mark, not a present nil.
+  (swap! layout/!layout
+         (fn [l] (cond-> (assoc l :viewport-offset (or (:viewport-offset session) 0))
+                   true                    (dissoc :follow-mark)
+                   (:follow-mark session)  (assoc :follow-mark (:follow-mark session)))))
   ;; Re-wrap to the CURRENT width. A resize that happened while this tab was in
   ;; the background never reached these rows — `handle-resize!` only reflows the
   ;; active tab — so without this they are painted at whatever width they were
@@ -703,13 +713,24 @@
    the point is that they no longer stop anything AFTER them from reflowing."
   [session new-lines render]
   (let [rows (vec (:scrollback session))
-        src  (snapshot-src session)]
-    (assoc session
-           :scrollback     (into rows new-lines)
-           :scrollback-src (conj src {:render   (or render (constantly (vec new-lines)))
-                                      :n        (count new-lines)
-                                      :block-id nil})
-           :has-unread?    true)))
+        src  (snapshot-src session)
+        n    (count new-lines)
+        ;; This tab's saved `:viewport-offset` counts rows back from ITS tail,
+        ;; and the append just moved that tail. Same rule as the foreground
+        ;; `layout/hold-viewport!`, applied to a tab nobody is looking at: a
+        ;; non-zero offset is a reader parked in this scrollback, and without
+        ;; absorbing `n` here they come back to find their place moved by
+        ;; however much arrived while they were on another tab.
+        off  (long (or (:viewport-offset session) 0))]
+    (cond-> (assoc session
+                   :scrollback     (into rows new-lines)
+                   :scrollback-src (conj src {:render   (or render (constantly (vec new-lines)))
+                                              :n        (count new-lines)
+                                              :block-id nil})
+                   :has-unread?    true)
+      (and (pos? off) (pos? n))
+      (assoc :viewport-offset (+ off n)
+             :follow-mark     (or (:follow-mark session) (count rows))))))
 
 (defn sub-output-tee-target
   "The agent-session-id whose `:sub-output` stream backs the tab at `idx`, or
