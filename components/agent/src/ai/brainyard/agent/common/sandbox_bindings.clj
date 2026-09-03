@@ -123,6 +123,16 @@
    and (b) it matches the LLM's natural style. Positional mode is preserved
    for backwards compatibility with REPL/test callers.
 
+   A tool that declares NO entries at all (`[:map]`) takes the kwargs branch on
+   any leading keyword, without the known-key test. That test exists to keep a
+   keyword that is merely the first POSITIONAL value from being misread as a
+   kwarg — but a no-entry schema has no required keys, so positional mode binds
+   nothing and every argument was silently discarded (`(f :x 7)` → `{}`, no
+   error). `[:map]` is `define-tool`'s default, which made this the normal
+   outcome for any user tool authored without an explicit `:input-schema`. There
+   is no working behaviour to preserve here: the choice is between the args and
+   nothing.
+
    nil kwargs are dropped so unspecified options don't pollute the args map."
   [tool-def agent]
   (let [m            (:meta tool-def)
@@ -137,7 +147,8 @@
         f (fn [& args]
             (let [kwargs-mode? (and (seq args)
                                     (keyword? (first args))
-                                    (contains? all-keys (first args)))
+                                    (or (contains? all-keys (first args))
+                                        (empty? all-keys)))
                   flat-map? (and (seq args)
                                  (map? (first args))
                                  (= 1 (count args)))
@@ -151,18 +162,31 @@
                     flat-map? (first args)
 
                     :else
-                    (let [n   (count req-keys)
-                          pos (take n args)
-                          kw  (apply hash-map (drop n args))
-                          opts (drop-nils
-                                (into {}
-                                      (filter (fn [[k _]] (contains? opt-keys k)))
-                                      kw))]
-                      (merge (zipmap req-keys pos) opts)))]
+                    ;; Trailing args past the positionals must pair up. An odd
+                    ;; tail used to reach `apply hash-map`, which throws
+                    ;; `IllegalArgumentException: No value supplied for key`
+                    ;; straight out of the binding — an uncaught host exception
+                    ;; in a sandbox whose every other failure is a value.
+                    (let [n    (count req-keys)
+                          pos  (take n args)
+                          tail (drop n args)]
+                      (if (odd? (count tail))
+                        ::odd-trailing
+                        (let [kw   (apply hash-map tail)
+                              opts (drop-nils
+                                    (into {}
+                                          (filter (fn [[k _]] (contains? opt-keys k)))
+                                          kw))]
+                          (merge (zipmap req-keys pos) opts)))))]
               (cond
                 (= ::odd-kwargs args-map)
                 {:error (str "kwargs-style call to " (name id)
                              " requires an even number of args (pairs of :key value)")}
+
+                (= ::odd-trailing args-map)
+                {:error (str "call to " (name id) " left an odd number of args after its "
+                             (count req-keys) " positional input(s); trailing args must be"
+                             " :key value pairs")}
 
                 :else
                 (try

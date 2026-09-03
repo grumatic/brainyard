@@ -14,8 +14,11 @@
    plain `defn` in the agent's sandbox cannot provide.
 
    The tool body runs in a dedicated, long-lived `!tools-sandbox` (forked per
-   call for isolation). The body is a `(fn [args] ...)` of one map argument and
-   may compose other registered tools by their DIRECT symbol — builtins like
+   call for isolation). The body takes ONE map argument, written either as
+   `(fn [args] ...)` or as `(fn [& {:as args}] ...)` — the invoke path applies it
+   to a single map and SCI implements Clojure 1.11 trailing-map kwargs, so both
+   receive the same map. It may compose other registered tools by their DIRECT
+   symbol, in kwargs, map or positional form interchangeably — builtins like
    `(bash :command …)` / `(read-file :path …)` (supplied via :extra-bindings) and other
    user tools as `(user$tool$<name> :k v)` (bound on registration). call-tool is
    intentionally hidden, so composition is by symbol, not via call-tool. User
@@ -49,7 +52,9 @@
   "The live tools sandbox, created on first use. `extra-bindings` (typically the
    agent's `auto-tool-bindings`) expose registered tools as DIRECT symbols a body
    can call — builtins like `(bash :command …)` / `(read-file :path …)` and other
-   user tools as `(user$tool$<name> :k v)`. There is no generic `call-tool` helper here:
+   user tools as `(user$tool$<name> :k v)`. Peer user tools are additionally bound
+   by `bind-peer-symbol!`, which uses the same binder, so a peer accepts the same
+   call shapes a builtin does. There is no generic `call-tool` helper here:
    call-tool is intentionally hidden (`:visibility :hidden`), so a tool is
    composed by its own symbol, not through call-tool."
   ([] (tools-sandbox nil))
@@ -192,13 +197,41 @@
 
    Sandbox-touching, so it belongs to body installation (phase 2), NOT to
    registration: `register!` runs at process boot, where creating an SCI context
-   would be work done for a `by agents` that never evaluates anything."
-  [name]
-  (sb/set-var! (tools-sandbox)
-               (symbol (str "user$tool$" name))
-               (fn [args]
-                 (let [r (tool/call-tool (tool-id name) (or args {}))]
-                   (if (:error-message r) {:error (:error-message r)} r)))))
+   would be work done for a `by agents` that never evaluates anything.
+
+   The binding is built by `sandbox-bindings/bind-one-tool` — the SAME binder the
+   agent's code-eval sandbox and the hooks sandbox use — rather than a local
+   one-arity `(fn [args] …)`. It has to be: this runs AFTER the palette refresh
+   in both call sites, so a local fn SHADOWS the generic binding, and a peer
+   composed the way this ns's own docstrings teach it (`(user$tool$other :k v)`)
+   died with `Wrong number of args (2)`. Tool bodies were the only path in the
+   codebase where kwargs composition did not work; hook bodies never had the bug
+   precisely because they have no equivalent of this function and ride the
+   palette.
+
+   The def is SYNTHESIZED from the persisted record rather than read back out of
+   `!tool-defs`. `bind-one-tool` reads only `:meta` (`:id`, `:description`,
+   `:input-schema`), and synthesizing drops the ordering coupling that a registry
+   lookup would create — `install-bodies!` is public and does not itself
+   guarantee that phase 1 has run.
+
+   `agent` is nil, preserving the no-agent `call-tool` this has always issued: a
+   peer call resolves no agent-scoped permission/config. The tools sandbox is
+   long-lived and shared across agents, so capturing one here would be wrong;
+   changing it to resolve `*current-agent*` per call is a permission-gating
+   change, not a call-shape one."
+  [{:keys [name description input-schema]}]
+  (let [id       (tool-id name)
+        tool-def {:id   id
+                  :type :tool
+                  :meta {:id           id
+                         :type         :tool
+                         :description  description
+                         :input-schema (or input-schema [:map])}}
+        bind-one (requiring-resolve
+                  'ai.brainyard.agent.common.sandbox-bindings/bind-one-tool)
+        [sym f]  (bind-one tool-def nil)]
+    (sb/set-var! (tools-sandbox) sym f)))
 
 (defn- register!
   "Register (or replace) the tool in the shared !tool-defs registry. PURE
@@ -255,7 +288,8 @@
      :name          - lowercase-kebab string (matches #\"^[a-z][a-z0-9-]*$\")
      :description   - one-line description
      :input-schema  - Malli [:map ...] (default [:map]); drives coercion/validation
-     :body          - a string `(fn [args] ...)` of ONE map arg
+     :body          - a string taking ONE map arg, as either `(fn [args] ...)`
+                      or `(fn [& {:as args}] ...)` — both receive the same map
      :dirs          - {:project-dir ...} resolving where to persist
 
    Effects: validates + eval-smoke-tests the body, persists the metadata to
@@ -285,7 +319,7 @@
     (let [id (register! (assoc rec :file edn))]
       ;; `register!` is sandbox-free (it runs at boot too), so the peer symbol
       ;; other bodies compose by is bound here, next to the body install above.
-      (bind-peer-symbol! name)
+      (bind-peer-symbol! rec)
       (mulog/info ::define-tool :id id :file edn)
       {:id id :name name :persisted edn})))
 
@@ -352,7 +386,7 @@
   (let [recs (read-persisted (tools-dir dirs))]
     ;; Bind every peer `user$tool$<name>` symbol BEFORE installing any body:
     ;; a body may compose a peer and `.edn` file order is undefined.
-    (doseq [rec recs] (bind-peer-symbol! (:name rec)))
+    (doseq [rec recs] (bind-peer-symbol! rec))
     (->> recs
          (keep (fn [rec]
                  (try (install-body! (:name rec) (:body rec))
@@ -521,7 +555,8 @@
 
 (defcommand tool-agent$create
   "Author a reusable, PERSISTENT tool from Clojure source. :body is a string
-   `(fn [args] ...)` taking one map; :input-schema is a Malli [:map ...] passed
+   taking one map — `(fn [args] ...)` or `(fn [& {:as args}] ...)`, both work;
+   :input-schema is a Malli [:map ...] passed
    as an EDN string. The tool survives restarts, registers as `user$tool$<name>`
    (callable directly as a tool in the SAME turn it is created), and its body may
    compose other tools by their direct symbol, e.g. (bash :command …) or (user$tool$other :k v)."
@@ -537,7 +572,7 @@
       (catch Exception e {:error (str "tool-agent$create failed: " (.getMessage e))})))
   :input-schema  [:map
                   [:name        [:string {:desc "lowercase-kebab tool name (no user$tool$ prefix)"}]]
-                  [:body        [:string {:desc "Clojure source: a `(fn [args] ...)` of one map"}]]
+                  [:body        [:string {:desc "Clojure source: `(fn [args] ...)` or `(fn [& {:as args}] ...)` of one map"}]]
                   [:description {:optional true} [:string {:desc "one-line description"}]]
                   [:input-schema {:optional true :desc "Malli arg schema: a native vector (code channel) or an EDN string (tool-calls channel), e.g. [:map [:x :int]] (default [:map])"} ::acs/vector-object-arg]]
   :output-schema [:map
@@ -628,7 +663,7 @@
         {:valid false :collision false :schema-ok false :body-ok false
          :errors [(str "tool-agent$validate failed: " (.getMessage e))]})))
   :input-schema  [:map
-                  [:body         [:string {:desc "Clojure source: a `(fn [args] ...)` of one map"}]]
+                  [:body         [:string {:desc "Clojure source: `(fn [args] ...)` or `(fn [& {:as args}] ...)` of one map"}]]
                   [:name         {:optional true} [:string {:desc "Proposed name; enables name + collision check"}]]
                   [:input-schema {:optional true :desc "Malli arg schema to validate: a native vector (code channel) or an EDN string (tool-calls channel), e.g. [:map [:x :int]]"} ::acs/vector-object-arg]
                   [:sample       {:optional true} [:map {:desc "Example args map; if given, body is run once on it"}]]]

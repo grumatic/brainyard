@@ -444,6 +444,50 @@
             correctly a same-source replace"
     (is (= (str #'tool-test$probe) (:source (get @tool/!tool-defs :tool-test$probe))))))
 
+(deftest a-tool-body-is-always-applied-to-a-map-never-nil
+  ;; `invoke-tool`'s `{:as options}` binds nil (not `{}`) when no kwargs arrive,
+  ;; and the registry path reaches it via `(apply invoke-tool id (mapcat identity
+  ;; args))` — which flattens an empty args map to no arguments at all. So every
+  ;; zero-arg call used to hand the body nil, the one shape it never sees on any
+  ;; other path, and precisely the shape a tool with no required inputs is
+  ;; normally invoked with.
+  ;; A PLAIN keyword id: `call-tool` derives the hook's :tool-name via
+  ;; `util/kw->str`, which keeps the namespace on a qualified keyword, so a
+  ;; `::foo` id would never equal `(name id)` in the :match below.
+  (let [id   :empty-args-probe
+        seen (atom ::unset)]
+    (try
+      (swap! tool/!tool-defs assoc id
+             {:id id :type :tool
+              :fn (fn [args] (reset! seen args) {:ok? true})
+              :meta {:id id :type :tool :description "probe"
+                     :input-schema [:map] :output-schema [:map]}})
+      (testing "call-tool with an empty args map"
+        (tool/call-tool id {})
+        (is (= {} @seen) "body receives {}, not nil"))
+      (testing "invoke-tool called bare, with no kwargs at all"
+        (reset! seen ::unset)
+        (tool/invoke-tool id)
+        (is (= {} @seen)))
+      (testing "a populated call is unchanged"
+        (reset! seen ::unset)
+        (tool/call-tool id {:x 1})
+        (is (= {:x 1} @seen)))
+      (testing "the pre-hook and the body now agree about the empty case"
+        ;; The hook chain is handed the args map BEFORE the flattening, so it
+        ;; always saw {} while the body it gated saw nil.
+        (let [hook-saw (atom ::unset)]
+          (hooks/register-hook! :agent.tool-use/pre ::empty-args-probe-hook
+                                (fn [ev] (reset! hook-saw (:args ev)) nil)
+                                :match (fn [ev] (= (name id) (str (:tool-name ev)))))
+          (try
+            (reset! seen ::unset)
+            (tool/call-tool id {})
+            (is (= @hook-saw @seen))
+            (finally (hooks/unregister-hook! :agent.tool-use/pre
+                                             ::empty-args-probe-hook)))))
+      (finally (swap! tool/!tool-defs dissoc id)))))
+
 ;; Drop the throwaway tools AFTER the tests run, so a sibling test that
 ;; enumerates the registry doesn't see them. (At load time this would remove
 ;; them before the deftests above ever bind them.)

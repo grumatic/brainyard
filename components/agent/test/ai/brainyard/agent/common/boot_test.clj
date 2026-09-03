@@ -156,6 +156,22 @@
     (is (= {:via "PEER WORKS"}
            (tool/call-tool :user$tool$aaa-caller {:text "peer works"})))))
 
+(deftest peer-composition-over-boot-accepts-kwargs
+  (testing "a rehydrated peer symbol takes kwargs, not just a map"
+    ;; The boot path binds peers through `install-bodies!`, which is a different
+    ;; call site from `define-tool` — both used to install a one-arity fn, so a
+    ;; body restored from disk could only call a peer with a map.
+    (write-tool! "aaa-caller" {:description "composes a peer with kwargs"
+                               :input-schema [:map [:text :string]]}
+                 "(fn [args] {:via (:shouted (user$tool$zzz-base :text (:text args)))})")
+    (write-tool! "zzz-base" {:description "the peer"
+                             :input-schema [:map [:text :string]]}
+                 "(fn [args] {:shouted (clojure.string/upper-case (:text args))})")
+    (boot/boot-registries! :dirs test-dirs :skills :skip)
+    (ut/install-bodies! :dirs test-dirs :extra-bindings (palette))
+    (is (= {:via "PEER WORKS"}
+           (tool/call-tool :user$tool$aaa-caller {:text "peer works"})))))
+
 (deftest a-broken-body-rolls-out-of-the-registry
   (testing "phase 1 registers both; phase 2 retracts only the one that cannot eval"
     (write-tool! "good" {:description "fine"} "(fn [args] {:ok true})")

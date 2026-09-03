@@ -96,6 +96,33 @@
       (try
         (let [[_ f] (#'sb-bind/bind-one-tool (tool/get-tool-defs :id id) nil)]
           (is (str/includes? (str (:error (f :path))) "even number")))
+        (finally (swap! tool/!tool-defs dissoc id)))))
+
+  (testing "a tool declaring NO entries still takes kwargs"
+    ;; `[:map]` is what `user-tools/define-tool` defaults to, so this covers
+    ;; every user tool authored without an explicit :input-schema. The kwargs
+    ;; branch used to require the leading keyword to be a DECLARED input; with
+    ;; nothing declared, the call fell through to positional mode, which binds
+    ;; only required keys — of which there are none — and every argument was
+    ;; discarded without an error.
+    (let [id ::cs-no-entries]
+      (capture-args-tool id [:map])
+      (try
+        (let [[_ f] (#'sb-bind/bind-one-tool (tool/get-tool-defs :id id) nil)]
+          (is (= {:x 7 :y 8} (:seen (f :x 7 :y 8))) "kwargs reach the tool")
+          (is (= (:seen (f {:x 7 :y 8})) (:seen (f :x 7 :y 8)))
+              "and agree with the map form, as for a declared schema"))
+        (finally (swap! tool/!tool-defs dissoc id)))))
+
+  (testing "an odd trailing arg is reported as a value, not thrown"
+    ;; `(apply hash-map)` on an odd tail throws IllegalArgumentException out of
+    ;; the binding — an uncaught host exception in a sandbox whose every other
+    ;; failure is an {:error …} value.
+    (let [id ::cs-odd-tail]
+      (capture-args-tool id [:map [:path [:string {:desc "p"}]]])
+      (try
+        (let [[_ f] (#'sb-bind/bind-one-tool (tool/get-tool-defs :id id) nil)]
+          (is (str/includes? (str (:error (f "/tmp/x" :extra))) "odd number")))
         (finally (swap! tool/!tool-defs dissoc id))))))
 
 ;; ---------------------------------------------------------------------------

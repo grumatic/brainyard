@@ -27,7 +27,9 @@
 (def ^:private our-ids
   [:user$tool$wc-test :user$tool$long-test :user$tool$echo-test
    :user$tool$shout-test :user$tool$bad-schema-test :user$tool$unreadable-test
-   :user$tool$slow-test])
+   :user$tool$slow-test
+   :user$tool$peer-kw-test :user$tool$peer-map-test :user$tool$peer-pos-test
+   :user$tool$kwbody-test :user$tool$kwbody-peer-test :user$tool$noargs-test])
 
 (defn- rm-rf! [^java.io.File f]
   (when (.isDirectory f) (doseq [c (.listFiles f)] (rm-rf! c)))
@@ -79,6 +81,72 @@
       :dirs test-dirs)
     (is (= {:long? true}  (tool/call-tool :user$tool$long-test {:text "the quick brown fox jumps"})))
     (is (= {:long? false} (tool/call-tool :user$tool$long-test {:text "just three words"})))))
+
+(deftest peer-composition-accepts-every-call-shape
+  ;; Regression: `bind-peer-symbol!` used to install its own one-arity
+  ;; `(fn [args] …)` for peer symbols, and it runs AFTER the palette refresh —
+  ;; so it SHADOWED the generic binding every other path uses. A peer composed
+  ;; the way this ns's docstrings (and tool-agent's instruction) teach it,
+  ;; `(user$tool$peer :k v)`, died with "Wrong number of args (2) passed to
+  ;; user-tools/bind-peer-symbol!/fn". Tool bodies were the only place in the
+  ;; codebase where kwargs composition did not work — hook bodies never had the
+  ;; bug because they have no equivalent function and ride the palette.
+  (ut/define-tool :name "wc-test" :description "Count words."
+    :input-schema [:map [:text :string]]
+    :body "(fn [{:keys [text]}] {:words (count (clojure.string/split text #\"\\s+\"))})"
+    :dirs test-dirs)
+  (testing "kwargs — the shape the instructions teach"
+    (ut/define-tool :name "peer-kw-test" :description "kwargs peer call"
+      :input-schema [:map [:text :string]]
+      :body "(fn [args] {:n (:words (user$tool$wc-test :text (:text args)))})"
+      :dirs test-dirs)
+    (is (= {:n 4} (tool/call-tool :user$tool$peer-kw-test {:text "the quick brown fox"}))))
+  (testing "flat map — the shape that already worked"
+    (ut/define-tool :name "peer-map-test" :description "map peer call"
+      :input-schema [:map [:text :string]]
+      :body "(fn [args] {:n (:words (user$tool$wc-test {:text (:text args)}))})"
+      :dirs test-dirs)
+    (is (= {:n 4} (tool/call-tool :user$tool$peer-map-test {:text "the quick brown fox"}))))
+  (testing "positional — required inputs in declaration order"
+    (ut/define-tool :name "peer-pos-test" :description "positional peer call"
+      :input-schema [:map [:text :string]]
+      :body "(fn [args] {:n (:words (user$tool$wc-test (:text args)))})"
+      :dirs test-dirs)
+    (is (= {:n 4} (tool/call-tool :user$tool$peer-pos-test {:text "the quick brown fox"})))))
+
+(deftest a-body-may-be-written-kwargs-style
+  ;; The invoke path applies the body to ONE map, and SCI implements Clojure
+  ;; 1.11 trailing-map kwargs — so `(fn [& {:as args}] …)` receives exactly what
+  ;; `(fn [args] …)` receives. Both shapes are documented; this pins that.
+  (testing "a kwargs-style body is invoked with the args map"
+    (ut/define-tool :name "kwbody-test" :description "kwargs-style body"
+      :input-schema [:map [:text :string]]
+      :body "(fn [& {:as args}] {:seen (:text args)})"
+      :dirs test-dirs)
+    (is (= {:seen "hi"} (tool/call-tool :user$tool$kwbody-test {:text "hi"}))))
+  (testing "and a peer composes it with kwargs"
+    (ut/define-tool :name "kwbody-peer-test" :description "peer of a kwargs-style body"
+      :input-schema [:map [:text :string]]
+      :body "(fn [& {:as args}] {:via (:seen (user$tool$kwbody-test :text (:text args)))})"
+      :dirs test-dirs)
+    (is (= {:via "hi"} (tool/call-tool :user$tool$kwbody-peer-test {:text "hi"})))))
+
+(deftest a-tool-with-no-declared-inputs-still-receives-kwargs
+  ;; `[:map]` is define-tool's DEFAULT, so this is the normal shape for any tool
+  ;; authored without an explicit :input-schema. Kwargs used to be discarded in
+  ;; silence — `(f :x 7)` produced `{}`, with no error anywhere — because the
+  ;; kwargs branch required the leading keyword to be a declared input. A
+  ;; no-entry schema has no required keys, so positional mode bound nothing.
+  (ut/define-tool :name "noargs-test" :description "echoes whatever it got"
+    :body "(fn [args] {:got args})"
+    :dirs test-dirs)
+  (let [[_ f] (#'sb-bind/bind-one-tool (tool/get-tool-defs :id :user$tool$noargs-test) nil)]
+    (testing "kwargs survive"
+      (is (= {:got {:x 7 :y 8}} (f :x 7 :y 8))))
+    (testing "the map form is unchanged"
+      (is (= {:got {:x 7 :y 8}} (f {:x 7 :y 8}))))
+    (testing "an odd trailing arg is a value, not an uncaught IllegalArgumentException"
+      (is (str/includes? (str (:error (f 7))) "odd number")))))
 
 (deftest composes-builtin-bash
   (testing "a body calls a builtin tool by its DIRECT symbol (via :extra-bindings)"

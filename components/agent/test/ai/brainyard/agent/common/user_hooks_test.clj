@@ -19,6 +19,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [ai.brainyard.agent.common.user-hooks :as uh]
+            [ai.brainyard.agent.common.sandbox-bindings :as sb-bind]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.tool :as tool]))
 
@@ -81,6 +82,34 @@
     (reset! sink [])
     (hooks/fire! :agent.iteration/post {:iteration 1 :max-iterations 10})
     (is (= [:agent.iteration/post] @sink))))
+
+(deftest handler-body-composes-a-tool-with-kwargs
+  ;; Hook bodies reach the tool palette through `sandbox-bindings/bind-one-tool`
+  ;; and so never had the one-arity peer bug that tool bodies did — user-tools
+  ;; installed its own `(fn [args] …)` over the palette in `bind-peer-symbol!`,
+  ;; and user-hooks has no equivalent. This is the lock that keeps the hook side
+  ;; on the shared binder rather than growing its own copy.
+  (reset! sink [])
+  (let [id :user$tool$hooks-kwargs-probe]
+    (swap! tool/!tool-defs assoc id
+           {:id id :type :tool
+            :fn (fn [args] {:echoed (:text args)})
+            :meta {:id id :type :tool :description "probe"
+                   :input-schema  [:map [:text [:string {:desc "t"}]]]
+                   :output-schema [:map]}})
+    (try
+      ;; The body is ALSO written kwargs-style, pinning the other half: the fire
+      ;; path applies it to one map, and SCI's Clojure 1.11 trailing-map kwargs
+      ;; make `(fn [& {:as event}] …)` receive the same map `(fn [event] …)` does.
+      (uh/define-hook :id "compose-kw" :event :agent.iteration/post
+        :match {:global true}
+        :body (str "(fn [& {:as event}] (record! (:echoed "
+                   "(user$tool$hooks-kwargs-probe :text (str \"i\" (:iteration event))))))")
+        :dirs test-dirs
+        :extra-bindings (merge (sb-bind/auto-tool-bindings nil) (bindings-with-sink)))
+      (hooks/fire! :agent.iteration/post {:iteration 1 :max-iterations 10})
+      (is (= ["i1"] @sink))
+      (finally (swap! tool/!tool-defs dissoc id)))))
 
 (deftest rejects-gated-event
   (testing "a gated event (:agent.tool-use/pre) is rejected — observer-only v1"

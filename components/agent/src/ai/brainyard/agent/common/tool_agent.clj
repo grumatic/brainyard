@@ -44,10 +44,12 @@ AUTHORING (validate → create → verify — the dry-run and the verify are HAR
    - :description   one tight line — this is what other agents see in discovery.
    - :input-schema  a Malli [:map ...]; every field [:k [:type {:desc \"...\"}]].
                     The schema drives coercion, the sandbox arglist, and docs.
-2. Write :body as a string \"(fn [args] ...)\" of ONE map argument. COMPOSE the
-   existing palette by direct symbol — (read-file {...}), (bash {...}), or a
-   peer (user$tool$other {...}) — instead of re-implementing or reaching for host
-   interop. Pull args out of the `args` map by the schema's keys.
+2. Write :body as a string taking ONE map argument — \"(fn [args] ...)\" or
+   \"(fn [& {:as args}] ...)\"; both receive the same map. COMPOSE the existing
+   palette by direct symbol — (read-file :path ...), (bash :command ...), or a
+   peer (user$tool$other :k v) — instead of re-implementing or reaching for host
+   interop. Kwargs, map and positional call shapes all work, for builtins and
+   peers alike. Pull args out of the `args` map by the schema's keys.
    FILE-FIRST (optional, for a large body or one with nested ``` fences): rather
    than hand-escaping the body into a string literal, write-file it to a scratch
    .clj (verbatim), read-file it back, and pass that content as :body. The body

@@ -17,11 +17,14 @@
    sandbox to rehydrate the handler on fire and on session start.
 
    The handler body runs in a dedicated, long-lived `!hooks-sandbox` (forked per
-   fire for isolation). The body is a `(fn [event] ...)` of one map argument — a
-   SANITIZED view of the event (the live Agent record is dropped; stable
-   `:event-key` / `:agent-id` / `:defagent-type` are added) — and may compose the
-   registered tool palette by DIRECT symbol, e.g. `(read-file {…})` /
-   `(bash {…})`, exactly like a user tool body.
+   fire for isolation). The body takes ONE map argument — a SANITIZED view of the
+   event (the live Agent record is dropped; stable `:event-key` / `:agent-id` /
+   `:defagent-type` are added) — written either as `(fn [event] ...)` or as
+   `(fn [& {:as event}] ...)`; the fire path applies it to a single map and SCI
+   implements Clojure 1.11 trailing-map kwargs, so both receive the same map. It
+   may compose the registered tool palette by DIRECT symbol, in kwargs, map or
+   positional form interchangeably — `(read-file :path …)` / `(bash {…})` —
+   exactly like a user tool body.
 
    v1 scope (observer-only, explicit scope):
    - Only NON-gated (`fire!`) events are allowed; gated events
@@ -270,7 +273,8 @@
                    {:defagent-type …}, {:agent-id …}) or {:global true}
      :priority   - integer, higher fires first (default 0)
      :doc        - one-line description
-     :body       - a string `(fn [event] ...)` of ONE map arg
+     :body       - a string taking ONE map arg, as either `(fn [event] ...)`
+                   or `(fn [& {:as event}] ...)` — both receive the same map
      :dirs       - {:project-dir ...} resolving where to persist
 
    Effects: validates + eval-smoke-tests the body, persists the metadata to
@@ -522,7 +526,7 @@
          :body-ok false :collision false
          :errors [(str "hook-agent$validate failed: " (.getMessage e))]})))
   :input-schema  [:map
-                  [:body     [:string {:desc "Clojure source: a `(fn [event] ...)` of one map"}]]
+                  [:body     [:string {:desc "Clojure source: `(fn [event] ...)` or `(fn [& {:as event}] ...)` of one map"}]]
                   [:id       {:optional true} [:string {:desc "Proposed id; enables id + collision check"}]]
                   [:event    {:optional true} [:string {:desc "Event key, e.g. \"agent.tool-use/post\""}]]
                   [:match    {:optional true :desc "Scope: a map, or an EDN string, e.g. {:tool-name \"bash\"} or {:global true}"} ::acs/map-object-arg]
@@ -561,7 +565,7 @@
   :input-schema  [:map
                   [:id       [:string {:desc "lowercase-kebab hook id (no prefix)"}]]
                   [:event    [:string {:desc "Non-gated event key from hook-agent$events, e.g. \"agent.tool-use/post\""}]]
-                  [:body     [:string {:desc "Clojure source: a `(fn [event] ...)` of one map"}]]
+                  [:body     [:string {:desc "Clojure source: `(fn [event] ...)` or `(fn [& {:as event}] ...)` of one map"}]]
                   [:match    {:desc "REQUIRED scope: a map, or an EDN string: {:tool-name \"bash\"}, {:defagent-type \"router-agent\"}, or {:global true}"} ::acs/map-object-arg]
                   [:doc      {:optional true} [:string {:desc "one-line description"}]]
                   [:priority {:optional true} [:int {:desc "Higher fires first; default 0"}]]]

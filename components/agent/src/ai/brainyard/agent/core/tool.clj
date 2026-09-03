@@ -309,9 +309,23 @@
   "Invoke a registered tool (command, skill, or agent) by ID.
    BARE dispatcher — no hooks, no permissions, no visibility checks.
 
-   Direct invoke-tool should only be used internally."
+   Direct invoke-tool should only be used internally.
+
+   A tool `:fn` is ALWAYS applied to a map, never to nil. `{:as options}` binds
+   nil rather than `{}` when no kwargs arrive, and the registry path reaches
+   here via `(apply invoke-tool id (mapcat identity args))` — which flattens an
+   empty args map to no arguments at all. So every zero-arg call handed the
+   tool body nil: `(call-tool :some$tool {})` ran `(tool-fn nil)`.
+
+   That is a shape the same body never sees on any other path. `call-tool`'s
+   hooks are given the args map BEFORE this flattening, so `:agent.tool-use/pre`
+   already observed `{}` while the body it gated observed nil; and an LLM-authored
+   `(fn [args] …)` body doing `(map? args)` or `(merge args …)` broke only for
+   the no-argument call, which is the one shape a tool with no required inputs
+   is normally invoked with."
   [id & {:as options}]
-  (let [str-id (util/kw->str id)]
+  (let [str-id  (util/kw->str id)
+        options (or options {})]
     (if-let [tool-def (get @!tool-defs id)]
       (if-let [tool-fn (:fn tool-def)]
         (cond
