@@ -44,7 +44,7 @@
       "a quarantined key must not also be owned by a feature"))
 
 (deftest partition-counts-match-the-design
-  (testing "34 feature gates + 9 family gates + 98 knobs + 18 presentation + 14 ambient = 173"
+  (testing "34 feature gates + 9 family gates + 100 knobs + 18 presentation + 14 ambient = 175"
     (let [knobs (->> feat/all-features
                      (mapcat :keys)
                      (remove feat/presentation-key?)
@@ -52,14 +52,14 @@
           pres  (->> feat/all-features (filter :presentation) (mapcat :keys) count)]
       (is (= 34 (count feat/gate-keys)) "+1: :enable-catalog-refresh (exec/catalog-refresh)")
       (is (= 9 (count feat/family-gate-keys)) "one per capability family; :ui has none")
-      (is (= 98 knobs)
-          "+1: :nrepl-eval-timeout-ms (exec/nrepl)")
+      (is (= 100 knobs)
+          "+2: :recall-mode, :recall-min-terms (memory/recall)")
       (is (= 18 pres) "+1: :enable-mouse (ui/mouse)")
       (is (= 14 (count feat/ambient-keys))
           "+1: :permission-timeout-ms, beside :permission-mode")
       (is (= 0 (count feat/unclassified-keys))
           "no schema key is currently unreadable")
-      (is (= 173 (count cfg/config-keys)))
+      (is (= 175 (count cfg/config-keys)))
       (testing "the partition still balances"
         ;; The real invariant behind the hardcoded numbers: every schema key
         ;; lands in exactly one bucket. Asserting the sum catches a

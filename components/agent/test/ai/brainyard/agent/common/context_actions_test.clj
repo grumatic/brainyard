@@ -432,3 +432,70 @@
       (is (str/includes? out "[Turns 5–7]"))
       (is (str/includes? out "see Previous Turns"))
       (is (str/includes? out "**user**: hello")))))
+
+;; ============================================================================
+;; Conditional recall — inject-side overlap gate
+;; ============================================================================
+
+(def ^:private gate-terms ["sqlite" "vec" "extension" "bundled" "native" "image"])
+
+(def ^:private gate-hits-fixture
+  [{:_layer :l2 :content "sqlite-vec extension is bundled into the native image"} ; 6
+   {:_layer :l3 :content "GraalVM native image bundles resources from config"}     ; 2
+   {:_layer :l2 :content "Native compilation is slow."}                            ; 1
+   {:_layer :l2 :content "The user prefers tabs over spaces."}                      ; 0
+   {:_layer :l1 :content "Session overlay: cwd is /tmp/proj"}])                     ; 0
+
+(deftest matched-term-count-test
+  (testing "counts distinct terms present, case-insensitively"
+    (is (= 6 (ctx-actions/matched-term-count gate-terms (:content (nth gate-hits-fixture 0)))))
+    (is (= 2 (ctx-actions/matched-term-count gate-terms (:content (nth gate-hits-fixture 1)))))
+    (is (= 1 (ctx-actions/matched-term-count gate-terms "NATIVE only, upper-case")))
+    (is (= 0 (ctx-actions/matched-term-count gate-terms "nothing relevant here"))))
+  (testing "nil content is 0, not a throw"
+    (is (= 0 (ctx-actions/matched-term-count gate-terms nil)))))
+
+(deftest gate-hits-drops-single-incidental-token-matches
+  (testing "min-terms 2 keeps corroborated hits, drops one-token FTS :or noise"
+    (let [kept (ctx-actions/gate-hits gate-hits-fixture gate-terms 2)]
+      (is (= 3 (count kept)))
+      (is (= [:l2 :l3 :l1] (mapv :_layer kept))
+          "the 1-token :l2 hit and the 0-token :l2 hit are dropped")))
+  (testing "raising min-terms drops the weaker corroborated hit too"
+    (is (= [:l2 :l1] (mapv :_layer (ctx-actions/gate-hits gate-hits-fixture gate-terms 3))))))
+
+(deftest gate-hits-never-drops-l1
+  (testing "L1 overlays pass regardless of overlap — they are deliberate session
+            state, not retrieval results competing for relevance"
+    (doseq [n [1 2 3 99]]
+      (is (some #(= :l1 (:_layer %)) (ctx-actions/gate-hits gate-hits-fixture gate-terms n))
+          (str "L1 survived min-terms=" n)))))
+
+(deftest gate-hits-degrades-open-not-closed
+  (testing "no keywords → gate is inert (nothing to judge against)"
+    (is (= gate-hits-fixture (ctx-actions/gate-hits gate-hits-fixture [] 99))))
+  (testing "min-terms clamps down to the keyword count, so a 1-keyword question
+            still returns its matches instead of nothing"
+    (let [kept (ctx-actions/gate-hits gate-hits-fixture ["sqlite"] 2)]
+      (is (= [:l2 :l1] (mapv :_layer kept)))))
+  (testing "order is preserved (RRF rank order survives the gate)"
+    (let [kept (ctx-actions/gate-hits gate-hits-fixture gate-terms 1)]
+      (is (= (mapv :content kept)
+             (->> gate-hits-fixture
+                  (filter (set kept))
+                  (mapv :content)))))))
+
+(deftest gate-hits-empty-input
+  (testing "no hits in, no hits out — and a vector, not nil"
+    (is (= [] (ctx-actions/gate-hits [] gate-terms 2)))))
+
+(deftest gate-hits-never-gates-semantic-layers
+  (testing ":vec and :graph hits pass regardless of keyword overlap — gating a
+            semantic-similarity or multi-hop result on shared WORDS would
+            delete exactly the signal those layers exist to add"
+    (let [semantic [{:_layer :vec   :content "no shared vocabulary whatsoever"}
+                    {:_layer :graph :content "two hops out from the seed node"}
+                    {:_layer :l2    :content "no shared vocabulary whatsoever"}]
+          kept (ctx-actions/gate-hits semantic gate-terms 1)]
+      (is (= [:vec :graph] (mapv :_layer kept))
+          "the :l2 twin of the same text is dropped; :vec/:graph survive"))))

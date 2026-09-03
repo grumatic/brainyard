@@ -96,7 +96,8 @@
    {:title     "Memory recall"
     :family    :memory
     :gate      :enable-memory-recall
-    :keys      [:recall-limit :memory-recall-snippet-chars]
+    :keys      [:recall-limit :memory-recall-snippet-chars
+                :recall-mode :recall-min-terms]
     ;; Deliberately does NOT require :memory/capture. The store is USER-scoped
     ;; (~/.brainyard/memory/<user-id>.db) and long-lived, so a session can
     ;; usefully read a corpus it does not write to — the one-shot `by ask`

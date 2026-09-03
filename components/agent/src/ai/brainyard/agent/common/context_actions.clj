@@ -14,15 +14,19 @@
    - prepare-recalled-memory-action — run cross-layer recall over the
      current question, render the hits as a layer-grouped markdown
      block, and store the string in st-memory :recalled-memory.
-     No-op when no memory manager or no question.
+     No-op when no memory manager or no question. Under
+     `:recall-mode \"conditional\"` the query still runs but only hits
+     matching at least `:recall-min-terms` of the question's keywords
+     are injected (see gate-hits), and
+     `::recall-gate` reports what that saved.
 
    - re-recall-after-tool-use — :agent.tool-use/post hook (M8a). When
      `:enable-mid-turn-recall` is on, extracts novel entity terms from
      each tool result, fires a refined recall, and merges new hits
      into :recalled-memory. Self-installs at namespace load."
   (:require [ai.brainyard.behavior-tree.interface :as bt]
+            [ai.brainyard.clj-llm.interface :as clj-llm]
             [ai.brainyard.agent.core.config :as config]
-            [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.feature :as feature]
             [ai.brainyard.agent.core.hooks :as hooks]
             [ai.brainyard.agent.core.protocol :as proto]
@@ -159,6 +163,74 @@
                                               (str "- " (snip (:content h))))
                                             other))))]
       (str/join "\n" parts))))
+
+;; ============================================================================
+;; Conditional recall — inject-side gate (:recall-mode "conditional")
+;; ============================================================================
+;;
+;; What recall COSTS is prompt tokens, not query time: the query is a local
+;; SQLite FTS read, while every hit it returns is re-encoded into the user
+;; message. So the gate runs on the INJECTION, never on the query — the store
+;; is still read (and still audited) exactly as in "always" mode.
+;;
+;; Cache geometry, which is why gating here is safe (see dspy_action.clj
+;; `build-system-prompt` + the `:user-cache-boundary :iterations` on CoAct's
+;; think-act-code node): :recalled-memory is a USER-message input sitting in
+;; the turn-stable prefix BEFORE :iterations. That prefix is what iterations
+;; 2..N of one turn read from cache. It is NOT one of the system zones
+;; (:agent-core / :session-context / :history-context), and it is preceded by
+;; :question — which changes every turn — so the prefix never survives into
+;; the next turn anyway. Deciding recall ONCE at turn start therefore cannot
+;; invalidate a cache read that would otherwise have hit; it only shrinks what
+;; iteration 1 writes. (The converse case is `re-recall-after-tool-use`, which
+;; rewrites :recalled-memory MID-turn and does invalidate the prefix from that
+;; iteration on — that is why its telemetry is worth reading next to this.)
+
+(def ^:private gated-layers
+  "Layers the overlap gate applies to — the two LEXICALLY-retrieved ones.
+   Everything else in `recall-v2/default-layers` is excluded on purpose:
+
+     :l1            session overlays, deliberately written for this session
+                    rather than retrieval results competing for relevance.
+     :vec           CR-MEM-21 semantic similarity. Its whole value is finding
+                    material that does NOT share the question's wording, so a
+                    keyword test would silently delete the signal it exists to
+                    add — the gate would be strictest exactly where recall is
+                    smartest.
+     :graph         CR-MEM-23 relational/multi-hop. Retrieved via edges from a
+                    seed node, so a hit two hops out legitimately shares no
+                    term with the question.
+
+   Only :l2/:l3 are FTS matches, and only for those does 'shares no keyword
+   with the query that retrieved it' actually mean the hit is noise."
+  #{:l2 :l3})
+
+(defn matched-term-count
+  "How many of `terms` appear as case-insensitive substrings of `content`."
+  [terms content]
+  (let [lc (str/lower-case (str content))]
+    (count (filter #(str/includes? lc %) terms))))
+
+(defn gate-hits
+  "Drop hits matching fewer than `min-terms` of the question's keywords.
+   Hits in a layer outside `gated-layers` pass through untouched, as does
+   EVERY hit when `terms` is empty — a question that yields no keywords gives
+   nothing to judge against, and silently emptying the block there would read
+   as 'memory is broken' rather than 'gated'.
+
+   `min-terms` is clamped down to `(count terms)`: a question with one
+   keyword cannot be asked for two matches, and clamping keeps the short
+   question working instead of returning nothing.
+
+   Returns the kept vector, order preserved."
+  [hits terms min-terms]
+  (if (empty? terms)
+    (vec hits)
+    (let [need (max 1 (min (long min-terms) (count terms)))]
+      (filterv (fn [h]
+                 (or (not (contains? gated-layers (:_layer h)))
+                     (>= (matched-term-count terms (:content h)) need)))
+               hits))))
 
 (defn- drop-question-tail
   "If the last message is a user message whose content equals `question`
@@ -334,12 +406,41 @@
                                       :message (ex-message e))
                           nil)))
         projected (mapv project-hit (or hits []))
-        rendered  (binding [*snip-chars* (or (config/get-config agent :memory-recall-snippet-chars)
-                                             *snip-chars*)]
-                    (format-recalled-memory projected))]
+        snip-n    (or (config/get-config agent :memory-recall-snippet-chars)
+                      *snip-chars*)
+        render    (fn [hs] (binding [*snip-chars* snip-n]
+                             (format-recalled-memory hs)))
+        ;; Inject-side gate. Renders BOTH forms when conditional so the
+        ;; telemetry can report what the gate actually cost/saved — the
+        ;; ungated render is the counterfactual, and without it "chars saved"
+        ;; would be a guess. Both renders are pure string work over <=
+        ;; :recall-limit hits, i.e. cheap next to the LLM call they precede.
+        conditional? (= "conditional" (str (config/get-config agent :recall-mode)))
+        kept      (if (and conditional? (seq projected))
+                    (gate-hits projected
+                               (mem/extract-keywords (str question))
+                               (or (config/get-config agent :recall-min-terms) 1))
+                    projected)
+        rendered  (render kept)]
+    (when (and conditional? (seq projected))
+      (let [full (render projected)
+            saved (- (count full) (count rendered))]
+        (mulog/log ::recall-gate
+                   :turn-id      turn-id
+                   :agent-id     aid
+                   :hits-in      (count projected)
+                   :hits-kept    (count kept)
+                   :chars-in     (count full)
+                   :chars-kept   (count rendered)
+                   :chars-saved  saved
+                   ;; The number that matters: :recalled-memory rides the
+                   ;; turn-stable user prefix, so every char here is billed as
+                   ;; a cache WRITE on iteration 1 of each turn.
+                   :est-tokens-saved (max 0 (- (clj-llm/estimate-tokens full)
+                                               (clj-llm/estimate-tokens rendered))))))
     (swap! st-memory assoc
            :recalled-memory      rendered
-           :recalled-memory-hits projected)
+           :recalled-memory-hits kept)
     bt/success))
 
 ;; ============================================================================
